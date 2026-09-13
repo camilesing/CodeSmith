@@ -48,7 +48,7 @@ impl ToolSpec for GrepFilesTool {
     }
 
     fn description(&self) -> &'static str {
-        "Search for a regex pattern in workspace files. Use this instead of `grep -r`, `rg`, or `find ... -exec grep` in `exec_shell` — ripgrep-engine, faster, and respects `.gitignore`. Returns matching lines with context (default: 2 lines before/after each match). Set `multiline: true` to match patterns that span line breaks (e.g. `fn\\s+\\w+\\(\\s*[^)]*\\)\\s*\\{`); prefix the pattern with `(?s)` when `.` itself must match newlines."
+        "Search for a regex pattern in workspace files. Use this instead of `grep -r`, `rg`, or `find ... -exec grep` in `exec_shell` — ripgrep-engine, faster, and respects `.gitignore`. Returns matching lines with context (default: 2 lines before/after each match). Set `multiline: true` to match patterns that span line breaks (e.g. `fn\\s+\\w+\\(\\s*[^)]*\\)\\s*\\{`); prefix the pattern with `(?s)` when `.` itself must match newlines.\n\nExamples: `{\"pattern\": \"fn parse_config\", \"include\": [\"*.rs\"]}` (find definitions Rust-wide); `{\"pattern\": \"TODO|FIXME\", \"path\": \"src\", \"context_lines\": 0, \"max_results\": 50}` (sweep a subtree); `{\"pattern\": \"async fn\\s+\\w+\", \"case_insensitive\": false}`."
     }
 
     fn input_schema(&self) -> Value {

@@ -815,9 +815,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         worktree_state: crate::tools::worktree::new_shared_worktree_session_state(),
         max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
         allowed_tools: app.active_allowed_tools.clone(),
-        network_policy: config.network.clone().map(|toml_cfg| {
-            crate::network_policy::NetworkPolicyDecider::with_default_audit(toml_cfg.into_runtime())
-        }),
+        network_policy: Some(config.network_policy_decider()),
         snapshots_enabled: config.snapshots_config().enabled,
         snapshots_max_workspace_bytes: config
             .snapshots_config()
@@ -829,6 +827,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
             .map(crate::config::LspConfigToml::into_runtime),
         subagent_model_overrides: config.subagent_model_overrides(),
         subagent_api_timeout: Duration::from_secs(config.subagent_api_timeout_secs()),
+        stream_idle_timeout: Duration::from_secs(config.stream_idle_timeout_secs()),
         subagent_inherit_full_registry: config.subagent_inherit_full_registry(),
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
         sandbox_runtime: config.sandbox_runtime_config(),

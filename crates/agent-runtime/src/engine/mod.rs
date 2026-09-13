@@ -1351,7 +1351,22 @@ impl Engine {
         .with_tool_dispatcher(plan.tool_registry.clone())
         .with_turn_meta(Some(turn_meta_probe))
         .with_reinject(Some(reinject_probe))
-        .with_extension_runner(self.extension_runner.clone());
+        .with_extension_runner(self.extension_runner.clone())
+        // P0-1: stream idle watchdog — abort a stream that stays silent for
+        // the configured per-event budget into the transparent-retry path.
+        // `ZERO` (explicitly disabled in config) maps to `None`.
+        .with_stream_idle_timeout(
+            if self.config.stream_idle_timeout.is_zero() {
+                None
+            } else {
+                Some(self.config.stream_idle_timeout)
+            },
+        )
+        // P0-3: shadow-mode prefix-cache stability checks. `Arc` clone of the
+        // session-scoped manager (before the `&mut self.session` borrow held
+        // by `SessionChatHistory` below) so per-step fingerprint re-pins
+        // persist across turns. None ⇒ no checks (pre-P0-3 behavior).
+        .with_prefix_stability(self.session.prefix_stability.clone());
         let mut history =
             SessionChatHistory::new_with_event_tx(&mut self.session, Some(self.tx_event.clone()));
         // Drain steers queued between turns (mirrors the retired pre-turn

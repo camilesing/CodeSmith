@@ -35,6 +35,13 @@ pub const MIN_SUBAGENT_API_TIMEOUT_SECS: u64 = 1;
 /// keeps a misconfigured per-step timeout from masking real model/network
 /// hangs forever.
 pub const MAX_SUBAGENT_API_TIMEOUT_SECS: u64 = 1800;
+/// Minimum accepted `stream_idle_timeout_secs`. Anything lower (except the
+/// explicit `0` opt-out) clamps up to this — a hair-trigger watchdog would
+/// abort healthy slow-thinking streams.
+pub const MIN_STREAM_IDLE_TIMEOUT_SECS: u64 = 10;
+/// Maximum accepted `stream_idle_timeout_secs` (1 hour). The cap keeps a
+/// misconfigured watchdog from masking real stalls for an unbounded wait.
+pub const MAX_STREAM_IDLE_TIMEOUT_SECS: u64 = 3600;
 /// Default text model used as a fallback when a caller does not supply one.
 ///
 /// Re-exported from `codesmith_agent_runtime::compaction::DEFAULT_TEXT_MODEL`
@@ -1108,6 +1115,13 @@ pub struct Config {
     pub requirements_path: Option<String>,
     pub max_subagents: Option<usize>,
     pub retry: Option<RetryConfig>,
+    /// Idle watchdog for streaming responses, in seconds: the maximum
+    /// silence between two consecutive stream events before the stream is
+    /// declared silently stalled and aborted into the transparent-retry path
+    /// (P0-1). Default 120; `0` disables the watchdog; clamped to
+    /// `[MIN_STREAM_IDLE_TIMEOUT_SECS, MAX_STREAM_IDLE_TIMEOUT_SECS]`
+    /// (10..=3600) otherwise.
+    pub stream_idle_timeout_secs: Option<u64>,
     pub capacity: Option<CapacityConfig>,
     pub features: Option<FeaturesToml>,
 
@@ -1311,6 +1325,25 @@ impl NetworkPolicyToml {
             proxy: self.proxy,
             audit: self.audit,
         }
+    }
+}
+
+impl Config {
+    /// Build the runtime network-policy decider (P1-5).
+    ///
+    /// When the `[network]` table is present, the user's policy is honored
+    /// as before. When it is **absent**, this now returns a prompt-default
+    /// decider (`NetworkPolicyToml::default()`, i.e. `default = "prompt"`)
+    /// instead of the old `None` (= silently allow every host): a network
+    /// tool's first call to an unapproved host raises the standard inline
+    /// approval prompt (with approve-for-session dedup) rather than passing
+    /// unobserved. YOLO / auto-approve sessions never see the prompt — the
+    /// approval gate auto-approves under `ApprovalMode::Auto` — so the
+    /// out-of-box flow there is unchanged.
+    #[must_use]
+    pub fn network_policy_decider(&self) -> crate::network_policy::NetworkPolicyDecider {
+        let toml_cfg = self.network.clone().unwrap_or_default();
+        crate::network_policy::NetworkPolicyDecider::with_default_audit(toml_cfg.into_runtime())
     }
 }
 
@@ -2673,6 +2706,27 @@ impl Config {
         raw.clamp(MIN_SUBAGENT_API_TIMEOUT_SECS, MAX_SUBAGENT_API_TIMEOUT_SECS)
     }
 
+    /// Resolved stream idle watchdog budget, in seconds (P0-1).
+    ///
+    /// Reads top-level `stream_idle_timeout_secs`. `None` resolves to
+    /// `DEFAULT_STREAM_IDLE_TIMEOUT_SECS` (120); explicit `0` disables the
+    /// watchdog (returned as-is so the engine maps it to `None`); anything
+    /// else clamps to `[MIN_STREAM_IDLE_TIMEOUT_SECS, MAX_STREAM_IDLE_TIMEOUT_SECS]`
+    /// (10..=3600).
+    #[must_use]
+    pub fn stream_idle_timeout_secs(&self) -> u64 {
+        let raw = self
+            .stream_idle_timeout_secs
+            .unwrap_or(codesmith_agent_runtime::engine_config::DEFAULT_STREAM_IDLE_TIMEOUT_SECS);
+        if raw == 0 {
+            return 0;
+        }
+        raw.clamp(
+            MIN_STREAM_IDLE_TIMEOUT_SECS,
+            MAX_STREAM_IDLE_TIMEOUT_SECS,
+        )
+    }
+
     /// Whether sub-agents inherit the full parent tool registry (legacy
     /// v0.6.6 behavior) or are restricted to a subset of their parent's
     /// effective tools (Plan 04 / finding F4 `restrictToSubset`).
@@ -3980,6 +4034,9 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         requirements_path: override_cfg.requirements_path.or(base.requirements_path),
         max_subagents: override_cfg.max_subagents.or(base.max_subagents),
         retry: override_cfg.retry.or(base.retry),
+        stream_idle_timeout_secs: override_cfg
+            .stream_idle_timeout_secs
+            .or(base.stream_idle_timeout_secs),
         capacity: override_cfg.capacity.or(base.capacity),
         tui: override_cfg.tui.or(base.tui),
         hooks: override_cfg.hooks.or(base.hooks),
@@ -5880,7 +5937,6 @@ mod tests {
             Config::default().subagent_api_timeout_secs(),
             DEFAULT_SUBAGENT_API_TIMEOUT_SECS
         );
-
         let zero = Config {
             subagents: Some(SubagentsConfig {
                 api_timeout_secs: Some(0),
@@ -5913,6 +5969,67 @@ mod tests {
             high.subagent_api_timeout_secs(),
             MAX_SUBAGENT_API_TIMEOUT_SECS
         );
+    }
+
+    #[test]
+    fn stream_idle_timeout_defaults_zero_and_clamps() {
+        // Unset → default 120s watchdog.
+        assert_eq!(
+            Config::default().stream_idle_timeout_secs(),
+            codesmith_agent_runtime::engine_config::DEFAULT_STREAM_IDLE_TIMEOUT_SECS
+        );
+
+        // Explicit 0 is the opt-out — passed through so the engine maps it
+        // to `None` (watchdog disabled).
+        let zero = Config {
+            stream_idle_timeout_secs: Some(0),
+            ..Config::default()
+        };
+        assert_eq!(zero.stream_idle_timeout_secs(), 0);
+
+        // Below-min clamps up (a hair-trigger watchdog would abort healthy
+        // slow-thinking streams).
+        let low = Config {
+            stream_idle_timeout_secs: Some(1),
+            ..Config::default()
+        };
+        assert_eq!(low.stream_idle_timeout_secs(), MIN_STREAM_IDLE_TIMEOUT_SECS);
+
+        // Above-max clamps down (don't mask real stalls for an unbounded wait).
+        let high = Config {
+            stream_idle_timeout_secs: Some(MAX_STREAM_IDLE_TIMEOUT_SECS + 60),
+            ..Config::default()
+        };
+        assert_eq!(
+            high.stream_idle_timeout_secs(),
+            MAX_STREAM_IDLE_TIMEOUT_SECS
+        );
+    }
+
+    /// P1-5: absent `[network]` now yields a prompt-default decider (not the
+    /// old `None` = allow-all); an explicit table is honored verbatim.
+    #[test]
+    fn network_policy_decider_defaults_to_prompt_when_table_absent() {
+        // Absent table → default = prompt for unlisted hosts.
+        let decider = Config::default().network_policy_decider();
+        let policy = decider.policy();
+        assert_eq!(policy.decide("unlisted.example.com"), crate::network_policy::Decision::Prompt);
+
+        // Explicit table is honored: default allow for everyone except deny.
+        let explicit = Config {
+            network: Some(NetworkPolicyToml {
+                default: "allow".to_string(),
+                allow: Vec::new(),
+                deny: vec!["evil.example.com".to_string()],
+                proxy: Vec::new(),
+                audit: false,
+            }),
+            ..Config::default()
+        };
+        let decider = explicit.network_policy_decider();
+        let policy = decider.policy();
+        assert_eq!(policy.decide("anything.example.com"), crate::network_policy::Decision::Allow);
+        assert_eq!(policy.decide("evil.example.com"), crate::network_policy::Decision::Deny);
     }
 
     #[test]

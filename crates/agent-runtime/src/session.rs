@@ -137,7 +137,11 @@ pub struct Session {
     /// Prefix-cache stability monitor (inspired by Reasonix's Pillar 1).
     /// Tracks the immutable prefix fingerprint and detects drift across turns.
     /// Set during engine construction; None until the first system prompt assembly.
-    pub prefix_stability: Option<PrefixStabilityManager>,
+    /// `Arc<StdMutex<…>>` so the per-turn `HostAgentExecutor` can share the
+    /// session-scoped pinned fingerprint (its per-step checks re-pin here,
+    /// persisting across turns) — cloned into the executor before the `&mut
+    /// Session` borrow held by `SessionChatHistory`.
+    pub prefix_stability: Option<Arc<StdMutex<PrefixStabilityManager>>>,
 
     /// Micro-compact state tracking (time triggers, bytes cleared).
     pub micro_compact_state: MicroCompactState,

@@ -438,6 +438,45 @@ impl ToolSpec for WebRunTool {
         ApprovalRequirement::Auto
     }
 
+    /// P1-5: gate the URLs this batch of browser actions will actually
+    /// contact (`open` items' `ref_id`s that look like URLs, plus a
+    /// top-level `url` field if present). A `Prompt` decision on any of
+    /// them raises the standard inline approval prompt; later actions on
+    /// an already-open page have no new host to gate, so they stay `Auto`.
+    fn approval_requirement_for_input(
+        &self,
+        input: &serde_json::Value,
+        context: &ToolContext,
+    ) -> ApprovalRequirement {
+        let mut hosts: Vec<String> = Vec::new();
+        if let Some(url) = input.get("url").and_then(serde_json::Value::as_str)
+            && let Some(host) = host_from_url(url)
+        {
+            hosts.push(host);
+        }
+        if let Some(opens) = input.get("open").and_then(serde_json::Value::as_array) {
+            for open in opens {
+                if let Some(ref_id) = open.get("ref_id").and_then(serde_json::Value::as_str)
+                    && looks_like_url(ref_id)
+                    && let Some(host) = host_from_url(ref_id)
+                {
+                    hosts.push(host);
+                }
+            }
+        }
+        for host in &hosts {
+            if codesmith_agent_runtime::network_policy::network_approval_requirement(
+                context.network_policy.as_ref(),
+                host,
+                "web_run",
+            ) == ApprovalRequirement::Required
+            {
+                return ApprovalRequirement::Required;
+            }
+        }
+        ApprovalRequirement::Auto
+    }
+
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let response_length = ResponseLength::from_input(input.get("response_length"));
         let mut output = WebRunOutput::default();
@@ -1057,10 +1096,9 @@ fn check_network_policy(url: &str, context: &ToolContext) -> Result<(), ToolErro
         Decision::Deny => Err(ToolError::permission_denied(format!(
             "network call to '{host}' blocked by network policy"
         ))),
-        Decision::Prompt => Err(ToolError::permission_denied(format!(
-            "network call to '{host}' requires approval; \
-             re-run after `/network allow {host}` or set network.default = \"allow\" in config"
-        ))),
+        // P1-5: Prompt no longer errors here — the inline approval gate at
+        // dispatch time (`approval_requirement_for_input`) owns the ask.
+        Decision::Prompt => Ok(()),
     }
 }
 

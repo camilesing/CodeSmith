@@ -18,6 +18,12 @@ use crate::config_types::{
     DEFAULT_MAX_SUBAGENTS, DEFAULT_SUBAGENT_API_TIMEOUT_SECS, SearchProvider, ToolsConfig,
     VisionModelConfig, WorkshopConfig,
 };
+
+/// Default stream idle watchdog budget (P0-1). Long enough that a reasoning
+/// model's quiet thinking phase (no text deltas yet, connection healthy)
+/// doesn't trip it, short enough that a silently-stalled stream recovers
+/// within a couple of minutes via transparent retry.
+pub const DEFAULT_STREAM_IDLE_TIMEOUT_SECS: u64 = 120;
 use crate::cycle_manager::CycleConfig;
 use crate::features::Features;
 use crate::lsp_config::LspConfig;
@@ -192,6 +198,14 @@ pub struct EngineConfig {
     /// once at engine construction, then threaded onto every
     /// `SubAgentRuntime` the engine builds (#1806, #1808).
     pub subagent_api_timeout: Duration,
+    /// Idle watchdog for streaming responses (P0-1): the maximum silence
+    /// between two consecutive stream events before the stream is declared
+    /// silently stalled (connection open, data flow stopped) and aborted into
+    /// the transparent-retry / surface-partial path. Resolved from
+    /// `stream_idle_timeout_secs` (default 120); `Duration::ZERO` disables
+    /// the watchdog. Per-event idle, not a total budget — a steadily
+    /// dribbling stream of any length never trips it.
+    pub stream_idle_timeout: Duration,
     /// Whether sub-agents inherit the full parent tool registry (legacy
     /// v0.6.6 behavior). Default `false` (Plan 04 / finding F4
     /// `restrictToSubset`): a child's tool surface is a subset of its parent's
@@ -292,6 +306,7 @@ impl Default for EngineConfig {
             search_api_key: None,
             index_enabled: true,
             subagent_api_timeout: Duration::from_secs(DEFAULT_SUBAGENT_API_TIMEOUT_SECS),
+            stream_idle_timeout: Duration::from_secs(DEFAULT_STREAM_IDLE_TIMEOUT_SECS),
             subagent_inherit_full_registry: false,
             tools_always_load: HashSet::new(),
             prefer_bwrap: false,
