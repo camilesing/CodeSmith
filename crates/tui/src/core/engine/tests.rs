@@ -4123,10 +4123,11 @@ async fn engine_128k_window_long_session_compacts_without_prompt_too_long() {
     let client: LlmClientHandle = mock_arc.clone();
     let (mut engine, handle) = Engine::new_with_client(config, &Config::default(), client);
 
-    // Seed a long session: 70 × 3,150-char messages ≈ 69,300 summarizable
-    // raw tokens — over the 63,333 trigger, under the preflight budget
-    // (121,600 conservative), and under a real provider's raw limit.
-    let body = "x".repeat(3_150);
+    // Seed a long session: 70 × 4,200-char messages ≈ 73,500 summarizable
+    // raw tokens (chars/4 heuristic) — over the 63,333 trigger, under the
+    // preflight budget (121,600 conservative), and under a real provider's
+    // raw limit.
+    let body = "x".repeat(4_200);
     for i in 0..70 {
         engine
             .add_session_message(Message {

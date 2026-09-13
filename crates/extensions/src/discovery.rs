@@ -8,7 +8,7 @@
 
 use crate::manifest::ExtensionManifest;
 use codesmith_agent::extension::ExtensionMetadata;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// A compiled-in extension registration. `factory` constructs a fresh
 /// `Box<dyn Extension>` per load (so a reload gets clean state). Mirrors
@@ -122,7 +122,26 @@ fn discover_in_root(root: &Path, global: bool, out: &mut Vec<DiscoveredSource>) 
 fn discover_manifest_dir(dir: &Path, global: bool) -> Option<DiscoveredSource> {
     let manifest = ExtensionManifest::parse(&dir.join("extension.toml")).ok()?;
     let dylib_path = match &manifest.entry {
-        Some(entry) => dir.join(entry),
+        Some(entry) => {
+            // The manifest `entry` is untrusted data from disk: an absolute
+            // path or a `..` component would point the loader outside the
+            // extension's own dir. Reject and skip the manifest, matching
+            // the best-effort handling of parse failures above.
+            let entry_path = Path::new(entry);
+            if entry_path.is_absolute()
+                || entry_path
+                    .components()
+                    .any(|component| matches!(component, Component::ParentDir))
+            {
+                tracing::warn!(
+                    "skipping extension manifest {}: entry {:?} is absolute or contains '..'",
+                    dir.join("extension.toml").display(),
+                    entry
+                );
+                return None;
+            }
+            dir.join(entry_path)
+        }
         None => dir.join(default_dylib_filename(&manifest.id)),
     };
     Some(DiscoveredSource {
@@ -231,6 +250,64 @@ mod dylib_tests {
         assert_eq!(found[0].id, "bare");
         assert_eq!(found[0].dylib_path, path);
         assert!(found[0].config_path.is_none());
+    }
+
+    #[test]
+    fn discover_dylib_skips_absolute_entry() {
+        // A crafted manifest must not aim the loader at an arbitrary
+        // absolute path via `entry`.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext_dir = dir.path().join("evil");
+        std::fs::create_dir(&ext_dir).expect("mkdir");
+        let absolute = if cfg!(windows) {
+            r"C:\\Windows\\evil.dll"
+        } else {
+            "/tmp/evil.dylib"
+        };
+        std::fs::write(
+            ext_dir.join("extension.toml"),
+            format!("id = \"evil\"\nversion = \"0.1.0\"\nentry = \"{absolute}\"\n"),
+        )
+        .expect("write manifest");
+        let found = discover_dylib(&[dir.path().to_path_buf()], &[]);
+        assert!(
+            found.is_empty(),
+            "absolute entry must be skipped, got {found:?}"
+        );
+    }
+
+    #[test]
+    fn discover_dylib_skips_parent_traversal_entry() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext_dir = dir.path().join("evil");
+        std::fs::create_dir(&ext_dir).expect("mkdir");
+        std::fs::write(
+            ext_dir.join("extension.toml"),
+            "id = \"evil\"\nversion = \"0.1.0\"\nentry = \"../sibling.dylib\"\n",
+        )
+        .expect("write manifest");
+        let found = discover_dylib(&[dir.path().to_path_buf()], &[]);
+        assert!(
+            found.is_empty(),
+            "'..' entry must be skipped, got {found:?}"
+        );
+    }
+
+    #[test]
+    fn discover_dylib_allows_relative_entry_without_traversal() {
+        // Legit manifests name a dylib next to `extension.toml` (possibly
+        // in a subdirectory) — those keep working.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext_dir = dir.path().join("demo");
+        std::fs::create_dir(&ext_dir).expect("mkdir");
+        std::fs::write(
+            ext_dir.join("extension.toml"),
+            "id = \"demo\"\nversion = \"0.1.0\"\nentry = \"libdemo.so\"\n",
+        )
+        .expect("write manifest");
+        let found = discover_dylib(&[dir.path().to_path_buf()], &[]);
+        assert_eq!(found.len(), 1, "expected 1 source, got {found:?}");
+        assert_eq!(found[0].dylib_path, ext_dir.join("libdemo.so"));
     }
 
     #[test]

@@ -1,4 +1,6 @@
 /** en dictionary — minimal, pages carry inline copy */
+import { GITHUB_REPO_URL } from "@/lib/constants";
+
 const en = {
   nav: {
     links: [
@@ -22,16 +24,16 @@ const en = {
           { label: "Install", href: "/install" },
           { label: "Documentation", href: "/docs" },
           { label: "Roadmap", href: "/roadmap" },
-          { label: "Releases", href: "https://github.com/camilesing/CodeSmith/releases" },
+          { label: "Releases", href: `${GITHUB_REPO_URL}/releases` },
         ],
       },
       {
         title: "Community",
         cn: "社区",
         items: [
-          { label: "Issues", href: "https://github.com/camilesing/CodeSmith/issues" },
-          { label: "Pull Requests", href: "https://github.com/camilesing/CodeSmith/pulls" },
-          { label: "Discussions", href: "https://github.com/camilesing/CodeSmith/discussions" },
+          { label: "Issues", href: `${GITHUB_REPO_URL}/issues` },
+          { label: "Pull Requests", href: `${GITHUB_REPO_URL}/pulls` },
+          { label: "Discussions", href: `${GITHUB_REPO_URL}/discussions` },
           { label: "Contribute", href: "/contribute" },
         ],
       },
@@ -40,9 +42,9 @@ const en = {
         cn: "资源",
         items: [
           { label: "Activity Feed", href: "/feed" },
-          { label: "Code of Conduct", href: "https://github.com/camilesing/CodeSmith/blob/main/CODE_OF_CONDUCT.md" },
-          { label: "Security", href: "https://github.com/camilesing/CodeSmith/blob/main/SECURITY.md" },
-          { label: "License (MIT)", href: "https://github.com/camilesing/CodeSmith/blob/main/LICENSE" },
+          { label: "Code of Conduct", href: `${GITHUB_REPO_URL}/blob/main/CODE_OF_CONDUCT.md` },
+          { label: "Security", href: `${GITHUB_REPO_URL}/blob/main/SECURITY.md` },
+          { label: "License (MIT)", href: `${GITHUB_REPO_URL}/blob/main/LICENSE` },
         ],
       },
     ],

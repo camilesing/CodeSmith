@@ -8,7 +8,6 @@ use crate::models::{LEGACY_MODEL_CONTEXT_WINDOW_TOKENS, SystemPrompt, context_wi
 use crate::session_manager::SessionContextReference;
 use crate::tui::app::{App, ToolDetailRecord};
 use crate::tui::file_mention::ContextReferenceSource;
-use crate::utils::estimate_message_chars;
 
 /// Marker used by per-turn working-set metadata. Replicated here so the
 /// context inspector can distinguish stable prompt blocks from volatile
@@ -132,10 +131,10 @@ pub fn build_context_inspector_text(app: &App) -> String {
 
 fn context_usage(app: &App) -> (usize, u32, f64) {
     let max = context_window_for_model(&app.model).unwrap_or(LEGACY_MODEL_CONTEXT_WINDOW_TOKENS);
-    let estimated =
-        estimate_input_tokens_conservative(&app.api_messages, app.system_prompt.as_ref());
-    let total_chars = estimate_message_chars(&app.api_messages);
-    let used = estimated.max(total_chars / 4);
+    // Single estimator: mixing token counts with raw char/byte sums via
+    // max() compares incompatible scales (bytes vs tokens, different image
+    // cost models), so the larger number wins for the wrong reason.
+    let used = estimate_input_tokens_conservative(&app.api_messages, app.system_prompt.as_ref());
     let percent = ((used as f64 / f64::from(max)) * 100.0).clamp(0.0, 100.0);
     (used, max, percent)
 }

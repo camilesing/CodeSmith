@@ -114,10 +114,8 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         fs::create_dir_all(parent)
             .with_context(|| format!("create parent dir for {}", path.display()))?;
     }
-    let tmp = path.with_extension("toml.tmp");
-    fs::write(&tmp, bytes).with_context(|| format!("write tmp at {}", tmp.display()))?;
-    fs::rename(&tmp, path).with_context(|| format!("rename tmp into {}", path.display()))?;
-    Ok(())
+    crate::utils::write_atomic(path, bytes)
+        .with_context(|| format!("write {}", path.display()))
 }
 
 #[cfg(test)]

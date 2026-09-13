@@ -3,6 +3,7 @@
 use crate::engine::Engine;
 use crate::events::Event;
 use crate::team::{InboxDispatch, handle_shutdown_approval};
+use crate::utils::{defuse_closing_tag, escape_prompt_attr};
 
 impl Engine {
     /// Handle a team inbox dispatch from the inbox poller background task.
@@ -22,9 +23,16 @@ impl Engine {
                 text,
                 summary,
             } => {
+                // `from` / `summary` land inside double-quoted attributes and
+                // `text` inside the element body — all three are teammate-
+                // supplied, so escape the attributes and defuse any
+                // `</teammate-message` sequence that would close the frame
+                // early and smuggle trailing content outside it.
                 let xml = format!(
-                    "<teammate-message teammate_id=\"{from}\" summary=\"{}\">\n{text}\n</teammate-message>",
-                    summary.unwrap_or_default()
+                    "<teammate-message teammate_id=\"{}\" summary=\"{}\">\n{}\n</teammate-message>",
+                    escape_prompt_attr(&from),
+                    escape_prompt_attr(summary.as_deref().unwrap_or_default()),
+                    defuse_closing_tag(&text, "teammate-message")
                 );
                 // Inject as synthetic user message.
                 let msg = crate::models::Message {
@@ -48,12 +56,19 @@ impl Engine {
                 if let Some(shared_tc) = self.config.team_context.as_ref() {
                     let mut team_ctx = shared_tc.lock().await;
                     if let Some(ctx) = team_ctx.as_mut() {
-                        let _ = handle_shutdown_approval(
-                            &request_id,
-                            &from,
-                            &ctx.team_name,
-                            &ctx.teammate_cancel_tokens,
-                        );
+                        let hook_request_id = request_id.clone();
+                        let hook_from = from.clone();
+                        let team_name = ctx.team_name.clone();
+                        let cancel_tokens = ctx.teammate_cancel_tokens.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            handle_shutdown_approval(
+                                &hook_request_id,
+                                &hook_from,
+                                &team_name,
+                                &cancel_tokens,
+                            )
+                        })
+                        .await;
                         ctx.teammate_cancel_tokens.remove(&from);
                         ctx.teammates.retain(|_, info| info.name != from);
                     }

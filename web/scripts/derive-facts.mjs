@@ -7,9 +7,12 @@
  *
  * Sources of truth:
  *   - <repo>/Cargo.toml                         → version, workspace crates
- *   - <repo>/crates/tui/src/sandbox/*.rs        → sandbox backends
- *   - <repo>/crates/tui/src/main.rs             → provider list (--provider arms)
- *   - <repo>/crates/tui/src/config.rs           → DEFAULT_TEXT_MODEL
+ *   - <repo>/crates/tui/src/sandbox/*.rs             → sandbox backends
+ *   - <repo>/crates/tui/src/main.rs                  → provider list (--provider arms)
+ *   - <repo>/crates/agent-runtime/src/config_types.rs → ApiProvider enum (provider list)
+ *   - <repo>/crates/agent-runtime/src/compaction/mod.rs → DEFAULT_TEXT_MODEL
+ *      (crates/tui/src/config.rs only re-exports these since the engine-closure
+ *      extraction moved them to agent-runtime)
  *   - <repo>/npm/codesmith/package.json         → node engines
  */
 import { readFileSync, readdirSync, writeFileSync, existsSync } from "node:fs";
@@ -54,16 +57,15 @@ function deriveSandboxBackends() {
 }
 
 function deriveProviders() {
-  // Source of truth: the ApiProvider enum in config.rs.
-  const cfg = read("crates/tui/src/config.rs");
+  // Source of truth: the ApiProvider enum in agent-runtime config_types.rs
+  // (crates/tui/src/config.rs only re-exports it since the engine-closure
+  // extraction). DeepseekCN no longer exists as a variant — it was folded
+  // onto Deepseek (§B3 slice 52), so no exclusion is needed.
+  const cfg = read("crates/agent-runtime/src/config_types.rs");
   if (!cfg) return [];
   const enumBlock = cfg.match(/pub enum ApiProvider \{([\s\S]*?)\}/);
   if (!enumBlock) return [];
   const variants = [...enumBlock[1].matchAll(/^\s*(\w+)\s*,\s*$/gm)].map((m) => m[1]);
-  // Only list variants the published CLI binary actually accepts via
-  // `--provider` (see ProviderArg in crates/cli/src/lib.rs). DeepseekCN
-  // exists in the legacy tui/config.rs enum but is not wired through the
-  // shared ProviderKind, so we exclude it until that lands. Issue #1104.
   const labelMap = {
     Deepseek: { id: "deepseek", label: "DeepSeek", env: "DEEPSEEK_API_KEY" },
     NvidiaNim: { id: "nvidia-nim", label: "NVIDIA NIM", env: "NVIDIA_API_KEY / NVIDIA_NIM_API_KEY" },
@@ -80,14 +82,17 @@ function deriveProviders() {
     Sglang: { id: "sglang", label: "SGLang", env: "SGLANG_API_KEY" },
     Vllm: { id: "vllm", label: "vLLM", env: "VLLM_API_KEY" },
     Ollama: { id: "ollama", label: "Ollama", env: "OLLAMA_API_KEY" },
+    Anthropic: { id: "anthropic", label: "Anthropic", env: "ANTHROPIC_API_KEY" },
   };
   return variants.map((v) => labelMap[v]).filter(Boolean);
 }
 
 function deriveDefaultModel() {
-  const cfg = read("crates/tui/src/config.rs");
+  // DEFAULT_TEXT_MODEL moved to agent-runtime's compaction module; tui/config.rs
+  // only re-exports it (a loose grep there would capture a neighboring const's value).
+  const cfg = read("crates/agent-runtime/src/compaction/mod.rs");
   if (!cfg) return null;
-  const m = cfg.match(/DEFAULT_TEXT_MODEL[^"]*"([^"]+)"/);
+  const m = cfg.match(/pub const DEFAULT_TEXT_MODEL:\s*&str\s*=\s*"([^"]+)"/);
   return m ? m[1] : null;
 }
 

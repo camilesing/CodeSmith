@@ -1865,7 +1865,6 @@ mod tests {
         // to DuckDuckGo (which would expose the query to a different
         // provider than the user authorised). Instead it returns a
         // ToolError that names the missing key explicitly.
-        use crate::config::SearchProvider;
         use crate::tools::spec::{ToolContext, ToolSpec};
 
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -1978,6 +1977,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "performs real network I/O against metaso.cn; run explicitly when needed"]
     async fn metaso_provider_uses_built_in_key_when_no_config_key_set() {
         // Unlike Tavily/Bocha, Metaso falls back to a built-in default, so
         // the call should NOT return an API-key-related error — it should

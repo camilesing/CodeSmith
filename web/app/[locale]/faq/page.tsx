@@ -201,7 +201,7 @@ default_text_model = "openrouter/deepseek/deepseek-v4-pro"`}
       <>
         <code className="inline">/goal</code> is a simple goal-setter for the current session.
         It does not add another app mode; the mode switcher remains Plan, Agent, and YOLO.
-        Track progress in <a href="https://github.com/Hmbown/CodeSmith/issues/891" className="body-link">#891</a>.
+        Track progress in <a href="https://github.com/camilesing/CodeSmith/issues/891" className="body-link">#891</a>.
       </>
     ),
     sources: ["#891"],
@@ -285,7 +285,7 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"`}
     a: (
       <>
         Model Lab is the planned open-model infrastructure layer: Hugging Face Hub API for model discovery, model cards, datasets, safetensors adapters, inference providers, and Jobs.
-        It is NOT fully implemented. Track progress in <a href="https://github.com/Hmbown/CodeSmith/issues/1977" className="body-link">#1977</a>.
+        It is NOT fully implemented. Track progress in <a href="https://github.com/camilesing/CodeSmith/issues/1977" className="body-link">#1977</a>.
         Currently, you can use Hugging Face models through the OpenRouter provider or self-hosted endpoints.
       </>
     ),
@@ -514,7 +514,7 @@ default_text_model = "openrouter/deepseek/deepseek-v4-pro"`}
       <>
         Goal 模式是未来的工作流/标签页方向，用于长时间运行的多步目标——不是当前的 <code className="inline">/goal</code> 命令。
         当前的 <code className="inline">/goal</code> 是一个简单的目标设置器。完整的 Goal 模式（自主多回合任务执行，支持检查点/恢复）已规划但尚未实现。
-        关注 <a href="https://github.com/Hmbown/CodeSmith/issues/891" className="body-link">#891</a> 的进展。
+        关注 <a href="https://github.com/camilesing/CodeSmith/issues/891" className="body-link">#891</a> 的进展。
       </>
     ),
     sources: ["#891"],
@@ -598,7 +598,7 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"`}
     a: (
       <>
         Model Lab 是规划中的开放模型基础设施层：Hugging Face Hub API 用于模型发现、模型卡片、数据集、safetensors 适配器、推理提供商和 Jobs。
-        它尚未完全实现。关注 <a href="https://github.com/Hmbown/CodeSmith/issues/1977" className="body-link">#1977</a> 的进展。
+        它尚未完全实现。关注 <a href="https://github.com/camilesing/CodeSmith/issues/1977" className="body-link">#1977</a> 的进展。
         目前，你可以通过 OpenRouter 提供商或自托管端点使用 Hugging Face 模型。
       </>
     ),

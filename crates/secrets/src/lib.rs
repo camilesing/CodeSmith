@@ -365,16 +365,42 @@ impl FileKeyringStore {
             }
         }
         let body = serde_json::to_string_pretty(blob)?;
-        fs::write(&self.path, body)?;
+        // Atomic replace: write a sibling temp file created with 0600 (no
+        // world-readable window between write and chmod), fsync it, then
+        // rename over the target so a crash mid-write can never truncate
+        // stored secrets.
+        let tmp = self.tmp_sibling_path();
+        let write_res: Result<(), SecretsError> = (|| {
+            #[cfg(unix)]
+            let mut file = {
+                use std::os::unix::fs::OpenOptionsExt;
+                fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(&tmp)?
+            };
+            #[cfg(not(unix))]
+            let mut file = fs::File::create(&tmp)?;
+            use std::io::Write;
+            file.write_all(body.as_bytes())?;
+            file.sync_all()?;
+            drop(file);
+            fs::rename(&tmp, &self.path)?;
+            Ok(())
+        })();
+        if write_res.is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
+        write_res?;
+        // Preserve compatibility with filesystems that ignore creation modes
+        // (Docker bind-mounts of NTFS, network shares — #897): best-effort
+        // 0o600 after the rename, matching the parent-dir chmod above. The
+        // host's native ACLs do access control in those environments.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            // Best-effort 0o600 — matches the parent-dir chmod above which
-            // is also `let _ = ...`. Filesystems that don't support Unix
-            // chmod (Docker bind-mounts of NTFS, network shares — #897)
-            // would otherwise fail the whole save here even though the
-            // blob already wrote successfully. The host's native ACLs
-            // are doing access control in those environments.
             if let Ok(meta) = fs::metadata(&self.path) {
                 let mut perms = meta.permissions();
                 perms.set_mode(0o600);
@@ -382,6 +408,51 @@ impl FileKeyringStore {
             }
         }
         Ok(())
+    }
+
+    /// Sibling temp path for atomic writes: same directory (so the rename
+    /// stays on one filesystem), unique per process and per call.
+    fn tmp_sibling_path(&self) -> PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let base = self
+            .path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "secrets".to_string());
+        let name = format!(".{base}.tmp-{}-{n}", std::process::id());
+        match self.path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent.join(name),
+            _ => PathBuf::from(name),
+        }
+    }
+}
+
+/// Degenerate store used when no safe on-disk location can be resolved.
+///
+/// Reads report "not found" so `Secrets::resolve` falls through to env vars;
+/// writes fail loudly instead of leaking plaintext secrets into the CWD.
+struct UnavailableStore;
+
+impl KeyringStore for UnavailableStore {
+    fn get(&self, _key: &str) -> Result<Option<String>, SecretsError> {
+        Ok(None)
+    }
+
+    fn set(&self, _key: &str, _value: &str) -> Result<(), SecretsError> {
+        Err(SecretsError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "secret storage unavailable: no home directory resolved \
+             (set HOME/USERPROFILE or CODESMITH_HOME)",
+        )))
+    }
+
+    fn delete(&self, _key: &str) -> Result<(), SecretsError> {
+        Ok(())
+    }
+
+    fn backend_name(&self) -> &'static str {
+        "unavailable (no home directory)"
     }
 }
 
@@ -547,9 +618,22 @@ impl Secrets {
     }
 
     fn file_backed_default() -> Self {
-        let path = FileKeyringStore::default_path()
-            .unwrap_or_else(|_| PathBuf::from(".codesmith-secrets.json"));
-        Self::new(Arc::new(FileKeyringStore::new(path)))
+        match FileKeyringStore::default_path() {
+            Ok(path) => Self::new(Arc::new(FileKeyringStore::new(path))),
+            Err(err) => {
+                // Never silently fall back to a plaintext file in the CWD:
+                // a missing home directory usually means a broken container
+                // or CI environment, and secrets written there would leak
+                // into workspaces and build artifacts. Reads report "not
+                // found" (so `resolve` still falls through to env vars);
+                // writes fail loudly.
+                tracing::error!(
+                    "could not resolve a home directory for the file-backed secret store ({err}); \
+                     secret storage disabled — set HOME/USERPROFILE or CODESMITH_HOME"
+                );
+                Self::new(Arc::new(UnavailableStore))
+            }
+        }
     }
 
     /// Construct the file-backed default backend directly.
@@ -628,7 +712,7 @@ impl Secrets {
 /// | `openrouter` | `OPENROUTER_API_KEY` |
 /// | `xiaomi-mimo` / `mimo` | `XIAOMI_MIMO_API_KEY`, `XIAOMI_API_KEY`, `MIMO_API_KEY` |
 /// | `novita` | `NOVITA_API_KEY` |
-/// | `nvidia` / `nvidia-nim` / `nim` | `NVIDIA_API_KEY`, `NVIDIA_NIM_API_KEY`, `CODESMITH_API_KEY`, `DEEPSEEK_API_KEY` |
+/// | `nvidia` / `nvidia-nim` / `nim` | `NVIDIA_API_KEY`, `NVIDIA_NIM_API_KEY`, `CODESMITH_API_KEY` |
 /// | `fireworks` | `FIREWORKS_API_KEY` |
 /// | `siliconflow` | `SILICONFLOW_API_KEY` |
 /// | `moonshot` / `kimi` | `MOONSHOT_API_KEY`, `KIMI_API_KEY` |
@@ -651,14 +735,14 @@ pub fn env_for(name: &str) -> Option<String> {
             &["XIAOMI_MIMO_API_KEY", "XIAOMI_API_KEY", "MIMO_API_KEY"]
         }
         "novita" => &["NOVITA_API_KEY"],
-        // NVIDIA NIM falls back to the app-wide key last because the
-        // catalog endpoint accepts the same DeepSeek-issued key when no
-        // dedicated NVIDIA token is set. This mirrors pre-v0.7 behaviour.
+        // NVIDIA NIM falls back to the app-wide key last. DEEPSEEK_API_KEY
+        // is deliberately NOT reused here: silently presenting a
+        // DeepSeek-issued credential to NVIDIA endpoints leaks that key to a
+        // third party, so NVIDIA auth requires an NVIDIA (or app-wide) token.
         "nvidia" | "nvidia-nim" | "nvidia_nim" | "nim" => &[
             "NVIDIA_API_KEY",
             "NVIDIA_NIM_API_KEY",
             "CODESMITH_API_KEY",
-            "DEEPSEEK_API_KEY",
         ],
         "fireworks" | "fireworks-ai" => &["FIREWORKS_API_KEY"],
         "siliconflow" | "silicon-flow" | "silicon_flow" => &["SILICONFLOW_API_KEY"],

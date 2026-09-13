@@ -319,6 +319,13 @@ pub struct CycleArchiveHeader {
 
 /// Resolve the on-disk archive directory: `~/.codesmith/sessions/<id>/cycles`.
 fn archive_dir_for(session_id: &str) -> Result<PathBuf> {
+    // The session id reaches `Path::join`; require a single safe path
+    // segment so a malformed id cannot traverse outside the sessions root.
+    if !crate::utils::is_safe_path_component(session_id) {
+        return Err(anyhow::anyhow!(
+            "invalid session id '{session_id}': must be a single safe path segment"
+        ));
+    }
     let sessions = codesmith_config::resolve_state_dir("sessions").unwrap_or_else(|_| {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -371,6 +378,19 @@ fn write_archive_file(
 ) -> Result<()> {
     let tmp_path = path.with_extension("jsonl.tmp");
     {
+        // Archives contain full conversation transcripts — create the tmp
+        // file owner-only from the start instead of chmod-after-write.
+        #[cfg(unix)]
+        let file = {
+            use std::os::unix::fs::OpenOptionsExt;
+            OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .mode(0o600)
+                .open(&tmp_path)?
+        };
+        #[cfg(not(unix))]
         let file = OpenOptions::new()
             .create(true)
             .truncate(true)
@@ -388,7 +408,9 @@ fn write_archive_file(
         // BufWriter flushes on drop, but we want any error surfaced now —
         // not silently into the void.
         buf.flush()?;
-        // File handle drops with `buf`.
+        // Durability before the rename: without fsync, a crash after rename
+        // can leave a zero-length archive that reads as data loss.
+        buf.get_ref().sync_all()?;
     }
     std::fs::rename(&tmp_path, path)?;
     Ok(())
@@ -823,6 +845,25 @@ mod tests {
         assert_eq!(seeds.len(), 2);
         assert_eq!(seeds[0].role, "user");
         assert_eq!(seeds[1].role, "assistant");
+    }
+
+    #[test]
+    fn archive_dir_for_rejects_unsafe_session_ids() {
+        // The session id reaches `Path::join` under the sessions root —
+        // traversal / separators / dot tricks must be rejected outright.
+        for bad_id in ["../../etc", "a/b", "", ".", "..", ".hidden"] {
+            let err = archive_dir_for(bad_id).expect_err("unsafe session id must reject");
+            assert!(
+                format!("{err:#}").contains("invalid session id"),
+                "id {bad_id:?}: got {err:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn archive_dir_for_accepts_safe_session_ids() {
+        let dir = archive_dir_for("session-123_abc").expect("safe session id");
+        assert!(dir.ends_with(std::path::Path::new("session-123_abc").join("cycles")));
     }
 
     #[test]

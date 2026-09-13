@@ -186,7 +186,8 @@ fn write_notes(notes_path: &Path, notes: &[String]) -> Result<(), String> {
         .map(|note| format!("---\n{}", note.trim()))
         .collect::<Vec<_>>()
         .join("\n\n");
-    fs::write(notes_path, content).map_err(|e| format!("Failed to write notes file: {e}"))
+    crate::utils::write_atomic(notes_path, content.as_bytes())
+        .map_err(|e| format!("Failed to write notes file: {e}"))
 }
 
 fn ensure_notes_parent(notes_path: &Path) -> Result<(), String> {

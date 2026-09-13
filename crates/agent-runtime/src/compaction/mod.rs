@@ -99,7 +99,7 @@ pub const MINIMUM_AUTO_COMPACTION_TOKENS: usize = 0;
 //
 // Pure functions over API message types. Kept `pub` so the TUI's heavy
 // compaction engine can re-export and call them unqualified. All counting
-// routes through [`crate::tokenizer`] — the historical chars/3 heuristic by
+// routes through [`crate::tokenizer`] — the CJK-aware heuristic by
 // default, exact counts when a tokenizer.json was installed at startup.
 
 pub fn estimate_tokens_for_message(message: &Message, include_thinking: bool) -> usize {

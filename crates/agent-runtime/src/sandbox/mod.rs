@@ -12,12 +12,17 @@
 //! platform-coupled state and are referenced by the runtime's shell
 //! dispatcher. `SandboxManager`, `get_platform_sandbox`,
 //! `is_sandbox_available`, and the platform executors (seatbelt / landlock /
-//! seccomp / bwrap / windows / process_hardening) were extracted from
+//! bwrap / windows / process_hardening) were extracted from
 //! `crates/tui/src/sandbox/mod.rs` and the per-platform executor files; they
 //! drive OS-level sandboxing via `libc` syscalls and are gated with
 //! file-local `#![allow(unsafe_code)]` (matching `child_env`).
-
-#![allow(dead_code)]
+//!
+//! A hand-rolled seccomp BPF filter module previously lived here but was
+//! removed: it had zero call sites (Landlock + bwrap are the actual Linux
+//! defenses) and its hand-maintained syscall whitelist was x86_64-only and
+//! missing `PR_SET_NO_NEW_PRIVS`/`TSYNC`, so it could never have installed
+//! or run correctly. Do not resurrect it without a maintained bindings
+//! crate (e.g. libseccomp) and real integration testing.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -33,9 +38,6 @@ pub mod seatbelt;
 
 #[cfg(target_os = "linux")]
 pub mod landlock;
-
-#[cfg(target_os = "linux")]
-pub mod seccomp;
 
 #[cfg(target_os = "linux")]
 pub mod bwrap;

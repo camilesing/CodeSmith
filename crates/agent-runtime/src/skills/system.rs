@@ -119,7 +119,7 @@ fn install_one(
 
     if should_install {
         fs::create_dir_all(&target_dir)?;
-        fs::write(&target_file, skill.body)?;
+        crate::utils::write_atomic(&target_file, skill.body.as_bytes())?;
     }
     Ok(should_install)
 }
@@ -151,7 +151,7 @@ pub fn install_system_skills(skills_dir: &Path) -> std::io::Result<()> {
 
     if changed {
         fs::create_dir_all(skills_dir)?;
-        fs::write(&marker, BUNDLED_SKILL_VERSION)?;
+        crate::utils::write_atomic(&marker, BUNDLED_SKILL_VERSION.as_bytes())?;
     }
     Ok(())
 }

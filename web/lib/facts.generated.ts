@@ -18,31 +18,33 @@ export interface RepoFacts {
 }
 
 export const FACTS: RepoFacts = {
-  "generatedAt": "2026-06-01T00:40:33.053Z",
-  "version": "0.8.48",
+  "generatedAt": "2026-09-13T13:37:43.466Z",
+  "version": "0.1.0",
   "crates": [
     "agent",
+    "agent-runtime",
     "app-server",
     "cli",
     "config",
     "core",
     "execpolicy",
+    "extensions",
+    "extensions-fixture-dylib",
     "hooks",
+    "index",
     "mcp",
     "protocol",
+    "providers",
     "release",
     "secrets",
     "state",
+    "tool-impls",
     "tools",
     "tui",
     "tui-core"
   ],
   "sandboxBackends": [
-    "bwrap",
-    "landlock (Linux)",
-    "process_hardening",
-    "seatbelt (macOS)",
-    "seccomp"
+    "runtime"
   ],
   "providers": [
     {
@@ -119,11 +121,16 @@ export const FACTS: RepoFacts = {
       "id": "ollama",
       "label": "Ollama",
       "env": "OLLAMA_API_KEY"
+    },
+    {
+      "id": "anthropic",
+      "label": "Anthropic",
+      "env": "ANTHROPIC_API_KEY"
     }
   ],
   "defaultModel": "deepseek-v4-pro",
   "nodeEngines": ">=18",
-  "toolCount": 75,
+  "toolCount": 41,
   "license": "MIT",
   "latestRelease": null
 };

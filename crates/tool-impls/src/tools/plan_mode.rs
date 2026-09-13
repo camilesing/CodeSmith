@@ -122,9 +122,11 @@ impl ToolSpec for EnterPlanModeTool {
         })?;
 
         // Create empty plan file
-        plan_file::write_plan_file(&slug, "").map_err(|e| ToolError::ExecutionFailed {
-            message: format!("Failed to create plan file: {e}"),
-        })?;
+        plan_file::write_plan_file(&slug, "")
+            .await
+            .map_err(|e| ToolError::ExecutionFailed {
+                message: format!("Failed to create plan file: {e}"),
+            })?;
 
         // Save the current mode and activate plan mode
         // The caller (the turn loop, in host_executor) should set pre_plan_mode to the current AppMode name
@@ -222,6 +224,7 @@ impl ToolSpec for ExitPlanModeTool {
 
         // Read the plan file content
         let plan_content = plan_file::read_plan_file(&slug)
+            .await
             .map_err(|e| ToolError::ExecutionFailed {
                 message: format!("Failed to read plan file: {e}"),
             })?
@@ -332,9 +335,11 @@ impl ToolSpec for WritePlanFileTool {
             .ok_or_else(|| ToolError::missing_field("content"))?;
 
         // Write to disk
-        plan_file::write_plan_file(&slug, content).map_err(|e| ToolError::ExecutionFailed {
-            message: format!("Failed to write plan file: {e}"),
-        })?;
+        plan_file::write_plan_file(&slug, content)
+            .await
+            .map_err(|e| ToolError::ExecutionFailed {
+                message: format!("Failed to write plan file: {e}"),
+            })?;
 
         // Also update in-memory PlanState for TUI rendering
         let mut plan_state_guard = self.plan_state.lock().await;

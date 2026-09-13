@@ -27,8 +27,6 @@ async function run(binaryName) {
     stdio: "inherit",
   });
   if (result.error) {
-    // If binary fails and user asked for --version, show npm version instead
-    handleVersionFallback(binaryName);
     throw result.error;
   }
   process.exit(result.status ?? 1);

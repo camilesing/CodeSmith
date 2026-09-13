@@ -79,8 +79,16 @@ impl TaskV2Manager {
         self.task_dir.join(".lock")
     }
 
-    fn task_file(&self, id: &str) -> PathBuf {
-        self.task_dir.join(format!("{id}.json"))
+    /// Resolve the on-disk file for a task id. The id is model-supplied and
+    /// reaches `Path::join`, so it must be a single safe path segment — this
+    /// blocks `../../foo`-style traversal and separator smuggling.
+    fn task_file(&self, id: &str) -> anyhow::Result<PathBuf> {
+        if !crate::utils::is_safe_path_component(id) {
+            return Err(anyhow::anyhow!(
+                "invalid task id '{id}': must be a single safe path segment"
+            ));
+        }
+        Ok(self.task_dir.join(format!("{id}.json")))
     }
 
     fn highwatermark_file(&self) -> PathBuf {
@@ -101,14 +109,14 @@ impl TaskV2Manager {
     }
 
     fn read_task_file(&self, id: &str) -> anyhow::Result<TaskV2Record> {
-        let path = self.task_file(id);
+        let path = self.task_file(id)?;
         let content = fs::read_to_string(&path)?;
         let record: TaskV2Record = serde_json::from_str(&content)?;
         Ok(record)
     }
 
     fn write_task_file(&self, record: &TaskV2Record) -> anyhow::Result<()> {
-        let path = self.task_file(&record.id);
+        let path = self.task_file(&record.id)?;
         let content = serde_json::to_string_pretty(record)?;
         fs::write(&path, content)?;
         Ok(())
@@ -373,7 +381,7 @@ impl TaskV2Manager {
             }
         }
 
-        let path = self.task_file(id);
+        let path = self.task_file(id)?;
         if path.exists() {
             fs::remove_file(&path)?;
         }
@@ -382,7 +390,7 @@ impl TaskV2Manager {
 
     /// Delete a task by ID (raw physical deletion without reference cleanup).
     pub fn delete_task(&mut self, id: &str) -> anyhow::Result<()> {
-        let path = self.task_file(id);
+        let path = self.task_file(id)?;
         if path.exists() {
             fs::remove_file(&path)?;
         }
@@ -865,5 +873,32 @@ mod tests {
         let json = r#"{"id":"1","subject":"test","description":"","status":"pending","blocked_by":[],"metadata":{},"created_at":"2024-01-01T00:00:00Z"}"#;
         let record: TaskV2Record = serde_json::from_str(json).unwrap();
         assert!(record.blocks.is_empty());
+    }
+
+    #[test]
+    fn task_file_rejects_traversal_ids() {
+        // Model-supplied ids reach `Path::join` — traversal, separators, and
+        // dot tricks must be rejected before any file is touched.
+        let mgr = temp_manager();
+        for bad_id in ["../../foo", "../x", "a/b", "", ".", "..", ".hidden"] {
+            assert!(
+                mgr.task_file(bad_id).is_err(),
+                "task id {bad_id:?} must be rejected"
+            );
+        }
+        // The rejection must also surface through the public API.
+        let err = mgr.get_task("../../foo").unwrap_err();
+        assert!(
+            err.to_string().contains("invalid task id"),
+            "error must name the invalid id; got: {err}"
+        );
+    }
+
+    #[test]
+    fn task_file_accepts_safe_ids() {
+        let mgr = temp_manager();
+        let path = mgr.task_file("valid-id-123").unwrap();
+        assert!(path.starts_with(&mgr.task_dir));
+        assert!(path.ends_with("valid-id-123.json"));
     }
 }

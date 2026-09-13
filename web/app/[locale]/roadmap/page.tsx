@@ -1,7 +1,9 @@
 import Link from "next/link";
+import type { ReactNode } from "react";
 import { Seal } from "@/components/seal";
 import { getCachedRoadmap, type RoadmapItem } from "@/lib/roadmap-feed";
 import { getEnv } from "@/lib/kv";
+import { GITHUB_REPO_URL } from "@/lib/constants";
 
 export const revalidate = 1800;
 
@@ -155,6 +157,142 @@ const colorFor = (c: string) =>
   c === "indigo" ? "border-indigo text-indigo" :
   "border-ink-mute text-ink-mute";
 
+// Locale copy for the shared RoadmapBody renderer. The only intentionally
+// divergent styling is `proseClass`: zh needs leading-[1.9] tracking-wide for
+// CJK line rhythm, en uses leading-relaxed. It is applied to the intro, the
+// track-item notes, and the CTA paragraph so both locales keep their original
+// typographic behavior; all other differences are pure strings.
+const copyZh = {
+  headingMain: "路线图",
+  headingSub: "Roadmap",
+  intro: (
+    <>
+      已确认的功能、正在权衡的方案、以及已被排除的方向。未列在此页的内容均可在{" "}
+      <Link href={`${GITHUB_REPO_URL}/discussions/new?category=ideas`} className="body-link">
+        Discussions
+      </Link>{" "}
+      中讨论。
+    </>
+  ),
+  countLabel: "项",
+  proseClass: "leading-[1.9] tracking-wide",
+  ctaHeading: "想影响这份清单？",
+  ctaBody: (
+    <>
+      路线图反映的是维护者的计划——但 PR 和有理有据的讨论会不断调整优先级。
+      带一个可运行的原型来，"考虑中"就能变成"进行中"。
+    </>
+  ),
+  ctaPrimary: "提交想法 →",
+};
+
+const copyEn = {
+  headingMain: "Roadmap",
+  headingSub: "路线图",
+  intro: (
+    <>
+      What's confirmed, what's being weighed, what's been ruled out. Anything not on this page
+      is fair game for{" "}
+      <Link href={`${GITHUB_REPO_URL}/discussions/new?category=ideas`} className="body-link">
+        discussion
+      </Link>.
+    </>
+  ),
+  countLabel: "items",
+  proseClass: "leading-relaxed",
+  ctaHeading: "Want to shape this list?",
+  ctaBody: (
+    <>
+      The roadmap reflects what the maintainer plans to do — but PRs and well-argued
+      discussions reorder it constantly. Show up with a working prototype and watch
+      "Considered" become "Underway".
+    </>
+  ),
+  ctaPrimary: "Propose an idea →",
+};
+
+function RoadmapBody({
+  tracks,
+  copy,
+}: {
+  tracks: typeof tracksEn;
+  copy: {
+    headingMain: string;
+    headingSub: string;
+    intro: ReactNode;
+    countLabel: string;
+    proseClass: string;
+    ctaHeading: string;
+    ctaBody: ReactNode;
+    ctaPrimary: string;
+  };
+}) {
+  return (
+    <>
+      <section className="mx-auto max-w-[1400px] px-6 pt-12 pb-8">
+        <div className="flex items-baseline gap-4 mb-3">
+          <Seal char="路" />
+          <div className="eyebrow">Section 04 · 路线</div>
+        </div>
+        <h1 className="font-display tracking-crisp">
+          {copy.headingMain} <span className="font-cjk text-indigo text-5xl ml-2">{copy.headingSub}</span>
+        </h1>
+        <p className={`mt-5 max-w-3xl text-ink-soft text-lg ${copy.proseClass}`}>{copy.intro}</p>
+      </section>
+
+      <section className="mx-auto max-w-[1400px] px-6 pb-20 grid lg:grid-cols-2 gap-px bg-paper-line">
+        {tracks.map((t) => (
+          <div key={t.title} className="bg-paper p-7">
+            <div className={`hairline-b pb-3 mb-5 flex items-baseline justify-between border-b-2 ${colorFor(t.color)}`}>
+              <div>
+                <h2 className="font-display text-3xl">
+                  {t.title} <span className="font-cjk text-2xl ml-2 text-ink-mute">{t.cn}</span>
+                </h2>
+              </div>
+              <div className="font-mono text-xs uppercase tracking-widest tabular text-ink-mute">{t.items.length} {copy.countLabel}</div>
+            </div>
+            <ul className="space-y-4">
+              {t.items.map((it, i) => (
+                <li key={i} className="flex gap-4">
+                  <span className={`font-display text-xl tabular shrink-0 w-8 ${colorFor(t.color)}`}>{String(i + 1).padStart(2, "0")}</span>
+                  <div>
+                    <div className="font-display text-base">{it.title}</div>
+                    <div className={`text-sm text-ink-soft mt-0.5 ${copy.proseClass}`}>{it.note}</div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </section>
+
+      <section className="bg-ink text-paper">
+        <div className="mx-auto max-w-[1400px] px-6 py-12 grid lg:grid-cols-12 gap-6 items-center">
+          <div className="lg:col-span-8">
+            <div className="font-cjk text-indigo text-lg mb-2">参与塑造</div>
+            <h2 className="font-display text-paper text-3xl">{copy.ctaHeading}</h2>
+            <p className={`mt-3 text-paper-deep/80 max-w-2xl ${copy.proseClass}`}>{copy.ctaBody}</p>
+          </div>
+          <div className="lg:col-span-4 flex flex-col gap-3">
+            <Link
+              href={`${GITHUB_REPO_URL}/discussions/new?category=ideas`}
+              className="px-5 py-3 bg-indigo text-paper font-mono text-sm uppercase tracking-wider text-center hover:bg-indigo-deep transition-colors"
+            >
+              {copy.ctaPrimary}
+            </Link>
+            <Link
+              href={`${GITHUB_REPO_URL}/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22`}
+              className="px-5 py-3 hairline-t hairline-b hairline-l hairline-r border-paper-deep/30 font-mono text-sm uppercase tracking-wider text-center hover:bg-paper hover:text-ink transition-colors"
+            >
+              Good first issues →
+            </Link>
+          </div>
+        </div>
+      </section>
+    </>
+  );
+}
+
 export default async function RoadmapPage({ params }: { params: Promise<{ locale: string }> }) {
   const { locale } = await params;
   const isZh = locale === "zh";
@@ -189,154 +327,5 @@ export default async function RoadmapPage({ params }: { params: Promise<{ locale
     /* keep static fallback */
   }
 
-  return (
-    <>
-      {isZh ? (
-        <>
-          <section className="mx-auto max-w-[1400px] px-6 pt-12 pb-8">
-            <div className="flex items-baseline gap-4 mb-3">
-              <Seal char="路" />
-              <div className="eyebrow">Section 04 · 路线</div>
-            </div>
-            <h1 className="font-display tracking-crisp">
-              路线图 <span className="font-cjk text-indigo text-5xl ml-2">Roadmap</span>
-            </h1>
-            <p className="mt-5 max-w-3xl text-ink-soft text-lg leading-[1.9] tracking-wide">
-              已确认的功能、正在权衡的方案、以及已被排除的方向。未列在此页的内容均可在{" "}
-              <Link href="https://github.com/camilesing/CodeSmith/discussions/new?category=ideas" className="body-link">
-                Discussions
-              </Link>{" "}
-              中讨论。
-            </p>
-          </section>
-
-          <section className="mx-auto max-w-[1400px] px-6 pb-20 grid lg:grid-cols-2 gap-px bg-paper-line">
-            {tracks.map((t) => (
-              <div key={t.title} className="bg-paper p-7">
-                <div className={`hairline-b pb-3 mb-5 flex items-baseline justify-between border-b-2 ${colorFor(t.color)}`}>
-                  <div>
-                    <h2 className="font-display text-3xl">
-                      {t.title} <span className="font-cjk text-2xl ml-2 text-ink-mute">{t.cn}</span>
-                    </h2>
-                  </div>
-                  <div className="font-mono text-xs uppercase tracking-widest tabular text-ink-mute">{t.items.length} 项</div>
-                </div>
-                <ul className="space-y-4">
-                  {t.items.map((it, i) => (
-                    <li key={i} className="flex gap-4">
-                      <span className={`font-display text-xl tabular shrink-0 w-8 ${colorFor(t.color)}`}>{String(i + 1).padStart(2, "0")}</span>
-                      <div>
-                        <div className="font-display text-base">{it.title}</div>
-                        <div className="text-sm text-ink-soft mt-0.5 leading-[1.9] tracking-wide">{it.note}</div>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
-          </section>
-
-          <section className="bg-ink text-paper">
-            <div className="mx-auto max-w-[1400px] px-6 py-12 grid lg:grid-cols-12 gap-6 items-center">
-              <div className="lg:col-span-8">
-                <div className="font-cjk text-indigo text-lg mb-2">参与塑造</div>
-                <h2 className="font-display text-paper text-3xl">想影响这份清单？</h2>
-                <p className="mt-3 text-paper-deep/80 leading-[1.9] tracking-wide max-w-2xl">
-                  路线图反映的是维护者的计划——但 PR 和有理有据的讨论会不断调整优先级。
-                  带一个可运行的原型来，"考虑中"就能变成"进行中"。
-                </p>
-              </div>
-              <div className="lg:col-span-4 flex flex-col gap-3">
-                <Link
-                  href="https://github.com/camilesing/CodeSmith/discussions/new?category=ideas"
-                  className="px-5 py-3 bg-indigo text-paper font-mono text-sm uppercase tracking-wider text-center hover:bg-indigo-deep transition-colors"
-                >
-                  提交想法 →
-                </Link>
-                <Link
-                  href="https://github.com/camilesing/CodeSmith/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22"
-                  className="px-5 py-3 hairline-t hairline-b hairline-l hairline-r border-paper-deep/30 font-mono text-sm uppercase tracking-wider text-center hover:bg-paper hover:text-ink transition-colors"
-                >
-                  Good first issues →
-                </Link>
-              </div>
-            </div>
-          </section>
-        </>
-      ) : (
-        <>
-          <section className="mx-auto max-w-[1400px] px-6 pt-12 pb-8">
-            <div className="flex items-baseline gap-4 mb-3">
-              <Seal char="路" />
-              <div className="eyebrow">Section 04 · 路线</div>
-            </div>
-            <h1 className="font-display tracking-crisp">
-              Roadmap <span className="font-cjk text-indigo text-5xl ml-2">路线图</span>
-            </h1>
-            <p className="mt-5 max-w-3xl text-ink-soft text-lg leading-relaxed">
-              What's confirmed, what's being weighed, what's been ruled out. Anything not on this page
-              is fair game for{" "}
-              <Link href="https://github.com/camilesing/CodeSmith/discussions/new?category=ideas" className="body-link">
-                discussion
-              </Link>.
-            </p>
-          </section>
-
-          <section className="mx-auto max-w-[1400px] px-6 pb-20 grid lg:grid-cols-2 gap-px bg-paper-line">
-            {tracks.map((t) => (
-              <div key={t.title} className="bg-paper p-7">
-                <div className={`hairline-b pb-3 mb-5 flex items-baseline justify-between border-b-2 ${colorFor(t.color)}`}>
-                  <div>
-                    <h2 className="font-display text-3xl">
-                      {t.title} <span className="font-cjk text-2xl ml-2 text-ink-mute">{t.cn}</span>
-                    </h2>
-                  </div>
-                  <div className="font-mono text-xs uppercase tracking-widest tabular text-ink-mute">{t.items.length} items</div>
-                </div>
-                <ul className="space-y-4">
-                  {t.items.map((it, i) => (
-                    <li key={i} className="flex gap-4">
-                      <span className={`font-display text-xl tabular shrink-0 w-8 ${colorFor(t.color)}`}>{String(i + 1).padStart(2, "0")}</span>
-                      <div>
-                        <div className="font-display text-base">{it.title}</div>
-                        <div className="text-sm text-ink-soft mt-0.5 leading-relaxed">{it.note}</div>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
-          </section>
-
-          <section className="bg-ink text-paper">
-            <div className="mx-auto max-w-[1400px] px-6 py-12 grid lg:grid-cols-12 gap-6 items-center">
-              <div className="lg:col-span-8">
-                <div className="font-cjk text-indigo text-lg mb-2">参与塑造</div>
-                <h2 className="font-display text-paper text-3xl">Want to shape this list?</h2>
-                <p className="mt-3 text-paper-deep/80 leading-relaxed max-w-2xl">
-                  The roadmap reflects what the maintainer plans to do — but PRs and well-argued
-                  discussions reorder it constantly. Show up with a working prototype and watch
-                  "Considered" become "Underway".
-                </p>
-              </div>
-              <div className="lg:col-span-4 flex flex-col gap-3">
-                <Link
-                  href="https://github.com/camilesing/CodeSmith/discussions/new?category=ideas"
-                  className="px-5 py-3 bg-indigo text-paper font-mono text-sm uppercase tracking-wider text-center hover:bg-indigo-deep transition-colors"
-                >
-                  Propose an idea →
-                </Link>
-                <Link
-                  href="https://github.com/camilesing/CodeSmith/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22"
-                  className="px-5 py-3 hairline-t hairline-b hairline-l hairline-r border-paper-deep/30 font-mono text-sm uppercase tracking-wider text-center hover:bg-paper hover:text-ink transition-colors"
-                >
-                  Good first issues →
-                </Link>
-              </div>
-            </div>
-          </section>
-        </>
-      )}
-    </>
-  );
+  return <RoadmapBody tracks={tracks} copy={isZh ? copyZh : copyEn} />;
 }

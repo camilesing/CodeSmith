@@ -1962,6 +1962,13 @@ impl App {
             shell_manager: shell_manager.clone(),
             runtime_services: RuntimeToolServices {
                 shell_manager: Some(wrap_shell_manager(shell_manager)),
+                // The interactive session IS the team lead whenever a team
+                // exists. Identity is set explicitly so team protocol tools
+                // can authorize lead-only actions; contexts that genuinely
+                // have no identity (background threads, UI helper contexts)
+                // keep `team_sender: None` and are treated as unknown
+                // senders rather than silently attributed to the lead.
+                team_sender: Some(crate::tools::team::team_lead_name().to_string()),
                 ..RuntimeToolServices::default()
             },
             index_service: None,

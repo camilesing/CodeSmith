@@ -219,9 +219,18 @@ export async function getAgentEnv(): Promise<CommunityAgentEnv> {
   }
 }
 
+/**
+ * Canonical KV key for a draft. Writers and dedup readers must go through
+ * this helper — content-watch.ts once read `draft:linkcheck:<id>` while
+ * saveDraft wrote `draft:triage:<id>`, silently breaking dedup.
+ */
+export function draftKey(type: AgentDraft["type"], id: string): string {
+  return `draft:${type}:${id}`;
+}
+
 export async function saveDraft(kv: KVNamespace | undefined, draft: AgentDraft): Promise<void> {
   if (!kv) return;
-  const key = `draft:${draft.type}:${draft.id}`;
+  const key = draftKey(draft.type, draft.id);
   await kv.put(key, JSON.stringify(draft), { expirationTtl: 60 * 60 * 24 * 30 }); // 30 days
 }
 
@@ -319,12 +328,12 @@ export async function logUsage(
 
 export async function hasFreshDraft(
   kv: KVNamespace | undefined,
-  type: string,
+  type: AgentDraft["type"],
   id: string,
   updatedAt: string
 ): Promise<boolean> {
   if (!kv) return false;
-  const key = `draft:${type}:${id}`;
+  const key = draftKey(type, id);
   const existing = await getDraft(kv, key);
   if (!existing) return false;
   // Skip if draft is newer than the item's last update

@@ -60,7 +60,6 @@ mod palette;
 mod prefix_cache;
 mod pricing;
 mod project_context;
-mod project_doc;
 mod prompts;
 mod purge;
 pub mod repl;
@@ -868,15 +867,23 @@ enum SandboxCommand {
     },
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     configure_windows_console_utf8();
 
     // ── Process hardening (#2183) ─────────────────────────────────────────
-    // MUST run before Tokio is booted and before any threads are spawned.
-    // See crates/tui/src/sandbox/process_hardening.rs for ordering rationale.
+    // MUST run before Tokio is booted and before any threads are spawned:
+    // `#[tokio::main]` builds the multi-thread runtime (and its worker
+    // threads) before the async body runs, so hardening from inside the
+    // async fn would be too late. See
+    // crates/agent-runtime/src/sandbox/process_hardening.rs for ordering
+    // rationale.
     crate::sandbox::process_hardening::apply_process_hardening();
 
+    real_main()
+}
+
+#[tokio::main]
+async fn real_main() -> Result<()> {
     // Set up process panic hook before anything else — writes crash dumps
     // to ~/.codesmith/crashes/ even if the panic happens before tokio is up,
     // and restores the terminal so a panicked TUI doesn't leave the user's

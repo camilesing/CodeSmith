@@ -5,8 +5,8 @@ CodeSmith codebase. It is intentionally conservative: shipped entries are
 limited to provider IDs, config keys, auth paths, base URLs, model resolution,
 and capability metadata that the code already knows about.
 
-DeepSeek remains the first-class default provider. NVIDIA NIM, OpenRouter,
-Volcengine Ark, Xiaomi MiMo, Novita, Fireworks, SiliconFlow, generic
+DeepSeek remains the first-class default provider. Anthropic Claude, NVIDIA NIM,
+OpenRouter, Volcengine Ark, Xiaomi MiMo, Novita, Fireworks, SiliconFlow, generic
 OpenAI-compatible endpoints, self-hosted runtimes, and Moonshot/Kimi are
 additive routes for running the same terminal harness against other hosted or
 local model endpoints. Hugging Face Inference Providers are a planned additive
@@ -15,7 +15,9 @@ open-model routing layer; they are not a native provider in this checkout yet.
 Sources to keep in sync:
 
 - `crates/config/src/lib.rs` - shared provider IDs, defaults, env precedence.
-- `crates/tui/src/config.rs` - TUI provider IDs, provider capability metadata,
+- `crates/agent-runtime/src/config_types.rs` - live TUI `ApiProvider` IDs
+  (moved out of `crates/tui/src/config.rs`, which now only re-exports).
+- `crates/tui/src/config.rs` - provider capability metadata,
   and provider-specific env handling.
 - `crates/agent/src/lib.rs` - static `ModelRegistry` used by
   `codesmith model list` and `codesmith model resolve`.
@@ -29,9 +31,9 @@ Sources to keep in sync:
 
 The canonical provider IDs are:
 
-`deepseek`, `nvidia-nim`, `openai`, `atlascloud`, `wanjie-ark`, `volcengine`,
-`openrouter`, `xiaomi-mimo`, `novita`, `fireworks`, `siliconflow`, `moonshot`,
-`sglang`, `vllm`, and `ollama`.
+`deepseek`, `anthropic`, `nvidia-nim`, `openai`, `atlascloud`, `wanjie-ark`,
+`volcengine`, `openrouter`, `xiaomi-mimo`, `novita`, `fireworks`, `siliconflow`,
+`moonshot`, `sglang`, `vllm`, and `ollama`.
 
 Use any of these surfaces to select a provider:
 
@@ -114,6 +116,7 @@ endpoint.
 | Provider ID | TOML table | Auth env | Base URL env and default | Default or static models | Notes |
 | --- | --- | --- | --- | --- | --- |
 | `deepseek` | `[providers.deepseek]` | `DEEPSEEK_API_KEY` | `CODESMITH_BASE_URL`; default `https://api.deepseek.com/beta` | `deepseek-v4-pro`, `deepseek-v4-flash`; compatibility aliases `deepseek-chat`, `deepseek-reasoner` | First-class default. Beta URL enables strict tool mode, chat prefix completion, and FIM completion. Set `https://api.deepseek.com` or `/v1` explicitly to opt out of beta-only features. |
+| `anthropic` | `[providers.anthropic]` | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL`; default `https://api.anthropic.com/v1` | `claude-sonnet-4-5` | Anthropic Claude route. `claude`, `anthropic-claude`, and `claude-ai` are accepted as provider aliases. |
 | `nvidia-nim` | `[providers.nvidia_nim]` | `NVIDIA_API_KEY`, `NVIDIA_NIM_API_KEY`, fallback `DEEPSEEK_API_KEY` | `NVIDIA_NIM_BASE_URL`, `NIM_BASE_URL`, `NVIDIA_BASE_URL`; default `https://integrate.api.nvidia.com/v1` | `deepseek-ai/deepseek-v4-pro`, `deepseek-ai/deepseek-v4-flash` | Hosted DeepSeek V4 through NVIDIA NIM. `NVIDIA_NIM_MODEL` is accepted by the TUI config path. |
 | `openai` | `[providers.openai]` | `OPENAI_API_KEY` | `OPENAI_BASE_URL`; default `https://api.openai.com/v1` | Registry entries: `gpt-5`, `deepseek-v4-pro`, `deepseek-v4-flash`; default config model `gpt-5` | Generic OpenAI-compatible route for gateways and custom endpoints. Use this for explicit third-party OpenAI-compatible routes instead of inventing a new provider ID. `OPENAI_MODEL` is accepted. A custom `OPENAI_BASE_URL` with no explicit model fails fast at startup. |
 | `atlascloud` | `[providers.atlascloud]` | `ATLASCLOUD_API_KEY` | `ATLASCLOUD_BASE_URL`; default `https://api.atlascloud.ai/v1` | `deepseek-ai/deepseek-v4-flash`, `deepseek-ai/deepseek-v4-pro` | OpenAI-compatible hosted route. `ATLASCLOUD_MODEL` is accepted by the TUI config path, and the static `ModelRegistry` includes AtlasCloud fallback rows for CLI model resolution. |
@@ -225,8 +228,8 @@ python3 scripts/check-provider-registry.py
 The check fails when:
 
 - `docs/PROVIDERS.md` omits a canonical `ProviderKind::as_str()` ID.
-- `crates/tui/src/config.rs` `ApiProvider::as_str()` diverges from
-  `ProviderKind::as_str()` except for the explicit `deepseek-cn` legacy alias.
+- `crates/agent-runtime/src/config_types.rs` `ApiProvider::as_str()` diverges
+  from `ProviderKind::as_str()`.
 - The shipped-provider table omits or adds a `[providers.*]` TOML table.
 - The static model registry table drifts from providers used by
   `crates/agent/src/lib.rs`.

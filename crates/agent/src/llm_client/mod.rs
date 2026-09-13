@@ -714,20 +714,34 @@ where
 
 // === Utility Functions ===
 
+/// Upper bound for a `Retry-After`-derived delay. A server sending a
+/// multi-day (or garbage-huge) value should degrade to the normal retry
+/// backoff rather than park the client for eternity.
+const MAX_RETRY_AFTER_SECS: f64 = 86_400.0;
+
 /// Parses the Retry-After header value into a Duration.
 ///
 /// Supports both:
 /// - Seconds as integer: "120" -> 120 seconds
+/// - Seconds as float: "1.5" -> 1.5 seconds
 /// - HTTP-date format: "Wed, 21 Oct 2015 07:28:00 GMT" (not implemented, returns None)
+///
+/// Malformed values (negative, NaN, infinite) are rejected — the header is
+/// server-controlled and `Duration::from_secs_f64` panics on those inputs.
+/// Absurdly large values are clamped to one day.
 pub fn parse_retry_after(value: &str) -> Option<Duration> {
     // Try parsing as seconds
     if let Ok(seconds) = value.parse::<u64>() {
-        return Some(Duration::from_secs(seconds));
+        return Some(Duration::from_secs(seconds.min(MAX_RETRY_AFTER_SECS as u64)));
     }
 
     // Try parsing as float seconds
-    if let Ok(seconds) = value.parse::<f64>() {
-        return Some(Duration::from_secs_f64(seconds));
+    if let Ok(seconds) = value.parse::<f64>()
+        && seconds.is_finite()
+        && seconds >= 0.0
+    {
+        let clamped = seconds.min(MAX_RETRY_AFTER_SECS);
+        return Some(Duration::from_secs_f64(clamped));
     }
 
     // HTTP-date format not supported yet
@@ -952,6 +966,26 @@ mod tests {
         // Invalid
         assert_eq!(parse_retry_after("invalid"), None);
         assert_eq!(parse_retry_after(""), None);
+    }
+
+    #[test]
+    fn test_parse_retry_after_rejects_malformed_floats() {
+        // The header is server-controlled; these would panic
+        // `Duration::from_secs_f64` if passed through unvalidated.
+        assert_eq!(parse_retry_after("-1"), None);
+        assert_eq!(parse_retry_after("-1.5"), None);
+        assert_eq!(parse_retry_after("NaN"), None);
+        assert_eq!(parse_retry_after("nan"), None);
+        assert_eq!(parse_retry_after("inf"), None);
+        assert_eq!(parse_retry_after("infinity"), None);
+    }
+
+    #[test]
+    fn test_parse_retry_after_clamps_huge_values() {
+        let clamped = parse_retry_after("99999999999999999999").expect("clamped, not None");
+        assert_eq!(clamped, Duration::from_secs(86_400));
+        let clamped_float = parse_retry_after("1e18").expect("clamped, not None");
+        assert_eq!(clamped_float, Duration::from_secs(86_400));
     }
 
     #[test]

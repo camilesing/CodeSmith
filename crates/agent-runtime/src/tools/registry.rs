@@ -774,7 +774,10 @@ mod tests {
             _input: Value,
             _context: &ToolContext,
         ) -> Result<ToolResult, crate::tools::spec::ToolError> {
-            Ok(ToolResult::success("v".repeat(13_000)))
+            // 17_000 chars ≈ 4,250 tokens under the CJK-aware heuristic
+            // (chars/4 for ASCII) — above the default 4,096-token routing
+            // threshold.
+            Ok(ToolResult::success("v".repeat(17_000)))
         }
     }
 

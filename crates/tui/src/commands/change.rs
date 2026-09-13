@@ -490,12 +490,15 @@ Previous release.\n";
                 let expected = extract_latest_changelog_section(CODESMITH_TUI_CHANGELOG)
                     .expect("bundled changelog should have a release section");
                 assert!(prompt.contains(expected.lines().next().unwrap()));
-                let prev_ver = extract_previous_version_number(CODESMITH_TUI_CHANGELOG)
-                    .expect("bundled changelog should have a previous release");
-                assert!(
-                    prompt.contains(&prev_ver),
-                    "translation prompt should include previous-version hint: {prompt}"
-                );
+                // The previous-version hint only exists once the changelog
+                // has more than one release.
+                if let Some(prev_ver) = extract_previous_version_number(CODESMITH_TUI_CHANGELOG)
+                {
+                    assert!(
+                        prompt.contains(&prev_ver),
+                        "translation prompt should include previous-version hint: {prompt}"
+                    );
+                }
             }
         }
     }
@@ -843,6 +846,26 @@ Older release.\n";
 
     // --- change() output hint tests ---
 
+    /// The previous-version hint only exists once the bundled changelog has
+    /// more than one release; these tests stay honest on single-release
+    /// changelogs instead of hardcoding 0.8.x-era versions.
+    fn bundled_previous_version() -> Option<String> {
+        extract_previous_version_number(CODESMITH_TUI_CHANGELOG)
+    }
+
+    fn bundled_latest_version() -> String {
+        extract_latest_changelog_section(CODESMITH_TUI_CHANGELOG)
+            .and_then(|section| section.lines().next().map(str::to_string))
+            .and_then(|header| {
+                header
+                    .trim_start_matches("## [")
+                    .split(']')
+                    .next()
+                    .map(str::to_string)
+            })
+            .expect("bundled changelog has at least one release")
+    }
+
     #[test]
     fn change_without_args_includes_previous_version_hint() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -850,26 +873,36 @@ Older release.\n";
         let result = change(&mut app, None);
         assert!(!result.is_error);
         let msg = result.message.expect("should have a message");
-        // The previous version hint should be part of the output.
-        // We can't assert an exact version number since the changelog changes,
-        // but the hint message key should appear.
-        assert!(
-            msg.contains("Previous version:") || msg.contains("run `/change"),
-            "expected previous-version hint in output, got: {msg}"
-        );
+        match bundled_previous_version() {
+            Some(prev) => assert!(
+                msg.contains("Previous version:") && msg.contains(&prev),
+                "expected previous-version hint in output, got: {msg}"
+            ),
+            None => assert!(
+                !msg.contains("Previous version:"),
+                "single-release changelog must not hint at a nonexistent previous version: {msg}"
+            ),
+        }
     }
 
     #[test]
     fn change_with_explicit_version_includes_previous_hint() {
         let tmp = tempfile::TempDir::new().unwrap();
         let mut app = make_app(&tmp, Locale::En, false);
-        let result = change(&mut app, Some("0.8.32"));
+        let latest = bundled_latest_version();
+        let result = change(&mut app, Some(&latest));
         assert!(!result.is_error);
         let msg = result.message.as_deref().unwrap_or("");
-        assert!(
-            msg.contains("Previous version:") && msg.contains("0.8.31"),
-            "explicit version should show previous-version hint: {msg}"
-        );
+        match bundled_previous_version() {
+            Some(prev) => assert!(
+                msg.contains("Previous version:") && msg.contains(&prev),
+                "explicit version should show previous-version hint: {msg}"
+            ),
+            None => assert!(
+                !msg.contains("Previous version:"),
+                "single-release changelog has no previous version to hint: {msg}"
+            ),
+        }
     }
 
     #[test]
@@ -879,11 +912,17 @@ Older release.\n";
         let result = change(&mut app, None);
         assert!(!result.is_error);
         let msg = result.message.expect("should have a message");
-        // zh-Hans template: "上一个版本:"
-        assert!(
-            msg.contains("上一个版本"),
-            "zh-Hans output should contain localized hint: {msg}"
-        );
+        match bundled_previous_version() {
+            // zh-Hans template: "上一个版本:"
+            Some(_) => assert!(
+                msg.contains("上一个版本"),
+                "zh-Hans output should contain localized hint: {msg}"
+            ),
+            None => assert!(
+                msg.contains("## ["),
+                "zh-Hans output should still show the changelog section: {msg}"
+            ),
+        }
     }
 
     #[test]
@@ -893,10 +932,16 @@ Older release.\n";
         let result = change(&mut app, None);
         assert!(!result.is_error);
         let msg = result.message.expect("should have a message");
-        assert!(
-            msg.contains("पिछला संस्करण"),
-            "hi output should contain localized hint: {msg}"
-        );
+        match bundled_previous_version() {
+            Some(_) => assert!(
+                msg.contains("पिछला संस्करण"),
+                "hi output should contain localized hint: {msg}"
+            ),
+            None => assert!(
+                msg.contains("## ["),
+                "hi output should still show the changelog section: {msg}"
+            ),
+        }
     }
 
     #[test]
@@ -906,9 +951,15 @@ Older release.\n";
         let result = change(&mut app, None);
         assert!(!result.is_error);
         let msg = result.message.expect("should have a message");
-        assert!(
-            msg.contains("Versión anterior"),
-            "es-419 output should contain localized hint: {msg}"
-        );
+        match bundled_previous_version() {
+            Some(_) => assert!(
+                msg.contains("Versión anterior"),
+                "es-419 output should contain localized hint: {msg}"
+            ),
+            None => assert!(
+                msg.contains("## ["),
+                "es-419 output should still show the changelog section: {msg}"
+            ),
+        }
     }
 }

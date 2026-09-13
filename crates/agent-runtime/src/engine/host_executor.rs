@@ -8915,11 +8915,11 @@ mod tests {
     #[tokio::test]
     async fn capacity_small_window_auto_compacts_before_preflight_budget() {
         let mut sess = fresh_session();
-        // 70 messages × 3,150 'x' chars = 1,050 raw tokens each (chars/3):
+        // 70 messages × 4,200 'x' chars = 1,050 raw tokens each (chars/4):
         // summarizable ≈ 66 × 1,050 = 69,300 > 63,333 trigger, while the
         // conservative estimate ≈ 70 × 1,050 × 1.5 + framing ≈ 111,150 stays
         // under the 121,600 preflight budget.
-        let body = "x".repeat(3_150);
+        let body = "x".repeat(4_200);
         for i in 0..70 {
             sess.add_message(Message {
                 role: if i % 2 == 0 {

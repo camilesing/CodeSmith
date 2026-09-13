@@ -7,7 +7,7 @@ use super::CommandResult;
 use crate::compaction::estimate_input_tokens_conservative;
 use crate::models::{LEGACY_MODEL_CONTEXT_WINDOW_TOKENS, context_window_for_model};
 use crate::tui::app::App;
-use crate::utils::{display_path, estimate_message_chars};
+use crate::utils::display_path;
 
 /// Show a compact runtime status report for the current TUI session.
 pub fn status(app: &mut App) -> CommandResult {
@@ -167,10 +167,12 @@ fn footer_items(app: &App) -> String {
 
 fn context_usage(app: &App) -> (usize, u32, f64) {
     let max = context_window_for_model(&app.model).unwrap_or(LEGACY_MODEL_CONTEXT_WINDOW_TOKENS);
-    let estimated =
-        estimate_input_tokens_conservative(&app.api_messages, app.system_prompt.as_ref());
-    let total_chars = estimate_message_chars(&app.api_messages);
-    let used = estimated.max(total_chars / 4);
+    // Single estimator: the shared conservative token estimate already
+    // covers messages + system prompt + framing. The old
+    // `estimate_message_chars / 4` fallback summed bytes (not chars),
+    // excluded the system prompt, and used a different image cost model,
+    // so mixing the two scales via max() was meaningless.
+    let used = estimate_input_tokens_conservative(&app.api_messages, app.system_prompt.as_ref());
     let percent = ((used as f64 / f64::from(max)) * 100.0).clamp(0.0, 100.0);
     (used, max, percent)
 }

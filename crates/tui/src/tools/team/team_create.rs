@@ -109,6 +109,25 @@ impl ToolSpec for TeamCreateTool {
             .map(|s| s.to_string());
 
         let sanitized = sanitize_name(&team_name);
+        // An empty sanitized name would resolve the team dir to the teams
+        // root itself (`~/.codesmith/teams/`) and clobber its config.json.
+        if sanitized.is_empty() {
+            return Err(ToolError::invalid_input(
+                "Team name must contain at least one alphanumeric character",
+            ));
+        }
+        // A second session creating the same-named team would silently
+        // clobber the existing roster (the one-team-per-leader guard above
+        // is in-process only). Refuse instead.
+        if crate::tools::team::team_config_path(&team_name)
+            .map(|path| path.exists())
+            .unwrap_or(false)
+        {
+            return Err(ToolError::invalid_input(format!(
+                "A team named '{}' already exists; pick a different name or delete the existing team first",
+                sanitized
+            )));
+        }
         let lead_agent_id = format_lead_agent_id(&team_name);
         let now = chrono::Utc::now().timestamp_millis();
 

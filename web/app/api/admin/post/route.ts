@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getAgentEnv, getDraft, deleteDraft, validateSession, type CommunityAgentEnv } from "@/lib/community-agent";
+import { GITHUB_REPO } from "@/lib/constants";
 
 export const dynamic = "force-dynamic";
 
@@ -90,7 +91,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "no target number" }, { status: 400 });
     }
 
-    const repo = env.GITHUB_REPO ?? "camilesing/CodeSmith";
+    const repo = env.GITHUB_REPO ?? GITHUB_REPO;
     const commentUrl = `https://api.github.com/repos/${repo}/issues/${draft.targetNumber}/comments`;
 
     const ghRes = await fetch(commentUrl, {

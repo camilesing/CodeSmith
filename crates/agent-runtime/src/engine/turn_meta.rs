@@ -20,7 +20,13 @@
 use std::path::Path;
 
 use crate::models::{ContentBlock, Message};
+use crate::utils::defuse_closing_tag;
 use crate::working_set::WorkingSet;
+
+/// Tag name of the framing built by [`turn_metadata_block`]. Untrusted body
+/// fields (skill frontmatter, working-set paths) are defused against this
+/// tag so they cannot close the block early.
+const TURN_META_TAG: &str = "turn_meta";
 
 /// Render the matched conditional-skills block for the working set's top
 /// paths. Mirrors the retired `Engine::conditional_skills_block`
@@ -54,16 +60,16 @@ pub(crate) fn conditional_skills_block(
         if reason.is_empty() {
             lines.push(format!(
                 "- {} matched paths [{}]. Load with `load_skill` if relevant. Source: {}",
-                skill.name,
-                skill.paths.join(", "),
+                defuse_closing_tag(&skill.name, TURN_META_TAG),
+                defuse_closing_tag(&skill.paths.join(", "), TURN_META_TAG),
                 skill.path.display()
             ));
         } else {
             lines.push(format!(
                 "- {}: {} Matched paths [{}]. Load with `load_skill` if relevant. Source: {}",
-                skill.name,
-                reason,
-                skill.paths.join(", "),
+                defuse_closing_tag(&skill.name, TURN_META_TAG),
+                defuse_closing_tag(reason, TURN_META_TAG),
+                defuse_closing_tag(&skill.paths.join(", "), TURN_META_TAG),
                 skill.path.display()
             ));
         }
@@ -109,7 +115,14 @@ pub(crate) fn turn_metadata_block(
     let summary = lines.join("\n");
 
     ContentBlock::Text {
-        text: format!("<turn_meta>\n{summary}\n</turn_meta>"),
+        // Defuse the composed summary against the framing tag: the
+        // working-set summary and conditional-skills fields carry workspace
+        // / SKILL.md frontmatter content, none of which may close
+        // `<turn_meta>` early.
+        text: format!(
+            "<turn_meta>\n{}\n</turn_meta>",
+            defuse_closing_tag(&summary, TURN_META_TAG)
+        ),
         cache_control: None,
     }
 }
