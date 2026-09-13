@@ -76,6 +76,12 @@ struct Cli {
     config: Option<PathBuf>,
     #[arg(long)]
     profile: Option<String>,
+    /// Named runtime mode (minimal | balanced | maximal | plan | <custom>).
+    /// Modes are shareable delta bundles of dials from
+    /// ~/.codesmith/modes/ or .codesmith/modes/. Forwarded to the TUI;
+    /// overrides `mode` in config.toml.
+    #[arg(long, value_name = "NAME")]
+    mode: Option<String>,
     #[arg(
         long,
         value_enum,
@@ -1499,6 +1505,9 @@ fn build_tui_command(
     }
     if let Some(profile) = cli.profile.as_ref() {
         cmd.arg("--profile").arg(profile);
+    }
+    if let Some(mode) = cli.mode.as_ref() {
+        cmd.arg("--mode").arg(mode);
     }
     if let Some(workspace) = cli.workspace.as_ref() {
         cmd.arg("--workspace").arg(workspace);

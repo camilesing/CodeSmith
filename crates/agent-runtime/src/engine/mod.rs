@@ -545,6 +545,7 @@ impl Engine {
                     show_thinking,
                     is_simple,
                     allowed_tools,
+                    blocked_tools,
                 } => {
                     self.handle_send_message(
                         content,
@@ -563,6 +564,7 @@ impl Engine {
                         show_thinking,
                         is_simple,
                         allowed_tools,
+                        blocked_tools,
                     )
                     .await;
                 }
@@ -755,6 +757,7 @@ impl Engine {
                         self.config.show_thinking,
                         self.config.is_simple,
                         self.config.allowed_tools.clone(),
+                        self.config.blocked_tools.clone(),
                     )
                     .await;
                 }
@@ -1056,6 +1059,7 @@ impl Engine {
         show_thinking: bool,
         is_simple: bool,
         allowed_tools: Option<Vec<String>>,
+        blocked_tools: Vec<String>,
     ) {
         // Reset cancel token for fresh turn (in case previous was cancelled)
         self.reset_cancel_token();
@@ -1168,6 +1172,7 @@ impl Engine {
             );
         }
         self.config.allowed_tools = allowed_tools;
+        self.config.blocked_tools = blocked_tools;
         self.session.reasoning_effort = reasoning_effort;
         self.session.reasoning_effort_auto = reasoning_effort_auto;
         self.session.auto_model = auto_model;
@@ -3074,9 +3079,9 @@ pub use self::streaming::{
 };
 pub use self::tool_catalog::{
     CODE_EXECUTION_TOOL_NAME, TOOL_SEARCH_BM25_NAME, TOOL_SEARCH_REGEX_NAME, active_tools_for_step,
-    build_model_tool_catalog, ensure_advanced_tooling, execute_code_execution_tool,
-    execute_tool_search, initial_active_tools, maybe_activate_requested_deferred_tool,
-    maybe_hydrate_requested_deferred_tool, missing_tool_error_message,
-    preflight_requested_deferred_tool, should_default_defer_tool,
+    apply_tool_selection, build_model_tool_catalog, ensure_advanced_tooling,
+    execute_code_execution_tool, execute_tool_search, initial_active_tools,
+    maybe_activate_requested_deferred_tool, maybe_hydrate_requested_deferred_tool,
+    missing_tool_error_message, preflight_requested_deferred_tool, should_default_defer_tool,
 };
 use self::tool_catalog::{MULTI_TOOL_PARALLEL_NAME, REQUEST_USER_INPUT_NAME};

@@ -167,9 +167,13 @@ pub struct EngineConfig {
     pub memory_excludes: Vec<String>,
     pub vision_config: Option<VisionModelConfig>,
     pub goal_objective: Option<String>,
-    /// Tool restriction from custom slash command frontmatter.
-    /// `None` means the current turn may use the normal tool set.
+    /// Tool restriction from custom slash command frontmatter or the
+    /// active mode's `tools.include`. `None` means the current turn may
+    /// use the normal tool set.
     pub allowed_tools: Option<Vec<String>>,
+    /// Tool denylist from the active mode's `tools.exclude`, applied after
+    /// `allowed_tools`. Empty means no exclusion.
+    pub blocked_tools: Vec<String>,
     /// Resolved BCP-47 locale tag (e.g. `"en"`, `"zh-Hans"`, `"ja"`)
     /// for the `## Environment` block in the system prompt. The
     /// caller resolves this from `Settings` once at engine
@@ -300,6 +304,7 @@ impl Default for EngineConfig {
             strict_tool_mode: false,
             goal_objective: None,
             allowed_tools: None,
+            blocked_tools: Vec::new(),
             locale_tag: "en".to_string(),
             workshop: None,
             search_provider: SearchProvider::default(),

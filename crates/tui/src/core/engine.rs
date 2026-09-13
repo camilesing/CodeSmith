@@ -37,7 +37,7 @@ use codesmith_agent_runtime::host_services::HostServices;
 // `runtime_traits`, `ui`, …). These items MUST stay `pub` in AR's engine
 // module (see C7-2).
 pub use codesmith_agent_runtime::engine::{
-    ApprovalDecision, CancelReason, Engine, EngineConfig, UserInputDecision,
+    ApprovalDecision, CancelReason, Engine, EngineConfig, UserInputDecision, apply_tool_selection,
     build_model_tool_catalog, compact_tool_result_for_context, goal_objective_for_prompt,
     system_prompt_hash,
 };

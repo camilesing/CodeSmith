@@ -52,9 +52,14 @@ pub enum Op {
         /// Whether the assistant answers in "simple" (caveman) conversation
         /// style this turn. Refreshes the system prompt when it changes.
         is_simple: bool,
-        /// Tool restriction from custom slash command frontmatter.
-        /// `None` means the current turn may use the normal tool set.
+        /// Tool restriction from custom slash command frontmatter or the
+        /// active mode's `tools.include`. `None` means the current turn
+        /// may use the normal tool set.
         allowed_tools: Option<Vec<String>>,
+        /// Tool denylist from the active mode's `tools.exclude`. Applied
+        /// after `allowed_tools`, so a mode can combine an allowlist with
+        /// a few removals. Empty means no exclusion.
+        blocked_tools: Vec<String>,
     },
 
     /// Cancel the current request

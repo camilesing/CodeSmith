@@ -429,6 +429,12 @@ pub async fn run_tui(
     app.telemetry_sink = Some(telemetry_sink);
     sync_config_provider_from_app(config, &app);
 
+    // Named mode layer: `--mode` / config.toml `mode = "..."` (folded into
+    // `config.mode` by `run_interactive`) beats the persisted `/mode` choice
+    // from settings.toml. Applies the live dials; config-bound dials were
+    // already folded in before the engine existed.
+    crate::modes::restore_at_startup(&mut app, config.mode.as_deref());
+
     // Load existing session if resuming.
     if let Some(ref session_id) = options.resume_session_id
         && let Ok(manager) = SessionManager::default_location()
@@ -815,6 +821,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         worktree_state: crate::tools::worktree::new_shared_worktree_session_state(),
         max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
         allowed_tools: app.active_allowed_tools.clone(),
+        blocked_tools: app.active_blocked_tools.clone().unwrap_or_default(),
         network_policy: Some(config.network_policy_decider()),
         snapshots_enabled: config.snapshots_config().enabled,
         snapshots_max_workspace_bytes: config
@@ -4878,6 +4885,7 @@ async fn dispatch_user_message(
             show_thinking: app.show_thinking,
             is_simple: app.is_simple,
             allowed_tools: app.active_allowed_tools.clone(),
+            blocked_tools: app.active_blocked_tools.clone().unwrap_or_default(),
         })
         .await
     {

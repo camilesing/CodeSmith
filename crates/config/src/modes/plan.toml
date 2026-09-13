@@ -1,0 +1,6 @@
+# 计划模式 — design before implementing. / Plan mode — design first.
+# 只读探索 + 计划工具，写作类工具交给审批门控。
+name = "plan"
+description = "Design first: read-only exploration, plan tooling, writes gated behind approval."
+app_mode = "plan"
+memory_level = "notebook"

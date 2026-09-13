@@ -1653,6 +1653,7 @@ impl RuntimeThreadManager {
                 show_thinking,
                 is_simple,
                 allowed_tools: None,
+                blocked_tools: Vec::new(),
                 approval_mode: if auto_approve {
                     crate::tui::approval::ApprovalMode::Auto
                 } else {
@@ -2059,6 +2060,7 @@ impl RuntimeThreadManager {
             strict_tool_mode: self.config.strict_tool_mode.unwrap_or(false),
             goal_objective: None,
             allowed_tools: None,
+            blocked_tools: Vec::new(),
             locale_tag: crate::localization::resolve_locale(&settings.locale)
                 .tag()
                 .to_string(),

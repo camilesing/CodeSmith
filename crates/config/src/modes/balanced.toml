@@ -1,0 +1,4 @@
+# 均衡模式 — the default CodeSmith experience. / Balanced mode — defaults.
+# 不设任何旋钮：一切继承你的 config.toml。
+name = "balanced"
+description = "The default CodeSmith experience — every dial inherits your config."

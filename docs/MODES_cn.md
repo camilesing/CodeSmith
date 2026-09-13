@@ -5,7 +5,75 @@ codesmith 有两个相关概念：
 - **TUI 模式**：你当前所处的可见交互类型（Plan/Agent/YOLO）。
 - **审批模式**：UI 在执行工具前要求确认的严格程度。
 
+在这两者之上是**命名模式层**：一条命令（`/mode minimal`）把下述所有旋钮——
+工具面、思考深度、记忆持久化、审批姿态、子代理上限、模型——打包进一个可分享
+的 TOML 文件。
+
 模型选择是独立的。`--model auto` 和 `/model auto` 会把每个对话轮路由到具体的模型和思考级别；它们不是 TUI 模式，也不属于 `Tab` 循环。
+
+## 命名模式（`/mode <name>`）
+
+*模式*是单个 TOML 文件里的旋钮增量包。文件没写的字段保持当前值——模式与你的
+现有配置是组合关系，不是替换关系。
+
+```bash
+codesmith --mode minimal   # 极小工具面、思考关闭、零记忆
+codesmith --mode maximal   # 全量开启
+/mode list                 # 查看当前工作区可见的所有模式
+/mode plan                 # 会话中热切换，无需重启
+/mode export my-setup      # 把当前旋钮快照为可分享的文件
+/mode off                  # 退出模式层，旋钮保持当前值
+```
+
+内置模式：
+
+| 模式 | 思考 | 工具 | 记忆 | 子代理 |
+|---|---|---|---|---|
+| `minimal` | off | 仅核心文件 + shell（`tools.include`） | goldfish（无） | 关闭 |
+| `balanced` | 继承 | 继承 | 继承 | 继承 |
+| `maximal` | max | 全量 | elephant（自动 + 衰减） | 20 |
+| `plan` | 继承 | 只读 + 计划工具 | notebook（仅显式保存） | 继承 |
+
+模式文件放在两个扫描目录，后层按名字覆盖内置：
+
+1. `~/.codesmith/modes/*.toml` — 你的全局模式
+2. `<workspace>/.codesmith/modes/*.toml` — 项目模式（建议提交进仓库）
+
+模式文件完整 schema（所有字段均可省略）：
+
+```toml
+name = "review"
+description = "只读代码评审姿态"
+app_mode = "agent"              # agent | yolo | plan | coordinator
+reasoning_effort = "high"       # off | low | medium | high | max | auto
+approval_policy = "never"       # suggest | auto | never
+sandbox_mode = "read-only"      # read-only | workspace-write | danger-full-access
+memory_level = "notebook"       # goldfish | notebook | elephant
+max_subagents = 2
+model = "deepseek-v4-pro"
+provider = "deepseek"           # 仅启动时生效；切换需重启
+
+[tools]
+include = ["read_file", "grep_files", "list_dir"]  # 设置后即为白名单
+exclude = ["exec_shell"]                            # 在 include 之后再剔除
+
+[features]
+subagents = false
+web_search = false
+```
+
+**记忆旋钮**（`memory_level`）映射到既有的多层记忆系统
+（[docs/MEMORY_cn.md](MEMORY_cn.md)）：`goldfish` 关闭跨会话记忆，`notebook`
+只保留你显式保存的内容（`# note`、`/remember`），`elephant` 开启带预算与
+衰减的 Knowledge On Demand。
+
+**热切换 vs 需重启。** 应用模式、思考、审批、工具白/黑名单、子代理上限和模型
+下一轮即生效。Provider、feature 开关和记忆注入在引擎启动时读取——切换到包含
+这些字段的模式时，会明确提示哪些将在重启后生效。
+
+**活动模式的优先级：** `--mode name`（CLI）> config.toml 里的
+`mode = "name"` > TUI 中最近一次选择的模式（持久化在 settings.toml）。
+取消模式层用 `/mode off`。
 
 ## TUI 模式
 
