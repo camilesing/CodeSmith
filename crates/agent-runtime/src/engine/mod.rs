@@ -1530,13 +1530,33 @@ impl Engine {
             Err(e) => (TurnOutcomeStatus::Failed, Some(e.to_string())),
         };
 
-        // Sync session.cwd from worktree state after each turn.
+        // Sync session.cwd from worktree state after each turn. P2-6: a cwd
+        // captured by `exec_shell` this turn (the model `cd`'d) wins over the
+        // worktree/workspace defaults — the slot is turn-scoped, so a turn
+        // with no shell commands keeps the prior behavior. While a worktree
+        // is active, only captures *inside* the worktree are honored (a `cd`
+        // out of the tree must not leak the isolation boundary).
         {
+            let captured = plan
+                .tool_registry
+                .as_ref()
+                .and_then(|registry| registry.session_cwd_override());
             let wt_state = self.config.worktree_state.lock().unwrap();
-            if wt_state.active && wt_state.worktree_path.is_some() {
-                self.session.cwd = wt_state.worktree_path.clone().unwrap();
-            } else {
-                self.session.cwd = self.session.workspace.clone();
+            let worktree =
+                if wt_state.active { wt_state.worktree_path.clone() } else { None };
+            match (captured, worktree) {
+                (Some(captured), Some(wt)) if captured.starts_with(&wt) => {
+                    self.session.cwd = captured;
+                }
+                (Some(captured), None) => {
+                    self.session.cwd = captured;
+                }
+                (_, Some(wt)) => {
+                    self.session.cwd = wt;
+                }
+                (None, None) => {
+                    self.session.cwd = self.session.workspace.clone();
+                }
             }
         }
 

@@ -9,9 +9,7 @@
 
 use super::handle::query_jsonpath;
 use async_trait::async_trait;
-use codesmith_agent_runtime::network_policy::{
-    Decision, NetworkPolicy, NetworkPolicyDecider,
-};
+use codesmith_agent_runtime::network_policy::{Decision, NetworkPolicyDecider};
 use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_u64,
 };
@@ -883,6 +881,8 @@ mod tests {
     }
 
     // === P1-5: per-input approval gate ===================================
+
+    use codesmith_agent_runtime::network_policy::NetworkPolicy;
 
     fn prompt_decider(allow: &[&str], deny: &[&str]) -> NetworkPolicyDecider {
         NetworkPolicyDecider::new(

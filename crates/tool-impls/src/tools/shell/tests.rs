@@ -1201,3 +1201,139 @@ fn issue_1691_quoted_commit_message_round_trips() {
         .collect();
     assert_eq!(got, spec.args);
 }
+
+// === P2-6: session-aware cwd ==============================================
+
+#[cfg(unix)]
+#[test]
+fn extract_cwd_marker_strips_and_returns_last_path() {
+    let mut stdout = String::from("before\n");
+    let mut stderr = format!("noise\n{CWD_MARKER_PREFIX}/definitely/not/real\n");
+    // A path that doesn't canonicalize (a partial/malformed line, e.g. a
+    // kill mid-printf) yields no capture and is kept as honest output.
+    assert_eq!(extract_cwd_marker(&mut stdout, &mut stderr), None);
+    assert_eq!(stderr, format!("noise\n{CWD_MARKER_PREFIX}/definitely/not/real\n"));
+    assert_eq!(stdout, "before\n");
+
+    let real = std::env::temp_dir();
+    let mut stdout = format!("a\n{CWD_MARKER_PREFIX}{}\nb\n", real.display());
+    let mut stderr = String::new();
+    assert_eq!(extract_cwd_marker(&mut stdout, &mut stderr), Some(real.canonicalize().unwrap()));
+    assert_eq!(stdout, "a\nb\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn session_cwd_capture_rejects_outside_workspace() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path())
+        .with_session_cwd(std::sync::Arc::new(std::sync::Mutex::new(None)));
+    let outside = std::env::temp_dir().join("codesmith-p2-6-reject-probe");
+    std::fs::create_dir_all(&outside).expect("mkdir");
+
+    let mut stdout = format!("{}\n", CWD_MARKER_PREFIX).replace(
+        &format!("{CWD_MARKER_PREFIX}\n"),
+        &format!("{CWD_MARKER_PREFIX}{}\n", outside.display()),
+    );
+    let mut stderr = String::new();
+    assert!(
+        apply_session_cwd_capture(&ctx, &mut stdout, &mut stderr, tmp.path()).is_none(),
+        "a cwd outside the workspace must be dropped"
+    );
+    assert!(ctx.session_cwd_override().is_none());
+    assert!(!stdout.contains(CWD_MARKER_PREFIX), "marker stripped even when rejected");
+    let _ = std::fs::remove_dir(&outside);
+}
+
+#[cfg(unix)]
+#[test]
+fn session_cwd_capture_accepts_workspace_subdir() {
+    let tmp = tempdir().expect("tempdir");
+    let sub = tmp.path().join("sub");
+    std::fs::create_dir_all(&sub).expect("mkdir");
+    let ctx = ToolContext::new(tmp.path())
+        .with_session_cwd(std::sync::Arc::new(std::sync::Mutex::new(None)));
+
+    let mut stdout = format!("{}{}\n", CWD_MARKER_PREFIX, sub.display());
+    let mut stderr = String::new();
+    let applied =
+        apply_session_cwd_capture(&ctx, &mut stdout, &mut stderr, tmp.path()).expect("applied");
+    assert_eq!(applied.canonicalize().unwrap(), sub.canonicalize().unwrap());
+    assert_eq!(ctx.session_cwd_override().unwrap().canonicalize().unwrap(), sub.canonicalize().unwrap());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn exec_shell_cd_persists_across_calls() {
+    let tmp = tempdir().expect("tempdir");
+    let sub = tmp.path().join("pkg");
+    std::fs::create_dir_all(&sub).expect("mkdir");
+    let ctx = ToolContext::new(tmp.path())
+        .with_session_cwd(std::sync::Arc::new(std::sync::Mutex::new(None)));
+    let tool = ExecShellTool;
+
+    // First call: cd into the subdir. The final cwd is captured and surfaced.
+    let first = tool
+        .execute(json!({"command": "cd pkg"}), &ctx)
+        .await
+        .expect("execute");
+    assert!(first.success, "{}", first.content);
+    assert!(
+        first.content.contains("working directory is now"),
+        "cwd change must be surfaced: {}",
+        first.content
+    );
+    assert!(
+        !first.content.contains(CWD_MARKER_PREFIX),
+        "the marker must never leak into model-visible output: {}",
+        first.content
+    );
+    let meta = first.metadata.expect("metadata");
+    assert_eq!(
+        meta.get("session_cwd").and_then(Value::as_str),
+        Some(sub.canonicalize().unwrap().to_str().unwrap())
+    );
+
+    // Second call: runs in the captured directory, no explicit cwd needed.
+    let second = tool
+        .execute(json!({"command": "pwd"}), &ctx)
+        .await
+        .expect("execute");
+    assert!(second.success, "{}", second.content);
+    assert!(
+        second.content.contains("pkg"),
+        "second call should run in the persisted cwd: {}",
+        second.content
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn exec_shell_cd_outside_workspace_does_not_persist() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path())
+        .with_session_cwd(std::sync::Arc::new(std::sync::Mutex::new(None)));
+    let tool = ExecShellTool;
+
+    let first = tool
+        .execute(json!({"command": "cd /"}), &ctx)
+        .await
+        .expect("execute");
+    assert!(first.success, "{}", first.content);
+    assert!(
+        !first.content.contains("working directory is now"),
+        "an outside-workspace cd must not persist: {}",
+        first.content
+    );
+
+    let second = tool
+        .execute(json!({"command": "pwd"}), &ctx)
+        .await
+        .expect("execute");
+    assert!(
+        !second.content.trim_end().eq("/"),
+        "cwd should still be the workspace: {}",
+        second.content
+    );
+    assert!(second.content.contains(tmp.path().file_name().unwrap().to_string_lossy().as_ref()));
+}

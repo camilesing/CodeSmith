@@ -11,7 +11,7 @@
 use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use codesmith_agent_runtime::sandbox::{
@@ -214,9 +214,88 @@ fn shell_network_restricted_hint<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Sentinel prefix for the session-cwd capture line (P2-6). Printed by the
+/// foreground-command wrapper as the last stderr line; never a plausible
+/// substring of real command output.
+const CWD_MARKER_PREFIX: &str = "__CODESMITH_CWD__";
+
+/// Wrap a foreground command so the shell reports its final working
+/// directory (P2-6 — the lightweight stand-in for a persistent terminal
+/// session: `cd` survives across `exec_shell` calls, env vars don't).
+///
+/// POSIX sh only: run the command, capture its status, print the final `$PWD`
+/// on stderr as a marker line, then exit with the captured status — failure
+/// detection is unchanged. If the command itself exits the shell (`exec`,
+/// `exit`, `set -e` failure), the marker simply never prints and no update
+/// happens (fail-safe). The wrapper adds only `printf`/`exit` — no capability
+/// the sandbox didn't already grant the command.
+#[cfg(unix)]
+fn wrap_with_cwd_capture(command: &str) -> String {
+    format!(
+        "{command}\n_cs_rc=$?\nprintf '%s\\n' \"{CWD_MARKER_PREFIX}$PWD\" >&2\nexit $_cs_rc\n"
+    )
+}
+
+/// Extract (and strip) `__CODESMITH_CWD__<path>` marker lines from both
+/// output streams, returning the last well-formed (canonicalizable) path.
+/// Streams without a marker line are left byte-identical.
+fn extract_cwd_marker(stdout: &mut String, stderr: &mut String) -> Option<PathBuf> {
+    let mut found: Option<PathBuf> = None;
+    for stream in [stdout, stderr] {
+        if !stream.contains(CWD_MARKER_PREFIX) {
+            continue;
+        }
+        let mut rebuilt = String::with_capacity(stream.len());
+        for line in stream.split_inclusive('\n') {
+            let trimmed = line.strip_suffix('\n').unwrap_or(line);
+            if let Some(path_part) = trimmed.strip_prefix(CWD_MARKER_PREFIX)
+                && let Ok(canonical) = PathBuf::from(path_part).canonicalize()
+            {
+                found = Some(canonical);
+                continue;
+            }
+            rebuilt.push_str(line);
+        }
+        *stream = rebuilt;
+    }
+    found
+}
+
+/// Fold a captured final cwd into the session slot (P2-6). Boundary posture
+/// matches the `cwd` param: accept paths under the workspace, under the
+/// directory the command ran in (covers worktrees — whose path is not under
+/// the original workspace), or a trusted external root. Anything else (e.g. a
+/// marker faked by the command itself pointing outside) is dropped silently.
+fn apply_session_cwd_capture(
+    context: &ToolContext,
+    stdout: &mut String,
+    stderr: &mut String,
+    ran_in: &Path,
+) -> Option<PathBuf> {
+    let captured = extract_cwd_marker(stdout, stderr)?;
+    let workspace = context
+        .workspace
+        .canonicalize()
+        .unwrap_or_else(|_| context.workspace.clone());
+    let ran_in = ran_in.canonicalize().unwrap_or_else(|_| ran_in.to_path_buf());
+    if captured == ran_in {
+        return None;
+    }
+    let accepted = context.trust_mode
+        || captured.starts_with(&workspace)
+        || captured.starts_with(&ran_in)
+        || context.is_trusted_external_path(&captured);
+    if accepted {
+        context.record_session_cwd(captured.clone());
+        return Some(captured);
+    }
+    None
+}
+
 async fn execute_foreground_via_background(
     context: &ToolContext,
     command: &str,
+    working_dir: Option<&str>,
     timeout_ms: u64,
     stdin_data: Option<&str>,
     tty: bool,
@@ -231,7 +310,7 @@ async fn execute_foreground_via_background(
         manager.set_sandbox_runtime(sandbox_runtime);
         manager.execute_with_options_env(
             command,
-            None,
+            working_dir,
             timeout_ms,
             true,
             stdin_data,
@@ -293,7 +372,7 @@ impl ToolSpec for ExecShellTool {
     }
 
     fn description(&self) -> &'static str {
-        "Execute a shell command in the workspace directory. Foreground mode is for bounded commands; use background=true or task_shell_start for long-running work, then poll/wait."
+        "Execute a shell command in the workspace directory. Foreground mode is for bounded commands; use background=true or task_shell_start for long-running work, then poll/wait. Session-aware cwd (Unix): each process is fresh, but a foreground `cd <dir>` persists — the final working directory carries over to later exec_shell calls this session (environment variables do NOT persist; use a `.env` file or export them per command). Pass an explicit `cwd` to override for one call."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -621,6 +700,9 @@ impl ToolSpec for ExecShellTool {
             });
         }
 
+        // P2-6: set when a foreground command's captured cwd was folded into
+        // the session slot — surfaced in the result metadata below.
+        let mut session_cwd_applied: Option<PathBuf> = None;
         let result = if interactive {
             let manager = &context.shell_manager;
             manager.set_sandbox_runtime(effective_runtime.clone());
@@ -645,9 +727,29 @@ impl ToolSpec for ExecShellTool {
                 extra_env,
             )
         } else {
-            execute_foreground_via_background(
+            // P2-6 session-aware cwd: an explicit `cwd` param wins; else the
+            // session slot (a `cd` from an earlier call this session); else
+            // the manager default. Passing it through also fixes the
+            // foreground branch previously discarding the explicit `cwd`
+            // param (interactive/background branches already honored it).
+            let session_cwd = context.session_cwd_override();
+            let effective_dir: Option<String> = working_dir
+                .clone()
+                .or_else(|| session_cwd.as_ref().map(|p| p.to_string_lossy().to_string()));
+            let ran_in = effective_dir
+                .as_deref()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| context.cwd.clone());
+            // P2-6: wrap foreground commands (POSIX only) so the shell
+            // reports its final cwd; capture + strip happen after.
+            #[cfg(unix)]
+            let (wrapped, capture_cwd) = (wrap_with_cwd_capture(command), true);
+            #[cfg(not(unix))]
+            let (wrapped, capture_cwd) = (command.to_string(), false);
+            let mut result = execute_foreground_via_background(
                 context,
-                command,
+                &wrapped,
+                effective_dir.as_deref(),
                 timeout_ms,
                 stdin_data.as_deref(),
                 combined_output,
@@ -655,7 +757,14 @@ impl ToolSpec for ExecShellTool {
                 extra_env,
                 effective_runtime.clone(),
             )
-            .await
+            .await;
+            if capture_cwd
+                && let Ok(result) = result.as_mut()
+            {
+                session_cwd_applied =
+                    apply_session_cwd_capture(context, &mut result.stdout, &mut result.stderr, &ran_in);
+            }
+            result
         };
 
         match result {
@@ -775,6 +884,15 @@ impl ToolSpec for ExecShellTool {
                     }),
                 });
                 metadata["backgrounded"] = json!(background || backgrounded_foreground);
+                // P2-6: surface a captured cwd change so the model knows
+                // relative paths now resolve from the new directory.
+                if let Some(applied) = &session_cwd_applied {
+                    metadata["session_cwd"] = json!(applied.to_string_lossy());
+                    output = format!(
+                        "{output}\n(working directory is now {})",
+                        applied.display()
+                    );
+                }
                 if result.status == ShellStatus::TimedOut && !background && !interactive {
                     metadata["foreground_timeout_recovery"] = json!({
                         "process_killed": true,
@@ -839,7 +957,14 @@ fn required_task_id(input: &serde_json::Value) -> Result<&str, ToolError> {
 }
 
 fn build_shell_delta_tool_result(delta: ShellDeltaResult, context: &ToolContext) -> ToolResult {
-    let result = delta.result;
+    let mut result = delta.result;
+    // P2-6: a foreground command demoted to background reports its cwd marker
+    // through this polling path — strip it and fold the cwd into the session
+    // slot (same boundary posture as the foreground capture).
+    let ran_in = context
+        .session_cwd_override()
+        .unwrap_or_else(|| context.cwd.clone());
+    apply_session_cwd_capture(context, &mut result.stdout, &mut result.stderr, &ran_in);
     let network_restricted_hint =
         shell_network_restricted_hint(context, &delta.command, &result).map(str::to_string);
     let provenance_hint = macos_provenance_hint(&result);

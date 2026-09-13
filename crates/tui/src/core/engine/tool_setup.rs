@@ -87,6 +87,12 @@ pub(super) fn build_tool_context_for(
         }
     }
 
+    // P2-6: bind the turn-scoped session-cwd slot. `exec_shell` writes a
+    // validated child-process cwd into it when the model `cd`s; the engine
+    // reads it back post-turn and folds the change into `Session::cwd` (the
+    // durable store). Fresh per turn — absent captures keep prior behavior.
+    ctx = ctx.with_session_cwd(std::sync::Arc::new(std::sync::Mutex::new(None)));
+
     // Hand the user-memory path to tools so the model-callable
     // `remember` tool can append entries (#489). `None` when the
     // feature is disabled — tools short-circuit on that.
