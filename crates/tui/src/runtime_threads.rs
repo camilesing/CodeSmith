@@ -1950,9 +1950,7 @@ impl RuntimeThreadManager {
             token_threshold: compaction_threshold_for_model(&thread.model),
             ..Default::default()
         };
-        let network_policy = self.config.network.clone().map(|toml_cfg| {
-            crate::network_policy::NetworkPolicyDecider::with_default_audit(toml_cfg.into_runtime())
-        });
+        let network_policy = Some(self.config.network_policy_decider());
         let lsp_config = self
             .config
             .lsp
@@ -2045,6 +2043,9 @@ impl RuntimeThreadManager {
             subagent_model_overrides: self.config.subagent_model_overrides(),
             subagent_api_timeout: std::time::Duration::from_secs(
                 self.config.subagent_api_timeout_secs(),
+            ),
+            stream_idle_timeout: std::time::Duration::from_secs(
+                self.config.stream_idle_timeout_secs(),
             ),
             subagent_inherit_full_registry: self.config.subagent_inherit_full_registry(),
             prefer_bwrap: self.config.prefer_bwrap.unwrap_or(false),

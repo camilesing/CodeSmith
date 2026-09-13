@@ -115,6 +115,61 @@ pub fn recursively_sanitize_unicode(value: Value) -> Value {
     }
 }
 
+/// Wrap a tool result whose content originated from an external network
+/// source in an explicit provenance delimiter (P1-4).
+///
+/// The Constitution (Tier 6) already demotes evidence to data-not-instruction
+/// at the semantic level; the delimiter adds a **typographic** demotion that
+/// doesn't depend on the model's compliance: everything between
+/// `<external_content source="…">` and `</external_content>` is payload from
+/// that source — quoting it back is fine, obeying it is not.
+///
+/// Source labels are byte-stable by construction (a host string, a fixed
+/// label, or an MCP server name) — never a timestamp or request id — and the
+/// wrap is applied only to **newly pushed** tool results (append-only; no
+/// history message is ever rewritten). Tools with no external origin (local
+/// file reads, shell output, sub-agent reports) pass through unchanged.
+///
+/// Sources covered:
+/// - `fetch_url` → the fetched URL's host (e.g. `raw.githubusercontent.com`)
+/// - `web_search` → the fixed label `web_search` (results span many hosts)
+/// - `web.run` → the fixed label `browser` (page content via automation)
+/// - `mcp__<server>__<tool>` → the MCP server name segment
+/// - `github_*` → the fixed label `github.com` (issues/PRs/comments carry
+///   arbitrary user-controlled text)
+pub fn wrap_external_tool_content(
+    tool_name: &str,
+    input: &Value,
+    content: &str,
+) -> String {
+    if content.is_empty() {
+        return String::new();
+    }
+    let Some(source) = external_content_source(tool_name, input) else {
+        return content.to_string();
+    };
+    format!(
+        "<external_content source=\"{source}\">\n{content}\n</external_content>"
+    )
+}
+
+/// Resolve the stable source label for a tool result, or `None` for tools
+/// whose output has no external-network origin. See
+/// [`wrap_external_tool_content`] for the label policy.
+fn external_content_source(tool_name: &str, input: &Value) -> Option<String> {
+    match tool_name {
+        "fetch_url" => input
+            .get("url")
+            .and_then(Value::as_str)
+            .and_then(crate::network_policy::host_from_url),
+        "web_search" => Some("web_search".to_string()),
+        "web.run" => Some("browser".to_string()),
+        name if name.starts_with("mcp__") => name.split("__").nth(1).map(str::to_string),
+        name if name.starts_with("github_") => Some("github.com".to_string()),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,5 +272,72 @@ mod tests {
     fn recursively_strips_tag_char_in_string_leaf() {
         let input = json!("inject\u{E0001}ion");
         assert_eq!(recursively_sanitize_unicode(input), json!("injection"));
+    }
+
+    // === P1-4: external-content provenance wrapping ======================
+
+    #[test]
+    fn wrap_fetch_url_uses_url_host_as_source() {
+        let input = json!({"url": "https://Raw.GitHubusercontent.com/tokio-rs/tokio/master/README.md"});
+        assert_eq!(
+            wrap_external_tool_content("fetch_url", &input, "page body"),
+            "<external_content source=\"raw.githubusercontent.com\">\npage body\n</external_content>"
+        );
+    }
+
+    #[test]
+    fn wrap_fixed_labels_for_search_and_browser_and_github() {
+        assert_eq!(
+            wrap_external_tool_content("web_search", &json!({"query": "rust"}), "hits"),
+            "<external_content source=\"web_search\">\nhits\n</external_content>"
+        );
+        assert_eq!(
+            wrap_external_tool_content("web.run", &json!({"action": "open"}), "page"),
+            "<external_content source=\"browser\">\npage\n</external_content>"
+        );
+        assert_eq!(
+            wrap_external_tool_content("github_issue_context", &json!({}), "issue text"),
+            "<external_content source=\"github.com\">\nissue text\n</external_content>"
+        );
+    }
+
+    #[test]
+    fn wrap_mcp_tool_uses_server_segment() {
+        let input = json!({"query": "x"});
+        assert_eq!(
+            wrap_external_tool_content("mcp__github_api__search_issues", &input, "rows"),
+            "<external_content source=\"github_api\">\nrows\n</external_content>"
+        );
+    }
+
+    #[test]
+    fn wrap_passes_local_tools_through_unchanged() {
+        // No external origin ⇒ no delimiter (the tag would be noise).
+        for name in ["read_file", "grep_files", "exec_shell", "agent_eval", "edit_file"] {
+            assert_eq!(
+                wrap_external_tool_content(name, &json!({}), "local output"),
+                "local output",
+                "{name} must not be wrapped"
+            );
+        }
+    }
+
+    #[test]
+    fn wrap_skips_empty_content_and_missing_url() {
+        assert_eq!(wrap_external_tool_content("fetch_url", &json!({}), ""), "");
+        // A fetch_url call whose url can't be parsed for a host still wraps —
+        // the channel is external even when the label degrades.
+        let out = wrap_external_tool_content("fetch_url", &json!({}), "body");
+        // No url field ⇒ no host ⇒ treated as no external label.
+        assert_eq!(out, "body");
+    }
+
+    #[test]
+    fn wrap_is_byte_stable_for_identical_inputs() {
+        let input = json!({"url": "https://example.com/a"});
+        let a = wrap_external_tool_content("fetch_url", &input, "same");
+        let b = wrap_external_tool_content("fetch_url", &input, "same");
+        assert_eq!(a, b, "identical (tool, input, content) must wrap identically");
+        assert_eq!(a, "<external_content source=\"example.com\">\nsame\n</external_content>");
     }
 }

@@ -489,7 +489,7 @@ pub fn build_purge_tool() -> Tool {
     Tool {
         tool_type: None,
         name: "purge_context".to_string(),
-        description: "Remove or condense conversation history to free context window space."
+        description: "Remove or condense conversation history to free context window space.\n\nExample: `{\"operations\": [{\"op\": \"remove\", \"msg\": 4}, {\"op\": \"replace\", \"msg\": 6, \"block\": 0, \"with\": \"[old tool output condensed]\"}]}` — `msg` indices come from the numbered transcript in the purge prompt; when in doubt, keep the message."
             .to_string(),
         input_schema: serde_json::json!({
             "type": "object",

@@ -582,7 +582,7 @@ impl ToolSpec for TaskShellStartTool {
     }
 
     fn description(&self) -> &'static str {
-        "Start a long-running shell command in the background and return a shell task_id immediately. Use task_shell_wait to poll and optionally record gate evidence on the active durable task."
+        "Start a long-running shell command in the background and return a shell task_id immediately. Use task_shell_wait to poll and optionally record gate evidence on the active durable task.\n\nExamples: `{\"command\": \"cargo test -p codesmith-agent-runtime\"}` (then poll: task_shell_wait with the returned task_id); `{\"command\": \"npm run dev\", \"cwd\": \"web\"}` (long-lived dev server)."
     }
 
     fn input_schema(&self) -> Value {

@@ -1351,7 +1351,22 @@ impl Engine {
         .with_tool_dispatcher(plan.tool_registry.clone())
         .with_turn_meta(Some(turn_meta_probe))
         .with_reinject(Some(reinject_probe))
-        .with_extension_runner(self.extension_runner.clone());
+        .with_extension_runner(self.extension_runner.clone())
+        // P0-1: stream idle watchdog — abort a stream that stays silent for
+        // the configured per-event budget into the transparent-retry path.
+        // `ZERO` (explicitly disabled in config) maps to `None`.
+        .with_stream_idle_timeout(
+            if self.config.stream_idle_timeout.is_zero() {
+                None
+            } else {
+                Some(self.config.stream_idle_timeout)
+            },
+        )
+        // P0-3: shadow-mode prefix-cache stability checks. `Arc` clone of the
+        // session-scoped manager (before the `&mut self.session` borrow held
+        // by `SessionChatHistory` below) so per-step fingerprint re-pins
+        // persist across turns. None ⇒ no checks (pre-P0-3 behavior).
+        .with_prefix_stability(self.session.prefix_stability.clone());
         let mut history =
             SessionChatHistory::new_with_event_tx(&mut self.session, Some(self.tx_event.clone()));
         // Drain steers queued between turns (mirrors the retired pre-turn
@@ -1515,13 +1530,33 @@ impl Engine {
             Err(e) => (TurnOutcomeStatus::Failed, Some(e.to_string())),
         };
 
-        // Sync session.cwd from worktree state after each turn.
+        // Sync session.cwd from worktree state after each turn. P2-6: a cwd
+        // captured by `exec_shell` this turn (the model `cd`'d) wins over the
+        // worktree/workspace defaults — the slot is turn-scoped, so a turn
+        // with no shell commands keeps the prior behavior. While a worktree
+        // is active, only captures *inside* the worktree are honored (a `cd`
+        // out of the tree must not leak the isolation boundary).
         {
+            let captured = plan
+                .tool_registry
+                .as_ref()
+                .and_then(|registry| registry.session_cwd_override());
             let wt_state = self.config.worktree_state.lock().unwrap();
-            if wt_state.active && wt_state.worktree_path.is_some() {
-                self.session.cwd = wt_state.worktree_path.clone().unwrap();
-            } else {
-                self.session.cwd = self.session.workspace.clone();
+            let worktree =
+                if wt_state.active { wt_state.worktree_path.clone() } else { None };
+            match (captured, worktree) {
+                (Some(captured), Some(wt)) if captured.starts_with(&wt) => {
+                    self.session.cwd = captured;
+                }
+                (Some(captured), None) => {
+                    self.session.cwd = captured;
+                }
+                (_, Some(wt)) => {
+                    self.session.cwd = wt;
+                }
+                (None, None) => {
+                    self.session.cwd = self.session.workspace.clone();
+                }
             }
         }
 

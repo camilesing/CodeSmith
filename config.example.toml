@@ -529,8 +529,13 @@ max_subagents = 10 # optional (1-20)
 #     matches `api.example.com` and `a.b.example.com` but not the apex
 #     `example.com`. To cover both, list both. `*.example.com` is also accepted.
 #
-# Defaults are intentionally conservative: when this section is absent, no
-# policy is enforced (mirrors pre-v0.7.0 behavior). To opt in:
+# Defaults (P1-5): when this section is absent, network tools (fetch_url,
+# web_search, web.run) run with a prompt-default policy — the first call to
+# an unapproved host raises the standard inline approval prompt (with
+# approve-for-session dedup: approve once, no re-ask for the rest of the
+# session). YOLO / auto-approve sessions auto-approve, so the out-of-box
+# flow there is unchanged. To open up (pre-v0.9 behavior), set
+# default = "allow"; to lock down, default = "deny".
 #
 # [network]
 # default = "prompt"     # allow | deny | prompt
@@ -646,6 +651,16 @@ max_retries = 3
 initial_delay = 1.0
 max_delay = 60.0
 exponential_base = 2.0
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Stream Idle Watchdog
+# ─────────────────────────────────────────────────────────────────────────────────
+# Maximum silence between two consecutive stream events before the stream is
+# declared silently stalled (connection open, data flow stopped) and aborted
+# into the transparent-retry path. Per-event idle budget — a steadily
+# streaming response never trips it, no matter how long the turn runs.
+# Default: 120. Set 0 to disable. Clamped to 10..=3600 otherwise.
+# stream_idle_timeout_secs = 120
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Context Compaction

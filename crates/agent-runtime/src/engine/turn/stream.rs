@@ -119,19 +119,25 @@ use crate::engine::summarize_text;
 /// (early-tool-start, §E): the read-only, parallel-safe, no-approval, no-side-
 /// effect tools whose results can be pre-computed during streaming and reused
 /// at execute time (mirrors `handle_deepseek_turn`'s `early_tool_start_safe` final composite
-/// gate). The framework `Tool` trait exposes only `capabilities()`, so this is a
-/// **static approximation**: `ReadOnly` present AND none of `{RequiresApproval,
+/// gate). The framework `Tool` trait exposes only `capabilities()`, so this is
+/// a **static approximation**: `ReadOnly` present AND none of `{RequiresApproval,
 /// ExecutesCode, WritesFiles}`. Production additionally checks
 /// `metadata.is_read_only && metadata.supports_parallel && !is_interactive &&
 /// validate_input().is_ok() && approval_requirement_for(...) == Auto` plus a
 /// tool-catalog allowlist (not-MCP / not-code-execution / not-tool-search) —
 /// those per-input / per-metadata surfaces are not reachable from the framework
-/// `Tool` and thread in at the wire-in step (§E design note, same gap as
-/// [`requires_approval`]). `Network` / `Sandboxable` capabilities are not
-/// disqualifying (a read-only network fetch is safe to start early).
+/// `Tool` trait; they thread in at the wire-in step (§E design note, same gap as
+/// [`requires_approval`]).
+///
+/// **Network tools are excluded** (P1-5): a network tool's per-input approval
+/// can be `Required` (policy `Prompt` raises the gate per host), and a
+/// speculative dispatch at `ContentBlockStop` runs the fetch *before* any
+/// approval decision — a static approximation can't know, so it fails closed.
+/// This costs nothing when the policy allows the host (the call simply runs at
+/// execute time instead of speculatively).
 pub(crate) fn early_start_safe(caps: &[ToolCapability]) -> bool {
     let read_only = caps.contains(&ToolCapability::ReadOnly);
-    read_only && !requires_approval(caps)
+    read_only && !requires_approval(caps) && !caps.contains(&ToolCapability::Network)
 }
 
 /// Accumulator for a single content block being built from streaming deltas.
@@ -374,7 +380,48 @@ impl HostAgentExecutor {
             ..Usage::default()
         };
 
-        while let Some(item) = stream.next().await {
+        // Idle watchdog (P0-1): per-event deadline on `stream.next()`. A
+        // silent stall — connection open, data flow stopped — is the one
+        // stream failure no per-request timeout catches (SDK timeouts cover
+        // connection setup, not the stream body). The deadline applies only
+        // to the wait for the *next* event, so a steadily-producing stream of
+        // any length stays live while a silent gap of `idle` aborts. The
+        // abort reuses the mid-flight-error outcomes: `Empty` (nothing
+        // received → transparent retry) or `Partial` (content received →
+        // surface it), so recovery flows through the existing
+        // transparent-retry machinery in `stream_with_transparent_retry`.
+        // `StreamExt::next` is cancellation-safe, and the stream is dropped
+        // on abort (never polled again), so the cancelled poll is harmless.
+        let idle_timeout = self.stream_idle_timeout;
+
+        loop {
+            let item = match idle_timeout {
+                Some(idle) => match tokio::time::timeout(idle, stream.next()).await {
+                    Ok(item) => item,
+                    Err(_elapsed) => {
+                        let error = format!(
+                            "stream idle timeout: no events for {:.1}s, connection may have silently stalled",
+                            idle.as_secs_f64()
+                        );
+                        if any_content_received {
+                            let content = finalize_blocks(std::mem::take(&mut blocks));
+                            return StreamReduceOutcome::Partial {
+                                content,
+                                stop_reason,
+                                error,
+                                usage,
+                            };
+                        }
+                        return StreamReduceOutcome::Empty { error };
+                    }
+                },
+                None => stream.next().await,
+            };
+            let Some(item) = item else {
+                // Stream ended without `MessageStop` — treat as a clean
+                // completion (same fall-through the `while let` had).
+                break;
+            };
             let event = match item {
                 Ok(e) => e,
                 Err(e) => {
@@ -922,11 +969,7 @@ mod tests {
     #[test]
     fn early_start_safe_allows_readonly() {
         assert!(early_start_safe(&[ToolCapability::ReadOnly]));
-        // Network / Sandboxable don't disqualify a read-only tool.
-        assert!(early_start_safe(&[
-            ToolCapability::ReadOnly,
-            ToolCapability::Network,
-        ]));
+        // Sandboxable doesn't disqualify a read-only tool.
         assert!(early_start_safe(&[
             ToolCapability::ReadOnly,
             ToolCapability::Sandboxable,
@@ -954,5 +997,16 @@ mod tests {
             ToolCapability::ReadOnly,
             ToolCapability::RequiresApproval,
         ]));
+    }
+
+    /// P1-5: network tools are excluded from speculative dispatch — their
+    /// per-input approval can be `Required` (policy `Prompt` per host), and a
+    /// speculative run would execute the fetch before any approval decision.
+    #[test]
+    fn early_start_safe_disqualifies_network() {
+        assert!(
+            !early_start_safe(&[ToolCapability::ReadOnly, ToolCapability::Network]),
+            "network tools must not start speculatively"
+        );
     }
 }

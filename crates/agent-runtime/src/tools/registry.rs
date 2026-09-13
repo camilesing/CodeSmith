@@ -728,6 +728,12 @@ impl ToolDispatcher for ToolRegistry {
             .clone()
             .map(|h| -> Arc<dyn HookHost> { h })
     }
+
+    /// P2-6: delegate to the shared context slot (bound by the host per
+    /// turn); `None` when unbound (embeds/tests).
+    fn session_cwd_override(&self) -> Option<std::path::PathBuf> {
+        self.context().session_cwd_override()
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

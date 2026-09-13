@@ -1223,6 +1223,32 @@ pub struct HostAgentExecutor {
     /// calls fan out best-effort to registered `Handler`s at the lifecycle
     /// seams inside `run_inner`.
     extension: Option<Arc<codesmith_extensions::ExtensionRunner>>,
+
+    /// Idle watchdog for the streaming connection (P0-1). When `Some(d)`,
+    /// [`reduce_stream`](Self::reduce_stream) aborts a stream that produces no
+    /// event (not even a `Ping`) for `d` — the silent-stall failure mode where
+    /// the connection stays open but the data flow stops, which no per-request
+    /// timeout ever catches. The abort flows into the ordinary
+    /// `Empty`/`Partial` outcomes so the existing transparent-retry /
+    /// surface-partial machinery handles recovery. `None` (default; embeds and
+    /// most tests) disables the watchdog — `stream.next()` waits forever, the
+    /// pre-watchdog behavior. A **per-event idle** budget, not a total one: a
+    /// long turn with a steadily-dribbling stream never trips it, matching the
+    /// liveness requirement (only silence is fatal).
+    pub(crate) stream_idle_timeout: Option<std::time::Duration>,
+
+    /// Shared prefix-cache stability manager (P0-3, shadow mode). `None`
+    /// (default; embeds/tests) ⇒ no per-step fingerprint checks. When `Some`
+    /// (production wire-in passes an `Arc` clone of
+    /// `Session::prefix_stability`), each step's request assembly calls
+    /// [`observe_prefix_stability`](Self::observe_prefix_stability) which
+    /// fingerprints the system prompt + tool set and emits
+    /// [`Event::PrefixCacheChange`] on drift. Observation only — no
+    /// enforcement, no auto-recovery; the manager re-pins internally so the
+    /// next drift is measured against the latest prefix.
+    /// `std::sync::Mutex`-wrapped (sync fingerprint check; the lock is never
+    /// held across an `await`).
+    prefix_stability: Option<std::sync::Arc<std::sync::Mutex<crate::prefix_cache::PrefixStabilityManager>>>,
 }
 
 impl HostAgentExecutor {
@@ -1280,6 +1306,8 @@ impl HostAgentExecutor {
             pending_replay_outcome: std::sync::Mutex::new(None),
             pending_targeted_refresh_outcome: std::sync::Mutex::new(None),
             extension: None,
+            stream_idle_timeout: None,
+            prefix_stability: None,
         }
     }
 
@@ -1352,6 +1380,40 @@ impl HostAgentExecutor {
         runner: Option<Arc<codesmith_extensions::ExtensionRunner>>,
     ) -> Self {
         self.extension = runner;
+        self
+    }
+
+    /// Opt into the stream idle watchdog (P0-1). The production wire-in calls
+    /// this with the engine-configured timeout (`[stream] idle_timeout_secs`,
+    /// default 120s; `0` maps to `None` = disabled). Embeds/tests skip it —
+    /// the field defaults to `None`, so `stream.next()` waits forever (the
+    /// pre-watchdog behavior) and existing tests stay unchanged. Consumes and
+    /// returns `self` (builder).
+    #[must_use]
+    pub fn with_stream_idle_timeout(
+        mut self,
+        stream_idle_timeout: Option<std::time::Duration>,
+    ) -> Self {
+        self.stream_idle_timeout = stream_idle_timeout;
+        self
+    }
+
+    /// Opt into shadow-mode prefix-cache stability checks (P0-3). The
+    /// production wire-in calls this with an `Arc` clone of
+    /// `Session::prefix_stability` (cloned before the `&mut session` borrow
+    /// held by `SessionChatHistory`), so per-step fingerprint state persists
+    /// across turns on the session. `None` (embeds/tests) ⇒ no checks, the
+    /// pre-P0-3 behavior. Consumes and returns `self` (builder).
+    #[must_use]
+    pub fn with_prefix_stability(
+        mut self,
+        prefix_stability: Option<
+            std::sync::Arc<
+                std::sync::Mutex<crate::prefix_cache::PrefixStabilityManager>,
+            >,
+        >,
+    ) -> Self {
+        self.prefix_stability = prefix_stability;
         self
     }
 
@@ -1558,6 +1620,68 @@ impl HostAgentExecutor {
     pub(crate) async fn emit_status(&self, message: String) {
         if let Some(tx) = &self.event_tx {
             let _ = tx.send(Event::status(message)).await;
+        }
+    }
+
+    /// Shadow-mode prefix-cache stability check (P0-3). Fingerprints the
+    /// step's system prompt + tool set against the session-pinned
+    /// fingerprint; on drift, emits [`Event::PrefixCacheChange`] so the TUI
+    /// can surface the cache invalidation. Observation only — the manager
+    /// re-pins internally (measuring the *next* drift against the latest
+    /// prefix), and nothing here blocks or rewrites the request: a detected
+    /// drift is information, not a fault. No-op when
+    /// [`Self::prefix_stability`] is `None` (embeds/tests). Synchronous
+    /// fingerprint + mutex lock; the lock is released before the `send`
+    /// `await` (the event payload is pre-extracted).
+    pub(crate) async fn observe_prefix_stability(
+        &self,
+        system: Option<&SystemPrompt>,
+        api_tools: &[codesmith_agent::models::Tool],
+    ) {
+        let Some(manager) = &self.prefix_stability else {
+            return;
+        };
+        let system_text =
+            crate::prefix_cache::system_prompt_text(system);
+        let change = {
+            // Scope the lock: extracted (cloned) before the `send` await so
+            // no guard crosses an `await` (matches the LspProbe precedent).
+            let Ok(mut guard) = manager.lock() else {
+                return;
+            };
+            match guard.check_and_update(&system_text, Some(api_tools)) {
+                Err(change) => Some((
+                    change.description(),
+                    change.system_changed,
+                    change.tools_changed,
+                    change.new.combined_sha256.clone(),
+                    (guard.stability_ratio() * 100.0).round() as u32,
+                )),
+                // Stable — no event. Routine heartbeats would flood the
+                // channel once per step; drift-only emission keeps the
+                // signal where the cost is.
+                Ok(_) => None,
+            }
+        };
+        if let Some(tx) = &self.event_tx
+            && let Some((
+                description,
+                system_prompt_changed,
+                tools_changed,
+                pinned_combined_hash,
+                stability_pct,
+            )) = change
+        {
+            let _ = tx
+                .send(Event::PrefixCacheChange {
+                    description,
+                    system_prompt_changed,
+                    tools_changed,
+                    stability_pct,
+                    changed: true,
+                    pinned_combined_hash,
+                })
+                .await;
         }
     }
 
@@ -2627,6 +2751,14 @@ impl HostAgentExecutor {
             self.flush_pending_lsp_diagnostics(history);
 
             let api_tools = tools.to_api_tools();
+            // Shadow-mode prefix-cache stability check (P0-3): fingerprint
+            // this step's system prompt + tool set against the session-pinned
+            // fingerprint. Sits after the system-prompt refresh /
+            // compaction seam so a mid-turn summary fold is observed on the
+            // step that first carries it. Emits `Event::PrefixCacheChange`
+            // on drift; no-op unless the production wire-in bound the probe.
+            self.observe_prefix_stability(system.as_ref(), &api_tools)
+                .await;
             // §F2b T2 — BeforeProviderHeaders (observe) fires before the
             // request is assembled.
             if let Some(runner) = &extension {
@@ -3569,15 +3701,24 @@ mod tests {
     ///   Returns `StreamReduceOutcome::Partial` (the bail-on-error gap closure:
     ///   partial content is surfaced, not retried).
     /// - `StreamOpenErr` makes `create_message_stream` itself return `Err` —
-    ///   simulates a pre-stream provider rejection (e.g. a context-length
-    ///   error), the seam-2 reactive-recovery trigger. Distinct from
-    ///   `StreamErr`, which opens the stream successfully then yields a
-    ///   mid-flight `Err` item (drives transparent retry, not recovery).
+    /// simulates a pre-stream provider rejection (e.g. a context-length
+    /// error), the seam-2 reactive-recovery trigger. Distinct from
+    /// `StreamErr`, which opens the stream successfully then yields a
+    /// mid-flight `Err` item (drives transparent retry, not recovery).
+    /// - `Stall` opens the stream but never yields any item — the silent
+    /// stall (connection open, data flow stopped) the P0-1 idle watchdog
+    /// exists to catch. Without a watchdog bound via
+    /// `with_stream_idle_timeout`, `reduce_stream` would await forever.
+    /// - `StallAfter` streams the events (all `Ok`) then stalls forever —
+    /// a stall *after* content was produced, so the watchdog abort lands in
+    /// the `Partial` arm (surface, don't retry).
     enum MockRound {
         Events(Vec<StreamEvent>),
         StreamErr(String),
         EventsThenErr(Vec<StreamEvent>, String),
         StreamOpenErr(String),
+        Stall,
+        StallAfter(Vec<StreamEvent>),
     }
 
     struct MockLlm {
@@ -3777,6 +3918,24 @@ mod tests {
                     // seam-2 reactive-recovery tests. The request was already
                     // recorded above, so `requests()` still sees this call.
                     MockRound::StreamOpenErr(msg) => Err(anyhow::anyhow!(msg)),
+                    // Silent stall: a stream that never yields. With the
+                    // idle watchdog bound, `stream.next()` times out into the
+                    // `Empty` arm (transparent retry). Without a watchdog
+                    // this would hang the test forever — stall tests must
+                    // always bind `with_stream_idle_timeout`.
+                    MockRound::Stall => Ok(Box::pin(futures_util::stream::pending())
+                        as StreamEventBox),
+                    // Content, then silence: the watchdog abort lands in the
+                    // `Partial` arm (surface what was received, no retry).
+                    MockRound::StallAfter(events) => {
+                        use futures_util::StreamExt as _;
+                        let items: Vec<Result<StreamEvent>> =
+                            events.into_iter().map(Ok).collect();
+                        Ok(Box::pin(
+                            futures_util::stream::iter(items)
+                                .chain(futures_util::stream::pending()),
+                        ) as StreamEventBox)
+                    }
                 }
             })
         }
@@ -5061,6 +5220,283 @@ mod tests {
             status_msgs[0].contains("reasoning but no answer"),
             "the status is the thinking-only one: {status_msgs:?}"
         );
+    }
+
+    // === P0-1: stream idle watchdog ======================================
+    //
+    // A silent stall (connection open, data flow stopped) is the one stream
+    // failure no per-request timeout catches. With the watchdog bound, the
+    // stall aborts into the ordinary `Empty` (retry) / `Partial` (surface)
+    // arms — recovery flows through the existing transparent-retry machinery.
+
+    /// A never-yielding stall with the watchdog bound retries transparently
+    /// (the `Empty` arm: no content billed, nothing shown) and the follow-up
+    /// round completes the turn.
+    #[tokio::test]
+    async fn idle_watchdog_recovers_after_silent_stall() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, mut rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // Round 1: the stream opens then never yields. Round 2: a clean
+        // text+end_turn turn that ends the run.
+        let mut ok = text_block(0, "recovered from stall");
+        ok.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::with_rounds(vec![
+            MockRound::Stall,
+            MockRound::Events(ok),
+        ]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_stream_idle_timeout(Some(std::time::Duration::from_millis(50)));
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run should recover via transparent retry");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // The stalled attempt + the retry.
+        assert_eq!(mock.requests().len(), 2, "stall + one retry");
+
+        // The retry surfaced as a status (transparent to the transcript).
+        let msgs = statuses(&drain(&mut rx));
+        assert!(
+            msgs.iter().any(|m| m.contains("retrying (1/3")),
+            "expected a retry status, got: {msgs:?}"
+        );
+        assert_eq!(history.len(), 2, "[user, assistant(text recovered)]");
+    }
+
+    /// A stall *after* content was produced aborts into the `Partial` arm:
+    /// the received text is surfaced, no retry (the model has billed for
+    /// output; retrying would double-bill).
+    #[tokio::test]
+    async fn idle_watchdog_surfaces_partial_after_stall() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, mut rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // Text deltas arrive, then the stream falls silent mid-flight (no
+        // MessageStop).
+        let partial = text_block(0, "half an answer");
+        let mock = Arc::new(MockLlm::with_rounds(vec![MockRound::StallAfter(
+            partial,
+        )]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_stream_idle_timeout(Some(std::time::Duration::from_millis(50)));
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run should surface the partial content");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // No retry — exactly one request, and the partial assistant message
+        // was committed.
+        assert_eq!(mock.requests().len(), 1, "partial content is not retried");
+        assert_eq!(history.len(), 2, "[user, assistant(text half an answer)]");
+        let msgs = statuses(&drain(&mut rx));
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("Stream interrupted after partial content")),
+            "expected a partial-surfacing status, got: {msgs:?}"
+        );
+    }
+
+    /// Budget exhaustion on repeated stalls surfaces the stall error (with
+    /// the classifier-matching "timeout" wording), not a hang.
+    #[tokio::test]
+    async fn idle_watchdog_exhausts_budget_then_fails() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, _rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // Four consecutive stalls — budget is 3 retries (4 attempts).
+        let mock = Arc::new(MockLlm::with_rounds(vec![
+            MockRound::Stall,
+            MockRound::Stall,
+            MockRound::Stall,
+            MockRound::Stall,
+        ]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_stream_idle_timeout(Some(std::time::Duration::from_millis(30)));
+
+        let err = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect_err("budget exhausted should surface the stall");
+        assert!(
+            err.to_string().contains("stream idle timeout"),
+            "error should name the idle timeout: {err}"
+        );
+        assert_eq!(mock.requests().len(), 4, "initial + 3 retries");
+    }
+
+    // === P0-3: shadow-mode prefix stability ==============================
+
+    /// `observe_prefix_stability` pins silently on first sight and emits
+    /// `Event::PrefixCacheChange` on drift — no event on stable steps.
+    #[tokio::test]
+    async fn prefix_stability_observation_pins_then_emits_on_drift() {
+        let tools = Arc::new(ToolSet::new());
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let (tx, mut rx) = mpsc::channel(256);
+        // The observation path never calls the LLM — a mock with no rounds
+        // stands in for the client slot.
+        let mock = Arc::new(MockLlm::with_rounds(vec![]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_prefix_stability(Some(std::sync::Arc::new(std::sync::Mutex::new(
+            crate::prefix_cache::PrefixStabilityManager::new_unpinned(),
+        ))));
+
+        // Step 1: first check pins the baseline — no drift event.
+        executor
+            .observe_prefix_stability(Some(&SystemPrompt::Text("system v1".into())), &[])
+            .await;
+        assert!(drain(&mut rx).is_empty(), "first check pins, no event");
+
+        // Step 2: same prefix — stable, still no event.
+        executor
+            .observe_prefix_stability(Some(&SystemPrompt::Text("system v1".into())), &[])
+            .await;
+        assert!(drain(&mut rx).is_empty(), "stable check emits nothing");
+
+        // Step 3: drifted system prompt — one PrefixCacheChange event.
+        executor
+            .observe_prefix_stability(Some(&SystemPrompt::Text("system v2".into())), &[])
+            .await;
+        let events = drain(&mut rx);
+        let drift = events
+            .iter()
+            .find_map(|e| match e {
+                Event::PrefixCacheChange {
+                    description,
+                    system_prompt_changed,
+                    tools_changed,
+                    changed,
+                    ..
+                } => Some((
+                    description.clone(),
+                    *system_prompt_changed,
+                    *tools_changed,
+                    *changed,
+                )),
+                _ => None,
+            })
+            .expect("drift should emit PrefixCacheChange");
+        assert!(drift.0.contains("system prompt"), "{}", drift.0);
+        assert!(drift.1, "system component changed");
+        assert!(!drift.2, "tool set unchanged");
+        assert!(drift.3, "changed = true");
+
+        // Step 4: the manager re-pinned — the new prefix is the new baseline.
+        executor
+            .observe_prefix_stability(Some(&SystemPrompt::Text("system v2".into())), &[])
+            .await;
+        assert!(
+            drain(&mut rx).is_empty(),
+            "re-pinned baseline emits nothing"
+        );
+    }
+
+    /// Without the probe bound (embeds/tests default), the observation is a
+    /// no-op — no events even on wild drift.
+    #[tokio::test]
+    async fn prefix_stability_observation_noop_without_probe() {
+        let tools = Arc::new(ToolSet::new());
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let (tx, mut rx) = mpsc::channel(256);
+        let mock = Arc::new(MockLlm::with_rounds(vec![]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        executor
+            .observe_prefix_stability(Some(&SystemPrompt::Text("a".into())), &[])
+            .await;
+        executor
+            .observe_prefix_stability(Some(&SystemPrompt::Text("b".into())), &[])
+            .await;
+        assert!(drain(&mut rx).is_empty(), "no probe ⇒ no events");
     }
 
     // === steer (seam 1) ==================================================

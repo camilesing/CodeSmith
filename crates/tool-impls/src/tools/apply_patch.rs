@@ -182,7 +182,7 @@ impl ToolSpec for ApplyPatchTool {
     }
 
     fn description(&self) -> &'static str {
-        "Apply a unified-diff patch (multi-hunk, multi-file). Use this instead of `git apply`, `patch`, or repeated `edit_file` calls in `exec_shell` — single transactional change with fuzzy matching and a rendered diff."
+        "Apply a unified-diff patch (multi-hunk, multi-file). Use this instead of `git apply`, `patch`, or repeated `edit_file` calls in `exec_shell` — single transactional change with fuzzy matching and a rendered diff.\n\nExample shape: `{\"path\": \"src/main.rs\", \"patch\": \"--- a/src/main.rs\\n+++ b/src/main.rs\\n@@ -10,3 +10,4 @@\\n fn main() {\\n+    setup_tracing();\\n     run();\\n }\"}` — one `patch` string may carry several `@@` hunks; pass multiple calls (or `changes`) for whole-file rewrites."
     }
 
     fn input_schema(&self) -> Value {

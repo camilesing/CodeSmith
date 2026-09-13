@@ -88,6 +88,36 @@ impl Decision {
     }
 }
 
+/// Map a network-policy evaluation to the per-input tool-approval gate
+/// requirement (P1-5).
+///
+/// `Prompt` → [`ApprovalRequirement::Required`]: the standard **inline**
+/// approval gate (with approve-for-session fingerprint dedup) owns the ask.
+/// This replaces the old dead-end error — "requires approval; re-run after
+/// `/network allow <host>`" — which wrote the config file but never
+/// refreshed the live engine's policy snapshot, so the immediate retry the
+/// message promised would fail again.
+///
+/// `Allow` → `Auto` (nothing to ask). `Deny` → `Auto` as well: the call
+/// will hard-fail at execute time inside the tool's own policy check, and
+/// prompting the user to approve a call the policy forbids would be absurd.
+/// No decider attached (embeds) → `Auto`, preserving the pre-P1-5 embed
+/// behavior.
+#[must_use]
+pub fn network_approval_requirement(
+    decider: Option<&NetworkPolicyDecider>,
+    host: &str,
+    tool: &str,
+) -> codesmith_tools::ApprovalRequirement {
+    let Some(decider) = decider else {
+        return codesmith_tools::ApprovalRequirement::Auto;
+    };
+    match decider.evaluate(host, tool) {
+        Decision::Prompt => codesmith_tools::ApprovalRequirement::Required,
+        Decision::Allow | Decision::Deny => codesmith_tools::ApprovalRequirement::Auto,
+    }
+}
+
 /// Per-domain allow/deny list with a default fallback.
 ///
 /// See the module docs for [host-matching rules](self#host-matching-rules)
@@ -854,5 +884,65 @@ mod tests {
         let err = NetworkDenied("api.example.com".to_string());
         assert_eq!(err.host(), "api.example.com");
         assert!(format!("{err}").contains("api.example.com"));
+    }
+
+    // === P1-5: per-input approval mapping ================================
+
+    use codesmith_tools::ApprovalRequirement;
+
+    fn decider_for(default: Decision, allow: &[&str], deny: &[&str]) -> NetworkPolicyDecider {
+        NetworkPolicyDecider::new(mk(default, allow, deny), None)
+    }
+
+    #[test]
+    fn approval_requirement_prompt_maps_to_required() {
+        let d = decider_for(Decision::Prompt, &[], &[]);
+        assert_eq!(
+            network_approval_requirement(Some(&d), "news.example.com", "fetch_url"),
+            ApprovalRequirement::Required
+        );
+    }
+
+    #[test]
+    fn approval_requirement_allow_maps_to_auto() {
+        let d = decider_for(Decision::Prompt, &["api.example.com"], &[]);
+        assert_eq!(
+            network_approval_requirement(Some(&d), "api.example.com", "fetch_url"),
+            ApprovalRequirement::Auto
+        );
+    }
+
+    #[test]
+    fn approval_requirement_deny_maps_to_auto() {
+        // Deny never raises the approval gate — the execute-time check inside
+        // the tool hard-fails; asking the user to approve a forbidden call
+        // would be absurd.
+        let d = decider_for(Decision::Prompt, &[], &["evil.example.com"]);
+        assert_eq!(
+            network_approval_requirement(Some(&d), "evil.example.com", "fetch_url"),
+            ApprovalRequirement::Auto
+        );
+    }
+
+    #[test]
+    fn approval_requirement_no_decider_maps_to_auto() {
+        // Embeds that don't attach a decider keep the pre-P1-5 behavior.
+        assert_eq!(
+            network_approval_requirement(None, "any.example.com", "fetch_url"),
+            ApprovalRequirement::Auto
+        );
+    }
+
+    #[test]
+    fn approval_requirement_prompt_after_session_approval_maps_to_auto() {
+        // The approve-for-session flow is the approval gate's fingerprint
+        // dedup, but the decider's session cache covers embeds too: once a
+        // host is session-approved, evaluate returns Allow.
+        let d = decider_for(Decision::Prompt, &[], &[]);
+        d.approve_session("api.example.com", "test");
+        assert_eq!(
+            network_approval_requirement(Some(&d), "api.example.com", "fetch_url"),
+            ApprovalRequirement::Auto
+        );
     }
 }

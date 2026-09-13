@@ -1885,7 +1885,9 @@ impl ToolSpec for AgentOpenTool {
             "Use agent_eval to fetch or wait on the session, and agent_close to cancel/close it.\n\n",
             "Context control is explicit: omit fork_context or set it false for a fresh child with an independent prefill; set fork_context=true for perspective fanout over the current parent context. ",
             "Forked children preserve the parent system prompt and leading message prefix byte-identically where the runtime has that prefix, so DeepSeek can reuse its prefix cache before the child-specific task is appended.\n\n",
-            "Sub-agent results are self-reports. Re-verify claimed side effects such as file edits, commands, network writes, tests, or git operations before reporting them as facts."
+            "Sub-agent results are self-reports. Re-verify claimed side effects such as file edits, commands, network writes, tests, or git operations before reporting them as facts.\n\n",
+            "Examples: `{\"name\": \"explore-auth\", \"prompt\": \"Map how authentication middleware is wired in this repo. Read-only: report file paths and a summary, no edits.\", \"agent_type\": \"Explore\"}` (isolated read-only sweep — the noisy transcript stays out of your context); ",
+            "`{\"name\": \"review-plan\", \"prompt\": \"Review the plan above and list risks we missed.\", \"fork_context\": true}` (child sees the parent prefix). The prompt must be self-contained — the child does not see your conversation unless fork_context=true."
         )
     }
 

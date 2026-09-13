@@ -28,7 +28,7 @@ impl ToolSpec for ReadFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Read a UTF-8 file from the workspace. Use this instead of `cat`, `head`, `tail`, or `sed -n '..p'` in `exec_shell` — it's faster, sandbox-aware, and skips the approval prompt. Plain text is returned as-is; PDFs are auto-extracted via the bundled pure-Rust extractor (no Poppler install required). Image screenshots are OCR-extracted when local OCR is available. Cannot read other non-PDF binaries.\n\nFor large files, use `start_line` and `max_lines` to read in chunks. By default, returns at most 200 lines (~16KB). If `truncated=\"true\"` in the response, use `next_start_line` to continue reading. For PDFs, use `pages` instead — `start_line`/`max_lines` only apply to text files."
+        "Read a UTF-8 file from the workspace. Use this instead of `cat`, `head`, `tail`, or `sed -n '..p'` in `exec_shell` — it's faster, sandbox-aware, and skips the approval prompt. Plain text is returned as-is; PDFs are auto-extracted via the bundled pure-Rust extractor (no Poppler install required). Image screenshots are OCR-extracted when local OCR is available. Cannot read other non-PDF binaries.\n\nFor large files, use `start_line` and `max_lines` to read in chunks. By default, returns at most 200 lines (~16KB). If `truncated=\"true\"` in the response, use `next_start_line` to continue reading. For PDFs, use `pages` instead — `start_line`/`max_lines` only apply to text files.\n\nExamples: `{\"path\": \"src/main.rs\"}` (first 200 lines); `{\"path\": \"src/big.rs\", \"start_line\": 201, \"max_lines\": 200}` (next chunk after a truncated read); `{\"path\": \"docs/spec.pdf\", \"pages\": \"1-3\"}`."
     }
 
     fn input_schema(&self) -> Value {
@@ -539,7 +539,7 @@ impl ToolSpec for EditFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Replace text in a single file via exact search/replace. Use this instead of `sed -i` in `exec_shell` for one unambiguous in-place edit. `search` matches exactly by default; when no exact match is found the tool retries with leading-whitespace-tolerant fuzzy matching automatically. The optional `fuzz` parameter is accepted for backward compatibility and is no longer needed. When `search` matches multiple locations the call FAILS unless you pass `replace_all: true` (replace every occurrence) or `occurrence: N` (replace the N-th match, 1-based). Returns a compact unified diff, not the full file. For structural, multi-block, or cross-file changes, use `apply_patch` or `write_file` instead."
+        "Replace text in a single file via exact search/replace. Use this instead of `sed -i` in `exec_shell` for one unambiguous in-place edit. `search` matches exactly by default; when no exact match is found the tool retries with leading-whitespace-tolerant fuzzy matching automatically. The optional `fuzz` parameter is accepted for backward compatibility and is no longer needed. When `search` matches multiple locations the call FAILS unless you pass `replace_all: true` (replace every occurrence) or `occurrence: N` (replace the N-th match, 1-based). Returns a compact unified diff, not the full file. For structural, multi-block, or cross-file changes, use `apply_patch` or `write_file` instead.\n\nAnchor mode for long spans (40+ lines): pass `search_start` + `search_end` (instead of `search`) quoting only the first and last lines of the region — everything between the two anchors is replaced by `replace` without quoting it. `search_start` must be unique in the file; the first `search_end` after it closes the span.\n\nExamples: `{\"path\": \"src/lib.rs\", \"search\": \"let timeout = 30;\", \"replace\": \"let timeout = 60;\"}` (single unique match); `{\"path\": \"a.txt\", \"search\": \"TODO\", \"replace\": \"DONE\", \"replace_all\": true}` (several identical matches); `{\"path\": \"gen.rs\", \"search_start\": \"fn generated_table() {\", \"search_end\": \"// END generated_table\", \"replace\": \"fn generated_table() {\\n    // regenerated\"}` (replace a huge block without quoting its middle). Include enough surrounding context in `search` to make it unique — copy the text verbatim from a prior read_file result."
     }
 
     fn input_schema(&self) -> Value {
@@ -552,7 +552,15 @@ impl ToolSpec for EditFileTool {
                 },
                 "search": {
                     "type": "string",
-                    "description": "Exact text to search for, including whitespace, indentation, and newlines"
+                    "description": "Exact text to search for, including whitespace, indentation, and newlines. Mutually exclusive with anchor mode (search_start/search_end)."
+                },
+                "search_start": {
+                    "type": "string",
+                    "description": "Anchor mode: the first lines of the span to replace (verbatim). Must be unique in the file. Provide together with search_end, instead of search."
+                },
+                "search_end": {
+                    "type": "string",
+                    "description": "Anchor mode: the last lines of the span to replace (verbatim). The first occurrence after search_start closes the span."
                 },
                 "replace": {
                     "type": "string",
@@ -564,14 +572,14 @@ impl ToolSpec for EditFileTool {
                 },
                 "replace_all": {
                     "type": "boolean",
-                    "description": "Replace every occurrence of `search`. Required when `search` matches multiple locations and all of them should be replaced. Mutually exclusive with `occurrence`."
+                    "description": "Replace every occurrence of `search`. Required when `search` matches multiple locations and all of them should be replaced. Mutually exclusive with `occurrence` and with anchor mode."
                 },
                 "occurrence": {
                     "type": "integer",
-                    "description": "Replace only the N-th match of `search` (1-based). Required when `search` matches multiple locations and a specific one should be replaced. Mutually exclusive with `replace_all`."
+                    "description": "Replace only the N-th match of `search` (1-based). Required when `search` matches multiple locations and a specific one should be replaced. Mutually exclusive with `replace_all` and with anchor mode."
                 }
             },
-            "required": ["path", "search", "replace"]
+            "required": ["path", "replace"]
         })
     }
 
@@ -589,11 +597,35 @@ impl ToolSpec for EditFileTool {
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let path_str = required_str(&input, "path")?;
-        let search = required_str(&input, "search")?;
         let replace = required_str(&input, "replace")?;
         let _fuzz = optional_bool(&input, "fuzz", false);
 
-        if search == replace {
+        // P2-7 anchor mode: `search_start` + `search_end` replace `search`
+        // for spans too long to quote in full. Exactly-one-of validation.
+        let search_start = optional_str(&input, "search_start");
+        let search_end = optional_str(&input, "search_end");
+        let anchor_mode = match (search_start, search_end) {
+            (Some(_), None) | (None, Some(_)) => {
+                return Err(ToolError::invalid_input(
+                    "pass search_start and search_end together, or neither (use search for full-quote edits)"
+                        .to_string(),
+                ));
+            }
+            (Some(_), Some(_)) => true,
+            (None, None) => false,
+        };
+        let search = if anchor_mode {
+            if input.get("search").is_some() {
+                return Err(ToolError::invalid_input(
+                    "pass either search or search_start/search_end, not both".to_string(),
+                ));
+            }
+            String::new() // unused in anchor mode; equality check below uses anchors
+        } else {
+            required_str(&input, "search")?.to_string()
+        };
+
+        if !anchor_mode && search == replace {
             return Err(ToolError::invalid_input(
                 "search and replace are identical, no change intended",
             ));
@@ -621,6 +653,12 @@ impl ToolSpec for EditFileTool {
                 "pass either replace_all or occurrence, not both".to_string(),
             ));
         }
+        if anchor_mode && (replace_all || occurrence.is_some()) {
+            return Err(ToolError::invalid_input(
+                "replace_all / occurrence apply to search mode only; anchor mode replaces one unique span"
+                    .to_string(),
+            ));
+        }
 
         let file_path = context.resolve_path(path_str)?;
 
@@ -628,12 +666,27 @@ impl ToolSpec for EditFileTool {
             ToolError::execution_failed(format!("Failed to read {}: {}", file_path.display(), e))
         })?;
 
-        let count = contents.matches(search).count();
+        let count = if anchor_mode {
+            0 // unused in anchor mode
+        } else {
+            contents.matches(&search).count()
+        };
         // `occurrence_of` records the 1-based index the caller selected when
         // disambiguating a multi-match search.
-        let (updated, replaced_count, fuzz_kind, occurrence_of) = if count == 0 {
+        let (updated, replaced_count, fuzz_kind, occurrence_of) = if anchor_mode {
+            let display = file_path.display().to_string();
+            let (start, end) = anchor_match_range(
+                &contents,
+                input.get("search_start").and_then(|v| v.as_str()).unwrap_or_default(),
+                input.get("search_end").and_then(|v| v.as_str()).unwrap_or_default(),
+                &display,
+            )?;
+            let mut updated = contents.clone();
+            updated.replace_range(start..end, replace);
+            (updated, 1, Some("start/end anchor"), None)
+        } else if count == 0 {
             // First fallback: tolerate indentation differences.
-            let indent_matches = leading_whitespace_fuzzy_matches(&contents, search);
+            let indent_matches = leading_whitespace_fuzzy_matches(&contents, &search);
             match indent_matches.as_slice() {
                 [(start, end)] => {
                     let mut updated = contents.clone();
@@ -646,7 +699,7 @@ impl ToolSpec for EditFileTool {
                     // copy-paste failure mode where a browser/chat client
                     // silently substituted Unicode punctuation in for the
                     // ASCII the file actually contains.
-                    let punct_matches = punctuation_normalized_matches(&contents, search);
+                    let punct_matches = punctuation_normalized_matches(&contents, &search);
                     match punct_matches.as_slice() {
                         [] => {
                             return Err(ToolError::execution_failed(format!(
@@ -696,7 +749,7 @@ impl ToolSpec for EditFileTool {
                 }
                 Some(n) => {
                     let (start, end) =
-                        nth_match_range(&contents, search, n).expect("n <= count is validated");
+                        nth_match_range(&contents, &search, n).expect("n <= count is validated");
                     let mut updated = contents.clone();
                     updated.replace_range(start..end, replace);
                     (updated, 1, None, Some(n))
@@ -714,7 +767,7 @@ impl ToolSpec for EditFileTool {
                     file_path.display()
                 )));
             }
-            (contents.replace(search, replace), count, None, None)
+            (contents.replace(search.as_str(), replace), count, None, None)
         };
 
         fs::write(&file_path, &updated).map_err(|e| {
@@ -733,6 +786,7 @@ impl ToolSpec for EditFileTool {
                 Some("punctuation") => {
                     " (fuzzy punctuation match — typographic quotes/dashes normalized)"
                 }
+                Some("start/end anchor") => " (start/end anchor match)",
                 Some(other) => other,
                 None => "",
             };
@@ -754,6 +808,51 @@ impl ToolSpec for EditFileTool {
 
         Ok(ToolResult::success(full_body))
     }
+}
+
+/// Anchor mode (P2-7): locate a span by its first and last lines without
+/// quoting the middle. `search_start` must match exactly once; the first
+/// `search_end` occurrence at/after the start anchor's end closes the span.
+/// Returns the byte range to replace. Exact matching only — the fuzzy
+/// fallbacks exist to absorb copy-drift in a *full* quote; an anchor pair
+/// that doesn't match verbatim is a model error worth surfacing, not
+/// papering over (the span it would silently select is unreviewable).
+fn anchor_match_range(
+    contents: &str,
+    start_anchor: &str,
+    end_anchor: &str,
+    display: &str,
+) -> Result<(usize, usize), ToolError> {
+    if start_anchor.is_empty() || end_anchor.is_empty() {
+        return Err(ToolError::invalid_input(
+            "search_start and search_end must be non-empty".to_string(),
+        ));
+    }
+    let start_count = contents.matches(start_anchor).count();
+    match start_count {
+        0 => {
+            return Err(ToolError::execution_failed(format!(
+                "search_start not found in {display}"
+            )));
+        }
+        1 => {}
+        n => {
+            return Err(ToolError::execution_failed(format!(
+                "search_start matched {n} locations in {display}; add more lines to make it unique"
+            )));
+        }
+    }
+    let start = contents.find(start_anchor).expect("count == 1 checked");
+    let search_from = start + start_anchor.len();
+    let end = contents[search_from..]
+        .find(end_anchor)
+        .map(|offset| search_from + offset + end_anchor.len())
+        .ok_or_else(|| {
+            ToolError::execution_failed(format!(
+                "search_end not found after search_start in {display}"
+            ))
+        })?;
+    Ok((start, end))
 }
 
 fn strip_line_leading_whitespace_with_map(input: &str) -> (String, Vec<usize>) {
@@ -2146,8 +2245,19 @@ mod tests {
             .and_then(|value| value.as_array())
             .expect("edit schema should include required array");
         let required_fields: Vec<_> = required.iter().filter_map(|value| value.as_str()).collect();
-        assert_eq!(required_fields, vec!["path", "search", "replace"]);
+        // P2-7: `search` left out of `required` — anchor mode satisfies the
+        // edit with search_start + search_end instead; execute() enforces
+        // exactly-one-of.
+        assert_eq!(required_fields, vec!["path", "replace"]);
         assert!(!required_fields.contains(&"fuzz"));
+        assert_eq!(
+            edit_schema["properties"]["search_start"]["type"].as_str(),
+            Some("string")
+        );
+        assert_eq!(
+            edit_schema["properties"]["search_end"]["type"].as_str(),
+            Some("string")
+        );
         assert_eq!(
             edit_schema["properties"]["fuzz"]["type"].as_str(),
             Some("boolean")
@@ -2164,5 +2274,191 @@ mod tests {
             .and_then(|value| value.as_array())
             .expect("list schema should include required array");
         assert!(required.is_empty()); // path is optional
+    }
+
+    // === P2-7: anchor-mode matching =======================================
+
+    #[tokio::test]
+    async fn edit_file_anchor_mode_replaces_span_without_quoting_middle() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let test_file = tmp.path().join("gen.rs");
+
+        // A 50-line generated block: quoting it in full would be the exact
+        // cost anchor mode exists to avoid.
+        let mut original = String::from("fn head() {}\n\nfn generated_table() {\n");
+        for i in 0..50 {
+            original.push_str(&format!("    // row {i} of generated content\n"));
+        }
+        original.push_str("}\n// END generated_table\n\nfn tail() {}\n");
+        fs::write(&test_file, &original).expect("write");
+
+        let tool = EditFileTool;
+        let result = tool
+            .execute(
+                json!({
+                    "path": "gen.rs",
+                    "search_start": "fn generated_table() {",
+                    "search_end": "// END generated_table",
+                    "replace": "fn generated_table() {\n    // regenerated\n}\n// END generated_table"
+                }),
+                &ctx,
+            )
+            .await
+            .expect("execute");
+
+        assert!(result.success, "{}", result.content);
+        assert!(
+            result.content.contains("(start/end anchor match)"),
+            "{}",
+            result.content
+        );
+        let edited = fs::read_to_string(&test_file).expect("read");
+        assert_eq!(
+            edited,
+            "fn head() {}\n\nfn generated_table() {\n    // regenerated\n}\n// END generated_table\n\nfn tail() {}\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_file_anchor_mode_ambiguous_start_fails_with_count() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let test_file = tmp.path().join("dup.txt");
+        fs::write(
+            &test_file,
+            "begin\nmiddle one\nend\nbegin\nmiddle two\nend\n",
+        )
+        .expect("write");
+
+        let tool = EditFileTool;
+        let err = tool
+            .execute(
+                json!({
+                    "path": "dup.txt",
+                    "search_start": "begin",
+                    "search_end": "end",
+                    "replace": "x"
+                }),
+                &ctx,
+            )
+            .await
+            .expect_err("ambiguous anchor must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("matched 2 locations") && msg.contains("unique"),
+            "{msg}"
+        );
+        // File untouched.
+        assert_eq!(
+            fs::read_to_string(&test_file).unwrap(),
+            "begin\nmiddle one\nend\nbegin\nmiddle two\nend\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_file_anchor_mode_missing_end_anchor_fails() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let test_file = tmp.path().join("miss.txt");
+        fs::write(&test_file, "start\ncontent\n").expect("write");
+
+        let tool = EditFileTool;
+        let err = tool
+            .execute(
+                json!({
+                    "path": "miss.txt",
+                    "search_start": "start",
+                    "search_end": "nope",
+                    "replace": "x"
+                }),
+                &ctx,
+            )
+            .await
+            .expect_err("missing end anchor must fail");
+        assert!(err.to_string().contains("search_end not found"), "{}", err);
+    }
+
+    #[tokio::test]
+    async fn edit_file_anchor_mode_rejects_mode_mixing() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let test_file = tmp.path().join("mix.txt");
+        fs::write(&test_file, "abc\n").expect("write");
+
+        let tool = EditFileTool;
+        // search + anchors together.
+        let err = tool
+            .execute(
+                json!({
+                    "path": "mix.txt",
+                    "search": "abc",
+                    "search_start": "a",
+                    "search_end": "c",
+                    "replace": "x"
+                }),
+                &ctx,
+            )
+            .await
+            .expect_err("mode mixing must fail");
+        assert!(err.to_string().contains("not both"), "{}", err);
+
+        // Only one anchor.
+        let err = tool
+            .execute(
+                json!({"path": "mix.txt", "search_start": "a", "replace": "x"}),
+                &ctx,
+            )
+            .await
+            .expect_err("half an anchor pair must fail");
+        assert!(err.to_string().contains("together"), "{}", err);
+
+        // Anchor + replace_all.
+        let err = tool
+            .execute(
+                json!({
+                    "path": "mix.txt",
+                    "search_start": "a",
+                    "search_end": "c",
+                    "replace": "x",
+                    "replace_all": true
+                }),
+                &ctx,
+            )
+            .await
+            .expect_err("anchor + replace_all must fail");
+        assert!(err.to_string().contains("anchor mode"), "{}", err);
+    }
+
+    #[tokio::test]
+    async fn edit_file_anchor_mode_first_end_after_start_closes_span() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let test_file = tmp.path().join("first.txt");
+        fs::write(
+            &test_file,
+            "AAA\npayload-1\nBBB\njunk-after\nBBB\n",
+        )
+        .expect("write");
+
+        let tool = EditFileTool;
+        let result = tool
+            .execute(
+                json!({
+                    "path": "first.txt",
+                    "search_start": "AAA",
+                    "search_end": "BBB",
+                    "replace": "[replaced]"
+                }),
+                &ctx,
+            )
+            .await
+            .expect("execute");
+        assert!(result.success, "{}", result.content);
+        // The FIRST BBB after AAA closes the span — the trailing one stays.
+        assert_eq!(
+            fs::read_to_string(&test_file).unwrap(),
+            "[replaced]\njunk-after\nBBB\n"
+        );
     }
 }

@@ -45,10 +45,11 @@ fn check_policy(decider: Option<&NetworkPolicyDecider>, host: &str) -> Result<()
         Decision::Deny => Err(ToolError::permission_denied(format!(
             "web search to '{host}' blocked by network policy"
         ))),
-        Decision::Prompt => Err(ToolError::permission_denied(format!(
-            "web search to '{host}' requires approval; \
-             re-run after `/network allow {host}` or set network.default = \"allow\" in config"
-        ))),
+        // P1-5: Prompt no longer errors here — the inline approval gate at
+        // dispatch time (`approval_requirement_for_input`) owns the ask. By
+        // the time execute runs the call was either approved or no approval
+        // channel exists (embeds).
+        Decision::Prompt => Ok(()),
     }
 }
 
@@ -183,6 +184,38 @@ impl ToolSpec for WebSearchTool {
     }
 
     fn approval_requirement(&self) -> ApprovalRequirement {
+        ApprovalRequirement::Auto
+    }
+
+    /// P1-5: gate the search-backend hosts for this session's provider. A
+    /// `Prompt` policy decision on any host the configured provider will
+    /// contact (including the Bing→DuckDuckGo fallback pair) raises the
+    /// standard inline approval prompt. `Allow` / `Deny` / no decider stay
+    /// `Auto` (a `Deny` backend hard-fails at execute time).
+    fn approval_requirement_for_input(
+        &self,
+        _input: &Value,
+        context: &ToolContext,
+    ) -> ApprovalRequirement {
+        let hosts: &[&str] = match context.search_provider {
+            SearchProvider::Tavily => &["api.tavily.com"],
+            SearchProvider::Bocha => &["api.bochaai.com"],
+            SearchProvider::Metaso => &["metaso.cn"],
+            SearchProvider::Baidu => &["qianfan.baidubce.com"],
+            SearchProvider::Volcengine => &["ark.cn-beijing.volces.com"],
+            SearchProvider::Bing => &[BING_HOST, DUCKDUCKGO_HOST],
+            SearchProvider::DuckDuckGo => &[DUCKDUCKGO_HOST],
+        };
+        for host in hosts {
+            if crate::network_policy::network_approval_requirement(
+                context.network_policy.as_ref(),
+                host,
+                "web_search",
+            ) == ApprovalRequirement::Required
+            {
+                return ApprovalRequirement::Required;
+            }
+        }
         ApprovalRequirement::Auto
     }
 
@@ -1837,7 +1870,7 @@ mod tests {
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut ctx = ToolContext::new(tmp.path().to_path_buf());
-        ctx.search_provider = SearchProvider::Tavily;
+        ctx.search_provider = TestSearchProvider::Tavily;
         ctx.search_api_key = None;
         let err = WebSearchTool
             .execute(json!({"query": "anything"}), &ctx)
@@ -1968,5 +2001,64 @@ mod tests {
             !msg.contains("API key"),
             "should not complain about missing API key (built-in default); got `{msg}`"
         );
+    }
+
+    // === P1-5: per-input approval gate ===================================
+
+    use crate::config::SearchProvider as TestSearchProvider;
+
+    #[test]
+    fn approval_for_input_prompt_backend_requires_gate() {
+        use crate::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
+        use crate::tools::spec::{ApprovalRequirement, ToolContext, ToolSpec};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut ctx = ToolContext::new(tmp.path().to_path_buf());
+        ctx.search_provider = TestSearchProvider::DuckDuckGo;
+        ctx.network_policy = Some(NetworkPolicyDecider::new(
+            NetworkPolicy {
+                default: Decision::Prompt.into(),
+                allow: Vec::new(),
+                deny: Vec::new(),
+                proxy: Vec::new(),
+                audit: false,
+            },
+            None,
+        ));
+        let req = WebSearchTool.approval_requirement_for_input(&json!({"query": "rust"}), &ctx);
+        assert_eq!(req, ApprovalRequirement::Required);
+    }
+
+    #[test]
+    fn approval_for_input_allowed_backend_is_auto() {
+        use crate::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
+        use crate::tools::spec::{ApprovalRequirement, ToolContext, ToolSpec};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut ctx = ToolContext::new(tmp.path().to_path_buf());
+        ctx.search_provider = TestSearchProvider::Tavily;
+        ctx.network_policy = Some(NetworkPolicyDecider::new(
+            NetworkPolicy {
+                default: Decision::Prompt.into(),
+                allow: vec!["api.tavily.com".to_string()],
+                deny: Vec::new(),
+                proxy: Vec::new(),
+                audit: false,
+            },
+            None,
+        ));
+        let req = WebSearchTool.approval_requirement_for_input(&json!({"query": "rust"}), &ctx);
+        assert_eq!(req, ApprovalRequirement::Auto);
+    }
+
+    #[test]
+    fn approval_for_input_without_decider_is_auto() {
+        use crate::tools::spec::{ApprovalRequirement, ToolContext, ToolSpec};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut ctx = ToolContext::new(tmp.path().to_path_buf());
+        ctx.search_provider = TestSearchProvider::DuckDuckGo;
+        let req = WebSearchTool.approval_requirement_for_input(&json!({"query": "rust"}), &ctx);
+        assert_eq!(req, ApprovalRequirement::Auto);
     }
 }

@@ -156,6 +156,16 @@ pub struct ToolContext {
     /// Effective working directory for path resolution. Normally equal to
     /// `workspace`, but shifts to a worktree path after `enter_worktree`.
     pub cwd: PathBuf,
+    /// Session-aware cwd slot (P2-6): interior-mutable override that lets
+    /// `exec_shell` persist a child process's final working directory across
+    /// calls — the lightweight stand-in for a persistent terminal session
+    /// (`cd` survives, env vars don't). `None` for embeds/tests ⇒ the
+    /// feature is inert and [`Self::cwd`] alone is consulted. When `Some`,
+    /// every clone of this context shares the slot for the turn; the host
+    /// reads it back post-turn and folds the change into `Session::cwd`
+    /// (the durable store — the slot itself is turn-scoped by design, so a
+    /// `cd` cannot outlive the session that performed it).
+    pub session_cwd: Option<std::sync::Arc<std::sync::Mutex<Option<PathBuf>>>>,
     /// Shared shell manager for background tasks and streaming IO.
     pub shell_manager: Arc<dyn ShellManagerApi>,
     /// Whether to allow paths outside workspace
@@ -269,6 +279,7 @@ impl ToolContext {
         Self {
             workspace,
             cwd,
+            session_cwd: None,
             shell_manager,
             trust_mode: false,
             sandbox_policy: SandboxPolicy::None,
@@ -314,6 +325,7 @@ impl ToolContext {
         Self {
             workspace,
             cwd,
+            session_cwd: None,
             shell_manager,
             trust_mode,
             sandbox_policy: SandboxPolicy::None,
@@ -359,6 +371,7 @@ impl ToolContext {
         Self {
             workspace,
             cwd,
+            session_cwd: None,
             shell_manager,
             trust_mode,
             sandbox_policy: SandboxPolicy::None,
@@ -577,7 +590,10 @@ impl ToolContext {
 
     /// Whether `path` is under any of the user-trusted external roots. The
     /// caller should pass an already-canonicalized (or normalized) path.
-    fn is_trusted_external_path(&self, path: &Path) -> bool {
+    /// Public so sibling crates can reuse the boundary posture (P2-6 cwd
+    /// write-back applies the same rule as the `cwd` param).
+    #[must_use]
+    pub fn is_trusted_external_path(&self, path: &Path) -> bool {
         self.trusted_external_paths
             .iter()
             .any(|trusted| path.starts_with(trusted))
@@ -597,6 +613,38 @@ impl ToolContext {
     pub fn with_cwd(mut self, cwd: PathBuf) -> Self {
         self.cwd = cwd;
         self
+    }
+
+    /// Bind the shared session-cwd slot (P2-6). The host wires a fresh
+    /// `Arc<Mutex<Option<PathBuf>>>` per turn; `exec_shell` writes a
+    /// validated child-process cwd into it, and the host reads it back
+    /// post-turn to fold the change into `Session::cwd`.
+    #[must_use]
+    pub fn with_session_cwd(
+        mut self,
+        slot: std::sync::Arc<std::sync::Mutex<Option<PathBuf>>>,
+    ) -> Self {
+        self.session_cwd = Some(slot);
+        self
+    }
+
+    /// Read the session-cwd override (P2-6), if the slot is bound and set.
+    /// `None` ⇒ fall back to [`Self::cwd`].
+    #[must_use]
+    pub fn session_cwd_override(&self) -> Option<PathBuf> {
+        let slot = self.session_cwd.as_ref()?;
+        slot.lock().ok()?.clone()
+    }
+
+    /// Record a validated child-process cwd into the session slot (P2-6).
+    /// No-op when the slot is unbound (embeds/tests) or the lock is poisoned
+    /// — a failed update just means the next call keeps the old cwd.
+    pub fn record_session_cwd(&self, cwd: PathBuf) {
+        if let Some(slot) = &self.session_cwd
+            && let Ok(mut guard) = slot.lock()
+        {
+            *guard = Some(cwd);
+        }
     }
 
     /// Set the sandbox policy.

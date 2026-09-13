@@ -569,7 +569,20 @@ impl HostAgentExecutor {
             }
 
             let (content_str, is_error) = match &o.result {
-                Ok(r) => (r.content.clone(), !r.success),
+                Ok(r) => (
+                    // P1-4: provenance delimiter for external-network tool
+                    // results. Applied here — the single chokepoint where a
+                    // tool result enters the model-facing transcript — so
+                    // every downstream path (history, compaction, UI) sees
+                    // the wrapped form. Append-only: existing history is
+                    // never rewritten, and the source label is byte-stable,
+                    // so the KV prefix-cache discipline is untouched. Local
+                    // tools pass through unchanged.
+                    crate::sanitization::wrap_external_tool_content(
+                        &o.name, &o.input, &r.content,
+                    ),
+                    !r.success,
+                ),
                 Err(e) => (format!("Error: {e}"), true),
             };
             history.push(Message {

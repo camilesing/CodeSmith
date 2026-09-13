@@ -957,11 +957,18 @@ fn agent_catalog_keeps_edit_file_loaded_when_fuzz_is_omitted() {
         .as_array()
         .expect("edit_file schema should include required fields");
     assert!(required.iter().any(|field| field.as_str() == Some("path")));
-    assert!(
-        required
-            .iter()
-            .any(|field| field.as_str() == Some("search"))
-    );
+    // P2-7: `search` is no longer schema-required (anchor mode replaces it
+    // with search_start + search_end); the anchor fields exist as optional
+    // properties.
+    assert!(!required
+        .iter()
+        .any(|field| field.as_str() == Some("search")));
+    assert!(edit.input_schema["properties"]["search_start"]["type"]
+        .as_str()
+        .is_some_and(|t| t == "string"));
+    assert!(edit.input_schema["properties"]["search_end"]["type"]
+        .as_str()
+        .is_some_and(|t| t == "string"));
     assert!(
         required
             .iter()
@@ -1287,7 +1294,8 @@ fn deferred_tool_preflight_loads_edit_schema_without_executing_bad_aliases() {
     assert!(result.content.contains("Tool `edit_file` was deferred"));
     assert!(result.content.contains("The tool was not executed"));
     assert!(result.content.contains("path: string required"));
-    assert!(result.content.contains("search: string required"));
+    // P2-7: `search` is no longer schema-required (anchor mode); `replace`
+    // still is, and the alias hint keeps steering old_string to search.
     assert!(result.content.contains("replace: string required"));
     assert!(result.content.contains("old_string -> search"));
     assert!(result.content.contains("new_string -> replace"));

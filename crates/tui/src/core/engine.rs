@@ -760,10 +760,14 @@ pub fn build_engine(
     session.last_system_prompt_hash = Some(system_prompt_hash(stable_prompt.as_ref()));
     session.system_prompt = stable_prompt;
 
-    // Initialize prefix-cache stability monitor (lazy-pin).
-    let _ = session
-        .prefix_stability
-        .get_or_insert_with(crate::prefix_cache::PrefixStabilityManager::new_unpinned);
+    // Initialize prefix-cache stability monitor (lazy-pin). `Arc`-shared
+    // with the per-turn `HostAgentExecutor` (P0-3 wire-in) so fingerprint
+    // re-pins persist across turns.
+    let _ = session.prefix_stability.get_or_insert_with(|| {
+        std::sync::Arc::new(std::sync::Mutex::new(
+            crate::prefix_cache::PrefixStabilityManager::new_unpinned(),
+        ))
+    });
 
     let subagent_manager =
         new_shared_subagent_manager(config.workspace.clone(), config.max_subagents);

@@ -5562,9 +5562,7 @@ async fn run_exec_agent(
         ..Default::default()
     };
 
-    let network_policy = config.network.clone().map(|toml_cfg| {
-        crate::network_policy::NetworkPolicyDecider::with_default_audit(toml_cfg.into_runtime())
-    });
+    let network_policy = Some(config.network_policy_decider());
 
     let lsp_config = config
         .lsp
@@ -5618,6 +5616,7 @@ async fn run_exec_agent(
         lsp_config,
         subagent_model_overrides: config.subagent_model_overrides(),
         subagent_api_timeout: std::time::Duration::from_secs(config.subagent_api_timeout_secs()),
+        stream_idle_timeout: std::time::Duration::from_secs(config.stream_idle_timeout_secs()),
         subagent_inherit_full_registry: config.subagent_inherit_full_registry(),
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
         sandbox_runtime: config.sandbox_runtime_config(),
@@ -6133,9 +6132,7 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
         token_threshold: compaction_threshold_for_model(&effective_model),
         ..Default::default()
     };
-    let network_policy = config.network.clone().map(|toml_cfg| {
-        crate::network_policy::NetworkPolicyDecider::with_default_audit(toml_cfg.into_runtime())
-    });
+    let network_policy = Some(config.network_policy_decider());
     let lsp_config = config
         .lsp
         .clone()
@@ -6192,6 +6189,7 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
         lsp_config,
         subagent_model_overrides: config.subagent_model_overrides(),
         subagent_api_timeout: std::time::Duration::from_secs(config.subagent_api_timeout_secs()),
+        stream_idle_timeout: std::time::Duration::from_secs(config.stream_idle_timeout_secs()),
         subagent_inherit_full_registry: config.subagent_inherit_full_registry(),
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
         sandbox_runtime: config.sandbox_runtime_config(),

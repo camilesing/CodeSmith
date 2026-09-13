@@ -102,4 +102,13 @@ pub trait ToolDispatcher: Send + Sync {
 
     /// Hook host for pre/post tool-call hooks, if hooks are configured.
     fn hook_host(&self) -> Option<Arc<dyn HookHost>>;
+
+    /// Session-cwd override recorded by `exec_shell` during this turn
+    /// (P2-6): the final working directory of a foreground child process
+    /// whose `cd` should persist for the session. The engine folds it into
+    /// `Session::cwd` post-turn. Default `None` (no capture / dispatchers
+    /// without a context slot).
+    fn session_cwd_override(&self) -> Option<std::path::PathBuf> {
+        None
+    }
 }
