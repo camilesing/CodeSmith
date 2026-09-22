@@ -24,6 +24,12 @@ use crate::config_types::{
 /// doesn't trip it, short enough that a silently-stalled stream recovers
 /// within a couple of minutes via transparent retry.
 pub const DEFAULT_STREAM_IDLE_TIMEOUT_SECS: u64 = 120;
+/// Default per-retry widening of the stream idle watchdog window (P0-1
+/// adaptive retry). A provider silence gap longer than the base window would
+/// kill every fixed-window retry in the same silent stretch; widening the
+/// window per retry gives each attempt a longer lease. `0` disables the
+/// widening (fixed window on every retry).
+pub const DEFAULT_STREAM_IDLE_RETRY_INCREMENT_SECS: u64 = 30;
 use crate::cycle_manager::CycleConfig;
 use crate::features::Features;
 use crate::lsp_config::LspConfig;
@@ -210,6 +216,14 @@ pub struct EngineConfig {
     /// the watchdog. Per-event idle, not a total budget — a steadily
     /// dribbling stream of any length never trips it.
     pub stream_idle_timeout: Duration,
+    /// Per-retry widening of the stream idle watchdog window (P0-1 adaptive
+    /// retry): each transparent retry's idle deadline grows by this amount
+    /// times the retries already spent, so a provider silence gap that
+    /// outlasts the base window doesn't kill every retry in the same silent
+    /// stretch. Resolved from `stream_idle_retry_increment_secs` (default
+    /// 30); `Duration::ZERO` keeps the window fixed. Only meaningful while
+    /// `stream_idle_timeout` is non-zero.
+    pub stream_idle_retry_increment: Duration,
     /// Whether sub-agents inherit the full parent tool registry (legacy
     /// v0.6.6 behavior). Default `false` (Plan 04 / finding F4
     /// `restrictToSubset`): a child's tool surface is a subset of its parent's
@@ -312,6 +326,9 @@ impl Default for EngineConfig {
             index_enabled: true,
             subagent_api_timeout: Duration::from_secs(DEFAULT_SUBAGENT_API_TIMEOUT_SECS),
             stream_idle_timeout: Duration::from_secs(DEFAULT_STREAM_IDLE_TIMEOUT_SECS),
+            stream_idle_retry_increment: Duration::from_secs(
+                DEFAULT_STREAM_IDLE_RETRY_INCREMENT_SECS,
+            ),
             subagent_inherit_full_registry: false,
             tools_always_load: HashSet::new(),
             prefer_bwrap: false,

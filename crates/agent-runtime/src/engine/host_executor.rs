@@ -1237,6 +1237,16 @@ pub struct HostAgentExecutor {
     /// liveness requirement (only silence is fatal).
     pub(crate) stream_idle_timeout: Option<std::time::Duration>,
 
+    /// Per-retry widening of the stream idle watchdog window (P0-1 adaptive
+    /// retry). Each transparent retry's idle deadline grows by this amount
+    /// times the retries already spent — a fixed window would have every
+    /// retry die in the same provider silence gap that killed the first
+    /// attempt. `Duration::ZERO` (default; embeds/tests) keeps the window
+    /// fixed on every retry; the production wire-in passes the
+    /// engine-configured increment (`stream_idle_retry_increment_secs`,
+    /// default 30s). Only meaningful while `stream_idle_timeout` is `Some`.
+    pub(crate) stream_idle_retry_increment: std::time::Duration,
+
     /// Shared prefix-cache stability manager (P0-3, shadow mode). `None`
     /// (default; embeds/tests) ⇒ no per-step fingerprint checks. When `Some`
     /// (production wire-in passes an `Arc` clone of
@@ -1307,6 +1317,7 @@ impl HostAgentExecutor {
             pending_targeted_refresh_outcome: std::sync::Mutex::new(None),
             extension: None,
             stream_idle_timeout: None,
+            stream_idle_retry_increment: std::time::Duration::ZERO,
             prefix_stability: None,
         }
     }
@@ -1395,6 +1406,22 @@ impl HostAgentExecutor {
         stream_idle_timeout: Option<std::time::Duration>,
     ) -> Self {
         self.stream_idle_timeout = stream_idle_timeout;
+        self
+    }
+
+    /// Set the per-retry widening of the stream idle watchdog window (P0-1
+    /// adaptive retry). The production wire-in calls this with the
+    /// engine-configured increment (`stream_idle_retry_increment_secs`,
+    /// default 30s; `0` keeps the window fixed). Embeds/tests skip it — the
+    /// field defaults to `Duration::ZERO`, so every retry uses the same
+    /// window and existing watchdog tests stay time-bounded. Consumes and
+    /// returns `self` (builder).
+    #[must_use]
+    pub fn with_stream_idle_retry_increment(
+        mut self,
+        stream_idle_retry_increment: std::time::Duration,
+    ) -> Self {
+        self.stream_idle_retry_increment = stream_idle_retry_increment;
         self
     }
 
@@ -5381,6 +5408,165 @@ mod tests {
             "error should name the idle timeout: {err}"
         );
         assert_eq!(mock.requests().len(), 4, "initial + 3 retries");
+    }
+
+    /// Commit boundary (P0-1 adaptive-retry hardening): a stream that opens
+    /// a text block but dies before any non-empty delta has committed nothing
+    /// user-visible — the abort lands in the `Empty` arm and the round is
+    /// retried transparently. (The old boundary flipped on the first
+    /// non-`MessageStart` event, so a bare `ContentBlockStart` followed by
+    /// silence surfaced as `Partial`: an empty block, never retried.)
+    #[tokio::test]
+    async fn idle_watchdog_retries_after_block_start_only_stall() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, mut rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // Round 1: a text block starts, then the stream falls silent before
+        // any delta arrives. Round 2: a healthy answer.
+        let stalled = vec![StreamEvent::ContentBlockStart {
+            index: 0,
+            content_block: ContentBlockStart::Text {
+                text: String::new(),
+            },
+        }];
+        let mut healthy = text_block(0, "recovered");
+        healthy.extend(finish("end"));
+        let mock = Arc::new(MockLlm::with_rounds(vec![
+            MockRound::StallAfter(stalled),
+            MockRound::Events(healthy),
+        ]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_stream_idle_timeout(Some(std::time::Duration::from_millis(50)));
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("block-start-only stall is retried, not surfaced");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        assert_eq!(mock.requests().len(), 2, "stall + one retry");
+        let msgs = statuses(&drain(&mut rx));
+        assert!(
+            msgs.iter().any(|m| m.contains("retrying (1/3")),
+            "expected a retry status, got: {msgs:?}"
+        );
+        assert_eq!(history.len(), 2, "[user, assistant(text recovered)]");
+    }
+
+    /// The `Empty` arm classifies before spending retry budget: an auth
+    /// failure is deterministic — every retry re-fails identically — so it
+    /// surfaces immediately with exactly one request (previously it burned
+    /// all 3 retries before failing).
+    #[tokio::test]
+    async fn auth_rejected_empty_stream_is_not_retried() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, _rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let mock = Arc::new(MockLlm::with_rounds(vec![MockRound::StreamErr(
+            "401 Unauthorized: invalid API key".to_string(),
+        )]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let err = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect_err("auth failure must surface");
+        assert!(
+            err.to_string().contains("Unauthorized"),
+            "error should carry the provider message: {err}"
+        );
+        assert_eq!(mock.requests().len(), 1, "auth failures must not be retried");
+    }
+
+    /// Adaptive idle window: with a nonzero increment, retry #2's watchdog
+    /// window is `base + increment`, so the second stall must wait out the
+    /// widened window — the total elapsed time betrays a fixed window.
+    #[tokio::test]
+    async fn idle_watchdog_widens_window_per_retry() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let (tx, _rx) = mpsc::channel(256);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let base = std::time::Duration::from_millis(20);
+        let increment = std::time::Duration::from_millis(150);
+        let mut healthy = text_block(0, "recovered");
+        healthy.extend(finish("end"));
+        let mock = Arc::new(MockLlm::with_rounds(vec![
+            MockRound::Stall,
+            MockRound::Stall,
+            MockRound::Events(healthy),
+        ]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_stream_idle_timeout(Some(base))
+        .with_stream_idle_retry_increment(increment);
+
+        let start = std::time::Instant::now();
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("third attempt recovers");
+        let elapsed = start.elapsed();
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(mock.requests().len(), 3, "two stalls + one recovery");
+        // Stall #1 waits out `base` (20ms); stall #2 waits out
+        // `base + increment` (170ms). A fixed window would finish near 40ms.
+        assert!(
+            elapsed >= base + increment,
+            "second stall must use the widened window: {elapsed:?}"
+        );
     }
 
     // === P0-3: shadow-mode prefix stability ==============================

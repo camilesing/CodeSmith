@@ -3623,7 +3623,7 @@ fn stream_retry_after_content_received_surfaces_error() {
 }
 
 #[test]
-fn stream_retry_budget_caps_transparent_retries_at_two() {
+fn stream_retry_budget_caps_transparent_retries_at_the_constant() {
     // Case 4 from issue #103: after MAX_TRANSPARENT_STREAM_RETRIES attempts
     // we stop trying transparently and let the outer error path surface.
     // (The outer per-turn `stream_retry_attempts` retry is a separate layer
@@ -3680,12 +3680,17 @@ fn stream_retry_threshold_relaxed_to_five() {
         "the consecutive-stream-error threshold should be 5; \
          lowering it back to 3 will fail mid-turn under transient flakiness"
     );
-    // And a regression guard on the transparent-retry cap.
+    // And a regression guard on the transparent-retry cap: unified at 3 with
+    // the engine-side retry loop (`stream_with_transparent_retry`) — the old
+    // 2 here vs 3 there split was turn-loop-migration drift, not policy. The
+    // error-classification gate added in P0-1 keeps non-retryable failures
+    // (auth/bad-request/parse) from burning the budget on real outages.
     assert_eq!(
         super::MAX_TRANSPARENT_STREAM_RETRIES,
-        2,
-        "transparent-retry cap should be 2; raising it risks hammering the \
-         provider on real outages"
+        3,
+        "transparent-retry cap should be 3, unified with the engine-side \
+         retry loop; lowering or re-splitting it changes observed retry \
+         behavior on both paths"
     );
 }
 

@@ -42,6 +42,10 @@ pub const MIN_STREAM_IDLE_TIMEOUT_SECS: u64 = 10;
 /// Maximum accepted `stream_idle_timeout_secs` (1 hour). The cap keeps a
 /// misconfigured watchdog from masking real stalls for an unbounded wait.
 pub const MAX_STREAM_IDLE_TIMEOUT_SECS: u64 = 3600;
+/// Maximum accepted `stream_idle_retry_increment_secs` (10 minutes). The
+/// increment only widens an already-bounded watchdog; the cap keeps a typo
+/// from turning retries into near-permanent waits.
+pub const MAX_STREAM_IDLE_RETRY_INCREMENT_SECS: u64 = 600;
 /// Default text model used as a fallback when a caller does not supply one.
 ///
 /// Re-exported from `codesmith_agent_runtime::compaction::DEFAULT_TEXT_MODEL`
@@ -1128,6 +1132,13 @@ pub struct Config {
     /// `[MIN_STREAM_IDLE_TIMEOUT_SECS, MAX_STREAM_IDLE_TIMEOUT_SECS]`
     /// (10..=3600) otherwise.
     pub stream_idle_timeout_secs: Option<u64>,
+    /// Per-retry widening of the stream idle watchdog window, in seconds:
+    /// each transparent retry's idle deadline grows by this amount times the
+    /// retries already spent, so a provider silence gap longer than the base
+    /// window doesn't kill every retry in the same silent stretch (P0-1
+    /// adaptive retry). Default 30; `0` keeps the window fixed; clamped to
+    /// `[0, MAX_STREAM_IDLE_RETRY_INCREMENT_SECS]` (600) otherwise.
+    pub stream_idle_retry_increment_secs: Option<u64>,
     pub capacity: Option<CapacityConfig>,
     pub features: Option<FeaturesToml>,
 
@@ -2733,6 +2744,22 @@ impl Config {
         )
     }
 
+    /// Resolved per-retry widening of the stream idle watchdog window, in
+    /// seconds (P0-1 adaptive retry).
+    ///
+    /// Reads top-level `stream_idle_retry_increment_secs`. `None` resolves to
+    /// `DEFAULT_STREAM_IDLE_RETRY_INCREMENT_SECS` (30); explicit `0` disables
+    /// the widening (fixed window on every retry, the pre-adaptive behavior);
+    /// anything else clamps to `[0, MAX_STREAM_IDLE_RETRY_INCREMENT_SECS]`
+    /// (600).
+    #[must_use]
+    pub fn stream_idle_retry_increment_secs(&self) -> u64 {
+        let raw = self.stream_idle_retry_increment_secs.unwrap_or(
+            codesmith_agent_runtime::engine_config::DEFAULT_STREAM_IDLE_RETRY_INCREMENT_SECS,
+        );
+        raw.min(MAX_STREAM_IDLE_RETRY_INCREMENT_SECS)
+    }
+
     /// Whether sub-agents inherit the full parent tool registry (legacy
     /// v0.6.6 behavior) or are restricted to a subset of their parent's
     /// effective tools (Plan 04 / finding F4 `restrictToSubset`).
@@ -4044,6 +4071,9 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         stream_idle_timeout_secs: override_cfg
             .stream_idle_timeout_secs
             .or(base.stream_idle_timeout_secs),
+        stream_idle_retry_increment_secs: override_cfg
+            .stream_idle_retry_increment_secs
+            .or(base.stream_idle_retry_increment_secs),
         capacity: override_cfg.capacity.or(base.capacity),
         tui: override_cfg.tui.or(base.tui),
         hooks: override_cfg.hooks.or(base.hooks),
@@ -6010,6 +6040,43 @@ mod tests {
         assert_eq!(
             high.stream_idle_timeout_secs(),
             MAX_STREAM_IDLE_TIMEOUT_SECS
+        );
+    }
+
+    /// P0-1 adaptive retry: `stream_idle_retry_increment_secs` defaults to
+    /// 30, `0` keeps the window fixed, and large values clamp at the cap.
+    #[test]
+    fn stream_idle_retry_increment_defaults_zero_and_clamps() {
+        use super::*;
+
+        // Absent → default increment (30s).
+        assert_eq!(
+            Config::default().stream_idle_retry_increment_secs(),
+            codesmith_agent_runtime::engine_config::DEFAULT_STREAM_IDLE_RETRY_INCREMENT_SECS
+        );
+
+        // Explicit 0 is the opt-out — fixed window on every retry.
+        let zero = Config {
+            stream_idle_retry_increment_secs: Some(0),
+            ..Config::default()
+        };
+        assert_eq!(zero.stream_idle_retry_increment_secs(), 0);
+
+        // Mid-range values pass through untouched.
+        let mid = Config {
+            stream_idle_retry_increment_secs: Some(45),
+            ..Config::default()
+        };
+        assert_eq!(mid.stream_idle_retry_increment_secs(), 45);
+
+        // Above-max clamps down (don't turn retries into near-permanent waits).
+        let high = Config {
+            stream_idle_retry_increment_secs: Some(MAX_STREAM_IDLE_RETRY_INCREMENT_SECS + 60),
+            ..Config::default()
+        };
+        assert_eq!(
+            high.stream_idle_retry_increment_secs(),
+            MAX_STREAM_IDLE_RETRY_INCREMENT_SECS
         );
     }
 

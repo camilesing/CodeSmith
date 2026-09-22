@@ -113,7 +113,31 @@ use crate::engine::context::{
     is_context_length_error_message,
 };
 use crate::engine::host_executor::HostAgentExecutor;
+use crate::engine::streaming::MAX_TRANSPARENT_STREAM_RETRIES;
 use crate::engine::summarize_text;
+use crate::error_taxonomy::{ErrorCategory, classify_error_message};
+
+/// Backoff before a transparent retry when the empty-stream error classified
+/// as rate limiting. Provider Retry-After headers are already stringified by
+/// the time the error reaches the engine, so this is a fixed delay rather
+/// than a header-derived one.
+const RATE_LIMIT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The idle-watchdog window for the upcoming stream attempt: the configured
+/// base, widened by `increment` for every transparent retry already spent.
+/// `None` base (watchdog disabled) stays `None`; a `Duration::ZERO`
+/// increment keeps the window fixed (the pre-adaptive behavior). Saturating
+/// arithmetic — a huge increment clamps at `Duration::MAX` instead of
+/// panicking.
+fn effective_stream_idle_timeout(
+    base: Option<std::time::Duration>,
+    increment: std::time::Duration,
+    retry_attempts: u32,
+) -> Option<std::time::Duration> {
+    base.map(|base| {
+        base.saturating_add(increment.saturating_mul(retry_attempts))
+    })
+}
 
 /// Whether a tool is a safe candidate for **early speculative dispatch**
 /// (early-tool-start, §E): the read-only, parallel-safe, no-approval, no-side-
@@ -329,14 +353,19 @@ impl HostAgentExecutor {
     /// the host's UI lights up as the stream arrives (not after the whole
     /// stream is buffered).
     ///
-    /// `any_content_received` flips on the first non-`MessageStart` event —
-    /// the moment we cross from "stream not yet productive" (eligible for
-    /// transparent retry) into "the model has billed for output" (must
-    /// surface). On a mid-flight `Err`, this drives the
-    /// [`StreamReduceOutcome`] variant: `Empty` (no content → safe to retry)
-    /// vs `Partial` (content received → surface, don't retry). This mirrors
-    /// production's `any_content_received` guard in
-    /// `should_transparently_retry_stream` (`streaming.rs:81-87`).
+    /// `any_content_received` flips at the **commit boundary** — the first
+    /// event that makes the attempt non-discardable: a non-empty text or
+    /// thinking delta (the instant it is forwarded to the callback, the UI
+    /// has seen content) or a completed tool block (`ToolCallStarted` is
+    /// emitted and early speculative dispatch may already be running).
+    /// Block-lifecycle frames (`MessageStart`, `ContentBlockStart`, stop
+    /// events for empty blocks) and buffered `InputJsonDelta` fragments are
+    /// prelude: nothing user-visible has happened and no output tokens were
+    /// billed, so an abort there is safe to retry. On a mid-flight `Err`,
+    /// this drives the [`StreamReduceOutcome`] variant: `Empty` (no committed
+    /// content → safe to retry) vs `Partial` (content received → surface,
+    /// don't retry). This mirrors production's `any_content_received` guard
+    /// in `should_transparently_retry_stream` (`streaming.rs:81-87`).
     ///
     /// Tool-input JSON deltas (`Delta::InputJsonDelta`) are **not** emitted
     /// to the callback — they're assembled into the `ToolUse` block's input,
@@ -361,6 +390,7 @@ impl HostAgentExecutor {
     async fn reduce_stream(
         &self,
         mut stream: StreamEventBox,
+        idle_timeout: Option<std::time::Duration>,
         early_tasks: &mut HashMap<String, EarlyToolTask>,
         pending_steers: &mut Vec<String>,
     ) -> StreamReduceOutcome {
@@ -392,7 +422,10 @@ impl HostAgentExecutor {
         // transparent-retry machinery in `stream_with_transparent_retry`.
         // `StreamExt::next` is cancellation-safe, and the stream is dropped
         // on abort (never polled again), so the cancelled poll is harmless.
-        let idle_timeout = self.stream_idle_timeout;
+        // The window is caller-supplied rather than read from
+        // `self.stream_idle_timeout`: the retry loop widens it per retry
+        // attempt, so a provider whose silence outlasts the base window
+        // doesn't have every retry die in the same silent gap.
 
         loop {
             let item = match idle_timeout {
@@ -440,13 +473,6 @@ impl HostAgentExecutor {
                     return StreamReduceOutcome::Empty { error };
                 }
             };
-
-            // Flip on the first non-MessageStart event — that's the moment we
-            // cross from "stream not yet productive" into "the model has billed
-            // for output" (mirrors `handle_deepseek_turn`).
-            if !any_content_received && !matches!(event, StreamEvent::MessageStart { .. }) {
-                any_content_received = true;
-            }
 
             // Mid-stream steer buffer (mirrors `handle_deepseek_turn`): drain
             // any steers that arrived while the stream was producing. These are
@@ -537,6 +563,14 @@ impl HostAgentExecutor {
                     if let Some(build) = blocks.get_mut(&index) {
                         match (build, delta) {
                             (BlockBuild::Text(buf), Delta::TextDelta { text }) => {
+                                // Commit boundary: a non-empty delta is about
+                                // to become user-visible (forwarded below) —
+                                // from here on, an abort surfaces as `Partial`
+                                // instead of retrying, which would re-display
+                                // the same text and double-bill the output.
+                                if !text.is_empty() {
+                                    any_content_received = true;
+                                }
                                 // Forward the delta to the callback before
                                 // buffering — the host's UI streams as the
                                 // model produces text.
@@ -549,6 +583,11 @@ impl HostAgentExecutor {
                                 buf.push_str(&text);
                             }
                             (BlockBuild::Thinking(buf), Delta::ThinkingDelta { thinking }) => {
+                                // Commit boundary: same as text deltas —
+                                // thinking is streamed to the UI.
+                                if !thinking.is_empty() {
+                                    any_content_received = true;
+                                }
                                 self.callback
                                     .on_stream_delta(&StreamDelta::Thinking {
                                         index: index as usize,
@@ -600,6 +639,11 @@ impl HostAgentExecutor {
                                 start_input,
                                 ..
                             } => {
+                                // Commit boundary: the tool call is about to
+                                // be announced to the UI and may already be
+                                // speculatively running below — a retry would
+                                // double-announce and double-run it.
+                                any_content_received = true;
                                 // Finalize the tool input now that all
                                 // `InputJsonDelta` fragments have arrived.
                                 let finalized_input = finalize_tool_input(input_buf, start_input);
@@ -743,16 +787,23 @@ impl HostAgentExecutor {
         early_tasks: &mut HashMap<String, EarlyToolTask>,
         pending_steers: &mut Vec<String>,
     ) -> Result<StreamRoundOutcome> {
-        /// Cap on transparent stream retries — matches `handle_deepseek_turn`'s
-        /// `MAX_STREAM_RETRIES` (3). One initial attempt + 3 retries = 4 total
-        /// `create_message_stream` calls before the failure surfaces.
-        const MAX_STREAM_RETRIES: u32 = 3;
         // Clone the token once per round so the cancel future owns a local
         // (not a `&self` borrow) — avoids borrow-checker conflicts with the
         // `self.emit_status` / `self.try_recover_context_overflow` calls in the
         // select arms. `CancellationToken::clone` is a cheap Arc bump.
         let cancel_token = self.cancel_token.clone();
         loop {
+            // Adaptive idle window: a provider silence gap that outlasts the
+            // base watchdog would kill every fixed-window retry in the exact
+            // same silent stretch, so each retry gets a longer lease — the
+            // window grows by `stream_idle_retry_increment` per retry already
+            // spent. `Duration::ZERO` increment (embeds/tests) keeps the
+            // window fixed, the pre-adaptive behavior.
+            let idle_timeout = effective_stream_idle_timeout(
+                self.stream_idle_timeout,
+                self.stream_idle_retry_increment,
+                *stream_retry_attempts,
+            );
             // Checkpoint B — stream-open cancel race (mirrors
             // `handle_deepseek_turn`): race the cancel token against
             // `create_message_stream` so a cancelled turn aborts before the
@@ -807,7 +858,7 @@ impl HostAgentExecutor {
                 }
             };
             match self
-                .reduce_stream(stream, early_tasks, pending_steers)
+                .reduce_stream(stream, idle_timeout, early_tasks, pending_steers)
                 .await
             {
                 StreamReduceOutcome::Complete {
@@ -869,12 +920,49 @@ impl HostAgentExecutor {
                         self.emit_status("Request cancelled".to_string()).await;
                         return Ok(StreamRoundOutcome::Interrupted);
                     }
-                    // Stream died before any content — safe to retry
-                    // transparently (no output billed, nothing shown).
-                    if *stream_retry_attempts < MAX_STREAM_RETRIES {
+                    // Classify before spending retry budget: auth / authz /
+                    // bad-request / parse / state failures are deterministic —
+                    // every retry re-fails identically, so surface them now.
+                    // (Context-length rejections never get here: the stream
+                    // opened, so the provider already accepted the request.)
+                    // Transport classes (network / timeout / rate-limit) and
+                    // the Internal catch-all (incl. 5xx server errors) stay
+                    // retryable.
+                    let category = classify_error_message(&error);
+                    if matches!(
+                        category,
+                        ErrorCategory::Authentication
+                            | ErrorCategory::Authorization
+                            | ErrorCategory::InvalidInput
+                            | ErrorCategory::Parse
+                            | ErrorCategory::State
+                    ) {
+                        return Err(anyhow::anyhow!(error));
+                    }
+                    // Stream died before any committed content — safe to
+                    // retry transparently (no output billed, nothing shown).
+                    if *stream_retry_attempts < MAX_TRANSPARENT_STREAM_RETRIES {
                         *stream_retry_attempts = stream_retry_attempts.saturating_add(1);
+                        // Rate-limited: brief backoff so the retry doesn't
+                        // hammer a provider that just asked us to slow down.
+                        // Retry-After headers are stringified by the time the
+                        // error reaches the engine, so this is a fixed delay.
+                        if category == ErrorCategory::RateLimit {
+                            tokio::select! {
+                                _ = tokio::time::sleep(RATE_LIMIT_RETRY_DELAY) => {}
+                                _ = async {
+                                    match &cancel_token {
+                                        Some(token) => token.cancelled().await,
+                                        None => std::future::pending::<()>().await,
+                                    }
+                                } => {
+                                    self.emit_status("Request cancelled".to_string()).await;
+                                    return Ok(StreamRoundOutcome::Interrupted);
+                                }
+                            }
+                        }
                         self.emit_status(format!(
-                            "Connection interrupted; retrying ({}/{MAX_STREAM_RETRIES})",
+                            "Connection interrupted; retrying ({}/{MAX_TRANSPARENT_STREAM_RETRIES})",
                             *stream_retry_attempts,
                         ))
                         .await;
@@ -963,8 +1051,63 @@ impl HostAgentExecutor {
 
 #[cfg(test)]
 mod tests {
-    use super::early_start_safe;
+    use super::{early_start_safe, effective_stream_idle_timeout};
     use codesmith_agent::tools::ToolCapability;
+    use std::time::Duration;
+
+    #[test]
+    fn effective_idle_timeout_none_base_stays_none() {
+        // Watchdog disabled — no increment brings it back.
+        assert_eq!(
+            effective_stream_idle_timeout(None, Duration::from_secs(30), 3),
+            None
+        );
+    }
+
+    #[test]
+    fn effective_idle_timeout_zero_increment_is_fixed() {
+        // `Duration::ZERO` increment (embeds/tests) — every attempt uses the
+        // base window, the pre-adaptive behavior.
+        for attempt in 0..=3 {
+            assert_eq!(
+                effective_stream_idle_timeout(
+                    Some(Duration::from_secs(120)),
+                    Duration::ZERO,
+                    attempt
+                ),
+                Some(Duration::from_secs(120)),
+                "attempt {attempt} must not widen with a zero increment"
+            );
+        }
+    }
+
+    #[test]
+    fn effective_idle_timeout_widens_per_retry() {
+        let base = Duration::from_secs(120);
+        let inc = Duration::from_secs(30);
+        assert_eq!(effective_stream_idle_timeout(Some(base), inc, 0), Some(base));
+        assert_eq!(
+            effective_stream_idle_timeout(Some(base), inc, 1),
+            Some(Duration::from_secs(150))
+        );
+        assert_eq!(
+            effective_stream_idle_timeout(Some(base), inc, 3),
+            Some(Duration::from_secs(210))
+        );
+    }
+
+    #[test]
+    fn effective_idle_timeout_saturates_instead_of_panicking() {
+        // A huge increment clamps at `Duration::MAX` rather than overflowing.
+        assert_eq!(
+            effective_stream_idle_timeout(
+                Some(Duration::from_secs(120)),
+                Duration::MAX,
+                2
+            ),
+            Some(Duration::MAX)
+        );
+    }
 
     #[test]
     fn early_start_safe_allows_readonly() {

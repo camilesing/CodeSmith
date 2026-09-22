@@ -674,6 +674,13 @@ exponential_base = 2.0
 # Default: 120. Set 0 to disable. Clamped to 10..=3600 otherwise.
 # stream_idle_timeout_secs = 120
 
+# Per-retry widening of the idle watchdog window: each transparent retry's
+# deadline grows by this amount times the retries already spent, so a
+# provider silence gap longer than the base window doesn't kill every retry
+# in the same silent stretch. Default: 30. Set 0 to keep the window fixed.
+# Clamped to 0..=600 otherwise.
+# stream_idle_retry_increment_secs = 30
+
 # ─────────────────────────────────────────────────────────────────────────────────
 # Context Compaction
 # ─────────────────────────────────────────────────────────────────────────────────
