@@ -574,7 +574,8 @@ use super::capacity_flow::{
 };
 use super::context::{
     MAX_CONTEXT_RECOVERY_ATTEMPTS, MIN_RECENT_MESSAGES_TO_KEEP, compact_tool_result_for_context,
-    context_input_budget_for_provider, estimate_input_tokens_conservative,
+    context_input_budget_for_provider, estimate_input_tokens_anchored,
+    estimate_input_tokens_conservative,
 };
 use super::loop_guard::LoopGuard;
 use super::summarize_text;
@@ -671,11 +672,16 @@ pub struct CompactionProbe {
     workspace: PathBuf,
     micro_state: Arc<std::sync::Mutex<MicroCompactState>>,
     circuit_breaker: Arc<std::sync::Mutex<CompactionCircuitBreaker>>,
+    /// Rapid-refill detector (P2-5): catches compaction that succeeds but
+    /// is futile — the context refills within a few tool rounds, again
+    /// and again. Trips to an actionable message instead of re-compacting.
+    refill: Arc<std::sync::Mutex<crate::compaction::circuit_breaker::RapidRefillDetector>>,
 }
 
 impl CompactionProbe {
     /// Construct from the compaction config + the session workspace. The
-    /// micro-compact state and circuit breaker start fresh (default).
+    /// micro-compact state, circuit breaker, and refill detector start
+    /// fresh (default).
     #[must_use]
     pub fn new(config: CompactionConfig, workspace: PathBuf) -> Self {
         Self {
@@ -683,6 +689,9 @@ impl CompactionProbe {
             workspace,
             micro_state: Arc::new(std::sync::Mutex::new(MicroCompactState::default())),
             circuit_breaker: Arc::new(std::sync::Mutex::new(CompactionCircuitBreaker::new())),
+            refill: Arc::new(std::sync::Mutex::new(
+                crate::compaction::circuit_breaker::RapidRefillDetector::new(),
+            )),
         }
     }
 
@@ -1259,6 +1268,15 @@ pub struct HostAgentExecutor {
     /// `std::sync::Mutex`-wrapped (sync fingerprint check; the lock is never
     /// held across an `await`).
     prefix_stability: Option<std::sync::Arc<std::sync::Mutex<crate::prefix_cache::PrefixStabilityManager>>>,
+
+    /// Latest real provider usage reading, recorded after each committed
+    /// assistant turn (P2-5): pins the absolute token level for the
+    /// capacity preflight's estimate — real numbers beat estimates, so the
+    /// anchor fixes the level and only messages appended since are
+    /// estimated. `None` until the first successful stream of the run; the
+    /// anchored estimate falls back to the pure estimate whenever history
+    /// shrank past the anchor (compaction / rewind).
+    usage_anchor: std::sync::Mutex<Option<crate::compaction::TokenUsageAnchor>>,
 }
 
 impl HostAgentExecutor {
@@ -1318,6 +1336,7 @@ impl HostAgentExecutor {
             extension: None,
             stream_idle_timeout: None,
             stream_idle_retry_increment: std::time::Duration::ZERO,
+            usage_anchor: std::sync::Mutex::new(None),
             prefix_stability: None,
         }
     }
@@ -1895,7 +1914,12 @@ impl HostAgentExecutor {
     /// (see "Known gaps in compaction" in the module docs): working-set
     /// `external_pins` / `external_working_set_paths`, and `CompactionEnhancements` (PreCompact
     /// hooks / session-memory-first).
-    async fn run_compaction(&self, client: &LlmClientHandle, history: &mut dyn ChatHistory) {
+    async fn run_compaction(
+        &self,
+        client: &LlmClientHandle,
+        history: &mut dyn ChatHistory,
+        step: u32,
+    ) {
         let Some(probe) = &self.compaction else {
             return;
         };
@@ -1952,6 +1976,20 @@ impl HostAgentExecutor {
             None,
             None,
         ) {
+            return;
+        }
+        // Rapid-refill detector (P2-5): a trigger this close to the last
+        // completed compaction means the context isn't drifting, it's
+        // pouring in. When the streak trips, skip the compaction and
+        // surface the actionable message instead of summarizing again.
+        // (Guard dropped before the await — it isn't Send.)
+        let tripped_message = {
+            let mut refill = probe.refill.lock().expect("poisoned");
+            refill.record_trigger(step)
+        };
+        if let Some(message) = tripped_message {
+            tracing::warn!("rapid context refill tripped: auto-compaction skipped");
+            self.emit_status(message.to_string()).await;
             return;
         }
         // §F2b T3 — `SessionBeforeCompact` lets an extension veto
@@ -2025,6 +2063,12 @@ impl HostAgentExecutor {
                     .lock()
                     .expect("poisoned")
                     .record_success();
+                // Anchor the rapid-refill window at this step (P2-5).
+                probe
+                    .refill
+                    .lock()
+                    .expect("poisoned")
+                    .record_compaction(step);
                 self.emit_status(format!(
                     "Compaction completed ({} messages after)",
                     history.len()
@@ -2233,7 +2277,13 @@ impl HostAgentExecutor {
             // (mirrors the retired turn handler — `None` budget skips the gate).
             return CapacityPreflight::Proceed;
         };
-        let estimated = estimate_input_tokens_conservative(history.messages(), system);
+        // P2-5: anchor the estimate to the latest real provider usage when
+        // available — the absolute level is real, only messages appended
+        // since are estimated. Falls back to the pure estimate when no
+        // anchor exists yet or history shrank past it.
+        let anchor = *self.usage_anchor.lock().expect("poisoned");
+        let estimated =
+            estimate_input_tokens_anchored(history.messages(), system, anchor.as_ref());
         if estimated <= target_budget {
             return CapacityPreflight::Proceed;
         }
@@ -2678,7 +2728,7 @@ impl HostAgentExecutor {
             // compaction → … → LSP flush → request). Runs before the LSP
             // flush so a freshly-collected diagnostic message (pushed by the
             // flush below) is not summarized away.
-            self.run_compaction(&client, history).await;
+            self.run_compaction(&client, history, step).await;
             // Capacity preflight (Gate B — always-on hard token-budget check).
             // Mirrors the retired turn handler. Runs after compaction so the
             // estimate reflects the just-compacted transcript; before the LSP
@@ -2868,7 +2918,9 @@ impl HostAgentExecutor {
             // is a failed result, not a dispatch error (faithful to production).
             let mut step_error_count: usize = 0;
             let mut step_error_categories: Vec<ErrorCategory> = Vec::new();
-            let (content, _stop_reason) = match self
+            // `usage` rides along (P2-5 anchor) — only the Content arm has
+            // a real reading; every other arm carries a default.
+            let (content, _stop_reason, usage) = match self
                 .stream_with_transparent_retry(
                     &client,
                     request,
@@ -2906,7 +2958,7 @@ impl HostAgentExecutor {
                     // The reactive recovery budget is reset on a successful
                     // stream open inside `stream_with_transparent_retry`
                     // (mirrors the retired turn handler).
-                    (content, stop_reason)
+                    (content, stop_reason, usage)
                 }
                 Ok(StreamRoundOutcome::RecoveredContextOverflow) => {
                     // Emergency compaction succeeded on a context-length
@@ -2954,6 +3006,19 @@ impl HostAgentExecutor {
                     role: "assistant".to_string(),
                     content: content.clone(),
                 });
+                // P2-5 usage anchor: pin the token level to what the
+                // provider actually counted for THIS request. The anchor
+                // deliberately lags by one assistant message (the request
+                // predated the push above) — a few hundred tokens of
+                // systematic under-count against a 128K budget, in
+                // exchange for a real absolute level.
+                if usage.input_tokens > 0 {
+                    *self.usage_anchor.lock().expect("poisoned") =
+                        Some(crate::compaction::TokenUsageAnchor {
+                            messages_len: history.len(),
+                            input_tokens: u64::from(usage.input_tokens),
+                        });
+                }
             }
 
             // The model's preceding text this step — the "intent summary" the

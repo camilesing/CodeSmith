@@ -241,3 +241,142 @@ mod tests {
         assert!(breaker.should_attempt());
     }
 }
+
+/// Model-traffic steps tolerated between a completed auto-compaction and
+/// the next threshold trigger before it counts as a "rapid refill" (P2-5:
+/// a context that refills within a handful of tool rounds isn't drifting,
+/// it has a too-large file or tool output pouring into it).
+pub const RAPID_REFILL_STEP_WINDOW: u32 = 3;
+
+/// Consecutive rapid refills before the detector trips and auto-compaction
+/// is suspended with an actionable message. Three matches the compaction
+/// failure breaker — the mirror article's rapid-refill detector uses the
+/// same number.
+pub const RAPID_REFILL_MAX_STREAK: u32 = 3;
+
+/// The actionable message surfaced when the rapid-refill streak trips.
+pub const RAPID_REFILL_MESSAGE: &str = "Context refilled within a few tool rounds of the last compaction, 3 times in a row — a file or tool output is probably too large. Read it back in chunks (read_file start_line/end_line) or retrieve a slice (retrieve_tool_result mode=lines), or start a new session; auto-compaction is paused for this turn.";
+
+/// Rapid-refill detector (P2-5): catches the failure mode where
+/// auto-compaction *succeeds* but is futile — the context refills to the
+/// threshold within [`RAPID_REFILL_STEP_WINDOW`] steps again and again.
+/// Compounding summaries in that loop burn tokens and progressively
+/// destroy the transcript, so after [`RAPID_REFILL_MAX_STREAK`]
+/// consecutive rapid refills the detector trips and the caller surfaces
+/// [`RAPID_REFILL_MESSAGE`] instead of compacting again. A trigger that
+/// arrives after a healthy interval resets the streak.
+#[derive(Debug, Clone, Default)]
+pub struct RapidRefillDetector {
+    /// Step index of the last completed compaction.
+    last_compaction_step: Option<u32>,
+    /// Consecutive within-window refills.
+    streak: u32,
+}
+
+impl RapidRefillDetector {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record that an auto-compaction completed at `step`.
+    pub fn record_compaction(&mut self, step: u32) {
+        self.last_compaction_step = Some(step);
+    }
+
+    /// A compaction trigger fired at `step`. Returns `Some(message)` when
+    /// the refill streak tripped — the caller should skip the compaction
+    /// and surface the message. A trigger with no prior compaction, or
+    /// after a healthy interval (>= [`RAPID_REFILL_STEP_WINDOW`] steps),
+    /// resets the streak: it's ordinary context growth, not a leak.
+    pub fn record_trigger(&mut self, step: u32) -> Option<&'static str> {
+        let last = self.last_compaction_step?;
+        if step.saturating_sub(last) > RAPID_REFILL_STEP_WINDOW {
+            self.streak = 0;
+            return None;
+        }
+        self.streak += 1;
+        if self.streak >= RAPID_REFILL_MAX_STREAK {
+            Some(RAPID_REFILL_MESSAGE)
+        } else {
+            None
+        }
+    }
+
+    /// Fully reset (post-compaction cleanup gives a fresh start).
+    pub fn reset(&mut self) {
+        self.last_compaction_step = None;
+        self.streak = 0;
+    }
+
+    /// Current consecutive refill count (tests / observability).
+    pub fn streak(&self) -> u32 {
+        self.streak
+    }
+}
+
+#[cfg(test)]
+mod refill_tests {
+    use super::*;
+
+    #[test]
+    fn no_prior_compaction_never_trips() {
+        let mut det = RapidRefillDetector::new();
+        assert!(det.record_trigger(0).is_none());
+        assert!(det.record_trigger(100).is_none());
+    }
+
+    #[test]
+    fn three_rapid_refills_trip_with_message() {
+        let mut det = RapidRefillDetector::new();
+        det.record_compaction(10);
+        assert!(det.record_trigger(12).is_none(), "1st refill counts");
+        assert_eq!(det.streak(), 1);
+        det.record_compaction(12);
+        assert!(det.record_trigger(14).is_none(), "2nd refill counts");
+        det.record_compaction(14);
+        assert_eq!(
+            det.record_trigger(16),
+            Some(RAPID_REFILL_MESSAGE),
+            "3rd rapid refill trips"
+        );
+    }
+
+    #[test]
+    fn healthy_interval_resets_the_streak() {
+        let mut det = RapidRefillDetector::new();
+        det.record_compaction(10);
+        assert!(det.record_trigger(12).is_none());
+        // Refill after a long, healthy interval — ordinary growth.
+        det.record_compaction(12);
+        assert!(det.record_trigger(50).is_none());
+        assert_eq!(det.streak(), 0, "healthy interval resets the streak");
+    }
+
+    #[test]
+    fn window_boundary_is_inclusive() {
+        // Exactly RAPID_REFILL_STEP_WINDOW steps after the compaction
+        // still counts as rapid (>= threshold-within-window semantics).
+        let mut det = RapidRefillDetector::new();
+        det.record_compaction(10);
+        assert!(
+            det.record_trigger(10 + RAPID_REFILL_STEP_WINDOW).is_none()
+        );
+        assert_eq!(det.streak(), 1, "boundary refill counts as rapid");
+        // One step beyond the window does not.
+        det.record_compaction(30);
+        assert!(
+            det.record_trigger(30 + RAPID_REFILL_STEP_WINDOW + 1).is_none()
+        );
+        assert_eq!(det.streak(), 0, "beyond-window refill resets");
+    }
+
+    #[test]
+    fn reset_clears_state() {
+        let mut det = RapidRefillDetector::new();
+        det.record_compaction(10);
+        assert!(det.record_trigger(12).is_none());
+        det.reset();
+        assert!(det.record_trigger(13).is_none(), "no anchor after reset");
+        assert_eq!(det.streak(), 0);
+    }
+}

@@ -181,3 +181,42 @@ pub fn estimate_input_tokens_conservative(
         .saturating_add(system_tokens)
         .saturating_add(framing_overhead)
 }
+
+/// A real provider usage reading used to anchor token estimates (P2-5):
+/// real numbers beat estimates, so the absolute level is pinned to what
+/// the provider actually counted and only messages added since are
+/// estimated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TokenUsageAnchor {
+    /// History length (messages) at the time the usage was recorded.
+    pub messages_len: usize,
+    /// The request's real `input_tokens`: a full-context reading (system,
+    /// tools, history), so the anchor implicitly absorbs every constant
+    /// the message-only estimator never sees.
+    pub input_tokens: u64,
+}
+
+/// [`estimate_input_tokens_conservative`], anchored to a real usage reading
+/// when one is available: the anchor fixes the absolute level and only the
+/// messages appended since are estimated (same conservative factor and
+/// framing). Falls back to the pure estimate when no anchor exists or the
+/// history was rewritten past it (compaction / rewind shrank it).
+#[must_use]
+pub fn estimate_input_tokens_anchored(
+    messages: &[Message],
+    system: Option<&SystemPrompt>,
+    anchor: Option<&TokenUsageAnchor>,
+) -> usize {
+    let Some(anchor) = anchor else {
+        return estimate_input_tokens_conservative(messages, system);
+    };
+    if anchor.messages_len >= messages.len() {
+        return estimate_input_tokens_conservative(messages, system);
+    }
+    let new_messages = messages.len() - anchor.messages_len;
+    let incremental = estimate_tokens(&messages[anchor.messages_len..])
+        .saturating_mul(CONSERVATIVE_ESTIMATE_NUMERATOR)
+        .div_ceil(CONSERVATIVE_ESTIMATE_DENOMINATOR)
+        .saturating_add(new_messages.saturating_mul(12));
+    (anchor.input_tokens as usize).saturating_add(incremental)
+}
