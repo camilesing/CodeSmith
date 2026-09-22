@@ -35,11 +35,36 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// Determines when tool executions require user approval.
+/// Decide when tool executions require user approval.
 ///
 /// Re-exported from `codesmith-agent-runtime`; see
 /// [`codesmith_agent_runtime::mode::ApprovalMode`].
 pub use codesmith_agent_runtime::mode::ApprovalMode;
+
+/// Whether a persisted "Always allow" grant may be offered for this request
+/// (P1-4). Unclassified tool surfaces and shell commands `command_safety`
+/// flags as `Dangerous` are excluded: one-shot and session approvals remain
+/// available, but a persistent grant for them would be a foot-gun.
+fn grant_persistable(category: ToolCategory, params: &Value) -> bool {
+    match category {
+        // Unknown surface: no idea what a grant would cover — never persist.
+        ToolCategory::Unknown => false,
+        // Dangerous shell commands (the literal-deny tier from the
+        // injection-defense wall) never earn a persistent grant.
+        ToolCategory::Shell => params
+            .get("command")
+            .or_else(|| params.get("cmd"))
+            .and_then(Value::as_str)
+            .map(|cmd| {
+                !matches!(
+                    crate::command_safety::analyze_command(cmd).level,
+                    crate::command_safety::SafetyLevel::Dangerous
+                )
+            })
+            .unwrap_or(false),
+        _ => true,
+    }
+}
 
 /// User's decision for a pending approval
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +73,11 @@ pub enum ReviewDecision {
     Approved,
     /// Approve and don't ask again for this tool type this session
     ApprovedForSession,
+    /// Approve, and persist the grant into the global approvals store
+    /// (`~/.codesmith/approvals.toml`, keyed by workspace) so future
+    /// sessions in this workspace auto-approve the same arity-aware
+    /// command prefix (P1-4). Never offered for dangerous commands.
+    AlwaysAllow,
     /// Reject the tool execution
     Denied,
     /// Abort the entire turn
@@ -113,6 +143,12 @@ pub struct ApprovalRequest {
     /// Displayed in the approval view so users understand *why* the change
     /// is being made before reviewing *what* will change.
     pub intent_summary: Option<String>,
+    /// Whether the "Always allow (persisted)" option may be offered (P1-4).
+    /// False for unclassified tool surfaces and shell commands that
+    /// `command_safety` flags as `Dangerous` — those get one-shot or
+    /// session approvals only; a persistent grant must never be a
+    /// foot-gun away.
+    pub persistable: bool,
 }
 
 impl ApprovalRequest {
@@ -158,6 +194,7 @@ impl ApprovalRequest {
                     Some(summary.to_string())
                 }
             }),
+            persistable: grant_persistable(category, params),
         }
     }
 
@@ -450,14 +487,19 @@ fn build_impact_summary_zh_hans(
 pub enum ApprovalOption {
     ApproveOnce,
     ApproveAlways,
+    /// Persist the grant into the global approvals store (P1-4). Only
+    /// reachable when the request is `persistable`; navigation and the
+    /// `P` shortcut skip it otherwise.
+    ApproveForever,
     Deny,
     Abort,
 }
 
 impl ApprovalOption {
-    const ORDER: [ApprovalOption; 4] = [
+    const ORDER: [ApprovalOption; 5] = [
         ApprovalOption::ApproveOnce,
         ApprovalOption::ApproveAlways,
+        ApprovalOption::ApproveForever,
         ApprovalOption::Deny,
         ApprovalOption::Abort,
     ];
@@ -477,6 +519,7 @@ impl ApprovalOption {
         match self {
             ApprovalOption::ApproveOnce => ReviewDecision::Approved,
             ApprovalOption::ApproveAlways => ReviewDecision::ApprovedForSession,
+            ApprovalOption::ApproveForever => ReviewDecision::AlwaysAllow,
             ApprovalOption::Deny => ReviewDecision::Denied,
             ApprovalOption::Abort => ReviewDecision::Abort,
         }
@@ -514,10 +557,17 @@ impl ApprovalView {
 
     fn select_prev(&mut self) {
         self.selected = self.selected.saturating_sub(1);
+        // Skip the persist option when it isn't offered.
+        if !self.request.persistable && self.current_option() == ApprovalOption::ApproveForever {
+            self.selected = self.selected.saturating_sub(1);
+        }
     }
 
     fn select_next(&mut self) {
         self.selected = (self.selected + 1).min(ApprovalOption::ORDER.len() - 1);
+        if !self.request.persistable && self.current_option() == ApprovalOption::ApproveForever {
+            self.selected = (self.selected + 1).min(ApprovalOption::ORDER.len() - 1);
+        }
     }
 
     fn current_option(&self) -> ApprovalOption {
@@ -610,6 +660,12 @@ impl ModalView for ApprovalView {
             }
             KeyCode::Char('a') | KeyCode::Char('A') | KeyCode::Char('2') => {
                 self.commit_option(ApprovalOption::ApproveAlways)
+            }
+            // Persisted "always allow" (P1-4): capital `P` so it can't be
+            // hit by the lowercase approve reflex, and only when the
+            // request is persistable.
+            KeyCode::Char('P') if self.request.persistable => {
+                self.commit_option(ApprovalOption::ApproveForever)
             }
             KeyCode::Char('n')
             | KeyCode::Char('N')
@@ -1137,6 +1193,8 @@ mod tests {
 
     #[test]
     fn test_approval_view_navigation() {
+        // read_file is persistable, so the five-option order applies:
+        // 0 once, 1 session, 2 forever, 3 deny, 4 abort.
         let mut view = ApprovalView::new(benign_request());
         assert_eq!(view.selected, 0);
 
@@ -1147,12 +1205,12 @@ mod tests {
         view.select_next();
         assert_eq!(view.selected, 3);
 
-        // Should clamp at 3
+        // Should clamp at 4 (Abort)
         view.select_next();
-        assert_eq!(view.selected, 3);
+        assert_eq!(view.selected, 4);
 
         view.select_prev();
-        assert_eq!(view.selected, 2);
+        assert_eq!(view.selected, 3);
     }
 
     #[test]
@@ -1258,10 +1316,11 @@ mod tests {
     fn test_approval_view_enter_uses_selected_option() {
         let mut view = ApprovalView::new(benign_request());
 
-        // Navigate to index 2 (Denied)
+        // Navigate to index 3 (Denied) — the forever option sits at 2 now
         view.select_next();
         view.select_next();
-        assert_eq!(view.selected, 2);
+        view.select_next();
+        assert_eq!(view.selected, 3);
 
         let action = view.handle_key(create_key_event(KeyCode::Enter));
         assert!(matches!(
@@ -1290,6 +1349,79 @@ mod tests {
         assert_eq!(view.selected, 1);
     }
 
+    // ========================================================================
+    // ApprovalView Tests — P1-4 persisted always-allow
+    // ========================================================================
+
+    #[test]
+    fn capital_p_commits_always_allow_when_persistable() {
+        let mut view = ApprovalView::new(benign_request());
+        assert!(view.request.persistable, "read_file must be persistable");
+        let action = view.handle_key(create_key_event(KeyCode::Char('P')));
+        assert!(matches!(
+            action,
+            ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
+                decision: ReviewDecision::AlwaysAllow,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn dangerous_shell_commands_are_not_persistable() {
+        // A dangerous shell command never offers the persisted option:
+        // `P` is inert and navigation skips the forever slot entirely.
+        let request = ApprovalRequest::new(
+            "test-id",
+            "exec_shell",
+            "Run a shell command",
+            &json!({"command": "rm -rf /"}),
+            "tool:exec_shell",
+        );
+        assert!(!request.persistable, "dangerous shell must not persist");
+
+        let mut view = ApprovalView::new(request);
+        let action = view.handle_key(create_key_event(KeyCode::Char('P')));
+        assert!(
+            matches!(action, ViewAction::None),
+            "P must be inert for non-persistable requests"
+        );
+
+        // Navigation walks once → session → deny → abort (skipping 2).
+        view.select_next();
+        assert_eq!(view.selected, 1);
+        view.select_next();
+        assert_eq!(view.selected, 3, "forever slot (2) must be skipped");
+        view.select_next();
+        assert_eq!(view.selected, 4);
+        view.select_prev();
+        assert_eq!(view.selected, 3, "returning up must skip 2 as well");
+    }
+
+    #[test]
+    fn unknown_tool_surfaces_are_not_persistable() {
+        let request = ApprovalRequest::new(
+            "test-id",
+            "totally_new_tool",
+            "Unclassified",
+            &json!({"x": 1}),
+            "tool:totally_new_tool",
+        );
+        assert!(!request.persistable, "unknown surface must not persist");
+    }
+
+    #[test]
+    fn ordinary_shell_commands_are_persistable() {
+        let request = ApprovalRequest::new(
+            "test-id",
+            "exec_shell",
+            "Run a shell command",
+            &json!({"command": "cargo build"}),
+            "tool:exec_shell",
+        );
+        assert!(request.persistable, "ordinary shell must be persistable");
+    }
+
     #[test]
     fn test_approval_view_view_params() {
         let mut view = ApprovalView::new(benign_request());
@@ -1316,8 +1448,10 @@ mod tests {
         view.selected = 1;
         assert_eq!(view.current_decision(), ReviewDecision::ApprovedForSession);
         view.selected = 2;
-        assert_eq!(view.current_decision(), ReviewDecision::Denied);
+        assert_eq!(view.current_decision(), ReviewDecision::AlwaysAllow);
         view.selected = 3;
+        assert_eq!(view.current_decision(), ReviewDecision::Denied);
+        view.selected = 4;
         assert_eq!(view.current_decision(), ReviewDecision::Abort);
     }
 
@@ -1511,8 +1645,10 @@ mod tests {
             "missing zh selection prefix:\n{joined}"
         );
         assert!(
-            joined.contains("Enter执行选中项，或直接按y/a/d"),
-            "missing zh one-step hint:\n{joined}"
+            // write_file is persistable, so the hint advertises the P
+            // shortcut for the persisted always-allow option (P1-4).
+            joined.contains("Enter执行选中项，或直接按y/a/P/d"),
+            "missing zh one-step hint with P shortcut:\n{joined}"
         );
         assert!(
             joined.contains("文件写入"),

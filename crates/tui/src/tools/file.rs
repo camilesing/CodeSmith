@@ -539,7 +539,7 @@ impl ToolSpec for EditFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Replace text in a single file via exact search/replace. Use this instead of `sed -i` in `exec_shell` for one unambiguous in-place edit. `search` matches exactly by default; when no exact match is found the tool retries with leading-whitespace-tolerant fuzzy matching automatically. The optional `fuzz` parameter is accepted for backward compatibility and is no longer needed. When `search` matches multiple locations the call FAILS unless you pass `replace_all: true` (replace every occurrence) or `occurrence: N` (replace the N-th match, 1-based). Returns a compact unified diff, not the full file. For structural, multi-block, or cross-file changes, use `apply_patch` or `write_file` instead.\n\nAnchor mode for long spans (40+ lines): pass `search_start` + `search_end` (instead of `search`) quoting only the first and last lines of the region — everything between the two anchors is replaced by `replace` without quoting it. `search_start` must be unique in the file; the first `search_end` after it closes the span.\n\nExamples: `{\"path\": \"src/lib.rs\", \"search\": \"let timeout = 30;\", \"replace\": \"let timeout = 60;\"}` (single unique match); `{\"path\": \"a.txt\", \"search\": \"TODO\", \"replace\": \"DONE\", \"replace_all\": true}` (several identical matches); `{\"path\": \"gen.rs\", \"search_start\": \"fn generated_table() {\", \"search_end\": \"// END generated_table\", \"replace\": \"fn generated_table() {\\n    // regenerated\"}` (replace a huge block without quoting its middle). Include enough surrounding context in `search` to make it unique — copy the text verbatim from a prior read_file result."
+        "Replace text in a single file via exact search/replace. Use this instead of `sed -i` in `exec_shell` for one unambiguous in-place edit. `search` matches exactly by default; when no exact match is found the tool retries automatically with, in order: leading-whitespace-tolerant matching, typographic-punctuation normalization, and line-number-prefix stripping (if you paste a read_file/cat -n/grep -n excerpt into `search`, its leading `  12│ ` / `12\\t` / `12:` numbers are ignored — do not rely on this, copy text without numbers). The optional `fuzz` parameter is accepted for backward compatibility and is no longer needed. When `search` matches multiple locations the call FAILS unless you pass `replace_all: true` (replace every occurrence) or `occurrence: N` (replace the N-th match, 1-based). Returns a compact unified diff, not the full file. For structural, multi-block, or cross-file changes, use `apply_patch` or `write_file` instead.\n\nAnchor mode for long spans (40+ lines): pass `search_start` + `search_end` (instead of `search`) quoting only the first and last lines of the region — everything between the two anchors is replaced by `replace` without quoting it. `search_start` must be unique in the file; the first `search_end` after it closes the span.\n\nExamples: `{\"path\": \"src/lib.rs\", \"search\": \"let timeout = 30;\", \"replace\": \"let timeout = 60;\"}` (single unique match); `{\"path\": \"a.txt\", \"search\": \"TODO\", \"replace\": \"DONE\", \"replace_all\": true}` (several identical matches); `{\"path\": \"gen.rs\", \"search_start\": \"fn generated_table() {\", \"search_end\": \"// END generated_table\", \"replace\": \"fn generated_table() {\\n    // regenerated\"}` (replace a huge block without quoting its middle). Include enough surrounding context in `search` to make it unique — copy the text verbatim from a prior read_file result."
     }
 
     fn input_schema(&self) -> Value {
@@ -701,16 +701,39 @@ impl ToolSpec for EditFileTool {
                     // ASCII the file actually contains.
                     let punct_matches = punctuation_normalized_matches(&contents, &search);
                     match punct_matches.as_slice() {
-                        [] => {
-                            return Err(ToolError::execution_failed(format!(
-                                "Search string not found in {}",
-                                file_path.display()
-                            )));
-                        }
                         [(start, end)] => {
                             let mut updated = contents.clone();
                             updated.replace_range(*start..*end, replace);
                             (updated, 1, Some("punctuation"), None)
+                        }
+                        _ if punct_matches.is_empty() => {
+                            // Third fallback (P1-3): the model copied a
+                            // read_file / cat -n / grep -n excerpt back
+                            // verbatim, line numbers included — strip the
+                            // prefixes from `search` and match the file
+                            // contents directly.
+                            let line_no_matches =
+                                line_number_prefix_matches(&contents, &search);
+                            match line_no_matches.as_slice() {
+                                [(start, end)] => {
+                                    let mut updated = contents.clone();
+                                    updated.replace_range(*start..*end, replace);
+                                    (updated, 1, Some("line_numbers"), None)
+                                }
+                                [] => {
+                                    return Err(ToolError::execution_failed(format!(
+                                        "Search string not found in {}",
+                                        file_path.display()
+                                    )));
+                                }
+                                _ => {
+                                    return Err(ToolError::execution_failed(format!(
+                                        "Fuzzy line-number-stripped search matched {} locations in {}; refine search text",
+                                        line_no_matches.len(),
+                                        file_path.display()
+                                    )));
+                                }
+                            }
                         }
                         _ => {
                             return Err(ToolError::execution_failed(format!(
@@ -785,6 +808,9 @@ impl ToolSpec for EditFileTool {
                 Some("indentation") => " (fuzzy indentation match)",
                 Some("punctuation") => {
                     " (fuzzy punctuation match — typographic quotes/dashes normalized)"
+                }
+                Some("line_numbers") => {
+                    " (fuzzy line-number match — read_file/cat -n/grep -n line-number prefixes stripped from search)"
                 }
                 Some("start/end anchor") => " (start/end anchor match)",
                 Some(other) => other,
@@ -959,6 +985,93 @@ fn punctuation_normalized_matches(contents: &str, search: &str) -> Vec<(usize, u
         let original_end = byte_map.get(norm_end).copied().unwrap_or(contents.len());
         matches.push((original_start, original_end));
         cursor = norm_start.saturating_add(1);
+    }
+    matches
+}
+
+/// Parse one line's line-number prefix into `(remainder, number)`. The
+/// accepted shapes are the forms the model actually copies back:
+/// * read_file windows: `<spaces><digits>│<space>` (U+2502 separator)
+/// * cat -n:            `<spaces><digits>\t`
+/// * grep -n / ripgrep: `<spaces><digits>:`
+fn split_line_number_prefix(line: &str) -> Option<(&str, u64)> {
+    let after_spaces = line.trim_start_matches(' ');
+    let digit_end = after_spaces
+        .bytes()
+        .take_while(u8::is_ascii_digit)
+        .count();
+    if digit_end == 0 {
+        return None;
+    }
+    let (digits, rest) = after_spaces.split_at(digit_end);
+    let number: u64 = digits.parse().ok()?;
+    let rest = rest.trim_start_matches(' ');
+    let rest = if let Some(r) = rest.strip_prefix('│') {
+        // read_file's marker is `│ ` — the space is part of the prefix.
+        r.strip_prefix(' ').unwrap_or(r)
+    } else if let Some(r) = rest.strip_prefix('\t') {
+        r
+    } else if let Some(r) = rest.strip_prefix(':') {
+        r
+    } else {
+        return None;
+    };
+    Some((rest, number))
+}
+
+/// Strip a line-number prefix from every line of `search` (P1-3). Returns
+/// `None` unless every non-empty line carries a prefix AND the extracted
+/// numbers strictly increase — that monotonic guard is what keeps ordinary
+/// text whose lines merely start with digits (timestamps, hex offsets)
+/// from being mangled.
+fn strip_line_number_prefixes(search: &str) -> Option<String> {
+    let mut stripped = String::with_capacity(search.len());
+    let mut last_number: Option<u64> = None;
+    let mut numbered_lines = 0usize;
+    for line in search.split_inclusive('\n') {
+        // Preserve each line's trailing newline on the stripped slice.
+        let (body, newline) = match line.strip_suffix('\n') {
+            Some(b) => (b, "\n"),
+            None => (line, ""),
+        };
+        if body.is_empty() {
+            stripped.push_str(newline);
+            continue;
+        }
+        let (rest, number) = split_line_number_prefix(body)?;
+        if last_number.is_some_and(|prev| number <= prev) {
+            return None;
+        }
+        last_number = Some(number);
+        numbered_lines += 1;
+        stripped.push_str(rest);
+        stripped.push_str(newline);
+    }
+    if numbered_lines == 0 {
+        return None;
+    }
+    Some(stripped)
+}
+
+/// Try to find `search` inside `contents` after stripping line-number
+/// prefixes from `search` only (the file itself never carries them).
+/// Catches the failure mode where the model copied a read_file / cat -n /
+/// grep -n excerpt back into `old_string` verbatim, numbers included.
+fn line_number_prefix_matches(contents: &str, search: &str) -> Vec<(usize, usize)> {
+    let Some(stripped) = strip_line_number_prefixes(search) else {
+        return Vec::new();
+    };
+    if stripped.trim().is_empty() || stripped == search {
+        // Nothing usable, or nothing was actually stripped — the exact
+        // pass already considered this text.
+        return Vec::new();
+    }
+    let mut matches = Vec::new();
+    let mut cursor = 0;
+    while let Some(rel) = contents[cursor..].find(&stripped) {
+        let start = cursor + rel;
+        matches.push((start, start + stripped.len()));
+        cursor = start.saturating_add(1);
     }
     matches
 }
@@ -2277,6 +2390,109 @@ mod tests {
     }
 
     // === P2-7: anchor-mode matching =======================================
+
+    // === P1-3: line-number-prefix stripping (fourth fallback) =============
+
+    #[test]
+    fn split_line_number_prefix_accepts_known_formats() {
+        // read_file windows: `{n:>6}│ ` (U+2502, right-aligned width 6).
+        assert_eq!(
+            split_line_number_prefix("     2│ let timeout = 30;"),
+            Some(("let timeout = 30;", 2))
+        );
+        // cat -n: `{n}\t`.
+        assert_eq!(
+            split_line_number_prefix("     2\tlet timeout = 30;"),
+            Some(("let timeout = 30;", 2))
+        );
+        // grep -n / ripgrep: `{n}:`.
+        assert_eq!(
+            split_line_number_prefix("2:let timeout = 30;"),
+            Some(("let timeout = 30;", 2))
+        );
+        // No digits at all, or digits without a separator.
+        assert_eq!(split_line_number_prefix("plain line"), None);
+        assert_eq!(split_line_number_prefix("42 let x"), None);
+    }
+
+    #[test]
+    fn strip_line_number_prefixes_rejects_non_monotonic_and_partial() {
+        // Real line numbers increase down a file; text that merely starts
+        // with digits usually doesn't hold that shape.
+        assert_eq!(strip_line_number_prefixes("5 first\n3 second\n"), None);
+        // Every non-empty line must carry a prefix.
+        assert_eq!(
+            strip_line_number_prefixes("     2│ let x\nplain line\n"),
+            None
+        );
+        // No prefixes at all.
+        assert_eq!(strip_line_number_prefixes("just text\nmore text\n"), None);
+    }
+
+    #[tokio::test]
+    async fn edit_file_strips_read_file_line_number_prefixes() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let test_file = tmp.path().join("cfg.rs");
+        fs::write(
+            &test_file,
+            "fn head() {}\nlet timeout = 30;\nfn tail() {}\n",
+        )
+        .expect("write");
+
+        // The model copied line 2 of a read_file window verbatim, prefix
+        // and all: `     2│ let timeout = 30;`.
+        let tool = EditFileTool;
+        let result = tool
+            .execute(
+                json!({
+                    "path": "cfg.rs",
+                    "search": "     2│ let timeout = 30;",
+                    "replace": "let timeout = 60;"
+                }),
+                &ctx,
+            )
+            .await
+            .expect("execute");
+        assert!(result.success, "{}", result.content);
+        assert!(
+            result.content.contains("(fuzzy line-number match"),
+            "{}",
+            result.content
+        );
+        assert_eq!(
+            fs::read_to_string(&test_file).unwrap(),
+            "fn head() {}\nlet timeout = 60;\nfn tail() {}\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_file_strips_cat_n_style_line_numbers() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let test_file = tmp.path().join("cfg.txt");
+        fs::write(&test_file, "alpha\nbeta = 1\ngamma\n").expect("write");
+
+        let tool = EditFileTool;
+        let result = tool
+            .execute(
+                json!({
+                    "path": "cfg.txt",
+                    // Both lines carry the cat -n prefix — the all-lines
+                    // guard requires a consistently numbered excerpt.
+                    "search": "     2\tbeta = 1\n     3\tgamma",
+                    "replace": "beta = 2\ngamma"
+                }),
+                &ctx,
+            )
+            .await
+            .expect("execute");
+        assert!(result.success, "{}", result.content);
+        assert_eq!(
+            fs::read_to_string(&test_file).unwrap(),
+            "alpha\nbeta = 2\ngamma\n"
+        );
+    }
 
     #[tokio::test]
     async fn edit_file_anchor_mode_replaces_span_without_quoting_middle() {

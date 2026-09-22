@@ -1214,6 +1214,11 @@ pub struct App {
     /// dangerous command after being told no, but the user shouldn't
     /// have to keep dismissing the same dialog.
     pub approval_session_denied: HashSet<String>,
+    /// Cross-session persistent approval grants (P1-4), loaded from
+    /// `~/.codesmith/approvals.toml` at startup. Lookups are keyed by
+    /// canonical workspace path — a grant recorded in one project never
+    /// auto-approves anything in another.
+    pub approval_grants: crate::approval_grants::ApprovalGrants,
     pub approval_mode: ApprovalMode,
     // Modal view stack (approval/help/etc.)
     pub view_stack: ViewStack,
@@ -1934,6 +1939,9 @@ impl App {
             clipboard: ClipboardHandler::new(),
             approval_session_approved: HashSet::new(),
             approval_session_denied: HashSet::new(),
+            approval_grants: crate::approval_grants::approvals_toml_path()
+                .map(|path| crate::approval_grants::ApprovalGrants::load(&path))
+                .unwrap_or_default(),
             approval_mode: if matches!(initial_mode, AppMode::Yolo) {
                 ApprovalMode::Auto
             } else {

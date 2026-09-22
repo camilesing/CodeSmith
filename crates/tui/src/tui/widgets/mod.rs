@@ -1225,10 +1225,10 @@ impl Renderable for ApprovalWidget<'_> {
 
         lines.push(Line::from(""));
 
-        let options = approval_options_for(risk, locale);
+        let options = approval_options_for(risk, locale, self.request.persistable);
 
-        for (i, opt) in options.iter().enumerate() {
-            let is_selected = i == self.view.selected();
+        for (order_index, opt) in &options {
+            let is_selected = *order_index == self.view.selected();
             let label_color = if opt.dangerous {
                 palette_colors.accent
             } else {
@@ -1259,7 +1259,7 @@ impl Renderable for ApprovalWidget<'_> {
                 Style::default().fg(palette::TEXT_HINT),
             ),
             Span::styled(
-                selection_hint_value(locale),
+                selection_hint_value(locale, self.request.persistable),
                 Style::default()
                     .fg(palette_colors.accent)
                     .add_modifier(Modifier::BOLD),
@@ -1458,10 +1458,12 @@ fn selection_hint_prefix(locale: Locale) -> &'static str {
     }
 }
 
-fn selection_hint_value(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "Enter 执行选中项，或直接按 y/a/d",
-        _ => "Enter selected option, or press y/a/d directly",
+fn selection_hint_value(locale: Locale, persistable: bool) -> &'static str {
+    match (locale, persistable) {
+        (Locale::ZhHans, true) => "Enter 执行选中项，或直接按 y/a/P/d",
+        (Locale::ZhHans, false) => "Enter 执行选中项，或直接按 y/a/d",
+        (_, true) => "Enter selected option, or press y/a/P/d directly",
+        (_, false) => "Enter selected option, or press y/a/d directly",
     }
 }
 
@@ -1471,30 +1473,60 @@ struct ApprovalOptionRow {
     dangerous: bool,
 }
 
-fn approval_options_for(risk: RiskLevel, locale: Locale) -> [ApprovalOptionRow; 4] {
+/// Option rows for the approval card, each paired with its index in
+/// `ApprovalOption::ORDER` so the rendered selection lines up with the
+/// view's selection even when the persist option is skipped.
+fn approval_options_for(
+    risk: RiskLevel,
+    locale: Locale,
+    persistable: bool,
+) -> Vec<(usize, ApprovalOptionRow)> {
     let dangerous = matches!(risk, RiskLevel::Destructive);
-    [
-        ApprovalOptionRow {
-            label: option_approve_once(locale),
-            key_hint: "1 / y",
-            dangerous,
-        },
-        ApprovalOptionRow {
-            label: option_approve_always(locale),
-            key_hint: "2 / a",
-            dangerous,
-        },
+    let mut rows = vec![
+        (
+            0,
+            ApprovalOptionRow {
+                label: option_approve_once(locale),
+                key_hint: "1 / y",
+                dangerous,
+            },
+        ),
+        (
+            1,
+            ApprovalOptionRow {
+                label: option_approve_always(locale),
+                key_hint: "2 / a",
+                dangerous,
+            },
+        ),
+    ];
+    if persistable {
+        rows.push((
+            2,
+            ApprovalOptionRow {
+                label: option_approve_forever(locale),
+                key_hint: "P",
+                dangerous,
+            },
+        ));
+    }
+    rows.push((
+        3,
         ApprovalOptionRow {
             label: option_deny(locale),
             key_hint: "3 / d / n",
             dangerous: false,
         },
+    ));
+    rows.push((
+        4,
         ApprovalOptionRow {
             label: option_abort(locale),
             key_hint: "Esc",
             dangerous: false,
         },
-    ]
+    ));
+    rows
 }
 
 fn option_approve_once(locale: Locale) -> &'static str {
@@ -1508,6 +1540,13 @@ fn option_approve_always(locale: Locale) -> &'static str {
     match locale {
         Locale::ZhHans => "本会话同类自动批准",
         _ => "Approve always for this kind",
+    }
+}
+
+fn option_approve_forever(locale: Locale) -> &'static str {
+    match locale {
+        Locale::ZhHans => "本项目永久允许（写入全局授权）",
+        _ => "Always allow (saved for this project)",
     }
 }
 

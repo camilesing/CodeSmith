@@ -18,6 +18,7 @@ use crate::dependencies::ExternalTool;
 
 mod acp_server;
 mod agent_memory;
+mod approval_grants;
 mod artifacts;
 mod audit;
 mod auto_mode;
