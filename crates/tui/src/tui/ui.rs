@@ -197,6 +197,60 @@ fn is_session_denied_for_key(app: &App, approval_key: &str) -> bool {
     app.approval_session_denied.contains(approval_key)
 }
 
+/// Outcome of the pre-prompt approval gate. The evaluation order encoded
+/// in [`approval_shortcut`] is security-relevant: an explicit deny-all
+/// mode is terminal and must trump session approvals and stale persisted
+/// grants alike.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApprovalShortcut {
+    /// The user already denied this exact approval key this session (#360).
+    DenySession,
+    /// `ApprovalMode::Never` — "never execute tools requiring approval".
+    DenyNever,
+    /// Approve without prompting: session approval, re-checked persisted
+    /// grant, or Auto mode.
+    AutoApprove,
+    /// Ask the user.
+    Prompt,
+}
+
+fn approval_shortcut(
+    session_denied: bool,
+    session_approved: bool,
+    mode: ApprovalMode,
+    persistent_grant: bool,
+) -> ApprovalShortcut {
+    if session_denied {
+        ApprovalShortcut::DenySession
+    } else if mode == ApprovalMode::Never {
+        ApprovalShortcut::DenyNever
+    } else if session_approved || persistent_grant || mode == ApprovalMode::Auto {
+        ApprovalShortcut::AutoApprove
+    } else {
+        ApprovalShortcut::Prompt
+    }
+}
+
+/// Whether a persisted grant may cover *this* request. The store lookup
+/// alone is not enough: grouping keys collapse compound commands onto the
+/// leading prefix (`cargo build && curl … | sh` shares the
+/// `shell:cargo build` key with the plain command the user granted), and
+/// a hand-edited or stale `approvals.toml` bypasses the filters the offer
+/// path applies. Re-run the same `grant_persistable` filter on the
+/// current request; when it fails, fall through to the prompt.
+fn persistent_grant_allows(
+    grants: &crate::approval_grants::ApprovalGrants,
+    workspace: &std::path::Path,
+    tool_name: &str,
+    input: &serde_json::Value,
+    grouping_key: &str,
+) -> bool {
+    grants.is_granted(
+        &codesmith_agent_runtime::workspace_trust::workspace_config_key(workspace),
+        grouping_key,
+    ) && crate::tui::approval::grant_persistable(tool_name, input)
+}
+
 fn sidebar_width_for_chat_area(app: &App, chat_width: u16) -> Option<u16> {
     if app.sidebar_focus == SidebarFocus::Hidden || chat_width < SIDEBAR_VISIBLE_MIN_WIDTH {
         return None;
@@ -2202,89 +2256,103 @@ async fn run_event_loop(
                         let session_approved =
                             is_session_approved_for_tool(app, &tool_name, &approval_grouping_key);
                         let session_denied = is_session_denied_for_key(app, &approval_key);
-                        if session_denied {
-                            // The user already said no to this exact tool /
-                            // approval key in this session; auto-deny so the
-                            // model's retry loop doesn't keep re-prompting
-                            // (#360).
-                            log_sensitive_event(
-                                "tool.approval.auto_deny_session",
-                                serde_json::json!({
-                                    "tool_name": tool_name,
-                                    "approval_key": approval_key,
-                                    "session_id": app.current_session_id,
-                                }),
-                            );
-                            let _ = engine_handle.deny_tool_call(id.clone()).await;
-                        } else if session_approved
-                            || app.approval_grants.is_granted(
-                                &codesmith_agent_runtime::workspace_trust::workspace_config_key(
-                                    &app.workspace,
-                                ),
-                                &approval_grouping_key,
-                            )
-                            || app.approval_mode == ApprovalMode::Auto
-                        {
-                            log_sensitive_event(
-                                "tool.approval.auto_approve",
-                                serde_json::json!({
-                                    "tool_name": tool_name,
-                                    "approval_key": approval_key,
-                                    "session_id": app.current_session_id,
-                                    "mode": app.mode.label(),
-                                    "persistent_grant": !session_approved
-                                        && app.approval_mode != ApprovalMode::Auto,
-                                }),
-                            );
-                            let _ = engine_handle.approve_tool_call(id.clone()).await;
-                        } else if app.approval_mode == ApprovalMode::Never {
-                            log_sensitive_event(
-                                "tool.approval.auto_deny",
-                                serde_json::json!({
-                                    "tool_name": tool_name,
-                                    "session_id": app.current_session_id,
-                                    "mode": app.mode.label(),
-                                }),
-                            );
-                            let _ = engine_handle.deny_tool_call(id.clone()).await;
-                            app.status_message =
-                                Some(format!("Blocked tool '{tool_name}' (approval_mode=never)"));
-                        } else {
-                            let tool_input = input;
-
-                            push_approval_request_view(
-                                app,
-                                &id,
-                                &tool_name,
-                                &description,
-                                &tool_input,
-                                &approval_key,
-                                intent_summary.as_deref(),
-                            );
-                            log_sensitive_event(
-                                "tool.approval.prompted",
-                                serde_json::json!({
-                                    "tool_name": tool_name,
-                                    "description": description,
-                                    "session_id": app.current_session_id,
-                                    "mode": app.mode.label(),
-                                }),
-                            );
-                            if let Some((method, _, _)) =
-                                crate::tui::notifications::settings(config)
-                            {
-                                let in_tmux = std::env::var("TMUX").is_ok_and(|v| !v.is_empty());
-                                crate::tui::notifications::notify_done(
-                                    method,
-                                    in_tmux,
-                                    &format!("Approval needed: {tool_name} - {description}"),
-                                    Duration::ZERO,
-                                    Duration::ZERO,
+                        let persistent_grant = persistent_grant_allows(
+                            &app.approval_grants,
+                            &app.workspace,
+                            &tool_name,
+                            &input,
+                            &approval_grouping_key,
+                        );
+                        match approval_shortcut(
+                            session_denied,
+                            session_approved,
+                            app.approval_mode,
+                            persistent_grant,
+                        ) {
+                            ApprovalShortcut::DenySession => {
+                                // The user already said no to this exact tool /
+                                // approval key in this session; auto-deny so the
+                                // model's retry loop doesn't keep re-prompting
+                                // (#360).
+                                log_sensitive_event(
+                                    "tool.approval.auto_deny_session",
+                                    serde_json::json!({
+                                        "tool_name": tool_name,
+                                        "approval_key": approval_key,
+                                        "session_id": app.current_session_id,
+                                    }),
                                 );
+                                let _ = engine_handle.deny_tool_call(id.clone()).await;
                             }
-                            app.status_message = Some(format!(
-                                "Approval required for '{tool_name}': {description}"
-                            ));
+                            ApprovalShortcut::DenyNever => {
+                                // Deny-all mode is terminal: it must trump
+                                // session approvals and any grants persisted
+                                // in earlier, less restrictive sessions.
+                                log_sensitive_event(
+                                    "tool.approval.auto_deny",
+                                    serde_json::json!({
+                                        "tool_name": tool_name,
+                                        "session_id": app.current_session_id,
+                                        "mode": app.mode.label(),
+                                    }),
+                                );
+                                let _ = engine_handle.deny_tool_call(id.clone()).await;
+                                app.status_message = Some(format!(
+                                    "Blocked tool '{tool_name}' (approval_mode=never)"
+                                ));
+                            }
+                            ApprovalShortcut::AutoApprove => {
+                                log_sensitive_event(
+                                    "tool.approval.auto_approve",
+                                    serde_json::json!({
+                                        "tool_name": tool_name,
+                                        "approval_key": approval_key,
+                                        "session_id": app.current_session_id,
+                                        "mode": app.mode.label(),
+                                        "persistent_grant": !session_approved
+                                            && app.approval_mode != ApprovalMode::Auto,
+                                    }),
+                                );
+                                let _ = engine_handle.approve_tool_call(id.clone()).await;
+                            }
+                            ApprovalShortcut::Prompt => {
+                                let tool_input = input;
+
+                                push_approval_request_view(
+                                    app,
+                                    &id,
+                                    &tool_name,
+                                    &description,
+                                    &tool_input,
+                                    &approval_key,
+                                    intent_summary.as_deref(),
+                                );
+                                log_sensitive_event(
+                                    "tool.approval.prompted",
+                                    serde_json::json!({
+                                        "tool_name": tool_name,
+                                        "description": description,
+                                        "session_id": app.current_session_id,
+                                        "mode": app.mode.label(),
+                                    }),
+                                );
+                                if let Some((method, _, _)) =
+                                    crate::tui::notifications::settings(config)
+                                {
+                                    let in_tmux =
+                                        std::env::var("TMUX").is_ok_and(|v| !v.is_empty());
+                                    crate::tui::notifications::notify_done(
+                                        method,
+                                        in_tmux,
+                                        &format!("Approval needed: {tool_name} - {description}"),
+                                        Duration::ZERO,
+                                        Duration::ZERO,
+                                    );
+                                }
+                                app.status_message = Some(format!(
+                                    "Approval required for '{tool_name}': {description}"
+                                ));
+                            }
                         }
                     }
                     EngineEvent::UserInputRequired { id, request } => {

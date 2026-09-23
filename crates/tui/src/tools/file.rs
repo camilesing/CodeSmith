@@ -712,8 +712,7 @@ impl ToolSpec for EditFileTool {
                             // verbatim, line numbers included — strip the
                             // prefixes from `search` and match the file
                             // contents directly.
-                            let line_no_matches =
-                                line_number_prefix_matches(&contents, &search);
+                            let line_no_matches = line_number_prefix_matches(&contents, &search);
                             match line_no_matches.as_slice() {
                                 [(start, end)] => {
                                     let mut updated = contents.clone();
@@ -922,7 +921,10 @@ fn leading_whitespace_fuzzy_matches(contents: &str, search: &str) -> Vec<(usize,
         let original_start = line_start_before(contents, mapped_start);
         let original_end = byte_map.get(norm_end).copied().unwrap_or(contents.len());
         matches.push((original_start, original_end));
-        cursor = norm_start.saturating_add(1);
+        // Advance past the whole match (a char boundary): advancing one
+        // byte could land inside a multi-byte first character and panic
+        // on the next `normalized_contents[cursor..]` slice.
+        cursor = norm_end;
     }
     matches
 }
@@ -984,7 +986,10 @@ fn punctuation_normalized_matches(contents: &str, search: &str) -> Vec<(usize, u
         };
         let original_end = byte_map.get(norm_end).copied().unwrap_or(contents.len());
         matches.push((original_start, original_end));
-        cursor = norm_start.saturating_add(1);
+        // Advance past the whole match (a char boundary): advancing one
+        // byte could land inside a multi-byte first character and panic
+        // on the next `norm_contents[cursor..]` slice.
+        cursor = norm_end;
     }
     matches
 }
@@ -996,10 +1001,7 @@ fn punctuation_normalized_matches(contents: &str, search: &str) -> Vec<(usize, u
 /// * grep -n / ripgrep: `<spaces><digits>:`
 fn split_line_number_prefix(line: &str) -> Option<(&str, u64)> {
     let after_spaces = line.trim_start_matches(' ');
-    let digit_end = after_spaces
-        .bytes()
-        .take_while(u8::is_ascii_digit)
-        .count();
+    let digit_end = after_spaces.bytes().take_while(u8::is_ascii_digit).count();
     if digit_end == 0 {
         return None;
     }
@@ -1019,15 +1021,18 @@ fn split_line_number_prefix(line: &str) -> Option<(&str, u64)> {
     Some((rest, number))
 }
 
-/// Strip a line-number prefix from every line of `search` (P1-3). Returns
-/// `None` unless every non-empty line carries a prefix AND the extracted
-/// numbers strictly increase — that monotonic guard is what keeps ordinary
-/// text whose lines merely start with digits (timestamps, hex offsets)
-/// from being mangled.
-fn strip_line_number_prefixes(search: &str) -> Option<String> {
+/// Strip a line-number prefix from every line of `search` (P1-3),
+/// returning `(stripped text, first gutter number)`. Returns `None`
+/// unless every non-empty line carries a prefix AND the extracted numbers
+/// strictly increase. For multi-line text that monotonic guard is what
+/// keeps ordinary text whose lines merely start with digits (timestamps,
+/// hex offsets) from being mangled; for single-line text (where the guard
+/// is vacuous) the line-alignment check in
+/// [`line_number_prefix_matches`] does that job instead.
+fn strip_line_number_prefixes(search: &str) -> Option<(String, u64)> {
     let mut stripped = String::with_capacity(search.len());
+    let mut first_number: Option<u64> = None;
     let mut last_number: Option<u64> = None;
-    let mut numbered_lines = 0usize;
     for line in search.split_inclusive('\n') {
         // Preserve each line's trailing newline on the stripped slice.
         let (body, newline) = match line.strip_suffix('\n') {
@@ -1042,23 +1047,28 @@ fn strip_line_number_prefixes(search: &str) -> Option<String> {
         if last_number.is_some_and(|prev| number <= prev) {
             return None;
         }
+        first_number.get_or_insert(number);
         last_number = Some(number);
-        numbered_lines += 1;
         stripped.push_str(rest);
         stripped.push_str(newline);
     }
-    if numbered_lines == 0 {
-        return None;
-    }
-    Some(stripped)
+    Some((stripped, first_number?))
 }
 
 /// Try to find `search` inside `contents` after stripping line-number
 /// prefixes from `search` only (the file itself never carries them).
 /// Catches the failure mode where the model copied a read_file / cat -n /
 /// grep -n excerpt back into `old_string` verbatim, numbers included.
+///
+/// Occurrences are scanned left-to-right and non-overlapping (the same
+/// scan as `str::matches` / `nth_match_range`), and a match only counts
+/// when it begins on the line the first gutter number points at —
+/// read_file / cat -n / grep -n gutters all use absolute file line
+/// numbers, so legitimate copies align, while digit-leading prose (a
+/// timestamp like `"12:30:00"` stripping to `"30:00"`) lands on the
+/// wrong line and is rejected.
 fn line_number_prefix_matches(contents: &str, search: &str) -> Vec<(usize, usize)> {
-    let Some(stripped) = strip_line_number_prefixes(search) else {
+    let Some((stripped, first_line)) = strip_line_number_prefixes(search) else {
         return Vec::new();
     };
     if stripped.trim().is_empty() || stripped == search {
@@ -1068,10 +1078,19 @@ fn line_number_prefix_matches(contents: &str, search: &str) -> Vec<(usize, usize
     }
     let mut matches = Vec::new();
     let mut cursor = 0;
+    // Newlines before each match start, counted incrementally so files
+    // with very many occurrences still scan in linear time.
+    let mut newlines = 0usize;
+    let mut counted_through = 0usize;
     while let Some(rel) = contents[cursor..].find(&stripped) {
         let start = cursor + rel;
-        matches.push((start, start + stripped.len()));
-        cursor = start.saturating_add(1);
+        let end = start + stripped.len();
+        newlines += contents[counted_through..start].matches('\n').count();
+        counted_through = start;
+        if (newlines + 1) as u64 == first_line {
+            matches.push((start, end));
+        }
+        cursor = end;
     }
     matches
 }
@@ -2418,8 +2437,10 @@ mod tests {
     #[test]
     fn strip_line_number_prefixes_rejects_non_monotonic_and_partial() {
         // Real line numbers increase down a file; text that merely starts
-        // with digits usually doesn't hold that shape.
-        assert_eq!(strip_line_number_prefixes("5 first\n3 second\n"), None);
+        // with digits usually doesn't hold that shape. Both lines carry
+        // cat -n separators so the monotonic guard itself fires (not the
+        // missing-prefix check).
+        assert_eq!(strip_line_number_prefixes("5\tfirst\n3\tsecond\n"), None);
         // Every non-empty line must carry a prefix.
         assert_eq!(
             strip_line_number_prefixes("     2│ let x\nplain line\n"),
@@ -2427,6 +2448,79 @@ mod tests {
         );
         // No prefixes at all.
         assert_eq!(strip_line_number_prefixes("just text\nmore text\n"), None);
+    }
+
+    #[test]
+    fn strip_line_number_prefixes_returns_first_gutter_number() {
+        // Two-line cat -n excerpt: monotonic numbers, first is 2.
+        assert_eq!(
+            strip_line_number_prefixes("     2\tbeta = 1\n     3\tgamma\n"),
+            Some(("beta = 1\ngamma\n".to_string(), 2))
+        );
+        // A single line of digit-leading prose still strips — the
+        // line-alignment check in `line_number_prefix_matches` is what
+        // rejects it downstream.
+        assert_eq!(
+            strip_line_number_prefixes("12:30:00"),
+            Some(("30:00".to_string(), 12))
+        );
+    }
+
+    #[test]
+    fn line_number_prefix_matches_scans_multibyte_safely() {
+        // A match beginning with a multi-byte character must not panic
+        // when the cursor advances (regression: the loop used to advance
+        // one byte and re-slice mid-character even with a single match).
+        let contents = "fn a() {}\nfn 生成() {}\nfn 生成() {}\n";
+        // Line 2 copied from a read_file window, gutter included.
+        let matches = line_number_prefix_matches(contents, "     2│ fn 生成() {}");
+        assert_eq!(matches.len(), 1);
+        let (start, end) = matches[0];
+        assert_eq!(&contents[start..end], "fn 生成() {}");
+        // The gutter pointed at line 2, not the line-3 duplicate.
+        assert_eq!(contents[..start].matches('\n').count() + 1, 2);
+    }
+
+    #[test]
+    fn line_number_prefix_matches_count_is_non_overlapping() {
+        // Same left-to-right non-overlapping numbering as `str::matches`
+        // and `nth_match_range`: "aa" occurs once inside "aaa", not twice.
+        let contents = "aaa\n";
+        // Gutter points at line 1 so the match survives the alignment
+        // filter.
+        let matches = line_number_prefix_matches(contents, "1\taa");
+        assert_eq!(matches.len(), 1);
+    }
+
+    #[test]
+    fn line_number_prefix_matches_rejects_digit_leading_prose() {
+        // "12:30:00" is a timestamp, not line 12 — after stripping it
+        // becomes "30:00", which *is* found inside the file's 09:30:00,
+        // but on the wrong line: the alignment check must reject it
+        // instead of silently mangling the line.
+        let contents = "name = \"alarm\"\nwake_at = \"09:30:00\"\n";
+        assert!(line_number_prefix_matches(contents, "12:30:00").is_empty());
+        // The same stripped text with a gutter that points where it
+        // actually sits (line 2, grep -n style) still matches.
+        let matches = line_number_prefix_matches(contents, "2:30:00");
+        assert_eq!(matches.len(), 1);
+        let (start, end) = matches[0];
+        assert_eq!(&contents[start..end], "30:00");
+    }
+
+    #[test]
+    fn fuzzy_matchers_scan_multibyte_match_starts_safely() {
+        // Both fallbacks used to advance the cursor one byte past the
+        // match start; a multi-byte first character made the next
+        // `normalized_contents[cursor..]` slice panic.
+        let contents = "    中文一行\n    plain line\n";
+        assert_eq!(
+            leading_whitespace_fuzzy_matches(contents, "中文一行").len(),
+            1
+        );
+
+        let contents = "let a = \"中文”;\nlet b = 1;\n";
+        assert_eq!(punctuation_normalized_matches(contents, "中文”").len(), 1);
     }
 
     #[tokio::test]
@@ -2491,6 +2585,36 @@ mod tests {
         assert_eq!(
             fs::read_to_string(&test_file).unwrap(),
             "alpha\nbeta = 2\ngamma\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_file_line_number_stage_refuses_misaligned_digit_prose() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let test_file = tmp.path().join("cfg.toml");
+        fs::write(&test_file, "name = \"alarm\"\nwake_at = \"09:30:00\"\n").expect("write");
+
+        // The model misremembered a timestamp as "12:30:00". Stripping
+        // its digit prefix yields "30:00" — present in the file, but on
+        // the wrong line — so the edit must fail rather than silently
+        // corrupt 09:30:00.
+        let tool = EditFileTool;
+        let err = tool
+            .execute(
+                json!({
+                    "path": "cfg.toml",
+                    "search": "12:30:00",
+                    "replace": "13:45:00"
+                }),
+                &ctx,
+            )
+            .await
+            .expect_err("misaligned digit prose must not edit");
+        assert!(err.to_string().contains("Search string not found"), "{err}");
+        assert_eq!(
+            fs::read_to_string(&test_file).unwrap(),
+            "name = \"alarm\"\nwake_at = \"09:30:00\"\n"
         );
     }
 

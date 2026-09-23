@@ -20,12 +20,13 @@
 //!
 //! Load failures (missing file, corrupt TOML) degrade to an empty store —
 //! a broken grants file must never block the session, it just stops
-//! auto-approving. Save failures surface to the caller (the approval
-//! decision still applies for this session; only the persistence is
-//! lost).
+//! auto-approving. Saves are atomic (temp file + rename) and merged with
+//! whatever is on disk, so a crash mid-write can't tear the file and two
+//! concurrent sessions can't erase each other's grants. Save failures
+//! surface to the caller (the approval decision still applies for this
+//! session; only the persistence is lost).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -68,27 +69,12 @@ impl ApprovalGrants {
     /// (never fatal — see the module doc).
     #[must_use]
     pub fn load(path: &Path) -> Self {
-        let raw = match std::fs::read_to_string(path) {
-            Ok(raw) => raw,
-            Err(_) => return Self::default(),
-        };
-        match toml::from_str::<GrantsDoc>(&raw) {
-            Ok(doc) => Self {
-                projects: doc
-                    .projects
-                    .into_iter()
-                    .map(|(key, project)| (key, project.grants))
-                    .collect(),
-            },
-            Err(err) => {
-                tracing::warn!(
-                    target: "codesmith::approvals",
-                    path = %path.display(),
-                    error = %err,
-                    "approvals.toml is corrupt; starting with no persistent grants"
-                );
-                Self::default()
-            }
+        Self {
+            projects: load_doc(path)
+                .projects
+                .into_iter()
+                .map(|(key, project)| (key, project.grants))
+                .collect(),
         }
     }
 
@@ -122,8 +108,7 @@ impl ApprovalGrants {
             .is_some_and(|grants| grants.remove(grouping_key));
         // Drop emptied project tables so the file doesn't accumulate
         // `[projects."..."]` husks.
-        self.projects
-            .retain(|_, grants| !grants.is_empty());
+        self.projects.retain(|_, grants| !grants.is_empty());
         removed
     }
 
@@ -138,20 +123,46 @@ impl ApprovalGrants {
             .unwrap_or_default()
     }
 
-    /// Serialize to `path` with owner-only permissions (same posture as
-    /// config.toml writes).
+    /// Serialize to `path` atomically, merged with the on-disk state.
+    ///
+    /// * **Atomic** — via `write_atomic` (temp file + fsync + rename in
+    ///   the same directory): a crash mid-write can't leave a torn file,
+    ///   which the next `load` would silently degrade to an empty store.
+    /// * **Merged** — the store is loaded once at startup, so another
+    ///   concurrently running CodeSmith session may have persisted its
+    ///   own grants since; union with the on-disk sets before
+    ///   serializing so the last writer doesn't erase them.
+    /// * **Truthful timestamps** — projects whose merged grant set is
+    ///   unchanged from disk keep their on-disk `updated_at`; only
+    ///   actually-modified projects are stamped `now`.
+    ///
+    /// The file keeps owner-only permissions (0o600 on Unix), same
+    /// posture as config.toml writes.
     pub fn save(&self, path: &Path) -> Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
+        let on_disk = load_doc(path);
+        let mut merged: BTreeMap<String, BTreeSet<String>> = self.projects.clone();
+        for (key, project) in &on_disk.projects {
+            merged
+                .entry(key.clone())
+                .or_default()
+                .extend(project.grants.iter().cloned());
+        }
         let doc = GrantsDoc {
-            projects: self
-                .projects
+            projects: merged
                 .iter()
                 .map(|(key, grants)| {
+                    let updated_at = match on_disk.projects.get(key) {
+                        Some(on_disk_project) if &on_disk_project.grants == grants => {
+                            on_disk_project.updated_at.clone()
+                        }
+                        _ => Some(now.clone()),
+                    };
                     (
                         key.clone(),
                         GrantsProject {
                             grants: grants.clone(),
-                            updated_at: Some(now.clone()),
+                            updated_at,
                         },
                     )
                 })
@@ -163,35 +174,36 @@ impl ApprovalGrants {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
-        write_grants_file(path, &serialized)
+        crate::utils::write_atomic(path, serialized.as_bytes())
             .with_context(|| format!("failed to write {}", path.display()))?;
+        // write_atomic's temp file is created 0o600 on Unix; re-assert for
+        // pre-existing targets and mode-at-open edge cases (filesystems
+        // that reject chmod keep the written contents).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        }
         Ok(())
     }
 }
 
-/// Owner-only file write, mirroring config's `write_config_file_secure`
-/// posture (0o600 on Unix; host ACLs elsewhere).
-fn write_grants_file(path: &Path, content: &str) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)?;
-        file.write_all(content.as_bytes())?;
-        // Re-assert for pre-existing files / mode-at-open edge cases;
-        // filesystems that reject chmod keep the written contents.
-        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
-        Ok(())
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::write(path, content)
-    }
+/// Read the raw on-disk document. Missing or corrupt file → empty doc,
+/// never fatal (same degradation as [`ApprovalGrants::load`]).
+fn load_doc(path: &Path) -> GrantsDoc {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(_) => return GrantsDoc::default(),
+    };
+    toml::from_str::<GrantsDoc>(&raw).unwrap_or_else(|err| {
+        tracing::warn!(
+            target: "codesmith::approvals",
+            path = %path.display(),
+            error = %err,
+            "approvals.toml is corrupt; starting with no persistent grants"
+        );
+        GrantsDoc::default()
+    })
 }
 
 #[cfg(test)]
@@ -201,10 +213,7 @@ mod tests {
     fn temp_path(name: &str) -> PathBuf {
         // into_path() hands ownership back (no auto-cleanup); these tests
         // are short-lived and the directories live under TMPDIR.
-        tempfile::tempdir()
-            .expect("tempdir")
-            .into_path()
-            .join(name)
+        tempfile::tempdir().expect("tempdir").into_path().join(name)
     }
 
     #[test]
@@ -244,10 +253,85 @@ mod tests {
     }
 
     #[test]
+    fn save_merges_grants_persisted_by_a_concurrent_session() {
+        let path = temp_path("merge.toml");
+        // This session loaded an empty store at startup…
+        let mut ours = ApprovalGrants::default();
+        ours.insert("/w/project-a", "shell:cargo build");
+        // …then another session in a different project saved its own
+        // grants to the shared file.
+        let mut theirs = ApprovalGrants::default();
+        theirs.insert("/w/project-a", "shell:cargo test");
+        theirs.insert("/w/project-b", "shell:git status");
+        theirs.save(&path).expect("their save");
+
+        // Our save must union with theirs, not last-writer-wins-erase.
+        ours.save(&path).expect("merged save");
+        let reloaded = ApprovalGrants::load(&path);
+        assert!(reloaded.is_granted("/w/project-a", "shell:cargo build"));
+        assert!(reloaded.is_granted("/w/project-a", "shell:cargo test"));
+        assert!(reloaded.is_granted("/w/project-b", "shell:git status"));
+    }
+
+    #[test]
+    fn save_preserves_untouched_projects_updated_at() {
+        let path = temp_path("timestamps.toml");
+        let mut other = ApprovalGrants::default();
+        other.insert("/w/other", "shell:git status");
+        other.save(&path).expect("save");
+        let before: toml::Value =
+            toml::from_str(&std::fs::read_to_string(&path).expect("read")).expect("parse");
+        let original = before["projects"]["/w/other"]["updated_at"]
+            .as_str()
+            .expect("updated_at present")
+            .to_string();
+
+        // A different session saves an unrelated project — /w/other's
+        // timestamp must not be rewritten.
+        let mut ours = ApprovalGrants::default();
+        ours.insert("/w/ours", "shell:cargo build");
+        ours.save(&path).expect("save");
+
+        let after: toml::Value =
+            toml::from_str(&std::fs::read_to_string(&path).expect("read")).expect("parse");
+        let kept = after["projects"]["/w/other"]["updated_at"]
+            .as_str()
+            .expect("other project still has updated_at");
+        assert_eq!(
+            kept, original,
+            "untouched project's updated_at must survive"
+        );
+        // The project this save actually touched did get a fresh stamp.
+        assert!(
+            after["projects"]["/w/ours"]["updated_at"]
+                .as_str()
+                .is_some()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_leaves_owner_only_file_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = temp_path("mode.toml");
+        let mut grants = ApprovalGrants::default();
+        grants.insert("/w/a", "shell:cargo build");
+        grants.save(&path).expect("save");
+        let mode = std::fs::metadata(&path)
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "approvals.toml must stay owner-only");
+    }
+
+    #[test]
     fn insert_is_idempotent_and_remove_drops_emptied_tables() {
         let mut grants = ApprovalGrants::default();
         assert!(grants.insert("/w/a", "shell:cargo build"));
-        assert!(!grants.insert("/w/a", "shell:cargo build"), "second insert is not new");
+        assert!(
+            !grants.insert("/w/a", "shell:cargo build"),
+            "second insert is not new"
+        );
         assert!(grants.remove("/w/a", "shell:cargo build"));
         assert_eq!(grants.grants_for("/w/a"), Vec::<String>::new());
         // The emptied project table is gone entirely.
