@@ -1474,3 +1474,239 @@ async fn test_exec_shell_wait_spills_full_output() {
         "elided middle must be in the wait-path spill"
     );
 }
+
+/// While a task is still Running, polls must NOT spill the full output on
+/// every call — each poll would otherwise re-clone and re-write the FULL
+/// accumulated buffers (O(polls × bytes) of disk churn on the async path).
+/// The poll that observes the terminal status spills the final view, the
+/// same rule the foreground path applies.
+#[cfg(not(windows))]
+#[tokio::test]
+async fn test_exec_shell_wait_running_poll_does_not_spill() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path());
+    let _spill_root = TestSpillRoot::new(tmp.path());
+
+    // Emit >30KB quickly, then linger in Running so the first poll observes
+    // large totals while the task is still alive.
+    let start = ExecShellTool
+        .execute(
+            json!({"command": "seq 1 20000 && sleep 5", "background": true}),
+            &ctx,
+        )
+        .await
+        .expect("start");
+    let task_id = start
+        .metadata
+        .as_ref()
+        .and_then(|meta| meta.get("task_id"))
+        .and_then(Value::as_str)
+        .expect("task id")
+        .to_string();
+
+    // Give seq a moment to flush its ~108KB before the Running poll.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let poll = ShellWaitTool::new("exec_shell_wait")
+        .execute(
+            json!({"task_id": task_id, "wait": false, "timeout_ms": 1000}),
+            &ctx,
+        )
+        .await
+        .expect("poll");
+    let meta = poll.metadata.clone().expect("metadata");
+    assert_eq!(
+        meta.get("status").and_then(Value::as_str),
+        Some("Running"),
+        "task must still be running at the first poll: {:?}",
+        poll.content
+    );
+    assert!(
+        meta.get("stdout_total_len")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            > 30_000,
+        "poll totals must already exceed the spill threshold for this test to be meaningful"
+    );
+    assert!(
+        meta.get("spillover_ref").is_none(),
+        "no spill while Running: {:?}",
+        poll.metadata
+    );
+    assert!(
+        !poll.content.contains("retrieve_tool_result"),
+        "no retrieval footer while Running: {}",
+        poll.content
+    );
+
+    // The terminal poll spills the final view under the task id.
+    let done = ShellWaitTool::new("exec_shell_wait")
+        .execute(json!({"task_id": task_id, "timeout_ms": 30_000}), &ctx)
+        .await
+        .expect("wait");
+    assert!(done.success, "{}", done.content);
+    let meta = done.metadata.expect("metadata");
+    assert_eq!(
+        meta.get("spillover_ref").and_then(Value::as_str),
+        Some(task_id.as_str()),
+        "terminal poll must spill under the task id"
+    );
+}
+
+/// Minimal [`ShellManagerApi`] stub whose `inspect_job` reports a stale
+/// (evicted / restart-orphanned) job — only the spill path is exercised, so
+/// every other method panics if reached.
+struct StaleInspectManager;
+
+impl codesmith_agent_runtime::host_services::ShellManagerApi for StaleInspectManager {
+    fn clear_foreground_background_request(&self) {
+        unimplemented!("spill test only")
+    }
+    fn set_sandbox_runtime(
+        &self,
+        _runtime: codesmith_agent_runtime::sandbox::SandboxRuntimeConfig,
+    ) {
+        unimplemented!("spill test only")
+    }
+    fn execute_with_options_env(
+        &self,
+        _command: &str,
+        _working_dir: Option<&str>,
+        _timeout_ms: u64,
+        _background: bool,
+        _stdin_data: Option<&str>,
+        _tty: bool,
+        _policy_override: Option<codesmith_agent_runtime::sandbox::SandboxPolicy>,
+        _extra_env: std::collections::HashMap<String, String>,
+    ) -> anyhow::Result<ShellResult> {
+        unimplemented!("spill test only")
+    }
+    fn execute_interactive_with_policy_env(
+        &self,
+        _command: &str,
+        _working_dir: Option<&str>,
+        _timeout_ms: u64,
+        _policy_override: Option<codesmith_agent_runtime::sandbox::SandboxPolicy>,
+        _extra_env: std::collections::HashMap<String, String>,
+    ) -> anyhow::Result<ShellResult> {
+        unimplemented!("spill test only")
+    }
+    fn write_stdin(&self, _task_id: &str, _input: &str, _close: bool) -> anyhow::Result<()> {
+        unimplemented!("spill test only")
+    }
+    fn kill(&self, _task_id: &str) -> anyhow::Result<ShellResult> {
+        unimplemented!("spill test only")
+    }
+    fn kill_running(&self) -> anyhow::Result<Vec<ShellResult>> {
+        unimplemented!("spill test only")
+    }
+    fn take_foreground_background_request(&self) -> bool {
+        unimplemented!("spill test only")
+    }
+    fn get_output(
+        &self,
+        _task_id: &str,
+        _block: bool,
+        _timeout_ms: u64,
+    ) -> anyhow::Result<ShellResult> {
+        unimplemented!("spill test only")
+    }
+    fn get_output_delta(
+        &self,
+        _task_id: &str,
+        _wait: bool,
+        _timeout_ms: u64,
+    ) -> anyhow::Result<ShellDeltaResult> {
+        unimplemented!("spill test only")
+    }
+    fn tag_linked_task(
+        &self,
+        _task_id: &str,
+        _linked_task_id: Option<String>,
+    ) -> anyhow::Result<()> {
+        unimplemented!("spill test only")
+    }
+    fn list_jobs(&self) -> Vec<ShellJobSnapshot> {
+        unimplemented!("spill test only")
+    }
+    fn inspect_job(&self, _task_id: &str) -> anyhow::Result<ShellJobDetail> {
+        Ok(ShellJobDetail {
+            snapshot: ShellJobSnapshot {
+                id: "stale-task".to_string(),
+                job_id: "stale-task".to_string(),
+                command: "cargo test".to_string(),
+                cwd: std::path::PathBuf::from("/tmp"),
+                status: ShellStatus::Killed,
+                exit_code: None,
+                elapsed_ms: 0,
+                // The stored tail is all a stale detail carries — a strictly
+                // worse view than a previously spilled FULL output.
+                stdout_tail: "…last lines only…".to_string(),
+                stderr_tail: String::new(),
+                stdout_len: 20,
+                stderr_len: 0,
+                stdin_available: false,
+                stale: true,
+                linked_task_id: None,
+            },
+            stdout: "…last lines only…".to_string(),
+            stderr: String::new(),
+        })
+    }
+    fn poll_delta(
+        &self,
+        _task_id: &str,
+        _wait: bool,
+        _timeout_ms: u64,
+    ) -> anyhow::Result<ShellDeltaResult> {
+        unimplemented!("spill test only")
+    }
+    fn request_foreground_background(&self) {
+        unimplemented!("spill test only")
+    }
+}
+
+/// A stale (evicted / restart-orphanned) job's `inspect_job` detail carries
+/// only the stored tail — spilling it under the task id would overwrite a
+/// previously spilled FULL view with a strictly worse one. The spill must be
+/// skipped so the fuller file survives (no footer rather than a degraded
+/// spill).
+#[test]
+fn test_spill_task_full_output_skips_stale_detail() {
+    let tmp = tempdir().expect("tempdir");
+    let _spill_root = TestSpillRoot::new(tmp.path());
+    let mut ctx = ToolContext::new(tmp.path());
+    ctx.shell_manager = std::sync::Arc::new(StaleInspectManager);
+
+    // Prime a FULL spill under the task id — what an earlier live poll wrote.
+    let full = "x".repeat(40_000);
+    let path =
+        codesmith_agent_runtime::tools::truncate::write_spillover("stale-task", &full)
+            .expect("prime full spill");
+
+    let spill = spill_task_full_output(&ctx, "stale-task");
+    assert!(
+        spill.is_none(),
+        "stale detail must not spill over the full file"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path)
+            .expect("full spill survives")
+            .len(),
+        full.len(),
+        "the previously spilled FULL view must be intact"
+    );
+}
+
+/// The spill id embeds the pid: the spillover root is shared across
+/// concurrent CodeSmith processes, and millis+seq alone can collide between
+/// two processes that start their counters in the same millisecond.
+#[test]
+fn test_fresh_shell_spill_id_is_process_unique() {
+    let a = fresh_shell_spill_id();
+    let b = fresh_shell_spill_id();
+    assert_ne!(a, b, "consecutive ids must differ");
+    assert!(
+        a.ends_with(&format!("-{}", std::process::id())),
+        "id must embed the pid for cross-process uniqueness: {a}"
+    );
+}

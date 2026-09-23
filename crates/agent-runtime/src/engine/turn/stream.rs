@@ -301,9 +301,10 @@ enum StreamReduceOutcome {
         /// retried, so its tokens still count).
         usage: Usage,
     },
-    /// The stream died before any content was produced (only `MessageStart`
-    /// or nothing arrived). Safe to retry transparently — the provider hasn't
-    /// billed for output and the user has seen nothing (mirrors
+    /// The stream died before anything committed at the boundary (only
+    /// structural frames like `MessageStart` / empty block starts arrived —
+    /// nothing user-visible was emitted and no output tokens were billed).
+    /// Safe to retry transparently — the user has seen nothing (mirrors
     /// `should_transparently_retry_stream` in `streaming.rs:81`).
     Empty { error: String },
 }
@@ -354,18 +355,26 @@ impl HostAgentExecutor {
     /// stream is buffered).
     ///
     /// `any_content_received` flips at the **commit boundary** — the first
-    /// event that makes the attempt non-discardable: a non-empty text or
-    /// thinking delta (the instant it is forwarded to the callback, the UI
-    /// has seen content) or a completed tool block (`ToolCallStarted` is
+    /// event that makes the attempt non-discardable, judged by "did the UI
+    /// see something, or did the provider bill output tokens for it": a
+    /// non-empty text or thinking delta (the instant it is forwarded to the
+    /// callback, the UI has seen content), a non-empty text start payload or
+    /// buffered `InputJsonDelta` fragment (argument/initial tokens are
+    /// provider-generated *output* and are billed — a retry would regenerate
+    /// and re-bill them), or a completed tool block (`ToolCallStarted` is
     /// emitted and early speculative dispatch may already be running).
-    /// Block-lifecycle frames (`MessageStart`, `ContentBlockStart`, stop
-    /// events for empty blocks) and buffered `InputJsonDelta` fragments are
-    /// prelude: nothing user-visible has happened and no output tokens were
-    /// billed, so an abort there is safe to retry. On a mid-flight `Err`,
-    /// this drives the [`StreamReduceOutcome`] variant: `Empty` (no committed
-    /// content → safe to retry) vs `Partial` (content received → surface,
-    /// don't retry). This mirrors production's `any_content_received` guard
-    /// in `should_transparently_retry_stream` (`streaming.rs:81-87`).
+    /// Purely structural frames (`MessageStart`, empty
+    /// `ContentBlockStart`s, stop events for empty blocks) are prelude:
+    /// nothing user-visible has been emitted and no output tokens were
+    /// billed, so an abort there is safe to retry. (Block-lifecycle
+    /// announcements for empty blocks — `MessageStarted` / `ThinkingStarted`
+    /// — don't flip the flag: a transparent retry re-emits them, and the
+    /// [`CallbackBridge`](crate::callback_bridge::CallbackBridge) deduplicates the re-announcement so hosts
+    /// don't see a duplicate.) On a mid-flight `Err`, this drives the
+    /// [`StreamReduceOutcome`] variant: `Empty` (no committed content → safe
+    /// to retry) vs `Partial` (content received → surface, don't retry).
+    /// This mirrors production's `any_content_received` guard in
+    /// `should_transparently_retry_stream` (`streaming.rs:81-87`).
     ///
     /// Tool-input JSON deltas (`Delta::InputJsonDelta`) are **not** emitted
     /// to the callback — they're assembled into the `ToolUse` block's input,
@@ -525,6 +534,15 @@ impl HostAgentExecutor {
                                     index: index as usize,
                                 })
                                 .await;
+                            // Commit boundary: a non-empty start payload is
+                            // billed output (some OpenAI-compat providers put
+                            // initial text here instead of a delta) — a retry
+                            // would regenerate and re-bill it. The empty
+                            // start (Anthropic's shape) stays prelude; the
+                            // bridge dedupes the re-announcement on retry.
+                            if !text.is_empty() {
+                                any_content_received = true;
+                            }
                             BlockBuild::Text(text)
                         }
                         ContentBlockStart::Thinking { thinking } => {
@@ -600,8 +618,16 @@ impl HostAgentExecutor {
                                 BlockBuild::ToolUse { input_buf, .. },
                                 Delta::InputJsonDelta { partial_json },
                             ) => {
-                                // Tool-input JSON is not user-visible — buffer
-                                // for assembly, no callback emission.
+                                // Commit boundary: argument tokens are
+                                // provider-generated, billed output — a
+                                // stream dying mid-tool-input must surface as
+                                // `Partial` (regenerating the arguments on a
+                                // retry would double-bill them). The block is
+                                // still not user-visible, so no callback
+                                // emission — buffer for assembly only.
+                                if !partial_json.is_empty() {
+                                    any_content_received = true;
+                                }
                                 input_buf.push_str(&partial_json);
                             }
                             // Delta/block kind mismatch — ignore (provider quirk).
@@ -920,24 +946,55 @@ impl HostAgentExecutor {
                         self.emit_status("Request cancelled".to_string()).await;
                         return Ok(StreamRoundOutcome::Interrupted);
                     }
-                    // Classify before spending retry budget: auth / authz /
-                    // bad-request / parse / state failures are deterministic —
-                    // every retry re-fails identically, so surface them now.
-                    // (Context-length rejections never get here: the stream
-                    // opened, so the provider already accepted the request.)
-                    // Transport classes (network / timeout / rate-limit) and
-                    // the Internal catch-all (incl. 5xx server errors) stay
-                    // retryable.
+                    // Classify before spending retry budget. A context-length
+                    // rejection (InvalidInput) can also arrive in-band after
+                    // the stream opens (gateways / proxies emit errors
+                    // mid-stream), so route it through the same reactive
+                    // recovery as the pre-stream arm instead of hard-failing.
+                    // Auth failures are deterministic — every retry re-fails
+                    // identically — so surface them now. Everything else
+                    // (network / timeout / rate-limit / parse / state /
+                    // internal, incl. 5xx reason phrases like
+                    // "(503 Service Unavailable)" that classify as `State`)
+                    // stays retryable: the text classifier is heuristic, and
+                    // a wrongly-deterministic verdict would hard-fail a
+                    // transient failure after a single attempt — the bounded
+                    // retry budget (3) is the cheaper mistake.
                     let category = classify_error_message(&error);
+                    if category == ErrorCategory::InvalidInput {
+                        // Parity with the pre-stream arm: the same message
+                        // there triggers reactive compaction, not a hard
+                        // fail. Recovery decides via
+                        // `is_context_length_error_message` (== InvalidInput)
+                        // and its own budget; non-context InvalidInput (e.g.
+                        // a bad model name) recovers nowhere and hard-fails
+                        // below without burning retries.
+                        if self
+                            .try_recover_context_overflow(
+                                client,
+                                history,
+                                system,
+                                &error,
+                                context_recovery_attempts,
+                            )
+                            .await
+                        {
+                            // Mirrors the pre-stream arm: fresh step, fresh
+                            // retry budget.
+                            *stream_retry_attempts = 0;
+                            return Ok(StreamRoundOutcome::RecoveredContextOverflow);
+                        }
+                        return Err(anyhow::anyhow!(
+                            "stream failed with non-retryable error ({category}): {error}"
+                        ));
+                    }
                     if matches!(
                         category,
-                        ErrorCategory::Authentication
-                            | ErrorCategory::Authorization
-                            | ErrorCategory::InvalidInput
-                            | ErrorCategory::Parse
-                            | ErrorCategory::State
+                        ErrorCategory::Authentication | ErrorCategory::Authorization
                     ) {
-                        return Err(anyhow::anyhow!(error));
+                        return Err(anyhow::anyhow!(
+                            "stream failed with non-retryable error ({category}): {error}"
+                        ));
                     }
                     // Stream died before any committed content — safe to
                     // retry transparently (no output billed, nothing shown).
@@ -1150,6 +1207,401 @@ mod tests {
         assert!(
             !early_start_safe(&[ToolCapability::ReadOnly, ToolCapability::Network]),
             "network tools must not start speculatively"
+        );
+    }
+
+    // === Commit-boundary + Empty-classification integration tests ==========
+    //
+    // Self-contained doubles (a round-scripted `LlmClient` + echo tool).
+    // host_executor.rs's MockLlm harness lives in its private test module;
+    // duplicating the minimal pieces keeps these tests next to the
+    // `reduce_stream` / `stream_with_transparent_retry` logic they pin.
+
+    use codesmith_agent::callback::StopReason;
+    use codesmith_agent::executor::{AgentExecutor, AgentExecutorConfig};
+    use codesmith_agent::llm_client::{LlmClient, StreamEventBox};
+    use codesmith_agent::memory::ChatHistory;
+    use codesmith_agent::models::{
+        ContentBlockStart, Delta, MessageDelta, MessageRequest, MessageResponse, StreamEvent, Usage,
+    };
+    use codesmith_agent::tools::{ToolError, ToolResult};
+
+    use crate::engine::host_executor::HostAgentExecutor;
+    use crate::events::Event;
+    use crate::session::Session;
+    use crate::session_history::SessionChatHistory;
+    use crate::tools::registry::ToolRegistry;
+    use crate::tools::spec::{ApprovalRequirement, ToolContext, ToolSpec};
+
+    enum MockRound {
+        /// Stream the events, then die mid-flight with an error.
+        EventsThenErr(Vec<StreamEvent>, String),
+        /// Stream the events and end cleanly (no trailing error).
+        Events(Vec<StreamEvent>),
+    }
+
+    /// Minimal round-scripted `LlmClient`: one round per
+    /// `create_message_stream` call, popped front-first. Records each call's
+    /// request message count — enough to distinguish a transparent retry
+    /// (identical request) from a step advance (request grew by the surfaced
+    /// turn).
+    struct RetryMockLlm {
+        rounds: std::sync::Mutex<std::collections::VecDeque<MockRound>>,
+        calls: std::sync::Mutex<Vec<usize>>,
+    }
+
+    impl RetryMockLlm {
+        fn new(rounds: Vec<MockRound>) -> Self {
+            Self {
+                rounds: std::sync::Mutex::new(rounds.into_iter().collect()),
+                calls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn call_counts(&self) -> Vec<usize> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl LlmClient for RetryMockLlm {
+        fn provider_name(&self) -> &'static str {
+            "mock"
+        }
+
+        fn model(&self) -> &str {
+            "mock-v0"
+        }
+
+        fn create_message(
+            &self,
+            _request: MessageRequest,
+        ) -> futures_util::future::BoxFuture<'_, anyhow::Result<MessageResponse>> {
+            Box::pin(async { anyhow::bail!("mock does not implement create_message") })
+        }
+
+        fn create_message_stream(
+            &self,
+            request: MessageRequest,
+        ) -> futures_util::future::BoxFuture<'_, anyhow::Result<StreamEventBox>> {
+            self.calls.lock().unwrap().push(request.messages.len());
+            let next = self.rounds.lock().unwrap().pop_front();
+            Box::pin(async move {
+                let items: Vec<anyhow::Result<StreamEvent>> = match next {
+                    Some(MockRound::Events(events)) => events.into_iter().map(Ok).collect(),
+                    Some(MockRound::EventsThenErr(events, msg)) => events
+                        .into_iter()
+                        .map(Ok)
+                        .chain(std::iter::once(Err(anyhow::anyhow!(msg))))
+                        .collect(),
+                    None => anyhow::bail!("no more scripted rounds"),
+                };
+                Ok(Box::pin(futures_util::stream::iter(items)) as StreamEventBox)
+            })
+        }
+    }
+
+    /// A `MessageStart` carrying `input_tokens` — the per-stream usage seed
+    /// (`reduce_stream`'s `MessageStart` arm does `usage = message.usage;`).
+    fn message_start_with_usage(input_tokens: u32) -> StreamEvent {
+        StreamEvent::MessageStart {
+            message: MessageResponse {
+                id: "usage-start".to_string(),
+                r#type: "message".to_string(),
+                role: "assistant".to_string(),
+                content: Vec::new(),
+                model: "mock-v0".to_string(),
+                stop_reason: None,
+                stop_sequence: None,
+                container: None,
+                usage: Usage {
+                    input_tokens,
+                    output_tokens: 0,
+                    ..Usage::default()
+                },
+            },
+        }
+    }
+
+    /// A text block: `ContentBlockStart` (empty start payload — Anthropic's
+    /// shape), one non-empty delta, `ContentBlockStop`.
+    fn text_block(idx: u32, body: &str) -> Vec<StreamEvent> {
+        vec![
+            StreamEvent::ContentBlockStart {
+                index: idx,
+                content_block: ContentBlockStart::Text {
+                    text: String::new(),
+                },
+            },
+            StreamEvent::ContentBlockDelta {
+                index: idx,
+                delta: Delta::TextDelta {
+                    text: body.to_string(),
+                },
+            },
+            StreamEvent::ContentBlockStop { index: idx },
+        ]
+    }
+
+    /// A clean single-stream round: `MessageStart(input)` + a text block +
+    /// `MessageDelta(usage)` + `MessageStop`.
+    fn usage_round(input: u32, output: u32) -> Vec<StreamEvent> {
+        let mut call = vec![message_start_with_usage(input)];
+        call.extend(text_block(0, "answer"));
+        call.push(StreamEvent::MessageDelta {
+            delta: MessageDelta {
+                stop_reason: Some("end_turn".to_string()),
+                stop_sequence: None,
+            },
+            usage: Some(Usage {
+                input_tokens: input,
+                output_tokens: output,
+                ..Usage::default()
+            }),
+        });
+        call.push(StreamEvent::MessageStop);
+        call
+    }
+
+    /// Read-only echo tool whose result mirrors `input.text` (tolerates a
+    /// null/invalid input — the partial-tool-input test surfaces exactly
+    /// that shape).
+    struct EchoSpec;
+
+    #[async_trait::async_trait]
+    impl ToolSpec for EchoSpec {
+        fn name(&self) -> &'static str {
+            "echo"
+        }
+
+        fn description(&self) -> &'static str {
+            "Echoes input.text."
+        }
+
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"]
+            })
+        }
+
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+
+        fn approval_requirement(&self) -> ApprovalRequirement {
+            ApprovalRequirement::Auto
+        }
+
+        async fn execute(
+            &self,
+            input: serde_json::Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            let text = input
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            Ok(ToolResult::success(format!("echo:{text}")))
+        }
+    }
+
+    fn fresh_session() -> Session {
+        Session::new(
+            "mock-v0".to_string(),
+            std::path::PathBuf::from("/tmp/codesmith-test"),
+            false,
+            false,
+            std::path::PathBuf::from("/tmp/codesmith-test/notes.md"),
+            std::path::PathBuf::from("/tmp/codesmith-test/mcp.json"),
+        )
+    }
+
+    fn stream_test_executor(
+        mock: &std::sync::Arc<RetryMockLlm>,
+        tools: codesmith_agent::tools::ToolSet,
+    ) -> HostAgentExecutor {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<Event>(256);
+        HostAgentExecutor::new(
+            std::sync::Arc::clone(mock) as codesmith_agent::llm_client::LlmClientHandle,
+            std::sync::Arc::new(tools),
+            std::sync::Arc::new(codesmith_agent::callback::NoopCallback),
+            AgentExecutorConfig::default(),
+            Some(tx),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    fn echo_tool_set() -> codesmith_agent::tools::ToolSet {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(std::sync::Arc::new(EchoSpec));
+        registry.to_framework_tool_set()
+    }
+
+    /// A stream that dies mid-tool-input (after a non-empty `InputJsonDelta`)
+    /// surfaces as `Partial` instead of transparently retrying: argument
+    /// tokens are billed provider output, so a retry would regenerate and
+    /// re-bill them (the commit boundary flips on the first non-empty
+    /// fragment). Proven by the second call's request being LARGER than the
+    /// first — a step advance (partial assistant turn + tool result
+    /// appended), not a retry (which would re-send the identical request).
+    #[tokio::test]
+    async fn partial_tool_input_death_is_surfaced_not_retried() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+
+        // Attempt 1: a tool block opens and receives a partial argument
+        // fragment, then the stream dies — billed output, must surface.
+        let died_mid_input = vec![
+            message_start_with_usage(100),
+            StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlockStart::ToolUse {
+                    id: "t1".to_string(),
+                    name: "echo".to_string(),
+                    input: serde_json::Value::Null,
+                    caller: None,
+                },
+            },
+            StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: Delta::InputJsonDelta {
+                    partial_json: r#"{"text":"he"#.to_string(),
+                },
+            },
+        ];
+        // Round 2: a clean text-only turn — reached as the NEXT step (after
+        // the surfaced partial tool call runs), not as a retry.
+        let mock = std::sync::Arc::new(RetryMockLlm::new(vec![
+            MockRound::EventsThenErr(died_mid_input, "connection reset".into()),
+            MockRound::Events(usage_round(200, 60)),
+        ]));
+        let executor = stream_test_executor(&mock, echo_tool_set());
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("partial tool input must surface, not fail the turn");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        let calls = mock.call_counts();
+        assert_eq!(calls.len(), 2, "attempt + step-advance (not a retry)");
+        assert!(
+            calls[1] > calls[0],
+            "second request must carry the surfaced partial turn (assistant + tool result), \
+             not be a retry clone: {} vs {}",
+            calls[1],
+            calls[0]
+        );
+    }
+
+    /// A non-empty `ContentBlockStart::Text` payload is billed output (some
+    /// OpenAI-compat providers put initial text in the start event instead
+    /// of a delta) — a stream dying right after it must surface, not retry.
+    /// With no tool call in the surfaced content the turn ends immediately,
+    /// so exactly ONE request must have been issued.
+    #[tokio::test]
+    async fn billed_start_payload_death_is_surfaced_not_retried() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+
+        let died_after_start_payload = vec![
+            message_start_with_usage(100),
+            StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlockStart::Text {
+                    text: "partial words".to_string(),
+                },
+            },
+        ];
+        // Round 2 exists to catch a wrongful retry: surfacing ends the turn
+        // with NoToolCalls after exactly one request.
+        let mock = std::sync::Arc::new(RetryMockLlm::new(vec![
+            MockRound::EventsThenErr(died_after_start_payload, "connection reset".into()),
+            MockRound::Events(usage_round(200, 60)),
+        ]));
+        let executor = stream_test_executor(&mock, codesmith_agent::tools::ToolSet::new());
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("billed start payload must surface as partial content");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(
+            mock.call_counts().len(),
+            1,
+            "a stream that already billed output must not transparently retry"
+        );
+        assert_eq!(history.len(), 2, "[user, assistant(partial words)]");
+    }
+
+    /// A transient 5xx whose text escapes the classifier's space-padded
+    /// Network patterns (reqwest's "(503 Service Unavailable)" classifies as
+    /// `State` via "unavailable") must stay retryable — hard-failing on a
+    /// single attempt would be a regression vs. the always-retry-then-surface
+    /// policy this stream loop replaced.
+    #[tokio::test]
+    async fn empty_stream_state_5xx_is_retried() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+
+        let mock = std::sync::Arc::new(RetryMockLlm::new(vec![
+            MockRound::EventsThenErr(
+                vec![message_start_with_usage(100)],
+                "HTTP status server error (503 Service Unavailable)".into(),
+            ),
+            MockRound::Events(usage_round(200, 60)),
+        ]));
+        let executor = stream_test_executor(&mock, codesmith_agent::tools::ToolSet::new());
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("transient 503 must retry, not hard-fail");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(mock.call_counts().len(), 2, "initial attempt + one retry");
+    }
+
+    /// An in-band context-length rejection arriving MID-stream (gateways can
+    /// emit errors after the stream opens) routes through the same reactive
+    /// recovery as the pre-stream arm. Without a capacity probe, recovery is
+    /// unavailable and the turn hard-fails immediately — no retry budget
+    /// burned on a deterministic rejection.
+    #[tokio::test]
+    async fn empty_stream_context_length_hard_fails_without_capacity() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+
+        let mock = std::sync::Arc::new(RetryMockLlm::new(vec![
+            MockRound::EventsThenErr(
+                vec![message_start_with_usage(100)],
+                "This model's maximum context length is 128000 tokens, however you requested 130000"
+                    .into(),
+            ),
+            MockRound::Events(usage_round(200, 60)),
+        ]));
+        let executor = stream_test_executor(&mock, codesmith_agent::tools::ToolSet::new());
+
+        let err = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect_err("no capacity probe ⇒ context-length rejection hard-fails");
+        assert!(
+            err.to_string().contains("maximum context length"),
+            "error should carry the provider message: {err}"
+        );
+        assert_eq!(
+            mock.call_counts().len(),
+            1,
+            "deterministic rejection must not burn retry budget"
         );
     }
 }

@@ -1013,7 +1013,12 @@ fn build_shell_delta_tool_result(delta: ShellDeltaResult, context: &ToolContext)
     // renders may be small while the task's overall output already elided
     // bytes in an earlier view (or vice versa); the spill covers the whole
     // task, keyed by task id, so the elided middle is always retrievable.
-    let full_output_spill = if needs_spill(delta.stdout_total_len, delta.stderr_total_len)
+    // Skipped while Running (same rule as the foreground path above): each
+    // poll would otherwise re-clone and re-write the FULL accumulated output
+    // (O(polls × bytes) of disk churn plus blocking I/O on the async path).
+    // The poll that observes the terminal status spills the final view.
+    let full_output_spill = if result.status != ShellStatus::Running
+        && needs_spill(delta.stdout_total_len, delta.stderr_total_len)
         && let Some(task_id) = result.task_id.as_deref()
     {
         spill_task_full_output(context, task_id)
@@ -1191,9 +1196,14 @@ fn append_shell_delta_output(
 /// consumed by a previous call. Degrades to `None` when the task is gone or
 /// the disk write fails; callers then simply omit the retrieval footer.
 fn spill_task_full_output(context: &ToolContext, task_id: &str) -> Option<ShellSpillInfo> {
-    // Note: for an evicted (stale) job the detail carries only the stored
-    // tail — a degraded spill, still better than a permanently lost middle.
     let detail = context.shell_manager.inspect_job(task_id).ok()?;
+    if detail.snapshot.stale {
+        // A stale (evicted / restart-orphanned) detail carries only the
+        // stored tail — writing it under the task id would overwrite a
+        // previously spilled FULL view with a strictly worse one. Keep the
+        // fuller file; omit the footer rather than degrade it.
+        return None;
+    }
     spill_full_shell_output(task_id, &detail.stdout, &detail.stderr)
 }
 
@@ -1216,8 +1226,10 @@ fn attach_spill_to_result(tool_result: &mut ToolResult, spill: &ShellSpillInfo) 
 }
 
 /// Fresh spill id for paths with no task id (external-sandbox backend): a
-/// timestamp plus a process-wide sequence, both to keep ids unique when
-/// parallel batch calls land in the same millisecond.
+/// timestamp plus a process-wide sequence and the pid — the spillover root
+/// (`~/.codesmith/tool_outputs/`) is shared across concurrent CodeSmith
+/// processes, and millis+seq alone can collide between two processes that
+/// start their counters in the same millisecond.
 fn fresh_shell_spill_id() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -1226,7 +1238,7 @@ fn fresh_shell_spill_id() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    format!("shell-{millis}-{seq}")
+    format!("shell-{millis}-{seq}-{}", std::process::id())
 }
 
 fn shell_delta_with_accumulated_output(
