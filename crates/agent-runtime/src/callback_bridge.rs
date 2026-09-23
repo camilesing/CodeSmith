@@ -23,7 +23,7 @@
 //! |-----------------------|----------------------------|-----------------------|
 //! | `on_tool_start`       | `ToolCallStarted`          | `ToolCallBefore`      |
 //! | `on_tool_end`         | `ToolCallComplete`         | `ToolCallAfter`       |
-//! | `on_llm_start`        | — (no precise event¹)      | — (no LLM-start hook) |
+//! | `on_llm_start`        | — (no precise event¹; resets block-announcement dedup⁵) | — (no LLM-start hook) |
 //! | `on_llm_end`          | — (content not on wire²)   | — (no LLM-end hook)   |
 //! | `on_step`             | — (no step event variant)  | —                     |
 //! | `on_complete`         | — (`TurnComplete`³)         | —                     |
@@ -40,7 +40,12 @@
 //!   surface for `ExtensionEvent::ToolExecutionUpdate`; the host has no
 //!   streaming `Tool` contract yet (`Tool::run` is one-shot), so there is no
 //!   host `Event` variant to bridge it to. A streaming `Tool` variant (§F-later)
-//!   would add one.
+//!   would add one. ⁵ `on_llm_start` forwards nothing but clears the
+//!   block-announcement dedup set: the executor fires it once per LLM step
+//!   (transparent stream retries happen inside a step), and a retry re-emits
+//!   the same `MessageStarted` / `ThinkingStarted` announcements, which hosts
+//!   treat as "open a new item" — the dedup under `on_stream_delta` keeps the
+//!   first announcement the single source.
 //!
 //! Streaming deltas (`MessageDelta` / `ThinkingDelta`) and block-lifecycle
 //! events (`MessageStarted` / `ThinkingStarted` / `ThinkingComplete` /
@@ -87,10 +92,19 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 use codesmith_agent::callback::{Callback, StreamDelta};
+use codesmith_agent::models::MessageRequest;
 use codesmith_tools::{ToolError, ToolResult};
 
 use crate::events::Event;
 use crate::hooks::{HookContext, HookEvent, HookHost};
+
+/// Which block-lifecycle announcement a dedup key in
+/// [`BridgeState::announced_blocks`] refers to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum BlockAnnouncement {
+    Message,
+    Thinking,
+}
 
 /// Mutable per-bridge state behind a `Mutex` (the `Callback` methods take
 /// `&self`, so interior mutability is required, matching the executor's own
@@ -103,6 +117,16 @@ struct BridgeState {
     /// `Event::ToolCallStarted` if the id is present — deduplicating the
     /// stream-time and execute-time announcements.
     announced: std::collections::HashSet<String>,
+    /// Block-lifecycle announcements (`MessageStarted` / `ThinkingStarted`)
+    /// already forwarded since the last `on_llm_start`. A transparent stream
+    /// retry re-emits the same block announcements the failed attempt sent,
+    /// and hosts treat each one as "start a new message/reasoning item" —
+    /// the duplicate would orphan the first item (e.g. the TUI leaves the
+    /// replaced record `InProgress` forever). Suppressing the re-announcement
+    /// makes the retry's deltas land in the item the first attempt opened.
+    /// Keyed by (kind, wire block index); cleared per LLM step because each
+    /// step's stream legitimately restarts indexes at 0.
+    announced_blocks: std::collections::HashSet<(BlockAnnouncement, usize)>,
     /// LIFO of pending tool calls: `(wire_id, stashed_input)`. Pushed on
     /// `on_tool_start`, popped on `on_tool_end` so the end event pairs with the
     /// most recent start and `tool_args` can be replayed into the
@@ -253,21 +277,36 @@ impl Callback for CallbackBridge {
             let Some(tx) = tx.as_ref() else {
                 return;
             };
+            // First-wins dedup for block-lifecycle announcements within the
+            // current LLM step (see `BridgeState::announced_blocks`). `None`
+            // means "already announced — skip the send".
+            let first_block_announcement = |kind: BlockAnnouncement, index: usize| {
+                let mut s = state.lock().expect("bridge state mutex poisoned");
+                s.announced_blocks.insert((kind, index))
+            };
             let event = match delta {
-                StreamDelta::Text { index, content } => Event::MessageDelta {
+                StreamDelta::Text { index, content } => Some(Event::MessageDelta {
                     index: *index,
                     content: content.clone(),
-                },
-                StreamDelta::Thinking { index, content } => Event::ThinkingDelta {
+                }),
+                StreamDelta::Thinking { index, content } => Some(Event::ThinkingDelta {
                     index: *index,
                     content: content.clone(),
-                },
-                StreamDelta::MessageStarted { index } => Event::MessageStarted { index: *index },
-                StreamDelta::ThinkingStarted { index } => Event::ThinkingStarted { index: *index },
-                StreamDelta::ThinkingComplete { index } => {
-                    Event::ThinkingComplete { index: *index }
+                }),
+                StreamDelta::MessageStarted { index } => {
+                    first_block_announcement(BlockAnnouncement::Message, *index)
+                        .then(|| Event::MessageStarted { index: *index })
                 }
-                StreamDelta::MessageComplete { index } => Event::MessageComplete { index: *index },
+                StreamDelta::ThinkingStarted { index } => {
+                    first_block_announcement(BlockAnnouncement::Thinking, *index)
+                        .then(|| Event::ThinkingStarted { index: *index })
+                }
+                StreamDelta::ThinkingComplete { index } => {
+                    Some(Event::ThinkingComplete { index: *index })
+                }
+                StreamDelta::MessageComplete { index } => {
+                    Some(Event::MessageComplete { index: *index })
+                }
                 StreamDelta::ToolCallStarted { id, name, input } => {
                     // Mark this id as announced so the execute-time
                     // `on_tool_start` skips re-emitting `Event::ToolCallStarted`
@@ -276,22 +315,47 @@ impl Callback for CallbackBridge {
                         let mut s = state.lock().expect("bridge state mutex poisoned");
                         s.announced.insert(id.clone());
                     }
-                    Event::ToolCallStarted {
+                    Some(Event::ToolCallStarted {
                         id: id.clone(),
                         name: name.clone(),
                         input: input.clone(),
-                    }
+                    })
                 }
+            };
+            let Some(event) = event else {
+                return;
             };
             let _ = tx.send(event).await;
         })
     }
 
-    // `on_llm_start`, `on_llm_end`, `on_step`, `on_complete`,
+    fn on_llm_start<'a>(
+        &'a self,
+        request: &'a MessageRequest,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        let state = self.state.clone();
+        Box::pin(async move {
+            let _ = request;
+            // One LLM step = one logical message per block index. The
+            // executor fires `on_llm_start` once per step (retries are
+            // transparent), so this is the reset point for the
+            // block-announcement dedup — the next step's stream may
+            // legitimately re-announce index 0.
+            state
+                .lock()
+                .expect("bridge state mutex poisoned")
+                .announced_blocks
+                .clear();
+        })
+    }
+
+    // `on_llm_end`, `on_step`, `on_complete`,
     // `on_tool_progress`: intentionally un-overridden — see the "Bridged vs.
     // documented gaps" table in the module docs. The trait's default no-ops
     // apply; the host's `TurnStarted` / `TurnComplete` events are emitted
     // directly by the engine caller, not through this bridge.
+    // (`on_llm_start` IS overridden above — as the per-step reset point for
+    // the block-announcement dedup, not as a forwarder.)
     // `on_tool_progress` (§F2c) has no host `Event` variant — a streaming
     // `Tool` contract would add one (§F-later); until then it stays unbridged.
 }
@@ -646,6 +710,84 @@ mod tests {
                 content: "ghost".to_string(),
             })
             .await;
+    }
+
+    /// Block-lifecycle announcements dedup within one LLM step: a transparent
+    /// stream retry re-emits `MessageStarted`/`ThinkingStarted` for blocks the
+    /// failed attempt already announced, and hosts treat each one as "open a
+    /// new item" (the TUI would orphan the first record). Only the first
+    /// announcement per (kind, index) is forwarded; `on_llm_start` (fired
+    /// once per step, retries stay inside) clears the dedup so the next
+    /// step's index 0 flows again.
+    #[tokio::test]
+    async fn bridge_dedupes_block_announcements_within_a_step() {
+        let (tx, mut rx) = mpsc::channel(256);
+        let bridge = CallbackBridge::new(Some(tx), None, test_template());
+
+        // Same index twice (attempt + transparent retry) → one event.
+        bridge
+            .on_stream_delta(&StreamDelta::MessageStarted { index: 0 })
+            .await;
+        bridge
+            .on_stream_delta(&StreamDelta::MessageStarted { index: 0 })
+            .await;
+        // A different index is a different block → forwarded.
+        bridge
+            .on_stream_delta(&StreamDelta::MessageStarted { index: 1 })
+            .await;
+        // Thinking announcements dedup independently of message ones.
+        bridge
+            .on_stream_delta(&StreamDelta::ThinkingStarted { index: 0 })
+            .await;
+        bridge
+            .on_stream_delta(&StreamDelta::ThinkingStarted { index: 0 })
+            .await;
+        // Content deltas are never deduped.
+        bridge
+            .on_stream_delta(&StreamDelta::Text {
+                index: 0,
+                content: "after retry".to_string(),
+            })
+            .await;
+
+        let events = drain(&mut rx);
+        assert_eq!(
+            events.len(),
+            4,
+            "1×MessageStarted(0) + 1×MessageStarted(1) + 1×ThinkingStarted(0) + 1×Text: {events:?}"
+        );
+        assert!(matches!(events[0], Event::MessageStarted { index: 0 }));
+        assert!(matches!(events[1], Event::MessageStarted { index: 1 }));
+        assert!(matches!(events[2], Event::ThinkingStarted { index: 0 }));
+        assert!(matches!(events[3], Event::MessageDelta { .. }));
+
+        // New step: on_llm_start resets the dedup — index 0 is announced
+        // again (a new logical message).
+        let request = MessageRequest {
+            model: "mock-v0".to_string(),
+            messages: Vec::new(),
+            max_tokens: 0,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: None,
+            stream: None,
+            temperature: None,
+            top_p: None,
+        };
+        bridge.on_llm_start(&request).await;
+        bridge
+            .on_stream_delta(&StreamDelta::MessageStarted { index: 0 })
+            .await;
+        let events = drain(&mut rx);
+        assert_eq!(
+            events.len(),
+            1,
+            "post-reset announcement must forward: {events:?}"
+        );
+        assert!(matches!(events[0], Event::MessageStarted { index: 0 }));
     }
 
     // === Executor integration ================================================

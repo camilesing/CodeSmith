@@ -62,22 +62,42 @@ pub fn needs_spill(stdout_total: usize, stderr_total: usize) -> bool {
 /// bytes truncation elides stay retrievable via `retrieve_tool_result`
 /// instead of being lost (P0-2 — the mirror article's "spill, don't
 /// discard"). Call this only when truncation actually happened
-/// ([`TruncationMeta::truncated`]). Disk/IO failure degrades to `None` — a
-/// spillover hiccup must never fail the tool call; the model then simply
-/// sees the old truncated view with no footer.
+/// ([`TruncationMeta::truncated`]). Disk/IO failure degrades to `None`
+/// (logged via `tracing::warn!`) — a spillover hiccup must never fail the
+/// tool call; the model then simply sees the old truncated view with no
+/// footer.
 #[must_use]
 pub fn spill_full_shell_output(
     spill_id: &str,
     stdout: &str,
     stderr: &str,
 ) -> Option<ShellSpillInfo> {
-    let combined = if stderr.is_empty() {
-        stdout.to_string()
+    // Borrow stdout when stderr is empty (the common case) instead of
+    // duplicating a potentially very large buffer — this runs on every poll
+    // of a large-output task.
+    let combined: std::borrow::Cow<'_, str> = if stderr.is_empty() {
+        std::borrow::Cow::Borrowed(stdout)
     } else {
-        format!("{stdout}\n\nSTDERR:\n{stderr}")
+        std::borrow::Cow::Owned(format!("{stdout}\n\nSTDERR:\n{stderr}"))
     };
     let total_bytes = combined.len();
-    let path = super::truncate::write_spillover(spill_id, &combined).ok()?;
+    let path = match super::truncate::write_spillover(spill_id, &combined) {
+        Ok(path) => path,
+        Err(err) => {
+            // Degrade to `None` (a spillover hiccup must never fail the tool
+            // call), but leave a trace — the truncated view's footer promises
+            // the full output is on disk, and a silent write failure would
+            // break that promise invisibly (same posture as
+            // `apply_spillover_inner` in truncate.rs).
+            tracing::warn!(
+                target: "spillover",
+                ?err,
+                spill_id,
+                "shell spill write failed; keeping truncated view without retrieval footer"
+            );
+            return None;
+        }
+    };
     Some(ShellSpillInfo {
         ref_id: spill_id.to_string(),
         path,
@@ -293,9 +313,16 @@ mod tests {
 
     /// Serialise through the spillover guard: these tests swap the
     /// process-global test storage root (same convention as truncate.rs).
+    /// The guard is held for the whole test body — releasing it after the
+    /// swap would let a parallel test swap in its own root (or restore the
+    /// real one) while this test's body is still spilling.
     struct TestRoot {
-        _tmp: tempfile::TempDir,
         prior: Option<std::path::PathBuf>,
+        _tmp: tempfile::TempDir,
+        /// Held until drop so the override stays exclusive through the test
+        /// body and the temp-dir cleanup. Declared last so the mutex unlocks
+        /// only after `_tmp` has removed its directory.
+        _guard: std::sync::MutexGuard<'static, ()>,
     }
 
     impl TestRoot {
@@ -307,16 +334,18 @@ mod tests {
             let prior = super::super::truncate::set_test_spillover_root(Some(
                 tmp.path().join("tool_outputs"),
             ));
-            drop(guard);
-            Self { _tmp: tmp, prior }
+            Self {
+                prior,
+                _tmp: tmp,
+                _guard: guard,
+            }
         }
     }
 
     impl Drop for TestRoot {
         fn drop(&mut self) {
-            let _guard = super::super::truncate::TEST_SPILLOVER_GUARD
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            // The struct's `_guard` already holds the mutex (fields drop
+            // after this body) — re-locking here would self-deadlock.
             let _ = super::super::truncate::set_test_spillover_root(self.prior.take());
         }
     }

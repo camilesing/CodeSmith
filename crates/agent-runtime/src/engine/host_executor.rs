@@ -656,6 +656,9 @@ impl LspProbe {
 /// the same executor — matching the production `Session.micro_compact_state`
 /// / `Session.circuit_breaker` field semantics. `None` on the executor ⇒
 /// compaction disabled for this run (micro-compact + auto-compact are no-ops).
+/// The rapid-refill detector deliberately does **not** live here: emergency
+/// recovery compacts even without a `CompactionProbe`, so its detector is a
+/// [`HostAgentExecutor`] field shared by every compaction path.
 ///
 /// The transcript itself is read/written through [`ChatHistory`]: the compacted
 /// messages are applied via `clear()` + `push()`, composing the existing trait
@@ -672,16 +675,11 @@ pub struct CompactionProbe {
     workspace: PathBuf,
     micro_state: Arc<std::sync::Mutex<MicroCompactState>>,
     circuit_breaker: Arc<std::sync::Mutex<CompactionCircuitBreaker>>,
-    /// Rapid-refill detector (P2-5): catches compaction that succeeds but
-    /// is futile — the context refills within a few tool rounds, again
-    /// and again. Trips to an actionable message instead of re-compacting.
-    refill: Arc<std::sync::Mutex<crate::compaction::circuit_breaker::RapidRefillDetector>>,
 }
 
 impl CompactionProbe {
     /// Construct from the compaction config + the session workspace. The
-    /// micro-compact state, circuit breaker, and refill detector start
-    /// fresh (default).
+    /// micro-compact state and circuit breaker start fresh (default).
     #[must_use]
     pub fn new(config: CompactionConfig, workspace: PathBuf) -> Self {
         Self {
@@ -689,9 +687,6 @@ impl CompactionProbe {
             workspace,
             micro_state: Arc::new(std::sync::Mutex::new(MicroCompactState::default())),
             circuit_breaker: Arc::new(std::sync::Mutex::new(CompactionCircuitBreaker::new())),
-            refill: Arc::new(std::sync::Mutex::new(
-                crate::compaction::circuit_breaker::RapidRefillDetector::new(),
-            )),
         }
     }
 
@@ -1277,6 +1272,15 @@ pub struct HostAgentExecutor {
     /// anchored estimate falls back to the pure estimate whenever history
     /// shrank past the anchor (compaction / rewind).
     usage_anchor: std::sync::Mutex<Option<crate::compaction::TokenUsageAnchor>>,
+
+    /// Rapid-refill detector (P2-5), hoisted out of [`CompactionProbe`] so
+    /// every compaction path records into one shared detector — auto
+    /// (`run_compaction`), targeted mid-loop refresh, and emergency
+    /// recovery (which runs even when the compaction probe is absent or
+    /// compaction disabled). A compaction that is vetoed or fails never
+    /// counts as a refill; see
+    /// [`RapidRefillDetector::record_trigger`](crate::compaction::circuit_breaker::RapidRefillDetector::record_trigger).
+    refill: std::sync::Mutex<crate::compaction::circuit_breaker::RapidRefillDetector>,
 }
 
 impl HostAgentExecutor {
@@ -1337,6 +1341,9 @@ impl HostAgentExecutor {
             stream_idle_timeout: None,
             stream_idle_retry_increment: std::time::Duration::ZERO,
             usage_anchor: std::sync::Mutex::new(None),
+            refill: std::sync::Mutex::new(
+                crate::compaction::circuit_breaker::RapidRefillDetector::new(),
+            ),
             prefix_stability: None,
         }
     }
@@ -1588,6 +1595,20 @@ impl HostAgentExecutor {
             .pending_post_compact_cleanup
             .lock()
             .expect("pending_post_compact_cleanup mutex poisoned") = true;
+    }
+
+    /// Drop the usage anchor (P2-5): the transcript was just rewritten in
+    /// place (micro-compaction cleared tool-result content, a compaction
+    /// replaced the message list, a hard trim dropped messages), so the
+    /// anchor's `input_tokens` — measured against the pre-rewrite request —
+    /// no longer corresponds to its `messages_len`. Keeping it would skew
+    /// the capacity preflight: stale-high after an in-place clear (micro
+    /// compaction preserves `len`, so the anchored path stays active with
+    /// the pre-clear level), or obsolete once history grows back past the
+    /// old length after a full compaction. The next successful stream
+    /// re-anchors. Sync; a one-word critical section, no `await` inside.
+    fn invalidate_usage_anchor(&self) {
+        *self.usage_anchor.lock().expect("poisoned") = None;
     }
 
     /// Read back the capacity-decision slot set by the `CapacityGateProbe`
@@ -1953,6 +1974,11 @@ impl HostAgentExecutor {
                     tracing::info!(
                         "{cleared} bytes cleared by micro-compaction before the request"
                     );
+                    // The in-place clear rewrote the transcript the anchor's
+                    // `input_tokens` was measured against — drop it or this
+                    // step's capacity preflight over-estimates by exactly
+                    // the cleared bytes (P2-5).
+                    self.invalidate_usage_anchor();
                     // Slice 25c §E: signal the host to run
                     // `post_compact_cleanup` post-`run` — a non-merge
                     // compaction just staled the transcript (tool-result
@@ -1978,22 +2004,11 @@ impl HostAgentExecutor {
         ) {
             return;
         }
-        // Rapid-refill detector (P2-5): a trigger this close to the last
-        // completed compaction means the context isn't drifting, it's
-        // pouring in. When the streak trips, skip the compaction and
-        // surface the actionable message instead of summarizing again.
-        // (Guard dropped before the await — it isn't Send.)
-        let tripped_message = {
-            let mut refill = probe.refill.lock().expect("poisoned");
-            refill.record_trigger(step)
-        };
-        if let Some(message) = tripped_message {
-            tracing::warn!("rapid context refill tripped: auto-compaction skipped");
-            self.emit_status(message.to_string()).await;
-            return;
-        }
         // §F2b T3 — `SessionBeforeCompact` lets an extension veto
-        // compaction (Cancel → skip the summary call entirely).
+        // compaction (Cancel → skip the summary call entirely). The veto
+        // runs BEFORE the refill detector records the trigger: a vetoed
+        // compaction never ran, so it must not count as a refill (P2-5
+        // counts compactions that actually happen).
         if let Some(runner) = &self.extension {
             let out = runner
                 .emit(codesmith_agent::extension::ExtensionEvent::SessionBeforeCompact)
@@ -2004,6 +2019,20 @@ impl HostAgentExecutor {
             ) {
                 return;
             }
+        }
+        // Rapid-refill detector (P2-5): a trigger this close to the last
+        // completed compaction means the context isn't drifting, it's
+        // pouring in. When the streak trips, skip the compaction and
+        // surface the actionable message instead of summarizing again.
+        // (Guard dropped before the await — it isn't Send.)
+        let tripped_message = {
+            let mut refill = self.refill.lock().expect("poisoned");
+            refill.record_trigger(step)
+        };
+        if let Some(message) = tripped_message {
+            tracing::warn!("rapid context refill tripped: auto-compaction skipped");
+            self.emit_status(message.to_string()).await;
+            return;
         }
         // Clone the messages out so no `ChatHistory` borrow crosses the await
         // (the summary call is async — the compacted result is applied after).
@@ -2045,6 +2074,9 @@ impl HostAgentExecutor {
                 for m in result.messages {
                     history.push(m);
                 }
+                // Wholesale transcript replace — the anchor's absolute level
+                // was measured against the pre-compaction request (P2-5).
+                self.invalidate_usage_anchor();
                 let reinject_budget = self
                     .reinject
                     .as_ref()
@@ -2064,8 +2096,7 @@ impl HostAgentExecutor {
                     .expect("poisoned")
                     .record_success();
                 // Anchor the rapid-refill window at this step (P2-5).
-                probe
-                    .refill
+                self.refill
                     .lock()
                     .expect("poisoned")
                     .record_compaction(step);
@@ -2081,6 +2112,13 @@ impl HostAgentExecutor {
                     .lock()
                     .expect("poisoned")
                     .record_failure();
+                // The trigger this step recorded led to no compaction —
+                // roll it back so a persistently failing summarizer can't
+                // trip the refill detector without a single refill (P2-5).
+                self.refill
+                    .lock()
+                    .expect("poisoned")
+                    .discard_last_trigger();
                 self.emit_status(format!("Compaction failed: {e}")).await;
             }
         }
@@ -2127,12 +2165,16 @@ impl HostAgentExecutor {
     /// unreachable mid-loop; the auto-compaction path (`run_compaction`) also
     /// passes `None`. The `circuit_breaker` is not touched (faithful —
     /// `apply_targeted_context_refresh` doesn't go through the breaker; the
-    /// `last_refresh_turn` cooldown throttles instead).
+    /// `last_refresh_turn` cooldown throttles instead). The rapid-refill
+    /// detector IS anchored on success (P2-5) — a completed targeted refresh
+    /// is a compaction for window purposes, so a futile refill loop routed
+    /// through this path still trips the detector.
     async fn refresh_targeted_context_mid_loop(
         &self,
         client: &LlmClientHandle,
         history: &mut dyn ChatHistory,
         system: Option<&SystemPrompt>,
+        step: u32,
     ) -> Option<TargetedRefreshOutcome> {
         // Need both the compaction probe (config + workspace) and the capacity
         // gate probe (working set — `Arc`-shared with the session's, so reads
@@ -2197,6 +2239,10 @@ impl HostAgentExecutor {
                         for m in result.messages {
                             history.push(m);
                         }
+                        // Wholesale transcript replace — the usage anchor's
+                        // absolute level was measured against the
+                        // pre-compaction request (P2-5).
+                        self.invalidate_usage_anchor();
                         // `reinject_compaction_attachments` fires DURING `run`
                         // (slice 25b §E), right after the transcript replace —
                         // provider budget from `ReinjectProbe::provider_input_budget`
@@ -2233,10 +2279,26 @@ impl HostAgentExecutor {
                     trim_oldest_messages_to_budget_history(history, system, target_budget);
                 refreshed = trimmed > 0;
                 if refreshed {
+                    // Oldest messages dropped — the anchored level no longer
+                    // matches the transcript prefix it was measured against
+                    // (P2-5).
+                    self.invalidate_usage_anchor();
                     self.reinject_compaction_attachments(history, Some(target_budget))
                         .await;
                 }
             }
+        }
+
+        if refreshed {
+            // Anchor the rapid-refill window here too (P2-5): a completed
+            // targeted refresh is a compaction for window purposes, so a
+            // futile refill loop routed through this path still trips the
+            // detector instead of resetting the streak as a "healthy
+            // interval" against a stale anchor.
+            self.refill
+                .lock()
+                .expect("poisoned")
+                .record_compaction(step);
         }
 
         Some(TargetedRefreshOutcome {
@@ -2266,6 +2328,7 @@ impl HostAgentExecutor {
         history: &mut dyn ChatHistory,
         system: Option<&SystemPrompt>,
         context_recovery_attempts: &mut u8,
+        step: u32,
     ) -> CapacityPreflight {
         let Some(probe) = &self.capacity else {
             return CapacityPreflight::Proceed;
@@ -2303,6 +2366,7 @@ impl HostAgentExecutor {
                 system,
                 target_budget,
                 "preflight token budget",
+                step,
             )
             .await
         {
@@ -2363,6 +2427,7 @@ impl HostAgentExecutor {
         system: Option<&SystemPrompt>,
         target_budget: usize,
         reason: &str,
+        step: u32,
     ) -> bool {
         let Some(probe) = &self.capacity else {
             return false;
@@ -2394,6 +2459,15 @@ impl HostAgentExecutor {
                         "Emergency recovery: micro-compaction cleared enough context".to_string(),
                     )
                     .await;
+                    // In-place clear — drop the now-stale-high usage anchor
+                    // (P2-5), then anchor the refill window: this was a
+                    // completed compaction, so subsequent triggers measure
+                    // their interval against it.
+                    self.invalidate_usage_anchor();
+                    self.refill
+                        .lock()
+                        .expect("poisoned")
+                        .record_compaction(step);
                     // Slice 25c §E: signal the host to run
                     // `post_compact_cleanup` post-`run` — recovery micro
                     // changed the transcript (no `summary_prompt` produced),
@@ -2451,6 +2525,10 @@ impl HostAgentExecutor {
                     for m in result.messages {
                         history.push(m);
                     }
+                    // Wholesale transcript replace — the usage anchor's
+                    // absolute level was measured against the
+                    // pre-compaction request (P2-5).
+                    self.invalidate_usage_anchor();
                 }
                 // summary_prompt recorded for post-`run` merge — slice 25a §E.
                 self.record_compaction_summary(result.summary_prompt.clone());
@@ -2496,6 +2574,10 @@ impl HostAgentExecutor {
             // signals fire — the host does merge THEN cleanup (the
             // production `partial→both` analog).
             if trimmed {
+                // Oldest messages dropped — the anchored level no longer
+                // matches the transcript prefix it was measured against
+                // (P2-5).
+                self.invalidate_usage_anchor();
                 self.signal_post_compact_cleanup();
             }
         }
@@ -2506,6 +2588,15 @@ impl HostAgentExecutor {
             && (after_tokens < before_tokens || after_count < before_count);
 
         if recovered {
+            // Anchor the rapid-refill window (P2-5): emergency recovery ran
+            // a completed compaction, so a refill loop routed through this
+            // path — the most futile-prone one, repeatedly at the hard
+            // ceiling — still trips the detector instead of resetting the
+            // streak against a stale anchor.
+            self.refill
+                .lock()
+                .expect("poisoned")
+                .record_compaction(step);
             let removed = before_count.saturating_sub(after_count);
             self.emit_status(format!(
                 "Emergency compaction complete: {before_count} → {after_count} messages \
@@ -2742,6 +2833,7 @@ impl HostAgentExecutor {
                     history,
                     system.as_ref(),
                     &mut context_recovery_attempts,
+                    step,
                 )
                 .await
             {
@@ -2811,7 +2903,12 @@ impl HostAgentExecutor {
                     // same step), and the cooldown set above blocks seam 4.
                     if decision.action == GuardrailAction::TargetedContextRefresh {
                         let outcome = self
-                            .refresh_targeted_context_mid_loop(&client, history, system.as_ref())
+                            .refresh_targeted_context_mid_loop(
+                                &client,
+                                history,
+                                system.as_ref(),
+                                step,
+                            )
                             .await;
                         *self
                             .pending_targeted_refresh_outcome
@@ -2865,6 +2962,11 @@ impl HostAgentExecutor {
             // rewrite `request.messages` before the stream call. The host
             // passes the current messages as JSON; a Transform returns the
             // rewritten messages, which replace `request.messages`.
+            // A rewrite invalidates the messages↔history correspondence
+            // the P2-5 usage anchor depends on — flagged so the anchor
+            // update below keeps the previous anchor instead of pinning a
+            // reading that indexes a different transcript.
+            let mut request_messages_rewritten = false;
             if let Some(runner) = &extension {
                 let out = runner
                     .emit(
@@ -2881,6 +2983,7 @@ impl HostAgentExecutor {
                     && let Ok(rewritten) = serde_json::from_value::<Vec<Message>>(e.messages)
                 {
                     request.messages = rewritten;
+                    request_messages_rewritten = true;
                 }
             }
 
@@ -2930,6 +3033,7 @@ impl HostAgentExecutor {
                     system.as_ref(),
                     &mut early_tasks,
                     &mut pending_steers,
+                    step,
                 )
                 .await
             {
@@ -3002,20 +3106,28 @@ impl HostAgentExecutor {
 
             // Persist the assistant turn (only when sendable — see above).
             if has_sendable_assistant_content {
+                // P2-5 usage anchor: pin the token level to what the
+                // provider actually counted for THIS request — the message
+                // snapshot cloned at `MessageRequest` assembly, i.e.
+                // exactly `history.len()` BEFORE the push below. Capturing
+                // the length pre-push keeps the just-committed assistant
+                // message inside the incremental term of
+                // `estimate_input_tokens_anchored`: assistant turns carry
+                // tool-call payloads that can reach tens of thousands of
+                // tokens, and they must not fall out of the estimate
+                // (strictly more conservative for the budget gate). A
+                // `BeforeProviderRequest` rewrite broke the
+                // reading↔history correspondence, so that step keeps the
+                // previous anchor and the pure estimate stands in.
+                let anchored_len = history.len();
                 history.push(Message {
                     role: "assistant".to_string(),
                     content: content.clone(),
                 });
-                // P2-5 usage anchor: pin the token level to what the
-                // provider actually counted for THIS request. The anchor
-                // deliberately lags by one assistant message (the request
-                // predated the push above) — a few hundred tokens of
-                // systematic under-count against a 128K budget, in
-                // exchange for a real absolute level.
-                if usage.input_tokens > 0 {
+                if usage.input_tokens > 0 && !request_messages_rewritten {
                     *self.usage_anchor.lock().expect("poisoned") =
                         Some(crate::compaction::TokenUsageAnchor {
-                            messages_len: history.len(),
+                            messages_len: anchored_len,
                             input_tokens: u64::from(usage.input_tokens),
                         });
                 }
@@ -6990,6 +7102,14 @@ mod tests {
             None,
             None,
         );
+        // Seed a stale anchor (P2-5): the in-place clear rewrites the
+        // transcript the anchor's level was measured against, so it must
+        // be dropped — otherwise this step's capacity preflight
+        // over-estimates by exactly the cleared bytes.
+        *executor.usage_anchor.lock().unwrap() = Some(crate::compaction::TokenUsageAnchor {
+            messages_len: 3,
+            input_tokens: 50_000,
+        });
         let reason = executor
             .run(&mut history, "what did the file say".to_string())
             .await
@@ -7011,6 +7131,14 @@ mod tests {
         // Message count is unchanged — micro-compact clears content in place,
         // it doesn't drop messages (unlike the LLM-summary auto-compact).
         assert_eq!(history.len(), transcript_len_before + 2);
+        // The seeded anchor was invalidated by the in-place clear (P2-5):
+        // keeping it would over-estimate this step's capacity preflight by
+        // exactly the cleared bytes. `end_call` reports no usage, so the
+        // run cannot have re-recorded it.
+        assert!(
+            executor.usage_anchor.lock().unwrap().is_none(),
+            "micro-compaction must invalidate the usage anchor"
+        );
     }
 
     #[tokio::test]
@@ -7040,6 +7168,14 @@ mod tests {
             None,
             None,
         );
+        // Seed a stale anchor (P2-5): the wholesale transcript replace must
+        // drop it — its absolute level was measured against the
+        // pre-compaction request. `end_call` reports no usage, so the run
+        // cannot have re-recorded it.
+        *executor.usage_anchor.lock().unwrap() = Some(crate::compaction::TokenUsageAnchor {
+            messages_len: 13,
+            input_tokens: 90_000,
+        });
         let reason = executor
             .run(&mut history, "continue".to_string())
             .await
@@ -7053,6 +7189,10 @@ mod tests {
             history.len() < 13,
             "transcript compacted: {} < 13",
             history.len()
+        );
+        assert!(
+            executor.usage_anchor.lock().unwrap().is_none(),
+            "full compaction must invalidate the usage anchor"
         );
         // The stream request saw the *compacted* transcript, not the 13-message
         // original — proof the summary was applied before the request snapshot.
@@ -7093,6 +7233,10 @@ mod tests {
             None,
             None,
         );
+        // Seed the refill window so this run's trigger lands inside it
+        // (P2-5): the failed compaction must roll the trigger back — no
+        // refill happened.
+        executor.refill.lock().unwrap().record_compaction(0);
         let reason = executor
             .run(&mut history, "continue".to_string())
             .await
@@ -7101,6 +7245,11 @@ mod tests {
         assert_eq!(reason, StopReason::NoToolCalls);
         assert_eq!(mock.compaction_calls(), 1);
         assert_eq!(breaker.lock().unwrap().consecutive_failures(), 1);
+        assert_eq!(
+            executor.refill.lock().unwrap().streak(),
+            0,
+            "a failed compaction must not count as a refill"
+        );
         let statuses = statuses(&drain(&mut rx));
         assert!(
             statuses.iter().any(|s| s.contains("Compaction failed")),
@@ -10664,7 +10813,7 @@ mod tests {
         .with_reinject(Some(reinject));
 
         let outcome = executor
-            .refresh_targeted_context_mid_loop(&client, &mut history, None)
+            .refresh_targeted_context_mid_loop(&client, &mut history, None, 1)
             .await;
         let outcome = outcome.expect("both probes present ⇒ Some outcome");
         assert!(outcome.refreshed, "compaction should reduce the transcript");
@@ -10755,7 +10904,7 @@ mod tests {
         .with_capacity_gate(Some(capacity_gate_probe("mock-v0", 5, working_set)));
 
         let outcome = executor
-            .refresh_targeted_context_mid_loop(&client, &mut history, None)
+            .refresh_targeted_context_mid_loop(&client, &mut history, None, 1)
             .await;
         let outcome = outcome.expect("both probes present ⇒ Some outcome");
         // Compaction was attempted but failed — the local-trim fallback then
@@ -10827,7 +10976,7 @@ mod tests {
         .with_capacity_gate(Some(capacity_gate_probe("mock-v0", 5, working_set)));
 
         let outcome = executor
-            .refresh_targeted_context_mid_loop(&client, &mut history, None)
+            .refresh_targeted_context_mid_loop(&client, &mut history, None, 1)
             .await;
         let outcome = outcome.expect("both probes present ⇒ Some outcome");
         assert!(!outcome.refreshed, "under budget → no refresh");
@@ -13929,6 +14078,22 @@ mod tests {
         let usage = executor.take_usage();
         assert_eq!(usage.input_tokens, 220, "100 + 120 across two steps");
         assert_eq!(usage.output_tokens, 80, "50 + 30 across two steps");
+
+        // P2-5 anchor (off-by-one invariant): the final anchor covers the
+        // request snapshot — `messages_len` equals the history length
+        // BEFORE the last assistant push, so that message lands in the
+        // incremental estimate term instead of falling out of both terms.
+        let anchor = executor
+            .usage_anchor
+            .lock()
+            .unwrap()
+            .expect("anchor recorded after a usage-reporting step");
+        assert_eq!(anchor.input_tokens, 120, "latest reading wins");
+        assert_eq!(
+            anchor.messages_len + 1,
+            history.len(),
+            "anchor indexes the pre-push request snapshot, not the post-push history"
+        );
     }
 
     #[tokio::test]
@@ -15821,6 +15986,11 @@ mod tests {
         )
         .with_extension_runner(Some(runner));
 
+        // Seed the refill window so a recorded trigger would land inside it
+        // (P2-5): the veto runs BEFORE record_trigger, so a vetoed
+        // compaction must not advance the streak.
+        executor.refill.lock().unwrap().record_compaction(0);
+
         let reason = executor
             .run(&mut history, "continue".to_string())
             .await
@@ -15836,6 +16006,11 @@ mod tests {
         assert!(
             executor.take_pending_compaction_summary().is_none(),
             "no summary_prompt recorded when compaction is vetoed"
+        );
+        assert_eq!(
+            executor.refill.lock().unwrap().streak(),
+            0,
+            "a vetoed compaction must not count as a refill"
         );
     }
 

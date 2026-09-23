@@ -288,6 +288,12 @@ impl RapidRefillDetector {
     /// and surface the message. A trigger with no prior compaction, or
     /// after a healthy interval (>= [`RAPID_REFILL_STEP_WINDOW`] steps),
     /// resets the streak: it's ordinary context growth, not a leak.
+    ///
+    /// A trigger only counts as a refill when the compaction it preceded
+    /// actually runs: callers veto (`SessionBeforeCompact`) *before*
+    /// recording, and roll the increment back with
+    /// [`Self::discard_last_trigger`] when the summary call fails — a
+    /// vetoed or failed compaction never refilled anything.
     pub fn record_trigger(&mut self, step: u32) -> Option<&'static str> {
         let last = self.last_compaction_step?;
         if step.saturating_sub(last) > RAPID_REFILL_STEP_WINDOW {
@@ -300,6 +306,15 @@ impl RapidRefillDetector {
         } else {
             None
         }
+    }
+
+    /// Roll back the streak increment from the last
+    /// [`Self::record_trigger`]: the compaction it preceded did not
+    /// complete (summarizer error), so no refill happened. Saturating —
+    /// a trigger that reset the streak (healthy interval) rolls back to
+    /// zero harmlessly.
+    pub fn discard_last_trigger(&mut self) {
+        self.streak = self.streak.saturating_sub(1);
     }
 
     /// Fully reset (post-compaction cleanup gives a fresh start).
@@ -378,5 +393,31 @@ mod refill_tests {
         det.reset();
         assert!(det.record_trigger(13).is_none(), "no anchor after reset");
         assert_eq!(det.streak(), 0);
+    }
+
+    #[test]
+    fn discard_last_trigger_rolls_back_a_failed_compaction() {
+        let mut det = RapidRefillDetector::new();
+        det.record_compaction(10);
+        assert!(det.record_trigger(11).is_none());
+        assert_eq!(det.streak(), 1);
+        // The summary call failed — the trigger led to no compaction, so
+        // it must not count toward the refill streak.
+        det.discard_last_trigger();
+        assert_eq!(det.streak(), 0);
+        // The anchor is unchanged (still step 10), so the retried trigger
+        // counts once, not twice.
+        assert!(det.record_trigger(12).is_none());
+        assert_eq!(det.streak(), 1);
+    }
+
+    #[test]
+    fn discard_last_trigger_is_harmless_after_a_healthy_reset() {
+        let mut det = RapidRefillDetector::new();
+        det.record_compaction(10);
+        det.record_trigger(50); // beyond the window — resets the streak
+        assert_eq!(det.streak(), 0);
+        det.discard_last_trigger();
+        assert_eq!(det.streak(), 0, "saturating — must not underflow");
     }
 }
