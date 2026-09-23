@@ -945,6 +945,28 @@ mod tests {
         sanitize_tool_name,
     };
 
+    #[test]
+    fn shell_family_tools_are_freshness_probed() {
+        use codesmith_agent_runtime::tools::freshness::SHELL_PROBE_TOOLS;
+
+        // Every registered shell-family tool must be in the freshness probe
+        // set: a rename or new variant that falls out of the set silently
+        // no-ops the stale-read hint (exactly how `task_shell_output` once
+        // matched nothing). Add the name to SHELL_PROBE_TOOLS — or
+        // consciously exclude it here with a documented reason.
+        let builder = ToolRegistryBuilder::new()
+            .with_shell_tools()
+            .with_runtime_task_shell_tools();
+        let names: Vec<&str> = builder.tools.iter().map(|t| t.name()).collect();
+        assert!(!names.is_empty(), "shell family must register tools");
+        for name in &names {
+            assert!(
+                SHELL_PROBE_TOOLS.contains(name),
+                "registered shell tool {name} is not freshness-probed"
+            );
+        }
+    }
+
     /// A simple test tool for unit testing
     struct TestTool {
         name: String,

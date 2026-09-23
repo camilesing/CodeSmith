@@ -812,6 +812,7 @@ impl HostAgentExecutor {
         system: Option<&SystemPrompt>,
         early_tasks: &mut HashMap<String, EarlyToolTask>,
         pending_steers: &mut Vec<String>,
+        step: u32,
     ) -> Result<StreamRoundOutcome> {
         // Clone the token once per round so the cancel future owns a local
         // (not a `&self` borrow) — avoids borrow-checker conflicts with the
@@ -867,6 +868,7 @@ impl HostAgentExecutor {
                                 system,
                                 &message,
                                 context_recovery_attempts,
+                                step,
                             )
                             .await
                         {
@@ -976,6 +978,7 @@ impl HostAgentExecutor {
                                 system,
                                 &error,
                                 context_recovery_attempts,
+                                step,
                             )
                             .await
                         {
@@ -1064,6 +1067,7 @@ impl HostAgentExecutor {
         system: Option<&SystemPrompt>,
         error_message: &str,
         context_recovery_attempts: &mut u8,
+        step: u32,
     ) -> bool {
         let Some(probe) = &self.capacity else {
             // No capacity probe ⇒ reactive recovery is disabled (mirrors the
@@ -1097,6 +1101,7 @@ impl HostAgentExecutor {
                 system,
                 target_budget,
                 "provider context-length rejection",
+                step,
             )
             .await;
         if recovered {
