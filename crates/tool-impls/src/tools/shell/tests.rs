@@ -1337,3 +1337,140 @@ async fn exec_shell_cd_outside_workspace_does_not_persist() {
     );
     assert!(second.content.contains(tmp.path().file_name().unwrap().to_string_lossy().as_ref()));
 }
+
+// === P0-2: truncated shell output spills to disk for retrieval ============
+
+/// Point the process-global spillover root at a temp dir for the duration
+/// of a test, so spill tests never write into the real
+/// `~/.codesmith/tool_outputs/`. Holds the runtime's spill guard for the
+/// whole test body — without that, two concurrent spill tests would
+/// interleave their root swaps and drop-restore chains.
+struct TestSpillRoot {
+    prior: Option<std::path::PathBuf>,
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+impl TestSpillRoot {
+    fn new(tmp: &std::path::Path) -> Self {
+        use codesmith_agent_runtime::tools::truncate as spill_store;
+        let guard = spill_store::TEST_SPILLOVER_GUARD
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let prior =
+            spill_store::set_test_spillover_root(Some(tmp.join("tool_outputs")));
+        Self {
+            prior,
+            _guard: guard,
+        }
+    }
+}
+
+impl Drop for TestSpillRoot {
+    fn drop(&mut self) {
+        use codesmith_agent_runtime::tools::truncate as spill_store;
+        // Guard is still held here (struct fields drop after the Drop body).
+        let _ = spill_store::set_test_spillover_root(self.prior.take());
+    }
+}
+
+/// A foreground command whose stdout exceeds the 30KB truncation budget
+/// spills its FULL output to disk: the tool result carries a retrieval
+/// footer and `spillover_*` metadata, and the spilled file contains the
+/// middle bytes the truncated view elides.
+#[cfg(not(windows))]
+#[tokio::test]
+async fn test_exec_shell_spills_truncated_output_for_retrieval() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path());
+    let tool = ExecShellTool;
+    let _spill_root = TestSpillRoot::new(tmp.path());
+
+    // ~108KB of stdout — truncation keeps head+tail, elides the middle.
+    let result = tool
+        .execute(json!({"command": "seq 1 20000"}), &ctx)
+        .await
+        .expect("execute");
+    assert!(result.success, "{}", result.content);
+    assert!(
+        result.content.contains("[Output truncated"),
+        "expected truncation marker: {}",
+        result.content
+    );
+
+    let meta = result.metadata.expect("metadata");
+    let spill_ref = meta
+        .get("spillover_ref")
+        .and_then(Value::as_str)
+        .expect("spillover_ref")
+        .to_string();
+    let spill_path = std::path::PathBuf::from(
+        meta.get("spillover_path")
+            .and_then(Value::as_str)
+            .expect("spillover_path"),
+    );
+    assert!(
+        result
+            .content
+            .contains(&format!("retrieve_tool_result ref={spill_ref}")),
+        "footer must name the retrieval ref: {}",
+        result.content
+    );
+    assert!(spill_path.exists(), "spill file missing: {spill_path:?}");
+
+    // The spill holds the FULL output — including the elided middle.
+    let spilled = std::fs::read_to_string(&spill_path).expect("read spill");
+    assert!(
+        spilled.len() > 30_000,
+        "spill should hold the full output, got {} bytes",
+        spilled.len()
+    );
+    assert!(
+        spilled.contains("\n15000\n"),
+        "the elided middle must be retrievable from the spill"
+    );
+}
+
+/// The background wait path spills too, keyed by the task's full-output
+/// totals — even when the delta slice a single poll renders is small.
+#[cfg(not(windows))]
+#[tokio::test]
+async fn test_exec_shell_wait_spills_full_output() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path());
+    let _spill_root = TestSpillRoot::new(tmp.path());
+
+    let start = ExecShellTool
+        .execute(json!({"command": "seq 1 20000", "background": true}), &ctx)
+        .await
+        .expect("start");
+    let task_id = start
+        .metadata
+        .as_ref()
+        .and_then(|meta| meta.get("task_id"))
+        .and_then(Value::as_str)
+        .expect("task id")
+        .to_string();
+
+    let wait = ShellWaitTool::new("exec_shell_wait")
+        .execute(json!({"task_id": task_id, "timeout_ms": 30_000}), &ctx)
+        .await
+        .expect("wait");
+    assert!(wait.success, "{}", wait.content);
+
+    let meta = wait.metadata.expect("metadata");
+    assert_eq!(
+        meta.get("spillover_ref").and_then(Value::as_str),
+        Some(task_id.as_str()),
+        "wait-path spills are keyed by the task id"
+    );
+    let spill_path = std::path::PathBuf::from(
+        meta.get("spillover_path")
+            .and_then(Value::as_str)
+            .expect("spillover_path"),
+    );
+    let spilled = std::fs::read_to_string(&spill_path).expect("read spill");
+    assert!(
+        spilled.contains("\n15000\n"),
+        "elided middle must be in the wait-path spill"
+    );
+}

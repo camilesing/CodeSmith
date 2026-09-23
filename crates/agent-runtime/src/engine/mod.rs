@@ -1367,6 +1367,10 @@ impl Engine {
                 Some(self.config.stream_idle_timeout)
             },
         )
+        // P0-1 adaptive retry: widen the idle window per transparent retry so
+        // a silence gap longer than the base window doesn't kill every retry
+        // in the same silent stretch.
+        .with_stream_idle_retry_increment(self.config.stream_idle_retry_increment)
         // P0-3: shadow-mode prefix-cache stability checks. `Arc` clone of the
         // session-scoped manager (before the `&mut self.session` borrow held
         // by `SessionChatHistory` below) so per-step fingerprint re-pins

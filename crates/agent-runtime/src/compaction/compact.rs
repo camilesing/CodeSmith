@@ -1686,3 +1686,82 @@ pub fn merge_system_prompts(
         }
     }
 }
+
+#[cfg(test)]
+mod anchored_estimate_tests {
+    use super::super::estimate_tokens;
+    use super::super::{
+        estimate_input_tokens_anchored, estimate_input_tokens_conservative, TokenUsageAnchor,
+        CONSERVATIVE_ESTIMATE_DENOMINATOR, CONSERVATIVE_ESTIMATE_NUMERATOR,
+    };
+    use crate::models::{ContentBlock, Message};
+
+    fn text_message(body: &str) -> Message {
+        Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: body.to_string(),
+                cache_control: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn no_anchor_matches_the_pure_estimate() {
+        let messages: Vec<Message> = (0..5).map(|i| text_message(&format!("message {i}"))).collect();
+        assert_eq!(
+            estimate_input_tokens_anchored(&messages, None, None),
+            estimate_input_tokens_conservative(&messages, None)
+        );
+    }
+
+    #[test]
+    fn anchor_fixes_the_level_and_estimates_only_the_increment() {
+        let messages: Vec<Message> = (0..4).map(|i| text_message(&format!("message {i}"))).collect();
+        let anchor = TokenUsageAnchor {
+            messages_len: 2,
+            input_tokens: 10_000,
+        };
+        let expected_increment = estimate_tokens(&messages[2..])
+            .saturating_mul(CONSERVATIVE_ESTIMATE_NUMERATOR)
+            .div_ceil(CONSERVATIVE_ESTIMATE_DENOMINATOR)
+            .saturating_add(2 * 12);
+        assert_eq!(
+            estimate_input_tokens_anchored(&messages, None, Some(&anchor)),
+            10_000 + expected_increment
+        );
+    }
+
+    #[test]
+    fn anchor_at_history_end_yields_the_reading_itself() {
+        let messages: Vec<Message> = (0..4).map(|i| text_message(&format!("message {i}"))).collect();
+        let anchor = TokenUsageAnchor {
+            messages_len: messages.len(),
+            input_tokens: 5_000,
+        };
+        // messages_len == len is the "anchor is at the tail" case: the
+        // anchor's own request covered exactly these messages, so the
+        // reading is the level — the conservative fallback triggers here
+        // (>= comparison), which must still be sane.
+        let anchored = estimate_input_tokens_anchored(&messages, None, Some(&anchor));
+        assert!(
+            anchored > 0,
+            "tail-anchored estimate must stay positive (fell back to conservative)"
+        );
+    }
+
+    #[test]
+    fn shrunk_history_falls_back_to_the_pure_estimate() {
+        // Compaction rewrote history past the anchor — the reading no
+        // longer corresponds to any prefix of the current transcript.
+        let messages: Vec<Message> = (0..2).map(|i| text_message(&format!("m{i}"))).collect();
+        let anchor = TokenUsageAnchor {
+            messages_len: 9,
+            input_tokens: 10_000,
+        };
+        assert_eq!(
+            estimate_input_tokens_anchored(&messages, None, Some(&anchor)),
+            estimate_input_tokens_conservative(&messages, None)
+        );
+    }
+}

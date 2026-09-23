@@ -22,7 +22,14 @@ use codesmith_agent_runtime::sandbox::{
     SandboxRuntimeConfig,
 };
 use codesmith_agent_runtime::tools::git_env::merge_git_scrub_env;
-use codesmith_agent_runtime::tools::shell_output::{summarize_output, truncate_with_meta};
+use codesmith_agent_runtime::tools::shell_output::{
+    ShellSpillInfo,
+    needs_spill,
+    spill_full_shell_output,
+    spillover_footer,
+    summarize_output,
+    truncate_with_meta,
+};
 
 // Shell result/view data types live in the runtime crate so they can cross the
 // `Arc<dyn HostServices>` boundary once `ShellManager` is trait-erased.
@@ -372,7 +379,7 @@ impl ToolSpec for ExecShellTool {
     }
 
     fn description(&self) -> &'static str {
-        "Execute a shell command in the workspace directory. Foreground mode is for bounded commands; use background=true or task_shell_start for long-running work, then poll/wait. Session-aware cwd (Unix): each process is fresh, but a foreground `cd <dir>` persists — the final working directory carries over to later exec_shell calls this session (environment variables do NOT persist; use a `.env` file or export them per command). Pass an explicit `cwd` to override for one call."
+        "Execute a shell command in the workspace directory. Foreground mode is for bounded commands; use background=true or task_shell_start for long-running work, then poll/wait. Session-aware cwd (Unix): each process is fresh, but a foreground `cd <dir>` persists — the final working directory carries over to later exec_shell calls this session (environment variables do NOT persist; use a `.env` file or export them per command). Pass an explicit `cwd` to override for one call. Output over 30000 bytes is shown head+tail with the middle elided, but the FULL output is always saved to disk and referenced in a trailing note — read the elided middle back with retrieve_tool_result ref=<id> instead of re-running the command."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -605,7 +612,7 @@ impl ToolSpec for ExecShellTool {
             };
             let backend_result = backend.exec(request).await;
 
-            let result = match backend_result {
+            let (result, full_output_spill) = match backend_result {
                 Ok(output) => {
                     let (stdout, stdout_meta) = truncate_with_meta(&output.stdout);
                     let (stderr, stderr_meta) = truncate_with_meta(&output.stderr);
@@ -640,7 +647,20 @@ impl ToolSpec for ExecShellTool {
                     };
                     result.sandbox_type = Some("opensandbox".to_string());
                     result.sandbox_backend = Some("opensandbox".to_string());
-                    result
+                    // P0-2: external-sandbox runs bypass the shell manager
+                    // (no task id), so spill the full backend output under a
+                    // fresh id — the elided middle stays retrievable.
+                    let spill =
+                        if needs_spill(stdout_meta.original_len, stderr_meta.original_len) {
+                            spill_full_shell_output(
+                                &fresh_shell_spill_id(),
+                                &output.stdout,
+                                &output.stderr,
+                            )
+                        } else {
+                            None
+                        };
+                    (result, spill)
                 }
                 Err(e) => {
                     return Ok(ToolResult::error(format!("Sandbox backend error: {e}")));
@@ -693,11 +713,15 @@ impl ToolSpec for ExecShellTool {
             });
             attach_cargo_failure_summary(&mut metadata, command, &result);
 
-            return Ok(ToolResult {
+            let mut tool_result = ToolResult {
                 content: output,
                 success: result.status == ShellStatus::Completed,
                 metadata: Some(metadata),
-            });
+            };
+            if let Some(spill) = &full_output_spill {
+                attach_spill_to_result(&mut tool_result, spill);
+            }
+            return Ok(tool_result);
         }
 
         // P2-6: set when a foreground command's captured cwd was folded into
@@ -787,6 +811,19 @@ impl ToolSpec for ExecShellTool {
                     .as_ref()
                     .is_some_and(|token| token.is_cancelled());
                 let task_id_str = result.task_id.clone().unwrap_or_default();
+                // P0-2: when truncation elided bytes from the model-visible
+                // view, spill the task's FULL output to disk so the elided
+                // middle stays retrievable. Skipped while Running — a
+                // foreground command demoted to background is spilled by its
+                // later wait calls instead (same task id, fuller view).
+                let full_output_spill = if result.status != ShellStatus::Running
+                    && needs_spill(result.stdout_len, result.stderr_len)
+                    && let Some(task_id) = result.task_id.as_deref()
+                {
+                    spill_task_full_output(context, task_id)
+                } else {
+                    None
+                };
                 let stdout_summary = summarize_output(&result.stdout);
                 let stderr_summary = summarize_output(&result.stderr);
                 let summary = if !stderr_summary.is_empty() {
@@ -916,12 +953,16 @@ impl ToolSpec for ExecShellTool {
                 }
                 attach_cargo_failure_summary(&mut metadata, command, &result);
 
-                Ok(ToolResult {
+                let mut tool_result = ToolResult {
                     content: output,
                     success: result.status == ShellStatus::Completed
                         || result.status == ShellStatus::Running,
                     metadata: Some(metadata),
-                })
+                };
+                if let Some(spill) = &full_output_spill {
+                    attach_spill_to_result(&mut tool_result, spill);
+                }
+                Ok(tool_result)
             }
             Err(e) => Ok(ToolResult::error(format!("Shell execution failed: {e}"))),
         }
@@ -968,6 +1009,17 @@ fn build_shell_delta_tool_result(delta: ShellDeltaResult, context: &ToolContext)
     let network_restricted_hint =
         shell_network_restricted_hint(context, &delta.command, &result).map(str::to_string);
     let provenance_hint = macos_provenance_hint(&result);
+    // P0-2: spill on full-size totals — the accumulated slice this poll
+    // renders may be small while the task's overall output already elided
+    // bytes in an earlier view (or vice versa); the spill covers the whole
+    // task, keyed by task id, so the elided middle is always retrievable.
+    let full_output_spill = if needs_spill(delta.stdout_total_len, delta.stderr_total_len)
+        && let Some(task_id) = result.task_id.as_deref()
+    {
+        spill_task_full_output(context, task_id)
+    } else {
+        None
+    };
     let stdout_summary = summarize_output(&result.stdout);
     let stderr_summary = summarize_output(&result.stderr);
     let summary = if !stderr_summary.is_empty() {
@@ -1044,6 +1096,9 @@ fn build_shell_delta_tool_result(delta: ShellDeltaResult, context: &ToolContext)
         && let Some(object) = metadata.as_object_mut()
     {
         object.insert("macos_provenance_restricted".to_string(), json!(true));
+    }
+    if let Some(spill) = &full_output_spill {
+        attach_spill_to_result(&mut tool_result, spill);
     }
     tool_result
 }
@@ -1126,6 +1181,52 @@ fn append_shell_delta_output(
     if !result.stderr.is_empty() {
         stderr_accum.push_str(&result.stderr);
     }
+}
+
+/// Spill a task's full (untruncated) output to disk, keyed by the task id so
+/// re-polls of the same task overwrite one file with the fullest view (P0-2:
+/// truncation elides bytes from the model-visible result, the spill keeps
+/// them retrievable). Reads the full buffers through `inspect_job` — the
+/// accumulated delta slice a poll path holds may be missing earlier output
+/// consumed by a previous call. Degrades to `None` when the task is gone or
+/// the disk write fails; callers then simply omit the retrieval footer.
+fn spill_task_full_output(context: &ToolContext, task_id: &str) -> Option<ShellSpillInfo> {
+    // Note: for an evicted (stale) job the detail carries only the stored
+    // tail — a degraded spill, still better than a permanently lost middle.
+    let detail = context.shell_manager.inspect_job(task_id).ok()?;
+    spill_full_shell_output(task_id, &detail.stdout, &detail.stderr)
+}
+
+/// Stamp a spilled-output reference into a tool result's metadata and append
+/// the model-facing retrieval footer to its content.
+fn attach_spill_to_result(tool_result: &mut ToolResult, spill: &ShellSpillInfo) {
+    tool_result.content.push_str(&spillover_footer(spill));
+    if let Some(object) = tool_result
+        .metadata
+        .get_or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+    {
+        object.insert("spillover_ref".to_string(), json!(spill.ref_id));
+        object.insert(
+            "spillover_path".to_string(),
+            json!(spill.path.display().to_string()),
+        );
+        object.insert("spillover_bytes".to_string(), json!(spill.total_bytes));
+    }
+}
+
+/// Fresh spill id for paths with no task id (external-sandbox backend): a
+/// timestamp plus a process-wide sequence, both to keep ids unique when
+/// parallel batch calls land in the same millisecond.
+fn fresh_shell_spill_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    format!("shell-{millis}-{seq}")
 }
 
 fn shell_delta_with_accumulated_output(

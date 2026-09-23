@@ -4,6 +4,14 @@
 //! handles, no TUI state. Lives in the runtime crate so both the engine body
 //! and downstream tool implementations can call `truncate_with_meta` /
 //! `summarize_output` without depending on the `codesmith-tui` binary.
+//!
+//! P0-2: truncation no longer silently discards the elided middle. Callers
+//! that feed a model-visible tool result use [`spill_full_shell_output`] to
+//! persist the FULL pre-truncation output when [`TruncationMeta::truncated`]
+//! is set, and append [`spillover_footer`] so the model knows how to read it
+//! back via `retrieve_tool_result`.
+
+use std::path::PathBuf;
 
 /// Maximum output size before truncation (30KB like Claude Code).
 const MAX_OUTPUT_SIZE: usize = 30_000;
@@ -24,6 +32,69 @@ pub struct TruncationMeta {
     pub original_len: usize,
     pub omitted: usize,
     pub truncated: bool,
+}
+
+/// A full-output spill created by [`spill_full_shell_output`] when
+/// truncation would otherwise permanently discard the elided middle.
+#[derive(Debug, Clone)]
+pub struct ShellSpillInfo {
+    /// Reference id for `retrieve_tool_result ref=<ref_id>` — same string
+    /// used as the spillover filename stem.
+    pub ref_id: String,
+    /// Absolute path of the spilled file, for result metadata and the UI.
+    pub path: PathBuf,
+    /// Total bytes of the combined spilled view.
+    pub total_bytes: usize,
+}
+
+/// Whether a stream pair's FULL sizes warrant a spill: either stream alone
+/// exceeding the truncation budget ([`MAX_OUTPUT_SIZE`]) means truncation
+/// discarded bytes on the combined model-visible view. Based on totals (not
+/// the per-call truncated flags) so polling paths whose accumulated slice is
+/// still small still spill when the task's full output is already large.
+#[must_use]
+pub fn needs_spill(stdout_total: usize, stderr_total: usize) -> bool {
+    stdout_total > MAX_OUTPUT_SIZE || stderr_total > MAX_OUTPUT_SIZE
+}
+
+/// Persist the FULL pre-truncation shell output (stdout and stderr combined
+/// the same way the tool result renders them) to the spillover store, so the
+/// bytes truncation elides stay retrievable via `retrieve_tool_result`
+/// instead of being lost (P0-2 — the mirror article's "spill, don't
+/// discard"). Call this only when truncation actually happened
+/// ([`TruncationMeta::truncated`]). Disk/IO failure degrades to `None` — a
+/// spillover hiccup must never fail the tool call; the model then simply
+/// sees the old truncated view with no footer.
+#[must_use]
+pub fn spill_full_shell_output(
+    spill_id: &str,
+    stdout: &str,
+    stderr: &str,
+) -> Option<ShellSpillInfo> {
+    let combined = if stderr.is_empty() {
+        stdout.to_string()
+    } else {
+        format!("{stdout}\n\nSTDERR:\n{stderr}")
+    };
+    let total_bytes = combined.len();
+    let path = super::truncate::write_spillover(spill_id, &combined).ok()?;
+    Some(ShellSpillInfo {
+        ref_id: spill_id.to_string(),
+        path,
+        total_bytes,
+    })
+}
+
+/// Footer appended to a truncated tool result whose full output was spilled,
+/// pointing the model at the retrieval tool. Byte-stable format — it becomes
+/// part of the model-visible transcript.
+#[must_use]
+pub fn spillover_footer(info: &ShellSpillInfo) -> String {
+    format!(
+        "\n\n[Full output saved: {total} bytes. Read the elided middle with retrieve_tool_result ref={ref} mode=lines start_line=<n> end_line=<n>, or mode=query query=<text>.]",
+        total = info.total_bytes,
+        ref = info.ref_id,
+    )
 }
 
 pub fn truncate_with_meta(output: &str) -> (String, TruncationMeta) {
@@ -219,6 +290,85 @@ pub fn summarize_output(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serialise through the spillover guard: these tests swap the
+    /// process-global test storage root (same convention as truncate.rs).
+    struct TestRoot {
+        _tmp: tempfile::TempDir,
+        prior: Option<std::path::PathBuf>,
+    }
+
+    impl TestRoot {
+        fn new() -> Self {
+            let guard = super::super::truncate::TEST_SPILLOVER_GUARD
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let prior = super::super::truncate::set_test_spillover_root(Some(
+                tmp.path().join("tool_outputs"),
+            ));
+            drop(guard);
+            Self { _tmp: tmp, prior }
+        }
+    }
+
+    impl Drop for TestRoot {
+        fn drop(&mut self) {
+            let _guard = super::super::truncate::TEST_SPILLOVER_GUARD
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let _ = super::super::truncate::set_test_spillover_root(self.prior.take());
+        }
+    }
+
+    #[test]
+    fn spill_writes_combined_view_and_reports_total() {
+        let _root = TestRoot::new();
+        let stdout = "head\n".repeat(100);
+        let stderr = "warn\n".repeat(50);
+        let info =
+            spill_full_shell_output("call-spill-1", &stdout, &stderr).expect("spill succeeds");
+
+        assert_eq!(info.ref_id, "call-spill-1");
+        assert!(info.path.exists(), "spill file missing: {:?}", info.path);
+        let body = std::fs::read_to_string(&info.path).unwrap();
+        assert_eq!(body.len(), info.total_bytes);
+        assert!(body.contains("STDERR:"));
+        assert!(body.ends_with(&stderr));
+    }
+
+    #[test]
+    fn spill_without_stderr_omits_combined_marker() {
+        let _root = TestRoot::new();
+        let stdout = "plain output".to_string();
+        let info = spill_full_shell_output("call-spill-2", &stdout, "").expect("spill");
+        let body = std::fs::read_to_string(&info.path).unwrap();
+        assert_eq!(body, "plain output");
+        assert!(!body.contains("STDERR:"));
+    }
+
+    #[test]
+    fn spillover_footer_names_the_ref_and_retrieval_tool() {
+        let _root = TestRoot::new();
+        let info = spill_full_shell_output("call-spill-3", "x", "y").expect("spill");
+        let footer = spillover_footer(&info);
+        assert!(footer.contains("retrieve_tool_result ref=call-spill-3"));
+        assert!(footer.contains("mode=lines"));
+        assert!(footer.contains("mode=query"));
+        assert!(footer.contains(&info.total_bytes.to_string()));
+    }
+
+    #[test]
+    fn spill_overwrites_same_id_with_fuller_content() {
+        // Re-polling a still-running task spills again under the same
+        // task id; the file must end up with the latest (longest) view.
+        let _root = TestRoot::new();
+        spill_full_shell_output("call-spill-4", "partial", "").expect("first spill");
+        let info =
+            spill_full_shell_output("call-spill-4", "partial plus more", "").expect("second");
+        let body = std::fs::read_to_string(&info.path).unwrap();
+        assert_eq!(body, "partial plus more");
+    }
 
     #[test]
     fn truncation_preserves_cargo_test_summary_lines_from_tail() {

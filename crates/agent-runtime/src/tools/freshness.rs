@@ -94,6 +94,22 @@ impl FileFreshnessTracker {
             )),
         }
     }
+
+    /// Paths whose on-disk fingerprint no longer matches the last known
+    /// state — externally modified since their last read/write
+    /// (P2-5 `staleReadFileStateHint`). The model's picture of those
+    /// files has expired; callers surface the list so the model re-reads
+    /// *before* its next edit gets rejected by [`Self::validate`].
+    pub fn detect_changed(&self) -> Vec<PathBuf> {
+        let states = self.states.lock().expect("freshness map lock");
+        states
+            .iter()
+            .filter_map(|(path, known)| {
+                let current = probe(path)?;
+                (*known != current).then(|| path.clone())
+            })
+            .collect()
+    }
 }
 
 /// Which freshness behavior a wrapped tool needs.
@@ -104,6 +120,11 @@ enum FreshnessRole {
     /// Validate target paths before executing; record them as fresh after
     /// success.
     Write,
+    /// After a successful shell call, re-stat every tracked file and append
+    /// a stale-read hint naming the ones that changed (P2-5
+    /// `staleReadFileStateHint`): the model's picture of those files just
+    /// expired, and re-reading beats getting rejected at the next edit.
+    ShellProbe,
 }
 
 /// `ToolSpec` decorator that adds read-before-edit freshness validation to a
@@ -125,6 +146,10 @@ pub fn wrap_if_freshness_eligible(
     let role = match tool.name() {
         "read_file" => FreshnessRole::Read,
         "edit_file" | "write_file" | "fim_edit" | "apply_patch" => FreshnessRole::Write,
+        // Shell-family tools can mutate any tracked file via sed -i,
+        // generators, formatters, ...
+        "exec_shell" | "exec_shell_wait" | "task_shell_start" | "task_shell_wait"
+        | "task_shell_output" => FreshnessRole::ShellProbe,
         _ => return tool,
     };
     Arc::new(FreshnessWrappedTool {
@@ -268,9 +293,47 @@ impl ToolSpec for FreshnessWrappedTool {
                     self.tracker.record_write(path);
                 }
             }
+            // P2-5 staleReadFileStateHint: a successful shell call may have
+            // rewritten tracked files (sed -i, generators, formatters).
+            // Naming the stale ones now — instead of waiting for the next
+            // edit's rejection — turns a passive gate into an active hint,
+            // saving a failed tool round.
+            if self.role == FreshnessRole::ShellProbe
+                && let Some(hint) = stale_read_hint(&self.tracker)
+            {
+                let mut result = result;
+                result.content.push_str(&hint);
+                return Ok(result);
+            }
         }
         Ok(result)
     }
+}
+
+/// Render the stale-read hint for a shell result: the changed paths
+/// (bounded to five, then an "and N more" tail), byte-stable formatting.
+fn stale_read_hint(tracker: &FileFreshnessTracker) -> Option<String> {
+    let mut changed = tracker.detect_changed();
+    if changed.is_empty() {
+        return None;
+    }
+    changed.sort();
+    let total = changed.len();
+    let shown: Vec<String> = changed
+        .iter()
+        .take(5)
+        .map(|p| p.display().to_string())
+        .collect();
+    let tail = total
+        .checked_sub(5)
+        .filter(|more| *more > 0)
+        .map(|more| format!(", and {more} more"))
+        .unwrap_or_default();
+    Some(format!(
+        "\n\n[Files changed on disk since last read (possibly via this command) — read_file them again before editing: {}{}]",
+        shown.join(", "),
+        tail,
+    ))
 }
 
 #[cfg(test)]
@@ -370,5 +433,116 @@ mod tests {
             "patch": "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n"
         });
         assert_eq!(apply_patch_target_paths(&input), vec!["a.txt".to_owned()]);
+    }
+
+    #[test]
+    fn detect_changed_lists_only_drifted_files() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let stable = touch_sample(tmp.path(), "stable.txt");
+        let drifted = touch_sample(tmp.path(), "drifted.txt");
+
+        let tracker = FileFreshnessTracker::new();
+        tracker.record_read(&stable);
+        tracker.record_read(&drifted);
+
+        // External edit changes length, so the fingerprint differs.
+        std::fs::write(&drifted, "rewritten contents\n").expect("external write");
+
+        let mut changed = tracker.detect_changed();
+        changed.sort();
+        assert_eq!(changed, vec![drifted], "stable file must not be listed");
+    }
+
+    #[test]
+    fn stale_read_hint_caps_the_list_at_five() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let tracker = FileFreshnessTracker::new();
+        for i in 0..7 {
+            let path = touch_sample(tmp.path(), &format!("f{i}.txt"));
+            tracker.record_read(&path);
+            std::fs::write(&path, "longer contents that change the length\n")
+                .expect("external write");
+        }
+        let hint = stale_read_hint(&tracker).expect("hint");
+        assert!(hint.contains("f0.txt"));
+        assert!(hint.contains("f4.txt"));
+        assert!(!hint.contains("f5.txt"), "only the first five are named");
+        assert!(hint.contains("and 2 more"));
+    }
+
+    /// Minimal `ToolSpec` stand-in for exercising the wrapper's roles.
+    struct StubTool {
+        name: &'static str,
+    }
+
+    #[async_trait]
+    impl ToolSpec for StubTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> &str {
+            "stub"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            json!({})
+        }
+        fn output_schema(&self) -> serde_json::Value {
+            json!({})
+        }
+        fn capabilities(&self) -> Vec<crate::tools::spec::ToolCapability> {
+            Vec::new()
+        }
+        async fn execute(&self, _input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success("command output".to_string()))
+        }
+    }
+
+    #[tokio::test]
+    async fn shell_probe_appends_stale_hint_after_success() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let drifted = touch_sample(tmp.path(), "gen.txt");
+        let tracker = FileFreshnessTracker::new();
+        tracker.record_read(&drifted);
+        std::fs::write(&drifted, "formatted output\n").expect("external write");
+
+        let wrapped = wrap_if_freshness_eligible(
+            Arc::new(StubTool {
+                name: "exec_shell",
+            }),
+            tracker,
+        );
+        let context = ToolContext::new(tmp.path().to_path_buf());
+        let result = wrapped
+            .execute(json!({"command": "cargo fmt"}), &context)
+            .await
+            .expect("execute");
+        assert!(result.success);
+        assert!(
+            result.content.contains("[Files changed on disk since last read"),
+            "hint missing: {}",
+            result.content
+        );
+        assert!(result.content.contains("gen.txt"));
+    }
+
+    #[tokio::test]
+    async fn shell_probe_is_silent_when_nothing_drifted() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let stable = touch_sample(tmp.path(), "ok.txt");
+        let tracker = FileFreshnessTracker::new();
+        tracker.record_read(&stable);
+
+        let wrapped = wrap_if_freshness_eligible(
+            Arc::new(StubTool {
+                name: "exec_shell",
+            }),
+            tracker,
+        );
+        let context = ToolContext::new(tmp.path().to_path_buf());
+        let result = wrapped
+            .execute(json!({"command": "ls"}), &context)
+            .await
+            .expect("execute");
+        assert_eq!(result.content, "command output", "no hint expected");
     }
 }

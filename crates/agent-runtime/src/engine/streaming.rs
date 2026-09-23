@@ -30,9 +30,12 @@ pub struct ToolUseState {
 pub const MAX_STREAM_ERRORS_BEFORE_FAIL: u32 = 5;
 /// Cap on transparent stream-level retries — these only happen when the wire
 /// dies before any content was streamed, so DeepSeek hasn't billed us and
-/// the user hasn't seen anything. Two attempts is enough to ride out a
+/// the user hasn't seen anything. Unified with the engine-side retry loop
+/// (`stream_with_transparent_retry`): the two sites drifted apart during the
+/// turn-loop migration (2 here, 3 there) — that was drift, not policy, so
+/// one constant now serves both. Three retries is enough to ride out a
 /// flaky edge node without amplifying real outages (#103).
-pub const MAX_TRANSPARENT_STREAM_RETRIES: u32 = 2;
+pub const MAX_TRANSPARENT_STREAM_RETRIES: u32 = 3;
 
 /// Decide whether a stream error is eligible for a transparent retry.
 ///

@@ -835,6 +835,9 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         subagent_model_overrides: config.subagent_model_overrides(),
         subagent_api_timeout: Duration::from_secs(config.subagent_api_timeout_secs()),
         stream_idle_timeout: Duration::from_secs(config.stream_idle_timeout_secs()),
+        stream_idle_retry_increment: Duration::from_secs(
+            config.stream_idle_retry_increment_secs(),
+        ),
         subagent_inherit_full_registry: config.subagent_inherit_full_registry(),
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
         sandbox_runtime: config.sandbox_runtime_config(),
@@ -2213,7 +2216,15 @@ async fn run_event_loop(
                                 }),
                             );
                             let _ = engine_handle.deny_tool_call(id.clone()).await;
-                        } else if session_approved || app.approval_mode == ApprovalMode::Auto {
+                        } else if session_approved
+                            || app.approval_grants.is_granted(
+                                &codesmith_agent_runtime::workspace_trust::workspace_config_key(
+                                    &app.workspace,
+                                ),
+                                &approval_grouping_key,
+                            )
+                            || app.approval_mode == ApprovalMode::Auto
+                        {
                             log_sensitive_event(
                                 "tool.approval.auto_approve",
                                 serde_json::json!({
@@ -2221,6 +2232,8 @@ async fn run_event_loop(
                                     "approval_key": approval_key,
                                     "session_id": app.current_session_id,
                                     "mode": app.mode.label(),
+                                    "persistent_grant": !session_approved
+                                        && app.approval_mode != ApprovalMode::Auto,
                                 }),
                             );
                             let _ = engine_handle.approve_tool_call(id.clone()).await;
@@ -7120,10 +7133,61 @@ async fn apply_approval_decision(
             .insert(event.tool_name.clone());
         app.approval_session_approved
             .insert(event.approval_grouping_key.clone());
+    } else if event.decision == ReviewDecision::AlwaysAllow {
+        // P1-4: everything ApprovedForSession does for the rest of this
+        // session, plus a persisted grant in the global approvals store
+        // keyed by the canonical workspace path. The store lives under
+        // the CodeSmith home — never inside a repository — so a cloned
+        // hostile workspace has no file it can write to grant itself
+        // anything.
+        app.approval_session_approved
+            .insert(event.tool_name.clone());
+        app.approval_session_approved
+            .insert(event.approval_grouping_key.clone());
+        match crate::approval_grants::approvals_toml_path() {
+            Some(path) => {
+                let workspace_key =
+                    codesmith_agent_runtime::workspace_trust::workspace_config_key(&app.workspace);
+                if app
+                    .approval_grants
+                    .insert(&workspace_key, &event.approval_grouping_key)
+                {
+                    match app.approval_grants.save(&path) {
+                        Ok(()) => {
+                            app.status_message = Some(format!(
+                                "Always-allow saved for this project: {}",
+                                event.approval_grouping_key
+                            ));
+                        }
+                        Err(err) => {
+                            // The decision still applies for this session;
+                            // only the persistence is lost.
+                            app.status_message = Some(format!(
+                                "Approved for this session; persisting the grant failed: {err}"
+                            ));
+                            tracing::warn!(
+                                target: "codesmith::approvals",
+                                path = %path.display(),
+                                error = %err,
+                                "failed to persist always-allow grant"
+                            );
+                        }
+                    }
+                }
+            }
+            None => {
+                app.status_message = Some(
+                    "Approved for this session; approvals store unavailable (no home directory)"
+                        .to_string(),
+                );
+            }
+        }
     }
 
     match event.decision {
-        ReviewDecision::Approved | ReviewDecision::ApprovedForSession => {
+        ReviewDecision::Approved
+        | ReviewDecision::ApprovedForSession
+        | ReviewDecision::AlwaysAllow => {
             let _ = engine_handle.approve_tool_call(event.tool_id).await;
         }
         ReviewDecision::Denied => {

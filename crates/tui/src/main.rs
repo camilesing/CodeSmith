@@ -18,6 +18,7 @@ use crate::dependencies::ExternalTool;
 
 mod acp_server;
 mod agent_memory;
+mod approval_grants;
 mod artifacts;
 mod audit;
 mod auto_mode;
@@ -5649,6 +5650,9 @@ async fn run_exec_agent(
         subagent_model_overrides: config.subagent_model_overrides(),
         subagent_api_timeout: std::time::Duration::from_secs(config.subagent_api_timeout_secs()),
         stream_idle_timeout: std::time::Duration::from_secs(config.stream_idle_timeout_secs()),
+        stream_idle_retry_increment: std::time::Duration::from_secs(
+            config.stream_idle_retry_increment_secs(),
+        ),
         subagent_inherit_full_registry: config.subagent_inherit_full_registry(),
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
         sandbox_runtime: config.sandbox_runtime_config(),
@@ -6224,6 +6228,9 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
         subagent_model_overrides: config.subagent_model_overrides(),
         subagent_api_timeout: std::time::Duration::from_secs(config.subagent_api_timeout_secs()),
         stream_idle_timeout: std::time::Duration::from_secs(config.stream_idle_timeout_secs()),
+        stream_idle_retry_increment: std::time::Duration::from_secs(
+            config.stream_idle_retry_increment_secs(),
+        ),
         subagent_inherit_full_registry: config.subagent_inherit_full_registry(),
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
         sandbox_runtime: config.sandbox_runtime_config(),
