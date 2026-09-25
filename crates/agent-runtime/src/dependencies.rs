@@ -2,7 +2,7 @@
 //! locally-installed programs (Python for `code_execution` / RLM REPL,
 //! `pdftotext` for PDF reading in `read_file`, future tools as added).
 //!
-//! Before v0.8.31, tools that called external binaries hardcoded the
+//! Historically, tools that called external binaries hardcoded the
 //! command name and failed at execution time when the binary wasn't on
 //! `PATH`. The most-cited example was `code_execution`, which spawned
 //! `python3` directly — Windows users (where the launcher is `py` or

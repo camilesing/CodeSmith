@@ -573,7 +573,7 @@ pub fn should_compact(
     // Pinned messages consume part of the budget, so compact earlier when needed.
     let effective_token_threshold = config.token_threshold.saturating_sub(pinned_tokens);
 
-    // Token-only trigger (v0.8.11): the prior message-count branch was a
+    // Token-only trigger: the prior message-count branch was a
     // 128K-era heuristic that fired compaction on long chats of small
     // messages — exactly the case where rewriting the V4 prefix cache is
     // most wasteful. Token budget is the only signal that maps to actual

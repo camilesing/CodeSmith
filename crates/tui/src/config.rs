@@ -1158,7 +1158,7 @@ pub struct Config {
     pub notifications: Option<NotificationsConfig>,
 
     /// Per-domain network policy (#135). When absent, network tools fall back
-    /// to a permissive default that mirrors pre-v0.7.0 behavior.
+    /// to a permissive default, matching the old lenient behavior.
     #[serde(default)]
     pub network: Option<NetworkPolicyToml>,
 

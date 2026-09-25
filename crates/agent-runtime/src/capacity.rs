@@ -28,15 +28,15 @@ impl Default for CapacityControllerConfig {
         model_priors.insert("deepseek_v4_flash".to_string(), 4.2);
 
         Self {
-            // OFF BY DEFAULT since v0.8.11. The capacity controller's
-            // interventions (TargetedContextRefresh, VerifyAndReplan)
-            // silently rewrite or clear the session message log, which
-            // surprises the user and destroys V4's prefix cache. v0.8.11
-            // committed to "trust the model with the full 1M-token
+            // OFF BY DEFAULT. The capacity controller's interventions
+            // (TargetedContextRefresh, VerifyAndReplan) silently rewrite
+            // or clear the session message log, which surprises the user
+            // and destroys V4's prefix cache. The project's standing
+            // posture is "trust the model with the full 1M-token
             // context, only compact on explicit user `/compact`."
-            // Auto-managing the prefix on the user's behalf works against
-            // that posture. Power users who want the controller can opt
-            // in via `capacity.enabled = true` in
+            // Auto-managing the prefix on the user's behalf works
+            // against that posture. Power users who want the controller
+            // can opt in via `capacity.enabled = true` in
             // `~/.codesmith/config.toml`.
             enabled: false,
             // Thresholds retained for the opt-in path; tuning notes live

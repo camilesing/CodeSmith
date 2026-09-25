@@ -24,7 +24,7 @@ pub struct ToolUseState {
 }
 
 /// Hard cap on consecutive recoverable stream errors before we surface a turn
-/// failure. Bumped 3 → 5 in v0.6.7 along with the HTTP/2 keepalive defaults
+/// failure. Bumped 3 → 5 along with the HTTP/2 keepalive defaults
 /// (#103) — keepalive should make spurious decode errors rarer, so we can
 /// tolerate a longer streak before giving up on the turn.
 pub const MAX_STREAM_ERRORS_BEFORE_FAIL: u32 = 5;

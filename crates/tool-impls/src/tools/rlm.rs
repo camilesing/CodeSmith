@@ -1,6 +1,6 @@
 //! Persistent RLM session tools.
 //!
-//! v0.8.33 replaces the old one-shot `rlm` tool with a head/hands surface:
+//! The old one-shot `rlm` tool is replaced by a head/hands surface:
 //! `rlm_open` creates a named Python kernel over a large context,
 //! `rlm_eval` runs bounded probes against it, `rlm_configure` adjusts runtime
 //! feedback, and `rlm_close` tears it down.
