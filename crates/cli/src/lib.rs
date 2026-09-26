@@ -158,6 +158,8 @@ enum Commands {
     Run(RunArgs),
     /// Run CodeSmith diagnostics.
     Doctor(TuiPassthroughArgs),
+    /// Inspect and consolidate agent memory via the TUI binary.
+    Memory(TuiPassthroughArgs),
     /// List live DeepSeek API models via the TUI binary.
     Models(TuiPassthroughArgs),
     /// List saved TUI sessions.
@@ -534,6 +536,10 @@ fn run() -> Result<()> {
         Some(Commands::Doctor(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             delegate_to_tui(&cli, &resolved_runtime, tui_args("doctor", args))
+        }
+        Some(Commands::Memory(args)) => {
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            delegate_to_tui(&cli, &resolved_runtime, tui_args("memory", args))
         }
         Some(Commands::Models(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);

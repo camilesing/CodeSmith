@@ -14,6 +14,7 @@
 
 pub mod age;
 pub mod budget;
+pub mod curator;
 pub mod dedup;
 pub mod entrypoint;
 pub mod paths;

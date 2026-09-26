@@ -55,6 +55,7 @@ mod lsp;
 mod mcp;
 mod mcp_server;
 mod memory;
+mod memory_consolidate;
 mod models;
 mod network_policy;
 mod palette;
@@ -216,6 +217,8 @@ struct Cli {
 enum Commands {
     /// Run system diagnostics and check configuration
     Doctor(DoctorArgs),
+    /// Inspect and consolidate agent memory (KoD MEMORY.md index)
+    Memory(MemoryArgs),
     /// Bootstrap MCP config and/or skills directories
     Setup(SetupArgs),
     /// Generate shell completions
@@ -571,6 +574,26 @@ struct DoctorArgs {
     /// Emit machine-readable JSON output (skips live API connectivity check)
     #[arg(long, default_value_t = false)]
     json: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+struct MemoryArgs {
+    #[command(subcommand)]
+    command: MemoryCommand,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum MemoryCommand {
+    /// Consolidate the KoD memory index (P3-8 sleep learning, offline)
+    Consolidate {
+        /// Write the consolidated index (backs up MEMORY.md first);
+        /// default is a dry run printing a unified diff
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Deterministic passes only — skip the LLM merge proposal
+        #[arg(long, default_value_t = false)]
+        deterministic_only: bool,
+    },
 }
 
 #[derive(Args, Debug, Clone)]
@@ -980,6 +1003,22 @@ async fn real_main() -> Result<()> {
                 } else {
                     run_doctor(&config, &workspace, cli.config.as_deref()).await;
                     Ok(())
+                }
+            }
+            Commands::Memory(args) => {
+                let config = load_config_from_cli(&cli)?;
+                match args.command {
+                    MemoryCommand::Consolidate {
+                        apply,
+                        deterministic_only,
+                    } => {
+                        memory_consolidate::run_memory_consolidate(
+                            &config,
+                            apply,
+                            deterministic_only,
+                        )
+                        .await
+                    }
                 }
             }
             Commands::Setup(args) => {

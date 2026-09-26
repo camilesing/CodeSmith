@@ -13,6 +13,25 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
 
 ### Added
 
+- **Memory consolidation — "sleep learning" (P3-8 step 3)**:
+  `codesmith memory consolidate [--apply] [--deterministic-only]` gives
+  the KoD memory index an offline maintenance pass (the online loop only
+  ever appends). Deterministic passes always run first over
+  `MEMORY.md`: exact-duplicate pointer lines removed, pointers to
+  deleted topic files dropped, orphaned topic files reported (never
+  deleted), and the entrypoint budget (200 lines / 25 KB) checked —
+  results land in the new `agent-runtime::knowledge::curator` module
+  with its own validator. Unless `--deterministic-only`, the cleaned
+  index plus every topic file's frontmatter goes to one advisory LLM
+  call (`[utility_model]` when configured, else the main client) which
+  proposes a consolidated rewrite (sharper descriptions, grouped
+  sections, one pointer per file); the proposal is accepted only if
+  `validate_proposed_index` confirms every existing topic file stays
+  referenced exactly once with no unknown files and no budget breach —
+  otherwise the deterministic result stands. Default is a dry run
+  printing a unified diff; `--apply` writes after taking a
+  `MEMORY.md.bak` backup. Topic file contents are never touched. Also
+  adds the `codesmith memory` CLI passthrough.
 - **Doctor LLM fallback layer (P3-8 step 2)**: after `codesmith doctor`'s
   deterministic checks complete, the warnings/errors they collected
   (recorded at the same branches that print them — update checks,

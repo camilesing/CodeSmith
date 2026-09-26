@@ -297,6 +297,37 @@ memory_path = "~/.codesmith/memory.md"
 | Memory excludes       | (none)                        | `[memory] excludes = ["..."]` or `CODESMITH_MEMORY_EXCLUDES=` (colon-separated) |
 | Max file size         | 100 KiB                       | (none today; truncation marker shows the cut)     |
 
+## Consolidation (`codesmith memory consolidate`)
+
+The online loop only ever *appends* to memory (`remember` dedupes exact
+lines; nothing prunes). `codesmith memory consolidate` is the offline
+counterpart — the "sleep learning" step of the continuous-evolution plan
+(P3-8) — and it only ever rewrites the Knowledge On Demand `MEMORY.md`
+index, never topic file contents:
+
+- **Deterministic passes** always run first: exact-duplicate pointer
+  lines are removed, pointers to deleted topic files are dropped,
+  orphaned topic files (on disk but unreferenced) are *reported* but
+  never deleted, and the index is checked against the entrypoint budget
+  (200 lines / 25 KB, the same limits the injector truncates at).
+- **LLM merge proposal** (optional, `--deterministic-only` to skip): the
+  cleaned index plus every topic file's frontmatter is handed to one
+  advisory call (`[utility_model]` when configured, else the main
+  client) which rewrites the index — sharpened descriptions, grouped
+  sections, one pointer per file. The proposal is only accepted if the
+  validator confirms every existing topic file is still referenced
+  exactly once, no unknown files appear, and the budget holds; any
+  violation falls back to the deterministic result.
+- **Writing is gated**: default is a dry run that prints a unified diff;
+  `--apply` writes the index after taking a `MEMORY.md.bak` backup. The
+  next session's prompt refresh picks the new index up automatically.
+
+```bash
+codesmith memory consolidate                      # dry run: report + diff
+codesmith memory consolidate --apply              # write (backup first)
+codesmith memory consolidate --deterministic-only # no LLM call at all
+```
+
 ## Related
 
 - `docs/SUBAGENTS.md` — sub-agents inherit memory and can use the
