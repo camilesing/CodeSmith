@@ -661,6 +661,9 @@ fn match_kitty_csi_fragment(chars: &[char], start: usize) -> Option<usize> {
 
 const MAX_SUBMITTED_INPUT_CHARS: usize = 16_000;
 const MAX_DRAFT_HISTORY: usize = 50;
+/// Bounded history of `TranscriptRebuilt` audit entries shown by
+/// `/cache zones` (#2264 Phase 2).
+pub(crate) const TRANSCRIPT_REBUILD_AUDIT_LIMIT: usize = 8;
 
 // `AppMode` impl (`from_setting`/`as_setting`/`label`/`description`) lives in
 // `codesmith-agent-runtime::mode`; the enum is re-exported above.
@@ -1456,6 +1459,13 @@ pub struct App {
     /// `/cache stats` for cache-hit debugging.
     pub last_pinned_prefix_hash: Option<String>,
 
+    // === AppendLog rebuild audit (#2264 Phase 2) ===
+    /// Recent sanctioned transcript replacements (compaction, overflow
+    /// recovery, `/edit` rollback, session restore…), newest last, bounded
+    /// to `TRANSCRIPT_REBUILD_AUDIT_LIMIT`. Fed by `TranscriptRebuilt`
+    /// events; surfaced by `/cache zones` as "why did my cache reset".
+    pub transcript_rebuilds: VecDeque<(String, usize, usize)>,
+
     /// Active cycle configuration (token threshold, briefing cap, per-model
     /// overrides). Loaded from config and forwarded to the engine.
     pub cycle: CycleConfig,
@@ -2050,6 +2060,7 @@ impl App {
             prefix_stability_pct: None,
             last_prefix_change_desc: None,
             last_pinned_prefix_hash: None,
+            transcript_rebuilds: VecDeque::new(),
             cycle: CycleConfig::default(),
             collapsed_cells: HashSet::new(),
             folded_thinking: HashSet::new(),

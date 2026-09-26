@@ -2067,6 +2067,20 @@ async fn run_event_loop(
                             }
                         }
                     }
+                    EngineEvent::TranscriptRebuilt {
+                        reason,
+                        before,
+                        after,
+                    } => {
+                        // Sanctioned AppendLog replacement (#2264) — keep a
+                        // bounded audit trail for `/cache zones`.
+                        app.transcript_rebuilds.push_back((reason, before, after));
+                        while app.transcript_rebuilds.len()
+                            > crate::tui::app::TRANSCRIPT_REBUILD_AUDIT_LIMIT
+                        {
+                            app.transcript_rebuilds.pop_front();
+                        }
+                    }
                     EngineEvent::CapacityDecision { .. } => {
                         // Telemetry-only event. Surface actual interventions and failures
                         // instead of replacing the footer with no-op guardrail chatter.

@@ -85,9 +85,9 @@
 //!    [`should_compact`] passes (enough messages past the keep-recent window),
 //!    [`compact_messages_safe`] calls the LLM for a summary and replaces the
 //!    transcript with the compacted one. Both stages wholesale-replace the
-//!    transcript via `ChatHistory::clear()` + `push()` loop (the trait exposes
-//!    no bulk replace — this composes its primitives, matching the "don't
-//!    change core traits" precedent). The probe carries
+//!    transcript via `ChatHistory::replace_all` (the audited bulk-replace
+//!    hook the trait now exposes; it lands in the session's AppendLog
+//!    rebuild record and emits `Event::TranscriptRebuilt`). The probe carries
 //!    `micro_state: Arc<std::sync::Mutex<MicroCompactState>>` and
 //!    `circuit_breaker: Arc<std::sync::Mutex<CompactionCircuitBreaker>>` —
 //!    `std::sync::Mutex` like steer / LSP (no lock crosses an `await`: messages
@@ -564,7 +564,7 @@ use codesmith_agent::callback::{Callback, StopReason};
 use codesmith_agent::executor::{AgentExecutor, AgentExecutorConfig};
 use codesmith_agent::llm_client::LlmClientHandle;
 use codesmith_agent::memory::ChatHistory;
-use codesmith_agent::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Usage};
+use codesmith_agent::models::{ContentBlock, Message, SystemPrompt, Usage};
 use codesmith_agent::tools::{ToolResult, ToolSet};
 
 use super::approval::ApprovalDecision;
@@ -661,8 +661,8 @@ impl LspProbe {
 /// [`HostAgentExecutor`] field shared by every compaction path.
 ///
 /// The transcript itself is read/written through [`ChatHistory`]: the compacted
-/// messages are applied via `clear()` + `push()`, composing the existing trait
-/// surface (no core-trait change). Host-coupled follow-ups that **are**
+/// messages are applied via the trait's audited `replace_all` hook (landing
+/// in the session's AppendLog rebuild record). Host-coupled follow-ups that **are**
 /// absorbed: `merge_compaction_summary` (slice 25a §E —
 /// [`HostAgentExecutor::take_pending_compaction_summary`]) and
 /// `reinject_compaction_attachments` (slice 25b §E — [`ReinjectProbe`]).
@@ -1027,7 +1027,7 @@ pub struct HostAgentExecutor {
     /// are no-ops. The probe carries interior-mutable `micro_state` +
     /// `circuit_breaker` (both `Arc<std::sync::Mutex<…>>`, matching the
     /// steer/LSP pattern); the transcript is read/written through `ChatHistory`
-    /// (compacted messages applied via `clear()` + `push()`). Persists across
+    /// (compacted messages applied via `replace_all`). Persists across
     /// `run` calls (matches `Session.micro_compact_state` / `.circuit_breaker`).
     compaction: Option<CompactionProbe>,
     /// Optional capacity probe (§E). `None` ⇒ token-budget preflight is a
@@ -1265,7 +1265,8 @@ pub struct HostAgentExecutor {
     /// next drift is measured against the latest prefix.
     /// `std::sync::Mutex`-wrapped (sync fingerprint check; the lock is never
     /// held across an `await`).
-    prefix_stability: Option<std::sync::Arc<std::sync::Mutex<crate::prefix_cache::PrefixStabilityManager>>>,
+    prefix_stability:
+        Option<std::sync::Arc<std::sync::Mutex<crate::prefix_cache::PrefixStabilityManager>>>,
 
     /// Latest real provider usage reading, recorded after each committed
     /// assistant turn (P2-5): pins the absolute token level for the
@@ -1464,9 +1465,7 @@ impl HostAgentExecutor {
     pub fn with_prefix_stability(
         mut self,
         prefix_stability: Option<
-            std::sync::Arc<
-                std::sync::Mutex<crate::prefix_cache::PrefixStabilityManager>,
-            >,
+            std::sync::Arc<std::sync::Mutex<crate::prefix_cache::PrefixStabilityManager>>,
         >,
     ) -> Self {
         self.prefix_stability = prefix_stability;
@@ -1693,9 +1692,10 @@ impl HostAgentExecutor {
         }
     }
 
-    /// Shadow-mode prefix-cache stability check (P0-3). Fingerprints the
-    /// step's system prompt + tool set against the session-pinned
-    /// fingerprint; on drift, emits [`Event::PrefixCacheChange`] so the TUI
+    /// Shadow-mode prefix-cache stability check (P0-3). Compares the step's
+    /// frozen prefix (system prompt + tool set, hashed by
+    /// `prompt_zones::PinnedPrefix::freeze`) against the session-pinned
+    /// baseline; on drift, emits [`Event::PrefixCacheChange`] so the TUI
     /// can surface the cache invalidation. Observation only — the manager
     /// re-pins internally (measuring the *next* drift against the latest
     /// prefix), and nothing here blocks or rewrites the request: a detected
@@ -1705,26 +1705,23 @@ impl HostAgentExecutor {
     /// `await` (the event payload is pre-extracted).
     pub(crate) async fn observe_prefix_stability(
         &self,
-        system: Option<&SystemPrompt>,
-        api_tools: &[codesmith_agent::models::Tool],
+        frozen: &crate::prompt_zones::FrozenPrefix,
     ) {
         let Some(manager) = &self.prefix_stability else {
             return;
         };
-        let system_text =
-            crate::prefix_cache::system_prompt_text(system);
         let change = {
             // Scope the lock: extracted (cloned) before the `send` await so
             // no guard crosses an `await` (matches the LspProbe precedent).
             let Ok(mut guard) = manager.lock() else {
                 return;
             };
-            match guard.check_and_update(&system_text, Some(api_tools)) {
+            match guard.check_and_update(frozen) {
                 Err(change) => Some((
                     change.description(),
                     change.system_changed,
                     change.tools_changed,
-                    change.new.combined_sha256.clone(),
+                    change.new_sha256.clone(),
                     (guard.stability_ratio() * 100.0).round() as u32,
                 )),
                 // Stable — no event. Routine heartbeats would flood the
@@ -1793,7 +1790,7 @@ impl HostAgentExecutor {
     /// Re-inject post-compaction attachment messages (plan / todos /
     /// subagents / read_files) into the transcript DURING `run`, right after
     /// [`run_compaction`] / [`recover_context_overflow`] replace it via
-    /// `history.clear()` + `push(result.messages)` (slice 25b §E). Mirrors
+    /// the audited `history.replace_all(...)` hook (slice 25b §E). Mirrors
     /// production's `Engine::reinject_compaction_attachments` but reads from
     /// the [`ReinjectProbe`] (`plan_state` / `todos` / `recent_read_files`
     /// `Arc` clones) + [`subagent_api`] (`live_running_snapshots`) +
@@ -1917,8 +1914,8 @@ impl HostAgentExecutor {
     /// so a fresh LSP diagnostic message survives compaction.
     ///
     /// The transcript is read/written through [`ChatHistory`]: the compacted
-    /// messages are applied via `clear()` + `push()`, composing the existing
-    /// trait surface (no core-trait change). The `micro_state` /
+    /// messages are applied via the trait's audited `replace_all` hook. The
+    /// `micro_state` /
     /// `circuit_breaker` live on [`CompactionProbe`] as
     /// `Arc<std::sync::Mutex<…>>` (interior-mutable because [`AgentExecutor::run`]
     /// is `&self`); the locks are never held across an `await` — the LLM
@@ -1963,17 +1960,15 @@ impl HostAgentExecutor {
         // Phase 1 — micro-compaction (no API call): clear content from old
         // tool results (file reads, shell output, …) when a time/byte trigger
         // fires. Mirrors the retired turn handler. `ChatHistory::messages()` is
-        // `&[Message]` (immutable), so clone → mutate → clear+repush.
+        // `&[Message]` (immutable), so clone → mutate → audited
+        // `replace_all` swap.
         {
             let mut state = probe.micro_state.lock().expect("poisoned");
             if should_trigger_micro_compact(history.messages(), &state, false) {
                 let mut msgs = history.messages().to_vec();
                 let cleared = micro_compact_messages(&mut msgs, &mut state);
                 if cleared > 0 {
-                    history.clear();
-                    for m in msgs {
-                        history.push(m);
-                    }
+                    history.replace_all("micro-compact", msgs);
                     tracing::info!(
                         "{cleared} bytes cleared by micro-compaction before the request"
                     );
@@ -2073,10 +2068,7 @@ impl HostAgentExecutor {
                 // `emit_session_updated` remains deferred until the host-side
                 // post-`run` closure (fires alongside the merge).
                 self.record_compaction_summary(result.summary_prompt.clone());
-                history.clear();
-                for m in result.messages {
-                    history.push(m);
-                }
+                history.replace_all("full-compact", result.messages);
                 // Wholesale transcript replace — the anchor's absolute level
                 // was measured against the pre-compaction request (P2-5).
                 self.invalidate_usage_anchor();
@@ -2118,10 +2110,7 @@ impl HostAgentExecutor {
                 // The trigger this step recorded led to no compaction —
                 // roll it back so a persistently failing summarizer can't
                 // trip the refill detector without a single refill (P2-5).
-                self.refill
-                    .lock()
-                    .expect("poisoned")
-                    .discard_last_trigger();
+                self.refill.lock().expect("poisoned").discard_last_trigger();
                 self.emit_status(format!("Compaction failed: {e}")).await;
             }
         }
@@ -2238,10 +2227,7 @@ impl HostAgentExecutor {
                         // (the executor's system prompt is a static snapshot, so
                         // folding mid-run is invisible to this turn's requests).
                         self.record_compaction_summary(result.summary_prompt.clone());
-                        history.clear();
-                        for m in result.messages {
-                            history.push(m);
-                        }
+                        history.replace_all("responsive-compact", result.messages);
                         // Wholesale transcript replace — the usage anchor's
                         // absolute level was measured against the
                         // pre-compaction request (P2-5).
@@ -2348,8 +2334,7 @@ impl HostAgentExecutor {
         // since are estimated. Falls back to the pure estimate when no
         // anchor exists yet or history shrank past it.
         let anchor = *self.usage_anchor.lock().expect("poisoned");
-        let estimated =
-            estimate_input_tokens_anchored(history.messages(), system, anchor.as_ref());
+        let estimated = estimate_input_tokens_anchored(history.messages(), system, anchor.as_ref());
         if estimated <= target_budget {
             return CapacityPreflight::Proceed;
         }
@@ -2452,10 +2437,7 @@ impl HostAgentExecutor {
             let mut local_state = MicroCompactState::default();
             let cleared = micro_compact_messages(&mut msgs, &mut local_state);
             if cleared > 0 {
-                history.clear();
-                for m in msgs {
-                    history.push(m);
-                }
+                history.replace_all("overflow-recovery: micro-compact", msgs);
                 let after_micro = estimate_input_tokens_conservative(history.messages(), system);
                 if after_micro <= target_budget {
                     self.emit_status(
@@ -2524,10 +2506,7 @@ impl HostAgentExecutor {
                 // `emit_session_updated` remains deferred until the host-side
                 // post-`run` closure (fires alongside the merge).
                 if !result.messages.is_empty() || messages.is_empty() {
-                    history.clear();
-                    for m in result.messages {
-                        history.push(m);
-                    }
+                    history.replace_all("overflow-recovery: full-compact", result.messages);
                     // Wholesale transcript replace — the usage anchor's
                     // absolute level was measured against the
                     // pre-compaction request (P2-5).
@@ -2548,7 +2527,7 @@ impl HostAgentExecutor {
 
         // Phase 3 — hard trim oldest messages (mirrors mod.rs:1852 +
         // trim_oldest_messages_to_budget). `ChatHistory` has no `remove(0)`,
-        // so clone → trim Vec → clear + repush (same pattern as compaction).
+        // so clone → trim Vec → audited `replace_all` swap.
         let after_compact = estimate_input_tokens_conservative(history.messages(), system);
         if after_compact > target_budget {
             let mut msgs = history.messages().to_vec();
@@ -2558,12 +2537,9 @@ impl HostAgentExecutor {
             {
                 msgs.remove(0);
             }
-            // Capture before the `for` loop consumes `msgs`.
+            // Capture before the replacement consumes `msgs`.
             let trimmed = before_trim > msgs.len();
-            history.clear();
-            for m in msgs {
-                history.push(m);
-            }
+            history.replace_all("overflow-recovery: hard-trim", msgs);
             // Slice 25c §E: hard-trim is a non-merge compaction — it changes
             // the transcript (oldest messages removed) without producing a
             // `summary_prompt`, so signal the host to run
@@ -2928,14 +2904,19 @@ impl HostAgentExecutor {
             self.flush_pending_lsp_diagnostics(history);
 
             let api_tools = tools.to_api_tools();
+            // Three-zone assembly (#2264 Phase 2): freeze the step's prefix
+            // identity once — the same frozen prefix feeds the stability
+            // observer below AND the request, so what `/cache zones`
+            // reports is exactly what the request path carries.
+            let frozen_prefix =
+                crate::prompt_zones::PinnedPrefix::new(system.as_ref(), api_tools.clone()).freeze();
             // Shadow-mode prefix-cache stability check (P0-3): fingerprint
             // this step's system prompt + tool set against the session-pinned
             // fingerprint. Sits after the system-prompt refresh /
             // compaction seam so a mid-turn summary fold is observed on the
             // step that first carries it. Emits `Event::PrefixCacheChange`
             // on drift; no-op unless the production wire-in bound the probe.
-            self.observe_prefix_stability(system.as_ref(), &api_tools)
-                .await;
+            self.observe_prefix_stability(&frozen_prefix).await;
             // §F2b T2 — BeforeProviderHeaders (observe) fires before the
             // request is assembled.
             if let Some(runner) = &extension {
@@ -2943,9 +2924,18 @@ impl HostAgentExecutor {
                     .emit(codesmith_agent::extension::ExtensionEvent::BeforeProviderHeaders)
                     .await;
             }
-            let mut request = MessageRequest {
+            // The per-step `MessageRequest` is assembled through the
+            // three-zone contract: `messages` can only be the append-log
+            // slice plus the scratch tail (`TurnScratch` is empty in
+            // production — the current user message is committed to the log
+            // before the run loop starts). Byte-identical to the legacy
+            // direct `MessageRequest` construction; the zone types govern
+            // how the request is *expressible*, not what it contains.
+            let mut request = crate::prompt_zones::ThreeZoneRequest {
+                prefix: &frozen_prefix,
+                log: history.messages(),
+                scratch: crate::prompt_zones::TurnScratch::new(),
                 model: client.model().to_string(),
-                messages: history.messages().to_vec(),
                 max_tokens,
                 system: system.clone(),
                 tools: if api_tools.is_empty() {
@@ -2960,7 +2950,8 @@ impl HostAgentExecutor {
                 stream: Some(true),
                 temperature,
                 top_p: None,
-            };
+            }
+            .into_message_request();
             // §F2b T2 — BeforeProviderRequest (transform): a handler may
             // rewrite `request.messages` before the stream call. The host
             // passes the current messages as JSON; a Transform returns the
@@ -3617,6 +3608,7 @@ mod tests {
     use crate::tools::spec::{ApprovalRequirement, ToolContext, ToolSpec};
     use codesmith_agent::callback::StreamDelta;
     use codesmith_agent::llm_client::{LlmClient, StreamEventBox};
+    use codesmith_agent::models::MessageRequest;
     use codesmith_agent::models::{
         ContentBlockStart, Delta, MessageDelta, MessageResponse, StreamEvent, SystemBlock, Usage,
     };
@@ -4183,14 +4175,14 @@ mod tests {
                     // `Empty` arm (transparent retry). Without a watchdog
                     // this would hang the test forever — stall tests must
                     // always bind `with_stream_idle_timeout`.
-                    MockRound::Stall => Ok(Box::pin(futures_util::stream::pending())
-                        as StreamEventBox),
+                    MockRound::Stall => {
+                        Ok(Box::pin(futures_util::stream::pending()) as StreamEventBox)
+                    }
                     // Content, then silence: the watchdog abort lands in the
                     // `Partial` arm (surface what was received, no retry).
                     MockRound::StallAfter(events) => {
                         use futures_util::StreamExt as _;
-                        let items: Vec<Result<StreamEvent>> =
-                            events.into_iter().map(Ok).collect();
+                        let items: Vec<Result<StreamEvent>> = events.into_iter().map(Ok).collect();
                         Ok(Box::pin(
                             futures_util::stream::iter(items)
                                 .chain(futures_util::stream::pending()),
@@ -4641,6 +4633,87 @@ mod tests {
             true
         );
         assert_eq!(calls[1].1.tool_success, Some(true));
+    }
+
+    /// #2264 Phase 2 regression: the per-step request is assembled through
+    /// `ThreeZoneRequest` — its `messages` must stay byte-identical to the
+    /// legacy direct `MessageRequest { messages: history.messages().to_vec() }`
+    /// construction (prior log + the seeded user turn, verbatim). The zone
+    /// wiring changes how the request is *expressible*, never the bytes on
+    /// the wire.
+    #[tokio::test]
+    async fn three_zone_assembly_sends_verbatim_log_snapshot() {
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EchoSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        // Prior-turn history so the log slice is non-trivial.
+        sess.add_message(Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "earlier question".to_string(),
+                cache_control: None,
+            }],
+        });
+        sess.add_message(Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "earlier answer".to_string(),
+                cache_control: None,
+            }],
+        });
+        let log_before = sess.messages.to_vec();
+        let mut history = SessionChatHistory::new(&mut sess);
+
+        let callback: Arc<dyn Callback> =
+            Arc::new(CallbackBridge::new(None, None, test_template()));
+        let mut call = text_block(0, "done");
+        call.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let reason = executor
+            .run(&mut history, "current question".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        let requests = mock.requests();
+        assert_eq!(requests.len(), 1, "one text-only round = one request");
+        // The exact bytes the legacy construction sent: prior log + the
+        // seeded plain-text user turn.
+        let mut legacy = log_before;
+        legacy.push(Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "current question".to_string(),
+                cache_control: None,
+            }],
+        });
+        crate::test_support::assert_byte_identical(
+            "three-zone request messages vs legacy direct assembly",
+            &serde_json::to_string(&requests[0]).unwrap(),
+            &serde_json::to_string(&legacy).unwrap(),
+        );
+        // The log grew append-only: prefix intact, assistant reply at tail.
+        assert_eq!(sess.messages.len(), legacy.len() + 1);
+        assert_eq!(sess.messages.as_slice()[..legacy.len()], legacy[..]);
     }
 
     #[tokio::test]
@@ -5781,9 +5854,7 @@ mod tests {
         // Text deltas arrive, then the stream falls silent mid-flight (no
         // MessageStop).
         let partial = text_block(0, "half an answer");
-        let mock = Arc::new(MockLlm::with_rounds(vec![MockRound::StallAfter(
-            partial,
-        )]));
+        let mock = Arc::new(MockLlm::with_rounds(vec![MockRound::StallAfter(partial)]));
 
         let executor = HostAgentExecutor::new(
             mock.clone(),
@@ -5967,7 +6038,11 @@ mod tests {
             err.to_string().contains("Unauthorized"),
             "error should carry the provider message: {err}"
         );
-        assert_eq!(mock.requests().len(), 1, "auth failures must not be retried");
+        assert_eq!(
+            mock.requests().len(),
+            1,
+            "auth failures must not be retried"
+        );
     }
 
     /// Adaptive idle window: with a nonzero increment, retry #2's watchdog
@@ -6057,21 +6132,29 @@ mod tests {
             crate::prefix_cache::PrefixStabilityManager::new_unpinned(),
         ))));
 
+        let freeze = |text: &str| {
+            crate::prompt_zones::PinnedPrefix::new(
+                Some(&SystemPrompt::Text(text.to_string())),
+                vec![],
+            )
+            .freeze()
+        };
+
         // Step 1: first check pins the baseline — no drift event.
         executor
-            .observe_prefix_stability(Some(&SystemPrompt::Text("system v1".into())), &[])
+            .observe_prefix_stability(&freeze("system v1"))
             .await;
         assert!(drain(&mut rx).is_empty(), "first check pins, no event");
 
         // Step 2: same prefix — stable, still no event.
         executor
-            .observe_prefix_stability(Some(&SystemPrompt::Text("system v1".into())), &[])
+            .observe_prefix_stability(&freeze("system v1"))
             .await;
         assert!(drain(&mut rx).is_empty(), "stable check emits nothing");
 
         // Step 3: drifted system prompt — one PrefixCacheChange event.
         executor
-            .observe_prefix_stability(Some(&SystemPrompt::Text("system v2".into())), &[])
+            .observe_prefix_stability(&freeze("system v2"))
             .await;
         let events = drain(&mut rx);
         let drift = events
@@ -6099,7 +6182,7 @@ mod tests {
 
         // Step 4: the manager re-pinned — the new prefix is the new baseline.
         executor
-            .observe_prefix_stability(Some(&SystemPrompt::Text("system v2".into())), &[])
+            .observe_prefix_stability(&freeze("system v2"))
             .await;
         assert!(
             drain(&mut rx).is_empty(),
@@ -6132,12 +6215,15 @@ mod tests {
             None,
         );
 
-        executor
-            .observe_prefix_stability(Some(&SystemPrompt::Text("a".into())), &[])
-            .await;
-        executor
-            .observe_prefix_stability(Some(&SystemPrompt::Text("b".into())), &[])
-            .await;
+        let freeze = |text: &str| {
+            crate::prompt_zones::PinnedPrefix::new(
+                Some(&SystemPrompt::Text(text.to_string())),
+                vec![],
+            )
+            .freeze()
+        };
+        executor.observe_prefix_stability(&freeze("a")).await;
+        executor.observe_prefix_stability(&freeze("b")).await;
         assert!(drain(&mut rx).is_empty(), "no probe ⇒ no events");
     }
 

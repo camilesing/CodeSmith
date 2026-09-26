@@ -689,6 +689,18 @@ impl WorkingSet {
     /// The block lands in the system prompt before the historical
     /// conversation; any byte that drifts here cache-misses everything that
     /// follows in DeepSeek's KV prefix cache.
+    /// The exact path set [`summary_block`](Self::summary_block) renders, in
+    /// render order — the input selection mirrored for callers (the
+    /// three-zone `TurnScratch`) that record what fed a given turn's
+    /// `<turn_meta>`.
+    pub fn prompt_paths(&self) -> Vec<String> {
+        self.sorted_for_prompt()
+            .into_iter()
+            .take(self.config.max_prompt_entries)
+            .map(|entry| entry.path.clone())
+            .collect()
+    }
+
     pub fn summary_block(&self, workspace: &Path) -> Option<String> {
         let prompt_entries: Vec<&WorkingSetEntry> = self
             .sorted_for_prompt()

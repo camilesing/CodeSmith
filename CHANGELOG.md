@@ -13,6 +13,32 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
 
 ### Added
 
+- **Three-zone prompt contract wired into the engine request path
+  (#2264 Phase 2)**: the `prompt_zones` types are now load-bearing instead
+  of scaffolding. `Session.messages` is an `AppendLog` — `push` is the
+  only everyday mutation the type expresses (`insert` / `remove` /
+  `truncate` / `clear` / index writes do not compile); sanctioned
+  wholesale replacements (compaction, overflow recovery, `/edit` rollback,
+  session restore, cycle reseeds, front trims) all funnel through
+  `AppendLog::rebuild` with a named `RebuildReason`, recorded in an audit
+  record and surfaced as `Event::TranscriptRebuilt`. The framework
+  `ChatHistory` trait gains an audited `replace_all` hook (default:
+  clear + push loop) that `SessionChatHistory` overrides to land mid-run
+  compaction/recovery replacements in the same record atomically. The
+  per-step `MessageRequest` is assembled through `ThreeZoneRequest`
+  (`messages` = log slice + scratch tail only) — byte-identical to the
+  legacy direct construction, pinned by the
+  `three_zone_assembly_sends_verbatim_log_snapshot` regression test.
+  `PrefixStabilityManager` now consumes the same `FrozenPrefix` the
+  request path freezes per step, unifying the two parallel fingerprint
+  implementations; tool identity hashes the full sorted JSON of every
+  tool definition instead of names only, so a tool description or schema
+  edit is now detected as prefix drift. `TurnScratch` is wired as the
+  engine's per-turn staging area (working-set paths + the composed user
+  message, committed to the log before the request loop, cleared at the
+  turn boundary; the request-time scratch is empty in production).
+  `/cache zones` reports live zone state including the bounded rebuild
+  audit ("why did my cache reset") instead of confessing it is not wired.
 - **Parse-gated file editing (P0-1)**: `write_file`, `edit_file`,
   `apply_patch`, and `fim_edit` now syntax-check writes to `.rs` / `.toml` /
   `.json` files *before* anything touches disk. The gate is regression-only —

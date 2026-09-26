@@ -30,6 +30,22 @@ pub trait ChatHistory: Send + Sync {
     /// Drop the entire transcript.
     fn clear(&mut self);
 
+    /// Replace the whole transcript in one atomic operation — the named
+    /// form of "this busts the prefix cache on purpose" (compaction,
+    /// context-overflow recovery, turn resets). `reason` is a static label
+    /// naming the caller; hosts surface it in diagnostics.
+    ///
+    /// Default: `clear` + push loop, which keeps simple embeds working.
+    /// Production hosts should override so the replacement lands in their
+    /// audited store in one step (see agent-runtime's `SessionChatHistory`).
+    fn replace_all(&mut self, reason: &'static str, messages: Vec<Message>) {
+        let _ = reason;
+        self.clear();
+        for message in messages {
+            self.push(message);
+        }
+    }
+
     /// Current transcript length.
     fn len(&self) -> usize;
 
@@ -104,5 +120,15 @@ mod tests {
         h.clear();
         assert!(h.is_empty());
         assert!(h.messages().is_empty());
+    }
+
+    #[test]
+    fn replace_all_swaps_transcript_atomically() {
+        let mut h = VecChatHistory::new();
+        h.push(user_text("old-1"));
+        h.push(user_text("old-2"));
+        h.replace_all("test-swap", vec![user_text("new")]);
+        assert_eq!(h.len(), 1);
+        assert_eq!(h.messages()[0].content.len(), 1);
     }
 }

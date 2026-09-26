@@ -315,6 +315,22 @@ command = "echo 'Running tool: $TOOL_NAME'"
    platform matrix).
 5. **Minimal dependencies**: Careful dependency selection for build speed
 6. **Local-first runtime API**: HTTP/SSE endpoints are intended for trusted localhost access and are served by the `crates/tui` runtime today
+7. **Three-zone prompt contract (#2264)**: every request is divided into a
+   `PinnedPrefix` (system prompt + tool catalog, fingerprinted per step by
+   `prompt_zones::PinnedPrefix::freeze` and drift-checked by
+   `prefix_cache::PrefixStabilityManager`), an `AppendLog` (the `Session`
+   transcript store — `push` is the only everyday mutation the type
+   expresses; wholesale replacement must name itself via a `RebuildReason`
+   and lands in the log's audit record, surfacing as
+   `Event::TranscriptRebuilt` for `/cache zones`), and a `TurnScratch`
+   (per-turn composition staging, committed to the log before the request
+   loop and cleared at every turn boundary). The per-step
+   `MessageRequest` is assembled through `ThreeZoneRequest` in
+   `engine/host_executor.rs` — `messages` can only be the log slice plus
+   the scratch tail, so hand-assembling a request from an arbitrary
+   `Vec<Message>` elsewhere is the pattern this contract exists to
+   prevent (byte-identical to the legacy direct construction; see the
+   `three_zone_assembly_sends_verbatim_log_snapshot` regression test).
 
 ## Configuration Files
 

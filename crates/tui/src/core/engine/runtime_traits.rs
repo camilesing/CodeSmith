@@ -293,7 +293,7 @@ impl HostServices for super::EngineHost {
             .await;
             Some(SubAgentForkContext {
                 system: session.system_prompt.clone(),
-                messages: session.messages.clone(),
+                messages: session.messages.to_vec(),
                 structured_state_block: state.to_system_block(),
                 current_assistant_text: None,
                 current_turn_tool_calls: None,

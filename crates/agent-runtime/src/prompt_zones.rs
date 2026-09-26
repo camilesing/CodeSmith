@@ -10,23 +10,47 @@
 //! │ AppendLog (append-only)                  │ ← conversation history
 //! │   push() only, no insert / remove / edit │   preserves prefix of prior turns
 //! ├─────────────────────────────────────────┤
-//! │ TurnScratch (ephemeral)                  │ ← per-turn metadata
-//! │   cleared at every turn boundary         │   the only new content per request
+//! │ TurnScratch (ephemeral)                  │ ← per-turn composition staging,
+//! │   cleared at every turn boundary         │   committed to the log pre-request
 //! └─────────────────────────────────────────┘
 //! ```
 //!
-//! ## Status (Phase 1 foundation)
+//! ## Status (Phase 2 — wired into the engine request path)
 //!
-//! `PinnedPrefix` / `FrozenPrefix` / `PrefixDrift` are ready for use.
-//! `AppendLog` / `TurnScratch` / `ThreeZoneRequest` are type scaffolding
-//! for future phases — not yet wired into the request path.
+//! All six types are load-bearing:
+//!
+//! * [`AppendLog`] is the transcript store on `Session` — `push` is the only
+//!   everyday mutation the type expresses; every wholesale replacement must
+//!   name itself through [`AppendLog::rebuild`] with a [`RebuildReason`].
+//! * [`ThreeZoneRequest::into_message_request`] assembles the per-step
+//!   `MessageRequest` in `engine/host_executor.rs`: `messages` can only be
+//!   the log slice plus the scratch tail.
+//! * [`PinnedPrefix`] / [`FrozenPrefix`] / [`PrefixDrift`] are the prefix
+//!   identity currency: the engine freezes one per step and
+//!   `prefix_cache::PrefixStabilityManager` drift-checks against it.
+//! * [`TurnScratch`] is the engine's per-turn staging area — composed at
+//!   turn start, committed to the log *before* the request loop runs, and
+//!   cleared at every turn boundary. In production the request-time scratch
+//!   is therefore empty (the request tail is the log tail); the field is the
+//!   type-level slot for embedders that keep per-request-only content out
+//!   of the log. Honest limitation, stated rather than papered over.
+//!
+//! ## The escape-hatch policy
+//!
+//! "Append-only" has sanctioned exceptions: compaction, overflow recovery,
+//! `/edit` rollback, session restore, cycle reseeds. They all funnel through
+//! [`AppendLog::rebuild`], which requires a [`RebuildReason`] naming the
+//! caller and records a [`RebuildRecord`] for diagnostics (`/cache zones`).
+//! Every one of those sites busts the KV prefix cache *by design*; the type
+//! system's job is to make that impossible to do by accident.
 
-use crate::models::{Message, SystemPrompt, Tool};
+use std::fmt;
+
+use crate::models::{Message, MessageRequest, SystemPrompt, Tool};
 use crate::utils::sha256_hex;
 
 // ── helpers ────────────────────────────────────────────────────────────
 
-#[allow(dead_code)]
 fn system_text(system: Option<&SystemPrompt>) -> String {
     match system {
         Some(SystemPrompt::Text(text)) => text.clone(),
@@ -43,7 +67,10 @@ fn system_text(system: Option<&SystemPrompt>) -> String {
 }
 
 /// Serialize tools to a deterministic, sorted JSON string for hashing.
-#[allow(dead_code)]
+///
+/// Full definitions, not just names: a tool whose description or schema
+/// changed re-serializes to different bytes and must be detected as prefix
+/// drift even though its name (and catalog position) did not change.
 fn tool_catalog_digest(tools: &[Tool]) -> String {
     let mut serialized: Vec<String> = tools
         .iter()
@@ -53,7 +80,6 @@ fn tool_catalog_digest(tools: &[Tool]) -> String {
     serialized.join("\n")
 }
 
-#[allow(dead_code)]
 fn combined_hash(system_text: &str, tools: &[Tool]) -> String {
     let system_sha = sha256_hex(system_text.as_bytes());
     let tools_digest = tool_catalog_digest(tools);
@@ -70,14 +96,12 @@ fn combined_hash(system_text: &str, tools: &[Tool]) -> String {
 ///
 /// Use [`PinnedPrefix::freeze`] to produce one.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub struct FrozenPrefix {
     pub system_text: String,
     pub tool_catalog: String,
     pub combined_sha256: String,
 }
 
-#[allow(dead_code)]
 impl FrozenPrefix {
     /// Verify that `current_system_text` and `current_tools` match the frozen
     /// prefix. Returns `Ok(())` when stable, `Err(PrefixDrift)` on mismatch.
@@ -127,13 +151,11 @@ impl FrozenPrefix {
 /// A mutable prefix builder. Construct from the system prompt and tool
 /// catalog, then call [`freeze`](Self::freeze) to produce a [`FrozenPrefix`].
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PinnedPrefix {
     system_text: String,
     tools: Vec<Tool>,
 }
 
-#[allow(dead_code)]
 impl PinnedPrefix {
     #[must_use]
     pub fn new(system: Option<&SystemPrompt>, tools: Vec<Tool>) -> Self {
@@ -161,7 +183,6 @@ impl PinnedPrefix {
 
 /// Describes how the current prefix differs from the frozen baseline.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub struct PrefixDrift {
     pub system_changed: bool,
     pub tools_changed: bool,
@@ -169,8 +190,8 @@ pub struct PrefixDrift {
     pub current_hash: String,
 }
 
-impl std::fmt::Display for PrefixDrift {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for PrefixDrift {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let cause = match (self.system_changed, self.tools_changed) {
             (true, true) => "system prompt and tool set",
             (true, false) => "system prompt",
@@ -186,31 +207,133 @@ impl std::fmt::Display for PrefixDrift {
     }
 }
 
-// ── AppendLog ──────────────────────────────────────────────────────────
+// ── RebuildReason / RebuildRecord ──────────────────────────────────────
 
-/// Append-only conversation history. Only exposes `push`-style mutations.
-///
-/// **Phase 1 scaffolding** — not yet wired into the engine request path.
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub struct AppendLog {
-    messages: Vec<Message>,
+/// Why an [`AppendLog`] was wholesale replaced. Every variant is a
+/// sanctioned KV-prefix-cache bust — the enum exists so each bust names
+/// itself at the type level and lands in the audit record instead of
+/// hiding inside an arbitrary `Vec` assignment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RebuildReason {
+    /// `/compact` — user-initiated LLM-summary compaction.
+    ManualCompaction,
+    /// Background LLM-summary compaction (capacity gate / auto compact).
+    AutoCompaction,
+    /// `/purge` context purge.
+    Purge,
+    /// In-place byte-level micro-compaction (no LLM call).
+    MicroCompaction,
+    /// Emergency recovery from a provider context-length rejection.
+    ContextOverflowRecovery,
+    /// Oldest-message front trim to meet an input budget.
+    FrontTrim,
+    /// VerifyAndReplan turn reset (keep latest user + verified only).
+    VerifyAndReplanReset,
+    /// `/edit` rollback of the last user exchange.
+    EditRollback,
+    /// Session sync/restore (`Op::SyncSession`, TUI session load).
+    SessionSync,
+    /// Cycle-boundary transcript reseed (`build_seed_messages`).
+    CycleReset,
+    /// Trait-level replacement through `ChatHistory::replace_all` inside
+    /// `executor.run` (compaction/recovery paths that only hold
+    /// `&mut dyn ChatHistory`); the static str names the operation.
+    Runtime(&'static str),
+    /// `ChatHistory::clear` on the session bridge (empty replacement).
+    TraitClear,
 }
 
-#[allow(dead_code)]
+impl fmt::Display for RebuildReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            RebuildReason::ManualCompaction => "manual compaction (/compact)",
+            RebuildReason::AutoCompaction => "auto compaction",
+            RebuildReason::Purge => "context purge (/purge)",
+            RebuildReason::MicroCompaction => "micro-compaction",
+            RebuildReason::ContextOverflowRecovery => "context-overflow recovery",
+            RebuildReason::FrontTrim => "front trim to budget",
+            RebuildReason::VerifyAndReplanReset => "verify-and-replan reset",
+            RebuildReason::EditRollback => "edit rollback (/edit)",
+            RebuildReason::SessionSync => "session sync/restore",
+            RebuildReason::CycleReset => "cycle reset reseed",
+            RebuildReason::Runtime(op) => return write!(f, "runtime: {op}"),
+            RebuildReason::TraitClear => "history clear",
+        };
+        f.write_str(name)
+    }
+}
+
+/// Audit entry for one [`AppendLog::rebuild`]: what asked for the swap and
+/// the transcript size on both sides of it. Surfaced by `/cache zones`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RebuildRecord {
+    pub reason: RebuildReason,
+    pub before: usize,
+    pub after: usize,
+}
+
+// ── AppendLog ──────────────────────────────────────────────────────────
+
+/// Append-only conversation history — the `Session` transcript store.
+///
+/// `push` is the only everyday mutation this type expresses. Wholesale
+/// replacement exists solely through [`rebuild`](Self::rebuild), which
+/// demands a [`RebuildReason`]. There is deliberately no way to insert,
+/// remove, truncate, or index-write: the append-only prefix that DeepSeek's
+/// KV cache matches against is a property of the type, not of discipline.
+///
+/// Reads go through `Deref<Target = [Message]>` (shared only — no
+/// `DerefMut`, which would re-expose slice in-place edits like `swap` or
+/// `sort`), so `&log`, `log.len()`, `log.iter()`, `log[i]`, and
+/// `log.to_vec()` all keep working while every mutating method of `Vec`
+/// fails to compile.
+#[derive(Debug, Clone, Default)]
+pub struct AppendLog {
+    messages: Vec<Message>,
+    last_rebuild: Option<RebuildRecord>,
+}
+
 impl AppendLog {
     pub fn new() -> Self {
         Self {
             messages: Vec::new(),
+            last_rebuild: None,
         }
     }
 
+    /// Wrap an existing message list (session restore, test fixtures).
+    #[must_use]
     pub fn from_messages(messages: Vec<Message>) -> Self {
-        Self { messages }
+        Self {
+            messages,
+            last_rebuild: None,
+        }
     }
 
+    /// The everyday mutation: append one message to the tail. Every
+    /// production growth path (user turns, assistant turns, tool results,
+    /// steers, seams, re-injections) funnels through here.
     pub fn push(&mut self, message: Message) {
         self.messages.push(message);
+    }
+
+    /// The ONLY sanctioned wholesale replacement. Busts the KV prefix cache
+    /// by design — the `reason` names the caller and lands in the audit
+    /// record ([`last_rebuild`](Self::last_rebuild)) for `/cache zones`.
+    pub fn rebuild(&mut self, reason: RebuildReason, messages: Vec<Message>) {
+        let before = self.messages.len();
+        self.messages = messages;
+        self.last_rebuild = Some(RebuildRecord {
+            reason,
+            before,
+            after: self.messages.len(),
+        });
+    }
+
+    /// The most recent rebuild's audit entry, if the log was ever rebuilt.
+    #[must_use]
+    pub fn last_rebuild(&self) -> Option<RebuildRecord> {
+        self.last_rebuild
     }
 
     #[must_use]
@@ -223,7 +346,7 @@ impl AppendLog {
         self.messages.is_empty()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &Message> {
+    pub fn iter(&self) -> std::slice::Iter<'_, Message> {
         self.messages.iter()
     }
 
@@ -233,25 +356,26 @@ impl AppendLog {
     }
 }
 
-impl Default for AppendLog {
-    fn default() -> Self {
-        Self::new()
+impl std::ops::Deref for AppendLog {
+    type Target = [Message];
+
+    fn deref(&self) -> &[Message] {
+        &self.messages
     }
 }
 
 // ── TurnScratch ────────────────────────────────────────────────────────
 
-/// Per-turn ephemeral data. Cleared at every turn boundary.
-///
-/// **Phase 1 scaffolding** — not yet wired into the engine request path.
-#[allow(dead_code)]
+/// Per-turn ephemeral composition state. Populated at turn start (the
+/// working-set paths that feed `<turn_meta>` and the user message being
+/// composed), committed to the [`AppendLog`] before the request loop runs,
+/// and cleared at every turn boundary.
 #[derive(Debug, Clone, Default)]
 pub struct TurnScratch {
     pub working_set: Vec<String>,
     pub user_message: Option<Message>,
 }
 
-#[allow(dead_code)]
 impl TurnScratch {
     pub fn new() -> Self {
         Self::default()
@@ -270,15 +394,22 @@ impl TurnScratch {
 
 // ── ThreeZoneRequest ───────────────────────────────────────────────────
 
-/// A composed three-zone request ready for DeepSeek API serialization.
+/// A composed three-zone request: the frozen prefix identity, the
+/// append-log slice, and the per-turn scratch, plus the sampling
+/// parameters. Convert with [`into_message_request`](Self::into_message_request)
+/// — the engine's per-step `MessageRequest` is produced here and nowhere
+/// else.
 ///
-/// **Phase 1 scaffolding** — not yet wired into the engine request path.
-/// Currently the engine continues to use [`MessageRequest`] directly.
-#[allow(dead_code)]
+/// The system prompt travels in the `MessageRequest.system` field (the
+/// provider shaper maps it to a preamble); it is NOT inlined as a
+/// `role:"system"` entry inside `messages`.
 #[derive(Debug, Clone)]
 pub struct ThreeZoneRequest<'a> {
     pub prefix: &'a FrozenPrefix,
-    pub log: &'a AppendLog,
+    /// Append-log view. In production this is the `Session` transcript
+    /// borrowed through `ChatHistory::messages`; the [`AppendLog`] type
+    /// governs the store, this slice is the request-side view of it.
+    pub log: &'a [Message],
     pub scratch: TurnScratch,
     pub model: String,
     pub max_tokens: u32,
@@ -293,61 +424,48 @@ pub struct ThreeZoneRequest<'a> {
     pub metadata: Option<serde_json::Value>,
 }
 
-#[allow(dead_code)]
 impl<'a> ThreeZoneRequest<'a> {
-    /// Build the full message list from system prompt, append-log messages,
-    /// and scratch user message. The returned vector is serialized as the
-    /// `messages` field in the DeepSeek chat-completion request.
+    /// The `messages` field of the wire request: append-log slice with the
+    /// scratch user message (when present) cloned at the tail. Deterministic
+    /// — identical zone inputs always serialize to identical bytes, which is
+    /// what makes transparent retries cache-safe.
     #[must_use]
-    pub fn build_messages(&self) -> Vec<Message> {
-        let mut messages = Vec::with_capacity(self.message_count());
-
-        match self.system.as_ref() {
-            Some(SystemPrompt::Text(text)) => {
-                messages.push(Message {
-                    role: "system".to_string(),
-                    content: vec![crate::models::ContentBlock::Text {
-                        text: text.clone(),
-                        cache_control: None,
-                    }],
-                });
-            }
-            Some(SystemPrompt::Blocks(blocks)) => {
-                let content: Vec<crate::models::ContentBlock> = blocks
-                    .iter()
-                    .map(|block| crate::models::ContentBlock::Text {
-                        text: block.text.clone(),
-                        cache_control: block.cache_control.clone(),
-                    })
-                    .collect();
-                messages.push(Message {
-                    role: "system".to_string(),
-                    content,
-                });
-            }
-            None => {}
-        }
-
-        for msg in self.log.iter() {
-            messages.push(msg.clone());
-        }
-
+    pub fn wire_messages(&self) -> Vec<Message> {
+        let mut messages =
+            Vec::with_capacity(self.log.len() + usize::from(self.scratch.user_message.is_some()));
+        messages.extend_from_slice(self.log);
         if let Some(ref user_msg) = self.scratch.user_message {
             messages.push(user_msg.clone());
         }
-
         messages
     }
 
     #[must_use]
     pub fn message_count(&self) -> usize {
-        let system_count = if self.system.is_some() { 1 } else { 0 };
-        let scratch_count = if self.scratch.user_message.is_some() {
-            1
-        } else {
-            0
-        };
-        system_count + self.log.len() + scratch_count
+        self.log.len() + usize::from(self.scratch.user_message.is_some())
+    }
+
+    /// Compose into the wire [`MessageRequest`] the provider client sends.
+    /// This is the single production assembly point — hand-building a
+    /// `MessageRequest.messages` from an arbitrary `Vec` elsewhere is the
+    /// pattern the three-zone contract exists to prevent.
+    #[must_use]
+    pub fn into_message_request(self) -> MessageRequest {
+        let messages = self.wire_messages();
+        MessageRequest {
+            model: self.model,
+            messages,
+            max_tokens: self.max_tokens,
+            system: self.system,
+            tools: self.tools,
+            tool_choice: self.tool_choice,
+            metadata: self.metadata,
+            thinking: self.thinking,
+            reasoning_effort: self.reasoning_effort,
+            stream: self.stream,
+            temperature: self.temperature,
+            top_p: self.top_p,
+        }
     }
 }
 
@@ -520,6 +638,56 @@ mod tests {
         let log = AppendLog::from_messages(msgs);
         assert_eq!(log.len(), 2);
         assert_eq!(log.as_slice().len(), 2);
+        assert!(log.last_rebuild().is_none());
+    }
+
+    #[test]
+    fn append_log_deref_exposes_slice_reads() {
+        let mut log = AppendLog::new();
+        log.push(make_message("user", "hello"));
+        log.push(make_message("assistant", "hi"));
+
+        // Shared Deref keeps slice-style reads working.
+        let slice: &[Message] = &log;
+        assert_eq!(slice.len(), 2);
+        assert_eq!(log[0].role, "user");
+        assert_eq!(log.to_vec().len(), 2);
+        assert_eq!(log.iter().next().map(|m| m.role.as_str()), Some("user"));
+    }
+
+    #[test]
+    fn append_log_rebuild_records_audit() {
+        let mut log = AppendLog::from_messages(vec![
+            make_message("user", "a"),
+            make_message("assistant", "b"),
+            make_message("user", "c"),
+        ]);
+        assert!(log.last_rebuild().is_none());
+
+        log.rebuild(
+            RebuildReason::ManualCompaction,
+            vec![make_message("user", "summary")],
+        );
+
+        let record = log.last_rebuild().expect("rebuild recorded");
+        assert_eq!(record.reason, RebuildReason::ManualCompaction);
+        assert_eq!(record.before, 3);
+        assert_eq!(record.after, 1);
+        assert_eq!(log.len(), 1);
+    }
+
+    #[test]
+    fn rebuild_reason_display_is_readable() {
+        assert!(
+            RebuildReason::ManualCompaction
+                .to_string()
+                .contains("/compact")
+        );
+        assert_eq!(
+            RebuildReason::Runtime("micro-compact").to_string(),
+            "runtime: micro-compact"
+        );
+        assert!(RebuildReason::EditRollback.to_string().contains("/edit"));
     }
 
     // ── TurnScratch ───────────────────────────────────────────────
@@ -540,7 +708,7 @@ mod tests {
     // ── ThreeZoneRequest ──────────────────────────────────────────
 
     #[test]
-    fn build_messages_concatenates_zones() {
+    fn wire_messages_concatenates_log_and_scratch_tail() {
         let sys = SystemPrompt::Text("you are helpful".to_string());
         let tools = vec![make_tool("read")];
         let prefix = PinnedPrefix::new(Some(&sys), tools).freeze();
@@ -556,7 +724,7 @@ mod tests {
 
         let request = ThreeZoneRequest {
             prefix: &prefix,
-            log: &log,
+            log: log.as_slice(),
             scratch,
             model: "deepseek-v4-pro".to_string(),
             max_tokens: 4096,
@@ -571,17 +739,17 @@ mod tests {
             metadata: None,
         };
 
-        let messages = request.build_messages();
-        assert_eq!(messages.len(), 4);
-        assert_eq!(messages[0].role, "system");
-        assert_eq!(messages[1].role, "user");
-        assert_eq!(messages[2].role, "assistant");
-        assert_eq!(messages[3].role, "user");
-        assert_eq!(request.message_count(), 4);
+        let messages = request.wire_messages();
+        // System is NOT inlined — it travels in MessageRequest.system.
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[1].role, "assistant");
+        assert_eq!(messages[2].role, "user");
+        assert_eq!(request.message_count(), 3);
     }
 
     #[test]
-    fn build_messages_no_system_no_scratch() {
+    fn wire_messages_log_only() {
         let prefix = PinnedPrefix::new(None, vec![]).freeze();
 
         let mut log = AppendLog::new();
@@ -589,7 +757,7 @@ mod tests {
 
         let request = ThreeZoneRequest {
             prefix: &prefix,
-            log: &log,
+            log: log.as_slice(),
             scratch: TurnScratch::new(),
             model: "x".to_string(),
             max_tokens: 1,
@@ -604,58 +772,82 @@ mod tests {
             metadata: None,
         };
 
-        let messages = request.build_messages();
+        let messages = request.wire_messages();
         assert_eq!(messages.len(), 1);
         assert_eq!(request.message_count(), 1);
     }
 
     #[test]
-    fn blocks_system_prompt_preserves_cache_control() {
+    fn into_message_request_matches_hand_assembly() {
         use crate::models::{CacheControl, SystemBlock};
-        let cc = Some(CacheControl {
-            cache_type: "ephemeral".to_string(),
-        });
+
         let blocks = SystemPrompt::Blocks(vec![SystemBlock {
             block_type: "text".to_string(),
             text: "hello".to_string(),
-            cache_control: cc.clone(),
+            cache_control: Some(CacheControl {
+                cache_type: "ephemeral".to_string(),
+            }),
         }]);
+        let tools = vec![make_tool("read"), make_tool("write")];
+        let prefix = PinnedPrefix::new(Some(&blocks), tools.clone()).freeze();
 
-        let prefix = PinnedPrefix::new(Some(&blocks), vec![]).freeze();
-        let log = AppendLog::new();
-        let scratch = TurnScratch::new();
-        let request = ThreeZoneRequest {
-            prefix: &prefix,
-            log: &log,
-            scratch,
-            model: "x".to_string(),
-            max_tokens: 1,
-            system: Some(blocks),
-            tools: None,
-            tool_choice: None,
-            reasoning_effort: None,
-            thinking: None,
-            stream: None,
-            temperature: None,
-            top_p: None,
-            metadata: None,
+        let log_msgs = vec![make_message("user", "q"), make_message("assistant", "a")];
+        let scratch = TurnScratch {
+            working_set: vec![],
+            user_message: Some(make_message("user", "next")),
         };
 
-        let messages = request.build_messages();
-        assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].role, "system");
-        // cache_control should be preserved on the block.
-        if let ContentBlock::Text {
-            cache_control: actual_cc,
-            ..
-        } = &messages[0].content[0]
-        {
-            assert_eq!(
-                actual_cc.as_ref().map(|c| c.cache_type.as_str()),
-                Some("ephemeral")
-            );
-        } else {
-            panic!("expected Text content block");
+        let request = ThreeZoneRequest {
+            prefix: &prefix,
+            log: &log_msgs,
+            scratch,
+            model: "deepseek-chat".to_string(),
+            max_tokens: 8192,
+            system: Some(blocks.clone()),
+            tools: Some(tools.clone()),
+            tool_choice: None,
+            reasoning_effort: Some("low".to_string()),
+            thinking: None,
+            stream: Some(true),
+            temperature: Some(0.0),
+            top_p: None,
+            metadata: None,
         }
+        .into_message_request();
+
+        // Byte-identical to the legacy direct MessageRequest assembly.
+        let legacy = MessageRequest {
+            model: "deepseek-chat".to_string(),
+            messages: {
+                let mut m = log_msgs.clone();
+                m.push(make_message("user", "next"));
+                m
+            },
+            max_tokens: 8192,
+            system: Some(blocks),
+            tools: Some(tools),
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: Some("low".to_string()),
+            stream: Some(true),
+            temperature: Some(0.0),
+            top_p: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&request).unwrap(),
+            serde_json::to_string(&legacy).unwrap()
+        );
+        // Blocks system prompt (incl. cache_control) passes through as-is.
+        assert_eq!(
+            request.system,
+            Some(SystemPrompt::Blocks(vec![SystemBlock {
+                block_type: "text".to_string(),
+                text: "hello".to_string(),
+                cache_control: Some(CacheControl {
+                    cache_type: "ephemeral".to_string(),
+                }),
+            }]))
+        );
     }
 }

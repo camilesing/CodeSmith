@@ -28,70 +28,35 @@
 //! │ LATEST USER TURN                        │ ← the only new content per request
 //! └─────────────────────────────────────────┘
 //! ```
+//!
+//! The fingerprint *is* [`FrozenPrefix`] from [`crate::prompt_zones`] — the
+//! same type the request path freezes per step. One fingerprint
+//! implementation, one source of truth: what `/cache zones` displays is
+//! exactly what the request path verifies. Tool identity hashes the full
+//! sorted JSON of every tool definition (not just names), so a description
+//! or schema edit is detected as drift even when the tool's name and
+//! catalog position are unchanged.
 
 use serde::{Deserialize, Serialize};
 
-use crate::models::{SystemPrompt, Tool};
-use crate::utils::sha256_hex;
-
-/// A snapshot of the immutable prefix's fingerprint.
-///
-/// Two snapshots with the same `combined` hash are guaranteed to
-/// produce the same byte prefix when serialized for the API.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PrefixFingerprint {
-    /// SHA-256 of the system prompt text.
-    pub system_sha256: String,
-    /// SHA-256 of the concatenated, sorted tool names.
-    pub tools_sha256: String,
-    /// SHA-256 of system_sha256 ++ tools_sha256 (combined).
-    pub combined_sha256: String,
-}
-
-impl PrefixFingerprint {
-    /// Compute a fingerprint from system prompt text and tool list.
-    pub fn compute(system_text: &str, tools: Option<&[Tool]>) -> Self {
-        let system_sha256 = sha256_hex(system_text.as_bytes());
-
-        let tools_sha256 = match tools {
-            Some(tools) if !tools.is_empty() => {
-                // Sort tool names deterministically so the hash is
-                // stable regardless of registration order.
-                let mut tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-                tool_names.sort();
-                let joined = tool_names.join(",");
-                sha256_hex(joined.as_bytes())
-            }
-            _ => sha256_hex(b""),
-        };
-
-        let combined = format!("{system_sha256}:{tools_sha256}");
-        let combined_sha256 = sha256_hex(combined.as_bytes());
-
-        Self {
-            system_sha256,
-            tools_sha256,
-            combined_sha256,
-        }
-    }
-}
+use crate::prompt_zones::FrozenPrefix;
 
 /// A change record describing what drifted in the prefix.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrefixChange {
-    /// The old fingerprint (before the change).
-    pub old: PrefixFingerprint,
-    /// The new fingerprint (after the change).
-    pub new: PrefixFingerprint,
+    /// Combined SHA-256 of the pinned prefix before the change.
+    pub old_sha256: String,
+    /// Combined SHA-256 of the prefix after the change.
+    pub new_sha256: String,
     /// Whether the system prompt component changed.
     pub system_changed: bool,
     /// Whether the tool set component changed.
     pub tools_changed: bool,
 }
 
-#[allow(dead_code)]
 impl PrefixChange {
     /// Returns a human-readable description of what changed.
+    #[must_use]
     pub fn description(&self) -> String {
         let mut parts = Vec::new();
         if self.system_changed {
@@ -107,15 +72,14 @@ impl PrefixChange {
     }
 
     /// Returns a short label for TUI chip display.
+    #[must_use]
+    #[allow(dead_code)] // surfaced via tests; kept for future TUI chip use
     pub fn label(&self) -> &'static str {
-        if self.system_changed && self.tools_changed {
-            "sys+tools"
-        } else if self.system_changed {
-            "sys"
-        } else if self.tools_changed {
-            "tools"
-        } else {
-            "prefix"
+        match (self.system_changed, self.tools_changed) {
+            (true, true) => "sys+tools",
+            (true, false) => "sys",
+            (false, true) => "tools",
+            (false, false) => "prefix",
         }
     }
 }
@@ -126,22 +90,15 @@ impl PrefixChange {
 /// concept but adapted to CodeSmith's existing architecture where the
 /// system prompt is rebuilt each turn and tools are registered at startup.
 ///
-/// Usage:
-/// ```ignore
-/// let mgr = PrefixStabilityManager::new(system_text, tools);
-/// if mgr.check_and_update(system_text, tools) {
-///     println!("Prefix is stable (cache-friendly)");
-/// } else {
-///     let change = mgr.last_change().unwrap();
-///     println!("Prefix drifted: {}", change.description());
-/// }
-/// ```
+/// The engine freezes one [`FrozenPrefix`] per step (via
+/// `prompt_zones::PinnedPrefix`) and calls [`check_and_update`](Self::check_and_update);
+/// drift emits [`crate::events::Event::PrefixCacheChange`] for the TUI.
 #[derive(Debug, Clone)]
 pub struct PrefixStabilityManager {
     /// The pinned fingerprint from session start or last stabilization.
-    pinned: Option<PrefixFingerprint>,
+    pinned: Option<FrozenPrefix>,
     /// The most recent fingerprint (computed during last check).
-    current: Option<PrefixFingerprint>,
+    current: Option<FrozenPrefix>,
     /// The last detected change, if any.
     last_change: Option<PrefixChange>,
     /// Total number of prefix changes detected this session.
@@ -150,22 +107,10 @@ pub struct PrefixStabilityManager {
     check_count: u64,
 }
 
-#[allow(dead_code)]
 impl PrefixStabilityManager {
-    /// Create a new manager and immediately pin the first fingerprint.
-    pub fn new(system_text: &str, tools: Option<&[Tool]>) -> Self {
-        let fp = PrefixFingerprint::compute(system_text, tools);
-        Self {
-            pinned: Some(fp.clone()),
-            current: Some(fp),
-            last_change: None,
-            change_count: 0,
-            check_count: 0,
-        }
-    }
-
     /// Create a manager in "unpinned" state — no initial fingerprint.
-    /// Call `pin()` or `check_and_update()` to establish the baseline.
+    /// The first `check_and_update` establishes the baseline.
+    #[must_use]
     pub fn new_unpinned() -> Self {
         Self {
             pinned: None,
@@ -176,56 +121,36 @@ impl PrefixStabilityManager {
         }
     }
 
-    /// Explicitly pin a fingerprint, replacing any prior pinned state.
-    /// Returns `true` if this is the first pin, or `false` if replacing.
-    /// Note: does NOT increment `check_count` — that counter is reserved
-    /// for `check_and_update` calls so `stability_ratio()` stays accurate.
-    pub fn pin(&mut self, system_text: &str, tools: Option<&[Tool]>) -> bool {
-        let fp = PrefixFingerprint::compute(system_text, tools);
-        let was_unpinned = self.pinned.is_none();
-        self.pinned = Some(fp.clone());
-        self.current = Some(fp);
-        was_unpinned
-    }
-
     /// Check whether the current prefix matches the pinned fingerprint.
     /// Updates internal state and returns:
     /// - `Ok(true)` if the prefix is stable (fingerprint matches pinned).
-    /// - `Ok(false)` if the prefix changed but was automatically re-pinned.
     /// - `Err(change)` if the prefix changed; caller should surface this.
     ///
     /// After calling this, `last_change()` returns the detected change.
-    pub fn check_and_update(
-        &mut self,
-        system_text: &str,
-        tools: Option<&[Tool]>,
-    ) -> Result<bool, Box<PrefixChange>> {
-        let fp = PrefixFingerprint::compute(system_text, tools);
-        let old_fp = self.current.replace(fp.clone());
+    /// On drift the manager re-pins to the new prefix, so the *next* drift
+    /// is measured against the latest baseline.
+    pub fn check_and_update(&mut self, frozen: &FrozenPrefix) -> Result<bool, Box<PrefixChange>> {
+        self.current = Some(frozen.clone());
         self.check_count += 1;
 
-        let pinned = match &self.pinned {
-            Some(p) => p,
-            None => {
-                // First check: pin now.
-                self.pinned = Some(fp);
-                self.last_change = None;
-                return Ok(true);
-            }
+        let Some(pinned) = self.pinned.clone() else {
+            // First check: pin now.
+            self.pinned = Some(frozen.clone());
+            self.last_change = None;
+            return Ok(true);
         };
 
-        if fp.combined_sha256 == pinned.combined_sha256 {
+        if frozen.combined_sha256 == pinned.combined_sha256 {
             // Stable — no change.
             Ok(true)
         } else {
-            // Change detected.
-            let old = old_fp.unwrap_or_else(|| pinned.clone());
-            let system_changed = fp.system_sha256 != pinned.system_sha256;
-            let tools_changed = fp.tools_sha256 != pinned.tools_sha256;
+            // Change detected. Compare components for the diagnosis.
+            let system_changed = frozen.system_text != pinned.system_text;
+            let tools_changed = frozen.tool_catalog != pinned.tool_catalog;
 
             let change = PrefixChange {
-                old,
-                new: fp.clone(),
+                old_sha256: pinned.combined_sha256,
+                new_sha256: frozen.combined_sha256.clone(),
                 system_changed,
                 tools_changed,
             };
@@ -234,35 +159,39 @@ impl PrefixStabilityManager {
             self.change_count += 1;
 
             // Re-pin to the new prefix so subsequent checks are
-            // against the latest baseline. Use the original fp
-            // (avoid recomputing the hash — clone was for the change record).
-            self.pinned = Some(fp);
+            // against the latest baseline.
+            self.pinned = Some(frozen.clone());
 
             Err(Box::new(change))
         }
     }
 
     /// Returns the most recent prefix change, if any.
+    #[must_use]
     pub fn last_change(&self) -> Option<&PrefixChange> {
         self.last_change.as_ref()
     }
 
     /// Returns the pinned fingerprint.
-    pub fn pinned_fingerprint(&self) -> Option<&PrefixFingerprint> {
+    #[must_use]
+    pub fn pinned_fingerprint(&self) -> Option<&FrozenPrefix> {
         self.pinned.as_ref()
     }
 
     /// Returns the current (most recently computed) fingerprint.
-    pub fn current_fingerprint(&self) -> Option<&PrefixFingerprint> {
+    #[must_use]
+    pub fn current_fingerprint(&self) -> Option<&FrozenPrefix> {
         self.current.as_ref()
     }
 
     /// Returns the total number of prefix changes detected.
+    #[must_use]
     pub fn change_count(&self) -> u64 {
         self.change_count
     }
 
     /// Returns the total number of stability checks performed.
+    #[must_use]
     pub fn check_count(&self) -> u64 {
         self.check_count
     }
@@ -270,6 +199,7 @@ impl PrefixStabilityManager {
     /// Returns the prefix stability rate as a fraction (0.0 – 1.0).
     /// 1.0 means the prefix has never changed. Returns 1.0 when no
     /// checks have been performed (to avoid division by zero).
+    #[must_use]
     pub fn stability_ratio(&self) -> f64 {
         if self.check_count == 0 {
             1.0
@@ -280,18 +210,13 @@ impl PrefixStabilityManager {
     }
 
     /// Returns a human-readable stability summary.
+    #[must_use]
     pub fn summary(&self) -> String {
         let pct = self.stability_ratio() * 100.0;
         let pinned_short = self
             .pinned
             .as_ref()
-            .map(|fp| {
-                if fp.combined_sha256.len() >= 12 {
-                    &fp.combined_sha256[..12]
-                } else {
-                    &fp.combined_sha256
-                }
-            })
+            .map(FrozenPrefix::short_id)
             .unwrap_or("none");
 
         format!(
@@ -305,27 +230,11 @@ impl PrefixStabilityManager {
     }
 }
 
-/// Extract the system prompt text from an optional SystemPrompt,
-/// returning an owned String. This is used for prefix fingerprinting
-/// and avoids lifetime/leak issues with the rare SystemPrompt::Blocks case.
-pub fn system_prompt_text(system: Option<&SystemPrompt>) -> String {
-    match system {
-        Some(SystemPrompt::Text(text)) => text.clone(),
-        Some(SystemPrompt::Blocks(blocks)) => {
-            let mut text = String::new();
-            for block in blocks {
-                text.push_str(&block.text);
-                text.push('\n');
-            }
-            text
-        }
-        None => String::new(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{SystemPrompt, Tool};
+    use crate::prompt_zones::PinnedPrefix;
 
     fn make_tool(name: &str) -> Tool {
         Tool {
@@ -342,17 +251,22 @@ mod tests {
         }
     }
 
+    fn freeze(system: &str, tools: &[Tool]) -> FrozenPrefix {
+        let sys = SystemPrompt::Text(system.to_string());
+        PinnedPrefix::new(Some(&sys), tools.to_vec()).freeze()
+    }
+
     #[test]
     fn same_prefix_produces_same_fingerprint() {
-        let a = PrefixFingerprint::compute("hello world", None);
-        let b = PrefixFingerprint::compute("hello world", None);
+        let a = freeze("hello world", &[]);
+        let b = freeze("hello world", &[]);
         assert_eq!(a.combined_sha256, b.combined_sha256);
     }
 
     #[test]
     fn different_system_produces_different_fingerprint() {
-        let a = PrefixFingerprint::compute("hello", None);
-        let b = PrefixFingerprint::compute("world", None);
+        let a = freeze("hello", &[]);
+        let b = freeze("world", &[]);
         assert_ne!(a.combined_sha256, b.combined_sha256);
     }
 
@@ -360,8 +274,8 @@ mod tests {
     fn tool_order_does_not_affect_fingerprint() {
         let tools_a = vec![make_tool("read_file"), make_tool("write_file")];
         let tools_b = vec![make_tool("write_file"), make_tool("read_file")];
-        let a = PrefixFingerprint::compute("system", Some(&tools_a));
-        let b = PrefixFingerprint::compute("system", Some(&tools_b));
+        let a = freeze("system", &tools_a);
+        let b = freeze("system", &tools_b);
         assert_eq!(a.combined_sha256, b.combined_sha256);
     }
 
@@ -369,23 +283,42 @@ mod tests {
     fn different_tools_produce_different_fingerprint() {
         let tools_a = vec![make_tool("read_file")];
         let tools_b = vec![make_tool("write_file")];
-        let a = PrefixFingerprint::compute("system", Some(&tools_a));
-        let b = PrefixFingerprint::compute("system", Some(&tools_b));
+        let a = freeze("system", &tools_a);
+        let b = freeze("system", &tools_b);
         assert_ne!(a.combined_sha256, b.combined_sha256);
     }
 
     #[test]
+    fn tool_description_change_is_detected() {
+        // Full-JSON tool fingerprinting: same name, different description.
+        // The retired names-only hash missed this class of drift (#2264).
+        let mut tool_v2 = make_tool("read_file");
+        tool_v2.description = "updated description".to_string();
+        let a = freeze("system", &[make_tool("read_file")]);
+        let b = freeze("system", &[tool_v2]);
+        assert_ne!(a.combined_sha256, b.combined_sha256);
+
+        let mut mgr = PrefixStabilityManager::new_unpinned();
+        assert!(mgr.check_and_update(&a).unwrap());
+        let change = mgr.check_and_update(&b).unwrap_err();
+        assert!(change.tools_changed);
+        assert!(!change.system_changed);
+    }
+
+    #[test]
     fn manager_starts_stable() {
-        let mut mgr = PrefixStabilityManager::new("system prompt", None);
-        assert!(mgr.check_and_update("system prompt", None).unwrap());
+        let frozen = freeze("system prompt", &[]);
+        let mut mgr = PrefixStabilityManager::new_unpinned();
+        assert!(mgr.check_and_update(&frozen).unwrap());
         assert_eq!(mgr.change_count(), 0);
         assert_eq!(mgr.check_count(), 1);
     }
 
     #[test]
     fn manager_detects_change() {
-        let mut mgr = PrefixStabilityManager::new("system prompt", None);
-        let result = mgr.check_and_update("different prompt", None);
+        let mut mgr = PrefixStabilityManager::new_unpinned();
+        assert!(mgr.check_and_update(&freeze("system prompt", &[])).unwrap());
+        let result = mgr.check_and_update(&freeze("different prompt", &[]));
         assert!(result.is_err());
         assert_eq!(mgr.change_count(), 1);
         let change = mgr.last_change().unwrap();
@@ -397,8 +330,9 @@ mod tests {
     fn manager_detects_tool_change() {
         let tools_a = vec![make_tool("read_file")];
         let tools_b = vec![make_tool("write_file")];
-        let mut mgr = PrefixStabilityManager::new("system", Some(&tools_a));
-        let result = mgr.check_and_update("system", Some(&tools_b));
+        let mut mgr = PrefixStabilityManager::new_unpinned();
+        assert!(mgr.check_and_update(&freeze("system", &tools_a)).unwrap());
+        let result = mgr.check_and_update(&freeze("system", &tools_b));
         assert!(result.is_err());
         let change = mgr.last_change().unwrap();
         assert!(!change.system_changed);
@@ -407,18 +341,20 @@ mod tests {
 
     #[test]
     fn manager_re_pins_after_change() {
-        let mut mgr = PrefixStabilityManager::new("old", None);
-        let _ = mgr.check_and_update("new", None);
+        let mut mgr = PrefixStabilityManager::new_unpinned();
+        let _ = mgr.check_and_update(&freeze("old", &[])); // pin
+        let _ = mgr.check_and_update(&freeze("new", &[])); // drift, re-pin
         // After re-pin, the new "new" should be stable.
-        assert!(mgr.check_and_update("new", None).unwrap());
+        assert!(mgr.check_and_update(&freeze("new", &[])).unwrap());
         assert_eq!(mgr.change_count(), 1);
     }
 
     #[test]
     fn stability_ratio_is_one_for_no_changes() {
-        let mut mgr = PrefixStabilityManager::new("hello", None);
-        mgr.check_and_update("hello", None).unwrap();
-        mgr.check_and_update("hello", None).unwrap();
+        let frozen = freeze("hello", &[]);
+        let mut mgr = PrefixStabilityManager::new_unpinned();
+        mgr.check_and_update(&frozen).unwrap();
+        mgr.check_and_update(&frozen).unwrap();
         assert!((mgr.stability_ratio() - 1.0).abs() < f64::EPSILON);
         assert_eq!(mgr.check_count(), 2);
         assert_eq!(mgr.change_count(), 0);
@@ -426,39 +362,27 @@ mod tests {
 
     #[test]
     fn stability_ratio_reflects_change_rate() {
-        let mut mgr = PrefixStabilityManager::new("hello", None);
-        mgr.check_and_update("hello", None).unwrap(); // check 1: stable
-        let _ = mgr.check_and_update("world", None); // check 2: changed
-        mgr.check_and_update("world", None).unwrap(); // check 3: stable
+        let mut mgr = PrefixStabilityManager::new_unpinned();
+        mgr.check_and_update(&freeze("hello", &[])).unwrap(); // check 1: pin, stable
+        let _ = mgr.check_and_update(&freeze("world", &[])); // check 2: changed
+        mgr.check_and_update(&freeze("world", &[])).unwrap(); // check 3: stable
         // 2 stable out of 3 checks = 0.666...
-        // (check_count=0 at start, so 3 checks: 3 checks - 1 change = 2 stable)
         assert!((mgr.stability_ratio() - 2.0 / 3.0).abs() < 0.01);
         assert_eq!(mgr.check_count(), 3);
         assert_eq!(mgr.change_count(), 1);
     }
 
     #[test]
-    fn empty_tools_and_none_tools_produce_same_hash() {
-        let empty = PrefixFingerprint::compute("system", Some(&[]));
-        let none = PrefixFingerprint::compute("system", None);
-        // Both should produce sha256(b"") for the tool component
-        assert_eq!(empty.tools_sha256, none.tools_sha256);
-    }
-
-    #[test]
-    fn empty_system_produces_sha256_of_empty_string() {
-        let fp = PrefixFingerprint::compute("", None);
-        let expected = sha256_hex(b"");
-        assert_eq!(fp.system_sha256, expected);
+    fn empty_tools_and_no_tools_produce_same_hash() {
+        let empty = freeze("system", &[]);
+        assert_eq!(empty.tool_catalog, "");
     }
 
     #[test]
     fn prefix_change_description_is_informative() {
-        let old = PrefixFingerprint::compute("old", None);
-        let new = PrefixFingerprint::compute("new", None);
         let change = PrefixChange {
-            old,
-            new,
+            old_sha256: "a".repeat(64),
+            new_sha256: "b".repeat(64),
             system_changed: true,
             tools_changed: false,
         };
@@ -478,13 +402,8 @@ mod tests {
         assert_eq!(mgr.change_count(), 0);
         assert_eq!(mgr.check_count(), 0);
         // First check should pin automatically and count as a check.
-        assert!(mgr.check_and_update("hello", None).unwrap());
+        assert!(mgr.check_and_update(&freeze("hello", &[])).unwrap());
         assert!(mgr.pinned_fingerprint().is_some());
         assert_eq!(mgr.check_count(), 1);
-    }
-
-    #[test]
-    fn system_prompt_text_returns_empty_for_none() {
-        assert_eq!(system_prompt_text(None), "");
     }
 }

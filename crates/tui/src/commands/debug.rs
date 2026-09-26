@@ -559,12 +559,17 @@ fn format_cache_stats(app: &App) -> String {
 
 /// Render three-zone prefix contract status for `/cache zones` (#2264).
 ///
-/// Displays the PinnedPrefix fingerprint, AppendLog size, and TurnScratch
-/// state. The zones are type scaffolding only (Phase 1) — not yet
-/// enforcing the full contract at request time.
+/// All three zones are wired into the engine request path (Phase 2):
+/// the AppendLog is the `Session` transcript store (everyday mutation is
+/// `push`; wholesale replacement must name itself via `RebuildReason`),
+/// the per-step `MessageRequest` is assembled through `ThreeZoneRequest`,
+/// and the PinnedPrefix fingerprint is frozen by the same code the request
+/// path runs. PinnedPrefix reads the live drift events; AppendLog shows
+/// the transcript size plus the bounded rebuild audit; TurnScratch shows
+/// turn liveness.
 fn format_cache_zones(app: &App) -> String {
     let mut out = String::new();
-    out.push_str("Cache Zones (#2264 three-zone contract, Phase 1 foundation)\n");
+    out.push_str("Cache Zones (#2264 three-zone contract, Phase 2 — wired)\n");
 
     // ── PinnedPrefix ─────────────────────────────────────────────────
     out.push_str("\n── PinnedPrefix (system + tools, frozen baseline)\n");
@@ -597,19 +602,33 @@ fn format_cache_zones(app: &App) -> String {
 
     // ── AppendLog ────────────────────────────────────────────────────
     out.push_str("\n── AppendLog (conversation history, append-only)\n");
-    out.push_str("  Status:      Phase 1 scaffolding — not yet wired into engine\n");
     let msg_count = app.api_messages.len();
-    out.push_str(&format!("  Messages:    {msg_count}\n"));
+    out.push_str(&format!("  Messages:     {msg_count}\n"));
     let history_count = app
         .api_messages
         .iter()
         .filter(|m| m.role != "system")
         .count();
     out.push_str(&format!("  History msgs: {history_count}\n"));
+    match app.transcript_rebuilds.back() {
+        Some((reason, before, after)) => {
+            out.push_str(&format!(
+                "  Last rebuild: {reason} ({before} → {after} msgs)\n"
+            ));
+        }
+        None => out.push_str("  Rebuilds:     none — log grew by push() only\n"),
+    }
 
     // ── TurnScratch ──────────────────────────────────────────────────
-    out.push_str("\n── TurnScratch (per-turn ephemeral data)\n");
-    out.push_str("  Status:      Phase 1 scaffolding — not yet wired into engine\n");
+    out.push_str("\n── TurnScratch (per-turn composition staging)\n");
+    if app.is_loading {
+        out.push_str("  Status:    active — turn in flight\n");
+    } else {
+        out.push_str("  Status:    idle (cleared at the last turn boundary)\n");
+    }
+    out.push_str("  Role:      stages the turn's <turn_meta> inputs and user message;\n");
+    out.push_str("             committed to the log before the request runs, so the\n");
+    out.push_str("             request-time scratch is empty in production\n");
 
     // ── Zone contract summary ────────────────────────────────────────
     out.push_str("\n── Contract Status\n");
@@ -626,8 +645,26 @@ fn format_cache_zones(app: &App) -> String {
             "not frozen"
         }
     ));
-    out.push_str("  AppendLog:    Phase 1 foundation\n");
-    out.push_str("  TurnScratch:  Phase 1 foundation\n");
+    out.push_str(&format!(
+        "  AppendLog:    {}\n",
+        if app.transcript_rebuilds.is_empty() {
+            "OK — append-only since session start"
+        } else {
+            "rebuilt (sanctioned — see audit above)"
+        }
+    ));
+    out.push_str(&format!(
+        "  TurnScratch:  {}\n",
+        if app.is_loading { "active" } else { "idle" }
+    ));
+
+    // Bounded rebuild audit — newest last.
+    if !app.transcript_rebuilds.is_empty() {
+        out.push_str("\n── Rebuild audit (each entry busts the KV prefix cache by design)\n");
+        for (reason, before, after) in &app.transcript_rebuilds {
+            out.push_str(&format!("  · {reason} ({before} → {after} msgs)\n"));
+        }
+    }
 
     out
 }
@@ -885,6 +922,63 @@ mod tests {
             strict: Some(true),
             cache_control: None,
         }
+    }
+
+    #[test]
+    fn cache_zones_reports_wired_contract() {
+        let mut app = create_test_app();
+        app.last_pinned_prefix_hash = Some("a".repeat(64));
+        app.prefix_stability_pct = Some(100);
+        app.api_messages.push(Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "hi".to_string(),
+                cache_control: None,
+            }],
+        });
+
+        let msg = format_cache_zones(&app);
+        assert!(msg.contains("Phase 2 — wired"), "got: {msg}");
+        assert!(msg.contains("PinnedPrefix"));
+        assert!(msg.contains("stable (no drift this session)"));
+        assert!(msg.contains("AppendLog"));
+        assert!(msg.contains("Messages:     1"));
+        // No rebuild recorded — the log grew by push() only.
+        assert!(msg.contains("none — log grew by push() only"));
+        assert!(msg.contains("OK — append-only since session start"));
+        assert!(msg.contains("TurnScratch"));
+        assert!(msg.contains("idle"));
+        // The Phase 1 confessions are gone.
+        assert!(!msg.contains("not yet wired"));
+        assert!(!msg.contains("Phase 1 foundation"));
+    }
+
+    #[test]
+    fn cache_zones_shows_rebuild_audit() {
+        let mut app = create_test_app();
+        app.last_pinned_prefix_hash = Some("b".repeat(64));
+        app.transcript_rebuilds
+            .push_back(("manual compaction (/compact)".to_string(), 42, 5));
+        app.transcript_rebuilds
+            .push_back(("runtime: micro-compact".to_string(), 9, 9));
+
+        let msg = format_cache_zones(&app);
+        assert!(
+            msg.contains("Last rebuild: runtime: micro-compact (9 → 9 msgs)"),
+            "got: {msg}"
+        );
+        assert!(msg.contains("rebuilt (sanctioned — see audit above)"));
+        assert!(msg.contains("Rebuild audit"));
+        assert!(msg.contains("manual compaction (/compact) (42 → 5 msgs)"));
+        assert!(!msg.contains("none — log grew by push() only"));
+    }
+
+    #[test]
+    fn cache_zones_unfrozen_prefix() {
+        let app = create_test_app();
+        let msg = format_cache_zones(&app);
+        assert!(msg.contains("unavailable (not yet frozen)"));
+        assert!(msg.contains("not frozen"));
     }
 
     #[test]
