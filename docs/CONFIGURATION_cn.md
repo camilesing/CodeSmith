@@ -17,36 +17,54 @@ codesmith 从一个 TOML 文件加上环境变量中读取配置。
 
 如果两者都设置了，`--config` 优先。环境变量覆盖在文件加载之后应用。
 
+统一的解析顺序（优先级从高到低）：
+
+1. CLI 参数（`--provider`、`--model`、`--approval-policy` 等）
+2. 配置文件值——先应用选中的 `[profiles.<name>]` 档案覆盖文件顶层键，
+   再在其上合并项目级 overlay
+3. API 密钥回退链（在任何显式 CLI `--api-key` 之后）：
+   `config -> keyring -> env`
+4. 托管配置（`managed_config_path`，默认
+   `/etc/codesmith/managed_config.toml`），在用户 + 环境变量值之后应用
+5. requirements 校验（`requirements_path`，默认
+   `/etc/codesmith/requirements.toml`），可在启动时拒绝最终结果
+
 ### 按项目叠加（#485）
 
 当 TUI 在包含 `<workspace>/.codesmith/config.toml` 文件的工作区中启动时，
-该文件中声明的值会合并到全局配置之上。当 CodeSmith 路径不存在时，
-仍会读取旧版 `<workspace>/.codesmith/config.toml` 文件。这使得仓库可以
-锁定自己的 provider、模型、沙箱策略或审批策略，而无需改动用户的
-`~/.codesmith/config.toml`。传入 `--no-project-config` 可在单次启动时
-跳过该叠加。
+该文件中声明的值会合并到全局配置之上。overlay 只在工作区通过启动
+信任边界**之后**才会读取——与放行工作区 `.env` 文件的是同一道门——
+因此不可信的克隆无法操纵初始化。传入 `--no-project-config` 可在单次
+启动时跳过该叠加。
 
 项目叠加中支持的键（仅限顶层字段）：
 
 | 键 | 作用 |
 |---|---|
-| `provider` | 切换后端（例如企业仓库使用 `"nvidia-nim"`） |
 | `model` | 覆盖 `default_text_model` |
-| `api_key` | 使用按仓库的密钥（通常从 `.env` 读取，**不提交到版本库**） |
-| `base_url` | 指向自托管端点 |
 | `reasoning_effort` | 为复杂仓库强制使用 `"high"` / `"max"` |
-| `approval_policy` | 为有强约定的仓库设置 `"never"` / `"on-request"` / `"untrusted"` |
-| `sandbox_mode` | `"read-only"` / `"workspace-write"` / `"danger-full-access"` |
-| `mcp_config_path` | 按仓库的 MCP 服务器集合 |
+| `approval_policy` | 只能收紧——见下文 |
+| `sandbox_mode` | 只能收紧——见下文 |
 | `notes_path` | 将笔记保留在仓库内 |
 | `personality` | 按仓库的语气/风格叠加（`"calm"` / `"playful"`） |
 | `max_subagents` | 为受限仓库钳制并发数（钳制在 1..=20） |
 | `allow_shell` | 设为 `false` 以关闭 shell 工具访问 |
+| `instructions` | **整体替换**用户数组；`instructions = []` 为该仓库清空列表 |
 
-该叠加刻意保持狭窄——它只覆盖仓库维护者最可能希望在贡献者之间
-标准化的字段。其他设置（skills_dir、hooks、capacity、retry 等）
-保持为用户全局配置。如果你的仓库需要更多，请提交一个 issue
-描述具体使用场景。
+`approval_policy` 与 `sandbox_mode` 只允许朝收紧方向移动：项目可以把
+`on-request` 收成 `never`、把 `workspace-write` 收成 `read-only`，但绝不
+能放宽用户的设置；`external-sandbox` 仅在用户配置已经使用它时才被接受。
+非收紧方向的值会被忽略并在 stderr 给出警告。`codesmith` 门面对自己的
+文件读取应用同样的规则，并额外接受项目文件中的 `output_mode`、
+`log_level`、`[tools]` 表以及各 provider 的 `model` 覆盖。
+
+项目作用域中被拒绝的键（#417）：`provider`、`api_key`、`base_url` 和
+`mcp_config_path` 会被忽略并在 stderr 给出警告。否则一个恶意项目文件
+可以通过替换用户的凭据和目标主机把提示词外传到仿冒端点，或让 MCP
+加载器指向一个以用户身份启动任意 stdio 服务器的配置。其余一切
+（凭据、端点、`custom_provider`、遥测、`[network]`、`[skills]`、
+`[lsp].servers`、`[edit]`、`[snapshots]` 等）保持为用户全局配置。
+如果你的仓库需要更多，请提交一个 issue 描述具体使用场景。
 
 `codesmith` 门面（facade）和 `codesmith-tui` 二进制文件共享同一个配置文件，
 用于 DeepSeek 认证和模型默认值。`codesmith auth set --provider deepseek`
@@ -63,8 +81,8 @@ codesmith 从一个 TOML 文件加上环境变量中读取配置。
 对于托管型、通用 OpenAI 兼容型或自托管 provider，可以设置
 `provider = "nvidia-nim"`、`"openai"`、`"atlascloud"`、`"wanjie-ark"`、
 `"volcengine"`、`"openrouter"`、`"xiaomi-mimo"`、`"novita"`、`"fireworks"`、
-`"siliconflow"`、`"moonshot"`、`"sglang"`、`"vllm"` 或 `"ollama"`，或者传递
-`codesmith --provider <name>`。
+`"siliconflow"`、`"moonshot"`、`"sglang"`、`"vllm"`、`"ollama"` 或
+`"anthropic"`，或者传递 `codesmith --provider <name>`。
 关于逐个 provider 的注册信息（包括认证变量、默认 base URL、模型 ID
 和能力元数据），请参阅 [PROVIDERS.md](PROVIDERS.md)。
 门面会将 provider 凭证保存到共享的用户配置中，并将解析出的密钥、
@@ -118,6 +136,31 @@ provider 之一。将端点放在 `[providers.openai]` 之下，而不是旧版�
 `default_text_model` 是发送给网关的模型 ID；如果在一个配置中保留
 多个 provider 表，可以使用 `[providers.openai].model` 作为 OpenAI
 provider 专属的覆盖值。
+
+#### 自定义 provider 注册表（`[[providers.custom]]`）
+
+当网关需要自己的 provider 身份而不是借用 `openai` 时，可以在
+`[[providers.custom]]` 下声明它，并用顶层 `custom_provider` 选择器选中：
+
+```toml
+custom_provider = "my-gateway"
+
+[[providers.custom]]
+id = "my-gateway"
+api_key = "YOUR_GATEWAY_KEY"
+base_url = "https://gw.internal.example/v1"
+model = "glm-5"
+# auth_mode = "bearer"                    # 可选
+# http_headers = { "X-Gateway-Route" = "dev" }
+# vision = true                           # 可选；默认 false
+```
+
+规则：`id` 必填且唯一；不得与内置 provider 名冲突——内置选择器保持
+权威。每个条目自包含（自己的凭据、端点、模型、请求头），设置
+`custom_provider` 后对该进程覆盖 `provider`。自定义网关在静态视觉
+矩阵中没有条目，因此内联图片需要显式 `vision = true`。门面通过
+`codesmith config set providers.custom.<id>.<field> <value>` 逐字段
+写入；不支持整表重写。
 
 当 Ollama、SGLang 和 vLLM 等本地 HTTP 端点使用 localhost 或环回地址时，
 默认是允许的。对于非本地 `http://` 网关，仅在可信网络上使用
@@ -181,7 +224,7 @@ model = "deepseek-v4-flash"        # required: setting the table enables it
 `provider` 则会构建一个专门的第二个客户端（例如主模型 = anthropic，
 辅助模型 = deepseek），此时需要自己的 `api_key`——一家厂商的密钥
 永远不会被发送给另一家。模型 id 也可以通过 `CODESMITH_UTILITY_MODEL`
-（旧版别名 `CODESMITH_UTILITY_MODEL`）设置。
+环境变量设置。
 
 ### 代码索引
 
@@ -317,13 +360,19 @@ default_text_model = "codesmith-coder:1.3b"
 应用级变量统一使用 `CODESMITH_*` 前缀：
 
 - `CODESMITH_PROVIDER` —
-  `deepseek|nvidia-nim|openai|atlascloud|wanjie-ark|openrouter|xiaomi-mimo|novita|fireworks|siliconflow|moonshot|sglang|vllm|ollama`
+  `deepseek|nvidia-nim|openai|atlascloud|wanjie-ark|volcengine|openrouter|xiaomi-mimo|novita|fireworks|siliconflow|moonshot|sglang|vllm|ollama|anthropic`
 - `CODESMITH_MODEL` — 当前活跃 provider 的默认模型
 - `CODESMITH_BASE_URL` — 当前活跃 provider 的 base URL
 
 其余应用级变量：
 
 - `CODESMITH_API_KEY`
+- `CODESMITH_CUSTOM_PROVIDER`（按 id 选择一个 `[[providers.custom]]` 条目；覆盖 `CODESMITH_PROVIDER`）
+- `CODESMITH_AUTH_MODE`（`api_key` | `bearer` | `none` | `off` | `kimi_oauth`；对应 `auth_mode` 配置键）
+- `CODESMITH_PROFILE`（选择一个 `[profiles.<name>]` 档案）
+- `CODESMITH_OUTPUT_MODE`
+- `CODESMITH_TELEMETRY`（`1`/`true` 开启仅本地遥测）
+- `CODESMITH_YOLO`（`1`/`true` 自动批准全部工具调用）
 - `CODESMITH_HTTP_HEADERS`（自定义模型请求头，逗号分隔的 `name=value` 对）
 - `CODESMITH_DEFAULT_TEXT_MODEL`（`CODESMITH_MODEL` 的额外旧版别名）
 - `NVIDIA_API_KEY` 或 `NVIDIA_NIM_API_KEY`（当 provider 为 `nvidia-nim` 时首选；回退到 `CODESMITH_API_KEY` / `DEEPSEEK_API_KEY`）
@@ -365,15 +414,31 @@ default_text_model = "codesmith-coder:1.3b"
 - `OLLAMA_BASE_URL`
 - `OLLAMA_MODEL`
 - `OLLAMA_API_KEY`（可选；许多 localhost Ollama 服务器不需要认证）
+- `ANTHROPIC_API_KEY`（别名 `CLAUDE_API_KEY`）
+- `ANTHROPIC_BASE_URL`
 - `CODESMITH_LOG_LEVEL` 或 `RUST_LOG`（`info`/`debug`/`trace` 启用轻量详细日志）
 - `CODESMITH_SKILLS_DIR`
 - `CODESMITH_MCP_CONFIG`
 - `CODESMITH_NOTES_PATH`
 - `CODESMITH_MEMORY`（`1|on|true|yes|y|enabled` 开启用户记忆）
 - `CODESMITH_MEMORY_PATH`
+- `CODESMITH_DISABLE_AUTO_MEMORY`（`1`/`true` 退出默认开启的用户记忆；记忆级联中优先级最高的一步）
+- `CODESMITH_SIMPLE`（`1`/`true` 精简模式——裁剪功能并关闭记忆）
+- `CODESMITH_REMOTE` / `CODESMITH_REMOTE_MEMORY_DIR`（远程模式；只有显式设置记忆目录时记忆才保持开启）
 - `CODESMITH_ALLOW_SHELL`（`1`/`true` 启用）
 - `CODESMITH_APPROVAL_POLICY`（`on-request|untrusted|never`）
 - `CODESMITH_SANDBOX_MODE`（`read-only|workspace-write|danger-full-access|external-sandbox`）
+- `CODESMITH_SANDBOX_BACKEND` / `CODESMITH_SANDBOX_URL` / `CODESMITH_SANDBOX_API_KEY`
+  （外部沙箱后端：`none` | `opensandbox`；URL 默认 `http://localhost:8080`，
+  密钥以 Bearer token 发送）
+- `CODESMITH_SANDBOX_ENABLED`、`CODESMITH_SANDBOX_FAIL_IF_UNAVAILABLE`、
+  `CODESMITH_SANDBOX_ENABLED_PLATFORMS`、`CODESMITH_SANDBOX_EXCLUDED_COMMANDS`、
+  `CODESMITH_AUTO_ALLOW_BASH_IF_SANDBOXED`、`CODESMITH_PREFER_BWRAP`
+  （`[sandbox]` 表的字段级覆盖；参见 [SANDBOX_cn.md](SANDBOX_cn.md)）
+- `CODESMITH_SEARCH_PROVIDER` / `CODESMITH_SEARCH_API_KEY`（覆盖 `[search]` 表）
+- `CODESMITH_CORS_ORIGINS`（逗号分隔的额外 CORS origin，用于 `serve --http`；
+  优先级介于 `--cors-origin` 与 `[runtime_api].cors_origins` 之间）
+- `CODESMITH_PROVIDERS_MANIFEST`（覆盖内置 `providers.toml` 清单的路径）
 - `CODESMITH_MANAGED_CONFIG_PATH`
 - `CODESMITH_REQUIREMENTS_PATH`
 - `CODESMITH_MAX_SUBAGENTS`（钳制在 `1..=20`）
@@ -600,6 +665,19 @@ codesmith 还将用户偏好存储在：
   保留，用于输入框历史搜索）
 - `default_model`（模型名称覆盖）
 
+### 附属文件
+
+- `~/.codesmith/tui.toml` — 与代理/项目配置解耦的 TUI 专属偏好，
+  因此切换项目后仍然保留（#437）：`theme`（默认 `"dark"`）、
+  `font_size`（`0` = 终端默认，转发给支持的前端）、以及 `[keybinds]`
+  按键覆盖，如 `submit = "ctrl+enter"` / `new_line = "enter"`。文件
+  缺失时回退到 `config.toml` 的 `[tui]` 节，再回退到内置默认值。
+  注意：加载器已定义但尚未接入启动流程（#657）——目前编辑该文件
+  不产生效果。
+- `providers.toml` — 内置 provider 清单（每个 provider 一条：id、
+  backend、base URL、默认模型），进程内只读一次。可用
+  `CODESMITH_PROVIDERS_MANIFEST` 覆盖其路径以测试备用注册表。
+
 UI 中只有 `agent`、`plan` 和 `yolo` 是可见模式。使用 `/mode` 在它们
 之间切换。为兼容起见，带有 `default_mode = "normal"` 的旧设置文件仍会
 加载为 `agent`。
@@ -653,14 +731,42 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
 
 ### 核心键（供 TUI/引擎使用）
 
-- `provider`（字符串，可选）：`deepseek`（默认）、`nvidia-nim`、`openai`、`atlascloud`、`wanjie-ark`、`openrouter`、`xiaomi-mimo`、`novita`、`fireworks`、`siliconflow`、`moonshot`、`sglang`、`vllm` 或 `ollama`。旧版 `deepseek-cn` 配置仍被接受，作为 `deepseek` 的别名；DeepSeek 在全球使用相同的官方主机 [`https://api.deepseek.com`](https://api-docs.deepseek.com/)。`nvidia-nim` 通过 `https://integrate.api.nvidia.com/v1` 指向 NVIDIA NIM 托管的 DeepSeek 端点；`openai` 指向通用 OpenAI 兼容端点，默认为 `https://api.openai.com/v1`；`atlascloud` 指向 AtlasCloud 的 OpenAI 兼容端点 `https://api.atlascloud.ai/v1`；`wanjie-ark` 指向 Wanjie Ark 的 OpenAI 兼容端点 `https://maas-openapi.wanjiedata.com/api/v1`；`openrouter` 指向 `https://openrouter.ai/api/v1`；`xiaomi-mimo` 指向小米 MiMo 的 OpenAI 兼容端点 `https://api.xiaomimimo.com/v1`；`novita` 指向 `https://api.novita.ai/v1`；`fireworks` 指向 `https://api.fireworks.ai/inference/v1`；`siliconflow` 指向 SiliconFlow，默认为 `https://api.siliconflow.com/v1`；`moonshot` 指向 Moonshot/Kimi，默认为 `https://api.moonshot.ai/v1`；`sglang` 指向自托管的 OpenAI 兼容端点，默认为 `http://localhost:30000/v1`；`vllm` 指向自托管的 vLLM OpenAI 兼容端点，默认为 `http://localhost:8000/v1`；`ollama` 指向 Ollama 的 OpenAI 兼容端点，默认为 `http://localhost:11434/v1`。
+- `provider`（字符串，可选）：`deepseek`（默认）、`nvidia-nim`、`openai`、`atlascloud`、`wanjie-ark`、`openrouter`、`xiaomi-mimo`、`novita`、`fireworks`、`siliconflow`、`moonshot`、`sglang`、`vllm`、`ollama`、`volcengine` 或 `anthropic`。`volcengine` 指向 Volcengine Ark 的 OpenAI 兼容端点（环境变量别名 `VOLCENGINE_API_KEY` / `VOLCENGINE_ARK_API_KEY` / `ARK_API_KEY`）；`anthropic` 指向 Anthropic Messages API（环境变量别名 `ANTHROPIC_API_KEY` / `CLAUDE_API_KEY`）。旧版 `deepseek-cn` 配置仍被接受，作为 `deepseek` 的别名；DeepSeek 在全球使用相同的官方主机 [`https://api.deepseek.com`](https://api-docs.deepseek.com/)。`nvidia-nim` 通过 `https://integrate.api.nvidia.com/v1` 指向 NVIDIA NIM 托管的 DeepSeek 端点；`openai` 指向通用 OpenAI 兼容端点，默认为 `https://api.openai.com/v1`；`atlascloud` 指向 AtlasCloud 的 OpenAI 兼容端点 `https://api.atlascloud.ai/v1`；`wanjie-ark` 指向 Wanjie Ark 的 OpenAI 兼容端点 `https://maas-openapi.wanjiedata.com/api/v1`；`openrouter` 指向 `https://openrouter.ai/api/v1`；`xiaomi-mimo` 指向小米 MiMo 的 OpenAI 兼容端点 `https://api.xiaomimimo.com/v1`；`novita` 指向 `https://api.novita.ai/v1`；`fireworks` 指向 `https://api.fireworks.ai/inference/v1`；`siliconflow` 指向 SiliconFlow，默认为 `https://api.siliconflow.com/v1`；`moonshot` 指向 Moonshot/Kimi，默认为 `https://api.moonshot.ai/v1`；`sglang` 指向自托管的 OpenAI 兼容端点，默认为 `http://localhost:30000/v1`；`vllm` 指向自托管的 vLLM OpenAI 兼容端点，默认为 `http://localhost:8000/v1`；`ollama` 指向 Ollama 的 OpenAI 兼容端点，默认为 `http://localhost:11434/v1`。
 - `api_key`（字符串，托管 provider 必填）：对 DeepSeek/托管 provider 必须非空（或设置该 provider 的 API 密钥环境变量）。自托管的 SGLang、vLLM 和 Ollama 可以省略。
+- `custom_provider`（字符串，可选）：某个 `[[providers.custom]]` 条目的
+  id。设置后覆盖 `provider`，并让会话走该自包含的网关定义——参见
+  [自定义 provider 注册表](#自定义-provider-注册表-providerscustom)。
+- `auth_mode`（字符串，可选）：当前活跃 provider 的认证方式。
+  `api_key`（或 `bearer`）强制带密钥认证，即使对环回端点也一样；
+  `none` / `off` / `anonymous` 禁用认证；`kimi` / `kimi_oauth` 让
+  Moonshot/Kimi 改用 OAuth 而非静态密钥。未设置时保持 provider 默认——
+  自托管和环回端点不会读取密钥存储，除非显式要求密钥。各 provider 表
+  （`[providers.<name>].auth_mode`）接受相同的值；环境变量
+  `CODESMITH_AUTH_MODE` 可覆盖。
 - `base_url`（字符串，可选）：对 DeepSeek 的 OpenAI 兼容 Chat Completions API 默认为 `https://api.deepseek.com/beta`，包括旧版 `provider = "deepseek-cn"` 配置。其他默认值：`nvidia-nim` 为 `https://integrate.api.nvidia.com/v1`，`openai` 为 `https://api.openai.com/v1`，`atlascloud` 为 `https://api.atlascloud.ai/v1`，`wanjie-ark` 为 `https://maas-openapi.wanjiedata.com/api/v1`，`openrouter` 为 `https://openrouter.ai/api/v1`，`xiaomi-mimo` 为 `https://api.xiaomimimo.com/v1`，`novita` 为 `https://api.novita.ai/v1`，`fireworks` 为 `https://api.fireworks.ai/inference/v1`，`siliconflow` 为 `https://api.siliconflow.com/v1`，`moonshot` 为 `https://api.moonshot.ai/v1`，`sglang` 为 `http://localhost:30000/v1`，`vllm` 为 `http://localhost:8000/v1`，`ollama` 为 `http://localhost:11434/v1`。显式设置 `https://api.deepseek.com` 或 `https://api.deepseek.com/v1` 可退出 DeepSeek beta 功能。
-- `default_text_model`（字符串，可选）：DeepSeek 和通用 OpenAI 兼容端点默认为 `deepseek-v4-pro`，NVIDIA NIM 为 `deepseek-ai/deepseek-v4-pro`，AtlasCloud 为 `deepseek-ai/deepseek-v4-flash`，Wanjie Ark 为 `deepseek-reasoner`，OpenRouter 和 Novita 为 `deepseek/deepseek-v4-pro`，小米 MiMo 为 `mimo-v2.5-pro`，Fireworks 为 `accounts/fireworks/models/deepseek-v4-pro`，SiliconFlow 为 `deepseek-ai/DeepSeek-V4-Pro`，Moonshot 为 `kimi-k2.6`，SGLang/vLLM 为 `deepseek-ai/DeepSeek-V4-Pro`，Ollama 为 `deepseek-coder:1.3b`。当前公开的 DeepSeek ID 是 `deepseek-v4-pro` 和 `deepseek-v4-flash`，两者都具有 1M 上下文窗口、384K 最大输出，并且默认启用思考模式。旧版 `deepseek-chat` 和 `deepseek-reasoner` 仍作为 `deepseek-v4-flash` 的兼容别名解析（移除已列入计划，但未承诺具体日期），但 SiliconFlow 除外：它将 `deepseek-reasoner` 和 `deepseek-r1` 映射到其 Pro 模型，而 `deepseek-chat` 和 `deepseek-v3` 映射到 Flash。Provider 专属映射会在支持的情况下将 `deepseek-v4-pro` / `deepseek-v4-flash` 转换为各 provider 的模型 ID。OpenRouter 还识别较新的大型 ID，如 `arcee-ai/trinity-large-thinking`、`qwen/qwen3.7-max`、`xiaomi/mimo-v2.5-pro`、`qwen/qwen3.6-35b-a3b`、`google/gemma-4-31b-it` 和 `moonshotai/kimi-k2.6`。通用 `openai`、`atlascloud`、`wanjie-ark`、`xiaomi-mimo` 以及 Ollama 的模型 ID 会原样透传。带有自定义 `base_url` 的 OpenRouter 和 SiliconFlow provider 配置也会保留显式模型值，这使得 OpenAI 兼容网关可以接受裸模型 ID。使用 `/models` 或 `codesmith models` 从你配置的端点发现可用 ID。`CODESMITH_MODEL` 可为单个进程覆盖此项；`CODESMITH_MODEL` 是旧版别名。
+- `default_text_model`（字符串，可选）：DeepSeek 和通用 OpenAI 兼容端点默认为 `deepseek-v4-pro`，NVIDIA NIM 为 `deepseek-ai/deepseek-v4-pro`，AtlasCloud 为 `deepseek-ai/deepseek-v4-flash`，Wanjie Ark 为 `deepseek-reasoner`，OpenRouter 和 Novita 为 `deepseek/deepseek-v4-pro`，小米 MiMo 为 `mimo-v2.5-pro`，Fireworks 为 `accounts/fireworks/models/deepseek-v4-pro`，SiliconFlow 为 `deepseek-ai/DeepSeek-V4-Pro`，Moonshot 为 `kimi-k2.6`，SGLang/vLLM 为 `deepseek-ai/DeepSeek-V4-Pro`，Ollama 为 `deepseek-coder:1.3b`。当前公开的 DeepSeek ID 是 `deepseek-v4-pro` 和 `deepseek-v4-flash`，两者都具有 1M 上下文窗口、384K 最大输出，并且默认启用思考模式。旧版 `deepseek-chat` 和 `deepseek-reasoner` 仍作为 `deepseek-v4-flash` 的兼容别名解析（移除已列入计划，但未承诺具体日期），但 SiliconFlow 除外：它将 `deepseek-reasoner` 和 `deepseek-r1` 映射到其 Pro 模型，而 `deepseek-chat` 和 `deepseek-v3` 映射到 Flash。Provider 专属映射会在支持的情况下将 `deepseek-v4-pro` / `deepseek-v4-flash` 转换为各 provider 的模型 ID。OpenRouter 还识别较新的大型 ID，如 `arcee-ai/trinity-large-thinking`、`qwen/qwen3.7-max`、`xiaomi/mimo-v2.5-pro`、`qwen/qwen3.6-35b-a3b`、`google/gemma-4-31b-it` 和 `moonshotai/kimi-k2.6`。通用 `openai`、`atlascloud`、`wanjie-ark`、`xiaomi-mimo` 以及 Ollama 的模型 ID 会原样透传。带有自定义 `base_url` 的 OpenRouter 和 SiliconFlow provider 配置也会保留显式模型值，这使得 OpenAI 兼容网关可以接受裸模型 ID。使用 `/models` 或 `codesmith models` 从你配置的端点发现可用 ID。`CODESMITH_MODEL` 可为单个进程覆盖此项；`CODESMITH_DEFAULT_TEXT_MODEL` 是旧版别名。
+- `model`（字符串，可选）：通用模型覆盖槽位，由 `codesmith` 门面和项目
+  overlay 消费；门面会把解析出的模型作为 `CODESMITH_MODEL` 转发给 TUI。
+  手写配置中优先使用明确的 `default_text_model` 或
+  `[providers.<name>].model` 槽位。
+- `output_mode` / `log_level`（字符串，可选）：门面级的输出与日志开关，
+  保存在同一文件中；TUI 从环境变量读取（`CODESMITH_OUTPUT_MODE`、
+  `CODESMITH_LOG_LEVEL` / `RUST_LOG`）。两者都允许在项目 overlay 中设置。
+- `strict_tool_mode`（布尔，可选）：为 `true` 时发送
+  `tool_choice: "required"`，并让兼容的函数 schema 启用 DeepSeek beta
+  严格模式。带根级备选的 schema 保持非严格，以免改变 optional/one-of
+  工具语义。
 - `reasoning_effort`（字符串，可选）：`off`、`low`、`medium`、`high` 或 `max`；默认为已配置的 UI 档位。DeepSeek 平台通过顶层 `thinking` / `reasoning_effort` 字段接收。NVIDIA NIM 通过 `chat_template_kwargs` 接收等价设置。
 - `allow_shell`（布尔，可选）：默认为 `true`（受沙箱保护）。
 - `telemetry`（布尔，可选，默认 `false`）：可选择加入的**仅本地**遥测。当为 `true` 时，容量决策分析事件会在通过工作区信任边界后写入 `~/.codesmith/telemetry/events.jsonl`。绝不联网；接收器在信任前在内存中排队，仅在信任后才附加（写入），因此在获得同意之前不会有任何工作区控制的数据落盘。事件携带临时的按会话 id，而不是持久线程 id。
 - `approval_policy`（字符串，可选）：`on-request`、`untrusted` 或 `never`。在 `/config` 中运行时编辑 `approval_mode` 时也接受 `on-request` 和 `untrusted` 别名。
+- `yolo`（布尔，可选，默认 `false`）：YOLO 模式——为会话自动批准全部
+  工具调用。等价于 CLI 的 `--yolo` 或环境变量 `CODESMITH_YOLO=1`。
+- `mode`（字符串，可选）：启动时激活的命名运行模式（`minimal`、
+  `balanced`、`maximal`、`plan`，或 `~/.codesmith/modes/*.toml` 中的
+  用户模式）。CLI 的 `--mode` 优先于该键。一个模式捆绑了应用模式、
+  推理档位、审批/沙箱策略、记忆级别、工具包含/排除列表和特性覆盖——
+  参见 [MODES_cn.md](MODES_cn.md)。
 - `sandbox_mode`（字符串，可选）：`read-only`、`workspace-write`、`danger-full-access`、`external-sandbox`。
   各平台的支持并不相同。macOS 使用 Seatbelt 进行策略执行。Linux 支持
   通过辅助程序围绕 Landlock 或可选的 bubblewrap（`prefer_bwrap = true`）
@@ -672,9 +778,23 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   `prefer_bwrap`，以及 `[sandbox.filesystem]` 和 `[sandbox.network]` 表。
   Shell 结果会同时报告请求的和实际生效的沙箱元数据，使回退行为
   明确可见。
+- `sandbox_backend` / `sandbox_url` / `sandbox_api_key`（可选）：外部
+  沙箱后端。`sandbox_backend` 为 `none`（默认）或 `opensandbox`；设为
+  `opensandbox` 时，`exec_shell` 把命令路由到
+  `POST {sandbox_url}/v1/sandbox/run`（默认 `http://localhost:8080`），
+  并以 `sandbox_api_key` 作为 Bearer token，而不是本地派生沙箱进程。
+  环境变量等价物：`CODESMITH_SANDBOX_BACKEND` / `CODESMITH_SANDBOX_URL` /
+  `CODESMITH_SANDBOX_API_KEY`。参见 [SANDBOX_cn.md](SANDBOX_cn.md)。
 - `managed_config_path`（字符串，可选）：在用户/环境配置之后加载的托管配置文件。
 - `requirements_path`（字符串，可选）：用于强制限定允许的审批/沙箱值的 requirements 文件。
 - `max_subagents`（整数，可选）：默认为 `10`，并钳制在 `1..=20`。
+- `stream_idle_timeout_secs`（整数，可选，默认 `120`）：流式空闲
+  看门狗——两个连续流事件之间允许的最大静默秒数，超时即判定流已
+  静默停滞并中止转入透明重试路径。`0` 关闭看门狗；其余值钳制在
+  `10..=3600`。
+- `stream_idle_retry_increment_secs`（整数，可选，默认 `30`）：每次
+  重试对看门狗窗口的加宽量，避免比基础窗口更长的 provider 静默段
+  把每次重试都杀掉。`0` 保持窗口固定；值钳制在 `0..=600`。
 - `subagents.*`（可选）：为 `agent_open` 及相关持久子代理会话设置按
   角色/类型的模型默认值。显式工具 `model` 值优先，其次是角色/类型
   覆盖，再次是父运行时模型。支持的便捷键有 `default_model`、
@@ -721,10 +841,22 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   小节仍会在其后渲染。除非需要从头构建角色，否则优先使用
   `instructions` + `append_system_prompt`。参见
   [系统提示词自定义](#system-prompt-customization)。
-- `[memory].enabled`（布尔，可选）：默认为 `false`。当为 `true` 时，
-  TUI 将用户记忆文件加载到 `<user_memory>` 提示词块中，在输入框中
-  启用 `# foo` 快速记录，显示 `/memory` 斜杠命令，并注册 `remember`
-  工具。同样的开关可通过 `CODESMITH_MEMORY=on` 使用。
+- `[memory].enabled`（布尔，可选）：未设置即**默认开启**——记忆文件
+  会被读写，输入框的 `# foo` 快速记录开箱即用。生效值按优先级级联
+  （从高到低）：`CODESMITH_DISABLE_AUTO_MEMORY` 环境变量、bare/simple
+  模式、未设 `CODESMITH_REMOTE_MEMORY_DIR` 的远程模式、该设置（或
+  `CODESMITH_MEMORY=on`）、最后默认开启。启用后，TUI 将用户记忆文件
+  加载到 `<user_memory>` 提示词块中，在输入框中启用 `# foo` 快速记录，
+  显示 `/memory` 斜杠命令，并注册 `remember` 工具。
+  - `[memory].kod_enabled`（布尔，默认 `false`）：把记忆从单文件演化
+    为基于目录的 Knowledge On Demand 系统（frontmatter 解析的 `.md`
+    文件、`MEMORY.md` 入口、按回合异步预取）。需要 `enabled = true`
+    和 `knowledge_on_demand` 特性开关。
+  - `[memory].directory`（字符串，可选）：记忆目录覆盖；默认为
+    `memory_path` 的父目录加 `/memory/`。
+  - `[memory].excludes`（数组，可选）：从四层 CLAUDE.md 记忆合并中剔除
+    的路径。条目会做 `~`/环境变量展开并规范化；该列表在引擎启动时
+    解析为 `CODESMITH_MEMORY_EXCLUDES` 环境变量，使所有加载点都遵循。
 - `memory_path`（字符串，可选）：默认为 `~/.codesmith/memory.md`，
   当 CodeSmith 路径不存在时回退到旧版 `~/.codesmith/memory.md`。
   启用后由用户记忆功能使用——完整功能面请参阅
@@ -733,6 +865,10 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
 - `snapshots.*`（可选）：用于文件回滚的 side-git 工作区快照：
   - `[snapshots].enabled`（布尔，默认 `true`）
   - `[snapshots].max_age_days`（整数，默认 `7`）
+  - `[snapshots].max_workspace_gb`（整数，默认 `2`）：非排除工作区
+    体积超过该上限时，快照功能在首次使用时自禁用；`0` 表示不设上限。
+    体积遍历遵循 `.gitignore` 和模块内置排除项（`node_modules/`、
+    `target/` 等）。
   - 快照位于
     `~/.codesmith/snapshots/<project_hash>/<worktree_hash>/.git`，
     当仅存在旧版状态时回退到 `~/.codesmith/snapshots/...`，并且绝不
@@ -762,6 +898,14 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   - `[context].cycle_threshold`（整数，默认 `768000`）
   - `[context].seam_model`（字符串，默认：已配置的 `[utility_model]`
     模型 id，否则为 `deepseek-v4-flash`）
+  - `[context].tokenizer_path`（字符串，可选）：指向 HuggingFace
+    `tokenizer.json`（BPE/Unigram）的路径。设置且可加载后，引擎中的
+    每个 token 预算（压缩触发、容量预检、大输出路由、截断阈值）都从
+    chars÷3 估算切换为精确计数——对 CJK 为主的文本和 JSON 工具输出
+    明显更准。加载失败会记录警告并保持估算。可用如下方式获取
+    tokenizer：
+    `huggingface-cli download deepseek-ai/DeepSeek-V3 tokenizer.json --local-dir ~/.codesmith/tokenizers`
+    然后把 `tokenizer_path` 指向下载的文件。
 - `retry.*`（可选）：API 请求的重试/退避设置：
   - `[retry].enabled`（布尔，默认 `true`）
   - `[retry].max_retries`（整数，默认 `3`）
@@ -785,17 +929,23 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   - `[capacity].deepseek_v4_pro_prior`（浮点，默认 `3.5`）
   - `[capacity].deepseek_v4_flash_prior`（浮点，默认 `4.2`）
   - `[capacity].fallback_default_prior`（浮点，默认 `3.8`）
-- `[notifications].method`（字符串，可选）：`auto`、`osc9`、`bel` 或
-  `off`。默认为 `auto`。TUI 会在耗时达到 `threshold_secs` 的已完成
-  （成功）轮次上触发；失败和取消的轮次保持静默。`auto` 对
-  `iTerm.app`、`Ghostty` 和 `WezTerm`（通过 `$TERM_PROGRAM` 检测）
-  解析为 `osc9`。否则回退为 macOS / Linux 上的 `bel` 和 Windows 上的
-  `off`（在 Windows 上 BEL 会映射为系统错误提示音——完整原因请参阅
-  [通知](#notifications)小节，#583）。
+- `[notifications].method`（字符串，可选）：`auto`、`osc9`、`bel`、
+  `kitty`、`ghostty` 或 `off`。默认为 `auto`。TUI 会在耗时达到
+  `threshold_secs` 的已完成（成功）轮次上触发；失败和取消的轮次保持
+  静默。`auto` 对 `iTerm.app`、`Ghostty`、`WezTerm` 和 `Cmux`
+  （先检测 `$TERM_PROGRAM`，再检测 `$LC_TERMINAL`）解析为 `osc9`。
+  否则回退为 macOS / Linux 上的 `bel` 和 Windows 上的 `off`（在
+  Windows 上 BEL 会映射为系统错误提示音——完整原因请参阅
+  [通知](#通知)小节，#583）。`kitty` 和 `ghostty` 分别显式选择
+  Kitty OSC 99 和 Ghostty OSC 777 通知协议。
 - `[notifications].threshold_secs`（整数，可选）：默认为 `30`。
   只有耗时达到或超过该值的已完成轮次才会触发通知。
 - `[notifications].include_summary`（布尔，可选）：默认为 `false`。
   当为 `true` 时，通知正文包含耗时以及按配置显示货币计的该轮成本。
+- `[notifications].completion_sound`（字符串，可选）：`off`、`beep`
+  （默认）或 `bell`——每个轮次结束时伴随 ✅ 标记播放的提示音。`beep`
+  使用系统通知音（Windows 上为 `MessageBeep`）；`bell` 发出 `\x07`
+  字节。
 - `tui.alternate_screen`（字符串，可选）：`auto`、`always` 或 `never`。
   保留此项是为了配置兼容性，但交互式会话现在始终使用 TUI 拥有的备用
   屏幕，因此宿主终端的回滚缓冲无法劫持视口。
@@ -820,6 +970,67 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   gnome-terminal/konsole）将其渲染为 Cmd+点击的超链接。不支持
   OSC 8 的终端渲染纯 URL 并忽略该转义。对错误渲染该序列的终端设为
   `false`；选择/剪贴板输出总是会剥离这些转义。
+- `tui.status_items`（数组，可选）：有序的页脚条目。缺省使用内置
+  默认页脚；显式 `[]` 表示全部隐藏。可用条目：`mode`、`model`、
+  `cost`、`status`、`coherence`、`agents`、`reasoning_replay`、
+  `prefix_stability`、`cache`、`context_percent`、`git_branch`、
+  `last_tool_elapsed`、`rate_limit`、`tokens`、`balance`。左簇条目
+  （mode/model/cost/status）与右簇芯片在各自一侧保持给定顺序。
+  可用 `/statusline` 交互编辑。
+- `tui.notification_condition`（字符串，可选）：`always`（每个成功
+  轮次都通知，忽略 `[notifications].threshold_secs`）或 `never`
+  （抑制轮次完成通知）。未设置时回退到 `[notifications]` 默认值。
+- `tui.composer_arrows_scroll`（布尔，可选）：空输入框上的普通
+  Up/Down 滚动会话记录而不是召回输入历史——对把滚轮手势映射为
+  方向键的终端有用。仅在鼠标捕获关闭时默认 `true`，否则 `false`。
+- `network.*`（可选）：按域名的出站网络策略（#135），管
+  `fetch_url`、`web_search` 和 MCP HTTP 调用：
+  - `[network].default`（`"allow"` | `"deny"` | `"prompt"`，默认
+    `prompt`）——不在 allow/deny 列表中的主机的决策
+  - `[network].allow` / `[network].deny`——主机列表；前导点
+    （`.example.com`）匹配子域但不匹配顶点；deny 恒胜
+  - `[network].proxy`——在显式信任的代理设置中，DNS 可能解析为
+    fake-IP 或私有网段的主机名；字面 IP URL 仍被阻止
+  - `[network].audit`（布尔，默认 `true`）——每次出站调用向
+    `~/.codesmith/audit.log` 追加一行
+  表缺失时，运行时应用同样的 `prompt` 默认（首次调用未批准主机
+  会弹出标准审批提示），而不是静默放行所有主机；YOLO 会话照常
+  自动批准。
+- `skills.*`（可选）：社区技能安装器（#140）：
+  - `[skills].registry_url`——`/skill install <name>` 查询的精选
+    registry 索引；默认为内置 registry
+  - `[skills].max_install_size_bytes`——单个技能的最大未压缩体积
+    （默认 5 MiB）；超限的 tarball 在校验期间被拒绝
+- `lsp.*`（可选）：编辑后 LSP 诊断注入（#136）。表缺失时：启用、
+  5 秒轮询、每文件 20 条诊断、仅错误：
+  - `[lsp].enabled`（布尔，默认 `true`）
+  - `[lsp].poll_after_edit_ms`（整数，默认 `5000`）——`didOpen`/
+    `didChange` 后等待服务器发布诊断的时长
+  - `[lsp].max_diagnostics_per_file`（整数，默认 `20`）
+  - `[lsp].include_warnings`（布尔，默认 `false`）
+  - `[lsp].servers`——语言 slug → 命令数组的映射（如
+    `rust = ["rust-analyzer"]`），覆盖内置服务器命令（rust →
+    rust-analyzer、go → gopls、python → pyright、ts →
+    typescript-language-server、java → jdtls 等）
+- `auto.*`（可选）：`--model auto` 路由器调优（#1207）：
+  - `[auto].cost_saving`（布尔，默认 `false`）——让路由偏向
+    flash 级模型以节省成本
+- `workshop.*`（可选）：大工具输出路由（#548）。超过阈值的工具
+  结果由 `[utility_model]` 模型压缩；只有综合结果进入父上下文，
+  原文保留在 workshop 变量 `last_tool_result` 中（工具调用上设置
+  `raw = true` 可绕过路由）：
+  - `[workshop].large_output_threshold_tokens`（整数，默认 `4096`）
+  - `[workshop].per_tool_thresholds`——工具名 → 阈值的映射，为该
+    工具覆盖全局值
+- `runtime_api.*`（可选）：`serve --http` 调优。目前只有
+  `[runtime_api].cors_origins`——在内置 `localhost:3000` /
+  `localhost:1420` 和 `tauri://localhost` 开发默认值之上追加允许的
+  origin。解析顺序：`--cors-origin` CLI 参数，其次
+  `CODESMITH_CORS_ORIGINS` 环境变量，最后该字段。
+- `hook_sinks.*`（可选）：app-server 事件 sink。
+  `[hook_sinks].unix_socket_path` 为结构化事件注册一个 Unix 域
+  socket sink。刻意不提供共享的 `/tmp` 默认值——socket 归属必须
+  显式声明。
 - `hooks`（可选）：生命周期钩子配置（参见 `config.example.toml`）。
 - `features.*`（可选）：功能开关覆盖（见下文）。
 
@@ -913,7 +1124,23 @@ CodeSmith 默认加载一个精简的核心原生工具目录，并让不太常�
 ```toml
 [tools]
 always_load = ["git_show", "notify"]
+# plugin_dir = "~/.codesmith/tools"   # 默认；携带 `# name:` /
+#                                     # `# description:` / `# schema:`
+#                                     # frontmatter 头的脚本会被自动发现
+#                                     # 并注册为工具
+
+# 替换或禁用内置工具（以内置工具名为键）：
+[tools.overrides]
+# read_file = { type = "disabled" }
+# web_search = { type = "command", command = "my-search-wrapper", args = ["--json"] }
+# read_file = { type = "script", path = "~/.codesmith/tools/rr.sh" }
 ```
+
+`[tools.overrides]` 条目有三种形态。`script` 运行本地脚本文件
+（`path`，绝对路径或相对于插件目录），把工具的 JSON 输入接到 stdin，
+并要求 stdout 返回 JSON `ToolResult`；`command` 以同样方式运行外部
+二进制；`disabled` 把工具从模型可见目录中彻底移除——无法再被调用。
+任何静态 `args` 都会拼在工具的 JSON 输入之前。
 
 ## 功能开关
 
@@ -930,6 +1157,12 @@ mcp = true
 exec_policy = true
 # file_freshness = true # read-before-edit validation for edit_file/write_file/fim_edit/apply_patch
 ```
+
+完整注册表：`shell_tool`、`subagents`、`web_search`、`apply_patch`、
+`mcp`、`exec_policy` 和 `file_freshness` 默认开启。另有四个默认关闭、
+门控预览功能的开关：`vision_model`（`[vision_model]` 图像分析路径）、
+`knowledge_on_demand`（经 `[memory].kod_enabled` 启用的目录式记忆）、
+`agent_teams` 和 `coordinator_mode`。
 
 `file_freshness`（默认开启）使编辑工具拒绝会话中从未读取过、或自上次
 读取后在磁盘上发生变化的文件——错误信息会提示模型先 `read_file`。
@@ -957,9 +1190,13 @@ Tavily、Bocha、Metaso 或 Baidu。
 设置 `BAIDU_SEARCH_API_KEY` 或 `[search] api_key`。这只是搜索工具
 后端；不会添加百度模型 provider。
 
+**Volcengine** 使用 Volcengine Ark 的搜索后端。设置 `[search] api_key`
+或 `VOLCENGINE_API_KEY` / `VOLCENGINE_ARK_API_KEY` / `ARK_API_KEY`
+环境变量之一。
+
 ```toml
 [search]
-provider = "baidu" # duckduckgo | bing | tavily | bocha | metaso | baidu
+provider = "baidu" # duckduckgo | bing | tavily | bocha | metaso | baidu | volcengine
 # api_key = "YOUR_KEY" # required for tavily, bocha, and baidu; optional for metaso
 ```
 
@@ -967,11 +1204,26 @@ provider = "baidu" # duckduckgo | bing | tavily | bocha | metaso | baidu
 
 在输入框中使用 `@path/to/file` 可将本地文本文件或目录上下文添加到
 下一条消息。使用 `/attach <path>` 附加本地图像/视频媒体路径，或使用
-`Ctrl+V` 从剪贴板附加图像。DeepSeek 公开的 Chat Completions API 目前
-只接受文本消息内容，因此媒体附件以显式的本地路径引用发送，而不是
-原生图像/视频载荷。附件行在提交前显示在输入框上方；移动到输入框
-开头，按 `↑` 选择附件行，然后按 `Backspace` 或 `Delete` 将其移除，
-无需手动编辑占位文本。
+`Ctrl+V` 从剪贴板附加图像。
+
+当活跃的 provider+模型支持视觉时，附加的图像会作为**原生图像内容块**
+（OpenAI 兼容的 `image_url` 载荷）随消息发送——无需工具往返。视觉
+支持由静态模型名矩阵判定（deepseek-vl*、Qwen-VL、GLM-V、gpt-4o 及
+之后、claude-*、xiaomi mimo-v2.5 等），并可按 provider 覆盖：
+
+```toml
+[providers.openai]        # 或任意 [providers.*] 表 / [[providers.custom]] 条目
+vision = true             # 网关前端是矩阵看不到的视觉模型时
+```
+
+自定义 `[[providers.custom]]` 网关默认为 `false`（矩阵中没有条目）——
+需显式设置 `vision = true` 才能启用内联图像。不支持视觉时，附件降级
+为文本引用模式：`[Attached image: … at <path>]` 占位行，外加一条
+指引模型使用 `image_analyze` 工具（配置了 `[vision_model]` 时）或
+`read_file` 的 OCR 提取的说明。
+
+附件行在提交前显示在输入框上方；移动到输入框开头，按 `↑` 选择附件
+行，然后按 `Backspace` 或 `Delete` 将其移除，无需手动编辑占位文本。
 
 ## 托管配置与 requirements
 

@@ -134,9 +134,7 @@ fn effective_stream_idle_timeout(
     increment: std::time::Duration,
     retry_attempts: u32,
 ) -> Option<std::time::Duration> {
-    base.map(|base| {
-        base.saturating_add(increment.saturating_mul(retry_attempts))
-    })
+    base.map(|base| base.saturating_add(increment.saturating_mul(retry_attempts)))
 }
 
 /// Whether a tool is a safe candidate for **early speculative dispatch**
@@ -1191,7 +1189,10 @@ mod tests {
     fn effective_idle_timeout_widens_per_retry() {
         let base = Duration::from_secs(120);
         let inc = Duration::from_secs(30);
-        assert_eq!(effective_stream_idle_timeout(Some(base), inc, 0), Some(base));
+        assert_eq!(
+            effective_stream_idle_timeout(Some(base), inc, 0),
+            Some(base)
+        );
         assert_eq!(
             effective_stream_idle_timeout(Some(base), inc, 1),
             Some(Duration::from_secs(150))
@@ -1206,11 +1207,7 @@ mod tests {
     fn effective_idle_timeout_saturates_instead_of_panicking() {
         // A huge increment clamps at `Duration::MAX` rather than overflowing.
         assert_eq!(
-            effective_stream_idle_timeout(
-                Some(Duration::from_secs(120)),
-                Duration::MAX,
-                2
-            ),
+            effective_stream_idle_timeout(Some(Duration::from_secs(120)), Duration::MAX, 2),
             Some(Duration::MAX)
         );
     }
