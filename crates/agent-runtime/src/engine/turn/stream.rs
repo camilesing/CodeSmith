@@ -460,9 +460,31 @@ impl HostAgentExecutor {
                 None => stream.next().await,
             };
             let Some(item) = item else {
-                // Stream ended without `MessageStop` — treat as a clean
-                // completion (same fall-through the `while let` had).
-                break;
+                // P0-3 — the stream ended without `MessageStop`, i.e. with no
+                // termination proof: the provider may have closed the
+                // connection mid-flight, and a tail could have been lost.
+                // (`MessageStop` always breaks the loop, so reaching this
+                // branch means it never arrived.) The rig adapter already
+                // converts its proof-less endings into an in-band `Err` (the
+                // mapper's evidence gate); this branch is the engine-side
+                // defense for any other `LlmClient` implementation. Route it
+                // through the interrupted-stream outcomes — `Empty` →
+                // transparent retry, `Partial` → surface what arrived —
+                // instead of the old clean-completion fall-through, which
+                // silently swallowed severed streams.
+                let error = "stream ended without MessageStop: no termination proof \
+                             from the provider; treating as interrupted connection"
+                    .to_string();
+                if any_content_received {
+                    let content = finalize_blocks(std::mem::take(&mut blocks));
+                    return StreamReduceOutcome::Partial {
+                        content,
+                        stop_reason,
+                        error,
+                        usage,
+                    };
+                }
+                return StreamReduceOutcome::Empty { error };
             };
             let event = match item {
                 Ok(e) => e,
@@ -903,6 +925,12 @@ impl HostAgentExecutor {
                     }
                     // Healthy round → reset the retry budget so a bad prior
                     // step doesn't carry over (mirrors `handle_deepseek_turn`).
+                    if *stream_retry_attempts > 0 {
+                        // A retried round finally landed — clear the
+                        // structured retry banner (P0-3 retry-count surface;
+                        // `Event::Status` above already carried the text).
+                        crate::retry_status::succeeded();
+                    }
                     *stream_retry_attempts = 0;
                     return Ok(StreamRoundOutcome::Content {
                         content,
@@ -928,6 +956,9 @@ impl HostAgentExecutor {
                     // output; retrying would double-bill and lose the partial
                     // turn). Reset the budget so a bad prior step doesn't
                     // carry over (mirrors `handle_deepseek_turn`).
+                    if *stream_retry_attempts > 0 {
+                        crate::retry_status::succeeded();
+                    }
                     *stream_retry_attempts = 0;
                     self.emit_status(format!(
                         "Stream interrupted after partial content; surfacing what was received: {error}"
@@ -1007,9 +1038,19 @@ impl HostAgentExecutor {
                         // hammer a provider that just asked us to slow down.
                         // Retry-After headers are stringified by the time the
                         // error reaches the engine, so this is a fixed delay.
-                        if category == ErrorCategory::RateLimit {
+                        let (delay, reason) = if category == ErrorCategory::RateLimit {
+                            (RATE_LIMIT_RETRY_DELAY, "rate limited")
+                        } else {
+                            (std::time::Duration::ZERO, "stream interrupted")
+                        };
+                        // Structured retry surface for the footer (P0-3):
+                        // attempt number + countdown deadline + short reason.
+                        // The text channel below (`Event::Status`) keeps the
+                        // same information in the event stream.
+                        crate::retry_status::start(*stream_retry_attempts, delay, reason);
+                        if delay > std::time::Duration::ZERO {
                             tokio::select! {
-                                _ = tokio::time::sleep(RATE_LIMIT_RETRY_DELAY) => {}
+                                _ = tokio::time::sleep(delay) => {}
                                 _ = async {
                                     match &cancel_token {
                                         Some(token) => token.cancelled().await,
@@ -1029,6 +1070,9 @@ impl HostAgentExecutor {
                         continue;
                     }
                     // Budget exhausted → surface the failure.
+                    crate::retry_status::failed(format!(
+                        "stream failed ({category}); {MAX_TRANSPARENT_STREAM_RETRIES} retries exhausted"
+                    ));
                     return Err(anyhow::anyhow!(error));
                 }
             }
@@ -1608,5 +1652,92 @@ mod tests {
             1,
             "deterministic rejection must not burn retry budget"
         );
+    }
+
+    /// P0-3 engine-side defense — a stream that simply ENDS without an error
+    /// item and without `MessageStop` carries no termination proof. The rig
+    /// adapter already converts its proof-less endings into in-band errors;
+    /// this pins the engine's own seam for any other `LlmClient`: zero
+    /// content ⇒ `Empty` ⇒ transparent retry (not the old clean-completion
+    /// fall-through).
+    #[tokio::test]
+    async fn unproven_stream_end_without_message_stop_is_retried() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+
+        // MessageStart only — no content, no MessageStop, no error item.
+        let unproven = vec![message_start_with_usage(100)];
+        let mock = std::sync::Arc::new(RetryMockLlm::new(vec![
+            MockRound::Events(unproven),
+            MockRound::Events(usage_round(200, 60)),
+        ]));
+        let executor = stream_test_executor(&mock, codesmith_agent::tools::ToolSet::new());
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("unproven stream end must retry, not fail");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(
+            mock.call_counts().len(),
+            2,
+            "unproven empty stream must transparently retry"
+        );
+    }
+
+    /// P0-3 engine-side defense, content variant — a stream that ends without
+    /// `MessageStop` after content was received surfaces the partial content
+    /// (`Partial`), it is neither a completion nor a retry: the provider may
+    /// have billed the output already.
+    #[tokio::test]
+    async fn unproven_end_with_content_surfaces_partial_not_retried() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+
+        let mut unproven_partial = vec![message_start_with_usage(100)];
+        unproven_partial.extend(text_block(0, "partial words"));
+        // no MessageStop
+        let mock = std::sync::Arc::new(RetryMockLlm::new(vec![
+            MockRound::Events(unproven_partial),
+            MockRound::Events(usage_round(200, 60)),
+        ]));
+        let executor = stream_test_executor(&mock, codesmith_agent::tools::ToolSet::new());
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("unproven end after content must surface the partial content");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(
+            mock.call_counts().len(),
+            1,
+            "partial content must surface, not transparently retry"
+        );
+        assert_eq!(history.len(), 2, "[user, assistant(partial words)]");
+    }
+
+    /// Pin the retry classification of the two P0-3 "no termination proof"
+    /// wordings — both the rig adapter's mapper error and the engine's own
+    /// None-without-MessageStop error must stay on the retryable Network
+    /// category (a wording drift here would silently turn interrupted
+    /// connections into hard failures). The mapper string is duplicated
+    /// because the providers crate is not a dependency of this one — keep in
+    /// sync with `rig_adapter/src/stream.rs`.
+    #[test]
+    fn termination_proof_errors_classify_as_retryable_network() {
+        use crate::error_taxonomy::{ErrorCategory, classify_error_message};
+
+        let mapper_wording = "stream ended without termination proof: provider connection \
+                              closed before any finish signal arrived (no Final payload / \
+                              finish_reason / DONE evidence); treating as interrupted connection";
+        let engine_wording = "stream ended without MessageStop: no termination proof from \
+                              the provider; treating as interrupted connection";
+        for message in [mapper_wording, engine_wording] {
+            assert_eq!(
+                classify_error_message(message),
+                ErrorCategory::Network,
+                "wording drifted off the retryable Network category: {message}"
+            );
+        }
     }
 }

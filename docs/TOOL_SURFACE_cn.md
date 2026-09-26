@@ -16,9 +16,9 @@
 |---|---|
 | `read_file` | 读取 UTF-8 文件。可用时通过 `pdftotext`（poppler）自动提取 PDF 内容；`pages: "1-5"` 可切分大文档。 |
 | `list_dir` | 结构化、感知 gitignore 的目录列表。优先于 `exec_shell("ls")`。 |
-| `write_file` | 创建或覆写文件。 |
-| `edit_file` | 在单个文件内进行搜索替换。比完整重写更省。 |
-| `apply_patch` | 应用 unified diff。多块（multi-hunk）编辑的正确选择。 |
+| `write_file` | 创建或覆写文件。`.rs`/`.toml`/`.json` 写入前先做 parse 检查：把原本能正常 parse 的文件改坏会被拒绝并给出错误位置。 |
+| `edit_file` | 在单个文件内进行搜索替换。比完整重写更省。与 `write_file` 同样的写前 parse 门；rustfmt-clean 的 Rust 文件编辑后会重新规范化。 |
+| `apply_patch` | 应用 unified diff。多块（multi-hunk）编辑的正确选择。整个批次在落盘前统一过 parse 门（要么全写要么全不写）。 |
 | `retrieve_tool_result` | 读取此前溢出到 `~/.codesmith/tool_outputs/` 的大型工具输出的摘要或切片；使用 `summary`、`head`、`tail`、`lines` 或 `query`，而不是重放整个结果。 |
 | `handle_read` | 从活跃工具环境持有的 `var_handle` 载荷中读取有界投影。这是 RLM 会话、子代理转录及其他大型符号载荷的基础。 |
 

@@ -9,6 +9,7 @@ use super::spec::{
     lsp_diagnostics_for_paths, optional_bool, optional_str, required_str,
 };
 use async_trait::async_trait;
+use codesmith_agent_runtime::tools::parse_gate;
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -440,7 +441,7 @@ impl ToolSpec for WriteFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Write content to a UTF-8 file in the workspace. Use this instead of heredocs (`cat <<EOF > file`) or `echo > file` in `exec_shell` — diffs render inline and approval is handled cleanly. Creates or overwrites; parent directories are auto-created."
+        "Write content to a UTF-8 file in the workspace. Use this instead of heredocs (`cat <<EOF > file`) or `echo > file` in `exec_shell` — diffs render inline and approval is handled cleanly. Creates or overwrites; parent directories are auto-created. Writes to `.rs`/`.toml`/`.json` files are parse-checked before saving: content that would break a file which parsed cleanly before is rejected with the error location, so keep the content syntactically complete."
     }
 
     fn input_schema(&self) -> Value {
@@ -498,22 +499,44 @@ impl ToolSpec for WriteFileTool {
             })?;
         }
 
-        fs::write(&file_path, file_content).map_err(|e| {
+        // P0-1 parse gate: reject writes that would break a previously
+        // parsing .rs/.toml/.json file before anything touches disk, and
+        // re-normalize Rust files that were rustfmt-clean.
+        let gated = if context.parse_gate {
+            Some(parse_gate::gate(
+                &file_path,
+                existed_before.then_some(prior_contents.as_str()),
+                file_content,
+            )?)
+        } else {
+            None
+        };
+        let final_content = gated
+            .as_ref()
+            .map_or(file_content, |outcome| outcome.content.as_str());
+
+        fs::write(&file_path, final_content).map_err(|e| {
             ToolError::execution_failed(format!("Failed to write {}: {}", file_path.display(), e))
         })?;
 
         let display = file_path.display().to_string();
-        let diff = make_unified_diff(&display, &prior_contents, file_content);
+        let diff = make_unified_diff(&display, &prior_contents, final_content);
         let summary = if existed_before {
-            format!("Wrote {} bytes to {}", file_content.len(), display)
+            format!("Wrote {} bytes to {}", final_content.len(), display)
         } else {
-            format!("Created {} ({} bytes)", display, file_content.len())
+            format!("Created {} ({} bytes)", display, final_content.len())
         };
-        let body = if diff.is_empty() {
+        let mut body = if diff.is_empty() {
             format!("{summary}\n(no changes)")
         } else {
             format!("{diff}\n{summary}")
         };
+        if let Some(outcome) = gated.as_ref()
+            && let Some(note) = outcome.normalization_note.as_ref()
+        {
+            body.push('\n');
+            body.push_str(note);
+        }
 
         // Append LSP diagnostics for the written file when enabled (#428).
         let diag_block = lsp_diagnostics_for_paths(context, &[file_path]).await;
@@ -539,7 +562,7 @@ impl ToolSpec for EditFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Replace text in a single file via exact search/replace. Use this instead of `sed -i` in `exec_shell` for one unambiguous in-place edit. `search` matches exactly by default; when no exact match is found the tool retries automatically with, in order: leading-whitespace-tolerant matching, typographic-punctuation normalization, and line-number-prefix stripping (if you paste a read_file/cat -n/grep -n excerpt into `search`, its leading `  12│ ` / `12\\t` / `12:` numbers are ignored — do not rely on this, copy text without numbers). The optional `fuzz` parameter is accepted for backward compatibility and is no longer needed. When `search` matches multiple locations the call FAILS unless you pass `replace_all: true` (replace every occurrence) or `occurrence: N` (replace the N-th match, 1-based). Returns a compact unified diff, not the full file. For structural, multi-block, or cross-file changes, use `apply_patch` or `write_file` instead.\n\nAnchor mode for long spans (40+ lines): pass `search_start` + `search_end` (instead of `search`) quoting only the first and last lines of the region — everything between the two anchors is replaced by `replace` without quoting it. `search_start` must be unique in the file; the first `search_end` after it closes the span.\n\nExamples: `{\"path\": \"src/lib.rs\", \"search\": \"let timeout = 30;\", \"replace\": \"let timeout = 60;\"}` (single unique match); `{\"path\": \"a.txt\", \"search\": \"TODO\", \"replace\": \"DONE\", \"replace_all\": true}` (several identical matches); `{\"path\": \"gen.rs\", \"search_start\": \"fn generated_table() {\", \"search_end\": \"// END generated_table\", \"replace\": \"fn generated_table() {\\n    // regenerated\"}` (replace a huge block without quoting its middle). Include enough surrounding context in `search` to make it unique — copy the text verbatim from a prior read_file result."
+        "Replace text in a single file via exact search/replace. Use this instead of `sed -i` in `exec_shell` for one unambiguous in-place edit. `search` matches exactly by default; when no exact match is found the tool retries automatically with, in order: leading-whitespace-tolerant matching, typographic-punctuation normalization, and line-number-prefix stripping (if you paste a read_file/cat -n/grep -n excerpt into `search`, its leading `  12│ ` / `12\\t` / `12:` numbers are ignored — do not rely on this, copy text without numbers). The optional `fuzz` parameter is accepted for backward compatibility and is no longer needed. When `search` matches multiple locations the call FAILS unless you pass `replace_all: true` (replace every occurrence) or `occurrence: N` (replace the N-th match, 1-based). Returns a compact unified diff, not the full file. For structural, multi-block, or cross-file changes, use `apply_patch` or `write_file` instead.\n\nAnchor mode for long spans (40+ lines): pass `search_start` + `search_end` (instead of `search`) quoting only the first and last lines of the region — everything between the two anchors is replaced by `replace` without quoting it. `search_start` must be unique in the file; the first `search_end` after it closes the span.\n\nExamples: `{\"path\": \"src/lib.rs\", \"search\": \"let timeout = 30;\", \"replace\": \"let timeout = 60;\"}` (single unique match); `{\"path\": \"a.txt\", \"search\": \"TODO\", \"replace\": \"DONE\", \"replace_all\": true}` (several identical matches); `{\"path\": \"gen.rs\", \"search_start\": \"fn generated_table() {\", \"search_end\": \"// END generated_table\", \"replace\": \"fn generated_table() {\\n    // regenerated\"}` (replace a huge block without quoting its middle). Include enough surrounding context in `search` to make it unique — copy the text verbatim from a prior read_file result.\n\nEdits to `.rs`/`.toml`/`.json` files are parse-checked before saving: an edit that would break a file which parsed cleanly before is rejected with the error location, so keep edits syntactically complete (close every brace you open)."
     }
 
     fn input_schema(&self) -> Value {
@@ -677,8 +700,14 @@ impl ToolSpec for EditFileTool {
             let display = file_path.display().to_string();
             let (start, end) = anchor_match_range(
                 &contents,
-                input.get("search_start").and_then(|v| v.as_str()).unwrap_or_default(),
-                input.get("search_end").and_then(|v| v.as_str()).unwrap_or_default(),
+                input
+                    .get("search_start")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default(),
+                input
+                    .get("search_end")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default(),
                 &display,
             )?;
             let mut updated = contents.clone();
@@ -789,15 +818,36 @@ impl ToolSpec for EditFileTool {
                     file_path.display()
                 )));
             }
-            (contents.replace(search.as_str(), replace), count, None, None)
+            (
+                contents.replace(search.as_str(), replace),
+                count,
+                None,
+                None,
+            )
         };
 
-        fs::write(&file_path, &updated).map_err(|e| {
+        // P0-1 parse gate: reject edits that would break a previously
+        // parsing .rs/.toml/.json file before anything touches disk, and
+        // re-normalize Rust files that were rustfmt-clean.
+        let gated = if context.parse_gate {
+            Some(parse_gate::gate(
+                &file_path,
+                Some(contents.as_str()),
+                &updated,
+            )?)
+        } else {
+            None
+        };
+        let final_updated = gated
+            .as_ref()
+            .map_or(updated.as_str(), |o| o.content.as_str());
+
+        fs::write(&file_path, final_updated).map_err(|e| {
             ToolError::execution_failed(format!("Failed to write {}: {}", file_path.display(), e))
         })?;
 
         let display = file_path.display().to_string();
-        let diff = make_unified_diff(&display, &contents, &updated);
+        let diff = make_unified_diff(&display, &contents, final_updated);
         let summary = if let Some(n) = occurrence_of {
             format!("Replaced occurrence {n} of {count} in {display}")
         } else if replaced_count > 1 {
@@ -817,11 +867,17 @@ impl ToolSpec for EditFileTool {
             };
             format!("Replaced 1 occurrence in {display}{fuzz_note}")
         };
-        let body = if diff.is_empty() {
+        let mut body = if diff.is_empty() {
             format!("{summary}\n(no textual changes)")
         } else {
             format!("{diff}\n{summary}")
         };
+        if let Some(outcome) = gated.as_ref()
+            && let Some(note) = outcome.normalization_note.as_ref()
+        {
+            body.push('\n');
+            body.push_str(note);
+        }
 
         // Append LSP diagnostics for the edited file when enabled (#428).
         let diag_block = lsp_diagnostics_for_paths(context, &[file_path]).await;
@@ -1828,6 +1884,194 @@ mod tests {
         assert_eq!(written, "nested content");
     }
 
+    // === P0-1 parse gate ===
+
+    const GATE_VALID_RS: &str = "fn main() {\n    let answer = 42;\n}\n";
+    const GATE_BROKEN_RS: &str = "fn main() {\n    let answer = ;\n}\n";
+
+    #[tokio::test]
+    async fn test_write_file_parse_gate_rejects_rust_regression() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let target = tmp.path().join("src/lib.rs");
+        fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
+        fs::write(&target, GATE_VALID_RS).expect("seed");
+
+        let tool = WriteFileTool;
+        let result = tool
+            .execute(
+                json!({"path": "src/lib.rs", "content": GATE_BROKEN_RS}),
+                &ctx,
+            )
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Parse gate rejected write to") && err.contains("line 2"),
+            "error must name the gate and the broken line: {err}"
+        );
+        assert!(
+            err.contains("NOT modified"),
+            "error must say the file is untouched: {err}"
+        );
+        // The file on disk is untouched.
+        let unchanged = fs::read_to_string(&target).expect("read");
+        assert_eq!(unchanged, GATE_VALID_RS);
+    }
+
+    #[tokio::test]
+    async fn test_write_file_parse_gate_allows_already_broken_file() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let target = tmp.path().join("src/lib.rs");
+        fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
+        fs::write(&target, GATE_BROKEN_RS).expect("seed");
+
+        let tool = WriteFileTool;
+        // Even worse content: the gate never locks an already-broken file.
+        let result = tool
+            .execute(
+                json!({"path": "src/lib.rs", "content": "fn main() { let also_broken = "}),
+                &ctx,
+            )
+            .await
+            .expect("execute");
+
+        assert!(result.success);
+        let written = fs::read_to_string(&target).expect("read");
+        assert_eq!(written, "fn main() { let also_broken = ");
+    }
+
+    #[tokio::test]
+    async fn test_write_file_parse_gate_off_restores_write_through() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf()).with_parse_gate(false);
+        let target = tmp.path().join("src/lib.rs");
+        fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
+        fs::write(&target, GATE_VALID_RS).expect("seed");
+
+        let tool = WriteFileTool;
+        let result = tool
+            .execute(
+                json!({"path": "src/lib.rs", "content": GATE_BROKEN_RS}),
+                &ctx,
+            )
+            .await
+            .expect("execute");
+
+        assert!(result.success);
+        let written = fs::read_to_string(&target).expect("read");
+        assert_eq!(written, GATE_BROKEN_RS);
+    }
+
+    #[tokio::test]
+    async fn test_edit_file_parse_gate_rejects_rust_regression() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let target = tmp.path().join("src/lib.rs");
+        fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
+        fs::write(&target, GATE_VALID_RS).expect("seed");
+
+        let tool = EditFileTool;
+        let result = tool
+            .execute(
+                json!({"path": "src/lib.rs", "search": "42;", "replace": "};"}),
+                &ctx,
+            )
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Parse gate rejected write to"), "{err}");
+        let unchanged = fs::read_to_string(&target).expect("read");
+        assert_eq!(unchanged, GATE_VALID_RS);
+    }
+
+    #[tokio::test]
+    async fn test_write_file_parse_gate_ignores_ungated_extensions() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let tool = WriteFileTool;
+        // .md is not gated; broken-looking markdown writes fine.
+        let result = tool
+            .execute(
+                json!({"path": "notes.md", "content": "}}} broken {{{"}),
+                &ctx,
+            )
+            .await
+            .expect("execute");
+
+        assert!(result.success);
+        let written = fs::read_to_string(tmp.path().join("notes.md")).expect("read");
+        assert_eq!(written, "}}} broken {{{");
+    }
+
+    #[tokio::test]
+    async fn test_write_file_parse_gate_rejects_json_regression() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let target = tmp.path().join("data.json");
+        fs::write(&target, "{\"a\": 1}").expect("seed");
+
+        let tool = WriteFileTool;
+        let result = tool
+            .execute(
+                json!({"path": "data.json", "content": "{\"a\": 1, }"}),
+                &ctx,
+            )
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("valid JSON"), "{err}");
+        let unchanged = fs::read_to_string(&target).expect("read");
+        assert_eq!(unchanged, "{\"a\": 1}");
+    }
+
+    #[tokio::test]
+    async fn test_write_file_rustfmt_renormalizes_clean_files() {
+        // Skip silently when rustfmt is not installed in this environment.
+        let Ok(out) = std::process::Command::new("rustfmt")
+            .arg("--version")
+            .output()
+        else {
+            return;
+        };
+        if !out.status.success() {
+            return;
+        }
+
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let target = tmp.path().join("src/lib.rs");
+        fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
+        // Seed with a rustfmt-clean file.
+        fs::write(&target, GATE_VALID_RS).expect("seed");
+
+        let tool = WriteFileTool;
+        // Valid but messy Rust: the gate passes and rustfmt normalizes.
+        let result = tool
+            .execute(
+                json!({"path": "src/lib.rs", "content": "fn main(){let x=1;}\n"}),
+                &ctx,
+            )
+            .await
+            .expect("execute");
+
+        assert!(result.success);
+        assert!(
+            result.content.contains("[parse-gate]"),
+            "result must disclose the re-normalization: {}",
+            result.content
+        );
+        let written = fs::read_to_string(&target).expect("read");
+        assert!(written.contains("fn main() {"), "formatted: {written}");
+        // The summary and diff reflect the normalized bytes.
+        assert!(result.content.contains("Wrote"), "{}", result.content);
+    }
+
     #[tokio::test]
     async fn test_edit_file_tool() {
         let tmp = tempdir().expect("tempdir");
@@ -2775,11 +3019,7 @@ mod tests {
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
         let test_file = tmp.path().join("first.txt");
-        fs::write(
-            &test_file,
-            "AAA\npayload-1\nBBB\njunk-after\nBBB\n",
-        )
-        .expect("write");
+        fs::write(&test_file, "AAA\npayload-1\nBBB\njunk-after\nBBB\n").expect("write");
 
         let tool = EditFileTool;
         let result = tool

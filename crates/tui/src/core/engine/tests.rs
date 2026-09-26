@@ -1764,7 +1764,7 @@ async fn reinject_compaction_attachments_prepends_turn_meta_block() {
 
     // Every re-inject message: first block is `<turn_meta>`, second is the
     // `<system-reminder>`-wrapped restoration content.
-    for message in &engine.session.messages {
+    for message in engine.session.messages.iter() {
         assert!(
             message.content.len() >= 2,
             "re-inject message should carry turn_meta + system-reminder blocks"
@@ -2254,7 +2254,7 @@ fn messages_with_turn_metadata_preserves_stored_messages_for_prefix_cache() {
     let first_user = engine.user_text_message_with_turn_metadata("inspect src/lib.rs".to_string());
     engine.session.add_message(first_user.clone());
     let first_request = engine.messages_with_turn_metadata();
-    assert_eq!(first_request, engine.session.messages);
+    assert_eq!(first_request, engine.session.messages.to_vec());
 
     engine.session.add_message(Message {
         role: "assistant".to_string(),
@@ -2273,7 +2273,7 @@ fn messages_with_turn_metadata_preserves_stored_messages_for_prefix_cache() {
     engine.session.add_message(second_user);
 
     let second_request = engine.messages_with_turn_metadata();
-    assert_eq!(second_request, engine.session.messages);
+    assert_eq!(second_request, engine.session.messages.to_vec());
     assert_eq!(second_request.first(), Some(&first_user));
 }
 
@@ -2843,7 +2843,7 @@ async fn apply_verify_and_replan_skip_transcript_preserves_messages() {
         }],
     });
 
-    let before_messages = engine.session.messages.clone();
+    let before_messages = engine.session.messages.to_vec();
     let before_len = before_messages.len();
     let turn = TurnContext::new(10);
 
@@ -2859,7 +2859,7 @@ async fn apply_verify_and_replan_skip_transcript_preserves_messages() {
     // the next turn (this is the crux of sub-slice 3a: the post-`run` path must
     // not wipe the growth the model produced after the mid-loop reset).
     assert_eq!(engine.session.messages.len(), before_len);
-    assert_eq!(engine.session.messages, before_messages);
+    assert_eq!(engine.session.messages.to_vec(), before_messages);
 }
 
 /// §E slice 3b: `apply_verify_with_tool_replay(skip_transcript = true)` runs
@@ -2917,7 +2917,7 @@ async fn apply_verify_with_tool_replay_skip_transcript_uses_outcome() {
         }],
     });
 
-    let before_messages = engine.session.messages.clone();
+    let before_messages = engine.session.messages.to_vec();
     let before_len = before_messages.len();
     let turn = TurnContext::new(10);
 
@@ -2953,7 +2953,7 @@ async fn apply_verify_with_tool_replay_skip_transcript_uses_outcome() {
     // (this is the crux of sub-slice 3b: the post-`run` path must not
     // double-inject the note the executor already pushed mid-loop).
     assert_eq!(engine.session.messages.len(), before_len);
-    assert_eq!(engine.session.messages, before_messages);
+    assert_eq!(engine.session.messages.to_vec(), before_messages);
     // Exactly one `[verification replay]` note (the seeded one) — no
     // double-push from the `skip_transcript` path.
     let replay_notes = engine
@@ -3027,7 +3027,7 @@ async fn apply_targeted_context_refresh_skip_transcript_uses_outcome() {
         }],
     });
 
-    let before_messages = engine.session.messages.clone();
+    let before_messages = engine.session.messages.to_vec();
     let before_len = before_messages.len();
     let turn = TurnContext::new(10);
 
@@ -3049,7 +3049,7 @@ async fn apply_targeted_context_refresh_skip_transcript_uses_outcome() {
     // the crux of sub-slice 3c: the post-`run` path must not re-compact the
     // transcript the executor already compacted mid-loop).
     assert_eq!(engine.session.messages.len(), before_len);
-    assert_eq!(engine.session.messages, before_messages);
+    assert_eq!(engine.session.messages.to_vec(), before_messages);
 }
 
 #[tokio::test]

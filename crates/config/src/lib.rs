@@ -459,6 +459,10 @@ pub struct ConfigToml {
     /// enabled with 7-day retention when absent.
     #[serde(default)]
     pub snapshots: Option<SnapshotsToml>,
+    /// File-editing behavior (P0-1 parse gate). When absent, the gate is
+    /// enabled with the defaults documented in [`EditToml`].
+    #[serde(default)]
+    pub edit: Option<EditToml>,
     /// Post-edit LSP diagnostics injection (#136). When absent, the engine
     /// applies the defaults documented in [`LspConfigToml`].
     #[serde(default)]
@@ -585,6 +589,29 @@ impl Default for SnapshotsToml {
     }
 }
 
+/// On-disk schema for the `[edit]` table (P0-1 parse gate). See
+/// `config.example.toml` for documentation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditToml {
+    /// Pre-write parse gate for file-editing tools: writes that would break
+    /// a previously-parsing `.rs`/`.toml`/`.json` file are rejected before
+    /// touching disk. `false` restores the pre-gate write-through behavior.
+    #[serde(default = "default_parse_gate_enabled")]
+    pub parse_gate: bool,
+}
+
+fn default_parse_gate_enabled() -> bool {
+    true
+}
+
+impl Default for EditToml {
+    fn default() -> Self {
+        Self {
+            parse_gate: default_parse_gate_enabled(),
+        }
+    }
+}
+
 /// On-disk schema for the `[network]` table (#135). See `config.example.toml`
 /// for documentation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -651,7 +678,8 @@ impl ConfigToml {
     ///
     /// Repo-local config is untrusted input. This helper intentionally ignores
     /// credentials, endpoints, provider selection, auth/session values, telemetry,
-    /// network policy, skill registry, LSP command tables, and unknown extras.
+    /// network policy, skill registry, LSP command tables, the `[edit]` parse
+    /// gate, snapshots, and unknown extras.
     /// Approval and sandbox values may only tighten the existing user/global
     /// posture.
     ///
@@ -5023,6 +5051,27 @@ backend = "openai-compat"
         assert_eq!(manifest.providers[0].backend, FactoryBackend::Deepseek);
         assert_eq!(manifest.providers[1].backend, FactoryBackend::OpenaiCompat);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn edit_section_parses_and_defaults() {
+        let parsed: ConfigToml = toml::from_str("[edit]\nparse_gate = false\n").expect("parse");
+        assert_eq!(
+            parsed.edit.as_ref().map(|edit| edit.parse_gate),
+            Some(false)
+        );
+
+        let absent: ConfigToml = toml::from_str("").expect("parse");
+        assert!(absent.edit.is_none());
+        assert!(EditToml::default().parse_gate);
+
+        // Round-trip: the serialized form reparses to the same value.
+        let serialized = toml::to_string(&parsed).expect("serialize");
+        let round_tripped: ConfigToml = toml::from_str(&serialized).expect("reparse");
+        assert_eq!(
+            round_tripped.edit.as_ref().map(|edit| edit.parse_gate),
+            Some(false)
+        );
     }
 
     #[test]

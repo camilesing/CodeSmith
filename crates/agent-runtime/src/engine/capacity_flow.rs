@@ -135,20 +135,21 @@ pub(crate) fn latest_user_and_verified(messages: &[Message]) -> (Option<Message>
 ///
 /// Mirrors the transcript portion of `Engine::apply_verify_and_replan`
 /// (below) but operates through the framework-core `ChatHistory` trait
-/// (`push`/`clear`) since the executor only holds `&mut dyn ChatHistory`
+/// (`replace_all`) since the executor only holds `&mut dyn ChatHistory`
 /// during `run`, not `&mut Session`. `SessionChatHistory` delegates to
 /// `session.messages`, so this mutates the host's transcript in place; the
 /// model sees the reset on the next request within the same turn (the loop
 /// `continue`s and rebuilds the request from `history.messages()`).
 pub(crate) fn reset_history_to_latest_user_and_verified(history: &mut dyn ChatHistory) {
     let (latest_user, latest_verified) = latest_user_and_verified(history.messages());
-    history.clear();
+    let mut kept = Vec::with_capacity(2);
     if let Some(msg) = latest_user {
-        history.push(msg);
+        kept.push(msg);
     }
     if let Some(msg) = latest_verified {
-        history.push(msg);
+        kept.push(msg);
     }
+    history.replace_all("verify-and-replan reset", kept);
 }
 
 /// Trim oldest messages off the transcript until the estimated input tokens
@@ -158,11 +159,11 @@ pub(crate) fn reset_history_to_latest_user_and_verified(history: &mut dyn ChatHi
 /// (§E slice 3c) can run the local-trim fallback through `ChatHistory` without
 /// `&mut Session`.
 ///
-/// Mirrors `run_compaction`'s Phase-1 clone → mutate → clear+repush pattern:
-/// `ChatHistory::messages()` is `&[Message]` (immutable), so the messages are
-/// cloned, the oldest peeled off in a loop (keeping at least
-/// `MIN_RECENT_MESSAGES_TO_KEEP`), then the survivors are cleared+repushed.
-/// Returns the number removed.
+/// Mirrors `run_compaction`'s Phase-1 clone → mutate → audited-replace
+/// pattern: `ChatHistory::messages()` is `&[Message]` (immutable), so the
+/// messages are cloned, the oldest peeled off in a loop (keeping at least
+/// `MIN_RECENT_MESSAGES_TO_KEEP`), then the survivors replace the log via
+/// the trait's audited `replace_all` hook. Returns the number removed.
 pub(crate) fn trim_oldest_messages_to_budget_history(
     history: &mut dyn ChatHistory,
     system: Option<&SystemPrompt>,
@@ -178,10 +179,7 @@ pub(crate) fn trim_oldest_messages_to_budget_history(
     }
     if removed > 0 {
         removed += enforce_tool_pairs_after_front_trim(&mut messages);
-        history.clear();
-        for m in messages {
-            history.push(m);
-        }
+        history.replace_all("front trim to budget", messages);
     }
     removed
 }
@@ -1156,7 +1154,10 @@ impl Engine {
                 {
                     Ok(result) => {
                         if !result.messages.is_empty() || self.session.messages.is_empty() {
-                            self.session.messages = result.messages;
+                            self.rebuild_transcript(
+                                crate::prompt_zones::RebuildReason::AutoCompaction,
+                                result.messages,
+                            );
                             self.merge_compaction_summary(result.summary_prompt);
                             self.reinject_compaction_attachments(
                                 context_input_budget_for_provider(
@@ -1468,13 +1469,17 @@ impl Engine {
         // fold, emit, mark) always runs.
         if !skip_transcript {
             let (latest_user, latest_verified) = latest_user_and_verified(&self.session.messages);
-            self.session.messages.clear();
+            let mut kept = Vec::with_capacity(2);
             if let Some(msg) = latest_user {
-                self.session.messages.push(msg);
+                kept.push(msg);
             }
             if let Some(msg) = latest_verified {
-                self.session.messages.push(msg);
+                kept.push(msg);
             }
+            self.session.rebuild_transcript(
+                crate::prompt_zones::RebuildReason::VerifyAndReplanReset,
+                kept,
+            );
         }
 
         self.merge_compaction_summary(Some(self.canonical_prompt(

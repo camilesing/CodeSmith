@@ -50,6 +50,11 @@ unicode-normalization.workspace = true
 unicode-properties.workspace = true
 uuid.workspace = true
 shellexpand = "3"
+syn = { version = "2", default-features = false, features = ["parsing", "full"], optional = true }
+# Runtime (non-proc-macro) syn spans only carry real line/column when
+# proc-macro2 is built with `span-locations`; feature unification applies
+# it to syn's copy too. Only needed by the parse gate.
+proc-macro2 = { version = "1", optional = true, features = ["span-locations"] }
 tokenizers = { version = "0.23.1", default-features = false, features = ["fancy-regex"], optional = true }
 
 [dev-dependencies]
@@ -61,3 +66,9 @@ tiny_http = "0.12"
 # tokenizer.json files). Off by default for the portable core; hosts that
 # want exact token counts (`[context].tokenizer_path`) enable this feature.
 hf-tokenizer = ["dep:tokenizers"]
+# Pre-write parse gate for file-editing tools (P0-1): Rust via `syn`,
+# TOML/JSON via their standard parsers, plus rustfmt re-normalization.
+# Hosts that never register write tools can drop the parser from their
+# dependency graph by leaving this off — `parse_gate::gate` then compiles
+# to a pass-through.
+parse-gate = ["dep:syn", "dep:proc-macro2"]

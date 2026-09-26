@@ -299,6 +299,7 @@ fn apply_session_cwd_capture(
     None
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_foreground_via_background(
     context: &ToolContext,
     command: &str,
@@ -379,7 +380,7 @@ impl ToolSpec for ExecShellTool {
     }
 
     fn description(&self) -> &'static str {
-        "Execute a shell command in the workspace directory. Foreground mode is for bounded commands; use background=true or task_shell_start for long-running work, then poll/wait. Session-aware cwd (Unix): each process is fresh, but a foreground `cd <dir>` persists — the final working directory carries over to later exec_shell calls this session (environment variables do NOT persist; use a `.env` file or export them per command). Pass an explicit `cwd` to override for one call. Output over 30000 bytes is shown head+tail with the middle elided, but the FULL output is always saved to disk and referenced in a trailing note — read the elided middle back with retrieve_tool_result ref=<id> instead of re-running the command."
+        "Execute a shell command in the workspace directory. Foreground mode is for bounded commands; use background=true or task_shell_start for long-running work, then poll/wait. Session-aware cwd (Unix): each process is fresh, but a foreground `cd <dir>` persists — the final working directory carries over to later exec_shell calls this session (environment variables do NOT persist; use a `.env` file or export them per command). Pass an explicit `cwd` to override for one call. Output over 30000 bytes is shown head+tail with the middle elided, but the FULL output is always saved to disk and referenced in a trailing note — read the elided middle back with retrieve_tool_result ref=<id> instead of re-running the command. Arguments run verbatim: a call whose arguments were cut off by the output limit is rejected, never auto-completed or repaired — re-send the complete call."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -1380,7 +1381,7 @@ impl ToolSpec for ShellWaitTool {
     }
 
     fn description(&self) -> &'static str {
-        "Wait for a background shell task and return incremental output. Turn cancellation stops waiting but leaves the background task running."
+        "Wait for a background shell task and return incremental output. Turn cancellation stops waiting but leaves the background task running. Arguments cut off by the output limit are rejected, never repaired — re-send the complete call."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -1458,7 +1459,7 @@ impl ToolSpec for ShellInteractTool {
     }
 
     fn description(&self) -> &'static str {
-        "Send input to a background shell task and return incremental output."
+        "Send input to a background shell task and return incremental output. Input is sent verbatim: a call whose arguments were cut off by the output limit is rejected, never auto-completed — re-send the complete call."
     }
 
     fn input_schema(&self) -> serde_json::Value {

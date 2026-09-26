@@ -55,6 +55,21 @@ pub struct SessionChatHistory<'a> {
 }
 
 impl<'a> SessionChatHistory<'a> {
+    /// Best-effort `Event::TranscriptRebuilt` for the log's most recent
+    /// rebuild record (drop-on-full matches the `push` precedent).
+    fn emit_transcript_rebuilt(&self) {
+        let Some(tx) = &self.event_tx else {
+            return;
+        };
+        if let Some(record) = self.session.messages.last_rebuild() {
+            let _ = tx.try_send(Event::TranscriptRebuilt {
+                reason: record.reason.to_string(),
+                before: record.before,
+                after: record.after,
+            });
+        }
+    }
+
     /// Borrow a `Session`'s transcript for use as a [`ChatHistory`], with no
     /// `SessionUpdated` emission on push (embed/test path — unchanged behavior
     /// for the executor's existing tests).
@@ -98,7 +113,7 @@ impl<'a> ChatHistory for SessionChatHistory<'a> {
         if let Some(tx) = &self.event_tx {
             let _ = tx.try_send(Event::SessionUpdated {
                 session_id: self.session.id.clone(),
-                messages: self.session.messages.clone(),
+                messages: self.session.messages.to_vec(),
                 system_prompt: self.session.system_prompt.clone(),
                 model: self.session.model.clone(),
                 workspace: self.session.workspace.clone(),
@@ -107,7 +122,34 @@ impl<'a> ChatHistory for SessionChatHistory<'a> {
     }
 
     fn clear(&mut self) {
-        self.session.messages.clear();
+        // Empty wholesale replacement through the audited rebuild — the
+        // AppendLog store has no in-place `clear`.
+        self.session
+            .rebuild_transcript(crate::prompt_zones::RebuildReason::TraitClear, Vec::new());
+        self.emit_transcript_rebuilt();
+    }
+
+    /// Atomic transcript replacement routed through the audited
+    /// [`Session::rebuild_transcript`], so mid-run compaction / recovery
+    /// paths that only hold `&mut dyn ChatHistory` still land in the
+    /// AppendLog's rebuild record. One `SessionUpdated` + one
+    /// `TranscriptRebuilt` for the whole swap (the clear+repush pattern
+    /// this replaces fired none, or N).
+    fn replace_all(&mut self, reason: &'static str, messages: Vec<Message>) {
+        self.session.rebuild_transcript(
+            crate::prompt_zones::RebuildReason::Runtime(reason),
+            messages,
+        );
+        self.emit_transcript_rebuilt();
+        if let Some(tx) = &self.event_tx {
+            let _ = tx.try_send(Event::SessionUpdated {
+                session_id: self.session.id.clone(),
+                messages: self.session.messages.to_vec(),
+                system_prompt: self.session.system_prompt.clone(),
+                model: self.session.model.clone(),
+                workspace: self.session.workspace.clone(),
+            });
+        }
     }
 
     fn len(&self) -> usize {

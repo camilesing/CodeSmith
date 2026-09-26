@@ -860,6 +860,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         max_steps: u32::MAX,
         max_subagents: app.max_subagents,
         features: config.features(),
+        parse_gate: config.edit_config().parse_gate,
         compaction: app.compaction_config(),
         cycle: app.cycle_config(),
         capacity: crate::core::capacity::capacity_controller_config_from_app(config),
@@ -889,9 +890,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         subagent_model_overrides: config.subagent_model_overrides(),
         subagent_api_timeout: Duration::from_secs(config.subagent_api_timeout_secs()),
         stream_idle_timeout: Duration::from_secs(config.stream_idle_timeout_secs()),
-        stream_idle_retry_increment: Duration::from_secs(
-            config.stream_idle_retry_increment_secs(),
-        ),
+        stream_idle_retry_increment: Duration::from_secs(config.stream_idle_retry_increment_secs()),
         subagent_inherit_full_registry: config.subagent_inherit_full_registry(),
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
         sandbox_runtime: config.sandbox_runtime_config(),
@@ -2066,6 +2065,20 @@ async fn run_event_loop(
                             if !description.is_empty() {
                                 app.last_prefix_change_desc = Some(description);
                             }
+                        }
+                    }
+                    EngineEvent::TranscriptRebuilt {
+                        reason,
+                        before,
+                        after,
+                    } => {
+                        // Sanctioned AppendLog replacement (#2264) — keep a
+                        // bounded audit trail for `/cache zones`.
+                        app.transcript_rebuilds.push_back((reason, before, after));
+                        while app.transcript_rebuilds.len()
+                            > crate::tui::app::TRANSCRIPT_REBUILD_AUDIT_LIMIT
+                        {
+                            app.transcript_rebuilds.pop_front();
                         }
                     }
                     EngineEvent::CapacityDecision { .. } => {

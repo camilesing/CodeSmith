@@ -109,6 +109,9 @@ pub struct EngineConfig {
     pub max_subagents: usize,
     /// Feature flags controlling tool availability.
     pub features: Features,
+    /// Pre-write parse gate for file-editing tools (P0-1). Plumbed from
+    /// `[edit] parse_gate` in config.toml; defaults to on.
+    pub parse_gate: bool,
     /// Auto-compaction settings for long conversations.
     ///
     /// High-level summarization compaction is enabled by default and uses
@@ -294,6 +297,7 @@ impl Default for EngineConfig {
             max_steps: 100,
             max_subagents: DEFAULT_MAX_SUBAGENTS,
             features: Features::with_defaults(),
+            parse_gate: true,
             compaction: CompactionConfig::default(),
             cycle: CycleConfig::default(),
             capacity: CapacityControllerConfig::default(),

@@ -588,6 +588,29 @@ impl Default for SnapshotsConfig {
     }
 }
 
+fn default_parse_gate_enabled() -> bool {
+    true
+}
+
+/// File-editing configuration (P0-1 parse gate).
+#[derive(Debug, Clone, Deserialize)]
+pub struct EditConfig {
+    /// Pre-write parse gate for file-editing tools: writes that would break
+    /// a previously-parsing `.rs`/`.toml`/`.json` file are rejected before
+    /// touching disk (regression-only — already-broken files stay editable).
+    /// `false` restores write-through behavior.
+    #[serde(default = "default_parse_gate_enabled")]
+    pub parse_gate: bool,
+}
+
+impl Default for EditConfig {
+    fn default() -> Self {
+        Self {
+            parse_gate: default_parse_gate_enabled(),
+        }
+    }
+}
+
 /// User-level memory configuration (#489).
 ///
 /// Default is **on** (mirrors Claude Code's `isAutoMemoryEnabled`): when this
@@ -1173,6 +1196,11 @@ pub struct Config {
     /// retention when the table is absent.
     #[serde(default)]
     pub snapshots: Option<SnapshotsConfig>,
+
+    /// File-editing behavior (P0-1 parse gate). Defaults to enabled when
+    /// the table is absent.
+    #[serde(default)]
+    pub edit: Option<EditConfig>,
 
     /// Web search provider configuration. When absent, defaults to DuckDuckGo.
     /// Set `provider` to `bing`, `tavily`, or `bocha` to use those services
@@ -2738,10 +2766,7 @@ impl Config {
         if raw == 0 {
             return 0;
         }
-        raw.clamp(
-            MIN_STREAM_IDLE_TIMEOUT_SECS,
-            MAX_STREAM_IDLE_TIMEOUT_SECS,
-        )
+        raw.clamp(MIN_STREAM_IDLE_TIMEOUT_SECS, MAX_STREAM_IDLE_TIMEOUT_SECS)
     }
 
     /// Resolved per-retry widening of the stream idle watchdog window, in
@@ -2833,6 +2858,12 @@ impl Config {
     #[must_use]
     pub fn snapshots_config(&self) -> SnapshotsConfig {
         self.snapshots.clone().unwrap_or_default()
+    }
+
+    /// Resolve file-editing (parse gate) settings with defaults applied.
+    #[must_use]
+    pub fn edit_config(&self) -> EditConfig {
+        self.edit.clone().unwrap_or_default()
     }
 
     /// Resolve startup update-check settings with defaults applied.
@@ -4029,6 +4060,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         custom_provider: override_cfg.custom_provider.or(base.custom_provider),
         api_key: override_cfg.api_key.or(base.api_key),
         base_url: override_cfg.base_url.or(base.base_url),
+        edit: override_cfg.edit.or(base.edit),
         http_headers: override_cfg.http_headers.or(base.http_headers),
         default_text_model: override_cfg.default_text_model.or(base.default_text_model),
         auth_mode: override_cfg.auth_mode.or(base.auth_mode),
@@ -5536,6 +5568,22 @@ mod tests {
     }
 
     #[test]
+    fn edit_config_defaults_on_and_parses_off() {
+        let _guard = lock_test_env();
+        let default: Config = toml::from_str("").expect("empty config");
+        assert!(default.edit_config().parse_gate);
+
+        let disabled: Config = toml::from_str(
+            r#"
+            [edit]
+            parse_gate = false
+            "#,
+        )
+        .expect("edit config");
+        assert!(!disabled.edit_config().parse_gate);
+    }
+
+    #[test]
     fn search_provider_resolution_ignores_invalid_env_override() {
         let _guard = lock_test_env();
         let prev = env::var_os("CODESMITH_SEARCH_PROVIDER");
@@ -6087,7 +6135,10 @@ mod tests {
         // Absent table → default = prompt for unlisted hosts.
         let decider = Config::default().network_policy_decider();
         let policy = decider.policy();
-        assert_eq!(policy.decide("unlisted.example.com"), crate::network_policy::Decision::Prompt);
+        assert_eq!(
+            policy.decide("unlisted.example.com"),
+            crate::network_policy::Decision::Prompt
+        );
 
         // Explicit table is honored: default allow for everyone except deny.
         let explicit = Config {
@@ -6102,8 +6153,14 @@ mod tests {
         };
         let decider = explicit.network_policy_decider();
         let policy = decider.policy();
-        assert_eq!(policy.decide("anything.example.com"), crate::network_policy::Decision::Allow);
-        assert_eq!(policy.decide("evil.example.com"), crate::network_policy::Decision::Deny);
+        assert_eq!(
+            policy.decide("anything.example.com"),
+            crate::network_policy::Decision::Allow
+        );
+        assert_eq!(
+            policy.decide("evil.example.com"),
+            crate::network_policy::Decision::Deny
+        );
     }
 
     #[test]

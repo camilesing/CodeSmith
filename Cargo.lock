@@ -855,6 +855,7 @@ dependencies = [
  "multimap",
  "portable-pty",
  "pretty_assertions",
+ "proc-macro2",
  "regex",
  "reqwest",
  "serde",
@@ -864,6 +865,7 @@ dependencies = [
  "shlex",
  "similar",
  "starlark",
+ "syn 2.0.114",
  "tar",
  "tempfile",
  "thiserror 2.0.18",
@@ -1059,6 +1061,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "bytes",
  "codesmith-agent",
  "codesmith-config",
  "futures-util",

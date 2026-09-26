@@ -787,6 +787,22 @@ If you are upgrading from older releases:
     `~/.codesmith/snapshots/<project_hash>/<worktree_hash>/.git`, with legacy
     `~/.codesmith/snapshots/...` fallback when only the legacy state exists, and
     never use the workspace's own `.git` directory
+- `edit.*` (optional): pre-write parse gate for the file-editing tools
+  (`write_file`, `edit_file`, `apply_patch`, `fim_edit`):
+  - `[edit].parse_gate` (bool, default `true`): writes to `.rs` / `.toml` /
+    `.json` files are syntax-checked before anything touches disk. The gate is
+    **regression-only** — a write is rejected only when the file parsed
+    successfully before the edit and the new content does not; already-broken
+    files (and new files) are never locked by the gate, so repairs still go
+    through. Rejections report the offending line and leave the file
+    unmodified. `Cargo.lock` is exempt.
+  - Rust files that were rustfmt-clean before the edit are re-normalized with
+    `rustfmt` after the gate passes, so subsequent patch anchors stay stable;
+    the tool result discloses the re-normalization. rustfmt failures (missing
+    binary, timeout) silently skip normalization — they never block a write.
+  - Set `parse_gate = false` to restore write-through behavior. The gate is
+    also compiled out entirely in builds of `codesmith-agent-runtime` without
+    the `parse-gate` cargo feature (the `syn` dependency).
 - `context.*` (optional): append-only Fin seam manager, currently opt-in.
   Fin is the fast `deepseek-v4-flash` path with thinking off used for
   coordination work such as routing, summaries, and context maintenance.

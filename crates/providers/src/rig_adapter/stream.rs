@@ -24,6 +24,25 @@
 //! (`MapperState::tool_blocks_by_id`): the delta-built block is authoritative
 //! and the trailing complete event is merged into it or suppressed — emitting
 //! both would make the engine execute every streamed tool call twice.
+//!
+//! # Termination proof (P0-3)
+//!
+//! rig-core 0.39 collapses the wire finish evidence before it reaches us: the
+//! OpenAI-compat path compresses `finish_reason` into a crate-private
+//! two-value enum and skips `[DONE]` outright, and the Anthropic path reads
+//! `stop_reason` and then discards the string. The one public signal that
+//! survives is [`StreamedAssistantContent::Final`]: rig only yields it when
+//! the SSE loop closed without error. The mapper therefore treats `Final` as
+//! the termination proof. A stream that ends *without* one — the connection
+//! died silently mid-flight — is surfaced as a retryable `Err` (never a
+//! synthetic `MessageStop`), so the engine's transparent-retry machinery can
+//! re-send zero-content rounds and surface partial ones as `Partial`.
+//!
+//! `stop_reason` on the terminal `MessageDelta` is derived from what CAN be
+//! proven at this layer (see [`super::convert::derive_stop_reason`]): billed
+//! output hitting the requested `max_tokens` cap ⇒ `"max_tokens"` (this is
+//! what arms the P0-2 truncation gate on real traffic), tool blocks ⇒
+//! `"tool_use"`, otherwise `"end_turn"`.
 
 use std::collections::{HashMap, VecDeque};
 use std::pin::Pin;
@@ -42,9 +61,14 @@ use super::convert;
 
 /// Wrap a rig streaming response in a CodeSmith `StreamEvent` stream ready to
 /// hand back from `LlmClient::create_message_stream`.
+///
+/// `max_tokens` is the output cap the engine requested for this completion; it
+/// feeds the `stop_reason` derivation (billed output reaching the cap proves
+/// output-limit truncation even though rig hides the wire finish_reason).
 pub(crate) fn map_rig_stream<R>(
     inner: StreamingCompletionResponse<R>,
     model: String,
+    max_tokens: u32,
 ) -> Pin<Box<dyn futures_util::Stream<Item = AnyResult<StreamEvent>> + Send + 'static>>
 where
     R: Clone + Unpin + GetTokenUsage + Send + 'static,
@@ -52,9 +76,11 @@ where
     let state = MapperState {
         inner,
         model,
+        max_tokens,
         started: false,
-        usage_emitted: false,
+        termination_proven: false,
         finished: false,
+        saw_tool_use: false,
         pending: VecDeque::new(),
         next_index: 0,
         current: None,
@@ -91,15 +117,29 @@ where
             // 3. Pull the next rig item.
             match state.inner.next().await {
                 None => {
-                    // Stream ended. Close any open block, emit a final
-                    // MessageDelta (with default usage if the provider never
-                    // yielded a Final), then MessageStop.
-                    if !state.usage_emitted {
-                        state.close_current_block();
-                        state.enqueue_message_delta(Usage::default());
-                        state.usage_emitted = true;
+                    if state.termination_proven {
+                        // Final already emitted the terminal MessageDelta
+                        // (usage + derived stop_reason); close the lifecycle.
+                        state.pending.push_back(Ok(StreamEvent::MessageStop));
+                        state.finished = true;
+                        continue;
                     }
-                    state.pending.push_back(Ok(StreamEvent::MessageStop));
+                    // P0-3 — the stream ended with no termination proof: rig
+                    // never yielded its Final payload, which on both provider
+                    // paths only happens when the SSE loop did NOT close
+                    // cleanly. This is an interrupted connection, not a
+                    // completion: surface a retryable error (the wording keeps
+                    // the engine's text classifier on the Network category)
+                    // instead of forging MessageDelta/MessageStop. The engine
+                    // then transparently retries the round (zero content) or
+                    // surfaces the partial content it did receive.
+                    state.close_current_block();
+                    state.pending.push_back(Err(anyhow::anyhow!(
+                        "stream ended without termination proof: provider \
+                         connection closed before any finish signal arrived \
+                         (no Final payload / finish_reason / DONE evidence); \
+                         treating as interrupted connection"
+                    )));
                     state.finished = true;
                     continue;
                 }
@@ -168,8 +208,18 @@ where
 {
     inner: StreamingCompletionResponse<R>,
     model: String,
+    /// Requested output cap, used to derive `stop_reason` (see [`map_rig_stream`]).
+    max_tokens: u32,
     started: bool,
-    usage_emitted: bool,
+    /// Termination proof (P0-3): rig yielded its `Final` payload, which only
+    /// happens when the provider's SSE loop closed without error. Without it,
+    /// a stream end is an interrupted connection, not a completion.
+    termination_proven: bool,
+    /// Whether any tool-use block was opened — drives the `"tool_use"`
+    /// stop_reason. Set the moment a block is committed (delta-assembled or
+    /// complete), so a later `Final` can report it even if the block was
+    /// reconciled away by dedup.
+    saw_tool_use: bool,
     finished: bool,
     pending: VecDeque<AnyResult<StreamEvent>>,
     next_index: u32,
@@ -320,6 +370,7 @@ where
             return;
         }
         self.close_current_block();
+        self.saw_tool_use = true;
         let index = self.next_index;
         self.next_index = self.next_index.saturating_add(1);
         self.pending.push_back(Ok(StreamEvent::ContentBlockStart {
@@ -340,6 +391,7 @@ where
     /// The `ContentBlockStart` is deferred until the name is known or an
     /// argument chunk forces it (see [`Self::start_tool_use_if_needed`]).
     fn ensure_tool_use_delta(&mut self, id: String) {
+        self.saw_tool_use = true;
         if let Some(CurrentBlock::ToolUse { id: cur_id, .. }) = &self.current
             && *cur_id == id
         {
@@ -424,9 +476,10 @@ where
     }
 
     fn enqueue_message_delta(&mut self, usage: Usage) {
+        let stop_reason = convert::derive_stop_reason(self.saw_tool_use, &usage, self.max_tokens);
         self.pending.push_back(Ok(StreamEvent::MessageDelta {
             delta: MessageDelta {
-                stop_reason: Some("end_turn".to_string()),
+                stop_reason: Some(stop_reason),
                 stop_sequence: None,
             },
             usage: Some(usage),
@@ -485,12 +538,15 @@ where
                 }
             }
             StreamedAssistantContent::Final(response) => {
-                // Final carries usage via GetTokenUsage. Close the open block,
-                // then emit the message-level delta before MessageStop.
+                // Final carries usage via GetTokenUsage and — more important
+                // for P0-3 — is rig's only public termination proof (see the
+                // module doc). Close the open block, then emit the
+                // message-level delta with the derived stop_reason before
+                // MessageStop.
                 self.close_current_block();
                 let usage = convert::usage_to_codesmith(&response.token_usage());
                 self.enqueue_message_delta(usage);
-                self.usage_emitted = true;
+                self.termination_proven = true;
             }
         }
     }
@@ -529,13 +585,27 @@ mod tests {
         StreamingCompletionResponse::stream(Box::pin(it))
     }
 
+    /// Collect only the Ok events (errors dropped) with a permissive default
+    /// output cap; tests that care about the `max_tokens` derivation use
+    /// [`collect_raw_with_cap`] instead.
     async fn collect(resp: StreamingCompletionResponse<FakeFinal>) -> Vec<StreamEvent> {
+        collect_raw_with_cap(resp, 8192)
+            .await
+            .into_iter()
+            .filter_map(|item| item.ok())
+            .collect()
+    }
+
+    /// Collect the raw mapper output (errors included) under an explicit
+    /// output cap.
+    async fn collect_raw_with_cap(
+        resp: StreamingCompletionResponse<FakeFinal>,
+        max_tokens: u32,
+    ) -> Vec<AnyResult<StreamEvent>> {
         let mut out = Vec::new();
-        let mut s = map_rig_stream(resp, "test-model".to_string());
+        let mut s = map_rig_stream(resp, "test-model".to_string(), max_tokens);
         while let Some(item) = s.next().await {
-            if let Ok(ev) = item {
-                out.push(ev);
-            }
+            out.push(item);
         }
         out
     }
@@ -688,6 +758,171 @@ mod tests {
                 (0, "call_a".to_string(), "read_file".to_string()),
                 (1, "call_b".to_string(), "read_file".to_string()),
             ]
+        );
+    }
+
+    /// A delta block closed while still deferred (Name(A), Name(B), …) that
+    /// never received argument deltas gets its authoritative arguments
+    /// back-filled via a synthetic InputJsonDelta on its (already stopped)
+    /// block index — the engine keeps the build alive after
+    /// ContentBlockStop and prefers `input_buf` at finalize time.
+    /// Stop reason carried on the (last) MessageDelta, if any.
+    fn message_delta_stop_reason(items: &[AnyResult<StreamEvent>]) -> Option<String> {
+        items.iter().rev().find_map(|item| match item {
+            Ok(StreamEvent::MessageDelta {
+                delta: MessageDelta { stop_reason, .. },
+                ..
+            }) => stop_reason.clone(),
+            _ => None,
+        })
+    }
+
+    fn err_text(items: &[AnyResult<StreamEvent>]) -> Option<String> {
+        items.iter().rev().find_map(|item| match item {
+            Err(e) => Some(e.to_string()),
+            Ok(_) => None,
+        })
+    }
+
+    /// P0-3 — a stream that ends without rig's `Final` payload carries no
+    /// termination proof (the connection may have died silently). The mapper
+    /// must surface a retryable error, never a synthetic MessageStop or a
+    /// forged end_turn.
+    #[tokio::test]
+    async fn stream_end_without_final_is_an_error_not_a_completion() {
+        let resp = raw_stream(vec![
+            RawStreamingChoice::Message("partial text".to_string()),
+            // no FinalResponse — the provider never proved termination
+        ]);
+        let items = collect_raw_with_cap(resp, 8192).await;
+        let err = err_text(&items).expect("unproven stream end must surface an error");
+        assert!(
+            err.contains("termination proof"),
+            "error must name the missing proof, got: {err}"
+        );
+        assert!(
+            items
+                .iter()
+                .all(|item| !matches!(item, Ok(StreamEvent::MessageStop))),
+            "no synthetic MessageStop may be forged without a proof"
+        );
+        assert!(
+            items
+                .iter()
+                .all(|item| !matches!(item, Ok(StreamEvent::MessageDelta { .. }))),
+            "no terminal MessageDelta may be forged without a proof"
+        );
+        // The partial content itself stays well-formed (block opened + closed
+        // before the error), so the engine can surface it as `Partial`.
+        assert!(
+            items
+                .iter()
+                .any(|item| matches!(item, Ok(StreamEvent::ContentBlockStart { .. })))
+        );
+        assert!(
+            items
+                .iter()
+                .any(|item| matches!(item, Ok(StreamEvent::ContentBlockStop { .. })))
+        );
+    }
+
+    /// A stream that never produced ANY content and never proved termination
+    /// still errors (never a clean empty completion) — the engine then
+    /// transparently retries it.
+    #[tokio::test]
+    async fn empty_unproven_stream_is_an_error() {
+        let resp = raw_stream(vec![]);
+        let items = collect_raw_with_cap(resp, 8192).await;
+        assert!(err_text(&items).is_some(), "empty + unproven must error");
+        assert!(
+            items
+                .iter()
+                .all(|item| !matches!(item, Ok(StreamEvent::MessageStop)))
+        );
+    }
+
+    /// P0-3 pin — a proven clean end (Final arrived) keeps the full lifecycle:
+    /// terminal MessageDelta + MessageStop, no error.
+    #[tokio::test]
+    async fn proven_end_emits_terminal_delta_and_message_stop() {
+        let resp = raw_stream(vec![
+            RawStreamingChoice::Message("hello".to_string()),
+            RawStreamingChoice::FinalResponse(FakeFinal(RigUsage::new())),
+        ]);
+        let items = collect_raw_with_cap(resp, 8192).await;
+        assert_eq!(
+            message_delta_stop_reason(&items).as_deref(),
+            Some("end_turn")
+        );
+        assert!(
+            items
+                .iter()
+                .any(|item| matches!(item, Ok(StreamEvent::MessageStop)))
+        );
+        assert!(err_text(&items).is_none());
+    }
+
+    /// A round that committed tool blocks reports `tool_use` — not the old
+    /// unconditional `end_turn` — so the engine can tell tool rounds from
+    /// natural stops.
+    #[tokio::test]
+    async fn tool_call_round_reports_tool_use_stop_reason() {
+        let resp = raw_stream(vec![
+            delta("call_1", ToolCallDeltaContent::Name("bash".to_string())),
+            delta(
+                "call_1",
+                ToolCallDeltaContent::Delta("{\"command\":\"ls\"}".to_string()),
+            ),
+            RawStreamingChoice::FinalResponse(FakeFinal(RigUsage::new())),
+        ]);
+        let items = collect_raw_with_cap(resp, 8192).await;
+        assert_eq!(
+            message_delta_stop_reason(&items).as_deref(),
+            Some("tool_use")
+        );
+    }
+
+    /// Billed output reaching the requested cap proves output-limit
+    /// truncation (the wire finish_reason is collapsed inside rig) — and the
+    /// cap check outranks `tool_use`, because a length-truncated TOOL round
+    /// is exactly the case the P0-2 gate exists for.
+    #[tokio::test]
+    async fn output_reaching_requested_cap_reports_max_tokens() {
+        let at_cap = RigUsage {
+            output_tokens: 64,
+            ..RigUsage::new()
+        };
+        let resp = raw_stream(vec![
+            delta("call_1", ToolCallDeltaContent::Name("bash".to_string())),
+            delta(
+                "call_1",
+                ToolCallDeltaContent::Delta("{\"command\":\"ls_and_a_very_long_".to_string()),
+            ),
+            RawStreamingChoice::FinalResponse(FakeFinal(at_cap)),
+        ]);
+        let items = collect_raw_with_cap(resp, 64).await;
+        assert_eq!(
+            message_delta_stop_reason(&items).as_deref(),
+            Some("max_tokens")
+        );
+    }
+
+    /// Output below the requested cap never trips the truncation derivation,
+    /// even when usage is reported.
+    #[tokio::test]
+    async fn output_below_cap_keeps_end_turn() {
+        let under_cap = RigUsage {
+            output_tokens: 10,
+            ..RigUsage::new()
+        };
+        let resp = raw_stream(vec![
+            RawStreamingChoice::Message("short answer".to_string()),
+            RawStreamingChoice::FinalResponse(FakeFinal(under_cap)),
+        ]);
+        let items = collect_raw_with_cap(resp, 64).await;
+        assert_eq!(
+            message_delta_stop_reason(&items).as_deref(),
+            Some("end_turn")
         );
     }
 

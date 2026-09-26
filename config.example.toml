@@ -825,6 +825,25 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 #                         # monorepos.
 
 # ─────────────────────────────────────────────────────────────────────────────────
+# Edit Parse Gate (P0-1)
+# ─────────────────────────────────────────────────────────────────────────────────
+# The file-editing tools (write_file / edit_file / apply_patch / fim_edit)
+# syntax-check writes to .rs / .toml / .json files BEFORE anything touches
+# disk. Regression-only: a write is rejected only when the file parsed
+# cleanly before the edit and the new content does not — already-broken
+# files stay editable, new files are never blocked, and Cargo.lock is
+# exempt. Rejections report the offending line and leave the file
+# unmodified.
+#
+# Rust files that were rustfmt-clean before the edit are re-normalized
+# with `rustfmt` after the gate passes (disclosed in the tool result) so
+# subsequent patch anchors stay stable. A missing rustfmt never blocks a
+# write — normalization silently skips itself.
+#
+# [edit]
+# parse_gate = true     # false restores write-through behavior
+
+# ─────────────────────────────────────────────────────────────────────────────────
 # LSP Diagnostics (post-edit) (#136)
 # ─────────────────────────────────────────────────────────────────────────────────
 # After every successful file edit (`edit_file`, `apply_patch`, `write_file`),

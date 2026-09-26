@@ -737,6 +737,19 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
     `~/.codesmith/snapshots/<project_hash>/<worktree_hash>/.git`，
     当仅存在旧版状态时回退到 `~/.codesmith/snapshots/...`，并且绝不
     使用工作区自身的 `.git` 目录
+- `edit.*`（可选）：文件编辑工具（`write_file`、`edit_file`、
+  `apply_patch`、`fim_edit`）的写前 parse 门：
+  - `[edit].parse_gate`（布尔，默认 `true`）：对 `.rs` / `.toml` /
+    `.json` 文件的写入在落盘前做语法检查。门是 **regression-only** 的——
+    只有当文件在编辑前能正常 parse 而新内容不能时才拒绝写入；本来就
+    坏的文件（以及新文件）永远不会被门锁死，修复仍然可以落盘。拒绝
+    时报告出错行号，且文件保持原样。`Cargo.lock` 豁免。
+  - 编辑前 rustfmt-clean 的 Rust 文件，过门后会用 `rustfmt` 重新规范化
+    （在工具结果中注明），保住后续 patch 锚点；rustfmt 不可用或超时
+    时静默跳过规范化——绝不因此阻塞写入。
+  - 设为 `parse_gate = false` 恢复直写行为。若 `codesmith-agent-runtime`
+    构建时未启用 `parse-gate` cargo feature（即 `syn` 依赖），门整体
+    不编译。
 - `context.*`（可选）：只增不减的 Fin seam 管理器，目前为可选。
   Fin 是关闭思考的快速 `deepseek-v4-flash` 路径，用于协调工作，
   如路由、摘要和上下文维护。阈值使用活跃请求输入估算，而不是生命

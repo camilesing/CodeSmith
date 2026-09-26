@@ -23,9 +23,9 @@ chosen over the available shell equivalent. Companion to `crates/agent-runtime/s
 |---|---|
 | `read_file` | Read a UTF-8 file. PDFs auto-extracted via `pdftotext` (poppler) when available; `pages: "1-5"` slices large docs. |
 | `list_dir` | Structured, gitignore-aware listing. Preferred over `exec_shell("ls")`. |
-| `write_file` | Create or overwrite a file. |
-| `edit_file` | Search-and-replace inside a single file. Cheaper than a full rewrite. |
-| `apply_patch` | Apply a unified diff. The right tool for multi-hunk edits. |
+| `write_file` | Create or overwrite a file. `.rs`/`.toml`/`.json` writes are parse-checked first: breaking a file that parsed cleanly before is rejected with the error location. |
+| `edit_file` | Search-and-replace inside a single file. Cheaper than a full rewrite. Same pre-write parse gate as `write_file`; rustfmt-clean Rust files are re-normalized after the edit. |
+| `apply_patch` | Apply a unified diff. The right tool for multi-hunk edits. The whole batch is parse-gated before any file is touched (all-or-nothing). |
 | `retrieve_tool_result` | Read summaries or slices of prior large tool outputs spilled to `~/.codesmith/tool_outputs/`; use `summary`, `head`, `tail`, `lines`, or `query` instead of replaying the whole result. |
 | `handle_read` | Read bounded projections from `var_handle` payloads held by live tool environments. This is the foundation for RLM sessions, sub-agent transcripts, and other large symbolic payloads. |
 

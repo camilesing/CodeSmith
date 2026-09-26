@@ -42,6 +42,7 @@ use crate::models::{
     ContentBlock, ImageSource, LEGACY_MODEL_CONTEXT_WINDOW_TOKENS, Message, SystemPrompt, Tool,
     Usage,
 };
+use crate::prompt_zones::RebuildReason;
 use crate::prompts;
 use crate::purge::{emit_purge_completed, emit_purge_failed, emit_purge_started, run_purge};
 use crate::subagent::SubAgentCompletion;
@@ -195,6 +196,14 @@ pub struct Engine {
     /// `None` when no extension runtime was built (embeds/tests skip via
     /// `with_extension_runner`'s default `None`); the emits are then no-ops.
     pub extension_runner: Option<Arc<codesmith_extensions::ExtensionRunner>>,
+    /// Three-zone contract (#2264 Phase 2): per-turn composition staging.
+    /// Staged at turn start with the working-set paths that feed this turn's
+    /// `<turn_meta>` and the user message being composed; the message is
+    /// committed to the session's AppendLog **before** the request loop runs
+    /// (so the request-time scratch is empty in production — the request
+    /// tail is the log tail), and the scratch is cleared when the turn's
+    /// run returns. See `prompt_zones::TurnScratch`.
+    pub turn_scratch: crate::prompt_zones::TurnScratch,
 }
 
 // === Internal tool helpers ===
@@ -202,16 +211,18 @@ pub struct Engine {
 impl Engine {
     /// Return the session transcript verbatim for a request snapshot.
     ///
-    /// `<turn_meta>` is stored on user-text messages when the message is
-    /// appended. Do not rewrite historical messages at request time: doing
-    /// so makes the API prefix differ from the bytes sent in earlier turns
-    /// and destroys DeepSeek's KV prefix cache reuse.
+    /// The transcript is the session's `AppendLog` (#2264): this snapshot is
+    /// a plain `to_vec()` of its slice. `<turn_meta>` is stored on
+    /// user-text messages when the message is appended. Do not rewrite
+    /// historical messages at request time: doing so makes the API prefix
+    /// differ from the bytes sent in earlier turns and destroys DeepSeek's
+    /// KV prefix cache reuse.
     ///
     /// Relocated from `turn_loop.rs` in slice 49 §E (module convergence —
     /// that file was the retired engine turn loop's home and is now
     /// deleted; this accessor is test-referenced from tui).
     pub fn messages_with_turn_metadata(&self) -> Vec<Message> {
-        self.session.messages.clone()
+        self.session.messages.to_vec()
     }
 
     pub fn reset_cancel_token(&mut self) {
@@ -686,7 +697,7 @@ impl Engine {
                     } else if messages.is_empty() && system_prompt.is_none() {
                         self.session.id = uuid::Uuid::new_v4().to_string();
                     }
-                    self.session.messages = messages;
+                    self.rebuild_transcript(RebuildReason::SessionSync, messages);
                     self.session.compaction_summary_prompt =
                         extract_compaction_summary_prompt(system_prompt.clone());
                     self.session.system_prompt = system_prompt;
@@ -735,7 +746,9 @@ impl Engine {
                         }
                     }
                     if let Some(idx) = cut {
-                        self.session.messages.truncate(idx);
+                        let kept = self.session.messages.as_slice()[..idx].to_vec();
+                        self.session
+                            .rebuild_transcript(RebuildReason::EditRollback, kept);
                     }
                     // Now dispatch the new message as a normal send,
                     // reusing the engine's stored mode/model config.
@@ -934,7 +947,7 @@ impl Engine {
             .tx_event
             .send(Event::SessionUpdated {
                 session_id: self.session.id.clone(),
-                messages: self.session.messages.clone(),
+                messages: self.session.messages.to_vec(),
                 system_prompt: self.session.system_prompt.clone(),
                 model: self.session.model.clone(),
                 workspace: self.session.workspace.clone(),
@@ -945,6 +958,24 @@ impl Engine {
     pub async fn add_session_message(&mut self, message: Message) {
         self.session.add_message(message);
         self.emit_session_updated().await;
+    }
+
+    /// Audited transcript replacement + `Event::TranscriptRebuilt`
+    /// emission — the engine-side wrapper over
+    /// [`Session::rebuild_transcript`]. Every call site is a sanctioned
+    /// KV-prefix-cache bust; the event names it for `/cache zones`.
+    /// `try_send` (sync) so sync callers (`trim_oldest_messages_to_budget`)
+    /// can use it too; drop-on-full matches the `SessionChatHistory::push`
+    /// precedent (`TurnComplete` still carries the final transcript).
+    fn rebuild_transcript(&mut self, reason: RebuildReason, messages: Vec<Message>) {
+        self.session.rebuild_transcript(reason, messages);
+        if let Some(record) = self.session.messages.last_rebuild() {
+            let _ = self.tx_event.try_send(Event::TranscriptRebuilt {
+                reason: record.reason.to_string(),
+                before: record.before,
+                after: record.after,
+            });
+        }
     }
 
     /// `<turn_meta>`-enriched `user` message for the session's current model
@@ -1145,7 +1176,19 @@ impl Engine {
             .observe_user_message(&content, &self.session.workspace);
         let _force_update_plan_first = should_force_update_plan_first(mode, &content);
 
-        // Add user message to session
+        // Three-zone contract (#2264 Phase 2): stage this turn's composition
+        // in the scratch zone. `working_set` records the exact path set the
+        // `<turn_meta>` below renders (same `sorted_for_prompt` selection);
+        // the user message stages here, then commits to the AppendLog before
+        // any request runs — production commits at turn start, so the
+        // request-time scratch is always empty.
+        self.turn_scratch.clear();
+        self.turn_scratch.working_set = self
+            .session
+            .working_set
+            .lock()
+            .expect("working_set poisoned")
+            .prompt_paths();
         let mut user_msg = self.user_text_message_with_turn_metadata_for_route(
             content,
             &model,
@@ -1154,7 +1197,9 @@ impl Engine {
             reasoning_effort_auto,
         );
         append_image_blocks(&mut user_msg, &image_paths);
-        self.session.add_message(user_msg);
+        self.turn_scratch.user_message = Some(user_msg);
+        self.session
+            .add_message(self.turn_scratch.user_message.take().expect("staged above"));
 
         let previous_goal_objective = self.config.goal_objective.clone();
 
@@ -1360,13 +1405,11 @@ impl Engine {
         // P0-1: stream idle watchdog — abort a stream that stays silent for
         // the configured per-event budget into the transparent-retry path.
         // `ZERO` (explicitly disabled in config) maps to `None`.
-        .with_stream_idle_timeout(
-            if self.config.stream_idle_timeout.is_zero() {
-                None
-            } else {
-                Some(self.config.stream_idle_timeout)
-            },
-        )
+        .with_stream_idle_timeout(if self.config.stream_idle_timeout.is_zero() {
+            None
+        } else {
+            Some(self.config.stream_idle_timeout)
+        })
         // P0-1 adaptive retry: widen the idle window per transparent retry so
         // a silence gap longer than the base window doesn't kill every retry
         // in the same silent stretch.
@@ -1386,6 +1429,10 @@ impl Engine {
         // (cwd sync / `maybe_advance_cycle` / usage / `TurnComplete` / snapshot)
         // touches `self.session` again.
         drop(history);
+        // Turn boundary (#2264): the scratch zone is ephemeral per turn —
+        // its user message was committed to the AppendLog before the run and
+        // its working-set snapshot only described this turn's `<turn_meta>`.
+        self.turn_scratch.clear();
         // Harvest per-turn token usage from the executor (slice 21 §E). The
         // inline stream reducer captured `MessageStart`/`MessageDelta` usage
         // and accumulated it across the turn's streams; this replaces the
@@ -1551,8 +1598,11 @@ impl Engine {
                 .as_ref()
                 .and_then(|registry| registry.session_cwd_override());
             let wt_state = self.config.worktree_state.lock().unwrap();
-            let worktree =
-                if wt_state.active { wt_state.worktree_path.clone() } else { None };
+            let worktree = if wt_state.active {
+                wt_state.worktree_path.clone()
+            } else {
+                None
+            };
             match (captured, worktree) {
                 (Some(captured), Some(wt)) if captured.starts_with(&wt) => {
                     self.session.cwd = captured;
@@ -1684,7 +1734,7 @@ impl Engine {
             Ok(result) => {
                 if !result.messages.is_empty() || self.session.messages.is_empty() {
                     let messages_after = result.messages.len();
-                    self.session.messages = result.messages;
+                    self.rebuild_transcript(RebuildReason::ManualCompaction, result.messages);
                     self.merge_compaction_summary(result.summary_prompt);
                     self.reinject_compaction_attachments(context_input_budget_for_provider(
                         self.api_provider,
@@ -1839,7 +1889,7 @@ impl Engine {
             return;
         }
 
-        self.session.messages = result.messages;
+        self.rebuild_transcript(RebuildReason::ManualCompaction, result.messages);
         self.merge_compaction_summary(result.summary_prompt);
         self.reinject_compaction_attachments(context_input_budget_for_provider(
             self.api_provider,
@@ -1998,7 +2048,7 @@ impl Engine {
         {
             Ok(result) => {
                 let messages_after = result.messages.len();
-                self.session.messages = result.messages;
+                self.rebuild_transcript(RebuildReason::Purge, result.messages);
                 self.emit_session_updated().await;
 
                 let summary = format!(
@@ -2044,18 +2094,23 @@ impl Engine {
 
     fn trim_oldest_messages_to_budget(&mut self, target_input_budget: usize) -> usize {
         let mut removed = 0usize;
-        while self.session.messages.len() > MIN_RECENT_MESSAGES_TO_KEEP
-            && self.estimated_input_tokens() > target_input_budget
+        // Work on a detached copy, then swap back through the audited
+        // rebuild — the AppendLog type has no in-place `remove(0)`.
+        let mut messages = self.session.messages.to_vec();
+        while messages.len() > MIN_RECENT_MESSAGES_TO_KEEP
+            && estimate_input_tokens_conservative(&messages, self.session.system_prompt.as_ref())
+                > target_input_budget
         {
-            self.session.messages.remove(0);
+            messages.remove(0);
             removed = removed.saturating_add(1);
         }
         if removed > 0 {
             // Drop results orphaned by the trim so the transcript keeps the
             // every-tool_use-has-a-tool_result contract (see
             // `enforce_tool_pairs_after_front_trim`).
-            removed +=
-                capacity_flow::enforce_tool_pairs_after_front_trim(&mut self.session.messages);
+            removed += capacity_flow::enforce_tool_pairs_after_front_trim(&mut messages);
+            self.session
+                .rebuild_transcript(RebuildReason::FrontTrim, messages);
         }
         removed
     }
@@ -2091,13 +2146,14 @@ impl Engine {
             let action = next_recovery_action(&responsive_state, recovery_attempt);
             match action {
                 ResponsiveCompactAction::MicroCompact => {
-                    let mut messages = self.session.messages.clone();
+                    let mut messages = self.session.messages.to_vec();
                     let bytes = crate::compaction::micro_compact::micro_compact_messages(
                         &mut messages,
                         &mut self.session.micro_compact_state,
                     );
                     if bytes > 0 {
-                        self.session.messages = messages;
+                        self.session
+                            .rebuild_transcript(RebuildReason::MicroCompaction, messages);
                         if self.estimated_input_tokens() <= target_budget {
                             crate::compaction::post_compact_cleanup::post_compact_cleanup(
                                 &mut self.session,
@@ -2149,7 +2205,10 @@ impl Engine {
                     {
                         Ok(result) => {
                             if !result.messages.is_empty() {
-                                self.session.messages = result.messages;
+                                self.rebuild_transcript(
+                                    RebuildReason::ContextOverflowRecovery,
+                                    result.messages,
+                                );
                                 self.merge_compaction_summary(result.summary_prompt);
                                 self.reinject_compaction_attachments(Some(target_budget))
                                     .await;
@@ -2196,7 +2255,7 @@ impl Engine {
         // Phase 2: Full LLM compaction (existing logic).
         let mut retries_used = 0u32;
         let mut summary_prompt = None;
-        let mut compacted_messages = self.session.messages.clone();
+        let mut compacted_messages = self.session.messages.to_vec();
 
         let mut forced_config = self.config.compaction.clone();
         forced_config.enabled = true;
@@ -2237,7 +2296,8 @@ impl Engine {
         }
 
         if !compacted_messages.is_empty() || self.session.messages.is_empty() {
-            self.session.messages = compacted_messages;
+            self.session
+                .rebuild_transcript(RebuildReason::ContextOverflowRecovery, compacted_messages);
         }
         self.merge_compaction_summary(summary_prompt);
         self.reinject_compaction_attachments(Some(target_budget))
@@ -2605,7 +2665,7 @@ impl Engine {
         );
 
         // 5. Atomic swap.
-        self.session.messages = seed_messages;
+        self.rebuild_transcript(RebuildReason::CycleReset, seed_messages);
         self.session.cycle_count = to;
         self.session.current_cycle_started = now;
         self.session.cycle_briefings.push(briefing.clone());
@@ -2842,7 +2902,7 @@ impl Engine {
                 continue;
             }
             if let Some(target_budget) = target_input_budget {
-                let mut trial = self.session.messages.clone();
+                let mut trial = self.session.messages.to_vec();
                 trial.push(candidate.clone());
                 if estimate_input_tokens_conservative(&trial, self.session.system_prompt.as_ref())
                     > target_budget
@@ -2934,6 +2994,7 @@ impl Engine {
             capacity_controller,
             coherence_state: CoherenceState::default(),
             turn_counter: 0,
+            turn_scratch: crate::prompt_zones::TurnScratch::new(),
             pending_lsp_blocks: Vec::new(),
             slop_ledger_gate_cache: None,
             knowledge_prefetch: crate::knowledge::prefetch::KnowledgePrefetch::new(),
@@ -3065,14 +3126,15 @@ pub fn default_active_native_tool_names() -> &'static [&'static str] {
 
 pub use self::approval::{ApprovalDecision, UserInputDecision};
 pub use self::dispatch::should_parallelize_tool_batch;
+pub use self::dispatch::{
+    ArgSalvagePolicy, ToolExecOutcome, ToolExecutionBatch, ToolExecutionPlan,
+    caller_allowed_for_tool, final_tool_input, final_tool_input_with_policy, format_tool_error,
+    parse_tool_input, parse_tool_input_with_policy, plan_tool_execution_batches,
+    should_force_update_plan_first, should_stop_after_plan_tool,
+};
 use self::dispatch::{
     ParallelToolResult, ParallelToolResultEntry, ToolExecGuard, mcp_tool_is_parallel_safe,
     mcp_tool_is_read_only, parse_parallel_tool_calls,
-};
-pub use self::dispatch::{
-    ToolExecOutcome, ToolExecutionBatch, ToolExecutionPlan, caller_allowed_for_tool,
-    final_tool_input, format_tool_error, plan_tool_execution_batches,
-    should_force_update_plan_first, should_stop_after_plan_tool,
 };
 pub use self::lsp_hooks::edited_paths_for_tool;
 pub use self::streaming::TOOL_CALL_START_MARKERS;

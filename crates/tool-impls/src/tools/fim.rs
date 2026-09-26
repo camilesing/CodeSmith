@@ -12,6 +12,7 @@ use thiserror::Error;
 
 use codesmith_agent_runtime::llm_client::LlmClientHandle;
 
+use codesmith_agent_runtime::tools::parse_gate;
 use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_u64, required_str,
@@ -65,7 +66,10 @@ impl ToolSpec for FimEditTool {
         "Edit a file using Fill-in-the-Middle (FIM) completion. Provide a file path, \
          prefix_anchor (text that appears before the section to replace), and \
          suffix_anchor (text that appears after the section to replace). The tool \
-         calls DeepSeek's FIM endpoint to generate replacement content."
+         calls DeepSeek's FIM endpoint to generate replacement content. The result \
+         is parse-checked before saving: edits that would break a `.rs`/`.toml`/\
+         `.json` file which parsed cleanly before are rejected with the error \
+         location."
     }
 
     fn input_schema(&self) -> Value {
@@ -167,19 +171,41 @@ impl ToolSpec for FimEditTool {
         // 7. Build the new content and write it back
         let generated_len = generated_text.len();
         let new_content = format!("{fim_prompt}{generated_text}{fim_suffix}");
-        fs::write(&resolved, &new_content).map_err(|e| {
+        // P0-1 parse gate: reject writes that would break a previously
+        // parsing .rs/.toml/.json file before anything touches disk, and
+        // re-normalize Rust files that were rustfmt-clean.
+        let gated = if context.parse_gate {
+            Some(parse_gate::gate(
+                &resolved,
+                Some(content.as_str()),
+                &new_content,
+            )?)
+        } else {
+            None
+        };
+        let final_content = gated
+            .as_ref()
+            .map_or(new_content.as_str(), |o| o.content.as_str());
+        fs::write(&resolved, final_content).map_err(|e| {
             ToolError::execution_failed(format!("Failed to write {}: {}", resolved.display(), e))
         })?;
 
+        let mut message = format!(
+            "FIM edit applied to `{path}`. Generated {generated_len} chars between prefix_anchor end (byte {prefix_end}) and suffix_anchor start (byte {suffix_start}).",
+        );
+        if let Some(outcome) = gated.as_ref()
+            && let Some(note) = outcome.normalization_note.as_ref()
+        {
+            message.push(' ');
+            message.push_str(note);
+        }
         let result = FimEditResult {
             success: true,
             path: path.to_string(),
             generated_text,
             prefix_end,
             suffix_start,
-            message: format!(
-                "FIM edit applied to `{path}`. Generated {generated_len} chars between prefix_anchor end (byte {prefix_end}) and suffix_anchor start (byte {suffix_start}).",
-            ),
+            message,
         };
 
         ToolResult::json(&result).map_err(|e| ToolError::execution_failed(e.to_string()))

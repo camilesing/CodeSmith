@@ -336,6 +336,21 @@ pub enum Event {
         pinned_combined_hash: String,
     },
 
+    /// A sanctioned wholesale transcript replacement landed in the session's
+    /// `AppendLog` (#2264 Phase 2) — compaction, overflow recovery, `/edit`
+    /// rollback, session restore, cycle reseeds. Each busts the KV prefix
+    /// cache *by design*; this event names the culprit so `/cache zones`
+    /// can show "why did my cache reset" instead of leaving it a mystery.
+    TranscriptRebuilt {
+        /// Human-readable rebuild reason (e.g. "manual compaction (/compact)",
+        /// "runtime: micro-compact") — `RebuildReason`'s Display.
+        reason: String,
+        /// Transcript length before the rebuild.
+        before: usize,
+        /// Transcript length after the rebuild.
+        after: usize,
+    },
+
     // === Background Task Events ===
     /// A background task has been registered and started.
     #[allow(dead_code)]
