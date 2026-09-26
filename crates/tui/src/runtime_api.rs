@@ -688,7 +688,7 @@ async fn mobile_page(State(state): State<RuntimeApiState>, req: Request) -> Resp
         // address-bar navigation cannot set headers. The client strips the
         // token from the URL immediately after load and every subsequent
         // `/v1/*` call uses the Authorization header instead.
-        && !token_from_query(req.uri().query()).is_some_and(|token| token == expected)
+        && token_from_query(req.uri().query()).is_none_or(|token| token != expected)
     {
         return runtime_token_required_response();
     }
@@ -718,14 +718,12 @@ fn print_mobile_urls(addr: SocketAddr, token: Option<&str>, auth_enabled: bool, 
         println!("  URL:   {url}");
         url
     };
-    if auth_enabled {
-        if let Some(token) = token.filter(|token| !token.trim().is_empty()) {
-            println!(
-                "  Auth:  open /mobile?token={} once, or paste this token into the page:",
-                url_query_component(token)
-            );
-            println!("         {token}");
-        }
+    if auth_enabled && let Some(token) = token.filter(|token| !token.trim().is_empty()) {
+        println!(
+            "  Auth:  open /mobile?token={} once, or paste this token into the page:",
+            url_query_component(token)
+        );
+        println!("         {token}");
     }
     println!("Mobile security: use only on a trusted LAN/VPN; this server does not provide TLS.");
 

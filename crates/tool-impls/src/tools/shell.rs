@@ -299,6 +299,7 @@ fn apply_session_cwd_capture(
     None
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_foreground_via_background(
     context: &ToolContext,
     command: &str,
