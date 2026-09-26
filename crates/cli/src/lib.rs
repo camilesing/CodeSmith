@@ -76,11 +76,14 @@ struct Cli {
     config: Option<PathBuf>,
     #[arg(long)]
     profile: Option<String>,
-    /// Named runtime mode (minimal | balanced | maximal | plan | <custom>).
-    /// Modes are shareable delta bundles of dials from
-    /// ~/.codesmith/modes/ or .codesmith/modes/. Forwarded to the TUI;
-    /// overrides `mode` in config.toml.
+    /// Configuration preset tier (simple | middle | all | experiment |
+    /// plan | <custom>) — shareable baseline bundles from
+    /// ~/.codesmith/presets/ or .codesmith/presets/. Forwarded to the
+    /// TUI; overrides `preset` in config.toml.
     #[arg(long, value_name = "NAME")]
+    preset: Option<String>,
+    /// Deprecated alias of --preset (pre-rename name).
+    #[arg(long, value_name = "NAME", hide = true)]
     mode: Option<String>,
     #[arg(
         long,
@@ -1488,8 +1491,8 @@ fn build_tui_command(
     if let Some(profile) = cli.profile.as_ref() {
         cmd.arg("--profile").arg(profile);
     }
-    if let Some(mode) = cli.mode.as_ref() {
-        cmd.arg("--mode").arg(mode);
+    if let Some(preset) = cli.preset.as_ref().or(cli.mode.as_ref()) {
+        cmd.arg("--preset").arg(preset);
     }
     if let Some(workspace) = cli.workspace.as_ref() {
         cmd.arg("--workspace").arg(workspace);
@@ -2572,9 +2575,12 @@ mod tests {
         assert_eq!(store.config.api_key, None);
         assert_eq!(store.config.providers.deepseek.api_key, None);
 
-        assert!(!path.exists() || !std::fs::read_to_string(&path)
-            .map(|saved| saved.contains("ring-key"))
-            .unwrap_or(false));
+        assert!(
+            !path.exists()
+                || !std::fs::read_to_string(&path)
+                    .map(|saved| saved.contains("ring-key"))
+                    .unwrap_or(false)
+        );
 
         let _ = std::fs::remove_file(path);
     }

@@ -169,7 +169,12 @@ impl StdioLspTransport {
         spawn_supervised(
             "lsp-dispatcher",
             std::panic::Location::caller(),
-            dispatcher_task(rx_inbound, diagnostics_cache.clone(), version_tx, pending.clone()),
+            dispatcher_task(
+                rx_inbound,
+                diagnostics_cache.clone(),
+                version_tx,
+                pending.clone(),
+            ),
         );
 
         // Register the reply slot for `initialize` (id 1) BEFORE sending so a
@@ -790,7 +795,10 @@ mod tests {
         // Exact wire form: only unreserved chars and `/` survive literal.
         assert_eq!(
             uri,
-            format!("file://{}", percent_encode_path(&canonical.to_string_lossy()))
+            format!(
+                "file://{}",
+                percent_encode_path(&canonical.to_string_lossy())
+            )
         );
         assert!(uri.contains("%20"), "space encoded in {uri}");
         assert!(uri.contains("%23"), "hash encoded in {uri}");
@@ -840,7 +848,12 @@ mod tests {
         let pending: Arc<AsyncMutex<HashMap<i64, oneshot::Sender<Value>>>> =
             Arc::new(AsyncMutex::new(HashMap::new()));
 
-        let task = tokio::spawn(dispatcher_task(rx_inbound, cache.clone(), version_tx, pending));
+        let task = tokio::spawn(dispatcher_task(
+            rx_inbound,
+            cache.clone(),
+            version_tx,
+            pending,
+        ));
 
         let notification = |message: &str| {
             json!({
@@ -862,7 +875,10 @@ mod tests {
             })
         };
 
-        tx_inbound.send(notification("first")).await.expect("send 1");
+        tx_inbound
+            .send(notification("first"))
+            .await
+            .expect("send 1");
         timeout(Duration::from_secs(2), version_rx.changed())
             .await
             .expect("version bumped after first publish")
@@ -875,7 +891,10 @@ mod tests {
         assert_eq!(items[0].message, "first");
 
         // Second publish replaces the entry and bumps the version tag.
-        tx_inbound.send(notification("second")).await.expect("send 2");
+        tx_inbound
+            .send(notification("second"))
+            .await
+            .expect("send 2");
         timeout(Duration::from_secs(2), version_rx.changed())
             .await
             .expect("version bumped after second publish")

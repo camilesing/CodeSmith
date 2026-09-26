@@ -5,6 +5,31 @@ codesmith 从一个 TOML 文件加上环境变量中读取配置。
 请使用纳入版本控制的 `.env.example` 作为模板；将其复制为 `.env`，
 然后只编辑你需要的 provider 和安全相关选项。
 
+## 配置预设（Configuration Presets）—— 从这里开始
+
+刚接触 codesmith？你只需要一个键。`preset` 选择一个层层递进的档位，
+为本文档中的大部分开关提供基线值：
+
+```toml
+preset = "simple"      # Pi 式极简：9 个核心工具，无任何后台消耗
+preset = "middle"      # 出厂默认：高价值、低消耗的功能开启
+preset = "all"         # 除实验性/争议型外全部开启（20 子代理、LSP 警告等）
+preset = "experiment"  # 全部开启，含预览特性与侵入式机制
+```
+
+- **基线而非覆盖**：档位只填充你未显式设置的键。`preset = "simple"`
+  加上 `[lsp] enabled = true` 仍会保留 LSP 开启。显式配置、CLI 旗标
+  与环境变量永远优先。
+- **`diy`**：当任何显式键与所选档位的值不同时，生效档位会显示为
+  `diy`（可在 `doctor`、启动日志与 `/preset list` 中看到）。`diy`
+  不可被选择——它是派生状态。
+- 选择优先级：`--preset`（或 `CODESMITH_PRESET`）> config.toml 的
+  `preset` 键 > settings.toml 中持久化的上次 `/preset` 选择 > `middle`。
+- 用 `codesmith-tui preset show` 查看治理开关矩阵；完整档位文档
+  （含 `plan` 工作流预设与自定义预设文件）见
+  [PRESETS_cn.md](PRESETS_cn.md)。改名前的写法（`mode` 键、`--mode`、
+  `/mode`、`minimal`/`balanced`/`maximal`）仍作为弃用别名有效。
+
 ## 配置查找位置
 
 默认配置路径：`~/.codesmith/config.toml`
@@ -370,6 +395,7 @@ default_text_model = "codesmith-coder:1.3b"
 - `CODESMITH_CUSTOM_PROVIDER`（按 id 选择一个 `[[providers.custom]]` 条目；覆盖 `CODESMITH_PROVIDER`）
 - `CODESMITH_AUTH_MODE`（`api_key` | `bearer` | `none` | `off` | `kimi_oauth`；对应 `auth_mode` 配置键）
 - `CODESMITH_PROFILE`（选择一个 `[profiles.<name>]` 档案）
+- `CODESMITH_PRESET`（选择配置预设档位；取值同 `preset` 键）
 - `CODESMITH_OUTPUT_MODE`
 - `CODESMITH_TELEMETRY`（`1`/`true` 开启仅本地遥测）
 - `CODESMITH_YOLO`（`1`/`true` 自动批准全部工具调用）
@@ -678,7 +704,7 @@ codesmith 还将用户偏好存储在：
   backend、base URL、默认模型），进程内只读一次。可用
   `CODESMITH_PROVIDERS_MANIFEST` 覆盖其路径以测试备用注册表。
 
-UI 中只有 `agent`、`plan` 和 `yolo` 是可见模式。使用 `/mode` 在它们
+UI 中只有 `agent`、`plan` 和 `yolo` 是可见模式。使用 `/preset agent`（或 Tab 循环）在它们
 之间切换。为兼容起见，带有 `default_mode = "normal"` 的旧设置文件仍会
 加载为 `agent`。
 
@@ -762,11 +788,15 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
 - `approval_policy`（字符串，可选）：`on-request`、`untrusted` 或 `never`。在 `/config` 中运行时编辑 `approval_mode` 时也接受 `on-request` 和 `untrusted` 别名。
 - `yolo`（布尔，可选，默认 `false`）：YOLO 模式——为会话自动批准全部
   工具调用。等价于 CLI 的 `--yolo` 或环境变量 `CODESMITH_YOLO=1`。
-- `mode`（字符串，可选）：启动时激活的命名运行模式（`minimal`、
-  `balanced`、`maximal`、`plan`，或 `~/.codesmith/modes/*.toml` 中的
-  用户模式）。CLI 的 `--mode` 优先于该键。一个模式捆绑了应用模式、
-  推理档位、审批/沙箱策略、记忆级别、工具包含/排除列表和特性覆盖——
-  参见 [MODES_cn.md](MODES_cn.md)。
+- `preset`（字符串，可选）：启动时激活的配置预设档位（`simple`、
+  `middle`、`all`、`experiment`、`plan`，或
+  `~/.codesmith/presets/*.toml` 中的自定义预设）。未设置时默认
+  `middle`。预设值是基线——显式键永远优先；偏离会使生效档位显示为
+  `diy`。CLI 的 `--preset`（或 `CODESMITH_PRESET`）优先于该键。一个
+  预设捆绑了应用模式、推理档位、记忆级别、工具包含/排除列表、特性
+  覆盖以及资源开关基线——参见 [PRESETS_cn.md](PRESETS_cn.md)。旧版
+  `mode` 键仍作为弃用别名被接受（`minimal`/`balanced`/`maximal` 分别
+  映射到 `simple`/`middle`/`all`）。
 - `sandbox_mode`（字符串，可选）：`read-only`、`workspace-write`、`danger-full-access`、`external-sandbox`。
   各平台的支持并不相同。macOS 使用 Seatbelt 进行策略执行。Linux 支持
   通过辅助程序围绕 Landlock 或可选的 bubblewrap（`prefer_bwrap = true`）

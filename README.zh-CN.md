@@ -33,11 +33,11 @@ codesmith doctor                         # 验证配置与连接
 codesmith                                # 交互式 TUI
 ```
 
-模式：**Plan**（只读）/ **Agent**（默认，带审批门控）/ **YOLO**（自动批准）——[docs/MODES_cn.md](docs/MODES_cn.md) · 其他提供商：[docs/PROVIDERS_cn.md](docs/PROVIDERS_cn.md)
+模式：**Plan**（只读）/ **Agent**（默认，带审批门控）/ **YOLO**（自动批准）——[docs/PRESETS_cn.md](docs/PRESETS_cn.md) · 其他提供商：[docs/PROVIDERS_cn.md](docs/PROVIDERS_cn.md)
 
 ## 文档
 
-上手：[用户指南](docs/GUIDE_cn.md) · [模式与审批](docs/MODES_cn.md) · [快捷键](docs/KEYBINDINGS_cn.md) · [技能](docs/SKILLS_cn.md) · [记忆](docs/MEMORY_cn.md) · [界面语言](docs/LOCALIZATION_cn.md) · [完整命令手册](docs/CLI.md)
+上手：[用户指南](docs/GUIDE_cn.md) · [预设与审批](docs/PRESETS_cn.md) · [快捷键](docs/KEYBINDINGS_cn.md) · [技能](docs/SKILLS_cn.md) · [记忆](docs/MEMORY_cn.md) · [界面语言](docs/LOCALIZATION_cn.md) · [完整命令手册](docs/CLI.md)
 
 配置：[配置参考](docs/CONFIGURATION_cn.md) · [提供商](docs/PROVIDERS_cn.md) · [安装](docs/INSTALL_cn.md) · [Docker](docs/DOCKER_cn.md)
 

@@ -487,7 +487,7 @@ pub async fn run_tui(
     // `config.mode` by `run_interactive`) beats the persisted `/mode` choice
     // from settings.toml. Applies the live dials; config-bound dials were
     // already folded in before the engine existed.
-    crate::modes::restore_at_startup(&mut app, config.mode.as_deref());
+    crate::presets::apply_at_startup(&mut app, config.preset.as_deref().unwrap_or("middle"));
 
     // Load existing session if resuming.
     if let Some(ref session_id) = options.resume_session_id
@@ -860,7 +860,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         max_steps: u32::MAX,
         max_subagents: app.max_subagents,
         features: config.features(),
-        parse_gate: config.edit_config().parse_gate,
+        parse_gate: config.edit_config().parse_gate_enabled(),
         compaction: app.compaction_config(),
         cycle: app.cycle_config(),
         capacity: crate::core::capacity::capacity_controller_config_from_app(config),
@@ -878,7 +878,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         allowed_tools: app.active_allowed_tools.clone(),
         blocked_tools: app.active_blocked_tools.clone().unwrap_or_default(),
         network_policy: Some(config.network_policy_decider()),
-        snapshots_enabled: config.snapshots_config().enabled,
+        snapshots_enabled: config.snapshots_config().is_enabled(),
         snapshots_max_workspace_bytes: config
             .snapshots_config()
             .max_workspace_gb
@@ -9066,7 +9066,7 @@ enum StartupVersionCheckSource {
 }
 
 fn startup_version_check_source(config: &UpdateConfig) -> StartupVersionCheckSource {
-    if !config.check_for_updates {
+    if !config.checks_for_updates() {
         return StartupVersionCheckSource::Disabled;
     }
     if let Some(update_uri) = config.update_uri() {

@@ -314,7 +314,10 @@ fn mode_style(app: &App) -> (String, Color) {
     };
     // A named mode (`/mode minimal`) owns the chip; its app mode still
     // picks the color so plan-ish modes stay visually distinct.
-    let label = app.active_mode.clone().unwrap_or_else(|| label.to_string());
+    let label = app
+        .active_preset
+        .clone()
+        .unwrap_or_else(|| label.to_string());
     let color = match app.mode {
         AppMode::Agent => app.ui_theme.mode_agent,
         AppMode::Yolo => app.ui_theme.mode_yolo,

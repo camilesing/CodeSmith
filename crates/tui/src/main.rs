@@ -55,10 +55,10 @@ mod mcp;
 mod mcp_server;
 mod memory;
 mod models;
-mod modes;
 mod network_policy;
 mod palette;
 mod prefix_cache;
+mod presets;
 mod pricing;
 mod project_context;
 mod prompts;
@@ -157,10 +157,17 @@ struct Cli {
     #[arg(long)]
     profile: Option<String>,
 
-    /// Named runtime mode (minimal | balanced | maximal | plan | <custom>).
-    /// Modes are delta bundles of dials defined in ~/.codesmith/modes/ or
-    /// .codesmith/modes/; see /mode list. Overrides `mode` in config.toml.
+    /// Configuration preset tier (simple | middle | all | experiment | plan
+    /// | <custom>). Preset values are baselines: explicit config.toml keys
+    /// always win, and deviations report the effective preset as `diy`.
+    /// Presets are defined in ~/.codesmith/presets/ or
+    /// .codesmith/presets/; see /preset list. Overrides `preset` (and the
+    /// legacy `mode`) in config.toml.
     #[arg(long)]
+    preset: Option<String>,
+
+    /// Deprecated alias of --preset (pre-rename name).
+    #[arg(long, hide = true)]
     mode: Option<String>,
 
     /// Workspace directory for file operations
@@ -271,6 +278,8 @@ enum Commands {
     Execpolicy(ExecpolicyCommand),
     /// Inspect feature flags
     Features(FeaturesCli),
+    /// Inspect configuration presets
+    Preset(PresetCli),
     /// Run a command inside the sandbox
     Sandbox(SandboxArgs),
     /// Run a local server (e.g. MCP)
@@ -832,6 +841,18 @@ enum FeaturesSubcommand {
 }
 
 #[derive(Args, Debug, Clone)]
+struct PresetCli {
+    #[command(subcommand)]
+    command: PresetSubcommand,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum PresetSubcommand {
+    /// Show the preset tiers, their governed switches, and the effective preset
+    Show,
+}
+
+#[derive(Args, Debug, Clone)]
 struct SandboxArgs {
     #[command(subcommand)]
     command: SandboxCommand,
@@ -948,8 +969,11 @@ async fn real_main() -> Result<()> {
     if let Some(command) = cli.command.clone() {
         return match command {
             Commands::Doctor(args) => {
-                let config = load_config_from_cli(&cli)?;
+                let mut config = load_config_from_cli(&cli)?;
                 let workspace = resolve_workspace(&cli);
+                // Fold the preset layer in so the reported tier (and the
+                // effective switches) match an interactive session.
+                crate::presets::apply_config_preset(&mut config, &workspace);
                 if args.json {
                     run_doctor_json(&config, &workspace, cli.config.as_deref())
                 } else {
@@ -1069,6 +1093,14 @@ async fn real_main() -> Result<()> {
             Commands::Features(command) => {
                 let config = load_config_from_cli(&cli)?;
                 run_features_command(&config, command)
+            }
+            Commands::Preset(command) => {
+                let mut config = load_config_from_cli(&cli)?;
+                let workspace = resolve_workspace(&cli);
+                // Apply the layer so the reported effective preset (diy
+                // detection, alias canonicalization) matches a live session.
+                crate::presets::apply_config_preset(&mut config, &workspace);
+                run_preset_command(&config, command)
             }
             Commands::Sandbox(args) => run_sandbox_command(args),
             Commands::Serve(args) => {
@@ -2494,6 +2526,10 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     println!("  · provider: {}", api_target.provider);
     println!("  · base_url: {}", api_target.base_url);
     println!("  · model: {}", api_target.model);
+    println!(
+        "  · preset: {} (see `/preset list`; `codesmith-tui preset show` for the tier matrix)",
+        config.effective_preset()
+    );
     let strict_tool_mode = doctor_strict_tool_mode_status(config);
     let strict_icon = match strict_tool_mode.status {
         "ready" => "✓".truecolor(aqua_r, aqua_g, aqua_b),
@@ -3562,6 +3598,42 @@ fn run_features_command(config: &Config, command: FeaturesCli) -> Result<()> {
     }
 }
 
+fn run_preset_command(config: &Config, command: PresetCli) -> Result<()> {
+    match command.command {
+        PresetSubcommand::Show => {
+            println!("effective preset: {}", config.effective_preset());
+            println!(
+                "selected: {}",
+                config
+                    .preset_selection()
+                    .unwrap_or("middle (factory default)")
+            );
+            println!();
+            println!("governed switches per tier (explicit config keys always win):");
+            println!();
+            println!(
+                "{:<28} {:<8} {:<8} {:<8} {:<8}",
+                "key", "simple", "middle", "all", "exp"
+            );
+            for (key, row) in codesmith_config::presets::builtin_tier_matrix() {
+                let cells: Vec<String> = row
+                    .iter()
+                    .map(|value| {
+                        value
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "-".to_string())
+                    })
+                    .collect();
+                println!(
+                    "{:<28} {:<8} {:<8} {:<8} {:<8}",
+                    key, cells[0], cells[1], cells[2], cells[3]
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
 async fn run_models(config: &Config, args: ModelsArgs) -> Result<()> {
     let client = crate::core::engine::resolve_llm_client(config)?;
     let mut models = client.list_models().await?;
@@ -3828,6 +3900,14 @@ fn load_config_from_cli_with_exec_model(cli: &Cli, exec_model: Option<&str>) -> 
     let mut config = Config::load(cli.config.clone(), profile.as_deref())?;
     config.require_explicit_model_on_custom_gateway(exec_model)?;
     cli.feature_toggles.apply(&mut config)?;
+    // Fold the CLI preset selection in so every subcommand (doctor,
+    // preset show, …) resolves the same tier an interactive session
+    // would; the tier baselines themselves are applied later by
+    // `presets::apply_config_preset` at the point of use.
+    if cli.preset.is_some() || cli.mode.is_some() {
+        config.preset = cli.preset.clone().or_else(|| cli.mode.clone());
+        config.mode = None;
+    }
     install_token_counter(&config);
     Ok(config)
 }
@@ -5161,14 +5241,34 @@ async fn run_interactive(
     if should_load_project_config(cli.no_project_config, &boundary) {
         merge_project_config(&mut merged_config, &workspace);
     }
-    // Named mode: CLI --mode wins over `mode = "..."` in config.toml. Fold
-    // config-bound dials (provider/features/memory/sandbox) in before the
-    // engine is built; the TUI applies the live dials after App creation.
-    if cli.mode.is_some() {
-        merged_config.mode = cli.mode.clone();
+    // Configuration preset: CLI --preset (or the deprecated --mode) wins
+    // over `preset = "..."` in config.toml, which wins over the preset
+    // persisted by the last /preset command; with no selection anywhere
+    // the factory default (middle) applies. The tier's baselines are
+    // folded in fill-if-unset, so explicit config keys always win and any
+    // deviation reports the effective preset as `diy`.
+    if cli.preset.is_some() || cli.mode.is_some() {
+        merged_config.preset = cli.preset.clone().or_else(|| cli.mode.clone());
+        merged_config.mode = None;
     }
-    let mode_definition = crate::modes::apply_config_mode(&mut merged_config, &workspace);
+    if merged_config.preset_selection().is_none()
+        && let Some(persisted) = crate::presets::persisted_selection()
+    {
+        merged_config.preset = Some(persisted);
+    }
+    let applied_preset = crate::presets::apply_config_preset(&mut merged_config, &workspace);
     let config = &merged_config;
+    match applied_preset.as_ref() {
+        Some(applied) if applied.deviated => logging::info(format!(
+            "preset: diy (selected '{}'; explicit config deviates from the tier)",
+            applied.name
+        )),
+        Some(applied) => logging::info(format!(
+            "preset: {} (explicit config keys always win; see /preset list)",
+            applied.name
+        )),
+        None => {}
+    }
     // Re-apply the `telemetry` flag from the merged (user + project) config so
     // the durable `enabled` state honours the project overlay (Plan 06 / 6.2).
     // The sink is Arc-shared with the engine clone handed to `run_tui` below,
@@ -5192,15 +5292,15 @@ async fn run_interactive(
         || config.max_subagents(),
         |value| value.clamp(1, MAX_SUBAGENTS),
     );
-    let mut max_subagents = max_subagents;
 
-    if let Some(definition) = &mode_definition {
-        if let Some(mode_model) = &definition.model {
-            model = mode_model.clone();
-        }
-        if let Some(cap) = definition.max_subagents {
-            max_subagents = cap.clamp(0, MAX_SUBAGENTS);
-        }
+    // The preset layer may pin a model override; the sub-agent cap and
+    // every other numeric/bool dial already flowed through the filled
+    // config above.
+    if let Some(mode_model) = applied_preset
+        .as_ref()
+        .and_then(|applied| applied.definition.model.as_ref())
+    {
+        model = mode_model.clone();
     }
     let use_alt_screen = should_use_alt_screen(cli, config);
     let use_mouse_capture = should_use_mouse_capture(cli, config, use_alt_screen);
@@ -5219,7 +5319,7 @@ async fn run_interactive(
     // Non-fatal: a flaky disk, missing `git`, or read-only home should
     // never block the TUI from starting.
     let snapshots = config.snapshots_config();
-    if snapshots.enabled {
+    if snapshots.is_enabled() {
         session_manager::prune_workspace_snapshots(&workspace, snapshots.max_age());
     }
 
@@ -5630,7 +5730,7 @@ async fn run_exec_agent(
         max_steps: 100,
         max_subagents,
         features: config.features(),
-        parse_gate: config.edit_config().parse_gate,
+        parse_gate: config.edit_config().parse_gate_enabled(),
         compaction,
         cycle: crate::cycle_manager::CycleConfig::default(),
         capacity: crate::core::capacity::capacity_controller_config_from_app(config),
@@ -5642,7 +5742,7 @@ async fn run_exec_agent(
         worktree_state: crate::tools::worktree::new_shared_worktree_session_state(),
         max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
         network_policy,
-        snapshots_enabled: config.snapshots_config().enabled,
+        snapshots_enabled: config.snapshots_config().is_enabled(),
         snapshots_max_workspace_bytes: config
             .snapshots_config()
             .max_workspace_gb
@@ -6209,7 +6309,7 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
         max_steps: 100,
         max_subagents: config.max_subagents(),
         features: config.features(),
-        parse_gate: config.edit_config().parse_gate,
+        parse_gate: config.edit_config().parse_gate_enabled(),
         compaction,
         cycle: crate::cycle_manager::CycleConfig::default(),
         capacity: crate::core::capacity::capacity_controller_config_from_app(config),
@@ -6221,7 +6321,7 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
         worktree_state: crate::tools::worktree::new_shared_worktree_session_state(),
         max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
         network_policy,
-        snapshots_enabled: config.snapshots_config().enabled,
+        snapshots_enabled: config.snapshots_config().is_enabled(),
         snapshots_max_workspace_bytes: config
             .snapshots_config()
             .max_workspace_gb

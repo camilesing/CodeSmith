@@ -1,45 +1,76 @@
-# 模式与审批
+# 预设与审批
 
 codesmith 有两个相关概念：
 
 - **TUI 模式**：你当前所处的可见交互类型（Plan/Agent/YOLO）。
 - **审批模式**：UI 在执行工具前要求确认的严格程度。
 
-在这两者之上是**命名模式层**：一条命令（`/mode minimal`）把下述所有旋钮——
-工具面、思考深度、记忆持久化、审批姿态、子代理上限、模型——打包进一个可分享
-的 TOML 文件。
+在这两者之上是**配置预设层**：一个键（`preset = "middle"`）、一条命令
+（`/preset <name>`）把下述所有旋钮——工具面、思考深度、记忆持久化、审批
+姿态、子代理上限、模型，以及一组资源开关（代码索引、LSP 诊断、快照、后台
+检查）——打包进一个可分享的 TOML 文件。内置四个层层递进的档位，出厂默认为
+`middle`。
 
 模型选择是独立的。`--model auto` 和 `/model auto` 会把每个对话轮路由到具体的模型和思考级别；它们不是 TUI 模式，也不属于 `Tab` 循环。
 
-## 命名模式（`/mode <name>`）
+## 配置预设（`/preset <name>`）
 
-*模式*是单个 TOML 文件里的旋钮增量包。文件没写的字段保持当前值——模式与你的
-现有配置是组合关系，不是替换关系。
+*预设*是单个 TOML 文件里的旋钮包。预设值是**基线而非覆盖**：只有你在
+config.toml 中留空的键才会被档位填充，因此 `preset = "simple"` 加上
+`[lsp] enabled = true` 仍会保留 LSP 开启。当任何显式键与所选档位不同时，
+生效档位会显示为 **`diy`**（派生状态——不可被选择），标签永远不会撒谎。
 
 ```bash
-codesmith --mode minimal   # 极小工具面、思考关闭、零记忆
-codesmith --mode maximal   # 全量开启
-/mode list                 # 查看当前工作区可见的所有模式
-/mode plan                 # 会话中热切换，无需重启
-/mode export my-setup      # 把当前旋钮快照为可分享的文件
-/mode off                  # 退出模式层，旋钮保持当前值
+codesmith --preset simple    # Pi 式极简：9 个工具，无索引/LSP/记忆
+codesmith --preset all       # 稳定功能全开
+/preset list                 # 查看当前工作区可见的所有预设
+/preset plan                 # 会话中热切换（现场旋钮即时生效，其余给出重启提示）
+/preset export my-setup      # 把当前旋钮快照为可分享的文件
+/preset off                  # 退出预设层，旋钮保持当前值
+codesmith-tui preset show    # 档位矩阵 + 你的生效预设
 ```
 
-内置模式：
+内置档位，由轻到重层层递进：
 
-| 模式 | 思考 | 工具 | 记忆 | 子代理 |
+| 档位 | 思考 | 工具 | 记忆 | 子代理 | 资源开关 |
+|---|---|---|---|---|---|
+| `simple` | medium | 仅核心文件 + shell（`tools.include`） | goldfish（无） | 关闭 | 索引/LSP/快照/记忆/更新检查/审计全关 |
+| `middle`（默认） | 继承 | 继承 | 继承 | 10 | 高价值低消耗组合开启（索引、LSP、快照、记忆、省钱路由）；实验性机制关闭 |
+| `all` | 继承 | 全量 | notebook（记忆开、KOD 关） | 20 | middle + LSP 警告；预览旗标仍关闭 |
+| `experiment` | 继承 | 全量 | elephant + Knowledge On Demand | 20 | 全部开启（视觉、agent teams、coordinator、上下文管理器、容量控制器、strict tool mode） |
+| `plan` | 继承 | 只读 + 计划工具 | notebook（仅显式保存） | 继承 | 继承 |
+
+治理开关矩阵（`codesmith-tui preset show` 会打印带生效值的版本）：
+
+| 键 | simple | middle | all | experiment |
 |---|---|---|---|---|
-| `minimal` | off | 仅核心文件 + shell（`tools.include`） | goldfish（无） | 关闭 |
-| `balanced` | 继承 | 继承 | 继承 | 继承 |
-| `maximal` | max | 全量 | elephant（自动 + 衰减） | 20 |
-| `plan` | 继承 | 只读 + 计划工具 | notebook（仅显式保存） | 继承 |
+| `[index].enabled` | 关 | 开 | 开 | 开 |
+| `[lsp].enabled` | 关 | 开 | 开 | 开 |
+| `[lsp].include_warnings` | 关 | 关 | 开 | 开 |
+| `[snapshots].enabled` | 关 | 开 | 开 | 开 |
+| `[memory].enabled` | 关 | 开 | 开 | 开 |
+| `[memory].kod_enabled` | 关 | 关 | 关 | 开 |
+| `[context].project_pack` | 关 | 开 | 开 | 开 |
+| `[context].enabled` | 关 | 关 | 关 | 开 |
+| `[capacity].enabled` | 关 | 关 | 关 | 开 |
+| `[auto].cost_saving` | 关 | 开 | 开 | 开 |
+| `[update].check_for_updates` | 关 | 开 | 开 | 开 |
+| `[network].audit` | 关 | 开 | 开 | 开 |
+| `strict_tool_mode` | 关 | 关 | 关 | 开 |
+| 特性：`subagents` / `web_search` / `mcp` | 关 | 开 | 开 | 开 |
+| 特性：`vision_model` / `knowledge_on_demand` / `agent_teams` / `coordinator_mode` | 关 | 关 | 关 | 开 |
 
-模式文件放在两个扫描目录，后层按名字覆盖内置：
+任何档位都不会治理：安全键（`yolo`、`approval_policy`、`sandbox_mode`）、
+隐私 opt-in（`telemetry`）、用户内容（提示词、`personality`、
+`instructions`）、provider 凭据和工具覆盖。安全相关的键永远由你掌控。
 
-1. `~/.codesmith/modes/*.toml` — 你的全局模式
-2. `<workspace>/.codesmith/modes/*.toml` — 项目模式（建议提交进仓库）
+预设文件放在两个扫描目录，后层按名字覆盖内置（旧版 `modes/` 目录仍会被
+扫描，并给出一次性迁移警告）：
 
-模式文件完整 schema（所有字段均可省略）：
+1. `~/.codesmith/presets/*.toml` — 你的全局预设
+2. `<workspace>/.codesmith/presets/*.toml` — 项目预设（建议提交进仓库）
+
+预设文件完整 schema（所有字段均可省略）：
 
 ```toml
 name = "review"
@@ -52,6 +83,21 @@ memory_level = "notebook"       # goldfish | notebook | elephant
 max_subagents = 2
 model = "deepseek-v4-pro"
 provider = "deepseek"           # 仅启动时生效；切换需重启
+
+# 资源开关基线（填充式，与 config.toml 同名词表）
+index_enabled = false
+lsp_enabled = false
+lsp_include_warnings = false
+snapshots_enabled = false
+memory_enabled = false
+memory_kod_enabled = false
+context_enabled = false
+context_project_pack = false
+capacity_enabled = false
+auto_cost_saving = false
+update_check = false
+network_audit = false
+strict_tool_mode = false
 
 [tools]
 include = ["read_file", "grep_files", "list_dir"]  # 设置后即为白名单
@@ -68,20 +114,27 @@ web_search = false
 衰减的 Knowledge On Demand。
 
 **热切换 vs 需重启。** 应用模式、思考、审批、工具白/黑名单、子代理上限和模型
-下一轮即生效。Provider、feature 开关和记忆注入在引擎启动时读取——切换到包含
-这些字段的模式时，会明确提示哪些将在重启后生效。
+下一轮即生效。资源开关（索引、LSP、快照、context/capacity 接缝）、Provider、
+feature 开关和记忆注入在引擎启动时读取——切换到包含这些字段的预设时，会明确
+提示哪些将在重启后生效。
 
-**活动模式的优先级：** `--mode name`（CLI）> config.toml 里的
-`mode = "name"` > TUI 中最近一次选择的模式（持久化在 settings.toml）。
-取消模式层用 `/mode off`。
+**活动预设的优先级：** `--preset name`（CLI，或 `CODESMITH_PRESET`）>
+config.toml 里的 `preset = "name"`（旧版 `mode` 键仍作为弃用别名有效）>
+TUI 中最近一次选择的预设（持久化在 settings.toml）> 出厂默认 `middle`。
+取消预设层用 `/preset off`。
+
+**弃用名称。** 改名前的写法仍有效并映射（带警告）：`minimal` → `simple`、
+`balanced` → `middle`、`maximal` → `all`；`--mode` 与 `/mode` 是
+`--preset` / `/preset` 的别名。
 
 ## TUI 模式
 
 按 `Tab` 可确认 composer 菜单选择、在对话轮运行期间把草稿排入下一轮跟进，或在
 composer 空闲时循环切换可见模式：**Plan → Agent → YOLO → Plan**。
 按 `Shift+Tab` 循环切换推理力度。
-运行 `/mode` 打开模式选择器，或使用 `/mode agent`、
-`/mode plan`、`/mode yolo`、`/mode 1`、`/mode 2` 或 `/mode 3` 直接切换。
+运行 `/preset` 打开模式选择器，或使用 `/preset agent`、
+`/preset plan`、`/preset yolo`、`/preset 1`、`/preset 2` 或 `/preset 3`
+直接切换。
 
 - **Plan**：设计优先的提示模式。只读调查工具保持可用；shell 与补丁执行保持关闭。当你想边思考边表达、产出一份交给真人（未来的自己或评审者）的计划时使用它。
 - **Agent**：多步工具使用。Shell 执行（`exec_shell`、`task_shell_start`、`task_shell_wait`）要求配置中 `allow_shell = true`；每次调用都由审批提示把关。文件写入无需提示即可进行。

@@ -547,10 +547,6 @@ pub struct NotificationsConfig {
     pub completion_sound: CompletionSound,
 }
 
-fn default_snapshots_enabled() -> bool {
-    true
-}
-
 fn default_snapshot_max_age_days() -> u64 {
     crate::snapshot::DEFAULT_MAX_AGE.as_secs() / (24 * 60 * 60)
 }
@@ -562,9 +558,10 @@ fn default_snapshot_max_workspace_gb() -> u64 {
 /// Workspace side-git snapshot configuration (#137).
 #[derive(Debug, Clone, Deserialize)]
 pub struct SnapshotsConfig {
-    /// Snapshot the workspace before and after each interactive agent turn.
-    #[serde(default = "default_snapshots_enabled")]
-    pub enabled: bool,
+    /// Snapshot the workspace before and after each interactive agent
+    /// turn. `None` inherits the active preset's baseline (default `true`).
+    #[serde(default)]
+    pub enabled: Option<bool>,
     /// Prune side-git snapshots older than this many days at session boot.
     #[serde(default = "default_snapshot_max_age_days")]
     pub max_age_days: u64,
@@ -581,10 +578,19 @@ pub struct SnapshotsConfig {
 impl Default for SnapshotsConfig {
     fn default() -> Self {
         Self {
-            enabled: default_snapshots_enabled(),
+            enabled: None,
             max_age_days: default_snapshot_max_age_days(),
             max_workspace_gb: default_snapshot_max_workspace_gb(),
         }
+    }
+}
+
+impl SnapshotsConfig {
+    /// Effective master switch: explicit value, else the built-in default
+    /// (the active preset fills its baseline in before this resolves).
+    #[must_use]
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.unwrap_or(true)
     }
 }
 
@@ -593,21 +599,22 @@ fn default_parse_gate_enabled() -> bool {
 }
 
 /// File-editing configuration (P0-1 parse gate).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct EditConfig {
     /// Pre-write parse gate for file-editing tools: writes that would break
     /// a previously-parsing `.rs`/`.toml`/`.json` file are rejected before
     /// touching disk (regression-only — already-broken files stay editable).
-    /// `false` restores write-through behavior.
-    #[serde(default = "default_parse_gate_enabled")]
-    pub parse_gate: bool,
+    /// `false` restores write-through behavior. `None` inherits the active
+    /// preset's baseline (default `true`).
+    #[serde(default)]
+    pub parse_gate: Option<bool>,
 }
 
-impl Default for EditConfig {
-    fn default() -> Self {
-        Self {
-            parse_gate: default_parse_gate_enabled(),
-        }
+impl EditConfig {
+    /// Effective parse gate: explicit value, else the built-in default.
+    #[must_use]
+    pub fn parse_gate_enabled(&self) -> bool {
+        self.parse_gate.unwrap_or_else(default_parse_gate_enabled)
     }
 }
 
@@ -915,7 +922,7 @@ pub use codesmith_agent_runtime::config_types::{
 };
 
 /// Capacity-controller config loaded from config files/environment.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct CapacityConfig {
     pub enabled: Option<bool>,
     pub low_risk_max: Option<f64>,
@@ -1026,31 +1033,26 @@ pub struct AutoConfig {
     pub cost_saving: Option<bool>,
 }
 
-fn default_update_check_for_updates() -> bool {
-    true
-}
-
 /// Startup update-check configuration (`[update]` table in config.toml).
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 pub struct UpdateConfig {
-    /// When false, skip the TUI startup background update check entirely.
-    #[serde(default = "default_update_check_for_updates")]
-    pub check_for_updates: bool,
+    /// When `Some(false)`, skip the TUI startup background update check
+    /// entirely. `None` inherits the active preset's baseline (default:
+    /// check enabled).
+    #[serde(default)]
+    pub check_for_updates: Option<bool>,
     /// Optional GitHub-compatible latest-release JSON endpoint.
     #[serde(default)]
     pub update_uri: Option<String>,
 }
 
-impl Default for UpdateConfig {
-    fn default() -> Self {
-        Self {
-            check_for_updates: true,
-            update_uri: None,
-        }
-    }
-}
-
 impl UpdateConfig {
+    /// Effective switch: explicit value, else the built-in default.
+    #[must_use]
+    pub fn checks_for_updates(&self) -> bool {
+        self.check_for_updates.unwrap_or(true)
+    }
+
     #[must_use]
     pub fn update_uri(&self) -> Option<&str> {
         self.update_uri
@@ -1115,12 +1117,22 @@ pub struct Config {
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
     pub yolo: Option<bool>,
-    /// Active named runtime mode (`minimal`, `maximal`, a user mode, …).
-    /// Applied after profile merging: config-bound dials (provider,
-    /// features, memory, sandbox) are folded into this config before the
-    /// engine is built, and the TUI applies the remaining live dials on
-    /// startup. Overridden by `--mode` on the CLI.
+    /// Active configuration preset tier (`simple` | `middle` | `all` |
+    /// `experiment`, plus `plan` and user/project preset files). Preset
+    /// values are *baselines* applied fill-if-unset after profile and
+    /// project merging: explicit keys elsewhere in this file always win,
+    /// and any explicit value that differs from the selected tier turns
+    /// the effective preset into `diy` (a derived state — see
+    /// [`Config::effective_preset`]). Overridden by `--preset` on the CLI.
+    pub preset: Option<String>,
+    /// Deprecated pre-rename alias of [`Self::preset`]; still accepted so
+    /// existing configs keep working (canonicalized with a warning).
     pub mode: Option<String>,
+    /// Derived at startup by the preset layer: `true` when an explicit
+    /// config value deviates from the selected tier, which reports the
+    /// effective preset as `diy`. Never serialized.
+    #[serde(skip)]
+    pub preset_deviated: bool,
     /// Enable local-only telemetry: capacity-decision analytics events are
     /// written to `~/.codesmith/telemetry/events.jsonl`. Off by default; the
     /// sink is constructed pre-trust (events queue in-memory) and only
@@ -1334,16 +1346,13 @@ pub struct NetworkPolicyToml {
     #[serde(default)]
     pub proxy: Vec<String>,
     /// Whether to record one audit-log line per outbound network call.
-    #[serde(default = "default_network_audit")]
-    pub audit: bool,
+    /// `None` inherits the active preset's baseline (default `true`).
+    #[serde(default)]
+    pub audit: Option<bool>,
 }
 
 fn default_network_decision() -> String {
     "prompt".to_string()
-}
-
-fn default_network_audit() -> bool {
-    true
 }
 
 impl Default for NetworkPolicyToml {
@@ -1353,22 +1362,29 @@ impl Default for NetworkPolicyToml {
             allow: Vec::new(),
             deny: Vec::new(),
             proxy: Vec::new(),
-            audit: default_network_audit(),
+            audit: None,
         }
     }
 }
 
 impl NetworkPolicyToml {
+    /// Effective audit switch: explicit value, else the built-in default.
+    #[must_use]
+    pub fn audit_enabled(&self) -> bool {
+        self.audit.unwrap_or(true)
+    }
+
     /// Build a runtime [`crate::network_policy::NetworkPolicy`] from the
     /// on-disk schema.
     #[must_use]
     pub fn into_runtime(self) -> crate::network_policy::NetworkPolicy {
+        let audit = self.audit_enabled();
         crate::network_policy::NetworkPolicy {
             default: crate::network_policy::Decision::parse(&self.default).into(),
             allow: self.allow,
             deny: self.deny,
             proxy: self.proxy,
-            audit: self.audit,
+            audit,
         }
     }
 }
@@ -1759,6 +1775,17 @@ impl Config {
                 if !is_known_feature_key(key) {
                     anyhow::bail!("Unknown feature flag: {key}");
                 }
+            }
+        }
+        for (key, value) in [("preset", &self.preset), ("mode", &self.mode)] {
+            if let Some(value) = value.as_deref()
+                && value.trim().eq_ignore_ascii_case("diy")
+            {
+                anyhow::bail!(
+                    "Invalid {key} '{value}': 'diy' is a derived state shown when your \
+                     explicit config deviates from a tier; pick simple | middle | all | \
+                     experiment (or a custom preset name)"
+                );
             }
         }
         // The default_text_model check is DeepSeek-namespace-specific (it
@@ -2724,10 +2751,13 @@ impl Config {
         {
             return max.clamp(1, MAX_SUBAGENTS);
         }
-        // Fall back to top-level max_subagents
-        self.max_subagents
-            .unwrap_or(DEFAULT_MAX_SUBAGENTS)
-            .clamp(1, MAX_SUBAGENTS)
+        // Fall back to top-level max_subagents. An explicit `0` disables
+        // sub-agents entirely (the `simple` preset fills it); the clamp
+        // otherwise keeps the value in range.
+        match self.max_subagents.unwrap_or(DEFAULT_MAX_SUBAGENTS) {
+            0 => 0,
+            value => value.clamp(1, MAX_SUBAGENTS),
+        }
     }
 
     /// Resolved per-step DeepSeek API timeout for sub-agents, in seconds.
@@ -2870,6 +2900,32 @@ impl Config {
     #[must_use]
     pub fn update_config(&self) -> UpdateConfig {
         self.update.clone().unwrap_or_default()
+    }
+
+    /// The explicitly selected preset: the `preset` key, falling back to
+    /// the deprecated `mode` alias. `None` means no selection was made
+    /// (the startup layer then applies the factory default `middle`, or
+    /// the preset persisted in settings).
+    #[must_use]
+    pub fn preset_selection(&self) -> Option<&str> {
+        self.preset
+            .as_deref()
+            .or(self.mode.as_deref())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+
+    /// The effective preset reported to the user: the selected tier, or
+    /// `diy` when explicit config values deviate from it. Computed by the
+    /// startup preset layer (see `crate::presets::apply_config_preset`);
+    /// before that runs this simply reflects the selection.
+    #[must_use]
+    pub fn effective_preset(&self) -> &str {
+        if self.preset_deviated {
+            "diy"
+        } else {
+            self.preset_selection().unwrap_or("middle")
+        }
     }
 
     /// Resolve enabled features from defaults and config entries.
@@ -3655,6 +3711,18 @@ fn apply_env_overrides(config: &mut Config) {
         config.max_subagents = Some(parsed.clamp(1, MAX_SUBAGENTS));
     }
 
+    // Tier selection via env (also how the `codesmith` facade forwards a
+    // `--preset` flag to the TUI). Applied before the preset layer runs,
+    // so the tier's fill-if-unset baselines are computed under this
+    // selection. Empty values are a no-op, matching every other override.
+    if let Ok(value) = app_env("PRESET") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            config.preset = Some(trimmed.to_string());
+            config.mode = None;
+        }
+    }
+
     let capacity = config.capacity.get_or_insert(CapacityConfig {
         enabled: None,
         low_risk_max: None,
@@ -4086,6 +4154,8 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         allow_shell: override_cfg.allow_shell.or(base.allow_shell),
         yolo: override_cfg.yolo.or(base.yolo),
         mode: override_cfg.mode.or(base.mode),
+        preset: override_cfg.preset.or(base.preset),
+        preset_deviated: false,
         telemetry: override_cfg.telemetry.or(base.telemetry),
         approval_policy: override_cfg.approval_policy.or(base.approval_policy),
         sandbox_mode: override_cfg.sandbox_mode.or(base.sandbox_mode),
@@ -5168,7 +5238,7 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.update, None);
         assert_eq!(config.update_config(), UpdateConfig::default());
-        assert!(config.update_config().check_for_updates);
+        assert!(config.update_config().checks_for_updates());
         assert_eq!(config.update_config().update_uri(), None);
     }
 
@@ -5184,7 +5254,7 @@ mod tests {
         .expect("update config");
 
         let update = config.update_config();
-        assert!(!update.check_for_updates);
+        assert!(!update.checks_for_updates());
         assert_eq!(
             update.update_uri(),
             Some("https://mirror.example/releases/latest")
@@ -5571,7 +5641,7 @@ mod tests {
     fn edit_config_defaults_on_and_parses_off() {
         let _guard = lock_test_env();
         let default: Config = toml::from_str("").expect("empty config");
-        assert!(default.edit_config().parse_gate);
+        assert!(default.edit_config().parse_gate_enabled());
 
         let disabled: Config = toml::from_str(
             r#"
@@ -5580,7 +5650,7 @@ mod tests {
             "#,
         )
         .expect("edit config");
-        assert!(!disabled.edit_config().parse_gate);
+        assert!(!disabled.edit_config().parse_gate_enabled());
     }
 
     #[test]
@@ -6147,7 +6217,7 @@ mod tests {
                 allow: Vec::new(),
                 deny: vec!["evil.example.com".to_string()],
                 proxy: Vec::new(),
-                audit: false,
+                audit: Some(false),
             }),
             ..Config::default()
         };

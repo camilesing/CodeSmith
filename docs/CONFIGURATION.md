@@ -5,6 +5,33 @@ At process startup it also loads a workspace-local `.env` file when present.
 Use the tracked `.env.example` as the template; copy it to `.env`, then edit
 only the provider and safety knobs you need.
 
+## Configuration Presets — start here
+
+New to codesmith? You only need one key. `preset` selects a progressive
+tier that baselines most of the switches documented in this file:
+
+```toml
+preset = "simple"      # Pi-style minimal: 9 core tools, nothing in the background
+preset = "middle"      # factory default: high-value low-cost features on
+preset = "all"         # everything stable on (20 sub-agents, LSP warnings, …)
+preset = "experiment"  # everything on, including preview flags and invasive seams
+```
+
+- **Baselines, not overrides**: a tier only fills keys you left unset.
+  `preset = "simple"` plus `[lsp] enabled = true` keeps LSP on. Explicit
+  config, CLI flags, and env vars always win.
+- **`diy`**: when any explicit key differs from the selected tier, the
+  effective preset is reported as `diy` (shown in `doctor`, the startup
+  log, and `/preset list`). `diy` cannot be selected — it is derived.
+- Selection precedence: `--preset` (or `CODESMITH_PRESET`) > the `preset`
+  key in config.toml > the last `/preset` choice persisted in
+  settings.toml > `middle`.
+- See the governed-switch matrix with `codesmith-tui preset show`, and the
+  full tier documentation (including the `plan` workflow preset and custom
+  preset files) in [PRESETS.md](PRESETS.md). The pre-rename spellings
+  (`mode` key, `--mode`, `/mode`, `minimal`/`balanced`/`maximal`) still
+  work as deprecated aliases.
+
 ## Where It Looks
 
 Default config path:`~/.codesmith/config.toml`
@@ -389,6 +416,7 @@ Remaining app-level variables:
 - `CODESMITH_CUSTOM_PROVIDER` (selects a `[[providers.custom]]` entry by id; overrides `CODESMITH_PROVIDER`)
 - `CODESMITH_AUTH_MODE` (`api_key` | `bearer` | `none` | `off` | `kimi_oauth`; mirrors the `auth_mode` config key)
 - `CODESMITH_PROFILE` (selects a `[profiles.<name>]` entry)
+- `CODESMITH_PRESET` (selects a configuration preset tier; same values as the `preset` key)
 - `CODESMITH_OUTPUT_MODE`
 - `CODESMITH_TELEMETRY` (`1`/`true` enables local-only telemetry)
 - `CODESMITH_YOLO` (`1`/`true` auto-approves every tool call)
@@ -728,8 +756,8 @@ Common settings keys:
   an alternate registry.
 
 Only `agent`, `plan`, and `yolo` are visible modes in the UI. Switch between
-them with `/mode`. For compatibility, older settings files with
-`default_mode = "normal"` still load as `agent`.
+them with `/preset agent` (or the Tab cycle). For compatibility, older
+settings files with `default_mode = "normal"` still load as `agent`.
 
 Localization scope is tracked in [LOCALIZATION.md](LOCALIZATION.md). The v0.7.6
 core pack covers high-visibility TUI chrome only; provider/tool schemas,
@@ -818,12 +846,16 @@ If you are upgrading from older releases:
 - `yolo` (bool, optional, default `false`): YOLO mode — auto-approve every
   tool call for the session. Equivalent to `--yolo` on the CLI or
   `CODESMITH_YOLO=1` in the environment.
-- `mode` (string, optional): named runtime mode activated at startup
-  (`minimal`, `balanced`, `maximal`, `plan`, or a user mode from
-  `~/.codesmith/modes/*.toml`). The `--mode` CLI flag wins over this key.
-  A mode bundles an app mode, reasoning effort, approval/sandbox policy,
-  memory level, tool include/exclude lists, and feature overrides — see
-  [MODES.md](MODES.md).
+- `preset` (string, optional): configuration preset tier activated at
+  startup (`simple`, `middle`, `all`, `experiment`, `plan`, or a custom
+  preset from `~/.codesmith/presets/*.toml`). Defaults to `middle` when
+  unset. Preset values are baselines — explicit keys always win; deviations
+  report the effective preset as `diy`. The `--preset` CLI flag (or
+  `CODESMITH_PRESET`) wins over this key. A preset bundles an app mode,
+  reasoning effort, memory level, tool include/exclude lists, feature
+  overrides, and resource-switch baselines — see [PRESETS.md](PRESETS.md).
+  The legacy `mode` key is still accepted as a deprecated alias (and
+  `minimal`/`balanced`/`maximal` map to `simple`/`middle`/`all`).
 - `sandbox_mode` (string, optional): `read-only`, `workspace-write`, `danger-full-access`, `external-sandbox`.
   Platform support is not identical. macOS uses Seatbelt for policy
   enforcement. Linux support is helper-gated around Landlock or optional

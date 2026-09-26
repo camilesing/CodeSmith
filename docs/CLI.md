@@ -49,7 +49,7 @@ user prompt and put that prompt back in the composer for editing. `/restore`
 and `revert_turn` are separate workspace rollback tools: they restore files
 from side-git snapshots but do not rewrite conversation history.
 
-More detail: [MODES.md — Branching and Rollback](MODES.md#branching-and-rollback).
+More detail: [PRESETS.md — Branching and Rollback](PRESETS.md#branching-and-rollback).
 
 ## Docker
 

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
-pub mod modes;
+pub mod presets;
 
 pub const CONFIG_FILE_NAME: &str = "config.toml";
 const DEFAULT_DEEPSEEK_MODEL: &str = "deepseek-v4-pro";
@@ -435,6 +435,11 @@ pub struct ConfigToml {
     pub auth_mode: Option<String>,
     pub output_mode: Option<String>,
     pub log_level: Option<String>,
+    /// Configuration preset tier (simple | middle | all | experiment | plan
+    /// | <custom>). Accepted for schema parity with the TUI config so the
+    /// key is recognized here too; the tier itself is applied by the TUI
+    /// at startup.
+    pub preset: Option<String>,
     pub telemetry: Option<bool>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,

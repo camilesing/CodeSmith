@@ -2886,7 +2886,7 @@ fn version_hint_ignores_draft_prerelease_and_current_versions() {
 fn startup_version_check_source_respects_update_config() {
     assert_eq!(
         startup_version_check_source(&UpdateConfig {
-            check_for_updates: false,
+            check_for_updates: Some(false),
             update_uri: Some("https://mirror.example/releases/latest".to_string()),
         }),
         StartupVersionCheckSource::Disabled
@@ -2894,7 +2894,7 @@ fn startup_version_check_source_respects_update_config() {
 
     assert_eq!(
         startup_version_check_source(&UpdateConfig {
-            check_for_updates: true,
+            check_for_updates: Some(true),
             update_uri: Some("  https://mirror.example/releases/latest  ".to_string()),
         }),
         StartupVersionCheckSource::ConfiguredUrl(

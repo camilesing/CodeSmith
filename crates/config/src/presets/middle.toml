@@ -1,0 +1,33 @@
+# Middle — the factory default. Simple plus the high-value, low-cost
+# features: cross-session memory, lazy code index, LSP diagnostics,
+# workspace snapshots, sub-agents, web search, MCP, and the cheap-model
+# cost-saving router. Experimental/preview seams stay off.
+name = "middle"
+description = "Factory default: high-value low-cost features on, experimental seams off."
+max_subagents = 10
+index_enabled = true
+lsp_enabled = true
+lsp_include_warnings = false
+snapshots_enabled = true
+memory_enabled = true
+memory_kod_enabled = false
+context_enabled = false
+context_project_pack = true
+capacity_enabled = false
+auto_cost_saving = true
+update_check = true
+network_audit = true
+strict_tool_mode = false
+
+[features]
+shell_tool = true
+subagents = true
+web_search = true
+apply_patch = true
+mcp = true
+exec_policy = true
+vision_model = false
+knowledge_on_demand = false
+agent_teams = false
+coordinator_mode = false
+file_freshness = true

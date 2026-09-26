@@ -1300,7 +1300,9 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdLogoutDescription => "清除 API 密钥并返回设置",
         MessageId::CmdMcpDescription => "打开或管理 MCP 服务器",
         MessageId::CmdMemoryDescription => "查看或管理持久用户记忆文件",
-        MessageId::CmdModeDescription => "切换运行模式、列出/应用模式档：/mode [list|agent|plan|yolo|<name>|off|export <name>]",
+        MessageId::CmdModeDescription => {
+            "切换运行模式、列出/应用模式档：/mode [list|agent|plan|yolo|<name>|off|export <name>]"
+        }
         MessageId::CmdModelDescription => "切换或查看当前模型",
         MessageId::CmdModelsDescription => "列出 API 中可用的模型",
         MessageId::CmdNetworkDescription => "管理网络允许和拒绝规则",
@@ -1643,7 +1645,9 @@ fn hindi(id: MessageId) -> Option<&'static str> {
         MessageId::CmdLogoutDescription => "API key साफ़ कर सेटअप पर लौटें",
         MessageId::CmdMcpDescription => "MCP सर्वर खोलें या प्रबंधित करें",
         MessageId::CmdMemoryDescription => "स्थायी user-memory फ़ाइल देखें या प्रबंधित करें",
-        MessageId::CmdModeDescription => "मोड बदलें या पिकर खोलें: /mode [list|agent|plan|yolo|<name>|off|export <name>]",
+        MessageId::CmdModeDescription => {
+            "मोड बदलें या पिकर खोलें: /mode [list|agent|plan|yolo|<name>|off|export <name>]"
+        }
         MessageId::CmdModelDescription => "वर्तमान मॉडल बदलें या देखें",
         MessageId::CmdModelsDescription => "API से उपलब्ध मॉडल दिखाएँ",
         MessageId::CmdNetworkDescription => "नेटवर्क allow और deny नियम प्रबंधित करें",

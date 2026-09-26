@@ -7,6 +7,29 @@
 # See `docs/CONFIGURATION.md` for how config is loaded (profiles, env overrides, etc.).
 
 # ─────────────────────────────────────────────────────────────────────────────────
+# Configuration preset — start here
+# ─────────────────────────────────────────────────────────────────────────────────
+# One key that baselines most switches below. Values are BASELINES, not
+# overrides: keys you set explicitly in this file always win, and any
+# deviation reports the effective preset as `diy`.
+#
+#   simple      Pi-style minimal: 9 core tools, no index/LSP/memory/snapshots,
+#               no background work
+#   middle      factory default: high-value low-cost features on
+#               (memory, index, LSP, snapshots, cost-saving router)
+#   all         everything stable on: 20 sub-agents, LSP warnings (notebook memory)
+#   experiment  everything on, including preview flags and invasive seams
+#               (vision, knowledge-on-demand, agent teams, coordinator,
+#               context manager, capacity controller, strict tool mode)
+#
+# Also accepted: `plan` (read-only workflow) and custom presets from
+# ~/.codesmith/presets/ or .codesmith/presets/. See `codesmith-tui preset show`
+# for the full tier matrix and docs/PRESETS.md for semantics.
+# The pre-rename spellings (`mode` key, minimal/balanced/maximal) still work
+# as deprecated aliases.
+preset = "middle"
+
+# ─────────────────────────────────────────────────────────────────────────────────
 # Active provider + DeepSeek defaults
 # ─────────────────────────────────────────────────────────────────────────────────
 # Choose which provider to use by default. Per-provider credentials live in the
@@ -174,16 +197,16 @@ approval_policy = "on-request" # on-request | untrusted | never
 sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-access | external-sandbox
 
 # ─────────────────────────────────────────────────────────────────────────────────
-# Named Mode
+# Preset (detailed reference)
 # ─────────────────────────────────────────────────────────────────────────────────
-# Active named mode: a delta bundle of dials in a single TOML file. Built-ins:
-# minimal | balanced | maximal | plan. Your own modes live in
-# ~/.codesmith/modes/*.toml and <workspace>/.codesmith/modes/*.toml (project
-# files override by name). Switch live with `/mode <name>`, list with
-# `/mode list`, snapshot your current dials with `/mode export <name>`.
-# Overridden by the `--mode` CLI flag; see docs/MODES.md.
+# The active preset tier is set by the `preset` key at the top of this file.
+# Custom presets live in ~/.codesmith/presets/*.toml and
+# <workspace>/.codesmith/presets/*.toml (project files override by name).
+# Switch live with `/preset <name>`, list with `/preset list`, snapshot your
+# current dials with `/preset export <name>`. Overridden by the `--preset`
+# CLI flag; see docs/PRESETS.md. The legacy `mode` key is a deprecated alias:
 #
-# mode = "minimal"
+# mode = "minimal"                 # deprecated; equivalent to preset = "simple"
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # External Sandbox Backend (pluggable remote execution)

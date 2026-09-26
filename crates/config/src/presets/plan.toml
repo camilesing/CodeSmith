@@ -1,0 +1,6 @@
+# Plan — design before implementing. Read-only exploration + plan tooling,
+# writing tools gated behind approval.
+name = "plan"
+description = "Design first: read-only exploration, plan tooling, writes gated behind approval."
+app_mode = "plan"
+memory_level = "notebook"

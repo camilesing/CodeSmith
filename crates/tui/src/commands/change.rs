@@ -492,8 +492,7 @@ Previous release.\n";
                 assert!(prompt.contains(expected.lines().next().unwrap()));
                 // The previous-version hint only exists once the changelog
                 // has more than one release.
-                if let Some(prev_ver) = extract_previous_version_number(CODESMITH_TUI_CHANGELOG)
-                {
+                if let Some(prev_ver) = extract_previous_version_number(CODESMITH_TUI_CHANGELOG) {
                     assert!(
                         prompt.contains(&prev_ver),
                         "translation prompt should include previous-version hint: {prompt}"

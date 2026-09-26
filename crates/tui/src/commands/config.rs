@@ -704,26 +704,29 @@ pub fn set_config(app: &mut App, args: Option<&str>) -> CommandResult {
     set_config_value(app, &key, value, should_save)
 }
 
-/// Select the TUI operating mode, or apply a named runtime mode.
+/// Select the TUI operating mode, or apply a named configuration preset.
 ///
-/// - `/mode` — open the picker (app modes + catalog modes)
-/// - `/mode agent|plan|yolo|1|2|3` — legacy app-mode switch
-/// - `/mode list` — list the mode catalog (built-in + user + project)
-/// - `/mode <name>` — apply a named mode (minimal, maximal, …)
-/// - `/mode off` — clear the mode layer (dials keep current values)
-/// - `/mode export [name]` — write current dials to a shareable mode file
-pub fn mode(app: &mut App, arg: Option<&str>) -> CommandResult {
+/// - `/preset` — open the picker (app modes + catalog presets)
+/// - `/preset agent|plan|yolo|1|2|3` — legacy app-mode switch
+/// - `/preset list` — list the preset catalog (built-in + user + project)
+/// - `/preset <name>` — apply a named preset (simple, all, …)
+/// - `/preset off` — clear the preset layer (dials keep current values)
+/// - `/preset export [name]` — write current dials to a shareable preset file
+pub fn preset(app: &mut App, arg: Option<&str>) -> CommandResult {
     let Some(arg) = arg.filter(|value| !value.trim().is_empty()) else {
         return CommandResult::action(AppAction::OpenModePicker);
     };
 
     match arg.trim() {
         "list" | "ls" => {
-            let catalog = crate::modes::catalog_for(app);
-            CommandResult::message(crate::modes::describe(&catalog, app.active_mode.as_deref()))
+            let catalog = crate::presets::catalog_for(app);
+            CommandResult::message(crate::presets::describe(
+                &catalog,
+                app.active_preset.as_deref(),
+            ))
         }
         "off" | "none" => {
-            let summary = crate::modes::clear(app);
+            let summary = crate::presets::clear(app);
             CommandResult::message(summary.render())
         }
         sub if sub.starts_with("export") => {
@@ -738,22 +741,23 @@ pub fn mode(app: &mut App, arg: Option<&str>) -> CommandResult {
                 },
                 None => (None, false),
             };
-            match crate::modes::export(app, name, force) {
+            match crate::presets::export(app, name, force) {
                 Ok(msg) => CommandResult::message(msg),
                 Err(err) => CommandResult::error(err.to_string()),
             }
         }
         legacy => {
-            // Catalog modes win over legacy app-mode tokens so `/mode plan`
-            // applies the full mode delta (app mode + memory + any tools),
-            // not just the AppMode switch. Unknown names fall through to
-            // the legacy parser for agent/yolo/1/2/3, then error.
-            match crate::modes::apply(app, legacy) {
+            // Catalog presets win over legacy app-mode tokens so
+            // `/preset plan` applies the full preset delta (app mode +
+            // memory + any tools), not just the AppMode switch. Unknown
+            // names fall through to the legacy parser for
+            // agent/yolo/1/2/3, then error.
+            match crate::presets::apply(app, legacy) {
                 Ok(summary) => CommandResult::message(summary.render()),
                 Err(_) => match parse_mode_arg(legacy) {
                     Some(mode) => CommandResult::message(switch_mode(app, mode)),
                     None => CommandResult::error(format!(
-                        "unknown mode '{legacy}'. Usage: /mode [list|agent|plan|yolo|<name>|off|export <name>]"
+                        "unknown preset '{legacy}'. Usage: /preset [list|agent|plan|yolo|<name>|off|export <name>]"
                     )),
                 },
             }
@@ -1530,8 +1534,8 @@ mod tests {
         let mut app = create_test_app();
         // Switch to Agent first to guarantee a clean starting state regardless of
         // user settings on the host machine.
-        let _ = mode(&mut app, Some("agent"));
-        let result = mode(&mut app, Some("yolo"));
+        let _ = preset(&mut app, Some("agent"));
+        let result = preset(&mut app, Some("yolo"));
         assert!(result.message.unwrap().contains("Switched to YOLO mode"));
         assert!(app.allow_shell);
         assert!(app.trust_mode);
@@ -1543,18 +1547,18 @@ mod tests {
     #[test]
     fn test_mode_switch_command_accepts_names_and_numbers() {
         let mut app = create_test_app();
-        let _ = mode(&mut app, Some("agent"));
+        let _ = preset(&mut app, Some("agent"));
         assert_eq!(app.mode, AppMode::Agent);
-        let _ = mode(&mut app, Some("2"));
+        let _ = preset(&mut app, Some("2"));
         assert_eq!(app.mode, AppMode::Plan);
-        let _ = mode(&mut app, Some("3"));
+        let _ = preset(&mut app, Some("3"));
         assert_eq!(app.mode, AppMode::Yolo);
     }
 
     #[test]
     fn test_mode_without_arg_opens_picker() {
         let mut app = create_test_app();
-        let result = mode(&mut app, None);
+        let result = preset(&mut app, None);
         assert!(result.message.is_none());
         assert!(matches!(result.action, Some(AppAction::OpenModePicker)));
     }
@@ -1562,9 +1566,9 @@ mod tests {
     #[test]
     fn test_mode_rejects_unknown_value() {
         let mut app = create_test_app();
-        let result = mode(&mut app, Some("fast"));
+        let result = preset(&mut app, Some("fast"));
         assert!(result.is_error);
-        assert!(result.message.unwrap().contains("Usage: /mode"));
+        assert!(result.message.unwrap().contains("Usage: /preset"));
     }
 
     /// Guards + redirects settings/config persistence so mode switches in
@@ -1586,34 +1590,46 @@ mod tests {
     #[test]
     fn test_mode_list_describes_catalog() {
         let mut app = create_test_app();
-        let result = mode(&mut app, Some("list"));
+        let result = preset(&mut app, Some("list"));
         assert!(!result.is_error);
         let msg = result.message.unwrap();
-        assert!(msg.contains("minimal"), "{msg}");
-        assert!(msg.contains("maximal"), "{msg}");
+        assert!(msg.contains("simple"), "{msg}");
+        assert!(msg.contains("experiment"), "{msg}");
         assert!(msg.contains("built-in"), "{msg}");
     }
 
     #[test]
-    fn test_mode_applies_named_mode_minimal() {
+    fn test_preset_applies_simple_tier() {
         let _env = guard_settings_env();
         let mut app = create_test_app();
         app.reasoning_effort = crate::tui::app::ReasoningEffort::Max;
-        let result = mode(&mut app, Some("minimal"));
+        let result = preset(&mut app, Some("simple"));
         assert!(!result.is_error);
-        assert_eq!(app.active_mode.as_deref(), Some("minimal"));
-        assert_eq!(app.reasoning_effort, crate::tui::app::ReasoningEffort::Off);
+        assert_eq!(app.active_preset.as_deref(), Some("simple"));
+        assert_eq!(
+            app.reasoning_effort,
+            crate::tui::app::ReasoningEffort::Medium
+        );
         assert!(app.active_allowed_tools.is_some());
+    }
+
+    #[test]
+    fn test_preset_minimal_alias_maps_to_simple() {
+        let _env = guard_settings_env();
+        let mut app = create_test_app();
+        let result = preset(&mut app, Some("minimal"));
+        assert!(!result.is_error);
+        assert_eq!(app.active_preset.as_deref(), Some("simple"));
     }
 
     #[test]
     fn test_mode_off_clears_layer() {
         let _env = guard_settings_env();
         let mut app = create_test_app();
-        let _ = mode(&mut app, Some("minimal"));
-        let result = mode(&mut app, Some("off"));
+        let _ = preset(&mut app, Some("simple"));
+        let result = preset(&mut app, Some("off"));
         assert!(!result.is_error);
-        assert!(app.active_mode.is_none());
+        assert!(app.active_preset.is_none());
         assert!(app.active_allowed_tools.is_none());
     }
 
@@ -1621,13 +1637,13 @@ mod tests {
     fn test_mode_plan_applies_catalog_not_legacy_switch() {
         let _env = guard_settings_env();
         let mut app = create_test_app();
-        let _ = mode(&mut app, Some("agent"));
-        let result = mode(&mut app, Some("plan"));
+        let _ = preset(&mut app, Some("agent"));
+        let result = preset(&mut app, Some("plan"));
         assert!(!result.is_error);
-        // The catalog plan mode wins over the bare AppMode switch: the
-        // mode layer is recorded and notebook memory is dialled in.
+        // The catalog plan preset wins over the bare AppMode switch:
+        // the preset layer is recorded and notebook memory is dialled in.
         assert_eq!(app.mode, AppMode::Plan);
-        assert_eq!(app.active_mode.as_deref(), Some("plan"));
+        assert_eq!(app.active_preset.as_deref(), Some("plan"));
         assert!(app.use_memory);
         assert!(!app.kod_enabled);
     }
@@ -1636,13 +1652,13 @@ mod tests {
     fn test_mode_legacy_names_still_work() {
         let _env = guard_settings_env();
         let mut app = create_test_app();
-        let _ = mode(&mut app, Some("agent"));
+        let _ = preset(&mut app, Some("agent"));
         assert_eq!(app.mode, AppMode::Agent);
-        let result = mode(&mut app, Some("yolo"));
+        let result = preset(&mut app, Some("yolo"));
         assert!(result.message.unwrap().contains("YOLO"));
         assert_eq!(app.mode, AppMode::Yolo);
         assert!(
-            app.active_mode.is_none(),
+            app.active_preset.is_none(),
             "legacy switch must not set a named mode"
         );
     }
@@ -1653,23 +1669,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut app = create_test_app();
         app.workspace = dir.path().to_path_buf();
-        let result = mode(&mut app, Some("export my-focus"));
+        let result = preset(&mut app, Some("export my-focus"));
         assert!(!result.is_error, "{:?}", result.message);
-        let path = dir.path().join(".codesmith/modes/my-focus.toml");
+        let path = dir.path().join(".codesmith/presets/my-focus.toml");
         assert!(path.exists());
         let body = fs::read_to_string(&path).unwrap();
         assert!(body.contains("name = \"my-focus\""), "{body}");
 
-        // The exported file becomes a switchable project mode.
-        let result = mode(&mut app, Some("my-focus"));
+        // The exported file becomes a switchable project preset.
+        let result = preset(&mut app, Some("my-focus"));
         assert!(!result.is_error, "{:?}", result.message);
-        assert_eq!(app.active_mode.as_deref(), Some("my-focus"));
+        assert_eq!(app.active_preset.as_deref(), Some("my-focus"));
     }
 
     #[test]
     fn test_mode_export_requires_name() {
         let mut app = create_test_app();
-        let result = mode(&mut app, Some("export"));
+        let result = preset(&mut app, Some("export"));
         assert!(result.is_error);
     }
 

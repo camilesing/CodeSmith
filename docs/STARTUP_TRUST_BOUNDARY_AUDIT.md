@@ -238,7 +238,7 @@ These are implementation candidates, not changes made by this audit.
 5. **Docs cleanup**
    - Update `docs/CONFIGURATION.md` to describe actual `.env` timing/source and
      project config denylist.
-   - Update `docs/MODES.md` so `/trust` no-arg is status, `/trust on` enables
+   - Update `docs/PRESETS.md` so `/trust` no-arg is status, `/trust on` enables
      runtime trust mode, and `/trust add` is the narrower external path option.
 
 ## Verification checklist
