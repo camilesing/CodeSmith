@@ -639,9 +639,7 @@ impl HostAgentExecutor {
                     // never rewritten, and the source label is byte-stable,
                     // so the KV prefix-cache discipline is untouched. Local
                     // tools pass through unchanged.
-                    crate::sanitization::wrap_external_tool_content(
-                        &o.name, &o.input, &r.content,
-                    ),
+                    crate::sanitization::wrap_external_tool_content(&o.name, &o.input, &r.content),
                     !r.success,
                 ),
                 Err(e) => (format!("Error: {e}"), true),

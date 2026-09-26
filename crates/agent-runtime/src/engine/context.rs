@@ -362,6 +362,7 @@ pub fn extract_compaction_summary_prompt(prompt: Option<SystemPrompt>) -> Option
     }
 }
 
+pub use crate::compaction::estimate_input_tokens_anchored;
 /// Conservative input-token estimate (messages + system + framing) shared
 /// with the compaction pipeline.
 ///
@@ -373,7 +374,6 @@ pub fn extract_compaction_summary_prompt(prompt: Option<SystemPrompt>) -> Option
 /// Heuristic counter, and installing a tokenizer.json via
 /// `[context].tokenizer_path` sharpens both parts equally.
 pub use crate::compaction::estimate_input_tokens_conservative;
-pub use crate::compaction::estimate_input_tokens_anchored;
 
 /// Context windows at or above this size reserve the full
 /// [`TURN_MAX_OUTPUT_TOKENS`] (262K) when computing the internal input budget,

@@ -16,39 +16,61 @@ Overrides:
 
 If both are set, `--config` wins. Environment variable overrides are applied after the file is loaded.
 
+Consolidated resolution order (highest first):
+
+1. CLI flags (`--provider`, `--model`, `--approval-policy`, …)
+2. config file values — the selected `[profiles.<name>]` profile over the
+   file's top-level keys, then the per-project overlay merged on top
+3. API-key fallbacks after any explicit CLI `--api-key`:
+   `config -> keyring -> env`
+4. managed config (`managed_config_path`, default
+   `/etc/codesmith/managed_config.toml`), applied after user + env values
+5. requirements validation (`requirements_path`, default
+   `/etc/codesmith/requirements.toml`), which can reject the final result
+   at startup
+
 ### Per-project overlay (#485)
 
 When the TUI starts in a workspace that contains a
 `<workspace>/.codesmith/config.toml` file, the values declared in that
-file are merged on top of the global config. Legacy
-`<workspace>/.codesmith/config.toml` files are still read when the
-CodeSmith path is absent. This lets a repo lock its own provider,
-model, sandbox policy, or approval policy without touching the user's
-`~/.codesmith/config.toml`. Pass
-`--no-project-config` to skip the overlay for one launch.
+file are merged on top of the global config. The overlay is only read
+after the workspace passes the startup trust boundary — the same gate
+that admits the workspace `.env` file — so an untrusted clone cannot
+steer initialization. Pass `--no-project-config` to skip the overlay for
+one launch.
 
 Supported keys in the project overlay (top-level fields only):
 
 | Key | Effect |
 |---|---|
-| `provider` | switch backend (e.g. `"nvidia-nim"` for an enterprise repo) |
 | `model` | override `default_text_model` |
-| `api_key` | use a per-repo key (typically read from `.env`, **not committed**) |
-| `base_url` | point at a self-hosted endpoint |
 | `reasoning_effort` | force `"high"` / `"max"` for a complex repo |
-| `approval_policy` | `"never"` / `"on-request"` / `"untrusted"` for opinionated repos |
-| `sandbox_mode` | `"read-only"` / `"workspace-write"` / `"danger-full-access"` |
-| `mcp_config_path` | per-repo MCP server set |
+| `approval_policy` | tighten only — see below |
+| `sandbox_mode` | tighten only — see below |
 | `notes_path` | keep notes in-repo |
 | `personality` | per-repo voice/tone overlay (`"calm"` / `"playful"`) |
 | `max_subagents` | clamp concurrency for a constrained repo (clamped to 1..=20) |
 | `allow_shell` | gate shell tool access on `false` |
+| `instructions` | **replaces** the user's array wholesale; `instructions = []` clears it for this repo |
 
-The overlay is intentionally narrow — it covers the fields a repo
-maintainer is most likely to want to standardize across contributors.
-Other settings (skills_dir, hooks, capacity, retry, etc.) stay
-user-global. If your repo needs more, file an issue describing the
-specific use case.
+`approval_policy` and `sandbox_mode` may only move in the tightening
+direction: a project can turn `on-request` into `never`, or
+`workspace-write` into `read-only`, but never loosen the user's setting;
+`external-sandbox` is accepted only when the user config already uses it.
+Non-tightening values are ignored with a stderr warning. The `codesmith`
+facade applies the same rules to its own file reads and additionally
+honours `output_mode`, `log_level`, the `[tools]` table, and per-provider
+`model` overrides from the project file.
+
+Denied at project scope (#417): `provider`, `api_key`, `base_url`, and
+`mcp_config_path` are ignored with a stderr warning. A malicious project
+file could otherwise exfiltrate prompts to a look-alike endpoint by
+swapping the user's credentials and target host, or point the MCP loader
+at a config that spawns arbitrary stdio servers under the user's
+identity. Everything else (credentials, endpoints, `custom_provider`,
+telemetry, `[network]`, `[skills]`, `[lsp].servers`, `[edit]`,
+`[snapshots]`, …) stays user-global. If your repo needs more, file an
+issue describing the specific use case.
 
 The `codesmith` facade and `codesmith-tui` binary share the same config file for
 DeepSeek auth and model defaults. `codesmith auth set --provider deepseek` (and
@@ -66,8 +88,8 @@ provider's keyring entry.
 For hosted, generic OpenAI-compatible, or self-hosted providers, set
 `provider = "nvidia-nim"`, `"openai"`, `"atlascloud"`, `"wanjie-ark"`,
 `"volcengine"`, `"openrouter"`, `"xiaomi-mimo"`, `"novita"`, `"fireworks"`,
-`"siliconflow"`, `"moonshot"`, `"sglang"`, `"vllm"`, or `"ollama"` or pass
-`codesmith --provider <name>`.
+`"siliconflow"`, `"moonshot"`, `"sglang"`, `"vllm"`, `"ollama"`, or
+`"anthropic"`, or pass `codesmith --provider <name>`.
 For the provider-by-provider registry, including auth variables, default base
 URLs, model IDs, and capability metadata, see [PROVIDERS.md](PROVIDERS.md).
 The facade saves provider credentials to the shared user config and forwards
@@ -122,6 +144,34 @@ legacy top-level `base_url`, so the OpenAI-compatible provider receives it.
 `default_text_model` is the model ID sent to the gateway; if you keep several
 provider tables in one config, `[providers.openai].model` can be used as the
 OpenAI-provider-specific override.
+
+#### Custom provider registry (`[[providers.custom]]`)
+
+When a gateway needs its own provider identity rather than borrowing
+`openai`, declare it under `[[providers.custom]]` and select it with the
+top-level `custom_provider` selector:
+
+```toml
+custom_provider = "my-gateway"
+
+[[providers.custom]]
+id = "my-gateway"
+api_key = "YOUR_GATEWAY_KEY"
+base_url = "https://gw.internal.example/v1"
+model = "glm-5"
+# auth_mode = "bearer"                    # optional
+# http_headers = { "X-Gateway-Route" = "dev" }
+# vision = true                           # optional; default false
+```
+
+Rules: `id` is required and must be unique; it must not collide with a
+builtin provider name — the builtin selector stays authoritative. Each
+entry is self-contained (own credentials, endpoint, model, headers), and
+setting `custom_provider` overrides `provider` for that process. Custom
+gateways have no entry in the static vision matrix, so inline images need
+an explicit `vision = true`. The facade writes individual fields with
+`codesmith config set providers.custom.<id>.<field> <value>`; whole-table
+rewrites are not supported.
 
 Local HTTP endpoints such as Ollama, SGLang, and vLLM are allowed by default
 when they use localhost or loopback addresses. For a non-local `http://`
@@ -188,8 +238,7 @@ Same-provider setups reuse the main client with a per-request model
 override; a different `provider` builds a dedicated second client (for
 example main = anthropic, utility = deepseek) and then needs its own
 `api_key` — one vendor's key is never sent to another. The model id can
-also be set with `CODESMITH_UTILITY_MODEL` (legacy alias
-`CODESMITH_UTILITY_MODEL`).
+also be set with the `CODESMITH_UTILITY_MODEL` environment variable.
 
 ### Code Index
 
@@ -330,13 +379,19 @@ fallbacks after saved config and keyring credentials.
 App-level variables all use the `CODESMITH_*` prefix:
 
 - `CODESMITH_PROVIDER` —
-  `deepseek|nvidia-nim|openai|atlascloud|wanjie-ark|openrouter|xiaomi-mimo|novita|fireworks|siliconflow|moonshot|sglang|vllm|ollama`
+  `deepseek|nvidia-nim|openai|atlascloud|wanjie-ark|volcengine|openrouter|xiaomi-mimo|novita|fireworks|siliconflow|moonshot|sglang|vllm|ollama|anthropic`
 - `CODESMITH_MODEL` — default model for the active provider
 - `CODESMITH_BASE_URL` — base URL for the active provider
 
 Remaining app-level variables:
 
 - `CODESMITH_API_KEY`
+- `CODESMITH_CUSTOM_PROVIDER` (selects a `[[providers.custom]]` entry by id; overrides `CODESMITH_PROVIDER`)
+- `CODESMITH_AUTH_MODE` (`api_key` | `bearer` | `none` | `off` | `kimi_oauth`; mirrors the `auth_mode` config key)
+- `CODESMITH_PROFILE` (selects a `[profiles.<name>]` entry)
+- `CODESMITH_OUTPUT_MODE`
+- `CODESMITH_TELEMETRY` (`1`/`true` enables local-only telemetry)
+- `CODESMITH_YOLO` (`1`/`true` auto-approves every tool call)
 - `CODESMITH_HTTP_HEADERS` (custom model request headers, comma-separated `name=value` pairs)
 - `CODESMITH_DEFAULT_TEXT_MODEL` (extra legacy alias of `CODESMITH_MODEL`)
 - `NVIDIA_API_KEY` or `NVIDIA_NIM_API_KEY` (preferred when provider is `nvidia-nim`; falls back to `CODESMITH_API_KEY` / `DEEPSEEK_API_KEY`)
@@ -378,15 +433,33 @@ Remaining app-level variables:
 - `OLLAMA_BASE_URL`
 - `OLLAMA_MODEL`
 - `OLLAMA_API_KEY` (optional; many localhost Ollama servers do not require auth)
+- `ANTHROPIC_API_KEY` (alias `CLAUDE_API_KEY`)
+- `ANTHROPIC_BASE_URL`
 - `CODESMITH_LOG_LEVEL` or `RUST_LOG` (`info`/`debug`/`trace` enables lightweight verbose logs)
 - `CODESMITH_SKILLS_DIR`
 - `CODESMITH_MCP_CONFIG`
 - `CODESMITH_NOTES_PATH`
 - `CODESMITH_MEMORY` (`1|on|true|yes|y|enabled` turns user memory on)
 - `CODESMITH_MEMORY_PATH`
+- `CODESMITH_DISABLE_AUTO_MEMORY` (`1`/`true` opts out of the on-by-default user memory; highest-priority step of the memory cascade)
+- `CODESMITH_SIMPLE` (`1`/`true` bare/simple mode — trims features and closes memory)
+- `CODESMITH_REMOTE` / `CODESMITH_REMOTE_MEMORY_DIR` (remote mode; memory stays on only when an explicit memory dir is set)
 - `CODESMITH_ALLOW_SHELL` (`1`/`true` enables)
 - `CODESMITH_APPROVAL_POLICY` (`on-request|untrusted|never`)
 - `CODESMITH_SANDBOX_MODE` (`read-only|workspace-write|danger-full-access|external-sandbox`)
+- `CODESMITH_SANDBOX_BACKEND` / `CODESMITH_SANDBOX_URL` / `CODESMITH_SANDBOX_API_KEY`
+  (external sandbox backend: `none` | `opensandbox`; URL defaults to
+  `http://localhost:8080`, key is sent as a Bearer token)
+- `CODESMITH_SANDBOX_ENABLED`, `CODESMITH_SANDBOX_FAIL_IF_UNAVAILABLE`,
+  `CODESMITH_SANDBOX_ENABLED_PLATFORMS`, `CODESMITH_SANDBOX_EXCLUDED_COMMANDS`,
+  `CODESMITH_AUTO_ALLOW_BASH_IF_SANDBOXED`, `CODESMITH_PREFER_BWRAP`
+  (field-level overrides of the `[sandbox]` table; see [SANDBOX.md](SANDBOX.md))
+- `CODESMITH_SEARCH_PROVIDER` / `CODESMITH_SEARCH_API_KEY` (override the
+  `[search]` table)
+- `CODESMITH_CORS_ORIGINS` (comma-separated extra CORS origins for
+  `serve --http`; between `--cors-origin` and `[runtime_api].cors_origins`)
+- `CODESMITH_PROVIDERS_MANIFEST` (override the bundled `providers.toml`
+  manifest path)
 - `CODESMITH_MANAGED_CONFIG_PATH`
 - `CODESMITH_REQUIREMENTS_PATH`
 - `CODESMITH_MAX_SUBAGENTS` (clamped to `1..=20`)
@@ -639,6 +712,21 @@ Common settings keys:
   also kept locally for composer history search)
 - `default_model` (model name override)
 
+### Companion files
+
+- `~/.codesmith/tui.toml` — TUI-only preferences decoupled from agent and
+  project config so they survive project switches (#437): `theme`
+  (default `"dark"`), `font_size` (`0` = terminal default, forwarded to
+  supporting front-ends), and `[keybinds]` chord overrides such as
+  `submit = "ctrl+enter"` / `new_line = "enter"`. When the file is
+  absent, values fall back to the `[tui]` section of `config.toml` and
+  then to built-in defaults. Note: the loader is defined but not yet
+  wired into startup (#657) — editing this file has no effect yet.
+- `providers.toml` — the bundled builtin-provider manifest (one entry per
+  provider: id, backend, base URL, default model), read once per
+  process. Override its path with `CODESMITH_PROVIDERS_MANIFEST` to test
+  an alternate registry.
+
 Only `agent`, `plan`, and `yolo` are visible modes in the UI. Switch between
 them with `/mode`. For compatibility, older settings files with
 `default_mode = "normal"` still load as `agent`.
@@ -694,14 +782,48 @@ If you are upgrading from older releases:
 
 ### Core keys (used by the TUI/engine)
 
-- `provider` (string, optional): `deepseek` (default), `nvidia-nim`, `openai`, `atlascloud`, `wanjie-ark`, `openrouter`, `xiaomi-mimo`, `novita`, `fireworks`, `siliconflow`, `moonshot`, `sglang`, `vllm`, or `ollama`. Legacy `deepseek-cn` configs are still accepted as an alias for `deepseek`; DeepSeek uses the same official host [`https://api.deepseek.com`](https://api-docs.deepseek.com/) worldwide. `nvidia-nim` targets NVIDIA's NIM-hosted DeepSeek endpoints through `https://integrate.api.nvidia.com/v1`; `openai` targets a generic OpenAI-compatible endpoint, defaulting to `https://api.openai.com/v1`; `atlascloud` targets AtlasCloud's OpenAI-compatible endpoint at `https://api.atlascloud.ai/v1`; `wanjie-ark` targets Wanjie Ark's OpenAI-compatible endpoint at `https://maas-openapi.wanjiedata.com/api/v1`; `openrouter` targets `https://openrouter.ai/api/v1`; `xiaomi-mimo` targets Xiaomi MiMo's OpenAI-compatible endpoint at `https://api.xiaomimimo.com/v1`; `novita` targets `https://api.novita.ai/v1`; `fireworks` targets `https://api.fireworks.ai/inference/v1`; `siliconflow` targets SiliconFlow, defaulting to `https://api.siliconflow.com/v1`; `moonshot` targets Moonshot/Kimi, defaulting to `https://api.moonshot.ai/v1`; `sglang` targets a self-hosted OpenAI-compatible endpoint, defaulting to `http://localhost:30000/v1`; `vllm` targets a self-hosted vLLM OpenAI-compatible endpoint, defaulting to `http://localhost:8000/v1`; `ollama` targets Ollama's OpenAI-compatible endpoint, defaulting to `http://localhost:11434/v1`.
+- `provider` (string, optional): `deepseek` (default), `nvidia-nim`, `openai`, `atlascloud`, `wanjie-ark`, `openrouter`, `xiaomi-mimo`, `novita`, `fireworks`, `siliconflow`, `moonshot`, `sglang`, `vllm`, `ollama`, `volcengine`, or `anthropic`. `volcengine` targets Volcengine Ark's OpenAI-compatible endpoint (env aliases `VOLCENGINE_API_KEY` / `VOLCENGINE_ARK_API_KEY` / `ARK_API_KEY`); `anthropic` targets the Anthropic Messages API (env aliases `ANTHROPIC_API_KEY` / `CLAUDE_API_KEY`). Legacy `deepseek-cn` configs are still accepted as an alias for `deepseek`; DeepSeek uses the same official host [`https://api.deepseek.com`](https://api-docs.deepseek.com/) worldwide. `nvidia-nim` targets NVIDIA's NIM-hosted DeepSeek endpoints through `https://integrate.api.nvidia.com/v1`; `openai` targets a generic OpenAI-compatible endpoint, defaulting to `https://api.openai.com/v1`; `atlascloud` targets AtlasCloud's OpenAI-compatible endpoint at `https://api.atlascloud.ai/v1`; `wanjie-ark` targets Wanjie Ark's OpenAI-compatible endpoint at `https://maas-openapi.wanjiedata.com/api/v1`; `openrouter` targets `https://openrouter.ai/api/v1`; `xiaomi-mimo` targets Xiaomi MiMo's OpenAI-compatible endpoint at `https://api.xiaomimimo.com/v1`; `novita` targets `https://api.novita.ai/v1`; `fireworks` targets `https://api.fireworks.ai/inference/v1`; `siliconflow` targets SiliconFlow, defaulting to `https://api.siliconflow.com/v1`; `moonshot` targets Moonshot/Kimi, defaulting to `https://api.moonshot.ai/v1`; `sglang` targets a self-hosted OpenAI-compatible endpoint, defaulting to `http://localhost:30000/v1`; `vllm` targets a self-hosted vLLM OpenAI-compatible endpoint, defaulting to `http://localhost:8000/v1`; `ollama` targets Ollama's OpenAI-compatible endpoint, defaulting to `http://localhost:11434/v1`.
+- `custom_provider` (string, optional): id of a `[[providers.custom]]`
+  entry. When set, it overrides `provider` and routes the session through
+  that self-contained gateway definition — see
+  [Custom provider registry](#custom-provider-registry-providerscustom).
 - `api_key` (string, required for hosted providers): must be non-empty for DeepSeek/hosted providers (or set the provider API key env var). Self-hosted SGLang, vLLM, and Ollama can omit it.
+- `auth_mode` (string, optional): authentication style for the active
+  provider. `api_key` (or `bearer`) forces key-bearing auth even for
+  loopback endpoints; `none` / `off` / `anonymous` disables it; `kimi` /
+  `kimi_oauth` switches Moonshot/Kimi to OAuth instead of a static key.
+  Unset keeps the provider default — self-hosted and loopback endpoints
+  skip the secret store unless a key is explicitly requested. Per-provider
+  tables (`[providers.<name>].auth_mode`) accept the same values, and
+  `CODESMITH_AUTH_MODE` overrides from the environment.
 - `base_url` (string, optional): defaults to `https://api.deepseek.com/beta` for DeepSeek's OpenAI-compatible Chat Completions API, including legacy `provider = "deepseek-cn"` configs. Other defaults are `https://integrate.api.nvidia.com/v1` for `nvidia-nim`, `https://api.openai.com/v1` for `openai`, `https://api.atlascloud.ai/v1` for `atlascloud`, `https://maas-openapi.wanjiedata.com/api/v1` for `wanjie-ark`, `https://openrouter.ai/api/v1` for `openrouter`, `https://api.xiaomimimo.com/v1` for `xiaomi-mimo`, `https://api.novita.ai/v1` for `novita`, `https://api.fireworks.ai/inference/v1` for `fireworks`, `https://api.siliconflow.com/v1` for `siliconflow`, `https://api.moonshot.ai/v1` for `moonshot`, `http://localhost:30000/v1` for `sglang`, `http://localhost:8000/v1` for `vllm`, and `http://localhost:11434/v1` for `ollama`. Set `https://api.deepseek.com` or `https://api.deepseek.com/v1` explicitly to opt out of DeepSeek beta features.
-- `default_text_model` (string, optional): defaults to `deepseek-v4-pro` for DeepSeek and generic OpenAI-compatible endpoints, `deepseek-ai/deepseek-v4-pro` for NVIDIA NIM, `deepseek-ai/deepseek-v4-flash` for AtlasCloud, `deepseek-reasoner` for Wanjie Ark, `deepseek/deepseek-v4-pro` for OpenRouter and Novita, `mimo-v2.5-pro` for Xiaomi MiMo, `accounts/fireworks/models/deepseek-v4-pro` for Fireworks, `deepseek-ai/DeepSeek-V4-Pro` for SiliconFlow, `kimi-k2.6` for Moonshot, `deepseek-ai/DeepSeek-V4-Pro` for SGLang/vLLM, and `deepseek-coder:1.3b` for Ollama. Current public DeepSeek IDs are `deepseek-v4-pro` and `deepseek-v4-flash`, both with 1M context windows, 384K max output, and thinking mode enabled by default. Legacy `deepseek-chat` and `deepseek-reasoner` remain compatibility aliases for `deepseek-v4-flash` until July 24, 2026, except SiliconFlow maps `deepseek-reasoner` and `deepseek-r1` to its Pro model while `deepseek-chat` and `deepseek-v3` map to Flash. Provider-specific mappings translate `deepseek-v4-pro` / `deepseek-v4-flash` to each provider's model ID where supported. OpenRouter also recognizes recent large IDs such as `arcee-ai/trinity-large-thinking`, `qwen/qwen3.7-max`, `xiaomi/mimo-v2.5-pro`, `qwen/qwen3.6-35b-a3b`, `google/gemma-4-31b-it`, and `moonshotai/kimi-k2.6`. Generic `openai`, `atlascloud`, `wanjie-ark`, `xiaomi-mimo`, and Ollama model IDs are passed through unchanged. OpenRouter and SiliconFlow provider configs with a custom `base_url` also preserve explicit model values, which lets OpenAI-compatible gateways accept bare model IDs. Use `/models` or `codesmith models` to discover live IDs from your configured endpoint. `CODESMITH_MODEL` overrides this for a single process; `CODESMITH_MODEL` is the legacy alias.
+- `default_text_model` (string, optional): defaults to `deepseek-v4-pro` for DeepSeek and generic OpenAI-compatible endpoints, `deepseek-ai/deepseek-v4-pro` for NVIDIA NIM, `deepseek-ai/deepseek-v4-flash` for AtlasCloud, `deepseek-reasoner` for Wanjie Ark, `deepseek/deepseek-v4-pro` for OpenRouter and Novita, `mimo-v2.5-pro` for Xiaomi MiMo, `accounts/fireworks/models/deepseek-v4-pro` for Fireworks, `deepseek-ai/DeepSeek-V4-Pro` for SiliconFlow, `kimi-k2.6` for Moonshot, `deepseek-ai/DeepSeek-V4-Pro` for SGLang/vLLM, and `deepseek-coder:1.3b` for Ollama. Current public DeepSeek IDs are `deepseek-v4-pro` and `deepseek-v4-flash`, both with 1M context windows, 384K max output, and thinking mode enabled by default. Legacy `deepseek-chat` and `deepseek-reasoner` remain compatibility aliases for `deepseek-v4-flash` until July 24, 2026, except SiliconFlow maps `deepseek-reasoner` and `deepseek-r1` to its Pro model while `deepseek-chat` and `deepseek-v3` map to Flash. Provider-specific mappings translate `deepseek-v4-pro` / `deepseek-v4-flash` to each provider's model ID where supported. OpenRouter also recognizes recent large IDs such as `arcee-ai/trinity-large-thinking`, `qwen/qwen3.7-max`, `xiaomi/mimo-v2.5-pro`, `qwen/qwen3.6-35b-a3b`, `google/gemma-4-31b-it`, and `moonshotai/kimi-k2.6`. Generic `openai`, `atlascloud`, `wanjie-ark`, `xiaomi-mimo`, and Ollama model IDs are passed through unchanged. OpenRouter and SiliconFlow provider configs with a custom `base_url` also preserve explicit model values, which lets OpenAI-compatible gateways accept bare model IDs. Use `/models` or `codesmith models` to discover live IDs from your configured endpoint. `CODESMITH_MODEL` overrides this for a single process; `CODESMITH_DEFAULT_TEXT_MODEL` is the legacy alias.
+- `model` (string, optional): generic model override slot consumed by the
+  `codesmith` facade and the project overlay; the facade forwards the
+  resolved model to the TUI as `CODESMITH_MODEL`. Prefer the explicit
+  `default_text_model` or `[providers.<name>].model` slots in hand-written
+  configs.
+- `output_mode` / `log_level` (string, optional): facade-level output and
+  logging knobs stored in the same file; the TUI reads them from the
+  environment (`CODESMITH_OUTPUT_MODE`, `CODESMITH_LOG_LEVEL` / `RUST_LOG`).
+  Both are project-overlay-safe (a repo may set them).
+- `strict_tool_mode` (bool, optional): when `true`, sends
+  `tool_choice: "required"` and opts compatible function schemas into the
+  DeepSeek beta strict mode. Schemas with root alternatives stay
+  non-strict so optional/one-of tool semantics are unchanged.
 - `reasoning_effort` (string, optional): `off`, `low`, `medium`, `high`, or `max`; defaults to the configured UI tier. DeepSeek Platform receives top-level `thinking` / `reasoning_effort` fields. NVIDIA NIM receives equivalent settings through `chat_template_kwargs`.
 - `allow_shell` (bool, optional): defaults to `true` (sandboxed).
 - `telemetry` (bool, optional, default `false`): opt-in **local-only** telemetry. When `true`, capacity-decision analytics events are written to `~/.codesmith/telemetry/events.jsonl` after the workspace trust boundary passes. Never networked; the sink queues in-memory pre-trust and attaches (writes) only post-trust, so no workspace-controlled data reaches disk before consent. Events carry an ephemeral per-session id, not the durable thread id.
 - `approval_policy` (string, optional): `on-request`, `untrusted`, or `never`. Runtime `approval_mode` editing in `/config` also accepts `on-request` and `untrusted` aliases.
+- `yolo` (bool, optional, default `false`): YOLO mode — auto-approve every
+  tool call for the session. Equivalent to `--yolo` on the CLI or
+  `CODESMITH_YOLO=1` in the environment.
+- `mode` (string, optional): named runtime mode activated at startup
+  (`minimal`, `balanced`, `maximal`, `plan`, or a user mode from
+  `~/.codesmith/modes/*.toml`). The `--mode` CLI flag wins over this key.
+  A mode bundles an app mode, reasoning effort, approval/sandbox policy,
+  memory level, tool include/exclude lists, and feature overrides — see
+  [MODES.md](MODES.md).
 - `sandbox_mode` (string, optional): `read-only`, `workspace-write`, `danger-full-access`, `external-sandbox`.
   Platform support is not identical. macOS uses Seatbelt for policy
   enforcement. Linux support is helper-gated around Landlock or optional
@@ -715,9 +837,26 @@ If you are upgrading from older releases:
   `prefer_bwrap`, plus `[sandbox.filesystem]` and `[sandbox.network]` tables.
   Shell results report both requested and effective sandbox metadata so fallback
   behavior is explicit.
+- `sandbox_backend` / `sandbox_url` / `sandbox_api_key` (optional):
+  external sandbox backend. `sandbox_backend` is `none` (default) or
+  `opensandbox`; when set to `opensandbox`, `exec_shell` routes commands
+  through `POST {sandbox_url}/v1/sandbox/run` (default
+  `http://localhost:8080`) with `sandbox_api_key` as the Bearer token,
+  instead of spawning local sandboxed processes. Environment equivalents:
+  `CODESMITH_SANDBOX_BACKEND` / `CODESMITH_SANDBOX_URL` /
+  `CODESMITH_SANDBOX_API_KEY`. See [SANDBOX.md](SANDBOX.md).
 - `managed_config_path` (string, optional): managed config file loaded after user/env config.
 - `requirements_path` (string, optional): requirements file used to enforce allowed approval/sandbox values.
 - `max_subagents` (int, optional): defaults to `10` and is clamped to `1..=20`.
+- `stream_idle_timeout_secs` (int, optional, default `120`): streaming idle
+  watchdog — the maximum silence between two consecutive stream events
+  before the stream is declared silently stalled and aborted into the
+  transparent-retry path. `0` disables the watchdog; other values are
+  clamped to `10..=3600`.
+- `stream_idle_retry_increment_secs` (int, optional, default `30`): per-retry
+  widening of the watchdog window, so a provider silence gap longer than
+  the base window does not kill every retry in the same silent stretch.
+  `0` keeps the window fixed; values are clamped to `0..=600`.
 - `subagents.*` (optional): per-role/type model defaults for `agent_open` and
   related persistent sub-agent sessions. Explicit tool `model` values win, then role/type
   overrides, then the parent runtime model. Supported convenience keys are
@@ -769,11 +908,27 @@ If you are upgrading from older releases:
   layers); `append_system_prompt` sections still render after it. Prefer
   `instructions` + `append_system_prompt` unless you need a from-scratch
   persona. See [System prompt customization](#system-prompt-customization).
-- `[memory].enabled` (bool, optional): defaults to `false`. When `true`,
-  the TUI loads the user memory file into a `<user_memory>` prompt block,
-  enables `# foo` quick-capture in the composer, surfaces the `/memory`
-  slash command, and registers the `remember` tool. The same toggle is
-  available via `CODESMITH_MEMORY=on`.
+- `[memory].enabled` (bool, optional): unset means **on** — the memory
+  file is read/written and `# foo` quick-capture works out of the box.
+  The effective value follows a priority cascade (highest first):
+  `CODESMITH_DISABLE_AUTO_MEMORY` env, bare/simple mode, remote mode
+  without `CODESMITH_REMOTE_MEMORY_DIR`, this setting (or
+  `CODESMITH_MEMORY=on`), then default on. When enabled, the TUI loads
+  the user memory file into a `<user_memory>` prompt block, enables
+  `# foo` quick-capture in the composer, surfaces the `/memory` slash
+  command, and registers the `remember` tool.
+  - `[memory].kod_enabled` (bool, default `false`): evolve memory from a
+    single file to a directory-based Knowledge On Demand system
+    (frontmatter-parsed `.md` files, a `MEMORY.md` entrypoint, async
+    per-turn prefetch). Requires `enabled = true` and the
+    `knowledge_on_demand` feature flag.
+  - `[memory].directory` (string, optional): memory directory override;
+    defaults to the parent of `memory_path` with `/memory/` appended.
+  - `[memory].excludes` (array, optional): paths dropped from the
+    four-tier CLAUDE.md memory merge. Entries are `~`/env-expanded and
+    canonicalized; the list is resolved into the
+    `CODESMITH_MEMORY_EXCLUDES` env var at engine startup so every load
+    site honours it.
 - `memory_path` (string, optional): defaults to `~/.codesmith/memory.md`, with
   legacy `~/.codesmith/memory.md` fallback when the CodeSmith path is absent.
   Used by the user-memory feature when enabled — see
@@ -783,6 +938,10 @@ If you are upgrading from older releases:
 - `snapshots.*` (optional): side-git workspace snapshots for file rollback:
   - `[snapshots].enabled` (bool, default `true`)
   - `[snapshots].max_age_days` (int, default `7`)
+  - `[snapshots].max_workspace_gb` (int, default `2`): the snapshot feature
+    self-disables on first use when the non-excluded workspace size exceeds
+    this cap; `0` disables the cap. The size walk honours `.gitignore` and
+    the module's built-in excludes (`node_modules/`, `target/`, …).
   - snapshots live under
     `~/.codesmith/snapshots/<project_hash>/<worktree_hash>/.git`, with legacy
     `~/.codesmith/snapshots/...` fallback when only the legacy state exists, and
@@ -848,24 +1007,98 @@ If you are upgrading from older releases:
   - `[capacity].deepseek_v4_pro_prior` (float, default `3.5`)
   - `[capacity].deepseek_v4_flash_prior` (float, default `4.2`)
   - `[capacity].fallback_default_prior` (float, default `3.8`)
-- `[notifications].method` (string, optional): `auto`, `osc9`, `bel`, or
-  `off`. Defaults to `auto`. The TUI fires this on completed (successful)
-  turns whose elapsed time meets `threshold_secs`; failed and cancelled
-  turns are silent. `auto` resolves to `osc9` for `iTerm.app`, `Ghostty`,
-  and `WezTerm` (detected via `$TERM_PROGRAM`). Otherwise the fallback is
+- `[notifications].method` (string, optional): `auto`, `osc9`, `bel`,
+  `kitty`, `ghostty`, or `off`. Defaults to `auto`. The TUI fires this on
+  completed (successful) turns whose elapsed time meets `threshold_secs`;
+  failed and cancelled turns are silent. `auto` resolves to `osc9` for
+  `iTerm.app`, `Ghostty`, `WezTerm`, and `Cmux` (detected via
+  `$TERM_PROGRAM`, then `$LC_TERMINAL`). Otherwise the fallback is
   `bel` on macOS / Linux and `off` on Windows (where BEL maps to the
   system error chime — see the [Notifications](#notifications) section
-  for the full rationale, #583).
+  for the full rationale, #583). `kitty` and `ghostty` select the
+  Kitty OSC 99 and Ghostty OSC 777 notification protocols explicitly.
 - `[notifications].threshold_secs` (int, optional): defaults to `30`.
   Only completed turns whose elapsed time meets or exceeds this fire a
   notification.
 - `[notifications].include_summary` (bool, optional): defaults to
   `false`. When `true`, the notification body includes the elapsed
   duration and the turn's cost in the configured display currency.
+- `[notifications].completion_sound` (string, optional): `off`, `beep`
+  (default), or `bell` — a sound played when every turn finishes,
+  alongside the ✅ marker. `beep` uses the system notification sound
+  (`MessageBeep` on Windows); `bell` emits a `\x07` byte.
 - `tui.alternate_screen` (string, optional): `auto`, `always`, or `never`. This is retained for config compatibility, but interactive sessions now always use the TUI-owned alternate screen so host terminal scrollback cannot hijack the viewport.
 - `tui.mouse_capture` (bool, optional, default `true` on non-Windows terminals and on Windows Terminal/ConEmu/Cmder when the alternate screen is active; `false` on legacy Windows console and inside JetBrains JediTerm — PyCharm/IDEA/CLion/etc. — where mouse-event escapes leak into the input stream as garbled text, see #878 / #898): enable internal mouse scrolling, transcript selection, right-click context actions, and transcript scrollbar dragging. TUI-owned drag selection copies only transcript text, removes visual wrap-column line breaks from paragraphs, and keeps selection scoped to the transcript pane. Set this to `false` or run with `--no-mouse-capture` for raw terminal selection; set it to `true` or run with `--mouse-capture` to opt in anywhere it's defaulted off. On raw terminal selection, especially on legacy Windows console or when mouse capture is disabled, selection may cross the right sidebar and include visual wraps because the terminal, not the TUI, owns the selection.
 - `tui.terminal_probe_timeout_ms` (int, optional, default `500`): startup terminal-mode probe timeout in milliseconds. Values are clamped to `100..=5000`; timeout emits a warning and aborts startup instead of hanging indefinitely.
 - `tui.osc8_links` (bool, optional, default `true`): emit OSC 8 escape sequences around URLs in transcript output so terminals that support them (iTerm2, Terminal.app 13+, Ghostty, Kitty, WezTerm, Alacritty, recent gnome-terminal/konsole) render them as Cmd+click hyperlinks. Terminals without OSC 8 support render the plain URL and ignore the escape. Set `false` for terminals that misrender the sequence; selection/clipboard output always strips the escapes.
+- `tui.status_items` (array, optional): ordered footer items. Absent means
+  the built-in default footer; an explicit `[]` hides everything. Available
+  items: `mode`, `model`, `cost`, `status`, `coherence`, `agents`,
+  `reasoning_replay`, `prefix_stability`, `cache`, `context_percent`,
+  `git_branch`, `last_tool_elapsed`, `rate_limit`, `tokens`, `balance`.
+  Left-cluster items (mode/model/cost/status) and right-cluster chips keep
+  their given order within their side. Edited interactively with
+  `/statusline`.
+- `tui.notification_condition` (string, optional): `always` (notify on
+  every successful turn, ignoring `[notifications].threshold_secs`) or
+  `never` (suppress turn-completion notifications). Unset falls back to
+  the `[notifications]` defaults.
+- `tui.composer_arrows_scroll` (bool, optional): plain Up/Down on an empty
+  composer scroll the transcript instead of recalling input history —
+  useful for terminals that map mouse-wheel gestures to arrow keys.
+  Defaults to `true` only when mouse capture is off, otherwise `false`.
+- `network.*` (optional): per-domain outbound network policy (#135)
+  governing `fetch_url`, `web_search`, and MCP HTTP calls:
+  - `[network].default` (`"allow"` | `"deny"` | `"prompt"`, default
+    `prompt`) — decision for hosts not in the allow/deny lists
+  - `[network].allow` / `[network].deny` — host lists; a leading dot
+    (`.example.com`) matches subdomains but not the apex; deny wins
+  - `[network].proxy` — hostnames whose DNS may resolve to fake-IP or
+    private ranges in an explicitly trusted proxy setup; literal IP URLs
+    stay blocked
+  - `[network].audit` (bool, default `true`) — append one line per
+    outbound call to `~/.codesmith/audit.log`
+  When the table is absent the runtime applies the same `prompt` default
+  (the first call to an unapproved host raises the standard approval
+  prompt) instead of silently allowing every host; YOLO sessions
+  auto-approve as usual.
+- `skills.*` (optional): community skill installer (#140):
+  - `[skills].registry_url` — curated registry index consulted by
+    `/skill install <name>`; defaults to the bundled registry
+  - `[skills].max_install_size_bytes` — per-skill maximum uncompressed
+    size (default 5 MiB); larger tarballs are rejected during validation
+- `lsp.*` (optional): post-edit LSP diagnostics injection (#136). When
+  the table is absent: enabled, 5 s poll, 20 diagnostics per file,
+  errors only:
+  - `[lsp].enabled` (bool, default `true`)
+  - `[lsp].poll_after_edit_ms` (int, default `5000`) — how long to wait
+    for the server to publish diagnostics after a `didOpen`/`didChange`
+  - `[lsp].max_diagnostics_per_file` (int, default `20`)
+  - `[lsp].include_warnings` (bool, default `false`)
+  - `[lsp].servers` — map of language slug → command array (e.g.
+    `rust = ["rust-analyzer"]`) overriding the built-in server commands
+    (rust → rust-analyzer, go → gopls, python → pyright, ts →
+    typescript-language-server, java → jdtls, …)
+- `auto.*` (optional): `--model auto` router tuning (#1207):
+  - `[auto].cost_saving` (bool, default `false`) — bias routing toward
+    flash-class models to save cost
+- `workshop.*` (optional): large-tool-output routing (#548). Tool results
+  above the threshold are condensed by the `[utility_model]` model; only
+  the synthesis enters the parent context while the raw text is kept in
+  the workshop variable `last_tool_result` (`raw = true` on a tool call
+  bypasses routing):
+  - `[workshop].large_output_threshold_tokens` (int, default `4096`)
+  - `[workshop].per_tool_thresholds` — map of tool name → threshold
+    overriding the global value for that tool
+- `runtime_api.*` (optional): `serve --http` tuning. Currently only
+  `[runtime_api].cors_origins` — additional allowed origins on top of the
+  built-in `localhost:3000` / `localhost:1420` and `tauri://localhost`
+  dev defaults. Resolution order: `--cors-origin` CLI flag, then
+  `CODESMITH_CORS_ORIGINS` env var, then this field.
+- `hook_sinks.*` (optional): app-server event sinks.
+  `[hook_sinks].unix_socket_path` registers a Unix-domain socket sink for
+  structured events. There is deliberately no shared `/tmp` default —
+  socket ownership must be explicit.
 - `hooks` (optional): lifecycle hooks configuration (see `config.example.toml`).
 - `features.*` (optional): feature flag overrides (see below).
 
@@ -953,7 +1186,24 @@ tools loaded on every request, add them to `[tools].always_load`:
 ```toml
 [tools]
 always_load = ["git_show", "notify"]
+# plugin_dir = "~/.codesmith/tools"   # default; scripts carrying a
+#                                     # `# name:` / `# description:` /
+#                                     # `# schema:` frontmatter header are
+#                                     # auto-discovered and registered as tools
+
+# Replace or disable a built-in tool (keyed by built-in tool name):
+[tools.overrides]
+# read_file = { type = "disabled" }
+# web_search = { type = "command", command = "my-search-wrapper", args = ["--json"] }
+# read_file = { type = "script", path = "~/.codesmith/tools/rr.sh" }
 ```
+
+`[tools.overrides]` entries come in three shapes. `script` runs a local
+script file (`path`, absolute or relative to the plugin dir) with the
+tool's JSON input on stdin and expects a JSON `ToolResult` on stdout;
+`command` runs an external binary the same way; `disabled` removes the
+tool from the model-visible catalog entirely — it cannot be called. Any
+static `args` are prepended before the tool's JSON input.
 
 ## Feature Flags
 
@@ -971,6 +1221,13 @@ mcp = true
 exec_policy = true
 # file_freshness = true # read-before-edit validation for edit_file/write_file/fim_edit/apply_patch
 ```
+
+The full registry: `shell_tool`, `subagents`, `web_search`, `apply_patch`,
+`mcp`, `exec_policy`, and `file_freshness` default to on. Four flags
+default to off and gate preview functionality: `vision_model` (the
+`[vision_model]` image-analysis path), `knowledge_on_demand`
+(directory-based memory via `[memory].kod_enabled`), `agent_teams`, and
+`coordinator_mode`.
 
 `file_freshness` (default on) makes editing tools reject files that were
 never read in the session or that changed on disk since their last read —
@@ -1000,9 +1257,13 @@ set `METASO_API_KEY` or `[search] api_key` for a higher quota.
 `BAIDU_SEARCH_API_KEY` or `[search] api_key`. This is a search-tool backend
 only; it does not add a Baidu model provider.
 
+**Volcengine** uses Volcengine Ark's search backend. Set `[search] api_key`
+or one of the `VOLCENGINE_API_KEY` / `VOLCENGINE_ARK_API_KEY` / `ARK_API_KEY`
+environment variables.
+
 ```toml
 [search]
-provider = "baidu" # duckduckgo | bing | tavily | bocha | metaso | baidu
+provider = "baidu" # duckduckgo | bing | tavily | bocha | metaso | baidu | volcengine
 # api_key = "YOUR_KEY" # required for tavily, bocha, and baidu; optional for metaso
 ```
 
