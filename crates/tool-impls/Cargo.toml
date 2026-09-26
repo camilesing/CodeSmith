@@ -12,7 +12,7 @@ description = "Model-visible tool implementations for CodeSmith (concrete impl T
 
 [dependencies]
 codesmith-agent = { path = "../agent", version = "0.1.0" }
-codesmith-agent-runtime = { path = "../agent-runtime", version = "0.1.0" }
+codesmith-agent-runtime = { path = "../agent-runtime", version = "0.1.0", features = ["parse-gate"] }
 codesmith-config = { path = "../config", version = "0.1.0" }
 codesmith-index = { path = "../index", version = "0.1.0" }
 codesmith-tools = { path = "../tools", version = "0.1.0" }

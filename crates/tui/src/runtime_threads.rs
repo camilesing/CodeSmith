@@ -2023,6 +2023,7 @@ impl RuntimeThreadManager {
             max_steps: 100,
             max_subagents: self.config.max_subagents().clamp(1, MAX_SUBAGENTS),
             features: self.config.features(),
+            parse_gate: self.config.edit_config().parse_gate,
             compaction,
             cycle: crate::cycle_manager::CycleConfig::default(),
             capacity: crate::core::capacity::capacity_controller_config_from_app(&self.config),

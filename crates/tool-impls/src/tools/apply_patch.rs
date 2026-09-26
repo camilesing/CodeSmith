@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
 
+use codesmith_agent_runtime::tools::parse_gate;
 use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     lsp_diagnostics_for_paths, optional_bool, optional_str, optional_u64, required_str,
@@ -182,7 +183,7 @@ impl ToolSpec for ApplyPatchTool {
     }
 
     fn description(&self) -> &'static str {
-        "Apply a unified-diff patch (multi-hunk, multi-file). Use this instead of `git apply`, `patch`, or repeated `edit_file` calls in `exec_shell` — single transactional change with fuzzy matching and a rendered diff.\n\nExample shape: `{\"path\": \"src/main.rs\", \"patch\": \"--- a/src/main.rs\\n+++ b/src/main.rs\\n@@ -10,3 +10,4 @@\\n fn main() {\\n+    setup_tracing();\\n     run();\\n }\"}` — one `patch` string may carry several `@@` hunks; pass multiple calls (or `changes`) for whole-file rewrites."
+        "Apply a unified-diff patch (multi-hunk, multi-file). Use this instead of `git apply`, `patch`, or repeated `edit_file` calls in `exec_shell` — single transactional change with fuzzy matching and a rendered diff.\n\nExample shape: `{\"path\": \"src/main.rs\", \"patch\": \"--- a/src/main.rs\\n+++ b/src/main.rs\\n@@ -10,3 +10,4 @@\\n fn main() {\\n+    setup_tracing();\\n     run();\\n }\"}` — one `patch` string may carry several `@@` hunks; pass multiple calls (or `changes`) for whole-file rewrites. The whole batch is parse-checked before any file is touched: patches that would break a `.rs`/`.toml`/`.json` file which parsed cleanly before are rejected with the error location and nothing is written."
     }
 
     fn input_schema(&self) -> Value {
@@ -244,7 +245,8 @@ impl ToolSpec for ApplyPatchTool {
         let preflight = preflight_apply_patch_plan(&input)?;
 
         if let Some(changes_value) = input.get("changes") {
-            let (pending, stats) = build_pending_writes_from_changes(changes_value, context)?;
+            let (mut pending, stats) = build_pending_writes_from_changes(changes_value, context)?;
+            let gate_notes = gate_pending_writes(&mut pending, context)?;
             apply_pending_writes(&pending)?;
             // Resolve absolute paths for LSP diagnostics query.
             let abs_paths: Vec<PathBuf> = pending.iter().map(|p| p.path.clone()).collect();
@@ -265,6 +267,10 @@ impl ToolSpec for ApplyPatchTool {
                 .map_err(|e| ToolError::execution_failed(e.to_string()))?;
             tool_result =
                 tool_result.with_metadata(apply_patch_preflight_metadata(&preflight.summary));
+            for note in &gate_notes {
+                tool_result.content.push('\n');
+                tool_result.content.push_str(note);
+            }
             if !diag_block.is_empty() {
                 tool_result.content.push('\n');
                 tool_result.content.push_str(&diag_block);
@@ -285,8 +291,10 @@ impl ToolSpec for ApplyPatchTool {
             ApplyPatchPreflightKind::FilePatches(file_patches) => file_patches,
         };
 
-        let (pending, mut stats) = build_pending_writes_from_patches(file_patches, context, fuzz)?;
+        let (mut pending, mut stats) =
+            build_pending_writes_from_patches(file_patches, context, fuzz)?;
         stats.header_path_mismatch = preflight.summary.header_path_mismatch.clone();
+        let gate_notes = gate_pending_writes(&mut pending, context)?;
         apply_pending_writes(&pending)?;
         // Resolve absolute paths for LSP diagnostics query.
         let abs_paths: Vec<PathBuf> = pending
@@ -310,6 +318,10 @@ impl ToolSpec for ApplyPatchTool {
         let mut tool_result =
             ToolResult::json(&result).map_err(|e| ToolError::execution_failed(e.to_string()))?;
         tool_result = tool_result.with_metadata(apply_patch_preflight_metadata(&preflight.summary));
+        for note in &gate_notes {
+            tool_result.content.push('\n');
+            tool_result.content.push_str(note);
+        }
         if !diag_block.is_empty() {
             tool_result.content.push('\n');
             tool_result.content.push_str(&diag_block);
@@ -921,6 +933,33 @@ fn build_pending_writes_from_patches(
     Ok((pending, stats))
 }
 
+/// P0-1 parse gate for the whole pending batch: every write is checked
+/// before any file is touched, so a rejected patch leaves the workspace
+/// unmodified. Rust files that were rustfmt-clean are re-normalized in
+/// place (`entry.content` is replaced with the formatted output). Returns
+/// the normalization notes for the tool result; `Err` rejects the patch.
+fn gate_pending_writes(
+    pending: &mut [PendingWrite],
+    context: &ToolContext,
+) -> Result<Vec<String>, ToolError> {
+    let mut notes = Vec::new();
+    if !context.parse_gate {
+        return Ok(notes);
+    }
+    for entry in pending.iter_mut() {
+        // Deletes pass: there is no new content to break.
+        let Some(new_content) = entry.content.as_ref() else {
+            continue;
+        };
+        let outcome = parse_gate::gate(&entry.path, entry.original.as_deref(), new_content)?;
+        if let Some(note) = outcome.normalization_note {
+            notes.push(note);
+        }
+        entry.content = Some(outcome.content);
+    }
+    Ok(notes)
+}
+
 fn apply_pending_writes(pending: &[PendingWrite]) -> Result<(), ToolError> {
     let mut applied = Vec::new();
 
@@ -1494,6 +1533,63 @@ diff --git a/same.txt b/same.txt
         assert_eq!(patch_result.touched_files, vec!["new_file.txt"]);
         assert!(patch_result.file_summaries.first().unwrap().created);
         assert!(tmp.path().join("new_file.txt").exists());
+    }
+
+    // === P0-1 parse gate ===
+
+    #[tokio::test]
+    async fn test_apply_patch_parse_gate_rejects_rust_regression() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let seed = "fn main() {\n    let answer = 42;\n}\n";
+        fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
+        let target = tmp.path().join("src/lib.rs");
+        fs::write(&target, seed).expect("write");
+
+        let patch = "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,3 @@\n fn main() {\n-    let answer = 42;\n+    let answer = ;\n }\n";
+
+        let tool = ApplyPatchTool;
+        let result = tool
+            .execute(json!({"path": "src/lib.rs", "patch": patch}), &ctx)
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Parse gate rejected write to") && err.contains("line 2"),
+            "error must name the gate and the broken line: {err}"
+        );
+        // Nothing was written.
+        let unchanged = fs::read_to_string(&target).expect("read");
+        assert_eq!(unchanged, seed);
+    }
+
+    #[tokio::test]
+    async fn test_apply_patch_parse_gate_is_all_or_nothing() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let seed_rs = "fn main() {\n    let answer = 42;\n}\n";
+        fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
+        let rs_target = tmp.path().join("src/lib.rs");
+        let txt_target = tmp.path().join("notes.txt");
+        fs::write(&rs_target, seed_rs).expect("write");
+        fs::write(&txt_target, "old\n").expect("write");
+
+        // First section is a harmless text edit; the second breaks the Rust
+        // file. The gate runs over the whole pending batch before any
+        // write, so the text edit must not land either.
+        let patch = "diff --git a/notes.txt b/notes.txt\n--- a/notes.txt\n+++ b/notes.txt\n@@ -1 +1 @@\n-old\n+new\ndiff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,3 @@\n fn main() {\n-    let answer = 42;\n+    let answer = ;\n }\n";
+
+        let tool = ApplyPatchTool;
+        let result = tool.execute(json!({"patch": patch}), &ctx).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Parse gate rejected write to"), "{err}");
+        assert_eq!(fs::read_to_string(&txt_target).unwrap(), "old\n");
+        assert_eq!(fs::read_to_string(&rs_target).unwrap(), seed_rs);
     }
 
     #[tokio::test]

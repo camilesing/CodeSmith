@@ -59,6 +59,7 @@ pub(super) fn build_tool_context_for(
     )
     .with_state_namespace(session.id.clone())
     .with_features(config.features.clone())
+    .with_parse_gate(config.parse_gate)
     .with_shell_manager(wrap_shell_manager(
         host.shell_manager
             .as_ref()

@@ -11,6 +11,23 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
 
 ## [Unreleased]
 
+### Added
+
+- **Parse-gated file editing (P0-1)**: `write_file`, `edit_file`,
+  `apply_patch`, and `fim_edit` now syntax-check writes to `.rs` / `.toml` /
+  `.json` files *before* anything touches disk. The gate is regression-only —
+  a write is rejected only when the file parsed cleanly before the edit and
+  the new content does not, so already-broken files (and new files) stay
+  editable. Rejections report the offending line and column and leave the
+  file unmodified; `Cargo.lock` is exempt. Rust files that were
+  rustfmt-clean before the edit are re-normalized with `rustfmt` after the
+  gate passes (disclosed in the tool result) to keep subsequent patch
+  anchors stable — a missing rustfmt never blocks a write. Rust parsing uses
+  `syn` behind the new `parse-gate` cargo feature of `codesmith-agent-runtime`
+  (enabled by `codesmith-tui` and `codesmith-tool-impls`; builds without it
+  compile a pass-through gate). Configure with `[edit] parse_gate`
+  (bool, default `true`).
+
 ## [0.1.0] - 2026-08-25
 
 ### Added

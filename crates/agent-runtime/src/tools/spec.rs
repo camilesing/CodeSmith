@@ -189,6 +189,11 @@ pub struct ToolContext {
     pub auto_approve: bool,
     /// Effective feature flag set for the running session.
     pub features: Features,
+    /// Pre-write parse gate for file-editing tools (P0-1). When `true`
+    /// (default), writes that would break a previously-parsing
+    /// `.rs`/`.toml`/`.json` file are rejected before touching disk.
+    /// Set from `[edit] parse_gate` in config.toml.
+    pub parse_gate: bool,
     /// Namespace for tool state that should be scoped to the current session/thread.
     pub state_namespace: String,
     /// User-trusted external paths the agent may read/write even when they
@@ -289,6 +294,7 @@ impl ToolContext {
             shell_network_denied_hint: None,
             auto_approve: false,
             features: Features::with_defaults(),
+            parse_gate: true,
             state_namespace: "workspace".to_string(),
             trusted_external_paths: Vec::new(),
             network_policy: None,
@@ -335,6 +341,7 @@ impl ToolContext {
             shell_network_denied_hint: None,
             auto_approve: false,
             features: Features::with_defaults(),
+            parse_gate: true,
             state_namespace: "workspace".to_string(),
             trusted_external_paths: Vec::new(),
             network_policy: None,
@@ -381,6 +388,7 @@ impl ToolContext {
             shell_network_denied_hint: None,
             auto_approve,
             features: Features::with_defaults(),
+            parse_gate: true,
             state_namespace: "workspace".to_string(),
             trusted_external_paths: Vec::new(),
             network_policy: None,
@@ -657,6 +665,14 @@ impl ToolContext {
     /// Set feature flags for tool execution.
     pub fn with_features(mut self, features: Features) -> Self {
         self.features = features;
+        self
+    }
+
+    /// Set the pre-write parse gate switch (P0-1). Defaults to `true`;
+    /// `[edit] parse_gate = false` in config.toml turns the gate off.
+    #[must_use]
+    pub fn with_parse_gate(mut self, parse_gate: bool) -> Self {
+        self.parse_gate = parse_gate;
         self
     }
 
