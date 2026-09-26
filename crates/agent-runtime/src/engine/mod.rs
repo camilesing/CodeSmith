@@ -174,6 +174,13 @@ pub struct Engine {
     /// Diagnostics collected during the current step's tool calls. Drained
     /// and forwarded as a synthetic user message before the next API call.
     pub pending_lsp_blocks: Vec<crate::lsp_diagnostics::DiagnosticBlock>,
+    /// P3-8 result claim verifier: verdicts produced by the post-turn
+    /// background check ("model claimed tests pass — re-run says exit 1").
+    /// Arc-shared with each turn's `HostAgentExecutor` so a verdict that
+    /// lands after the turn ended persists until the next turn's first
+    /// pre-request flush (same tail-injection semantics as
+    /// [`Self::pending_lsp_blocks`]).
+    pub(crate) pending_result_verifications: Arc<StdMutex<Vec<result_verifier::VerdictBlock>>>,
     /// Cached SlopLedger gate block keyed by the ledger file's modified time.
     /// This keeps prompt refreshes cheap while still noticing append/update
     /// writes from slop ledger tools during the same session.
@@ -1197,6 +1204,10 @@ impl Engine {
             reasoning_effort_auto,
         );
         append_image_blocks(&mut user_msg, &image_paths);
+        // P3-8: remember where this turn's transcript slice starts (the
+        // user message below is its first entry) so the post-turn result
+        // claim verifier can scan exactly this turn's assistant/tool traffic.
+        let result_verifier_turn_start = self.session.messages.len();
         self.turn_scratch.user_message = Some(user_msg);
         self.session
             .add_message(self.turn_scratch.user_message.take().expect("staged above"));
@@ -1418,7 +1429,12 @@ impl Engine {
         // session-scoped manager (before the `&mut self.session` borrow held
         // by `SessionChatHistory` below) so per-step fingerprint re-pins
         // persist across turns. None ⇒ no checks (pre-P0-3 behavior).
-        .with_prefix_stability(self.session.prefix_stability.clone());
+        .with_prefix_stability(self.session.prefix_stability.clone())
+        // P3-8: the engine-held pending verdict buffer — the post-turn
+        // background check pushes verdicts here, and each turn's executor
+        // flushes them as a synthetic runtime_event message before the
+        // turn's first API request (mirrors the LSP probe wire-in above).
+        .with_result_verifications(Some(Arc::clone(&self.pending_result_verifications)));
         let mut history =
             SessionChatHistory::new_with_event_tx(&mut self.session, Some(self.tx_event.clone()));
         // Drain steers queued between turns (mirrors the retired pre-turn
@@ -1663,6 +1679,49 @@ impl Engine {
                     Some(&snapshot_prompt_post),
                 );
             });
+        }
+
+        // P3-8 result claim verifier — the first domino of the continuous
+        // evolution loop. After a completed turn, scan this turn's transcript
+        // slice for a "tests pass / build succeeds" claim in the final
+        // assistant message; when found, re-run the verification-class
+        // command the model itself executed this turn (approved-replay — see
+        // `result_verifier` module docs for the safety contract) and record
+        // the four-element verdict. Fire-and-forget like the post-turn
+        // snapshot: TurnComplete is already out, the UI is unblocked, and the
+        // verdict lands on the engine-held pending buffer for the next
+        // turn's first pre-request flush — appended at the tail, never
+        // rewriting history.
+        if self.config.result_claim_verifier && matches!(status, TurnOutcomeStatus::Completed) {
+            let start = result_verifier_turn_start.min(self.session.messages.len());
+            let turn_messages: Vec<Message> = self.session.messages[start..].to_vec();
+            if let Some(claim) = result_verifier::detect_claim(&turn_messages) {
+                let command =
+                    result_verifier::find_verification_command(&turn_messages, claim.kind);
+                let dispatcher = plan.tool_registry.clone();
+                let pending = Arc::clone(&self.pending_result_verifications);
+                let tx_event = self.tx_event.clone();
+                spawn_supervised(
+                    "result-verifier",
+                    std::panic::Location::caller(),
+                    async move {
+                        let block = result_verifier::verify_claim(dispatcher, claim, command).await;
+                        pending
+                            .lock()
+                            .expect("pending_result_verifications poisoned")
+                            .push(block.clone());
+                        let _ = tx_event
+                            .send(Event::ResultVerification {
+                                verdict: block.kind.label().to_string(),
+                                claim: block.phrase.clone(),
+                                command: block.command.clone(),
+                                exit_code: block.exit_code,
+                                failure_type: block.failure_type().map(str::to_string),
+                            })
+                            .await;
+                    },
+                );
+            }
         }
     }
 
@@ -2996,6 +3055,7 @@ impl Engine {
             turn_counter: 0,
             turn_scratch: crate::prompt_zones::TurnScratch::new(),
             pending_lsp_blocks: Vec::new(),
+            pending_result_verifications: Arc::new(StdMutex::new(Vec::new())),
             slop_ledger_gate_cache: None,
             knowledge_prefetch: crate::knowledge::prefetch::KnowledgePrefetch::new(),
             tx_op,
@@ -3108,6 +3168,7 @@ use context::{
 mod dispatch;
 mod loop_guard;
 mod lsp_hooks;
+mod result_verifier;
 mod streaming;
 mod team_inbox;
 mod tool_catalog;

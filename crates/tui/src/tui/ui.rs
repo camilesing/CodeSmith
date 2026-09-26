@@ -891,6 +891,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         subagent_api_timeout: Duration::from_secs(config.subagent_api_timeout_secs()),
         stream_idle_timeout: Duration::from_secs(config.stream_idle_timeout_secs()),
         stream_idle_retry_increment: Duration::from_secs(config.stream_idle_retry_increment_secs()),
+        result_claim_verifier: config.result_claim_verifier(),
         subagent_inherit_full_registry: config.subagent_inherit_full_registry(),
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
         sandbox_runtime: config.sandbox_runtime_config(),
@@ -2066,6 +2067,43 @@ async fn run_event_loop(
                                 app.last_prefix_change_desc = Some(description);
                             }
                         }
+                    }
+                    EngineEvent::ResultVerification {
+                        verdict,
+                        claim,
+                        command,
+                        exit_code,
+                        failure_type,
+                    } => {
+                        // P3-8: surface the engine's claim check. A mismatch
+                        // or an unsubstantiated claim is a warning (the
+                        // model asserted something the re-run contradicts —
+                        // or never ran at all); a pass is a quiet
+                        // confirmation.
+                        let claim = crate::utils::truncate_with_ellipsis(&claim, 24, "…");
+                        let (level, icon) = if verdict == "verified-pass" {
+                            (crate::tui::app::StatusToastLevel::Info, "✓")
+                        } else {
+                            (crate::tui::app::StatusToastLevel::Warning, "⚠️")
+                        };
+                        let detail = match (&command, exit_code) {
+                            (Some(command), Some(code)) => {
+                                format!("`{command}` → exit {code}")
+                            }
+                            (Some(command), None) => format!("`{command}`"),
+                            _ => "no verification command run this turn".to_string(),
+                        };
+                        let failure = failure_type
+                            .as_deref()
+                            .map(|t| format!(" ({t})"))
+                            .unwrap_or_default();
+                        app.push_status_toast(
+                            format!(
+                                "{icon} claim check {verdict}{failure}: 「{claim}」 vs {detail}"
+                            ),
+                            level,
+                            Some(10_000),
+                        );
                     }
                     EngineEvent::TranscriptRebuilt {
                         reason,

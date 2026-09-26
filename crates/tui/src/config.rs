@@ -1196,6 +1196,10 @@ pub struct Config {
     /// to a permissive default, matching the old lenient behavior.
     #[serde(default)]
     pub network: Option<NetworkPolicyToml>,
+    /// Post-turn claim checks (P3-8). When absent, the result claim
+    /// verifier runs with its defaults (on).
+    #[serde(default)]
+    pub verification: Option<VerificationToml>,
 
     /// Community skill installer settings (#140). When absent, installer
     /// commands fall back to the bundled defaults
@@ -1328,6 +1332,18 @@ impl SkillsConfig {
 /// TUI runtime can construct a [`crate::network_policy::NetworkPolicy`]
 /// without reaching into the workspace config crate. See `config.example.toml`
 /// for documentation.
+/// `[verification]` table — post-turn claim checks (P3-8). See
+/// `config.example.toml` for documentation.
+#[derive(Debug, Clone, Deserialize)]
+pub struct VerificationToml {
+    /// When `true` (the default), a completed turn whose final assistant
+    /// message claims "tests pass / build succeeds" triggers an engine-side
+    /// re-run of the verification-class command the model executed that
+    /// turn; the verdict is injected before the next request and surfaced
+    /// as a toast. `false` restores the pre-P3-8 behavior.
+    pub result_claims: Option<bool>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct NetworkPolicyToml {
     /// Decision for hosts that are not in `allow` or `deny`. One of
@@ -2781,6 +2797,16 @@ impl Config {
         raw.clamp(MIN_SUBAGENT_API_TIMEOUT_SECS, MAX_SUBAGENT_API_TIMEOUT_SECS)
     }
 
+    /// Resolved result claim verifier switch (P3-8). Reads `[verification]
+    /// result_claims`; `None` resolves to `true` (on).
+    #[must_use]
+    pub fn result_claim_verifier(&self) -> bool {
+        self.verification
+            .as_ref()
+            .and_then(|v| v.result_claims)
+            .unwrap_or(true)
+    }
+
     /// Resolved stream idle watchdog budget, in seconds (P0-1).
     ///
     /// Reads top-level `stream_idle_timeout_secs`. `None` resolves to
@@ -4183,6 +4209,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         features: merge_features(base.features, override_cfg.features),
         notifications: override_cfg.notifications.or(base.notifications),
         network: override_cfg.network.or(base.network),
+        verification: override_cfg.verification.or(base.verification),
         skills: override_cfg.skills.or(base.skills),
         snapshots: override_cfg.snapshots.or(base.snapshots),
         search: override_cfg.search.or(base.search),

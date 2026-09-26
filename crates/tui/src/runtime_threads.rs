@@ -2052,6 +2052,7 @@ impl RuntimeThreadManager {
             stream_idle_retry_increment: std::time::Duration::from_secs(
                 self.config.stream_idle_retry_increment_secs(),
             ),
+            result_claim_verifier: self.config.result_claim_verifier(),
             subagent_inherit_full_registry: self.config.subagent_inherit_full_registry(),
             prefer_bwrap: self.config.prefer_bwrap.unwrap_or(false),
             sandbox_runtime: self.config.sandbox_runtime_config(),

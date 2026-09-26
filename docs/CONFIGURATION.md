@@ -889,6 +889,21 @@ If you are upgrading from older releases:
   widening of the watchdog window, so a provider silence gap longer than
   the base window does not kill every retry in the same silent stretch.
   `0` keeps the window fixed; values are clamped to `0..=600`.
+- `[verification] result_claims` (bool, optional, default `true`): result
+  claim verifier (P3-8) — when a completed turn's final assistant message
+  asserts "tests pass" / "build succeeds" (Chinese or English), the engine
+  re-runs the verification-class command the model itself executed during
+  that turn (foreground `exec_shell` calls starting with a known test/build
+  prefix — `cargo test`, `npm test`, `pytest`, `cargo build`, … — and
+  `run_tests` calls) and compares the claim against the exit code. The
+  four-element verdict (verdict / dimension / evidence / failure_type) is
+  appended to the conversation as an internal runtime event before the
+  next request, so the model must reconcile a mismatch, and surfaced as a
+  status toast. A claim with no verification command behind it is reported
+  as `unsubstantiated`. The re-run replays exactly the input the model
+  already sent through the same sandbox/network policy — it grants no
+  authority the turn did not already have. `false` restores the pre-P3-8
+  behavior of trusting the claim.
 - `subagents.*` (optional): per-role/type model defaults for `agent_open` and
   related persistent sub-agent sessions. Explicit tool `model` values win, then role/type
   overrides, then the parent runtime model. Supported convenience keys are
