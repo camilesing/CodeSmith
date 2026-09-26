@@ -978,7 +978,10 @@ fn add_optional_usage(total: Option<u32>, delta: Option<u32>) -> Option<u32> {
 /// loop's own tool-lifecycle hooks. Nothing is mutated on `self` per run; the
 /// transcript is mutated in place through [`ChatHistory`].
 pub struct HostAgentExecutor {
-    client: LlmClientHandle,
+    /// `pub(crate)` for the turn-phase submodules (`turn::batches` reads the
+    /// provider name for the P0-2 truncation exemptions) — same visibility
+    /// convention as `tools` / `callback` / `lsp` below.
+    pub(crate) client: LlmClientHandle,
     pub(crate) tools: Arc<ToolSet>,
     pub(crate) callback: Arc<dyn Callback>,
     config: AgentExecutorConfig,
@@ -3023,7 +3026,10 @@ impl HostAgentExecutor {
             let mut step_error_categories: Vec<ErrorCategory> = Vec::new();
             // `usage` rides along (P2-5 anchor) — only the Content arm has
             // a real reading; every other arm carries a default.
-            let (content, _stop_reason, usage) = match self
+            // `stop_reason` feeds the P0-2 truncation gate below (an
+            // output-limit stop reason turns unparseable tool-call args
+            // into a refused + re-send-feedback call).
+            let (content, stop_reason, usage) = match self
                 .stream_with_transparent_retry(
                     &client,
                     request,
@@ -3399,6 +3405,7 @@ impl HostAgentExecutor {
                 .execute_tool_batches(
                     history,
                     tool_uses,
+                    stop_reason.as_deref(),
                     &mut early_tasks,
                     &mut loop_guard,
                     &tools,
@@ -3656,6 +3663,49 @@ mod tests {
             input: serde_json::Value,
             context: &ToolContext,
         ) -> Result<ToolResult, ToolError> {
+            let text = input
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Ok(ToolResult {
+                content: format!("{}|{text}", context.workspace.display()),
+                success: true,
+                metadata: None,
+            })
+        }
+    }
+
+    /// An `EchoSpec` variant that counts `execute` invocations — lets the
+    /// P0-2 truncation-gate tests prove whether a (possibly truncated) call
+    /// actually reached the tool, not just what the transcript claims.
+    struct CountingEchoSpec {
+        runs: Arc<Mutex<usize>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolSpec for CountingEchoSpec {
+        fn name(&self) -> &str {
+            "echo"
+        }
+        fn description(&self) -> &str {
+            "Echoes input, stamped with the workspace path."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": { "text": { "type": "string" } }
+            })
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+        async fn execute(
+            &self,
+            input: serde_json::Value,
+            context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            *self.runs.lock().unwrap() += 1;
             let text = input
                 .get("text")
                 .and_then(|v| v.as_str())
@@ -4323,6 +4373,36 @@ mod tests {
         ]
     }
 
+    /// A tool block that was cut off by the provider output limit: argument
+    /// deltas arrived, then the stream ended (`finish("length")` supplies the
+    /// message-level stop) — the block never gets a `ContentBlockStop`, so no
+    /// speculative early-start fires and the partial buffer is finalized at
+    /// stream end (the real truncation shape; see the P0-2 gate tests).
+    fn truncated_tool_use_block(
+        idx: u32,
+        id: &str,
+        name: &str,
+        partial_json: &str,
+    ) -> Vec<StreamEvent> {
+        vec![
+            StreamEvent::ContentBlockStart {
+                index: idx,
+                content_block: ContentBlockStart::ToolUse {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    input: serde_json::Value::Null,
+                    caller: None,
+                },
+            },
+            StreamEvent::ContentBlockDelta {
+                index: idx,
+                delta: Delta::InputJsonDelta {
+                    partial_json: partial_json.to_string(),
+                },
+            },
+        ]
+    }
+
     fn finish(stop: &str) -> Vec<StreamEvent> {
         vec![
             StreamEvent::MessageDelta {
@@ -4600,6 +4680,194 @@ mod tests {
             } => {
                 assert!(content.starts_with("Error:"));
                 assert_eq!(*is_error, Some(true));
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    // === P0-2: tool calls truncated by the output limit ====================
+
+    /// Helper: executor wiring with a counting echo tool — returns the
+    /// executor, the run counter, and the workspace stamp for result
+    /// assertions.
+    fn executor_with_counting_echo(
+        rounds: Vec<Vec<StreamEvent>>,
+    ) -> (HostAgentExecutor, Arc<Mutex<usize>>, String) {
+        let tmp = tempdir().expect("tempdir");
+        let workspace_stamp = tmp.path().display().to_string();
+        let runs = Arc::new(Mutex::new(0usize));
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(CountingEchoSpec { runs: runs.clone() }));
+        let tools = Arc::new(registry.to_framework_tool_set());
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(rounds)),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        (executor, runs, workspace_stamp)
+    }
+
+    /// P0-2: a tool call whose argument JSON was cut off by the output limit
+    /// (`stop_reason=length`, buffer unparseable) must NOT execute — not via
+    /// the repair ladder, not with a null/empty stand-in. It is refused with
+    /// an explicit re-send feedback, and a re-sent complete call on the next
+    /// step executes normally (upstream v0.9.13 #5986 semantics).
+    #[tokio::test]
+    async fn host_executor_truncated_tool_call_refused_with_resend_feedback() {
+        // Round 1: cut off mid-argument + output-limit stop.
+        let mut truncated = text_block(0, "cut off");
+        truncated.extend(truncated_tool_use_block(
+            1,
+            "t1",
+            "echo",
+            r#"{"text": "hel"#,
+        ));
+        truncated.extend(finish("length"));
+        // Round 2: the model re-sends the call complete; Round 3 ends the run.
+        let mut resent = text_block(0, "again");
+        resent.extend(tool_use_block(1, "t2", "echo", r#"{"text": "hello"}"#));
+        resent.extend(finish("tool_use"));
+        let mut done = text_block(0, "done");
+        done.extend(finish("end_turn"));
+
+        let (executor, runs, _stamp) = executor_with_counting_echo(vec![truncated, resent, done]);
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // The truncated fragment never reached the tool — only the re-send ran.
+        assert_eq!(
+            *runs.lock().unwrap(),
+            1,
+            "truncated call must not execute; only the re-sent call may"
+        );
+
+        // The feedback for t1 is an explicit refusal + re-send request.
+        match &sess.messages[2].content[0] {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
+                assert_eq!(*is_error, Some(true));
+                assert!(
+                    content.contains("NOT executed"),
+                    "refusal must say the call was not executed: {content}"
+                );
+                assert!(
+                    content.contains("stop_reason=length"),
+                    "refusal must name the stop reason: {content}"
+                );
+                assert!(
+                    content.contains("re-send the complete tool call"),
+                    "refusal must ask for a complete re-send: {content}"
+                );
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+        // The re-sent call executed normally.
+        match &sess.messages[4].content[0] {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
+                assert_eq!(*is_error, Some(false));
+                assert!(
+                    content.ends_with("|hello"),
+                    "re-sent call should have echoed: {content}"
+                );
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    /// P0-2 scope check: only the *truncated* call is refused. A call whose
+    /// arguments parsed completely was fully received, so it executes
+    /// normally even on a turn that ended at the output limit.
+    #[tokio::test]
+    async fn host_executor_complete_call_in_truncated_turn_still_executes() {
+        let mut call = text_block(0, "complete call");
+        call.extend(tool_use_block(1, "t1", "echo", r#"{"text": "hello"}"#));
+        call.extend(finish("length"));
+        let mut done = text_block(0, "done");
+        done.extend(finish("end_turn"));
+
+        let (executor, runs, _stamp) = executor_with_counting_echo(vec![call, done]);
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        assert_eq!(*runs.lock().unwrap(), 1, "complete call must execute");
+        match &sess.messages[2].content[0] {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
+                assert_eq!(*is_error, Some(false));
+                assert!(
+                    content.ends_with("|hello"),
+                    "complete call should have echoed: {content}"
+                );
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    /// P0-2 regression pin: without an output-limit stop reason, an
+    /// unparseable argument buffer keeps its legacy dispatch (the tool runs
+    /// with whatever the strict parse produced — here `null`, so the lenient
+    /// echo executes with no fields). The truncation gate must not widen
+    /// beyond `length`/`max_tokens` turns.
+    #[tokio::test]
+    async fn host_executor_unparseable_args_without_length_stop_keeps_legacy_dispatch() {
+        let mut call = text_block(0, "garbage args, normal stop");
+        call.extend(truncated_tool_use_block(
+            1,
+            "t1",
+            "echo",
+            r#"{"text": "hel"#,
+        ));
+        call.extend(finish("end_turn"));
+
+        let (executor, runs, stamp) = executor_with_counting_echo(vec![call]);
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        assert_eq!(*runs.lock().unwrap(), 1, "legacy path still dispatches");
+        match &sess.messages[2].content[0] {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
+                assert_eq!(*is_error, Some(false));
+                assert_eq!(
+                    content,
+                    &format!("{stamp}|"),
+                    "legacy dispatch runs the tool with the null-input stand-in"
+                );
+                assert!(
+                    !content.contains("NOT executed"),
+                    "no truncation refusal without an output-limit stop reason"
+                );
             }
             other => panic!("expected ToolResult, got {other:?}"),
         }

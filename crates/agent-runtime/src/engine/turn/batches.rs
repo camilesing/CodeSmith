@@ -28,6 +28,7 @@ use codesmith_agent::tools::{Tool, ToolCapability, ToolError, ToolResult, ToolSe
 
 use super::approval::requires_approval;
 use super::stream::{EarlyToolTask, early_start_safe};
+use super::truncation::stop_reason_indicates_output_truncation;
 use crate::engine::dispatch::{ToolExecutionBatch, ToolExecutionPlan, plan_tool_execution_batches};
 use crate::engine::host_executor::HostAgentExecutor;
 use crate::engine::loop_guard::{AttemptDecision, LoopGuard, OutcomeDecision};
@@ -42,6 +43,32 @@ use crate::tools::spec::ApprovalRequirement;
 fn block_tool_result(message: String) -> ToolResult {
     ToolResult::error(message).with_metadata(serde_json::json!({
         "loop_guard": "identical_tool_call"
+    }))
+}
+
+/// The `ToolResult` fed back when a tool call is refused because its
+/// arguments were cut off by the provider output limit (P0-2): the streamed
+/// argument JSON failed to parse on a turn whose stop reason says the
+/// output cap was hit, so the model never finished writing the call.
+/// Executing it — or worse, repairing the fragment into parseable
+/// arguments — would run a command the model didn't write. The call is not
+/// executed and the model is asked to re-send it complete (upstream v0.9.13
+/// #5986 semantics: route truncated calls to the malformed-arguments path,
+/// never "fix the JSON and run it").
+fn truncated_tool_result(tool_name: &str, stop_reason: Option<&str>) -> ToolResult {
+    let reason = stop_reason
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .unwrap_or("length");
+    ToolResult::error(format!(
+        "Tool call '{tool_name}' was NOT executed: its arguments JSON was cut off by the \
+         output token limit (stop_reason={reason}) and only a fragment arrived. Partial \
+         arguments are never repaired or auto-completed — re-send the complete tool call \
+         with all required arguments. If the arguments are long, shorten or split them so \
+         the call fits within the output limit."
+    ))
+    .with_metadata(serde_json::json!({
+        "truncated_tool_call": "output_limit"
     }))
 }
 
@@ -85,6 +112,13 @@ impl HostAgentExecutor {
     /// `Parallel` batch drains before the next `Serial` batch starts).
     /// `loop_guard_halt` is per-step: a halt short-circuits the tool loop
     /// and the whole turn at the (4) seam in `run_inner`.
+    /// ✅ truncation gate (P0-2): on a turn whose stop reason says the
+    /// provider output limit was hit, a tool call whose streamed argument
+    /// JSON failed to parse (`input == Null` — `finalize_tool_input`'s
+    /// strict-parse failure sentinel) is never executed and never repaired;
+    /// it is fed back via [`truncated_tool_result`] asking the model to
+    /// re-send the complete call. Calls whose arguments did parse were
+    /// fully received and execute normally.
     // Signature mirrors `run_inner`'s step locals 1:1 (behavior-preserving
     // extraction); collapsing into a params struct is left for a later pass.
     #[allow(clippy::too_many_arguments)]
@@ -92,6 +126,7 @@ impl HostAgentExecutor {
         &self,
         history: &mut dyn ChatHistory,
         tool_uses: Vec<(String, String, serde_json::Value)>,
+        turn_stop_reason: Option<&str>,
         early_tasks: &mut HashMap<String, EarlyToolTask>,
         loop_guard: &mut LoopGuard,
         tools: &Arc<ToolSet>,
@@ -103,6 +138,16 @@ impl HostAgentExecutor {
     ) -> Option<String> {
         let mut loop_guard_halt: Option<String> = None;
         let n = tool_uses.len();
+
+        // P0-2 truncation classification — computed once for the whole turn:
+        // a stop reason that says the output limit was hit (minus the
+        // per-provider mis-report exemptions) turns every unparseable-args
+        // call below into a refusal + re-send feedback instead of an
+        // execution attempt.
+        let turn_output_truncated = stop_reason_indicates_output_truncation(
+            turn_stop_reason,
+            Some(self.client.provider_name()),
+        );
 
         // --- Phase 1: planning (sequential) — build a `ToolExecutionPlan`
         // per tool_use, pop speculative `early_tasks`, and run the loop-guard
@@ -116,15 +161,31 @@ impl HostAgentExecutor {
         let mut early_for_plan: Vec<Option<EarlyToolTask>> = Vec::with_capacity(n);
         let mut tool_for_plan: Vec<Option<Arc<dyn Tool>>> = Vec::with_capacity(n);
         for (i, (id, name, input)) in tool_uses.into_iter().enumerate() {
+            // P0-2 truncation gate: on an output-limit-truncated turn, a call
+            // whose argument JSON failed to parse was cut off mid-argument.
+            // Refuse it before anything else — no loop-guard attempt (the
+            // model never finished making this call), no speculative early
+            // task, no execution. Like a guard block, this is an
+            // intervention, not an execution, so it must not count toward
+            // the error-escalation halt (`blocked` in `DispatchedTool`).
+            let truncation_refusal = if turn_output_truncated && input.is_null() {
+                early_tasks.remove(&id);
+                Some(truncated_tool_result(&name, turn_stop_reason))
+            } else {
+                None
+            };
             // loop-guard: block the 3rd identical (name+args) call this turn.
-            let guard_result = match loop_guard.record_attempt(&name, &input) {
-                AttemptDecision::Block(message) => {
-                    // Abort any speculatively-started task — the call
-                    // won't execute (Drop aborts the `JoinHandle`).
-                    early_tasks.remove(&id);
-                    Some(block_tool_result(message))
-                }
-                AttemptDecision::Proceed => None,
+            let guard_result = match truncation_refusal {
+                Some(result) => Some(result),
+                None => match loop_guard.record_attempt(&name, &input) {
+                    AttemptDecision::Block(message) => {
+                        // Abort any speculatively-started task — the call
+                        // won't execute (Drop aborts the `JoinHandle`).
+                        early_tasks.remove(&id);
+                        Some(block_tool_result(message))
+                    }
+                    AttemptDecision::Proceed => None,
+                },
             };
             // Pop the speculative early-start task (if any) for reuse / abort
             // at dispatch time.

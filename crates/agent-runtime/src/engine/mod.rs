@@ -3070,8 +3070,9 @@ use self::dispatch::{
     mcp_tool_is_read_only, parse_parallel_tool_calls,
 };
 pub use self::dispatch::{
-    ToolExecOutcome, ToolExecutionBatch, ToolExecutionPlan, caller_allowed_for_tool,
-    final_tool_input, format_tool_error, plan_tool_execution_batches,
+    ArgSalvagePolicy, ToolExecOutcome, ToolExecutionBatch, ToolExecutionPlan,
+    caller_allowed_for_tool, final_tool_input, final_tool_input_with_policy, format_tool_error,
+    parse_tool_input, parse_tool_input_with_policy, plan_tool_execution_batches,
     should_force_update_plan_first, should_stop_after_plan_tool,
 };
 pub use self::lsp_hooks::edited_paths_for_tool;

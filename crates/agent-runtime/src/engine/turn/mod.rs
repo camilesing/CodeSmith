@@ -18,6 +18,9 @@
 //!   gate + sentinel builder, the thinking-only emit predicate, and the LSP
 //!   diagnostics collect / flush pair (the drain / hold control flow stays
 //!   inline in `run_inner`).
+//! - [`truncation`] — output-limit stop-reason classification (the P0-2
+//!   gate's predicate: a `length`/`max_tokens` stop reason minus the
+//!   per-provider mis-report exemptions).
 //!
 //! The submodules are private; the items `host_executor` still needs cross
 //! over through the `pub(crate)` re-exports below.
@@ -31,6 +34,7 @@ mod batches;
 mod postprocess;
 mod seams;
 mod stream;
+mod truncation;
 
 pub(crate) use approval::approval_intent_summary;
 pub(crate) use postprocess::{

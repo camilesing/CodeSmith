@@ -5,7 +5,11 @@
 //! was retired/deleted); this module owns:
 //!
 //! * Streaming-buffer parsing into a finalized `serde_json::Value` tool input
-//!   (`final_tool_input`, `parse_tool_input`, fenced/JSON segment helpers).
+//!   (`final_tool_input`, `parse_tool_input`, fenced/JSON segment helpers) —
+//!   with the P0-2 salvage policy: on an output-limit-truncated turn the
+//!   ladder must not run (pass [`ArgSalvagePolicy::StrictOnly`]; a fragment
+//!   the model was cut off writing is feedback material, never something to
+//!   repair into executable arguments).
 //! * The `multi_tool_use.parallel` payload parser.
 //! * Policy predicates the turn loop consults — when a batch can run in
 //!   parallel, when an `update_plan` step should stop the turn, when a Plan
@@ -142,6 +146,27 @@ pub fn format_tool_error(err: &ToolError, tool_name: &str) -> String {
 
 // === Streaming-buffer parsing =========================================
 
+/// Salvage policy for a streamed tool-argument buffer (P0-2).
+///
+/// [`ArgSalvagePolicy::RepairAllowed`] runs the full ladder — the
+/// deterministic arg-repair pass plus the code-fence / double-encoded /
+/// balanced-segment fallbacks — and is right for a turn the model finished
+/// writing, where "almost-JSON" is a formatting slip worth fixing.
+///
+/// [`ArgSalvagePolicy::StrictOnly`] parses strictly and returns `None` on
+/// failure. It is mandatory on a turn whose stop reason says the provider
+/// output limit was hit: an unparseable buffer there is a call the model
+/// was cut off mid-argument, and salvaging it (closing its braces,
+/// stripping its trailing commas) would fabricate executable arguments the
+/// model never wrote. Such calls are routed to feedback asking for a
+/// re-send instead — never repaired into execution (upstream v0.9.13
+/// #5986).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArgSalvagePolicy {
+    RepairAllowed,
+    StrictOnly,
+}
+
 /// Promote a streaming `ToolUseState` to a finalized JSON input.
 ///
 /// Order of preference:
@@ -155,8 +180,18 @@ pub fn format_tool_error(err: &ToolError, tool_name: &str) -> String {
 ///      (the per-delta parser has already mirrored the most recent valid
 ///      partial parse into `tool_state.input`).
 pub fn final_tool_input(state: &ToolUseState) -> serde_json::Value {
+    final_tool_input_with_policy(state, ArgSalvagePolicy::RepairAllowed)
+}
+
+/// [`final_tool_input`] with an explicit salvage [`ArgSalvagePolicy`] —
+/// pass [`ArgSalvagePolicy::StrictOnly`] for output-limit-truncated turns
+/// (P0-2).
+pub fn final_tool_input_with_policy(
+    state: &ToolUseState,
+    policy: ArgSalvagePolicy,
+) -> serde_json::Value {
     if !state.input_buffer.trim().is_empty()
-        && let Some(parsed) = parse_tool_input(&state.input_buffer)
+        && let Some(parsed) = parse_tool_input_with_policy(&state.input_buffer, policy)
     {
         return parsed;
     }
@@ -164,9 +199,23 @@ pub fn final_tool_input(state: &ToolUseState) -> serde_json::Value {
 }
 
 pub fn parse_tool_input(buffer: &str) -> Option<serde_json::Value> {
+    parse_tool_input_with_policy(buffer, ArgSalvagePolicy::RepairAllowed)
+}
+
+/// [`parse_tool_input`] with an explicit salvage [`ArgSalvagePolicy`] —
+/// [`ArgSalvagePolicy::StrictOnly`] runs a strict parse only, so a
+/// truncated buffer surfaces as `None` instead of being repaired into
+/// executable arguments (P0-2).
+pub fn parse_tool_input_with_policy(
+    buffer: &str,
+    policy: ArgSalvagePolicy,
+) -> Option<serde_json::Value> {
     let trimmed = buffer.trim();
     if trimmed.is_empty() {
         return None;
+    }
+    if policy == ArgSalvagePolicy::StrictOnly {
+        return serde_json::from_str::<serde_json::Value>(trimmed).ok();
     }
     // Try the deterministic arg-repair ladder first (handles trailing commas,
     // unclosed braces, embedded control chars, etc.)
@@ -388,4 +437,38 @@ pub fn mcp_tool_is_read_only(name: &str) -> bool {
             | "read_mcp_resource"
             | "mcp_get_prompt"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strict_policy_refuses_truncated_buffer_instead_of_repairing() {
+        // A call cut off mid-argument by the output limit: unterminated
+        // string, no closing brace. RepairAllowed would close the braces
+        // and fabricate `{"command": "rm -rf /tmp/legacy"}`-shaped
+        // executable args the model never finished writing; StrictOnly
+        // must surface it as unparseable (P0-2).
+        let truncated = r#"{"command": "rm -rf /tmp/leg"#;
+        assert!(parse_tool_input_with_policy(truncated, ArgSalvagePolicy::StrictOnly).is_none());
+        assert!(parse_tool_input_with_policy(truncated, ArgSalvagePolicy::RepairAllowed).is_some());
+    }
+
+    #[test]
+    fn strict_policy_still_parses_complete_buffers() {
+        let complete = r#"{"command": "ls -la"}"#;
+        assert_eq!(
+            parse_tool_input_with_policy(complete, ArgSalvagePolicy::StrictOnly),
+            Some(json!({"command": "ls -la"}))
+        );
+    }
+
+    #[test]
+    fn default_parse_tool_input_keeps_repair_ladder() {
+        // The default wrapper must stay behavior-compatible with the
+        // pre-P0-2 ladder (tui engine tests pin this too).
+        assert!(parse_tool_input(r#"{"a": 1,}"#).is_some());
+        assert!(parse_tool_input(r#"{"a": 1"#).is_some());
+    }
 }
