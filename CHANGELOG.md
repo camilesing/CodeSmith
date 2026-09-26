@@ -13,6 +13,24 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
 
 ### Added
 
+- **Doctor LLM fallback layer (P3-8 step 2)**: after `codesmith doctor`'s
+  deterministic checks complete, the warnings/errors they collected
+  (recorded at the same branches that print them — update checks,
+  config.toml presence, provider key, API connectivity, strict_tool_mode
+  fallback, MCP servers/config, missing skills dirs, Python/Node/
+  pdftotext dependencies, platform sandbox) are handed to one advisory
+  LLM call — the `[utility_model]` when configured, else the main client
+  — which proposes root causes (preferring explanations that connect
+  multiple findings) and one concrete next action per finding, skipping
+  findings whose built-in hint already covers them. The section renders
+  after "All checks complete!" and is explicitly advisory: deterministic
+  results take precedence, the model never executes anything, and every
+  skip condition (no resolvable client, empty response, transport error,
+  30s timeout) degrades to a quiet `·` line. Usage flows through the
+  `cost_status` side-channel. `--json` mode is untouched (CI-safe).
+  Configure with `[doctor] llm_fallback` (bool, default `true`). Unit
+  tests in `doctor_llm.rs` cover the collector, prompt-safety contract,
+  and client round-trip (mock).
 - **Result claim verifier (P3-8)**: the first piece of the
   continuous-evolution loop — a result validator for the online turn.
   When a completed turn's final assistant message asserts "tests pass" /

@@ -904,6 +904,19 @@ If you are upgrading from older releases:
   already sent through the same sandbox/network policy — it grants no
   authority the turn did not already have. `false` restores the pre-P3-8
   behavior of trusting the claim.
+- `[doctor] llm_fallback` (bool, optional, default `true`): the
+  `codesmith doctor` LLM fallback layer (P3-8 step 2). After the
+  deterministic checks complete, any collected warnings/errors are handed
+  to one advisory LLM call — the `[utility_model]` when configured, else
+  the main client — which proposes root causes (preferring explanations
+  that connect multiple findings) and one concrete next action per
+  finding, skipping findings whose built-in hint already covers them.
+  The section renders after "All checks complete!", is explicitly
+  advisory (deterministic results take precedence), and the model never
+  executes anything. Skip conditions (no resolvable client, empty
+  response, transport error, 30s timeout) degrade to a quiet `·` line;
+  `--json` mode adds no live calls. `false` keeps doctor fully
+  deterministic.
 - `subagents.*` (optional): per-role/type model defaults for `agent_open` and
   related persistent sub-agent sessions. Explicit tool `model` values win, then role/type
   overrides, then the parent runtime model. Supported convenience keys are

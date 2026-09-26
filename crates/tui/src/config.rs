@@ -1200,6 +1200,11 @@ pub struct Config {
     /// verifier runs with its defaults (on).
     #[serde(default)]
     pub verification: Option<VerificationToml>,
+    /// `codesmith doctor` LLM fallback layer (P3-8). When absent, the
+    /// advisory analysis runs with its default (on, when findings exist
+    /// and a client resolves).
+    #[serde(default)]
+    pub doctor: Option<DoctorToml>,
 
     /// Community skill installer settings (#140). When absent, installer
     /// commands fall back to the bundled defaults
@@ -1342,6 +1347,17 @@ pub struct VerificationToml {
     /// turn; the verdict is injected before the next request and surfaced
     /// as a toast. `false` restores the pre-P3-8 behavior.
     pub result_claims: Option<bool>,
+}
+
+/// `[doctor]` table — the `codesmith doctor` LLM fallback layer (P3-8
+/// step 2). See `config.example.toml` for documentation.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DoctorToml {
+    /// When `true` (the default), doctor's post-check advisory analysis
+    /// runs when the deterministic checks collected warnings/errors and
+    /// an LLM client resolves (utility model when configured, else the
+    /// main client). `false` keeps doctor fully deterministic.
+    pub llm_fallback: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2807,6 +2823,16 @@ impl Config {
             .unwrap_or(true)
     }
 
+    /// Resolved doctor LLM fallback switch (P3-8 step 2). Reads `[doctor]
+    /// llm_fallback`; `None` resolves to `true` (on).
+    #[must_use]
+    pub fn doctor_llm_fallback(&self) -> bool {
+        self.doctor
+            .as_ref()
+            .and_then(|d| d.llm_fallback)
+            .unwrap_or(true)
+    }
+
     /// Resolved stream idle watchdog budget, in seconds (P0-1).
     ///
     /// Reads top-level `stream_idle_timeout_secs`. `None` resolves to
@@ -4210,6 +4236,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         notifications: override_cfg.notifications.or(base.notifications),
         network: override_cfg.network.or(base.network),
         verification: override_cfg.verification.or(base.verification),
+        doctor: override_cfg.doctor.or(base.doctor),
         skills: override_cfg.skills.or(base.skills),
         snapshots: override_cfg.snapshots.or(base.snapshots),
         search: override_cfg.search.or(base.search),

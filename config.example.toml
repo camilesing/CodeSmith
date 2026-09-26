@@ -731,6 +731,22 @@ exponential_base = 2.0
 # result_claims = true
 
 # ─────────────────────────────────────────────────────────────────────────────────
+# Doctor LLM Fallback (P3-8)
+# ─────────────────────────────────────────────────────────────────────────────────
+# After `codesmith doctor`'s deterministic checks complete, any collected
+# warnings/errors are handed to one advisory LLM call (the [utility_model]
+# when configured, else the main client) that looks for root causes the
+# per-check hints cannot see — usually interactions between findings.
+# The analysis renders after "All checks complete!" and is explicitly
+# advisory: the deterministic results above take precedence, the model
+# never executes anything, and every skip condition (no client, empty
+# response, error, 30s timeout) degrades to a quiet `·` line. `--json`
+# mode is untouched. Default: on. Set false to keep doctor fully
+# deterministic.
+#[doctor]
+# llm_fallback = true
+
+# ─────────────────────────────────────────────────────────────────────────────────
 # Context Compaction
 # ─────────────────────────────────────────────────────────────────────────────────
 # Auto-compaction is a saved UI setting edited with `/config` (`auto_compact`).

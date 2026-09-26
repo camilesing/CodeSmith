@@ -38,6 +38,7 @@ mod core;
 mod cost_status;
 mod cycle_manager;
 mod dependencies;
+mod doctor_llm;
 mod error_taxonomy;
 mod eval;
 mod execpolicy;
@@ -2276,6 +2277,13 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     let (aqua_r, aqua_g, aqua_b) = palette::CODESMITH_SKY_RGB;
     let (red_r, red_g, red_b) = palette::CODESMITH_RED_RGB;
 
+    // P3-8 step 2: collect the warning/error branches below as structured
+    // findings for the LLM fallback layer (`doctor_llm`). Recording never
+    // changes what prints — the sections below stay exactly as they were;
+    // the collector only accumulates what the post-run advisory analysis
+    // will see.
+    let mut findings = doctor_llm::DoctorFindings::new();
+
     println!(
         "{}",
         "codesmith Doctor".truecolor(blue_r, blue_g, blue_b).bold()
@@ -2303,6 +2311,10 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                         "!".truecolor(sky_r, sky_g, sky_b)
                     );
                     println!("    Update available. Run `codesmith update` to install.");
+                    findings.warn(
+                        "Updates",
+                        format!("update available: v{current_version} < {latest_tag}"),
+                    );
                 }
                 Ok(std::cmp::Ordering::Equal) => {
                     println!(
@@ -2321,6 +2333,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                         "!".truecolor(sky_r, sky_g, sky_b)
                     );
                     println!("    Version comparison failed: {err}");
+                    findings.warn("Updates", format!("version comparison failed: {err}"));
                 }
             }
         }
@@ -2330,6 +2343,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                 "!".truecolor(sky_r, sky_g, sky_b)
             );
             println!("    Run `codesmith update --check` to retry.");
+            findings.warn("Updates", format!("latest release check failed: {err}"));
         }
     }
     println!();
@@ -2356,6 +2370,13 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             "  {} config.toml not found at {} (using defaults/env)",
             "!".truecolor(sky_r, sky_g, sky_b),
             crate::utils::display_path(&config_path)
+        );
+        findings.warn(
+            "Configuration",
+            format!(
+                "config.toml not found at {} (using defaults/env)",
+                crate::utils::display_path(&config_path)
+            ),
         );
     }
     println!("  workspace: {}", crate::utils::display_path(workspace));
@@ -2516,6 +2537,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         println!(
             "    Run 'codesmith auth set --provider <name>' to save a key to ~/.codesmith/config.toml."
         );
+        findings.error("API Keys", "active provider key not configured");
         false
     };
 
@@ -2540,6 +2562,14 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         "  {} strict_tool_mode: {}",
         strict_icon, strict_tool_mode.message
     );
+    if strict_tool_mode.status == "fallback_non_beta"
+        || strict_tool_mode.status == "custom_endpoint"
+    {
+        findings.warn(
+            "API Connectivity",
+            format!("strict_tool_mode: {}", strict_tool_mode.message),
+        );
+    }
     if let Some(recommended) = strict_tool_mode.recommended_base_url.as_ref() {
         println!("    Use `base_url = \"{recommended}\"` for DeepSeek strict schemas.");
     }
@@ -2567,6 +2597,13 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                 println!(
                     "\r  {} API connection failed",
                     "✗".truecolor(red_r, red_g, red_b)
+                );
+                findings.error(
+                    "API Connectivity",
+                    format!(
+                        "connection to {} ({}) failed: {error_msg}",
+                        api_target.base_url, api_target.model
+                    ),
                 );
                 if error_msg.contains("401") || error_msg.contains("Unauthorized") {
                     println!(
@@ -2622,6 +2659,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             "  {} MCP feature flag disabled",
             "!".truecolor(sky_r, sky_g, sky_b)
         );
+        findings.warn("MCP Servers", "MCP feature flag disabled");
     }
 
     let mcp_config_path = config.mcp_config_path();
@@ -2643,6 +2681,15 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                 );
                 for (name, server) in &cfg.servers {
                     let status = doctor_check_mcp_server(server);
+                    match &status {
+                        McpServerDoctorStatus::Warning(detail) => {
+                            findings.warn("MCP Servers", format!("{name}: {detail}"));
+                        }
+                        McpServerDoctorStatus::Error(detail) => {
+                            findings.error("MCP Servers", format!("{name}: {detail}"));
+                        }
+                        McpServerDoctorStatus::Ok(_) => {}
+                    }
                     let icon = match status {
                         McpServerDoctorStatus::Ok(ref detail) => {
                             format!(
@@ -2678,6 +2725,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                     "✗".truecolor(red_r, red_g, red_b),
                     err
                 );
+                findings.error("MCP Servers", format!("MCP config parse error: {err}"));
             }
         }
     } else {
@@ -2817,6 +2865,10 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         && !global_skills_dir.exists()
     {
         println!("    Run `codesmith setup --skills` (or add --local for ./skills).");
+        findings.warn(
+            "Skills",
+            "no skills directory found in any precedence location",
+        );
     }
 
     // Tools directory
@@ -2927,6 +2979,13 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                 crate::dependencies::PYTHON_CANDIDATES,
             );
             println!("    code_execution tool is NOT advertised to the model on this install.");
+            findings.error(
+                "Tool Dependencies",
+                format!(
+                    "Python not found (tried {:?}); code_execution tool not advertised",
+                    crate::dependencies::PYTHON_CANDIDATES
+                ),
+            );
             println!("    Install Python 3 and ensure one of those names is on PATH:");
             match std::env::consts::OS {
                 "macos" => {
@@ -2954,6 +3013,10 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                 "✗".truecolor(red_r, red_g, red_b),
             );
             println!("    js_execution tool is NOT advertised to the model on this install.");
+            findings.error(
+                "Tool Dependencies",
+                "Node.js not found (tried `node`); js_execution tool not advertised",
+            );
             println!("    Install Node 18+ and ensure `node` is on PATH:");
             match std::env::consts::OS {
                 "macos" => println!("      brew install node   (or download from nodejs.org)"),
@@ -3068,6 +3131,10 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                 println!(
                     "    Either install Poppler or unset `prefer_external_pdftotext` to fall back to the bundled pure-Rust extractor."
                 );
+                findings.error(
+                    "Tool Dependencies",
+                    "pdftotext missing while prefer_external_pdftotext = true; PDF reads will return binary_unavailable",
+                );
                 match std::env::consts::OS {
                     "macos" => println!("    Install via: brew install poppler"),
                     "linux" => println!(
@@ -3157,6 +3224,10 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             "  {} sandbox not available (commands run best-effort)",
             "!".truecolor(sky_r, sky_g, sky_b)
         );
+        findings.warn(
+            "Platform",
+            "no platform sandbox available (commands run best-effort)",
+        );
     }
 
     println!();
@@ -3166,6 +3237,51 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             .truecolor(aqua_r, aqua_g, aqua_b)
             .bold()
     );
+
+    // P3-8 step 2: the LLM fallback layer. Deterministic checks covered
+    // the high-frequency problems above; when they found anything worth
+    // reasoning about, one advisory call (utility model when configured,
+    // else the main client) analyzes the collected findings for root
+    // causes the per-branch hints cannot see — usually interactions
+    // between findings. Analysis only, never execution; every skip
+    // condition degrades to a `·` line (see `doctor_llm` module docs).
+    if findings.has_attention() && config.doctor_llm_fallback() {
+        println!();
+        println!("{}", "LLM Analysis (advisory):".bold());
+        match doctor_llm::resolve_analysis_target(config) {
+            Ok((client, model)) => {
+                print!("  · Analyzing {} with {model}...", findings.summary_line());
+                use std::io::Write;
+                std::io::stdout().flush().ok();
+                let payload = findings.to_prompt_payload(
+                    std::env::consts::OS,
+                    api_target.provider,
+                    &api_target.base_url,
+                    &api_target.model,
+                );
+                match doctor_llm::analyze_findings(&client, &model, &payload).await {
+                    Some(analysis) => {
+                        println!(
+                            "\r  {} analysis below is advisory — the deterministic results above take precedence",
+                            "✓".truecolor(aqua_r, aqua_g, aqua_b)
+                        );
+                        for line in analysis.lines() {
+                            println!("    {line}");
+                        }
+                    }
+                    None => {
+                        println!(
+                            "\r  {} {model} returned no analysis (empty/error/timeout) — skipping",
+                            "·".dimmed()
+                        );
+                    }
+                }
+            }
+            Err(reason) => {
+                println!("  {} skipped ({reason})", "·".dimmed());
+            }
+        }
+    }
 }
 
 /// Machine-readable counterpart to `run_doctor`. Skips the live API call so it
