@@ -4153,7 +4153,13 @@ mod tests {
                 if let Some((tx, text)) = steer_pair {
                     let _ = tx.try_send(text);
                 }
-                let round = next.unwrap_or(MockRound::Events(vec![]));
+                // Exhausted-round default: a PROVEN empty completion. P0-3
+                // made a proof-less stream end an interrupted connection
+                // (Empty → transparent retry), so the old `vec![]` default
+                // would turn every unscripted follow-up request into a
+                // retry-then-fail. Real clients always send `MessageStop`,
+                // even for empty completions — this matches them.
+                let round = next.unwrap_or(MockRound::Events(vec![StreamEvent::MessageStop]));
                 match round {
                     MockRound::Events(events) => Ok(Box::pin(futures_util::stream::iter(
                         events.into_iter().map(Ok),
@@ -5637,16 +5643,21 @@ mod tests {
 
     #[tokio::test]
     async fn transparent_retry_skips_clean_empty_stream() {
-        // A stream that completes cleanly but produced no content blocks is
-        // NOT a "stream died" situation (production gates on `stream_errors >
-        // 0`). The executor must not retry it — it surfaces NoToolCalls.
+        // A stream that completes cleanly (P0-3: WITH a termination proof —
+        // `MessageStop`) but produced no content blocks is NOT a "stream
+        // died" situation. The executor must not retry it — it surfaces
+        // NoToolCalls. (A proof-less empty stream, by contrast, now retries —
+        // see `unproven_stream_end_without_message_stop_is_retried` in
+        // `turn::stream`.)
         let tools = Arc::new(ToolSet::new());
         let mut sess = fresh_session();
         let mut history = SessionChatHistory::new(&mut sess);
         let (tx, mut rx) = mpsc::channel(256);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
 
-        let mock = Arc::new(MockLlm::with_rounds(vec![MockRound::Events(vec![])]));
+        let mock = Arc::new(MockLlm::with_rounds(vec![MockRound::Events(vec![
+            StreamEvent::MessageStop,
+        ])]));
 
         let executor = HostAgentExecutor::new(
             mock.clone(),

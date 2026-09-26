@@ -14,7 +14,7 @@ use codesmith_agent::llm_client::LlmClientHandle;
 use codesmith_agent::provider::{ProviderConfig, ProviderFactory, ProviderId};
 use rig_core::providers::openai;
 
-use crate::rig_adapter::{GenericShaper, RigLlmClient, build_header_map};
+use crate::rig_adapter::{GenericShaper, H2FallbackClient, RigLlmClient, build_header_map};
 
 /// Factory for the official OpenAI provider (Chat Completions API). Carries
 /// the manifest-sourced `base_url` / `model` defaults it falls back to when the
@@ -56,7 +56,12 @@ impl ProviderFactory for OpenAiFactory {
             builder = builder.base_url(&base_url);
         }
         builder = builder.http_headers(build_header_map(&cfg.http_headers));
+        // P0-3: backend with a one-shot HTTP/2 → HTTP/1.1 fallback
+        // (`rig_adapter::http_fallback`). `http_client` advances the
+        // builder's backend type parameter, so it chains into `build`
+        // instead of re-assigning `builder`.
         let client = builder
+            .http_client(H2FallbackClient::new())
             .build()
             .context("failed to build rig openai (completions) client")?;
 

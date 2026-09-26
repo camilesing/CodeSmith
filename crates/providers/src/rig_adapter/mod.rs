@@ -21,11 +21,12 @@
 //! request's `'&self` lifetime.
 
 mod convert;
+mod fim_translate;
+mod http_fallback;
 // `reasoning` is consumed only by `GenericShaper` (the OpenAI / openai-compat /
 // DeepSeek family); Anthropic has its own thinking config and never calls it.
 // Gate it with the same cfg so the `anthropic`-only Lego build stays
 // warning-free.
-mod fim_translate;
 #[cfg(any(feature = "openai", feature = "deepseek", feature = "openai-compat"))]
 mod reasoning;
 mod shaper;
@@ -48,6 +49,7 @@ pub(crate) use shaper::AnthropicShaper;
 #[cfg(any(feature = "openai", feature = "deepseek", feature = "openai-compat"))]
 pub(crate) use shaper::GenericShaper;
 pub(crate) use shaper::RequestShaper;
+pub(crate) use http_fallback::H2FallbackClient;
 
 /// Monotonic counter for synthetic message IDs. rig doesn't always surface a
 /// provider message ID (and the streaming `MessageStart` fires before the
@@ -251,6 +253,7 @@ where
                 request.model.clone(),
                 response.choice,
                 &response.usage,
+                request.max_tokens,
             )
         })
     }
@@ -270,7 +273,8 @@ where
             };
             let builder = build_request(&client, &model_id, &request, shaper)?;
             let stream = builder.stream().await.map_err(anyhow::Error::new)?;
-            let mapped = stream::map_rig_stream(stream, request.model.clone());
+            let mapped =
+                stream::map_rig_stream(stream, request.model.clone(), request.max_tokens);
             Ok(Box::pin(mapped) as StreamEventBox)
         })
     }

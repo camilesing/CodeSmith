@@ -275,6 +275,34 @@ fn nonzero(v: u64) -> Option<u32> {
     (v != 0).then(|| u32::try_from(v).unwrap_or(u32::MAX))
 }
 
+/// Derive an Anthropic-style `stop_reason` for the terminal `MessageDelta`.
+///
+/// rig-core 0.39 collapses the wire `finish_reason` before it crosses its
+/// public API (OpenAI-compat compresses it to a crate-private enum, Anthropic
+/// reads it and drops the string), so the real value cannot be passed
+/// through. What CAN be proven at this layer, in priority order:
+///
+/// 1. `"max_tokens"` — the billed output reached the output cap we requested.
+///    Providers stop at exactly `max_tokens` when the output limit truncates
+///    the turn, so hitting the cap is proof of truncation even without the
+///    wire field. This arms the P0-2 truncation gate on real traffic. The
+///    rare false positive (a turn that happened to end naturally at exactly
+///    the cap) is harmless there: the gate only refuses tool calls whose
+///    arguments failed to parse.
+/// 2. `"tool_use"` — a tool block was committed; the model stopped to call a
+///    tool (OpenAI `tool_calls` normalizes to this).
+/// 3. `"end_turn"` — proof of a clean finish, value indistinguishable at this
+///    layer (stop vs. anything below the cap).
+pub(crate) fn derive_stop_reason(saw_tool_use: bool, usage: &Usage, max_tokens: u32) -> String {
+    if max_tokens > 0 && usage.output_tokens >= max_tokens {
+        "max_tokens".to_string()
+    } else if saw_tool_use {
+        "tool_use".to_string()
+    } else {
+        "end_turn".to_string()
+    }
+}
+
 /// Build a `MessageResponse` from the non-streaming completion pieces. Used by
 /// `RigLlmClient::create_message`.
 pub(crate) fn build_message_response(
@@ -282,24 +310,30 @@ pub(crate) fn build_message_response(
     model: String,
     choice: OneOrMany<AssistantContent>,
     usage: &RigUsage,
+    max_tokens: u32,
 ) -> Result<MessageResponse> {
-    let content: Vec<ContentBlock> = choice
+    let items: Vec<AssistantContent> = choice.into_iter().collect();
+    let saw_tool_use = items
+        .iter()
+        .any(|item| matches!(item, AssistantContent::ToolCall(_)));
+    let content: Vec<ContentBlock> = items
         .into_iter()
         .filter_map(|item| assistant_content_to_block(&item))
         .collect();
     if content.is_empty() {
         return Err(anyhow!("completion returned no assistant content blocks"));
     }
+    let cs_usage = usage_to_codesmith(usage);
     Ok(MessageResponse {
         id: provider_msg_id.unwrap_or_else(crate::rig_adapter::synth_message_id),
         r#type: "message".to_string(),
         role: "assistant".to_string(),
         content,
         model,
-        stop_reason: Some("end_turn".to_string()),
+        stop_reason: Some(derive_stop_reason(saw_tool_use, &cs_usage, max_tokens)),
         stop_sequence: None,
         container: None,
-        usage: usage_to_codesmith(usage),
+        usage: cs_usage,
     })
 }
 
@@ -307,6 +341,23 @@ pub(crate) fn build_message_response(
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn stop_reason_derivation_priority() {
+        let usage = |output| Usage {
+            output_tokens: output,
+            ..Usage::default()
+        };
+        // Billed output reaching the requested cap outranks everything —
+        // that's the case the P0-2 truncation gate exists for.
+        assert_eq!(derive_stop_reason(false, &usage(100), 100), "max_tokens");
+        assert_eq!(derive_stop_reason(true, &usage(100), 100), "max_tokens");
+        // Tool rounds report tool_use; natural stops report end_turn.
+        assert_eq!(derive_stop_reason(true, &usage(50), 100), "tool_use");
+        assert_eq!(derive_stop_reason(false, &usage(50), 100), "end_turn");
+        // No cap known (0) → the derivation never fires.
+        assert_eq!(derive_stop_reason(false, &usage(5_000), 0), "end_turn");
+    }
 
     fn user_message(content: Vec<ContentBlock>) -> Message {
         Message {

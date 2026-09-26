@@ -27,6 +27,23 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
   (enabled by `codesmith-tui` and `codesmith-tool-impls`; builds without it
   compile a pass-through gate). Configure with `[edit] parse_gate`
   (bool, default `true`).
+- **Stream termination proof (P0-3)**: the rig adapter's stream mapper no
+  longer forges `MessageDelta`/`MessageStop` when the provider's SSE
+  connection dies silently. rig's `Final` payload is treated as the
+  termination proof (rig-core 0.39 collapses the wire `finish_reason` /
+  `[DONE]` evidence into it); a stream that ends without one is surfaced as
+  a retryable "interrupted connection" error, so zero-content rounds
+  transparently re-send and partial rounds surface the content they
+  received. The engine adds a matching defense at its own seam: any stream
+  that ends without `MessageStop` is treated as interrupted, never as a
+  clean completion. The terminal `stop_reason` is derived instead of
+  hard-coded `end_turn`: billed output reaching the requested `max_tokens`
+  cap reports `max_tokens` (arming the P0-2 truncation gate on real
+  traffic), tool rounds report `tool_use`. Transparent stream retries now
+  also drive the structured retry banner (`retry_status`: attempt,
+  countdown, reason — rendered in the TUI footer). All four rig-backed
+  provider factories inject a reqwest backend that falls back to HTTP/1.1
+  after the first HTTP/2 protocol failure (sticky, one replay).
 
 ## [0.1.0] - 2026-08-25
 
