@@ -33,6 +33,7 @@ mod stash;
 mod status;
 mod task;
 pub mod user_commands;
+mod verify;
 
 use std::fmt::Write as _;
 
@@ -560,6 +561,13 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/slop [query|export]",
         description_id: MessageId::CmdSlopDescription,
     },
+    // Result claim verifier readout (P3-8 / P3-9)
+    CommandInfo {
+        name: "verify",
+        aliases: &[],
+        usage: "/verify [stats]",
+        description_id: MessageId::CmdVerifyDescription,
+    },
     // Extension system (§F1)
     CommandInfo {
         name: "extension",
@@ -665,6 +673,9 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
 
         // Slop ledger (#2127)
         "slop" | "canzha" => config::slop(app, arg),
+
+        // Result claim verifier readout (P3-8 / P3-9)
+        "verify" => verify::verify(app, arg),
 
         // Extension system (§F1). Unreachable in practice — the runtime
         // lookup in `execute()` (above) intercepts `/extension` first. Kept

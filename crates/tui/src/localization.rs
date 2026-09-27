@@ -218,6 +218,7 @@ pub enum MessageId {
     CmdWorkspaceDescription,
     CmdUndoDescription,
     CmdVerboseDescription,
+    CmdVerifyDescription,
     CmdCacheAdvice,
     CmdCacheFootnote,
     CmdCacheHeader,
@@ -481,6 +482,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdWorkspaceDescription,
     MessageId::CmdUndoDescription,
     MessageId::CmdVerboseDescription,
+    MessageId::CmdVerifyDescription,
     MessageId::CmdCacheAdvice,
     MessageId::CmdCacheFootnote,
     MessageId::CmdCacheHeader,
@@ -961,6 +963,9 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdWorkspaceDescription => "Show or switch the current workspace",
         MessageId::CmdUndoDescription => "Remove last message pair",
         MessageId::CmdVerboseDescription => "Toggle full live thinking in the transcript",
+        MessageId::CmdVerifyDescription => {
+            "Show result-claim verifier stats (pass/fail/unsubstantiated counts)"
+        }
         MessageId::CmdCacheAdvice => {
             "Hit/miss ratios over ~70% after the third turn indicate a stable cache prefix; \n\
              lower than that on long sessions suggests prefix churn worth investigating (#263)."
@@ -1353,6 +1358,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdWorkspaceDescription => "显示或切换当前工作空间",
         MessageId::CmdUndoDescription => "移除最后一组消息对",
         MessageId::CmdVerboseDescription => "切换实时思考内容的完整显示",
+        MessageId::CmdVerifyDescription => "查看结果声明验证统计（通过/失败/无据计数）",
         MessageId::CmdCacheAdvice => {
             "第 3 轮起命中率稳定在 ~70% 以上即表示前缀缓存稳定；\n\
              长会话中明显偏低则意味着前缀有抖动，值得排查（#263）。"
@@ -1702,6 +1708,9 @@ fn hindi(id: MessageId) -> Option<&'static str> {
         MessageId::CmdWorkspaceDescription => "वर्तमान workspace दिखाएँ या बदलें",
         MessageId::CmdUndoDescription => "अंतिम संदेश जोड़ी हटाएँ",
         MessageId::CmdVerboseDescription => "transcript में पूरा live thinking चालू/बंद करें",
+        MessageId::CmdVerifyDescription => {
+            "result-claim verifier आँकड़े देखें (pass/fail/unsubstantiated)"
+        }
         MessageId::CmdCacheAdvice => {
             "तीसरे टर्न के बाद ~70% से अधिक hit/miss अनुपात स्थिर cache prefix दर्शाता है; \n\
              लंबे सत्रों में इससे कम होना prefix churn की जाँच के लायक है (#263)।"
@@ -2113,6 +2122,9 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         MessageId::CmdUndoDescription => "Eliminar el último par de mensajes",
         MessageId::CmdVerboseDescription => {
             "Alternar pensamiento en vivo completo en la transcripción"
+        }
+        MessageId::CmdVerifyDescription => {
+            "Ver estadísticas del verificador de afirmaciones (pass/fail/unsubstantiated)"
         }
         MessageId::CmdCacheAdvice => {
             "Tasas de hit/miss arriba del ~70% a partir del tercer turno indican un prefijo de caché estable;\n\

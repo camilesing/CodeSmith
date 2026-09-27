@@ -1701,6 +1701,7 @@ impl Engine {
                 let dispatcher = plan.tool_registry.clone();
                 let pending = Arc::clone(&self.pending_result_verifications);
                 let tx_event = self.tx_event.clone();
+                let model = self.session.model.clone();
                 spawn_supervised(
                     "result-verifier",
                     std::panic::Location::caller(),
@@ -1710,6 +1711,18 @@ impl Engine {
                             .lock()
                             .expect("pending_result_verifications poisoned")
                             .push(block.clone());
+                        // P3-9 step 1: every verdict is appended to the
+                        // local evolution log (best-effort — see
+                        // `evolution_log`) so the machinery itself becomes
+                        // observable before anything tries to evaluate it.
+                        crate::evolution_log::record_verdict(
+                            &model,
+                            block.kind.label(),
+                            block.failure_type(),
+                            &block.phrase,
+                            block.command.as_deref(),
+                            block.exit_code,
+                        );
                         let _ = tx_event
                             .send(Event::ResultVerification {
                                 verdict: block.kind.label().to_string(),

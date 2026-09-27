@@ -57,10 +57,12 @@ correctness; nothing measures the *evolution* machinery itself. The claim
 verdicts, doctor analyses, and consolidation runs now emit structured
 events — the observation objects exist. Next:
 
-- [ ] Persist verdict/analysis events locally (jsonl, mirroring the
-  opt-in telemetry sink) and add a readout (`/verify stats` or a
-  `codesmith metrics` section): claim-match rate, unsubstantiated rate,
-  verdict failure types.
+- [x] Verdict events persist locally
+  (`~/.codesmith/evolution/verdicts.jsonl`, best-effort append — the log
+  never breaks the engine) with a `/verify stats` readout: totals,
+  claim-match rate over checkable claims, and the failure-type
+  histogram. Doctor analyses and consolidation runs join the same log
+  next.
 - [ ] The four evolution metrics from the field notes — update-proposal
   acceptance rate, artifact activation rate, adherence success rate,
   retention-set gain — once the propose-and-gate half exists to measure.

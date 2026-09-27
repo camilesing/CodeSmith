@@ -13,6 +13,20 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
 
 ### Added
 
+- **Evolution event log + `/verify stats` (P3-9 step 1)**: the
+  continuous-evolution machinery is now observable. Every result-claim
+  verdict is appended to `~/.codesmith/evolution/verdicts.jsonl`
+  (rfc3339 timestamp + the four-element verdict fields + the claiming
+  model; `CODESMITH_HOME` redirects it like every state path). Writing is
+  best-effort — resolution or IO failure logs a WARN and never breaks the
+  engine — and rides the `[verification] result_claims` switch, so the
+  feature's own gate is the log's gate. The new `/verify [stats]` command
+  aggregates the log into the first evaluation surface: verdict totals,
+  the claim-match rate over checkable claims (of the claims that had a
+  command behind them, how many survived the re-run), and the
+  failure-type histogram. Malformed tail lines from a mid-append crash
+  are skipped on load. Doctor analyses and memory-consolidation runs are
+  the next event kinds to join the log.
 - **Memory consolidation — "sleep learning" (P3-8 step 3)**:
   `codesmith memory consolidate [--apply] [--deterministic-only]` gives
   the KoD memory index an offline maintenance pass (the online loop only
