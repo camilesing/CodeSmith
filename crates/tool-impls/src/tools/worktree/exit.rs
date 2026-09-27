@@ -80,7 +80,10 @@ impl ToolSpec for ExitWorktreeTool {
 
         // 1. Check if worktree session is active
         let (worktree_path, worktree_branch, original_cwd, original_head_commit) = {
-            let state = self.worktree_state.lock().unwrap();
+            let state = self
+                .worktree_state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if !state.active {
                 return Ok(ToolResult::success(
                     "No-op: there is no active enter_worktree session to exit. \
@@ -145,14 +148,21 @@ impl ToolSpec for ExitWorktreeTool {
 
         // 3. Perform action
         if action == "keep" {
-            // Clear state but keep files on disk
-            self.worktree_state.lock().unwrap().active = false;
-            self.worktree_state.lock().unwrap().worktree_path = None;
-            self.worktree_state.lock().unwrap().worktree_branch = None;
-            self.worktree_state.lock().unwrap().worktree_name = None;
-            self.worktree_state.lock().unwrap().original_cwd = None;
-            self.worktree_state.lock().unwrap().original_head_commit = None;
-            self.worktree_state.lock().unwrap().session_id = None;
+            // Clear state but keep files on disk (single guard — the old
+            // form re-locked seven times, once per field).
+            {
+                let mut state = self
+                    .worktree_state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                state.active = false;
+                state.worktree_path = None;
+                state.worktree_branch = None;
+                state.worktree_name = None;
+                state.original_cwd = None;
+                state.original_head_commit = None;
+                state.session_id = None;
+            }
 
             let branch_info = worktree_branch
                 .as_deref()
@@ -176,7 +186,10 @@ impl ToolSpec for ExitWorktreeTool {
 
         // Clear state
         {
-            let mut state = self.worktree_state.lock().unwrap();
+            let mut state = self
+                .worktree_state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             state.active = false;
             state.worktree_path = None;
             state.worktree_branch = None;

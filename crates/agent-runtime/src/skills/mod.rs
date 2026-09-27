@@ -30,7 +30,17 @@ const MAX_AVAILABLE_SKILLS_CHARS: usize = 12_000;
 #[must_use]
 pub fn default_skills_dir() -> PathBuf {
     dirs::home_dir().map_or_else(
-        || PathBuf::from("/tmp/codesmith/skills"),
+        || {
+            // /tmp is world-writable: any local user could plant a skill
+            // here. Warn rather than fail — this only triggers when the
+            // home directory is unresolvable.
+            tracing::warn!(
+                "no home directory resolved; skills fallback directory \
+                 /tmp/codesmith/skills is world-writable — treat discovered \
+                 skills as untrusted"
+            );
+            PathBuf::from("/tmp/codesmith/skills")
+        },
         |p| p.join(".codesmith").join("skills"),
     )
 }

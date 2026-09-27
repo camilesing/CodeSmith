@@ -194,7 +194,7 @@ fn refresh_blocking(shared: &Shared, budget: RefreshBudget) -> Result<RefreshRep
         stale,
         duration_ms: started.elapsed().as_millis() as u64,
     };
-    *shared.stats.lock().expect("index stats mutex poisoned") = IndexStats {
+    *shared.stats.lock().unwrap_or_else(|e| e.into_inner()) = IndexStats {
         files,
         symbols,
         stale_files: stale as u64,
@@ -335,7 +335,7 @@ impl IndexServiceApi for IndexService {
         self.inner
             .stats
             .lock()
-            .expect("index stats mutex poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
 }

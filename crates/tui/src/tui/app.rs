@@ -1029,11 +1029,11 @@ pub struct App {
     /// Active tool denylist from the current mode's `tools.exclude`.
     /// Applied after `active_allowed_tools`; empty/`None` excludes nothing.
     pub active_blocked_tools: Option<Vec<String>>,
-    /// Name of the active runtime mode (`/mode <name>` / `--mode <name>`),
-    /// if any. Modes are named delta bundles defined in
-    /// `codesmith_config::modes`; `None` means no mode layer is active and
-    /// every dial keeps its individual setting.
-    pub active_mode: Option<String>,
+    /// Name of the active preset (`/preset <name>` / `--preset <name>`),
+    /// if any. Presets are named baseline bundles defined in
+    /// `codesmith_config::presets`; `None` means no preset layer is active
+    /// and every dial keeps its individual setting.
+    pub active_preset: Option<String>,
     pub history: Vec<HistoryCell>,
     pub history_version: u64,
     /// Per-cell revision counter, kept in lockstep with `history`.
@@ -1864,7 +1864,7 @@ impl App {
             session: SessionState::default(),
             active_allowed_tools: None,
             active_blocked_tools: None,
-            active_mode: None,
+            active_preset: None,
             history: Vec::new(),
             history_version: 0,
             history_revisions: Vec::new(),

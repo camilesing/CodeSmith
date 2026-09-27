@@ -193,6 +193,31 @@ impl HostAgentExecutor {
         };
         history.push(message);
     }
+
+    /// (P3-8) pre-request seam — drain the pending result-verification
+    /// verdicts into a synthetic `user` message so the model sees the
+    /// engine's claim check before its next reasoning step. Mirrors
+    /// [`HostAgentExecutor::flush_pending_lsp_diagnostics`] above:
+    /// `mem::take` the engine-held buffer, render, push. The message is a
+    /// `<codesmith:runtime_event kind="result_verification">` sentinel
+    /// (never `<turn_meta>`-enriched — matching the sub-agent completion
+    /// push) and is appended at the transcript tail, so the append-only /
+    /// KV-cache prefix discipline holds. No-op when nothing is pending or
+    /// when the wire-in left the buffer absent. Synchronous — the mutex
+    /// guard is taken and dropped before `history.push`, never held across
+    /// an `await`.
+    pub(crate) fn flush_pending_result_verifications(&self, history: &mut dyn ChatHistory) {
+        let Some(pending) = &self.result_verifications else {
+            return;
+        };
+        let blocks = std::mem::take(&mut *pending.lock().expect("poisoned"));
+        let Some(rendered) = crate::engine::result_verifier::render_verdicts(&blocks) else {
+            return;
+        };
+        history.push(crate::engine::result_verifier::verdict_runtime_message(
+            &rendered,
+        ));
+    }
 }
 
 #[cfg(test)]

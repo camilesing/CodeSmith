@@ -231,7 +231,7 @@ CodeSmith 文件工具可以访问该工作区之外的哪些具体路径？"
 5. **文档清理**
    - 更新 `docs/CONFIGURATION.md`，描述实际的 `.env` 时机/来源以及
      项目配置拒绝列表。
-   - 更新 `docs/MODES.md`，说明 `/trust` 无参数为状态查询、`/trust on` 启用
+   - 更新 `docs/PRESETS.md`，说明 `/trust` 无参数为状态查询、`/trust on` 启用
      运行时信任模式、`/trust add` 是更窄的外部路径选项。
 
 ## 验证清单

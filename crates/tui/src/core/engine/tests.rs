@@ -4273,6 +4273,238 @@ async fn engine_tool_call_round_trip_with_mock_client() {
     );
 }
 
+// === P3-8 result claim verifier =============================================
+//
+// The verifier's engine wiring has three observable behaviors, each covered
+// by one test below: (1) a completed turn that claims "tests pass" after
+// running a verification-class command triggers a background replay whose
+// verdict is both emitted as an event and flushed into the NEXT request as
+// a result_verification runtime_event; (2) a claim with no verification
+// command behind it is reported as unsubstantiated (no re-run needed);
+// (3) `[verification] result_claims = false` disables the whole path.
+
+/// Like [`collect_until_turn_complete`], but auto-approves any
+/// `ApprovalRequired` event — the test stand-in for the TUI's
+/// `ApprovalShortcut::AutoApprove` arm (ui.rs), which these engine-level
+/// tests don't otherwise have answering the approval channel.
+async fn collect_until_turn_complete_auto_approving(handle: &EngineHandle) -> Vec<Event> {
+    let mut events = Vec::new();
+    let mut rx = handle.rx_event.write().await;
+    while let Some(event) = rx.recv().await {
+        if let Event::ApprovalRequired { id, .. } = &event {
+            let _ = handle.approve_tool_call(id.clone()).await;
+        }
+        let is_complete = matches!(event, Event::TurnComplete { .. });
+        events.push(event);
+        if is_complete {
+            break;
+        }
+    }
+    events
+}
+
+/// Await the background `Event::ResultVerification` (skipping unrelated
+/// post-turn events). Once seen, the verdict is already on the pending
+/// buffer, so the next turn's first request is guaranteed to flush it.
+async fn await_result_verification_event(
+    handle: &EngineHandle,
+) -> (String, String, Option<String>, Option<i64>, Option<String>) {
+    let (verdict, claim, command, exit_code, failure_type) =
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            let mut rx = handle.rx_event.write().await;
+            loop {
+                let event = rx.recv().await.expect("engine event channel open");
+                if let Event::ResultVerification {
+                    verdict,
+                    claim,
+                    command,
+                    exit_code,
+                    failure_type,
+                } = event
+                {
+                    return (verdict, claim, command, exit_code, failure_type);
+                }
+            }
+        })
+        .await
+        .expect("ResultVerification event within 30s");
+    (verdict, claim, command, exit_code, failure_type)
+}
+
+/// Concatenate every user-role text block of a request — the surface the
+/// flushed verdict runtime_event lands on.
+fn user_text_of_request(request: &crate::models::MessageRequest) -> String {
+    request
+        .messages
+        .iter()
+        .filter(|m| m.role == "user")
+        .flat_map(|m| m.content.iter())
+        .filter_map(|block| match block {
+            ContentBlock::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A `make_send_op` variant with shell tools allowed, so the mock's
+/// `exec_shell` call resolves against a registry that carries it.
+fn make_send_op_allow_shell(content: &str) -> Op {
+    let mut op = make_send_op(content);
+    if let Op::SendMessage { allow_shell, .. } = &mut op {
+        *allow_shell = true;
+    }
+    op
+}
+
+#[tokio::test]
+async fn result_verifier_replays_test_command_and_injects_verdict() {
+    let _guard = lock_test_env();
+    let tmp = tempdir().expect("tempdir");
+
+    // `cargo test --help` is prefix-eligible ("cargo test") and
+    // completes in well under a second without needing a Cargo project.
+    let turn1 = canned::tool_call_turn(
+        "call_1",
+        "exec_shell",
+        &json!({ "command": "cargo test --help" }).to_string(),
+    );
+    let turn2 = canned::simple_text_turn("所有测试通过，任务完成。");
+    let turn3 = canned::simple_text_turn("ok");
+
+    let mock = MockLlmClient::new(vec![turn1, turn2, turn3]);
+
+    let mut config = test_engine_config(tmp.path());
+    config.allow_shell = true;
+    let (handle, mock_arc) = spawn_engine_with_mock(config, mock);
+
+    handle
+        .send(make_send_op_allow_shell("run the tests"))
+        .await
+        .expect("send op");
+    let _ = collect_until_turn_complete_auto_approving(&handle).await;
+
+    let (verdict, claim, command, exit_code, failure_type) =
+        await_result_verification_event(&handle).await;
+    assert_eq!(verdict, "verified-pass");
+    assert_eq!(claim, "测试通过");
+    assert_eq!(command.as_deref(), Some("cargo test --help"));
+    assert_eq!(exit_code, Some(0));
+    assert_eq!(failure_type, None);
+
+    // The next turn's first request must carry the flushed verdict.
+    handle
+        .send(make_send_op_allow_shell("anything else"))
+        .await
+        .expect("send op");
+    let _ = collect_until_turn_complete_auto_approving(&handle).await;
+
+    let requests = mock_arc.captured_requests();
+    let user_text = user_text_of_request(
+        requests
+            .last()
+            .expect("second turn request captured by mock"),
+    );
+    assert!(
+        user_text.contains(r#"kind="result_verification""#),
+        "expected the verdict runtime_event wrapper, got: {user_text}"
+    );
+    assert!(
+        user_text.contains("verdict: verified-pass"),
+        "expected the pass verdict, got: {user_text}"
+    );
+    assert!(
+        user_text.contains("cargo test --help"),
+        "expected the replayed command as evidence, got: {user_text}"
+    );
+}
+
+#[tokio::test]
+async fn result_verifier_flags_unsubstantiated_claim() {
+    let _guard = lock_test_env();
+    let tmp = tempdir().expect("tempdir");
+
+    // A claim with zero tool calls behind it — the no-re-run signal.
+    let turn1 = canned::simple_text_turn("所有测试通过。");
+    let turn2 = canned::simple_text_turn("ok");
+    let mock = MockLlmClient::new(vec![turn1, turn2]);
+
+    let config = test_engine_config(tmp.path());
+    let (handle, mock_arc) = spawn_engine_with_mock(config, mock);
+
+    handle
+        .send(make_send_op("just tell me it works"))
+        .await
+        .expect("send op");
+    let _ = collect_until_turn_complete(&handle).await;
+
+    let (verdict, claim, command, exit_code, failure_type) =
+        await_result_verification_event(&handle).await;
+    assert_eq!(verdict, "unsubstantiated");
+    assert_eq!(claim, "测试通过");
+    assert_eq!(command, None);
+    assert_eq!(exit_code, None);
+    assert_eq!(failure_type.as_deref(), Some("unsubstantiated-claim"));
+
+    handle
+        .send(make_send_op("anything else"))
+        .await
+        .expect("send op");
+    let _ = collect_until_turn_complete(&handle).await;
+
+    let requests = mock_arc.captured_requests();
+    let user_text = user_text_of_request(
+        requests
+            .last()
+            .expect("second turn request captured by mock"),
+    );
+    assert!(
+        user_text.contains("verdict: unsubstantiated"),
+        "expected the unsubstantiated verdict, got: {user_text}"
+    );
+    assert!(
+        user_text.contains("no verification-class command"),
+        "expected the missing-evidence note, got: {user_text}"
+    );
+}
+
+#[tokio::test]
+async fn result_verifier_disabled_by_config_skips_check() {
+    let _guard = lock_test_env();
+    let tmp = tempdir().expect("tempdir");
+
+    let turn1 = canned::simple_text_turn("所有测试通过。");
+    let turn2 = canned::simple_text_turn("ok");
+    let mock = MockLlmClient::new(vec![turn1, turn2]);
+
+    let mut config = test_engine_config(tmp.path());
+    config.result_claim_verifier = false;
+    let (handle, mock_arc) = spawn_engine_with_mock(config, mock);
+
+    handle
+        .send(make_send_op("just tell me"))
+        .await
+        .expect("send op");
+    let _ = collect_until_turn_complete(&handle).await;
+
+    handle
+        .send(make_send_op("anything else"))
+        .await
+        .expect("send op");
+    let _ = collect_until_turn_complete(&handle).await;
+
+    let requests = mock_arc.captured_requests();
+    let user_text = user_text_of_request(
+        requests
+            .last()
+            .expect("second turn request captured by mock"),
+    );
+    assert!(
+        !user_text.contains("result_verification"),
+        "verifier disabled — no verdict should be injected, got: {user_text}"
+    );
+    assert_eq!(mock_arc.call_count(), 2);
+}
+
 // === §F2b T5 — engine-level lifecycle events ================================
 //
 // Proves `Engine::run()` emits `SessionStart` (at entry, before the op loop),

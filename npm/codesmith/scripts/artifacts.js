@@ -80,10 +80,7 @@ function executableName(base, platform) {
 
 function releaseBaseUrl(version, repo = "camilesing/CodeSmith") {
   // CODESMITH_RELEASE_BASE_URL is the canonical override.
-  // CODESMITH_RELEASE_BASE_URL / CODESMITH_RELEASE_BASE_URL are legacy aliases.
-  const override =
-    process.env.CODESMITH_RELEASE_BASE_URL ||
-    process.env.CODESMITH_RELEASE_BASE_URL;
+  const override = process.env.CODESMITH_RELEASE_BASE_URL;
   if (override) {
     const trimmed = String(override).trim();
     return trimmed.endsWith("/") ? trimmed : `${trimmed}/`;

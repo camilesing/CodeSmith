@@ -33,7 +33,8 @@ function runCommand(command, args, options = {}) {
       ...process.env,
       ...(options.env || {}),
     },
-    encoding: "utf8",
+    // Note: no `encoding` here — it is an exec/execFile option, silently
+    // ignored by spawn; capture mode sets the stream encoding manually.
     shell: usesWindowsCommandShim(command),
     stdio: options.capture ? ["ignore", "pipe", "pipe"] : "inherit",
     windowsHide: true,

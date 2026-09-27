@@ -209,10 +209,10 @@ pub(super) fn stash_reasoning_buffer_into_last_reasoning(app: &mut App) {
             existing.push('\n');
         }
         existing.push_str(&app.reasoning_buffer);
+        app.reasoning_buffer.clear();
     } else {
-        app.last_reasoning = Some(app.reasoning_buffer.clone());
+        app.last_reasoning = Some(std::mem::take(&mut app.reasoning_buffer));
     }
-    app.reasoning_buffer.clear();
 }
 
 /// Finalize the in-flight thinking entry in `active_cell`: append the

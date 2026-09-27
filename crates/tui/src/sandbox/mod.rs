@@ -4,7 +4,7 @@
 //!
 //! The sandbox data types, `SandboxManager`, the platform detection helpers
 //! (`get_platform_sandbox` / `is_sandbox_available`), and the per-platform
-//! executors (seatbelt / landlock / seccomp / bwrap / windows /
+//! executors (seatbelt / landlock / bwrap / windows /
 //! process_hardening) now live in `codesmith_agent_runtime::sandbox`. This
 //! module keeps the TUI-local `backend` / `opensandbox` / `policy` /
 //! `runtime` submodules (which depend on `crate::config::Config` and
@@ -20,7 +20,7 @@ pub use codesmith_agent_runtime::sandbox::process_hardening;
 #[cfg(target_os = "windows")]
 pub use codesmith_agent_runtime::sandbox::windows;
 #[cfg(target_os = "linux")]
-pub use codesmith_agent_runtime::sandbox::{bwrap, landlock, seccomp};
+pub use codesmith_agent_runtime::sandbox::{bwrap, landlock};
 
 pub use codesmith_agent_runtime::sandbox::{
     CommandSpec, ExecEnv, SandboxManager, SandboxType, get_platform_sandbox,

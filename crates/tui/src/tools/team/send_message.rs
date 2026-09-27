@@ -37,22 +37,16 @@ const LEAD_ONLY_ACTIONS: [&str; 4] = [
 /// App construction (the lead), so the model cannot forge it through tool
 /// input. Plain mailbox files remain the underlying transport trust
 /// boundary — this check governs the tool path.
-fn authorize_protocol_action(
-    action: &str,
-    sender: &str,
-    team_name: &str,
-) -> Result<(), ToolError> {
+fn authorize_protocol_action(action: &str, sender: &str, team_name: &str) -> Result<(), ToolError> {
     if sender == UNKNOWN_SENDER {
         return Err(ToolError::invalid_input(format!(
             "Refusing '{action}' from an unidentified sender: this context has no team identity"
         )));
     }
-    let team_file = read_team_file(team_name).map_err(|e| {
-        ToolError::execution_failed(format!("Failed to read team roster: {}", e))
-    })?;
+    let team_file = read_team_file(team_name)
+        .map_err(|e| ToolError::execution_failed(format!("Failed to read team roster: {}", e)))?;
     let is_lead = sender == team_lead_name();
-    let is_member =
-        find_member_by_name(&team_file, sender).is_some_and(|member| member.is_active);
+    let is_member = find_member_by_name(&team_file, sender).is_some_and(|member| member.is_active);
     if !is_lead && !is_member {
         return Err(ToolError::invalid_input(format!(
             "Sender '{sender}' is not an active member of team '{team_name}'"
@@ -525,7 +519,8 @@ impl SendMessageTool {
                     .expect("payload is an object")
                     .insert("failed".to_string(), serde_json::Value::Object(failed));
             }
-            return ToolResult::json(&payload).map_err(|e| ToolError::execution_failed(e.to_string()));
+            return ToolResult::json(&payload)
+                .map_err(|e| ToolError::execution_failed(e.to_string()));
         }
 
         // Single recipient DM.
@@ -542,11 +537,11 @@ impl SendMessageTool {
 mod tests {
     use super::*;
     use crate::test_support::{ScopedCodeSmithHome, lock_test_env};
+    use crate::tools::spec::RuntimeToolServices;
     use crate::tools::team::team_file::{
         TeamFile, TeamMember, create_team_file, format_lead_agent_id,
     };
     use crate::tools::team::teammate_mailbox::read_mailbox;
-    use crate::tools::spec::RuntimeToolServices;
 
     fn make_team(name: &str) -> TeamFile {
         TeamFile {
@@ -614,10 +609,7 @@ mod tests {
         let (tool, _ctx) = setup().await;
 
         let err = tool
-            .execute(
-                shutdown_request_input(),
-                &context_with_sender(None),
-            )
+            .execute(shutdown_request_input(), &context_with_sender(None))
             .await
             .expect_err("unknown sender must be denied");
         assert!(
@@ -640,10 +632,7 @@ mod tests {
             )
             .await
             .expect_err("teammate must be denied lead-only action");
-        assert!(
-            err.to_string().contains("lead-only"),
-            "got: {err}"
-        );
+        assert!(err.to_string().contains("lead-only"), "got: {err}");
     }
 
     #[tokio::test]

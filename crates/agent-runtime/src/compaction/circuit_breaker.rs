@@ -373,14 +373,13 @@ mod refill_tests {
         // still counts as rapid (>= threshold-within-window semantics).
         let mut det = RapidRefillDetector::new();
         det.record_compaction(10);
-        assert!(
-            det.record_trigger(10 + RAPID_REFILL_STEP_WINDOW).is_none()
-        );
+        assert!(det.record_trigger(10 + RAPID_REFILL_STEP_WINDOW).is_none());
         assert_eq!(det.streak(), 1, "boundary refill counts as rapid");
         // One step beyond the window does not.
         det.record_compaction(30);
         assert!(
-            det.record_trigger(30 + RAPID_REFILL_STEP_WINDOW + 1).is_none()
+            det.record_trigger(30 + RAPID_REFILL_STEP_WINDOW + 1)
+                .is_none()
         );
         assert_eq!(det.streak(), 0, "beyond-window refill resets");
     }

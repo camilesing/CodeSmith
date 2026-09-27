@@ -63,7 +63,7 @@ impl ExtensionContext for HostExtensionContext {
         self.mode
     }
     fn is_idle(&self) -> bool {
-        *self.idle.lock().unwrap()
+        *self.idle.lock().unwrap_or_else(|e| e.into_inner())
     }
     /// Snapshot the **current** engine cancel token. Locks the shared `Arc`
     /// and clones the inner token (§F2c Layer 2) — so a handler calling this
@@ -73,7 +73,7 @@ impl ExtensionContext for HostExtensionContext {
     fn signal(&self) -> CancellationToken {
         self.signal
             .lock()
-            .expect("extension context signal mutex poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
     fn generation(&self) -> u64 {

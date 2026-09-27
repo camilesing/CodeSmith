@@ -89,6 +89,10 @@ pub async fn execute_js_execution_tool(
         ToolError::execution_failed("js_execution: Node.js runtime became unavailable".to_string())
     })?;
     cmd.arg(&script_path).current_dir(workspace);
+    // kill_on_drop: on timeout the `output()` future is dropped with the
+    // child — without this the Node process keeps running detached in the
+    // workspace cwd after the tool already returned a Timeout error.
+    cmd.kill_on_drop(true);
 
     let output = tokio::time::timeout(Duration::from_secs(120), cmd.output())
         .await

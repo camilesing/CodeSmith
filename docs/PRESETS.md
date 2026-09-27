@@ -1,49 +1,84 @@
-# Modes and Approvals
+# Presets and Approvals
 
 codesmith has two related concepts:
 
 - **TUI mode**: what kind of visible interaction you're in (Plan/Agent/YOLO).
 - **Approval mode**: how aggressively the UI asks before executing tools.
 
-On top of both sits the **named mode layer**: one command (`/mode minimal`)
-that bundles every dial below — tools, thinking, memory, approvals,
-sub-agents, model — into a shareable TOML file.
+On top of both sits the **preset layer**: one key (`preset = "middle"`, one
+command `/preset <name>`) that bundles every dial below — tools, thinking,
+memory, approvals, sub-agents, model, and a set of resource switches (code
+index, LSP diagnostics, snapshots, background checks) — into a shareable
+TOML file. Four progressive tiers ship built-in; the factory default is
+`middle`.
 
 Model selection is separate. `--model auto` and `/model auto` route each turn to
 a concrete model and thinking level; they are not TUI modes and are not part of
 the `Tab` cycle.
 
-## Named Modes (`/mode <name>`)
+## Configuration Presets (`/preset <name>)
 
-A *mode* is a delta bundle of dials in a single TOML file. Anything the file
-leaves out keeps its current value, so a mode composes with your existing
-config instead of replacing it.
+A *preset* is a bundle of dials in a single TOML file. Preset values are
+**baselines, not overrides**: a value is only applied to a key you left
+unset in `config.toml`, so `preset = "simple"` plus `[lsp] enabled = true`
+keeps LSP on. When any explicit key differs from the selected tier, the
+effective preset is reported as **`diy`** (a derived state — you cannot
+select it) so the label never lies about what is running.
 
 ```bash
-codesmith --mode minimal   # tiny surface, thinking off, no memory
-codesmith --mode maximal   # everything on
-/mode list                 # see every mode visible to this workspace
-/mode plan                 # switch mid-session (hot)
-/mode export my-setup      # snapshot current dials to a shareable file
-/mode off                  # drop the mode layer, keep current dials
+codesmith --preset simple    # Pi-style minimal: 9 tools, no index/LSP/memory
+codesmith --preset all       # everything stable on
+/preset list                 # see every preset visible to this workspace
+/preset plan                 # switch mid-session (live dials; restart notes for the rest)
+/preset export my-setup      # snapshot current dials to a shareable file
+/preset off                  # drop the preset layer, keep current dials
+codesmith-tui preset show    # tier matrix + your effective preset
 ```
 
-Built-in modes:
+Built-in tiers, progressive from lightest to heaviest:
 
-| Mode | Thinking | Tools | Memory | Sub-agents |
+| Tier | Thinking | Tools | Memory | Sub-agents | Resource switches |
+|---|---|---|---|---|---|
+| `simple` | medium | core file + shell only (`tools.include`) | goldfish (none) | off | index/LSP/snapshots/memory/update check/audit off |
+| `middle` *(default)* | inherits | inherits | inherits | 10 | high-value low-cost set on (index, LSP, snapshots, memory, cost-saving router); experimental seams off |
+| `all` | inherits | full surface | notebook (memory on, KOD off) | 20 | middle + LSP warnings; preview flags still off |
+| `experiment` | inherits | full surface | elephant + Knowledge On Demand | 20 | everything on (vision, agent teams, coordinator, context manager, capacity controller, strict tool mode) |
+| `plan` | inherits | read-only + plan tooling | notebook (explicit only) | inherits | inherits |
+
+Governed switch matrix (`codesmith-tui preset show` prints this with your
+effective values):
+
+| key | simple | middle | all | experiment |
 |---|---|---|---|---|
-| `minimal` | off | core file + shell only (`tools.include`) | goldfish (none) | off |
-| `balanced` | inherits | inherits | inherits | inherits |
-| `maximal` | max | full surface | elephant (auto + decay) | 20 |
-| `plan` | inherits | read-only + plan tooling | notebook (explicit only) | inherits |
+| `[index].enabled` | off | on | on | on |
+| `[lsp].enabled` | off | on | on | on |
+| `[lsp].include_warnings` | off | off | on | on |
+| `[snapshots].enabled` | off | on | on | on |
+| `[memory].enabled` | off | on | on | on |
+| `[memory].kod_enabled` | off | off | off | on |
+| `[context].project_pack` | off | on | on | on |
+| `[context].enabled` | off | off | off | on |
+| `[capacity].enabled` | off | off | off | on |
+| `[auto].cost_saving` | off | on | on | on |
+| `[update].check_for_updates` | off | on | on | on |
+| `[network].audit` | off | on | on | on |
+| `strict_tool_mode` | off | off | off | on |
+| features: `subagents` / `web_search` / `mcp` | off | on | on | on |
+| features: `vision_model` / `knowledge_on_demand` / `agent_teams` / `coordinator_mode` | off | off | off | on |
 
-Mode files live in two scanned directories, later layers overriding built-ins
-by name:
+Never governed by any tier: safety keys (`yolo`, `approval_policy`,
+`sandbox_mode`), privacy opt-ins (`telemetry`), user content (prompts,
+`personality`, `instructions`), provider credentials, and tool overrides.
+Safety-relevant keys stay yours.
 
-1. `~/.codesmith/modes/*.toml` — your modes, everywhere
-2. `<workspace>/.codesmith/modes/*.toml` — project modes (commit these)
+Preset files live in two scanned directories, later layers overriding
+built-ins by name (legacy `modes/` directories are still scanned, with a
+one-time migration warning):
 
-A mode file's full schema (every field optional):
+1. `~/.codesmith/presets/*.toml` — your presets, everywhere
+2. `<workspace>/.codesmith/presets/*.toml` — project presets (commit these)
+
+A preset file's full schema (every field optional):
 
 ```toml
 name = "review"
@@ -56,6 +91,21 @@ memory_level = "notebook"       # goldfish | notebook | elephant
 max_subagents = 2
 model = "deepseek-v4-pro"
 provider = "deepseek"           # startup-only; needs a restart to change
+
+# Resource switch baselines (fill-if-unset, same vocabulary as config.toml)
+index_enabled = false
+lsp_enabled = false
+lsp_include_warnings = false
+snapshots_enabled = false
+memory_enabled = false
+memory_kod_enabled = false
+context_enabled = false
+context_project_pack = false
+capacity_enabled = false
+auto_cost_saving = false
+update_check = false
+network_audit = false
+strict_tool_mode = false
 
 [tools]
 include = ["read_file", "grep_files", "list_dir"]  # allowlist when set
@@ -72,13 +122,20 @@ memory, `notebook` keeps only what you explicitly save (`# note`,
 `/remember`), `elephant` turns on Knowledge On Demand with budget and decay.
 
 **Hot vs. restart.** App mode, thinking, approvals, tool allow/denylists,
-sub-agent cap, and model switch on the next turn. Provider, feature flags,
-and memory injection are read at engine startup — switching to a mode that
-sets them prints what will apply after restart.
+sub-agent cap, and model switch on the next turn. The resource switches
+(index, LSP, snapshots, context/capacity seams), provider, feature flags,
+and memory injection are read at engine startup — switching to a preset
+that sets them prints what will apply after restart.
 
-**Precedence for the active mode:** `--mode name` (CLI) > `mode = "name"` in
-config.toml > the last mode picked in the TUI (persisted in settings.toml).
-Unsetting is `/mode off`.
+**Precedence for the active preset:** `--preset name` (CLI, or
+`CODESMITH_PRESET`) > `preset = "name"` in config.toml (the legacy `mode`
+key still works as a deprecated alias) > the last preset picked in the TUI
+(persisted in settings.toml) > the factory default `middle`. Unsetting is
+`/preset off`.
+
+**Deprecated names.** The pre-rename spellings still work and map with a
+warning: `minimal` → `simple`, `balanced` → `middle`, `maximal` → `all`;
+`--mode` and `/mode` are aliases of `--preset` / `/preset`.
 
 ## TUI Modes
 
@@ -86,8 +143,9 @@ Press `Tab` to complete composer menus, queue a draft as a next-turn follow-up
 while a turn is running, or cycle through the visible modes when the composer is
 otherwise idle: **Plan → Agent → YOLO → Plan**.
 Press `Shift+Tab` to cycle reasoning effort.
-Run `/mode` to open the mode picker, or switch directly with `/mode agent`,
-`/mode plan`, `/mode yolo`, `/mode 1`, `/mode 2`, or `/mode 3`.
+Run `/preset` to open the mode picker, or switch directly with
+`/preset agent`, `/preset plan`, `/preset yolo`, `/preset 1`, `/preset 2`,
+or `/preset 3`.
 
 - **Plan**: design-first prompting. Read-only investigation tools stay available; shell and patch execution stay off. Use this when you want to think out loud and produce a plan to hand to a human (yourself later, or a reviewer).
 - **Agent**: multi-step tool use. Shell execution (`exec_shell`, `task_shell_start`, `task_shell_wait`) requires `allow_shell = true` in config; approval prompts gate each call. File writes are allowed without a prompt.
@@ -190,7 +248,7 @@ Run `codesmith --help` for the canonical list. Common flags:
 - `--max-subagents <N>`: clamp to `1..=20`
 - `--mouse-capture` / `--no-mouse-capture`: opt in or out of internal mouse scrolling, transcript selection, right-click context actions, and transcript scrollbar dragging. Mouse capture is enabled by default on non-Windows terminals and on Windows Terminal/ConEmu/Cmder so drag selection copies only transcript text, removes visual wrap-column line breaks from paragraphs, and stays scoped to the transcript pane; hold Shift while dragging or use `--no-mouse-capture` for raw terminal selection. It defaults off on legacy Windows console (CMD without `WT_SESSION` / `ConEmuPID`) and inside JetBrains JediTerm — PyCharm/IDEA/CLion/etc. — where the terminal advertises mouse support but forwards SGR mouse events as raw text (#878, #898). Use `--mouse-capture` to opt in anywhere it's defaulted off. Raw terminal selection may cross the right sidebar and include visual wraps because the terminal, not the TUI, owns the selection.
 - `--profile <NAME>`: select config profile
-- `--mode <NAME>`: apply a named mode (minimal | balanced | maximal | plan | custom); see [Named Modes](#named-modes-mode-name)
+- `--preset <NAME>`: select a configuration preset (simple | middle | all | experiment | plan | custom); see [Configuration Presets](#configuration-presets-preset-name). The pre-rename `--mode` spelling still works.
 - `--config <PATH>`: config file path
 - `-v, --verbose`: verbose logging
 

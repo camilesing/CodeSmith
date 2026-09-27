@@ -139,7 +139,7 @@ impl TuiPrefs {
             })?;
         }
         let content = toml::to_string_pretty(self).context("Failed to serialize TuiPrefs")?;
-        std::fs::write(&path, content)
+        crate::utils::write_atomic(&path, content.as_bytes())
             .with_context(|| format!("Failed to write tui.toml to {}", path.display()))?;
         Ok(())
     }
@@ -226,13 +226,15 @@ pub struct Settings {
     pub transcript_spacing: String,
     /// Default mode: "agent", "plan", "yolo"
     pub default_mode: String,
-    /// Last named runtime mode selected via `/mode <name>` or `--mode`
-    /// (e.g. "minimal", "maximal", or a user/project mode). Restored on
-    /// the next launch unless `--mode` or `mode = "..."` in config.toml
-    /// overrides it. `None` means no named mode is active and every dial
-    /// keeps its individual setting. Free-form: validated against the
-    /// mode catalog at use time, not at save time.
-    pub active_mode: Option<String>,
+    /// Last preset selected via `/preset <name>` or `--preset` (e.g.
+    /// "simple", "all", or a user/project preset). Restored on the next
+    /// launch unless `--preset` or `preset = "..."` in config.toml
+    /// overrides it. `None` means no persisted choice. Free-form:
+    /// validated against the preset catalog at use time, not at save
+    /// time. Older settings files used the `active_mode` key, still
+    /// accepted as an alias.
+    #[serde(default, alias = "active_mode")]
+    pub active_preset: Option<String>,
     /// Sidebar width as percentage of terminal width
     pub sidebar_width_percent: u16,
     /// Sidebar focus mode: auto, work, tasks, agents, context, hidden
@@ -316,7 +318,7 @@ impl Default for Settings {
             composer_vim_mode: "normal".to_string(),
             transcript_spacing: "comfortable".to_string(),
             default_mode: "agent".to_string(),
-            active_mode: None,
+            active_preset: None,
             sidebar_width_percent: 28,
             sidebar_focus: "auto".to_string(),
             context_panel: false,
@@ -487,7 +489,7 @@ impl Settings {
         }
 
         let content = toml::to_string_pretty(self).context("Failed to serialize settings")?;
-        std::fs::write(&path, content)
+        crate::utils::write_atomic(&path, content.as_bytes())
             .with_context(|| format!("Failed to write settings to {}", path.display()))?;
         Ok(())
     }
@@ -615,12 +617,12 @@ impl Settings {
                 }
                 self.default_mode = normalized.to_string();
             }
-            "active_mode" | "named_mode" => {
+            "active_preset" | "active_mode" | "named_mode" => {
                 let trimmed = value.trim();
                 if trimmed.is_empty() {
-                    self.active_mode = None;
+                    self.active_preset = None;
                 } else {
-                    self.active_mode = Some(trimmed.to_string());
+                    self.active_preset = Some(trimmed.to_string());
                 }
             }
             "sidebar_width" | "sidebar" => {

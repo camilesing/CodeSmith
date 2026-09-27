@@ -146,14 +146,20 @@ impl ExtensionApi for RealExtensionApi {
         assert_live(&self.generation, self.captured_gen)?;
         let name = tool.name().to_string();
         let arc: Arc<dyn ToolDefinition> = Arc::from(tool);
-        self.tools.lock().unwrap().insert(name, arc);
+        self.tools
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(name, arc);
         Ok(())
     }
     fn register_command(&self, command: Box<dyn CommandDefinition>) -> Result<(), ExtensionError> {
         assert_live(&self.generation, self.captured_gen)?;
         let name = command.name().to_string();
         let arc: Arc<dyn CommandDefinition> = Arc::from(command);
-        self.commands.lock().unwrap().insert(name, arc);
+        self.commands
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(name, arc);
         Ok(())
     }
     fn on(&self, handler: Arc<dyn Handler>) -> Result<(), ExtensionError> {

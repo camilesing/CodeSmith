@@ -1,0 +1,34 @@
+# Experiment — everything on, including preview feature flags and the
+# invasive seams: vision model, Knowledge On Demand, agent teams,
+# coordinator mode, the layered-context manager, the capacity controller,
+# and DeepSeek beta strict tool mode. Expect rough edges.
+name = "experiment"
+description = "Everything on: preview flags, context/capacity seams, strict tool mode."
+memory_level = "elephant"
+max_subagents = 20
+index_enabled = true
+lsp_enabled = true
+lsp_include_warnings = true
+snapshots_enabled = true
+memory_enabled = true
+memory_kod_enabled = true
+context_enabled = true
+context_project_pack = true
+capacity_enabled = true
+auto_cost_saving = true
+update_check = true
+network_audit = true
+strict_tool_mode = true
+
+[features]
+shell_tool = true
+subagents = true
+web_search = true
+apply_patch = true
+mcp = true
+exec_policy = true
+vision_model = true
+knowledge_on_demand = true
+agent_teams = true
+coordinator_mode = true
+file_freshness = true

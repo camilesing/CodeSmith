@@ -1,0 +1,35 @@
+# All — everything except experimental/controversial switches. Middle plus
+# 20 sub-agents and LSP warnings. Memory stays at notebook level (explicit
+# saves, no Knowledge On Demand — that arrives with experiment's elephant
+# level). The four preview feature flags (vision, knowledge-on-demand,
+# agent teams, coordinator) and the invasive context/capacity seams stay off.
+name = "all"
+description = "Everything stable on: 20 sub-agents, LSP warnings; preview flags off."
+memory_level = "notebook"
+max_subagents = 20
+index_enabled = true
+lsp_enabled = true
+lsp_include_warnings = true
+snapshots_enabled = true
+memory_enabled = true
+memory_kod_enabled = false
+context_enabled = false
+context_project_pack = true
+capacity_enabled = false
+auto_cost_saving = true
+update_check = true
+network_audit = true
+strict_tool_mode = false
+
+[features]
+shell_tool = true
+subagents = true
+web_search = true
+apply_patch = true
+mcp = true
+exec_policy = true
+vision_model = false
+knowledge_on_demand = false
+agent_teams = false
+coordinator_mode = false
+file_freshness = true

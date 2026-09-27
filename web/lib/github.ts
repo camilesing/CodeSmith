@@ -24,11 +24,12 @@ export async function fetchRepoStats(token?: string): Promise<RepoStats> {
     fetch(`${GH}/repos/${REPO}/releases/latest`, { headers: headers(token), next: { revalidate: 3600 } }),
   ]);
 
-  const repo = (await repoRes.json()) as {
-    stargazers_count: number;
-    forks_count: number;
-    open_issues_count: number;
-  };
+  // Guard every payload: a rate-limited or error response body is not the
+  // typed shape these were cast to, and `user` is null for ghost accounts.
+  const repoBody = repoRes.ok ? await repoRes.json().catch(() => null) : null;
+  const repo = repoBody as
+    | { stargazers_count?: number; forks_count?: number; open_issues_count?: number }
+    | null;
 
   const contributors = await contributorCount(contribRes);
 
@@ -37,19 +38,21 @@ export async function fetchRepoStats(token?: string): Promise<RepoStats> {
     `${GH}/search/issues?q=${encodeURIComponent(`repo:${REPO} is:pr is:open`)}&per_page=1`,
     { headers: headers(token), next: { revalidate: 1800 } }
   );
-  const prJson = (await prRes.json()) as { total_count?: number };
-  const openPulls = prJson.total_count ?? 0;
-  const openIssues = Math.max(0, repo.open_issues_count - openPulls);
+  const prJson = prRes.ok ? ((await prRes.json().catch(() => null)) as { total_count?: number } | null) : null;
+  const openPulls = prJson?.total_count ?? 0;
+  const openIssues = Math.max(0, (repo?.open_issues_count ?? openPulls) - openPulls);
 
   let latestRelease: RepoStats["latestRelease"];
   if (releaseRes.ok) {
-    const r = (await releaseRes.json()) as { tag_name: string; published_at: string; html_url: string };
-    latestRelease = { tag: r.tag_name, publishedAt: r.published_at, url: r.html_url };
+    const r = (await releaseRes.json().catch(() => null)) as
+      | { tag_name: string; published_at: string; html_url: string }
+      | null;
+    if (r) latestRelease = { tag: r.tag_name, publishedAt: r.published_at, url: r.html_url };
   }
 
   return {
-    stars: repo.stargazers_count,
-    forks: repo.forks_count,
+    stars: repo?.stargazers_count ?? 0,
+    forks: repo?.forks_count ?? 0,
     openIssues,
     openPulls,
     contributors,
@@ -115,8 +118,12 @@ export async function fetchFeed(token?: string, limit = 30): Promise<FeedItem[]>
     ),
   ]);
 
-  const issues = (await issuesRes.json()) as RawIssue[];
-  const pulls = (await pullsRes.json()) as (RawIssue & { merged_at?: string | null })[];
+  const issuesBody = issuesRes.ok ? await issuesRes.json().catch(() => null) : null;
+  const pullsBody = pullsRes.ok ? await pullsRes.json().catch(() => null) : null;
+  const issues = Array.isArray(issuesBody) ? (issuesBody as RawIssue[]) : [];
+  const pulls = Array.isArray(pullsBody)
+    ? (pullsBody as (RawIssue & { merged_at?: string | null })[])
+    : [];
 
   const items: FeedItem[] = [];
 
@@ -128,8 +135,9 @@ export async function fetchFeed(token?: string, limit = 30): Promise<FeedItem[]>
       title: it.title,
       url: it.html_url,
       state: it.state,
-      author: it.user.login,
-      authorAvatar: it.user.avatar_url,
+      // `user` is null for ghost (deleted) accounts — fall back rather than crash.
+      author: it.user?.login ?? "ghost",
+      authorAvatar: it.user?.avatar_url ?? "",
       createdAt: it.created_at,
       updatedAt: it.updated_at,
       comments: it.comments,
@@ -148,8 +156,8 @@ export async function fetchFeed(token?: string, limit = 30): Promise<FeedItem[]>
       title: pr.title,
       url: pr.html_url,
       state,
-      author: pr.user.login,
-      authorAvatar: pr.user.avatar_url,
+      author: pr.user?.login ?? "ghost",
+      authorAvatar: pr.user?.avatar_url ?? "",
       createdAt: pr.created_at,
       updatedAt: pr.updated_at,
       comments: pr.comments,

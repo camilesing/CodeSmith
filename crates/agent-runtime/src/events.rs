@@ -336,6 +336,26 @@ pub enum Event {
         pinned_combined_hash: String,
     },
 
+    /// Result claim verification verdict (P3-8) — the post-turn checker
+    /// re-ran a verification-class command the model executed during the
+    /// finished turn (or found no such command behind the claim) and
+    /// recorded the outcome. The verdict is also appended to the
+    /// transcript as a synthetic runtime_event message before the next
+    /// request; this event lets the UI surface it immediately as a toast.
+    ResultVerification {
+        /// `verified-pass` | `verified-fail` | `verify-error` | `unsubstantiated`.
+        verdict: String,
+        /// The matched claim phrase (e.g. "测试通过").
+        claim: String,
+        /// The re-run command, when one was found.
+        command: Option<String>,
+        /// Exit code of the re-run, when it produced one.
+        exit_code: Option<i64>,
+        /// `test-failure` / `build-failure` / `unsubstantiated-claim` /
+        /// `verify-error`; absent on a pass.
+        failure_type: Option<String>,
+    },
+
     /// A sanctioned wholesale transcript replacement landed in the session's
     /// `AppendLog` (#2264 Phase 2) — compaction, overflow recovery, `/edit`
     /// rollback, session restore, cycle reseeds. Each busts the KV prefix

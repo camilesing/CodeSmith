@@ -156,6 +156,14 @@ struct ArchivedDoc {
 }
 
 fn archive_root(session_id: &str) -> Result<PathBuf, std::io::Error> {
+    // Mirror the writer-side guard (cycle_manager): a session id with
+    // separators or `..` must never reach the path join.
+    if !codesmith_agent_runtime::utils::is_safe_path_component(session_id) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("invalid session id '{session_id}': must be a single safe path segment"),
+        ));
+    }
     let home = dirs::home_dir().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,

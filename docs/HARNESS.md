@@ -58,7 +58,7 @@ Three modes control the action space. Plan is read-only. Agent gates
 destructive operations behind approval. YOLO auto-approves in trusted
 workspaces. OS-level sandboxing is enforced per platform: macOS Seatbelt,
 Linux Landlock + seccomp (plus optional bubblewrap), and a Windows Job
-Object v1. See [MODES.md](MODES.md) and [SANDBOX.md](SANDBOX.md).
+Object v1. See [PRESETS.md](PRESETS.md) and [SANDBOX.md](SANDBOX.md).
 
 Fin — a cheap Flash call with thinking off — handles model auto-routing per
 turn. `--model auto` is the default.

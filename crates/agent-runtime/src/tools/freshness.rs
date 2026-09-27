@@ -96,7 +96,10 @@ impl FileFreshnessTracker {
         }
         // A fresh read re-arms hinting: drift from this new state must be
         // announced even if it matches an older hinted state.
-        self.hinted.lock().expect("freshness hint lock").remove(path);
+        self.hinted
+            .lock()
+            .expect("freshness hint lock")
+            .remove(path);
     }
 
     /// Alias of [`Self::record_read`]: after a write, the on-disk state is
@@ -165,7 +168,10 @@ impl FileFreshnessTracker {
     /// those files has expired; callers surface the list so the model re-reads
     /// *before* its next edit gets rejected by [`Self::validate`].
     pub fn detect_changed(&self) -> Vec<PathBuf> {
-        self.scan_drift().into_iter().map(|(path, _)| path).collect()
+        self.scan_drift()
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect()
     }
 
     /// [`Self::detect_changed`] minus drift already announced: every path
@@ -672,7 +678,11 @@ mod tests {
         fn capabilities(&self) -> Vec<crate::tools::spec::ToolCapability> {
             Vec::new()
         }
-        async fn execute(&self, _input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
+        async fn execute(
+            &self,
+            _input: Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
             let mut result = ToolResult::success("command output".to_string());
             result.metadata = self.metadata.clone();
             Ok(result)
@@ -701,7 +711,9 @@ mod tests {
             .expect("execute");
         assert!(result.success);
         assert!(
-            result.content.contains("[Files changed on disk since last read"),
+            result
+                .content
+                .contains("[Files changed on disk since last read"),
             "hint missing: {}",
             result.content
         );
@@ -785,7 +797,9 @@ mod tests {
                 .await
                 .expect("execute");
             assert_eq!(
-                result.content.contains("[Files changed on disk since last read"),
+                result
+                    .content
+                    .contains("[Files changed on disk since last read"),
                 expect_hint,
                 "{tool}: hint presence mismatch ({})",
                 result.content
@@ -811,7 +825,10 @@ mod tests {
         );
         let context = ToolContext::new(tmp.path().to_path_buf());
         let result = wrapped
-            .execute(json!({"command": "ls", "path": "hallucinated.txt"}), &context)
+            .execute(
+                json!({"command": "ls", "path": "hallucinated.txt"}),
+                &context,
+            )
             .await
             .expect("execute");
         assert!(result.success);

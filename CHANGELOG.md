@@ -13,6 +13,86 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
 
 ### Added
 
+- **Evolution event log + `/verify stats` (P3-9 step 1)**: the
+  continuous-evolution machinery is now observable. Every result-claim
+  verdict is appended to `~/.codesmith/evolution/verdicts.jsonl`
+  (rfc3339 timestamp + the four-element verdict fields + the claiming
+  model; `CODESMITH_HOME` redirects it like every state path). Writing is
+  best-effort — resolution or IO failure logs a WARN and never breaks the
+  engine — and rides the `[verification] result_claims` switch, so the
+  feature's own gate is the log's gate. The new `/verify [stats]` command
+  aggregates the log into the first evaluation surface: verdict totals,
+  the claim-match rate over checkable claims (of the claims that had a
+  command behind them, how many survived the re-run), and the
+  failure-type histogram. Malformed tail lines from a mid-append crash
+  are skipped on load. Doctor analyses and memory-consolidation runs are
+  the next event kinds to join the log.
+- **Memory consolidation — "sleep learning" (P3-8 step 3)**:
+  `codesmith memory consolidate [--apply] [--deterministic-only]` gives
+  the KoD memory index an offline maintenance pass (the online loop only
+  ever appends). Deterministic passes always run first over
+  `MEMORY.md`: exact-duplicate pointer lines removed, pointers to
+  deleted topic files dropped, orphaned topic files reported (never
+  deleted), and the entrypoint budget (200 lines / 25 KB) checked —
+  results land in the new `agent-runtime::knowledge::curator` module
+  with its own validator. Unless `--deterministic-only`, the cleaned
+  index plus every topic file's frontmatter goes to one advisory LLM
+  call (`[utility_model]` when configured, else the main client) which
+  proposes a consolidated rewrite (sharper descriptions, grouped
+  sections, one pointer per file); the proposal is accepted only if
+  `validate_proposed_index` confirms every existing topic file stays
+  referenced exactly once with no unknown files and no budget breach —
+  otherwise the deterministic result stands. Default is a dry run
+  printing a unified diff; `--apply` writes after taking a
+  `MEMORY.md.bak` backup. Topic file contents are never touched. Also
+  adds the `codesmith memory` CLI passthrough.
+- **Doctor LLM fallback layer (P3-8 step 2)**: after `codesmith doctor`'s
+  deterministic checks complete, the warnings/errors they collected
+  (recorded at the same branches that print them — update checks,
+  config.toml presence, provider key, API connectivity, strict_tool_mode
+  fallback, MCP servers/config, missing skills dirs, Python/Node/
+  pdftotext dependencies, platform sandbox) are handed to one advisory
+  LLM call — the `[utility_model]` when configured, else the main client
+  — which proposes root causes (preferring explanations that connect
+  multiple findings) and one concrete next action per finding, skipping
+  findings whose built-in hint already covers them. The section renders
+  after "All checks complete!" and is explicitly advisory: deterministic
+  results take precedence, the model never executes anything, and every
+  skip condition (no resolvable client, empty response, transport error,
+  30s timeout) degrades to a quiet `·` line. Usage flows through the
+  `cost_status` side-channel. `--json` mode is untouched (CI-safe).
+  Configure with `[doctor] llm_fallback` (bool, default `true`). Unit
+  tests in `doctor_llm.rs` cover the collector, prompt-safety contract,
+  and client round-trip (mock).
+- **Result claim verifier (P3-8)**: the first piece of the
+  continuous-evolution loop — a result validator for the online turn.
+  When a completed turn's final assistant message asserts "tests pass" /
+  "build succeeds" (Chinese or English phrase matching, which keeps
+  negations like 测试未通过 / "tests failed" from matching), the engine
+  re-runs the verification-class command the model itself executed during
+  that turn: foreground `exec_shell` calls whose command starts with a
+  known test/build prefix (`cargo test`, `npm test`, `pytest`,
+  `cargo build`, … — `&&`/`;`-chained segments and leading `VAR=value`
+  assignments qualify) plus `run_tests` calls (reconstructed as the
+  equivalent `cargo test` invocation). The re-run is approved-replay only:
+  it dispatches the exact original input through the session's own tool
+  dispatcher, so the same sandbox/network policy applies and no authority
+  beyond what the turn already had is granted; it never touches the
+  approval gate or any capability surface. The verdict carries the
+  four-element contract (verdict / dimension / evidence — command, exit
+  code, originating tool_use_id, output head / failure_type), is appended
+  to the transcript as a `<codesmith:runtime_event
+  kind="result_verification">` user message before the next request (so
+  the model must reconcile a mismatch; appended at the tail, append-only
+  discipline preserved), and is surfaced as `Event::ResultVerification`
+  for a status toast. A claim with no verification command behind it is
+  reported as `unsubstantiated` — the hallucination signal that needs no
+  re-run at all. Configure with `[verification] result_claims`
+  (bool, default `true`). Unit tests in
+  `engine/result_verifier.rs`; engine integration tests
+  `result_verifier_replays_test_command_and_injects_verdict` /
+  `result_verifier_flags_unsubstantiated_claim` /
+  `result_verifier_disabled_by_config_skips_check`.
 - **Three-zone prompt contract wired into the engine request path
   (#2264 Phase 2)**: the `prompt_zones` types are now load-bearing instead
   of scaffolding. `Session.messages` is an `AppendLog` — `push` is the

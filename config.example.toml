@@ -7,6 +7,29 @@
 # See `docs/CONFIGURATION.md` for how config is loaded (profiles, env overrides, etc.).
 
 # ─────────────────────────────────────────────────────────────────────────────────
+# Configuration preset — start here
+# ─────────────────────────────────────────────────────────────────────────────────
+# One key that baselines most switches below. Values are BASELINES, not
+# overrides: keys you set explicitly in this file always win, and any
+# deviation reports the effective preset as `diy`.
+#
+#   simple      Pi-style minimal: 9 core tools, no index/LSP/memory/snapshots,
+#               no background work
+#   middle      factory default: high-value low-cost features on
+#               (memory, index, LSP, snapshots, cost-saving router)
+#   all         everything stable on: 20 sub-agents, LSP warnings (notebook memory)
+#   experiment  everything on, including preview flags and invasive seams
+#               (vision, knowledge-on-demand, agent teams, coordinator,
+#               context manager, capacity controller, strict tool mode)
+#
+# Also accepted: `plan` (read-only workflow) and custom presets from
+# ~/.codesmith/presets/ or .codesmith/presets/. See `codesmith-tui preset show`
+# for the full tier matrix and docs/PRESETS.md for semantics.
+# The pre-rename spellings (`mode` key, minimal/balanced/maximal) still work
+# as deprecated aliases.
+preset = "middle"
+
+# ─────────────────────────────────────────────────────────────────────────────────
 # Active provider + DeepSeek defaults
 # ─────────────────────────────────────────────────────────────────────────────────
 # Choose which provider to use by default. Per-provider credentials live in the
@@ -174,16 +197,16 @@ approval_policy = "on-request" # on-request | untrusted | never
 sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-access | external-sandbox
 
 # ─────────────────────────────────────────────────────────────────────────────────
-# Named Mode
+# Preset (detailed reference)
 # ─────────────────────────────────────────────────────────────────────────────────
-# Active named mode: a delta bundle of dials in a single TOML file. Built-ins:
-# minimal | balanced | maximal | plan. Your own modes live in
-# ~/.codesmith/modes/*.toml and <workspace>/.codesmith/modes/*.toml (project
-# files override by name). Switch live with `/mode <name>`, list with
-# `/mode list`, snapshot your current dials with `/mode export <name>`.
-# Overridden by the `--mode` CLI flag; see docs/MODES.md.
+# The active preset tier is set by the `preset` key at the top of this file.
+# Custom presets live in ~/.codesmith/presets/*.toml and
+# <workspace>/.codesmith/presets/*.toml (project files override by name).
+# Switch live with `/preset <name>`, list with `/preset list`, snapshot your
+# current dials with `/preset export <name>`. Overridden by the `--preset`
+# CLI flag; see docs/PRESETS.md. The legacy `mode` key is a deprecated alias:
 #
-# mode = "minimal"
+# mode = "minimal"                 # deprecated; equivalent to preset = "simple"
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # External Sandbox Backend (pluggable remote execution)
@@ -680,6 +703,48 @@ exponential_base = 2.0
 # in the same silent stretch. Default: 30. Set 0 to keep the window fixed.
 # Clamped to 0..=600 otherwise.
 # stream_idle_retry_increment_secs = 30
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Result Claim Verifier (P3-8)
+# ─────────────────────────────────────────────────────────────────────────────────
+# Post-turn claim checking — the first piece of the continuous-evolution loop.
+# When a completed turn's final assistant message asserts "tests pass" /
+# "build succeeds" (Chinese or English), the engine re-runs the
+# verification-class command the model itself executed during that turn
+# (cargo test / npm test / pytest / cargo build / … — foreground exec_shell
+# and run_tests calls only) and compares the claim against the exit code.
+#
+# The verdict is appended to the conversation as an internal runtime event
+# before the next request (so the model must reconcile a mismatch) and
+# surfaced as a status toast. A claim with no verification command behind it
+# is reported as "unsubstantiated" — the strongest hallucination signal this
+# checker produces, since it needs no re-run at all.
+#
+# Safety: the re-run replays exactly the input the model already sent (same
+# command, cwd and timeout) through the same sandbox/network policy — it
+# grants no authority the turn didn't already have, and only known
+# test/build prefixes are ever eligible for replay.
+#
+# Default: on. Set false to restore the pre-P3-8 behavior of trusting the
+# claim.
+#[verification]
+# result_claims = true
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Doctor LLM Fallback (P3-8)
+# ─────────────────────────────────────────────────────────────────────────────────
+# After `codesmith doctor`'s deterministic checks complete, any collected
+# warnings/errors are handed to one advisory LLM call (the [utility_model]
+# when configured, else the main client) that looks for root causes the
+# per-check hints cannot see — usually interactions between findings.
+# The analysis renders after "All checks complete!" and is explicitly
+# advisory: the deterministic results above take precedence, the model
+# never executes anything, and every skip condition (no client, empty
+# response, error, 30s timeout) degrades to a quiet `·` line. `--json`
+# mode is untouched. Default: on. Set false to keep doctor fully
+# deterministic.
+#[doctor]
+# llm_fallback = true
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Context Compaction

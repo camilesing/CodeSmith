@@ -262,6 +262,33 @@ memory_path = "~/.codesmith/memory.md"
 | 记忆排除项    | （无）                        | `[memory] excludes = ["..."]` 或 `CODESMITH_MEMORY_EXCLUDES=`（冒号分隔） |
 | 文件大小上限  | 100 KiB                       | （目前无；截断标记会显示切割位置）                 |
 
+## 记忆整理（`codesmith memory consolidate`）
+
+在线循环对记忆只会**追加**（`remember` 做精确行去重，但没有任何
+修剪）。`codesmith memory consolidate` 是离线的对应面——持续进化
+计划（P3-8）的"睡眠学习"一步——并且只改写 Knowledge On Demand 的
+`MEMORY.md` 索引，绝不改动主题文件内容：
+
+- **确定性整理**永远先跑：删除完全重复的指针行、丢弃指向已删除
+  主题文件的指针；孤立主题文件（在盘但未被索引）只**报告**、绝不
+  删除；并对照入口预算（200 行 / 25 KB，与注入器截断用的同一组
+  上限）检查索引。
+- **LLM 合并提案**（可选，`--deterministic-only` 跳过）：把清理后的
+  索引加全部主题文件的 frontmatter 交给一次咨询式调用（配置了
+  `[utility_model]` 时用它，否则用主客户端）重写索引——描述更
+  精炼、相关指针分组、每文件恰好一条。提案只有在校验器确认每个
+  现存主题文件仍被恰好引用一次、没有引入未知文件、预算未超时才会
+  被接受；任何违例都回退到确定性结果。
+- **写入门控**：默认是干跑，只打印统一 diff；`--apply` 才写盘，且
+  先做 `MEMORY.md.bak` 备份。下一个会话的提示词刷新会自动拿到
+  新索引。
+
+```bash
+codesmith memory consolidate                      # 干跑：报告 + diff
+codesmith memory consolidate --apply              # 写盘（先备份）
+codesmith memory consolidate --deterministic-only # 完全不调 LLM
+```
+
 ## 相关
 
 - `docs/SUBAGENTS.md` — 子代理会继承记忆，也可以使用 `remember`

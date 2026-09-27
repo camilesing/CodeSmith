@@ -991,6 +991,16 @@ pub struct HostAgentExecutor {
     /// §1 split); the probe type stays in this module (the wire-in in
     /// `engine::mod` constructs it), so its fields are `pub(crate)`.
     pub(crate) lsp: Option<LspProbe>,
+    /// P3-8 pending result-verification verdicts. `None` (embeds/tests) ⇒
+    /// the pre-request flush is a no-op. The Arc is engine-held
+    /// (`Engine.pending_result_verifications`) so verdicts produced by the
+    /// post-turn background claim check survive across the per-turn
+    /// executors and surface on the next turn's first pre-request flush —
+    /// the same cross-turn persistence the steer/approval receivers get,
+    /// but over a plain buffer (`std::sync::Mutex`: push / `mem::take` are
+    /// synchronous, the guard never crosses an await).
+    pub(crate) result_verifications:
+        Option<Arc<std::sync::Mutex<Vec<super::result_verifier::VerdictBlock>>>>,
     /// Optional steer input receiver (§E). `None` ⇒ steer drain is a no-op.
     ///
     /// Interior-mutable because [`AgentExecutor::run`] takes `&self` while
@@ -1349,6 +1359,7 @@ impl HostAgentExecutor {
                 crate::compaction::circuit_breaker::RapidRefillDetector::new(),
             ),
             prefix_stability: None,
+            result_verifications: None,
         }
     }
 
@@ -1469,6 +1480,28 @@ impl HostAgentExecutor {
         >,
     ) -> Self {
         self.prefix_stability = prefix_stability;
+        self
+    }
+
+    /// Opt into pending result-verification verdicts (P3-8). The production
+    /// wire-in calls this with an `Arc` clone of
+    /// `Engine.pending_result_verifications` so the post-turn background
+    /// claim check's verdicts are flushed as a synthetic
+    /// `<codesmith:runtime_event kind="result_verification">` user message
+    /// before this turn's first API request. Embeds/tests skip it — the
+    /// field defaults to `None`, so the flush is a no-op and existing tests
+    /// stay unchanged. `pub(crate)` (not `pub` like the other builders):
+    /// the buffer type lives in the crate-private `result_verifier` module
+    /// and only the engine wire-in constructs this. Consumes and returns
+    /// `self` (builder).
+    #[must_use]
+    pub(crate) fn with_result_verifications(
+        mut self,
+        result_verifications: Option<
+            Arc<std::sync::Mutex<Vec<super::result_verifier::VerdictBlock>>>,
+        >,
+    ) -> Self {
+        self.result_verifications = result_verifications;
         self
     }
 
@@ -2902,6 +2935,11 @@ impl HostAgentExecutor {
             // on the executor for the next turn's first flush — matching the
             // production `Engine.pending_lsp_blocks` field semantics.
             self.flush_pending_lsp_diagnostics(history);
+            // P3-8 result claim verifier: verdicts from a previous turn's
+            // post-run background check flush at the same pre-request seam —
+            // appended before the request snapshot so the model reconciles
+            // its earlier claim with the re-run's exit code.
+            self.flush_pending_result_verifications(history);
 
             let api_tools = tools.to_api_tools();
             // Three-zone assembly (#2264 Phase 2): freeze the step's prefix

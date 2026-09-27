@@ -201,6 +201,11 @@ pub fn project_tree(root: &Path, max_depth: usize) -> String {
 
 // === Filesystem Helpers ===
 
+/// The GitHub repository this project is published under (`owner/repo`).
+/// Single source of truth for user-facing URLs (feedback, share footers,
+/// user-agent strings); the web app mirrors this in `web/lib/constants.ts`.
+pub const GITHUB_REPO: &str = "camilesing/CodeSmith";
+
 /// Atomically write `contents` to `path` using a temporary file + fsync + rename.
 ///
 /// 1. Creates a `NamedTempFile` in the same directory as `path` (same filesystem).
@@ -525,27 +530,43 @@ pub fn escape_prompt_attr(value: &str) -> String {
 
 /// Neutralize closing-tag sequences of `tag` in untrusted prompt body text.
 ///
-/// Only the literal `</{tag}` sequence (case-sensitive, with any trailing
-/// characters — so `</knowledge_memory>` and `</knowledge_memoryfoo>` are
-/// both defused) is replaced with `&lt;/{tag}`, so the body can no longer
-/// close the framing tag early while staying readable for the model.
-/// Occurrences of other tags (e.g. `</other>`) are left untouched.
+/// The literal `</{tag}` sequence — matched **ASCII-case-insensitively**, so
+/// `</knowledge_memory>`, `</KNOWLEDGE_MEMORY>`, and `</Knowledge_Memory>`
+/// are all defused, with any trailing characters — is replaced with
+/// `&lt;/{tag}`, so the body can no longer close the framing tag early
+/// while staying readable for the model. Occurrences of other tags (e.g.
+/// `</other>`) are left untouched.
 ///
 /// `tag` is always a literal tag name from our own code; an empty `tag` is
 /// degenerate (it would match every `</`) and returns the input unchanged.
-/// Allocation-free when `text` contains no match: the needle and the
-/// replacement are only built after `text` is known to contain `</`.
 #[must_use]
 pub fn defuse_closing_tag(text: &str, tag: &str) -> String {
     if tag.is_empty() || !text.contains("</") {
         return text.to_string();
     }
-    let needle = format!("</{tag}");
-    if !text.contains(&needle) {
-        return text.to_string();
+    let tag_bytes = tag.as_bytes();
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'<' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            let rest = &bytes[i + 2..];
+            if rest.len() >= tag_bytes.len()
+                && rest[..tag_bytes.len()].eq_ignore_ascii_case(tag_bytes)
+            {
+                out.push_str("&lt;/");
+                i += 2;
+                continue;
+            }
+        }
+        // Copy one full UTF-8 character (loop index always sits on a
+        // boundary: it starts at 0 and advances by char lengths, and the
+        // `</` skip above only skips ASCII bytes).
+        let ch = text[i..].chars().next().unwrap_or('<');
+        out.push(ch);
+        i += ch.len_utf8();
     }
-    let replacement = format!("&lt;/{tag}");
-    text.replace(&needle, &replacement)
+    out
 }
 
 /// Render a path for **user-facing display** with the home directory
@@ -717,11 +738,21 @@ mod prompt_escape_tests {
     }
 
     #[test]
-    fn defuse_is_case_sensitive() {
-        // Only the exact-case sequence is defused.
+    fn defuse_matches_case_insensitively() {
+        // Matching is ASCII-case-insensitive: any casing of the closing
+        // tag is defused, not just the exact-case sequence.
         assert_eq!(
             defuse_closing_tag("</Knowledge_Memory>", "knowledge_memory"),
-            "</Knowledge_Memory>"
+            "&lt;/Knowledge_Memory>"
+        );
+        assert_eq!(
+            defuse_closing_tag("</knowledge_memory>", "knowledge_memory"),
+            "&lt;/knowledge_memory>"
+        );
+        // Other tags remain untouched.
+        assert_eq!(
+            defuse_closing_tag("</other>", "knowledge_memory"),
+            "</other>"
         );
     }
 

@@ -1083,12 +1083,20 @@ fn task_id_from_input_or_context(
     input: &Value,
     context: &ToolContext,
 ) -> Result<String, ToolError> {
-    optional_str(input, "task_id")
+    let task_id = optional_str(input, "task_id")
         .map(ToString::to_string)
         .or_else(|| context.runtime.active_task_id.clone())
         .ok_or_else(|| {
             ToolError::invalid_input("task_id is required when no durable task is active")
-        })
+        })?;
+    // The id is joined into artifact/data paths — a model-supplied id with
+    // separators or `..` must be rejected, not resolved.
+    if !codesmith_agent_runtime::utils::is_safe_path_component(&task_id) {
+        return Err(ToolError::invalid_input(format!(
+            "invalid task_id {task_id:?}: must be a single safe path component"
+        )));
+    }
+    Ok(task_id)
 }
 
 fn task_id_schema() -> Value {

@@ -164,7 +164,7 @@ CodeSmith works best when you let investigation and implementation happen in
 separate steps for unfamiliar code. For small, well-understood changes, a
 single implementation request is fine.
 
-Next: [MODES.md](MODES.md) explains when to use Plan, Agent, and YOLO.
+Next: [PRESETS.md](PRESETS.md) explains when to use Plan, Agent, and YOLO.
 
 ## 4. Understanding the Interface
 
@@ -209,15 +209,15 @@ CodeSmith has three visible TUI modes:
 Switch modes from the TUI with the mode picker:
 
 ```text
-/mode
+/preset
 ```
 
 Or switch directly:
 
 ```text
-/mode plan
-/mode agent
-/mode yolo
+/preset plan
+/preset agent
+/preset yolo
 ```
 
 Plan mode is the safest place to start in an unfamiliar repository. It is for
@@ -237,7 +237,7 @@ turns.
 You can also change approval behavior from `/config` by editing the approval
 mode. Use this only when you understand how it changes tool execution.
 
-Next: [MODES.md](MODES.md) has the full mode, approval, and trust-mode
+Next: [PRESETS.md](PRESETS.md) has the full preset, approval, and trust-mode
 reference.
 
 ## 6. Slash Commands
@@ -250,7 +250,7 @@ Common commands for first-time users:
 
 | Command | Use |
 | --- | --- |
-| `/mode` | Open the mode picker or switch with `/mode agent` |
+| `/preset` | Open the mode picker, switch tiers (`/preset simple`), or app modes (`/preset agent`) |
 | `/model` | Select a model or use `/model auto` |
 | `/models` | Fetch or list models from the active endpoint |
 | `/provider` | Pick the active API provider |
@@ -526,5 +526,5 @@ next pages are install, configuration, providers, modes, keybindings, tools,
 and sub-agents.
 
 Next: [INSTALL.md](INSTALL.md), [CONFIGURATION.md](CONFIGURATION.md),
-[PROVIDERS.md](PROVIDERS.md), [MODES.md](MODES.md), and
+[PROVIDERS.md](PROVIDERS.md), [PRESETS.md](PRESETS.md), and
 [TOOL_SURFACE.md](TOOL_SURFACE.md).

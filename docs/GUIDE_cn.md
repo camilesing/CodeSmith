@@ -145,7 +145,7 @@ files yet. Return the likely cause, evidence, and a proposed patch plan.
 
 对于不熟悉的代码，让调查和实现分成两个独立步骤时 CodeSmith 表现最好。对于小而明确的改动，单次实现请求即可。
 
-下一步：[MODES.md](MODES.md) 说明何时使用 Plan、Agent 和 YOLO。
+下一步：[PRESETS.md](PRESETS.md) 说明何时使用 Plan、Agent 和 YOLO。
 
 ## 4. 理解界面
 
@@ -180,15 +180,15 @@ CodeSmith 有三个可见的 TUI 模式：
 在 TUI 中通过模式选择器切换模式：
 
 ```text
-/mode
+/preset
 ```
 
 或直接切换：
 
 ```text
-/mode plan
-/mode agent
-/mode yolo
+/preset plan
+/preset agent
+/preset yolo
 ```
 
 在不熟悉的仓库中，Plan 模式是最安全的起点。它用于检查和决策，而不是文件编辑。
@@ -201,7 +201,7 @@ YOLO 模式适用于你有意让模型不停下来等待审批就行动的受信
 
 你还可以在 `/config` 中通过编辑审批模式来更改审批行为。只有当你理解它如何改变工具执行时才使用。
 
-下一步：[MODES.md](MODES.md) 包含完整的模式、审批和信任模式参考。
+下一步：[PRESETS.md](PRESETS.md) 包含完整的模式、审批和信任模式参考。
 
 ## 6. 斜杠命令
 
@@ -211,7 +211,7 @@ YOLO 模式适用于你有意让模型不停下来等待审批就行动的受信
 
 | 命令 | 用途 |
 | --- | --- |
-| `/mode` | 打开模式选择器，或用 `/mode agent` 切换 |
+| `/preset` | 打开模式选择器、切换配置档（`/preset simple`）或应用模式（`/preset agent`） |
 | `/model` | 选择模型，或使用 `/model auto` |
 | `/models` | 从当前端点获取或列出模型 |
 | `/provider` | 选择当前 API provider |
@@ -422,4 +422,4 @@ CodeSmith 会保存会话。使用会话选择器或 README 与模式指南中�
 
 阅读与你要修改的内容对应的专项参考。对大多数用户来说，接下来的页面是安装、配置、provider、模式、快捷键、工具和子代理。
 
-下一步：[INSTALL.md](INSTALL.md)、[CONFIGURATION.md](CONFIGURATION.md)、[PROVIDERS.md](PROVIDERS.md)、[MODES.md](MODES.md) 和 [TOOL_SURFACE.md](TOOL_SURFACE.md)。
+下一步：[INSTALL.md](INSTALL.md)、[CONFIGURATION.md](CONFIGURATION.md)、[PROVIDERS.md](PROVIDERS.md)、[PRESETS.md](PRESETS.md) 和 [TOOL_SURFACE.md](TOOL_SURFACE.md)。

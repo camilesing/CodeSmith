@@ -2023,7 +2023,7 @@ impl RuntimeThreadManager {
             max_steps: 100,
             max_subagents: self.config.max_subagents().clamp(1, MAX_SUBAGENTS),
             features: self.config.features(),
-            parse_gate: self.config.edit_config().parse_gate,
+            parse_gate: self.config.edit_config().parse_gate_enabled(),
             compaction,
             cycle: crate::cycle_manager::CycleConfig::default(),
             capacity: crate::core::capacity::capacity_controller_config_from_app(&self.config),
@@ -2035,7 +2035,7 @@ impl RuntimeThreadManager {
             worktree_state: crate::tools::worktree::new_shared_worktree_session_state(),
             max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
             network_policy,
-            snapshots_enabled: self.config.snapshots_config().enabled,
+            snapshots_enabled: self.config.snapshots_config().is_enabled(),
             snapshots_max_workspace_bytes: self
                 .config
                 .snapshots_config()
@@ -2052,6 +2052,7 @@ impl RuntimeThreadManager {
             stream_idle_retry_increment: std::time::Duration::from_secs(
                 self.config.stream_idle_retry_increment_secs(),
             ),
+            result_claim_verifier: self.config.result_claim_verifier(),
             subagent_inherit_full_registry: self.config.subagent_inherit_full_registry(),
             prefer_bwrap: self.config.prefer_bwrap.unwrap_or(false),
             sandbox_runtime: self.config.sandbox_runtime_config(),

@@ -66,7 +66,10 @@ impl ToolSpec for EnterWorktreeTool {
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         // 1. Check if already in a worktree session
         {
-            let state = self.worktree_state.lock().unwrap();
+            let state = self
+                .worktree_state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if state.active {
                 return Err(ToolError::execution_failed(
                     "Already in a worktree session. Use exit_worktree first before entering another.",
@@ -95,7 +98,10 @@ impl ToolSpec for EnterWorktreeTool {
 
         // 6. Update WorktreeSessionState
         {
-            let mut state = self.worktree_state.lock().unwrap();
+            let mut state = self
+                .worktree_state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             state.active = true;
             state.worktree_path = Some(create_result.worktree_path.clone());
             state.worktree_branch = Some(create_result.worktree_branch.clone());

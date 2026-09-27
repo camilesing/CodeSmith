@@ -1,0 +1,49 @@
+# Simple — Pi-style minimal. Minimal token/compute/disk footprint.
+# Small tool surface (9 core tools), thinking at medium, no index, no LSP,
+# no cross-session memory, no snapshots, no MCP, no web search, no
+# background update check.
+name = "simple"
+description = "Pi-style minimal: 9 core tools, thinking medium, no index/LSP/memory/snapshots/MCP/search."
+app_mode = "agent"
+reasoning_effort = "medium"
+memory_level = "goldfish"
+max_subagents = 0
+index_enabled = false
+lsp_enabled = false
+lsp_include_warnings = false
+snapshots_enabled = false
+memory_enabled = false
+memory_kod_enabled = false
+context_enabled = false
+context_project_pack = false
+capacity_enabled = false
+auto_cost_saving = false
+update_check = false
+network_audit = false
+strict_tool_mode = false
+
+[tools]
+include = [
+  "read_file",
+  "write_file",
+  "edit_file",
+  "grep_files",
+  "list_dir",
+  "file_search",
+  "exec_shell",
+  "exec_shell_wait",
+  "update_plan",
+]
+
+[features]
+shell_tool = true
+subagents = false
+web_search = false
+apply_patch = true
+mcp = false
+exec_policy = true
+vision_model = false
+knowledge_on_demand = false
+agent_teams = false
+coordinator_mode = false
+file_freshness = true

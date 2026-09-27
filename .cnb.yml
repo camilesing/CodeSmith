@@ -106,7 +106,9 @@ main:
     - *feishu_bridge_tests
     - *linux_release_preflight
 
-$:
+# Full release pipeline on version tags only (`$` matched ANY tag push,
+# including temporary/CI tags, triggering a full release + asset upload).
+"v*":
   tag_push:
     - docker:
         image: rust:1.88-bookworm

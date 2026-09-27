@@ -227,6 +227,16 @@ pub struct EngineConfig {
     /// 30); `Duration::ZERO` keeps the window fixed. Only meaningful while
     /// `stream_idle_timeout` is non-zero.
     pub stream_idle_retry_increment: Duration,
+    /// Result claim verifier (P3-8, step 1 of the continuous-evolution
+    /// loop). When `true`, a completed turn whose final assistant message
+    /// asserts "tests pass / build succeeds" triggers a re-run of the
+    /// verification-class command the model itself executed that turn; the
+    /// four-element verdict is appended before the next request and
+    /// surfaced as `Event::ResultVerification`. Resolved from
+    /// `[verification] result_claims`; defaults to on. The checker is
+    /// approved-replay only (see `engine::result_verifier` docs) — turning
+    /// it off restores the pre-P3-8 behavior of trusting the claim.
+    pub result_claim_verifier: bool,
     /// Whether sub-agents inherit the full parent tool registry (legacy
     /// v0.6.6 behavior). Default `false` (Plan 04 / finding F4
     /// `restrictToSubset`): a child's tool surface is a subset of its parent's
@@ -333,6 +343,7 @@ impl Default for EngineConfig {
             stream_idle_retry_increment: Duration::from_secs(
                 DEFAULT_STREAM_IDLE_RETRY_INCREMENT_SECS,
             ),
+            result_claim_verifier: true,
             subagent_inherit_full_registry: false,
             tools_always_load: HashSet::new(),
             prefer_bwrap: false,

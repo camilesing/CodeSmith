@@ -487,7 +487,7 @@ pub async fn run_tui(
     // `config.mode` by `run_interactive`) beats the persisted `/mode` choice
     // from settings.toml. Applies the live dials; config-bound dials were
     // already folded in before the engine existed.
-    crate::modes::restore_at_startup(&mut app, config.mode.as_deref());
+    crate::presets::apply_at_startup(&mut app, config.preset.as_deref().unwrap_or("middle"));
 
     // Load existing session if resuming.
     if let Some(ref session_id) = options.resume_session_id
@@ -860,7 +860,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         max_steps: u32::MAX,
         max_subagents: app.max_subagents,
         features: config.features(),
-        parse_gate: config.edit_config().parse_gate,
+        parse_gate: config.edit_config().parse_gate_enabled(),
         compaction: app.compaction_config(),
         cycle: app.cycle_config(),
         capacity: crate::core::capacity::capacity_controller_config_from_app(config),
@@ -878,7 +878,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         allowed_tools: app.active_allowed_tools.clone(),
         blocked_tools: app.active_blocked_tools.clone().unwrap_or_default(),
         network_policy: Some(config.network_policy_decider()),
-        snapshots_enabled: config.snapshots_config().enabled,
+        snapshots_enabled: config.snapshots_config().is_enabled(),
         snapshots_max_workspace_bytes: config
             .snapshots_config()
             .max_workspace_gb
@@ -891,6 +891,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         subagent_api_timeout: Duration::from_secs(config.subagent_api_timeout_secs()),
         stream_idle_timeout: Duration::from_secs(config.stream_idle_timeout_secs()),
         stream_idle_retry_increment: Duration::from_secs(config.stream_idle_retry_increment_secs()),
+        result_claim_verifier: config.result_claim_verifier(),
         subagent_inherit_full_registry: config.subagent_inherit_full_registry(),
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
         sandbox_runtime: config.sandbox_runtime_config(),
@@ -2066,6 +2067,43 @@ async fn run_event_loop(
                                 app.last_prefix_change_desc = Some(description);
                             }
                         }
+                    }
+                    EngineEvent::ResultVerification {
+                        verdict,
+                        claim,
+                        command,
+                        exit_code,
+                        failure_type,
+                    } => {
+                        // P3-8: surface the engine's claim check. A mismatch
+                        // or an unsubstantiated claim is a warning (the
+                        // model asserted something the re-run contradicts —
+                        // or never ran at all); a pass is a quiet
+                        // confirmation.
+                        let claim = crate::utils::truncate_with_ellipsis(&claim, 24, "…");
+                        let (level, icon) = if verdict == "verified-pass" {
+                            (crate::tui::app::StatusToastLevel::Info, "✓")
+                        } else {
+                            (crate::tui::app::StatusToastLevel::Warning, "⚠️")
+                        };
+                        let detail = match (&command, exit_code) {
+                            (Some(command), Some(code)) => {
+                                format!("`{command}` → exit {code}")
+                            }
+                            (Some(command), None) => format!("`{command}`"),
+                            _ => "no verification command run this turn".to_string(),
+                        };
+                        let failure = failure_type
+                            .as_deref()
+                            .map(|t| format!(" ({t})"))
+                            .unwrap_or_default();
+                        app.push_status_toast(
+                            format!(
+                                "{icon} claim check {verdict}{failure}: 「{claim}」 vs {detail}"
+                            ),
+                            level,
+                            Some(10_000),
+                        );
                     }
                     EngineEvent::TranscriptRebuilt {
                         reason,
@@ -9066,7 +9104,7 @@ enum StartupVersionCheckSource {
 }
 
 fn startup_version_check_source(config: &UpdateConfig) -> StartupVersionCheckSource {
-    if !config.check_for_updates {
+    if !config.checks_for_updates() {
         return StartupVersionCheckSource::Disabled;
     }
     if let Some(update_uri) = config.update_uri() {

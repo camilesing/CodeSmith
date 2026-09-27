@@ -25,8 +25,15 @@ const HARD_MAX_BYTES: u64 = 10 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS: u64 = 15_000;
 const HARD_MAX_TIMEOUT_MS: u64 = 60_000;
 const MAX_REDIRECTS: usize = 5;
-const USER_AGENT: &str =
-    "Mozilla/5.0 (compatible; codesmith/0.5; +https://github.com/camilesing/CodeSmith)";
+fn user_agent() -> &'static str {
+    static USER_AGENT: OnceLock<String> = OnceLock::new();
+    USER_AGENT.get_or_init(|| {
+        format!(
+            "Mozilla/5.0 (compatible; codesmith/0.5; +https://github.com/{})",
+            codesmith_agent_runtime::utils::GITHUB_REPO
+        )
+    })
+}
 
 static SCRIPT_RE: OnceLock<Regex> = OnceLock::new();
 static STYLE_RE: OnceLock<Regex> = OnceLock::new();
@@ -148,9 +155,7 @@ impl ToolSpec for FetchUrlTool {
             // Missing/invalid url fails at execute-time validation.
             return ApprovalRequirement::Auto;
         };
-        let Some(host) =
-            codesmith_agent_runtime::network_policy::host_from_url(url)
-        else {
+        let Some(host) = codesmith_agent_runtime::network_policy::host_from_url(url) else {
             return ApprovalRequirement::Auto;
         };
         codesmith_agent_runtime::network_policy::network_approval_requirement(
@@ -191,7 +196,7 @@ impl ToolSpec for FetchUrlTool {
             let dns_pinning = validate_fetch_target(&current_url, context).await?;
             let mut client_builder = reqwest::Client::builder()
                 .timeout(Duration::from_millis(timeout_ms))
-                .user_agent(USER_AGENT)
+                .user_agent(user_agent())
                 .redirect(reqwest::redirect::Policy::none());
 
             // Pin validated IP to prevent DNS rebinding (TOCTOU) — reqwest will
@@ -931,10 +936,8 @@ mod tests {
 
     #[test]
     fn approval_for_input_without_decider_is_auto() {
-        let req = FetchUrlTool.approval_requirement_for_input(
-            &json!({"url": "https://any.example.com/"}),
-            &ctx(),
-        );
+        let req = FetchUrlTool
+            .approval_requirement_for_input(&json!({"url": "https://any.example.com/"}), &ctx());
         assert_eq!(req, ApprovalRequirement::Auto);
     }
 

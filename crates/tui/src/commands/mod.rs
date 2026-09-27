@@ -33,6 +33,7 @@ mod stash;
 mod status;
 mod task;
 pub mod user_commands;
+mod verify;
 
 use std::fmt::Write as _;
 
@@ -560,6 +561,13 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/slop [query|export]",
         description_id: MessageId::CmdSlopDescription,
     },
+    // Result claim verifier readout (P3-8 / P3-9)
+    CommandInfo {
+        name: "verify",
+        aliases: &[],
+        usage: "/verify [stats]",
+        description_id: MessageId::CmdVerifyDescription,
+    },
     // Extension system (§F1)
     CommandInfo {
         name: "extension",
@@ -646,9 +654,11 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "settings" => config::show_settings(app),
         "status" => status::status(app),
         "statusline" => config::status_line(app),
-        "mode" => config::mode(app, arg),
-        "jihua" => config::mode(app, Some("plan")),
-        "zidong" => config::mode(app, Some("yolo")),
+        "preset" => config::preset(app, arg),
+        // `/mode` is the pre-rename alias of `/preset`.
+        "mode" => config::preset(app, arg),
+        "jihua" => config::preset(app, Some("plan")),
+        "zidong" => config::preset(app, Some("yolo")),
         "theme" => config::theme(app, arg),
         "verbose" => config::verbose(app, arg),
         "trust" | "xinren" => config::trust(app, arg),
@@ -663,6 +673,9 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
 
         // Slop ledger (#2127)
         "slop" | "canzha" => config::slop(app, arg),
+
+        // Result claim verifier readout (P3-8 / P3-9)
+        "verify" => verify::verify(app, arg),
 
         // Extension system (§F1). Unreachable in practice — the runtime
         // lookup in `execute()` (above) intercepts `/extension` first. Kept

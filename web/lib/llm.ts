@@ -122,7 +122,24 @@ export async function curate(
     dsEnv
   );
 
-  const parsed = JSON.parse(raw) as Omit<CuratedDispatch, "generatedAt">;
+  let parsed: Omit<CuratedDispatch, "generatedAt">;
+  try {
+    parsed = JSON.parse(raw) as Omit<CuratedDispatch, "generatedAt">;
+  } catch (err) {
+    throw new Error(
+      `LLM did not return valid JSON for the dispatch (json_mode=on): ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    typeof parsed.headline !== "string" ||
+    typeof parsed.summary !== "string" ||
+    !Array.isArray(parsed.highlights) ||
+    !Array.isArray(parsed.movers)
+  ) {
+    throw new Error("LLM dispatch payload has the wrong shape (headline/summary/highlights/movers)");
+  }
   return { ...sanitizeDispatch(parsed), generatedAt: new Date().toISOString() };
 }
 

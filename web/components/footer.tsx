@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { GITEE_ENABLED, type Locale } from "@/lib/i18n/config";
 import { Seal } from "./seal";
+import { GITHUB_REPO } from "../lib/constants";
 
 const EN_COLS = [
   {
@@ -11,16 +12,16 @@ const EN_COLS = [
       { label: "Documentation", href: "/docs" },
       { label: "Roadmap", href: "/roadmap" },
       { label: "FAQ", href: "/faq" },
-      { label: "Releases", href: "https://github.com/camilesing/CodeSmith/releases" },
+      { label: "Releases", href: `https://github.com/${GITHUB_REPO}/releases` },
     ],
   },
   {
     title: "Community",
     cn: "社区",
     items: [
-      { label: "Issues", href: "https://github.com/camilesing/CodeSmith/issues" },
-      { label: "Pull Requests", href: "https://github.com/camilesing/CodeSmith/pulls" },
-      { label: "Discussions", href: "https://github.com/camilesing/CodeSmith/discussions" },
+      { label: "Issues", href: `https://github.com/${GITHUB_REPO}/issues` },
+      { label: "Pull Requests", href: `https://github.com/${GITHUB_REPO}/pulls` },
+      { label: "Discussions", href: `https://github.com/${GITHUB_REPO}/discussions` },
       { label: "Contribute", href: "/contribute" },
       { label: "Sponsor CodeSmith", href: "https://github.com/sponsors/camilesing" },
     ],
@@ -30,9 +31,9 @@ const EN_COLS = [
     cn: "资源",
     items: [
       { label: "Activity Feed", href: "/feed" },
-      { label: "Code of Conduct", href: "https://github.com/camilesing/CodeSmith/blob/main/CODE_OF_CONDUCT.md" },
-      { label: "Security", href: "https://github.com/camilesing/CodeSmith/blob/main/SECURITY.md" },
-      { label: "License (MIT)", href: "https://github.com/camilesing/CodeSmith/blob/main/LICENSE" },
+      { label: "Code of Conduct", href: `https://github.com/${GITHUB_REPO}/blob/main/CODE_OF_CONDUCT.md` },
+      { label: "Security", href: `https://github.com/${GITHUB_REPO}/blob/main/SECURITY.md` },
+      { label: "License (MIT)", href: `https://github.com/${GITHUB_REPO}/blob/main/LICENSE` },
     ],
   },
 ];
@@ -45,15 +46,15 @@ const ZH_COLS = [
       { label: "使用文档", href: "/zh/docs" },
       { label: "路线图", href: "/zh/roadmap" },
       { label: "常见问题", href: "/zh/faq" },
-      { label: "版本发布", href: "https://github.com/camilesing/CodeSmith/releases" },
+      { label: "版本发布", href: `https://github.com/${GITHUB_REPO}/releases` },
     ],
   },
   {
     title: "社区",
     items: [
-      { label: "议题", href: "https://github.com/camilesing/CodeSmith/issues" },
-      { label: "合并请求", href: "https://github.com/camilesing/CodeSmith/pulls" },
-      { label: "讨论区", href: "https://github.com/camilesing/CodeSmith/discussions" },
+      { label: "议题", href: `https://github.com/${GITHUB_REPO}/issues` },
+      { label: "合并请求", href: `https://github.com/${GITHUB_REPO}/pulls` },
+      { label: "讨论区", href: `https://github.com/${GITHUB_REPO}/discussions` },
       { label: "参与贡献", href: "/zh/contribute" },
       { label: "支持 CodeSmith", href: "https://github.com/sponsors/camilesing" },
     ],
@@ -62,9 +63,9 @@ const ZH_COLS = [
     title: "资源",
     items: [
       { label: "活动动态", href: "/zh/feed" },
-      { label: "行为准则", href: "https://github.com/camilesing/CodeSmith/blob/main/CODE_OF_CONDUCT.md" },
-      { label: "安全策略", href: "https://github.com/camilesing/CodeSmith/blob/main/SECURITY.md" },
-      { label: "MIT 许可证", href: "https://github.com/camilesing/CodeSmith/blob/main/LICENSE" },
+      { label: "行为准则", href: `https://github.com/${GITHUB_REPO}/blob/main/CODE_OF_CONDUCT.md` },
+      { label: "安全策略", href: `https://github.com/${GITHUB_REPO}/blob/main/SECURITY.md` },
+      { label: "MIT 许可证", href: `https://github.com/${GITHUB_REPO}/blob/main/LICENSE` },
     ],
   },
 ];

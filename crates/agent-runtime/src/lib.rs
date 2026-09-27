@@ -44,6 +44,7 @@ pub mod engine;
 pub mod engine_config;
 pub mod error_taxonomy;
 pub mod events;
+pub mod evolution_log;
 pub mod execpolicy;
 pub mod features;
 pub mod hooks;

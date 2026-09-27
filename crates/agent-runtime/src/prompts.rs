@@ -281,6 +281,10 @@ pub fn render_instructions_block(sources: &[InstructionSource]) -> Option<String
 /// Read the workspace-local relay artifact, if present, and format it as a
 /// system-prompt block. Returns `None` when the file is absent or empty so
 /// callers can keep the default-uncluttered prompt for fresh workspaces.
+///
+/// The artifact is workspace-supplied (untrusted): it is wrapped in a
+/// framing tag and its closing-tag sequences defused, matching the tier
+/// blocks, so it cannot impersonate other prompt sections.
 pub fn load_handoff_block(workspace: &Path) -> Option<String> {
     let path = workspace.join(HANDOFF_RELATIVE_PATH);
     let raw = std::fs::read_to_string(&path).ok()?;
@@ -289,7 +293,8 @@ pub fn load_handoff_block(workspace: &Path) -> Option<String> {
         return None;
     }
     Some(format!(
-        "## Previous Session Relay\n\nThe previous session in this workspace left a relay artifact at `{HANDOFF_RELATIVE_PATH}`. Consider it the first artifact to read on this turn — open blockers, in-flight changes, and recent decisions live there. Update or rewrite it before exiting if state changes materially.\n\n{trimmed}"
+        "## Previous Session Relay\n\nThe previous session in this workspace left a relay artifact at `{HANDOFF_RELATIVE_PATH}`. Consider it the first artifact to read on this turn — open blockers, in-flight changes, and recent decisions live there. Update or rewrite it before exiting if state changes materially.\n\n<handoff>\n{}\n</handoff>",
+        defuse_closing_tag(trimmed, "handoff")
     ))
 }
 

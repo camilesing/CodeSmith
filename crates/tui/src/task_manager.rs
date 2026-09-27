@@ -1094,6 +1094,11 @@ impl TaskManager {
     }
 
     fn write_artifact(&self, task_id: &str, label: &str, content: &str) -> Result<PathBuf> {
+        // Defense in depth: `task_id` is joined into a path (task ids are
+        // generated `task_<hex>`, but the tool input path accepts raw ids).
+        if !codesmith_agent_runtime::utils::is_safe_path_component(task_id) {
+            bail!("invalid task id {task_id:?}: must be a single safe path component");
+        }
         let artifact_dir = self.artifacts_dir.join(task_id);
         fs::create_dir_all(&artifact_dir)
             .with_context(|| format!("Failed to create artifact dir {}", artifact_dir.display()))?;

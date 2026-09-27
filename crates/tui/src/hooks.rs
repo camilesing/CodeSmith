@@ -890,7 +890,12 @@ impl HookExecutor {
         }
     }
 
-    /// Execute a hook in the background (non-blocking)
+    /// Execute a hook in the background (non-blocking).
+    ///
+    /// Unlike the old fire-and-forget `.output()`, the child's lifetime is
+    /// bounded by `hook.timeout_secs` (default 30): a hook that never exits
+    /// is killed instead of leaking a process forever. Output is discarded
+    /// (null stdio) — the previous form collected it and then threw it away.
     fn execute_background(&self, hook: &Hook, env_vars: &HashMap<String, String>) -> HookResult {
         let started = Instant::now();
         let working_dir = self
@@ -902,13 +907,33 @@ impl HookExecutor {
         let cmd = hook.command.clone();
         let env = env_vars.clone();
         let wd = working_dir.clone();
+        let timeout_secs = hook.timeout_secs;
 
         // Spawn in a detached thread
         std::thread::spawn(move || {
-            let _ = HookExecutor::build_shell_command(&cmd)
+            let Ok(mut child) = HookExecutor::build_shell_command(&cmd)
                 .current_dir(&wd)
                 .envs(&env)
-                .output();
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            else {
+                return;
+            };
+            let deadline = started + Duration::from_secs(timeout_secs.max(1));
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) if Instant::now() >= deadline => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break;
+                    }
+                    Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+                    Err(_) => break,
+                }
+            }
         });
 
         // Return immediately with success (background execution is fire-and-forget)

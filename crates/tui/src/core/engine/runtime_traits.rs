@@ -279,7 +279,7 @@ impl HostServices for super::EngineHost {
             let ws_snapshot = session
                 .working_set
                 .lock()
-                .expect("working_set poisoned")
+                .unwrap_or_else(|e| e.into_inner())
                 .clone();
             let state = StructuredState::capture(
                 mode.label(),

@@ -29,24 +29,23 @@ codesmith doctor                         # verify setup & connectivity
 codesmith                                # interactive TUI
 ```
 
-Modes — **Plan** (read-only) / **Agent** (default, gated) / **YOLO** (auto-approve): [docs/MODES.md](docs/MODES.md) · other providers: [docs/PROVIDERS.md](docs/PROVIDERS.md)
+Modes — **Plan** (read-only) / **Agent** (default, gated) / **YOLO** (auto-approve): [docs/PRESETS.md](docs/PRESETS.md) · other providers: [docs/PROVIDERS.md](docs/PROVIDERS.md)
 
-## One Binary, Many Modes
+## One Key, Four Tiers
 
-Don't write extensions to get the tool you want — turn dials. A *mode* is one TOML file bundling tool surface, thinking depth, memory persistence, approval posture, sub-agent cap, and model into a switchable preset:
+Don't read a hundred config keys to get the tool you want — pick a tier. `preset` is one config.toml key that baselines tool surface, thinking depth, memory persistence, sub-agent cap, and a set of resource switches (code index, LSP diagnostics, snapshots). Explicit keys always win; deviations show as `diy`:
 
 ```bash
-codesmith --mode minimal   # core file+shell tools, thinking off, zero memory
-codesmith --mode maximal   # full surface, deepest thinking, 20 sub-agents
-/mode plan                 # switch mid-session, no restart
-/mode export my-setup      # snapshot your dials into a shareable file
+codesmith --preset simple    # Pi-style minimal: 9 tools, no index/LSP/memory
+codesmith --preset all       # everything stable on, 20 sub-agents
+codesmith-tui preset show    # the tier matrix + your effective preset
 ```
 
-Four modes ship built-in (`minimal` / `balanced` / `maximal` / `plan`); yours live in `~/.codesmith/modes/` and per-project `.codesmith/modes/` — commit the project ones, that's the sharing story. Memory is a dial like everything else: `goldfish` (no cross-session memory) / `notebook` (only what you explicitly save) / `elephant` (auto memory with budget + decay). Full schema and semantics: [docs/MODES.md](docs/MODES.md).
+Four progressive tiers ship built-in — `simple` / `middle` *(factory default)* / `all` / `experiment` — plus the `plan` workflow preset. Yours live in `~/.codesmith/presets/` and per-project `.codesmith/presets/` — commit the project ones, that's the sharing story. Memory is a dial like everything else: `goldfish` (no cross-session memory) / `notebook` (only what you explicitly save) / `elephant` (auto memory with budget + decay). Full schema and semantics: [docs/PRESETS.md](docs/PRESETS.md).
 
 ## Documentation
 
-Get started: [user guide](docs/GUIDE.md) · [modes & approvals](docs/MODES.md) · [keybindings](docs/KEYBINDINGS.md) · [skills](docs/SKILLS.md) · [memory](docs/MEMORY.md) · [localization](docs/LOCALIZATION.md) · [full command catalog](docs/CLI.md)
+Get started: [user guide](docs/GUIDE.md) · [presets & approvals](docs/PRESETS.md) · [keybindings](docs/KEYBINDINGS.md) · [skills](docs/SKILLS.md) · [memory](docs/MEMORY.md) · [localization](docs/LOCALIZATION.md) · [full command catalog](docs/CLI.md)
 
 Configure: [configuration](docs/CONFIGURATION.md) · [providers](docs/PROVIDERS.md) · [install](docs/INSTALL.md) · [Docker](docs/DOCKER.md)
 

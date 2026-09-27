@@ -38,6 +38,7 @@ mod core;
 mod cost_status;
 mod cycle_manager;
 mod dependencies;
+mod doctor_llm;
 mod error_taxonomy;
 mod eval;
 mod execpolicy;
@@ -54,11 +55,12 @@ mod lsp;
 mod mcp;
 mod mcp_server;
 mod memory;
+mod memory_consolidate;
 mod models;
-mod modes;
 mod network_policy;
 mod palette;
 mod prefix_cache;
+mod presets;
 mod pricing;
 mod project_context;
 mod prompts;
@@ -157,10 +159,17 @@ struct Cli {
     #[arg(long)]
     profile: Option<String>,
 
-    /// Named runtime mode (minimal | balanced | maximal | plan | <custom>).
-    /// Modes are delta bundles of dials defined in ~/.codesmith/modes/ or
-    /// .codesmith/modes/; see /mode list. Overrides `mode` in config.toml.
+    /// Configuration preset tier (simple | middle | all | experiment | plan
+    /// | <custom>). Preset values are baselines: explicit config.toml keys
+    /// always win, and deviations report the effective preset as `diy`.
+    /// Presets are defined in ~/.codesmith/presets/ or
+    /// .codesmith/presets/; see /preset list. Overrides `preset` (and the
+    /// legacy `mode`) in config.toml.
     #[arg(long)]
+    preset: Option<String>,
+
+    /// Deprecated alias of --preset (pre-rename name).
+    #[arg(long, hide = true)]
     mode: Option<String>,
 
     /// Workspace directory for file operations
@@ -208,6 +217,8 @@ struct Cli {
 enum Commands {
     /// Run system diagnostics and check configuration
     Doctor(DoctorArgs),
+    /// Inspect and consolidate agent memory (KoD MEMORY.md index)
+    Memory(MemoryArgs),
     /// Bootstrap MCP config and/or skills directories
     Setup(SetupArgs),
     /// Generate shell completions
@@ -271,6 +282,8 @@ enum Commands {
     Execpolicy(ExecpolicyCommand),
     /// Inspect feature flags
     Features(FeaturesCli),
+    /// Inspect configuration presets
+    Preset(PresetCli),
     /// Run a command inside the sandbox
     Sandbox(SandboxArgs),
     /// Run a local server (e.g. MCP)
@@ -564,6 +577,26 @@ struct DoctorArgs {
 }
 
 #[derive(Args, Debug, Clone)]
+struct MemoryArgs {
+    #[command(subcommand)]
+    command: MemoryCommand,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum MemoryCommand {
+    /// Consolidate the KoD memory index (P3-8 sleep learning, offline)
+    Consolidate {
+        /// Write the consolidated index (backs up MEMORY.md first);
+        /// default is a dry run printing a unified diff
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Deterministic passes only — skip the LLM merge proposal
+        #[arg(long, default_value_t = false)]
+        deterministic_only: bool,
+    },
+}
+
+#[derive(Args, Debug, Clone)]
 struct EvalArgs {
     /// Intentionally fail a specific step (list, read, search, edit, patch, shell)
     #[arg(long, value_name = "STEP")]
@@ -832,6 +865,18 @@ enum FeaturesSubcommand {
 }
 
 #[derive(Args, Debug, Clone)]
+struct PresetCli {
+    #[command(subcommand)]
+    command: PresetSubcommand,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum PresetSubcommand {
+    /// Show the preset tiers, their governed switches, and the effective preset
+    Show,
+}
+
+#[derive(Args, Debug, Clone)]
 struct SandboxArgs {
     #[command(subcommand)]
     command: SandboxCommand,
@@ -948,13 +993,32 @@ async fn real_main() -> Result<()> {
     if let Some(command) = cli.command.clone() {
         return match command {
             Commands::Doctor(args) => {
-                let config = load_config_from_cli(&cli)?;
+                let mut config = load_config_from_cli(&cli)?;
                 let workspace = resolve_workspace(&cli);
+                // Fold the preset layer in so the reported tier (and the
+                // effective switches) match an interactive session.
+                crate::presets::apply_config_preset(&mut config, &workspace);
                 if args.json {
                     run_doctor_json(&config, &workspace, cli.config.as_deref())
                 } else {
                     run_doctor(&config, &workspace, cli.config.as_deref()).await;
                     Ok(())
+                }
+            }
+            Commands::Memory(args) => {
+                let config = load_config_from_cli(&cli)?;
+                match args.command {
+                    MemoryCommand::Consolidate {
+                        apply,
+                        deterministic_only,
+                    } => {
+                        memory_consolidate::run_memory_consolidate(
+                            &config,
+                            apply,
+                            deterministic_only,
+                        )
+                        .await
+                    }
                 }
             }
             Commands::Setup(args) => {
@@ -1069,6 +1133,14 @@ async fn real_main() -> Result<()> {
             Commands::Features(command) => {
                 let config = load_config_from_cli(&cli)?;
                 run_features_command(&config, command)
+            }
+            Commands::Preset(command) => {
+                let mut config = load_config_from_cli(&cli)?;
+                let workspace = resolve_workspace(&cli);
+                // Apply the layer so the reported effective preset (diy
+                // detection, alias canonicalization) matches a live session.
+                crate::presets::apply_config_preset(&mut config, &workspace);
+                run_preset_command(&config, command)
             }
             Commands::Sandbox(args) => run_sandbox_command(args),
             Commands::Serve(args) => {
@@ -2244,6 +2316,13 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     let (aqua_r, aqua_g, aqua_b) = palette::CODESMITH_SKY_RGB;
     let (red_r, red_g, red_b) = palette::CODESMITH_RED_RGB;
 
+    // P3-8 step 2: collect the warning/error branches below as structured
+    // findings for the LLM fallback layer (`doctor_llm`). Recording never
+    // changes what prints — the sections below stay exactly as they were;
+    // the collector only accumulates what the post-run advisory analysis
+    // will see.
+    let mut findings = doctor_llm::DoctorFindings::new();
+
     println!(
         "{}",
         "codesmith Doctor".truecolor(blue_r, blue_g, blue_b).bold()
@@ -2271,6 +2350,10 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                         "!".truecolor(sky_r, sky_g, sky_b)
                     );
                     println!("    Update available. Run `codesmith update` to install.");
+                    findings.warn(
+                        "Updates",
+                        format!("update available: v{current_version} < {latest_tag}"),
+                    );
                 }
                 Ok(std::cmp::Ordering::Equal) => {
                     println!(
@@ -2289,6 +2372,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                         "!".truecolor(sky_r, sky_g, sky_b)
                     );
                     println!("    Version comparison failed: {err}");
+                    findings.warn("Updates", format!("version comparison failed: {err}"));
                 }
             }
         }
@@ -2298,6 +2382,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                 "!".truecolor(sky_r, sky_g, sky_b)
             );
             println!("    Run `codesmith update --check` to retry.");
+            findings.warn("Updates", format!("latest release check failed: {err}"));
         }
     }
     println!();
@@ -2324,6 +2409,13 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             "  {} config.toml not found at {} (using defaults/env)",
             "!".truecolor(sky_r, sky_g, sky_b),
             crate::utils::display_path(&config_path)
+        );
+        findings.warn(
+            "Configuration",
+            format!(
+                "config.toml not found at {} (using defaults/env)",
+                crate::utils::display_path(&config_path)
+            ),
         );
     }
     println!("  workspace: {}", crate::utils::display_path(workspace));
@@ -2484,6 +2576,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         println!(
             "    Run 'codesmith auth set --provider <name>' to save a key to ~/.codesmith/config.toml."
         );
+        findings.error("API Keys", "active provider key not configured");
         false
     };
 
@@ -2494,6 +2587,10 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     println!("  · provider: {}", api_target.provider);
     println!("  · base_url: {}", api_target.base_url);
     println!("  · model: {}", api_target.model);
+    println!(
+        "  · preset: {} (see `/preset list`; `codesmith-tui preset show` for the tier matrix)",
+        config.effective_preset()
+    );
     let strict_tool_mode = doctor_strict_tool_mode_status(config);
     let strict_icon = match strict_tool_mode.status {
         "ready" => "✓".truecolor(aqua_r, aqua_g, aqua_b),
@@ -2504,6 +2601,14 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         "  {} strict_tool_mode: {}",
         strict_icon, strict_tool_mode.message
     );
+    if strict_tool_mode.status == "fallback_non_beta"
+        || strict_tool_mode.status == "custom_endpoint"
+    {
+        findings.warn(
+            "API Connectivity",
+            format!("strict_tool_mode: {}", strict_tool_mode.message),
+        );
+    }
     if let Some(recommended) = strict_tool_mode.recommended_base_url.as_ref() {
         println!("    Use `base_url = \"{recommended}\"` for DeepSeek strict schemas.");
     }
@@ -2531,6 +2636,13 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                 println!(
                     "\r  {} API connection failed",
                     "✗".truecolor(red_r, red_g, red_b)
+                );
+                findings.error(
+                    "API Connectivity",
+                    format!(
+                        "connection to {} ({}) failed: {error_msg}",
+                        api_target.base_url, api_target.model
+                    ),
                 );
                 if error_msg.contains("401") || error_msg.contains("Unauthorized") {
                     println!(
@@ -2586,6 +2698,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             "  {} MCP feature flag disabled",
             "!".truecolor(sky_r, sky_g, sky_b)
         );
+        findings.warn("MCP Servers", "MCP feature flag disabled");
     }
 
     let mcp_config_path = config.mcp_config_path();
@@ -2607,6 +2720,15 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                 );
                 for (name, server) in &cfg.servers {
                     let status = doctor_check_mcp_server(server);
+                    match &status {
+                        McpServerDoctorStatus::Warning(detail) => {
+                            findings.warn("MCP Servers", format!("{name}: {detail}"));
+                        }
+                        McpServerDoctorStatus::Error(detail) => {
+                            findings.error("MCP Servers", format!("{name}: {detail}"));
+                        }
+                        McpServerDoctorStatus::Ok(_) => {}
+                    }
                     let icon = match status {
                         McpServerDoctorStatus::Ok(ref detail) => {
                             format!(
@@ -2642,6 +2764,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                     "✗".truecolor(red_r, red_g, red_b),
                     err
                 );
+                findings.error("MCP Servers", format!("MCP config parse error: {err}"));
             }
         }
     } else {
@@ -2781,6 +2904,10 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         && !global_skills_dir.exists()
     {
         println!("    Run `codesmith setup --skills` (or add --local for ./skills).");
+        findings.warn(
+            "Skills",
+            "no skills directory found in any precedence location",
+        );
     }
 
     // Tools directory
@@ -2891,6 +3018,13 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                 crate::dependencies::PYTHON_CANDIDATES,
             );
             println!("    code_execution tool is NOT advertised to the model on this install.");
+            findings.error(
+                "Tool Dependencies",
+                format!(
+                    "Python not found (tried {:?}); code_execution tool not advertised",
+                    crate::dependencies::PYTHON_CANDIDATES
+                ),
+            );
             println!("    Install Python 3 and ensure one of those names is on PATH:");
             match std::env::consts::OS {
                 "macos" => {
@@ -2918,6 +3052,10 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                 "✗".truecolor(red_r, red_g, red_b),
             );
             println!("    js_execution tool is NOT advertised to the model on this install.");
+            findings.error(
+                "Tool Dependencies",
+                "Node.js not found (tried `node`); js_execution tool not advertised",
+            );
             println!("    Install Node 18+ and ensure `node` is on PATH:");
             match std::env::consts::OS {
                 "macos" => println!("      brew install node   (or download from nodejs.org)"),
@@ -3032,6 +3170,10 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                 println!(
                     "    Either install Poppler or unset `prefer_external_pdftotext` to fall back to the bundled pure-Rust extractor."
                 );
+                findings.error(
+                    "Tool Dependencies",
+                    "pdftotext missing while prefer_external_pdftotext = true; PDF reads will return binary_unavailable",
+                );
                 match std::env::consts::OS {
                     "macos" => println!("    Install via: brew install poppler"),
                     "linux" => println!(
@@ -3121,6 +3263,10 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             "  {} sandbox not available (commands run best-effort)",
             "!".truecolor(sky_r, sky_g, sky_b)
         );
+        findings.warn(
+            "Platform",
+            "no platform sandbox available (commands run best-effort)",
+        );
     }
 
     println!();
@@ -3130,6 +3276,51 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             .truecolor(aqua_r, aqua_g, aqua_b)
             .bold()
     );
+
+    // P3-8 step 2: the LLM fallback layer. Deterministic checks covered
+    // the high-frequency problems above; when they found anything worth
+    // reasoning about, one advisory call (utility model when configured,
+    // else the main client) analyzes the collected findings for root
+    // causes the per-branch hints cannot see — usually interactions
+    // between findings. Analysis only, never execution; every skip
+    // condition degrades to a `·` line (see `doctor_llm` module docs).
+    if findings.has_attention() && config.doctor_llm_fallback() {
+        println!();
+        println!("{}", "LLM Analysis (advisory):".bold());
+        match doctor_llm::resolve_analysis_target(config) {
+            Ok((client, model)) => {
+                print!("  · Analyzing {} with {model}...", findings.summary_line());
+                use std::io::Write;
+                std::io::stdout().flush().ok();
+                let payload = findings.to_prompt_payload(
+                    std::env::consts::OS,
+                    api_target.provider,
+                    &api_target.base_url,
+                    &api_target.model,
+                );
+                match doctor_llm::analyze_findings(&client, &model, &payload).await {
+                    Some(analysis) => {
+                        println!(
+                            "\r  {} analysis below is advisory — the deterministic results above take precedence",
+                            "✓".truecolor(aqua_r, aqua_g, aqua_b)
+                        );
+                        for line in analysis.lines() {
+                            println!("    {line}");
+                        }
+                    }
+                    None => {
+                        println!(
+                            "\r  {} {model} returned no analysis (empty/error/timeout) — skipping",
+                            "·".dimmed()
+                        );
+                    }
+                }
+            }
+            Err(reason) => {
+                println!("  {} skipped ({reason})", "·".dimmed());
+            }
+        }
+    }
 }
 
 /// Machine-readable counterpart to `run_doctor`. Skips the live API call so it
@@ -3562,6 +3753,42 @@ fn run_features_command(config: &Config, command: FeaturesCli) -> Result<()> {
     }
 }
 
+fn run_preset_command(config: &Config, command: PresetCli) -> Result<()> {
+    match command.command {
+        PresetSubcommand::Show => {
+            println!("effective preset: {}", config.effective_preset());
+            println!(
+                "selected: {}",
+                config
+                    .preset_selection()
+                    .unwrap_or("middle (factory default)")
+            );
+            println!();
+            println!("governed switches per tier (explicit config keys always win):");
+            println!();
+            println!(
+                "{:<28} {:<8} {:<8} {:<8} {:<8}",
+                "key", "simple", "middle", "all", "exp"
+            );
+            for (key, row) in codesmith_config::presets::builtin_tier_matrix() {
+                let cells: Vec<String> = row
+                    .iter()
+                    .map(|value| {
+                        value
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "-".to_string())
+                    })
+                    .collect();
+                println!(
+                    "{:<28} {:<8} {:<8} {:<8} {:<8}",
+                    key, cells[0], cells[1], cells[2], cells[3]
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
 async fn run_models(config: &Config, args: ModelsArgs) -> Result<()> {
     let client = crate::core::engine::resolve_llm_client(config)?;
     let mut models = client.list_models().await?;
@@ -3828,6 +4055,14 @@ fn load_config_from_cli_with_exec_model(cli: &Cli, exec_model: Option<&str>) -> 
     let mut config = Config::load(cli.config.clone(), profile.as_deref())?;
     config.require_explicit_model_on_custom_gateway(exec_model)?;
     cli.feature_toggles.apply(&mut config)?;
+    // Fold the CLI preset selection in so every subcommand (doctor,
+    // preset show, …) resolves the same tier an interactive session
+    // would; the tier baselines themselves are applied later by
+    // `presets::apply_config_preset` at the point of use.
+    if cli.preset.is_some() || cli.mode.is_some() {
+        config.preset = cli.preset.clone().or_else(|| cli.mode.clone());
+        config.mode = None;
+    }
     install_token_counter(&config);
     Ok(config)
 }
@@ -4710,6 +4945,18 @@ fn run_sandbox_command(args: SandboxArgs) -> Result<()> {
     let spec =
         CommandSpec::program(program, args.to_vec(), cwd.clone(), timeout).with_policy(policy);
     let manager = SandboxManager::new();
+    // Fail closed: `sandbox run` exists to confine the command, so refuse to
+    // spawn when the selected backend cannot actually enforce isolation.
+    // Landlock has no child-process enforcement wired and `None` means no
+    // backend at all — either way the command would run fully unconfined.
+    let selected = manager.select_sandbox(&spec.sandbox_policy);
+    if spec.sandbox_policy.should_sandbox() && !selected.enforces_isolation() {
+        bail!(
+            "refusing to run unsandboxed: sandbox backend '{selected}' enforces no \
+             isolation on this platform; install bubblewrap and enable prefer_bwrap, \
+             or use a policy that does not require sandboxing"
+        );
+    }
     let exec_env = manager.prepare(&spec);
 
     let mut cmd = Command::new(exec_env.program());
@@ -5161,14 +5408,34 @@ async fn run_interactive(
     if should_load_project_config(cli.no_project_config, &boundary) {
         merge_project_config(&mut merged_config, &workspace);
     }
-    // Named mode: CLI --mode wins over `mode = "..."` in config.toml. Fold
-    // config-bound dials (provider/features/memory/sandbox) in before the
-    // engine is built; the TUI applies the live dials after App creation.
-    if cli.mode.is_some() {
-        merged_config.mode = cli.mode.clone();
+    // Configuration preset: CLI --preset (or the deprecated --mode) wins
+    // over `preset = "..."` in config.toml, which wins over the preset
+    // persisted by the last /preset command; with no selection anywhere
+    // the factory default (middle) applies. The tier's baselines are
+    // folded in fill-if-unset, so explicit config keys always win and any
+    // deviation reports the effective preset as `diy`.
+    if cli.preset.is_some() || cli.mode.is_some() {
+        merged_config.preset = cli.preset.clone().or_else(|| cli.mode.clone());
+        merged_config.mode = None;
     }
-    let mode_definition = crate::modes::apply_config_mode(&mut merged_config, &workspace);
+    if merged_config.preset_selection().is_none()
+        && let Some(persisted) = crate::presets::persisted_selection()
+    {
+        merged_config.preset = Some(persisted);
+    }
+    let applied_preset = crate::presets::apply_config_preset(&mut merged_config, &workspace);
     let config = &merged_config;
+    match applied_preset.as_ref() {
+        Some(applied) if applied.deviated => logging::info(format!(
+            "preset: diy (selected '{}'; explicit config deviates from the tier)",
+            applied.name
+        )),
+        Some(applied) => logging::info(format!(
+            "preset: {} (explicit config keys always win; see /preset list)",
+            applied.name
+        )),
+        None => {}
+    }
     // Re-apply the `telemetry` flag from the merged (user + project) config so
     // the durable `enabled` state honours the project overlay (Plan 06 / 6.2).
     // The sink is Arc-shared with the engine clone handed to `run_tui` below,
@@ -5192,15 +5459,15 @@ async fn run_interactive(
         || config.max_subagents(),
         |value| value.clamp(1, MAX_SUBAGENTS),
     );
-    let mut max_subagents = max_subagents;
 
-    if let Some(definition) = &mode_definition {
-        if let Some(mode_model) = &definition.model {
-            model = mode_model.clone();
-        }
-        if let Some(cap) = definition.max_subagents {
-            max_subagents = cap.clamp(0, MAX_SUBAGENTS);
-        }
+    // The preset layer may pin a model override; the sub-agent cap and
+    // every other numeric/bool dial already flowed through the filled
+    // config above.
+    if let Some(mode_model) = applied_preset
+        .as_ref()
+        .and_then(|applied| applied.definition.model.as_ref())
+    {
+        model = mode_model.clone();
     }
     let use_alt_screen = should_use_alt_screen(cli, config);
     let use_mouse_capture = should_use_mouse_capture(cli, config, use_alt_screen);
@@ -5219,7 +5486,7 @@ async fn run_interactive(
     // Non-fatal: a flaky disk, missing `git`, or read-only home should
     // never block the TUI from starting.
     let snapshots = config.snapshots_config();
-    if snapshots.enabled {
+    if snapshots.is_enabled() {
         session_manager::prune_workspace_snapshots(&workspace, snapshots.max_age());
     }
 
@@ -5630,7 +5897,7 @@ async fn run_exec_agent(
         max_steps: 100,
         max_subagents,
         features: config.features(),
-        parse_gate: config.edit_config().parse_gate,
+        parse_gate: config.edit_config().parse_gate_enabled(),
         compaction,
         cycle: crate::cycle_manager::CycleConfig::default(),
         capacity: crate::core::capacity::capacity_controller_config_from_app(config),
@@ -5642,7 +5909,7 @@ async fn run_exec_agent(
         worktree_state: crate::tools::worktree::new_shared_worktree_session_state(),
         max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
         network_policy,
-        snapshots_enabled: config.snapshots_config().enabled,
+        snapshots_enabled: config.snapshots_config().is_enabled(),
         snapshots_max_workspace_bytes: config
             .snapshots_config()
             .max_workspace_gb
@@ -5654,6 +5921,7 @@ async fn run_exec_agent(
         stream_idle_retry_increment: std::time::Duration::from_secs(
             config.stream_idle_retry_increment_secs(),
         ),
+        result_claim_verifier: config.result_claim_verifier(),
         subagent_inherit_full_registry: config.subagent_inherit_full_registry(),
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
         sandbox_runtime: config.sandbox_runtime_config(),
@@ -6209,7 +6477,7 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
         max_steps: 100,
         max_subagents: config.max_subagents(),
         features: config.features(),
-        parse_gate: config.edit_config().parse_gate,
+        parse_gate: config.edit_config().parse_gate_enabled(),
         compaction,
         cycle: crate::cycle_manager::CycleConfig::default(),
         capacity: crate::core::capacity::capacity_controller_config_from_app(config),
@@ -6221,7 +6489,7 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
         worktree_state: crate::tools::worktree::new_shared_worktree_session_state(),
         max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
         network_policy,
-        snapshots_enabled: config.snapshots_config().enabled,
+        snapshots_enabled: config.snapshots_config().is_enabled(),
         snapshots_max_workspace_bytes: config
             .snapshots_config()
             .max_workspace_gb
@@ -6233,6 +6501,7 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
         stream_idle_retry_increment: std::time::Duration::from_secs(
             config.stream_idle_retry_increment_secs(),
         ),
+        result_claim_verifier: config.result_claim_verifier(),
         subagent_inherit_full_registry: config.subagent_inherit_full_registry(),
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
         sandbox_runtime: config.sandbox_runtime_config(),
