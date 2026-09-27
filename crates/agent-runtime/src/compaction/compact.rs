@@ -905,12 +905,12 @@ pub async fn compact_messages_safe(
     // session-memory early return, and the LLM summary). Hooks are
     // non-blocking: failures log a warning and contribute nothing (#485).
     let preserve_context: Option<String> = match enhancements.and_then(|e| e.hooks.clone()) {
-        Some((executor, context)) => tokio::task::spawn_blocking(move || {
-            executor.execute_pre_compact_hook(&context)
-        })
-        .await
-        .ok()
-        .flatten(),
+        Some((executor, context)) => {
+            tokio::task::spawn_blocking(move || executor.execute_pre_compact_hook(&context))
+                .await
+                .ok()
+                .flatten()
+        }
         None => None,
     };
 
@@ -1691,8 +1691,8 @@ pub fn merge_system_prompts(
 mod anchored_estimate_tests {
     use super::super::estimate_tokens;
     use super::super::{
-        estimate_input_tokens_anchored, estimate_input_tokens_conservative, TokenUsageAnchor,
-        CONSERVATIVE_ESTIMATE_DENOMINATOR, CONSERVATIVE_ESTIMATE_NUMERATOR,
+        CONSERVATIVE_ESTIMATE_DENOMINATOR, CONSERVATIVE_ESTIMATE_NUMERATOR, TokenUsageAnchor,
+        estimate_input_tokens_anchored, estimate_input_tokens_conservative,
     };
     use crate::models::{ContentBlock, Message};
 
@@ -1708,7 +1708,9 @@ mod anchored_estimate_tests {
 
     #[test]
     fn no_anchor_matches_the_pure_estimate() {
-        let messages: Vec<Message> = (0..5).map(|i| text_message(&format!("message {i}"))).collect();
+        let messages: Vec<Message> = (0..5)
+            .map(|i| text_message(&format!("message {i}")))
+            .collect();
         assert_eq!(
             estimate_input_tokens_anchored(&messages, None, None),
             estimate_input_tokens_conservative(&messages, None)
@@ -1717,7 +1719,9 @@ mod anchored_estimate_tests {
 
     #[test]
     fn anchor_fixes_the_level_and_estimates_only_the_increment() {
-        let messages: Vec<Message> = (0..4).map(|i| text_message(&format!("message {i}"))).collect();
+        let messages: Vec<Message> = (0..4)
+            .map(|i| text_message(&format!("message {i}")))
+            .collect();
         let anchor = TokenUsageAnchor {
             messages_len: 2,
             input_tokens: 10_000,
@@ -1734,7 +1738,9 @@ mod anchored_estimate_tests {
 
     #[test]
     fn anchor_at_history_end_yields_the_reading_itself() {
-        let messages: Vec<Message> = (0..4).map(|i| text_message(&format!("message {i}"))).collect();
+        let messages: Vec<Message> = (0..4)
+            .map(|i| text_message(&format!("message {i}")))
+            .collect();
         let anchor = TokenUsageAnchor {
             messages_len: messages.len(),
             input_tokens: 5_000,

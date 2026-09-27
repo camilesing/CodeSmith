@@ -137,20 +137,14 @@ pub fn recursively_sanitize_unicode(value: Value) -> Value {
 /// - `mcp__<server>__<tool>` → the MCP server name segment
 /// - `github_*` → the fixed label `github.com` (issues/PRs/comments carry
 ///   arbitrary user-controlled text)
-pub fn wrap_external_tool_content(
-    tool_name: &str,
-    input: &Value,
-    content: &str,
-) -> String {
+pub fn wrap_external_tool_content(tool_name: &str, input: &Value, content: &str) -> String {
     if content.is_empty() {
         return String::new();
     }
     let Some(source) = external_content_source(tool_name, input) else {
         return content.to_string();
     };
-    format!(
-        "<external_content source=\"{source}\">\n{content}\n</external_content>"
-    )
+    format!("<external_content source=\"{source}\">\n{content}\n</external_content>")
 }
 
 /// Resolve the stable source label for a tool result, or `None` for tools
@@ -278,7 +272,8 @@ mod tests {
 
     #[test]
     fn wrap_fetch_url_uses_url_host_as_source() {
-        let input = json!({"url": "https://Raw.GitHubusercontent.com/tokio-rs/tokio/master/README.md"});
+        let input =
+            json!({"url": "https://Raw.GitHubusercontent.com/tokio-rs/tokio/master/README.md"});
         assert_eq!(
             wrap_external_tool_content("fetch_url", &input, "page body"),
             "<external_content source=\"raw.githubusercontent.com\">\npage body\n</external_content>"
@@ -313,7 +308,13 @@ mod tests {
     #[test]
     fn wrap_passes_local_tools_through_unchanged() {
         // No external origin ⇒ no delimiter (the tag would be noise).
-        for name in ["read_file", "grep_files", "exec_shell", "agent_eval", "edit_file"] {
+        for name in [
+            "read_file",
+            "grep_files",
+            "exec_shell",
+            "agent_eval",
+            "edit_file",
+        ] {
             assert_eq!(
                 wrap_external_tool_content(name, &json!({}), "local output"),
                 "local output",
@@ -337,7 +338,13 @@ mod tests {
         let input = json!({"url": "https://example.com/a"});
         let a = wrap_external_tool_content("fetch_url", &input, "same");
         let b = wrap_external_tool_content("fetch_url", &input, "same");
-        assert_eq!(a, b, "identical (tool, input, content) must wrap identically");
-        assert_eq!(a, "<external_content source=\"example.com\">\nsame\n</external_content>");
+        assert_eq!(
+            a, b,
+            "identical (tool, input, content) must wrap identically"
+        );
+        assert_eq!(
+            a,
+            "<external_content source=\"example.com\">\nsame\n</external_content>"
+        );
     }
 }
