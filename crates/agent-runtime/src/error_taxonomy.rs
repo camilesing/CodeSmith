@@ -287,6 +287,38 @@ impl From<LlmError> for ErrorEnvelope {
     }
 }
 
+/// Word-boundary status-code match: `contains_status_code(lower, "429")`
+/// matches "HTTP 429" and "429." but not "1429 tokens" — the substring
+/// form misrouted every message containing a 4-digit token count.
+fn contains_status_code(lower: &str, code: &str) -> bool {
+    lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|token| token == code)
+}
+
+/// Token-level authentication keywords. Substring `contains("auth")`
+/// matched "author"/"authoring"; plain "authorization" stays on the
+/// Authorization branch below.
+fn contains_auth_keyword(lower: &str) -> bool {
+    if lower.contains("api key") || lower.contains("api-key") {
+        return true;
+    }
+    lower
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+        .any(|token| {
+            matches!(
+                token,
+                "auth"
+                    | "oauth"
+                    | "apikey"
+                    | "authenticate"
+                    | "authentication"
+                    | "unauthorized"
+                    | "unauthenticated"
+            )
+        })
+}
+
 /// Classify an error message string into an ErrorCategory.
 ///
 /// Uses heuristic keyword matching on the lowercased message.
@@ -306,7 +338,7 @@ pub fn classify_error_message(message: &str) -> ErrorCategory {
     }
     if lower.contains("rate limit")
         || lower.contains("too many requests")
-        || lower.contains("429")
+        || contains_status_code(&lower, "429")
         || lower.contains("quota")
     {
         return ErrorCategory::RateLimit;
@@ -314,10 +346,14 @@ pub fn classify_error_message(message: &str) -> ErrorCategory {
     if lower.contains("timeout") || lower.contains("timed out") {
         return ErrorCategory::Timeout;
     }
-    if lower.contains("auth") || lower.contains("unauthorized") || lower.contains("api key") {
+    if contains_auth_keyword(&lower) {
         return ErrorCategory::Authentication;
     }
-    if lower.contains("permission") || lower.contains("forbidden") || lower.contains("denied") {
+    if lower.contains("permission")
+        || lower.contains("forbidden")
+        || lower.contains("denied")
+        || lower.contains("authorization")
+    {
         return ErrorCategory::Authorization;
     }
     if lower.contains("network")
@@ -510,6 +546,7 @@ mod tests {
             "Rate limit reached for gpt-4",
             "Too Many Requests",
             "HTTP 429 from upstream",
+            "429.",
             "Your quota has been exceeded",
         ] {
             assert_eq!(
@@ -518,6 +555,11 @@ mod tests {
                 "expected RateLimit for `{msg}`",
             );
         }
+        // Substring false positive: "1429" is a token count, not a status.
+        assert_eq!(
+            classify("response truncated to 1429 tokens"),
+            ErrorCategory::Internal
+        );
     }
 
     #[test]
@@ -553,6 +595,7 @@ mod tests {
             "403 Forbidden",
             "Permission denied for resource",
             "Tool 'edit_file' denied by user",
+            "authorization failed for scope read:org",
         ] {
             assert_eq!(
                 classify(msg),
@@ -560,6 +603,11 @@ mod tests {
                 "expected Authorization for `{msg}`",
             );
         }
+        // Substring false positive: "author"/"authoring" is not an auth error.
+        assert_eq!(
+            classify("file author mismatch after rewrite"),
+            ErrorCategory::Internal
+        );
     }
 
     #[test]

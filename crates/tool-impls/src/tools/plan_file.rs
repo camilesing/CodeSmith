@@ -49,6 +49,11 @@ pub fn generate_plan_slug() -> Result<String> {
 
 /// Resolve the plan file path for a given slug.
 pub fn plan_file_path(slug: &str) -> Result<PathBuf> {
+    // Slugs are generated `plan_<uuid-hex>`; reject anything that would not
+    // be a single safe path component (defense in depth for future callers).
+    if !codesmith_agent_runtime::utils::is_safe_path_component(slug) {
+        anyhow::bail!("invalid plan slug {slug:?}: must be a single safe path component");
+    }
     Ok(plans_dir()?.join(format!("{slug}.md")))
 }
 
@@ -154,7 +159,9 @@ mod tests {
         let _guard = lock_test_env();
         let _home = ScopedCodeSmithHome::new();
         let slug = generate_plan_slug().expect("slug");
-        write_plan_file(&slug, "# My plan\nStep 1").await.expect("write");
+        write_plan_file(&slug, "# My plan\nStep 1")
+            .await
+            .expect("write");
         let content = read_plan_file(&slug).await.expect("read");
         assert_eq!(content, Some("# My plan\nStep 1".to_string()));
     }

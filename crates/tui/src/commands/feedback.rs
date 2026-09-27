@@ -1,7 +1,11 @@
 use super::CommandResult;
 use crate::tui::app::{App, AppAction};
 
-const SECURITY_POLICY_URL: &str = "https://github.com/camilesing/CodeSmith/security/policy";
+use codesmith_agent_runtime::utils::GITHUB_REPO;
+
+fn security_policy_url() -> String {
+    format!("https://github.com/{GITHUB_REPO}/security/policy")
+}
 
 pub fn feedback(_app: &mut App, arg: Option<&str>) -> CommandResult {
     let raw = arg.map(str::trim).unwrap_or("");
@@ -22,15 +26,16 @@ pub fn feedback(_app: &mut App, arg: Option<&str>) -> CommandResult {
     };
 
     if matches!(kind, FeedbackKind::Security) {
+        let url = security_policy_url();
         return CommandResult::with_message_and_action(
             format!(
                 "Review the project's security policy before reporting a vulnerability.\n\n\
                  Trying to open it in your browser. If that fails, open this URL manually:\n\n\
-                 {SECURITY_POLICY_URL}\n\n\
+                 {url}\n\n\
                  Do not include sensitive security details in a public issue.",
             ),
             AppAction::OpenExternalUrl {
-                url: SECURITY_POLICY_URL.to_string(),
+                url,
                 label: "GitHub security policy".to_string(),
             },
         );
@@ -76,20 +81,16 @@ impl FeedbackKind {
         }
     }
 
-    fn issue_url_base(self) -> &'static str {
+    fn issue_url(self) -> String {
         match self {
             Self::Bug => {
-                "https://github.com/camilesing/CodeSmith/issues/new?template=bug_report.md"
+                format!("https://github.com/{GITHUB_REPO}/issues/new?template=bug_report.md")
             }
             Self::Feature => {
-                "https://github.com/camilesing/CodeSmith/issues/new?template=feature_request.md"
+                format!("https://github.com/{GITHUB_REPO}/issues/new?template=feature_request.md")
             }
-            Self::Security => SECURITY_POLICY_URL,
+            Self::Security => security_policy_url(),
         }
-    }
-
-    fn issue_url(self) -> String {
-        self.issue_url_base().to_string()
     }
 }
 
@@ -262,8 +263,9 @@ mod tests {
             .message
             .as_deref()
             .expect("security feedback message");
-        assert_eq!(external_url(&result), SECURITY_POLICY_URL);
-        assert!(message.contains(SECURITY_POLICY_URL));
+        let policy_url = security_policy_url();
+        assert_eq!(external_url(&result), policy_url);
+        assert!(message.contains(&policy_url));
         assert!(message.contains("Do not include sensitive security details"));
         assert!(!message.contains("/issues/new"));
     }

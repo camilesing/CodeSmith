@@ -243,18 +243,31 @@ const RUSTFMT_TIMEOUT: Duration = Duration::from_secs(10);
 static RUSTFMT_BIN: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 /// Resolve the rustfmt binary once per process. `None` when it is not on
-/// PATH — normalization then silently disables itself.
+/// PATH — normalization then silently disables itself. The probe is
+/// time-bounded: a wedged `rustfmt --version` must not block this
+/// `OnceLock` (and with it the whole write path) indefinitely.
 fn rustfmt_binary() -> Option<&'static PathBuf> {
     RUSTFMT_BIN
         .get_or_init(|| {
-            Command::new("rustfmt")
+            let Ok(mut child) = Command::new("rustfmt")
                 .arg("--version")
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|status| status.success())
-                .then(|| PathBuf::from("rustfmt"))
+                .spawn()
+            else {
+                return None;
+            };
+            let probed_ok = matches!(
+                child.wait_timeout(Duration::from_secs(5)),
+                Ok(Some(status)) if status.success()
+            );
+            if !probed_ok {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            Some(PathBuf::from("rustfmt"))
         })
         .as_ref()
 }
@@ -296,6 +309,8 @@ fn format_rustfmt_content(bin: Option<&Path>, content: &str) -> Option<String> {
     let mut stdout = Vec::new();
     if child.stdout.take()?.read_to_end(&mut stdout).is_err() {
         let _ = child.kill();
+        // Reap the killed child so it doesn't linger as a zombie.
+        let _ = child.wait();
         return None;
     }
     match child.wait_timeout(RUSTFMT_TIMEOUT) {
@@ -313,6 +328,7 @@ fn format_rustfmt_content(bin: Option<&Path>, content: &str) -> Option<String> {
         // child's stdin closes.
         Ok(None) | Err(_) => {
             let _ = child.kill();
+            let _ = child.wait();
             None
         }
     }

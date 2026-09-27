@@ -24,12 +24,22 @@ use crate::config::Config;
 /// `sandbox_backend` key is absent, empty, or `"none"`). When `"opensandbox"`
 /// is set, constructs an [`OpenSandboxBackend`](super::opensandbox::OpenSandboxBackend) using `sandbox_url` and
 /// `sandbox_api_key`.
+///
+/// An unrecognized backend name is an error, not a silent fall-through to
+/// local execution — a typo like `sandbox_backend = "opensandbox2"` must
+/// never quietly disable the external sandbox the user asked for.
 pub fn create_backend(config: &Config) -> Result<Option<Box<dyn SandboxBackend>>> {
-    let kind = config
+    let raw = config
         .sandbox_backend
         .as_deref()
-        .and_then(SandboxKind::parse)
-        .unwrap_or(SandboxKind::None);
+        .map(str::trim)
+        .unwrap_or("");
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let Some(kind) = SandboxKind::parse(raw) else {
+        anyhow::bail!("unknown sandbox_backend {raw:?}: expected \"none\" or \"opensandbox\"");
+    };
 
     match kind {
         SandboxKind::None => Ok(None),

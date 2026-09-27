@@ -49,9 +49,13 @@ pub fn review(app: &mut App, args: Option<&str>) -> CommandResult {
         }
     };
 
+    // Route the skill body through the same preprocessing as /skill
+    // activation: untrusted skill files get their shell-snippet blocks
+    // defused instead of injected verbatim.
+    let body = crate::skills::preprocess_skill_body_for_activation(&skill);
     let instruction = format!(
         "You are now using a skill. Follow these instructions:\n\n# Skill: {}\n\n{}\n\n---\n\nNow respond to the user's request following the above skill instructions.",
-        skill.name, skill.body
+        skill.name, body
     );
 
     app.add_message(HistoryCell::System {

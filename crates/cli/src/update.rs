@@ -72,27 +72,27 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
         return Ok(());
     }
 
-    // Step 2: Download the aggregated SHA256 checksum manifest if available
-    let checksum_manifest = match select_checksum_manifest_asset(release) {
-        Some(checksum_asset) => {
-            println!("Downloading {}...", checksum_asset.name);
-            let checksum_bytes = download_url(&checksum_asset.browser_download_url, proxy.as_ref())
-                .with_context(|| {
-                    format!(
-                        "failed to download {}\n{}",
-                        checksum_asset.name,
-                        update_network_fallback_hint()
-                    )
-                })?;
-            let checksum_text = std::str::from_utf8(&checksum_bytes)
-                .with_context(|| format!("{} is not valid UTF-8", checksum_asset.name))?;
-            Some(parse_checksum_manifest(checksum_text)?)
-        }
-        None => {
-            println!("  (no SHA256 checksum manifest found; skipping verification)");
-            None
-        }
-    };
+    // Step 2: Download the aggregated SHA256 checksum manifest. It is
+    // mandatory: every release published by this project ships one, so a
+    // missing manifest means a broken or tampered release — refuse to
+    // install unverified binaries.
+    let checksum_asset = select_checksum_manifest_asset(release).ok_or_else(|| {
+        anyhow::anyhow!(
+            "release {latest_tag} has no SHA256 checksum manifest; refusing to install unverified binaries"
+        )
+    })?;
+    println!("Downloading {}...", checksum_asset.name);
+    let checksum_bytes = download_url(&checksum_asset.browser_download_url, proxy.as_ref())
+        .with_context(|| {
+            format!(
+                "failed to download {}\n{}",
+                checksum_asset.name,
+                update_network_fallback_hint()
+            )
+        })?;
+    let checksum_text = std::str::from_utf8(&checksum_bytes)
+        .with_context(|| format!("{} is not valid UTF-8", checksum_asset.name))?;
+    let checksum_manifest = parse_checksum_manifest(checksum_text)?;
 
     // Step 3: Download and verify every colocated binary in the install.
     let mut downloads = Vec::new();
@@ -121,8 +121,8 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
                 )
             })?;
 
-        if let Some(checksums) = &checksum_manifest {
-            let expected = checksums
+        {
+            let expected = checksum_manifest
                 .get(&asset.name)
                 .with_context(|| format!("checksum manifest is missing {}", asset.name))?;
             let actual = sha256_hex(&bytes);
@@ -137,9 +137,7 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
         downloads.push((target.path.clone(), asset.name.clone(), bytes));
     }
 
-    if checksum_manifest.is_some() {
-        println!("SHA256 checksum verified.");
-    }
+    println!("SHA256 checksum verified.");
 
     // Step 4: Replace binaries atomically after all downloads verify.
     for (path, _, bytes) in downloads.iter().rev() {
@@ -503,6 +501,12 @@ fn replace_binary(target: &Path, new_bytes: &[u8]) -> Result<()> {
         .with_context(|| format!("failed to create temp file in {}", parent.display()))?;
     tmp.write_all(new_bytes)
         .with_context(|| format!("failed to write temp file at {}", tmp.path().display()))?;
+    // Durability: flush the content to stable storage before the rename —
+    // without the fsync, a crash right after `persist` can leave a renamed
+    // file whose data never hit the disk (empty/partial binary).
+    tmp.as_file()
+        .sync_all()
+        .with_context(|| format!("failed to fsync temp file at {}", tmp.path().display()))?;
 
     // Preserve permissions from the original binary (if it exists)
     if target.exists() {

@@ -258,7 +258,9 @@ impl Session {
     pub fn rebuild_working_set(&mut self) {
         self.working_set
             .lock()
-            .expect("working_set poisoned")
+            // Poison-tolerant: the guarded state is plain data; a panic in
+            // another thread must not cascade into every session accessor.
+            .unwrap_or_else(|e| e.into_inner())
             .rebuild_from_messages(&self.messages, &self.workspace);
     }
 
@@ -289,7 +291,7 @@ pub(crate) fn record_read_file_result_into(
         return;
     };
     let preview = summarize_chars(output_for_context, RECENT_READ_FILE_SNIPPET_CHARS);
-    let mut files = files.lock().expect("recent_read_files poisoned");
+    let mut files = files.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(existing) = files.iter().position(|entry| entry.path == path) {
         files.remove(existing);
     }

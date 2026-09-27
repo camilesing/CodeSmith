@@ -810,6 +810,10 @@ pub async fn execute_code_execution_tool(
         )
     })?;
     cmd.arg(&script_path).current_dir(workspace);
+    // kill_on_drop: on timeout the `output()` future is dropped with the
+    // child — without this the interpreter keeps running detached in the
+    // workspace cwd after the tool already returned a Timeout error.
+    cmd.kill_on_drop(true);
 
     let output = tokio::time::timeout(Duration::from_secs(120), cmd.output())
         .await

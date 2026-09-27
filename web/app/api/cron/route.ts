@@ -102,6 +102,8 @@ export async function GET(req: Request) {
     }
     return NextResponse.json({ ok: true, task, result });
   } catch (e) {
-    return NextResponse.json({ ok: false, error: String(e) }, { status: 200 });
+    // 500 (not 200): status-based monitors must see cron task failures —
+    // a 200 with ok:false in the body is indistinguishable from success.
+    return NextResponse.json({ ok: false, error: String(e) }, { status: 500 });
   }
 }

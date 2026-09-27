@@ -196,7 +196,7 @@ impl Callback for CallbackBridge {
             // stream-time (via `StreamDelta::ToolCallStarted`), skip the
             // execute-time `Event::ToolCallStarted` — dedup.
             let already_announced = {
-                let mut s = state.lock().expect("bridge state mutex poisoned");
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                 s.pending.push((id.to_string(), input.clone()));
                 !s.announced.insert(id.to_string())
             };
@@ -235,7 +235,7 @@ impl Callback for CallbackBridge {
             // signature is input-less, but `ToolCallAfter` hooks want it).
             let (id, input) = state
                 .lock()
-                .expect("bridge state mutex poisoned")
+                .unwrap_or_else(|e| e.into_inner())
                 .pending
                 .pop()
                 .unwrap_or_else(|| ("bridge-?".to_string(), serde_json::Value::Null));
@@ -281,7 +281,7 @@ impl Callback for CallbackBridge {
             // current LLM step (see `BridgeState::announced_blocks`). `None`
             // means "already announced — skip the send".
             let first_block_announcement = |kind: BlockAnnouncement, index: usize| {
-                let mut s = state.lock().expect("bridge state mutex poisoned");
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                 s.announced_blocks.insert((kind, index))
             };
             let event = match delta {
@@ -312,7 +312,7 @@ impl Callback for CallbackBridge {
                     // `on_tool_start` skips re-emitting `Event::ToolCallStarted`
                     // (dedup — the stream-time emission is the single source).
                     {
-                        let mut s = state.lock().expect("bridge state mutex poisoned");
+                        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                         s.announced.insert(id.clone());
                     }
                     Some(Event::ToolCallStarted {
@@ -343,7 +343,7 @@ impl Callback for CallbackBridge {
             // legitimately re-announce index 0.
             state
                 .lock()
-                .expect("bridge state mutex poisoned")
+                .unwrap_or_else(|e| e.into_inner())
                 .announced_blocks
                 .clear();
         })

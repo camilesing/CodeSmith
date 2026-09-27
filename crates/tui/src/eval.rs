@@ -670,7 +670,7 @@ fn apply_patch(root: &Path, patch: &str) -> Result<()> {
     let file_rel = header
         .strip_prefix("*** Update File: ")
         .ok_or_else(|| anyhow!("only *** Update File patches are supported"))?;
-    if file_rel.contains("..") {
+    if file_rel.contains("..") || Path::new(file_rel).is_absolute() {
         return Err(anyhow!("patch path must be workspace-relative"));
     }
 

@@ -53,7 +53,20 @@ export async function getDispatch(): Promise<CuratedDispatch | null> {
   const raw = env.CURATED_KV ? await env.CURATED_KV.get("dispatch:latest") : MEM.get("dispatch:latest") ?? null;
   if (!raw) return null;
   try {
-    return JSON.parse(raw) as CuratedDispatch;
+    const parsed: unknown = JSON.parse(raw);
+    // Shape guard: valid JSON of the wrong shape must degrade to "absent",
+    // not render a broken dispatch.
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      typeof (parsed as CuratedDispatch).headline !== "string" ||
+      typeof (parsed as CuratedDispatch).summary !== "string" ||
+      !Array.isArray((parsed as CuratedDispatch).highlights) ||
+      !Array.isArray((parsed as CuratedDispatch).movers)
+    ) {
+      return null;
+    }
+    return parsed as CuratedDispatch;
   } catch {
     return null;
   }

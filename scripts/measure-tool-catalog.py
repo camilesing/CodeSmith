@@ -29,15 +29,18 @@ def main() -> int:
         "--test-threads=1",
     ]
     proc = subprocess.run(cmd, text=True, capture_output=True, check=False)
-    sys.stderr.write(proc.stderr)
+    sys.stdout.write(proc.stdout)
 
-    for line in proc.stdout.splitlines():
+    # The Rust test prints the marker with `eprintln!` (stderr), so scan
+    # stderr for it; scanning stdout could never find the marker.
+    for line in proc.stderr.splitlines():
         if MARKER in line:
             metrics = json.loads(line.split(MARKER, 1)[1])
             print(json.dumps(metrics, indent=2, sort_keys=True))
+            sys.stderr.write(proc.stderr)
             return proc.returncode
 
-    sys.stdout.write(proc.stdout)
+    sys.stderr.write(proc.stderr)
     sys.stderr.write("missing TOOL_CATALOG_METRICS marker\n")
     return proc.returncode or 1
 

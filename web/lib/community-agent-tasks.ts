@@ -2,6 +2,19 @@ import { fetchFeed, fetchRepoStats } from "@/lib/github";
 import { curate } from "@/lib/llm";
 import { putDispatchWithKv } from "@/lib/kv";
 import {
+
+/// Parse LLM output as JSON with a descriptive error — raw JSON.parse
+/// failure messages ("Unexpected token …") carry no task context.
+function parseLlmJson(content: string): unknown {
+  try {
+    return JSON.parse(content);
+  } catch (err) {
+    throw new Error(
+      `LLM returned invalid JSON: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+
   agentChat,
   TRIAGE_PROMPT,
   PR_REVIEW_PROMPT,
@@ -119,7 +132,7 @@ export async function runTriage(env: AgentEnv): Promise<Record<string, unknown>>
           true,
           dsEnv(env)
         );
-        const parsed = JSON.parse(content) as { bodyEn: string; bodyZh: string };
+        const parsed = parseLlmJson(content) as { bodyEn: string; bodyZh: string };
         const draft: AgentDraft = {
           id: String(issue.number),
           type: "triage",
@@ -203,7 +216,7 @@ export async function runPrReview(env: AgentEnv): Promise<Record<string, unknown
           true,
           dsEnv(env)
         );
-        const parsed = JSON.parse(content) as { bodyEn: string; bodyZh: string };
+        const parsed = parseLlmJson(content) as { bodyEn: string; bodyZh: string };
         const draft: AgentDraft = {
           id: String(pr.number),
           type: "pr-review",
@@ -270,7 +283,7 @@ export async function runStale(env: AgentEnv): Promise<Record<string, unknown>> 
           true,
           dsEnv(env)
         );
-        const parsed = JSON.parse(content) as { bodyEn: string; bodyZh: string };
+        const parsed = parseLlmJson(content) as { bodyEn: string; bodyZh: string };
         const draft: AgentDraft = {
           id: String(issue.number),
           type: "stale",
@@ -330,7 +343,7 @@ export async function runDupes(env: AgentEnv): Promise<Record<string, unknown>> 
       dsEnv(env)
     );
 
-    const parsed = JSON.parse(content) as { suggestions?: { targetNumber: number; duplicateNumber: number; reason: string; bodyEn: string; bodyZh: string }[] };
+    const parsed = parseLlmJson(content) as { suggestions?: { targetNumber: number; duplicateNumber: number; reason: string; bodyEn: string; bodyZh: string }[] };
     const suggestions = parsed.suggestions ?? [];
 
     let processed = 0;
@@ -414,7 +427,7 @@ export async function runDigest(env: AgentEnv): Promise<Record<string, unknown>>
       dsEnv(env)
     );
 
-    const parsed = JSON.parse(content) as { titleEn: string; titleZh: string; summaryEn: string; summaryZh: string; sections: { heading: string; items: string[] }[] };
+    const parsed = parseLlmJson(content) as { titleEn: string; titleZh: string; summaryEn: string; summaryZh: string; sections: { heading: string; items: string[] }[] };
 
     // Compute week ID
     const now = new Date();

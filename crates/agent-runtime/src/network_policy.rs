@@ -409,42 +409,45 @@ impl NetworkSessionCache {
         Self::default()
     }
 
+    /// Lock the inner state, recovering from poisoning instead of
+    /// dropping the decision: the guarded data is two plain `HashSet`s,
+    /// so a panic elsewhere in the process must not silently erase the
+    /// user's session approvals/denials (the old `unwrap_or` fallbacks
+    /// failed open and re-prompted forever).
+    fn lock_inner(&self) -> std::sync::MutexGuard<'_, NetworkSessionCacheInner> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// `true` if the host was previously approved this session.
     #[must_use]
     pub fn is_approved(&self, host: &str) -> bool {
         let normalized = normalize_host(host);
-        self.inner
-            .lock()
-            .map(|guard| guard.approved.contains(&normalized))
-            .unwrap_or(false)
+        self.lock_inner().approved.contains(&normalized)
     }
 
     /// `true` if the host was previously denied this session.
     #[must_use]
     pub fn is_denied(&self, host: &str) -> bool {
         let normalized = normalize_host(host);
-        self.inner
-            .lock()
-            .map(|guard| guard.denied.contains(&normalized))
-            .unwrap_or(false)
+        self.lock_inner().denied.contains(&normalized)
     }
 
     /// Mark the host as approved for the rest of this session.
     pub fn approve(&self, host: &str) {
         let normalized = normalize_host(host);
-        if let Ok(mut guard) = self.inner.lock() {
-            guard.denied.remove(&normalized);
-            guard.approved.insert(normalized);
-        }
+        let mut guard = self.lock_inner();
+        guard.denied.remove(&normalized);
+        guard.approved.insert(normalized);
     }
 
     /// Mark the host as denied for the rest of this session.
     pub fn deny(&self, host: &str) {
         let normalized = normalize_host(host);
-        if let Ok(mut guard) = self.inner.lock() {
-            guard.approved.remove(&normalized);
-            guard.denied.insert(normalized);
-        }
+        let mut guard = self.lock_inner();
+        guard.approved.remove(&normalized);
+        guard.denied.insert(normalized);
     }
 }
 

@@ -4945,6 +4945,18 @@ fn run_sandbox_command(args: SandboxArgs) -> Result<()> {
     let spec =
         CommandSpec::program(program, args.to_vec(), cwd.clone(), timeout).with_policy(policy);
     let manager = SandboxManager::new();
+    // Fail closed: `sandbox run` exists to confine the command, so refuse to
+    // spawn when the selected backend cannot actually enforce isolation.
+    // Landlock has no child-process enforcement wired and `None` means no
+    // backend at all — either way the command would run fully unconfined.
+    let selected = manager.select_sandbox(&spec.sandbox_policy);
+    if spec.sandbox_policy.should_sandbox() && !selected.enforces_isolation() {
+        bail!(
+            "refusing to run unsandboxed: sandbox backend '{selected}' enforces no \
+             isolation on this platform; install bubblewrap and enable prefer_bwrap, \
+             or use a policy that does not require sandboxing"
+        );
+    }
     let exec_env = manager.prepare(&spec);
 
     let mut cmd = Command::new(exec_env.program());

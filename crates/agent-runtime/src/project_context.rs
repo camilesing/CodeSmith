@@ -453,11 +453,19 @@ fn load_project_context_with_parents_and_home(
 ) -> ProjectContext {
     let mut ctx = load_project_context(workspace);
 
-    // If no context found in workspace, check parent directories
-    if !ctx.has_instructions() {
+    // If no context found in workspace, check parent directories — bounded
+    // by the user's home so a planted /AGENTS.md (or /tmp/AGENTS.md for a
+    // workspace under /tmp) never loads. Outside home (or without a
+    // resolvable home) the walk is skipped: the fail-safe direction.
+    if !ctx.has_instructions()
+        && let Some(home) = home_dir
+    {
         let mut current = workspace.parent();
 
         while let Some(parent) = current {
+            if !parent.starts_with(home) {
+                break;
+            }
             let parent_ctx = load_project_context(parent);
             ctx.warnings.extend(parent_ctx.warnings.iter().cloned());
             if parent_ctx.has_instructions() {
@@ -878,8 +886,10 @@ mod tests {
         // Also create .git to mark as repo root
         fs::create_dir(tmp.path().join(".git")).expect("mkdir .git");
 
-        // Load from subdir should find parent's AGENTS.md
-        let ctx = load_project_context_with_parents(&subdir);
+        // Load from subdir should find parent's AGENTS.md. The parent walk
+        // is home-bounded (a planted /AGENTS.md must not load), so the test
+        // passes the tempdir as the home boundary.
+        let ctx = load_project_context_with_parents_and_home(&subdir, Some(tmp.path()));
 
         assert!(ctx.has_instructions());
         assert!(
@@ -921,7 +931,9 @@ mod tests {
         let workspace = repo_root.join("apps").join("client");
         fs::create_dir_all(&workspace).expect("mkdir workspace");
 
-        let ctx = load_project_context_with_parents(&workspace);
+        // Home-bounded walk: pass the tempdir as home so the walk may cross
+        // the git root (monorepo support) without reaching filesystem root.
+        let ctx = load_project_context_with_parents_and_home(&workspace, Some(tmp.path()));
         assert!(ctx.has_instructions());
         assert!(
             ctx.instructions

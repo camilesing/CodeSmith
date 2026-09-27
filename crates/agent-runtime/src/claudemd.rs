@@ -139,6 +139,18 @@ fn resolve_include_target(target: &str, base: &Path) -> PathBuf {
     }
 }
 
+/// Whether an `@include` resolved target is permitted: it must stay within
+/// the including file's directory subtree (canonicalized comparison, so
+/// symlinks can't sidestep it). Absolute targets, `~`, env-expanded
+/// absolute paths, and `..` escapes (`@include ../../secrets.md`) are all
+/// rejected — an untrusted workspace memory file must not be able to pull
+/// arbitrary files (`~/.ssh/…`, `/etc/…`) into the system prompt.
+fn include_target_permitted(resolved: &Path, base: &Path) -> bool {
+    let canon_resolved = canonicalize_or_keep(resolved);
+    let canon_base = canonicalize_or_keep(base);
+    canon_resolved.starts_with(&canon_base)
+}
+
 /// Read a single memory file and recursively expand `@include` directives
 /// inline at their positions, returning the file's full text (with includes
 /// spliced in) tagged with its `tier`.
@@ -151,6 +163,9 @@ fn resolve_include_target(target: &str, base: &Path) -> PathBuf {
 /// - Symlink-stable dedup via [`canonicalize_or_keep`] into `processed`; a
 ///   file already seen in this merge is not loaded again (cycle safe).
 /// - A path whose canonical form matches any entry in `excludes` is dropped.
+/// - Targets that escape the including file's directory ([`include_target_permitted`])
+///   are dropped with a warning.
+/// - Directives inside markdown code fences (``` blocks) are inert prose.
 /// - Files failing [`load_context_file`] (missing, oversized, empty) are
 ///   skipped.
 fn process_memory_file(
@@ -173,6 +188,9 @@ fn process_memory_file(
     let content = load_context_file(path).ok()?;
     let base = path.parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut out = String::new();
+    // Track ``` fence state so `@include` lines shown inside a code block
+    // (documentation examples) are treated as the prose they are.
+    let mut in_fence = false;
     // `split_inclusive('\n')` keeps the trailing newline so non-directive
     // lines round-trip byte-for-byte; directive lines are dropped and
     // replaced by the included file's expanded text.
@@ -181,8 +199,19 @@ fn process_memory_file(
             Some(b) => (b, "\n"),
             None => (line, ""),
         };
-        if let Some(target) = match_include_directive(body) {
+        if body.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+        }
+        if !in_fence && let Some(target) = match_include_directive(body) {
             let resolved = resolve_include_target(target, &base);
+            if !include_target_permitted(&resolved, &base) {
+                tracing::warn!(
+                    target: "codesmith::memory",
+                    path = %resolved.display(),
+                    "@include target escapes the including file's directory; skipped"
+                );
+                continue;
+            }
             if let Some((_, inc_text)) =
                 process_memory_file(&resolved, tier, processed, excludes, depth + 1)
             {
@@ -248,8 +277,15 @@ fn load_user_tier(
 /// First match of [`PROJECT_CONTEXT_FILES`] in `workspace`, then a
 /// parent-directory walk (monorepo root support), reusing the existing
 /// `project_context` parent-walk behaviour.
+///
+/// The walk is bounded by the user's home directory: a planted
+/// `/AGENTS.md` (or `/tmp/AGENTS.md` for a workspace under `/tmp`) must not
+/// load into the system prompt from a world-writable ancestor. When home
+/// cannot be established, or the workspace lives outside it, the walk is
+/// skipped entirely — the fail-safe direction.
 fn load_project_tier(
     workspace: &Path,
+    home: Option<&Path>,
     excludes: &[PathBuf],
     processed: &mut HashSet<PathBuf>,
 ) -> Option<(MemoryTier, String)> {
@@ -258,8 +294,12 @@ fn load_project_tier(
     {
         return Some(c);
     }
+    let home = home?;
     let mut current = workspace.parent();
     while let Some(parent) = current {
+        if !parent.starts_with(home) {
+            break;
+        }
         if let Some(found) = find_project_file(parent)
             && let Some(c) =
                 process_memory_file(&found, MemoryTier::Project, processed, excludes, 0)
@@ -341,7 +381,7 @@ pub fn load_all_memory_tiers(workspace: &Path, home: Option<&Path>, excludes: &[
     {
         blocks.push(user);
     }
-    if let Some(project) = load_project_tier(workspace, &exclude_paths, &mut processed) {
+    if let Some(project) = load_project_tier(workspace, home, &exclude_paths, &mut processed) {
         blocks.push(project);
     }
     blocks.extend(load_local_tier(workspace, &exclude_paths, &mut processed));
@@ -429,6 +469,53 @@ mod tests {
         assert!(inc < after);
         // The directive line itself is dropped.
         assert!(!merged.contains("@include extra.md"));
+    }
+
+    #[test]
+    fn include_escape_targets_are_dropped() {
+        let tmp = tempdir().unwrap();
+        // The workspace is a subdirectory; the secret lives OUTSIDE it so
+        // `..` genuinely escapes the including file's directory.
+        let ws = tmp.path().join("ws");
+        fs::create_dir_all(&ws).unwrap();
+        let secret_dir = tmp.path().join("secrets");
+        fs::create_dir_all(&secret_dir).unwrap();
+        write(&secret_dir.join("token.md"), "SECRET_BODY");
+        write(&ws.join("AGENTS.md"), "@include ../secrets/token.md\nplain");
+
+        let merged = load_all_memory_tiers(&ws, None, &[]);
+        assert!(
+            !merged.contains("SECRET_BODY"),
+            "`..` include escaping the file's directory must be dropped"
+        );
+        assert!(merged.contains("plain"));
+
+        // Absolute targets are rejected the same way.
+        let abs = secret_dir.join("token.md");
+        write(
+            &ws.join("AGENTS.md"),
+            &format!("@include {}", abs.display()),
+        );
+        let merged = load_all_memory_tiers(&ws, None, &[]);
+        assert!(!merged.contains("SECRET_BODY"));
+    }
+
+    #[test]
+    fn include_directive_inside_code_fence_is_inert() {
+        let tmp = tempdir().unwrap();
+        let ws = tmp.path();
+        write(&ws.join("extra.md"), "INCLUDED_BODY");
+        write(
+            &ws.join("AGENTS.md"),
+            "intro\n```md\n@include extra.md\n```\nafter",
+        );
+
+        let merged = load_all_memory_tiers(ws, None, &[]);
+        assert!(
+            !merged.contains("INCLUDED_BODY"),
+            "an @include shown inside a code fence is prose, not a directive"
+        );
+        assert!(merged.contains("@include extra.md"));
     }
 
     #[test]

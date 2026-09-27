@@ -36,6 +36,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ApprovalGrants {
     projects: BTreeMap<String, BTreeSet<String>>,
+    /// Grants removed this session, subtracted from the on-disk state in
+    /// [`ApprovalGrants::save`] so the union merge can never resurrect a
+    /// grant the user explicitly removed.
+    removed: BTreeMap<String, BTreeSet<String>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -75,6 +79,7 @@ impl ApprovalGrants {
                 .into_iter()
                 .map(|(key, project)| (key, project.grants))
                 .collect(),
+            removed: BTreeMap::new(),
         }
     }
 
@@ -99,13 +104,20 @@ impl ApprovalGrants {
 
     /// Remove a grant. Returns `true` when something was removed. Reserved
     /// for a future `/approvals` management command — not yet wired into
-    /// the UI.
+    /// the UI. The removal is remembered as a tombstone so the next `save`
+    /// (which unions with whatever is on disk) doesn't resurrect it.
     #[allow(dead_code)]
     pub fn remove(&mut self, workspace_key: &str, grouping_key: &str) -> bool {
         let removed = self
             .projects
             .get_mut(workspace_key)
             .is_some_and(|grants| grants.remove(grouping_key));
+        if removed {
+            self.removed
+                .entry(workspace_key.to_string())
+                .or_default()
+                .insert(grouping_key.to_string());
+        }
         // Drop emptied project tables so the file doesn't accumulate
         // `[projects."..."]` husks.
         self.projects.retain(|_, grants| !grants.is_empty());
@@ -148,6 +160,14 @@ impl ApprovalGrants {
                 .or_default()
                 .extend(project.grants.iter().cloned());
         }
+        // Subtract this session's removals: the union above would otherwise
+        // resurrect grants removed locally but still present on disk.
+        for (key, tombstones) in &self.removed {
+            if let Some(grants) = merged.get_mut(key) {
+                grants.retain(|grant| !tombstones.contains(grant));
+            }
+        }
+        merged.retain(|_, grants| !grants.is_empty());
         let doc = GrantsDoc {
             projects: merged
                 .iter()
@@ -271,6 +291,32 @@ mod tests {
         assert!(reloaded.is_granted("/w/project-a", "shell:cargo build"));
         assert!(reloaded.is_granted("/w/project-a", "shell:cargo test"));
         assert!(reloaded.is_granted("/w/project-b", "shell:git status"));
+    }
+
+    #[test]
+    fn save_does_not_resurrect_removed_grants() {
+        let path = temp_path("tombstone.toml");
+        let mut ours = ApprovalGrants::default();
+        ours.insert("/w/a", "shell:cargo build");
+        ours.save(&path).expect("initial save");
+
+        // This session removes the grant; meanwhile another session
+        // persists an unrelated grant to the shared file.
+        let mut reloaded = ApprovalGrants::load(&path);
+        assert!(reloaded.remove("/w/a", "shell:cargo build"));
+        let mut other = ApprovalGrants::default();
+        other.insert("/w/b", "shell:git status");
+        other.save(&path).expect("other session save");
+
+        // Our save must union with the other session's grant but must NOT
+        // bring back the grant we removed.
+        reloaded.save(&path).expect("our save");
+        let final_state = ApprovalGrants::load(&path);
+        assert!(
+            !final_state.is_granted("/w/a", "shell:cargo build"),
+            "removed grant resurrected by the merge"
+        );
+        assert!(final_state.is_granted("/w/b", "shell:git status"));
     }
 
     #[test]

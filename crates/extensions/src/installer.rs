@@ -99,6 +99,14 @@ impl<'a> Installer<'a> {
     /// Remove `<root>/<id>/` from any of `roots`. `removed` is true if any
     /// dir was deleted. §F5c: state mutation is the caller's (R1).
     pub fn uninstall_files(id: &str, roots: &[PathBuf]) -> Result<UninstallReport, ExtensionError> {
+        // `id` is joined into a path and fed to `remove_dir_all`: accept a
+        // single safe path component only. An absolute or `..`-bearing id
+        // would escape (or entirely replace) the extensions root.
+        if !is_safe_id(id) {
+            return Err(ExtensionError::Install(format!(
+                "invalid extension id {id:?}: must be a single safe path component"
+            )));
+        }
         let mut removed = false;
         for root in roots {
             let dir = root.join(id);
@@ -114,6 +122,19 @@ impl<'a> Installer<'a> {
             removed,
         })
     }
+}
+
+/// Strict single-component whitelist mirroring
+/// `codesmith_agent_runtime::utils::is_safe_path_component` (a dependency
+/// would be circular here): non-empty, ASCII alphanumerics plus `_`, `-`,
+/// `.` in non-leading/trailing position.
+fn is_safe_id(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    if bytes.is_empty() || bytes[0] == b'.' || bytes[bytes.len() - 1] == b'.' {
+        return false;
+    }
+    id.chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
 }
 
 fn manifest_kind(spec: &SourceSpec) -> &'static str {

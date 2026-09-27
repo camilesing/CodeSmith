@@ -25,9 +25,18 @@ impl BackgroundTaskOutputManager {
         self.output_dir.join(task_id).join("output.txt")
     }
 
+    /// Whether `task_id` is a single safe path component (ids are generated
+    /// `bg_shell_<hex>` etc.; this guards the join against future callers).
+    fn task_id_is_safe(task_id: &str) -> bool {
+        codesmith_agent_runtime::utils::is_safe_path_component(task_id)
+    }
+
     /// Write incremental output to a task's output file.
     #[allow(dead_code)]
     pub fn append_output(&self, task_id: &str, content: &str) -> Result<()> {
+        if !Self::task_id_is_safe(task_id) {
+            anyhow::bail!("invalid task id {task_id:?}: must be a single safe path component");
+        }
         let path = self.output_path_for(task_id);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).with_context(|| format!("create dir {:?}", parent))?;
@@ -77,6 +86,9 @@ impl BackgroundTaskOutputManager {
 
     /// Remove a task's output directory (called during eviction).
     pub fn remove_output(&self, task_id: &str) -> Result<()> {
+        if !Self::task_id_is_safe(task_id) {
+            anyhow::bail!("invalid task id {task_id:?}: must be a single safe path component");
+        }
         let dir = self.output_dir.join(task_id);
         if dir.exists() {
             fs::remove_dir_all(&dir).with_context(|| format!("remove {:?}", dir))?;

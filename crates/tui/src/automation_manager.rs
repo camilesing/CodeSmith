@@ -276,6 +276,7 @@ impl AutomationManager {
     }
 
     pub fn get_automation(&self, id: &str) -> Result<AutomationRecord> {
+        require_safe_automation_id(id)?;
         let path = self.automation_path(id);
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read automation {}", path.display()))?;
@@ -389,6 +390,8 @@ impl AutomationManager {
     }
 
     pub fn delete_automation(&self, id: &str) -> Result<AutomationRecord> {
+        // get_automation validates the id first; delete then removes both
+        // the record file and the runs directory under the same guarantee.
         let existing = self.get_automation(id)?;
         let path = self.automation_path(id);
         fs::remove_file(&path)
@@ -409,6 +412,7 @@ impl AutomationManager {
         automation_id: &str,
         limit: Option<usize>,
     ) -> Result<Vec<AutomationRunRecord>> {
+        require_safe_automation_id(automation_id)?;
         let dir = self.runs_dir_for(automation_id);
         if !dir.exists() {
             return Ok(Vec::new());
@@ -674,6 +678,16 @@ impl AutomationManager {
 
         Ok(())
     }
+}
+
+/// Automation ids are joined into record/run paths (`<dir>/<id>.json`,
+/// `<runs>/<id>/`). Tool input reaches these joins directly, so require a
+/// single safe path component — no separators, `..`, or absolute paths.
+fn require_safe_automation_id(id: &str) -> Result<()> {
+    if !codesmith_agent_runtime::utils::is_safe_path_component(id) {
+        bail!("invalid automation id {id:?}: must be a single safe path component");
+    }
+    Ok(())
 }
 
 fn validate_name_and_prompt(name: &str, prompt: &str) -> Result<()> {

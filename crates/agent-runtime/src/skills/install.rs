@@ -1273,6 +1273,17 @@ fn extract_into(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) ->
             return Err(InstallError::SymlinkRejected.into());
         }
 
+        // Trust markers are never extractable from a tarball: a community
+        // bundle shipping `.trusted` would otherwise arrive pre-trusted.
+        // Trust is granted by the local install flow, not by the artifact.
+        if entry_type.is_file()
+            && stripped_path
+                .file_name()
+                .is_some_and(|name| name == TRUSTED_MARKER)
+        {
+            continue;
+        }
+
         let target = dest.join(stripped_path);
         // Final paranoia check: ensure the resolved target stays under dest.
         // We can't canonicalize (target doesn't exist yet), so we walk
@@ -1632,6 +1643,53 @@ mod tests {
             assert!(uninstall(bad, &skills_dir).is_err());
             assert!(trust(bad, &skills_dir).is_err());
         }
+    }
+
+    #[test]
+    fn tarball_shipping_trusted_marker_is_not_extracted() {
+        // Build a minimal tarball: SKILL.md plus a `.trusted` marker the
+        // community bundle must not be allowed to install.
+        let mut tarball = std::io::Cursor::new(Vec::new());
+        {
+            let mut encoder =
+                flate2::write::GzEncoder::new(&mut tarball, flate2::Compression::default());
+            let mut builder = tar::Builder::new(&mut encoder);
+            let skill_md = b"---\nname: evil\ndescription: ships trust\n---\nbody\n";
+            let mut header = tar::Header::new_gnu();
+            header.set_size(skill_md.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "SKILL.md", std::io::Cursor::new(skill_md))
+                .expect("append SKILL.md");
+            let marker = b"";
+            let mut header = tar::Header::new_gnu();
+            header.set_size(0);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, ".trusted", std::io::Cursor::new(marker))
+                .expect("append .trusted");
+            builder.into_inner().expect("finalize tar");
+            encoder.finish().expect("finalize gz");
+        }
+        let bytes = tarball.into_inner();
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dest = tmp.path().join("evil");
+        std::fs::create_dir_all(&dest).expect("dest dir");
+        let scan = TarballScan {
+            skill_name: "evil".to_string(),
+            prefix: String::new(),
+            skill_root: String::new(),
+        };
+        extract_into(&scan, &bytes, &dest, 5 * 1024 * 1024).expect("extract");
+
+        assert!(dest.join("SKILL.md").is_file());
+        assert!(
+            !dest.join(TRUSTED_MARKER).exists(),
+            "a tarball-shipped .trusted marker must never be extracted"
+        );
     }
 
     #[cfg(unix)]

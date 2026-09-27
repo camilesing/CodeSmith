@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Seal } from "@/components/seal";
+import { GITHUB_REPO } from "../lib/constants";
 
 export async function generateMetadata({ params }: { params: Promise<{ locale: string }> }) {
   const { locale } = await params;
@@ -201,7 +202,7 @@ default_text_model = "openrouter/deepseek/deepseek-v4-pro"`}
       <>
         <code className="inline">/goal</code> is a simple goal-setter for the current session.
         It does not add another app mode; the mode switcher remains Plan, Agent, and YOLO.
-        Track progress in <a href="https://github.com/camilesing/CodeSmith/issues/891" className="body-link">#891</a>.
+        Track progress in <a href={`https://github.com/${GITHUB_REPO}/issues/891`} className="body-link">#891</a>.
       </>
     ),
     sources: ["#891"],
@@ -235,7 +236,7 @@ default_text_model = "openrouter/deepseek/deepseek-v4-pro"`}
       <>
         No CLA required. Fork, branch with conventional commits (<code className="inline">feat:</code>, <code className="inline">fix:</code>, etc.), run the local checks, open a PR.
         The maintainer reads everything personally. Start with issues labeled <code className="inline">good first issue</code>.
-        See the <Link href="/contribute" className="body-link">contribute page</Link> and <a href="https://github.com/camilesing/CodeSmith/blob/main/CONTRIBUTING.md" className="body-link">CONTRIBUTING.md</a>.
+        See the <Link href="/contribute" className="body-link">contribute page</Link> and <a href={`https://github.com/${GITHUB_REPO}/blob/main/CONTRIBUTING.md`} className="body-link">CONTRIBUTING.md</a>.
       </>
     ),
     sources: ["CONTRIBUTING.md"],
@@ -258,7 +259,7 @@ replace-with = "tuna"
 registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"`}
         </pre>
         <p>
-          Prebuilt binaries are also available from <a href="https://github.com/camilesing/CodeSmith/releases" className="body-link">GitHub Releases</a>.
+          Prebuilt binaries are also available from <a href={`https://github.com/${GITHUB_REPO}/releases`} className="body-link">GitHub Releases</a>.
           The Gitee mirror and CNB mirror may also be available.
         </p>
       </>
@@ -285,7 +286,7 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"`}
     a: (
       <>
         Model Lab is the planned open-model infrastructure layer: Hugging Face Hub API for model discovery, model cards, datasets, safetensors adapters, inference providers, and Jobs.
-        It is NOT fully implemented. Track progress in <a href="https://github.com/camilesing/CodeSmith/issues/1977" className="body-link">#1977</a>.
+        It is NOT fully implemented. Track progress in <a href={`https://github.com/${GITHUB_REPO}/issues/1977`} className="body-link">#1977</a>.
         Currently, you can use Hugging Face models through the OpenRouter provider or self-hosted endpoints.
       </>
     ),
@@ -323,7 +324,7 @@ brew update && brew upgrade codesmith`}
         </pre>
         <p>
           If you installed via npm, <code className="inline">codesmith update</code> downloads the latest release binaries.
-          If a mirror is lagging, download directly from <a href="https://github.com/camilesing/CodeSmith/releases" className="body-link">GitHub Releases</a>.
+          If a mirror is lagging, download directly from <a href={`https://github.com/${GITHUB_REPO}/releases`} className="body-link">GitHub Releases</a>.
         </p>
       </>
     ),
@@ -514,7 +515,7 @@ default_text_model = "openrouter/deepseek/deepseek-v4-pro"`}
       <>
         Goal 模式是未来的工作流/标签页方向，用于长时间运行的多步目标——不是当前的 <code className="inline">/goal</code> 命令。
         当前的 <code className="inline">/goal</code> 是一个简单的目标设置器。完整的 Goal 模式（自主多回合任务执行，支持检查点/恢复）已规划但尚未实现。
-        关注 <a href="https://github.com/camilesing/CodeSmith/issues/891" className="body-link">#891</a> 的进展。
+        关注 <a href={`https://github.com/${GITHUB_REPO}/issues/891`} className="body-link">#891</a> 的进展。
       </>
     ),
     sources: ["#891"],
@@ -548,7 +549,7 @@ default_text_model = "openrouter/deepseek/deepseek-v4-pro"`}
       <>
         无需签署 CLA。Fork、用约定式提交（<code className="inline">feat:</code>、<code className="inline">fix:</code> 等）创建分支、通过本地检查、提交 PR。
         维护者亲自阅读每一条内容。从标记为 <code className="inline">good first issue</code> 的议题开始。
-        查看 <Link href="/zh/contribute" className="body-link">贡献页面</Link> 和 <a href="https://github.com/camilesing/CodeSmith/blob/main/CONTRIBUTING.md" className="body-link">CONTRIBUTING.md</a>。
+        查看 <Link href="/zh/contribute" className="body-link">贡献页面</Link> 和 <a href={`https://github.com/${GITHUB_REPO}/blob/main/CONTRIBUTING.md`} className="body-link">CONTRIBUTING.md</a>。
       </>
     ),
     sources: ["CONTRIBUTING.md"],
@@ -571,7 +572,7 @@ replace-with = "tuna"
 registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"`}
         </pre>
         <p>
-          也可以从 <a href="https://github.com/camilesing/CodeSmith/releases" className="body-link">GitHub Releases</a> 直接下载预编译二进制。
+          也可以从 <a href={`https://github.com/${GITHUB_REPO}/releases`} className="body-link">GitHub Releases</a> 直接下载预编译二进制。
           Gitee 镜像和 CNB 镜像也可能可用。
         </p>
       </>
@@ -598,7 +599,7 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"`}
     a: (
       <>
         Model Lab 是规划中的开放模型基础设施层：Hugging Face Hub API 用于模型发现、模型卡片、数据集、safetensors 适配器、推理提供商和 Jobs。
-        它尚未完全实现。关注 <a href="https://github.com/camilesing/CodeSmith/issues/1977" className="body-link">#1977</a> 的进展。
+        它尚未完全实现。关注 <a href={`https://github.com/${GITHUB_REPO}/issues/1977`} className="body-link">#1977</a> 的进展。
         目前，你可以通过 OpenRouter 提供商或自托管端点使用 Hugging Face 模型。
       </>
     ),
@@ -636,7 +637,7 @@ brew update && brew upgrade codesmith`}
         </pre>
         <p>
           如果通过 npm 安装，<code className="inline">codesmith update</code> 会下载最新发布二进制。
-          如果镜像延迟，请从 <a href="https://github.com/camilesing/CodeSmith/releases" className="body-link">GitHub Releases</a> 直接下载。
+          如果镜像延迟，请从 <a href={`https://github.com/${GITHUB_REPO}/releases`} className="body-link">GitHub Releases</a> 直接下载。
         </p>
       </>
     ),
@@ -707,7 +708,7 @@ export default async function FaqPage({ params }: { params: Promise<{ locale: st
               : "Didn't find your question?"}
           </p>
           <a
-            href="https://github.com/camilesing/CodeSmith/issues/new/choose"
+            href={`https://github.com/${GITHUB_REPO}/issues/new/choose`}
             className="inline-flex items-center gap-2 px-5 py-3 bg-ink text-paper font-mono text-sm uppercase tracking-wider hover:bg-indigo transition-colors"
           >
             {isZh ? "提交 Issue →" : "Open an issue →"}

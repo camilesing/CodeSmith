@@ -317,9 +317,13 @@ export async function logUsage(
   const date = new Date().toISOString().slice(0, 10);
   const key = `usage:${date}`;
   const raw = await kv.get(key);
-  const existing: UsageLog = raw
-    ? JSON.parse(raw)
-    : { date, calls: 0, inputTokens: 0, outputTokens: 0 };
+  // Corrupt KV value resets the day's counters rather than crashing the call.
+  let existing: UsageLog;
+  try {
+    existing = raw ? (JSON.parse(raw) as UsageLog) : { date, calls: 0, inputTokens: 0, outputTokens: 0 };
+  } catch {
+    existing = { date, calls: 0, inputTokens: 0, outputTokens: 0 };
+  }
   existing.calls += 1;
   existing.inputTokens += inputTokens;
   existing.outputTokens += outputTokens;

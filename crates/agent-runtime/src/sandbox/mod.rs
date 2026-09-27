@@ -759,6 +759,29 @@ impl std::fmt::Display for SandboxType {
     }
 }
 
+impl SandboxType {
+    /// Whether this backend actually confines a locally spawned child today.
+    ///
+    /// `LinuxLandlock` has no child-process enforcement wired (see
+    /// [`SandboxManager::prepare_landlock`]) and `Windows` has no helper at
+    /// all, so neither counts as isolation — callers deciding whether to
+    /// proceed must treat them the same as `None`.
+    #[must_use]
+    pub fn enforces_isolation(self) -> bool {
+        match self {
+            SandboxType::None => false,
+            #[cfg(target_os = "macos")]
+            SandboxType::MacosSeatbelt => true,
+            #[cfg(target_os = "linux")]
+            SandboxType::LinuxBwrap => true,
+            #[cfg(target_os = "linux")]
+            SandboxType::LinuxLandlock => false,
+            #[cfg(target_os = "windows")]
+            SandboxType::Windows => false,
+        }
+    }
+}
+
 /// The execution environment after sandbox transformation.
 ///
 /// This contains the actual command to run (which may include sandbox wrapper
@@ -1000,10 +1023,12 @@ impl SandboxManager {
             return forced;
         }
 
-        // Use platform default
+        // Use platform default. On Linux, bwrap wins when preferred (#2184)
+        // and also serves as the fallback when Landlock is unavailable —
+        // a real bwrap confinement beats degrading to unsandboxed execution.
         #[cfg(target_os = "linux")]
         {
-            if self.prefer_bwrap && bwrap::is_available() {
+            if bwrap::is_available() && (self.prefer_bwrap || !landlock::is_available()) {
                 return SandboxType::LinuxBwrap;
             }
         }
@@ -1102,63 +1127,30 @@ impl SandboxManager {
         }
     }
 
-    /// Prepare a Landlock-sandboxed execution environment (Linux).
+    /// Prepare a Landlock-tagged execution environment (Linux).
     ///
-    /// Landlock is currently only advertised when the platform probe succeeds;
-    /// this path keeps metadata truthful and does not claim bwrap enforcement.
+    /// Landlock has no child-process enforcement wired: rules would have to
+    /// be applied inside the child before exec, and that helper path does
+    /// not exist (see `landlock::LandlockSandbox`, which has no callers).
+    /// This arm therefore reports `SandboxType::None` — the command runs
+    /// unconfined and every consumer of the `ExecEnv` sees the truth. The
+    /// higher-level decision layer (`shell_manager::decide_sandbox`) already
+    /// refuses to mark Landlock effective.
     #[cfg(target_os = "linux")]
     fn prepare_landlock(&self, spec: &CommandSpec) -> ExecEnv {
         let _ = self;
-        // Full Landlock enforcement requires applying rules inside the child
-        // process before exec. Until that helper path is wired, report this as
-        // a marker only when selected by tests/platform detection and let the
-        // higher-level decision layer fail closed when strict enforcement is
-        // required.
-        let mut command = vec![spec.program.clone()];
-        command.extend(spec.args.clone());
-
-        let mut env = spec.env.clone();
-        env.insert("DEEPSEEK_SANDBOX".to_string(), "landlock".to_string());
-
-        ExecEnv {
-            command,
-            cwd: spec.cwd.clone(),
-            env,
-            timeout: spec.timeout,
-            sandbox_type: SandboxType::LinuxLandlock,
-            policy: spec.sandbox_policy.clone(),
-        }
+        Self::prepare_unsandboxed(spec)
     }
 
-    /// Prepare a Windows helper execution environment.
+    /// Prepare a Windows execution environment.
     ///
-    /// Windows support is currently not advertised by `get_platform_sandbox`.
-    /// This branch only exists for forced tests and future helper wiring.
-    /// The first supported helper contract is process-tree containment only;
-    /// it must not be presented as filesystem or network isolation.
+    /// No Windows helper exists (`windows::is_available()` is false, so this
+    /// arm is unreachable from platform detection). If it is ever reached
+    /// via a forced sandbox type, report `SandboxType::None`: without a Job
+    /// Object / AppContainer helper there is no containment to advertise.
     #[cfg(target_os = "windows")]
     fn prepare_windows(spec: &CommandSpec) -> ExecEnv {
-        let mut command = vec![spec.program.clone()];
-        command.extend(spec.args.clone());
-
-        let mut env = spec.env.clone();
-        let kind = windows::select_best_kind(&spec.sandbox_policy, &spec.cwd);
-        env.insert("DEEPSEEK_SANDBOX".to_string(), format!("windows:{kind}"));
-        if !spec.sandbox_policy.has_network_access() {
-            env.insert(
-                "DEEPSEEK_SANDBOX_BLOCK_NETWORK".to_string(),
-                "1".to_string(),
-            );
-        }
-
-        ExecEnv {
-            command,
-            cwd: spec.cwd.clone(),
-            env,
-            timeout: spec.timeout,
-            sandbox_type: SandboxType::Windows,
-            policy: spec.sandbox_policy.clone(),
-        }
+        Self::prepare_unsandboxed(spec)
     }
 
     /// Check if a command failure was due to sandbox denial.

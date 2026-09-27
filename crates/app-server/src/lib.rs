@@ -233,46 +233,38 @@ async fn healthz() -> Json<Value> {
 async fn thread_handler(
     State(state): State<AppState>,
     Json(req): Json<ThreadRequest>,
-) -> Json<ThreadResponse> {
+) -> axum::response::Response {
     let mut runtime = state.runtime.lock().await;
     match runtime.handle_thread(req).await {
-        Ok(res) => Json(res),
-        Err(err) => Json(ThreadResponse {
-            thread_id: "error".to_string(),
-            status: format!("error:{err}"),
-            thread: None,
-            threads: Vec::new(),
-            model: None,
-            model_provider: None,
-            cwd: None,
-            approval_policy: None,
-            sandbox: None,
-            events: Vec::new(),
-            data: json!({}),
-        }),
+        Ok(res) => Json(res).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response(),
     }
 }
 
 async fn prompt_handler(
     State(state): State<AppState>,
     Json(req): Json<PromptRequest>,
-) -> Json<PromptResponse> {
+) -> axum::response::Response {
     let mut runtime = state.runtime.lock().await;
     let overrides = CliRuntimeOverrides::default();
     match runtime.handle_prompt(req, &overrides).await {
-        Ok(res) => Json(res),
-        Err(err) => Json(PromptResponse {
-            output: err.to_string(),
-            model: "unknown".to_string(),
-            events: Vec::new(),
-        }),
+        Ok(res) => Json(res).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response(),
     }
 }
 
 async fn tool_handler(
     State(state): State<AppState>,
     Json(req): Json<ToolCallRequest>,
-) -> Json<Value> {
+) -> axum::response::Response {
     let runtime = state.runtime.lock().await;
     let cwd = req
         .cwd
@@ -285,8 +277,12 @@ async fn tool_handler(
         )
         .await
     {
-        Ok(value) => Json(value),
-        Err(err) => Json(json!({ "ok": false, "error": err.to_string() })),
+        Ok(value) => Json(value).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "ok": false, "error": err.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -344,7 +340,7 @@ fn build_state(config_path: Option<PathBuf>, auth_token: Option<String>) -> Resu
         state_store,
         Arc::new(ToolRegistry::default()),
         Arc::new(McpManager::default()),
-        ExecPolicyEngine::new(Vec::new(), Vec::new()),
+        ExecPolicyEngine::new(Vec::new(), default_denied_exec_prefixes()),
         hooks,
     );
 
@@ -424,7 +420,7 @@ async fn require_app_server_token(
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|raw| raw.strip_prefix("Bearer "))
-        .is_some_and(|token| token == expected);
+        .is_some_and(|token| constant_time_eq(token.as_bytes(), expected.as_bytes()));
 
     if authorized {
         next.run(req).await
@@ -444,6 +440,21 @@ async fn require_app_server_token(
 
 fn params_or_object(params: Value) -> Value {
     if params.is_null() { json!({}) } else { params }
+}
+
+/// Length-checked constant-time byte comparison for bearer tokens — avoids
+/// the timing side channel of a plain `==` string compare. The length
+/// mismatch early-return only leaks the token's length, which is not a
+/// secret worth protecting for a locally generated `cwapp_<uuid>`.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 fn parse_params<T: DeserializeOwned>(params: Value) -> std::result::Result<T, JsonRpcError> {
@@ -873,30 +884,57 @@ async fn process_app_request(
             }
         }
         AppRequest::ConfigSet { key, value } => {
-            let mut cfg = state.config.write().await;
-            let result = cfg.set_value(&key, &value);
-            let ok = result.is_ok();
-            let message = result.err().map(|e| e.to_string());
-            let snapshot = cfg.clone();
-            drop(cfg);
-            let _ = persist_config(state, snapshot).await;
+            {
+                let mut cfg = state.config.write().await;
+                if let Err(err) = cfg.set_value(&key, &value) {
+                    return AppResponse {
+                        ok: false,
+                        data: json!({ "key": key, "value": value, "error": err.to_string() }),
+                        events: Vec::new(),
+                    };
+                }
+            }
+            // Apply the single key change to a freshly-loaded store: an
+            // external edit to config.toml made since this process started
+            // must survive, not be clobbered by our startup snapshot.
+            let persist_error = persist_config(
+                state,
+                PersistOp::Set {
+                    key: &key,
+                    value: &value,
+                },
+            )
+            .await
+            .err()
+            .map(|e| e.to_string());
             AppResponse {
-                ok,
-                data: json!({ "key": key, "value": value, "error": message }),
+                ok: persist_error.is_none(),
+                data: json!({
+                    "key": key,
+                    "value": value,
+                    "persist_error": persist_error,
+                }),
                 events: Vec::new(),
             }
         }
         AppRequest::ConfigUnset { key } => {
-            let mut cfg = state.config.write().await;
-            let result = cfg.unset_value(&key);
-            let ok = result.is_ok();
-            let message = result.err().map(|e| e.to_string());
-            let snapshot = cfg.clone();
-            drop(cfg);
-            let _ = persist_config(state, snapshot).await;
+            {
+                let mut cfg = state.config.write().await;
+                if let Err(err) = cfg.unset_value(&key) {
+                    return AppResponse {
+                        ok: false,
+                        data: json!({ "key": key, "error": err.to_string() }),
+                        events: Vec::new(),
+                    };
+                }
+            }
+            let persist_error = persist_config(state, PersistOp::Unset { key: &key })
+                .await
+                .err()
+                .map(|e| e.to_string());
             AppResponse {
-                ok,
-                data: json!({ "key": key, "error": message }),
+                ok: persist_error.is_none(),
+                data: json!({ "key": key, "persist_error": persist_error }),
                 events: Vec::new(),
             }
         }
@@ -939,13 +977,48 @@ async fn process_app_request(
     }
 }
 
-async fn persist_config(state: &AppState, config: codesmith_config::ConfigToml) -> Result<()> {
-    if state.config_path.is_none() {
+/// A single config change to persist — the unit of edit applied to a
+/// freshly-loaded store so concurrent external edits survive.
+enum PersistOp<'a> {
+    Set { key: &'a str, value: &'a str },
+    Unset { key: &'a str },
+}
+
+async fn persist_config(state: &AppState, op: PersistOp<'_>) -> Result<()> {
+    let Some(path) = state.config_path.clone() else {
         return Ok(());
+    };
+    // Re-read from disk: applying only this request's key change to the
+    // current on-disk state preserves any external edits made since this
+    // process started (a whole-snapshot overwrite would discard them).
+    let mut store = ConfigStore::load(Some(path))?;
+    match op {
+        PersistOp::Set { key, value } => store.config.set_value(key, value)?,
+        PersistOp::Unset { key } => store.config.unset_value(key)?,
     }
-    let mut store = ConfigStore::load(state.config_path.clone())?;
-    store.config = config;
     store.save()
+}
+
+/// Denied exec prefixes for the app-server tool channel. The channel has no
+/// approval path (every untrusted call already short-circuits to
+/// `approval_required`), so this list only upgrades clearly destructive
+/// commands to an explicit `forbidden` verdict instead of an approval ask.
+fn default_denied_exec_prefixes() -> Vec<String> {
+    [
+        "rm -rf /",
+        "rm -rf /*",
+        "rm -rf ~",
+        "rm -rf $HOME",
+        "sudo rm",
+        "mkfs",
+        "dd if=/dev/zero of=/dev/",
+        "chmod -R 777 /",
+        "shred /dev/",
+        "> /dev/sda",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
 }
 
 #[cfg(test)]
@@ -1234,5 +1307,49 @@ mod tests {
         assert!(DEFAULT_CORS_ORIGINS.contains(&"http://localhost:3000"));
         assert!(DEFAULT_CORS_ORIGINS.contains(&"http://localhost:5173"));
         assert!(DEFAULT_CORS_ORIGINS.contains(&"tauri://localhost"));
+    }
+
+    // ── Token comparison / config persistence ─────────────────────────
+
+    #[test]
+    fn constant_time_eq_compares_bytes() {
+        assert!(constant_time_eq(b"cwapp abc", b"cwapp abc"));
+        assert!(!constant_time_eq(b"cwapp abc", b"cwapp abd"));
+        assert!(!constant_time_eq(b"cwapp abc", b"cwapp ab"));
+        assert!(!constant_time_eq(b"", b"x"));
+        assert!(constant_time_eq(b"", b""));
+    }
+
+    #[tokio::test]
+    async fn config_set_preserves_external_edits() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("config.toml");
+        fs::write(&config_path, "api_key = \"sk-a\"\n").expect("write config");
+        let state = build_state(Some(config_path.clone()), None).expect("state");
+
+        // An external edit lands after this process loaded its config.
+        fs::write(
+            &config_path,
+            "api_key = \"sk-a\"\nexternal_key = \"kept\"\n",
+        )
+        .expect("external edit");
+
+        let resp = process_app_request(
+            &state,
+            AppRequest::ConfigSet {
+                key: "hook_sinks.unix_socket_path".to_string(),
+                value: "/tmp/cw-events.sock".to_string(),
+            },
+            AppTransport::Http,
+        )
+        .await;
+        assert!(resp.ok, "set should succeed: {:?}", resp.data);
+
+        let raw = fs::read_to_string(&config_path).expect("read back");
+        assert!(
+            raw.contains("kept"),
+            "external edit must survive a config set, got: {raw}"
+        );
+        assert!(raw.contains("/tmp/cw-events.sock"));
     }
 }
