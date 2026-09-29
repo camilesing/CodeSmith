@@ -776,21 +776,21 @@ fn subagent_auto_reasoning_resolves_to_distinct_v4_tiers() {
 }
 
 #[test]
-fn fixed_model_subagent_auto_reasoning_skips_flash_router() {
+fn fixed_model_subagent_auto_reasoning_skips_router() {
     let runtime = stub_runtime().with_reasoning_effort(Some("high".to_string()), true);
 
     assert!(
-        !should_use_subagent_flash_router(&runtime),
+        !should_use_subagent_router(&runtime),
         "fixed-model auto thinking should resolve locally without a hidden router request"
     );
 }
 
 #[test]
-fn auto_model_subagent_assignments_still_use_flash_router() {
+fn auto_model_subagent_assignments_still_use_router() {
     let runtime = stub_runtime().with_auto_model(true);
 
     assert!(
-        should_use_subagent_flash_router(&runtime),
+        should_use_subagent_router(&runtime),
         "auto-model sub-agent assignments still need router guidance"
     );
 }
@@ -2223,6 +2223,7 @@ fn stub_runtime() -> SubAgentRuntime {
         reasoning_effort: None,
         reasoning_effort_auto: false,
         role_models: std::collections::HashMap::new(),
+        auto_route: crate::config::AutoRouteContext::default(),
         context,
         allow_shell: true,
         event_tx: None,

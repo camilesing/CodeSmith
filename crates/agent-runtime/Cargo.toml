@@ -42,6 +42,12 @@ tempfile = "3.16"
 tar = "0.4"
 thiserror.workspace = true
 tokio.workspace = true
+# AST foundation for command safety analysis (`bash_ast`): the approval
+# gate parses every shell command with tree-sitter-bash instead of
+# hand-rolled string scanning. Non-optional — security parsing must not
+# be compilable out of the runtime.
+tree-sitter.workspace = true
+tree-sitter-bash.workspace = true
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 tokio-util = { version = "0.7.16", features = ["io"] }
 toml.workspace = true

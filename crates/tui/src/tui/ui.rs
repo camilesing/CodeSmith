@@ -888,6 +888,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
             .clone()
             .map(crate::config::LspConfigToml::into_runtime),
         subagent_model_overrides: config.subagent_model_overrides(),
+        auto_route: config.auto_route_context(),
         subagent_api_timeout: Duration::from_secs(config.subagent_api_timeout_secs()),
         stream_idle_timeout: Duration::from_secs(config.stream_idle_timeout_secs()),
         stream_idle_retry_increment: Duration::from_secs(config.stream_idle_retry_increment_secs()),
@@ -4960,7 +4961,7 @@ async fn dispatch_user_message(
         auto_selection
             .as_ref()
             .map(|selection| selection.model.clone())
-            .unwrap_or_else(|| commands::auto_model_heuristic(&message.display, &app.model))
+            .unwrap_or_else(|| commands::auto_model_heuristic(config, &message.display))
     } else {
         app.model.clone()
     };

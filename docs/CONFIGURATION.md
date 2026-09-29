@@ -1140,8 +1140,19 @@ If you are upgrading from older releases:
     (rust → rust-analyzer, go → gopls, python → pyright, ts →
     typescript-language-server, java → jdtls, …)
 - `auto.*` (optional): `--model auto` router tuning (#1207):
-  - `[auto].cost_saving` (bool, default `false`) — bias routing toward
-    flash-class models to save cost
+  - `[auto].cost_saving` (bool, default `false`) — full cheap-routing
+    opt-in: the router classifier runs on the `[utility_model]` cheap brain
+    and ambiguous requests resolve to the light tier. Default (`false`)
+    keeps the strong brain routing: the provider's heavy tier classifies,
+    ambiguous requests resolve to heavy.
+  - `[auto].heavy_model` / `[auto].light_model` (string, optional) —
+    explicit tier overrides. On pass-through providers (OpenAI-compatible
+    gateways, Ollama, custom endpoints) the router cannot infer your
+    catalogue and falls back to your main model; pin these to route
+    between two concrete models you actually serve.
+  - `[auto].router_model` (string, optional) — override the routing
+    classifier itself. Default: the heavy tier under quality-first
+    routing, the `[utility_model]` under cost saving.
 - `workshop.*` (optional): large-tool-output routing (#548). Tool results
   above the threshold are condensed by the `[utility_model]` model; only
   the synthesis enters the parent context while the raw text is kept in

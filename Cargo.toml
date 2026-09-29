@@ -69,6 +69,10 @@ grep-matcher = "0.1"
 # stable `tree-sitter-language` ABI crate, so grammar versions float
 # independently of the core crate pinned here.
 tree-sitter = "0.25"
+# Bash grammar doubles as the command-analysis parser for the approval
+# gate (agent-runtime `bash_ast`), not just code retrieval — keep it a
+# non-optional dependency there.
+tree-sitter-bash = "0.25"
 tree-sitter-rust = "0.24"
 tree-sitter-python = "0.25"
 tree-sitter-javascript = "0.25"

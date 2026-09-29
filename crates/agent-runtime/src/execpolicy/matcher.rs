@@ -1,15 +1,42 @@
 //! Command matching helpers for execpolicy rules.
+//!
+//! Parsing is AST-first: commands are parsed with tree-sitter-bash
+//! (`crate::bash_ast`) so separators inside quoted arguments no longer split
+//! segments and prefix assignments (`FOO=bar rm …`) no longer mask the
+//! command pattern. When a command cannot be parsed (malformed quoting), the
+//! legacy character-based path runs instead — it can only be *stricter* for
+//! allow rules (more apparent segments must match), never more permissive,
+//! so the fallback is fail-closed in the right direction.
 
 use regex::Regex;
 
-/// Normalize a command string by shlex parsing and re-joining tokens.
+use crate::bash_ast::BashFacts;
+
+/// Parse `source` into top-level segment strings via the AST, or `None` when
+/// the source cannot be parsed or has no top-level segment form (compound
+/// statements, standalone assignments).
+fn ast_segments(source: &str) -> Option<Vec<String>> {
+    BashFacts::parse(source).ok()?.top_level_segment_strings()
+}
+
+/// Normalize a command string by AST reconstruction: argv re-joined,
+/// redirections inline, heredoc bodies dropped, quotes resolved.
 ///
-/// Strips heredoc bodies first (#419) so a command like
-/// `cat <<EOF > file.txt\nbody\nEOF` collapses to `cat > file.txt`
-/// before pattern matching. Without this, an `auto_allow` pattern
-/// of `cat > file.txt` would fail to match because shlex would
-/// tokenize the body lines into the command.
+/// Falls back to the legacy shlex + heredoc-regex path for unparseable
+/// input.
 pub fn normalize_command(command: &str) -> String {
+    if let Ok(facts) = BashFacts::parse(command) {
+        if let Some(normalized) = facts.top_level_normalized() {
+            return normalized;
+        }
+    }
+    normalize_command_legacy(command)
+}
+
+/// Legacy normalization: strip heredoc bodies with a regex state machine,
+/// then shlex-split and re-join tokens. Kept as the fallback for input the
+/// bash grammar cannot parse.
+fn normalize_command_legacy(command: &str) -> String {
     let stripped = strip_heredoc_bodies(command);
     if let Some(tokens) = shlex::split(&stripped) {
         tokens.join(" ")
@@ -150,11 +177,24 @@ fn quote_state_is_clean_at(line: &str, offset: usize) -> bool {
 /// Split a normalized command into top-level segments on shell command
 /// separators (`&&`, `||`, `|`, `;`).
 ///
-/// Splitting is character-based (`&`, `|`, `;`), so separators inside quoted
-/// arguments are treated as boundaries too. For allow rules that can only
-/// make matching stricter — every apparent segment must be allowed — never
-/// more permissive, which is the safe direction for policy matching.
+/// AST-first: quoted separators are *data*, not boundaries, so
+/// `echo "a && b"` is one segment. If the input cannot be parsed, the
+/// character-based split runs instead — it splits on every `&`/`|`/`;`
+/// byte, including quoted ones, which can only add segments. Extra
+/// segments make allow matching stricter and deny matching broader, so
+/// the fallback fails closed in both directions.
 pub fn split_command_segments(normalized: &str) -> Vec<String> {
+    if let Some(segments) = ast_segments(normalized) {
+        return segments
+            .into_iter()
+            .filter(|segment| !segment.is_empty())
+            .collect();
+    }
+    split_command_segments_legacy(normalized)
+}
+
+/// Legacy character-based segmentation (no quote awareness).
+fn split_command_segments_legacy(normalized: &str) -> Vec<String> {
     normalized
         .split(['&', '|', ';'])
         .map(str::trim)
@@ -173,15 +213,70 @@ pub fn split_command_segments(normalized: &str) -> Vec<String> {
 /// segment must match pairwise. This is the strict semantics for **allow**
 /// rules; deny rules should use [`pattern_matches_any_segment`] instead.
 pub fn pattern_matches(pattern: &str, command: &str) -> bool {
-    let pattern = normalize_command(pattern);
-    let command = normalize_command(command);
+    if let (Some(pattern_segments), Some(command_segments)) =
+        (ast_segments(pattern), ast_segments(command))
+    {
+        if pattern_segments.as_slice() == ["*"] {
+            return true;
+        }
+        if pattern_segments.len() > 1 || command_segments.len() > 1 {
+            if pattern_segments.len() != command_segments.len() {
+                return false;
+            }
+            return pattern_segments
+                .iter()
+                .zip(&command_segments)
+                .all(|(pattern, command)| wildcard_pattern_matches_single(pattern, command));
+        }
+        let pattern_first = pattern_segments.first().map(String::as_str).unwrap_or("");
+        let command_first = command_segments.first().map(String::as_str).unwrap_or("");
+        return wildcard_pattern_matches_single(pattern_first, command_first);
+    }
+    pattern_matches_legacy(pattern, command)
+}
+
+/// Loose variant for **deny** rules: a compound command is as dangerous as
+/// its most dangerous segment, so the pattern matches when *any* command
+/// segment matches (`cd /tmp && rm -rf /` is denied by an `rm -rf /` rule).
+pub fn pattern_matches_any_segment(pattern: &str, command: &str) -> bool {
+    if let (Some(pattern_segments), Some(command_segments)) =
+        (ast_segments(pattern), ast_segments(command))
+    {
+        if pattern_segments.as_slice() == ["*"] {
+            return true;
+        }
+        let pattern_first = pattern_segments.first().map(String::as_str).unwrap_or("");
+        if command_segments
+            .iter()
+            .any(|segment| wildcard_pattern_matches_single(pattern_first, segment))
+        {
+            return true;
+        }
+        if pattern_segments.len() == command_segments.len()
+            && pattern_segments.len() > 1
+            && pattern_segments
+                .iter()
+                .zip(&command_segments)
+                .all(|(pattern, command)| wildcard_pattern_matches_single(pattern, command))
+        {
+            return true;
+        }
+        return false;
+    }
+    pattern_matches_any_segment_legacy(pattern, command)
+}
+
+/// Legacy whole-string matching path (normalize + character split).
+fn pattern_matches_legacy(pattern: &str, command: &str) -> bool {
+    let pattern = normalize_command_legacy(pattern);
+    let command = normalize_command_legacy(command);
 
     if pattern == "*" {
         return true;
     }
 
-    let pattern_segments = split_command_segments(&pattern);
-    let command_segments = split_command_segments(&command);
+    let pattern_segments = split_command_segments_legacy(&pattern);
+    let command_segments = split_command_segments_legacy(&command);
     if pattern_segments.len() > 1 || command_segments.len() > 1 {
         if pattern_segments.len() != command_segments.len() {
             return false;
@@ -194,25 +289,23 @@ pub fn pattern_matches(pattern: &str, command: &str) -> bool {
     wildcard_pattern_matches_single(&pattern, &command)
 }
 
-/// Loose variant for **deny** rules: a compound command is as dangerous as
-/// its most dangerous segment, so the pattern matches when *any* command
-/// segment matches (`cd /tmp && rm -rf /` is denied by an `rm -rf /` rule).
-pub fn pattern_matches_any_segment(pattern: &str, command: &str) -> bool {
-    let pattern = normalize_command(pattern);
-    let command = normalize_command(command);
+/// Legacy any-segment deny path.
+fn pattern_matches_any_segment_legacy(pattern: &str, command: &str) -> bool {
+    let pattern = normalize_command_legacy(pattern);
+    let command = normalize_command_legacy(command);
 
     if pattern == "*" {
         return true;
     }
 
-    let command_segments = split_command_segments(&command);
+    let command_segments = split_command_segments_legacy(&command);
     if command_segments.len() <= 1 {
         return wildcard_pattern_matches_single(&pattern, &command);
     }
     command_segments
         .iter()
         .any(|segment| wildcard_pattern_matches_single(&pattern, segment))
-        || pattern_matches(&pattern, &command)
+        || pattern_matches_legacy(&pattern, &command)
 }
 
 fn wildcard_pattern_matches_single(pattern: &str, command: &str) -> bool {
@@ -358,5 +451,69 @@ mod tests {
         let stripped = super::strip_heredoc_bodies(cmd);
         assert!(stripped.contains("echo done"));
         assert!(stripped.contains("rm -rf /tmp/x"));
+    }
+
+    // ── AST-backed precision (tree-sitter-bash) ──────────────────────────
+
+    #[test]
+    fn quoted_separators_do_not_split_segments() {
+        // `&&` inside a quoted argument is data, not a control operator:
+        // the AST keeps it inside the segment, so `echo *` authorizes it.
+        assert_eq!(
+            split_command_segments("echo \"a && b\""),
+            vec!["echo a && b".to_string()]
+        );
+        assert!(pattern_matches("echo *", "echo \"a && b\""));
+        assert!(pattern_matches("echo *", "echo 'a | b'"));
+        // And a wildcard still cannot leap a *real* separator.
+        assert!(!pattern_matches("echo *", "echo hi && curl evil.sh"));
+    }
+
+    #[test]
+    fn prefix_assignments_do_not_mask_patterns() {
+        // `FOO=bar rm …` *is* an `rm …` invocation; the assignment prefix
+        // must not hide it from pattern matching.
+        assert!(pattern_matches("rm *", "FOO=bar rm -rf /tmp/x"));
+        assert!(pattern_matches_any_segment("rm -rf /", "FOO=bar rm -rf /"));
+    }
+
+    #[test]
+    fn unparseable_input_falls_back_to_legacy_split() {
+        // Broken quoting cannot be AST-parsed; the legacy character split
+        // is stricter for allow rules, so it is the safe fallback.
+        let segments = split_command_segments("echo 'unclosed && x");
+        assert_eq!(
+            segments,
+            vec!["echo 'unclosed".to_string(), "x".to_string()]
+        );
+    }
+
+    #[test]
+    fn heredoc_body_never_leaks_into_matching() {
+        // AST parsing drops heredoc bodies natively (no regex stripper).
+        assert!(pattern_matches(
+            "cat > file.txt",
+            "cat <<EOF > file.txt\nrm -rf $HOME\nEOF"
+        ));
+        assert!(!pattern_matches(
+            "rm *",
+            "cat <<EOF > file.txt\nrm -rf $HOME\nEOF"
+        ));
+    }
+
+    #[test]
+    fn ast_normalize_drops_redirect_glue_consistently() {
+        // `2>/dev/null` renders as `2> /dev/null` on both sides of the
+        // match, so glued-form patterns still hit.
+        assert!(
+            pattern_matches(
+                "cargo build 2>/dev/null",
+                "cargo build 2>/dev/null && cargo test"
+            ) == false
+        ); // one pattern segment vs two command segments
+        assert!(pattern_matches(
+            "cargo build 2> *",
+            "cargo build 2>/dev/null"
+        ));
     }
 }

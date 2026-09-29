@@ -910,14 +910,14 @@ mod tests {
             .unwrap()
             .definition
             .clone();
-        // middle says index on, lsp on, cost_saving on — a user config
+        // middle says index on, lsp on, cost_saving off — a user config
         // spelling the same values stays "middle", not diy.
         let mut config: Config = toml::from_str(
             r#"
             [index]
             enabled = true
             [auto]
-            cost_saving = true
+            cost_saving = false
             "#,
         )
         .unwrap();
@@ -932,7 +932,9 @@ mod tests {
         let applied = apply_config_preset(&mut config, tmp.path()).unwrap();
         assert_eq!(applied.name, "middle");
         assert_eq!(config.preset.as_deref(), Some("middle"));
-        assert_eq!(config.auto.as_ref().unwrap().cost_saving, Some(true));
+        // Quality-first baseline: the strong brain routes; cost_saving is
+        // the opt-in cheap router.
+        assert_eq!(config.auto.as_ref().unwrap().cost_saving, Some(false));
         assert_eq!(
             config.index.as_ref().unwrap().enabled,
             Some(true),

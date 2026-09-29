@@ -599,7 +599,9 @@ mod tests {
         assert_eq!(middle.app_mode, None);
         assert_eq!(middle.tools, None);
         assert_eq!(middle.index_enabled, Some(true));
-        assert_eq!(middle.auto_cost_saving, Some(true));
+        // Quality-first default: the strong brain classifies; cost_saving is
+        // the opt-in cheap router.
+        assert_eq!(middle.auto_cost_saving, Some(false));
         assert_eq!(middle.lsp_include_warnings, Some(false));
 
         let all = &catalog.get("all").unwrap().definition;

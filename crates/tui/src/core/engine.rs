@@ -444,7 +444,9 @@ pub(crate) fn resolve_utility_llm(
 /// 2. a configured utility model — same-provider setups reuse the main client
 ///    with a per-request model override; cross-provider setups use the
 ///    utility client
-/// 3. the built-in Flash default (`DEFAULT_SEAM_MODEL`) on the main client
+/// 3. the active provider's light tier (cheap-and-fast summarizer), which
+///    falls back to the effective main model on pass-through providers —
+///    never a hardcoded DeepSeek ID that the provider may not serve
 pub(crate) fn resolve_seam_model_and_client(
     api_config: &Config,
     main_client: &LlmClientHandle,
@@ -464,7 +466,7 @@ pub(crate) fn resolve_seam_model_and_client(
         }
         None => (
             main_client.clone(),
-            crate::seam_manager::DEFAULT_SEAM_MODEL.to_string(),
+            api_config.resolve_model_tier(crate::config::ModelTier::Light),
         ),
     }
 }

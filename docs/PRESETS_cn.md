@@ -35,7 +35,7 @@ codesmith-tui preset show    # 档位矩阵 + 你的生效预设
 | 档位 | 思考 | 工具 | 记忆 | 子代理 | 资源开关 |
 |---|---|---|---|---|---|
 | `simple` | medium | 仅核心文件 + shell（`tools.include`） | goldfish（无） | 关闭 | 索引/LSP/快照/记忆/更新检查/审计全关 |
-| `middle`（默认） | 继承 | 继承 | 继承 | 10 | 高价值低消耗组合开启（索引、LSP、快照、记忆、省钱路由）；实验性机制关闭 |
+| `middle`（默认） | 继承 | 继承 | 继承 | 10 | 高价值低消耗组合开启（索引、LSP、快照、记忆、强脑自动路由）；实验性机制关闭 |
 | `all` | 继承 | 全量 | notebook（记忆开、KOD 关） | 20 | middle + LSP 警告；预览旗标仍关闭 |
 | `experiment` | 继承 | 全量 | elephant + Knowledge On Demand | 20 | 全部开启（视觉、agent teams、coordinator、上下文管理器、容量控制器、strict tool mode） |
 | `plan` | 继承 | 只读 + 计划工具 | notebook（仅显式保存） | 继承 | 继承 |
@@ -53,7 +53,7 @@ codesmith-tui preset show    # 档位矩阵 + 你的生效预设
 | `[context].project_pack` | 关 | 开 | 开 | 开 |
 | `[context].enabled` | 关 | 关 | 关 | 开 |
 | `[capacity].enabled` | 关 | 关 | 关 | 开 |
-| `[auto].cost_saving` | 关 | 开 | 开 | 开 |
+| `[auto].cost_saving` | 关 | 关 | 关 | 关 |
 | `[update].check_for_updates` | 关 | 开 | 开 | 开 |
 | `[network].audit` | 关 | 开 | 开 | 开 |
 | `strict_tool_mode` | 关 | 关 | 关 | 开 |
@@ -142,8 +142,10 @@ composer 空闲时循环切换可见模式：**Plan → Agent → YOLO → Plan*
 
 所有具备执行能力的模式都可以通过 `rlm_open`、`rlm_eval`、`rlm_configure` 和 `rlm_close` 访问持久的 RLM 会话。在 RLM Python REPL 中，`sub_query_batch` 可以并发发出 1-16 个固定使用 `deepseek-v4-flash` 的廉价并行子调用。当工作对于父对话来说过于庞大或重复时，模型会主动使用它。
 
-快速的 `deepseek-v4-flash` / 关闭思考路径在产品语言中称为 Fin。Fin 是路由、
-摘要、廉价子调用和协调工作的接缝；它不会改变审批行为。
+快速的轻量档路径（DeepSeek 端点上的 `deepseek-v4-flash`）+ 关闭思考，在产品
+语言中称为 Fin。Fin 是快速工具调用、摘要和廉价子调用的接缝；它不会改变审批
+行为。模型路由本身已不再由 Fin 负责——路由分类器运行在最强档上（见
+PRESETS.md 的 Auto Model Routing 一节）。
 
 `/goal` 设置一个带可选 token 预算的会话目标，并将该目标作为 Work 上下文保持
 可见。它不会改变当前活跃的 TUI 模式、审批模式或模型路由。它与 `--model auto`

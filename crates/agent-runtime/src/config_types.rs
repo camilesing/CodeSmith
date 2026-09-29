@@ -345,6 +345,66 @@ impl ApiProvider {
     }
 }
 
+/// Capability tier for `--model auto` routing. Routing decisions are
+/// tier-level, not vendor-ID-level: the router classifier emits `heavy` /
+/// `light`, and the tier resolves to a concrete model ID for the active
+/// provider, so non-DeepSeek setups are routed to models that actually exist
+/// on their provider instead of a hardcoded DeepSeek ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelTier {
+    Heavy,
+    Light,
+}
+
+impl ModelTier {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ModelTier::Heavy => "heavy",
+            ModelTier::Light => "light",
+        }
+    }
+}
+
+/// A resolved heavy/light model pair for tier routing. Defaults to the
+/// DeepSeek pair so runtimes that never see a full config (tests, embedders)
+/// keep the historical concrete IDs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TierModels {
+    pub heavy: String,
+    pub light: String,
+}
+
+impl Default for TierModels {
+    fn default() -> Self {
+        Self {
+            heavy: "deepseek-v4-pro".to_string(),
+            light: "deepseek-v4-flash".to_string(),
+        }
+    }
+}
+
+impl TierModels {
+    #[must_use]
+    pub fn get(&self, tier: ModelTier) -> &str {
+        match tier {
+            ModelTier::Heavy => &self.heavy,
+            ModelTier::Light => &self.light,
+        }
+    }
+}
+
+/// Auto-routing context distilled from the host config for runtimes that
+/// route tiers without carrying the full config (sub-agents): the resolved
+/// heavy/light pair, the `[auto] router_model` override, and the
+/// cost-saving switch.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AutoRouteContext {
+    pub tier_models: TierModels,
+    pub router_model: Option<String>,
+    pub cost_saving: bool,
+}
+
 // ============================================================================
 // Provider Capability Matrix
 // ============================================================================

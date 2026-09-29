@@ -1612,14 +1612,9 @@ impl RuntimeThreadManager {
         let requested_model = req.model.unwrap_or_else(|| thread.model.clone());
         let auto_model = requested_model.trim().eq_ignore_ascii_case("auto");
         let (model, reasoning_effort) = if auto_model {
-            let selection = crate::commands::resolve_auto_route_with_flash(
-                &self.config,
-                &prompt,
-                "",
-                "auto",
-                "auto",
-            )
-            .await;
+            let selection =
+                crate::commands::resolve_auto_route(&self.config, &prompt, "", "auto", "auto")
+                    .await;
             (
                 selection.model,
                 selection
@@ -2043,6 +2038,7 @@ impl RuntimeThreadManager {
                 .saturating_mul(1024 * 1024 * 1024),
             lsp_config,
             subagent_model_overrides: self.config.subagent_model_overrides(),
+            auto_route: self.config.auto_route_context(),
             subagent_api_timeout: std::time::Duration::from_secs(
                 self.config.subagent_api_timeout_secs(),
             ),
