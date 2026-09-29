@@ -1,7 +1,9 @@
 # Middle — the factory default. Simple plus the high-value, low-cost
 # features: cross-session memory, lazy code index, LSP diagnostics,
-# workspace snapshots, sub-agents, web search, MCP, and the cheap-model
-# cost-saving router. Experimental/preview seams stay off.
+# workspace snapshots, sub-agents, web search, MCP, and the strong-brain
+# auto router (heavy tier classifies, quality-first). Experimental/preview
+# seams stay off. Set [auto] cost_saving = true to restore the cheap-model
+# cost-saving router.
 name = "middle"
 description = "Factory default: high-value low-cost features on, experimental seams off."
 max_subagents = 10
@@ -14,7 +16,7 @@ memory_kod_enabled = false
 context_enabled = false
 context_project_pack = true
 capacity_enabled = false
-auto_cost_saving = true
+auto_cost_saving = false
 update_check = true
 network_audit = true
 strict_tool_mode = false

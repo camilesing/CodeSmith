@@ -1,10 +1,10 @@
-//! Auto-routing helpers: deciding when to consult the auto-route flash
-//! model, and building the small context window it sees.
+//! Auto-routing helpers: deciding when to consult the auto-route
+//! classifier, and building the small context window it sees.
 //!
 //! The TUI calls `resolve_auto_model_selection` once per user turn when
 //! `app.auto_model` is set. The async function builds a recent-context
 //! summary from `api_messages` (capped to six rows of up to 900 chars
-//! each), passes it through `commands::resolve_auto_route_with_flash`,
+//! each), passes it through `commands::resolve_auto_route`,
 //! and returns the selection (model + reasoning effort). The remaining
 //! helpers are pure transforms used to build that summary.
 
@@ -13,12 +13,12 @@ use crate::config::Config;
 use crate::models::{ContentBlock, Message};
 use crate::tui::app::{App, QueuedMessage, ReasoningEffort};
 
-/// Whether the next turn should consult the auto-route flash model.
+/// Whether the next turn should consult the auto-route classifier.
 pub(super) fn should_resolve_auto_model_selection(app: &App) -> bool {
     app.auto_model
 }
 
-/// Call the auto-route flash model with the user's draft + a short
+/// Call the auto-route classifier with the user's draft + a short
 /// recent-context window. Returns the selected model and effort.
 pub(super) async fn resolve_auto_model_selection(
     app: &App,
@@ -31,7 +31,7 @@ pub(super) async fn resolve_auto_model_selection(
     } else {
         latest_content
     };
-    commands::resolve_auto_route_with_flash(
+    commands::resolve_auto_route(
         config,
         latest_request,
         &recent_auto_router_context(&app.api_messages),

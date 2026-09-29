@@ -653,14 +653,16 @@ exec_policy = true
 # ─────────────────────────────────────────────────────────────────────────────────
 # Utility Model Configuration (optional)
 # ─────────────────────────────────────────────────────────────────────────────────
-# A cheap/fast secondary LLM used for background assists so the main model's
-# budget is spent on the actual conversation:
+# A cheap/fast secondary LLM used for transcription-grade background assists so
+# the main model's budget is spent on the actual conversation:
 #   - workshop large-output synthesis (#548): tool results above the
 #     `large_output_threshold_tokens` threshold are condensed by this model;
 #     only the synthesis enters the parent context (the raw output is kept in
 #     the workshop variable `last_tool_result`)
-#   - auto-route classification (`/model auto` + sub-agent routing)
 #   - Flash seams (`[context] seam_model` default)
+#   - the auto-route classifier brain — ONLY under `[auto] cost_saving = true`;
+#     by default the classifier runs on the provider's heavy tier (strongest
+#     brain) because a misroute costs more than one tiny routing call
 #
 # When this table is absent every assist falls back to the main model and
 # behaviour is unchanged. api_key / base_url / provider inherit from the main
@@ -676,6 +678,23 @@ exec_policy = true
 # provider = "deepseek"              # Optional: defaults to the main provider
 # api_key = "YOUR_API_KEY"           # Optional: defaults to main api_key
 # base_url = "https://api.deepseek.com/beta"  # Optional: defaults to main base_url
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Auto Model Routing (optional)
+# ─────────────────────────────────────────────────────────────────────────────────
+# `--model auto` routes each turn between two capability tiers (light/heavy)
+# instead of hardcoded model IDs. Tiers resolve per provider: DeepSeek maps
+# them to deepseek-v4-flash / deepseek-v4-pro; pass-through providers
+# (OpenAI-compatible gateways, Ollama, custom endpoints) fall back to your
+# main model — pin the pair explicitly there. The classifier brain defaults
+# to the heavy tier (strongest model decides who does the work); a free
+# local heuristic short-circuits obvious requests.
+#
+# [auto]
+# cost_saving = false                # true = cheap-brain router + light-tier bias
+# heavy_model = "your-strongest-model"  # optional tier pin (pass-through setups)
+# light_model = "your-cheapest-model"   # optional tier pin (pass-through setups)
+# router_model = "override the classifier brain itself"  # optional
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Retry Configuration

@@ -565,6 +565,12 @@ pub struct SubAgentRuntime {
     pub reasoning_effort: Option<String>,
     pub reasoning_effort_auto: bool,
     pub role_models: HashMap<String, String>,
+    /// Distilled auto-routing context (resolved tier pair, router-model
+    /// override, cost-saving switch) from the parent's `Config`. Lets
+    /// children translate tier answers into concrete model IDs without
+    /// carrying the full config. Propagates verbatim to descendants via the
+    /// runtime clone.
+    pub auto_route: crate::config::AutoRouteContext,
     pub context: ToolContext,
     pub allow_shell: bool,
     pub event_tx: Option<mpsc::Sender<Event>>,
@@ -641,6 +647,7 @@ impl SubAgentRuntime {
             reasoning_effort: None,
             reasoning_effort_auto: false,
             role_models: HashMap::new(),
+            auto_route: crate::config::AutoRouteContext::default(),
             context,
             allow_shell,
             event_tx,
@@ -745,6 +752,14 @@ impl SubAgentRuntime {
         self
     }
 
+    /// Attach the distilled auto-routing context (tier pair + router
+    /// override + cost-saving switch) from the parent's `Config`.
+    #[must_use]
+    pub fn with_auto_route(mut self, auto_route: crate::config::AutoRouteContext) -> Self {
+        self.auto_route = auto_route;
+        self
+    }
+
     /// Preserve whether the parent session is using per-turn model routing.
     #[must_use]
     pub fn with_auto_model(mut self, auto_model: bool) -> Self {
@@ -754,7 +769,7 @@ impl SubAgentRuntime {
 
     /// Preserve the parent's thinking configuration. `reasoning_effort_auto`
     /// stays true even when the parent turn itself was sent with a concrete
-    /// flash-router recommendation, so children can resolve their own tier.
+    /// model-router recommendation, so children can resolve their own tier.
     #[must_use]
     pub fn with_reasoning_effort(
         mut self,
@@ -798,6 +813,7 @@ impl SubAgentRuntime {
             reasoning_effort: self.reasoning_effort.clone(),
             reasoning_effort_auto: self.reasoning_effort_auto,
             role_models: self.role_models.clone(),
+            auto_route: self.auto_route.clone(),
             context: child_context,
             allow_shell: self.allow_shell,
             event_tx: self.event_tx.clone(),
@@ -5769,7 +5785,8 @@ pub(crate) fn normalize_requested_subagent_model(
     }
     crate::config::normalize_model_name(trimmed).ok_or_else(|| {
         ToolError::invalid_input(format!(
-            "Invalid {field} '{trimmed}'. Expected a DeepSeek model id such as deepseek-v4-pro or deepseek-v4-flash"
+            "Invalid {field} '{trimmed}': expected a model ID your provider serves \
+             (DeepSeek endpoints: deepseek-v4-pro, deepseek-v4-flash, or a deepseek-prefixed id)"
         ))
     })
 }
@@ -5808,17 +5825,21 @@ pub(crate) async fn resolve_subagent_assignment_route(
     agent_type: &SubAgentType,
 ) -> SubAgentResolvedRoute {
     if matches!(agent_type, SubAgentType::ToolAgent) {
-        return tool_agent_route();
+        return tool_agent_route(runtime);
     }
 
     let explicit_model = configured_model.is_some();
     let mut route = fallback_subagent_assignment_route(runtime, configured_model, prompt);
 
-    if should_use_subagent_flash_router(runtime)
-        && let Ok(Some(recommendation)) = subagent_flash_router(runtime, prompt).await
+    if should_use_subagent_router(runtime)
+        && let Ok(Some(recommendation)) = subagent_model_router(runtime, prompt).await
     {
         if runtime.auto_model && !explicit_model {
-            route.model = recommendation.model;
+            route.model = runtime
+                .auto_route
+                .tier_models
+                .get(recommendation.tier)
+                .to_string();
         }
         if runtime.reasoning_effort_auto {
             route.reasoning_effort = recommendation
@@ -5831,14 +5852,22 @@ pub(crate) async fn resolve_subagent_assignment_route(
     route
 }
 
-fn tool_agent_route() -> SubAgentResolvedRoute {
+fn tool_agent_route(runtime: &SubAgentRuntime) -> SubAgentResolvedRoute {
+    // Quick interactive tool work runs on the light tier of the active
+    // provider (historically hardcoded to deepseek-v4-flash, which errored
+    // on non-DeepSeek providers). Providers without a light model resolve
+    // it to their heavy default or the main model via the tier pair.
     SubAgentResolvedRoute {
-        model: "deepseek-v4-flash".to_string(),
+        model: runtime
+            .auto_route
+            .tier_models
+            .get(crate::config::ModelTier::Light)
+            .to_string(),
         reasoning_effort: Some("off".to_string()),
     }
 }
 
-fn should_use_subagent_flash_router(runtime: &SubAgentRuntime) -> bool {
+fn should_use_subagent_router(runtime: &SubAgentRuntime) -> bool {
     runtime.auto_model
 }
 
@@ -5850,7 +5879,9 @@ fn fallback_subagent_assignment_route(
     let model = if let Some(model) = configured_model {
         model
     } else if runtime.auto_model {
-        crate::commands::auto_model_heuristic(prompt, &runtime.model)
+        let tier =
+            crate::commands::auto_model_heuristic_tier(prompt, runtime.auto_route.cost_saving);
+        runtime.auto_route.tier_models.get(tier).to_string()
     } else {
         runtime.model.clone()
     };
@@ -5873,7 +5904,7 @@ fn fallback_subagent_assignment_route(
     }
 }
 
-async fn subagent_flash_router(
+async fn subagent_model_router(
     runtime: &SubAgentRuntime,
     prompt: &str,
 ) -> Result<Option<crate::commands::AutoRouteRecommendation>> {
@@ -5881,13 +5912,27 @@ async fn subagent_flash_router(
         return Ok(None);
     }
 
-    // Classify through the configured [utility_model] when present; otherwise
-    // the runtime's main client with its own model. (Previously pinned to
-    // deepseek-v4-flash, which errored — and silently fell back to the
-    // heuristic — on non-DeepSeek providers.)
-    let (client, model) = match runtime.context.utility_llm.as_ref() {
-        Some(utility) => (utility.client.clone(), utility.model.clone()),
-        None => (runtime.client.clone(), runtime.model.clone()),
+    // The classifier brain. Quality-first default: the heavy tier on the
+    // runtime's main client decides the least sufficient worker — a
+    // misrouted child wastes the whole assignment. `[auto] cost_saving`
+    // restores the cheap `[utility_model]` brain. (Both paths previously
+    // pinned to deepseek-v4-flash, which errored — and silently fell back
+    // to the heuristic — on non-DeepSeek providers.)
+    let (client, model) = if let Some(router_model) = runtime.auto_route.router_model.clone() {
+        (runtime.client.clone(), router_model)
+    } else if runtime.auto_route.cost_saving
+        && let Some(utility) = runtime.context.utility_llm.as_ref()
+    {
+        (utility.client.clone(), utility.model.clone())
+    } else {
+        (
+            runtime.client.clone(),
+            runtime
+                .auto_route
+                .tier_models
+                .get(crate::config::ModelTier::Heavy)
+                .to_string(),
+        )
     };
 
     let request = MessageRequest {
@@ -5922,11 +5967,11 @@ async fn subagent_flash_router(
 
 const SUBAGENT_ROUTER_SYSTEM_PROMPT: &str = "\
 You are the codesmith sub-agent routing manager. Return only compact JSON: \
-{\"model\":\"deepseek-v4-flash|deepseek-v4-pro\",\"thinking\":\"off|high|max\"}. \
+{\"tier\":\"light|heavy\",\"thinking\":\"off|high|max\"}. \
 Treat each child assignment like a customer request entering a team queue: decide the least \
-sufficient worker and thinking budget for that assignment. Do not treat being a sub-agent as \
-important by itself. Use Flash for trivial, read-only, status, lookup, or single-step work. \
-Use Pro for coding, debugging, release work, multi-file changes, security, architecture, \
+sufficient worker tier and thinking budget for that assignment. Do not treat being a sub-agent as \
+important by itself. Use the light tier for trivial, read-only, status, lookup, or single-step work. \
+Use the heavy tier for coding, debugging, release work, multi-file changes, security, architecture, \
 high-risk decisions, ambiguous requests, or work likely to need tool-call judgment. Use thinking \
 off for trivial no-tool work, high for ordinary reasoning, and max only for hard, risky, \
 multi-step, uncertain, or tool-heavy work.";

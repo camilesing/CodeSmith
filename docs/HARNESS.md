@@ -60,8 +60,12 @@ workspaces. OS-level sandboxing is enforced per platform: macOS Seatbelt,
 Linux Landlock + seccomp (plus optional bubblewrap), and a Windows Job
 Object v1. See [PRESETS.md](PRESETS.md) and [SANDBOX.md](SANDBOX.md).
 
-Fin — a cheap Flash call with thinking off — handles model auto-routing per
-turn. `--model auto` is the default.
+Model auto-routing (`--model auto`, the default) is a per-turn classifier that
+runs on the provider's strongest tier — a tiny thinking-off call picking the
+heavy or light model and the thinking level for the turn. A free local
+heuristic short-circuits obvious cases; `[auto] cost_saving = true` restores
+the cheap-utility-model router. Fin — the fast light-tier path — still handles
+quick tool work and background summaries.
 
 Every turn records a side-git snapshot outside your repo's `.git`.
 `/restore` and `revert_turn` roll back the workspace.

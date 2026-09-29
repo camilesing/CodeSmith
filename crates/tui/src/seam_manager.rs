@@ -43,7 +43,10 @@ use crate::compaction::plan_compaction;
 use crate::llm_client::{LlmClient, LlmClientHandle};
 use crate::models::{ContentBlock, Message, MessageRequest, SystemBlock, SystemPrompt};
 
-/// Default seam model — Flash is cheap and fast, ideal for summarization.
+/// Default seam model for DeepSeek endpoints — the light tier, cheap and
+/// fast, ideal for summarization. The engine resolves non-DeepSeek setups to
+/// their own provider's light tier instead of this constant
+/// (`resolve_seam_model_and_client`).
 pub const DEFAULT_SEAM_MODEL: &str = "deepseek-v4-flash";
 
 /// Default thresholds based on the active request input estimate.

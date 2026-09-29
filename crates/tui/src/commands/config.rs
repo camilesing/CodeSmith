@@ -962,21 +962,16 @@ fn expand_tilde(raw: &str) -> String {
 /// Long messages (>500 chars) → Pro (powerful reasoning).
 /// Messages with complex keywords → Pro.
 /// Default → Flash (cost savings).
-pub fn auto_model_heuristic(input: &str, _current_model: &str) -> String {
-    auto_model_heuristic_with_bias(input, _current_model, false)
+pub fn auto_model_heuristic(config: &crate::config::Config, input: &str) -> String {
+    config.resolve_model_tier(auto_model_heuristic_tier(input, config.auto_cost_saving()))
 }
 
-/// `auto_model_heuristic` parameterised by the `[auto] cost_saving` opt-in
-/// (#1207). When `cost_saving` is `true` the keyword set drops the borderline
-/// triggers (`implement`, `analyze`) and the long-message length threshold
-/// goes from 500 to 1000 — both shifts let "looks involved but might be a
-/// one-liner" requests stay on Flash unless they actually look agentic.
-pub fn auto_model_heuristic_with_bias(
-    input: &str,
-    _current_model: &str,
-    cost_saving: bool,
-) -> String {
-    auto_model_heuristic_selection_with_bias(input, _current_model, cost_saving).model
+/// Deterministic tier-level heuristic for callers that resolve the tier
+/// against their own model pair (sub-agent runtimes carry an
+/// `AutoRouteContext`, not the full `Config`).
+#[must_use]
+pub fn auto_model_heuristic_tier(input: &str, cost_saving: bool) -> crate::config::ModelTier {
+    auto_model_heuristic_selection_with_bias(input, cost_saving).tier
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -985,15 +980,14 @@ enum AutoModelHeuristicConfidence {
     Ambiguous,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct AutoModelHeuristicSelection {
-    model: String,
+    tier: crate::config::ModelTier,
     confidence: AutoModelHeuristicConfidence,
 }
 
 fn auto_model_heuristic_selection_with_bias(
     input: &str,
-    _current_model: &str,
     cost_saving: bool,
 ) -> AutoModelHeuristicSelection {
     let len = input.chars().count();
@@ -1009,47 +1003,47 @@ fn auto_model_heuristic_selection_with_bias(
         .iter()
         .any(|kw| !borderline_pro_keywords.contains(kw) && lower.contains(kw));
     let borderline_match = borderline_pro_keywords.iter().any(|kw| lower.contains(kw));
-    let pro_match = strong_match || (!cost_saving && borderline_match);
-    if pro_match {
+    let heavy_match = strong_match || (!cost_saving && borderline_match);
+    if heavy_match {
         return AutoModelHeuristicSelection {
-            model: "deepseek-v4-pro".to_string(),
+            tier: crate::config::ModelTier::Heavy,
             confidence: AutoModelHeuristicConfidence::Decisive,
         };
     }
-    // Short messages → Flash
+    // Short messages → light tier
     if len < 100 {
         return AutoModelHeuristicSelection {
-            model: "deepseek-v4-flash".to_string(),
+            tier: crate::config::ModelTier::Light,
             confidence: AutoModelHeuristicConfidence::Decisive,
         };
     }
-    // Long complex requests → Pro. Cost-saving raises the threshold so that
-    // long-but-routine requests (pasted logs, CSV-style data) don't escalate.
+    // Long complex requests → heavy tier. Cost-saving raises the threshold
+    // so that long-but-routine requests (pasted logs, CSV-style data) don't
+    // escalate.
     let long_threshold = if cost_saving { 1_000 } else { 500 };
     if len > long_threshold {
         return AutoModelHeuristicSelection {
-            model: "deepseek-v4-pro".to_string(),
+            tier: crate::config::ModelTier::Heavy,
             confidence: AutoModelHeuristicConfidence::Decisive,
         };
     }
-    // Grey-zone default branch: Flash is the deterministic fallback, but the
-    // Flash router can still add value here because there was no strong local
+    // Grey-zone default branch: light is the deterministic fallback, but the
+    // router can still add value here because there was no strong local
     // signal.
     AutoModelHeuristicSelection {
-        model: "deepseek-v4-flash".to_string(),
+        tier: crate::config::ModelTier::Light,
         confidence: AutoModelHeuristicConfidence::Ambiguous,
     }
 }
 
-/// Keywords that escalate `auto`-mode model selection to
-/// `deepseek-v4-pro`. The Latin entries are lowercase (the caller
-/// lowercases the message); CJK has no case so the literal form
-/// matches as-is.
+/// Keywords that escalate `auto`-mode model selection to the heavy tier.
+/// The Latin entries are lowercase (the caller lowercases the message); CJK
+/// has no case so the literal form matches as-is.
 ///
 /// Without the CJK entries, a Chinese-speaking user typing
 /// "帮我重构这个模块" or "审计安全漏洞" silently fell through to the
-/// short/long-message threshold and usually landed on Flash even
-/// for tasks that obviously need Pro-grade reasoning.
+/// short/long-message threshold and usually landed on the light tier even
+/// for tasks that obviously need heavy-grade reasoning.
 const COMPLEX_KEYWORDS: &[&str] = &[
     // English (unchanged from the original list).
     "refactor",
@@ -1092,13 +1086,13 @@ const COMPLEX_KEYWORDS: &[&str] = &[
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutoRouteRecommendation {
-    pub model: String,
+    pub tier: crate::config::ModelTier,
     pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutoRouteSource {
-    FlashRouter,
+    Router,
     Heuristic,
 }
 
@@ -1106,7 +1100,7 @@ impl AutoRouteSource {
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
-            AutoRouteSource::FlashRouter => "flash-router",
+            AutoRouteSource::Router => "model-router",
             AutoRouteSource::Heuristic => "heuristic",
         }
     }
@@ -1121,33 +1115,39 @@ pub struct AutoRouteSelection {
 
 pub const AUTO_MODEL_ROUTER_SYSTEM_PROMPT: &str = "\
 You are the codesmith auto-routing classifier. Return only compact JSON: \
-{\"model\":\"deepseek-v4-flash|deepseek-v4-pro\",\"thinking\":\"off|high|max\"}. \
-Use deepseek-v4-flash for trivial, conversational, status, or single-step work. \
-Use deepseek-v4-pro for coding, debugging, release work, multi-step tasks, high-risk decisions, \
+{\"tier\":\"light|heavy\",\"thinking\":\"off|high|max\"}. \
+Use the light tier for trivial, conversational, status, or single-step work. \
+Use the heavy tier for coding, debugging, release work, multi-step tasks, high-risk decisions, \
 tool-heavy work, ambiguous requests, or anything that benefits from deeper reasoning. \
 Use thinking off only for trivial no-tool answers, high for ordinary reasoning, and max for \
 agentic, coding, multi-file, release, architecture, debugging, security, tool-heavy, or uncertain work.";
 
 /// Bias appended to the auto-router's system prompt when the user opts in to
 /// `[auto] cost_saving = true` (#1207). Reverses the default tie-breaker for
-/// genuinely ambiguous requests so Pro is reserved for tasks that clearly
-/// require it; ordinary tweaks, config edits, and short reads stay on Flash.
+/// genuinely ambiguous requests so the heavy tier is reserved for tasks that
+/// clearly require it; ordinary tweaks, config edits, and short reads stay on
+/// the light tier.
 pub const AUTO_MODEL_ROUTER_COST_SAVING_ADDENDUM: &str = "\
-\n\nCost-saving mode is ON. Prefer deepseek-v4-flash for any request that is \
+\n\nCost-saving mode is ON. Prefer the light tier for any request that is \
 not unmistakably agentic, multi-step, architecture/design, security review, \
-debugging, or otherwise clearly out of Flash's capability. Resolve ambiguous \
-cases in favour of deepseek-v4-flash, not deepseek-v4-pro.";
+debugging, or otherwise clearly beyond the light tier's capability. Resolve \
+ambiguous cases in favour of light, not heavy.";
 
-/// Parse the Flash router's JSON-only response.
+/// Parse the router's JSON-only response.
 ///
-/// The runtime treats classifier output as untrusted: only known V4 model IDs
-/// and supported reasoning tiers are accepted. Anything else falls back to the
-/// deterministic heuristic.
+/// The runtime treats classifier output as untrusted: only the two routing
+/// tiers and supported reasoning tiers are accepted. Anything else falls
+/// back to the deterministic heuristic. Responses from routers prompted
+/// before the tier vocabulary still parse — the legacy `model` field
+/// ("deepseek-v4-pro" / "deepseek-v4-flash") maps onto tiers.
 pub fn parse_auto_route_recommendation(raw: &str) -> Option<AutoRouteRecommendation> {
     let json = extract_first_json_object(raw)?;
     let value: serde_json::Value = serde_json::from_str(json).ok()?;
-    let model = value.get("model").and_then(serde_json::Value::as_str)?;
-    let model = normalize_auto_route_model(model)?;
+    let tier = value
+        .get("tier")
+        .or_else(|| value.get("model"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(normalize_auto_route_tier)?;
     let reasoning_effort = value
         .get("thinking")
         .or_else(|| value.get("reasoning_effort"))
@@ -1156,7 +1156,7 @@ pub fn parse_auto_route_recommendation(raw: &str) -> Option<AutoRouteRecommendat
         .and_then(parse_auto_route_reasoning_effort);
 
     Some(AutoRouteRecommendation {
-        model: model.to_string(),
+        tier,
         reasoning_effort,
     })
 }
@@ -1167,10 +1167,15 @@ fn extract_first_json_object(raw: &str) -> Option<&str> {
     (end >= start).then_some(&raw[start..=end])
 }
 
-fn normalize_auto_route_model(model: &str) -> Option<&'static str> {
-    match model.trim().to_ascii_lowercase().as_str() {
-        "deepseek-v4-pro" | "v4-pro" | "pro" => Some("deepseek-v4-pro"),
-        "deepseek-v4-flash" | "v4-flash" | "flash" => Some("deepseek-v4-flash"),
+/// Whitelist for the router's tier answer. The tier names plus the legacy
+/// DeepSeek model vocabulary (kept so pre-tier router responses and their
+/// "pro"/"flash" shorthands still parse) are the only accepted values —
+/// a classifier can never name a concrete model ID into the turn.
+fn normalize_auto_route_tier(value: &str) -> Option<crate::config::ModelTier> {
+    use crate::config::ModelTier;
+    match value.trim().to_ascii_lowercase().as_str() {
+        "heavy" | "deepseek-v4-pro" | "v4-pro" | "pro" => Some(ModelTier::Heavy),
+        "light" | "deepseek-v4-flash" | "v4-flash" | "flash" => Some(ModelTier::Light),
         _ => None,
     }
 }
@@ -1193,7 +1198,7 @@ pub fn normalize_auto_route_effort(effort: ReasoningEffort) -> ReasoningEffort {
     }
 }
 
-pub async fn resolve_auto_route_with_flash(
+pub async fn resolve_auto_route(
     config: &crate::config::Config,
     latest_request: &str,
     recent_context: &str,
@@ -1201,13 +1206,12 @@ pub async fn resolve_auto_route_with_flash(
     selected_thinking_mode: &str,
 ) -> AutoRouteSelection {
     let cost_saving = config.auto_cost_saving();
-    let heuristic =
-        auto_model_heuristic_selection_with_bias(latest_request, selected_model_mode, cost_saving);
+    let heuristic = auto_model_heuristic_selection_with_bias(latest_request, cost_saving);
     if heuristic.confidence == AutoModelHeuristicConfidence::Decisive {
-        return auto_route_from_heuristic(latest_request, heuristic);
+        return auto_route_from_heuristic(config, latest_request, heuristic);
     }
 
-    match auto_route_flash_recommendation(
+    match auto_route_model_recommendation(
         config,
         latest_request,
         recent_context,
@@ -1217,20 +1221,21 @@ pub async fn resolve_auto_route_with_flash(
     .await
     {
         Ok(Some(recommendation)) => AutoRouteSelection {
-            model: recommendation.model,
+            model: config.resolve_model_tier(recommendation.tier),
             reasoning_effort: recommendation.reasoning_effort,
-            source: AutoRouteSource::FlashRouter,
+            source: AutoRouteSource::Router,
         },
-        Ok(None) | Err(_) => auto_route_from_heuristic(latest_request, heuristic),
+        Ok(None) | Err(_) => auto_route_from_heuristic(config, latest_request, heuristic),
     }
 }
 
 fn auto_route_from_heuristic(
+    config: &crate::config::Config,
     latest_request: &str,
     heuristic: AutoModelHeuristicSelection,
 ) -> AutoRouteSelection {
     AutoRouteSelection {
-        model: heuristic.model,
+        model: config.resolve_model_tier(heuristic.tier),
         reasoning_effort: Some(normalize_auto_route_effort(crate::auto_reasoning::select(
             false,
             latest_request,
@@ -1239,7 +1244,7 @@ fn auto_route_from_heuristic(
     }
 }
 
-async fn auto_route_flash_recommendation(
+async fn auto_route_model_recommendation(
     config: &crate::config::Config,
     latest_request: &str,
     recent_context: &str,
@@ -1250,16 +1255,31 @@ async fn auto_route_flash_recommendation(
         return Ok(None);
     }
 
-    // Classify through the configured [utility_model] when present; otherwise
-    // the main client with its default model. (Previously pinned to
-    // deepseek-v4-flash, which errored — and silently fell back to the
-    // heuristic — on non-DeepSeek providers.)
+    // The classifier brain. Quality-first default: the heavy tier — the
+    // strongest model the active provider serves — decides who does the
+    // work. A misroute wastes the whole turn, which costs far more than one
+    // tiny heavy call on a six-line input. `[auto] cost_saving = true`
+    // restores the cheap brain: the configured `[utility_model]`, falling
+    // back to the main model when absent. (Both brain paths previously
+    // pinned to deepseek-v4-flash, which errored — and silently fell back
+    // to the heuristic — on non-DeepSeek providers.)
     let main_client = crate::core::engine::resolve_llm_client(config)?;
-    let main_model = main_client.model().to_string();
-    let (client, model) = match crate::core::engine::resolve_utility_llm(config, Some(&main_client))
-    {
-        Some(utility) => (utility.client, utility.model),
-        None => (main_client, main_model),
+    let (client, model) = if let Some(model) = config.auto_router_model_override() {
+        (main_client, model)
+    } else if config.auto_cost_saving() {
+        // Bind first: the scrutinee's borrow of `main_client` must end before
+        // the None arm may move it.
+        let utility = crate::core::engine::resolve_utility_llm(config, Some(&main_client));
+        match utility {
+            Some(utility) => (utility.client, utility.model),
+            None => {
+                let model = main_client.model().to_string();
+                (main_client, model)
+            }
+        }
+    } else {
+        let heavy = config.resolve_model_tier(crate::config::ModelTier::Heavy);
+        (main_client, heavy)
     };
     let mut router_system = AUTO_MODEL_ROUTER_SYSTEM_PROMPT.to_string();
     if config.auto_cost_saving() {
@@ -1779,7 +1799,7 @@ mod tests {
         // Without these keywords, a Chinese user typing
         // "帮我重构这个模块" (37 chars in chars().count() terms after
         // the leading helper text) fell through to the short-message
-        // Flash branch even though the intent is obviously Pro-tier.
+        // light branch even though the intent is obviously heavy-tier.
         for msg in [
             "\u{5e2e}\u{6211}\u{91cd}\u{6784}\u{8fd9}\u{4e2a}\u{6a21}\u{5757}", // 帮我重构这个模块
             "\u{8bbe}\u{8ba1}\u{6570}\u{636e}\u{5e93}\u{67b6}\u{6784}",         // 设计数据库架构
@@ -1790,9 +1810,9 @@ mod tests {
             "\u{5206}\u{6790}\u{8fd9}\u{6bb5}\u{4ee3}\u{7801}",                 // 分析这段代码
         ] {
             assert_eq!(
-                auto_model_heuristic(msg, "auto"),
-                "deepseek-v4-pro",
-                "expected Pro for `{msg}`",
+                auto_model_heuristic_tier(msg, false),
+                crate::config::ModelTier::Heavy,
+                "expected the heavy tier for `{msg}`",
             );
         }
     }
@@ -1810,9 +1830,9 @@ mod tests {
             "\u{5be6}\u{73fe}\u{65b0}\u{529f}\u{80fd}",         // 實現新功能
         ] {
             assert_eq!(
-                auto_model_heuristic(msg, "auto"),
-                "deepseek-v4-pro",
-                "expected Pro for `{msg}`",
+                auto_model_heuristic_tier(msg, false),
+                crate::config::ModelTier::Heavy,
+                "expected the heavy tier for `{msg}`",
             );
         }
     }
@@ -1820,34 +1840,31 @@ mod tests {
     #[test]
     fn auto_model_heuristic_short_chinese_chat_stays_on_flash() {
         // Sanity: a short non-keyword Chinese message still falls
-        // through to the cost-saving Flash branch.
-        // "你好" (2 chars) — well under the 100-char Flash floor.
+        // through to the light tier.
+        // "你好" (2 chars) — well under the 100-char light floor.
         assert_eq!(
-            auto_model_heuristic("\u{4f60}\u{597d}", "auto"),
-            "deepseek-v4-flash",
+            auto_model_heuristic_tier("\u{4f60}\u{597d}", false),
+            crate::config::ModelTier::Light,
         );
     }
 
     #[test]
     fn auto_heuristic_selection_marks_short_and_complex_routes_decisive() {
-        let short = auto_model_heuristic_selection_with_bias("yes", "auto", false);
-        assert_eq!(short.model, "deepseek-v4-flash");
+        let short = auto_model_heuristic_selection_with_bias("yes", false);
+        assert_eq!(short.tier, crate::config::ModelTier::Light);
         assert_eq!(
             short.confidence,
             AutoModelHeuristicConfidence::Decisive,
-            "trivial replies should skip the Flash router"
+            "trivial replies should skip the router call"
         );
 
-        let complex = auto_model_heuristic_selection_with_bias(
-            "Please review the auth migration",
-            "auto",
-            false,
-        );
-        assert_eq!(complex.model, "deepseek-v4-pro");
+        let complex =
+            auto_model_heuristic_selection_with_bias("Please review the auth migration", false);
+        assert_eq!(complex.tier, crate::config::ModelTier::Heavy);
         assert_eq!(
             complex.confidence,
             AutoModelHeuristicConfidence::Decisive,
-            "strong complexity keywords should skip the Flash router"
+            "strong complexity keywords should skip the router call"
         );
     }
 
@@ -1860,61 +1877,87 @@ mod tests {
             "test request must stay in the default grey zone"
         );
 
-        let selection = auto_model_heuristic_selection_with_bias(&request, "auto", false);
-        assert_eq!(selection.model, "deepseek-v4-flash");
+        let selection = auto_model_heuristic_selection_with_bias(&request, false);
+        assert_eq!(selection.tier, crate::config::ModelTier::Light);
         assert_eq!(
             selection.confidence,
             AutoModelHeuristicConfidence::Ambiguous,
-            "only the grey-zone default branch should invoke the Flash router"
+            "only the grey-zone default branch should invoke the router"
         );
     }
 
     #[test]
-    fn auto_route_recommendation_parses_strict_json() {
+    fn auto_route_recommendation_parses_tier_json() {
+        let rec = parse_auto_route_recommendation(r#"{"tier":"heavy","thinking":"max"}"#)
+            .expect("tier vocabulary should parse");
+
+        assert_eq!(rec.tier, crate::config::ModelTier::Heavy);
+        assert_eq!(rec.reasoning_effort, Some(ReasoningEffort::Max));
+    }
+
+    #[test]
+    fn auto_route_recommendation_parses_legacy_model_json() {
+        // Routers prompted before the tier vocabulary answered with a
+        // concrete model field; those answers must still map onto tiers.
         let rec =
             parse_auto_route_recommendation(r#"{"model":"deepseek-v4-pro","thinking":"max"}"#)
-                .expect("valid router response should parse");
+                .expect("legacy router response should parse");
 
-        assert_eq!(rec.model, "deepseek-v4-pro");
+        assert_eq!(rec.tier, crate::config::ModelTier::Heavy);
         assert_eq!(rec.reasoning_effort, Some(ReasoningEffort::Max));
     }
 
     #[test]
     fn auto_route_recommendation_accepts_wrapped_json_aliases() {
         let rec =
-            parse_auto_route_recommendation(r#"route: {"model":"flash","reasoning_effort":"off"}"#)
+            parse_auto_route_recommendation(r#"route: {"tier":"light","reasoning_effort":"off"}"#)
                 .expect("wrapped router response should parse");
 
-        assert_eq!(rec.model, "deepseek-v4-flash");
+        assert_eq!(rec.tier, crate::config::ModelTier::Light);
+        assert_eq!(rec.reasoning_effort, Some(ReasoningEffort::Off));
+    }
+
+    #[test]
+    fn auto_route_recommendation_accepts_legacy_shorthand_model() {
+        let rec =
+            parse_auto_route_recommendation(r#"route: {"model":"flash","reasoning_effort":"off"}"#)
+                .expect("wrapped legacy shorthand should parse");
+
+        assert_eq!(rec.tier, crate::config::ModelTier::Light);
         assert_eq!(rec.reasoning_effort, Some(ReasoningEffort::Off));
     }
 
     #[test]
     fn auto_route_recommendation_normalizes_legacy_low_medium_to_high() {
-        let rec = parse_auto_route_recommendation(
-            r#"{"model":"deepseek-v4-pro","reasoning_effort":"medium"}"#,
-        )
-        .expect("medium should parse for back-compat");
+        let rec =
+            parse_auto_route_recommendation(r#"{"tier":"heavy","reasoning_effort":"medium"}"#)
+                .expect("medium should parse for back-compat");
 
-        assert_eq!(rec.model, "deepseek-v4-pro");
+        assert_eq!(rec.tier, crate::config::ModelTier::Heavy);
         assert_eq!(rec.reasoning_effort, Some(ReasoningEffort::High));
     }
 
     #[test]
-    fn auto_route_recommendation_rejects_unknown_model() {
+    fn auto_route_recommendation_rejects_unknown_tier_and_model() {
+        // The classifier can never name a concrete model ID into the turn:
+        // only the tier vocabulary (plus the legacy DeepSeek pair) parses.
         assert!(
             parse_auto_route_recommendation(r#"{"model":"some-other-model","thinking":"max"}"#,)
                 .is_none()
         );
+        assert!(
+            parse_auto_route_recommendation(r#"{"tier":"gpt-9-ultra","thinking":"max"}"#).is_none()
+        );
+        assert!(parse_auto_route_recommendation(r#"{"tier":"medium"}"#).is_none());
     }
 
     #[test]
     fn auto_heuristic_default_routes_implement_to_pro() {
         // Default (no cost-saving): "implement" is one of the borderline
-        // keywords that escalates to Pro.
+        // keywords that escalates to the heavy tier.
         assert_eq!(
-            auto_model_heuristic_with_bias("Please implement a binary search", "auto", false),
-            "deepseek-v4-pro"
+            auto_model_heuristic_tier("Please implement a binary search", false),
+            crate::config::ModelTier::Heavy
         );
     }
 
@@ -1922,18 +1965,18 @@ mod tests {
     fn auto_heuristic_cost_saving_keeps_borderline_keywords_on_flash() {
         // Cost-saving: "implement" / "analyze" are no longer enough to escalate.
         assert_eq!(
-            auto_model_heuristic_with_bias("Please implement a binary search", "auto", true),
-            "deepseek-v4-flash"
+            auto_model_heuristic_tier("Please implement a binary search", true),
+            crate::config::ModelTier::Light
         );
         assert_eq!(
-            auto_model_heuristic_with_bias("analyze this snippet", "auto", true),
-            "deepseek-v4-flash"
+            auto_model_heuristic_tier("analyze this snippet", true),
+            crate::config::ModelTier::Light
         );
     }
 
     #[test]
     fn auto_heuristic_strong_keywords_still_route_to_pro_under_cost_saving() {
-        // Cost-saving must NOT swallow obviously Pro-grade work.
+        // Cost-saving must NOT swallow obviously heavy-grade work.
         for kw in [
             "refactor",
             "architecture",
@@ -1948,25 +1991,25 @@ mod tests {
         ] {
             let req = format!("Please {kw} this module");
             assert_eq!(
-                auto_model_heuristic_with_bias(&req, "auto", true),
-                "deepseek-v4-pro",
-                "expected Pro for strong keyword `{kw}` even in cost-saving mode"
+                auto_model_heuristic_tier(&req, true),
+                crate::config::ModelTier::Heavy,
+                "expected the heavy tier for strong keyword `{kw}` even in cost-saving mode"
             );
         }
     }
 
     #[test]
     fn auto_heuristic_cost_saving_raises_long_message_threshold() {
-        // 600-char request is "long" by default (>500) → Pro,
-        // but stays Flash under cost-saving (threshold 1000).
+        // 600-char request is "long" by default (>500) → heavy,
+        // but stays light under cost-saving (threshold 1000).
         let body = "filler sentence. ".repeat(40); // ~680 chars
         assert_eq!(
-            auto_model_heuristic_with_bias(&body, "auto", false),
-            "deepseek-v4-pro"
+            auto_model_heuristic_tier(&body, false),
+            crate::config::ModelTier::Heavy
         );
         assert_eq!(
-            auto_model_heuristic_with_bias(&body, "auto", true),
-            "deepseek-v4-flash"
+            auto_model_heuristic_tier(&body, true),
+            crate::config::ModelTier::Light
         );
     }
 
@@ -1981,10 +2024,92 @@ mod tests {
         let cfg = crate::config::Config {
             auto: Some(crate::config::AutoConfig {
                 cost_saving: Some(true),
+                ..Default::default()
             }),
             ..Default::default()
         };
         assert!(cfg.auto_cost_saving());
+    }
+
+    #[test]
+    fn resolve_model_tier_maps_provider_pairs() {
+        use crate::config::ModelTier;
+
+        let mut cfg = crate::config::Config::default();
+        cfg.provider = Some("deepseek".to_string());
+        assert_eq!(cfg.resolve_model_tier(ModelTier::Heavy), "deepseek-v4-pro");
+        assert_eq!(
+            cfg.resolve_model_tier(ModelTier::Light),
+            "deepseek-v4-flash"
+        );
+
+        cfg.provider = Some("openrouter".to_string());
+        assert_eq!(
+            cfg.resolve_model_tier(ModelTier::Heavy),
+            "deepseek/deepseek-v4-pro"
+        );
+        assert_eq!(
+            cfg.resolve_model_tier(ModelTier::Light),
+            "deepseek/deepseek-v4-flash"
+        );
+    }
+
+    #[test]
+    fn resolve_model_tier_explicit_overrides_win() {
+        use crate::config::ModelTier;
+
+        let mut cfg = crate::config::Config::default();
+        cfg.provider = Some("deepseek".to_string());
+        cfg.auto = Some(crate::config::AutoConfig {
+            heavy_model: Some("deepseek-v4-pro-extended".to_string()),
+            light_model: Some("deepseek-v4-flash-8k".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(
+            cfg.resolve_model_tier(ModelTier::Heavy),
+            "deepseek-v4-pro-extended"
+        );
+        assert_eq!(
+            cfg.resolve_model_tier(ModelTier::Light),
+            "deepseek-v4-flash-8k"
+        );
+    }
+
+    #[test]
+    fn resolve_model_tier_passthrough_falls_back_to_main_model() {
+        use crate::config::ModelTier;
+
+        // OpenAI passes arbitrary model IDs through; routing must fall back
+        // to the user's own model instead of inventing an ID the endpoint
+        // may not serve.
+        let mut cfg = crate::config::Config::default();
+        cfg.provider = Some("openai".to_string());
+        cfg.default_text_model = Some("my-custom-openai-model".to_string());
+        assert_eq!(
+            cfg.resolve_model_tier(ModelTier::Heavy),
+            "my-custom-openai-model"
+        );
+        assert_eq!(
+            cfg.resolve_model_tier(ModelTier::Light),
+            "my-custom-openai-model"
+        );
+    }
+
+    #[test]
+    fn auto_route_context_distills_overrides_and_flag() {
+        let mut cfg = crate::config::Config::default();
+        cfg.provider = Some("deepseek".to_string());
+        cfg.auto = Some(crate::config::AutoConfig {
+            cost_saving: Some(true),
+            router_model: Some("deepseek-v4-pro".to_string()),
+            ..Default::default()
+        });
+
+        let ctx = cfg.auto_route_context();
+        assert!(ctx.cost_saving);
+        assert_eq!(ctx.router_model.as_deref(), Some("deepseek-v4-pro"));
+        assert_eq!(ctx.tier_models.heavy, "deepseek-v4-pro");
+        assert_eq!(ctx.tier_models.light, "deepseek-v4-flash");
     }
 
     #[test]

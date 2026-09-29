@@ -52,6 +52,7 @@ pub const MAX_STREAM_IDLE_RETRY_INCREMENT_SECS: u64 = 600;
 /// so the runtime and TUI share the same value.
 pub use codesmith_agent_runtime::compaction::DEFAULT_TEXT_MODEL;
 pub const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/beta";
+pub const DEFAULT_DEEPSEEK_FLASH_MODEL: &str = "deepseek-v4-flash";
 pub const DEFAULT_NVIDIA_NIM_MODEL: &str = "deepseek-ai/deepseek-v4-pro";
 pub const DEFAULT_NVIDIA_NIM_FLASH_MODEL: &str = "deepseek-ai/deepseek-v4-flash";
 pub const DEFAULT_NVIDIA_NIM_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
@@ -1023,14 +1024,88 @@ pub struct SubagentsConfig {
 
 /// `[auto]` table — knobs for the `--model auto` / `/model auto` router.
 ///
-/// `cost_saving` (#1207): when `true`, the auto-mode router prefers
-/// `deepseek-v4-flash` for ambiguous requests, only escalating to
-/// `deepseek-v4-pro` when the task clearly benefits from deeper reasoning.
-/// Default is `false` (balanced — match the existing routing voice).
+/// `cost_saving` (#1207): the full cheap-routing opt-in. When `true`, the
+/// router classifier runs on the configured `[utility_model]` (cheap brain)
+/// and ambiguous requests resolve to the light tier. Default `false`: the
+/// classifier runs on the heavy tier — the strongest available brain decides
+/// who does the work — and ambiguous requests resolve to heavy.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct AutoConfig {
     #[serde(default)]
     pub cost_saving: Option<bool>,
+    /// Explicit heavy-tier model for auto routing. Wins over the provider's
+    /// default heavy model; the only way to pin the heavy tier on
+    /// pass-through providers (custom gateways, OpenAI-compatible endpoints)
+    /// whose catalogue the router cannot infer.
+    #[serde(default)]
+    pub heavy_model: Option<String>,
+    /// Explicit light-tier model for auto routing. Wins over the provider's
+    /// default light model (see `Config::resolve_model_tier`).
+    #[serde(default)]
+    pub light_model: Option<String>,
+    /// Explicit model for the routing classifier itself. Default: the heavy
+    /// tier. `[auto] cost_saving = true` moves the classifier to the
+    /// `[utility_model]` cheap brain instead.
+    #[serde(default)]
+    pub router_model: Option<String>,
+}
+
+/// Capability tier for `--model auto` routing — see
+/// `codesmith_agent_runtime::config_types::ModelTier`. Tier-level routing
+/// keeps classifier output provider-agnostic: the tier resolves to a
+/// concrete model ID for the active provider via
+/// `Config::resolve_model_tier`.
+pub use codesmith_agent_runtime::config_types::{AutoRouteContext, ModelTier, TierModels};
+
+/// Provider tier pair. Providers without a distinct light model resolve
+/// `Light` to their heavy default — routing up a tier is always safe,
+/// routing to an ID the provider does not serve is not. Pass-through
+/// providers (unknown catalogues) never reach this table; the caller falls
+/// back to the effective main model instead.
+fn tier_default_model_for_provider(provider: ApiProvider, tier: ModelTier) -> &'static str {
+    let light = match provider {
+        ApiProvider::Deepseek => DEFAULT_DEEPSEEK_FLASH_MODEL,
+        ApiProvider::NvidiaNim => DEFAULT_NVIDIA_NIM_FLASH_MODEL,
+        ApiProvider::Volcengine => DEFAULT_VOLCENGINE_FLASH_MODEL,
+        ApiProvider::Openrouter => DEFAULT_OPENROUTER_FLASH_MODEL,
+        ApiProvider::Novita => DEFAULT_NOVITA_FLASH_MODEL,
+        ApiProvider::Siliconflow => DEFAULT_SILICONFLOW_FLASH_MODEL,
+        ApiProvider::Sglang => DEFAULT_SGLANG_FLASH_MODEL,
+        ApiProvider::Vllm => DEFAULT_VLLM_FLASH_MODEL,
+        ApiProvider::Openai
+        | ApiProvider::Atlascloud
+        | ApiProvider::WanjieArk
+        | ApiProvider::XiaomiMimo
+        | ApiProvider::Moonshot
+        | ApiProvider::Ollama
+        | ApiProvider::Anthropic
+        | ApiProvider::Fireworks => return heavy_model_for_provider(provider),
+    };
+    match tier {
+        ModelTier::Heavy => heavy_model_for_provider(provider),
+        ModelTier::Light => light,
+    }
+}
+
+fn heavy_model_for_provider(provider: ApiProvider) -> &'static str {
+    match provider {
+        ApiProvider::Deepseek => DEFAULT_TEXT_MODEL,
+        ApiProvider::NvidiaNim => DEFAULT_NVIDIA_NIM_MODEL,
+        ApiProvider::Openai => DEFAULT_OPENAI_MODEL,
+        ApiProvider::Atlascloud => DEFAULT_ATLASCLOUD_MODEL,
+        ApiProvider::WanjieArk => DEFAULT_WANJIE_ARK_MODEL,
+        ApiProvider::Volcengine => DEFAULT_VOLCENGINE_MODEL,
+        ApiProvider::Openrouter => DEFAULT_OPENROUTER_MODEL,
+        ApiProvider::XiaomiMimo => DEFAULT_XIAOMI_MIMO_MODEL,
+        ApiProvider::Novita => DEFAULT_NOVITA_MODEL,
+        ApiProvider::Fireworks => DEFAULT_FIREWORKS_MODEL,
+        ApiProvider::Siliconflow => DEFAULT_SILICONFLOW_MODEL,
+        ApiProvider::Moonshot => DEFAULT_MOONSHOT_MODEL,
+        ApiProvider::Sglang => DEFAULT_SGLANG_MODEL,
+        ApiProvider::Vllm => DEFAULT_VLLM_MODEL,
+        ApiProvider::Ollama => DEFAULT_OLLAMA_MODEL,
+        ApiProvider::Anthropic => DEFAULT_ANTHROPIC_MODEL,
+    }
 }
 
 /// Startup update-check configuration (`[update]` table in config.toml).
@@ -1648,15 +1723,69 @@ impl Config {
     }
 
     /// Return `true` if the `[auto] cost_saving = true` opt-in is set
-    /// (#1207). When true, the auto-mode router biases toward
-    /// `deepseek-v4-flash` for ambiguous requests instead of escalating to
-    /// `deepseek-v4-pro`. Default: `false` (balanced behaviour).
+    /// (#1207). When true, routing is fully cheap-first: the classifier runs
+    /// on the `[utility_model]` cheap brain and ambiguous requests resolve
+    /// to the light tier. Default: `false` — the heavy tier classifies and
+    /// ambiguous requests resolve to heavy (quality-first).
     #[must_use]
     pub fn auto_cost_saving(&self) -> bool {
         self.auto
             .as_ref()
             .and_then(|a| a.cost_saving)
             .unwrap_or(false)
+    }
+
+    /// Resolve a routing tier to the concrete model ID for this
+    /// configuration.
+    ///
+    /// Priority: an explicit `[auto] heavy_model` / `light_model` override →
+    /// the active provider's tier pair → the effective main model. The last
+    /// arm covers pass-through providers and custom gateways whose catalogue
+    /// the router cannot infer: routing to the user's own configured model
+    /// beats routing to an ID their endpoint may not serve.
+    #[must_use]
+    pub fn resolve_model_tier(&self, tier: ModelTier) -> String {
+        let explicit = self.auto.as_ref().and_then(|a| match tier {
+            ModelTier::Heavy => a.heavy_model.as_deref(),
+            ModelTier::Light => a.light_model.as_deref(),
+        });
+        if let Some(model) = explicit.map(str::trim).filter(|m| !m.is_empty()) {
+            return model.to_string();
+        }
+        if self.custom_provider().is_none()
+            && !provider_passes_model_through(self.api_provider())
+            && !self.active_provider_preserves_custom_base_url_model()
+        {
+            return tier_default_model_for_provider(self.api_provider(), tier).to_string();
+        }
+        self.default_model()
+    }
+
+    /// Explicit `[auto] router_model` override for the routing classifier
+    /// itself. `None` → the classifier picks its brain by mode: heavy tier by
+    /// default, `[utility_model]` under `[auto] cost_saving = true`.
+    #[must_use]
+    pub fn auto_router_model_override(&self) -> Option<String> {
+        self.auto
+            .as_ref()
+            .and_then(|a| a.router_model.as_deref())
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(ToOwned::to_owned)
+    }
+
+    /// Distilled auto-routing context for runtimes that route tiers without
+    /// carrying the full `Config` (sub-agents).
+    #[must_use]
+    pub fn auto_route_context(&self) -> AutoRouteContext {
+        AutoRouteContext {
+            tier_models: TierModels {
+                heavy: self.resolve_model_tier(ModelTier::Heavy),
+                light: self.resolve_model_tier(ModelTier::Light),
+            },
+            router_model: self.auto_router_model_override(),
+            cost_saving: self.auto_cost_saving(),
+        }
     }
 
     #[must_use]
@@ -1832,8 +1961,33 @@ impl Config {
             && normalize_model_name(model).is_none()
         {
             anyhow::bail!(
-                "Invalid default_text_model '{model}': expected auto or a DeepSeek model ID (for example: deepseek-v4-pro, deepseek-v4-flash, deepseek-ai/deepseek-v4-pro)."
+                "Invalid default_text_model '{model}': expected auto or a model ID your \
+                 provider serves (DeepSeek endpoints: deepseek-v4-pro, deepseek-v4-flash, \
+                 or a deepseek-prefixed id)."
             );
+        }
+        // The [auto] tier overrides follow the same rule as default_text_model:
+        // free-form only on pass-through providers / custom gateways.
+        if let Some(auto) = self.auto.as_ref() {
+            let skips_model_checks = self.custom_provider().is_some()
+                || provider_passes_model_through(self.api_provider())
+                || self.active_provider_preserves_custom_base_url_model();
+            for (field, model) in [
+                ("heavy_model", auto.heavy_model.as_deref()),
+                ("light_model", auto.light_model.as_deref()),
+                ("router_model", auto.router_model.as_deref()),
+            ] {
+                if let Some(model) = model
+                    && !skips_model_checks
+                    && normalize_model_name(model).is_none()
+                {
+                    anyhow::bail!(
+                        "Invalid auto.{field} '{model}': expected a model ID your provider \
+                         serves (DeepSeek endpoints: deepseek-v4-pro, deepseek-v4-flash, or a \
+                         deepseek-prefixed id)."
+                    );
+                }
+            }
         }
         if let Some(policy) = self.approval_policy.as_deref() {
             let normalized = policy.trim().to_ascii_lowercase();

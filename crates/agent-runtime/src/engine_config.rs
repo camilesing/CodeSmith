@@ -30,6 +30,7 @@ pub const DEFAULT_STREAM_IDLE_TIMEOUT_SECS: u64 = 120;
 /// window per retry gives each attempt a longer lease. `0` disables the
 /// widening (fixed window on every retry).
 pub const DEFAULT_STREAM_IDLE_RETRY_INCREMENT_SECS: u64 = 30;
+use crate::config_types::AutoRouteContext;
 use crate::cycle_manager::CycleConfig;
 use crate::features::Features;
 use crate::lsp_config::LspConfig;
@@ -154,6 +155,11 @@ pub struct EngineConfig {
     pub task_v2_manager: Option<SharedTaskV2Manager>,
     /// Per-role/type sub-agent model overrides already resolved from config.
     pub subagent_model_overrides: HashMap<String, String>,
+    /// Distilled auto-routing context (resolved tier pair, router-model
+    /// override, cost-saving switch) from the host config. Sub-agent
+    /// runtimes translate tier answers into concrete model IDs from this
+    /// instead of carrying the full config.
+    pub auto_route: AutoRouteContext,
     /// Whether the user-memory feature is enabled (#489). When `true` the
     /// engine reads `memory_path` on each prompt assembly and prepends a
     /// `<user_memory>` block to the system prompt.
@@ -323,6 +329,7 @@ impl Default for EngineConfig {
             lsp_config: None,
             task_v2_manager: None,
             subagent_model_overrides: HashMap::new(),
+            auto_route: AutoRouteContext::default(),
             memory_enabled: false,
             memory_path: PathBuf::from("./memory.md"),
             kod_enabled: false,

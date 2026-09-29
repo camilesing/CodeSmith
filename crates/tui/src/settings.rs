@@ -693,7 +693,9 @@ impl Settings {
 
                 let Some(model) = normalize_default_model(trimmed) else {
                     anyhow::bail!(
-                        "Failed to update setting: invalid model '{value}'. Expected: auto, a DeepSeek model ID (for example deepseek-v4-pro, deepseek-v4-flash), or none/default."
+                        "Failed to update setting: invalid model '{value}'. Expected: auto, a \
+                         model ID your provider serves (DeepSeek endpoints: deepseek-v4-pro, \
+                         deepseek-v4-flash, or a deepseek-prefixed id), or none/default."
                     );
                 };
                 self.default_model = Some(model);

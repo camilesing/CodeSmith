@@ -40,7 +40,7 @@ Built-in tiers, progressive from lightest to heaviest:
 | Tier | Thinking | Tools | Memory | Sub-agents | Resource switches |
 |---|---|---|---|---|---|
 | `simple` | medium | core file + shell only (`tools.include`) | goldfish (none) | off | index/LSP/snapshots/memory/update check/audit off |
-| `middle` *(default)* | inherits | inherits | inherits | 10 | high-value low-cost set on (index, LSP, snapshots, memory, cost-saving router); experimental seams off |
+| `middle` *(default)* | inherits | inherits | inherits | 10 | high-value low-cost set on (index, LSP, snapshots, memory, strong-brain auto router); experimental seams off |
 | `all` | inherits | full surface | notebook (memory on, KOD off) | 20 | middle + LSP warnings; preview flags still off |
 | `experiment` | inherits | full surface | elephant + Knowledge On Demand | 20 | everything on (vision, agent teams, coordinator, context manager, capacity controller, strict tool mode) |
 | `plan` | inherits | read-only + plan tooling | notebook (explicit only) | inherits | inherits |
@@ -59,7 +59,7 @@ effective values):
 | `[context].project_pack` | off | on | on | on |
 | `[context].enabled` | off | off | off | on |
 | `[capacity].enabled` | off | off | off | on |
-| `[auto].cost_saving` | off | on | on | on |
+| `[auto].cost_saving` | off | off | off | off |
 | `[update].check_for_updates` | off | on | on | on |
 | `[network].audit` | off | on | on | on |
 | `strict_tool_mode` | off | off | off | on |
@@ -153,9 +153,11 @@ or `/preset 3`.
 
 All action-capable modes have access to persistent RLM sessions through `rlm_open`, `rlm_eval`, `rlm_configure`, and `rlm_close`. Inside an RLM Python REPL, `sub_query_batch` fans out 1-16 cheap parallel child calls pinned to `deepseek-v4-flash`. The model reaches for it when work is too large or repetitive for the parent transcript.
 
-The fast `deepseek-v4-flash` / thinking-off path is called Fin in the product
-language. Fin is a seam for routing, summaries, cheap child calls, and
-coordination work; it does not change approval behavior.
+The fast light-tier path (`deepseek-v4-flash` on DeepSeek endpoints) with
+thinking off is called Fin in the product language. Fin is a seam for quick
+tool work, summaries, and cheap child calls; it does not change approval
+behavior. Model routing itself is no longer Fin's job — the router runs on the
+strongest tier (see Auto Model Routing below).
 
 `/goal` sets a session objective with an optional token budget and keeps that
 objective visible as Work context. It does not change the active TUI mode,
@@ -168,12 +170,23 @@ Use `codesmith --model auto` or `/model auto` when you want codesmith to decide 
 
 Auto mode controls two settings together:
 
-- Model: `deepseek-v4-flash` or `deepseek-v4-pro`
+- Model tier: `light` (fast/cheap) or `heavy` (strongest) — resolved to a concrete model ID for your provider
 - Thinking: `off`, `high`, or `max`
 
-Before the real turn is sent, the app makes a small `deepseek-v4-flash` routing call with thinking off. That router looks at the latest request and recent context, then selects a concrete model and thinking level for the real request. Short/simple turns can stay on Flash with thinking off; coding, debugging, release work, architecture, security review, or ambiguous multi-step tasks can move up to Pro and/or higher thinking.
+Before the real turn is sent, the app makes a small routing call **on the provider's strongest tier** with thinking off. Routing is the highest-leverage decision of the turn — a misroute wastes the whole request — so the strongest available brain makes it, on a deliberately tiny input (a few lines of recent context). The router looks at the latest request, then selects a tier and thinking level for the real request. Short/simple turns stay on the light tier with thinking off; coding, debugging, release work, architecture, security review, or ambiguous multi-step tasks move up to the heavy tier and/or higher thinking.
 
-`auto` is local to codesmith. The upstream API never receives `model: "auto"`; it receives the concrete model and thinking setting chosen for that turn. The TUI shows the selected route, and cost tracking is charged against the model that actually ran. If the router call fails or returns an invalid answer, the app falls back to a local heuristic. Sub-agents inherit auto mode unless you assign them an explicit model.
+Tier answers resolve per provider: on DeepSeek endpoints `light`/`heavy` map to `deepseek-v4-flash`/`deepseek-v4-pro`; on OpenRouter they map to that provider's flash/pro pair; on pass-through providers (OpenAI-compatible gateways, Ollama, custom endpoints) they fall back to your configured model unless you pin them explicitly:
+
+```toml
+[auto]
+# heavy_model = "your-strongest-model"
+# light_model = "your-cheapest-model"
+# router_model = "override the classifier brain itself"
+```
+
+`auto` is local to codesmith. The upstream API never receives `model: "auto"`; it receives the concrete model and thinking setting chosen for that turn. The TUI shows the selected route, and cost tracking is charged against the model that actually ran. If the router call fails or returns an invalid answer, the app falls back to a free local heuristic (which also short-circuits obvious cases so trivial turns never pay for routing). Sub-agent assignment routing uses the same strong-brain classifier and tier vocabulary.
+
+`[auto] cost_saving = true` flips the whole router to the original cheap-first design: the classifier runs on the configured `[utility_model]` (cheap brain) and ambiguous requests resolve to the light tier. The factory presets ship with cost-saving off (quality-first); users who had explicitly set `auto.cost_saving` keep their value.
 
 Use a fixed model or fixed thinking level when you want repeatable benchmarking, a strict cost ceiling, or a specific provider/model mapping.
 
