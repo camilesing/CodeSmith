@@ -569,7 +569,7 @@ use codesmith_agent::tools::{ToolResult, ToolSet};
 
 use super::approval::ApprovalDecision;
 use super::capacity_flow::{
-    CapacityGateProbe, replay_and_push_verification_note,
+    CapacityGateProbe, enforce_tool_pairs_after_front_trim, replay_and_push_verification_note,
     reset_history_to_latest_user_and_verified, trim_oldest_messages_to_budget_history,
 };
 use super::context::{
@@ -2570,8 +2570,18 @@ impl HostAgentExecutor {
             {
                 msgs.remove(0);
             }
-            // Capture before the replacement consumes `msgs`.
-            let trimmed = before_trim > msgs.len();
+            // Front-removing can orphan a kept tool result whose assistant
+            // `ToolUse` was peeled off — the same cleanup the sibling trims
+            // run (engine/mod.rs `trim_oldest_messages_to_budget`,
+            // `trim_oldest_messages_to_budget_history`). Without it the next
+            // request ships a `role=tool` message with no preceding
+            // `tool_calls`, which strict OpenAI-compatible providers (GLM
+            // 1214 "messages 参数非法") reject outright.
+            let orphaned = enforce_tool_pairs_after_front_trim(&mut msgs);
+            // Capture before the replacement consumes `msgs`. Dropping
+            // orphaned results also rewrote the transcript, so it counts for
+            // the post-compaction cleanup signal too.
+            let trimmed = before_trim > msgs.len() || orphaned > 0;
             history.replace_all("overflow-recovery: hard-trim", msgs);
             // Slice 25c §E: hard-trim is a non-merge compaction — it changes
             // the transcript (oldest messages removed) without producing a
@@ -8751,6 +8761,106 @@ mod tests {
         assert_eq!(mock.compaction_calls(), 1);
         assert!(history.len() < 42, "history len = {}", history.len());
         // The non-merge hard-trim set the cleanup signal.
+        assert!(
+            executor.take_pending_post_compact_cleanup(),
+            "hard-trim must signal post-compact cleanup"
+        );
+    }
+
+    /// The hard-trim boundary can land between an assistant `ToolUse` and its
+    /// user `ToolResult` (the call here is big enough that the budget only
+    /// fits once it is peeled off). The orphaned result must be swept, or the
+    /// next request opens with a `role=tool` message that has no preceding
+    /// `tool_calls` — GLM rejects that shape with 400 1214 "messages 参数非法"
+    /// (forensic dump: `cad-model__a8KzpuU`, orphan `call_31ba44ba…` at wire
+    /// index 1).
+    #[tokio::test]
+    async fn hard_trim_does_not_orphan_tool_results() {
+        let mut sess = fresh_session();
+        // estimate(m0..) and estimate(m1..) both exceed the 2991-token
+        // Ollama/"llama2" budget; estimate(m2..) fits — the trim stops between
+        // the call (m1) and its result (m2).
+        sess.add_message(Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "x".repeat(9_000),
+                cache_control: None,
+            }],
+        });
+        sess.add_message(Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::ToolUse {
+                id: "call_A".to_string(),
+                name: "write_file".to_string(),
+                input: serde_json::json!({ "content": "z".repeat(12_000) }),
+                caller: None,
+            }],
+        });
+        sess.add_message(Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "call_A".to_string(),
+                content: "ok".to_string(),
+                is_error: None,
+                content_blocks: None,
+            }],
+        });
+        for (role, text) in [("user", "pad 1"), ("assistant", "pad 2"), ("user", "pad 3")] {
+            sess.add_message(Message {
+                role: role.to_string(),
+                content: vec![ContentBlock::Text {
+                    text: text.to_string(),
+                    cache_control: None,
+                }],
+            });
+        }
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        // Compaction fails → Phase-3 hard trim is the fallback.
+        let mock =
+            Arc::new(MockLlm::new(vec![end_call()]).with_compaction_error("mock compaction error"));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+            None,
+            None,
+            None,
+        );
+        let reason = executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert!(history.len() < 7, "hard-trim must have removed messages");
+        // Invariant: no orphaned tool result survives the recovery.
+        let call_ids: std::collections::HashSet<String> = history
+            .messages()
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                ContentBlock::ToolUse { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        for msg in history.messages() {
+            for block in &msg.content {
+                if let ContentBlock::ToolResult { tool_use_id, .. } = block {
+                    assert!(
+                        call_ids.contains(tool_use_id),
+                        "orphaned result for {tool_use_id} survived hard-trim"
+                    );
+                }
+            }
+        }
+        // Dropping the orphan also rewrote the transcript → cleanup signal.
         assert!(
             executor.take_pending_post_compact_cleanup(),
             "hard-trim must signal post-compact cleanup"

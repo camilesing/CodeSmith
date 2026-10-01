@@ -22,8 +22,8 @@
 //! structurally. A false positive costs one harmless HTTP/1.1 replay (HTTP/1.1
 //! works everywhere); a false negative simply keeps today's behaviour.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use bytes::Bytes;
 use rig_core::http_client::sse::BoxedStream;
@@ -48,7 +48,10 @@ fn looks_like_h2_failure(err: &dyn std::error::Error) -> bool {
     let mut cursor: Option<&dyn std::error::Error> = Some(err);
     while let Some(e) = cursor {
         let rendered = e.to_string().to_lowercase();
-        if H2_FAILURE_MARKERS.iter().any(|marker| rendered.contains(marker)) {
+        if H2_FAILURE_MARKERS
+            .iter()
+            .any(|marker| rendered.contains(marker))
+        {
             return true;
         }
         cursor = e.source();
@@ -121,13 +124,192 @@ fn instance_error(error: reqwest::Error) -> HttpError {
     HttpError::Instance(Box::new(error))
 }
 
+/// Monotonic suffix so concurrent processes (or repeated failures in one
+/// process) never clobber each other's dumps.
+static DUMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Truthy values accepted for `CODESMITH_DUMP_400_PAYLOAD` (same family as the
+/// TUI's `CODESMITH_TUI_DEBUG`).
+fn env_flag_enabled(raw: Option<&str>) -> bool {
+    raw.is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+}
+
+/// One shallow per-message entry for the dump's `wire_summary` — role, block
+/// kinds, sizes and tool-call/result ids. Deliberately provider-shape agnostic
+/// (works over any OpenAI-style chat body rig serializes); the deep violation
+/// analysis (orphan pairing, duplicate ids, …) happens offline on the dump.
+fn wire_message_summary(msg: &serde_json::Value) -> serde_json::Value {
+    let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("?");
+    let mut kinds: Vec<&str> = Vec::new();
+    let mut chars = 0usize;
+    let mut tool_call_ids: Vec<String> = Vec::new();
+    let mut tool_result_id: Option<&str> = None;
+    let mut empty_content = false;
+
+    match msg.get("content") {
+        Some(serde_json::Value::String(text)) => {
+            chars = text.len();
+            if text.trim().is_empty() {
+                empty_content = true;
+            }
+            kinds.push("text");
+        }
+        Some(serde_json::Value::Array(blocks)) => {
+            for block in blocks {
+                match block.get("type").and_then(|v| v.as_str()) {
+                    Some(kind) => kinds.push(kind),
+                    None => kinds.push("?"),
+                }
+                chars += block
+                    .get("text")
+                    .or_else(|| block.get("thinking"))
+                    .and_then(|v| v.as_str())
+                    .map(str::len)
+                    .unwrap_or(0);
+            }
+            if blocks.is_empty() {
+                empty_content = true;
+            }
+        }
+        Some(serde_json::Value::Null) | None => empty_content = true,
+        _ => {}
+    }
+    if let Some(calls) = msg.get("tool_calls").and_then(|v| v.as_array()) {
+        for call in calls {
+            if let Some(id) = call.get("id").and_then(|v| v.as_str()) {
+                tool_call_ids.push(id.to_string());
+            }
+            chars += call
+                .pointer("/function/arguments")
+                .and_then(|v| v.as_str())
+                .map(str::len)
+                .unwrap_or(0);
+        }
+    }
+    if let Some(id) = msg.get("tool_call_id").and_then(|v| v.as_str()) {
+        tool_result_id = Some(id);
+        chars += msg
+            .get("content")
+            .and_then(|v| v.as_str())
+            .map(str::len)
+            .unwrap_or(0);
+    }
+    let has_reasoning_content = msg.get("reasoning_content").is_some();
+
+    serde_json::json!({
+        "role": role,
+        "kinds": kinds,
+        "chars": chars,
+        "empty_content": empty_content,
+        "tool_call_ids": tool_call_ids,
+        "tool_result_id": tool_result_id,
+        "has_reasoning_content": has_reasoning_content,
+    })
+}
+
+/// Shallow structural summary of an OpenAI-style request body: per-message
+/// entries plus aggregate counts the offline analyzer keys off.
+fn wire_summary(request_body: &serde_json::Value) -> serde_json::Value {
+    let messages = request_body
+        .get("messages")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let summaries: Vec<serde_json::Value> = messages.iter().map(wire_message_summary).collect();
+    let tool_call_count: usize = summaries
+        .iter()
+        .map(|m| m["tool_call_ids"].as_array().map(Vec::len).unwrap_or(0))
+        .sum();
+    let tool_result_count = summaries
+        .iter()
+        .filter(|m| m["tool_result_id"].is_string())
+        .count();
+    serde_json::json!({
+        "message_count": messages.len(),
+        "tool_call_count": tool_call_count,
+        "tool_result_count": tool_result_count,
+        "messages": summaries,
+    })
+}
+
+/// Env-gated forensic dump of a failed provider request. Off by default and
+/// zero-cost when off (one env read on an already-failing request); enable
+/// with `CODESMITH_DUMP_400_PAYLOAD=1`, optionally redirecting the dump
+/// directory with `CODESMITH_DUMP_400_PAYLOAD_DIR` (default `/tmp`).
+///
+/// The dump holds the full serialized request rig was about to send plus the
+/// provider's error body — the evidence needed to diagnose strict-provider
+/// 400s (e.g. GLM 1214 "messages 参数非法") that only surface mid-session.
+fn dump_failed_request(spec: &ReplaySpec, status: reqwest::StatusCode, response_body: &str) {
+    if !env_flag_enabled(std::env::var("CODESMITH_DUMP_400_PAYLOAD").ok().as_deref()) {
+        return;
+    }
+    let seq = DUMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let dir =
+        std::env::var("CODESMITH_DUMP_400_PAYLOAD_DIR").unwrap_or_else(|_| "/tmp".to_string());
+    let path = std::path::Path::new(&dir).join(format!(
+        "codesmith-400-dump-{}-{}.json",
+        std::process::id(),
+        seq
+    ));
+
+    let request_body: serde_json::Value = serde_json::from_slice(&spec.body)
+        .unwrap_or_else(|error| serde_json::json!({ "parse_error": error.to_string() }));
+    let dump = serde_json::json!({
+        "uri": spec.uri,
+        "status": status.as_u16(),
+        "response_body": response_body,
+        "request_body": request_body,
+    });
+
+    let mut note = String::new();
+    if let Ok(payload) = serde_json::to_string_pretty(&dump) {
+        match std::fs::write(&path, payload) {
+            Ok(()) => note = format!("dump written to {}", path.display()),
+            Err(error) => note = format!("dump write failed: {error}"),
+        }
+    }
+    let summary = wire_summary(&request_body);
+    tracing::error!(
+        uri = %spec.uri,
+        status = status.as_u16(),
+        message_count = summary["message_count"].as_u64().unwrap_or(0),
+        tool_call_count = summary["tool_call_count"].as_u64().unwrap_or(0),
+        tool_result_count = summary["tool_result_count"].as_u64().unwrap_or(0),
+        "{note}; provider rejected request: {}",
+        truncate_for_log(response_body)
+    );
+}
+
+fn truncate_for_log(text: &str) -> String {
+    const MAX: usize = 400;
+    if text.len() <= MAX {
+        text.to_string()
+    } else {
+        let mut cut = MAX;
+        while !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        format!("{}…(+{} bytes)", &text[..cut], text.len() - cut)
+    }
+}
+
 /// Mirror rig's non-success-status handling: drain the body for the message.
-async fn non_success_status_error(response: reqwest::Response) -> HttpError {
+/// Chat endpoints pass `Some(spec)` so a gated forensic dump can capture the
+/// exact request the provider rejected; the multipart path has no replayable
+/// body and passes `None`.
+async fn non_success_status_error(
+    response: reqwest::Response,
+    spec: Option<&ReplaySpec>,
+) -> HttpError {
     let status = response.status();
     let message = response
         .text()
         .await
         .unwrap_or_else(|error| format!("failed to read error response body: {error}"));
+    if let Some(spec) = spec {
+        dump_failed_request(spec, status, &message);
+    }
     HttpError::InvalidStatusCodeWithMessage(status, message)
 }
 
@@ -139,7 +321,7 @@ async fn execute(
 ) -> std::result::Result<reqwest::Response, HttpError> {
     let response = spec.build(client).send().await.map_err(instance_error)?;
     if !response.status().is_success() {
-        return Err(non_success_status_error(response).await);
+        return Err(non_success_status_error(response, Some(spec)).await);
     }
     Ok(response)
 }
@@ -157,7 +339,7 @@ async fn execute_with_fallback(
         match spec.build(&primary).send().await {
             Ok(response) => {
                 if !response.status().is_success() {
-                    return Err(non_success_status_error(response).await);
+                    return Err(non_success_status_error(response, Some(spec)).await);
                 }
                 return Ok(response);
             }
@@ -235,7 +417,7 @@ impl HttpClientExt for H2FallbackClient {
                 .await
                 .map_err(instance_error)?;
             if !response.status().is_success() {
-                return Err(non_success_status_error(response).await);
+                return Err(non_success_status_error(response, None).await);
             }
 
             let mut res = Response::builder().status(response.status());
@@ -345,4 +527,35 @@ mod tests {
     }
 
     impl std::error::Error for Shim {}
+
+    #[test]
+    fn dump_env_flag_parsing() {
+        assert!(env_flag_enabled(Some("1")));
+        assert!(env_flag_enabled(Some("TRUE")));
+        assert!(env_flag_enabled(Some("yes")));
+        assert!(env_flag_enabled(Some("on")));
+        assert!(!env_flag_enabled(Some("0")));
+        assert!(!env_flag_enabled(Some("false")));
+        assert!(!env_flag_enabled(Some("")));
+        assert!(!env_flag_enabled(None));
+    }
+
+    #[test]
+    fn log_truncation_respects_char_boundaries() {
+        assert_eq!(truncate_for_log("short"), "short");
+        let long = "x".repeat(500);
+        let truncated = truncate_for_log(&long);
+        assert!(truncated.starts_with(&"x".repeat(400)));
+        assert!(truncated.ends_with("…(+100 bytes)"));
+        let multibyte = "编译".repeat(300);
+        let truncated = truncate_for_log(&multibyte);
+        // The cut must land on a char boundary (a mis-cut would panic while
+        // slicing) and keep whole characters.
+        assert!(
+            truncated.starts_with("编"),
+            "cut must land on a char boundary"
+        );
+        assert!(truncated.contains("…(+") && truncated.ends_with(")"));
+        assert!(truncated.len() < multibyte.len());
+    }
 }

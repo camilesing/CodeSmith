@@ -36,6 +36,10 @@ base64 = { version = "0.22.1", optional = true }
 # `rig_adapter::http_fallback` backend (cheap clone for the HTTP/1.1 replay).
 # Same major version rig-core already pulls in — no extra compile.
 bytes = { version = "1", optional = true }
+# Env-gated forensic dump of failed provider requests
+# (`rig_adapter::http_fallback`). Optional with the `rig` aggregate so a
+# `--no-default-features` build stays lean.
+tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
@@ -53,7 +57,7 @@ mock = []
 # compiled exactly when at least one rig-backed provider is selected. rig
 # compiles all its provider modules unconditionally, so these features select
 # only which CodeSmith factory glue is linked — not which rig providers exist.
-rig = ["dep:rig-core", "dep:reqwest", "dep:base64", "dep:bytes"]
+rig = ["dep:rig-core", "dep:reqwest", "dep:base64", "dep:bytes", "dep:tracing"]
 openai = ["rig"]
 anthropic = ["rig"]
 deepseek = ["rig"]

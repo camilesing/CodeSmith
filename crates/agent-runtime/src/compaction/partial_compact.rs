@@ -52,51 +52,41 @@ pub fn adjust_pivot_for_tool_pairs(messages: &[Message], pivot: usize) -> usize 
         return pivot;
     }
 
-    let mut adjusted = pivot;
-
-    // Build tool_use_id → message index maps.
-    let mut call_ids: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    let mut result_ids: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-
+    // Build tool_use_id → (earliest side, latest side). A pair spans the
+    // compaction boundary whenever its two sides land on opposite sides of
+    // `pivot`; the pivot then moves forward past the pair so both sides stay
+    // together (in the summarized prefix for UpTo, in the kept prefix for
+    // From). Scanning every pair is required: inspecting only the message at
+    // `pivot` misses a call/result straddling it from pivot-1 / pivot+1, and
+    // one side would then be summarized away from the other.
+    let mut pair_bounds: std::collections::HashMap<String, (usize, usize)> =
+        std::collections::HashMap::new();
     for (idx, msg) in messages.iter().enumerate() {
         for block in &msg.content {
-            match block {
-                ContentBlock::ToolUse { id, .. } => {
-                    call_ids.insert(id.clone(), idx);
-                }
-                ContentBlock::ToolResult { tool_use_id, .. } => {
-                    result_ids.insert(tool_use_id.clone(), idx);
-                }
-                _ => {}
-            }
+            let id = match block {
+                ContentBlock::ToolUse { id, .. } => id,
+                ContentBlock::ToolResult { tool_use_id, .. } => tool_use_id,
+                _ => continue,
+            };
+            let bounds = pair_bounds.entry(id.clone()).or_insert((idx, idx));
+            bounds.0 = bounds.0.min(idx);
+            bounds.1 = bounds.1.max(idx);
         }
     }
 
-    // If pivot lands on a tool_result whose call is in the prefix section,
-    // move pivot forward past the result to keep the pair together in From direction.
-    for block in &messages[adjusted].content {
-        if let ContentBlock::ToolResult { tool_use_id, .. } = block
-            && let Some(&call_idx) = call_ids.get(tool_use_id)
-            && call_idx < adjusted
-        {
-            // The call is before pivot, result is at/after pivot.
-            // For From direction: move pivot back to include the call.
-            // For UpTo direction: move pivot forward to include the result.
-            // Default behavior: move forward to keep pairs together.
-            adjusted = adjusted.saturating_add(1);
-            return adjust_pivot_for_tool_pairs(messages, adjusted);
-        }
-    }
-
-    // If pivot lands on a tool_use whose result is after pivot,
-    // move pivot forward past the result.
-    for block in &messages[adjusted].content {
-        if let ContentBlock::ToolUse { id, .. } = block
-            && let Some(&result_idx) = result_ids.get(id)
-            && result_idx > adjusted
-        {
-            adjusted = result_idx.saturating_add(1);
-            return adjust_pivot_for_tool_pairs(messages, adjusted);
+    let mut adjusted = pivot;
+    loop {
+        let Some((_, (_, latest))) = pair_bounds
+            .iter()
+            .find(|(_, (earliest, latest))| *earliest < adjusted && *latest >= adjusted)
+        else {
+            break;
+        };
+        adjusted = latest.saturating_add(1);
+        if adjusted >= messages.len() {
+            // Clamp to a sliceable bound (`perform_partial_compact` slices
+            // `messages[pivot..]`).
+            return messages.len();
         }
     }
 
@@ -384,5 +374,36 @@ mod tests {
 
         let pivot = adjust_pivot_for_tool_pairs(&messages, 2);
         assert_eq!(pivot, 2); // No tool pairs, pivot stays at 2
+    }
+
+    #[test]
+    fn adjust_pivot_catches_pairs_straddling_the_boundary() {
+        // call at 1, plain message at 2, result at 3 — a pivot at 2 used to
+        // slip through (only the message *at* the pivot was inspected) and
+        // summarizing [0..2) would swallow the call while the result stayed.
+        let messages = vec![
+            msg("user", "start"),        // 0
+            tool_use_msg("t1", "read"),  // 1
+            msg("assistant", "note"),    // 2
+            tool_result_msg("t1", "ok"), // 3
+            msg("user", "more"),         // 4
+        ];
+        let adjusted = adjust_pivot_for_tool_pairs(&messages, 2);
+        assert_eq!(adjusted, 4, "pivot must move past the whole pair");
+    }
+
+    #[test]
+    fn adjust_pivot_cascades_across_overlapping_pairs() {
+        // Two calls share the boundary region: moving past t1's result makes
+        // t2's pair straddle the new boundary, so the sweep must continue.
+        let messages = vec![
+            tool_use_msg("t1", "read"),  // 0
+            tool_use_msg("t2", "read"),  // 1
+            tool_result_msg("t1", "ok"), // 2
+            tool_result_msg("t2", "ok"), // 3
+            msg("user", "more"),         // 4
+        ];
+        let adjusted = adjust_pivot_for_tool_pairs(&messages, 2);
+        assert_eq!(adjusted, 4, "cascade must clear every straddling pair");
     }
 }
