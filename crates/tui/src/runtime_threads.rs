@@ -2015,7 +2015,7 @@ impl RuntimeThreadManager {
             show_thinking: settings.show_thinking,
             is_simple: settings.is_simple,
             personality: self.config.personality(),
-            max_steps: 100,
+            max_steps: codesmith_agent_runtime::engine_config::DEFAULT_MAX_STEPS,
             max_subagents: self.config.max_subagents().clamp(1, MAX_SUBAGENTS),
             features: self.config.features(),
             parse_gate: self.config.edit_config().parse_gate_enabled(),

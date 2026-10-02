@@ -141,15 +141,79 @@ pub(crate) fn latest_user_and_verified(messages: &[Message]) -> (Option<Message>
 /// model sees the reset on the next request within the same turn (the loop
 /// `continue`s and rebuilds the request from `history.messages()`).
 pub(crate) fn reset_history_to_latest_user_and_verified(history: &mut dyn ChatHistory) {
-    let (latest_user, latest_verified) = latest_user_and_verified(history.messages());
-    let mut kept = Vec::with_capacity(2);
+    let kept = kept_verify_and_replan_messages(history.messages());
+    history.replace_all("verify-and-replan reset", kept);
+}
+
+/// The kept transcript for a VerifyAndReplan reset: `{latest_user, pairing
+/// assistant call, latest_verified}`.
+///
+/// The `[verification replay]` result reuses the original call's
+/// `tool_use_id`, so keeping the result alone would open the next request
+/// with a `role=tool` message that has no preceding `tool_calls` — a shape
+/// strict OpenAI-compatible providers reject (GLM 1214 "messages 参数非法").
+/// The assistant `ToolUse` pairing with the replayed id is therefore kept
+/// ahead of the result; when that call is unrecoverable the replay result is
+/// flattened into a plain text note instead (a user text message is always
+/// wire-valid).
+pub(crate) fn kept_verify_and_replan_messages(messages: &[Message]) -> Vec<Message> {
+    let (latest_user, latest_verified) = latest_user_and_verified(messages);
+    let mut kept = Vec::with_capacity(3);
     if let Some(msg) = latest_user {
         kept.push(msg);
     }
-    if let Some(msg) = latest_verified {
-        kept.push(msg);
+    let Some(verified) = latest_verified else {
+        return kept;
+    };
+    match verification_call_message(messages, &verified) {
+        Some(call) => {
+            kept.push(call);
+            kept.push(verified);
+        }
+        None => kept.push(flatten_tool_results_to_text(verified)),
     }
-    history.replace_all("verify-and-replan reset", kept);
+    kept
+}
+
+/// The assistant message whose `ToolUse` pairs with any `[verification
+/// replay]` result carried by `verified`, searched newest-first.
+fn verification_call_message(messages: &[Message], verified: &Message) -> Option<Message> {
+    let call_ids: Vec<&str> = verified
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    if call_ids.is_empty() {
+        return None;
+    }
+    messages
+        .iter()
+        .rev()
+        .find(|msg| {
+            msg.role == "assistant"
+                && msg.content.iter().any(|block| {
+                    matches!(block, ContentBlock::ToolUse { id, .. } if call_ids.contains(&id.as_str()))
+                })
+        })
+        .cloned()
+}
+
+/// Rewrite every `ToolResult` block of `msg` into a plain `Text` block,
+/// preserving the content. Used when a result's pairing call is gone and the
+/// message must stay wire-valid without one.
+fn flatten_tool_results_to_text(mut msg: Message) -> Message {
+    for block in &mut msg.content {
+        if let ContentBlock::ToolResult { content, .. } = block {
+            *block = ContentBlock::Text {
+                text: content.clone(),
+                cache_control: None,
+            };
+        }
+    }
+    msg
 }
 
 /// Trim oldest messages off the transcript until the estimated input tokens
@@ -1468,14 +1532,7 @@ impl Engine {
         // replanning work. The state work below (canonical persist, system-prompt
         // fold, emit, mark) always runs.
         if !skip_transcript {
-            let (latest_user, latest_verified) = latest_user_and_verified(&self.session.messages);
-            let mut kept = Vec::with_capacity(2);
-            if let Some(msg) = latest_user {
-                kept.push(msg);
-            }
-            if let Some(msg) = latest_verified {
-                kept.push(msg);
-            }
+            let kept = kept_verify_and_replan_messages(&self.session.messages);
             self.session.rebuild_transcript(
                 crate::prompt_zones::RebuildReason::VerifyAndReplanReset,
                 kept,
@@ -1849,6 +1906,71 @@ mod front_trim_tests {
         let mut kept = vec![combined, tool_result("B"), user_text("tail")];
         let removed = enforce_tool_pairs_after_front_trim(&mut kept);
         assert_eq!(removed, 2);
+        assert_eq!(kept.len(), 1);
+    }
+
+    fn verification_replay(id: &str) -> Message {
+        Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: id.to_string(),
+                content: "[verification replay] tool=bash pass=pass details=output_match"
+                    .to_string(),
+                is_error: Some(false),
+                content_blocks: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn verify_reset_keeps_the_pairing_call() {
+        // The `[verification replay]` result reuses call "B"'s id. Keeping the
+        // result alone would open the reset transcript with an orphan
+        // role=tool message (GLM 1214); the pairing assistant call must be
+        // kept ahead of it.
+        let history = vec![
+            user_text("start"),
+            assistant_call("A"),
+            tool_result("A"),
+            user_text("do X"),
+            assistant_call("B"),
+            tool_result("B"),
+            verification_replay("B"),
+        ];
+        let kept = kept_verify_and_replan_messages(&history);
+        assert_eq!(kept.len(), 3, "user + pairing call + replay result");
+        assert!(matches!(&kept[0].content[0], ContentBlock::Text { .. }));
+        let call_id = match &kept[1].content[0] {
+            ContentBlock::ToolUse { id, .. } => id.clone(),
+            other => panic!("expected ToolUse, got {other:?}"),
+        };
+        assert_eq!(call_id, "B");
+        match &kept[2].content[0] {
+            ContentBlock::ToolResult { tool_use_id, .. } => assert_eq!(tool_use_id, "B"),
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_reset_flattens_the_replay_result_when_call_is_missing() {
+        // The pairing call is unrecoverable (already trimmed): the replay
+        // result must degrade to a plain text note, never ship as an orphan
+        // role=tool message.
+        let history = vec![user_text("do X"), verification_replay("C")];
+        let kept = kept_verify_and_replan_messages(&history);
+        assert_eq!(kept.len(), 2);
+        match &kept[1].content[0] {
+            ContentBlock::Text { text, .. } => {
+                assert!(text.contains("[verification replay]"));
+            }
+            other => panic!("expected flattened Text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_reset_without_verification_message() {
+        let history = vec![user_text("only question")];
+        let kept = kept_verify_and_replan_messages(&history);
         assert_eq!(kept.len(), 1);
     }
 }

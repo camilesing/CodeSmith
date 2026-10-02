@@ -31,6 +31,7 @@ mod http_fallback;
 mod reasoning;
 mod shaper;
 mod stream;
+mod wire_sanitize;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -44,12 +45,12 @@ use rig_core::completion::{CompletionModel, CompletionRequestBuilder};
 
 #[cfg(feature = "deepseek")]
 pub(crate) use fim_translate::resolve_base_url;
+pub(crate) use http_fallback::H2FallbackClient;
 #[cfg(feature = "anthropic")]
 pub(crate) use shaper::AnthropicShaper;
 #[cfg(any(feature = "openai", feature = "deepseek", feature = "openai-compat"))]
 pub(crate) use shaper::GenericShaper;
 pub(crate) use shaper::RequestShaper;
-pub(crate) use http_fallback::H2FallbackClient;
 
 /// Monotonic counter for synthetic message IDs. rig doesn't always surface a
 /// provider message ID (and the streaming `MessageStart` fires before the
@@ -155,6 +156,14 @@ where
     // so tool-call assistant turns in the history get the DeepSeek placeholder
     // (#1739/#1694) or the #1542 strip.
     shaper.shape_messages(&mut rig_messages, req);
+
+    // Outbound invariant sweep (orphan tool results, dangling tool calls,
+    // duplicate result ids, adjacent same-role, empty content) — transcript
+    // mutations elsewhere in the engine can produce shapes strict
+    // OpenAI-compatible providers reject outright (GLM 400 1214 "messages
+    // 参数非法"). Provider-agnostic last line of defense; valid histories
+    // pass through unchanged.
+    wire_sanitize::sanitize_wire_messages(&mut rig_messages);
 
     // The shaper may decline to produce a preamble (e.g. Anthropic forwards
     // structured system through additional_params instead).
@@ -273,8 +282,7 @@ where
             };
             let builder = build_request(&client, &model_id, &request, shaper)?;
             let stream = builder.stream().await.map_err(anyhow::Error::new)?;
-            let mapped =
-                stream::map_rig_stream(stream, request.model.clone(), request.max_tokens);
+            let mapped = stream::map_rig_stream(stream, request.model.clone(), request.max_tokens);
             Ok(Box::pin(mapped) as StreamEventBox)
         })
     }

@@ -19,6 +19,11 @@ use crate::config_types::{
     VisionModelConfig, WorkshopConfig,
 };
 
+/// Default step budget for the engine's tool loop. Embedders constructing
+/// [`EngineConfig`](crate::engine_config::EngineConfig) field-by-field should
+/// read this constant instead of hard-coding a step cap so every entry point
+/// (TUI, exec agent, team teammate, runtime threads) shares one budget.
+pub const DEFAULT_MAX_STEPS: u32 = 1024;
 /// Default stream idle watchdog budget (P0-1). Long enough that a reasoning
 /// model's quiet thinking phase (no text deltas yet, connection healthy)
 /// doesn't trip it, short enough that a silently-stalled stream recovers
@@ -310,7 +315,7 @@ impl Default for EngineConfig {
             show_thinking: true,
             is_simple: false,
             personality: crate::prompts::Personality::Calm,
-            max_steps: 100,
+            max_steps: DEFAULT_MAX_STEPS,
             max_subagents: DEFAULT_MAX_SUBAGENTS,
             features: Features::with_defaults(),
             parse_gate: true,
