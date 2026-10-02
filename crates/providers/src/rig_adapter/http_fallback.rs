@@ -35,6 +35,137 @@ use rig_core::wasm_compat::WasmCompatSend;
 
 use futures_util::StreamExt;
 
+// --- DeepSeek-compatible usage normalization ----------------------------
+//
+// rig-core's deepseek response types require `prompt_cache_hit_tokens` and
+// `prompt_cache_miss_tokens` as non-Option numbers on every `usage` object.
+// DeepSeek's own API always sends them, but third-party DeepSeek-compatible
+// gateways (e.g. Zhipu GLM) omit the two cache fields — the strict parse then
+// fails the whole response ("data did not match any variant of untagged enum
+// ApiResponse") or the stream's final usage chunk. Defaulting them to 0 —
+// "no cache tokens reported" — at this HTTP backend (wired only by the
+// deepseek factory) makes those gateways parse. Tolerant consumers ignore the
+// extra fields, so unrelated body shapes pass through untouched.
+
+const USAGE_CACHE_FIELDS: [&str; 2] = ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens"];
+
+/// Default the DeepSeek cache-token fields on an OpenAI-style `usage` object.
+/// Returns whether the value was mutated. Absent, null, or non-unsigned
+/// values become `0` (nulls and floats also break the `u32` decode).
+fn default_usage_cache_fields(usage: &mut serde_json::Value) -> bool {
+    let Some(obj) = usage.as_object_mut() else {
+        return false;
+    };
+    let mut changed = false;
+    for field in USAGE_CACHE_FIELDS {
+        let needs_default =
+            !matches!(obj.get(field), Some(serde_json::Value::Number(n)) if n.is_u64());
+        if needs_default {
+            obj.insert(field.to_string(), serde_json::json!(0u32));
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Rewrite a `data: {json}` SSE line's top-level `usage`, defaulting the
+/// cache fields. Other lines (and payloads without a top-level `usage`)
+/// pass through byte-identical.
+fn normalize_sse_line(line: &[u8]) -> Vec<u8> {
+    let payload_start = match line.strip_prefix(b"data:") {
+        Some(rest) => rest,
+        None => return line.to_vec(),
+    };
+    let trimmed = {
+        let t = payload_start.strip_prefix(b" ").unwrap_or(payload_start);
+        t.strip_suffix(b"\r").unwrap_or(t)
+    };
+    let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(trimmed) else {
+        return line.to_vec();
+    };
+    let Some(usage) = value.get_mut("usage") else {
+        return line.to_vec();
+    };
+    if !default_usage_cache_fields(usage) {
+        return line.to_vec();
+    }
+    let mut rewritten = Vec::with_capacity(line.len() + 48);
+    rewritten.extend_from_slice(b"data: ");
+    rewritten.extend_from_slice(&serde_json::to_vec(&value).unwrap_or_else(|_| trimmed.to_vec()));
+    if line.ends_with(b"\n") {
+        rewritten.push(b'\n');
+    }
+    rewritten
+}
+
+/// Stateful rewriter for a byte-chunk SSE stream: buffers partial lines
+/// across chunk boundaries and normalizes complete `data:` lines that carry a
+/// top-level `usage`. An empty push flushes the pending remainder (used as
+/// the end-of-stream sentinel).
+#[derive(Default)]
+struct SseUsageNormalizer {
+    pending: Vec<u8>,
+}
+
+impl SseUsageNormalizer {
+    fn push(&mut self, chunk: Bytes) -> Bytes {
+        if chunk.is_empty() {
+            return self.flush();
+        }
+        self.pending.extend_from_slice(&chunk);
+        let Some(cut) = self.pending.iter().rposition(|&b| b == b'\n') else {
+            return Bytes::new();
+        };
+        let complete: Vec<u8> = self.pending.drain(..=cut).collect();
+        self.rewrite(complete)
+    }
+
+    fn flush(&mut self) -> Bytes {
+        if self.pending.is_empty() {
+            return Bytes::new();
+        }
+        let rest = std::mem::take(&mut self.pending);
+        self.rewrite(rest)
+    }
+
+    fn rewrite(&self, buf: Vec<u8>) -> Bytes {
+        if !buf.windows(7).any(|w| w == b"\"usage\"") {
+            return Bytes::from(buf);
+        }
+        let mut out = Vec::with_capacity(buf.len() + 64);
+        let mut rest = buf.as_slice();
+        while !rest.is_empty() {
+            let (line, tail) = match rest.iter().position(|&b| b == b'\n') {
+                Some(idx) => (&rest[..=idx], &rest[idx + 1..]),
+                None => (rest, &[][..]),
+            };
+            out.extend_from_slice(&normalize_sse_line(line));
+            rest = tail;
+        }
+        Bytes::from(out)
+    }
+}
+
+/// Default the cache-token fields on a non-streaming completion response's
+/// top-level `usage`. Bodies without a top-level `usage` (errors, other
+/// endpoints) or unparseable bodies pass through unchanged so rig produces
+/// its own native error.
+fn normalize_completion_usage(body: Bytes) -> Bytes {
+    if !body.windows(7).any(|w| w == b"\"usage\"") {
+        return body;
+    }
+    let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&body[..]) else {
+        return body;
+    };
+    let Some(usage) = value.get_mut("usage") else {
+        return body;
+    };
+    if !default_usage_cache_fields(usage) {
+        return body;
+    }
+    serde_json::to_vec(&value).map(Bytes::from).unwrap_or(body)
+}
+
 /// Lowercased markers that identify an HTTP/2 protocol failure in a rendered
 /// reqwest error chain (preface handshake, GOAWAY, generic h2 protocol
 /// errors).
@@ -386,7 +517,7 @@ impl HttpClientExt for H2FallbackClient {
                     .bytes()
                     .await
                     .map_err(|e| HttpError::Instance(Box::new(e)))?;
-                Ok(U::from(bytes))
+                Ok(U::from(normalize_completion_usage(bytes)))
             });
 
             res.body(body).map_err(HttpError::Protocol)
@@ -469,10 +600,23 @@ impl HttpClientExt for H2FallbackClient {
                 *hs = response.headers().clone();
             }
 
+            // The trailing empty chunk is a flush sentinel: `scan` drops its
+            // state at end-of-stream, so the normalizer emits any pending
+            // partial line when it sees the sentinel.
             let mapped_stream: BoxedStream = Box::pin(
                 response
                     .bytes_stream()
-                    .map(|chunk| chunk.map_err(|e| HttpError::Instance(Box::new(e)))),
+                    .map(|chunk| chunk.map_err(|e| HttpError::Instance(Box::new(e))))
+                    .chain(futures_util::stream::once(async {
+                        Ok::<Bytes, HttpError>(Bytes::new())
+                    }))
+                    .scan(SseUsageNormalizer::default(), |state, chunk| {
+                        let out = match chunk {
+                            Ok(bytes) => state.push(bytes),
+                            Err(e) => return std::future::ready(Some(Err(e))),
+                        };
+                        std::future::ready(Some(Ok(out)))
+                    }),
             );
 
             res.body(mapped_stream).map_err(HttpError::Protocol)
@@ -483,6 +627,98 @@ impl HttpClientExt for H2FallbackClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- usage cache-field normalization ------------------------------------
+
+    /// A GLM-style response whose `usage` lacks the two DeepSeek cache
+    /// fields gets them defaulted to 0; everything else stays intact.
+    #[test]
+    fn completion_usage_cache_fields_defaulted_when_missing() {
+        let body = Bytes::from_static(
+            br#"{"id":"1","choices":[{"index":0,"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}"#,
+        );
+        let out = normalize_completion_usage(body);
+        let v: serde_json::Value = serde_json::from_slice(&out[..]).unwrap();
+        assert_eq!(v["usage"]["prompt_cache_hit_tokens"], 0);
+        assert_eq!(v["usage"]["prompt_cache_miss_tokens"], 0);
+        assert_eq!(v["usage"]["total_tokens"], 4);
+        assert_eq!(v["choices"][0]["message"]["content"], "OK");
+    }
+
+    /// A real DeepSeek response already carrying the cache fields passes
+    /// through unchanged (no re-serialization churn).
+    #[test]
+    fn completion_usage_untouched_when_cache_fields_present() {
+        let body = Bytes::from_static(
+            br#"{"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,"prompt_cache_hit_tokens":2,"prompt_cache_miss_tokens":1}}"#,
+        );
+        let out = normalize_completion_usage(body.clone());
+        assert_eq!(out, body);
+    }
+
+    /// Error payloads without a top-level `usage` are passed through
+    /// byte-identical so rig renders the provider's own error text.
+    #[test]
+    fn completion_error_bodies_pass_through() {
+        let body = Bytes::from_static(br#"{"error":{"code":"1214","message":"messages invalid"}}"#);
+        let out = normalize_completion_usage(body.clone());
+        assert_eq!(out, body);
+    }
+
+    /// Null or non-integer cache values (which also break `u32` decoding)
+    /// are defaulted to 0.
+    #[test]
+    fn completion_null_cache_values_defaulted() {
+        let body = Bytes::from_static(
+            br#"{"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"prompt_cache_hit_tokens":null}}"#,
+        );
+        let out = normalize_completion_usage(body);
+        let v: serde_json::Value = serde_json::from_slice(&out[..]).unwrap();
+        assert_eq!(v["usage"]["prompt_cache_hit_tokens"], 0);
+        assert_eq!(v["usage"]["prompt_cache_miss_tokens"], 0);
+    }
+
+    /// The final SSE usage chunk (GLM shape) is rewritten in place while
+    /// sibling content chunks and the `[DONE]` sentinel stay byte-identical.
+    #[test]
+    fn sse_usage_chunk_normalized_and_others_untouched() {
+        let mut state = SseUsageNormalizer::default();
+        let stream = b"data: {\"choices\":[{\"delta\":{\"content\":\"OK\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"total_tokens\":4}}\n\ndata: [DONE]\n\n";
+        let out = state.push(Bytes::from_static(stream));
+        let text = String::from_utf8(out.to_vec()).unwrap();
+        let usage_line = text
+            .lines()
+            .find(|l| l.contains("\"usage\""))
+            .expect("usage line present");
+        let v: serde_json::Value =
+            serde_json::from_str(usage_line.trim_start_matches("data: ")).unwrap();
+        assert_eq!(v["usage"]["prompt_cache_hit_tokens"], 0);
+        assert_eq!(v["usage"]["prompt_cache_miss_tokens"], 0);
+        assert!(text.contains("data: [DONE]"));
+        assert!(text.contains("OK"));
+    }
+
+    /// A usage JSON line split across two network chunks is still rewritten
+    /// exactly once, with no bytes lost or duplicated.
+    #[test]
+    fn sse_usage_line_split_across_chunks() {
+        let mut state = SseUsageNormalizer::default();
+        let first = state.push(Bytes::from_static(
+            b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3",
+        ));
+        assert!(first.is_empty(), "partial line must be buffered");
+        let second = state.push(Bytes::from_static(
+            br#","completion_tokens":1,"total_tokens":4}}"#,
+        ));
+        assert!(second.is_empty(), "no newline yet; still buffered");
+        let flushed = state.push(Bytes::new()); // flush sentinel
+        let text = String::from_utf8(flushed.to_vec()).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(text.trim().trim_start_matches("data: ")).unwrap();
+        assert_eq!(v["usage"]["prompt_cache_hit_tokens"], 0);
+        assert_eq!(v["usage"]["prompt_cache_miss_tokens"], 0);
+        assert_eq!(v["usage"]["prompt_tokens"], 3);
+    }
 
     #[test]
     fn h2_protocol_failures_are_detected() {
