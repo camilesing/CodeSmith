@@ -1,192 +1,192 @@
-# CodeSmith Mods — Rhai 脚本 mod 层
+# CodeSmith Mods — the Rhai Script Mod Layer
 
-Mods 用 [Rhai](https://rhai.rs) 脚本扩展 CodeSmith，不需要编译 Rust：写几行脚本就能给智能体加**事件钩子**（拦截/改写工具调用、输入、请求）、注册**模型可见工具**、注册**斜杠命令**，并用 **KV 存储**跨会话记住状态。写完激活即可在当前会话生效，改完保存自动热加载。
+Mods extend CodeSmith with [Rhai](https://rhai.rs) scripts — no Rust compilation required. A few lines of script add **event hooks** (intercept/rewrite tool calls, input, provider requests), register **model-visible tools**, register **slash commands**, and keep state across sessions in a **KV store**. Activate a mod and it works in the current session; save a change and it hot-reloads.
 
-最简单的一个 mod 只需要 3 行脚本——下面这个会在执行包含 `rm -rf` 的命令前把它拦下来：
+The smallest possible mod is 3 lines of script — this one blocks any `rm -rf` before it runs:
 
 ```rhai
 on("tool-call", |e| {
     if e.name == "exec_shell" && e.input.command.contains("rm -rf") {
-        return block("rm -rf 需要人工确认");
+        return block("rm -rf needs human confirmation");
     }
     proceed()
 });
 ```
 
-> 需要文件/网络访问或任意 Rust 生态能力？那是另一条路——Rust 扩展（dylib），见 [EXTENSIONS.md](EXTENSIONS.md)。两者共享同一套装配线，本教程只讲 Rhai Mods。
+> Need file/network access or the full Rust ecosystem? That's the other path — Rust extensions (dylib), see [EXTENSIONS.md](EXTENSIONS.md). Both ride the same assembly line; this guide covers Rhai Mods only. 中文版：[MODS_cn.md](MODS_cn.md).
 
-## 五分钟上手
+## Five-Minute Quick Start
 
-### 第 1 步：建目录，写两个文件
+### Step 1: Create the directory, write two files
 
-mods 放在全局根 `~/.codesmith/mods/<id>/`（所有工作区可见）或项目根 `<workspace>/.codesmith/mods/<id>/`（受工作区信任门控）。目录名就是 mod id：
+Mods live under a global root `~/.codesmith/mods/<id>/` (visible in every workspace) or a project root `<workspace>/.codesmith/mods/<id>/` (gated by workspace trust). The directory name is the mod id:
 
 ```bash
 mkdir -p ~/.codesmith/mods/hello
 ```
 
-`~/.codesmith/mods/hello/mod.toml` —— 只有两个必填字段：
+`~/.codesmith/mods/hello/mod.toml` — just two required fields:
 
 ```toml
 id = "hello"
 version = "0.1.0"
 ```
 
-`~/.codesmith/mods/hello/mod.rhai` —— 本页开头那 3 行守卫钩子。顶层脚本在加载时执行一次，`on(...)` 把钩子注册进运行时：
+`~/.codesmith/mods/hello/mod.rhai` — the 3-line guard hook from the top of this page. The top-level script runs once at load; `on(...)` registers the hook with the runtime:
 
 ```rhai
 on("tool-call", |e| {
     if e.name == "exec_shell" && e.input.command.contains("rm -rf") {
-        return block("rm -rf 需要人工确认");
+        return block("rm -rf needs human confirmation");
     }
     proceed()
 });
 ```
 
-> `&&` 会短路：非 `exec_shell` 的工具调用不会走到 `e.input.command`，所以不必担心缺字段报错。
+> `&&` short-circuits: non-`exec_shell` tool calls never evaluate `e.input.command`, so a missing field is not a concern.
 
-### 第 2 步：激活
+### Step 2: Activate
 
-在 CodeSmith 里敲：
+In CodeSmith, type:
 
 ```
 /mods activate hello
 ```
 
-**预期效果**：这是该 id 的**一次性同意**（mod 是进程内代码且跨会话持久，首次激活需要你确认）——确认后 mod 立即生效。此后同 id 的重载（含热载）不再需要审批。之后任何包含 `rm -rf` 的 shell 调用都会被拦截，模型会收到你的 reason 并改道。
+**What you'll see**: this is the **one-time consent** for this id (a mod is in-process code that persists across sessions — first activation requires your approval). After approval the mod is live immediately; same-id reloads (including hot reloads) never ask again. Any shell call containing `rm -rf` is now blocked, and the model receives your reason and adapts.
 
-### 第 3 步：注册一个模型可见工具 + KV 状态
+### Step 3: Register a model-visible tool + KV state
 
-在 `mod.rhai` 里追加：一个钩子统计每次工具调用，一个工具让模型查询计数。`mod_state_get/set` 是本 mod 私有的持久 KV（跨会话保留，mod 之间隔离）：
+Append to `mod.rhai`: one hook counting every tool call, and one tool the model can call to read the count. `mod_state_get/set` is a per-mod private persistent KV (survives sessions, isolated between mods):
 
 ```rhai
 on("tool-call", |e| {
-    let n = mod_state_get("calls") ?? 0;   // 不存在时取 0
+    let n = mod_state_get("calls") ?? 0;   // default 0 when absent
     mod_state_set("calls", n + 1);
     proceed()
 });
 
 register_tool(#{
     name: "call_count",
-    description: "查询本次会话累计工具调用次数",
+    description: "Report the cumulative tool-call count for this session",
     schema: #{ type: "object", properties: #{}, additionalProperties: false },
 }, |input| ok(mod_state_get("calls") ?? 0));
 ```
 
-**预期效果**：下一个 turn 开始，模型的工具目录里出现 `call_count`；模型调用它时会拿到当前计数。`ok(...)` 构造成功结果（字符串原样返回，其他值 JSON 化）。
+**What you'll see**: from the next turn, `call_count` appears in the model's tool catalog; calling it returns the current count. `ok(...)` builds a successful result (strings verbatim, other values JSON-encoded).
 
-### 第 4 步：注册斜杠命令，改代码看热载
+### Step 4: Register a slash command, watch the hot reload
 
-再追加一个斜杠命令（反引号字符串支持 `${...}` 插值）：
+Add a slash command (backtick strings support `${...}` interpolation):
 
 ```rhai
-register_command("calls", "显示工具调用次数", |args, ctx| {
-    message(`到目前为止共调用 ${mod_state_get("calls") ?? 0} 次工具`);
+register_command("calls", "Show the tool-call count", |args, ctx| {
+    message(`${mod_state_get("calls") ?? 0} tool calls so far`);
 });
 ```
 
-**预期效果**：
+**What you'll see**:
 
-- 敲 `/calls` 显示计数——`message(...)` 展示给用户（想触发智能体则用 `send(...)`）
-- 现在**直接改 `mod.rhai` 并保存**——watcher 监视两个 mods 根（500ms 防抖 + 1s 冷却），安静后自动重载，同 id 免审批。`/mods status` 可确认已加载的 mod 与 runner 代数
+- Typing `/calls` shows the count — `message(...)` displays to the user (use `send(...)` to feed the agent conversation instead)
+- Now **edit `mod.rhai` and save** — the watcher monitors both mods roots (500ms debounce + 1s cooldown) and hot-reloads after the quiet window, no re-approval for the same id. `/mods status` confirms which mods are loaded and the runner generation
 
-到此你已经用过全部四种注册面：事件钩子、工具、命令、KV。完整 `/mods` 命令：`list` / `status` / `info <id>` / `activate <id>` / `enable|disable <id>` / `remove <id>` / `reload`。
+You've now touched all four registration surfaces: event hooks, tools, commands, KV. Full `/mods` command set: `list` / `status` / `info <id>` / `activate <id>` / `enable|disable <id>` / `remove <id>` / `reload`.
 
-## 速查
+## Quick Reference
 
-### 事件钩子
+### Event hooks
 
-`on("<event>", |e, ctx| { ... })`——`e` 是事件 payload map（都带 `kind` 字段），`ctx` 是 `#{cwd, mode, idle, generation}`，**ctx 可省略**（写 `|e|` 即可）。事件名是 `ExtensionEventKind` 的 kebab-case 全量 23 种：
+`on("<event>", |e, ctx| { ... })` — `e` is the event payload map (every payload carries `kind`), `ctx` is `#{cwd, mode, idle, generation}`; **ctx is optional** (`|e|` works). Event names are the kebab-case spelling of all 23 `ExtensionEventKind` variants:
 
-| 事件 | payload 字段 |
+| Event | Payload fields |
 |---|---|
 | `input` | `text` |
-| `before-agent-start` | `system_prompt`、`inject_message`（`()` 表示未设置） |
-| `before-provider-request` | `messages`（JSON 值） |
-| `after-provider-response` | `response`（JSON 值） |
-| `tool-call` | `id`、`name`、`input`（JSON 值） |
-| `tool-result` | `id`、`name`、`content`、`success`、`is_error` |
-| `turn-start` / `turn-end` | `turn_id`；`turn-end` 另有 `reason` |
-| `tool-execution-update` | `id`、`name`、`message` |
+| `before-agent-start` | `system_prompt`, `inject_message` (`()` = unset) |
+| `before-provider-request` | `messages` (JSON value) |
+| `after-provider-response` | `response` (JSON value) |
+| `tool-call` | `id`, `name`, `input` (JSON value) |
+| `tool-result` | `id`, `name`, `content`, `success`, `is_error` |
+| `turn-start` / `turn-end` | `turn_id`; `turn-end` also `reason` |
+| `tool-execution-update` | `id`, `name`, `message` |
 | `project-trust` / `session-start` / `resources-discover` | `reason` |
-| `agent-start` / `before-provider-headers` / `tool-execution-start` / `tool-execution-end` / `agent-end` / `agent-settled` / `session-before-switch` / `session-before-fork` / `session-shutdown` / `session-before-compact` / `session-compact` | （仅 `kind`） |
+| `agent-start` / `before-provider-headers` / `tool-execution-start` / `tool-execution-end` / `agent-end` / `agent-settled` / `session-before-switch` / `session-before-fork` / `session-shutdown` / `session-before-compact` / `session-compact` | (`kind` only) |
 
-未接线事件（宿主 seam 尚未兑现）订阅不触发：`tool-execution-update`、`resources-discover`、`session-before-fork`。
+Unwired events (host seam not yet connected) never fire: `tool-execution-update`, `resources-discover`, `session-before-fork`.
 
-### 钩子返回值 → HandlerOutcome
+### Hook return value → HandlerOutcome
 
-| 脚本返回 | HandlerOutcome | 生效 seam |
+| Script returns | HandlerOutcome | Effective seams |
 |---|---|---|
-| `proceed()` 或 `()` | `Continue` | 全部 |
-| `block(reason)` | `Block`（越权 seam 忽略） | `tool-call` |
-| `cancel(reason)` | `Cancel`（越权 seam 忽略） | `session-before-*` |
-| `transform(#{...})` | `Transform`（合并可变字段后继续链） | 见下 |
+| `proceed()` or `()` | `Continue` | all |
+| `block(reason)` | `Block` (ignored at non-block seams) | `tool-call` |
+| `cancel(reason)` | `Cancel` (ignored at non-cancel seams) | `session-before-*` |
+| `transform(#{...})` | `Transform` (merges mutable fields, chain continues) | see below |
 
-Transform 可变字段（一个 handler 的改写对后续 handler 立即可见）：
+Transform mutable fields (one handler's rewrite is immediately visible to the next):
 
-- `input`：`text`
-- `before-agent-start`：`system_prompt`、`inject_message`（字符串=设置，`()`=清除，缺省=保持）
-- `before-provider-request`：`messages`
-- `tool-result`：`content`、`success`、`is_error`
+- `input`: `text`
+- `before-agent-start`: `system_prompt`, `inject_message` (string = set, `()` = clear, absent = keep)
+- `before-provider-request`: `messages`
+- `tool-result`: `content`, `success`, `is_error`
 
-### 能力面函数
+### Capability functions
 
-| 函数 | 说明 |
+| Function | Description |
 |---|---|
-| `mod_state_get(key)` | 读持久 KV；不存在返回 `()`（配 `??` 默认值） |
-| `mod_state_set(key, value)` | 写持久 KV（原子落盘，`~/.codesmith/mods-state/`） |
-| `mod_log(msg)` | 打日志（target `codesmith_mods`） |
-| `now_ms()` | Unix 毫秒时间戳 |
-| `proceed / block / cancel / transform` | 钩子控制值 |
-| `ok(value) / err(msg)` | 工具结果构造 |
-| `message(msg) / send(msg)` | 命令输出（展示 / 注入对话） |
+| `mod_state_get(key)` | Read persistent KV; `()` when absent (pair with `??`) |
+| `mod_state_set(key, value)` | Write persistent KV (atomic write, `~/.codesmith/mods-state/`) |
+| `mod_log(msg)` | Log (target `codesmith_mods`) |
+| `now_ms()` | Unix timestamp in milliseconds |
+| `proceed / block / cancel / transform` | Hook control values |
+| `ok(value) / err(msg)` | Tool-result constructors |
+| `message(msg) / send(msg)` | Command output (display / feed the agent) |
 
-### 资源限制与错误姿态
+### Resource limits and error posture
 
-每次脚本调用上限 200,000 操作数、64 层调用深度、8 MiB 字符串 / 100k 数组与 map 元素。超限或脚本出错：**钩子 fail-open**（`warn` + `Continue`，一个坏 mod 不会打断链）；工具/命令返回普通错误给模型。不暴露文件/网络/进程——引擎未注册任何 I/O native，不注入即不存在。
+Per script call: 200,000 operations, 64 call levels, 8 MiB strings / 100k array & map elements. On limit breach or script error: **hooks fail open** (`warn` + `Continue` — one broken mod cannot break the chain); tools/commands return a normal error to the model. No fs/net/process — the engine registers no I/O natives; absence is the sandbox.
 
-## mod.toml 字段
+## mod.toml Fields
 
-| 字段 | 必需 | 说明 |
+| Field | Required | Description |
 |---|---|---|
-| `id` | ✓ | 稳定标识，`[a-zA-Z0-9._-]`，即目录名/状态键 |
-| `version` | ✓ | 语义化版本串（展示用） |
-| `name` | | 人类可读名，默认 = id |
-| `description` | | 激活审批时展示给用户的一句话说明 |
-| `entry` | | 入口脚本相对路径，默认 `mod.rhai`；绝对路径与 `..` 被拒绝 |
+| `id` | ✓ | Stable identity, `[a-zA-Z0-9._-]` — the directory name / state key |
+| `version` | ✓ | Semantic version string (display only) |
+| `name` | | Human-readable name, defaults to id |
+| `description` | | One-liner shown at activation approval |
+| `entry` | | Entry script path relative to the mod dir, defaults to `mod.rhai`; absolute paths and `..` are rejected |
 
-## 生命周期与安全模型
+## Lifecycle & Security Model
 
-- **首次激活需确认**：新 mod 被发现 → 跳过加载 + TUI 被动提示待激活。激活只有两条路：`/mods activate <id>`，或审批 `manage_mods(action="activate")` 工具调用。激活记录持久化（`~/.codesmith/mods_state.toml`），同 id 重载免审批。**为什么**：mod 是进程内代码且跨会话持久——提示注入可以在用户无感时植入常驻钩子，首次确认正是防这一点。
-- **让智能体代写**：直接说"帮我写一个 mod，拦截 git push"——模型会经 `manage_mods` 工具写文件（`write`）并请求你审批激活（`activate`）。
-- **项目级 mods** 沿用 workspace trust：未信任工作区直接不发现；`manage_mods` 写项目 mod 同样拒绝未信任工作区。
-- **已知边界**：mod 工具与 Rust 扩展工具同为"主 turn 独占"（子代理结构性不可见）；网络安装源（git clone 到 mods 目录）不在 MVP。
+- **First activation requires consent**: a newly discovered mod is skipped + passively announced as pending. Activation has exactly two paths: `/mods activate <id>`, or approving a `manage_mods(action="activate")` tool call. The activation record persists (`~/.codesmith/mods_state.toml`); same-id reloads need no re-approval. **Why**: mods are in-process code that persists across sessions — a prompt injection could plant a resident hook unnoticed; first-activation consent is exactly the guard against that.
+- **Let the agent write mods for you**: just ask ("write me a mod that blocks git push") — the model writes files via the `manage_mods` tool (`write`) and requests your approval to activate (`activate`).
+- **Project mods** follow workspace trust: an untrusted workspace discovers nothing; `manage_mods` likewise refuses to write project mods into an untrusted workspace.
+- **Known boundaries**: mod tools, like Rust-extension tools, are main-turn only (sub-agents structurally never see them); network install sources (git clone into the mods dir) are out of MVP scope.
 
-## 配置
+## Configuration
 
-`config.toml` 的 `[mods]` 节（两者默认 true）：
+The `[mods]` section of `config.toml` (both default to true):
 
 ```toml
 [mods]
-enabled = true   # 总开关：发现、manage_mods 工具、watcher
-watch = true     # 仅文件 watcher（500ms 防抖 + 1s 冷却）
+enabled = true   # master switch: discovery, manage_mods tool, watcher
+watch = true     # file watcher only (500ms debounce + 1s cooldown)
 ```
 
-## 实现索引
+## Implementation Index
 
-| 部件 | 位置 |
+| Component | Location |
 |---|---|
-| `ModManifest` / `discover_mods` / 信任门 | `crates/extensions/src/script/mod_manifest.rs` |
-| `RhaiMod`（Extension 实现、native 注册、事件映射） | `crates/extensions/src/script/rhai_mod.rs` |
+| `ModManifest` / `discover_mods` / trust gate | `crates/extensions/src/script/mod_manifest.rs` |
+| `RhaiMod` (Extension impl, native registration, event mapping) | `crates/extensions/src/script/rhai_mod.rs` |
 | `ScriptHandler` / `ScriptToolDefinition` / `ScriptCommandDefinition` | `crates/extensions/src/script/adapters.rs` |
-| `ModKvStore`（每 mod 持久 KV） | `crates/extensions/src/script/kv.rs` |
-| `ModStateStore`（激活/禁用状态） | `crates/tui/src/mod_state.rs` |
-| 共享操作层（/mods 与 manage_mods 单一实现、watcher） | `crates/tui/src/mod_ops.rs` |
-| 装配/门控接入（`populate` 返回 pending 报告） | `crates/tui/src/core/engine.rs` |
-| `ManageModsTool`（模型可见） | `crates/tui/src/tools/mods.rs` |
-| `/mods` 命令 | `crates/tui/src/commands/mod_commands.rs` |
+| `ModKvStore` (per-mod persistent KV) | `crates/extensions/src/script/kv.rs` |
+| `ModStateStore` (activation/disablement state) | `crates/tui/src/mod_state.rs` |
+| Shared ops layer (single impl behind /mods & manage_mods, watcher) | `crates/tui/src/mod_ops.rs` |
+| Assembly/gating (populate returns the pending report) | `crates/tui/src/core/engine.rs` |
+| `ManageModsTool` (model-visible) | `crates/tui/src/tools/mods.rs` |
+| `/mods` commands | `crates/tui/src/commands/mod_commands.rs` |
 
-## 延伸阅读
+## Further Reading
 
-- [EXTENSIONS.md](EXTENSIONS.md) — Rust 扩展（dylib / 编译进二进制）：同一 `Extension` 契约的完整能力形态
-- [HOOKS.md](HOOKS.md) — shell 命令形态的生命周期钩子（进程外，与本页进程内钩子互补）
+- [EXTENSIONS.md](EXTENSIONS.md) — Rust extensions (dylib / compiled-in): the full-capability form of the same `Extension` contract
+- [HOOKS.md](HOOKS.md) — lifecycle hooks as shell commands (out-of-process; complements the in-process hooks on this page)
