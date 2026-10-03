@@ -3722,6 +3722,62 @@ mod tests {
             .await
     }
 
+    /// Reqwest client for loopback tests. `.no_proxy()` is required: the
+    /// workspace feature unification enables reqwest's `system-proxy`
+    /// feature, which routes test traffic through the machine proxy (it does
+    /// not honor the loopback bypass entry), breaking raw-socket tests that
+    /// count connections.
+    fn loopback_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("loopback reqwest client")
+    }
+
+    /// Read one HTTP/1.1 request off a raw loopback socket: headers through
+    /// `\r\n\r\n`, then the Content-Length body bytes. A single `read()`
+    /// returns whatever TCP segment arrived first, which under parallel test
+    /// load can split a request mid-headers; loop until the request is whole.
+    async fn read_http_request<S: tokio::io::AsyncRead + Unpin>(
+        socket: &mut S,
+    ) -> std::io::Result<String> {
+        use tokio::io::AsyncReadExt;
+
+        let mut buf: Vec<u8> = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let head_end = loop {
+            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break pos + 4;
+            }
+            let n = socket.read(&mut chunk).await?;
+            if n == 0 {
+                break buf.len();
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        };
+        let head = String::from_utf8_lossy(&buf[..head_end.min(buf.len())]).to_string();
+        let content_length = head
+            .split("\r\n")
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                if name.trim().eq_ignore_ascii_case("content-length") {
+                    value.trim().parse::<usize>().ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
+        let total = head_end + content_length;
+        while buf.len() < total {
+            let n = socket.read(&mut chunk).await?;
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        }
+        Ok(String::from_utf8_lossy(&buf[..total.min(buf.len())]).into_owned())
+    }
+
     #[test]
     fn truncate_mcp_description_is_utf8_safe_and_limited() {
         let description = "界".repeat(MAX_MCP_DESCRIPTION_LENGTH + 5);
@@ -3964,7 +4020,7 @@ mod tests {
 
     #[test]
     fn default_mcp_http_get_accepts_json_and_event_stream() {
-        let client = reqwest::Client::new();
+        let client = loopback_client();
         let request =
             with_default_mcp_http_headers(client.get("https://example.invalid/mcp"), false)
                 .build()
@@ -3981,7 +4037,7 @@ mod tests {
 
     #[test]
     fn default_mcp_http_post_accepts_json_and_event_stream() {
-        let client = reqwest::Client::new();
+        let client = loopback_client();
         let request =
             with_default_mcp_http_headers(client.post("https://example.invalid/mcp"), true)
                 .build()
@@ -4001,7 +4057,7 @@ mod tests {
 
     #[test]
     fn streamable_http_transport_stores_headers() {
-        let client = reqwest::Client::new();
+        let client = loopback_client();
         let mut headers = HashMap::new();
         headers.insert("Authorization".to_string(), "Bearer xyz".to_string());
         let transport = StreamableHttpTransport::new(
@@ -5326,7 +5382,7 @@ mod tests {
             }
         });
 
-        let client = reqwest::Client::new();
+        let client = loopback_client();
         let url = format!("http://{addr}/sse");
         let mut transport = SseTransport::connect(
             client,
@@ -5418,7 +5474,7 @@ mod tests {
             }
         });
 
-        let client = reqwest::Client::new();
+        let client = loopback_client();
         let url = format!("http://{addr}/sse");
         let mut transport = SseTransport::connect(
             client,
@@ -5519,7 +5575,7 @@ mod tests {
             }
         });
 
-        let client = reqwest::Client::new();
+        let client = loopback_client();
         let url = format!("http://{addr}/sse");
         let mut headers = HashMap::new();
         headers.insert("X-Custom-Auth".to_string(), "my-test-token".to_string());
@@ -5611,7 +5667,7 @@ mod tests {
             }
         });
 
-        let client = reqwest::Client::new();
+        let client = loopback_client();
         let url = format!("http://{addr}/sse");
         let mut transport = SseTransport::connect(
             client,
@@ -5856,7 +5912,7 @@ mod tests {
 
         let (_sender, receiver) = mpsc::unbounded_channel();
         let mut transport = SseTransport {
-            client: reqwest::Client::new(),
+            client: loopback_client(),
             base_url: format!("http://{addr}/sse"),
             headers: HashMap::new(),
             oauth: None,
@@ -6082,7 +6138,7 @@ mod tests {
     #[test]
     fn session_id_starts_none() {
         let transport = StreamableHttpTransport::new(
-            reqwest::Client::new(),
+            loopback_client(),
             "https://example.invalid/mcp".to_string(),
             HashMap::new(),
             None,
@@ -6093,7 +6149,7 @@ mod tests {
     /// Session ID captured from a POST response is replayed on the next POST.
     #[tokio::test]
     async fn session_id_captured_from_post_response_and_replayed() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::io::AsyncWriteExt;
         use tokio::net::TcpListener;
 
         let _lock = lock_mcp_loopback_tests().await;
@@ -6101,9 +6157,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let mut buf = [0u8; 4096];
-            let n = socket.read(&mut buf).await.unwrap();
-            let req = String::from_utf8_lossy(&buf[..n]);
+            let req = read_http_request(&mut socket).await.unwrap();
             assert!(req.starts_with("POST "), "expected POST, got: {req}");
 
             // First POST: return a session ID so the transport captures it.
@@ -6116,9 +6170,7 @@ mod tests {
             socket.flush().await.unwrap();
 
             // Read the second POST — should contain the session ID.
-            let mut buf2 = [0u8; 4096];
-            let n2 = socket.read(&mut buf2).await.unwrap();
-            let req2 = String::from_utf8_lossy(&buf2[..n2]);
+            let req2 = read_http_request(&mut socket).await.unwrap();
             // reqwest lower-cases header names.
             let req2_lower = req2.to_lowercase();
             assert!(
@@ -6132,7 +6184,7 @@ mod tests {
                 .unwrap();
         });
 
-        let client = reqwest::Client::new();
+        let client = loopback_client();
         let url = format!("http://{addr}/mcp");
         let mut transport = StreamableHttpTransport::new(client, url, HashMap::new(), None);
 
@@ -6199,7 +6251,7 @@ mod tests {
                 .unwrap();
         });
 
-        let client = reqwest::Client::new();
+        let client = loopback_client();
         let url = format!("http://{addr}/mcp");
         let mut headers = HashMap::new();
         headers.insert("X-Custom-Auth".to_string(), "my-test-token".to_string());
