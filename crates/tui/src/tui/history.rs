@@ -4171,7 +4171,7 @@ mod tests {
     /// should leak the rail.
     #[test]
     fn assistant_wrapped_code_lines_keep_no_rail() {
-        let long = "let x = ".to_string() + &"abcdef ".repeat(40);
+        let long = format!("let x = {}", "abcdef ".repeat(40));
         let content = format!("```\n{long}\n```");
         let cell = HistoryCell::Assistant {
             content,

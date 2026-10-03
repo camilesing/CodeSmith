@@ -227,6 +227,8 @@ fn reload(app: &mut App) -> CommandResult {
         &runner,
         &app.workspace,
         &app.extension_state,
+        &app.mod_state,
+        app.mods_enabled,
         shared_cancel_token,
     );
     CommandResult::message(format!(

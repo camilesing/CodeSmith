@@ -29,6 +29,7 @@
 //! `codesmith-hooks`. The cost is two new deps on this core crate
 //! (`async-trait`, `tokio-util`); both are workspace staples.
 
+use std::borrow::Cow;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -86,20 +87,42 @@ impl From<ToolError> for ExtensionError {
 /// `id` is the stable key (lowercase, `-`-separated); `name` is the human
 /// display; `version` mirrors the crate version. Slice 1 populates from
 /// [`ExtensionMetadata::new`]`(id)`.
+///
+/// Fields are `Cow<'static, str>` so both registration styles coexist:
+/// compiled-in extensions keep the const [`ExtensionMetadata::new`] (borrowed
+/// `&'static str`), while script Mods (§F script mod layer) — whose
+/// id/name/version are parsed from `mod.toml` at discovery time — use
+/// [`ExtensionMetadata::from_strings`] (owned `String`s).
 #[derive(Debug, Clone)]
 pub struct ExtensionMetadata {
-    pub id: &'static str,
-    pub name: &'static str,
-    pub version: &'static str,
+    pub id: Cow<'static, str>,
+    pub name: Cow<'static, str>,
+    pub version: Cow<'static, str>,
 }
 
 impl ExtensionMetadata {
     #[must_use]
     pub const fn new(id: &'static str) -> Self {
         Self {
-            id,
-            name: id,
-            version: env!("CARGO_PKG_VERSION"),
+            id: Cow::Borrowed(id),
+            name: Cow::Borrowed(id),
+            version: Cow::Borrowed(env!("CARGO_PKG_VERSION")),
+        }
+    }
+
+    /// Owned-string constructor for runtime-discovered sources (script Mods).
+    /// `name` defaults to the id when empty.
+    #[must_use]
+    pub fn from_strings(id: String, name: String, version: String) -> Self {
+        let name = if name.trim().is_empty() {
+            id.clone()
+        } else {
+            name
+        };
+        Self {
+            id: Cow::Owned(id),
+            name: Cow::Owned(name),
+            version: Cow::Owned(version),
         }
     }
 }

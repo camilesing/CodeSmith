@@ -19,6 +19,7 @@ mod init;
 mod jobs;
 mod mcp;
 mod memory;
+mod mod_commands;
 mod network;
 mod note;
 mod provider;
@@ -575,6 +576,13 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/extension <list|info <id>|enable <id>|disable <id>|status|reload|install <src>|uninstall <id>>",
         description_id: MessageId::CmdHelpDescription, // reuse for now; §F2 adds a dedicated MessageId
     },
+    // Script Mods (§F script mod layer)
+    CommandInfo {
+        name: "mods",
+        aliases: &[],
+        usage: "/mods <list|status|info <id>|activate <id>|enable <id>|disable <id>|remove <id>|reload>",
+        description_id: MessageId::CmdHelpDescription,
+    },
 ];
 
 /// Execute a slash command
@@ -591,6 +599,12 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
 
     // §F1 — extension command lookup (after user-defined, before static match).
     if let Some(result) = extension_commands::try_dispatch(app, cmd.trim()) {
+        return result;
+    }
+
+    // §F script mod layer — /mods command lookup (after /extension, before
+    // the static match).
+    if let Some(result) = mod_commands::try_dispatch(app, cmd.trim()) {
         return result;
     }
 

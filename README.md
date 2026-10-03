@@ -49,7 +49,7 @@ Get started: [user guide](docs/GUIDE.md) · [presets & approvals](docs/PRESETS.m
 
 Configure: [configuration](docs/CONFIGURATION.md) · [providers](docs/PROVIDERS.md) · [install](docs/INSTALL.md) · [Docker](docs/DOCKER.md)
 
-Internals & extension: [harness](docs/HARNESS.md) · [architecture](docs/ARCHITECTURE.md) · [design internals](docs/DESIGN_INTERNALS.md) · [sandbox](docs/SANDBOX.md) · [sub-agents](docs/SUBAGENTS.md) · [MCP](docs/MCP.md) · [hooks](docs/HOOKS.md) · [runtime API & Zed ACP](docs/RUNTIME_API.md) · [ops runbook](docs/OPERATIONS_RUNBOOK.md) · [release process](docs/RELEASE_RUNBOOK.md) · [changelog](CHANGELOG.md)
+Internals & extension: [harness](docs/HARNESS.md) · [architecture](docs/ARCHITECTURE.md) · [design internals](docs/DESIGN_INTERNALS.md) · [sandbox](docs/SANDBOX.md) · [sub-agents](docs/SUBAGENTS.md) · [MCP](docs/MCP.md) · [hooks](docs/HOOKS.md) · [script mods](docs/MODS.md) · [runtime API & Zed ACP](docs/RUNTIME_API.md) · [ops runbook](docs/OPERATIONS_RUNBOOK.md) · [release process](docs/RELEASE_RUNBOOK.md) · [changelog](CHANGELOG.md)
 
 ## Project
 

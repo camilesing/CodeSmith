@@ -631,6 +631,35 @@ pub async fn run_tui(
     // `/extension reload` can pass the live engine token (not a fresh one)
     // into the reloaded context.
     app.extension_shared_cancel_token = Some(engine_handle.cancel_token.clone());
+    // §F script mod layer — passive first-run notice for discovered-but-
+    // unactivated mods (the consent gate). `/mods list` / `/mods status`
+    // are the durable queries.
+    if !engine_handle.mods_pending.is_empty() {
+        let ids: Vec<String> = engine_handle
+            .mods_pending
+            .iter()
+            .map(|m| format!("{} (v{}, {})", m.id, m.version, m.source))
+            .collect();
+        app.add_message(HistoryCell::System {
+            content: format!(
+                "{} new mod(s) awaiting activation: {}. Activate with /mods activate <id> (one-time consent).",
+                engine_handle.mods_pending.len(),
+                ids.join(", ")
+            ),
+        });
+    }
+    // §F script mod layer Phase B7 — hot-reload watcher over both mods
+    // roots (500ms debounce + 1s cooldown; gated by [mods] watch).
+    if config.mods_enabled()
+        && config.mods_watch()
+        && let Some(runner) = app.extension_runner.clone()
+    {
+        crate::mod_ops::spawn_mods_watcher(
+            runner,
+            app.workspace.clone(),
+            engine_handle.cancel_token.clone(),
+        );
+    }
     // The translation client is optional: it never crashes the TUI on
     // startup, even when the API key is missing, the base URL is malformed,
     // or the network is unavailable.

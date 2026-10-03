@@ -739,11 +739,9 @@ pub fn env_for(name: &str) -> Option<String> {
         // is deliberately NOT reused here: silently presenting a
         // DeepSeek-issued credential to NVIDIA endpoints leaks that key to a
         // third party, so NVIDIA auth requires an NVIDIA (or app-wide) token.
-        "nvidia" | "nvidia-nim" | "nvidia_nim" | "nim" => &[
-            "NVIDIA_API_KEY",
-            "NVIDIA_NIM_API_KEY",
-            "CODESMITH_API_KEY",
-        ],
+        "nvidia" | "nvidia-nim" | "nvidia_nim" | "nim" => {
+            &["NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY", "CODESMITH_API_KEY"]
+        }
         "fireworks" | "fireworks-ai" => &["FIREWORKS_API_KEY"],
         "siliconflow" | "silicon-flow" | "silicon_flow" => &["SILICONFLOW_API_KEY"],
         "moonshot" | "moonshot-ai" | "kimi" | "kimi-k2" => &["MOONSHOT_API_KEY", "KIMI_API_KEY"],

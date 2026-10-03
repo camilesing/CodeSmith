@@ -288,6 +288,21 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(LoadSkillTool))
     }
 
+    /// Include the `manage_mods` tool (§F script mod layer Phase C) so the
+    /// agent can list/write/activate mods for the user. Registered only when
+    /// the mod layer is live (`mod_reload` is `Some`); the per-action
+    /// approval gate lives on the tool (`approval_requirement_for_input`).
+    #[must_use]
+    pub fn with_mods_tool(self, reload: Option<crate::mod_ops::ModReloadCtx>) -> Self {
+        use super::mods::ManageModsTool;
+        match reload {
+            Some(reload) => self.with_tool(Arc::new(ManageModsTool {
+                reload: Some(reload),
+            })),
+            None => self,
+        }
+    }
+
     /// Include project mapping tools.
     #[must_use]
     pub fn with_project_tools(self) -> Self {

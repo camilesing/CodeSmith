@@ -46,6 +46,11 @@ clap = { version = "4.5.54", features = ["derive"] }
 clap_complete = "4.5"
 dirs = "6.0.0"
 reqwest = { version = "0.13.1", default-features = false, features = ["json", "rustls", "socks"] }
+# rhai: script runtime for Mods (§F script mod layer). `sync` is a hard
+# requirement — the `Handler`/`ToolDefinition` trait objects a mod registers
+# must be Send+Sync; `serde` gives `rhai::serde::{to_dynamic, from_dynamic}`
+# for the JSON-schema / tool-input conversions.
+rhai = { version = "1", features = ["sync", "serde"] }
 # rig: LLM provider framework. `reqwest`+`rustls` mirrors our TLS stack and
 # unifies with the workspace `reqwest 0.13.x` (Cargo merges features into one
 # build). `derive` is off — CodeSmith keeps its own `Tool`/`LlmClient` traits
@@ -60,6 +65,9 @@ tokio = { version = "1.49.0", features = ["full"] }
 toml = "0.9.7"
 sha2 = "0.10"
 ignore = "0.4"
+# notify: file watching for the Mods script-layer hot reload (§F script mod
+# layer Phase B7). Watch-only; events are debounced + cooldown-gated.
+notify = "8"
 # ripgrep engine crates: `grep_files` walks with `ignore` and matches with
 # `grep-regex`/`grep-matcher` so tool search gets ripgrep semantics
 # (gitignore-aware walking, multi-line mode) without shelling out to `rg`.

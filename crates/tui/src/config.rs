@@ -1214,6 +1214,12 @@ pub struct Config {
     /// attaches (writes to disk) once the workspace trust boundary passes.
     #[serde(default)]
     pub telemetry: Option<bool>,
+    /// Script Mods (§F script mod layer) controls: `enabled` gates the whole
+    /// script-mod layer (discovery, `manage_mods` tool, watcher), `watch`
+    /// gates only the hot-reload file watcher. Both default to `true`.
+    /// Documented in `config.example.toml` + `docs/MODS.md`.
+    #[serde(default)]
+    pub mods: Option<ModsConfig>,
     /// External sandbox backend: `"none"` or `"opensandbox"`.
     /// When set, exec_shell routes commands through the backend's HTTP API
     /// instead of spawning a local process.
@@ -1513,6 +1519,25 @@ impl Config {
         let toml_cfg = self.network.clone().unwrap_or_default();
         crate::network_policy::NetworkPolicyDecider::with_default_audit(toml_cfg.into_runtime())
     }
+
+    /// Script-mod layer enabled? (default `true`).
+    #[must_use]
+    pub fn mods_enabled(&self) -> bool {
+        self.mods.as_ref().and_then(|m| m.enabled).unwrap_or(true)
+    }
+
+    /// Script-mod hot-reload watcher enabled? (default `true`).
+    #[must_use]
+    pub fn mods_watch(&self) -> bool {
+        self.mods.as_ref().and_then(|m| m.watch).unwrap_or(true)
+    }
+}
+
+/// `[mods]` table (§F script mod layer).
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct ModsConfig {
+    pub enabled: Option<bool>,
+    pub watch: Option<bool>,
 }
 
 /// `[lsp]` table — mirrors [`crate::lsp::LspConfig`]. Documented in
@@ -4330,6 +4355,7 @@ fn apply_profile(config: ConfigFile, profile: Option<&str>) -> Result<Config> {
 
 fn merge_config(base: Config, override_cfg: Config) -> Config {
     Config {
+        mods: None,
         provider: override_cfg.provider.or(base.provider),
         custom_provider: override_cfg.custom_provider.or(base.custom_provider),
         api_key: override_cfg.api_key.or(base.api_key),

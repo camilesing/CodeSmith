@@ -406,7 +406,7 @@ mod tests {
             all.iter().any(|r| r.metadata.id == "test-noop"),
             "test-noop not discovered; all={} (inventory submit may need module-scope; see plan §4.3 fallback)",
             all.iter()
-                .map(|r| r.metadata.id)
+                .map(|r| r.metadata.id.as_ref())
                 .collect::<Vec<_>>()
                 .join(", ")
         );

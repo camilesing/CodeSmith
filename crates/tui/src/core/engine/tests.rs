@@ -4675,10 +4675,13 @@ async fn f2b_extension_reload_clears_and_rebinds_live() {
     // is cleared (it wasn't discovered via `discover_static`, so it isn't
     // re-bound); generation bumps.
     let state = crate::extension_state::ExtensionStateStore::load_default().unwrap_or_default();
+    let mod_state = crate::mod_state::ModStateStore::load_default().unwrap_or_default();
     super::reload_extension_runtime(
         &runner,
         &workspace,
         &state,
+        &mod_state,
+        true,
         std::sync::Arc::new(std::sync::Mutex::new(
             tokio_util::sync::CancellationToken::new(),
         )),
@@ -4693,6 +4696,128 @@ async fn f2b_extension_reload_clears_and_rebinds_live() {
         *seen.lock().unwrap(),
         vec!["SessionShutdown"],
         "reload must clear the previously-bound handler (no duplication)"
+    );
+}
+
+// === §F script mod layer — e2e: discover → pending gate → activate → live ==//
+//
+// Mirrors the §F2b reload-regression shape: a fixture mod under the (HOME-
+// scoped) global mods root, a tempdir-backed `ModStateStore`, and the real
+// populate/reload path. Proves the first-activation gate end to end:
+// unactivated mods are discovered but NOT loaded (pending report), the tool
+// appears only after `activate` + reload, executes through the runner's
+// adapter path, and disappears again on disable + reload.
+
+struct ScopedHome {
+    previous: Option<std::ffi::OsString>,
+}
+
+impl ScopedHome {
+    fn set(path: &std::path::Path) -> Self {
+        let previous = std::env::var_os("HOME");
+        // Safety: serialized with lock_test_env(); restored in Drop.
+        unsafe {
+            std::env::set_var("HOME", path);
+        }
+        Self { previous }
+    }
+}
+
+impl Drop for ScopedHome {
+    fn drop(&mut self) {
+        // Safety: tests using this helper serialize with lock_test_env().
+        unsafe {
+            if let Some(previous) = self.previous.take() {
+                std::env::set_var("HOME", previous);
+            } else {
+                std::env::remove_var("HOME");
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn mods_populate_gates_pending_activation_then_loads_after_activate() {
+    let _guard = lock_test_env();
+    let tmp = tempdir().expect("tempdir");
+    let _home = ScopedHome::set(tmp.path());
+    let workspace = tmp.path().to_path_buf();
+
+    // Fixture mod in the global root (trust-gate exempt): one tool.
+    let mod_dir = tmp.path().join(".codesmith").join("mods").join("e2e-mod");
+    fs::create_dir_all(&mod_dir).expect("mod dir");
+    fs::write(
+        mod_dir.join("mod.toml"),
+        "id = \"e2e-mod\"\nversion = \"0.1.0\"\ndescription = \"e2e fixture\"\n",
+    )
+    .expect("mod.toml");
+    fs::write(
+        mod_dir.join("mod.rhai"),
+        "register_tool(#{name: \"e2e_greet\", description: \"e2e greeting\"}, |input| { ok(\"hello from mod\") });",
+    )
+    .expect("mod.rhai");
+
+    let mut mod_state = crate::mod_state::ModStateStore::load_from(
+        tmp.path().join(".codesmith").join("mods_state.toml"),
+    )
+    .expect("mod state");
+    let ext_state = crate::extension_state::ExtensionStateStore::load_default().unwrap_or_default();
+    let cancel = std::sync::Arc::new(std::sync::Mutex::new(
+        tokio_util::sync::CancellationToken::new(),
+    ));
+
+    let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
+
+    // 1. Populate with the mod NOT activated: pending report, nothing bound.
+    let report = super::populate_extension_runtime(
+        &runner,
+        &workspace,
+        &ext_state,
+        &mod_state,
+        true,
+        cancel.clone(),
+    );
+    assert_eq!(report.loaded_mods, 0, "unactivated mod must not load");
+    assert_eq!(report.pending_mods.len(), 1, "{:?}", report.pending_mods);
+    assert_eq!(report.pending_mods[0].id, "e2e-mod");
+    assert!(
+        !runner.bound_tools().iter().any(|(n, _)| n == "e2e_greet"),
+        "unactivated mod's tool must not be bound"
+    );
+
+    // 2. Activate + reload: the mod loads and its tool binds.
+    mod_state.activate("e2e-mod").expect("activate");
+    let report = super::reload_extension_runtime(
+        &runner,
+        &workspace,
+        &ext_state,
+        &mod_state,
+        true,
+        cancel.clone(),
+    );
+    assert_eq!(report.loaded_mods, 1);
+    assert!(report.pending_mods.is_empty());
+    let tool = runner
+        .bound_tools()
+        .into_iter()
+        .find(|(n, _)| n == "e2e_greet")
+        .expect("e2e_greet bound after activate+reload");
+
+    // 3. The tool executes through the runner's adapter path.
+    let ctx = runner.bound_context().expect("context bound");
+    let out = tool
+        .1
+        .execute(serde_json::json!({}), &*ctx)
+        .await
+        .expect("tool executes");
+    assert_eq!(out.content, "hello from mod");
+
+    // 4. Disable + reload: the tool binding clears.
+    mod_state.set_enabled("e2e-mod", false).expect("disable");
+    super::reload_extension_runtime(&runner, &workspace, &ext_state, &mod_state, true, cancel);
+    assert!(
+        !runner.bound_tools().iter().any(|(n, _)| n == "e2e_greet"),
+        "disabled mod's tool must clear on reload"
     );
 }
 

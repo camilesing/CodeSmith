@@ -56,6 +56,8 @@ mod mcp;
 mod mcp_server;
 mod memory;
 mod memory_consolidate;
+mod mod_ops;
+mod mod_state;
 mod models;
 mod network_policy;
 mod palette;

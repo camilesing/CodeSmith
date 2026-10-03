@@ -274,6 +274,7 @@ impl HostServices for super::EngineHost {
             mode,
             todo_list,
             plan_state,
+            self.mod_reload.clone(),
         );
 
         let fork_context_for_runtime = if config.features.enabled(Feature::Subagents) {

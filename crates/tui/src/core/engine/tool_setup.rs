@@ -155,6 +155,7 @@ pub(super) fn build_turn_tool_registry_builder_for(
     mode: AppMode,
     todo_list: SharedTodoList,
     plan_state: SharedPlanState,
+    mod_reload: Option<crate::mod_ops::ModReloadCtx>,
 ) -> ToolRegistryBuilder {
     let mut builder = if mode == AppMode::Plan {
         ToolRegistryBuilder::new()
@@ -197,6 +198,7 @@ pub(super) fn build_turn_tool_registry_builder_for(
             .with_task_v2_tools_if_available(config.task_v2_manager.clone())
             .with_goal_tools(config.goal_state.clone())
             .with_worktree_tools(config.worktree_state.clone())
+            .with_mods_tool(mod_reload)
     };
 
     // Code-index navigation tools: registered only when the session enabled

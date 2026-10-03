@@ -149,6 +149,11 @@ pub struct EngineHandle {
     /// extensions were built (embed path / pre-engine). Cloning the `Arc` is
     /// cheap; the runner itself is shared with the per-turn `HostAgentExecutor`.
     pub extension_runner: Option<Arc<codesmith_extensions::ExtensionRunner>>,
+    /// §F script mod layer — mods discovered at engine build that await
+    /// first-activation consent (passive TUI notice; `/mods list` is the
+    /// durable query). A snapshot: watcher/tool reloads surface their own
+    /// reports via logs + `/mods status`.
+    pub mods_pending: Vec<crate::mod_ops::PendingModInfo>,
 }
 
 // `impl EngineHandle { ... }` lives in `engine/handle.rs`.
@@ -198,6 +203,10 @@ pub struct EngineHost {
     /// / `spawn_subagent`) can emit `ProjectTrust` without going through the
     /// `Engine`. `None` for embeds/tests that skip the extension runtime.
     pub extension_runner: Option<std::sync::Arc<codesmith_extensions::ExtensionRunner>>,
+    /// §F script mod layer — reload context handed to the model-visible
+    /// `manage_mods` tool (runner + workspace + shared cancel token), set by
+    /// `build_engine` alongside `extension_runner`. `None` for embeds/tests.
+    pub mod_reload: Option<crate::mod_ops::ModReloadCtx>,
 }
 
 impl Default for EngineHost {
@@ -220,6 +229,7 @@ impl Default for EngineHost {
             utility_llm: None,
             sandbox_backend: None,
             extension_runner: None,
+            mod_reload: None,
         }
     }
 }
@@ -497,12 +507,30 @@ pub(crate) fn resolve_seam_model_and_client(
 /// harden to share the host runtime.
 fn build_extension_runtime(
     workspace: &std::path::Path,
+    mods_enabled: bool,
     shared_cancel_token: Arc<StdMutex<tokio_util::sync::CancellationToken>>,
-) -> Arc<codesmith_extensions::ExtensionRunner> {
+) -> (Arc<codesmith_extensions::ExtensionRunner>, PopulateReport) {
     let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
     let state = crate::extension_state::ExtensionStateStore::load_default().unwrap_or_default();
-    populate_extension_runtime(&runner, workspace, &state, shared_cancel_token);
-    runner
+    let mod_state = crate::mod_state::ModStateStore::load_default().unwrap_or_default();
+    let report = populate_extension_runtime(
+        &runner,
+        workspace,
+        &state,
+        &mod_state,
+        mods_enabled,
+        shared_cancel_token,
+    );
+    (runner, report)
+}
+
+/// Result of a populate pass (§F script mod layer Phase B6): how many
+/// script mods loaded + which discovered mods await first-activation
+/// consent. The TUI surfaces `pending_mods` as a passive notice.
+#[derive(Debug, Clone, Default)]
+pub struct PopulateReport {
+    pub loaded_mods: usize,
+    pub pending_mods: Vec<crate::mod_ops::PendingModInfo>,
 }
 
 /// Shared discover → reconcile → load → `bind_core` for both the initial build
@@ -513,15 +541,17 @@ fn populate_extension_runtime(
     runner: &Arc<codesmith_extensions::ExtensionRunner>,
     workspace: &std::path::Path,
     state: &crate::extension_state::ExtensionStateStore,
+    mod_state: &crate::mod_state::ModStateStore,
+    mods_enabled: bool,
     shared_cancel_token: Arc<StdMutex<tokio_util::sync::CancellationToken>>,
-) {
+) -> PopulateReport {
     // 1. Discover compiled-in extensions (inventory).
     let discovered = codesmith_extensions::discover_static();
 
     // 2. Reconcile with state: skip disabled.
     let enabled: Vec<_> = discovered
         .into_iter()
-        .filter(|reg| state.is_enabled(reg.metadata.id))
+        .filter(|reg| state.is_enabled(&reg.metadata.id))
         .collect();
 
     // §F5b — discover dylibs (global + project; configured paths → §F5c
@@ -544,6 +574,26 @@ fn populate_extension_runtime(
             .filter(|d| state.is_enabled(&d.id))
             .collect();
 
+    // §F script mod layer Phase B6 — discover script mods, gate on trust +
+    // activation state. Disabled mods skip; discovered-but-not-activated
+    // mods skip AND are collected for the passive pending notice (the
+    // first-activation consent gate, plan §五).
+    let mut pending_mods: Vec<crate::mod_ops::PendingModInfo> = Vec::new();
+    let mut mods_to_load: Vec<codesmith_extensions::DiscoveredMod> = Vec::new();
+    if mods_enabled {
+        let discovered_mods = crate::mod_ops::discover_workspace_mods(workspace);
+        for m in discovered_mods {
+            if mod_state.is_disabled(&m.id) {
+                continue;
+            }
+            if !mod_state.is_activated(&m.id) {
+                pending_mods.push(crate::mod_ops::PendingModInfo::from_discovered(&m));
+                continue;
+            }
+            mods_to_load.push(m);
+        }
+    }
+
     // 3. Load + configure each against the stub api (best-effort; §F2 logs).
     //    The async `Extension::configure` is driven on a fresh single-thread
     //    runtime spawned on a plain OS thread: creating + dropping a tokio
@@ -555,7 +605,9 @@ fn populate_extension_runtime(
     //    spawned thread owns the runtime's lifetime cleanly; `std::thread::scope`
     //    blocks until it completes. Skipped entirely when nothing's enabled
     //    (slice 1 pre-T10: no compiled-in extensions → tests stay fast + panic-free).
-    if !enabled.is_empty() || !enabled_dylib.is_empty() {
+    let mods_kv_dir = mod_state.kv_dir();
+    let loaded_mods_cell = &std::sync::atomic::AtomicUsize::new(0);
+    if !enabled.is_empty() || !enabled_dylib.is_empty() || !mods_to_load.is_empty() {
         let runner_for_thread = runner.clone();
         std::thread::scope(|s| {
             s.spawn(move || {
@@ -579,6 +631,32 @@ fn populate_extension_runtime(
                         );
                     }
                 }
+                // §F script mod layer — load each activated script mod on
+                // the same load runtime (best-effort isolation, same as
+                // dylibs: a failing mod is warned + skipped).
+                for m in mods_to_load {
+                    match crate::mod_ops::load_rhai_mod(&m, mods_kv_dir.as_deref()) {
+                        Ok(rhai_mod) => {
+                            if let Err(e) = load_rt.block_on(runner_for_thread.load(&rhai_mod)) {
+                                tracing::warn!(
+                                    target: "codesmith_mods",
+                                    "configure mod {}: {e}",
+                                    m.id
+                                );
+                            } else {
+                                loaded_mods_cell.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "codesmith_mods",
+                                "skip mod {} ({}): {e}",
+                                m.id,
+                                m.dir.display()
+                            );
+                        }
+                    }
+                }
             });
         });
     }
@@ -597,6 +675,10 @@ fn populate_extension_runtime(
         runner.generation_arc(),
     ));
     runner.bind_core(ctx);
+    PopulateReport {
+        loaded_mods: loaded_mods_cell.load(std::sync::atomic::Ordering::Relaxed),
+        pending_mods,
+    }
 }
 
 /// §F2b T7 — live reload: re-discover + re-load + re-bind on the **shared**
@@ -614,8 +696,10 @@ pub fn reload_extension_runtime(
     runner: &Arc<codesmith_extensions::ExtensionRunner>,
     workspace: &std::path::Path,
     state: &crate::extension_state::ExtensionStateStore,
+    mod_state: &crate::mod_state::ModStateStore,
+    mods_enabled: bool,
     shared_cancel_token: Arc<StdMutex<tokio_util::sync::CancellationToken>>,
-) {
+) -> PopulateReport {
     runner.clear_handlers();
     // §F5d T3 — also clear tools/commands so the re-populate doesn't leave
     // stale bindings (name-keyed maps; safe concurrent w/ in-flight turn).
@@ -630,7 +714,14 @@ pub fn reload_extension_runtime(
     // `libraries` below. Idempotent + safe concurrent with an in-flight turn.
     runner.drain_libraries_to_pending();
     runner.invalidate();
-    populate_extension_runtime(runner, workspace, state, shared_cancel_token);
+    populate_extension_runtime(
+        runner,
+        workspace,
+        state,
+        mod_state,
+        mods_enabled,
+        shared_cancel_token,
+    )
 }
 
 /// Assemble an [`Engine`] from TUI-coupled construction state.
@@ -661,11 +752,23 @@ pub fn build_engine(
     // §F1 — build the extension runtime + bind to the host executor. §F2c
     // Layer 2: hand the engine's **shared** `cancel_token` `Arc` (not a
     // snapshot clone) so `ctx.signal()` reflects per-turn resets.
-    let extension_runner = build_extension_runtime(&config.workspace, shared_cancel_token.clone());
+    // §F script mod layer — the populate report's pending list rides on the
+    // handle for the TUI's passive first-run notice.
+    let mods_enabled = api_config.mods_enabled();
+    let (extension_runner, mods_report) =
+        build_extension_runtime(&config.workspace, mods_enabled, shared_cancel_token.clone());
     // §F2c — surface the runner on `EngineHost` too so `HostServices`
     // (`build_turn_dispatcher` / `spawn_subagent`) can emit `ProjectTrust`
     // without going through the `Engine`.
     host.extension_runner = Some(extension_runner.clone());
+    // §F script mod layer — the `manage_mods` tool reload context.
+    if mods_enabled {
+        host.mod_reload = Some(crate::mod_ops::ModReloadCtx {
+            runner: extension_runner.clone(),
+            workspace: config.workspace.clone(),
+            shared_cancel_token: shared_cancel_token.clone(),
+        });
+    }
 
     if config.features.enabled(Feature::AgentTeams) {
         let team_context = config
@@ -913,6 +1016,7 @@ pub fn build_engine(
         tx_user_input,
         tx_steer,
         extension_runner: Some(extension_runner),
+        mods_pending: mods_report.pending_mods,
     };
 
     (engine, handle)
@@ -1016,6 +1120,7 @@ impl EngineConstruct for Engine {
             mode,
             todo_list,
             plan_state,
+            self.host_concrete().mod_reload.clone(),
         )
     }
 
@@ -1106,6 +1211,7 @@ pub(crate) fn mock_engine_handle() -> MockEngineHandle {
         tx_user_input,
         tx_steer,
         extension_runner: None,
+        mods_pending: Vec::new(),
     };
 
     MockEngineHandle {
