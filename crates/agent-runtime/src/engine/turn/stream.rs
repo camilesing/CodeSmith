@@ -123,6 +123,22 @@ use crate::error_taxonomy::{ErrorCategory, classify_error_message};
 /// than a header-derived one.
 const RATE_LIMIT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Total per-request wait budget for quota walls, gated by
+/// `CODESMITH_RATE_LIMIT_HOLD_SECS` (unset/0 ⇒ disabled — the pre-existing
+/// fail-fast behavior). Read once per process; benchmark harnesses set this so
+/// long agent runs hold through a provider's 5h usage-cap window (e.g. GLM
+/// error 1308) instead of dying mid-task at the first 429.
+fn rate_limit_hold_budget() -> Option<std::time::Duration> {
+    static HOLD: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    HOLD.get_or_init(|| {
+        std::env::var("CODESMITH_RATE_LIMIT_HOLD_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|secs| *secs > 0)
+    })
+    .map(std::time::Duration::from_secs)
+}
+
 /// The idle-watchdog window for the upcoming stream attempt: the configured
 /// base, widened by `increment` for every transparent retry already spent.
 /// `None` base (watchdog disabled) stays `None`; a `Duration::ZERO`
@@ -821,6 +837,46 @@ impl HostAgentExecutor {
     /// functionally equivalent for the retry decision; the inner retry's
     /// advantage is avoiding a redundant `MessageStart` round-trip, which
     /// matters only for latency-sensitive production paths.
+    /// Env-gated long hold for provider quota walls. Reads
+    /// `CODESMITH_RATE_LIMIT_HOLD_SECS` once (total wait budget per stuck
+    /// request, e.g. 7200 to ride out a GLM 5h-usage-cap window). When set and
+    /// budget remains, sleeps one poll interval (60s) while honouring
+    /// cancellation, accumulating into `held`. Returns `false` (no hold) when
+    /// the env is unset or the budget is exhausted, leaving the caller on its
+    /// pre-existing fail path.
+    async fn try_rate_limit_hold(
+        &self,
+        cancel_token: &Option<tokio_util::sync::CancellationToken>,
+        held: &mut std::time::Duration,
+    ) -> bool {
+        let Some(budget) = rate_limit_hold_budget() else {
+            return false;
+        };
+        if *held >= budget {
+            return false;
+        }
+        let poll = std::time::Duration::from_secs(60).min(budget - *held);
+        self.emit_status(format!(
+            "Rate limited; holding for quota window (held {}s/{}s budget)",
+            held.as_secs(),
+            budget.as_secs()
+        ))
+        .await;
+        tokio::select! {
+            biased;
+            _ = async {
+                match cancel_token {
+                    Some(token) => token.cancelled().await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => false,
+            _ = tokio::time::sleep(poll) => {
+                *held += poll;
+                true
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn stream_with_transparent_retry(
         &self,
@@ -839,6 +895,9 @@ impl HostAgentExecutor {
         // `self.emit_status` / `self.try_recover_context_overflow` calls in the
         // select arms. `CancellationToken::clone` is a cheap Arc bump.
         let cancel_token = self.cancel_token.clone();
+        // Accumulated quota-wall hold time for this request (env-gated; stays
+        // zero unless CODESMITH_RATE_LIMIT_HOLD_SECS is set).
+        let mut rate_limit_held = std::time::Duration::ZERO;
         loop {
             // Adaptive idle window: a provider silence gap that outlasts the
             // base watchdog would kill every fixed-window retry in the exact
@@ -900,7 +959,22 @@ impl HostAgentExecutor {
                             return Ok(StreamRoundOutcome::RecoveredContextOverflow);
                         }
                         // Not a context-length error, no probe, budget exhausted,
-                        // or recovery failed — hard-fail the turn.
+                        // or recovery failed — unless this is a rate-limit /
+                        // quota wall with hold budget remaining (env-gated),
+                        // hard-fail the turn. Pre-stream 429s die here today;
+                        // the hold keeps long agent runs alive through a
+                        // provider's usage-cap window instead.
+                        if classify_error_message(&message) == ErrorCategory::RateLimit
+                            && self
+                                .try_rate_limit_hold(&cancel_token, &mut rate_limit_held)
+                                .await
+                        {
+                            continue;
+                        }
+                        if self.is_cancelled() {
+                            self.emit_status("Request cancelled".to_string()).await;
+                            return Ok(StreamRoundOutcome::Interrupted);
+                        }
                         return Err(anyhow::anyhow!(message));
                     }
                 }
@@ -1067,7 +1141,21 @@ impl HostAgentExecutor {
                         .await;
                         continue;
                     }
-                    // Budget exhausted → surface the failure.
+                    // Budget exhausted → surface the failure, unless the env
+                    // -gated quota-wall hold can ride it out (rate limits are
+                    // the one exhausted-budget case where waiting longer is
+                    // known to help: the window resets on the provider side).
+                    if category == ErrorCategory::RateLimit
+                        && self
+                            .try_rate_limit_hold(&cancel_token, &mut rate_limit_held)
+                            .await
+                    {
+                        // Held through one poll interval — restart the round
+                        // with a fresh transparent-retry budget so the next
+                        // genuine outage still gets its 3 attempts.
+                        *stream_retry_attempts = 0;
+                        continue;
+                    }
                     crate::retry_status::failed(format!(
                         "stream failed ({category}); {MAX_TRANSPARENT_STREAM_RETRIES} retries exhausted"
                     ));
