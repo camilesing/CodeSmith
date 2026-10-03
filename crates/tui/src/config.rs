@@ -5663,7 +5663,8 @@ mod tests {
     #[test]
     fn index_config_defaults_to_enabled_tree_sitter() {
         let _guard = lock_test_env();
-        for var in ["CODESMITH_INDEX_ENABLED"] {
+        {
+            let var = "CODESMITH_INDEX_ENABLED";
             unsafe { env::remove_var(var) };
         }
         let config: Config = toml::from_str("").expect("empty config");
@@ -5679,7 +5680,8 @@ mod tests {
     #[test]
     fn index_config_parses_table_and_respects_switches() {
         let _guard = lock_test_env();
-        for var in ["CODESMITH_INDEX_ENABLED"] {
+        {
+            let var = "CODESMITH_INDEX_ENABLED";
             unsafe { env::remove_var(var) };
         }
         let config: Config = toml::from_str(

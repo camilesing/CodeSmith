@@ -25,10 +25,10 @@ fn ast_segments(source: &str) -> Option<Vec<String>> {
 /// Falls back to the legacy shlex + heredoc-regex path for unparseable
 /// input.
 pub fn normalize_command(command: &str) -> String {
-    if let Ok(facts) = BashFacts::parse(command) {
-        if let Some(normalized) = facts.top_level_normalized() {
-            return normalized;
-        }
+    if let Ok(facts) = BashFacts::parse(command)
+        && let Some(normalized) = facts.top_level_normalized()
+    {
+        return normalized;
     }
     normalize_command_legacy(command)
 }

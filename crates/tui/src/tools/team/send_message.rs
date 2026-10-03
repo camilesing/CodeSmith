@@ -535,6 +535,14 @@ impl SendMessageTool {
 
 #[cfg(test)]
 mod tests {
+    // The env lock (`lock_test_env`) must span the whole async test body:
+    // `ScopedCodeSmithHome` redirects `CODESMITH_HOME` and the awaited tool
+    // executions read team files through it, so the guard is deliberately
+    // held across await points. These tests run on `#[tokio::test]`'s
+    // current-thread runtime, so no other task polled on that thread can
+    // contend for the std mutex while it is held.
+    #![allow(clippy::await_holding_lock)]
+
     use super::*;
     use crate::test_support::{ScopedCodeSmithHome, lock_test_env};
     use crate::tools::spec::RuntimeToolServices;

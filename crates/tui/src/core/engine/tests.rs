@@ -1,3 +1,10 @@
+// The env lock (`lock_test_env`) must span the whole async test body: the
+// engine and its tools read `CODESMITH_HOME` and friends while awaited, so
+// the guard is deliberately held across await points. These tests run on
+// `#[tokio::test]`'s current-thread runtime, so no other task polled on that
+// thread can contend for the std mutex while it is held.
+#![allow(clippy::await_holding_lock)]
+
 use crate::core::capacity::{
     CapacityControllerConfig, CapacityDecision, CapacitySnapshot, DynamicSlackProfile,
     GuardrailAction, ReplayOutcome, RiskBand, TargetedRefreshOutcome,

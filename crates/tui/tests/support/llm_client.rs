@@ -13,14 +13,11 @@
 use anyhow::Result;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 
 use crate::models::{MessageRequest, MessageResponse, StreamEvent};
 
 pub type StreamEventBox =
     Pin<Box<dyn futures_util::Stream<Item = Result<StreamEvent>> + Send + 'static>>;
-
-pub type LlmClientHandle = Arc<dyn LlmClient>;
 
 #[allow(dead_code)]
 pub trait LlmClient: Send + Sync {
@@ -39,10 +36,10 @@ pub trait LlmClient: Send + Sync {
     }
     fn fim_completion(
         &self,
-        model: String,
-        prompt: String,
-        suffix: String,
-        max_tokens: u32,
+        _model: String,
+        _prompt: String,
+        _suffix: String,
+        _max_tokens: u32,
     ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + '_>> {
         Box::pin(async {
             Err(anyhow::anyhow!(
@@ -53,9 +50,9 @@ pub trait LlmClient: Send + Sync {
     }
     fn translate(
         &self,
-        text: String,
-        model: String,
-        target_language: String,
+        _text: String,
+        _model: String,
+        _target_language: String,
     ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + '_>> {
         Box::pin(async {
             Err(anyhow::anyhow!(

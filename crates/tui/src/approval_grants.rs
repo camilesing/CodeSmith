@@ -231,9 +231,9 @@ mod tests {
     use super::*;
 
     fn temp_path(name: &str) -> PathBuf {
-        // into_path() hands ownership back (no auto-cleanup); these tests
+        // keep() hands ownership back (no auto-cleanup); these tests
         // are short-lived and the directories live under TMPDIR.
-        tempfile::tempdir().expect("tempdir").into_path().join(name)
+        tempfile::tempdir().expect("tempdir").keep().join(name)
     }
 
     #[test]

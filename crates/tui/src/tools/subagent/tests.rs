@@ -932,6 +932,7 @@ impl ExtensionCommandContext for StubExtCtx {}
 ///      parent's `ToolRegistry` `Arc`s nor wires extension-contributed tools
 ///      (those are added ONLY in `EngineHost::build_turn_dispatcher`, §F5d T1,
 ///      a path the sub-agent never takes).
+///
 /// So an ext tool bound on the parent's `ExtensionRunner` can NEVER reach a
 /// sub-agent's effective tool set, regardless of `inherit_full_registry`.
 ///

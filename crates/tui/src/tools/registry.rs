@@ -1601,7 +1601,7 @@ mod tests {
         assert_eq!(sanitize_tool_name("a/b@c"), "a_b_c");
         assert_eq!(sanitize_tool_name("  "), "__");
         assert_eq!(sanitize_tool_name(""), "fail_closed_tool");
-        let long = sanitize_tool_name(&"x".repeat(MAX_TOOL_NAME_LEN + 100));
+        let long = sanitize_tool_name("x".repeat(MAX_TOOL_NAME_LEN + 100));
         assert_eq!(long.len(), MAX_TOOL_NAME_LEN);
     }
 
