@@ -95,6 +95,42 @@ pub(crate) fn apply_reasoning_effort(
         return;
     };
     let normalized = effort.trim().to_ascii_lowercase();
+
+    // Third-party OpenAI-compatible gateways (Zhipu GLM, …) accept the
+    // `reasoning_effort` / `thinking` fields even though the official OpenAI
+    // endpoint rejects them. `CODESMITH_REASONING_PASSTHROUGH=1` opts the
+    // generic `openai` provider arm into verbatim forwarding so those
+    // gateways get thinking control too.
+    if provider == "openai"
+        && std::env::var("CODESMITH_REASONING_PASSTHROUGH")
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false)
+    {
+        match normalized.as_str() {
+            "off" | "disabled" | "none" | "false" => {
+                params.insert(
+                    "thinking".to_string(),
+                    serde_json::json!({ "type": "disabled" }),
+                );
+            }
+            "xhigh" | "max" | "highest" => {
+                params.insert("reasoning_effort".to_string(), serde_json::json!("high"));
+            }
+            _ => {
+                params.insert(
+                    "reasoning_effort".to_string(),
+                    serde_json::json!(normalized),
+                );
+            }
+        }
+        return;
+    }
+
     match normalized.as_str() {
         "off" | "disabled" | "none" | "false" => match provider {
             "deepseek" | "deepseek-cn" | "openrouter" | "xiaomi-mimo" | "novita"
