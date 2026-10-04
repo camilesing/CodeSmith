@@ -1675,6 +1675,20 @@ fn url_encode(input: &str) -> String {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    /// Serialized: every state-touching test below resets the process-global
+    /// `WebRunState`, so a parallel test's reset can wipe another test's
+    /// stored page between its store and get calls (observed as an
+    /// intermittent failure on Windows CI runners, whose thread scheduling
+    /// widens the race window).
+    static WEB_RUN_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_web_run_tests() -> std::sync::MutexGuard<'static, ()> {
+        WEB_RUN_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     fn sample_page(url: &str) -> WebPage {
         WebPage {
@@ -1767,6 +1781,7 @@ mod tests {
 
     #[test]
     fn scoped_ref_prefix_is_session_specific() {
+        let _lock = lock_web_run_tests();
         reset_web_run_state();
         let alpha = scoped_ref_prefix("session-alpha");
         let beta = scoped_ref_prefix("session-beta");
@@ -1779,6 +1794,7 @@ mod tests {
 
     #[test]
     fn stored_pages_do_not_cross_scoped_sessions() {
+        let _lock = lock_web_run_tests();
         reset_web_run_state();
         let shared_suffix = "turn1search1";
         let ref_alpha = format!("{}{}", scoped_ref_prefix("session-alpha"), shared_suffix);
@@ -1796,6 +1812,7 @@ mod tests {
 
     #[test]
     fn turn_counters_are_scoped_per_session() {
+        let _lock = lock_web_run_tests();
         reset_web_run_state();
 
         assert_eq!(next_turn_for_namespace("session-alpha"), 0);
@@ -1805,6 +1822,7 @@ mod tests {
 
     #[test]
     fn stale_session_pages_are_evicted() {
+        let _lock = lock_web_run_tests();
         reset_web_run_state();
         let namespace = "session-alpha";
         let ref_id = format!("{}turn0search1", scoped_ref_prefix(namespace));
