@@ -91,7 +91,7 @@ mod tests {
     use super::*;
     use codesmith_agent::callback::{NoopCallback, StopReason};
     use codesmith_agent::executor::{AgentExecutor, AgentExecutorConfig, DefaultAgentExecutor};
-    use codesmith_agent::llm_client::{LlmClient, LlmClientHandle, StreamEventBox};
+    use codesmith_agent::llm_client::{LlmClient, StreamEventBox};
     use codesmith_agent::memory::{ChatHistory, VecChatHistory};
     use codesmith_agent::models::{
         ContentBlock, ContentBlockStart, Delta, MessageDelta, MessageRequest, StreamEvent,

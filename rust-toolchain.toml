@@ -15,3 +15,6 @@
 
 [toolchain]
 channel = "1.90.0"
+# Auto-install pulls these in too; without them a fresh environment gets a
+# minimal toolchain and CI's `cargo fmt --check` fails on a missing cargo-fmt.
+components = ["rustfmt", "clippy"]

@@ -72,7 +72,9 @@ pub fn get_abi_version() -> Option<i32> {
     }
 }
 
-// Landlock syscall constants (not yet in libc crate)
+// Landlock syscall constants (not yet in libc crate). The access-right list
+// mirrors the kernel uapi; rights not consumed below stay as ABI reference
+// until child-process enforcement is wired (see `prepare_landlock`).
 #[cfg(target_os = "linux")]
 const LANDLOCK_CREATE_RULESET_VERSION: u32 = 1 << 0;
 
@@ -89,20 +91,25 @@ const LANDLOCK_ACCESS_FS_REMOVE_DIR: u64 = 1 << 4;
 #[cfg(target_os = "linux")]
 const LANDLOCK_ACCESS_FS_REMOVE_FILE: u64 = 1 << 5;
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 const LANDLOCK_ACCESS_FS_MAKE_CHAR: u64 = 1 << 6;
 #[cfg(target_os = "linux")]
 const LANDLOCK_ACCESS_FS_MAKE_DIR: u64 = 1 << 7;
 #[cfg(target_os = "linux")]
 const LANDLOCK_ACCESS_FS_MAKE_REG: u64 = 1 << 8;
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 const LANDLOCK_ACCESS_FS_MAKE_SOCK: u64 = 1 << 9;
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 const LANDLOCK_ACCESS_FS_MAKE_FIFO: u64 = 1 << 10;
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 const LANDLOCK_ACCESS_FS_MAKE_BLOCK: u64 = 1 << 11;
 #[cfg(target_os = "linux")]
 const LANDLOCK_ACCESS_FS_MAKE_SYM: u64 = 1 << 12;
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 const LANDLOCK_ACCESS_FS_REFER: u64 = 1 << 13;
 #[cfg(target_os = "linux")]
 const LANDLOCK_ACCESS_FS_TRUNCATE: u64 = 1 << 14;
@@ -143,6 +150,9 @@ const LANDLOCK_RULE_PATH_BENEATH: u32 = 1;
 #[cfg(target_os = "linux")]
 pub struct LandlockSandbox {
     ruleset_fd: i32,
+    // Kept for introspection once Landlock enforcement is wired into command
+    // spawning; nothing reads it yet (see `prepare_landlock`).
+    #[allow(dead_code)]
     policy: SandboxPolicy,
 }
 

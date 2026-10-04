@@ -828,13 +828,6 @@ mod tests {
                 .expect("MockLlmClient.canned mutex poisoned")
                 .push_back(response);
         }
-
-        fn captured_requests(&self) -> Vec<MessageRequest> {
-            self.captured
-                .lock()
-                .expect("MockLlmClient.captured mutex poisoned")
-                .clone()
-        }
     }
 
     impl LlmClient for MockLlmClient {

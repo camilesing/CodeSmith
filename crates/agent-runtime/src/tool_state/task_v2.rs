@@ -491,10 +491,9 @@ pub fn should_emit_verification_nudge(manager: &TaskV2Manager) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     fn temp_manager() -> TaskV2Manager {
-        let dir = tempfile::tempdir().expect("tempdir").into_path();
+        let dir = tempfile::tempdir().expect("tempdir").keep();
         let task_dir = dir.join("tasks").join("test_session");
         fs::create_dir_all(&task_dir).expect("create task dir");
         TaskV2Manager { task_dir }
@@ -735,7 +734,7 @@ mod tests {
     #[test]
     fn claim_task_fails_when_agent_busy() {
         let mut mgr = temp_manager();
-        let id1 = mgr
+        let _id1 = mgr
             .create_task(
                 "Busy task".into(),
                 "desc".into(),

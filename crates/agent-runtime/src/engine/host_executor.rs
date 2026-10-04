@@ -7860,8 +7860,6 @@ mod tests {
     /// `record_compaction_summary` twice directly to guard the fold.
     #[tokio::test]
     async fn multiple_compactions_accumulate_summary() {
-        let mut sess = fresh_session();
-        let mut history = SessionChatHistory::new(&mut sess);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
         let mock = Arc::new(MockLlm::new(vec![end_call()]));
         let executor = HostAgentExecutor::new(
@@ -11962,7 +11960,7 @@ mod tests {
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
 
         // Stream emits a text block ("partial answer") then dies with an Err.
-        let mut partial = text_block(0, "partial answer");
+        let partial = text_block(0, "partial answer");
         // Don't add finish — the stream dies before MessageStop.
         let mock = Arc::new(MockLlm::with_rounds(vec![MockRound::EventsThenErr(
             partial,
