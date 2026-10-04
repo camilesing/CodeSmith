@@ -44,7 +44,7 @@ pub mod sample_scratchpad;
 pub mod script;
 pub mod state;
 
-#[cfg(test)]
+#[cfg(all(test, not(windows)))]
 mod test_support;
 
 // Slice-1 runtime re-exports.

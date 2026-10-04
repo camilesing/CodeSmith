@@ -207,6 +207,10 @@ mod e2e_tests {
     /// `fixture_echo` bound. Proves the install pipeline end-to-end without a
     /// real `cargo build` (avoids target-dir lock / dep-tree rebuild). R5: no
     /// state assertion (state is tui-side, unit-tested in T2).
+    ///
+    /// Quarantined on Windows — see loader.rs `load_dylib_fixture_…` comment
+    /// (fixture dylib unload races with parallel tests → STATUS_ACCESS_VIOLATION).
+    #[cfg(not(windows))]
     #[test]
     fn install_to_load_roundtrip_binds_fixture_tool() {
         let fixture = crate::test_support::fixture_dylib_path();

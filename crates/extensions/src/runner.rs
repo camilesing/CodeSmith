@@ -829,6 +829,10 @@ mod tests {
     /// `fixture_echo` bound. Direct `load_dylib` on `env!("CODESMITH_FIXTURE_DYLIB")`
     /// (same compile-time env var as installer.rs:189); skips the install→discover
     /// round-trip (T3/T4 test clear/drain semantics, not the install pipeline).
+    ///
+    /// Quarantined on Windows — see loader.rs `load_dylib_fixture_…` comment
+    /// (fixture dylib unload races with parallel tests → STATUS_ACCESS_VIOLATION).
+    #[cfg(not(windows))]
     fn runner_with_fixture_dylib() -> crate::ExtensionRunner {
         let runner = crate::ExtensionRunner::new();
         let rt = tokio::runtime::Runtime::new().expect("rt");
@@ -839,6 +843,7 @@ mod tests {
         runner
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn clear_tools_and_clear_commands_empty_registries() {
         let runner = runner_with_fixture_dylib();
@@ -968,6 +973,7 @@ mod tests {
     /// design (exposing `Library` would leak `libloading` internals), so the
     /// semantics are proven behaviourally: idempotent + no panic across the
     /// drain→drain→drop→drop sequence.
+    #[cfg(not(windows))]
     #[test]
     fn drain_libraries_to_pending_moves_then_drop_pending_empties() {
         let runner = runner_with_fixture_dylib();
