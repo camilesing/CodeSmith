@@ -190,19 +190,17 @@ To re-enable automated publish: provision an npm automation token with "Bypass 2
 
 ## CNB Cool mirror
 
-Every push to `main`, `fix/*`, `rebrand/*`, `work/v*`, and every `v*` tag is mirrored to
-`cnb.cool/codesmith.net/codesmith` via the `Sync to CNB` workflow
-so users behind GitHub-blocking networks can fetch the source and so CNB can
-run the heavy Linux CI lane. After a release tag, **verify the mirror caught
-it** before declaring the release shipped:
+The `Sync to CNB` workflow was removed (the `CNB_GIT_TOKEN` secret was never
+configured, so every mirrored push failed). The copy at
+`cnb.cool/codesmith.net/codesmith` may be missing or stale — installs from
+it will not see new releases, and there is
+no mirror to verify after a release tag. To update it by hand, or if
+mirroring ever returns:
 
 ```bash
-git ls-remote https://cnb.cool/codesmith.net/codesmith.git refs/tags/vX.Y.Z
+git remote add cnb https://cnb.cool/codesmith.net/codesmith.git
+git push cnb <ref>   # e.g. main or vX.Y.Z
 ```
-
-If the workflow failed for the release tag, the manual fallback is
-documented in [docs/CNB_MIRROR.md](CNB_MIRROR.md) (one-time `git
-remote add cnb …`, then `git push cnb vX.Y.Z`).
 
 ## Recovery and Rollback
 
@@ -218,7 +216,3 @@ remote add cnb …`, then `git push cnb vX.Y.Z`).
   - repack and republish the wrapper
 - A bad npm publish cannot be overwritten:
   - publish a new npm version with corrected metadata or install logic
-- CNB mirror failed for the release tag:
-  - check the run via `gh run list --workflow=sync-cnb.yml`
-  - retrigger with `gh workflow run sync-cnb.yml`, or push the tag
-    manually per [docs/CNB_MIRROR.md](CNB_MIRROR.md#manual-fallback)

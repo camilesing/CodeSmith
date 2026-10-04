@@ -191,19 +191,15 @@ npm publish --access public
 
 ## CNB Cool 镜像
 
-对 `main`、`fix/*`、`rebrand/*`、`work/v*` 的每次推送以及每个
-`v*` tag 都会通过 `Sync to CNB` 工作流镜像到
-`cnb.cool/codesmith.net/codesmith`，这样位于 GitHub 被屏蔽网络
-中的用户可以获取源码，CNB 也可以运行重量级的 Linux CI 泳道。
-发布 tag 之后，在宣布发布完成之前，**请验证镜像已捕获该 tag**：
+`Sync to CNB` 工作流已移除（`CNB_GIT_TOKEN` secret 从未配置，
+每次镜像推送都会失败）。`cnb.cool/codesmith.net/codesmith` 上的副本
+可能缺失或已过期——从它安装不会看到新的发布，
+发布 tag 之后也没有镜像可供验证。如需手动更新，或者将来恢复镜像：
 
 ```bash
-git ls-remote https://cnb.cool/codesmith.net/codesmith.git refs/tags/vX.Y.Z
+git remote add cnb https://cnb.cool/codesmith.net/codesmith.git
+git push cnb <ref>   # 例如 main 或 vX.Y.Z
 ```
-
-如果该工作流在发布 tag 上失败了，手动回退方案记录在
-[docs/CNB_MIRROR.md](CNB_MIRROR.md) 中（一次性执行 `git
-remote add cnb …`，然后 `git push cnb vX.Y.Z`）。
 
 ## 恢复与回滚
 
@@ -219,7 +215,3 @@ remote add cnb …`，然后 `git push cnb vX.Y.Z`）。
   - 重新打包并重新发布包装器
 - 一次错误的 npm 发布无法被覆盖：
   - 发布一个修正了元数据或安装逻辑的新 npm 版本
-- 发布 tag 的 CNB 镜像失败：
-  - 通过 `gh run list --workflow=sync-cnb.yml` 检查运行情况
-  - 使用 `gh workflow run sync-cnb.yml` 重新触发，或按照
-    [docs/CNB_MIRROR.md](CNB_MIRROR.md#manual-fallback) 手动推送 tag

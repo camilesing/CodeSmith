@@ -232,9 +232,11 @@ cargo build --release --locked -p codesmith-cli -p codesmith-tui
 Edition 2024 (`let_chains` is used throughout); the toolchain is pinned in
 `rust-toolchain.toml`. Workspace default-members are `cli`, `app-server`,
 `tui`, so a bare `cargo build` covers the user-facing binaries. CI lanes live
-in `.github/workflows/ci.yml`; Linux gates run on CNB via `.cnb.yml` (a
-one-way GitHub→CNB mirror — CNB-side edits get overwritten, keep this file
-source-controlled here).
+in `.github/workflows/ci.yml`. The CNB mirror (`sync-cnb.yml`) was removed —
+it never ran successfully because the `CNB_GIT_TOKEN` secret was not
+configured. GitHub's test job skips its Linux steps (they were meant for the
+CNB lane), so re-enable them in `ci.yml` before relying on Linux test
+coverage. `.cnb.yml` stays source-controlled in case mirroring returns.
 
 Report commands actually run and distinguish source, local tests, packaged
 artifacts, CI, and public release state. Describe the evidence actually needed
