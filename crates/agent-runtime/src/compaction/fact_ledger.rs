@@ -77,16 +77,23 @@ pub const REFUTED_ASSUMPTIONS_HEADER: &str = "### Refuted Assumptions & Invarian
 /// Maximum reflection lines captured from one summary.
 pub const FACT_REFUTED_MAX_PER_COMPACTION: usize = 10;
 
-/// Parse the reflection section out of a layered summary text: the lines
-/// under [`REFUTED_ASSUMPTIONS_HEADER`] (bullets stripped) until the next
-/// header. Returns at most [`FACT_REFUTED_MAX_PER_COMPACTION`] lines.
-pub fn extract_refuted_assumptions(summary: &str) -> Vec<String> {
+/// Header of the optional file-map section in a layered summary — the
+/// model-authored "path — what it owns" table for multi-file projects.
+pub const FILE_MAP_HEADER: &str = "### File Map";
+
+/// Maximum file-map lines captured from one summary.
+pub const FACT_FILE_MAP_MAX_PER_COMPACTION: usize = 15;
+
+/// Parse one titled section (`### <title>` prefix match) out of a layered
+/// summary text: the lines under the header (bullets stripped) until the
+/// next header, empty lines skipped.
+fn extract_titled_section(summary: &str, title: &str, cap: usize) -> Vec<String> {
     let mut out = Vec::new();
     let mut in_section = false;
     for line in summary.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with('#') {
-            in_section = trimmed.starts_with("### Refuted Assumptions");
+            in_section = trimmed.starts_with(title);
             continue;
         }
         if !in_section {
@@ -96,12 +103,35 @@ pub fn extract_refuted_assumptions(summary: &str) -> Vec<String> {
         if entry.is_empty() {
             continue;
         }
-        out.push(truncate(entry, 2 * FACT_FAILURE_LINE_MAX_CHARS).to_string());
-        if out.len() >= FACT_REFUTED_MAX_PER_COMPACTION {
+        out.push(entry.to_string());
+        if out.len() >= cap {
             break;
         }
     }
     out
+}
+
+/// Parse the reflection section out of a layered summary text (see
+/// [`REFUTED_ASSUMPTIONS_HEADER`]).
+pub fn extract_refuted_assumptions(summary: &str) -> Vec<String> {
+    extract_titled_section(
+        summary,
+        "### Refuted Assumptions",
+        FACT_REFUTED_MAX_PER_COMPACTION,
+    )
+    .into_iter()
+    .map(|entry| truncate(&entry, 2 * FACT_FAILURE_LINE_MAX_CHARS).to_string())
+    .collect()
+}
+
+/// Parse the optional file-map section out of a layered summary text (see
+/// [`FILE_MAP_HEADER`]). Empty when the model omitted the section — it is
+/// optional precisely so single-file work never pads it.
+pub fn extract_file_map(summary: &str) -> Vec<String> {
+    extract_titled_section(summary, FILE_MAP_HEADER, FACT_FILE_MAP_MAX_PER_COMPACTION)
+        .into_iter()
+        .map(|entry| truncate(&entry, 2 * FACT_FAILURE_LINE_MAX_CHARS).to_string())
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,6 +150,10 @@ pub enum FactKind {
     /// failures — never injected from outside — and survive every later
     /// compaction and cycle reset so they are not relearned.
     RefutedAssumption,
+    /// One "path — what it owns" line from the model-authored file map in
+    /// the layered summary — the externalized project structure, so the
+    /// agent does not re-invent it hundreds of rounds in.
+    FileIntent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -261,11 +295,24 @@ impl FactLedger {
         self.entries.len() - before
     }
 
+    /// Record the model-authored file map (parsed out of the layered
+    /// summary's optional file-map section). Same dedup semantics as
+    /// [`Self::record_refuted_assumptions`].
+    pub fn record_file_map<I: IntoIterator<Item = String>>(&mut self, lines: I) -> usize {
+        let before = self.entries.len();
+        for text in lines {
+            self.push(FactKind::FileIntent, text);
+        }
+        self.enforce_capacity();
+        self.entries.len() - before
+    }
+
     /// Evict oldest `FailureCause` entries until the rendered ledger fits
-    /// the token cap, then oldest `RefutedAssumption` entries. Raw failure
-    /// lines are the cheapest to lose (their distilled lesson, if any, is a
-    /// `RefutedAssumption`); `TaskConstraint`/`PathSignature` entries are
-    /// never evicted.
+    /// the token cap, then oldest `FileIntent` entries, then oldest
+    /// `RefutedAssumption` entries. Raw failure lines are the cheapest to
+    /// lose (their distilled lesson, if any, is a `RefutedAssumption`);
+    /// distilled lessons are the most expensive; `TaskConstraint` /
+    /// `PathSignature` entries are never evicted.
     fn enforce_capacity(&mut self) {
         loop {
             let total: usize = self
@@ -276,16 +323,13 @@ impl FactLedger {
             if total <= FACT_LEDGER_MAX_TOKENS {
                 return;
             }
-            let Some(index) = self
-                .entries
-                .iter()
-                .position(|e| e.kind == FactKind::FailureCause)
-                .or_else(|| {
-                    self.entries
-                        .iter()
-                        .position(|e| e.kind == FactKind::RefutedAssumption)
-                })
-            else {
+            let Some(index) = [
+                FactKind::FailureCause,
+                FactKind::FileIntent,
+                FactKind::RefutedAssumption,
+            ]
+            .iter()
+            .find_map(|kind| self.entries.iter().position(|e| e.kind == *kind)) else {
                 return; // only non-evictable kinds remain; let it exceed
             };
             self.seen.remove(&normalize_key(&self.entries[index].text));
@@ -361,6 +405,19 @@ impl FactLedger {
             section.push('\n');
         }
 
+        let file_map: Vec<&FactEntry> = self
+            .entries
+            .iter()
+            .filter(|e| e.kind == FactKind::FileIntent)
+            .collect();
+        if !file_map.is_empty() {
+            section.push_str("**Project file map (path — what it owns):**\n");
+            for entry in file_map {
+                let _ = writeln!(section, "- {}", entry.text);
+            }
+            section.push('\n');
+        }
+
         section.push_str("\n---\n\n");
         section
     }
@@ -372,9 +429,10 @@ impl std::fmt::Display for FactEntry {
             // Constraint material is re-shown as a fenced block so the
             // model reads it as verbatim spec, not prose.
             FactKind::TaskConstraint => write!(f, "```\n{}\n```", self.text),
-            FactKind::PathSignature | FactKind::FailureCause | FactKind::RefutedAssumption => {
-                write!(f, "{}", self.text)
-            }
+            FactKind::PathSignature
+            | FactKind::FailureCause
+            | FactKind::RefutedAssumption
+            | FactKind::FileIntent => write!(f, "{}", self.text),
         }
     }
 }
@@ -614,6 +672,34 @@ mod tests {
         let section = ledger.summary_section();
         assert!(section.contains("Refuted assumptions / invariants"));
         assert!(section.contains("invariant B must hold"));
+    }
+
+    #[test]
+    fn extract_file_map_parses_optional_section_only() {
+        let with_map = "### Refuted Assumptions & Invariants\n- lesson one\n\
+            ### File Map\n- src/state.rs — owns the state machine, all commands depend on it\n\
+            src/cli.rs — argument parsing only\n\
+            ### Brief Process\ndone";
+        let lines = extract_file_map(with_map);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("src/state.rs"));
+        assert!(!lines[0].starts_with('-'));
+
+        // Absent section (single-file work) → empty, no noise.
+        assert!(extract_file_map("### Brief Process\nonly process").is_empty());
+    }
+
+    #[test]
+    fn record_file_map_dedups_and_renders() {
+        let mut ledger = FactLedger::default();
+        let line = "src/engine.rs — turn loop".to_string();
+
+        assert_eq!(ledger.record_file_map([line.clone()]), 1);
+        assert_eq!(ledger.record_file_map([line]), 0);
+
+        let section = ledger.summary_section();
+        assert!(section.contains("Project file map"));
+        assert!(section.contains("src/engine.rs — turn loop"));
     }
 
     #[test]

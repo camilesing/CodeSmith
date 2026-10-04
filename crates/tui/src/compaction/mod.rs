@@ -1833,7 +1833,9 @@ mod tests {
         ### Failed Approaches\n- direct parse failed (wrong format)\n\
         ### Brief Process\nexplored inputs, wrote parser\n\
         ### Refuted Assumptions & Invariants\n\
-        - assumption: state file can be rewritten in place — refuted: readers saw a torn write; invariant: write to a temp file then rename atomically";
+        - assumption: state file can be rewritten in place — refuted: readers saw a torn write; invariant: write to a temp file then rename atomically\n\
+        ### File Map\n\
+        - src/parser.py — owns CSV parsing, cli depends on it";
 
     /// P0-2 gate: a flat first draw is retried once and the layered second
     /// draw wins; a retry that is no more structured changes nothing.
@@ -1941,6 +1943,9 @@ mod tests {
             "the lesson must land in the ledger"
         );
         assert!(section.contains("rename atomically"));
+        // The optional file map is captured the same way.
+        assert!(section.contains("Project file map"));
+        assert!(section.contains("src/parser.py — owns CSV parsing"));
     }
 
     /// Fact-retention benchmark (the P0 gate): 20 planted facts in a long

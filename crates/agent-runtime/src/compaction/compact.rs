@@ -1112,23 +1112,24 @@ pub async fn compact_messages_safe(
                 // survive every later compaction and cycle reset. The
                 // lessons live in the summary this compaction produced; the
                 // ledger keeps them alive after this summary is itself
-                // compacted away.
+                // compacted away. The optional "File Map" section is
+                // captured the same way (externalized project structure).
                 if let Some(ledger) = enhancements.and_then(|e| e.fact_ledger.as_ref())
                     && let Some(summary) = prompt.as_ref()
                 {
-                    let lessons = super::fact_ledger::extract_refuted_assumptions(
-                        &prompt_summary_text(summary),
-                    );
-                    if !lessons.is_empty() {
-                        let added = ledger
-                            .lock()
-                            .expect("fact ledger poisoned")
-                            .record_refuted_assumptions(lessons);
-                        if added > 0 {
+                    let summary_text = prompt_summary_text(summary);
+                    let lessons = super::fact_ledger::extract_refuted_assumptions(&summary_text);
+                    let file_map = super::fact_ledger::extract_file_map(&summary_text);
+                    if !lessons.is_empty() || !file_map.is_empty() {
+                        let mut guard = ledger.lock().expect("fact ledger poisoned");
+                        let lessons_added = guard.record_refuted_assumptions(lessons);
+                        let map_added = guard.record_file_map(file_map);
+                        if lessons_added > 0 || map_added > 0 {
                             tracing::info!(
                                 target: "compaction",
-                                added,
-                                "reflection: captured {added} refuted assumptions into the fact ledger"
+                                lessons_added,
+                                map_added,
+                                "captured {lessons_added} refuted assumptions and {map_added} file-map lines into the fact ledger"
                             );
                         }
                     }
@@ -1590,6 +1591,9 @@ pub fn summary_instruction(word_limit: usize) -> String {
          per lesson: the assumption that was refuted and the invariant that \
          must actually hold. These lessons are preserved for the rest of the \
          session — state them so your future self will not relearn them.\n\
+         ### File Map (optional — multi-file projects only)\n\
+         One line per project file: `path — what it owns / what depends on \
+         it`. Skip this section entirely for single-file work.\n\
          Preserve key information, commands, and tool-result facts needed to \
          continue the work. Tool outputs may be abbreviated only when they are \
          repetitive. Keep it under {word_limit} words total."
