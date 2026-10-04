@@ -1513,6 +1513,7 @@ printf '%s\n' '{"text":"ignored"}'
         assert_eq!(executor.execute_pre_compact_hook(&HookContext::new()), None);
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn pre_compact_hook_disabled_when_global_enabled_false() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1677,6 +1678,7 @@ esac
         executor.execute_turn_end_hook(&HookContext::new(), "completed", 1, 2, 0.5);
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn turn_end_hook_disabled_when_global_enabled_false() {
         let dir = tempfile::tempdir().expect("tempdir");

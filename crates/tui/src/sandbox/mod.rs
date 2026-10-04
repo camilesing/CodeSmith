@@ -17,10 +17,6 @@ pub mod policy;
 pub mod runtime;
 
 pub use codesmith_agent_runtime::sandbox::process_hardening;
-#[cfg(target_os = "windows")]
-pub use codesmith_agent_runtime::sandbox::windows;
-#[cfg(target_os = "linux")]
-pub use codesmith_agent_runtime::sandbox::{bwrap, landlock};
 
 pub use codesmith_agent_runtime::sandbox::{
     CommandSpec, ExecEnv, SandboxManager, SandboxType, get_platform_sandbox,

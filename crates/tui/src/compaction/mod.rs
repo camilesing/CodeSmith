@@ -30,6 +30,8 @@ mod tests {
     use anyhow::Result;
     use std::collections::BTreeSet;
     use std::path::PathBuf;
+    // Only the #[cfg(not(windows))] hook tests below consume Arc.
+    #[cfg(not(windows))]
     use std::sync::Arc;
 
     use crate::models::{ContentBlock, Message, MessageRequest, SystemBlock, SystemPrompt};
@@ -1462,6 +1464,8 @@ mod tests {
     // === PreCompact hook + session-memory-first enhancements (#485) ===
 
     use crate::compaction::session_memory_compact::SessionMemoryCompactConfig;
+    // Only the #[cfg(not(windows))] PreCompact hook tests below consume these.
+    #[cfg(not(windows))]
     use crate::hooks::{Hook, HookContext, HookEvent, HookExecutor, HooksConfig};
 
     fn over_threshold_config() -> CompactionConfig {

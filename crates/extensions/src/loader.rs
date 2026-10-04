@@ -29,12 +29,21 @@ pub const REGISTER_SYMBOL: &[u8] = b"codesmith_register_extension";
 /// `ExtensionRunner::load` during `configure`, then dropped). Errors →
 /// [`ExtensionError::Load`] (open / symbol lookup / null return).
 pub fn load_dylib(path: &Path) -> Result<(Library, Box<dyn Extension>), ExtensionError> {
-    let library = unsafe { Library::new(path) }
-        .map_err(|e| ExtensionError::Load(format!("open dylib {path:?}: {e}")))?;
-    let register: Symbol<unsafe extern "C" fn() -> *mut dyn Extension> = unsafe {
-        library.get(REGISTER_SYMBOL)
-    }
-    .map_err(|e| ExtensionError::Load(format!("symbol {path:?}::{REGISTER_SYMBOL:?}: {e}")))?;
+    let library = unsafe { Library::new(path) }.map_err(|e| {
+        // libloading's `Display` for `DlOpen` is just "dlopen failed"; the OS
+        // reason (dlerror string) lives in the error's `source`.
+        let reason = std::error::Error::source(&e)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "system reported no detail".to_string());
+        ExtensionError::Load(format!("open dylib {path:?}: {reason}"))
+    })?;
+    let register: Symbol<unsafe extern "C" fn() -> *mut dyn Extension> =
+        unsafe { library.get(REGISTER_SYMBOL) }.map_err(|e| {
+            let reason = std::error::Error::source(&e)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "system reported no detail".to_string());
+            ExtensionError::Load(format!("symbol {path:?}::{REGISTER_SYMBOL:?}: {reason}"))
+        })?;
     let ptr = unsafe { register() };
     if ptr.is_null() {
         return Err(ExtensionError::Load(format!(
