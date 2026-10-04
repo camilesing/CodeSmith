@@ -242,7 +242,14 @@ mod dylib_tests {
     #[test]
     fn discover_dylib_finds_bare_dylib_file() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let fname = format!("libbare.{}", std::env::consts::DLL_EXTENSION);
+        // Use the platform prefix ("libbare.dylib" on unix, "bare.dll" on
+        // Windows) — `discover_bare` strips exactly `DLL_PREFIX` to derive
+        // the id, so a hardcoded "lib" would not be stripped on Windows.
+        let fname = format!(
+            "{}bare.{}",
+            std::env::consts::DLL_PREFIX,
+            std::env::consts::DLL_EXTENSION
+        );
         let path = dir.path().join(&fname);
         std::fs::write(&path, b"").expect("write dylib placeholder");
         let found = discover_dylib(&[path.clone()], &[]);
