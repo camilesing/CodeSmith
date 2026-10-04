@@ -160,6 +160,7 @@ For any task estimated to take 5+ concrete steps:
 3. **For multi-phase or ambiguous initiatives**, optionally add `update_plan` with 3-6 high-level phases. Keep it strategic; do not duplicate checklist items.
 4. **After each phase**, re-check whether the next checklist items still make sense. Update the checklist, and update strategy only if the high-level approach changed.
 5. **When a phase reveals sub-problems**, add them to the checklist or open investigation sub-agent sessions — don't guess.
+6. **When delivering a multi-component system** (multi-command CLI, service with several parts), build skeleton-first: stand up the entrypoint, argument parsing, and state/file I/O so `--help` runs end to end, then fill components one at a time with a minimal smoke check after each. Create every required output file early — a deliverable that only exists in your head at step 200 does not get written. Before declaring done, re-read each required deliverable from disk and run it.
 
 ## Sub-Agent Strategy
 

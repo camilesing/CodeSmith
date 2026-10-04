@@ -1812,6 +1812,100 @@ mod tests {
         assert!(instruction.contains("500"));
     }
 
+    fn summary_response(id: &str, text: &str) -> MessageResponse {
+        MessageResponse {
+            id: id.to_string(),
+            r#type: "message".to_string(),
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+                cache_control: None,
+            }],
+            model: "deepseek-v3.2-128k".to_string(),
+            stop_reason: Some("end_turn".to_string()),
+            stop_sequence: None,
+            container: None,
+            usage: Usage::default(),
+        }
+    }
+
+    const LAYERED_SUMMARY_TEXT: &str = "### Decisions & Confirmed Facts\n- schema: a,b\n\
+        ### Failed Approaches\n- direct parse failed (wrong format)\n\
+        ### Brief Process\nexplored inputs, wrote parser";
+
+    /// P0-2 gate: a flat first draw is retried once and the layered second
+    /// draw wins; a retry that is no more structured changes nothing.
+    #[tokio::test]
+    async fn flat_summary_is_retried_once_for_layered_sections() {
+        let mock = MockLlmClient::new(Vec::new());
+        mock.push_message_response(summary_response("flat", "just a flat summary"));
+        mock.push_message_response(summary_response("layered", LAYERED_SUMMARY_TEXT));
+
+        let (messages, prompt, removed, _) = compact_messages(
+            &mock,
+            &long_conversation(),
+            &over_threshold_config(),
+            None,
+            None,
+            None,
+            "",
+        )
+        .await
+        .expect("compaction should succeed");
+
+        let summary_text = collect_summary_text(&prompt);
+        assert!(
+            summary_text.contains("### Decisions & Confirmed Facts"),
+            "second (layered) draw must win"
+        );
+        assert_eq!(mock.call_count(), 2);
+        assert!(!messages.is_empty());
+        assert!(!removed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn flat_summary_retry_keeps_first_when_second_not_better() {
+        let mock = MockLlmClient::new(Vec::new());
+        mock.push_message_response(summary_response("flat-1", "first flat summary"));
+        mock.push_message_response(summary_response("flat-2", "second flat summary"));
+
+        let (_, prompt, _, _) = compact_messages(
+            &mock,
+            &long_conversation(),
+            &over_threshold_config(),
+            None,
+            None,
+            None,
+            "",
+        )
+        .await
+        .expect("compaction should succeed");
+
+        assert!(collect_summary_text(&prompt).contains("first flat summary"));
+        assert_eq!(mock.call_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn layered_first_draw_skips_the_retry() {
+        let mock = MockLlmClient::new(Vec::new());
+        mock.push_message_response(summary_response("layered", LAYERED_SUMMARY_TEXT));
+
+        let (_, prompt, _, _) = compact_messages(
+            &mock,
+            &long_conversation(),
+            &over_threshold_config(),
+            None,
+            None,
+            None,
+            "",
+        )
+        .await
+        .expect("compaction should succeed");
+
+        assert!(collect_summary_text(&prompt).contains("### Brief Process"));
+        assert_eq!(mock.call_count(), 1);
+    }
+
     /// Fact-retention benchmark (the P0 gate): 20 planted facts in a long
     /// conversation must remain model-visible after a full compaction —
     /// through instruction pinning (task schema + error-bearing results)

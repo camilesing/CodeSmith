@@ -577,6 +577,7 @@ use super::context::{
     context_input_budget_for_provider, estimate_input_tokens_anchored,
     estimate_input_tokens_conservative,
 };
+use super::deliverables::DeliverablesProbe;
 use super::loop_guard::LoopGuard;
 use super::summarize_text;
 use super::turn::{
@@ -1061,6 +1062,15 @@ pub struct HostAgentExecutor {
     /// synchronous, the guard never crosses an await).
     pub(crate) result_verifications:
         Option<Arc<std::sync::Mutex<Vec<super::result_verifier::VerdictBlock>>>>,
+
+    /// Deliverables watchdog (W2 P1-1). `None` (default; embeds/tests) ⇒ no
+    /// periodic disk checks. When `Some`, [`run_inner`]'s pre-request seam
+    /// checks the deliverable paths every
+    /// [`DELIVERABLES_CHECK_CADENCE_STEPS`](super::deliverables::DELIVERABLES_CHECK_CADENCE_STEPS)
+    /// steps and pushes a `<codesmith:runtime_event
+    /// kind="deliverables_check">` user message when one is missing, so a
+    /// gap surfaces mid-run instead of at grading.
+    pub(crate) deliverables: Option<super::deliverables::DeliverablesProbe>,
     /// Optional steer input receiver (§E). `None` ⇒ steer drain is a no-op.
     ///
     /// Interior-mutable because [`AgentExecutor::run`] takes `&self` while
@@ -1420,6 +1430,7 @@ impl HostAgentExecutor {
             ),
             prefix_stability: None,
             result_verifications: None,
+            deliverables: None,
         }
     }
 
@@ -1464,6 +1475,20 @@ impl HostAgentExecutor {
     #[must_use]
     pub fn with_reinject(mut self, reinject: Option<ReinjectProbe>) -> Self {
         self.reinject = reinject;
+        self
+    }
+
+    /// Opt into the deliverables watchdog (W2 P1-1). The production wire-in
+    /// calls this after [`new`] with a [`DeliverablesProbe`] parsed from the
+    /// task instruction, so the turn loop periodically re-checks the
+    /// deliverable paths on disk and notes gaps in the transcript mid-run.
+    /// Embeds / tests skip it — `None` keeps the loop unchanged.
+    /// `pub(crate)` (like `with_result_verifications`): the probe type lives
+    /// in the crate-private `deliverables` module and only the engine
+    /// wire-in constructs this.
+    #[must_use]
+    pub(crate) fn with_deliverables(mut self, deliverables: Option<DeliverablesProbe>) -> Self {
+        self.deliverables = deliverables;
         self
     }
 
@@ -3037,6 +3062,13 @@ impl HostAgentExecutor {
             // appended before the request snapshot so the model reconciles
             // its earlier claim with the re-run's exit code.
             self.flush_pending_result_verifications(history);
+            // W2 P1-1: deliverables watchdog — cadence-gated disk check of
+            // the output paths named in the task instruction; a gap is
+            // pushed as a runtime note so the agent closes it before the
+            // run ends.
+            if let Some(probe) = &self.deliverables {
+                probe.check_and_note(history, step).await;
+            }
 
             let api_tools = tools.to_api_tools();
             // Three-zone assembly (#2264 Phase 2): freeze the step's prefix
@@ -4174,14 +4206,20 @@ mod tests {
 
         /// Make `create_message` (the compaction summary call) return a canned
         /// `MessageResponse` whose text is `summary`. The summary is what
-        /// `compact_messages` writes back as the compaction result.
+        /// `compact_messages` writes back as the compaction result. The
+        /// layered-section headers are appended so the P0-2 section gate
+        /// accepts the canned reply without a retry — call-count assertions
+        /// keep measuring one compaction, not the gate.
         fn with_compaction_summary(self, summary: &str) -> Self {
+            let layered = format!(
+                "{summary}\n### Decisions & Confirmed Facts\n### Failed Approaches\n### Brief Process"
+            );
             *self.compaction_reply.lock().unwrap() = Some(MessageResponse {
                 id: "compaction".to_string(),
                 r#type: "message".to_string(),
                 role: "assistant".to_string(),
                 content: vec![ContentBlock::Text {
-                    text: summary.to_string(),
+                    text: layered,
                     cache_control: None,
                 }],
                 model: "mock-v0".to_string(),

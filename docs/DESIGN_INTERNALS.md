@@ -199,6 +199,14 @@ depending on `codesmith-agent-runtime`'s production `Engine`.
   summary and the cycle-reset seed, and the first task instruction is pinned
   verbatim by `plan_compaction` when under
   `TASK_INSTRUCTION_PIN_TOKEN_CAP`.
+  A separate deliverables watchdog (`engine/deliverables.rs`,
+  `DeliverablesProbe` on the executor) shares the pre-request seam: the
+  output paths parsed from the task instruction are re-checked on disk
+  every `DELIVERABLES_CHECK_CADENCE_STEPS` steps and a missing one is
+  pushed back as a `<codesmith:runtime_event kind="deliverables_check">`
+  user message, so a missing deliverable surfaces mid-run instead of at
+  grading. Compaction summaries also pass a layered-section gate
+  (`summary_section_count`): a flat draw is retried once.
   transparent-retry reuses the local-state pattern
   (a per-run `u32` counter, matching loop-guard). Guardrail status surfaces
   over the host's `Event` channel (`event_tx`), not the `Callback`.

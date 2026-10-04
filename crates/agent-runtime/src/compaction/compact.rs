@@ -1194,8 +1194,23 @@ pub async fn compact_messages(
         .map(|&idx| messages[idx].clone())
         .collect();
 
-    // Create a summary of the unpinned portion of the conversation
-    let summary_result = create_summary(client, &to_summarize, &config.model).await?;
+    // Create a summary of the unpinned portion of the conversation. Layered-
+    // section gate (P0-2): when the model ignored the required section
+    // structure, retry once — a flat summary is exactly the "compressed
+    // right-sized but wrong-shaped" failure the ledger cannot fix. The
+    // deterministic sections (ledger, failed attempts) ride regardless.
+    let mut summary_result = create_summary(client, &to_summarize, &config.model).await?;
+    if summary_section_count(&summary_result.text) < LAYERED_SUMMARY_HEADERS.len() {
+        tracing::warn!(
+            target: "compaction",
+            "summary missing layered sections; retrying once with a fresh draw"
+        );
+        if let Ok(second) = create_summary(client, &to_summarize, &config.model).await
+            && summary_section_count(&second.text) > summary_section_count(&summary_result.text)
+        {
+            summary_result = second;
+        }
+    }
     let summary = summary_result.text;
 
     // Extract workflow context (files touched, tasks in progress, etc.)
@@ -1490,6 +1505,24 @@ pub fn should_use_cache_aligned_summary(model: &str, messages: &[Message]) -> bo
         / 100;
     let summary_prompt_tokens = 512usize;
     estimate_tokens(messages).saturating_add(summary_prompt_tokens) <= budget
+}
+
+/// The required section headers of a layered summary, in order. Shared by
+/// the instruction (so the model is told) and [`summary_section_count`]
+/// (so the gate can verify the model complied).
+pub const LAYERED_SUMMARY_HEADERS: &[&str] = &[
+    "### Decisions & Confirmed Facts",
+    "### Failed Approaches",
+    "### Brief Process",
+];
+
+/// How many of the layered-summary section headers `text` carries. A
+/// compliant summary has all of them ([`LAYERED_SUMMARY_HEADERS.len()`]).
+pub fn summary_section_count(text: &str) -> usize {
+    LAYERED_SUMMARY_HEADERS
+        .iter()
+        .filter(|header| text.contains(*header))
+        .count()
 }
 
 /// Layered summarization instruction: different information types get

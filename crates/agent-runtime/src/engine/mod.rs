@@ -1440,7 +1440,18 @@ impl Engine {
         // background check pushes verdicts here, and each turn's executor
         // flushes them as a synthetic runtime_event message before the
         // turn's first API request (mirrors the LSP probe wire-in above).
-        .with_result_verifications(Some(Arc::clone(&self.pending_result_verifications)));
+        .with_result_verifications(Some(Arc::clone(&self.pending_result_verifications)))
+        // W2 P1-1: deliverables watchdog — parse the output paths named in
+        // the task instruction (first user text query) and let the turn
+        // loop re-check them on disk every cadence, noting gaps mid-run.
+        .with_deliverables(non_empty_deliverables_probe(
+            self.session
+                .messages
+                .iter()
+                .find(|m| crate::compaction::is_user_text_query(m))
+                .map(crate::compaction::message_text)
+                .as_deref(),
+        ));
         let mut history =
             SessionChatHistory::new_with_event_tx(&mut self.session, Some(self.tx_event.clone()));
         // Drain steers queued between turns (mirrors the retired pre-turn
@@ -3199,6 +3210,23 @@ use context::{
     MIN_RECENT_MESSAGES_TO_KEEP, estimate_input_tokens_conservative, summarize_text,
     turn_response_headroom_tokens,
 };
+/// Build the deliverables watchdog probe from the task instruction text,
+/// or `None` when no deliverable paths parse out (interactive chats, tasks
+/// without disk outputs).
+fn non_empty_deliverables_probe(
+    instruction: Option<&str>,
+) -> Option<deliverables::DeliverablesProbe> {
+    let paths = instruction
+        .map(deliverables::parse_deliverables)
+        .unwrap_or_default();
+    if paths.is_empty() {
+        None
+    } else {
+        Some(deliverables::DeliverablesProbe::new(paths))
+    }
+}
+
+mod deliverables;
 mod dispatch;
 mod loop_guard;
 mod lsp_hooks;
