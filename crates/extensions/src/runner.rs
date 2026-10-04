@@ -832,7 +832,8 @@ mod tests {
     fn runner_with_fixture_dylib() -> crate::ExtensionRunner {
         let runner = crate::ExtensionRunner::new();
         let rt = tokio::runtime::Runtime::new().expect("rt");
-        rt.block_on(runner.load_dylib(std::path::Path::new(env!("CODESMITH_FIXTURE_DYLIB"))))
+        let fixture = crate::test_support::fixture_dylib_path();
+        rt.block_on(runner.load_dylib(std::path::Path::new(&fixture)))
             .expect("load fixture dylib");
         runner.bind_core(Arc::new(Ctx { generation: 1 }));
         runner
@@ -869,7 +870,8 @@ mod tests {
 
         // Re-load proves clear is non-destructive to the runner itself.
         let rt = tokio::runtime::Runtime::new().expect("rt");
-        rt.block_on(runner.load_dylib(std::path::Path::new(env!("CODESMITH_FIXTURE_DYLIB"))))
+        let fixture = crate::test_support::fixture_dylib_path();
+        rt.block_on(runner.load_dylib(std::path::Path::new(&fixture)))
             .expect("reload");
         runner.bind_core(Arc::new(Ctx { generation: 2 }));
         assert!(

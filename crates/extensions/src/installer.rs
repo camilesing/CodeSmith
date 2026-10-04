@@ -209,14 +209,12 @@ mod e2e_tests {
     /// state assertion (state is tui-side, unit-tested in T2).
     #[test]
     fn install_to_load_roundtrip_binds_fixture_tool() {
-        let fixture = env!("CODESMITH_FIXTURE_DYLIB");
+        let fixture = crate::test_support::fixture_dylib_path();
         let root = tempfile::tempdir().expect("temp root");
         let source = FakeSource {
             provenance: "test:fake".into(),
         };
-        let builder = FakeBuilder {
-            dylib: PathBuf::from(fixture),
-        };
+        let builder = FakeBuilder { dylib: fixture };
         let installer = Installer::new(&source, &builder, root.path().to_path_buf());
         let spec = SourceSpec::parse("path:/ignored").unwrap();
         let report = installer.install(&spec).expect("install");

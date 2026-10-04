@@ -123,10 +123,10 @@ mod tests {
     /// workspace + toolchain).
     #[test]
     fn load_dylib_fixture_contributes_tool_and_handler() {
-        let path = env!("CODESMITH_FIXTURE_DYLIB");
+        let path = crate::test_support::fixture_dylib_path();
         let runner = crate::ExtensionRunner::new();
         let rt = tokio::runtime::Runtime::new().expect("rt");
-        rt.block_on(runner.load_dylib(Path::new(path)))
+        rt.block_on(runner.load_dylib(Path::new(&path)))
             .expect("load fixture");
         runner.bind_core(Arc::new(Ctx { generation: 1 }));
         let tools: Vec<String> = runner.bound_tools().into_iter().map(|(n, _)| n).collect();

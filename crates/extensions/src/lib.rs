@@ -44,6 +44,9 @@ pub mod sample_scratchpad;
 pub mod script;
 pub mod state;
 
+#[cfg(test)]
+mod test_support;
+
 // Slice-1 runtime re-exports.
 pub use api::{RealExtensionApi, StubExtensionApi};
 pub use bus::EventBus;
