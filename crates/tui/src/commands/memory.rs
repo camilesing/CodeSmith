@@ -464,7 +464,8 @@ mod tests {
         let msg = result.message.expect("agent overview should return text");
         assert!(msg.contains("Agent memory for `explore`"));
         assert!(msg.contains("project"));
-        assert!(msg.contains("agent-memory/explore"));
+        // The message embeds a filesystem path; accept either separator.
+        assert!(msg.replace('\\', "/").contains("agent-memory/explore"));
     }
 
     #[test]

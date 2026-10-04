@@ -252,11 +252,14 @@ pub fn remove(workspace: &Path, state: &mut ModStateStore, id: &str) -> Result<S
 }
 
 /// Sanitize a mod-author-supplied relative path: reject absolute paths and
-/// any `..` component (same guard class as mod.toml `entry`).
+/// any `..` component (same guard class as mod.toml `entry`). Rooted paths
+/// (`/abs`) and drive-prefix paths (`C:x`) are rejected too — on Windows
+/// neither `is_absolute` alone catches them.
 pub fn sanitize_rel_path(rel: &str) -> Result<PathBuf, String> {
     let p = Path::new(rel);
-    if p.is_absolute()
-        || p.components().any(|c| matches!(c, Component::ParentDir))
+    if p.has_root()
+        || p.components()
+            .any(|c| matches!(c, Component::ParentDir | Component::Prefix(_)))
         || p.components().count() == 0
     {
         return Err(format!(
@@ -495,10 +498,15 @@ mod tests {
     impl ScopedHome {
         fn set_trusted(tmp: &TempDir, workspace: &Path) -> Self {
             let guard = Self::set(tmp);
+            // Backslashes must be doubled inside a TOML basic-string key;
+            // a raw Windows path (`D:\a\…`) would make `\a` an invalid
+            // escape and the whole config file fails to parse, so the
+            // workspace never comes back trusted.
+            let key = workspace.display().to_string().replace('\\', "\\\\");
             let config = r#"[projects."{path}"]
 trust_level = "trusted"
 "#
-            .replace("{path}", &workspace.display().to_string());
+            .replace("{path}", &key);
             std::fs::create_dir_all(tmp.path().join(".codesmith")).unwrap();
             std::fs::write(tmp.path().join(".codesmith").join("config.toml"), config).unwrap();
             guard
