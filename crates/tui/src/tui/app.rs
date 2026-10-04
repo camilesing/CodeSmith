@@ -1515,6 +1515,14 @@ pub struct App {
     /// until the engine builds (mirrors `extension_runner`).
     pub extension_shared_cancel_token:
         Option<std::sync::Arc<std::sync::Mutex<tokio_util::sync::CancellationToken>>>,
+    /// §F script mod layer — persistent mod activation/enablement state,
+    /// loaded at `App::new` the same way `extension_state` is. The
+    /// file-backed store stays the source of truth; this copy serves the
+    /// `/mods` commands.
+    pub mod_state: crate::mod_state::ModStateStore,
+    /// §F script mod layer — `[mods] enabled` snapshot from the loaded
+    /// config (default `true`).
+    pub mods_enabled: bool,
 }
 
 /// Message queued while the engine is busy.
@@ -2082,6 +2090,8 @@ impl App {
                 .unwrap_or_default(),
             extension_runner: None,
             extension_shared_cancel_token: None,
+            mod_state: crate::mod_state::ModStateStore::load_default().unwrap_or_default(),
+            mods_enabled: config.mods_enabled(),
         }
     }
 

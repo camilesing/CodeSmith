@@ -41,6 +41,7 @@ pub mod loader;
 pub mod manifest;
 pub mod runner;
 pub mod sample_scratchpad;
+pub mod script;
 pub mod state;
 
 // Slice-1 runtime re-exports.
@@ -58,6 +59,9 @@ pub use installer::{InstallReport, Installer, UninstallReport};
 pub use loader::load_dylib;
 pub use manifest::ExtensionManifest;
 pub use runner::{EmitOutcome, ExtensionRunner};
+pub use script::{
+    DiscoveredMod, ModKvStore, ModManifest, RhaiMod, apply_mod_trust_gate, discover_mods,
+};
 pub use state::HostExtensionContext;
 
 // Re-export the framework contract so extension authors can depend solely on

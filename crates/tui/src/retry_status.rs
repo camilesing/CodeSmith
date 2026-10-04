@@ -7,6 +7,9 @@
 pub use codesmith_agent_runtime::retry_status::*;
 
 #[cfg(test)]
+pub use test_helpers::test_guard;
+
+#[cfg(test)]
 mod test_helpers {
     /// Test-only serialization guard mirroring the one that used to live in
     /// `retry_status::test_guard`. The original is `#[cfg(test)]` in the
@@ -21,6 +24,3 @@ mod test_helpers {
         GUARD.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
-
-#[cfg(test)]
-pub use test_helpers::test_guard;

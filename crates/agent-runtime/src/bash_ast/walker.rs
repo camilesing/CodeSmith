@@ -91,10 +91,10 @@ struct Walker<'a> {
     source: &'a str,
     segments: Vec<CommandSegment>,
     substitution_outside_segments: bool,
-    /// > 0 while walking nested positions (substitution bodies, assignment
-    /// values, subshells, compound-statement bodies); emitted segments are
-    /// marked `is_nested` so policy matching can reconstruct the top level
-    /// while safety analysis still sees them.
+    /// Nonzero while walking nested positions (substitution bodies,
+    /// assignment values, subshells, compound-statement bodies); emitted
+    /// segments are marked `is_nested` so policy matching can reconstruct
+    /// the top level while safety analysis still sees them.
     nested_depth: usize,
 }
 
@@ -223,11 +223,11 @@ impl<'a> Walker<'a> {
     ) {
         let mut cursor = heredoc.walk();
         for nested in heredoc.children(&mut cursor) {
-            if nested.kind() == "file_redirect" {
-                if let Some(redirect) = self.collect_redirect(nested) {
-                    *expansion_in_target |= self.subtree_has_expansion(nested);
-                    redirects.push(redirect);
-                }
+            if nested.kind() == "file_redirect"
+                && let Some(redirect) = self.collect_redirect(nested)
+            {
+                *expansion_in_target |= self.subtree_has_expansion(nested);
+                redirects.push(redirect);
             }
         }
     }
@@ -331,12 +331,15 @@ impl<'a> Walker<'a> {
     }
 
     fn subtree_has_kind(&self, node: Node, kind: &str) -> bool {
-        if node.kind() == kind {
-            return true;
+        let mut stack = vec![node];
+        while let Some(node) = stack.pop() {
+            if node.kind() == kind {
+                return true;
+            }
+            let mut cursor = node.walk();
+            stack.extend(node.children(&mut cursor));
         }
-        let mut cursor = node.walk();
-        node.children(&mut cursor)
-            .any(|child| self.subtree_has_kind(child, kind))
+        false
     }
 
     fn subtree_has_expansion(&self, node: Node) -> bool {

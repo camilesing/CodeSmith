@@ -23,11 +23,7 @@ use codesmith_agent_runtime::sandbox::{
 };
 use codesmith_agent_runtime::tools::git_env::merge_git_scrub_env;
 use codesmith_agent_runtime::tools::shell_output::{
-    ShellSpillInfo,
-    needs_spill,
-    spill_full_shell_output,
-    spillover_footer,
-    summarize_output,
+    ShellSpillInfo, needs_spill, spill_full_shell_output, spillover_footer, summarize_output,
     truncate_with_meta,
 };
 
@@ -238,9 +234,7 @@ const CWD_MARKER_PREFIX: &str = "__CODESMITH_CWD__";
 /// the sandbox didn't already grant the command.
 #[cfg(unix)]
 fn wrap_with_cwd_capture(command: &str) -> String {
-    format!(
-        "{command}\n_cs_rc=$?\nprintf '%s\\n' \"{CWD_MARKER_PREFIX}$PWD\" >&2\nexit $_cs_rc\n"
-    )
+    format!("{command}\n_cs_rc=$?\nprintf '%s\\n' \"{CWD_MARKER_PREFIX}$PWD\" >&2\nexit $_cs_rc\n")
 }
 
 /// Extract (and strip) `__CODESMITH_CWD__<path>` marker lines from both
@@ -284,7 +278,9 @@ fn apply_session_cwd_capture(
         .workspace
         .canonicalize()
         .unwrap_or_else(|_| context.workspace.clone());
-    let ran_in = ran_in.canonicalize().unwrap_or_else(|_| ran_in.to_path_buf());
+    let ran_in = ran_in
+        .canonicalize()
+        .unwrap_or_else(|_| ran_in.to_path_buf());
     if captured == ran_in {
         return None;
     }
@@ -651,16 +647,15 @@ impl ToolSpec for ExecShellTool {
                     // P0-2: external-sandbox runs bypass the shell manager
                     // (no task id), so spill the full backend output under a
                     // fresh id — the elided middle stays retrievable.
-                    let spill =
-                        if needs_spill(stdout_meta.original_len, stderr_meta.original_len) {
-                            spill_full_shell_output(
-                                &fresh_shell_spill_id(),
-                                &output.stdout,
-                                &output.stderr,
-                            )
-                        } else {
-                            None
-                        };
+                    let spill = if needs_spill(stdout_meta.original_len, stderr_meta.original_len) {
+                        spill_full_shell_output(
+                            &fresh_shell_spill_id(),
+                            &output.stdout,
+                            &output.stderr,
+                        )
+                    } else {
+                        None
+                    };
                     (result, spill)
                 }
                 Err(e) => {
@@ -758,9 +753,11 @@ impl ToolSpec for ExecShellTool {
             // foreground branch previously discarding the explicit `cwd`
             // param (interactive/background branches already honored it).
             let session_cwd = context.session_cwd_override();
-            let effective_dir: Option<String> = working_dir
-                .clone()
-                .or_else(|| session_cwd.as_ref().map(|p| p.to_string_lossy().to_string()));
+            let effective_dir: Option<String> = working_dir.clone().or_else(|| {
+                session_cwd
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().to_string())
+            });
             let ran_in = effective_dir
                 .as_deref()
                 .map(PathBuf::from)
@@ -783,11 +780,13 @@ impl ToolSpec for ExecShellTool {
                 effective_runtime.clone(),
             )
             .await;
-            if capture_cwd
-                && let Ok(result) = result.as_mut()
-            {
-                session_cwd_applied =
-                    apply_session_cwd_capture(context, &mut result.stdout, &mut result.stderr, &ran_in);
+            if capture_cwd && let Ok(result) = result.as_mut() {
+                session_cwd_applied = apply_session_cwd_capture(
+                    context,
+                    &mut result.stdout,
+                    &mut result.stderr,
+                    &ran_in,
+                );
             }
             result
         };
@@ -926,10 +925,7 @@ impl ToolSpec for ExecShellTool {
                 // relative paths now resolve from the new directory.
                 if let Some(applied) = &session_cwd_applied {
                     metadata["session_cwd"] = json!(applied.to_string_lossy());
-                    output = format!(
-                        "{output}\n(working directory is now {})",
-                        applied.display()
-                    );
+                    output = format!("{output}\n(working directory is now {})", applied.display());
                 }
                 if result.status == ShellStatus::TimedOut && !background && !interactive {
                     metadata["foreground_timeout_recovery"] = json!({

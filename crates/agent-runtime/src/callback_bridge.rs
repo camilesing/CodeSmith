@@ -295,11 +295,11 @@ impl Callback for CallbackBridge {
                 }),
                 StreamDelta::MessageStarted { index } => {
                     first_block_announcement(BlockAnnouncement::Message, *index)
-                        .then(|| Event::MessageStarted { index: *index })
+                        .then_some(Event::MessageStarted { index: *index })
                 }
                 StreamDelta::ThinkingStarted { index } => {
                     first_block_announcement(BlockAnnouncement::Thinking, *index)
-                        .then(|| Event::ThinkingStarted { index: *index })
+                        .then_some(Event::ThinkingStarted { index: *index })
                 }
                 StreamDelta::ThinkingComplete { index } => {
                     Some(Event::ThinkingComplete { index: *index })

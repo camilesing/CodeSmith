@@ -25,7 +25,9 @@
 //! attempts log a warning instead of swapping counters mid-session, which
 //! would make budgets inconsistent across a conversation.
 
-use std::sync::{Arc, OnceLock};
+#[cfg(feature = "hf-tokenizer")]
+use std::sync::Arc;
+use std::sync::OnceLock;
 
 /// Token counter with pluggable backends.
 #[derive(Clone)]

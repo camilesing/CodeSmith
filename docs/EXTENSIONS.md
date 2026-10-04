@@ -6,7 +6,14 @@ CodeSmith extensions are compiled-in (slice 1, §F1) or to-be-loaded
 `Extension` model ported onto the §E framework-core traits.
 
 An extension is a factory (`impl Extension`) that, during `configure`,
-registers its contributions against an `ExtensionApi`. The host discovers
+registers its contributions against an `ExtensionApi`.
+
+> **Script Mods.** The same `Extension` contract is also implemented by
+> Rhai-script **Mods** (`~/.codesmith/mods/<id>/mod.toml` + `mod.rhai`) —
+> hooks, tools, slash commands and persistent KV without compiling Rust,
+> first-activation-gated and hot-reloaded. They ride the exact runner /
+> seam / reload machinery documented here. Author guide:
+> [MODS.md](MODS.md). The host discovers
 compiled-in extensions at startup via `inventory`, reconciles them with the
 on-disk `ExtensionStateStore` (skip disabled), loads + configures each
 against a stub api, then `bind_core`s the host context — after which the

@@ -2699,7 +2699,13 @@ mod tests {
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+        // Poison-tolerant: a panic in one env-mutating test must not cascade
+        // into `.lock().unwrap()` failures across every unrelated test that
+        // also serialises env access.
+        match LOCK.get_or_init(|| Mutex::new(())).lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
     }
 
     #[test]
@@ -3245,7 +3251,7 @@ mod tests {
     }
 
     #[test]
-    fn nvidia_nim_provider_can_fallback_to_deepseek_api_key_env() {
+    fn nvidia_nim_does_not_reuse_deepseek_api_key_env() {
         let _lock = env_lock();
         let _env = EnvGuard::without_runtime_overrides();
         // Safety: test-only environment mutation guarded by a module mutex.
@@ -3258,7 +3264,10 @@ mod tests {
         let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
 
         assert_eq!(resolved.provider, ProviderKind::NvidiaNim);
-        assert_eq!(resolved.api_key.as_deref(), Some("deepseek-compat-key"));
+        // DEEPSEEK_API_KEY is deliberately not a nvidia-nim candidate
+        // (secrets::env_for): presenting a DeepSeek-issued credential to
+        // NVIDIA endpoints would leak it to a third party.
+        assert!(resolved.api_key.is_none());
     }
 
     #[test]

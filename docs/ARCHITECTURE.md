@@ -98,7 +98,7 @@ Current boundary note (v0.8.6):
 - **`crates/config`** - Config loading, profiles, environment variable precedence, CLI runtime overrides.
 - **`crates/core`** - Core runtime boundaries.
 - **`crates/execpolicy`** - Approval/sandbox policy engine for tool execution decisions.
-- **`crates/extensions`** + **`crates/extensions-fixture-dylib`** - Extension runtime (discovery, loading, event dispatch) and its test fixture dylib.
+- **`crates/extensions`** + **`crates/extensions-fixture-dylib`** - Extension runtime (discovery, loading, event dispatch) and its test fixture dylib. Also hosts the Rhai script-mod layer (`src/script/` — same `Extension` contract, script载体; see [MODS.md](MODS.md)).
 - **`crates/hooks`** - Lifecycle hooks (stdout, jsonl, webhook) for pre/post tool events.
 - **`crates/index`** - Persistent per-workspace code index (see the Code Index section below).
 - **`crates/mcp`** - MCP client + stdio server for Model Context Protocol tool servers.

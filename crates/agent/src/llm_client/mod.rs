@@ -732,7 +732,9 @@ const MAX_RETRY_AFTER_SECS: f64 = 86_400.0;
 pub fn parse_retry_after(value: &str) -> Option<Duration> {
     // Try parsing as seconds
     if let Ok(seconds) = value.parse::<u64>() {
-        return Some(Duration::from_secs(seconds.min(MAX_RETRY_AFTER_SECS as u64)));
+        return Some(Duration::from_secs(
+            seconds.min(MAX_RETRY_AFTER_SECS as u64),
+        ));
     }
 
     // Try parsing as float seconds

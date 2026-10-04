@@ -1212,13 +1212,19 @@ fn extract_cwd_marker_strips_and_returns_last_path() {
     // A path that doesn't canonicalize (a partial/malformed line, e.g. a
     // kill mid-printf) yields no capture and is kept as honest output.
     assert_eq!(extract_cwd_marker(&mut stdout, &mut stderr), None);
-    assert_eq!(stderr, format!("noise\n{CWD_MARKER_PREFIX}/definitely/not/real\n"));
+    assert_eq!(
+        stderr,
+        format!("noise\n{CWD_MARKER_PREFIX}/definitely/not/real\n")
+    );
     assert_eq!(stdout, "before\n");
 
     let real = std::env::temp_dir();
     let mut stdout = format!("a\n{CWD_MARKER_PREFIX}{}\nb\n", real.display());
     let mut stderr = String::new();
-    assert_eq!(extract_cwd_marker(&mut stdout, &mut stderr), Some(real.canonicalize().unwrap()));
+    assert_eq!(
+        extract_cwd_marker(&mut stdout, &mut stderr),
+        Some(real.canonicalize().unwrap())
+    );
     assert_eq!(stdout, "a\nb\n");
 }
 
@@ -1241,7 +1247,10 @@ fn session_cwd_capture_rejects_outside_workspace() {
         "a cwd outside the workspace must be dropped"
     );
     assert!(ctx.session_cwd_override().is_none());
-    assert!(!stdout.contains(CWD_MARKER_PREFIX), "marker stripped even when rejected");
+    assert!(
+        !stdout.contains(CWD_MARKER_PREFIX),
+        "marker stripped even when rejected"
+    );
     let _ = std::fs::remove_dir(&outside);
 }
 
@@ -1259,7 +1268,10 @@ fn session_cwd_capture_accepts_workspace_subdir() {
     let applied =
         apply_session_cwd_capture(&ctx, &mut stdout, &mut stderr, tmp.path()).expect("applied");
     assert_eq!(applied.canonicalize().unwrap(), sub.canonicalize().unwrap());
-    assert_eq!(ctx.session_cwd_override().unwrap().canonicalize().unwrap(), sub.canonicalize().unwrap());
+    assert_eq!(
+        ctx.session_cwd_override().unwrap().canonicalize().unwrap(),
+        sub.canonicalize().unwrap()
+    );
 }
 
 #[cfg(unix)]
@@ -1335,7 +1347,11 @@ async fn exec_shell_cd_outside_workspace_does_not_persist() {
         "cwd should still be the workspace: {}",
         second.content
     );
-    assert!(second.content.contains(tmp.path().file_name().unwrap().to_string_lossy().as_ref()));
+    assert!(
+        second
+            .content
+            .contains(tmp.path().file_name().unwrap().to_string_lossy().as_ref())
+    );
 }
 
 // === P0-2: truncated shell output spills to disk for retrieval ============
@@ -1356,8 +1372,7 @@ impl TestSpillRoot {
         let guard = spill_store::TEST_SPILLOVER_GUARD
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let prior =
-            spill_store::set_test_spillover_root(Some(tmp.join("tool_outputs")));
+        let prior = spill_store::set_test_spillover_root(Some(tmp.join("tool_outputs")));
         Self {
             prior,
             _guard: guard,
@@ -1679,9 +1694,8 @@ fn test_spill_task_full_output_skips_stale_detail() {
 
     // Prime a FULL spill under the task id — what an earlier live poll wrote.
     let full = "x".repeat(40_000);
-    let path =
-        codesmith_agent_runtime::tools::truncate::write_spillover("stale-task", &full)
-            .expect("prime full spill");
+    let path = codesmith_agent_runtime::tools::truncate::write_spillover("stale-task", &full)
+        .expect("prime full spill");
 
     let spill = spill_task_full_output(&ctx, "stale-task");
     assert!(

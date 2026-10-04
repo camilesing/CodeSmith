@@ -1085,3 +1085,17 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # ─────────────────────────────────────────────────────────────────────────────────
 # allowed_approval_policies = ["on-request", "untrusted", "never"]
 # allowed_sandbox_modes = ["read-only", "workspace-write"]
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Script Mods (optional) — docs/MODS.md
+# ─────────────────────────────────────────────────────────────────────────────────
+# Rhai-script mods extend CodeSmith with hooks, tools, and slash commands
+# without compiling Rust. They live under ~/.codesmith/mods/<id>/ (global)
+# or <workspace>/.codesmith/mods/<id>/ (project), each with a mod.toml +
+# mod.rhai. First activation requires one-time user consent (/mods activate
+# or approving a manage_mods action=activate call); same-id reloads are
+# free. Saves to disk are hot-reloaded at the next quiet moment.
+#
+# [mods]
+# enabled = true   # master switch: discovery, manage_mods tool, watcher
+# watch = true     # hot-reload file watcher only (500ms debounce, 1s cooldown)

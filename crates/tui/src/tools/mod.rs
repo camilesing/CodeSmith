@@ -35,6 +35,7 @@ pub use codesmith_tool_impls::tools::notify;
 pub use codesmith_tool_impls::tools::pandoc;
 pub use codesmith_tool_impls::tools::plan;
 pub use codesmith_tool_impls::tools::plan_mode;
+pub mod mods;
 pub mod plugin;
 pub use codesmith_tool_impls::tools::project;
 pub use codesmith_tool_impls::tools::recall_archive;

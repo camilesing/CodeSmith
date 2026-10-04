@@ -932,6 +932,7 @@ impl ExtensionCommandContext for StubExtCtx {}
 ///      parent's `ToolRegistry` `Arc`s nor wires extension-contributed tools
 ///      (those are added ONLY in `EngineHost::build_turn_dispatcher`, §F5d T1,
 ///      a path the sub-agent never takes).
+///
 /// So an ext tool bound on the parent's `ExtensionRunner` can NEVER reach a
 /// sub-agent's effective tool set, regardless of `inherit_full_registry`.
 ///
@@ -1047,7 +1048,7 @@ async fn agent_eval_on_completed_session_returns_full_projection_not_running_err
         input_tx,
         "boot_test".to_string(),
     );
-    let full_output = "Per-issue analysis:\n".to_string() + &"detail line\n".repeat(400);
+    let full_output = format!("Per-issue analysis:\n{}", "detail line\n".repeat(400));
     agent.status = SubAgentStatus::Completed;
     agent.result = Some(full_output.clone());
     let agent_id = agent.id.clone();
