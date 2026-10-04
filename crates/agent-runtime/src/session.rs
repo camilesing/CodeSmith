@@ -3,6 +3,7 @@
 //! Tracks conversation history, token usage, and session metadata.
 
 use crate::compaction::circuit_breaker::CompactionCircuitBreaker;
+use crate::compaction::fact_ledger::FactLedger;
 use crate::compaction::micro_compact::MicroCompactState;
 use crate::compaction::responsive_compact::ResponsiveCompactState;
 use crate::compaction::session_memory_compact::SessionMemoryCompactConfig;
@@ -78,6 +79,13 @@ pub struct Session {
     /// `executor.run` (while `&mut self.session` is borrowed by
     /// `SessionChatHistory`), mirroring the `working_set` precedent (slice 22).
     pub recent_read_files: Arc<StdMutex<VecDeque<RecentReadFile>>>,
+
+    /// Rule-extracted must-not-lose facts (task constraints, key paths,
+    /// failure causes) that survive every compaction and cycle reset. Fed
+    /// by the compaction drop set and re-rendered as a section of each
+    /// compaction summary. `Arc<std::sync::Mutex<…>>` for the same
+    /// mid-`run` access reason as `recent_read_files` above.
+    pub fact_ledger: Arc<StdMutex<FactLedger>>,
 
     /// Total tokens used in this session
     pub total_usage: SessionUsage,
@@ -213,6 +221,7 @@ impl Session {
             compaction_summary_prompt: None,
             messages: AppendLog::new(),
             recent_read_files: Arc::new(StdMutex::new(VecDeque::new())),
+            fact_ledger: Arc::new(StdMutex::new(FactLedger::default())),
             total_usage: SessionUsage::default(),
             allow_shell,
             trust_mode,

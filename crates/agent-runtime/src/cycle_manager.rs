@@ -492,7 +492,10 @@ impl Iterator for ArchiveMessageReader {
 /// 3. The model-curated `<carry_forward>` briefing — labeled with `[CYCLE
 ///    BRIEFING]` so the assistant knows it was self-authored on the previous
 ///    cycle.
-/// 4. Optional pending user message that hadn't been sent yet.
+/// 4. Optional fact-ledger section — the ledger's usual injection vehicle
+///    (the compaction summary) is dropped at the cycle boundary, so the
+///    engine re-renders it as a labeled seed message.
+/// 5. Optional pending user message that hadn't been sent yet.
 ///
 /// The original system prompt is composed by the engine and stays separate
 /// from this list — the engine sets `session.system_prompt` directly.
@@ -501,6 +504,7 @@ pub fn build_seed_messages(
     structured_state_block: Option<&str>,
     briefing: Option<&CycleBriefing>,
     pending_user_message: Option<&str>,
+    fact_ledger_section: Option<&str>,
 ) -> Vec<Message> {
     let mut out: Vec<Message> = Vec::new();
 
@@ -547,6 +551,28 @@ pub fn build_seed_messages(
             role: "assistant".to_string(),
             content: vec![ContentBlock::Text {
                 text: "Briefing absorbed. Continuing.".to_string(),
+                cache_control: None,
+            }],
+        });
+    }
+
+    if let Some(ledger) = fact_ledger_section
+        && !ledger.trim().is_empty()
+    {
+        out.push(Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: format!(
+                    "[FACT LEDGER — preserved across the cycle boundary]\n\n{}",
+                    ledger.trim()
+                ),
+                cache_control: None,
+            }],
+        });
+        out.push(Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "Ledger absorbed. Continuing.".to_string(),
                 cache_control: None,
             }],
         });
@@ -791,7 +817,7 @@ mod tests {
 
     #[test]
     fn build_seed_messages_empty_when_all_inputs_empty() {
-        let seeds = build_seed_messages(None, None, None);
+        let seeds = build_seed_messages(None, None, None, None);
         assert!(seeds.is_empty());
     }
 
@@ -808,15 +834,19 @@ mod tests {
             Some("## Cycle State\n- Mode: agent"),
             Some(&briefing),
             Some("Continue working on issue #124"),
+            Some("## Fact Ledger\n- columns: x"),
         );
 
-        // Expected layout: state user + ack assistant + briefing user + ack assistant + pending user.
-        assert_eq!(seeds.len(), 5);
+        // Expected layout: state user + ack + briefing user + ack +
+        // ledger user + ack + pending user.
+        assert_eq!(seeds.len(), 7);
         assert_eq!(seeds[0].role, "user");
         assert_eq!(seeds[1].role, "assistant");
         assert_eq!(seeds[2].role, "user");
         assert_eq!(seeds[3].role, "assistant");
         assert_eq!(seeds[4].role, "user");
+        assert_eq!(seeds[5].role, "assistant");
+        assert_eq!(seeds[6].role, "user");
 
         if let ContentBlock::Text { text, .. } = &seeds[0].content[0] {
             assert!(text.contains("[CYCLE STATE"));
@@ -832,6 +862,12 @@ mod tests {
             panic!("expected text block");
         }
         if let ContentBlock::Text { text, .. } = &seeds[4].content[0] {
+            assert!(text.contains("[FACT LEDGER"));
+            assert!(text.contains("columns: x"));
+        } else {
+            panic!("expected text block");
+        }
+        if let ContentBlock::Text { text, .. } = &seeds[6].content[0] {
             assert_eq!(text, "Continue working on issue #124");
         } else {
             panic!("expected text block");
@@ -840,7 +876,7 @@ mod tests {
 
     #[test]
     fn build_seed_messages_skips_blank_pending() {
-        let seeds = build_seed_messages(Some("## State"), None, Some("   "));
+        let seeds = build_seed_messages(Some("## State"), None, Some("   "), None);
         // State block + ack — no pending message.
         assert_eq!(seeds.len(), 2);
         assert_eq!(seeds[0].role, "user");

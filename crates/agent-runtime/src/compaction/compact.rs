@@ -312,6 +312,27 @@ pub fn derive_working_set_paths(
     paths.into_iter().collect()
 }
 
+/// Lowercase markers identifying error-bearing content. Shared by the pin
+/// planner ([`should_pin_message`]), the fact ledger's failure extraction,
+/// and the summary's failed-attempts section.
+pub const ERROR_MARKERS: &[&str] = &[
+    "error:",
+    "error ",
+    "failed",
+    "panic",
+    "traceback",
+    "stack trace",
+    "assertion failed",
+    "test failed",
+];
+
+/// Token cap under which the first user text query (the task instruction)
+/// is pinned verbatim instead of summarized. Typical task instructions are
+/// a few thousand tokens; an instruction over this cap falls back to fact
+/// ledger extraction. Pinning keeps the AppendLog front stable across
+/// compactions, so this only improves prefix-cache behavior.
+pub const TASK_INSTRUCTION_PIN_TOKEN_CAP: usize = 12_000;
+
 pub fn should_pin_message(text: &str, working_set_paths: &HashSet<String>) -> bool {
     let lower = text.to_lowercase();
 
@@ -320,17 +341,7 @@ pub fn should_pin_message(text: &str, working_set_paths: &HashSet<String>) -> bo
         return true;
     }
 
-    let error_markers = [
-        "error:",
-        "error ",
-        "failed",
-        "panic",
-        "traceback",
-        "stack trace",
-        "assertion failed",
-        "test failed",
-    ];
-    if error_markers.iter().any(|m| lower.contains(m)) {
+    if ERROR_MARKERS.iter().any(|m| lower.contains(m)) {
         return true;
     }
 
@@ -391,6 +402,19 @@ pub fn plan_compaction(
     // were not detected by the heuristics above.
     if let Some(pins) = external_pins {
         pinned_indices.extend(pins.iter().copied().filter(|idx| *idx < len));
+    }
+
+    // Pin the original task instruction (the first user text query). The
+    // `is_user_text_query` guarantee below picks the *most recent* user
+    // query, so without this the instruction — and any output schema quoted
+    // in it — is summarized away on long sessions (the "round 200 forgot
+    // OUTPUT_SCHEMA" failure). Oversized instructions fall back to fact
+    // ledger extraction instead of pinning.
+    if let Some(idx) = messages.iter().position(is_user_text_query)
+        && !pinned_indices.contains(&idx)
+        && estimate_tokens_for_message(&messages[idx], false) <= TASK_INSTRUCTION_PIN_TOKEN_CAP
+    {
+        pinned_indices.insert(idx);
     }
 
     // Ensure tool result messages are not kept without their corresponding tool call.
@@ -809,6 +833,10 @@ pub struct CompactionEnhancements {
     pub hooks: Option<(Arc<dyn HookHost>, HookContext)>,
     /// Session-memory sidecar. `None` skips session-memory-first.
     pub session_memory: Option<SessionMemorySidecar>,
+    /// Session fact ledger. When present, facts are extracted from the
+    /// drop set of every compaction and the ledger is rendered as a section
+    /// of the summary block. `None` disables fact extraction entirely.
+    pub fact_ledger: Option<Arc<std::sync::Mutex<super::fact_ledger::FactLedger>>>,
 }
 
 impl std::fmt::Debug for CompactionEnhancements {
@@ -819,6 +847,7 @@ impl std::fmt::Debug for CompactionEnhancements {
         f.debug_struct("CompactionEnhancements")
             .field("hooks", &self.hooks.is_some())
             .field("session_memory", &self.session_memory)
+            .field("fact_ledger", &self.fact_ledger.is_some())
             .finish()
     }
 }
@@ -913,6 +942,35 @@ pub async fn compact_messages_safe(
         }
         None => None,
     };
+
+    // Fact ledger: extract must-not-lose facts from the messages this
+    // compaction is about to drop (the plan's summarize set) *before* any
+    // pruning path can rewrite their content. Runs against the original
+    // messages, so all drop shapes below (local prune, session-memory, LLM
+    // summary) lose their facts to the ledger first. Accumulation is
+    // idempotent; the rendered section carries forward facts captured by
+    // earlier compactions.
+    let mut fact_ledger_section = String::new();
+    if let Some(ledger) = enhancements.and_then(|e| e.fact_ledger.as_ref()) {
+        let mut guard = ledger.lock().expect("fact ledger poisoned");
+        let plan = plan_compaction(
+            messages,
+            workspace,
+            KEEP_RECENT_MESSAGES,
+            external_pins,
+            external_working_set_paths,
+        );
+        let dropped = plan.summarize_indices.iter().map(|&idx| &messages[idx]);
+        let added = guard.accumulate(dropped, workspace);
+        if added > 0 {
+            tracing::info!(
+                target: "compaction",
+                added,
+                "fact ledger extracted {added} new facts from the compaction drop set"
+            );
+        }
+        fact_ledger_section = guard.summary_section();
+    }
 
     let mut pruned_messages = messages.to_vec();
     let mut now_under_threshold = false;
@@ -1030,6 +1088,7 @@ pub async fn compact_messages_safe(
             workspace,
             external_pins,
             external_working_set_paths,
+            &fact_ledger_section,
         )
         .await
         {
@@ -1112,6 +1171,7 @@ pub async fn compact_messages(
     workspace: Option<&Path>,
     external_pins: Option<&[usize]>,
     external_working_set_paths: Option<&[String]>,
+    fact_ledger_section: &str,
 ) -> Result<(Vec<Message>, Option<SystemPrompt>, Vec<Message>, u32)> {
     if messages.is_empty() {
         return Ok((Vec::new(), None, Vec::new(), 0));
@@ -1143,14 +1203,20 @@ pub async fn compact_messages(
 
     let anchors_section = anchor_summary_section(workspace);
 
+    // Deterministic failure record: one line per failed approach in the
+    // summarized span, independent of what the LLM summary kept.
+    let failed_section = failed_attempts_section(&to_summarize);
+
     // Build new message list with enhanced summary as system block
     let summary_block = SystemBlock {
         block_type: "text".to_string(),
         text: format!(
             "{anchors_section}\
+             {fact_ledger_section}\
              ## 📋 Conversation Summary (Auto-Generated)\n\n\
              {summary}\n\n\
              ---\n\n\
+             {failed_section}\
              ## 🔍 Workflow Context\n\n\
              {workflow_context}\n\n\
              ---\n\n\
@@ -1426,14 +1492,91 @@ pub fn should_use_cache_aligned_summary(model: &str, messages: &[Message]) -> bo
     estimate_tokens(messages).saturating_add(summary_prompt_tokens) <= budget
 }
 
+/// Layered summarization instruction: different information types get
+/// different fidelity, instead of uniformly compressing old messages into
+/// short prose. Decisions/constraints are copied verbatim, failed attempts
+/// keep their cause, process narrative is compressed hard.
 pub fn summary_instruction(word_limit: usize) -> String {
     format!(
-        "Summarize the conversation above in a concise but comprehensive way. \
-         Preserve key information, decisions made, exact file paths, commands, \
-         errors, and tool-result facts needed to continue the work. \
-         Tool outputs may be abbreviated only when they are repetitive. \
-         Keep it under {word_limit} words."
+        "Summarize the conversation above in a concise but comprehensive way, \
+         using exactly these sections:\n\
+         ### Decisions & Confirmed Facts\n\
+         Verbatim: exact numeric values, column/field names, file paths, interface \
+         signatures, output schemas, and task constraints that were stated or \
+         confirmed. Never paraphrase, round, or drop these.\n\
+         ### Failed Approaches\n\
+         One line per failed attempt: what was tried and why it failed.\n\
+         ### Brief Process\n\
+         Coarse narrative of the remaining progress (exploration, setup, \
+         intermediate steps).\n\
+         Preserve key information, commands, and tool-result facts needed to \
+         continue the work. Tool outputs may be abbreviated only when they are \
+         repetitive. Keep it under {word_limit} words total."
     )
+}
+
+/// Rule-extract one-line failure causes from messages about to be
+/// summarized — the deterministic complement to the summary's
+/// "Failed Approaches" section. Survives even when the LLM summary drops
+/// them, so the agent does not re-try approaches that already failed.
+pub fn extract_failed_attempts(messages: &[Message], limit: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen = HashSet::new();
+
+    for msg in messages {
+        for block in &msg.content {
+            let text = match block {
+                ContentBlock::ToolResult { content, .. } => content.as_str(),
+                ContentBlock::Text { text, .. } if msg.role != "assistant" => text.as_str(),
+                _ => continue,
+            };
+            let lower = text.to_lowercase();
+            if !ERROR_MARKERS.iter().any(|m| lower.contains(m)) {
+                continue;
+            }
+            for line in text.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let line_lower = trimmed.to_lowercase();
+                if !ERROR_MARKERS.iter().any(|m| line_lower.contains(m)) {
+                    continue;
+                }
+                let entry = truncate_chars(trimmed, 240).to_string();
+                let key = entry
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .to_lowercase();
+                if seen.insert(key) {
+                    out.push(entry);
+                    if out.len() >= limit {
+                        return out;
+                    }
+                }
+                break; // one line per block
+            }
+        }
+    }
+
+    out
+}
+
+/// Render the failed-attempts list as a summary-block section. Empty string
+/// when there is nothing to report.
+pub fn failed_attempts_section(messages: &[Message]) -> String {
+    let attempts = extract_failed_attempts(messages, 15);
+    if attempts.is_empty() {
+        return String::new();
+    }
+    let mut section =
+        String::from("## ⚠️ Failed Attempts (extracted)\n\nDo not repeat these approaches:\n");
+    for attempt in attempts {
+        let _ = writeln!(section, "- {attempt}");
+    }
+    section.push_str("\n---\n\n");
+    section
 }
 
 pub fn build_cache_aligned_summary_request(

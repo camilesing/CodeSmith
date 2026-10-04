@@ -1379,16 +1379,22 @@ impl Engine {
             lsp,
             Some(Arc::clone(&self.rx_steer)),
             Some(Arc::clone(&self.rx_approval)),
-            Some(CompactionProbe::new(
-                self.config.compaction.clone(),
-                self.session.workspace.clone(),
-            )),
-            Some(CapacityProbe::new(
-                self.api_provider,
-                self.session.model.clone(),
-                self.config.compaction.clone(),
-                self.session.workspace.clone(),
-            )),
+            Some(
+                CompactionProbe::new(
+                    self.config.compaction.clone(),
+                    self.session.workspace.clone(),
+                )
+                .with_fact_ledger(Some(Arc::clone(&self.session.fact_ledger))),
+            ),
+            Some(
+                CapacityProbe::new(
+                    self.api_provider,
+                    self.session.model.clone(),
+                    self.config.compaction.clone(),
+                    self.session.workspace.clone(),
+                )
+                .with_fact_ledger(Some(Arc::clone(&self.session.fact_ledger))),
+            ),
             Some(Arc::clone(&self.rx_subagent_completion)),
             Some(self.cancel_token.clone()),
             Some(self.host.subagents()),
@@ -2039,8 +2045,9 @@ impl Engine {
     /// session state after the call) plus whatever session-memory content is
     /// currently on disk.
     ///
-    /// Returns `None` when neither hooks nor session-memory material is
-    /// available, so the compaction primitive takes its untouched fast path.
+    /// Always returns `Some`: the session fact ledger is unconditionally
+    /// attached (compaction drops feed it, and it renders into the summary),
+    /// with hooks / session-memory added when available.
     fn build_compaction_enhancements(&self) -> Option<CompactionEnhancements> {
         let hooks = self.host.hooks().map(|executor| {
             let context = self
@@ -2066,14 +2073,13 @@ impl Engine {
             }
         };
 
-        if hooks.is_none() && session_memory.is_none() {
-            None
-        } else {
-            Some(CompactionEnhancements {
-                hooks,
-                session_memory,
-            })
-        }
+        // Always present: the session fact ledger rides every host-side
+        // compaction, with hooks / session-memory added when available.
+        Some(CompactionEnhancements {
+            hooks,
+            session_memory,
+            fact_ledger: Some(Arc::clone(&self.session.fact_ledger)),
+        })
     }
 
     async fn handle_purge(&mut self) {
@@ -2729,11 +2735,26 @@ impl Engine {
             .await;
 
         // 4. Build the seed messages. The next cycle starts with the
-        //    base system prompt (refreshed below) and these seeds.
+        //    base system prompt (refreshed below) and these seeds. The
+        //    fact ledger rides along — the compaction summary (its usual
+        //    injection vehicle) is dropped at step 5 below.
+        let fact_ledger_section = {
+            let ledger = self
+                .session
+                .fact_ledger
+                .lock()
+                .expect("fact ledger poisoned");
+            if ledger.is_empty() {
+                None
+            } else {
+                Some(ledger.summary_section())
+            }
+        };
         let seed_messages = build_seed_messages(
             state_block.as_deref(),
             Some(&briefing),
             None, // pending_user_message — pulled from steer/queue elsewhere
+            fact_ledger_section.as_deref(),
         );
 
         // 5. Atomic swap.

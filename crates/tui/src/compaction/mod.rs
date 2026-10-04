@@ -4,10 +4,7 @@
 //! loop) now lives in `codesmith_agent_runtime::compaction::compact`. This
 //! module is a thin re-export shim so historical `crate::compaction::<item>`
 //! paths keep resolving; it also owns the compaction *test* module (which
-//! depends on TUI-local `MockLlmClient` / `HookExecutor`) and the three
-//! prompt-/reinject-style submodules.
-
-pub mod compact_prompt;
+//! depends on TUI-local `MockLlmClient` / `HookExecutor`).
 
 // Re-export the full compaction surface — config + token helpers + state
 // submodules + the heavy `compact` engine — so `crate::compaction::<item>`
@@ -682,7 +679,8 @@ mod tests {
         for idx in 4..messages.len() {
             assert!(plan.pinned_indices.contains(&idx));
         }
-        assert!(plan.summarize_indices.contains(&0));
+        // Index 0 is the first user text query — instruction-pinned now.
+        assert!(plan.pinned_indices.contains(&0));
         assert!(plan.summarize_indices.contains(&1));
         assert!(plan.summarize_indices.contains(&3));
     }
@@ -1067,12 +1065,14 @@ mod tests {
             ..Default::default()
         };
 
-        // Create messages that exceed token threshold
-        let messages: Vec<Message> = (0..10)
+        // Create messages that exceed token threshold (the first user
+        // message is instruction-pinned, so keep enough summarize-eligible
+        // messages past KEEP_RECENT + the pin)
+        let messages: Vec<Message> = (0..12)
             .map(|_| msg("user", &"x".repeat(50))) // 50 chars = ~12 tokens each
             .collect();
 
-        // Total tokens: ~120, which exceeds 100
+        // Total tokens: ~144, which exceeds 100
         assert!(should_compact(&messages, &config, None, None, None));
     }
 
@@ -1099,7 +1099,7 @@ mod tests {
             ..Default::default()
         };
 
-        let messages: Vec<Message> = (0..10).map(|_| msg("user", &"x".repeat(50))).collect();
+        let messages: Vec<Message> = (0..12).map(|_| msg("user", &"x".repeat(50))).collect();
         assert!(should_compact(&messages, &config, None, None, None));
     }
 
@@ -1520,6 +1520,7 @@ mod tests {
                     max_retain_tokens: 200,
                 },
             }),
+            fact_ledger: None,
         };
 
         let result = compact_messages_safe(
@@ -1579,6 +1580,7 @@ mod tests {
                     max_retain_tokens: 10_000_000,
                 },
             }),
+            fact_ledger: None,
         };
 
         let result = compact_messages_safe(
@@ -1636,6 +1638,7 @@ mod tests {
         let enhancements = CompactionEnhancements {
             hooks: Some((Arc::new(executor), HookContext::new())),
             session_memory: None,
+            fact_ledger: None,
         };
 
         let result = compact_messages_safe(
@@ -1684,6 +1687,7 @@ mod tests {
                     max_retain_tokens: 200,
                 },
             }),
+            fact_ledger: None,
         };
 
         let result = compact_messages_safe(
@@ -1743,5 +1747,205 @@ mod tests {
             }
             _ => panic!("expected Blocks"),
         }
+    }
+
+    #[test]
+    fn plan_compaction_pins_first_instruction_under_token_cap() {
+        let mut messages = vec![msg(
+            "user",
+            "Build the dispatch CLI. State schema:\n```\ncolumns: a,b,c\n```",
+        )];
+        for i in 0..10 {
+            messages.push(msg(
+                if i % 2 == 0 { "user" } else { "assistant" },
+                &format!("filler turn {} {}", "x".repeat(200), i),
+            ));
+        }
+
+        let plan = plan_compaction(&messages, None, KEEP_RECENT_MESSAGES, None, None);
+
+        assert!(plan.pinned_indices.contains(&0));
+        assert!(plan.summarize_indices.len() >= MIN_SUMMARIZE_MESSAGES);
+    }
+
+    #[test]
+    fn plan_compaction_skips_instruction_pin_over_token_cap() {
+        // An instruction larger than TASK_INSTRUCTION_PIN_TOKEN_CAP must not
+        // pin verbatim — smaller later user queries remain, so the
+        // user-query guarantee pins the latest one instead.
+        let mut messages = vec![msg("user", &"y".repeat(80_000))];
+        for i in 0..10 {
+            messages.push(msg(
+                if i % 2 == 0 { "user" } else { "assistant" },
+                &format!("small filler turn {i}"),
+            ));
+        }
+
+        let plan = plan_compaction(&messages, None, KEEP_RECENT_MESSAGES, None, None);
+
+        assert!(!plan.pinned_indices.contains(&0));
+    }
+
+    #[test]
+    fn failed_attempts_section_lists_error_lines() {
+        let messages = vec![
+            tool_result(
+                "c1",
+                "running cargo test\nerror: cannot find function `foo`",
+            ),
+            msg("user", "unrelated question"),
+        ];
+
+        let section = failed_attempts_section(&messages);
+
+        assert!(section.contains("## ⚠️ Failed Attempts (extracted)"));
+        assert!(section.contains("error: cannot find function `foo`"));
+        assert!(failed_attempts_section(&[msg("user", "all good")]).is_empty());
+    }
+
+    #[test]
+    fn summary_instruction_uses_layered_sections() {
+        let instruction = summary_instruction(500);
+        assert!(instruction.contains("### Decisions & Confirmed Facts"));
+        assert!(instruction.contains("### Failed Approaches"));
+        assert!(instruction.contains("### Brief Process"));
+        assert!(instruction.contains("500"));
+    }
+
+    /// Fact-retention benchmark (the P0 gate): 20 planted facts in a long
+    /// conversation must remain model-visible after a full compaction —
+    /// through instruction pinning (task schema + error-bearing results)
+    /// and the fact ledger (schema blocks read from docs, key paths).
+    /// Retention below 18/20 (90%) fails.
+    #[tokio::test]
+    async fn fact_retention_benchmark_survives_compaction() {
+        let mock = MockLlmClient::new(Vec::new());
+        mock.push_message_response(MessageResponse {
+            id: "summary".to_string(),
+            r#type: "message".to_string(),
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "llm summary of the conversation".to_string(),
+                cache_control: None,
+            }],
+            model: "deepseek-v3.2-128k".to_string(),
+            stop_reason: Some("end_turn".to_string()),
+            stop_sequence: None,
+            container: None,
+            usage: Usage::default(),
+        });
+
+        let mut messages = Vec::new();
+
+        // Fact 1: the task instruction with an embedded output schema.
+        messages.push(msg(
+            "user",
+            "Build the freight dispatch CLI. The state file must follow:\n```\nschema v1: \
+             INSTRUCTION_MARKER_X7 columns: id,status,eta\n```\n",
+        ));
+        messages.push(msg("assistant", "Starting with the skeleton."));
+
+        // Facts 2-5: constraint-looking schema docs read from disk (old tool
+        // results — not pinned, not in the recent window → ledger).
+        for k in 1..=4 {
+            messages.push(tool_use(
+                &format!("read_{k}"),
+                "file_read",
+                json!({ "path": format!("docs/SCHEMA_{k}.md") }),
+            ));
+            messages.push(tool_result(
+                &format!("read_{k}"),
+                &format!(
+                    "# spec\n```\nschema doc {k}: SCHEMA_MARKER_{k} columns: c{k}_a,c{k}_b\n```"
+                ),
+            ));
+        }
+
+        // Facts 6-15: repo paths in old user turns (outside the recent-12
+        // working-set window → ledger).
+        for k in 1..=10 {
+            messages.push(msg(
+                "user",
+                &format!("the logic lives in src/mod{k}/lib.rs for stage {k}"),
+            ));
+            messages.push(msg(
+                "assistant",
+                &format!("noted stage {k} {}", "z".repeat(120)),
+            ));
+        }
+
+        // Facts 16-20: failure causes in tool results (error-marker pinned).
+        for k in 1..=5 {
+            messages.push(tool_use(
+                &format!("run_{k}"),
+                "exec_shell",
+                json!({ "command": format!("cargo build --stage {k}") }),
+            ));
+            messages.push(tool_result(
+                &format!("run_{k}"),
+                &format!("compiling stage {k}\nerror: FAILURE_MARKER_{k} linker exit 1"),
+            ));
+        }
+
+        // Filler tail to push everything old out of the working-set window
+        // and past KEEP_RECENT_MESSAGES.
+        for i in 0..12 {
+            messages.push(msg(
+                if i % 2 == 0 { "user" } else { "assistant" },
+                &format!("recent filler {i} {}", "w".repeat(300)),
+            ));
+        }
+
+        let ledger = std::sync::Arc::new(std::sync::Mutex::new(fact_ledger::FactLedger::default()));
+        let enhancements = CompactionEnhancements {
+            fact_ledger: Some(ledger.clone()),
+            ..CompactionEnhancements::default()
+        };
+
+        let result = compact_messages_safe(
+            &mock,
+            &messages,
+            &over_threshold_config(),
+            None,
+            None,
+            None,
+            Some(&enhancements),
+        )
+        .await
+        .expect("compaction should succeed");
+
+        // Everything the model still sees: summary prompt + pinned transcript.
+        let mut retained = collect_summary_text(&result.summary_prompt);
+        for message in &result.messages {
+            retained.push_str(&message_text(message));
+        }
+
+        let mut planted = vec!["INSTRUCTION_MARKER_X7".to_string()];
+        planted.extend((1..=4).map(|k| format!("SCHEMA_MARKER_{k}")));
+        planted.extend((1..=10).map(|k| format!("src/mod{k}/lib.rs")));
+        planted.extend((1..=5).map(|k| format!("FAILURE_MARKER_{k}")));
+
+        let survived = planted
+            .iter()
+            .filter(|marker| retained.contains(marker.as_str()))
+            .count();
+        assert!(
+            survived >= 18,
+            "fact retention {survived}/20 below the 90% gate; missing: {:?}",
+            planted
+                .iter()
+                .filter(|m| !retained.contains(m.as_str()))
+                .collect::<Vec<_>>()
+        );
+
+        // The instruction itself survived verbatim in the pinned transcript.
+        assert!(
+            result
+                .messages
+                .iter()
+                .any(|m| message_text(m).contains("INSTRUCTION_MARKER_X7"))
+        );
+        // The ledger section is rendered into the summary.
+        assert!(collect_summary_text(&result.summary_prompt).contains("## 🔒 Fact Ledger"));
     }
 }

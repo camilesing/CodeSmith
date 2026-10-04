@@ -547,7 +547,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -585,10 +585,13 @@ use super::turn::{
 };
 use super::{CapacityDecision, GuardrailAction, ReplayOutcome, TargetedRefreshOutcome};
 use crate::compaction::circuit_breaker::CompactionCircuitBreaker;
+use crate::compaction::fact_ledger::FactLedger;
 use crate::compaction::micro_compact::{
     MicroCompactState, micro_compact_messages, should_trigger_micro_compact,
 };
-use crate::compaction::{CompactionConfig, compact_messages_safe, should_compact};
+use crate::compaction::{
+    CompactionConfig, CompactionEnhancements, compact_messages_safe, message_text, should_compact,
+};
 use crate::config_types::ApiProvider;
 use crate::error_taxonomy::ErrorCategory;
 use crate::events::Event;
@@ -675,6 +678,11 @@ pub struct CompactionProbe {
     workspace: PathBuf,
     micro_state: Arc<std::sync::Mutex<MicroCompactState>>,
     circuit_breaker: Arc<std::sync::Mutex<CompactionCircuitBreaker>>,
+    /// Session fact ledger (`Session::fact_ledger`), attached by the host at
+    /// wire-in so the mid-`run` compaction paths can accumulate facts from
+    /// dropped messages and render the ledger section. `None` (tests) ⇒
+    /// fact extraction is disabled on the executor path.
+    fact_ledger: Option<Arc<std::sync::Mutex<FactLedger>>>,
 }
 
 impl CompactionProbe {
@@ -687,7 +695,15 @@ impl CompactionProbe {
             workspace,
             micro_state: Arc::new(std::sync::Mutex::new(MicroCompactState::default())),
             circuit_breaker: Arc::new(std::sync::Mutex::new(CompactionCircuitBreaker::new())),
+            fact_ledger: None,
         }
+    }
+
+    /// Attach the session fact ledger (builder precedent: `.with_reinject`).
+    #[must_use]
+    pub fn with_fact_ledger(mut self, ledger: Option<Arc<std::sync::Mutex<FactLedger>>>) -> Self {
+        self.fact_ledger = ledger;
+        self
     }
 
     /// Borrow the inner circuit breaker (test-only — proves cross-run
@@ -810,6 +826,9 @@ pub struct CapacityProbe {
     pub(crate) model: String,
     compaction_config: CompactionConfig,
     workspace: PathBuf,
+    /// Session fact ledger for the overflow-recovery drop paths (attached
+    /// by the host, mirroring [`CompactionProbe`]'s field).
+    fact_ledger: Option<Arc<std::sync::Mutex<FactLedger>>>,
 }
 
 impl CapacityProbe {
@@ -828,7 +847,48 @@ impl CapacityProbe {
             model,
             compaction_config,
             workspace,
+            fact_ledger: None,
         }
+    }
+
+    /// Attach the session fact ledger (builder precedent:
+    /// [`CompactionProbe::with_fact_ledger`]).
+    #[must_use]
+    pub fn with_fact_ledger(mut self, ledger: Option<Arc<std::sync::Mutex<FactLedger>>>) -> Self {
+        self.fact_ledger = ledger;
+        self
+    }
+
+    /// The fact ledger carried by this probe, if attached.
+    pub(crate) fn fact_ledger(&self) -> Option<&Arc<std::sync::Mutex<FactLedger>>> {
+        self.fact_ledger.as_ref()
+    }
+}
+
+/// Feed the fact ledger from tool-result bodies a micro-compaction just
+/// replaced. `originals` is the pre-clear transcript, `cleared` the post-clear
+/// copy; messages whose rendered text changed are accumulated whole (the
+/// ledger's own rules pick facts out of them) before their content is lost
+/// to the placeholder.
+fn accumulate_cleared_facts(
+    ledger: &Arc<std::sync::Mutex<FactLedger>>,
+    workspace: &Path,
+    originals: &[Message],
+    cleared: &[Message],
+) {
+    let mut guard = ledger.lock().expect("fact ledger poisoned");
+    let mut added = 0usize;
+    for (orig, new) in originals.iter().zip(cleared.iter()) {
+        if message_text(orig) != message_text(new) {
+            added += guard.accumulate(std::iter::once(orig), Some(workspace));
+        }
+    }
+    if added > 0 {
+        tracing::info!(
+            target: "compaction",
+            added,
+            "fact ledger extracted {added} facts from micro-compact cleared results"
+        );
     }
 }
 
@@ -1964,10 +2024,12 @@ impl HostAgentExecutor {
     /// prompt is a static snapshot) **and** `reinject_compaction_attachments`
     /// is absorbed (slice 25b §E — fires right after the transcript replace
     /// via [`Self::reinject_compaction_attachments`] with `None` budget; dedup
-    /// + push only — auto-compact isn't at a hard ceiling). Still deferred
-    /// (see "Known gaps in compaction" in the module docs): working-set
-    /// `external_pins` / `external_working_set_paths`, and `CompactionEnhancements` (PreCompact
-    /// hooks / session-memory-first).
+    /// + push only — auto-compact isn't at a hard ceiling). Of
+    /// `CompactionEnhancements`, the fact ledger is wired (both the micro
+    /// clear below and the full compaction feed it); PreCompact hooks /
+    /// session-memory-first and working-set `external_pins` /
+    /// `external_working_set_paths` remain deferred to the host paths (see
+    /// "Known gaps in compaction" in the module docs).
     async fn run_compaction(
         &self,
         client: &LlmClientHandle,
@@ -2001,6 +2063,17 @@ impl HostAgentExecutor {
                 let mut msgs = history.messages().to_vec();
                 let cleared = micro_compact_messages(&mut msgs, &mut state);
                 if cleared > 0 {
+                    // Feed the fact ledger from the tool-result bodies this
+                    // clear is about to erase (constraint docs read long ago
+                    // live in exactly those bodies).
+                    if let Some(ledger) = probe.fact_ledger.as_ref() {
+                        accumulate_cleared_facts(
+                            ledger,
+                            &probe.workspace,
+                            history.messages(),
+                            &msgs,
+                        );
+                    }
                     history.replace_all("micro-compact", msgs);
                     tracing::info!(
                         "{cleared} bytes cleared by micro-compaction before the request"
@@ -2068,6 +2141,13 @@ impl HostAgentExecutor {
         // Clone the messages out so no `ChatHistory` borrow crosses the await
         // (the summary call is async — the compacted result is applied after).
         let messages = history.messages().to_vec();
+        let enhancements = probe
+            .fact_ledger
+            .as_ref()
+            .map(|ledger| CompactionEnhancements {
+                fact_ledger: Some(Arc::clone(ledger)),
+                ..CompactionEnhancements::default()
+            });
         match compact_messages_safe(
             client.as_ref(),
             &messages,
@@ -2075,7 +2155,7 @@ impl HostAgentExecutor {
             Some(&probe.workspace),
             None,
             None,
-            None,
+            enhancements.as_ref(),
         )
         .await
         {
@@ -2470,6 +2550,9 @@ impl HostAgentExecutor {
             let mut local_state = MicroCompactState::default();
             let cleared = micro_compact_messages(&mut msgs, &mut local_state);
             if cleared > 0 {
+                if let Some(ledger) = probe.fact_ledger() {
+                    accumulate_cleared_facts(ledger, &probe.workspace, history.messages(), &msgs);
+                }
                 history.replace_all("overflow-recovery: micro-compact", msgs);
                 let after_micro = estimate_input_tokens_conservative(history.messages(), system);
                 if after_micro <= target_budget {
@@ -2511,6 +2594,10 @@ impl HostAgentExecutor {
         forced_config.auto_floor_tokens = 0;
 
         let messages = history.messages().to_vec();
+        let enhancements = probe.fact_ledger().map(|ledger| CompactionEnhancements {
+            fact_ledger: Some(Arc::clone(ledger)),
+            ..CompactionEnhancements::default()
+        });
         match compact_messages_safe(
             client.as_ref(),
             &messages,
@@ -2518,7 +2605,7 @@ impl HostAgentExecutor {
             Some(&probe.workspace),
             None,
             None,
-            None,
+            enhancements.as_ref(),
         )
         .await
         {

@@ -191,7 +191,14 @@ depending on `codesmith-agent-runtime`'s production `Engine`.
   crosses an `await` — messages are cloned out before the async
   `compact_messages_safe` call), persisting across `run` calls so a failed
   compaction on turn N still trips the breaker on turn N+1 (matching
-  `Engine.micro_compact_state` / `.compaction_circuit_breaker`).
+  `Engine.micro_compact_state` / `.compaction_circuit_breaker`). Both the
+  compaction and capacity probes also carry the session fact ledger
+  (`Session::fact_ledger`, `compaction/fact_ledger.rs`): every compaction's
+  drop set feeds it rule-extracted must-not-lose facts (task constraints,
+  key paths, failure causes), its rendered section rides every compaction
+  summary and the cycle-reset seed, and the first task instruction is pinned
+  verbatim by `plan_compaction` when under
+  `TASK_INSTRUCTION_PIN_TOKEN_CAP`.
   transparent-retry reuses the local-state pattern
   (a per-run `u32` counter, matching loop-guard). Guardrail status surfaces
   over the host's `Event` channel (`event_tx`), not the `Callback`.

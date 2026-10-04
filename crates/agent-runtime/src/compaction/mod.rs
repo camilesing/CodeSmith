@@ -24,6 +24,7 @@ use crate::models::{
 pub mod attachment_reinject;
 pub mod circuit_breaker;
 pub mod compact;
+pub mod fact_ledger;
 pub mod micro_compact;
 pub mod partial_compact;
 pub mod post_compact_cleanup;
