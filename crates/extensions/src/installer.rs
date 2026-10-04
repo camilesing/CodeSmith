@@ -153,12 +153,15 @@ mod e2e_tests {
     use async_trait::async_trait;
     use codesmith_agent::extension::*;
     use std::path::Path;
+    // Only the Windows-quarantined fixture roundtrip test consumes these.
+    #[cfg_attr(windows, allow(unused_imports))]
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
 
     // Mirrors `crates/extensions/src/loader.rs:61-82` (§F5b): `bind_core`
     // holds `Arc<dyn ExtensionCommandContext>`; the test Ctx must impl the
     // sub-trait (marker) for the coercion to fire.
+    #[cfg_attr(windows, allow(dead_code))]
     struct Ctx {
         generation: u64,
     }
@@ -182,6 +185,7 @@ mod e2e_tests {
     }
     impl ExtensionCommandContext for Ctx {}
 
+    #[cfg_attr(windows, allow(dead_code))]
     struct FakeSource {
         provenance: String,
     }
@@ -193,6 +197,7 @@ mod e2e_tests {
             })
         }
     }
+    #[cfg_attr(windows, allow(dead_code))]
     struct FakeBuilder {
         dylib: PathBuf,
     }

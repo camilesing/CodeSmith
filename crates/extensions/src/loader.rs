@@ -62,12 +62,15 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use codesmith_agent::extension::*;
+    // Only the Windows-quarantined fixture test consumes Arc.
+    #[cfg_attr(windows, allow(unused_imports))]
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
 
     // `bind_core` holds `Arc<dyn ExtensionCommandContext>`; the test Ctx must
     // impl the sub-trait (a marker in slice 1) for the coercion to fire —
     // mirrors `crates/extensions/src/runner.rs:370-384`.
+    #[cfg_attr(windows, allow(dead_code))]
     struct Ctx {
         generation: u64,
     }
