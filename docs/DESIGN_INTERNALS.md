@@ -198,7 +198,11 @@ depending on `codesmith-agent-runtime`'s production `Engine`.
   key paths, failure causes), its rendered section rides every compaction
   summary and the cycle-reset seed, and the first task instruction is pinned
   verbatim by `plan_compaction` when under
-  `TASK_INSTRUCTION_PIN_TOKEN_CAP`.
+  `TASK_INSTRUCTION_PIN_TOKEN_CAP`. The ledger is also the reflection loop's
+  store: the layered summary's "Refuted Assumptions & Invariants" section —
+  lessons the model derives from its own failures — is parsed back into the
+  ledger as `RefutedAssumption` entries, so a learned invariant outlives the
+  summary that carried it (no external playbook knowledge involved).
   A separate deliverables watchdog (`engine/deliverables.rs`,
   `DeliverablesProbe` on the executor) shares the pre-request seam: the
   output paths parsed from the task instruction are re-checked on disk

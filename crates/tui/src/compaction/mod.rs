@@ -1831,7 +1831,9 @@ mod tests {
 
     const LAYERED_SUMMARY_TEXT: &str = "### Decisions & Confirmed Facts\n- schema: a,b\n\
         ### Failed Approaches\n- direct parse failed (wrong format)\n\
-        ### Brief Process\nexplored inputs, wrote parser";
+        ### Brief Process\nexplored inputs, wrote parser\n\
+        ### Refuted Assumptions & Invariants\n\
+        - assumption: state file can be rewritten in place — refuted: readers saw a torn write; invariant: write to a temp file then rename atomically";
 
     /// P0-2 gate: a flat first draw is retried once and the layered second
     /// draw wins; a retry that is no more structured changes nothing.
@@ -1904,6 +1906,41 @@ mod tests {
 
         assert!(collect_summary_text(&prompt).contains("### Brief Process"));
         assert_eq!(mock.call_count(), 1);
+    }
+
+    /// Reflection loop: the lessons the model wrote into the summary's
+    /// "Refuted Assumptions & Invariants" section are captured into the
+    /// fact ledger, so the next compaction re-renders them even after the
+    /// summary that carried them is itself compacted away.
+    #[tokio::test]
+    async fn reflection_lessons_are_captured_into_the_fact_ledger() {
+        let mock = MockLlmClient::new(Vec::new());
+        mock.push_message_response(summary_response("layered", LAYERED_SUMMARY_TEXT));
+
+        let ledger = std::sync::Arc::new(std::sync::Mutex::new(fact_ledger::FactLedger::default()));
+        let enhancements = CompactionEnhancements {
+            fact_ledger: Some(ledger.clone()),
+            ..CompactionEnhancements::default()
+        };
+
+        compact_messages_safe(
+            &mock,
+            &long_conversation(),
+            &over_threshold_config(),
+            None,
+            None,
+            None,
+            Some(&enhancements),
+        )
+        .await
+        .expect("compaction should succeed");
+
+        let section = ledger.lock().unwrap().summary_section();
+        assert!(
+            section.contains("Refuted assumptions / invariants"),
+            "the lesson must land in the ledger"
+        );
+        assert!(section.contains("rename atomically"));
     }
 
     /// Fact-retention benchmark (the P0 gate): 20 planted facts in a long

@@ -861,6 +861,19 @@ pub struct SessionMemorySidecar {
     pub config: session_memory_compact::SessionMemoryCompactConfig,
 }
 
+/// Flatten a compaction summary prompt to plain text (block texts joined),
+/// for section-parsing (reflection capture).
+fn prompt_summary_text(prompt: &SystemPrompt) -> String {
+    match prompt {
+        SystemPrompt::Text(text) => text.clone(),
+        SystemPrompt::Blocks(blocks) => blocks
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
 /// Merge hook-provided "context to preserve" into a compaction summary.
 ///
 /// `None`/empty `preserve` leaves `summary` untouched. Otherwise the
@@ -1093,6 +1106,33 @@ pub async fn compact_messages_safe(
         .await
         {
             Ok((msgs, prompt, removed, summary_retries)) => {
+                // Reflection capture: parse the model-written "Refuted
+                // Assumptions & Invariants" section out of the summary and
+                // record the lessons into the fact ledger, where they
+                // survive every later compaction and cycle reset. The
+                // lessons live in the summary this compaction produced; the
+                // ledger keeps them alive after this summary is itself
+                // compacted away.
+                if let Some(ledger) = enhancements.and_then(|e| e.fact_ledger.as_ref())
+                    && let Some(summary) = prompt.as_ref()
+                {
+                    let lessons = super::fact_ledger::extract_refuted_assumptions(
+                        &prompt_summary_text(summary),
+                    );
+                    if !lessons.is_empty() {
+                        let added = ledger
+                            .lock()
+                            .expect("fact ledger poisoned")
+                            .record_refuted_assumptions(lessons);
+                        if added > 0 {
+                            tracing::info!(
+                                target: "compaction",
+                                added,
+                                "reflection: captured {added} refuted assumptions into the fact ledger"
+                            );
+                        }
+                    }
+                }
                 return Ok(CompactionResult {
                     messages: msgs,
                     summary_prompt: merge_preserve_context(prompt, preserve_context.as_deref()),
@@ -1509,11 +1549,14 @@ pub fn should_use_cache_aligned_summary(model: &str, messages: &[Message]) -> bo
 
 /// The required section headers of a layered summary, in order. Shared by
 /// the instruction (so the model is told) and [`summary_section_count`]
-/// (so the gate can verify the model complied).
+/// (so the gate can verify the model complied). The last section is the
+/// reflection hook: its lines are captured into the fact ledger as
+/// `RefutedAssumption` entries — the self-learning loop.
 pub const LAYERED_SUMMARY_HEADERS: &[&str] = &[
     "### Decisions & Confirmed Facts",
     "### Failed Approaches",
     "### Brief Process",
+    super::fact_ledger::REFUTED_ASSUMPTIONS_HEADER,
 ];
 
 /// How many of the layered-summary section headers `text` carries. A
@@ -1542,6 +1585,11 @@ pub fn summary_instruction(word_limit: usize) -> String {
          ### Brief Process\n\
          Coarse narrative of the remaining progress (exploration, setup, \
          intermediate steps).\n\
+         ### Refuted Assumptions & Invariants\n\
+         Reflect on the failures above and write what you learned, one line \
+         per lesson: the assumption that was refuted and the invariant that \
+         must actually hold. These lessons are preserved for the rest of the \
+         session — state them so your future self will not relearn them.\n\
          Preserve key information, commands, and tool-result facts needed to \
          continue the work. Tool outputs may be abbreviated only when they are \
          repetitive. Keep it under {word_limit} words total."

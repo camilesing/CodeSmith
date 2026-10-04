@@ -4212,7 +4212,7 @@ mod tests {
         /// keep measuring one compaction, not the gate.
         fn with_compaction_summary(self, summary: &str) -> Self {
             let layered = format!(
-                "{summary}\n### Decisions & Confirmed Facts\n### Failed Approaches\n### Brief Process"
+                "{summary}\n### Decisions & Confirmed Facts\n### Failed Approaches\n### Brief Process\n### Refuted Assumptions & Invariants"
             );
             *self.compaction_reply.lock().unwrap() = Some(MessageResponse {
                 id: "compaction".to_string(),

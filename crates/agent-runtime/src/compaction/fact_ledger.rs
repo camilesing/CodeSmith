@@ -11,10 +11,17 @@
 //! the compaction summary, is dropped there).
 //!
 //! Extraction is rule-based only — fenced schema blocks, workspace paths,
-//! error-marker lines. It deliberately does not:
+//! error-marker lines — with one deliberate exception: the model itself
+//! reflects lessons at compaction time (the layered summary's "Refuted
+//! Assumptions & Invariants" section) and those lines are captured verbatim
+//! as `RefutedAssumption` entries. That is the self-reflection loop: no
+//! external/playbook knowledge is ever injected, the agent learns from its
+//! own failures and the ledger keeps the lessons alive. It deliberately
+//! does not:
 //!
 //! * extract "confirmed decisions" (not rule-derivable; planned follow-up),
-//! * run an LLM extraction pass (cost/latency; rules first, per the plan),
+//! * run an LLM extraction pass over messages (cost/latency; rules first,
+//!   per the plan),
 //! * cover sub-agent transcripts (only the main-loop transcript feeds it),
 //! * bound `TaskConstraint` entries — they are never evicted when the token
 //!   cap is reached, so a pathological instruction corpus can exceed the
@@ -61,6 +68,42 @@ const CONSTRAINT_KEYWORDS: &[&str] = &[
     "must",
 ];
 
+/// Header of the reflection section in a layered summary. Shared by the
+/// summarization instruction (compact.rs) and the parser below — the
+/// instruction tells the model to reflect, the parser captures what it
+/// wrote, the ledger keeps it alive.
+pub const REFUTED_ASSUMPTIONS_HEADER: &str = "### Refuted Assumptions & Invariants";
+
+/// Maximum reflection lines captured from one summary.
+pub const FACT_REFUTED_MAX_PER_COMPACTION: usize = 10;
+
+/// Parse the reflection section out of a layered summary text: the lines
+/// under [`REFUTED_ASSUMPTIONS_HEADER`] (bullets stripped) until the next
+/// header. Returns at most [`FACT_REFUTED_MAX_PER_COMPACTION`] lines.
+pub fn extract_refuted_assumptions(summary: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut in_section = false;
+    for line in summary.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            in_section = trimmed.starts_with("### Refuted Assumptions");
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        let entry = trimmed.trim_start_matches(['-', '*']).trim();
+        if entry.is_empty() {
+            continue;
+        }
+        out.push(truncate(entry, 2 * FACT_FAILURE_LINE_MAX_CHARS).to_string());
+        if out.len() >= FACT_REFUTED_MAX_PER_COMPACTION {
+            break;
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FactKind {
     /// Verbatim constraint material: fenced blocks from the task instruction
@@ -70,6 +113,13 @@ pub enum FactKind {
     PathSignature,
     /// A one-line "why it failed" extracted from an error-bearing message.
     FailureCause,
+    /// A refuted assumption or invariant the **model itself derived** from a
+    /// failure, reflected in the layered summary's "Refuted Assumptions"
+    /// section at compaction time and captured verbatim here. This is the
+    /// self-reflection loop: lessons are learned from the run's own
+    /// failures — never injected from outside — and survive every later
+    /// compaction and cycle reset so they are not relearned.
+    RefutedAssumption,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -196,8 +246,26 @@ impl FactLedger {
         true
     }
 
+    /// Record model-reflected lessons (parsed out of the layered summary's
+    /// reflection section). Returns the number of new entries. Idempotent —
+    /// the same lesson reflected at two compactions records once.
+    pub fn record_refuted_assumptions<I: IntoIterator<Item = String>>(
+        &mut self,
+        lines: I,
+    ) -> usize {
+        let before = self.entries.len();
+        for text in lines {
+            self.push(FactKind::RefutedAssumption, text);
+        }
+        self.enforce_capacity();
+        self.entries.len() - before
+    }
+
     /// Evict oldest `FailureCause` entries until the rendered ledger fits
-    /// the token cap. `TaskConstraint`/`PathSignature` entries are kept.
+    /// the token cap, then oldest `RefutedAssumption` entries. Raw failure
+    /// lines are the cheapest to lose (their distilled lesson, if any, is a
+    /// `RefutedAssumption`); `TaskConstraint`/`PathSignature` entries are
+    /// never evicted.
     fn enforce_capacity(&mut self) {
         loop {
             let total: usize = self
@@ -212,6 +280,11 @@ impl FactLedger {
                 .entries
                 .iter()
                 .position(|e| e.kind == FactKind::FailureCause)
+                .or_else(|| {
+                    self.entries
+                        .iter()
+                        .position(|e| e.kind == FactKind::RefutedAssumption)
+                })
             else {
                 return; // only non-evictable kinds remain; let it exceed
             };
@@ -275,6 +348,19 @@ impl FactLedger {
             section.push('\n');
         }
 
+        let lessons: Vec<&FactEntry> = self
+            .entries
+            .iter()
+            .filter(|e| e.kind == FactKind::RefutedAssumption)
+            .collect();
+        if !lessons.is_empty() {
+            section.push_str("**Refuted assumptions / invariants (learned the hard way):**\n");
+            for entry in lessons {
+                let _ = writeln!(section, "- {}", entry.text);
+            }
+            section.push('\n');
+        }
+
         section.push_str("\n---\n\n");
         section
     }
@@ -286,7 +372,9 @@ impl std::fmt::Display for FactEntry {
             // Constraint material is re-shown as a fenced block so the
             // model reads it as verbatim spec, not prose.
             FactKind::TaskConstraint => write!(f, "```\n{}\n```", self.text),
-            FactKind::PathSignature | FactKind::FailureCause => write!(f, "{}", self.text),
+            FactKind::PathSignature | FactKind::FailureCause | FactKind::RefutedAssumption => {
+                write!(f, "{}", self.text)
+            }
         }
     }
 }
@@ -496,5 +584,60 @@ mod tests {
         let text = "a\n```\nfirst\n```\nb\n```rust\nsecond\n```\nc";
         let blocks: Vec<&str> = fenced_blocks(text).collect();
         assert_eq!(blocks, vec!["first", "second"]);
+    }
+
+    #[test]
+    fn extract_refuted_assumptions_parses_section_only() {
+        let summary = "### Decisions & Confirmed Facts\n- keep A\n\
+            ### Failed Approaches\n- x failed\n\
+            ### Refuted Assumptions & Invariants\n\
+            - assumption: socket swap needs no drain — refuted: in-flight reads saw a half-written table; invariant: drain requests before version switch\n\
+            plain line without bullet\n\
+            ### Brief Process\nexplored\n";
+        let lines = extract_refuted_assumptions(summary);
+
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("assumption: socket swap"));
+        assert!(!lines[0].starts_with('-'));
+        assert!(lines[1] == "plain line without bullet");
+        assert!(extract_refuted_assumptions("no headers here").is_empty());
+    }
+
+    #[test]
+    fn record_refuted_assumptions_dedups_across_compactions() {
+        let mut ledger = FactLedger::default();
+        let lesson = "assumption A refuted; invariant B must hold".to_string();
+
+        assert_eq!(ledger.record_refuted_assumptions([lesson.clone()]), 1);
+        assert_eq!(ledger.record_refuted_assumptions([lesson]), 0);
+
+        let section = ledger.summary_section();
+        assert!(section.contains("Refuted assumptions / invariants"));
+        assert!(section.contains("invariant B must hold"));
+    }
+
+    #[test]
+    fn eviction_prefers_raw_failures_over_refuted_lessons() {
+        let mut ledger = FactLedger::default();
+        ledger.record_refuted_assumptions(["lesson: invariant Z must hold".to_string()]);
+        // Enough raw failure volume to force eviction past the cap.
+        let failures: Vec<Message> = (0..120)
+            .map(|i| {
+                result_msg(&format!(
+                    "error: failure {i} {}",
+                    "padding token ".repeat(17)
+                ))
+            })
+            .collect();
+        let refs: Vec<&Message> = failures.iter().collect();
+        ledger.accumulate(refs, None);
+
+        assert!(
+            ledger
+                .entries
+                .iter()
+                .any(|e| e.kind == FactKind::RefutedAssumption),
+            "the distilled lesson must outlive its raw failure lines"
+        );
     }
 }
