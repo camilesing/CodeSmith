@@ -102,8 +102,30 @@ pub(crate) fn handle_composer_alt_word_motion_key(app: &mut App, key: KeyEvent) 
             app.move_cursor_word_backward();
             true
         }
+        // Readline `Alt+D` — kill from the cursor to the end of the word.
+        KeyCode::Char('d') | KeyCode::Char('D') => {
+            app.clear_selection();
+            app.delete_word_forward();
+            true
+        }
         _ => false,
     }
+}
+
+pub(crate) fn select_previous_emoji_menu_entry(app: &mut App, entry_count: usize) {
+    if entry_count == 0 {
+        return;
+    }
+    let selected = app.emoji_menu_selected.min(entry_count.saturating_sub(1));
+    app.emoji_menu_selected = (selected + entry_count - 1) % entry_count;
+}
+
+pub(crate) fn select_next_emoji_menu_entry(app: &mut App, entry_count: usize) {
+    if entry_count == 0 {
+        return;
+    }
+    let selected = app.emoji_menu_selected.min(entry_count.saturating_sub(1));
+    app.emoji_menu_selected = (selected + 1) % entry_count;
 }
 
 pub(crate) fn is_composer_newline_key(key: KeyEvent) -> bool {

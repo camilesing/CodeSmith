@@ -23,6 +23,7 @@ pub mod composer_ui;
 pub mod context_inspector;
 pub mod context_menu;
 pub mod diff_render;
+pub mod emoji_shortcode;
 pub mod event_broker;
 pub mod external_editor;
 pub mod feedback_picker;

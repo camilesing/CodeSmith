@@ -185,7 +185,10 @@ failure output as part of your next instruction instead of starting over.
 
 The composer accepts normal prompts and slash commands. Type `/` to discover
 available commands. Use file mentions when you want the model to focus on a
-specific file or directory instead of searching broadly.
+specific file or directory instead of searching broadly. Two more input
+prefixes: `!cmd` runs a shell command directly and submits its captured output
+to the session, and `:name:` inserts an emoji shortcode (with a suggestion
+popup while you type).
 
 The sidebar is useful when a turn spans multiple steps. It can keep goals,
 agent state, and contextual information visible while the transcript continues

@@ -36,6 +36,11 @@ local model/thinking picker. `/provider openrouter` and `/model <id>` switch
 directly, while `/models` explicitly fetches and lists live API models when the
 active provider supports model listing.
 
+Two composer prefixes complement slash commands: `!cmd` runs a shell command
+directly in your shell and submits the captured output to the session, and
+`:name:` expands an emoji shortcode (with a suggestion popup while typing).
+See [KEYBINDINGS.md](KEYBINDINGS.md) for the full composer editing set.
+
 ## Sessions: branching and rollback
 
 Saved sessions are intentionally branchable. `codesmith fork <SESSION_ID>` copies

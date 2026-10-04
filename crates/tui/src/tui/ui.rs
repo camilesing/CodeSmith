@@ -116,7 +116,7 @@ use super::key_actions;
 
 use super::app::{
     App, AppAction, AppMode, OnboardingState, QueuedMessage, ReasoningEffort, SidebarFocus,
-    StatusToastLevel, SubmitDisposition, TaskPanelEntry, TuiOptions,
+    StatusToastLevel, SubmitDisposition, TaskPanelEntry, TuiOptions, looks_like_shell_bang_input,
     looks_like_slash_command_input,
 };
 use super::approval::{
@@ -143,6 +143,10 @@ use super::widgets::{ChatWidget, ComposerWidget, HeaderData, HeaderWidget, Rende
 /// Bumped from 6 to 128 to fix #64 (selection couldn't reach commands beyond
 /// the visible window because the source list itself was capped).
 const SLASH_MENU_LIMIT: usize = 128;
+/// `!cmd` passthrough: how long a shell command may run before it is killed.
+const SHELL_BANG_TIMEOUT_SECS: u64 = 60;
+/// `!cmd` passthrough: captured-output cap before the message is truncated.
+const SHELL_BANG_MAX_OUTPUT_CHARS: usize = 16_000;
 const MIN_CHAT_HEIGHT: u16 = 3;
 const MIN_COMPOSER_HEIGHT: u16 = 2;
 const CONTEXT_WARNING_THRESHOLD_PERCENT: f64 = 85.0;
@@ -3380,6 +3384,11 @@ async fn run_event_loop(
             if mention_menu_open && app.mention_menu_selected >= mention_menu_entries.len() {
                 app.mention_menu_selected = mention_menu_entries.len().saturating_sub(1);
             }
+            let emoji_menu_entries = crate::tui::emoji_shortcode::visible_emoji_menu_entries(app);
+            let emoji_menu_open = !emoji_menu_entries.is_empty();
+            if emoji_menu_open && app.emoji_menu_selected >= emoji_menu_entries.len() {
+                app.emoji_menu_selected = emoji_menu_entries.len().saturating_sub(1);
+            }
 
             // Cancel a pending Esc-Esc prime as soon as any non-Esc key
             // arrives. Without this the prime would hang around for the
@@ -3607,6 +3616,12 @@ async fn run_event_loop(
                     app.mention_menu_hidden = true;
                     app.mention_menu_selected = 0;
                 }
+                KeyCode::Esc if emoji_menu_open => {
+                    // Positional suppression: stay hidden until the input or
+                    // cursor moves, so typing immediately re-opens suggestions.
+                    app.emoji_menu_suppressed_at = Some((app.input.clone(), app.cursor_position));
+                    app.emoji_menu_selected = 0;
+                }
                 KeyCode::Esc => {
                     match next_escape_action(app, slash_menu_open) {
                         EscapeAction::CloseSlashMenu => {
@@ -3684,6 +3699,14 @@ async fn run_event_loop(
                 }
                 KeyCode::Up
                     if key.modifiers.is_empty()
+                        && !slash_menu_open
+                        && !mention_menu_open
+                        && emoji_menu_open =>
+                {
+                    select_previous_emoji_menu_entry(app, emoji_menu_entries.len());
+                }
+                KeyCode::Up
+                    if key.modifiers.is_empty()
                         && app.selected_composer_attachment_index().is_some() =>
                 {
                     let _ = app.select_previous_composer_attachment();
@@ -3730,6 +3753,14 @@ async fn run_event_loop(
                 }
                 KeyCode::Down
                     if key.modifiers.is_empty()
+                        && !slash_menu_open
+                        && !mention_menu_open
+                        && emoji_menu_open =>
+                {
+                    select_next_emoji_menu_entry(app, emoji_menu_entries.len());
+                }
+                KeyCode::Down
+                    if key.modifiers.is_empty()
                         && app.selected_composer_attachment_index().is_some() =>
                 {
                     let _ = app.select_next_composer_attachment();
@@ -3753,6 +3784,9 @@ async fn run_event_loop(
                     }
                     if slash_menu_open && apply_slash_menu_selection(app, &slash_menu_entries, true)
                     {
+                        continue;
+                    }
+                    if emoji_menu_open && app.apply_emoji_menu_selection(&emoji_menu_entries) {
                         continue;
                     }
                     if try_autocomplete_slash_command(app) {
@@ -3890,6 +3924,13 @@ async fn run_event_loop(
                 }
                 // #382: Ctrl+Enter forces a steer into the current turn.
                 KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    // Empty composer + queued messages: flush the queue now
+                    // instead of waiting for the turn to end (Claude Code's
+                    // "send queued messages immediately").
+                    if app.input.is_empty() && app.queued_message_count() > 0 {
+                        flush_queued_messages_now(app, config, &engine_handle).await?;
+                        continue;
+                    }
                     if let Some(input) = app.submit_input() {
                         if looks_like_slash_command_input(&input) {
                             if execute_command_input(
@@ -3952,6 +3993,9 @@ async fn run_event_loop(
                             continue;
                         }
                     }
+                    if emoji_menu_open && app.apply_emoji_menu_selection(&emoji_menu_entries) {
+                        continue;
+                    }
                     if let Some(input) = app.handle_composer_enter() {
                         if handle_plan_choice(app, config, &engine_handle, &input).await? {
                             continue;
@@ -3965,6 +4009,13 @@ async fn run_event_loop(
                         // behaviour falls through to normal turn submit.
                         if config.memory_enabled() && is_memory_quick_add(&input) {
                             handle_memory_quick_add(app, &input, config);
+                            continue;
+                        }
+                        // `!cmd` shell passthrough — run the command in the
+                        // user's shell and submit the captured output as a
+                        // user message so the model can respond to it.
+                        if looks_like_shell_bang_input(&input) {
+                            run_shell_bang_input(app, config, &engine_handle, &input).await?;
                             continue;
                         }
                         if looks_like_slash_command_input(&input) {
@@ -4014,7 +4065,7 @@ async fn run_event_loop(
                     if key.modifiers.contains(KeyModifiers::SUPER)
                         && !app.remove_selected_composer_attachment() =>
                 {
-                    app.delete_to_start_of_line();
+                    app.kill_to_start_of_line();
                 }
                 KeyCode::Backspace if key.modifiers.contains(KeyModifiers::SUPER) => {}
                 KeyCode::Backspace
@@ -4167,13 +4218,34 @@ async fn run_event_loop(
                         handle_composer_history_arrow(app, key, slash_menu_open, mention_menu_open);
                 }
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.clear_input_recoverable();
+                    // Readline `Ctrl+U` — kill to the start of the current
+                    // logical line (into the kill ring). Recovering the text
+                    // is `Ctrl+Z` undo or `Ctrl+Y` yank.
+                    app.kill_to_start_of_line();
                 }
-                KeyCode::Char('z')
-                    if key.modifiers.contains(KeyModifiers::CONTROL)
-                        && app.restore_last_cleared_input_if_empty() =>
+                KeyCode::Char('l') | KeyCode::Char('\u{c}')
+                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
                 {
-                    app.status_message = Some("Restored cleared draft".to_string());
+                    // Force a full repaint, preserving input and history —
+                    // recovers from garbled or partially blanked terminals.
+                    terminal.clear()?;
+                    app.needs_redraw = true;
+                }
+                KeyCode::Char('z') | KeyCode::Char('_')
+                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    // Readline composer undo (`Ctrl+Z` / `Ctrl+_`): restores
+                    // the previous edit state including cursor position.
+                    // No redo — known limitation.
+                    if app.undo_input_edit() {
+                        app.status_message = Some("Undone".to_string());
+                    }
+                }
+                // Some terminals deliver Ctrl+_ as the raw 0x1F control char.
+                KeyCode::Char('\u{1f}') => {
+                    if app.undo_input_edit() {
+                        app.status_message = Some("Undone".to_string());
+                    }
                 }
                 KeyCode::Char('w') | KeyCode::Char('W')
                     if key.modifiers.contains(KeyModifiers::CONTROL) =>
@@ -4243,7 +4315,11 @@ async fn run_event_loop(
                     continue;
                 }
                 KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::ALT) => {
-                    app.set_mode(AppMode::Yolo);
+                    // Post-yank Alt+Y cycles the kill ring (readline
+                    // yank-pop); otherwise it stays the Yolo shortcut.
+                    if !app.yank_pop() {
+                        app.set_mode(AppMode::Yolo);
+                    }
                     continue;
                 }
                 KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::ALT) => {
@@ -4266,6 +4342,15 @@ async fn run_event_loop(
                     if key.modifiers.contains(KeyModifiers::ALT) =>
                 {
                     open_tool_details_pager(app);
+                    continue;
+                }
+                // Open the model picker without clearing the draft (the
+                // Claude Code `Option+P` affordance; Alt+P is Plan here).
+                KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    if app.view_stack.top_kind() != Some(ModalKind::ModelPicker) {
+                        app.view_stack
+                            .push(crate::tui::model_picker::ModelPickerView::new(app));
+                    }
                     continue;
                 }
                 // Vim composer: Normal-mode motion / operator keys.
@@ -4291,7 +4376,7 @@ async fn run_event_loop(
                     // absorb — Visual mode not yet fully implemented
                 }
                 KeyCode::Char(c) if is_plain_char => {
-                    app.insert_char(c);
+                    app.insert_plain_char(c);
                 }
                 KeyCode::Char(_) => {}
                 _ => {}
@@ -6229,6 +6314,139 @@ async fn steer_user_message(
 
     app.status_message = Some("Steering current turn...".to_string());
     Ok(())
+}
+
+/// `!cmd` shell passthrough: run the command in the user's shell (cwd =
+/// workspace), then submit the command plus captured output as a user
+/// message so the model can respond to it — and the session log records
+/// it (model-visible means logged).
+///
+/// The command runs as the user's own action (they typed it), so it does
+/// not pass the tool-approval gate.
+///
+/// Known limitation: output is captured, not streamed — the UI stays
+/// frozen while the command runs, capped by [`SHELL_BANG_TIMEOUT_SECS`].
+async fn run_shell_bang_input(
+    app: &mut App,
+    config: &Config,
+    engine_handle: &EngineHandle,
+    input: &str,
+) -> Result<()> {
+    let command = input
+        .trim_start()
+        .strip_prefix('!')
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string();
+    if command.is_empty() {
+        return Ok(());
+    }
+
+    let mut cmd = shell_bang_command(&command);
+    cmd.current_dir(&app.workspace);
+    cmd.stdin(std::process::Stdio::null());
+
+    let output = match tokio::time::timeout(
+        Duration::from_secs(SHELL_BANG_TIMEOUT_SECS),
+        cmd.output(),
+    )
+    .await
+    {
+        Ok(Ok(output)) => output,
+        Ok(Err(err)) => {
+            app.push_status_toast(
+                format!("Failed to spawn `{command}`: {err}"),
+                StatusToastLevel::Error,
+                Some(5_000),
+            );
+            return Ok(());
+        }
+        Err(_) => {
+            app.push_status_toast(
+                format!("`{command}` timed out after {SHELL_BANG_TIMEOUT_SECS}s"),
+                StatusToastLevel::Error,
+                Some(5_000),
+            );
+            return Ok(());
+        }
+    };
+
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.trim().is_empty() {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str("[stderr]\n");
+        text.push_str(&stderr);
+    }
+    if text.chars().count() > SHELL_BANG_MAX_OUTPUT_CHARS {
+        text = format!(
+            "{}\n…(output truncated)",
+            text.chars()
+                .take(SHELL_BANG_MAX_OUTPUT_CHARS)
+                .collect::<String>()
+        );
+    }
+    let status_note = if output.status.success() {
+        String::new()
+    } else {
+        format!("\n[exit status: {}]", output.status)
+    };
+
+    let body = format!("! `{command}`\n\n```\n{text}{status_note}\n```");
+    let queued = build_queued_message(app, body);
+    submit_or_steer_message(app, config, engine_handle, queued).await
+}
+
+fn shell_bang_command(command: &str) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(shell_bang_program());
+    #[cfg(unix)]
+    cmd.arg("-c");
+    #[cfg(windows)]
+    cmd.arg("/C");
+    cmd.arg(command);
+    cmd
+}
+
+fn shell_bang_program() -> String {
+    #[cfg(unix)]
+    {
+        std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+    }
+    #[cfg(windows)]
+    {
+        "cmd".to_string()
+    }
+}
+
+/// Send every queued message right now instead of waiting for the current
+/// turn to end: busy → one merged steer into the running turn, idle →
+/// normal dispatch. Reached via Ctrl+Enter on an empty composer.
+async fn flush_queued_messages_now(
+    app: &mut App,
+    config: &Config,
+    engine_handle: &EngineHandle,
+) -> Result<()> {
+    let drained: Vec<QueuedMessage> = std::mem::take(&mut app.queued_messages).into();
+    if drained.is_empty() {
+        return Ok(());
+    }
+    let mut skill_instruction: Option<String> = None;
+    let mut bodies: Vec<String> = Vec::with_capacity(drained.len());
+    for msg in drained {
+        if skill_instruction.is_none() {
+            skill_instruction = msg.skill_instruction;
+        }
+        bodies.push(msg.display);
+    }
+    let count = bodies.len();
+    let merged = QueuedMessage::new(bodies.join("\n\n"), skill_instruction);
+    let result = submit_or_steer_message(app, config, engine_handle, merged).await;
+    if result.is_ok() && app.queued_message_count() == 0 {
+        app.status_message = Some(format!("Sent {count} queued message(s)"));
+    }
+    result
 }
 
 /// Park a draft on the queued-messages bucket for dispatch after TurnComplete.

@@ -109,13 +109,18 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
         section: KeybindingSection::Navigation,
     },
     KeybindingEntry {
-        chord: "g / G",
+        chord: "Alt+g / Alt+G",
         description_id: crate::localization::MessageId::KbJumpTopBottomEmpty,
         section: KeybindingSection::Navigation,
     },
     KeybindingEntry {
-        chord: "[ / ]",
+        chord: "Alt+[ / Alt+]",
         description_id: crate::localization::MessageId::KbJumpToolBlocks,
+        section: KeybindingSection::Navigation,
+    },
+    KeybindingEntry {
+        chord: "Ctrl+L",
+        description_id: crate::localization::MessageId::KbRedrawScreen,
         section: KeybindingSection::Navigation,
     },
     // --- Editing ---
@@ -141,7 +146,17 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
     },
     KeybindingEntry {
         chord: "Ctrl+U",
-        description_id: crate::localization::MessageId::KbClearDraft,
+        description_id: crate::localization::MessageId::KbKillToLineStart,
+        section: KeybindingSection::Editing,
+    },
+    KeybindingEntry {
+        chord: "Alt+D",
+        description_id: crate::localization::MessageId::KbKillNextWord,
+        section: KeybindingSection::Editing,
+    },
+    KeybindingEntry {
+        chord: "Ctrl+Z / Ctrl+_",
+        description_id: crate::localization::MessageId::KbUndoInput,
         section: KeybindingSection::Editing,
     },
     KeybindingEntry {
@@ -157,6 +172,11 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
     KeybindingEntry {
         chord: "Ctrl+J / Alt+Enter / Shift+Enter",
         description_id: crate::localization::MessageId::KbInsertNewline,
+        section: KeybindingSection::Editing,
+    },
+    KeybindingEntry {
+        chord: "\\ + Enter",
+        description_id: crate::localization::MessageId::KbBackslashNewline,
         section: KeybindingSection::Editing,
     },
     // --- Submission / actions ---
@@ -201,13 +221,13 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {
-        chord: "l",
-        description_id: crate::localization::MessageId::KbLastMessagePager,
+        chord: "Ctrl+Enter",
+        description_id: crate::localization::MessageId::KbQueueFlush,
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {
-        chord: "v",
-        description_id: crate::localization::MessageId::KbSelectedDetails,
+        chord: "Alt+L",
+        description_id: crate::localization::MessageId::KbLastMessagePager,
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {
@@ -244,6 +264,11 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
     KeybindingEntry {
         chord: "Alt+P / Alt+A / Alt+Y",
         description_id: crate::localization::MessageId::KbAltJumpPlanAgentYolo,
+        section: KeybindingSection::Modes,
+    },
+    KeybindingEntry {
+        chord: "Alt+M",
+        description_id: crate::localization::MessageId::KbModelPickerHotkey,
         section: KeybindingSection::Modes,
     },
     KeybindingEntry {
@@ -285,7 +310,7 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
     },
     // --- Help ---
     KeybindingEntry {
-        chord: "?",
+        chord: "Alt+?",
         description_id: crate::localization::MessageId::KbHelpOverlay,
         section: KeybindingSection::Help,
     },

@@ -99,6 +99,16 @@ pub(crate) fn looks_like_slash_command_input(input: &str) -> bool {
     !command.contains('/')
 }
 
+/// `!cmd` shell passthrough: a leading `!` (after optional whitespace)
+/// followed by a non-empty command runs directly in the user's shell and
+/// submits the output to the session (Claude Code's `!` prefix mode).
+pub(crate) fn looks_like_shell_bang_input(input: &str) -> bool {
+    input
+        .trim_start()
+        .strip_prefix('!')
+        .is_some_and(|rest| !rest.trim().is_empty())
+}
+
 fn initial_onboarding_state(
     skip_onboarding: bool,
     was_onboarded: bool,
@@ -661,6 +671,11 @@ fn match_kitty_csi_fragment(chars: &[char], start: usize) -> Option<usize> {
 
 const MAX_SUBMITTED_INPUT_CHARS: usize = 16_000;
 const MAX_DRAFT_HISTORY: usize = 50;
+/// Kill-ring capacity (readline-style multi-entry kill/yank history).
+const KILL_RING_CAPACITY: usize = 16;
+/// Composer edit-undo depth: (text, cursor) snapshots pushed before each
+/// mutating edit. No redo — known limitation.
+const MAX_UNDO_STACK: usize = 128;
 /// Bounded history of `TranscriptRebuilt` audit entries shown by
 /// `/cache zones` (#2264 Phase 2).
 pub(crate) const TRANSCRIPT_REBUILD_AUDIT_LIMIT: usize = 8;
@@ -784,12 +799,24 @@ pub struct ComposerState {
     pub input: String,
     /// Cursor position within `input` (in characters).
     pub cursor_position: usize,
-    /// Single-entry kill buffer for emacs-style `Ctrl+K` cut / `Ctrl+Y` yank.
-    pub kill_buffer: String,
+    /// Readline-style kill ring. The front entry is the most recent kill;
+    /// consecutive kill commands merge into it, and `Ctrl+Y` / `Alt+Y`
+    /// yank and cycle through entries.
+    pub kill_ring: VecDeque<String>,
+    /// Char range of the text inserted by the last `Ctrl+Y`, so `Alt+Y`
+    /// (yank-pop) can replace it with the next ring entry.
+    pub yank_span: Option<(usize, usize)>,
+    /// Ring entry currently yanked; advanced by yank-pop.
+    pub yank_ring_index: usize,
+    /// True when the previous edit command was a kill, so a following kill
+    /// merges into the same ring entry (readline kill-append semantics).
+    pub last_edit_was_kill: bool,
+    /// Composer edit-undo stack: (text, cursor) snapshots pushed before
+    /// each mutating edit. No redo — known limitation.
+    pub undo_stack: VecDeque<(String, usize)>,
     pub paste_burst: PasteBurst,
     pub input_history: Vec<String>,
     pub draft_history: VecDeque<String>,
-    pub clear_undo_buffer: Option<String>,
     pub history_index: Option<usize>,
     pub(crate) history_navigation_draft: Option<InputHistoryDraft>,
     pub composer_history_search: Option<ComposerHistorySearch>,
@@ -801,6 +828,11 @@ pub struct ComposerState {
     /// Cached @-mention completions to avoid re-walking the filesystem when
     /// the cursor moves inside the same mention token.
     pub mention_completion_cache: Option<MentionCompletionCache>,
+    /// Selected row of the `:shortcode:` emoji popup.
+    pub emoji_menu_selected: usize,
+    /// (input, cursor) captured when the user dismissed the emoji popup
+    /// with Esc; the popup stays hidden until either value changes.
+    pub emoji_menu_suppressed_at: Option<(String, usize)>,
     /// Whether vim modal editing is enabled for this composer.
     /// Sourced from `Settings::composer_vim_mode` at startup.
     pub vim_enabled: bool,
@@ -821,11 +853,14 @@ impl Default for ComposerState {
         Self {
             input: String::new(),
             cursor_position: 0,
-            kill_buffer: String::new(),
+            kill_ring: VecDeque::new(),
+            yank_span: None,
+            yank_ring_index: 0,
+            last_edit_was_kill: false,
+            undo_stack: VecDeque::new(),
             paste_burst: PasteBurst::default(),
             input_history: Vec::new(),
             draft_history: VecDeque::new(),
-            clear_undo_buffer: None,
             history_index: None,
             history_navigation_draft: None,
             composer_history_search: None,
@@ -835,6 +870,8 @@ impl Default for ComposerState {
             mention_menu_selected: 0,
             mention_menu_hidden: false,
             mention_completion_cache: None,
+            emoji_menu_selected: 0,
+            emoji_menu_suppressed_at: None,
             vim_enabled: false,
             vim_mode: VimMode::Normal,
             vim_pending_d: false,
@@ -1848,11 +1885,14 @@ impl App {
             composer: ComposerState {
                 input: initial_input_text,
                 cursor_position: initial_input_cursor,
-                kill_buffer: String::new(),
+                kill_ring: VecDeque::new(),
+                yank_span: None,
+                yank_ring_index: 0,
+                last_edit_was_kill: false,
+                undo_stack: VecDeque::new(),
                 paste_burst: PasteBurst::default(),
                 input_history,
                 draft_history: VecDeque::new(),
-                clear_undo_buffer: None,
                 history_index: None,
                 history_navigation_draft: None,
                 composer_history_search: None,
@@ -1862,6 +1902,8 @@ impl App {
                 mention_menu_selected: 0,
                 mention_menu_hidden: false,
                 mention_completion_cache: None,
+                emoji_menu_selected: 0,
+                emoji_menu_suppressed_at: None,
                 vim_enabled: composer_vim_enabled,
                 vim_mode: VimMode::Normal,
                 vim_pending_d: false,
@@ -3246,6 +3288,8 @@ impl App {
         if text.is_empty() {
             return;
         }
+        self.push_undo_snapshot();
+        self.break_edit_sequences();
         self.delete_selection();
         self.selected_attachment_index = None;
         let cursor = self.cursor_position.min(char_count(&self.input));
@@ -3505,6 +3549,8 @@ impl App {
     }
 
     pub fn insert_char(&mut self, c: char) {
+        self.push_undo_snapshot();
+        self.break_edit_sequences();
         self.clear_input_history_navigation();
         self.delete_selection();
         self.selected_attachment_index = None;
@@ -3517,6 +3563,60 @@ impl App {
         self.mention_menu_hidden = false;
         self.mention_menu_selected = 0;
         self.needs_redraw = true;
+    }
+
+    /// Insert a plain typed character. A `:` that would close a known
+    /// `:shortcode:` token replaces the whole token with its emoji
+    /// instead of inserting the colon (Claude Code `:name:` input).
+    pub fn insert_plain_char(&mut self, c: char) {
+        if c == ':'
+            && let Some((colon_byte, emoji)) = crate::tui::emoji_shortcode::shortcode_closeable_at(
+                &self.input,
+                self.cursor_position,
+            )
+        {
+            self.push_undo_snapshot();
+            self.break_edit_sequences();
+            let start_char = char_count(&self.input[..colon_byte]);
+            let cursor_byte = byte_index_at_char(&self.input, self.cursor_position);
+            self.input.replace_range(colon_byte..cursor_byte, emoji);
+            self.cursor_position = start_char + char_count(emoji);
+            self.emoji_menu_selected = 0;
+            self.emoji_menu_suppressed_at = None;
+            self.slash_menu_hidden = false;
+            self.mention_menu_hidden = false;
+            self.needs_redraw = true;
+            return;
+        }
+        self.insert_char(c);
+    }
+
+    /// Apply the currently-selected emoji popup entry, replacing the
+    /// partial `:token` at the cursor with its emoji.
+    pub fn apply_emoji_menu_selection(&mut self, entries: &[(&'static str, &'static str)]) -> bool {
+        let Some((colon_byte, _partial)) = crate::tui::emoji_shortcode::partial_shortcode_at_cursor(
+            &self.input,
+            self.cursor_position,
+        ) else {
+            return false;
+        };
+        let Some((_, emoji)) = entries.get(
+            self.emoji_menu_selected
+                .min(entries.len().saturating_sub(1)),
+        ) else {
+            return false;
+        };
+        self.push_undo_snapshot();
+        self.break_edit_sequences();
+        let start_char = char_count(&self.input[..colon_byte]);
+        let cursor_byte = byte_index_at_char(&self.input, self.cursor_position);
+        self.input.replace_range(colon_byte..cursor_byte, emoji);
+        self.cursor_position = start_char + char_count(emoji);
+        self.emoji_menu_selected = 0;
+        self.emoji_menu_suppressed_at = None;
+        self.clear_input_history_navigation();
+        self.needs_redraw = true;
+        true
     }
 
     fn strip_raw_mouse_reports_from_input(&mut self) {
@@ -3540,6 +3640,8 @@ impl App {
         if self.cursor_position == 0 {
             return;
         }
+        self.push_undo_snapshot();
+        self.break_edit_sequences();
         let target = self.cursor_position.saturating_sub(1);
         let removed = remove_char_at(&mut self.input, target);
         if removed {
@@ -3560,6 +3662,8 @@ impl App {
         if self.input.is_empty() {
             return;
         }
+        self.push_undo_snapshot();
+        self.break_edit_sequences();
         let target = self.cursor_position;
         let removed = remove_char_at(&mut self.input, target);
         if !removed {
@@ -3606,6 +3710,10 @@ impl App {
         }
 
         if word_start < cursor_byte {
+            let removed = self.input[word_start..cursor_byte].to_string();
+            self.push_undo_snapshot();
+            self.yank_span = None;
+            self.kill_push(&removed, true);
             self.input.replace_range(word_start..cursor_byte, "");
             self.cursor_position = char_count(&self.input[..word_start]);
             self.slash_menu_hidden = false;
@@ -3615,15 +3723,23 @@ impl App {
         }
     }
 
-    /// Delete from the cursor to the start of the line.
-    pub fn delete_to_start_of_line(&mut self) {
+    /// Kill from the start of the current logical line to the cursor,
+    /// storing the removed text in the kill ring (readline `Ctrl+U`).
+    pub fn kill_to_start_of_line(&mut self) -> bool {
         self.clear_input_history_navigation();
-        if self.delete_selection() {
-            return;
+        if let Some((start, end)) = self.selection_range() {
+            let sb = byte_index_at_char(&self.input, start);
+            let eb = byte_index_at_char(&self.input, end);
+            let removed = self.input[sb..eb].to_string();
+            self.push_undo_snapshot();
+            self.yank_span = None;
+            self.kill_push(&removed, false);
+            self.delete_selection();
+            return true;
         }
         self.selected_attachment_index = None;
         if self.cursor_position == 0 {
-            return;
+            return false;
         }
 
         let cursor_byte = byte_index_at_char(&self.input, self.cursor_position);
@@ -3634,13 +3750,19 @@ impl App {
             .unwrap_or(0);
 
         if line_start < cursor_byte {
+            let removed = self.input[line_start..cursor_byte].to_string();
+            self.push_undo_snapshot();
+            self.yank_span = None;
+            self.kill_push(&removed, true);
             self.input.replace_range(line_start..cursor_byte, "");
             self.cursor_position = char_count(&self.input[..line_start]);
             self.slash_menu_hidden = false;
             self.mention_menu_hidden = false;
             self.mention_menu_selected = 0;
             self.needs_redraw = true;
+            return true;
         }
+        false
     }
 
     /// Delete the word after the cursor.
@@ -3677,6 +3799,10 @@ impl App {
         }
 
         if cursor_byte < word_end {
+            let removed = self.input[cursor_byte..word_end].to_string();
+            self.push_undo_snapshot();
+            self.yank_span = None;
+            self.kill_push(&removed, false);
             self.input.replace_range(cursor_byte..word_end, "");
             self.slash_menu_hidden = false;
             self.mention_menu_hidden = false;
@@ -3696,7 +3822,10 @@ impl App {
         if let Some((start, end)) = self.selection_range() {
             let sb = byte_index_at_char(&self.input, start);
             let eb = byte_index_at_char(&self.input, end);
-            self.kill_buffer = self.input[sb..eb].to_string();
+            let removed = self.input[sb..eb].to_string();
+            self.push_undo_snapshot();
+            self.yank_span = None;
+            self.kill_push(&removed, false);
             self.delete_selection();
             return true;
         }
@@ -3727,7 +3856,9 @@ impl App {
             return false;
         }
 
-        self.kill_buffer = removed;
+        self.push_undo_snapshot();
+        self.yank_span = None;
+        self.kill_push(&removed, false);
         self.input.replace_range(start_byte..end_byte, "");
         // Cursor stays at the same character index (start of removed range).
         self.cursor_position = cursor;
@@ -3738,23 +3869,124 @@ impl App {
         true
     }
 
-    /// Insert the contents of the kill buffer at the cursor, advancing it.
-    /// The kill buffer is left intact so multiple yanks duplicate the text.
-    /// Returns `true` if any text was inserted.
+    /// Push killed text onto the ring. Consecutive kill commands merge into
+    /// the front entry — appended for forward kills, prepended for backward
+    /// ones so multi-kill word order reads naturally after a yank.
+    fn kill_push(&mut self, text: &str, backward: bool) {
+        let was_kill = self.last_edit_was_kill;
+        self.last_edit_was_kill = true;
+        if text.is_empty() {
+            return;
+        }
+        if was_kill && let Some(front) = self.kill_ring.front_mut() {
+            if backward {
+                front.insert_str(0, text);
+            } else {
+                front.push_str(text);
+            }
+        } else {
+            self.kill_ring.push_front(text.to_string());
+            while self.kill_ring.len() > KILL_RING_CAPACITY {
+                self.kill_ring.pop_back();
+            }
+        }
+    }
+
+    /// Break readline kill-append and yank-pop sequences. Called by every
+    /// mutating edit that is neither a kill nor a yank.
+    fn break_edit_sequences(&mut self) {
+        self.last_edit_was_kill = false;
+        self.yank_span = None;
+    }
+
+    /// Insert the contents of the kill ring's front entry at the cursor,
+    /// advancing it. The ring is left intact so multiple yanks duplicate
+    /// the text. Returns `true` if any text was inserted.
     pub fn yank(&mut self) -> bool {
-        if self.kill_buffer.is_empty() {
+        let Some(text) = self.kill_ring.front().cloned() else {
+            return false;
+        };
+        if text.is_empty() {
             return false;
         }
+        self.push_undo_snapshot();
         self.delete_selection();
         self.clear_input_history_navigation();
-        let text = self.kill_buffer.clone();
         let cursor = self.cursor_position.min(char_count(&self.input));
         let byte_index = byte_index_at_char(&self.input, cursor);
         self.input.insert_str(byte_index, &text);
         self.cursor_position = cursor + char_count(&text);
+        self.yank_span = Some((cursor, self.cursor_position));
+        self.yank_ring_index = 0;
+        self.last_edit_was_kill = false;
         self.slash_menu_hidden = false;
         self.mention_menu_hidden = false;
         self.mention_menu_selected = 0;
+        self.needs_redraw = true;
+        true
+    }
+
+    /// Replace the text inserted by the last yank with the next kill-ring
+    /// entry (readline `Alt+Y` yank-pop). Returns `false` when no yank is
+    /// active or the next entry is empty.
+    pub fn yank_pop(&mut self) -> bool {
+        let Some((start, end)) = self.yank_span else {
+            return false;
+        };
+        if self.kill_ring.is_empty() {
+            return false;
+        }
+        let next_index = (self.yank_ring_index + 1) % self.kill_ring.len();
+        let text = self.kill_ring[next_index].clone();
+        if text.is_empty() {
+            return false;
+        }
+        self.push_undo_snapshot();
+        let end = end.min(char_count(&self.input));
+        let start_byte = byte_index_at_char(&self.input, start.min(end));
+        let end_byte = byte_index_at_char(&self.input, end);
+        self.input.replace_range(start_byte..end_byte, &text);
+        self.cursor_position = start + char_count(&text);
+        self.yank_span = Some((start, self.cursor_position));
+        self.yank_ring_index = next_index;
+        self.slash_menu_hidden = false;
+        self.mention_menu_hidden = false;
+        self.mention_menu_selected = 0;
+        self.needs_redraw = true;
+        true
+    }
+
+    /// Snapshot the composer before a mutating edit so `Ctrl+Z` / `Ctrl+_`
+    /// can restore text and cursor. Consecutive identical snapshots are
+    /// dropped.
+    fn push_undo_snapshot(&mut self) {
+        let snapshot = (self.input.clone(), self.cursor_position);
+        if self
+            .undo_stack
+            .back()
+            .is_some_and(|existing| *existing == snapshot)
+        {
+            return;
+        }
+        self.undo_stack.push_back(snapshot);
+        while self.undo_stack.len() > MAX_UNDO_STACK {
+            self.undo_stack.pop_front();
+        }
+    }
+
+    /// Undo the last composer edit, restoring text and cursor position.
+    /// No redo — known limitation.
+    pub fn undo_input_edit(&mut self) -> bool {
+        let Some((text, cursor)) = self.undo_stack.pop_back() else {
+            return false;
+        };
+        self.break_edit_sequences();
+        self.input = text;
+        self.cursor_position = cursor.min(char_count(&self.input));
+        self.selection_anchor = None;
+        self.selected_attachment_index = None;
+        self.history_index = None;
+        self.history_navigation_draft = None;
         self.needs_redraw = true;
         true
     }
@@ -4103,6 +4335,10 @@ impl App {
     }
 
     pub fn clear_input(&mut self) {
+        if !self.input.is_empty() {
+            self.push_undo_snapshot();
+        }
+        self.break_edit_sequences();
         self.clear_input_history_navigation();
         self.input.clear();
         self.cursor_position = 0;
@@ -4119,13 +4355,11 @@ impl App {
         self.clear_input();
     }
 
-    pub fn stash_current_input_for_recovery(&mut self) {
+    fn stash_current_input_for_recovery(&mut self) {
         let draft = self.input.clone();
         if draft.trim().is_empty() {
-            self.clear_undo_buffer = None;
             return;
         }
-        self.clear_undo_buffer = Some(draft.clone());
         self.remember_draft_for_recovery(draft);
     }
 
@@ -4363,28 +4597,6 @@ impl App {
         true
     }
 
-    /// Restore the last cleared input if the composer is empty.
-    /// Returns `true` if the input was restored.
-    pub fn restore_last_cleared_input_if_empty(&mut self) -> bool {
-        if !self.input.is_empty() {
-            return false;
-        }
-        let Some(saved) = self.clear_undo_buffer.take().filter(|s| !s.is_empty()) else {
-            return false;
-        };
-
-        self.input = saved;
-        self.cursor_position = char_count(&self.input);
-        self.history_index = None;
-        self.history_navigation_draft = None;
-        self.selected_attachment_index = None;
-        self.slash_menu_selected = 0;
-        self.slash_menu_hidden = false;
-        self.needs_redraw = true;
-        self.clear_undo_buffer = None;
-        true
-    }
-
     /// Composer-Enter dispatch. Returns `Some(input)` when the press should
     /// fire a submit; `None` when Enter was absorbed (paste-burst Enter
     /// suppression — see #1073).
@@ -4420,7 +4632,49 @@ impl App {
                 return None;
             }
         }
+        if self.consume_backslash_continuation() {
+            return None;
+        }
         self.submit_input()
+    }
+
+    /// `\` + Enter line continuation: when the cursor sits at the end of a
+    /// logical line whose last character is a single trailing backslash,
+    /// Enter removes the backslash and continues on a newline instead of
+    /// submitting. A doubled backslash (`\\`) is literal, so Windows-style
+    /// trailing paths survive.
+    fn consume_backslash_continuation(&mut self) -> bool {
+        let chars: Vec<char> = self.input.chars().collect();
+        if self.cursor_position == 0 || self.cursor_position > chars.len() {
+            return false;
+        }
+        // Cursor must sit at the end of its logical line.
+        if self.cursor_position < chars.len() && chars[self.cursor_position] != '\n' {
+            return false;
+        }
+        if chars[self.cursor_position - 1] != '\\' {
+            return false;
+        }
+        let doubled = self.cursor_position >= 2 && chars[self.cursor_position - 2] == '\\';
+        if doubled {
+            return false;
+        }
+        // Captured before the removal — `chars` still includes the backslash.
+        let had_following_newline = self.cursor_position < chars.len();
+        let backslash_byte = byte_index_at_char(&self.input, self.cursor_position - 1);
+        self.push_undo_snapshot();
+        self.break_edit_sequences();
+        self.input.remove(backslash_byte);
+        self.cursor_position -= 1;
+        if had_following_newline {
+            // A newline already follows the (removed) backslash — reuse it
+            // and step over it instead of inserting a second one.
+            self.cursor_position += 1;
+            self.needs_redraw = true;
+        } else {
+            self.insert_char('\n');
+        }
+        true
     }
 
     /// Public wrapper around [`Self::consolidate_large_input`] that no-ops
@@ -4611,6 +4865,7 @@ impl App {
             Some(i) => i.saturating_sub(1),
         };
         self.history_index = Some(new_index);
+        self.push_undo_snapshot();
         self.input = self.input_history[new_index].clone();
         self.cursor_position = char_count(&self.input);
         self.selection_anchor = None;
@@ -4628,6 +4883,7 @@ impl App {
             Some(i) => {
                 if i + 1 < self.input_history.len() {
                     self.history_index = Some(i + 1);
+                    self.push_undo_snapshot();
                     self.input = self.input_history[i + 1].clone();
                     self.cursor_position = char_count(&self.input);
                     self.selection_anchor = None;
@@ -4637,6 +4893,7 @@ impl App {
                 } else {
                     self.history_index = None;
                     if let Some(draft) = self.history_navigation_draft.take() {
+                        self.push_undo_snapshot();
                         self.input = draft.input;
                         self.cursor_position = draft.cursor.min(char_count(&self.input));
                         self.selection_anchor = None;
@@ -6223,47 +6480,86 @@ mod tests {
     }
 
     #[test]
-    fn clear_undo_buffer_is_set_on_clear_input_recoverable() {
+    fn undo_input_edit_restores_text_and_cursor() {
         let mut app = App::new(test_options(false), &Config::default());
-        app.input = "hello".to_string();
+        app.input = "hello world".to_string();
         app.cursor_position = 5;
 
-        app.clear_input_recoverable();
-
-        assert!(app.input.is_empty());
-        assert_eq!(app.clear_undo_buffer.as_deref(), Some("hello"));
+        app.kill_to_start_of_line();
+        assert_eq!(app.input, " world");
+        assert!(app.undo_input_edit());
+        assert_eq!(app.input, "hello world");
+        assert_eq!(app.cursor_position, 5);
+        // Stack exhausted — further undo is a no-op.
+        assert!(!app.undo_input_edit());
     }
 
     #[test]
-    fn clear_undo_buffer_is_none_when_clearing_empty_input() {
+    fn undo_input_edit_pops_once_per_edit() {
         let mut app = App::new(test_options(false), &Config::default());
-        assert!(app.input.is_empty());
+        app.insert_char('a');
+        app.insert_char('b');
+        assert_eq!(app.input, "ab");
 
-        app.clear_input_recoverable();
-
-        assert!(app.clear_undo_buffer.is_none());
+        assert!(app.undo_input_edit());
+        assert_eq!(app.input, "a");
+        assert!(app.undo_input_edit());
+        assert_eq!(app.input, "");
+        assert!(!app.undo_input_edit());
     }
 
     #[test]
-    fn restore_last_cleared_input_restores_saved_draft() {
+    fn backslash_enter_continues_line_instead_of_submitting() {
         let mut app = App::new(test_options(false), &Config::default());
-        app.input = "previous".to_string();
-        app.cursor_position = 8;
-        app.clear_input_recoverable();
-        assert!(app.input.is_empty());
+        app.input = "first\\".to_string();
+        app.cursor_position = app.input.chars().count();
 
-        let restored = app.restore_last_cleared_input_if_empty();
-        assert!(restored);
-        assert_eq!(app.input, "previous");
-        assert!(app.clear_undo_buffer.is_none());
+        let submitted = app.handle_composer_enter();
+
+        assert!(submitted.is_none());
+        assert_eq!(app.input, "first\n");
+        assert_eq!(app.cursor_position, app.input.chars().count());
     }
 
     #[test]
-    fn restore_last_cleared_input_does_nothing_when_composer_not_empty() {
+    fn doubled_backslash_at_eol_stays_literal_and_submits() {
         let mut app = App::new(test_options(false), &Config::default());
-        app.clear_undo_buffer = Some("old".to_string());
-        app.input = "current".to_string();
-        assert!(!app.restore_last_cleared_input_if_empty());
+        app.input = "path \\\\".to_string();
+        app.cursor_position = app.input.chars().count();
+
+        let submitted = app.handle_composer_enter();
+
+        assert_eq!(submitted.as_deref(), Some("path \\\\"));
+        assert_eq!(app.input, "");
+    }
+
+    #[test]
+    fn shell_bang_detection_requires_leading_bang_and_command() {
+        assert!(looks_like_shell_bang_input("!ls -la"));
+        assert!(looks_like_shell_bang_input("  !cargo test"));
+        assert!(!looks_like_shell_bang_input("!"));
+        assert!(!looks_like_shell_bang_input("!   "));
+        assert!(!looks_like_shell_bang_input("run !this"));
+        assert!(!looks_like_shell_bang_input("plain text"));
+    }
+
+    #[test]
+    fn plain_colon_insert_closes_known_shortcode() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "nice :fire".to_string();
+        app.cursor_position = app.input.chars().count();
+
+        app.insert_plain_char(':');
+
+        assert_eq!(app.input, "nice 🔥");
+        assert_eq!(app.cursor_position, app.input.chars().count());
+
+        // Unknown shortcode stays text, and URLs are untouched.
+        let mut app2 = App::new(test_options(false), &Config::default());
+        app2.input = "see https://example".to_string();
+        app2.cursor_position = app2.input.chars().count();
+        app2.insert_plain_char(':');
+        assert_eq!(app2.input, "see https://example:");
     }
 
     #[test]
@@ -6501,7 +6797,7 @@ mod tests {
         assert!(app.kill_to_end_of_line());
         assert_eq!(app.input, "hello ");
         assert_eq!(app.cursor_position, 6);
-        assert_eq!(app.kill_buffer, "world");
+        assert_eq!(app.kill_ring.front().map(String::as_str), Some("world"));
     }
 
     #[test]
@@ -6512,36 +6808,84 @@ mod tests {
         assert!(app.kill_to_end_of_line());
         assert_eq!(app.input, "line oneline two");
         assert_eq!(app.cursor_position, 8);
-        assert_eq!(app.kill_buffer, "\n");
+        assert_eq!(app.kill_ring.front().map(String::as_str), Some("\n"));
 
-        // Empty input: kill is a no-op and the buffer is untouched.
+        // Empty input: kill is a no-op and the ring is untouched.
         let mut empty = App::new(test_options(false), &Config::default());
         assert!(!empty.kill_to_end_of_line());
         assert!(empty.input.is_empty());
-        assert!(empty.kill_buffer.is_empty());
+        assert!(empty.kill_ring.is_empty());
     }
 
     #[test]
-    fn yank_inserts_kill_buffer_and_preserves_it() {
+    fn yank_inserts_kill_ring_front_and_preserves_it() {
         let mut app = App::new(test_options(false), &Config::default());
         app.input = "abc def".to_string();
         app.cursor_position = 4; // before 'd'
         assert!(app.kill_to_end_of_line());
         assert_eq!(app.input, "abc ");
-        assert_eq!(app.kill_buffer, "def");
+        assert_eq!(app.kill_ring.front().map(String::as_str), Some("def"));
 
-        // Move cursor to the start and yank twice — kill_buffer must persist.
+        // Move cursor to the start and yank twice — the ring must persist.
         app.cursor_position = 0;
         assert!(app.yank());
         assert!(app.yank());
         assert_eq!(app.input, "defdefabc ");
         assert_eq!(app.cursor_position, 6);
-        assert_eq!(app.kill_buffer, "def");
+        assert_eq!(app.kill_ring.front().map(String::as_str), Some("def"));
 
-        // Yank with empty buffer is a no-op.
+        // Yank with an empty ring is a no-op.
         let mut empty = App::new(test_options(false), &Config::default());
         assert!(!empty.yank());
         assert!(empty.input.is_empty());
+    }
+
+    #[test]
+    fn consecutive_kills_merge_and_separate_kills_ring() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "one two three".to_string();
+        app.cursor_position = char_count("one two three"); // end
+
+        // Two consecutive backward kills merge into one entry, prepended in
+        // reading order: first "three", then "two " lands in front.
+        app.delete_word_backward();
+        app.delete_word_backward();
+        assert_eq!(app.kill_ring.len(), 1);
+        assert_eq!(app.kill_ring.front().map(String::as_str), Some("two three"));
+
+        // A non-kill edit breaks the sequence — the next kill starts a new
+        // ring entry.
+        app.insert_char('x');
+        app.delete_word_backward();
+        assert_eq!(app.kill_ring.len(), 2);
+        assert_eq!(app.kill_ring.front().map(String::as_str), Some("x"));
+    }
+
+    #[test]
+    fn yank_pop_cycles_kill_ring_entries() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "alpha".to_string();
+        app.cursor_position = 5;
+        app.kill_to_start_of_line(); // ring: ["alpha"]
+        app.input = "beta".to_string();
+        app.cursor_position = 4;
+        app.break_edit_sequences();
+        app.kill_to_start_of_line(); // ring: ["beta", "alpha"]
+
+        // No yank active yet — yank-pop declines.
+        assert!(!app.yank_pop());
+
+        app.cursor_position = 0;
+        assert!(app.yank());
+        assert_eq!(app.input, "beta");
+
+        // Alt+Y swaps the just-yanked text for the next ring entry.
+        assert!(app.yank_pop());
+        assert_eq!(app.input, "alpha");
+
+        // Cycles back around.
+        assert!(app.yank_pop());
+        assert_eq!(app.input, "beta");
     }
 
     // ---- Issue #90: quit confirmation timeout ----
@@ -6914,15 +7258,20 @@ mod tests {
     }
 
     #[test]
-    fn delete_to_start_of_line_respects_multiline_cursor() {
+    fn kill_to_start_of_line_respects_multiline_cursor() {
         let mut app = App::new(test_options(false), &Config::default());
         app.input = "first\nsecond line".to_string();
         app.cursor_position = char_count("first\nsecond");
 
-        app.delete_to_start_of_line();
+        assert!(app.kill_to_start_of_line());
 
         assert_eq!(app.input, "first\n line");
         assert_eq!(app.cursor_position, char_count("first\n"));
+        assert_eq!(
+            app.kill_ring.front().map(String::as_str),
+            Some("second"),
+            "only the current line's prefix is killed"
+        );
     }
 
     #[test]
@@ -6934,7 +7283,7 @@ mod tests {
         assert!(app.kill_to_end_of_line());
         assert_eq!(app.input, "café ");
         assert_eq!(app.cursor_position, 5);
-        assert_eq!(app.kill_buffer, "你好");
+        assert_eq!(app.kill_ring.front().map(String::as_str), Some("你好"));
 
         // Yank back at the same spot — must not panic on char boundaries.
         assert!(app.yank());

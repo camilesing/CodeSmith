@@ -9,13 +9,15 @@ Bindings are not (yet) user-configurable — tracked for a future release (#436,
 | Chord                | Action                                                        |
 |----------------------|---------------------------------------------------------------|
 | `F1` or `Ctrl-/`     | Toggle the help overlay                                       |
+| `Alt-?`              | Open the help overlay (when the composer is empty)             |
 | `Ctrl-K`             | Open the command palette (slash-command finder)                |
 | `Ctrl-C`             | Cancel current turn / dismiss modal / arm-then-confirm quit    |
 | `Ctrl-D`             | Quit (only when the composer is empty)                         |
 | `Tab`                | Cycle TUI mode: Plan → Agent → YOLO → Plan                     |
 | `Shift-Tab`          | Cycle reasoning effort: off → high → max → off                 |
 | `Ctrl-R`             | Open the resume-session picker                                 |
-| `Ctrl-L`             | Refresh / clear the screen                                     |
+| `Ctrl-L`             | Force a full screen redraw (recovers garbled output)           |
+| `Alt-M`              | Open the model picker (switches hot while a turn runs)         |
 | `Ctrl-O`             | Open Activity Detail for selected/live/recent tool work, or the full reasoning timeline for thinking blocks when the composer is empty |
 | `Ctrl-Shift-E` / `Cmd-Shift-E` | Toggle the file-tree sidebar                          |
 | `Alt-G`              | Scroll transcript to top when the composer is empty             |
@@ -30,20 +32,24 @@ Editing the message you're about to send.
 | Chord                       | Action                                                  |
 |-----------------------------|---------------------------------------------------------|
 | `Enter`                     | Send the message (or run the slash command)             |
-| `Alt-Enter` / `Ctrl-J`      | Insert a newline without sending                        |
-| `Ctrl-U`                    | Delete to start of line                                 |
-| `Ctrl-W`                    | Delete previous word                                    |
+| `Ctrl-Enter`                | Force-steer the draft into the running turn; on an empty composer, send all queued messages immediately |
+| `Alt-Enter` / `Ctrl-J` / `Shift-Enter` | Insert a newline without sending              |
+| `\` + `Enter`               | Line continuation: removes the trailing `\` and continues on a newline (`\\` keeps the backslash literal) |
+| `Ctrl-U`                    | Kill to start of line (into the kill ring)               |
+| `Ctrl-W`                    | Kill previous word (into the kill ring)                  |
+| `Alt-D`                     | Kill to end of word (into the kill ring)                 |
 | `Ctrl-A` / `Home`           | Move to start of line                                   |
 | `Ctrl-E` / `End`            | Move to end of line                                     |
 | `Ctrl-←` / `Alt-←`          | Move backward one word                                  |
 | `Ctrl-→` / `Alt-→`          | Move forward one word                                   |
 | `Ctrl-V` / `Cmd-V`          | Paste from clipboard (also bracketed-paste auto-handled)|
-| `Ctrl-Y`                    | Yank (paste) from kill buffer                           |
+| `Ctrl-Y`                    | Yank (paste) from the kill ring; `Alt-Y` right after cycles earlier kills (yank-pop), otherwise `Alt-Y` toggles YOLO |
+| `Ctrl-Z` / `Ctrl-_`         | Undo the last input edit (text + cursor; no redo)        |
 | `↑` / `↓`                   | Cycle composer history (also selects popup/attachment items) |
-| `Ctrl-P` / `Ctrl-N`         | Cycle composer history (alternative)                     |
+| `Ctrl-P`                    | Open the fuzzy file picker                              |
 | `Ctrl-S`                    | Stash current draft (`/stash list`, `/stash pop` to recover) |
 | `Alt-R`                    | Search prompt history (Alt-R to exit)                  |
-| `Tab`                       | Slash-command / `@`-mention completion (popup-aware)    |
+| `Tab`                       | Slash-command / `@`-mention / `:emoji:` completion (popup-aware) |
 | `Ctrl-O`                    | Open external editor for the composer draft when it has focus |
 
 ### `@` mentions
@@ -53,6 +59,14 @@ Type `@<partial>` to open the file mention popup. `↑`/`↓` cycle the entries,
 ### `#` quick-add (memory)
 
 When `[memory] enabled = true`, typing `# foo` and pressing `Enter` appends `foo` as a timestamped bullet to your memory file *without* sending a turn. See `docs/MEMORY.md`.
+
+### `!` shell passthrough
+
+Type `!cmd` at the start of the input and press `Enter` to run `cmd` directly in your shell (`$SHELL`, falling back to `/bin/sh`; workspace as cwd). stdout and stderr are captured (60s timeout, output truncated at 16k chars) and submitted to the session as a user message so the model can respond to the output. The command runs as your own action and does not pass the tool-approval gate.
+
+### `:` emoji shortcodes
+
+Type `:name:` to insert an emoji — the closing `:` replaces the whole token (`:fire:` becomes 🔥). Typing two or more characters of a partial `:na…` opens a suggestion popup; `↑`/`↓` cycle, `Tab` or `Enter` accepts, `Esc` dismisses. The opening `:` only triggers at line start or after whitespace, so URLs and times like `12:30` are never touched. Unknown shortcodes stay as plain text.
 
 ## Transcript (when transcript has focus)
 
@@ -116,6 +130,18 @@ When `[memory] enabled = true`, typing `# foo` and pressing `Enter` appends `foo
 | `1`–`5`              | Pick a language (Language step)                    |
 | `y` / `Y`            | Trust the workspace (Trust step)                   |
 | `n` / `N`            | Skip the trust prompt                              |
+
+## readline parity revision
+
+This revision brings the composer to (near) readline parity with Claude Code's input editing:
+
+- **Kill ring.** `Ctrl-U`, `Ctrl-W`, `Alt-D`, and `Ctrl-K` (kill-to-end-of-line) all save their text into a 16-entry kill ring; consecutive kills merge into one entry. `Ctrl-Y` yanks; `Alt-Y` immediately after a yank cycles earlier entries (yank-pop). Outside the post-yank window `Alt-Y` keeps its Yolo-mode shortcut.
+- **Composer undo.** `Ctrl-Z` / `Ctrl+_` restore the previous edit state including cursor position (128-deep, no redo). This replaces the old "Ctrl-Z restores a cleared draft only when the composer is empty" special case.
+- **`\` + Enter continuation** and **`Ctrl-L` redraw** close two long-standing doc/code gaps (Ctrl-L was listed here but had no handler before).
+- **`Alt-M` opens the model picker** — the Claude Code `Option+P` affordance; `Alt-P` stays Plan mode.
+- **Ctrl+Enter on an empty composer flushes the queue** — running turn gets the queued messages steered in immediately instead of waiting for turn end.
+- **`Alt-D` (kill to end of word)** is new; `delete_word_forward` was reachable only via `Alt/Ctrl+Delete` before.
+- Stale rows fixed in this pass: `Ctrl-P`/`Ctrl-N` "cycle composer history" → `Ctrl-P` is the fuzzy file picker; the help catalog's bare `?`, `g`/`G`, `[`/`]`, `l`, `v` entries now read `Alt+?`, `Alt+g`/`Alt+G`, `Alt+[`/`Alt+]`, `Alt+L` (matching the v0.8.30 move of bare-letter navigation to Alt).
 
 ## v0.8.29 audit notes
 
