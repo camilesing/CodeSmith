@@ -261,9 +261,18 @@ mod tests {
     #[test]
     fn should_trigger_time_based() {
         let mut state = MicroCompactState::default();
-        // Simulate 61 minutes since last assistant message
-        state.last_assistant_message_at =
-            Some(Instant::now() - std::time::Duration::from_secs(TIME_TRIGGER_GAP_SECS + 60));
+        // Simulate 61 minutes since last assistant message. Subtracting a
+        // large duration from `Instant::now()` panics when the monotonic
+        // clock is younger than that gap — freshly booted CI VMs (Windows
+        // runners boot per job) hit exactly this — so skip when
+        // unrepresentable instead of panicking.
+        let Some(stale_at) =
+            Instant::now().checked_sub(std::time::Duration::from_secs(TIME_TRIGGER_GAP_SECS + 60))
+        else {
+            eprintln!("monotonic clock younger than simulated gap; skipping");
+            return;
+        };
+        state.last_assistant_message_at = Some(stale_at);
         let messages = vec![msg("user", "test")];
         assert!(should_trigger_micro_compact(&messages, &state, false));
     }
