@@ -3,8 +3,7 @@
 CodeSmith is a terminal coding agent for open-weight models (DeepSeek,
 Moonshot, OpenAI-compatible gateways, vLLM, Ollama) — a fork of CodeWhale,
 itself derived from deepseek-tui. Packages are `codesmith-*`; user storage is
-`~/.codesmith/`. This file is gitignored on purpose: local agent guidance, not
-a shipped artifact. 
+`~/.codesmith/`.
 
 Keep this file durable. Derive changing release, provider, branch, and flake
 state from the repository, tests, CI, and current issue tracker rather than from
