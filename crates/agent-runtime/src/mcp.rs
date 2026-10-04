@@ -5763,7 +5763,7 @@ mod tests {
                         let count = get_count.fetch_add(1, AtomicOrdering::SeqCst);
                         let session = if count == 0 { "sess-old" } else { "sess-new" };
                         let response = format!(
-                            "HTTP/1.1 200 OK\r\nMcp-Session-Id: {session}\r\nContent-Length: 0\r\n\r\n"
+                            "HTTP/1.1 200 OK\r\nConnection: close\r\nMcp-Session-Id: {session}\r\nContent-Length: 0\r\n\r\n"
                         );
                         socket.write_all(response.as_bytes()).await.unwrap();
                         return;
@@ -5783,7 +5783,7 @@ mod tests {
                         stale_seen.store(true, AtomicOrdering::SeqCst);
                         socket
                             .write_all(
-                                b"HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: 27\r\n\r\n{\"error\":\"session expired\"}",
+                                b"HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: 27\r\n\r\n{\"error\":\"session expired\"}",
                             )
                             .await
                             .unwrap();
@@ -5812,7 +5812,7 @@ mod tests {
                         }
                         _ => {
                             socket
-                                .write_all(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n")
+                                .write_all(b"HTTP/1.1 202 Accepted\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
                                 .await
                                 .unwrap();
                             return;
@@ -5825,7 +5825,7 @@ mod tests {
                     })
                     .to_string();
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
                         response_body.len(),
                         response_body
                     );
