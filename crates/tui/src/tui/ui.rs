@@ -963,6 +963,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         search_api_key: config.search.as_ref().and_then(|s| s.api_key.clone()),
         index_enabled: config.index_tools_enabled(),
         tools_always_load: config.tools_always_load(),
+        disabled_tools: crate::capabilities::effective_disabled(config.tools.as_ref()),
         tools: config.tools.clone(),
         team_context: None,
         file_freshness_tracker:

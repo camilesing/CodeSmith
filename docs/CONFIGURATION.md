@@ -1262,19 +1262,49 @@ always_load = ["git_show", "notify"]
 #                                     # `# schema:` frontmatter header are
 #                                     # auto-discovered and registered as tools
 
-# Replace or disable a built-in tool (keyed by built-in tool name):
+# Replace a built-in tool (keyed by built-in tool name; *disabling* moved
+# to ~/.codesmith/capabilities.toml — see "Capability Manifest"):
 [tools.overrides]
-# read_file = { type = "disabled" }
 # web_search = { type = "command", command = "my-search-wrapper", args = ["--json"] }
 # read_file = { type = "script", path = "~/.codesmith/tools/rr.sh" }
+# read_file = { type = "disabled" }   # deprecated — still honored, but list
+#                                     # the name in capabilities.toml instead
 ```
 
-`[tools.overrides]` entries come in three shapes. `script` runs a local
+`[tools.overrides]` entries come in two active shapes. `script` runs a local
 script file (`path`, absolute or relative to the plugin dir) with the
 tool's JSON input on stdin and expects a JSON `ToolResult` on stdout;
-`command` runs an external binary the same way; `disabled` removes the
-tool from the model-visible catalog entirely — it cannot be called. Any
-static `args` are prepended before the tool's JSON input.
+`command` runs an external binary the same way. Any static `args` are
+prepended before the tool's JSON input. A third shape, `disabled`, still
+parses but is deprecated: it removes the tool from the model-visible
+catalog (it cannot be called) and now rides the capability manifest's
+enforcement point — prefer listing the name in `capabilities.toml`
+`[tools] disabled`.
+
+## Capability Manifest
+
+`~/.codesmith/capabilities.toml` is the declarative capability-selection
+file — the session-level baseline for what the model-visible tool catalog
+may contain (selection only; implementation replacement stays in
+`[tools].overrides`):
+
+```toml
+[tools]
+disabled = ["edit_file", "apply_patch"]   # any origin: builtin, plugin,
+                                          # mod-contributed, or MCP tool name
+```
+
+A disabled tool is removed at the turn-dispatch composition point — from
+the registry itself, not just the catalog — so it is neither visible nor
+executable, and turn-scoped masks (preset `tools.include`/`exclude`,
+slash-command frontmatter) cannot resurrect it on the main turn.
+Sub-agent toolsets build on a separate path and do not consult the
+manifest yet. Unknown names are no-ops (tool names come and go); a
+malformed file fails startup with the offending field path. The
+`CODESMITH_CAPABILITIES_MANIFEST` env var overrides the file path
+(ops/tests). `/tools` renders the current catalog grouped by origin plus
+the disabled names. The file is read once per process — restart after
+edits.
 
 ## Feature Flags
 

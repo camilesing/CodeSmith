@@ -70,11 +70,11 @@ impl ToolRegistryPluginExt for ToolRegistry {
         for (tool_name, override_cfg) in overrides {
             match override_cfg {
                 crate::config::ToolOverride::Disabled => {
-                    if self.remove_tool(tool_name) {
-                        tracing::info!("Tool '{}' disabled via config override", tool_name);
-                    } else {
-                        tracing::warn!("Cannot disable tool '{}': not registered", tool_name);
-                    }
+                    // Selection moved to the capability composition point:
+                    // legacy config `disabled` entries are unioned into
+                    // `EngineConfig.disabled_tools` (with a deprecation
+                    // warning) and removed from the registry in
+                    // `build_turn_dispatcher` — one enforcement point.
                 }
                 _ => {
                     // Script and Command overrides create replacement tools.

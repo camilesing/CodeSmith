@@ -1180,18 +1180,42 @@ always_load = ["git_show", "notify"]
 #                                     # frontmatter 头的脚本会被自动发现
 #                                     # 并注册为工具
 
-# 替换或禁用内置工具（以内置工具名为键）：
+# 替换内置工具（以内置工具名为键；*禁用*已移至
+# ~/.codesmith/capabilities.toml，见"能力清单"一节）：
 [tools.overrides]
-# read_file = { type = "disabled" }
 # web_search = { type = "command", command = "my-search-wrapper", args = ["--json"] }
 # read_file = { type = "script", path = "~/.codesmith/tools/rr.sh" }
+# read_file = { type = "disabled" }   # 已弃用——仍然生效，但请把名字
+#                                     # 列进 capabilities.toml
 ```
 
-`[tools.overrides]` 条目有三种形态。`script` 运行本地脚本文件
+`[tools.overrides]` 条目有两种活跃形态。`script` 运行本地脚本文件
 （`path`，绝对路径或相对于插件目录），把工具的 JSON 输入接到 stdin，
 并要求 stdout 返回 JSON `ToolResult`；`command` 以同样方式运行外部
-二进制；`disabled` 把工具从模型可见目录中彻底移除——无法再被调用。
-任何静态 `args` 都会拼在工具的 JSON 输入之前。
+二进制。任何静态 `args` 都会拼在工具的 JSON 输入之前。第三种形态
+`disabled` 仍可解析但已弃用：它把工具从模型可见目录中移除（无法再被
+调用），现在走能力清单的统一执行点——请改在 `capabilities.toml` 的
+`[tools] disabled` 里列名。
+
+## 能力清单
+
+`~/.codesmith/capabilities.toml` 是声明式能力选择文件——模型可见工具
+目录的会话级基线（只做选择；实现替换仍留在 `[tools].overrides`）：
+
+```toml
+[tools]
+disabled = ["edit_file", "apply_patch"]   # 任意来源：内置、插件、mod
+                                          # 贡献或 MCP 工具名均可
+```
+
+被禁用的工具在回合分发的组合点移除——从注册表本身移除，而不只是
+目录——因此既不可见也不可执行，回合级掩码（preset 的
+`tools.include`/`exclude`、斜杠命令 frontmatter）在主回合无法将其
+复活。子代理工具集走独立构建路径，暂不读该清单。未知名字是无害的
+no-op（工具名有增有减）；文件格式错误会在启动时报出字段路径并失败。
+`CODESMITH_CAPABILITIES_MANIFEST` 环境变量可覆盖文件路径（运维/测试）。
+`/tools` 按来源分组展示当前目录，并列出被禁用名字。文件每进程读一次
+——修改后需重启。
 
 ## 功能开关
 
