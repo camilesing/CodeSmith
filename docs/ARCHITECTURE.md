@@ -22,6 +22,11 @@ Current boundary note (v0.8.6):
   by `codesmith-index`, consumed by the kernel's tool context
   (`agent-runtime/src/tools/spec.rs`) — the same shape as `LlmClient`
   (defined in `codesmith-agent`, implemented in `codesmith-providers`).
+  The generated capability graph (`docs/CAPABILITY_GRAPH.md`, from
+`scripts/capability-graph.py`, CI-checked for freshness) lists every
+seam's triple — a new capability lands all three roles in the same
+change, and every `ExtensionEventKind` declares its dispatch mode
+(`dispatch_mode()`, pinned by a contract test).
 - `crates/tui` is still the live end-user runtime for the TUI, runtime API, task manager, and tool registry wiring. The agent execution engine itself (turn loop, compaction, sandbox helpers, prompts) now lives in `crates/agent-runtime`; `crates/tui/src/core/` is a thin re-export + construction bridge (`engine.rs` defines `EngineHost`/`build_engine`).
 - Other workspace crates are being split out incrementally, but they are not yet the sole runtime source of truth.
 - Startup trust-boundary details are tracked in `docs/STARTUP_TRUST_BOUNDARY_AUDIT.md`; that audit is the current reference for pre-trust versus post-trust initialization follow-ups.

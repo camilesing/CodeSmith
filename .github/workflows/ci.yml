@@ -52,6 +52,8 @@ jobs:
         run: python3 scripts/check-provider-registry.py
       - name: Check framework dependency direction
         run: python3 scripts/check-framework-deps.py
+      - name: Check capability graph freshness
+        run: python3 scripts/capability-graph.py --check
       - name: Linux clippy location
         run: echo "Linux clippy/test gates run on CNB for mirrored fix/*, rebrand/*, work/v*, and main branches."
 

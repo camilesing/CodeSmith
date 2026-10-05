@@ -235,9 +235,12 @@ pub struct ToolExecutionUpdateEvent {
 /// §10.2 + §4): 23 variants total. `#[non_exhaustive]` so future slices can
 /// add variants without breaking downstream match arms. Handler dispatch is
 /// open (any `Handler` may subscribe to any variant via `on` /
-/// `on_variant`). Variant-specific outcome semantics (spec §4): `SessionBefore*`
-/// → cancel-capable; `ToolCall` → block-capable; `Input` / `BeforeAgentStart` /
-/// `BeforeProviderRequest` / `ToolResult` → transform-capable; rest observe-only.
+/// `on_variant`). Variant-specific outcome semantics are part of the
+/// contract and live with the kinds:
+/// [`ExtensionEventKind::dispatch_mode`](ExtensionEventKind::dispatch_mode)
+/// (discipline 3 — `SessionBefore*` cancel-veto; `ToolCall` block-deny;
+/// `Input` / `BeforeAgentStart` / `BeforeProviderRequest` / `ToolResult`
+/// transform-chain; the rest observe-serial).
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum ExtensionEvent {
@@ -340,6 +343,65 @@ impl ExtensionEvent {
             ExtensionEvent::SessionShutdown => ExtensionEventKind::SessionShutdown,
             ExtensionEvent::SessionBeforeCompact => ExtensionEventKind::SessionBeforeCompact,
             ExtensionEvent::SessionCompact => ExtensionEventKind::SessionCompact,
+        }
+    }
+}
+
+// === Dispatch contract (discipline 3) ======================================
+
+/// How handlers for an event are dispatched and which
+/// [`HandlerOutcome`]s the host honors — part of the event's contract, not
+/// an implementation detail of a seam (discipline 3: the dispatch mode is
+/// declared with the event). See [`ExtensionEventKind::dispatch_mode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum DispatchMode {
+    /// Observe-serial: handlers run in subscription order; outcomes are
+    /// advisory — `Transform`/`Cancel`/`Block` are ignored at these seams.
+    Observe,
+    /// Transform-chain: each handler's `Transform` folds into the running
+    /// event (immediately visible to the next handler); the terminal
+    /// actionable field is applied to the host operation.
+    TransformChain,
+    /// Short-circuit veto: a handler's `Cancel` aborts the pending host
+    /// operation (the `SessionBefore*` seams).
+    CancelVeto,
+    /// Short-circuit deny: a handler's `Block` rejects the tool call.
+    BlockDeny,
+}
+
+impl ExtensionEventKind {
+    /// The dispatch mode this event's contract declares (discipline 3).
+    /// Exhaustive like [`ExtensionEvent::kind`]: adding an event variant
+    /// without an arm here is a compile error, and the
+    /// `event_dispatch_contract_table` test pins the expected mode per kind
+    /// so the declared contract cannot drift silently.
+    #[must_use]
+    pub fn dispatch_mode(self) -> DispatchMode {
+        match self {
+            ExtensionEventKind::Input
+            | ExtensionEventKind::BeforeAgentStart
+            | ExtensionEventKind::BeforeProviderRequest
+            | ExtensionEventKind::ToolResult => DispatchMode::TransformChain,
+            ExtensionEventKind::ToolCall => DispatchMode::BlockDeny,
+            ExtensionEventKind::SessionBeforeSwitch
+            | ExtensionEventKind::SessionBeforeFork
+            | ExtensionEventKind::SessionBeforeCompact => DispatchMode::CancelVeto,
+            ExtensionEventKind::ProjectTrust
+            | ExtensionEventKind::SessionStart
+            | ExtensionEventKind::ResourcesDiscover
+            | ExtensionEventKind::AgentStart
+            | ExtensionEventKind::TurnStart
+            | ExtensionEventKind::BeforeProviderHeaders
+            | ExtensionEventKind::AfterProviderResponse
+            | ExtensionEventKind::ToolExecutionStart
+            | ExtensionEventKind::ToolExecutionUpdate
+            | ExtensionEventKind::ToolExecutionEnd
+            | ExtensionEventKind::TurnEnd
+            | ExtensionEventKind::AgentEnd
+            | ExtensionEventKind::AgentSettled
+            | ExtensionEventKind::SessionShutdown
+            | ExtensionEventKind::SessionCompact => DispatchMode::Observe,
         }
     }
 }
@@ -579,6 +641,49 @@ mod tests {
     use serde_json::json;
     use std::path::PathBuf;
     use std::sync::Mutex;
+
+    /// Discipline 3 — the dispatch-contract table. Every kind pins its
+    /// declared mode; the exhaustive `dispatch_mode` match makes a new
+    /// variant a compile error without an arm, and this table makes
+    /// CHANGING an existing kind's mode a test failure — the contract
+    /// cannot drift silently. 23 rows = the full §F2a set.
+    #[test]
+    fn event_dispatch_contract_table() {
+        use DispatchMode as M;
+        use ExtensionEventKind as K;
+        let contract: &[(K, M)] = &[
+            // Transform-chain (actionable field folds through the chain).
+            (K::Input, M::TransformChain),
+            (K::BeforeAgentStart, M::TransformChain),
+            (K::BeforeProviderRequest, M::TransformChain),
+            (K::ToolResult, M::TransformChain),
+            // Short-circuit.
+            (K::ToolCall, M::BlockDeny),
+            (K::SessionBeforeSwitch, M::CancelVeto),
+            (K::SessionBeforeFork, M::CancelVeto),
+            (K::SessionBeforeCompact, M::CancelVeto),
+            // Observe-serial (outcomes advisory).
+            (K::ProjectTrust, M::Observe),
+            (K::SessionStart, M::Observe),
+            (K::ResourcesDiscover, M::Observe),
+            (K::AgentStart, M::Observe),
+            (K::TurnStart, M::Observe),
+            (K::BeforeProviderHeaders, M::Observe),
+            (K::AfterProviderResponse, M::Observe),
+            (K::ToolExecutionStart, M::Observe),
+            (K::ToolExecutionUpdate, M::Observe),
+            (K::ToolExecutionEnd, M::Observe),
+            (K::TurnEnd, M::Observe),
+            (K::AgentEnd, M::Observe),
+            (K::AgentSettled, M::Observe),
+            (K::SessionShutdown, M::Observe),
+            (K::SessionCompact, M::Observe),
+        ];
+        assert_eq!(contract.len(), 23, "the full §F2a set");
+        for (kind, mode) in contract {
+            assert_eq!(&kind.dispatch_mode(), mode, "contract drift at {kind:?}");
+        }
+    }
 
     /// Run a future on a one-shot tokio runtime. (`codesmith-agent` does
     /// not depend on the `futures` crate's executor; tokio is already a dep.)

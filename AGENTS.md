@@ -150,7 +150,11 @@ casually it reads as taking the work even when credit is preserved.
   a framework crate needs something an implementation crate owns, invert the
   dependency: define the trait in a framework crate, let the implementation
   crate provide it and re-export for path compatibility. The boundary note
-  at the top of `docs/ARCHITECTURE.md` is the live reference.
+  at the top of `docs/ARCHITECTURE.md` is the live reference. A new
+capability is a seam triple — definition in a framework crate, provider
+in an implementation crate, consumer — and lands in
+`scripts/capability-graph.py`'s seam list (regenerate
+`docs/CAPABILITY_GRAPH.md`; CI checks freshness).
 - The model-facing sub-agent surface is `agent_open`/`agent_eval`/
   `agent_close` (implementation in `crates/tui/src/tools/subagent/`) plus
   persistent RLM sessions (`crates/tool-impls/src/tools/rlm.rs`); no
