@@ -5,6 +5,19 @@
 [DESIGN_INTERNALS.md](DESIGN_INTERNALS.md)（英文）。
 
 当前边界说明（v0.8.6）：
+- **框架层 / 实现层拆分。** 工作区分为框架群 —— `protocol`、`tools`、`agent`、
+  `config`、`secrets`、`extensions`、`agent-runtime`（内核：唯一的 turn 循环、
+  引擎、压缩）—— 与实现群：其余全部（`providers`、`tool-impls`、`tui`、`cli`、
+  `app-server`、`mcp`、`state`、`execpolicy`、`hooks`、`index`、`core`、
+  `release`、`tui-core`、测试 fixture）。框架群 crate 在构建图中不得依赖框架群
+  之外的任何 workspace crate；实现群可以自由依赖框架群。该规则由
+  `scripts/check-framework-deps.py`（扫描 cargo metadata，已接入 CI）物理强制；
+  dev-dependency 豁免，因为它不会进入框架产物。新能力遵循接缝三件套：定义落在
+  框架 crate、提供者落在实现 crate、消费者不限。现成范例：
+  `IndexServiceApi` 及其值类型定义于 `codesmith-tools::index_api`，由
+  `codesmith-index` 实现并原路径 re-export，内核工具上下文
+  （`agent-runtime/src/tools/spec.rs`）消费 —— 与 `LlmClient`（定义于
+  `codesmith-agent`、实现于 `codesmith-providers`）同构。
 - `crates/tui` 仍然是 TUI、运行时 API、任务管理器和工具注册表接线的活跃终端用户运行时。Agent 执行引擎本身（turn 循环、压缩、沙箱辅助程序、提示词）现在位于 `crates/agent-runtime`；`crates/tui/src/core/` 是一个薄的重导出 + 构造桥接层（`engine.rs` 定义 `EngineHost`/`build_engine`）。
 - 其他工作区 crate 正在逐步拆分，但它们尚不是唯一的运行时事实来源。
 - 启动信任边界的细节记录在 `docs/STARTUP_TRUST_BOUNDARY_AUDIT.md` 中；该审计是信任前与信任后初始化跟进事项的当前参考。
@@ -171,7 +184,7 @@ Chat Completions 驱动 turn。
 ### 代码索引
 
 - **`crates/index`**（`codesmith-index`）—— 按工作区持久化的代码索引（参见 `docs/INDEX.md`）
-  - `types.rs` / `backend.rs` —— 值类型 + 三个接缝：`IndexBackendFactory`/`IndexBackend`（提供商注册表模式）、`IndexServiceApi`（LspManagerApi 风格注入）、保留的 `SemanticIndexApi`
+  - 服务接缝 `IndexServiceApi` / 保留的 `SemanticIndexApi` 及值类型词汇定义于框架层（`codesmith-tools::index_api`）并由本 crate 原路径 re-export；`backend.rs` 保留后端 SPI：`IndexBackendFactory`/`IndexBackend`（提供商注册表模式）
   - `registry.rs` - `IndexBackendRegistry`，镜像 `ProviderRegistry`（upsert；构建错误列表会列出已注册的 id）
   - `tree_sitter.rs` - `tree-sitter` cargo feature 之后的内置符号后端（rust/python/js/ts/go；容器作用域、词法引用）
   - `walk.rs` - 基于 `ignore` 的工作区遍历（感知 `.gitignore`），为清单 + 新鲜度差异提供输入

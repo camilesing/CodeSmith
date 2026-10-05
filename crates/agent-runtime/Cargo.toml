@@ -18,7 +18,6 @@ clap.workspace = true
 codesmith-agent = { path = "../agent", version = "0.1.0" }
 codesmith-config = { path = "../config", version = "0.1.0" }
 codesmith-extensions = { path = "../extensions", version = "0.1.0" }
-codesmith-index = { path = "../index", version = "0.1.0" }
 codesmith-secrets = { path = "../secrets", version = "0.1.0" }
 codesmith-tools = { path = "../tools", version = "0.1.0" }
 dirs.workspace = true

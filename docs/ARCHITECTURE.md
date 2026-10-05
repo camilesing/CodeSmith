@@ -5,6 +5,23 @@ For the deep design narrative (provider seam, framework-core agent executor, gua
 absorption, extension system), see [DESIGN_INTERNALS.md](DESIGN_INTERNALS.md).
 
 Current boundary note (v0.8.6):
+- **Framework / implementation layer split.** The workspace is divided into a
+  framework group — `protocol`, `tools`, `agent`, `config`, `secrets`,
+  `extensions`, `agent-runtime` (the kernel: one turn loop, engine,
+  compaction) — and an implementation group: everything else (`providers`,
+  `tool-impls`, `tui`, `cli`, `app-server`, `mcp`, `state`, `execpolicy`,
+  `hooks`, `index`, `core`, `release`, `tui-core`, test fixtures). Framework
+  crates must not depend, in the build graph, on any workspace crate outside
+  the group; implementation crates depend freely on the framework. The rule
+  is enforced physically by `scripts/check-framework-deps.py` (cargo
+  metadata scan; runs in CI) — dev-dependencies are exempt because they
+  never enter a framework artifact. New capabilities follow the seam triple:
+  definition in a framework crate, provider in an implementation crate,
+  consumer anywhere. Standing example: `IndexServiceApi` + its value types
+  are defined in `codesmith-tools::index_api`, implemented and re-exported
+  by `codesmith-index`, consumed by the kernel's tool context
+  (`agent-runtime/src/tools/spec.rs`) — the same shape as `LlmClient`
+  (defined in `codesmith-agent`, implemented in `codesmith-providers`).
 - `crates/tui` is still the live end-user runtime for the TUI, runtime API, task manager, and tool registry wiring. The agent execution engine itself (turn loop, compaction, sandbox helpers, prompts) now lives in `crates/agent-runtime`; `crates/tui/src/core/` is a thin re-export + construction bridge (`engine.rs` defines `EngineHost`/`build_engine`).
 - Other workspace crates are being split out incrementally, but they are not yet the sole runtime source of truth.
 - Startup trust-boundary details are tracked in `docs/STARTUP_TRUST_BOUNDARY_AUDIT.md`; that audit is the current reference for pre-trust versus post-trust initialization follow-ups.
@@ -172,7 +189,7 @@ Tool implementations are split between the TUI (host-coupled tools) and
 ### Code Index
 
 - **`crates/index`** (`codesmith-index`) — persistent per-workspace code index (see `docs/INDEX.md`)
-  - `types.rs` / `backend.rs` — value types + the three seams: `IndexBackendFactory`/`IndexBackend` (provider-registry pattern), `IndexServiceApi` (LspManagerApi-style injection), reserved `SemanticIndexApi`
+  - The service seam `IndexServiceApi` / reserved `SemanticIndexApi` and the value vocabulary are defined in the framework layer (`codesmith-tools::index_api`) and re-exported here; `backend.rs` keeps the backend SPI: `IndexBackendFactory`/`IndexBackend` (provider-registry pattern)
   - `registry.rs` — `IndexBackendRegistry` mirroring `ProviderRegistry` (upsert, build error lists registered ids)
   - `tree_sitter.rs` — built-in symbol backend behind the `tree-sitter` cargo feature (rust/python/js/ts/go; container scoping, lexical references)
   - `walk.rs` — `ignore`-based workspace walk (`.gitignore`-aware) feeding the inventory + freshness diff

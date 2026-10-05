@@ -45,6 +45,15 @@
 //! in the kernel names a concrete backend type, so implementations are
 //! freely replaceable (including from a downstream crate compiled against
 //! this one).
+//!
+//! # Layering
+//!
+//! The service API and value vocabulary ([`IndexServiceApi`],
+//! [`SemanticIndexApi`], and everything re-exported from `types`) are
+//! defined in the framework layer — `codesmith_tools::index_api` — and
+//! re-exported here, so `codesmith-agent-runtime` consumes the seam without
+//! a dependency on this crate. This crate is the seam's provider: backend
+//! registry, built-in backends, and the SQLite store.
 
 pub mod backend;
 pub mod builtin;

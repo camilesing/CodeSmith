@@ -14,6 +14,7 @@ description = "Pluggable per-workspace code index: symbol index, file inventory 
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
+codesmith-tools = { path = "../tools", version = "0.1.0" }
 dirs.workspace = true
 ignore.workspace = true
 rusqlite.workspace = true
@@ -24,8 +25,9 @@ tokio.workspace = true
 tracing.workspace = true
 
 # Grammar crates are optional and enabled together via the `tree-sitter`
-# feature so the agent-runtime kernel (which depends on this crate with
-# default features) never pulls the parser stack.
+# feature so downstream default-feature builds (the kernel consumes only the
+# framework-side trait in `codesmith-tools::index_api`, never this crate)
+# don't pull the parser stack.
 tree-sitter = { workspace = true, optional = true }
 tree-sitter-rust = { workspace = true, optional = true }
 tree-sitter-python = { workspace = true, optional = true }

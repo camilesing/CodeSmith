@@ -81,9 +81,10 @@ pub struct RuntimeToolServices {
     /// context is a test that does not need symbol navigation. Index-backed
     /// tools fail closed with a clear "not available" error when unset.
     /// Trait-erased to `Arc<dyn IndexServiceApi>` so the kernel stays
-    /// grammar-free (the tree-sitter feature is enabled by the host, not
-    /// agent-runtime).
-    pub index_service: Option<std::sync::Arc<dyn codesmith_index::IndexServiceApi>>,
+    /// grammar-free (the trait is defined in `codesmith-tools::index_api`;
+    /// the implementation crate `codesmith-index` and its tree-sitter
+    /// feature are host-side).
+    pub index_service: Option<std::sync::Arc<dyn codesmith_tools::index_api::IndexServiceApi>>,
 }
 
 impl Default for RuntimeToolServices {

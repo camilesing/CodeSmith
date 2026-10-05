@@ -844,7 +844,6 @@ dependencies = [
  "codesmith-agent",
  "codesmith-config",
  "codesmith-extensions",
- "codesmith-index",
  "codesmith-secrets",
  "codesmith-tools",
  "dirs",
@@ -1024,6 +1023,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "codesmith-index",
+ "codesmith-tools",
  "dirs",
  "ignore",
  "rusqlite",
@@ -1158,6 +1158,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
  "codesmith-protocol",
  "serde",
  "serde_json",
