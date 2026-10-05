@@ -971,6 +971,8 @@ pub fn reload_extension_runtime(
     // (un-register; safe concurrent w/ in-flight turn — an already-built
     // client keeps its `Arc`).
     runner.clear_providers();
+    // Route B — prompt sections are generation-scoped like providers.
+    runner.clear_prompt_sections();
     // §F5d T4 — move the live dylib `Library`s into `pending_drop` (UI-thread
     // MOVE: `mem::take` under one lock, the `Library` stays alive). The engine
     // op-loop top then `drop_pending`s them at the one moment the main-thread

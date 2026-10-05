@@ -140,6 +140,18 @@ impl ExtensionApi for StubExtensionApi {
             .push(crate::runner::PendingProvider { factory });
         Ok(())
     }
+    fn register_prompt_section(&self, id: String, text: String) -> Result<(), ExtensionError> {
+        assert_live(&self.generation, self.captured_gen)?;
+        // Validate against the runner's rules now so a bad section fails
+        // its load (fail loud), not at first prompt assembly.
+        crate::runner::validate_prompt_section(&id, &text)?;
+        self.pending
+            .lock()
+            .unwrap()
+            .prompt_sections
+            .push((id, text));
+        Ok(())
+    }
 }
 
 /// Real api — live after `bind_core`; flushes registrations directly into
@@ -157,6 +169,9 @@ pub struct RealExtensionApi {
     /// registry they flush into.
     providers: Arc<Mutex<Vec<ProviderRegistration>>>,
     shared: SharedProviderRegistry,
+    /// Route B — prompt-section contributions (same storage the runner
+    /// reads at assembly; shared so late registrations are honored).
+    prompt_sections: Arc<Mutex<Vec<(String, String)>>>,
 }
 
 #[allow(dead_code)]
@@ -168,6 +183,7 @@ impl RealExtensionApi {
         handlers: Arc<Mutex<Vec<crate::runner::RegisteredHandler>>>,
         providers: Arc<Mutex<Vec<ProviderRegistration>>>,
         shared: SharedProviderRegistry,
+        prompt_sections: Arc<Mutex<Vec<(String, String)>>>,
     ) -> Self {
         let captured_gen = generation.load(Ordering::Acquire);
         Self {
@@ -178,6 +194,7 @@ impl RealExtensionApi {
             handlers,
             providers,
             shared,
+            prompt_sections,
         }
     }
 }
@@ -247,6 +264,17 @@ impl ExtensionApi for RealExtensionApi {
                 .map_err(ExtensionError::Config)?,
         );
         self.register_provider(factory)
+    }
+    fn register_prompt_section(&self, id: String, text: String) -> Result<(), ExtensionError> {
+        assert_live(&self.generation, self.captured_gen)?;
+        crate::runner::validate_prompt_section(&id, &text)?;
+        let mut sections = self.prompt_sections.lock().unwrap();
+        if let Some(slot) = sections.iter_mut().find(|(existing, _)| *existing == id) {
+            slot.1 = text;
+        } else {
+            sections.push((id, text));
+        }
+        Ok(())
     }
 }
 

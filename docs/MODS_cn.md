@@ -148,6 +148,19 @@ Transform 可变字段（一个 handler 的改写对后续 handler 立即可见�
 | `ok(value) / err(msg)` | 工具结果构造 |
 | `message(msg) / send(msg)` | 命令输出（展示 / 注入对话） |
 | `register_provider(spec)` | 注册 provider 别名（见下） |
+| `register_prompt_section(id, text)` | 向基础系统提示词追加命名分段（见下） |
+
+### 贡献系统提示词分段（路线 B）
+
+```rhai
+register_prompt_section("style", "Prefer small, reviewable diffs.");
+```
+
+分段按注册顺序追加到基础系统提示词（同 id 重复注册为原位替换）。分段在
+mod 加载时注册、会话内稳定——对前缀缓存友好。限制：≤16 段、id 须匹配
+`[a-zA-Z0-9_-]`、文本非空（违反即 mod **加载失败**）。任何 handler 经
+`before-agent-start` 的整段替换仍优先于分段。reload 清除该 generation
+的全部分段。
 
 ### 注册 provider（路线 A）
 
