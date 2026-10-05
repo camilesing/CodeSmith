@@ -154,6 +154,10 @@ pub struct EngineHandle {
     /// durable query). A snapshot: watcher/tool reloads surface their own
     /// reports via logs + `/mods status`.
     pub mods_pending: Vec<crate::mod_ops::PendingModInfo>,
+    /// Discipline 5 — the startup composition audit (loaded / failed-with-
+    /// original-error / pending / disabled / trust-gated, one entry per
+    /// discovered extension). `failed_audit_lines` is the display format.
+    pub mods_audit: Vec<StartupAuditEntry>,
 }
 
 // `impl EngineHandle { ... }` lives in `engine/handle.rs`.
@@ -553,6 +557,90 @@ fn build_extension_runtime(
 pub struct PopulateReport {
     pub loaded_mods: usize,
     pub pending_mods: Vec<crate::mod_ops::PendingModInfo>,
+    /// Discipline 5 — startup composition audit: one entry per discovered
+    /// extension/mod with its terminal status. Failures keep the original
+    /// error string; `failed_audit_lines` is the shared diagnostic format.
+    pub audit: Vec<StartupAuditEntry>,
+}
+
+/// One extension-layer startup entry (discipline 5). `populate_extension_runtime`
+/// collects one per discovered extension/mod.
+///
+/// Known limitations: a mod whose `mod.toml` fails discovery gets no entry
+/// (it has no loadable identity) — discovery-stage skips stay in the
+/// `tracing` warn log; and CodeSmith has no "required" extension concept,
+/// so there is no audit-fails-fatal branch — optional extensions stay
+/// fail-soft with this structured record instead.
+#[derive(Debug, Clone)]
+pub struct StartupAuditEntry {
+    pub id: String,
+    pub source: AuditSource,
+    pub status: AuditStatus,
+}
+
+impl StartupAuditEntry {
+    fn new(id: String, source: AuditSource, status: AuditStatus) -> Self {
+        Self { id, source, status }
+    }
+}
+
+/// Where an audited entry came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuditSource {
+    CompiledIn,
+    Dylib { global: bool },
+    ScriptMod { global: bool },
+}
+
+impl AuditSource {
+    fn label(self) -> String {
+        let scope = |global: bool| if global { "global" } else { "project" };
+        match self {
+            Self::CompiledIn => "compiled-in".to_string(),
+            Self::Dylib { global } => format!("dylib, {}", scope(global)),
+            Self::ScriptMod { global } => format!("script mod, {}", scope(global)),
+        }
+    }
+}
+
+/// Terminal status of an audited entry. `Failed` preserves the original
+/// error string so the structured diagnostic replaces half a
+/// troubleshooting doc.
+#[derive(Debug, Clone)]
+pub enum AuditStatus {
+    Loaded,
+    Failed {
+        error: String,
+    },
+    /// Discovered but awaits first-activation consent (script mods only).
+    PendingConsent,
+    /// Disabled via `/extension` state or mods_state.
+    Disabled,
+    /// Dropped by the project trust gate (project-local source in an
+    /// untrusted workspace).
+    TrustGated,
+}
+
+/// `id [source]: first-line-of-error` for every failed audit entry — the
+/// shared diagnostic format for the startup notice (`ui.rs`) and the
+/// reload message (`mod_ops::reload_mods`).
+pub(crate) fn failed_audit_lines(audit: &[StartupAuditEntry]) -> Vec<String> {
+    audit
+        .iter()
+        .filter_map(|e| match &e.status {
+            AuditStatus::Failed { error } => {
+                let first: String = error
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(120)
+                    .collect();
+                Some(format!("{} [{}]: {first}", e.id, e.source.label()))
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// Shared discover → reconcile → load → `bind_core` for both the initial build
@@ -570,11 +658,21 @@ fn populate_extension_runtime(
     // 1. Discover compiled-in extensions (inventory).
     let discovered = codesmith_extensions::discover_static();
 
-    // 2. Reconcile with state: skip disabled.
-    let enabled: Vec<_> = discovered
-        .into_iter()
-        .filter(|reg| state.is_enabled(&reg.metadata.id))
-        .collect();
+    // 2. Reconcile with state: skip disabled (the audit records it —
+    //    discipline 5: a disabled extension is visible, not silently gone).
+    let mut audit: Vec<StartupAuditEntry> = Vec::new();
+    let mut enabled = Vec::new();
+    for reg in discovered {
+        if state.is_enabled(&reg.metadata.id) {
+            enabled.push(reg);
+        } else {
+            audit.push(StartupAuditEntry::new(
+                reg.metadata.id.to_string(),
+                AuditSource::CompiledIn,
+                AuditStatus::Disabled,
+            ));
+        }
+    }
 
     // §F5b — discover dylibs (global + project; configured paths → §F5c
     // when settings.extensions lands). Global dir = ~/.codesmith/extensions
@@ -590,11 +688,32 @@ fn populate_extension_runtime(
     let global_roots: Vec<std::path::PathBuf> = global_dir.into_iter().collect();
     let project_roots = vec![project_dir];
     let discovered_dylib = codesmith_extensions::discover_dylib(&global_roots, &project_roots);
-    let enabled_dylib: Vec<_> =
-        codesmith_extensions::apply_trust_gate(discovered_dylib, !project_trusted)
-            .into_iter()
-            .filter(|d| state.is_enabled(&d.id))
-            .collect();
+    // Trust gate first (audit records gated entries), then the disabled
+    // filter (audit records those too).
+    let (gated, surviving): (Vec<_>, Vec<_>) = if !project_trusted {
+        discovered_dylib.into_iter().partition(|d| !d.global)
+    } else {
+        (Vec::new(), discovered_dylib)
+    };
+    for d in gated {
+        audit.push(StartupAuditEntry::new(
+            d.id,
+            AuditSource::Dylib { global: d.global },
+            AuditStatus::TrustGated,
+        ));
+    }
+    let mut enabled_dylib = Vec::new();
+    for d in surviving {
+        if state.is_enabled(&d.id) {
+            enabled_dylib.push(d);
+        } else {
+            audit.push(StartupAuditEntry::new(
+                d.id,
+                AuditSource::Dylib { global: d.global },
+                AuditStatus::Disabled,
+            ));
+        }
+    }
 
     // §F script mod layer Phase B6 — discover script mods, gate on trust +
     // activation state. Disabled mods skip; discovered-but-not-activated
@@ -606,9 +725,19 @@ fn populate_extension_runtime(
         let discovered_mods = crate::mod_ops::discover_workspace_mods(workspace);
         for m in discovered_mods {
             if mod_state.is_disabled(&m.id) {
+                audit.push(StartupAuditEntry::new(
+                    m.id.clone(),
+                    AuditSource::ScriptMod { global: m.global },
+                    AuditStatus::Disabled,
+                ));
                 continue;
             }
             if !mod_state.is_activated(&m.id) {
+                audit.push(StartupAuditEntry::new(
+                    m.id.clone(),
+                    AuditSource::ScriptMod { global: m.global },
+                    AuditStatus::PendingConsent,
+                ));
                 pending_mods.push(crate::mod_ops::PendingModInfo::from_discovered(&m));
                 continue;
             }
@@ -629,6 +758,10 @@ fn populate_extension_runtime(
     //    (slice 1 pre-T10: no compiled-in extensions → tests stay fast + panic-free).
     let mods_kv_dir = mod_state.kv_dir();
     let loaded_mods_cell = &std::sync::atomic::AtomicUsize::new(0);
+    // Discipline 5 — audit entries continue inside the load thread (Loaded /
+    // Failed{original error}); pre-thread entries (Disabled / PendingConsent
+    // / TrustGated) were pushed above.
+    let audit_cell: &StdMutex<Vec<StartupAuditEntry>> = &StdMutex::new(audit);
     if !enabled.is_empty() || !enabled_dylib.is_empty() || !mods_to_load.is_empty() {
         let runner_for_thread = runner.clone();
         std::thread::scope(|s| {
@@ -638,43 +771,108 @@ fn populate_extension_runtime(
                     .build()
                     .expect("extension load runtime");
                 for reg in enabled {
+                    let id = reg.metadata.id.to_string();
                     let ext = (reg.factory)();
-                    let _ = load_rt.block_on(runner_for_thread.load(&*ext));
+                    match load_rt.block_on(runner_for_thread.load(&*ext)) {
+                        Ok(()) => audit_cell.lock().expect("audit cell poisoned").push(
+                            StartupAuditEntry::new(
+                                id,
+                                AuditSource::CompiledIn,
+                                AuditStatus::Loaded,
+                            ),
+                        ),
+                        Err(e) => audit_cell.lock().expect("audit cell poisoned").push(
+                            StartupAuditEntry::new(
+                                id,
+                                AuditSource::CompiledIn,
+                                AuditStatus::Failed {
+                                    error: e.to_string(),
+                                },
+                            ),
+                        ),
+                    }
                 }
                 // §F5b — load each discovered dylib on the same load
                 // runtime. Best-effort: a failing dylib is warned + skipped
-                // (§8.3 isolation).
+                // (§8.3 isolation) and audited as Failed.
                 for d in enabled_dylib {
-                    if let Err(e) = load_rt.block_on(runner_for_thread.load_dylib(&d.dylib_path)) {
-                        tracing::warn!(
-                            target: "codesmith_extensions::loader",
-                            "skip dylib {}: {e}",
-                            d.dylib_path.display()
-                        );
+                    let (id, global) = (d.id.clone(), d.global);
+                    match load_rt.block_on(runner_for_thread.load_dylib(&d.dylib_path)) {
+                        Ok(()) => audit_cell.lock().expect("audit cell poisoned").push(
+                            StartupAuditEntry::new(
+                                id,
+                                AuditSource::Dylib { global },
+                                AuditStatus::Loaded,
+                            ),
+                        ),
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "codesmith_extensions::loader",
+                                "skip dylib {}: {e}",
+                                d.dylib_path.display()
+                            );
+                            audit_cell.lock().expect("audit cell poisoned").push(
+                                StartupAuditEntry::new(
+                                    id,
+                                    AuditSource::Dylib { global },
+                                    AuditStatus::Failed {
+                                        error: e.to_string(),
+                                    },
+                                ),
+                            );
+                        }
                     }
                 }
                 // §F script mod layer — load each activated script mod on
                 // the same load runtime (best-effort isolation, same as
-                // dylibs: a failing mod is warned + skipped).
+                // dylibs: a failing mod is warned + skipped and audited as
+                // Failed).
                 for m in mods_to_load {
+                    let (id, global) = (m.id.clone(), m.global);
                     match crate::mod_ops::load_rhai_mod(&m, mods_kv_dir.as_deref()) {
-                        Ok(rhai_mod) => {
-                            if let Err(e) = load_rt.block_on(runner_for_thread.load(&rhai_mod)) {
+                        Ok(rhai_mod) => match load_rt.block_on(runner_for_thread.load(&rhai_mod)) {
+                            Ok(()) => {
+                                loaded_mods_cell.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                audit_cell.lock().expect("audit cell poisoned").push(
+                                    StartupAuditEntry::new(
+                                        id,
+                                        AuditSource::ScriptMod { global },
+                                        AuditStatus::Loaded,
+                                    ),
+                                );
+                            }
+                            Err(e) => {
                                 tracing::warn!(
                                     target: "codesmith_mods",
                                     "configure mod {}: {e}",
-                                    m.id
+                                    id
                                 );
-                            } else {
-                                loaded_mods_cell.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                audit_cell.lock().expect("audit cell poisoned").push(
+                                    StartupAuditEntry::new(
+                                        id,
+                                        AuditSource::ScriptMod { global },
+                                        AuditStatus::Failed {
+                                            error: e.to_string(),
+                                        },
+                                    ),
+                                );
                             }
-                        }
+                        },
                         Err(e) => {
                             tracing::warn!(
                                 target: "codesmith_mods",
                                 "skip mod {} ({}): {e}",
-                                m.id,
+                                id,
                                 m.dir.display()
+                            );
+                            audit_cell.lock().expect("audit cell poisoned").push(
+                                StartupAuditEntry::new(
+                                    id,
+                                    AuditSource::ScriptMod { global },
+                                    AuditStatus::Failed {
+                                        error: e.to_string(),
+                                    },
+                                ),
                             );
                         }
                     }
@@ -697,9 +895,25 @@ fn populate_extension_runtime(
         runner.generation_arc(),
     ));
     runner.bind_core(ctx);
+    // Discipline 5 — collect the audit, keep a stable order, and leave one
+    // structured summary line when anything failed (per-failure warns are
+    // already logged above; this is the count + call to action).
+    let mut audit = std::mem::take(&mut *audit_cell.lock().expect("audit cell poisoned"));
+    audit.sort_by(|a, b| a.id.cmp(&b.id));
+    let failed = audit
+        .iter()
+        .filter(|e| matches!(e.status, AuditStatus::Failed { .. }))
+        .count();
+    if failed > 0 {
+        tracing::warn!(
+            target: "codesmith_extensions",
+            "startup audit: {failed} extension(s) failed to load — fix and /extension reload"
+        );
+    }
     PopulateReport {
         loaded_mods: loaded_mods_cell.load(std::sync::atomic::Ordering::Relaxed),
         pending_mods,
+        audit,
     }
 }
 
@@ -1043,6 +1257,7 @@ pub fn build_engine(
         tx_steer,
         extension_runner: Some(extension_runner),
         mods_pending: mods_report.pending_mods,
+        mods_audit: mods_report.audit,
     };
 
     (engine, handle)
@@ -1238,6 +1453,7 @@ pub(crate) fn mock_engine_handle() -> MockEngineHandle {
         tx_steer,
         extension_runner: None,
         mods_pending: Vec::new(),
+        mods_audit: Vec::new(),
     };
 
     MockEngineHandle {

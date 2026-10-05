@@ -652,6 +652,19 @@ pub async fn run_tui(
             ),
         });
     }
+    // Discipline 5 — structured startup audit: surface failed loads (first
+    // line of each original error) as a passive notice; full errors are in
+    // the log (targets `codesmith_extensions` / `codesmith_mods`).
+    let failed = crate::core::engine::failed_audit_lines(&engine_handle.mods_audit);
+    if !failed.is_empty() {
+        app.add_message(HistoryCell::System {
+            content: format!(
+                "{} extension(s) failed to load: {}. Full errors in the log; fix and /extension reload.",
+                failed.len(),
+                failed.join("; ")
+            ),
+        });
+    }
     // §F script mod layer Phase B7 — hot-reload watcher over both mods
     // roots (500ms debounce + 1s cooldown; gated by [mods] watch).
     if config.mods_enabled()

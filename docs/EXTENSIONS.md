@@ -42,7 +42,13 @@ Stance).
 > clients through; unregistration is symmetric via the
 > `ProviderRegistration` drop guard (reload drops the generation's guards).
 > Registration is logged (target `codesmith_extensions`); it takes effect
-> at the next client resolution, not mid-session. §F2c (reload sharing the engine's
+> at the next client resolution, not mid-session. **Startup composition
+> audit (discipline 5) is done**: every populate/reload pass collects one
+> structured entry per discovered extension/mod — `Loaded` /
+> `Failed { original error }` / `PendingConsent` / `Disabled` /
+> `TrustGated` — surfaced as a passive startup notice, in the reload
+> message, and as a `tracing` summary when anything failed. mod.toml
+> validation is schema-aggregated with path-tagged errors (discipline 6). §F2c (reload sharing the engine's
 > live `cancel_token`; `on_tool_progress` `Callback` hook as forward-looking
 > API surface for `ToolExecutionUpdate`; `ProjectTrust` per-turn wire) is
 > done. §F5 slice 1 (`ProjectTrust { FirstLoad }` emit at the onboarding

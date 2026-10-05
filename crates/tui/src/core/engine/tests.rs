@@ -4791,6 +4791,15 @@ async fn mods_populate_gates_pending_activation_then_loads_after_activate() {
         !runner.bound_tools().iter().any(|(n, _)| n == "e2e_greet"),
         "unactivated mod's tool must not be bound"
     );
+    // Discipline 5 — the audit records the pending-consent entry.
+    assert!(
+        report
+            .audit
+            .iter()
+            .any(|e| e.id == "e2e-mod" && matches!(e.status, super::AuditStatus::PendingConsent)),
+        "audit: {:?}",
+        report.audit
+    );
 
     // 2. Activate + reload: the mod loads and its tool binds.
     mod_state.activate("e2e-mod").expect("activate");
@@ -4804,6 +4813,14 @@ async fn mods_populate_gates_pending_activation_then_loads_after_activate() {
     );
     assert_eq!(report.loaded_mods, 1);
     assert!(report.pending_mods.is_empty());
+    assert!(
+        report
+            .audit
+            .iter()
+            .any(|e| e.id == "e2e-mod" && matches!(e.status, super::AuditStatus::Loaded)),
+        "audit: {:?}",
+        report.audit
+    );
     let tool = runner
         .bound_tools()
         .into_iter()
@@ -4819,12 +4836,80 @@ async fn mods_populate_gates_pending_activation_then_loads_after_activate() {
         .expect("tool executes");
     assert_eq!(out.content, "hello from mod");
 
-    // 4. Disable + reload: the tool binding clears.
+    // 4. Disable + reload: the tool binding clears (and the audit records
+    // the Disabled entry — a disabled extension stays visible).
     mod_state.set_enabled("e2e-mod", false).expect("disable");
-    super::reload_extension_runtime(&runner, &workspace, &ext_state, &mod_state, true, cancel);
+    let report =
+        super::reload_extension_runtime(&runner, &workspace, &ext_state, &mod_state, true, cancel);
     assert!(
         !runner.bound_tools().iter().any(|(n, _)| n == "e2e_greet"),
         "disabled mod's tool must clear on reload"
+    );
+    assert!(
+        report
+            .audit
+            .iter()
+            .any(|e| e.id == "e2e-mod" && matches!(e.status, super::AuditStatus::Disabled)),
+        "audit: {:?}",
+        report.audit
+    );
+}
+
+/// Discipline 5 — a mod that is activated but broken (script compile error)
+/// is audited as `Failed` with the original error preserved, and appears in
+/// `failed_audit_lines` (the startup-notice / reload-message digest).
+#[tokio::test]
+async fn mods_populate_audits_broken_mod_as_failed_with_original_error() {
+    let _guard = lock_test_env();
+    let tmp = tempdir().expect("tempdir");
+    let _home = ScopedHome::set(tmp.path());
+    let workspace = tmp.path().to_path_buf();
+
+    let mod_dir = tmp
+        .path()
+        .join(".codesmith")
+        .join("mods")
+        .join("broken-mod");
+    fs::create_dir_all(&mod_dir).expect("mod dir");
+    fs::write(
+        mod_dir.join("mod.toml"),
+        "id = \"broken-mod\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("mod.toml");
+    fs::write(mod_dir.join("mod.rhai"), "fn ( {").expect("broken entry");
+
+    let mut mod_state = crate::mod_state::ModStateStore::load_from(
+        tmp.path().join(".codesmith").join("mods_state.toml"),
+    )
+    .expect("mod state");
+    mod_state.activate("broken-mod").expect("activate");
+    let ext_state = crate::extension_state::ExtensionStateStore::load_default().unwrap_or_default();
+    let cancel = std::sync::Arc::new(std::sync::Mutex::new(
+        tokio_util::sync::CancellationToken::new(),
+    ));
+
+    let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
+    let report = super::populate_extension_runtime(
+        &runner, &workspace, &ext_state, &mod_state, true, cancel,
+    );
+    assert_eq!(report.loaded_mods, 0);
+    let entry = report
+        .audit
+        .iter()
+        .find(|e| e.id == "broken-mod")
+        .expect("audited");
+    match &entry.status {
+        super::AuditStatus::Failed { error } => {
+            assert!(!error.is_empty(), "original error preserved");
+        }
+        other => panic!("expected Failed, got {other:?}"),
+    }
+    let lines = super::failed_audit_lines(&report.audit);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].starts_with("broken-mod [script mod, "),
+        "names id + source: {}",
+        lines[0]
     );
 }
 

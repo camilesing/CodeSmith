@@ -184,6 +184,11 @@ provider、或 header 值不是字符串 —— 坏的 spec 到不了客户端�
 | `description` | | 激活审批时展示给用户的一句话说明 |
 | `entry` | | 入口脚本相对路径，默认 `mod.rhai`；绝对路径与 `..` 被拒绝 |
 
+清单校验为 schema 聚合式：所有字段问题连同路径一次性报出（如
+`version: missing required field; name: expected a string, got integer`），
+而非遇错即停。未知字段警告后忽略（向前兼容，不拒绝）。清单校验失败的
+mod 在发现阶段即被跳过（日志有告警），不会进入激活流程。
+
 ## 生命周期与安全模型
 
 - **首次激活需确认**：新 mod 被发现 → 跳过加载 + TUI 被动提示待激活。激活只有两条路：`/mods activate <id>`，或审批 `manage_mods(action="activate")` 工具调用。激活记录持久化（`~/.codesmith/mods_state.toml`），同 id 重载免审批。**为什么**：mod 是进程内代码且跨会话持久——提示注入可以在用户无感时植入常驻钩子，首次确认正是防这一点。
