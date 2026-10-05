@@ -18,6 +18,11 @@
   `codesmith-index` 实现并原路径 re-export，内核工具上下文
   （`agent-runtime/src/tools/spec.rs`）消费 —— 与 `LlmClient`（定义于
   `codesmith-agent`、实现于 `codesmith-providers`）同构。
+  生成式能力图谱（`docs/CAPABILITY_GRAPH.md`，由
+  `scripts/capability-graph.py` 生成、CI 校验新鲜度）列出每个接缝的
+  三件套——新能力须在同一变更中落齐三个角色；每个
+  `ExtensionEventKind` 声明分发模式（`dispatch_mode()`，由契约测试
+  锁定）。
 - `crates/tui` 仍然是 TUI、运行时 API、任务管理器和工具注册表接线的活跃终端用户运行时。Agent 执行引擎本身（turn 循环、压缩、沙箱辅助程序、提示词）现在位于 `crates/agent-runtime`；`crates/tui/src/core/` 是一个薄的重导出 + 构造桥接层（`engine.rs` 定义 `EngineHost`/`build_engine`）。
 - 其他工作区 crate 正在逐步拆分，但它们尚不是唯一的运行时事实来源。
 - 启动信任边界的细节记录在 `docs/STARTUP_TRUST_BOUNDARY_AUDIT.md` 中；该审计是信任前与信任后初始化跟进事项的当前参考。

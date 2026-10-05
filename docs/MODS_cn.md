@@ -113,6 +113,13 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 
 未接线事件（宿主 seam 尚未兑现）订阅不触发：`tool-execution-update`、`resources-discover`、`session-before-fork`。
 
+分发模式是每个事件契约的一部分（`ExtensionEventKind::dispatch_mode`，由契约测试锁定）：
+
+- **transform-chain**：`input`、`before-agent-start`、`before-provider-request`、`tool-result` —— transform 逐个折叠、后续 handler 可见、终值作用于宿主操作
+- **cancel veto**：`session-before-switch`、`session-before-fork`、`session-before-compact`
+- **block deny**：`tool-call`
+- **observe**（outcomes 仅供参考）：其余全部
+
 ### 钩子返回值 → HandlerOutcome
 
 | 脚本返回 | HandlerOutcome | 生效 seam |

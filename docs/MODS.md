@@ -113,6 +113,14 @@ You've now touched all four registration surfaces: event hooks, tools, commands,
 
 Unwired events (host seam not yet connected) never fire: `tool-execution-update`, `resources-discover`, `session-before-fork`.
 
+Dispatch modes are part of each event's contract (`ExtensionEventKind::dispatch_mode`,
+checked by a contract test):
+
+- **transform-chain**: `input`, `before-agent-start`, `before-provider-request`, `tool-result` — each transform folds in, the next handler sees it, the final field applies
+- **cancel veto**: `session-before-switch`, `session-before-fork`, `session-before-compact`
+- **block deny**: `tool-call`
+- **observe** (outcomes advisory): everything else
+
 ### Hook return value → HandlerOutcome
 
 | Script returns | HandlerOutcome | Effective seams |
