@@ -631,6 +631,9 @@ pub async fn run_tui(
     // without an engine round-trip. Built inside `build_engine`; cloned cheaply
     // (the same `Arc` is shared with the per-turn `HostAgentExecutor`).
     app.extension_runner = engine_handle.extension_runner.clone();
+    // Capability composition point — the same catalog baseline the
+    // dispatcher diffs for `tools-change`; `/tools` reads it.
+    app.tool_catalog = engine_handle.tool_catalog.clone();
     // Event-sourcing slice 4 — the live session's fact ledger.
     app.fact_ledger = Some(engine_handle.fact_ledger.clone());
     // Slice 6 — the live session's recent-read-files working set.

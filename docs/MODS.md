@@ -96,7 +96,7 @@ You've now touched all four registration surfaces: event hooks, tools, commands,
 
 ### Event hooks
 
-`on("<event>", |e, ctx| { ... })` — `e` is the event payload map (every payload carries `kind`), `ctx` is `#{cwd, mode, idle, generation}`; **ctx is optional** (`|e|` works). Event names are the kebab-case spelling of all 23 `ExtensionEventKind` variants:
+`on("<event>", |e, ctx| { ... })` — `e` is the event payload map (every payload carries `kind`), `ctx` is `#{cwd, mode, idle, generation}`; **ctx is optional** (`|e|` works). Event names are the kebab-case spelling of all 24 `ExtensionEventKind` variants:
 
 | Event | Payload fields |
 |---|---|
@@ -109,10 +109,13 @@ You've now touched all four registration surfaces: event hooks, tools, commands,
 | `turn-start` / `turn-end` | `turn_id`; `turn-end` also `reason` |
 | `assistant-stream` | `text` (one incremental chunk; fires per text delta, observe-only) |
 | `tool-execution-update` | `id`, `name`, `message` |
+| `tools-change` | `added`, `removed` (tool-name arrays) |
 | `project-trust` / `session-start` / `resources-discover` | `reason` |
 | `agent-start` / `before-provider-headers` / `tool-execution-start` / `tool-execution-end` / `agent-end` / `agent-settled` / `session-before-switch` / `session-before-fork` / `session-shutdown` / `session-before-compact` / `session-compact` | (`kind` only) |
 
 Unwired events (host seam not yet connected) never fire: `tool-execution-update`, `resources-discover`, `session-before-fork`.
+
+`tools-change` fires at the turn boundary when the compiled model-visible catalog changed since the previous main turn (mode switch, mod reload, selection change). The first turn establishes the baseline silently; sub-agent toolsets never trigger it, and there is no API to read the current catalog — the event carries the diff only. `/tools` renders the current baseline grouped by origin (builtin / plugin / extension / mcp).
 
 Dispatch modes are part of each event's contract (`ExtensionEventKind::dispatch_mode`,
 checked by a contract test):
@@ -120,7 +123,7 @@ checked by a contract test):
 - **transform-chain**: `input`, `before-agent-start`, `before-provider-request`, `tool-result` — each transform folds in, the next handler sees it, the final field applies
 - **transform + deny**: `tool-call` — rewrite the call's `input` (the rewritten input is what approval gates and what runs, and it is the recorded input) or `block(reason)` to deny (monotonic — no later handler can flip it)
 - **cancel veto**: `session-before-switch`, `session-before-fork`, `session-before-compact`
-- **observe** (outcomes advisory): everything else, including `assistant-stream` (fires per text delta — keep handlers cheap)
+- **observe** (outcomes advisory): everything else, including `assistant-stream` (fires per text delta — keep handlers cheap) and `tools-change` (catalog diff at the turn-dispatch chokepoint)
 
 ### Hook return value → HandlerOutcome
 

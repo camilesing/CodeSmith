@@ -96,7 +96,7 @@ pub enum ScriptRegistration {
 
 type RegistrationCell = Arc<Mutex<Vec<ScriptRegistration>>>;
 
-// === Event-name mapping (23 kinds, kebab-case) =============================
+// === Event-name mapping (24 kinds, kebab-case) =============================
 
 /// Parse a script-side event name (kebab-case) into its
 /// [`ExtensionEventKind`]. `None` for unknown names (surfaced as a script
@@ -127,6 +127,7 @@ pub(crate) fn event_kind_from_name(name: &str) -> Option<ExtensionEventKind> {
         "session-shutdown" => ExtensionEventKind::SessionShutdown,
         "session-before-compact" => ExtensionEventKind::SessionBeforeCompact,
         "session-compact" => ExtensionEventKind::SessionCompact,
+        "tools-change" => ExtensionEventKind::ToolsChange,
         _ => return None,
     })
 }
@@ -159,8 +160,9 @@ pub(crate) fn event_name_from_kind(kind: ExtensionEventKind) -> &'static str {
         ExtensionEventKind::SessionShutdown => "session-shutdown",
         ExtensionEventKind::SessionBeforeCompact => "session-before-compact",
         ExtensionEventKind::SessionCompact => "session-compact",
+        ExtensionEventKind::ToolsChange => "tools-change",
         // `ExtensionEventKind` is `#[non_exhaustive]`; the wildcard is
-        // unreachable while this crate tracks every variant (the 23-entry
+        // unreachable while this crate tracks every variant (the 24-entry
         // round-trip test guards that).
         _ => "unknown-event",
     }
@@ -326,6 +328,22 @@ pub(crate) fn event_to_dynamic(event: &ExtensionEvent) -> Dynamic {
         ExtensionEvent::SessionShutdown => vec![],
         ExtensionEvent::SessionBeforeCompact => vec![],
         ExtensionEvent::SessionCompact => vec![],
+        ExtensionEvent::ToolsChange { added, removed } => vec![
+            (
+                "added",
+                Dynamic::from(added.iter().cloned().map(Dynamic::from).collect::<Vec<_>>()),
+            ),
+            (
+                "removed",
+                Dynamic::from(
+                    removed
+                        .iter()
+                        .cloned()
+                        .map(Dynamic::from)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+        ],
         // `ExtensionEvent` is `#[non_exhaustive]` — wildcard required; the
         // kind round-trip test keeps the explicit arms in lockstep.
         _ => vec![],
@@ -537,7 +555,7 @@ fn register_natives(
                     Ok(())
                 }
                 None => Err(script_error(format!(
-                    "on(): unknown event name '{event}' (see docs/MODS.md for the 23 event names)"
+                    "on(): unknown event name '{event}' (see docs/MODS.md for the 24 event names)"
                 ))),
             }
         },
@@ -1435,7 +1453,7 @@ mod tests {
     }
 
     #[test]
-    fn event_kind_name_round_trips_all_23() {
+    fn event_kind_name_round_trips_all_24() {
         let kinds = [
             ExtensionEventKind::ProjectTrust,
             ExtensionEventKind::SessionStart,
@@ -1460,13 +1478,44 @@ mod tests {
             ExtensionEventKind::SessionShutdown,
             ExtensionEventKind::SessionBeforeCompact,
             ExtensionEventKind::SessionCompact,
+            ExtensionEventKind::ToolsChange,
         ];
-        assert_eq!(kinds.len(), 23);
+        assert_eq!(kinds.len(), 24);
         for kind in kinds {
             let name = event_name_from_kind(kind);
             assert_eq!(event_kind_from_name(name), Some(kind), "round-trip {name}");
         }
         assert_eq!(event_kind_from_name("bogus"), None);
+    }
+
+    #[test]
+    fn tools_change_payload_carries_diff_arrays() {
+        let event = ExtensionEvent::ToolsChange {
+            added: vec!["call_count".into()],
+            removed: vec![],
+        };
+        let payload = event_to_dynamic(&event);
+        let map = payload.try_cast::<rhai::Map>().expect("payload map");
+        assert_eq!(
+            map.get("kind").and_then(|d| d.clone().try_cast::<String>()),
+            Some("tools-change".into())
+        );
+        let added = map
+            .get("added")
+            .and_then(|d| d.clone().try_cast::<Vec<Dynamic>>())
+            .expect("added array");
+        assert_eq!(
+            added
+                .iter()
+                .map(|d| d.clone().try_cast::<String>())
+                .collect::<Vec<_>>(),
+            vec![Some("call_count".into())]
+        );
+        let removed = map
+            .get("removed")
+            .and_then(|d| d.clone().try_cast::<Vec<Dynamic>>())
+            .expect("removed array");
+        assert!(removed.is_empty());
     }
 
     #[test]

@@ -95,6 +95,17 @@ pub fn cost(app: &mut App) -> CommandResult {
     CommandResult::message(report)
 }
 
+/// `/tools` — the current model-visible tool catalog (the composition-point
+/// baseline `tools-change` diffs against), grouped by origin.
+pub fn tools(app: &App) -> CommandResult {
+    match app.tool_catalog.current() {
+        Some(snapshot) => CommandResult::message(snapshot.render()),
+        None => CommandResult::message(
+            "No tool catalog yet — run a turn first (the baseline is captured at turn dispatch).",
+        ),
+    }
+}
+
 /// Show current system prompt
 pub fn system_prompt(app: &mut App) -> CommandResult {
     let prompt_text = match &app.system_prompt {

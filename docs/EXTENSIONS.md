@@ -65,6 +65,11 @@ projections (session log folds) are done**:
 reads) registers a host-maintained fold over the session transcript —
 appends fold incrementally, wholesale replacements (reload-from-log,
 compaction, `/edit` rollback) refold; the state is never snapshotted.
+**The `tools-change` catalog event is done** (capability-composition
+slice 1): the turn dispatcher diffs the compiled model-visible catalog
+against the previous main-turn baseline (origin-classified snapshot in
+`tui/src/core/tool_catalog.rs`), emits `ToolsChange { added, removed }`
+observe-only, and `/tools` renders the baseline grouped by origin.
 §F2c (reload sharing the engine's
 > live `cancel_token`; `on_tool_progress` `Callback` hook as forward-looking
 > API surface for `ToolExecutionUpdate`; `ProjectTrust` per-turn wire) is

@@ -1563,6 +1563,10 @@ pub struct App {
     /// §F1 — bound extension runtime, set by `build_extension_runtime`
     /// (Task 9). `None` until the engine builds (embeds/tests skip).
     pub extension_runner: Option<std::sync::Arc<codesmith_extensions::ExtensionRunner>>,
+    /// Capability composition point — the main-turn tool-catalog baseline
+    /// the dispatcher diffs for `tools-change` and `/tools` renders, shared
+    /// from the engine at spawn time.
+    pub tool_catalog: crate::core::tool_catalog::SharedToolCatalog,
     /// §F2c — the engine's **shared** cancel-token `Arc`, set alongside
     /// `extension_runner` at engine build so `/extension reload` can pass the
     /// live engine token (not a fresh one) into the reloaded context. `None`
@@ -2150,6 +2154,7 @@ impl App {
             extension_state: crate::extension_state::ExtensionStateStore::load_default()
                 .unwrap_or_default(),
             extension_runner: None,
+            tool_catalog: Default::default(),
             extension_shared_cancel_token: None,
             mod_state: crate::mod_state::ModStateStore::load_default().unwrap_or_default(),
             mods_enabled: config.mods_enabled(),

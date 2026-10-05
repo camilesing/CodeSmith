@@ -291,6 +291,15 @@ pub enum ExtensionEvent {
     SessionBeforeFork,
     SessionBeforeCompact,
     SessionCompact,
+    // --- capability composition (tools-change) ---
+    /// The model-visible tool catalog changed between main turns. Emitted
+    /// at the dispatcher-build chokepoint after every selection source has
+    /// been applied; `added`/`removed` are tool names (sorted, possibly
+    /// empty on one side). Observe-only.
+    ToolsChange {
+        added: Vec<String>,
+        removed: Vec<String>,
+    },
 }
 
 /// Discriminant of an [`ExtensionEvent`], for per-variant handler subscription
@@ -323,6 +332,7 @@ pub enum ExtensionEventKind {
     SessionShutdown,
     SessionBeforeCompact,
     SessionCompact,
+    ToolsChange,
 }
 
 impl ExtensionEvent {
@@ -356,6 +366,7 @@ impl ExtensionEvent {
             ExtensionEvent::SessionShutdown => ExtensionEventKind::SessionShutdown,
             ExtensionEvent::SessionBeforeCompact => ExtensionEventKind::SessionBeforeCompact,
             ExtensionEvent::SessionCompact => ExtensionEventKind::SessionCompact,
+            ExtensionEvent::ToolsChange { .. } => ExtensionEventKind::ToolsChange,
         }
     }
 }
@@ -419,7 +430,8 @@ impl ExtensionEventKind {
             | ExtensionEventKind::AgentEnd
             | ExtensionEventKind::AgentSettled
             | ExtensionEventKind::SessionShutdown
-            | ExtensionEventKind::SessionCompact => DispatchMode::Observe,
+            | ExtensionEventKind::SessionCompact
+            | ExtensionEventKind::ToolsChange => DispatchMode::Observe,
         }
     }
 }
@@ -887,7 +899,8 @@ mod tests {
     /// declared mode; the exhaustive `dispatch_mode` match makes a new
     /// variant a compile error without an arm, and this table makes
     /// CHANGING an existing kind's mode a test failure — the contract
-    /// cannot drift silently. 23 rows = the full §F2a set.
+    /// cannot drift silently. 25 rows = the full §F2a set +
+    /// assistant-stream + tools-change.
     #[test]
     fn event_dispatch_contract_table() {
         use DispatchMode as M;
@@ -920,8 +933,13 @@ mod tests {
             (K::AgentSettled, M::Observe),
             (K::SessionShutdown, M::Observe),
             (K::SessionCompact, M::Observe),
+            (K::ToolsChange, M::Observe),
         ];
-        assert_eq!(contract.len(), 24, "the full §F2a set + assistant-stream");
+        assert_eq!(
+            contract.len(),
+            25,
+            "the full §F2a set + assistant-stream + tools-change"
+        );
         for (kind, mode) in contract {
             assert_eq!(&kind.dispatch_mode(), mode, "contract drift at {kind:?}");
         }
