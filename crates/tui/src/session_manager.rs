@@ -204,6 +204,11 @@ pub struct SavedSession {
     pub last_tool_catalog: Option<Vec<crate::models::Tool>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_base_url: Option<String>,
+    /// Event-sourcing slice 4 — the fact ledger (compaction invariants:
+    /// refuted assumptions, file map, constraints) so hard-won lessons
+    /// survive restarts. `None` on sessions saved before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fact_ledger: Option<codesmith_agent_runtime::compaction::fact_ledger::FactLedger>,
     /// Compact linked context references for user-visible `@path` and
     /// `/attach` mentions. Optional for backward-compatible session loads.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -718,6 +723,7 @@ pub fn create_saved_session_with_id_and_mode(
         schema_version: CURRENT_SESSION_SCHEMA_VERSION,
         last_tool_catalog: None,
         last_base_url: None,
+        fact_ledger: None,
         metadata: SessionMetadata {
             id,
             title,
@@ -1026,6 +1032,7 @@ mod tests {
         let parsed: SavedSession = serde_json::from_str(legacy).expect("legacy session loads");
         assert!(parsed.last_tool_catalog.is_none());
         assert!(parsed.last_base_url.is_none());
+        assert!(parsed.fact_ledger.is_none());
     }
 
     fn make_test_message(role: &str, text: &str) -> Message {
@@ -1047,6 +1054,7 @@ mod tests {
         let session = SavedSession {
             last_tool_catalog: None,
             last_base_url: None,
+            fact_ledger: None,
             schema_version: CURRENT_SESSION_SCHEMA_VERSION,
             messages: vec![make_test_message("user", "hi")],
             metadata: SessionMetadata {
@@ -1080,6 +1088,7 @@ mod tests {
         let session = SavedSession {
             last_tool_catalog: None,
             last_base_url: None,
+            fact_ledger: None,
             schema_version: CURRENT_SESSION_SCHEMA_VERSION,
             messages: Vec::new(),
             metadata: SessionMetadata {

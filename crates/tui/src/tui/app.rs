@@ -1292,6 +1292,14 @@ pub struct App {
     /// Todo list for `TodoWriteTool`
     #[allow(dead_code)] // For future engine integration
     pub todos: SharedTodoList,
+    /// Event-sourcing slice 4 — the live engine's fact ledger (same `Arc`
+    /// compaction feeds; `None` before the engine spawns). Snapshotted into
+    /// `SavedSession` and restored on session load.
+    pub fact_ledger: Option<
+        std::sync::Arc<
+            std::sync::Mutex<codesmith_agent_runtime::compaction::fact_ledger::FactLedger>,
+        >,
+    >,
     /// Durable runtime services exposed to model-visible task/automation tools.
     pub runtime_services: RuntimeToolServices,
     /// Per-workspace code index service (`symbol_search` /
@@ -2027,6 +2035,7 @@ impl App {
             plan_prompt_pending: false,
             plan_tool_used_in_turn: false,
             todos: new_shared_todo_list(),
+            fact_ledger: None,
             shell_manager: shell_manager.clone(),
             runtime_services: RuntimeToolServices {
                 shell_manager: Some(wrap_shell_manager(shell_manager)),
