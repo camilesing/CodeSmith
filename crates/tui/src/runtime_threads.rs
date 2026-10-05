@@ -2087,6 +2087,7 @@ impl RuntimeThreadManager {
             index_enabled: false,
             search_api_key: self.config.search.as_ref().and_then(|s| s.api_key.clone()),
             tools_always_load: self.config.tools_always_load(),
+            disabled_tools: crate::capabilities::effective_disabled(self.config.tools.as_ref()),
             tools: self.config.tools.clone(),
             team_context: None,
             file_freshness_tracker:

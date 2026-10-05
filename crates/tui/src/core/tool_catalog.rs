@@ -1,12 +1,14 @@
 //! Capability composition point — the model-visible tool catalog snapshot.
 //!
 //! `HostServices::build_turn_dispatcher` compiles the per-turn catalog from
-//! several selection sources (mode gate, `tools_always_load`, plugin
-//! overrides, `allowed_tools`/`blocked_tools`, mod enable state) that
-//! otherwise meet only implicitly. This module makes the compiled result a
-//! first-class artifact: the snapshot records what is visible and where each
-//! tool came from, the diff against the previous main-turn baseline drives
-//! the `tools-change` extension event, and `/tools` renders it.
+//! several selection sources (mode gate, capability-manifest disabled set,
+//! `tools_always_load`, plugin overrides, turn-scoped
+//! `allowed_tools`/`blocked_tools`) that otherwise meet only implicitly.
+//! This module makes the compiled result a first-class artifact: the
+//! snapshot records what is visible, where each tool came from, and what
+//! the capability manifest disabled; the diff against the previous
+//! main-turn baseline drives the `tools-change` extension event, and
+//! `/tools` renders it.
 //!
 //! Known limitations: there is no script-side API to read the current
 //! catalog (the event carries the diff only); the first dispatcher build
@@ -38,22 +40,28 @@ impl ToolOrigin {
     }
 }
 
-/// The compiled per-turn catalog: `(name, origin)` in catalog order.
+/// The compiled per-turn catalog: `(name, origin)` in catalog order, plus
+/// the capability manifest's disabled names (as configured — they are
+/// absent from `entries` by construction; unknown names are recorded
+/// anyway, they are documented no-ops).
 #[derive(Debug, Clone, Default)]
 pub struct ToolCatalogSnapshot {
     pub entries: Vec<(String, ToolOrigin)>,
+    pub disabled: Vec<String>,
 }
 
 impl ToolCatalogSnapshot {
     /// Classify the final post-selection catalog `names`. The three foreign
     /// sets are the same-name sources the dispatcher built from; anything
-    /// unclaimed is builtin.
+    /// unclaimed is builtin. `disabled` is the manifest's configured set
+    /// (sorted for a stable render), recorded for the `/tools` readout.
     #[must_use]
     pub fn capture(
         names: &[String],
         plugin: &std::collections::HashSet<String>,
         extension: &std::collections::HashSet<String>,
         mcp: &std::collections::HashSet<String>,
+        disabled: &std::collections::HashSet<String>,
     ) -> Self {
         let entries = names
             .iter()
@@ -70,10 +78,14 @@ impl ToolCatalogSnapshot {
                 (name.clone(), origin)
             })
             .collect();
-        Self { entries }
+        let mut disabled = disabled.iter().cloned().collect::<Vec<_>>();
+        disabled.sort();
+        Self { entries, disabled }
     }
 
-    /// Human rendering for `/tools`: grouped by origin, catalog order kept.
+    /// Human rendering for `/tools`: grouped by origin, catalog order kept,
+    /// plus the manifest-disabled names (absent from the catalog by
+    /// construction).
     #[must_use]
     pub fn render(&self) -> String {
         let mut out = format!("Tool catalog ({} tools)\n", self.entries.len());
@@ -97,6 +109,13 @@ impl ToolCatalogSnapshot {
                 origin.as_str(),
                 names.len(),
                 names.join(", ")
+            ));
+        }
+        if !self.disabled.is_empty() {
+            out.push_str(&format!(
+                "\n── disabled via capabilities.toml ({})\n  {}\n",
+                self.disabled.len(),
+                self.disabled.join(", ")
             ));
         }
         out
@@ -163,12 +182,18 @@ mod tests {
     use super::*;
 
     fn snap(names: &[&str]) -> ToolCatalogSnapshot {
-        let (plugin, extension, mcp) = (Default::default(), Default::default(), Default::default());
+        let (plugin, extension, mcp, disabled) = (
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
         ToolCatalogSnapshot::capture(
             &names.iter().map(|n| n.to_string()).collect::<Vec<_>>(),
             &plugin,
             &extension,
             &mcp,
+            &disabled,
         )
     }
 
@@ -184,7 +209,8 @@ mod tests {
             ["call_count"].iter().map(|n| n.to_string()).collect();
         let mcp: std::collections::HashSet<String> =
             ["mcp_foo"].iter().map(|n| n.to_string()).collect();
-        let s = ToolCatalogSnapshot::capture(&names, &plugin, &extension, &mcp);
+        let s =
+            ToolCatalogSnapshot::capture(&names, &plugin, &extension, &mcp, &Default::default());
         assert_eq!(
             s.entries,
             vec![
@@ -228,12 +254,22 @@ mod tests {
             ["call_count"].iter().map(|n| n.to_string()).collect();
         let mcp: std::collections::HashSet<String> =
             ["mcp_foo"].iter().map(|n| n.to_string()).collect();
-        let s = ToolCatalogSnapshot::capture(&names, &Default::default(), &extension, &mcp);
+        let disabled: std::collections::HashSet<String> = ["edit_file", "call_count"]
+            .iter()
+            .map(|n| n.to_string())
+            .collect();
+        let s =
+            ToolCatalogSnapshot::capture(&names, &Default::default(), &extension, &mcp, &disabled);
         let rendered = s.render();
         assert!(rendered.contains("Tool catalog (3 tools)"));
         assert!(rendered.contains("── builtin (1)\n  read_file"));
         assert!(rendered.contains("── extension (1)\n  call_count"));
         assert!(rendered.contains("── mcp (1)\n  mcp_foo"));
         assert!(!rendered.contains("plugin"), "empty groups are skipped");
+        assert!(
+            rendered.contains("── disabled via capabilities.toml (2)\n  call_count, edit_file"),
+            "disabled names render sorted in their own group:\n{rendered}"
+        );
+        assert_eq!(s.disabled, vec!["call_count", "edit_file"]);
     }
 }

@@ -457,7 +457,33 @@ impl HostServices for super::EngineHost {
             );
         }
 
-        let mcp_tools = req.mcp_tools;
+        // Capability manifest (composition point, slice 2): session-level
+        // selection. Remove disabled names from the registry itself (not
+        // just the catalog) so a disabled tool is neither visible nor
+        // executable; per-turn masks apply on top afterwards and cannot
+        // resurrect these. Covers every origin: builtins/plugins (registry),
+        // extension tools (registered just above), and mcp tools (filtered
+        // below before they merge into the catalog).
+        if let Some(ref mut tool_registry) = tool_registry {
+            for name in &config.disabled_tools {
+                if tool_registry.remove_tool(name) {
+                    tracing::info!(
+                        target: "codesmith_capabilities",
+                        "tool '{name}' disabled by capability manifest"
+                    );
+                } else {
+                    tracing::debug!(
+                        target: "codesmith_capabilities",
+                        "capability manifest disables '{name}' but no such registered tool"
+                    );
+                }
+            }
+        }
+        let mcp_tools: Vec<_> = req
+            .mcp_tools
+            .into_iter()
+            .filter(|t| !config.disabled_tools.contains(&t.name))
+            .collect();
         // Capability composition point — capture the mcp names before the
         // closure below consumes `mcp_tools`, for the catalog snapshot.
         let mcp_names: std::collections::HashSet<String> =
@@ -503,6 +529,7 @@ impl HostServices for super::EngineHost {
             &plugin_tool_names,
             &extension_names,
             &mcp_names,
+            &config.disabled_tools,
         );
         if let Some((added, removed)) = self.tool_catalog.update(snapshot)
             && let Some(runner) = &self.extension_runner

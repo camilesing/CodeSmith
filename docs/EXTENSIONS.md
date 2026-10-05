@@ -70,6 +70,10 @@ slice 1): the turn dispatcher diffs the compiled model-visible catalog
 against the previous main-turn baseline (origin-classified snapshot in
 `tui/src/core/tool_catalog.rs`), emits `ToolsChange { added, removed }`
 observe-only, and `/tools` renders the baseline grouped by origin.
+Slice 2 adds the capability manifest (`~/.codesmith/capabilities.toml`,
+`[tools] disabled`): session-level selection enforced at the same
+composition point (registry removal), with the legacy config
+`[tools].overrides` `disabled` shape deprecated but honored.
 §F2c (reload sharing the engine's
 > live `cancel_token`; `on_tool_progress` `Callback` hook as forward-looking
 > API surface for `ToolExecutionUpdate`; `ProjectTrust` per-turn wire) is

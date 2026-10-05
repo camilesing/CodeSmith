@@ -26,6 +26,7 @@ pub use codesmith_agent_runtime::auto_reasoning;
 mod automation_manager;
 mod background_task;
 mod brand_theme;
+mod capabilities;
 mod child_env;
 mod command_safety;
 mod commands;
@@ -5945,6 +5946,7 @@ async fn run_exec_agent(
         index_enabled: config.index_tools_enabled(),
         search_api_key: config.search.as_ref().and_then(|s| s.api_key.clone()),
         tools_always_load: config.tools_always_load(),
+        disabled_tools: crate::capabilities::effective_disabled(config.tools.as_ref()),
         tools: config.tools.clone(),
         team_context: None,
         file_freshness_tracker:
@@ -6526,6 +6528,7 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
         index_enabled: config.index_tools_enabled(),
         search_api_key: config.search.as_ref().and_then(|s| s.api_key.clone()),
         tools_always_load: config.tools_always_load(),
+        disabled_tools: crate::capabilities::effective_disabled(config.tools.as_ref()),
         tools: config.tools.clone(),
         file_freshness_tracker:
             codesmith_agent_runtime::tools::freshness::FileFreshnessTracker::new(),

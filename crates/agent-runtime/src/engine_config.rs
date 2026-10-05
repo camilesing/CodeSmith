@@ -194,6 +194,14 @@ pub struct EngineConfig {
     /// Tool denylist from the active mode's `tools.exclude`, applied after
     /// `allowed_tools`. Empty means no exclusion.
     pub blocked_tools: Vec<String>,
+    /// Session-level tool disable set — the capability manifest
+    /// (`~/.codesmith/capabilities.toml [tools] disabled`, unioned with the
+    /// deprecated config.toml `[tools].overrides` disabled entries by the
+    /// host). Removed from the registry at dispatch, before the per-turn
+    /// masks: a disabled tool is neither visible nor executable and a turn
+    /// mask cannot resurrect it. Main-turn dispatch only (sub-agent
+    /// toolsets do not consult it yet).
+    pub disabled_tools: std::collections::HashSet<String>,
     /// Resolved BCP-47 locale tag (e.g. `"en"`, `"zh-Hans"`, `"ja"`)
     /// for the `## Environment` block in the system prompt. The
     /// caller resolves this from `Settings` once at engine
@@ -345,6 +353,7 @@ impl Default for EngineConfig {
             goal_objective: None,
             allowed_tools: None,
             blocked_tools: Vec::new(),
+            disabled_tools: std::collections::HashSet::new(),
             locale_tag: "en".to_string(),
             workshop: None,
             search_provider: SearchProvider::default(),
