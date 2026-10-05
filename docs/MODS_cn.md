@@ -107,6 +107,7 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 | `tool-call` | `id`、`name`、`input`（JSON 值） |
 | `tool-result` | `id`、`name`、`content`、`success`、`is_error` |
 | `turn-start` / `turn-end` | `turn_id`；`turn-end` 另有 `reason` |
+| `assistant-stream` | `text`（单个增量块；随文本 delta 逐次触发，仅观察） |
 | `tool-execution-update` | `id`、`name`、`message` |
 | `project-trust` / `session-start` / `resources-discover` | `reason` |
 | `agent-start` / `before-provider-headers` / `tool-execution-start` / `tool-execution-end` / `agent-end` / `agent-settled` / `session-before-switch` / `session-before-fork` / `session-shutdown` / `session-before-compact` / `session-compact` | （仅 `kind`） |
@@ -118,7 +119,7 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 - **transform-chain**：`input`、`before-agent-start`、`before-provider-request`、`tool-result` —— transform 逐个折叠、后续 handler 可见、终值作用于宿主操作
 - **transform + deny**：`tool-call` —— 改写调用 `input`（改写后的输入才是审批与实际执行的输入，也是入档输入），或 `block(reason)` 拒绝（单调——后续 handler 不可翻转）
 - **cancel veto**：`session-before-switch`、`session-before-fork`、`session-before-compact`
-- **observe**（outcomes 仅供参考）：其余全部
+- **observe**（outcomes 仅供参考）：其余全部，含 `assistant-stream`（随文本 delta 逐次触发——handler 须轻量）
 
 ### 钩子返回值 → HandlerOutcome
 

@@ -1316,11 +1316,10 @@ impl Engine {
             .with_session_id(&self.session.telemetry_session_id)
             .with_thread_id(&self.session.id)
             .with_tokens(total_tokens);
-        let callback: Arc<dyn Callback> = Arc::new(CallbackBridge::new(
-            Some(self.tx_event.clone()),
-            hook_host,
-            hook_template,
-        ));
+        let callback: Arc<dyn Callback> = Arc::new(
+            CallbackBridge::new(Some(self.tx_event.clone()), hook_host, hook_template)
+                .with_extension_runner_if_some(self.extension_runner.clone()),
+        );
         let executor_config = AgentExecutorConfig {
             max_steps: self.config.max_steps,
             max_tokens: effective_max_output_tokens_for_provider(
