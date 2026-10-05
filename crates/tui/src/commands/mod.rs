@@ -583,6 +583,13 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/mods <list|status|info <id>|activate <id>|enable <id>|disable <id>|remove <id>|reload>",
         description_id: MessageId::CmdHelpDescription,
     },
+    // Capability composition point — model-visible tool catalog readout
+    CommandInfo {
+        name: "tools",
+        aliases: &[],
+        usage: "/tools",
+        description_id: MessageId::CmdHelpDescription, // reuse for now
+    },
 ];
 
 /// Execute a slash command
@@ -701,6 +708,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "change" => change::change(app, arg),
         "system" | "xitong" => debug::system_prompt(app),
         "context" | "ctx" => debug::context(app),
+        "tools" => debug::tools(app),
         "edit" => debug::edit(app),
         "diff" => debug::diff(app),
         "undo" => {

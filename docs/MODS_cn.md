@@ -96,7 +96,7 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 
 ### 事件钩子
 
-`on("<event>", |e, ctx| { ... })`——`e` 是事件 payload map（都带 `kind` 字段），`ctx` 是 `#{cwd, mode, idle, generation}`，**ctx 可省略**（写 `|e|` 即可）。事件名是 `ExtensionEventKind` 的 kebab-case 全量 23 种：
+`on("<event>", |e, ctx| { ... })`——`e` 是事件 payload map（都带 `kind` 字段），`ctx` 是 `#{cwd, mode, idle, generation}`，**ctx 可省略**（写 `|e|` 即可）。事件名是 `ExtensionEventKind` 的 kebab-case 全量 24 种：
 
 | 事件 | payload 字段 |
 |---|---|
@@ -109,17 +109,20 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 | `turn-start` / `turn-end` | `turn_id`；`turn-end` 另有 `reason` |
 | `assistant-stream` | `text`（单个增量块；随文本 delta 逐次触发，仅观察） |
 | `tool-execution-update` | `id`、`name`、`message` |
+| `tools-change` | `added`、`removed`（工具名数组） |
 | `project-trust` / `session-start` / `resources-discover` | `reason` |
 | `agent-start` / `before-provider-headers` / `tool-execution-start` / `tool-execution-end` / `agent-end` / `agent-settled` / `session-before-switch` / `session-before-fork` / `session-shutdown` / `session-before-compact` / `session-compact` | （仅 `kind`） |
 
 未接线事件（宿主 seam 尚未兑现）订阅不触发：`tool-execution-update`、`resources-discover`、`session-before-fork`。
+
+`tools-change` 在回合边界触发：当编译后的模型可见目录相对上一主回合发生变化（模式切换、mod 重载、选择变更）。首回合只建立基线、不触发；sub-agent 工具集不会触发；没有读取当前目录的 API——事件只携带差量。`/tools` 按来源（builtin / plugin / extension / mcp）分组展示当前基线。
 
 分发模式是每个事件契约的一部分（`ExtensionEventKind::dispatch_mode`，由契约测试锁定）：
 
 - **transform-chain**：`input`、`before-agent-start`、`before-provider-request`、`tool-result` —— transform 逐个折叠、后续 handler 可见、终值作用于宿主操作
 - **transform + deny**：`tool-call` —— 改写调用 `input`（改写后的输入才是审批与实际执行的输入，也是入档输入），或 `block(reason)` 拒绝（单调——后续 handler 不可翻转）
 - **cancel veto**：`session-before-switch`、`session-before-fork`、`session-before-compact`
-- **observe**（outcomes 仅供参考）：其余全部，含 `assistant-stream`（随文本 delta 逐次触发——handler 须轻量）
+- **observe**（outcomes 仅供参考）：其余全部，含 `assistant-stream`（随文本 delta 逐次触发——handler 须轻量）与 `tools-change`（回合分发收口的目录差量）
 
 ### 钩子返回值 → HandlerOutcome
 

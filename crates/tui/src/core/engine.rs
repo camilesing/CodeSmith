@@ -169,6 +169,11 @@ pub struct EngineHandle {
     /// load can rebuild it from the transcript without an engine rebuild.
     pub recent_read_files:
         Arc<StdMutex<std::collections::VecDeque<codesmith_agent_runtime::session::RecentReadFile>>>,
+    /// Capability composition point — the main-turn tool-catalog baseline
+    /// (the `tools-change` diff source; the `/tools` readout), shared from
+    /// `EngineHost` at build time so the TUI reads it without an engine
+    /// round-trip.
+    pub tool_catalog: crate::core::tool_catalog::SharedToolCatalog,
 }
 
 // `impl EngineHandle { ... }` lives in `engine/handle.rs`.
@@ -222,6 +227,11 @@ pub struct EngineHost {
     /// `manage_mods` tool (runner + workspace + shared cancel token), set by
     /// `build_engine` alongside `extension_runner`. `None` for embeds/tests.
     pub mod_reload: Option<crate::mod_ops::ModReloadCtx>,
+    /// Capability composition point — the last main-turn model-visible tool
+    /// catalog baseline (names + origins). `build_turn_dispatcher` diffs each
+    /// fresh catalog against it to emit `tools-change`; `/tools` renders it.
+    /// Shared with `EngineHandle` (the `extension_runner` precedent).
+    pub tool_catalog: crate::core::tool_catalog::SharedToolCatalog,
 }
 
 impl Default for EngineHost {
@@ -245,6 +255,7 @@ impl Default for EngineHost {
             sandbox_backend: None,
             extension_runner: None,
             mod_reload: None,
+            tool_catalog: Default::default(),
         }
     }
 }
@@ -1302,6 +1313,7 @@ pub fn build_engine(
         extension_runner: Some(extension_runner),
         mods_pending: mods_report.pending_mods,
         mods_audit: mods_report.audit,
+        tool_catalog: host_concrete.tool_catalog.clone(),
     };
 
     (engine, handle)
@@ -1500,6 +1512,7 @@ pub(crate) fn mock_engine_handle() -> MockEngineHandle {
         mods_audit: Vec::new(),
         fact_ledger: Arc::new(StdMutex::new(Default::default())),
         recent_read_files: Arc::new(StdMutex::new(Default::default())),
+        tool_catalog: Default::default(),
     };
 
     MockEngineHandle {

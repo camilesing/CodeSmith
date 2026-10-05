@@ -458,6 +458,10 @@ impl HostServices for super::EngineHost {
         }
 
         let mcp_tools = req.mcp_tools;
+        // Capability composition point — capture the mcp names before the
+        // closure below consumes `mcp_tools`, for the catalog snapshot.
+        let mcp_names: std::collections::HashSet<String> =
+            mcp_tools.iter().map(|t| t.name.clone()).collect();
         let tools = tool_registry.as_ref().map(|registry| {
             let mut catalog = build_model_tool_catalog(
                 registry.to_api_tools_with_cache(true),
@@ -477,6 +481,36 @@ impl HostServices for super::EngineHost {
             );
             catalog
         });
+
+        // Capability composition point (tools-change): diff the final
+        // model-visible catalog — after every selection source has been
+        // applied — against the previous main-turn baseline and notify
+        // (observe-only) when it changed. The first build establishes the
+        // baseline silently; sub-agent toolsets build on a separate path
+        // (`spawn_subagent`) and never reach here, so the baseline cannot
+        // flap between main and sub catalogs.
+        let extension_names: std::collections::HashSet<String> = self
+            .extension_runner
+            .as_ref()
+            .map(|r| r.bound_tools().into_iter().map(|(n, _)| n).collect())
+            .unwrap_or_default();
+        let catalog_names: Vec<String> = tools
+            .as_ref()
+            .map(|c| c.iter().map(|t| t.name.clone()).collect())
+            .unwrap_or_default();
+        let snapshot = crate::core::tool_catalog::ToolCatalogSnapshot::capture(
+            &catalog_names,
+            &plugin_tool_names,
+            &extension_names,
+            &mcp_names,
+        );
+        if let Some((added, removed)) = self.tool_catalog.update(snapshot)
+            && let Some(runner) = &self.extension_runner
+        {
+            let _ = runner
+                .emit(codesmith_agent::extension::ExtensionEvent::ToolsChange { added, removed })
+                .await;
+        }
 
         // Derive the framework-core `ToolSet` (§E) from the concrete `ToolRegistry`
         // *before* the type erase below — `to_framework_tool_set()` takes `&self`
