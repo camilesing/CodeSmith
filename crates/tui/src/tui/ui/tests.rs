@@ -1614,15 +1614,15 @@ fn saved_session_with_messages(messages: Vec<Message>) -> SavedSession {
     }
 }
 
-#[test]
-fn apply_loaded_session_restores_dangling_user_tail_as_retry_draft() {
+#[tokio::test]
+async fn apply_loaded_session_restores_dangling_user_tail_as_retry_draft() {
     let mut app = create_test_app();
     let session = saved_session_with_messages(vec![text_message(
         "user",
         "finish the Qthresh proof bundle",
     )]);
 
-    let recovered = apply_loaded_session(&mut app, &Config::default(), &session);
+    let recovered = apply_loaded_session(&mut app, &Config::default(), &session).await;
 
     assert!(recovered);
     assert!(app.api_messages.is_empty());
@@ -1647,12 +1647,12 @@ fn apply_loaded_session_restores_dangling_user_tail_as_retry_draft() {
     );
 }
 
-#[test]
-fn apply_loaded_session_does_not_restore_slash_command_tail_as_retry_draft() {
+#[tokio::test]
+async fn apply_loaded_session_does_not_restore_slash_command_tail_as_retry_draft() {
     let mut app = create_test_app();
     let session = saved_session_with_messages(vec![text_message("user", "/sessions")]);
 
-    let recovered = apply_loaded_session(&mut app, &Config::default(), &session);
+    let recovered = apply_loaded_session(&mut app, &Config::default(), &session).await;
 
     assert!(!recovered);
     assert_eq!(app.input, "");
@@ -1665,8 +1665,8 @@ fn apply_loaded_session_does_not_restore_slash_command_tail_as_retry_draft() {
     );
 }
 
-#[test]
-fn apply_loaded_session_resets_unpersisted_telemetry() {
+#[tokio::test]
+async fn apply_loaded_session_resets_unpersisted_telemetry() {
     let mut app = create_test_app();
     app.session.session_cost = 1.25;
     app.session.session_cost_cny = 9.13;
@@ -1691,7 +1691,7 @@ fn apply_loaded_session_resets_unpersisted_telemetry() {
     let mut session = saved_session_with_messages(vec![text_message("assistant", "ready")]);
     session.metadata.total_tokens = 500;
 
-    let recovered = apply_loaded_session(&mut app, &Config::default(), &session);
+    let recovered = apply_loaded_session(&mut app, &Config::default(), &session).await;
 
     assert!(!recovered);
     assert_eq!(app.session.total_tokens, 500);
@@ -1731,7 +1731,7 @@ async fn apply_loaded_session_resets_workspace_runtime_state() {
     let mut session = saved_session_with_messages(vec![text_message("assistant", "ready")]);
     session.metadata.workspace = TempDir::new().expect("temp dir").path().to_path_buf();
 
-    let recovered = apply_loaded_session(&mut app, &config, &session);
+    let recovered = apply_loaded_session(&mut app, &config, &session).await;
 
     assert!(!recovered);
     assert_eq!(app.workspace, session.metadata.workspace);
@@ -1754,15 +1754,15 @@ async fn apply_loaded_session_resets_workspace_runtime_state() {
     assert!(app.runtime_services.hook_executor.is_some());
 }
 
-#[test]
-fn apply_loaded_session_updates_current_workspace_display() {
+#[tokio::test]
+async fn apply_loaded_session_updates_current_workspace_display() {
     let mut app = create_test_app();
     let config = Config::default();
     let workspace = TempDir::new().expect("temp dir");
     let mut session = saved_session_with_messages(vec![text_message("assistant", "ready")]);
     session.metadata.workspace = workspace.path().to_path_buf();
 
-    let recovered = apply_loaded_session(&mut app, &config, &session);
+    let recovered = apply_loaded_session(&mut app, &config, &session).await;
     let result = commands::execute("/workspace", &mut app);
 
     assert!(!recovered);
@@ -4912,8 +4912,8 @@ fn existing_session_snapshot_updates_model_selection() {
     assert_eq!(snapshot.metadata.model, "deepseek-v4-flash");
 }
 
-#[test]
-fn apply_loaded_session_restores_concrete_model_mode() {
+#[tokio::test]
+async fn apply_loaded_session_restores_concrete_model_mode() {
     let mut app = create_test_app();
     app.set_model_selection("auto".to_string());
     let mut session = saved_session_with_messages(vec![
@@ -4922,7 +4922,7 @@ fn apply_loaded_session_restores_concrete_model_mode() {
     ]);
     session.metadata.model = "deepseek-v4-flash".to_string();
 
-    let recovered = apply_loaded_session(&mut app, &Config::default(), &session);
+    let recovered = apply_loaded_session(&mut app, &Config::default(), &session).await;
 
     assert!(!recovered);
     assert!(!app.auto_model);
@@ -4930,8 +4930,8 @@ fn apply_loaded_session_restores_concrete_model_mode() {
     assert_eq!(app.model_selection_for_persistence(), "deepseek-v4-flash");
 }
 
-#[test]
-fn apply_loaded_session_restores_auto_model_mode() {
+#[tokio::test]
+async fn apply_loaded_session_restores_auto_model_mode() {
     let mut app = create_test_app();
     app.set_model_selection("deepseek-v4-pro".to_string());
     app.reasoning_effort = ReasoningEffort::High;
@@ -4943,7 +4943,7 @@ fn apply_loaded_session_restores_auto_model_mode() {
     ]);
     session.metadata.model = "auto".to_string();
 
-    let recovered = apply_loaded_session(&mut app, &Config::default(), &session);
+    let recovered = apply_loaded_session(&mut app, &Config::default(), &session).await;
 
     assert!(!recovered);
     assert!(app.auto_model);
@@ -5031,8 +5031,8 @@ async fn model_picker_persists_model_and_reasoning_effort() {
     assert_eq!(app.reasoning_effort, ReasoningEffort::High);
 }
 
-#[test]
-fn apply_loaded_session_restores_artifact_registry() {
+#[tokio::test]
+async fn apply_loaded_session_restores_artifact_registry() {
     let mut app = create_test_app();
     let mut session = saved_session_with_messages(vec![
         text_message("user", "hello"),
@@ -5050,7 +5050,7 @@ fn apply_loaded_session_restores_artifact_registry() {
         storage_path: PathBuf::from("/tmp/tool_outputs/call-big.txt"),
     });
 
-    let recovered = apply_loaded_session(&mut app, &Config::default(), &session);
+    let recovered = apply_loaded_session(&mut app, &Config::default(), &session).await;
 
     assert!(!recovered);
     assert_eq!(app.session_artifacts, session.artifacts);

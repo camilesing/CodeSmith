@@ -72,6 +72,53 @@ impl TodoList {
         }
     }
 
+    /// Event-sourcing slice 3 — the todo projection: rebuild the list from
+    /// a transcript. Every `todo_write` / `checklist_write` call replaces
+    /// the whole list, so the fold is last-write-wins over assistant
+    /// `ToolUse` blocks. A malformed write is skipped (the fold keeps the
+    /// last coherent state) — recorded history is evidence, not a veto.
+    /// Rebuilt ids/statuses match live semantics (`add` re-enforces the
+    /// single-in-progress rule).
+    pub fn rebuild_from_messages(messages: &[codesmith_agent::models::Message]) -> Self {
+        use codesmith_agent::models::ContentBlock;
+
+        let mut list = Self::new();
+        for message in messages {
+            if message.role != "assistant" {
+                continue;
+            }
+            for block in &message.content {
+                let ContentBlock::ToolUse { name, input, .. } = block else {
+                    continue;
+                };
+                if name != "todo_write" && name != "checklist_write" {
+                    continue;
+                }
+                let Some(todos) = input.get("todos").and_then(|t| t.as_array()) else {
+                    continue;
+                };
+                let mut rebuilt = Self::new();
+                let mut coherent = true;
+                for item in todos {
+                    let (Some(content), Some(status)) = (
+                        item.get("content").and_then(|v| v.as_str()),
+                        item.get("status")
+                            .and_then(|v| v.as_str())
+                            .and_then(TodoStatus::from_str),
+                    ) else {
+                        coherent = false;
+                        break;
+                    };
+                    rebuilt.add(content.to_string(), status);
+                }
+                if coherent {
+                    list = rebuilt;
+                }
+            }
+        }
+        list
+    }
+
     /// Return a snapshot of the list with computed metrics.
     #[must_use]
     pub fn snapshot(&self) -> TodoListSnapshot {
@@ -165,4 +212,80 @@ pub type SharedTodoList = Arc<Mutex<TodoList>>;
 /// Create a new shared `TodoList`
 pub fn new_shared_todo_list() -> SharedTodoList {
     Arc::new(Mutex::new(TodoList::new()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Transcript helper: an assistant message carrying one tool call.
+    #[cfg(test)]
+    pub(crate) fn assistant_tool_use(
+        name: &str,
+        input: serde_json::Value,
+    ) -> codesmith_agent::models::Message {
+        codesmith_agent::models::Message {
+            role: "assistant".to_string(),
+            content: vec![codesmith_agent::models::ContentBlock::ToolUse {
+                id: "call_x".to_string(),
+                name: name.to_string(),
+                input,
+                caller: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn todo_projection_last_write_wins() {
+        let messages = vec![
+            assistant_tool_use(
+                "todo_write",
+                serde_json::json!({"todos": [
+                    {"content": "a", "status": "pending"},
+                    {"content": "b", "status": "in_progress"},
+                ]}),
+            ),
+            assistant_tool_use(
+                "checklist_write",
+                serde_json::json!({"todos": [
+                    {"content": "a", "status": "completed"},
+                    {"content": "c", "status": "pending"},
+                ]}),
+            ),
+        ];
+        let list = TodoList::rebuild_from_messages(&messages);
+        let snap = list.snapshot();
+        assert_eq!(snap.items.len(), 2);
+        assert_eq!(snap.items[0].content, "a");
+        assert!(snap.items[0].status == TodoStatus::Completed);
+        assert_eq!(snap.items[1].content, "c");
+    }
+
+    #[test]
+    fn todo_projection_skips_malformed_write() {
+        let messages = vec![
+            assistant_tool_use(
+                "todo_write",
+                serde_json::json!({"todos": [{"content": "ok", "status": "pending"}]}),
+            ),
+            // Malformed: unknown status — the fold keeps the last coherent list.
+            assistant_tool_use(
+                "todo_write",
+                serde_json::json!({"todos": [{"content": "bad", "status": "wat"}]}),
+            ),
+            // Unrelated tool calls and user messages are ignored.
+            codesmith_agent::models::Message {
+                role: "user".to_string(),
+                content: vec![codesmith_agent::models::ContentBlock::Text {
+                    text: "hi".to_string(),
+                    cache_control: None,
+                }],
+            },
+            assistant_tool_use("read_file", serde_json::json!({"path": "x"})),
+        ];
+        let list = TodoList::rebuild_from_messages(&messages);
+        let snap = list.snapshot();
+        assert_eq!(snap.items.len(), 1);
+        assert_eq!(snap.items[0].content, "ok");
+    }
 }
