@@ -223,6 +223,15 @@ pub struct AfterProviderResponseEvent {
     pub response: Value,
 }
 
+/// Payload for [`ExtensionEvent::AssistantStream`] (streaming
+/// observation, route B): one incremental assistant **text** chunk as the
+/// wire stream yields it. Observe-only; handlers run inline with the
+/// stream, so they must be cheap.
+#[derive(Debug, Clone)]
+pub struct AssistantStreamEvent {
+    pub text: String,
+}
+
 /// Payload for [`ExtensionEvent::ToolExecutionUpdate`]. Observe-only progress.
 #[derive(Debug, Clone)]
 pub struct ToolExecutionUpdateEvent {
@@ -232,7 +241,7 @@ pub struct ToolExecutionUpdateEvent {
 }
 
 /// Lifecycle events. §F1 minimal set (spec §10.1) + §F2a full set (spec
-/// §10.2 + §4): 23 variants total. `#[non_exhaustive]` so future slices can
+/// §10.2 + §4): 24 variants total (23 §F2a + `AssistantStream`), `#[non_exhaustive]` so future slices can
 /// add variants without breaking downstream match arms. Handler dispatch is
 /// open (any `Handler` may subscribe to any variant via `on` /
 /// `on_variant`). Variant-specific outcome semantics are part of the
@@ -273,6 +282,7 @@ pub enum ExtensionEvent {
     BeforeProviderRequest(BeforeProviderRequestEvent),
     AfterProviderResponse(AfterProviderResponseEvent),
     ToolExecutionStart,
+    AssistantStream(AssistantStreamEvent),
     ToolExecutionUpdate(ToolExecutionUpdateEvent),
     ToolExecutionEnd,
     AgentEnd,
@@ -300,6 +310,7 @@ pub enum ExtensionEventKind {
     BeforeProviderRequest,
     AfterProviderResponse,
     ToolExecutionStart,
+    AssistantStream,
     ToolCall,
     ToolExecutionUpdate,
     ToolResult,
@@ -332,6 +343,7 @@ impl ExtensionEvent {
             ExtensionEvent::BeforeProviderRequest(_) => ExtensionEventKind::BeforeProviderRequest,
             ExtensionEvent::AfterProviderResponse(_) => ExtensionEventKind::AfterProviderResponse,
             ExtensionEvent::ToolExecutionStart => ExtensionEventKind::ToolExecutionStart,
+            ExtensionEvent::AssistantStream(_) => ExtensionEventKind::AssistantStream,
             ExtensionEvent::ToolCall(_) => ExtensionEventKind::ToolCall,
             ExtensionEvent::ToolExecutionUpdate(_) => ExtensionEventKind::ToolExecutionUpdate,
             ExtensionEvent::ToolResult(_) => ExtensionEventKind::ToolResult,
@@ -399,6 +411,7 @@ impl ExtensionEventKind {
             | ExtensionEventKind::TurnStart
             | ExtensionEventKind::BeforeProviderHeaders
             | ExtensionEventKind::AfterProviderResponse
+            | ExtensionEventKind::AssistantStream
             | ExtensionEventKind::ToolExecutionStart
             | ExtensionEventKind::ToolExecutionUpdate
             | ExtensionEventKind::ToolExecutionEnd
@@ -676,6 +689,7 @@ mod tests {
             (K::SessionBeforeFork, M::CancelVeto),
             (K::SessionBeforeCompact, M::CancelVeto),
             // Observe-serial (outcomes advisory).
+            (K::AssistantStream, M::Observe),
             (K::ProjectTrust, M::Observe),
             (K::SessionStart, M::Observe),
             (K::ResourcesDiscover, M::Observe),
@@ -692,7 +706,7 @@ mod tests {
             (K::SessionShutdown, M::Observe),
             (K::SessionCompact, M::Observe),
         ];
-        assert_eq!(contract.len(), 23, "the full §F2a set");
+        assert_eq!(contract.len(), 24, "the full §F2a set + assistant-stream");
         for (kind, mode) in contract {
             assert_eq!(&kind.dispatch_mode(), mode, "contract drift at {kind:?}");
         }

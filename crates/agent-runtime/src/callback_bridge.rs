@@ -153,9 +153,25 @@ pub struct CallbackBridge {
     hook_template: HookContext,
     /// Id counter + pending start↔end correlation stack.
     state: Arc<Mutex<BridgeState>>,
+    /// Route B (streaming observation) — the extension runtime, for
+    /// forwarding assistant text deltas as `AssistantStream` events.
+    /// `None` when no runner is bound (tests / runner-less hosts).
+    extension: Option<Arc<codesmith_extensions::ExtensionRunner>>,
 }
 
 impl CallbackBridge {
+    /// Route B — bind the extension runtime (when the host has one) for
+    /// `AssistantStream` forwarding; builder style so runner-less
+    /// constructions stay untouched.
+    #[must_use]
+    pub fn with_extension_runner_if_some(
+        mut self,
+        runner: Option<Arc<codesmith_extensions::ExtensionRunner>>,
+    ) -> Self {
+        self.extension = runner;
+        self
+    }
+
     /// Build a bridge from the two host paths + a turn-level `HookContext`
     /// template (pre-filled with `session_id` / `workspace` / `model` / …).
     #[must_use]
@@ -169,6 +185,7 @@ impl CallbackBridge {
             hooks,
             hook_template,
             state: Arc::new(Mutex::new(BridgeState::default())),
+            extension: None,
         }
     }
 }
@@ -273,7 +290,21 @@ impl Callback for CallbackBridge {
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         let tx = self.tx.clone();
         let state = self.state.clone();
+        let extension = self.extension.clone();
         Box::pin(async move {
+            // Route B (streaming observation) — forward assistant TEXT
+            // deltas as `AssistantStream` (observe-only), independent of
+            // the UI channel below. Handlers run inline with the stream —
+            // cheap by contract. Thinking deltas stay UI-only for now.
+            if let (Some(runner), StreamDelta::Text { content, .. }) = (&extension, delta) {
+                let _ = runner
+                    .emit(codesmith_agent::extension::ExtensionEvent::AssistantStream(
+                        codesmith_agent::extension::AssistantStreamEvent {
+                            text: content.clone(),
+                        },
+                    ))
+                    .await;
+            }
             let Some(tx) = tx.as_ref() else {
                 return;
             };
@@ -991,5 +1022,105 @@ mod llm_request_tests {
             }
             other => panic!("expected LlmRequest, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod assistant_stream_tests {
+    use super::*;
+    use codesmith_agent::callback::StreamDelta;
+
+    /// A handler that records AssistantStream texts.
+    struct RecordStream(Arc<Mutex<Vec<String>>>);
+    #[async_trait::async_trait]
+    impl codesmith_agent::extension::Handler for RecordStream {
+        async fn handle(
+            &self,
+            event: &codesmith_agent::extension::ExtensionEvent,
+            _ctx: &dyn codesmith_agent::extension::ExtensionContext,
+        ) -> Result<
+            codesmith_agent::extension::HandlerOutcome,
+            codesmith_agent::extension::ExtensionError,
+        > {
+            if let codesmith_agent::extension::ExtensionEvent::AssistantStream(e) = event {
+                self.0.lock().unwrap().push(e.text.clone());
+            }
+            Ok(codesmith_agent::extension::HandlerOutcome::Continue)
+        }
+    }
+    struct StreamExt(Arc<Mutex<Vec<String>>>);
+    #[async_trait::async_trait]
+    impl codesmith_agent::extension::Extension for StreamExt {
+        fn metadata(&self) -> &codesmith_agent::extension::ExtensionMetadata {
+            static M: codesmith_agent::extension::ExtensionMetadata =
+                codesmith_agent::extension::ExtensionMetadata::new("stream-ext");
+            &M
+        }
+        async fn configure(
+            &self,
+            api: &dyn codesmith_agent::extension::ExtensionApi,
+        ) -> Result<(), codesmith_agent::extension::ExtensionError> {
+            api.on_variant(
+                codesmith_agent::extension::ExtensionEventKind::AssistantStream,
+                Arc::new(RecordStream(self.0.clone())),
+            )?;
+            Ok(())
+        }
+    }
+    struct NoopCtx;
+    #[async_trait::async_trait]
+    impl codesmith_agent::extension::ExtensionContext for NoopCtx {
+        fn cwd(&self) -> &std::path::Path {
+            std::path::Path::new(".")
+        }
+        fn mode(&self) -> codesmith_agent::extension::ExtensionMode {
+            codesmith_agent::extension::ExtensionMode::Tui
+        }
+        fn is_idle(&self) -> bool {
+            true
+        }
+        fn signal(&self) -> tokio_util::sync::CancellationToken {
+            tokio_util::sync::CancellationToken::new()
+        }
+        fn generation(&self) -> u64 {
+            1
+        }
+    }
+    impl codesmith_agent::extension::ExtensionCommandContext for NoopCtx {}
+
+    /// Route B — text deltas forwarded as `AssistantStream` to bound
+    /// extension handlers, independently of the UI channel.
+    #[tokio::test]
+    async fn text_deltas_forward_to_assistant_stream_handlers() {
+        let runner = codesmith_extensions::ExtensionRunner::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let ext = StreamExt(seen.clone());
+        runner.load(&ext).await.expect("load");
+        runner.bind_core(Arc::new(NoopCtx));
+
+        // No tx channel at all — extension forwarding must still fire.
+        let bridge = CallbackBridge::new(None, None, HookContext::default())
+            .with_extension_runner_if_some(Some(Arc::new(runner)));
+        bridge
+            .on_stream_delta(&StreamDelta::Text {
+                index: 0,
+                content: "hel".to_string(),
+            })
+            .await;
+        bridge
+            .on_stream_delta(&StreamDelta::Text {
+                index: 0,
+                content: "lo".to_string(),
+            })
+            .await;
+        bridge
+            .on_stream_delta(&StreamDelta::Thinking {
+                index: 1,
+                content: "not text".to_string(),
+            })
+            .await;
+
+        let got = seen.lock().unwrap().clone();
+        assert_eq!(got, vec!["hel".to_string(), "lo".to_string()], "text only");
     }
 }

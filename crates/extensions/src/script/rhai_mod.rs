@@ -105,6 +105,7 @@ pub(crate) fn event_kind_from_name(name: &str) -> Option<ExtensionEventKind> {
         "before-provider-request" => ExtensionEventKind::BeforeProviderRequest,
         "after-provider-response" => ExtensionEventKind::AfterProviderResponse,
         "tool-execution-start" => ExtensionEventKind::ToolExecutionStart,
+        "assistant-stream" => ExtensionEventKind::AssistantStream,
         "tool-call" => ExtensionEventKind::ToolCall,
         "tool-execution-update" => ExtensionEventKind::ToolExecutionUpdate,
         "tool-result" => ExtensionEventKind::ToolResult,
@@ -125,6 +126,7 @@ pub(crate) fn event_kind_from_name(name: &str) -> Option<ExtensionEventKind> {
 /// [`event_kind_from_name`]); used to stamp a `kind` field on payloads.
 pub(crate) fn event_name_from_kind(kind: ExtensionEventKind) -> &'static str {
     match kind {
+        ExtensionEventKind::AssistantStream => "assistant-stream",
         ExtensionEventKind::ProjectTrust => "project-trust",
         ExtensionEventKind::SessionStart => "session-start",
         ExtensionEventKind::ResourcesDiscover => "resources-discover",
@@ -248,6 +250,9 @@ pub(crate) fn event_to_dynamic(event: &ExtensionEvent) -> Dynamic {
             vec![("reason", Dynamic::from(discover_reason(*reason)))]
         }
         ExtensionEvent::Input(e) => vec![("text", Dynamic::from(e.text.clone()))],
+        ExtensionEvent::AssistantStream(e) => {
+            vec![("text", Dynamic::from(e.text.clone()))]
+        }
         ExtensionEvent::BeforeAgentStart(e) => vec![
             (
                 "system_prompt",

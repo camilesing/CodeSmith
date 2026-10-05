@@ -107,6 +107,7 @@ You've now touched all four registration surfaces: event hooks, tools, commands,
 | `tool-call` | `id`, `name`, `input` (JSON value) |
 | `tool-result` | `id`, `name`, `content`, `success`, `is_error` |
 | `turn-start` / `turn-end` | `turn_id`; `turn-end` also `reason` |
+| `assistant-stream` | `text` (one incremental chunk; fires per text delta, observe-only) |
 | `tool-execution-update` | `id`, `name`, `message` |
 | `project-trust` / `session-start` / `resources-discover` | `reason` |
 | `agent-start` / `before-provider-headers` / `tool-execution-start` / `tool-execution-end` / `agent-end` / `agent-settled` / `session-before-switch` / `session-before-fork` / `session-shutdown` / `session-before-compact` / `session-compact` | (`kind` only) |
@@ -119,7 +120,7 @@ checked by a contract test):
 - **transform-chain**: `input`, `before-agent-start`, `before-provider-request`, `tool-result` — each transform folds in, the next handler sees it, the final field applies
 - **transform + deny**: `tool-call` — rewrite the call's `input` (the rewritten input is what approval gates and what runs, and it is the recorded input) or `block(reason)` to deny (monotonic — no later handler can flip it)
 - **cancel veto**: `session-before-switch`, `session-before-fork`, `session-before-compact`
-- **observe** (outcomes advisory): everything else
+- **observe** (outcomes advisory): everything else, including `assistant-stream` (fires per text delta — keep handlers cheap)
 
 ### Hook return value → HandlerOutcome
 
