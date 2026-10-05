@@ -188,6 +188,13 @@ Per script call: 200,000 operations, 64 call levels, 8 MiB strings / 100k array 
 | `description` | | One-liner shown at activation approval |
 | `entry` | | Entry script path relative to the mod dir, defaults to `mod.rhai`; absolute paths and `..` are rejected |
 
+Manifest validation is schema-aggregated: every field problem is reported
+with its path in one error (e.g. `version: missing required field;
+name: expected a string, got integer`), instead of failing on the first.
+Unknown fields are ignored with a warning — forward compatibility, not a
+rejection. A mod whose manifest fails validation is skipped at discovery
+(warned in the log) and never reaches activation.
+
 ## Lifecycle & Security Model
 
 - **First activation requires consent**: a newly discovered mod is skipped + passively announced as pending. Activation has exactly two paths: `/mods activate <id>`, or approving a `manage_mods(action="activate")` tool call. The activation record persists (`~/.codesmith/mods_state.toml`); same-id reloads need no re-approval. **Why**: mods are in-process code that persists across sessions — a prompt injection could plant a resident hook unnoticed; first-activation consent is exactly the guard against that.

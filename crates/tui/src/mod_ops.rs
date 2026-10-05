@@ -361,6 +361,12 @@ pub fn reload_mods(
             ids.join(", ")
         ));
     }
+    // Discipline 5 — surface failed loads in the reload message too (the
+    // audit keeps the original errors; this is the first-line digest).
+    let failed = crate::core::engine::failed_audit_lines(&report.audit);
+    if !failed.is_empty() {
+        msg.push_str(&format!(" Failed: {}.", failed.join("; ")));
+    }
     msg
 }
 

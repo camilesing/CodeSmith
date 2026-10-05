@@ -5,6 +5,11 @@
 //! carry a `mod.toml`, applies the same entry path-traversal protections as
 //! dylib discovery (`discovery.rs:129`), and dedups by canonicalized mod
 //! dir. Best-effort: malformed manifests are skipped (warned).
+//!
+//! Manifest validation is schema-aggregated (discipline 6): every field
+//! problem is reported with its path in one error, instead of failing on
+//! the first. Unknown fields warn (forward compatibility) rather than
+//! rejecting the mod.
 
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
@@ -25,9 +30,52 @@ pub struct ModManifest {
 impl std::str::FromStr for ModManifest {
     type Err = ExtensionError;
 
-    /// Parse a `mod.toml` document. Returns [`ExtensionError::Load`] on
-    /// malformed TOML or a missing required field (`id`/`version`).
+    /// Parse + schema-validate a `mod.toml` document (discipline 6).
+    /// Validation aggregates EVERY field problem with its path in one
+    /// error — a manifest with several issues lists them all instead of
+    /// failing on the first. Unknown top-level fields warn (forward
+    /// compatibility: newer CodeSmith versions may add fields) instead of
+    /// rejecting the mod; missing required fields and wrong-typed fields
+    /// are errors. Returns [`ExtensionError::Load`].
     fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let table: toml::Table = toml::from_str(text)
+            .map_err(|e| ExtensionError::Load(format!("mod manifest syntax: {e}")))?;
+        let mut errors: Vec<String> = Vec::new();
+        for field in ["id", "version"] {
+            match table.get(field) {
+                None => errors.push(format!("{field}: missing required field")),
+                Some(v) if !v.is_str() => {
+                    errors.push(format!("{field}: expected a string, got {}", v.type_str()));
+                }
+                Some(_) => {}
+            }
+        }
+        for field in ["name", "description", "entry"] {
+            if let Some(v) = table.get(field)
+                && !v.is_str()
+            {
+                errors.push(format!("{field}: expected a string, got {}", v.type_str()));
+            }
+        }
+        for key in table.keys() {
+            if !matches!(
+                key.as_str(),
+                "id" | "name" | "version" | "description" | "entry"
+            ) {
+                tracing::warn!(
+                    target: "codesmith_mods",
+                    "mod manifest: ignoring unknown field {key:?} (known fields: \
+                     id, name, version, description, entry)"
+                );
+            }
+        }
+        if !errors.is_empty() {
+            return Err(ExtensionError::Load(format!(
+                "mod manifest invalid: {}",
+                errors.join("; ")
+            )));
+        }
+        // The table is validated field-by-field; serde cannot fail here.
         toml::from_str(text).map_err(|e| ExtensionError::Load(format!("mod manifest parse: {e}")))
     }
 }
@@ -229,6 +277,31 @@ entry = "main.rhai"
     fn manifest_parse_malformed_is_load_error() {
         let m = ModManifest::from_str("id = \n broken [");
         assert!(matches!(m, Err(ExtensionError::Load(_))), "got {m:?}");
+    }
+
+    #[test]
+    fn manifest_validation_aggregates_all_field_errors() {
+        // Two independent problems (missing `version`, non-string `name`):
+        // both are reported in one error, each with its field path.
+        let m = ModManifest::from_str("id = \"x\"\nname = 42\n");
+        let err = m.expect_err("must fail").to_string();
+        assert!(err.contains("version: missing required field"), "{err}");
+        assert!(
+            err.contains("name: expected a string, got integer"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn manifest_unknown_field_parses_with_warning() {
+        // Forward compatibility: a field a newer CodeSmith wrote is ignored
+        // (warned), not a rejection — the known fields still parse.
+        let m = ModManifest::from_str(
+            "id = \"x\"\nversion = \"1.0\"\ndiscription = \"typo of description\"\n",
+        )
+        .expect("unknown fields do not reject the manifest");
+        assert_eq!(m.id, "x");
+        assert!(m.description.is_none(), "the typo'd field was NOT mapped");
     }
 
     #[test]
