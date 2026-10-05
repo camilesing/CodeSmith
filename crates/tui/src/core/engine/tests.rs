@@ -4036,6 +4036,95 @@ async fn collect_until_turn_complete(handle: &EngineHandle) -> Vec<Event> {
     events
 }
 
+// === Record → replay round trip (dev plan capability 1+2) ==================
+
+/// The keyless-replay proof: a recording made against a mock client is a
+/// JSONL artifact whose request envelope round-trips, and a `ReplayClient`
+/// reading that artifact drives the REAL turn loop to the same outcome
+/// with zero model calls behind it.
+#[tokio::test]
+async fn record_then_replay_round_trip() {
+    use codesmith_agent::llm_client::record_replay::{RecordLine, RecordingClient, ReplayClient};
+
+    let _guard = lock_test_env();
+    let tmp = tempdir().expect("tempdir");
+    let recording_path = tmp.path().join("turns.jsonl");
+
+    // --- Engine A: record. A mock canned turn drives the loop; the
+    // RecordingClient decorator captures what the engine actually sent
+    // (full envelope) and the streamed response.
+    let mock = MockLlmClient::new(vec![canned::simple_text_turn("Hello from recording!")]);
+    let mock_arc = std::sync::Arc::new(mock);
+    let recording: LlmClientHandle = std::sync::Arc::new(
+        RecordingClient::new(mock_arc.clone(), &recording_path).expect("open recording"),
+    );
+    let config_a = test_engine_config(tmp.path());
+    let (engine_a, handle_a) = Engine::new_with_client(config_a, &Config::default(), recording);
+    tokio::spawn(async move { engine_a.run().await });
+    handle_a.send(make_send_op("hello")).await.expect("send op");
+    let events_a = collect_until_turn_complete(&handle_a).await;
+    assert!(events_a.iter().any(|e| matches!(
+        e,
+        Event::TurnComplete {
+            status: TurnOutcomeStatus::Completed,
+            ..
+        }
+    )));
+    assert_eq!(
+        mock_arc.call_count(),
+        1,
+        "exactly one model call recorded around"
+    );
+
+    // The artifact: ≥1 JSONL line whose request deserializes back into the
+    // full envelope (any historical request is a pure function of the log).
+    let text = std::fs::read_to_string(&recording_path).expect("recording written");
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert!(!lines.is_empty(), "recording has at least one line");
+    for line in &lines {
+        let parsed: RecordLine = serde_json::from_str(line).expect("line parses");
+        assert_eq!(parsed.request.model, "mock-model");
+        assert!(
+            parsed.request.system.is_some() || !parsed.request.messages.is_empty(),
+            "envelope carries the conversation"
+        );
+    }
+
+    // --- Engine B: replay. Same workspace, REAL loop, fixture-driven.
+    let replay = ReplayClient::load(&recording_path).expect("load replay fixture");
+    let config_b = test_engine_config(tmp.path());
+    let (engine_b, handle_b) =
+        Engine::new_with_client(config_b, &Config::default(), std::sync::Arc::new(replay));
+    tokio::spawn(async move { engine_b.run().await });
+    handle_b.send(make_send_op("hello")).await.expect("send op");
+    let events_b = collect_until_turn_complete(&handle_b).await;
+
+    let text_of = |events: &[Event]| -> String {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                Event::MessageDelta { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(
+        text_of(&events_a),
+        text_of(&events_b),
+        "replayed turn streams the recorded text"
+    );
+    assert!(
+        events_b.iter().any(|e| matches!(
+            e,
+            Event::TurnComplete {
+                status: TurnOutcomeStatus::Completed,
+                ..
+            }
+        )),
+        "replayed turn completes"
+    );
+}
+
 // === Test 1: Simple text turn ===============================================
 
 #[tokio::test]

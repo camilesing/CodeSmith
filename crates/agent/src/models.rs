@@ -459,7 +459,7 @@ pub fn compaction_threshold_for_model_and_effort(
 // === Streaming Structures ===
 
 #[allow(dead_code)]
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, serde::Serialize, Deserialize, Clone)]
 #[serde(tag = "type")]
 /// Streaming event types for SSE responses.
 pub enum StreamEvent {
@@ -486,7 +486,7 @@ pub enum StreamEvent {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, serde::Serialize, Deserialize, Clone)]
 #[serde(tag = "type")]
 /// Content block types used in streaming starts.
 pub enum ContentBlockStart {
@@ -512,7 +512,7 @@ pub enum ContentBlockStart {
 
 // Variant names match legacy streaming spec, suppressing style warning
 #[allow(clippy::enum_variant_names)]
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, serde::Serialize, Deserialize, Clone)]
 #[serde(tag = "type")]
 /// Delta events emitted during streaming responses.
 pub enum Delta {
@@ -525,7 +525,7 @@ pub enum Delta {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, serde::Serialize, Deserialize, Clone)]
 /// Delta payload for message-level updates.
 pub struct MessageDelta {
     pub stop_reason: Option<String>,
