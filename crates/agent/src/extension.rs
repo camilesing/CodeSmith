@@ -38,6 +38,8 @@ use codesmith_tools::{ToolCapability, ToolError, ToolResult};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
+use crate::provider::{ProviderAlias, ProviderFactory};
+
 // === Error type ============================================================
 
 /// Errors an extension or the extension runtime can produce.
@@ -532,6 +534,22 @@ pub trait ExtensionApi: Send + Sync {
         kind: ExtensionEventKind,
         handler: Arc<dyn Handler>,
     ) -> Result<(), ExtensionError>;
+
+    /// Route A — register (or replace) a provider factory, keyed by its
+    /// [`ProviderFactory::id`]. The runner owns the resulting registration
+    /// guard for the extension's generation: reload / `clear_providers`
+    /// drops it, which removes the factory (symmetric unload via
+    /// [`crate::provider::ProviderRegistration`]). A registration takes
+    /// effect at the next client resolution — an already-built client is
+    /// not hot-swapped.
+    fn register_provider(&self, factory: Arc<dyn ProviderFactory>) -> Result<(), ExtensionError>;
+
+    /// Route A, script-mod shape — register a declarative alias onto a
+    /// builtin provider (new custom id + optional `base_url` /
+    /// `default_model` / `http_headers` overrides). Rhai mods cannot
+    /// implement `LlmClient` (no async/net by design), so their provider
+    /// contribution is this alias form; see [`ProviderAlias`].
+    fn register_provider_alias(&self, alias: ProviderAlias) -> Result<(), ExtensionError>;
 }
 
 // === Extension (the factory) ==============================================

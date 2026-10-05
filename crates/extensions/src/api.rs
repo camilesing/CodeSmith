@@ -17,6 +17,9 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use codesmith_agent::extension::*;
+use codesmith_agent::provider::{
+    ProviderAlias, ProviderFactory, ProviderRegistration, SharedProviderRegistry,
+};
 
 use crate::runner::Pending;
 
@@ -36,18 +39,26 @@ pub struct StubExtensionApi {
     generation: Arc<AtomicU64>,
     captured_gen: u64,
     pending: Arc<Mutex<Pending>>,
+    /// Route A — the runner's shared provider registry, for building
+    /// aliasing factories (see `register_provider_alias`).
+    shared: SharedProviderRegistry,
 }
 
 impl StubExtensionApi {
     /// Construct a stub tied to the runner's `generation` + `pending` queue.
     /// `captured_gen` is read once at construction; a later `invalidate()`
     /// makes subsequent `register_*`/`on` calls return `StaleContext`.
-    pub(crate) fn new(generation: Arc<AtomicU64>, pending: Arc<Mutex<Pending>>) -> Self {
+    pub(crate) fn new(
+        generation: Arc<AtomicU64>,
+        pending: Arc<Mutex<Pending>>,
+        shared: SharedProviderRegistry,
+    ) -> Self {
         let captured_gen = generation.load(Ordering::Acquire);
         Self {
             generation,
             captured_gen,
             pending,
+            shared,
         }
     }
 }
@@ -103,6 +114,32 @@ impl ExtensionApi for StubExtensionApi {
             });
         Ok(())
     }
+    fn register_provider(&self, factory: Arc<dyn ProviderFactory>) -> Result<(), ExtensionError> {
+        assert_live(&self.generation, self.captured_gen)?;
+        self.pending
+            .lock()
+            .unwrap()
+            .providers
+            .push(crate::runner::PendingProvider { factory });
+        Ok(())
+    }
+    fn register_provider_alias(&self, alias: ProviderAlias) -> Result<(), ExtensionError> {
+        assert_live(&self.generation, self.captured_gen)?;
+        // Build + validate here so a bad alias (shadowing id, non-builtin
+        // target) fails its load — misconfiguration fails loud — instead of
+        // surfacing at the first client build.
+        let factory: Arc<dyn ProviderFactory> = Arc::new(
+            alias
+                .into_factory(self.shared.clone())
+                .map_err(ExtensionError::Config)?,
+        );
+        self.pending
+            .lock()
+            .unwrap()
+            .providers
+            .push(crate::runner::PendingProvider { factory });
+        Ok(())
+    }
 }
 
 /// Real api — live after `bind_core`; flushes registrations directly into
@@ -116,6 +153,10 @@ pub struct RealExtensionApi {
     tools: Arc<Mutex<HashMap<String, Arc<dyn ToolDefinition>>>>,
     commands: Arc<Mutex<HashMap<String, Arc<dyn CommandDefinition>>>>,
     handlers: Arc<Mutex<Vec<crate::runner::RegisteredHandler>>>,
+    /// Route A — live registrations (drop = un-register) + the shared
+    /// registry they flush into.
+    providers: Arc<Mutex<Vec<ProviderRegistration>>>,
+    shared: SharedProviderRegistry,
 }
 
 #[allow(dead_code)]
@@ -125,6 +166,8 @@ impl RealExtensionApi {
         tools: Arc<Mutex<HashMap<String, Arc<dyn ToolDefinition>>>>,
         commands: Arc<Mutex<HashMap<String, Arc<dyn CommandDefinition>>>>,
         handlers: Arc<Mutex<Vec<crate::runner::RegisteredHandler>>>,
+        providers: Arc<Mutex<Vec<ProviderRegistration>>>,
+        shared: SharedProviderRegistry,
     ) -> Self {
         let captured_gen = generation.load(Ordering::Acquire);
         Self {
@@ -133,6 +176,8 @@ impl RealExtensionApi {
             tools,
             commands,
             handlers,
+            providers,
+            shared,
         }
     }
 }
@@ -188,6 +233,21 @@ impl ExtensionApi for RealExtensionApi {
             });
         Ok(())
     }
+    fn register_provider(&self, factory: Arc<dyn ProviderFactory>) -> Result<(), ExtensionError> {
+        assert_live(&self.generation, self.captured_gen)?;
+        let guard = self.shared.register(factory);
+        self.providers.lock().unwrap().push(guard);
+        Ok(())
+    }
+    fn register_provider_alias(&self, alias: ProviderAlias) -> Result<(), ExtensionError> {
+        assert_live(&self.generation, self.captured_gen)?;
+        let factory: Arc<dyn ProviderFactory> = Arc::new(
+            alias
+                .into_factory(self.shared.clone())
+                .map_err(ExtensionError::Config)?,
+        );
+        self.register_provider(factory)
+    }
 }
 
 #[cfg(test)]
@@ -199,7 +259,8 @@ mod tests {
     async fn stub_after_invalidate_returns_stale_context() {
         let generation = Arc::new(AtomicU64::new(0));
         let pending = Arc::new(Mutex::new(Pending::default()));
-        let stub = StubExtensionApi::new(generation.clone(), pending);
+        let stub =
+            StubExtensionApi::new(generation.clone(), pending, SharedProviderRegistry::new());
         generation.fetch_add(1, Ordering::AcqRel);
         struct Nop;
         #[async_trait]
@@ -221,7 +282,11 @@ mod tests {
         use codesmith_agent::extension::ExtensionEventKind;
         let generation = Arc::new(AtomicU64::new(0));
         let pending = Arc::new(Mutex::new(Pending::default()));
-        let stub = StubExtensionApi::new(generation.clone(), pending.clone());
+        let stub = StubExtensionApi::new(
+            generation.clone(),
+            pending.clone(),
+            SharedProviderRegistry::new(),
+        );
         struct Nop;
         #[async_trait]
         impl Handler for Nop {

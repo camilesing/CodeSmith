@@ -140,6 +140,39 @@ Transform mutable fields (one handler's rewrite is immediately visible to the ne
 | `proceed / block / cancel / transform` | Hook control values |
 | `ok(value) / err(msg)` | Tool-result constructors |
 | `message(msg) / send(msg)` | Command output (display / feed the agent) |
+| `register_provider(spec)` | Register a provider alias (see below) |
+
+### Registering a provider (route A)
+
+A mod can register a **provider alias** — a new provider id that delegates
+to a builtin provider with its own `base_url` / `default_model` / `headers`
+overrides. Scripts cannot implement an LLM client (no async/net by
+design), so a mod's provider is always such an alias, e.g. onto an
+OpenAI-compatible gateway:
+
+```rhai
+register_provider(#{
+    id: "acme-gw",                        // new id; must not shadow a builtin
+    kind: "openai",                       // builtin provider to delegate to
+    base_url: "https://gw.example.test/v1",
+    default_model: "acme-large",
+    headers: #{ "X-Gateway": "acme" },    // optional
+});
+```
+
+Validation fails the mod's **load** when the `id` shadows a builtin, the
+`kind` is not a builtin, or a header value is not a string — a broken
+spec never reaches the client. `api_key` is deliberately not accepted:
+secrets live in config, never in scripts.
+
+To use the alias, declare a matching `[[providers.custom]]` entry (same
+`id`; it carries the API key) and select it with
+`custom_provider = "acme-gw"` in config.toml. The alias's `base_url` /
+`default_model` / `headers` overrides apply at client build, on top of the
+entry's values. Registration is logged (target `codesmith_extensions`)
+and takes effect at the next client resolution (new session, provider
+switch) — a running session keeps its current client. Unloading the mod
+or `/extension reload` removes the alias.
 
 ### Resource limits and error posture
 

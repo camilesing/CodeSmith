@@ -18,7 +18,7 @@
 #![allow(dead_code)]
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
 use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
@@ -110,7 +110,7 @@ use crate::tools::todo::SharedTodoList;
 use crate::tools::{ToolContext, ToolRegistryBuilder, ToolRegistryPluginExt};
 use crate::tui::app::AppMode;
 use crate::utils::spawn_supervised;
-use codesmith_agent::provider::{ProviderConfig, ProviderId};
+use codesmith_agent::provider::{ProviderConfig, ProviderId, SharedProviderRegistry};
 
 use super::capacity::CapacityController;
 use super::events::Event;
@@ -353,6 +353,22 @@ fn env_only_api_key_recovery_hint(api_config: &Config) -> Option<String> {
 /// (strip / `(reasoning omitted)` placeholder injection — #1542 / #1739 /
 /// #1694) plus rig's faithful `reasoning_content` serialization for the OpenAI
 /// / DeepSeek providers. See ROADMAP §A1 / §D1.
+/// Route A — the process-shared provider registry. Seeded once from the
+/// builtin `default_registry`; the extension runner upserts
+/// extension-registered factories into it (via `attach_shared_providers`),
+/// and `resolve_llm_client` / `resolve_utility_llm` build through it, so
+/// extension providers are selectable by id at the next client resolution.
+///
+/// Known limitation: an already-built client is not hot-swapped — a
+/// provider registered mid-session takes effect when the client is next
+/// resolved (new session, provider switch, doctor, ACP/MCP handshake).
+pub(crate) fn shared_providers() -> &'static SharedProviderRegistry {
+    static SHARED: OnceLock<SharedProviderRegistry> = OnceLock::new();
+    SHARED.get_or_init(|| {
+        SharedProviderRegistry::from_registry(codesmith_providers::default_registry().clone())
+    })
+}
+
 pub(crate) fn resolve_llm_client(api_config: &Config) -> anyhow::Result<LlmClientHandle> {
     // §D2 — when `custom_provider` is set, route to `ProviderId::Custom(id)`
     // so a host-registered factory (e.g. `mock`, or a user crate's factory)
@@ -373,7 +389,9 @@ pub(crate) fn resolve_llm_client(api_config: &Config) -> anyhow::Result<LlmClien
         http_headers: api_config.http_headers(),
         on_retry: None,
     };
-    codesmith_providers::default_registry().build(&cfg)
+    // Route A — build through the shared registry so extension-registered
+    // providers (registered since process start) are selectable by id.
+    shared_providers().build(&cfg)
 }
 
 /// Resolve the optional `[utility_model]` into a ready-to-use handle.
@@ -434,7 +452,7 @@ pub(crate) fn resolve_utility_llm(
         http_headers: api_config.http_headers(),
         on_retry: None,
     };
-    match codesmith_providers::default_registry().build(&cfg) {
+    match shared_providers().build(&cfg) {
         Ok(client) => Some(UtilityLlm {
             client,
             model: utility.model,
@@ -511,6 +529,10 @@ fn build_extension_runtime(
     shared_cancel_token: Arc<StdMutex<tokio_util::sync::CancellationToken>>,
 ) -> (Arc<codesmith_extensions::ExtensionRunner>, PopulateReport) {
     let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
+    // Route A — the runner's provider flush target is the same shared
+    // registry `resolve_llm_client` builds through, so extension-registered
+    // providers are visible to every resolution path.
+    runner.attach_shared_providers(shared_providers().clone());
     let state = crate::extension_state::ExtensionStateStore::load_default().unwrap_or_default();
     let mod_state = crate::mod_state::ModStateStore::load_default().unwrap_or_default();
     let report = populate_extension_runtime(
@@ -705,6 +727,10 @@ pub fn reload_extension_runtime(
     // stale bindings (name-keyed maps; safe concurrent w/ in-flight turn).
     runner.clear_tools();
     runner.clear_commands();
+    // Route A — drop the generation's provider registration guards
+    // (un-register; safe concurrent w/ in-flight turn — an already-built
+    // client keeps its `Arc`).
+    runner.clear_providers();
     // §F5d T4 — move the live dylib `Library`s into `pending_drop` (UI-thread
     // MOVE: `mem::take` under one lock, the `Library` stays alive). The engine
     // op-loop top then `drop_pending`s them at the one moment the main-thread
