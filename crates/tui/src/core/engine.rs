@@ -158,6 +158,12 @@ pub struct EngineHandle {
     /// original-error / pending / disabled / trust-gated, one entry per
     /// discovered extension). `failed_audit_lines` is the display format.
     pub mods_audit: Vec<StartupAuditEntry>,
+    /// Event-sourcing slice 4 — the engine session's fact ledger (std
+    /// mutex), surfaced so the host can snapshot it into `SavedSession`
+    /// and restore it on session load without an engine rebuild (the
+    /// `extension_runner` precedent). Same `Arc` the engine's compaction
+    /// feeds.
+    pub fact_ledger: Arc<StdMutex<codesmith_agent_runtime::compaction::fact_ledger::FactLedger>>,
 }
 
 // `impl EngineHandle { ... }` lives in `engine/handle.rs`.
@@ -1266,6 +1272,8 @@ pub fn build_engine(
         Some(extension_runner.clone()),
     );
 
+    // Event-sourcing slice 4 — surface the engine session's fact ledger
+    // (the same `Arc` compaction feeds) so the host can snapshot + restore.
     let handle = EngineHandle {
         tx_op,
         rx_event: Arc::new(RwLock::new(rx_event)),
@@ -1274,6 +1282,7 @@ pub fn build_engine(
         tx_approval,
         tx_user_input,
         tx_steer,
+        fact_ledger: engine.session.fact_ledger.clone(),
         extension_runner: Some(extension_runner),
         mods_pending: mods_report.pending_mods,
         mods_audit: mods_report.audit,
@@ -1473,6 +1482,7 @@ pub(crate) fn mock_engine_handle() -> MockEngineHandle {
         extension_runner: None,
         mods_pending: Vec::new(),
         mods_audit: Vec::new(),
+        fact_ledger: Arc::new(StdMutex::new(Default::default())),
     };
 
     MockEngineHandle {

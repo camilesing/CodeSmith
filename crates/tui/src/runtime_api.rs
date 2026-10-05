@@ -2219,6 +2219,7 @@ mod tests {
         SavedSession {
             last_tool_catalog: None,
             last_base_url: None,
+            fact_ledger: None,
             schema_version: 1,
             metadata: SessionMetadata {
                 id: "session-1".to_string(),

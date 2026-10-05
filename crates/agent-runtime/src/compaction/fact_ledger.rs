@@ -134,7 +134,7 @@ pub fn extract_file_map(summary: &str) -> Vec<String> {
         .collect()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FactKind {
     /// Verbatim constraint material: fenced blocks from the task instruction
     /// or from constraint-looking tool results.
@@ -156,7 +156,7 @@ pub enum FactKind {
     FileIntent,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FactEntry {
     pub kind: FactKind,
     pub text: String,
@@ -166,7 +166,7 @@ pub struct FactEntry {
 /// `Session` behind `Arc<Mutex<…>>` (the `recent_read_files` precedent) so
 /// both the executor's mid-run compaction and the host-side compaction
 /// paths can feed it.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct FactLedger {
     entries: Vec<FactEntry>,
     /// Whitespace-normalized, lowercased dedup keys for `entries`.
@@ -474,6 +474,28 @@ fn normalize_key(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Event-sourcing slice 4 — the ledger round-trips through JSON so it
+    /// can ride `SavedSession` (lessons survive restarts).
+    #[test]
+    fn fact_ledger_serde_round_trip() {
+        let mut ledger = FactLedger::default();
+        ledger.record_refuted_assumptions(vec![
+            "the API validates on POST, not GET — always POST".to_string(),
+        ]);
+        ledger.record_file_map(vec!["crates/foo.rs — owns the parser".to_string()]);
+        assert!(!ledger.is_empty());
+
+        let json = serde_json::to_string(&ledger).expect("serialize");
+        let back: FactLedger = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.len(), ledger.len());
+        // Dedup keys survive too: re-recording the same lesson is a no-op.
+        let mut back = back;
+        let added = back.record_refuted_assumptions(vec![
+            "the API validates on POST, not GET — always POST".to_string(),
+        ]);
+        assert_eq!(added, 0, "seen-set survived the round trip");
+    }
+
     use super::*;
 
     fn text_msg(text: &str) -> Message {

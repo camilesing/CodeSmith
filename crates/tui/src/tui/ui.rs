@@ -631,6 +631,8 @@ pub async fn run_tui(
     // without an engine round-trip. Built inside `build_engine`; cloned cheaply
     // (the same `Arc` is shared with the per-turn `HostAgentExecutor`).
     app.extension_runner = engine_handle.extension_runner.clone();
+    // Event-sourcing slice 4 — the live session's fact ledger.
+    app.fact_ledger = Some(engine_handle.fact_ledger.clone());
     // §F2c — surface the engine's shared cancel-token `Arc` so
     // `/extension reload` can pass the live engine token (not a fresh one)
     // into the reloaded context.
@@ -4481,6 +4483,10 @@ fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
         updated.artifacts = app.session_artifacts.clone();
         updated.last_tool_catalog = app.session.last_tool_catalog.clone();
         updated.last_base_url = app.session.last_base_url.clone();
+        updated.fact_ledger = app
+            .fact_ledger
+            .as_ref()
+            .map(|ledger| ledger.lock().unwrap_or_else(|e| e.into_inner()).clone());
         updated
     } else {
         let mut session = if let Some(existing_id) = app.current_session_id.as_ref() {
@@ -4508,6 +4514,10 @@ fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
         session.artifacts = app.session_artifacts.clone();
         session.last_tool_catalog = app.session.last_tool_catalog.clone();
         session.last_base_url = app.session.last_base_url.clone();
+        session.fact_ledger = app
+            .fact_ledger
+            .as_ref()
+            .map(|ledger| ledger.lock().unwrap_or_else(|e| e.into_inner()).clone());
         session
     }
 }
@@ -7881,6 +7891,13 @@ async fn apply_loaded_session(app: &mut App, config: &Config, session: &SavedSes
         crate::tools::todo::TodoList::rebuild_from_messages(&app.api_messages);
     *app.plan_state.lock().await =
         crate::tools::plan::PlanState::rebuild_from_messages(&app.api_messages);
+    // Slice 4 — restore the fact ledger (compaction invariants) into the
+    // LIVE engine's ledger (same `Arc`); a saved `None` clears it, matching
+    // sessions saved before the field existed.
+    if let Some(ledger) = &app.fact_ledger {
+        let mut guard = ledger.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = session.fact_ledger.clone().unwrap_or_default();
+    }
     app.clear_history();
     app.tool_cells.clear();
     app.tool_details_by_cell.clear();
