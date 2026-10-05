@@ -314,6 +314,59 @@ pub(crate) fn record_read_file_result_into(
     }
 }
 
+/// Event-sourcing slice 6 — the working-set projection: rebuild
+/// `recent_read_files` from a transcript by pairing each `read_file`
+/// tool call with its result (success only, matching the live gate at
+/// the executor's record site). Replays in transcript order through
+/// [`record_read_file_result_into`], so dedup-by-path + the size limit
+/// behave exactly like the live path. Unmatched ids (a call without a
+/// result, e.g. a blocked call) and error results are skipped.
+#[must_use]
+pub fn rebuild_recent_read_files_from_messages(
+    messages: &[Message],
+) -> Arc<StdMutex<VecDeque<RecentReadFile>>> {
+    use codesmith_agent::models::ContentBlock;
+    use std::collections::HashMap;
+
+    // id → input for every read_file call, in order.
+    let mut calls: HashMap<String, Value> = HashMap::new();
+    for message in messages {
+        if message.role != "assistant" {
+            continue;
+        }
+        for block in &message.content {
+            if let ContentBlock::ToolUse {
+                id, name, input, ..
+            } = block
+                && name == "read_file"
+            {
+                calls.insert(id.clone(), input.clone());
+            }
+        }
+    }
+
+    let files = Arc::new(StdMutex::new(VecDeque::new()));
+    for message in messages {
+        if message.role != "user" {
+            continue;
+        }
+        for block in &message.content {
+            if let ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+                ..
+            } = block
+                && is_error.is_none()
+                && let Some(input) = calls.get(tool_use_id)
+            {
+                record_read_file_result_into(&files, input, content);
+            }
+        }
+    }
+    files
+}
+
 fn summarize_chars(text: &str, limit: usize) -> String {
     if text.chars().count() <= limit {
         return text.to_string();
@@ -326,6 +379,67 @@ fn summarize_chars(text: &str, limit: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Event-sourcing slice 6 — the working-set projection: read_file calls
+    /// pair with successful results; errors + unmatched calls are skipped;
+    /// dedup-by-path + ordering match the live record path.
+    #[test]
+    fn rebuild_recent_read_files_from_transcript() {
+        use codesmith_agent::models::{ContentBlock, Message};
+        use serde_json::json;
+
+        let tool_use = |id: &str, name: &str, input: serde_json::Value| ContentBlock::ToolUse {
+            id: id.to_string(),
+            name: name.to_string(),
+            input,
+            caller: None,
+        };
+        let tool_result = |id: &str, content: &str| ContentBlock::ToolResult {
+            tool_use_id: id.to_string(),
+            content: content.to_string(),
+            is_error: None,
+            content_blocks: None,
+        };
+        let messages = vec![
+            Message {
+                role: "assistant".to_string(),
+                content: vec![
+                    tool_use("c1", "read_file", json!({"path": "a.rs"})),
+                    tool_use("c2", "read_file", json!({"path": "b.rs"})),
+                    // Blocked call: no result — skipped.
+                    tool_use("c3", "read_file", json!({"path": "c.rs"})),
+                    // Unrelated tool.
+                    tool_use("c4", "write_file", json!({"path": "d.rs"})),
+                ],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![
+                    tool_result("c1", "contents of a (first read)"),
+                    tool_result("c2", "contents of b"),
+                    tool_result("c4", "written"),
+                ],
+            },
+            Message {
+                role: "assistant".to_string(),
+                content: vec![tool_use("c5", "read_file", json!({"path": "a.rs"}))],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![tool_result("c5", "contents of a (re-read)")],
+            },
+        ];
+
+        let files = rebuild_recent_read_files_from_messages(&messages);
+        let files = files.lock().unwrap();
+        assert_eq!(files.len(), 2, "dedup-by-path kept the latest per path");
+        assert_eq!(
+            files[0].path, "b.rs",
+            "stable order: a.rs re-read moved it back"
+        );
+        assert_eq!(files[1].path, "a.rs");
+        assert_eq!(files[1].output_preview, "contents of a (re-read)");
+    }
+
     use super::*;
 
     #[test]
