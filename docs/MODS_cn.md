@@ -116,8 +116,8 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 分发模式是每个事件契约的一部分（`ExtensionEventKind::dispatch_mode`，由契约测试锁定）：
 
 - **transform-chain**：`input`、`before-agent-start`、`before-provider-request`、`tool-result` —— transform 逐个折叠、后续 handler 可见、终值作用于宿主操作
+- **transform + deny**：`tool-call` —— 改写调用 `input`（改写后的输入才是审批与实际执行的输入，也是入档输入），或 `block(reason)` 拒绝（单调——后续 handler 不可翻转）
 - **cancel veto**：`session-before-switch`、`session-before-fork`、`session-before-compact`
-- **block deny**：`tool-call`
 - **observe**（outcomes 仅供参考）：其余全部
 
 ### 钩子返回值 → HandlerOutcome

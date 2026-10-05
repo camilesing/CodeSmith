@@ -238,8 +238,9 @@ pub struct ToolExecutionUpdateEvent {
 /// `on_variant`). Variant-specific outcome semantics are part of the
 /// contract and live with the kinds:
 /// [`ExtensionEventKind::dispatch_mode`](ExtensionEventKind::dispatch_mode)
-/// (discipline 3 — `SessionBefore*` cancel-veto; `ToolCall` block-deny;
-/// `Input` / `BeforeAgentStart` / `BeforeProviderRequest` / `ToolResult`
+/// (discipline 3 — the `SessionBefore*` seams cancel-veto; `ToolCall`
+/// transform-and-deny — input rewrite or monotonic deny; `Input` /
+/// `BeforeAgentStart` / `BeforeProviderRequest` / `ToolResult`
 /// transform-chain; the rest observe-serial).
 #[non_exhaustive]
 #[derive(Debug, Clone)]
@@ -366,8 +367,12 @@ pub enum DispatchMode {
     /// Short-circuit veto: a handler's `Cancel` aborts the pending host
     /// operation (the `SessionBefore*` seams).
     CancelVeto,
-    /// Short-circuit deny: a handler's `Block` rejects the tool call.
-    BlockDeny,
+    /// Transform-chain with deny (the `ToolCall` seam): handlers may
+    /// rewrite the actionable field (`input` — chain continues, visible to
+    /// the next handler) or deny the call outright (`Block`
+    /// short-circuits; the deny is monotonic — no later handler can flip
+    /// it, the chain has already stopped).
+    TransformAndDeny,
 }
 
 impl ExtensionEventKind {
@@ -383,7 +388,7 @@ impl ExtensionEventKind {
             | ExtensionEventKind::BeforeAgentStart
             | ExtensionEventKind::BeforeProviderRequest
             | ExtensionEventKind::ToolResult => DispatchMode::TransformChain,
-            ExtensionEventKind::ToolCall => DispatchMode::BlockDeny,
+            ExtensionEventKind::ToolCall => DispatchMode::TransformAndDeny,
             ExtensionEventKind::SessionBeforeSwitch
             | ExtensionEventKind::SessionBeforeFork
             | ExtensionEventKind::SessionBeforeCompact => DispatchMode::CancelVeto,
@@ -658,7 +663,7 @@ mod tests {
             (K::BeforeProviderRequest, M::TransformChain),
             (K::ToolResult, M::TransformChain),
             // Short-circuit.
-            (K::ToolCall, M::BlockDeny),
+            (K::ToolCall, M::TransformAndDeny),
             (K::SessionBeforeSwitch, M::CancelVeto),
             (K::SessionBeforeFork, M::CancelVeto),
             (K::SessionBeforeCompact, M::CancelVeto),

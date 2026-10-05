@@ -117,8 +117,8 @@ Dispatch modes are part of each event's contract (`ExtensionEventKind::dispatch_
 checked by a contract test):
 
 - **transform-chain**: `input`, `before-agent-start`, `before-provider-request`, `tool-result` — each transform folds in, the next handler sees it, the final field applies
+- **transform + deny**: `tool-call` — rewrite the call's `input` (the rewritten input is what approval gates and what runs, and it is the recorded input) or `block(reason)` to deny (monotonic — no later handler can flip it)
 - **cancel veto**: `session-before-switch`, `session-before-fork`, `session-before-compact`
-- **block deny**: `tool-call`
 - **observe** (outcomes advisory): everything else
 
 ### Hook return value → HandlerOutcome
@@ -133,6 +133,7 @@ checked by a contract test):
 Transform mutable fields (one handler's rewrite is immediately visible to the next):
 
 - `input`: `text`
+- `tool-call`: `input` (JSON value — the pre-execute rewrite; the host applies it before approval + execution and records it)
 - `before-agent-start`: `system_prompt`, `inject_message` (string = set, `()` = clear, absent = keep)
 - `before-provider-request`: `messages`
 - `tool-result`: `content`, `success`, `is_error`

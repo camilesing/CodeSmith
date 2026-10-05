@@ -20,7 +20,8 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use codesmith_agent::extension::{
     AgentStartEvent, Extension, ExtensionApi, ExtensionContext, ExtensionError, ExtensionEvent,
-    ExtensionEventKind, ExtensionMetadata, ExtensionMode, InputEvent, ToolResultEvent,
+    ExtensionEventKind, ExtensionMetadata, ExtensionMode, InputEvent, ToolCallEvent,
+    ToolResultEvent,
 };
 use codesmith_agent::provider::ProviderId;
 use codesmith_tools::{ToolError, ToolResult};
@@ -444,6 +445,32 @@ pub(crate) fn merge_transform(
                 name: cur.name.clone(),
                 result,
             }))
+        }
+        ExtensionEvent::ToolCall(cur) => {
+            // Route B (pipeline refinement): the pre-execute rewrite —
+            // `transform(#{ input: {...} })` replaces the call's input; the
+            // host applies it before approval + execution.
+            if let Some(d) = map.get("input") {
+                match dynamic_to_json(d) {
+                    Ok(input) => {
+                        HandlerOutcome::Transform(ExtensionEvent::ToolCall(ToolCallEvent {
+                            id: cur.id.clone(),
+                            name: cur.name.clone(),
+                            input,
+                        }))
+                    }
+                    Err(e) => {
+                        tracing::warn!(target: "codesmith_mods", "tool-call transform: {e}");
+                        HandlerOutcome::Continue
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    target: "codesmith_mods",
+                    "tool-call transform requires an `input` field"
+                );
+                HandlerOutcome::Continue
+            }
         }
         // Observe-only / non-transformable seams: ignore the transform.
         _ => HandlerOutcome::Continue,
@@ -1243,6 +1270,50 @@ mod tests {
             assert_eq!(event_kind_from_name(name), Some(kind), "round-trip {name}");
         }
         assert_eq!(event_kind_from_name("bogus"), None);
+    }
+
+    #[test]
+    fn merge_transform_tool_call_rewrites_input() {
+        let event = ExtensionEvent::ToolCall(ToolCallEvent {
+            id: "c1".into(),
+            name: "exec_shell".into(),
+            input: serde_json::json!({"command": "rm -rf /tmp"}),
+        });
+        let mut inner = rhai::Map::new();
+        inner.insert(
+            "command".into(),
+            Dynamic::from("rm -rf /tmp --dry-run".to_string()),
+        );
+        let mut fields = rhai::Map::new();
+        fields.insert("input".into(), Dynamic::from(inner));
+        let out = merge_transform(&event, &Dynamic::from(fields));
+        match out {
+            codesmith_agent::extension::HandlerOutcome::Transform(ExtensionEvent::ToolCall(tc)) => {
+                assert_eq!(tc.id, "c1");
+                assert_eq!(tc.name, "exec_shell");
+                assert_eq!(
+                    tc.input,
+                    serde_json::json!({"command": "rm -rf /tmp --dry-run"})
+                );
+            }
+            other => panic!("expected a ToolCall transform, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn merge_transform_tool_call_without_input_warns_and_continues() {
+        let event = ExtensionEvent::ToolCall(ToolCallEvent {
+            id: "c1".into(),
+            name: "exec_shell".into(),
+            input: serde_json::json!({}),
+        });
+        let mut fields = rhai::Map::new();
+        fields.insert("id".into(), Dynamic::from("nope".to_string()));
+        let out = merge_transform(&event, &Dynamic::from(fields));
+        assert!(matches!(
+            out,
+            codesmith_agent::extension::HandlerOutcome::Continue
+        ));
     }
 
     #[test]
