@@ -167,6 +167,15 @@ pub struct TurnRecord {
     pub item_ids: Vec<String>,
     #[serde(default)]
     pub steer_count: usize,
+    /// Request envelope (event-sourcing slice 2): the tool catalog sent
+    /// with this turn's model request, and the client's base URL. Any
+    /// historical turn's provider envelope is recoverable from the record
+    /// (and from the `turn.completed` event that embeds it). `None` on
+    /// records written before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_catalog: Option<Vec<crate::models::Tool>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1490,6 +1499,8 @@ impl RuntimeThreadManager {
                 error: None,
                 item_ids,
                 steer_count: 0,
+                tool_catalog: None,
+                base_url: None,
             })?;
 
             thread.latest_turn_id = Some(turn_id);
@@ -1544,6 +1555,8 @@ impl RuntimeThreadManager {
             error: None,
             item_ids: Vec::new(),
             steer_count: 0,
+            tool_catalog: None,
+            base_url: None,
         };
 
         let user_item_id = format!("item_{}", &Uuid::new_v4().to_string()[..8]);
@@ -1843,6 +1856,8 @@ impl RuntimeThreadManager {
             error: None,
             item_ids: Vec::new(),
             steer_count: 0,
+            tool_catalog: None,
+            base_url: None,
         };
         self.store.save_turn(&turn)?;
 
@@ -2173,6 +2188,9 @@ impl RuntimeThreadManager {
         let mut tool_items: HashMap<String, String> = HashMap::new();
         let mut compaction_items: HashMap<String, String> = HashMap::new();
         let mut turn_usage: Option<Usage> = None;
+        // Event-sourcing slice 2 — the turn's request envelope.
+        let mut turn_tool_catalog: Option<Vec<crate::models::Tool>> = None;
+        let mut turn_base_url: Option<String> = None;
         let mut turn_status = RuntimeTurnStatus::Completed;
         let mut turn_error: Option<String> = None;
 
@@ -2972,9 +2990,14 @@ impl RuntimeThreadManager {
                     usage,
                     status,
                     error,
-                    ..
+                    tool_catalog,
+                    base_url,
                 } => {
                     turn_usage = Some(usage);
+                    // Event-sourcing slice 2 — stop dropping the envelope:
+                    // persist what the turn's model request actually carried.
+                    turn_tool_catalog = tool_catalog;
+                    turn_base_url = base_url;
                     turn_status = match status {
                         TurnOutcomeStatus::Completed => RuntimeTurnStatus::Completed,
                         TurnOutcomeStatus::Interrupted => RuntimeTurnStatus::Interrupted,
@@ -3054,6 +3077,8 @@ impl RuntimeThreadManager {
         turn.duration_ms = turn.started_at.map(|start| duration_ms(start, ended_at));
         turn.usage = turn_usage;
         turn.error = turn_error;
+        turn.tool_catalog = turn_tool_catalog;
+        turn.base_url = turn_base_url;
         self.store.save_turn(&turn)?;
 
         let mut thread = self.get_thread(&thread_id).await?;
@@ -3374,6 +3399,61 @@ mod tests {
         std::env::temp_dir().join(format!("deepseek-runtime-threads-{}", Uuid::new_v4()))
     }
 
+    /// Event-sourcing slice 2 — a TurnRecord round-trips its request
+    /// envelope (tool catalog + base URL), and records serialized before
+    /// the fields existed still load (envelope reads back as `None`).
+    #[test]
+    fn turn_record_round_trips_request_envelope() {
+        let turn = TurnRecord {
+            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+            id: "turn_x".into(),
+            thread_id: "thr_x".into(),
+            status: RuntimeTurnStatus::Completed,
+            input_summary: "s".into(),
+            created_at: Utc::now(),
+            started_at: None,
+            ended_at: None,
+            duration_ms: None,
+            usage: None,
+            error: None,
+            item_ids: Vec::new(),
+            steer_count: 0,
+            tool_catalog: Some(vec![crate::models::Tool {
+                tool_type: Some("function".into()),
+                name: "read_file".into(),
+                description: "Read a file".into(),
+                input_schema: serde_json::json!({"type": "object"}),
+                output_schema: None,
+                allowed_callers: None,
+                cache_control: None,
+                strict: None,
+                defer_loading: None,
+                input_examples: None,
+            }]),
+            base_url: Some("https://api.example.test/v1".into()),
+        };
+        let json = serde_json::to_string(&turn).expect("serialize");
+        assert!(json.contains("read_file"), "catalog persisted: {json}");
+        let back: TurnRecord = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(
+            back.base_url.as_deref(),
+            Some("https://api.example.test/v1")
+        );
+        assert_eq!(
+            back.tool_catalog.as_ref().map(|t| t.len()),
+            Some(1),
+            "catalog round-trips"
+        );
+
+        // Pre-field record (no envelope keys) stays loadable.
+        let legacy = r#"{"schema_version":1,"id":"t","thread_id":"h","status":"completed",
+            "input_summary":"s","created_at":"2026-01-01T00:00:00Z",
+            "item_ids":[],"steer_count":0}"#;
+        let old: TurnRecord = serde_json::from_str(legacy).expect("legacy record loads");
+        assert!(old.tool_catalog.is_none());
+        assert!(old.base_url.is_none());
+    }
+
     fn test_manager_config(data_dir: PathBuf) -> RuntimeThreadManagerConfig {
         RuntimeThreadManagerConfig {
             task_data_dir: data_dir.clone(),
@@ -3429,6 +3509,8 @@ mod tests {
             error: None,
             item_ids: Vec::new(),
             steer_count: 0,
+            tool_catalog: None,
+            base_url: None,
         }
     }
 
@@ -5184,6 +5266,8 @@ mod tests {
             error: None,
             item_ids: vec![completed_item.id.clone(), in_progress_item.id.clone()],
             steer_count: 0,
+            tool_catalog: None,
+            base_url: None,
         })?;
         manager.store.save_turn(&TurnRecord {
             schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
@@ -5199,6 +5283,8 @@ mod tests {
             error: None,
             item_ids: vec![queued_item.id.clone()],
             steer_count: 0,
+            tool_catalog: None,
+            base_url: None,
         })?;
         drop(manager);
 
@@ -5408,6 +5494,8 @@ mod tests {
                 error: None,
                 item_ids: vec![user_item_id, asst_item_id],
                 steer_count: 0,
+                tool_catalog: None,
+                base_url: None,
             })?;
             turn_ids.push(turn_id);
         }

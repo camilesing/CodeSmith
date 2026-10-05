@@ -2217,6 +2217,8 @@ mod tests {
 
     fn saved_session_with_blocks(blocks: Vec<crate::models::ContentBlock>) -> SavedSession {
         SavedSession {
+            last_tool_catalog: None,
+            last_base_url: None,
             schema_version: 1,
             metadata: SessionMetadata {
                 id: "session-1".to_string(),
