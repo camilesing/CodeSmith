@@ -22,6 +22,7 @@ use codesmith_agent::extension::{
     AgentStartEvent, Extension, ExtensionApi, ExtensionContext, ExtensionError, ExtensionEvent,
     ExtensionEventKind, ExtensionMetadata, ExtensionMode, InputEvent, ToolResultEvent,
 };
+use codesmith_agent::provider::ProviderId;
 use codesmith_tools::{ToolError, ToolResult};
 use rhai::Dynamic;
 
@@ -66,6 +67,16 @@ pub enum ScriptRegistration {
         name: String,
         description: String,
         callback: rhai::FnPtr,
+    },
+    /// Route A — a declarative provider alias captured by the
+    /// `register_provider(spec)` native. Replayed at `configure` via
+    /// `ExtensionApi::register_provider_alias`.
+    Provider {
+        id: String,
+        target: ProviderId,
+        base_url: Option<String>,
+        default_model: Option<String>,
+        http_headers: Option<std::collections::HashMap<String, String>>,
     },
 }
 
@@ -540,6 +551,90 @@ fn register_natives(engine: &mut rhai::Engine, kv: &ModKvStore, cell: &Registrat
         },
     );
 
+    // register_provider(spec_map) — route A: declarative provider alias.
+    // `#{ id: "my-gw", kind: "openai", base_url: "...", default_model: "...",
+    //    headers: #{ "X-Gateway": "acme" } }`.
+    // Script mods cannot implement `LlmClient` (no async/net by design), so
+    // a mod's provider is an alias onto a builtin factory with config
+    // overrides. Validation fails loud at capture: unknown `kind`, an `id`
+    // that shadows a builtin, or non-string header values fail the mod's
+    // load instead of surfacing at the first client build. `kind` must name
+    // a builtin (aliasing another mod's custom provider is not supported in
+    // v1); `api_key` is deliberately not accepted — secrets live in config,
+    // not scripts.
+    let cell_prov = Arc::clone(cell);
+    engine.register_fn(
+        "register_provider",
+        move |spec: rhai::Map| -> Result<(), Box<rhai::EvalAltResult>> {
+            let id = spec
+                .get("id")
+                .and_then(|d| d.clone().try_cast::<String>())
+                .ok_or_else(|| {
+                    script_error("register_provider(): spec must include a string `id`")
+                })?;
+            if !valid_tool_name(&id) {
+                return Err(script_error(format!(
+                    "register_provider(): provider id {id:?} must match [a-zA-Z0-9_-] and be 1-64 chars"
+                )));
+            }
+            if matches!(ProviderId::from(id.as_str()), ProviderId::Builtin(_)) {
+                return Err(script_error(format!(
+                    "register_provider(): id {id:?} shadows a builtin provider kind; pick another id"
+                )));
+            }
+            let kind = spec
+                .get("kind")
+                .and_then(|d| d.clone().try_cast::<String>())
+                .ok_or_else(|| {
+                    script_error(
+                        "register_provider(): spec must include a string `kind` naming the \
+                         builtin provider to alias (e.g. \"openai\")",
+                    )
+                })?;
+            let target = ProviderId::from(kind.as_str());
+            if !matches!(target, ProviderId::Builtin(_)) {
+                return Err(script_error(format!(
+                    "register_provider(): kind {kind:?} is not a builtin provider (aliases must \
+                     target a builtin; see docs/MODS.md)"
+                )));
+            }
+            let base_url = spec
+                .get("base_url")
+                .and_then(|d| d.clone().try_cast::<String>());
+            let default_model = spec
+                .get("default_model")
+                .and_then(|d| d.clone().try_cast::<String>());
+            let http_headers = match spec.get("headers").and_then(|d| d.clone().try_cast::<rhai::Map>())
+            {
+                None => None,
+                Some(map) => {
+                    let mut headers = std::collections::HashMap::new();
+                    for (key, value) in map {
+                        let value = value.try_cast::<String>().ok_or_else(|| {
+                            script_error(format!(
+                                "register_provider(): headers[{:?}] must be a string",
+                                key
+                            ))
+                        })?;
+                        headers.insert(key.to_string(), value);
+                    }
+                    Some(headers)
+                }
+            };
+            cell_prov
+                .lock()
+                .expect("mod registration cell poisoned")
+                .push(ScriptRegistration::Provider {
+                    id,
+                    target,
+                    base_url,
+                    default_model,
+                    http_headers,
+                });
+            Ok(())
+        },
+    );
+
     // mod_state_get / mod_state_set — per-mod persistent KV.
     let kv_get = kv.clone();
     engine.register_fn("mod_state_get", move |key: &str| -> Dynamic {
@@ -717,6 +812,21 @@ impl Extension for RhaiMod {
                         callback: callback.clone(),
                     }))?;
                 }
+                ScriptRegistration::Provider {
+                    id,
+                    target,
+                    base_url,
+                    default_model,
+                    http_headers,
+                } => {
+                    api.register_provider_alias(codesmith_agent::provider::ProviderAlias {
+                        id: id.clone(),
+                        target: target.clone(),
+                        base_url: base_url.clone(),
+                        default_model: default_model.clone(),
+                        http_headers: http_headers.clone(),
+                    })?;
+                }
             }
         }
         Ok(())
@@ -780,6 +890,7 @@ mod tests {
                     ScriptRegistration::Handler { kind, .. } => format!("h:{:?}", kind),
                     ScriptRegistration::Tool { name, .. } => format!("t:{name}"),
                     ScriptRegistration::Command { name, .. } => format!("c:{name}"),
+                    ScriptRegistration::Provider { id, .. } => format!("p:{id}"),
                 })
                 .collect::<Vec<_>>()
         );
@@ -813,6 +924,218 @@ mod tests {
             kv_for(&dir, "bad-tool"),
         );
         assert!(matches!(m, Err(ExtensionError::Load(_))), "got {m:?}");
+    }
+
+    // === Route A — register_provider(spec) ================================
+
+    #[test]
+    fn load_captures_provider_registration() {
+        let dir = TempDir::new().unwrap();
+        let m = RhaiMod::load(
+            &discovered_for(
+                &dir,
+                "gw-alias",
+                r#"
+                    register_provider(#{
+                        id: "acme-gw",
+                        kind: "openai",
+                        base_url: "https://gw.example.test/v1",
+                        default_model: "acme-large",
+                        headers: #{ "X-Gateway": "acme" },
+                    });
+                "#,
+            ),
+            kv_for(&dir, "gw-alias"),
+        )
+        .expect("load");
+        let (id, target, base_url, default_model, http_headers) = match m.registrations().first() {
+            Some(ScriptRegistration::Provider {
+                id,
+                target,
+                base_url,
+                default_model,
+                http_headers,
+            }) => (
+                id.clone(),
+                target.clone(),
+                base_url.clone(),
+                default_model.clone(),
+                http_headers.clone(),
+            ),
+            _ => panic!("expected a Provider registration"),
+        };
+        assert_eq!(id, "acme-gw");
+        assert!(matches!(target, ProviderId::Builtin(_)));
+        assert_eq!(base_url.as_deref(), Some("https://gw.example.test/v1"));
+        assert_eq!(default_model.as_deref(), Some("acme-large"));
+        assert_eq!(
+            http_headers.expect("headers captured").get("X-Gateway"),
+            Some(&"acme".to_string())
+        );
+    }
+
+    #[test]
+    fn register_provider_rejects_unknown_kind() {
+        let dir = TempDir::new().unwrap();
+        let m = RhaiMod::load(
+            &discovered_for(
+                &dir,
+                "bad-kind",
+                r#"register_provider(#{id: "x", kind: "nope"});"#,
+            ),
+            kv_for(&dir, "bad-kind"),
+        );
+        let msg = m.unwrap_err().to_string();
+        assert!(msg.contains("not a builtin provider"), "{msg}");
+    }
+
+    #[test]
+    fn register_provider_rejects_builtin_shadowing_id() {
+        let dir = TempDir::new().unwrap();
+        let m = RhaiMod::load(
+            &discovered_for(
+                &dir,
+                "shadow",
+                r#"register_provider(#{id: "deepseek", kind: "openai"});"#,
+            ),
+            kv_for(&dir, "shadow"),
+        );
+        let msg = m.unwrap_err().to_string();
+        assert!(msg.contains("shadows a builtin provider kind"), "{msg}");
+    }
+
+    #[test]
+    fn register_provider_rejects_missing_fields() {
+        let dir = TempDir::new().unwrap();
+        let m = RhaiMod::load(
+            &discovered_for(&dir, "no-id", r#"register_provider(#{kind: "openai"});"#),
+            kv_for(&dir, "no-id"),
+        );
+        let msg = m.unwrap_err().to_string();
+        assert!(msg.contains("must include a string `id`"), "{msg}");
+    }
+
+    /// Route A end-to-end: script alias → runner load → `bind_core` flush →
+    /// `shared_providers().build` resolves the alias and the target
+    /// factory sees the overridden `default_model`.
+    #[test]
+    fn script_provider_alias_builds_through_shared_registry() {
+        use codesmith_agent::llm_client::LlmClient;
+        use codesmith_agent::llm_client::{LlmClientHandle, RetryConfig};
+        use codesmith_agent::models::MessageRequest;
+        use codesmith_agent::provider::{ProviderConfig, ProviderFactory, ProviderId as Pid};
+
+        struct EchoClient {
+            model: String,
+        }
+        impl LlmClient for EchoClient {
+            fn provider_name(&self) -> &'static str {
+                "echo"
+            }
+            fn model(&self) -> &str {
+                &self.model
+            }
+            fn create_message(
+                &self,
+                _r: MessageRequest,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<
+                            Output = anyhow::Result<codesmith_agent::models::MessageResponse>,
+                        > + Send
+                        + '_,
+                >,
+            > {
+                Box::pin(async { Err(anyhow::anyhow!("echo mock")) })
+            }
+            fn create_message_stream(
+                &self,
+                _r: MessageRequest,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<
+                            Output = anyhow::Result<codesmith_agent::llm_client::StreamEventBox>,
+                        > + Send
+                        + '_,
+                >,
+            > {
+                Box::pin(async { Err(anyhow::anyhow!("echo mock")) })
+            }
+        }
+        struct EchoFactory;
+        impl ProviderFactory for EchoFactory {
+            fn id(&self) -> Pid {
+                Pid::from("openai")
+            }
+            fn build(&self, cfg: &ProviderConfig) -> anyhow::Result<LlmClientHandle> {
+                Ok(Arc::new(EchoClient {
+                    model: cfg.default_model.clone(),
+                }))
+            }
+        }
+
+        struct TestCmdCtx;
+        #[async_trait]
+        impl codesmith_agent::extension::ExtensionContext for TestCmdCtx {
+            fn cwd(&self) -> &std::path::Path {
+                std::path::Path::new(".")
+            }
+            fn mode(&self) -> codesmith_agent::extension::ExtensionMode {
+                codesmith_agent::extension::ExtensionMode::Tui
+            }
+            fn is_idle(&self) -> bool {
+                true
+            }
+            fn signal(&self) -> tokio_util::sync::CancellationToken {
+                tokio_util::sync::CancellationToken::new()
+            }
+            fn generation(&self) -> u64 {
+                1
+            }
+        }
+        impl codesmith_agent::extension::ExtensionCommandContext for TestCmdCtx {}
+
+        let dir = TempDir::new().unwrap();
+        let rhai_mod = RhaiMod::load(
+            &discovered_for(
+                &dir,
+                "e2e-gw",
+                r#"
+                    register_provider(#{
+                        id: "acme-gw",
+                        kind: "openai",
+                        default_model: "acme-large",
+                    });
+                "#,
+            ),
+            kv_for(&dir, "e2e-gw"),
+        )
+        .expect("load mod");
+
+        let runner = crate::ExtensionRunner::new();
+        let shared = runner.shared_providers();
+        // Seed the builtin target; hold the guard (drop = unregister).
+        let _target = shared.register(Arc::new(EchoFactory));
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        rt.block_on(runner.load(&rhai_mod)).expect("configure");
+        runner.bind_core(Arc::new(TestCmdCtx));
+
+        let client = shared
+            .build(&ProviderConfig {
+                provider: Pid::from("acme-gw"),
+                api_key: "k".into(),
+                base_url: "https://example.test/v1".into(),
+                default_model: "unused".into(),
+                retry: RetryConfig::disabled(),
+                http_headers: std::collections::HashMap::new(),
+                on_retry: None,
+            })
+            .expect("alias builds through the target factory");
+        assert_eq!(
+            client.model(),
+            "acme-large",
+            "default_model override applied"
+        );
     }
 
     #[test]

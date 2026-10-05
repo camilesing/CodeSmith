@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use codesmith_agent::extension::*;
+use codesmith_agent::provider::{ProviderFactory, ProviderRegistration, SharedProviderRegistry};
 use futures_util::FutureExt;
 use libloading::Library;
 
@@ -28,6 +29,13 @@ use crate::api::StubExtensionApi;
 /// `bind_core` flush into the host `ToolRegistry`.
 pub(crate) struct PendingTool {
     pub tool: Box<dyn ToolDefinition>,
+}
+
+/// A provider factory queued by the stub `ExtensionApi` during `configure`,
+/// awaiting `bind_core` flush into the runner's [`SharedProviderRegistry`]
+/// (route A).
+pub(crate) struct PendingProvider {
+    pub factory: Arc<dyn ProviderFactory>,
 }
 
 /// A command queued by the stub `ExtensionApi`.
@@ -79,6 +87,7 @@ pub(crate) struct Pending {
     pub tools: Vec<PendingTool>,
     pub commands: Vec<PendingCommand>,
     pub handlers: Vec<PendingHandler>,
+    pub providers: Vec<PendingProvider>,
 }
 
 /// The host runtime. Constructed by [`ExtensionRunner::new`] +
@@ -124,6 +133,17 @@ pub struct ExtensionRunner {
     /// while an in-flight turn holds a dylib `Arc` would be UAF (dangling
     /// vtable). See spec §4a/§4b.
     pending_drop: Mutex<Vec<Library>>,
+    /// Route A — the shared provider registry extension factories flush
+    /// into at `bind_core`. Defaults to a private instance; hosts that
+    /// resolve clients through their own shared instance call
+    /// [`attach_shared_providers`](Self::attach_shared_providers) before
+    /// load/bind so both sides see the same map. `Mutex` (not a plain
+    /// field) so the host can re-point it through `&self`.
+    shared: Mutex<SharedProviderRegistry>,
+    /// Route A — the live registration guards (drop = un-register, see
+    /// [`ProviderRegistration`]). `clear_providers` / reload drop the Vec;
+    /// that is the whole unload story for this contribution type.
+    providers: Mutex<Vec<ProviderRegistration>>,
 }
 
 impl ExtensionRunner {
@@ -139,6 +159,8 @@ impl ExtensionRunner {
             handlers: Mutex::new(Vec::new()),
             libraries: Mutex::new(Vec::new()),
             pending_drop: Mutex::new(Vec::new()),
+            shared: Mutex::new(SharedProviderRegistry::new()),
+            providers: Mutex::new(Vec::new()),
         }
     }
 
@@ -195,6 +217,46 @@ impl ExtensionRunner {
             .clear();
     }
 
+    /// Route A — clear all bound **providers** by dropping the generation's
+    /// registration guards (drop = un-register; see
+    /// [`ProviderRegistration`]). Same concurrency reasoning as
+    /// `clear_tools`: an already-built client keeps working (it holds its
+    /// `Arc`); only future resolutions stop seeing the extension factory.
+    /// Called from `reload_extension_runtime` before re-populate.
+    pub fn clear_providers(&self) {
+        // Move out under the lock, drop the guards outside it: guard drops
+        // take the shared registry's write lock (and factory `Drop`s may
+        // run), which must not happen under this lock.
+        let drained = {
+            let mut providers = self.providers.lock().expect("providers lock poisoned");
+            std::mem::take(&mut *providers)
+        };
+        drop(drained);
+    }
+
+    /// Route A — clone of the shared provider registry extensions flush
+    /// into. Hosts resolve clients through this instance to see
+    /// extension-registered factories.
+    #[must_use]
+    pub fn shared_providers(&self) -> SharedProviderRegistry {
+        self.shared
+            .lock()
+            .expect("shared provider registry lock poisoned")
+            .clone()
+    }
+
+    /// Route A — point the runner at the host's shared provider registry
+    /// (the one the host's client-resolution path reads). Call before
+    /// `load`/`bind_core` (host wiring at construction); registrations
+    /// already flushed into the previous instance stay there — their
+    /// guards reference the instance they registered into.
+    pub fn attach_shared_providers(&self, shared: SharedProviderRegistry) {
+        *self
+            .shared
+            .lock()
+            .expect("shared provider registry lock poisoned") = shared;
+    }
+
     /// §F5d T4 — MOVE the live `libraries` into `pending_drop` (UI-thread,
     /// reload-time). Safe: takes the `libraries` lock once + `std::mem::take`s
     /// the `Vec` (each `Library` is an owned handle, not a borrowed `Arc`);
@@ -240,7 +302,12 @@ impl ExtensionRunner {
     /// queue into `pending_*`. Called by `build_extension_runtime` (Task 9)
     /// for each discovered extension, BEFORE `bind_core`.
     pub async fn load(&self, ext: &dyn Extension) -> Result<(), ExtensionError> {
-        let stub = StubExtensionApi::new(self.generation.clone(), self.pending.clone());
+        let shared = self
+            .shared
+            .lock()
+            .expect("shared provider registry lock poisoned")
+            .clone();
+        let stub = StubExtensionApi::new(self.generation.clone(), self.pending.clone(), shared);
         ext.configure(&stub).await
     }
 
@@ -274,6 +341,7 @@ impl ExtensionRunner {
         let mut tools = self.tools.lock().unwrap();
         let mut commands = self.commands.lock().unwrap();
         let mut handlers = self.handlers.lock().unwrap();
+        let mut providers = self.providers.lock().unwrap();
         for pt in pending.tools.drain(..) {
             let name = pt.tool.name().to_string();
             let arc: Arc<dyn ToolDefinition> = Arc::from(pt.tool);
@@ -289,6 +357,20 @@ impl ExtensionRunner {
                 handler: ph.handler,
                 kind_filter: ph.kind_filter,
             });
+        }
+        for pp in pending.providers.drain(..) {
+            let id = pp.factory.id();
+            let guard = self
+                .shared
+                .lock()
+                .expect("shared provider registry lock poisoned")
+                .register(pp.factory);
+            tracing::info!(
+                target: "codesmith_extensions",
+                "extension provider registered: {}",
+                id.as_str(),
+            );
+            providers.push(guard);
         }
     }
 
@@ -428,6 +510,11 @@ impl std::fmt::Debug for ExtensionRunner {
             .lock()
             .expect("pending_drop mutex poisoned")
             .len();
+        let providers = self
+            .providers
+            .lock()
+            .expect("providers mutex poisoned")
+            .len();
         let bound = self
             .context
             .lock()
@@ -441,6 +528,7 @@ impl std::fmt::Debug for ExtensionRunner {
             .field("handlers", &handlers)
             .field("libraries", &libraries)
             .field("pending_drop", &pending_drop)
+            .field("providers", &providers)
             .finish()
     }
 }
@@ -987,5 +1075,145 @@ mod tests {
         // on an empty pending is a no-op (must not panic).
         runner.drop_pending();
         runner.drop_pending();
+    }
+
+    // === Route A — provider registration flush / clear / attach ===========
+
+    /// Minimal test-only `LlmClient` + factory (mirrors the shape in
+    /// `codesmith-agent`'s provider tests) so runner provider tests can
+    /// register a real factory.
+    struct EchoClient {
+        model: String,
+    }
+    impl codesmith_agent::llm_client::LlmClient for EchoClient {
+        fn provider_name(&self) -> &'static str {
+            "echo"
+        }
+        fn model(&self) -> &str {
+            &self.model
+        }
+        fn create_message(
+            &self,
+            _request: codesmith_agent::models::MessageRequest,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = anyhow::Result<codesmith_agent::models::MessageResponse>,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async { Err(anyhow::anyhow!("echo mock")) })
+        }
+        fn create_message_stream(
+            &self,
+            _request: codesmith_agent::models::MessageRequest,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = anyhow::Result<codesmith_agent::llm_client::StreamEventBox>,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async { Err(anyhow::anyhow!("echo mock")) })
+        }
+    }
+
+    struct EchoFactory {
+        id: codesmith_agent::provider::ProviderId,
+    }
+    impl codesmith_agent::provider::ProviderFactory for EchoFactory {
+        fn id(&self) -> codesmith_agent::provider::ProviderId {
+            self.id.clone()
+        }
+        fn build(
+            &self,
+            cfg: &codesmith_agent::provider::ProviderConfig,
+        ) -> anyhow::Result<codesmith_agent::llm_client::LlmClientHandle> {
+            Ok(Arc::new(EchoClient {
+                model: cfg.default_model.clone(),
+            }))
+        }
+    }
+
+    /// Registers one provider factory via `api.register_provider` — the
+    /// Rust-side (dylib-identical) contribution shape.
+    struct ProviderExt;
+    #[async_trait::async_trait]
+    impl Extension for ProviderExt {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("provider-ext");
+            &M
+        }
+        async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+            api.register_provider(Arc::new(EchoFactory {
+                id: codesmith_agent::provider::ProviderId::from("acme-llm"),
+            }))?;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn provider_registration_flushes_into_shared_and_clear_removes() {
+        let runner = ExtensionRunner::new();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        rt.block_on(runner.load(&ProviderExt)).expect("load");
+        runner.bind_core(Arc::new(Ctx { generation: 1 }));
+
+        let shared = runner.shared_providers();
+        let id = codesmith_agent::provider::ProviderId::from("acme-llm");
+        assert!(shared.resolve(&id).is_some(), "flushed at bind_core");
+
+        // clear_providers drops the generation's guards → un-register.
+        runner.clear_providers();
+        assert!(
+            shared.resolve(&id).is_none(),
+            "clear drops the registration guards"
+        );
+
+        // Re-load proves clear is non-destructive to the runner itself.
+        rt.block_on(runner.load(&ProviderExt)).expect("reload");
+        runner.bind_core(Arc::new(Ctx { generation: 2 }));
+        assert!(
+            shared.resolve(&id).is_some(),
+            "provider re-registered after reload"
+        );
+    }
+
+    #[test]
+    fn attach_shared_providers_repoints_flush_target() {
+        // Host wiring shape: create the shared instance the host resolves
+        // through, attach it BEFORE load/bind, and the registration lands
+        // there (not in the runner's private default).
+        let runner = ExtensionRunner::new();
+        let host_shared = SharedProviderRegistry::new();
+        runner.attach_shared_providers(host_shared.clone());
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        rt.block_on(runner.load(&ProviderExt)).expect("load");
+        runner.bind_core(Arc::new(Ctx { generation: 1 }));
+
+        let id = codesmith_agent::provider::ProviderId::from("acme-llm");
+        assert!(host_shared.resolve(&id).is_some());
+        assert!(
+            runner.shared_providers().resolve(&id).is_some(),
+            "shared_providers() is the attached instance"
+        );
+    }
+
+    #[test]
+    fn provider_registration_before_bind_core_is_not_live() {
+        // Pending-only: configure queued the factory but bind_core has not
+        // flushed it, so the shared registry does not resolve it yet
+        // (mirrors the two-phase tools/commands contract).
+        let runner = ExtensionRunner::new();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        rt.block_on(runner.load(&ProviderExt)).expect("load");
+        assert!(
+            runner
+                .shared_providers()
+                .resolve(&codesmith_agent::provider::ProviderId::from("acme-llm"))
+                .is_none()
+        );
     }
 }

@@ -32,8 +32,17 @@ Stance).
 > isolation), and §F2b (host seam wiring — honor `EmitOutcome` at the 7
 > `host_executor` seams + emit 22/23 events + full e2e round-trip + live
 > reload) are done. Dylib loading, `extension.toml` manifests,
-> install/uninstall, `registerProvider`, renderers, shortcuts, flags, the
-> `EventBus` impl are deferred to §F3–§F8. §F2c (reload sharing the engine's
+> install/uninstall, renderers, shortcuts, flags, the
+> `EventBus` impl are deferred to §F3–§F8. **Provider registration (route
+> A) is done**: `ExtensionApi::register_provider` (Rust/dylib shape, a full
+> `Arc<dyn ProviderFactory>`) and `ExtensionApi::register_provider_alias`
+> (script shape, a declarative alias onto a builtin provider — the Rhai
+> `register_provider(spec)` native) flush into a
+> `codesmith_agent::provider::SharedProviderRegistry` the host resolves
+> clients through; unregistration is symmetric via the
+> `ProviderRegistration` drop guard (reload drops the generation's guards).
+> Registration is logged (target `codesmith_extensions`); it takes effect
+> at the next client resolution, not mid-session. §F2c (reload sharing the engine's
 > live `cancel_token`; `on_tool_progress` `Callback` hook as forward-looking
 > API surface for `ToolExecutionUpdate`; `ProjectTrust` per-turn wire) is
 > done. §F5 slice 1 (`ProjectTrust { FirstLoad }` emit at the onboarding
@@ -84,7 +93,7 @@ between user-defined commands and the static `match`.
 | `/extension enable <id>` | | ✅ working | Marks the extension enabled in `extensions_state.toml`; takes effect on next `/extension reload` (§F2 wires live re-reconcile). |
 | `/extension disable <id>` | | ✅ working | Marks the extension disabled; same reload caveat. |
 | `/extension status` | | ✅ working | Reports the bound runner's generation + bound command/tool counts. |
-| `/extension reload` | | ✅ working (live reload) | Re-populates the **shared runner `Arc`**: `clear_handlers` → `clear_tools` → `clear_commands` → `drain_libraries_to_pending` (§F5d T3+T4) → `invalidate` (bump generation) → `discover_static` + `discover_dylib` → reconcile against state → `load` each → `bind_core` (fresh `HostExtensionContext`). Both `App.extension_runner` and the Engine's field update live (no `Arc` swap — they share the one the engine built). The drained `Library`s are `drop_pending`'d at the next engine op-loop top (turn boundary, §F5d T4). A handler bound before reload stops observing after (cleared, not duplicated); a newly-compiled-in extension is picked up on the next reload. |
+| `/extension reload` | | ✅ working (live reload) | Re-populates the **shared runner `Arc`**: `clear_handlers` → `clear_tools` → `clear_commands` → `clear_providers` (route A, drops registration guards) → `drain_libraries_to_pending` (§F5d T3+T4) → `invalidate` (bump generation) → `discover_static` + `discover_dylib` → reconcile against state → `load` each → `bind_core` (fresh `HostExtensionContext`). Both `App.extension_runner` and the Engine's field update live (no `Arc` swap — they share the one the engine built). The drained `Library`s are `drop_pending`'d at the next engine op-loop top (turn boundary, §F5d T4). A handler bound before reload stops observing after (cleared, not duplicated); a newly-compiled-in extension is picked up on the next reload. |
 | `/extension install <source> [--global]` | | ✅ working (§F5c) | Fetches (`git:`/`path:`) → builds (`cargo build`) → places to `<root>/<id>/` + writes `extension.toml` + records `installed[]` provenance; `--global` opt-in (default project). `crate:` fetches from crates.io (sparse-index → version → sha256-verified `.crate` → `tar` extract → build); `prebuilt:<https-url>` fetches a prebuilt cdylib (HTTPS-only, optional `--checksum <sha256>`); both warn if project + untrusted; `/extension reload` to load. |
 | `/extension uninstall <id>` | | ✅ working (§F5c) | Removes `<root>/<id>/` + clears `installed[]` provenance. Live tool/command bindings clear on next `/extension reload`; dylib unloads safely at next turn boundary (§F5d two-phase drop). |
 

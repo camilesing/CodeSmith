@@ -140,6 +140,35 @@ Transform 可变字段（一个 handler 的改写对后续 handler 立即可见�
 | `proceed / block / cancel / transform` | 钩子控制值 |
 | `ok(value) / err(msg)` | 工具结果构造 |
 | `message(msg) / send(msg)` | 命令输出（展示 / 注入对话） |
+| `register_provider(spec)` | 注册 provider 别名（见下） |
+
+### 注册 provider（路线 A）
+
+Mod 可以注册一个 **provider 别名** —— 一个新的 provider id，委托给某个
+内置 provider，并携带自己的 `base_url` / `default_model` / `headers`
+覆盖。脚本无法实现 LLM 客户端（按设计无 async/网络），因此 mod 的
+provider 贡献永远是这种别名，例如指向一个 OpenAI 兼容网关：
+
+```rhai
+register_provider(#{
+    id: "acme-gw",                        // 新 id；不得遮蔽内置名称
+    kind: "openai",                       // 委托到的内置 provider
+    base_url: "https://gw.example.test/v1",
+    default_model: "acme-large",
+    headers: #{ "X-Gateway": "acme" },    // 可选
+});
+```
+
+校验在 mod **加载**时即失败：`id` 遮蔽内置名称、`kind` 不是内置
+provider、或 header 值不是字符串 —— 坏的 spec 到不了客户端。刻意不
+接受 `api_key`：秘密只存在于配置中，绝不进入脚本。
+
+选用别名：在 config.toml 声明一个同 `id` 的 `[[providers.custom]]`
+条目（承载 API key），并以 `custom_provider = "acme-gw"` 选中。别名的
+`base_url` / `default_model` / `headers` 覆盖在客户端构建时叠加于条目
+值之上。注册会写日志（target `codesmith_extensions`），在下一次客户端
+解析时生效（新会话、切换 provider）—— 运行中的会话沿用当前客户端。
+卸载 mod 或 `/extension reload` 即移除别名。
 
 ### 资源限制与错误姿态
 
