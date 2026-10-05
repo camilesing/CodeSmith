@@ -4479,6 +4479,8 @@ fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
         app.sync_cost_to_metadata(&mut updated.metadata);
         updated.context_references = app.session_context_references.clone();
         updated.artifacts = app.session_artifacts.clone();
+        updated.last_tool_catalog = app.session.last_tool_catalog.clone();
+        updated.last_base_url = app.session.last_base_url.clone();
         updated
     } else {
         let mut session = if let Some(existing_id) = app.current_session_id.as_ref() {
@@ -4504,6 +4506,8 @@ fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
         app.sync_cost_to_metadata(&mut session.metadata);
         session.context_references = app.session_context_references.clone();
         session.artifacts = app.session_artifacts.clone();
+        session.last_tool_catalog = app.session.last_tool_catalog.clone();
+        session.last_base_url = app.session.last_base_url.clone();
         session
     }
 }
@@ -7865,6 +7869,10 @@ fn set_provider_auth_mode_in_memory(config: &mut Config, provider: ApiProvider, 
 fn apply_loaded_session(app: &mut App, config: &Config, session: &SavedSession) -> bool {
     let (messages, recovered_draft) = recover_interrupted_user_tail(&session.messages);
     app.api_messages = messages;
+    // Event-sourcing slice 2 — restore the persisted request envelope
+    // (tool catalog + base URL of the last model request).
+    app.session.last_tool_catalog = session.last_tool_catalog.clone();
+    app.session.last_base_url = session.last_base_url.clone();
     app.clear_history();
     app.tool_cells.clear();
     app.tool_details_by_cell.clear();

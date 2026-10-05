@@ -196,6 +196,14 @@ pub struct SavedSession {
     pub messages: Vec<Message>,
     /// System prompt if any
     pub system_prompt: Option<String>,
+    /// Request envelope (event-sourcing slice 2): the tool catalog and API
+    /// base URL of the LAST model request in this session — the persisted
+    /// counterpart of `SessionState::last_tool_catalog`/`last_base_url`.
+    /// `None` on sessions saved before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_tool_catalog: Option<Vec<crate::models::Tool>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_base_url: Option<String>,
     /// Compact linked context references for user-visible `@path` and
     /// `/attach` mentions. Optional for backward-compatible session loads.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -708,6 +716,8 @@ pub fn create_saved_session_with_id_and_mode(
 
     SavedSession {
         schema_version: CURRENT_SESSION_SCHEMA_VERSION,
+        last_tool_catalog: None,
+        last_base_url: None,
         metadata: SessionMetadata {
             id,
             title,
@@ -998,6 +1008,26 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    /// Event-sourcing slice 2 — a session saved before the envelope fields
+    /// existed still loads; the envelope reads back as `None`.
+    #[test]
+    fn saved_session_legacy_load_has_no_envelope() {
+        let legacy = r#"{
+            "schema_version": 1,
+            "metadata": {
+                "id": "s1", "title": "t", "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z", "message_count": 0,
+                "total_tokens": 0, "model": "m", "workspace": "/tmp",
+                "cost": {"session_cost": 0.0, "session_cost_cny": 0.0,
+                          "subagent_cost": 0.0, "subagent_cost_cny": 0.0}
+            },
+            "messages": []
+        }"#;
+        let parsed: SavedSession = serde_json::from_str(legacy).expect("legacy session loads");
+        assert!(parsed.last_tool_catalog.is_none());
+        assert!(parsed.last_base_url.is_none());
+    }
+
     fn make_test_message(role: &str, text: &str) -> Message {
         Message {
             role: role.to_string(),
@@ -1015,6 +1045,8 @@ mod tests {
         updated_at: DateTime<Utc>,
     ) {
         let session = SavedSession {
+            last_tool_catalog: None,
+            last_base_url: None,
             schema_version: CURRENT_SESSION_SCHEMA_VERSION,
             messages: vec![make_test_message("user", "hi")],
             metadata: SessionMetadata {
@@ -1046,6 +1078,8 @@ mod tests {
         updated_at: DateTime<Utc>,
     ) {
         let session = SavedSession {
+            last_tool_catalog: None,
+            last_base_url: None,
             schema_version: CURRENT_SESSION_SCHEMA_VERSION,
             messages: Vec::new(),
             metadata: SessionMetadata {

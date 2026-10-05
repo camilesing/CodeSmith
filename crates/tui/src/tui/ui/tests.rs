@@ -1589,6 +1589,8 @@ fn text_message(role: &str, text: &str) -> Message {
 
 fn saved_session_with_messages(messages: Vec<Message>) -> SavedSession {
     SavedSession {
+        last_tool_catalog: None,
+        last_base_url: None,
         schema_version: 1,
         metadata: crate::session_manager::SessionMetadata {
             id: "resume-recovery-session".to_string(),
