@@ -2986,6 +2986,15 @@ impl RuntimeThreadManager {
                     )
                     .await?;
                 }
+                // Event-sourcing slice 5 — persist the per-step request
+                // envelope into the append-only event stream (step-level
+                // facts the turn record does not carry).
+                EngineEvent::LlmRequest { summary } => {
+                    let payload =
+                        serde_json::to_value(&summary).unwrap_or_else(|_| serde_json::json!({}));
+                    self.emit_event(&thread_id, Some(&turn_id), None, "llm.request", payload)
+                        .await?;
+                }
                 EngineEvent::TurnComplete {
                     usage,
                     status,

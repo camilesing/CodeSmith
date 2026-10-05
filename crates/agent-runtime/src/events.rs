@@ -26,6 +26,42 @@ pub enum TurnOutcomeStatus {
     Failed,
 }
 
+/// Compact per-request envelope summary (event-sourcing slice 5). Built
+/// from the final `MessageRequest` at the `on_llm_start` seam — after every
+/// extension transform — so any step's provider envelope is reconstructable
+/// from the event log.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LlmRequestSummary {
+    pub model: String,
+    pub max_tokens: u32,
+    pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
+    /// DeepSeek reasoning-effort tier ("off" | "low" | "medium" | "high" | "max").
+    pub reasoning_effort: Option<String>,
+    /// How many transcript messages this request carried (the slicing fact).
+    pub message_count: usize,
+    /// How many tools the request advertised.
+    pub tool_count: usize,
+    pub stream: bool,
+}
+
+impl LlmRequestSummary {
+    /// Build from the final outgoing request.
+    #[must_use]
+    pub fn from_request(request: &codesmith_agent::models::MessageRequest) -> Self {
+        Self {
+            model: request.model.clone(),
+            max_tokens: request.max_tokens,
+            temperature: request.temperature,
+            top_p: request.top_p,
+            reasoning_effort: request.reasoning_effort.clone(),
+            message_count: request.messages.len(),
+            tool_count: request.tools.as_ref().map_or(0, Vec::len),
+            stream: request.stream.unwrap_or(false),
+        }
+    }
+}
+
 /// Events emitted by the engine to update the UI.
 #[derive(Debug, Clone)]
 pub enum Event {
@@ -90,6 +126,14 @@ pub enum Event {
     // === Turn Lifecycle ===
     /// A new turn has started (user sent a message)
     TurnStarted { turn_id: String },
+
+    /// Event-sourcing slice 5 — one per provider request (LLM step): the
+    /// compact request-envelope facts the turn-level record does not carry
+    /// (sampling parameters, message/tool counts, slicing). Messages live
+    /// in the transcript and the tool catalog rides the turn record — the
+    /// event log stays deduplicated. Emitted from the `on_llm_start`
+    /// callback (once per step; transparent retries happen inside a step).
+    LlmRequest { summary: LlmRequestSummary },
 
     /// The turn is complete (no more tool calls)
     TurnComplete {
