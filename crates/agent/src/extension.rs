@@ -617,6 +617,14 @@ pub trait ExtensionApi: Send + Sync {
     /// implement `LlmClient` (no async/net by design), so their provider
     /// contribution is this alias form; see [`ProviderAlias`].
     fn register_provider_alias(&self, alias: ProviderAlias) -> Result<(), ExtensionError>;
+
+    /// Route B (systemPrompt sections) — contribute a named, append-only
+    /// section to the base system prompt. Sections register at mod load and
+    /// are stable for the session (prefix-cache discipline); the host
+    /// appends them to the base prompt each turn, BEFORE the
+    /// `BeforeAgentStart` seam — an explicit whole-prompt replacement by a
+    /// handler still wins. `id` is diagnostics/dedup identity, not display.
+    fn register_prompt_section(&self, id: String, text: String) -> Result<(), ExtensionError>;
 }
 
 // === Extension (the factory) ==============================================

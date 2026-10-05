@@ -31,6 +31,28 @@ pub(crate) struct PendingTool {
     pub tool: Box<dyn ToolDefinition>,
 }
 
+/// Route B — prompt-section limit (fail loud beyond, at registration).
+pub(crate) const MAX_PROMPT_SECTIONS: usize = 16;
+
+/// Route B — shared validation (stub-time and live registration paths).
+pub(crate) fn validate_prompt_section(id: &str, text: &str) -> Result<(), ExtensionError> {
+    if id.is_empty()
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        return Err(ExtensionError::Config(format!(
+            "prompt section id {id:?} must match [a-zA-Z0-9_-]"
+        )));
+    }
+    if text.trim().is_empty() {
+        return Err(ExtensionError::Config(format!(
+            "prompt section {id:?} text must be non-empty"
+        )));
+    }
+    Ok(())
+}
+
 /// A provider factory queued by the stub `ExtensionApi` during `configure`,
 /// awaiting `bind_core` flush into the runner's [`SharedProviderRegistry`]
 /// (route A).
@@ -88,6 +110,7 @@ pub(crate) struct Pending {
     pub commands: Vec<PendingCommand>,
     pub handlers: Vec<PendingHandler>,
     pub providers: Vec<PendingProvider>,
+    pub prompt_sections: Vec<(String, String)>,
 }
 
 /// The host runtime. Constructed by [`ExtensionRunner::new`] +
@@ -144,6 +167,11 @@ pub struct ExtensionRunner {
     /// [`ProviderRegistration`]). `clear_providers` / reload drop the Vec;
     /// that is the whole unload story for this contribution type.
     providers: Mutex<Vec<ProviderRegistration>>,
+    /// Route B (systemPrompt sections) — `(id, text)` in registration
+    /// order. Register at mod load; `clear_prompt_sections` / reload drop
+    /// them (a dropped section shifts the prompt prefix once, the same
+    /// cost class as a whole-prompt replacement).
+    prompt_sections: Mutex<Vec<(String, String)>>,
 }
 
 impl ExtensionRunner {
@@ -161,6 +189,7 @@ impl ExtensionRunner {
             pending_drop: Mutex::new(Vec::new()),
             shared: Mutex::new(SharedProviderRegistry::new()),
             providers: Mutex::new(Vec::new()),
+            prompt_sections: Mutex::new(Vec::new()),
         }
     }
 
@@ -243,6 +272,73 @@ impl ExtensionRunner {
             .lock()
             .expect("shared provider registry lock poisoned")
             .clone()
+    }
+
+    /// Route B (systemPrompt sections) — append `text` as a named section.
+    /// Errors on an empty id/text, an unknown id charset, or beyond
+    /// [`MAX_PROMPT_SECTIONS`] sections (fail loud at load, not mid-session).
+    pub fn register_prompt_section(&self, id: String, text: String) -> Result<(), ExtensionError> {
+        validate_prompt_section(&id, &text)?;
+        let mut sections = self
+            .prompt_sections
+            .lock()
+            .expect("prompt sections poisoned");
+        if sections.len() >= MAX_PROMPT_SECTIONS {
+            return Err(ExtensionError::Config(format!(
+                "too many prompt sections (>{MAX_PROMPT_SECTIONS})"
+            )));
+        }
+        // Re-registering an id replaces its text in place (id is identity).
+        if let Some(slot) = sections.iter_mut().find(|(existing, _)| *existing == id) {
+            slot.1 = text;
+        } else {
+            sections.push((id, text));
+        }
+        Ok(())
+    }
+
+    /// Route B — merge the registered sections onto `base` (append-only,
+    /// registration order). `None` when no sections are registered (the
+    /// caller keeps `base` untouched; no needless prefix churn).
+    #[must_use]
+    pub fn append_prompt_sections(
+        &self,
+        base: codesmith_agent::models::SystemPrompt,
+    ) -> Option<codesmith_agent::models::SystemPrompt> {
+        let sections = self
+            .prompt_sections
+            .lock()
+            .expect("prompt sections poisoned");
+        if sections.is_empty() {
+            return None;
+        }
+        let joined = sections
+            .iter()
+            .map(|(_, text)| text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        Some(match base {
+            codesmith_agent::models::SystemPrompt::Text(t) => {
+                codesmith_agent::models::SystemPrompt::Text(format!("{t}\n\n{joined}"))
+            }
+            codesmith_agent::models::SystemPrompt::Blocks(mut blocks) => {
+                blocks.push(codesmith_agent::models::SystemBlock {
+                    block_type: "text".to_string(),
+                    text: joined,
+                    cache_control: None,
+                });
+                codesmith_agent::models::SystemPrompt::Blocks(blocks)
+            }
+        })
+    }
+
+    /// Route B — clear all prompt sections (reload drops the generation's
+    /// contributions, mirroring `clear_tools`/`clear_providers`).
+    pub fn clear_prompt_sections(&self) {
+        self.prompt_sections
+            .lock()
+            .expect("prompt sections poisoned")
+            .clear();
     }
 
     /// Route A — point the runner at the host's shared provider registry
@@ -357,6 +453,14 @@ impl ExtensionRunner {
                 handler: ph.handler,
                 kind_filter: ph.kind_filter,
             });
+        }
+        for (id, text) in pending.prompt_sections.drain(..) {
+            if let Err(e) = self.register_prompt_section(id, text) {
+                tracing::warn!(
+                    target: "codesmith_extensions",
+                    "prompt section rejected at bind: {e}"
+                );
+            }
         }
         for pp in pending.providers.drain(..) {
             let id = pp.factory.id();
@@ -1198,6 +1302,112 @@ mod tests {
         assert!(
             runner.shared_providers().resolve(&id).is_some(),
             "shared_providers() is the attached instance"
+        );
+    }
+
+    // === Route B — prompt sections =========================================
+
+    #[test]
+    fn prompt_sections_register_merge_and_clear() {
+        use codesmith_agent::models::SystemPrompt;
+        let runner = ExtensionRunner::new();
+
+        // No sections → None (base untouched, no prefix churn).
+        assert!(
+            runner
+                .append_prompt_sections(SystemPrompt::Text("base".into()))
+                .is_none()
+        );
+
+        runner
+            .register_prompt_section("style".into(), "Be terse.".into())
+            .unwrap();
+        runner
+            .register_prompt_section("domain".into(), "Fintech conventions apply.".into())
+            .unwrap();
+        // Re-registering an id replaces in place (identity), not append.
+        runner
+            .register_prompt_section("style".into(), "Be VERY terse.".into())
+            .unwrap();
+
+        let merged = runner
+            .append_prompt_sections(SystemPrompt::Text("base".into()))
+            .expect("merged");
+        match merged {
+            SystemPrompt::Text(t) => {
+                assert!(t.starts_with("base"));
+                assert!(t.contains("Be VERY terse."), "replaced text wins: {t}");
+                assert!(t.contains("Fintech conventions apply."));
+                assert!(
+                    t.find("VERY").unwrap() < t.find("Fintech").unwrap(),
+                    "order kept"
+                );
+            }
+            other => panic!("expected Text, got {other:?}"),
+        }
+        // Blocks base gets an appended block.
+        let merged_blocks = runner
+            .append_prompt_sections(SystemPrompt::Blocks(Vec::new()))
+            .expect("merged blocks");
+        assert!(matches!(merged_blocks, SystemPrompt::Blocks(b) if b.len() == 1));
+
+        runner.clear_prompt_sections();
+        assert!(
+            runner
+                .append_prompt_sections(SystemPrompt::Text("base".into()))
+                .is_none(),
+            "cleared"
+        );
+    }
+
+    #[test]
+    fn prompt_section_validation_and_cap() {
+        let runner = ExtensionRunner::new();
+        assert!(
+            runner
+                .register_prompt_section("bad id!".into(), "x".into())
+                .is_err()
+        );
+        assert!(
+            runner
+                .register_prompt_section("ok".into(), "  ".into())
+                .is_err()
+        );
+        for i in 0..MAX_PROMPT_SECTIONS {
+            runner
+                .register_prompt_section(format!("s{i}"), "x".into())
+                .unwrap();
+        }
+        assert!(
+            runner
+                .register_prompt_section("overflow".into(), "x".into())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn prompt_section_flushes_at_bind_core() {
+        struct SectionExt;
+        #[async_trait::async_trait]
+        impl Extension for SectionExt {
+            fn metadata(&self) -> &ExtensionMetadata {
+                static M: ExtensionMetadata = ExtensionMetadata::new("section-ext");
+                &M
+            }
+            async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+                api.register_prompt_section("guide".into(), "Prefer small diffs.".into())?;
+                Ok(())
+            }
+        }
+        let runner = ExtensionRunner::new();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        rt.block_on(runner.load(&SectionExt)).expect("load");
+        runner.bind_core(Arc::new(Ctx { generation: 1 }));
+        assert!(
+            runner
+                .append_prompt_sections(codesmith_agent::models::SystemPrompt::Text("b".into()))
+                .is_some(),
+            "flushed at bind_core"
         );
     }
 

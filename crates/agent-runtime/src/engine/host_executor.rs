@@ -2785,6 +2785,18 @@ impl HostAgentExecutor {
         let extension = self.extension.clone();
         let turn_id = uuid::Uuid::new_v4().to_string();
 
+        // Route B (systemPrompt sections) — append registered mod sections
+        // to the base prompt BEFORE the BeforeAgentStart seam: sections are
+        // the composition form, an explicit whole-prompt replacement by a
+        // handler still wins. Sections register at mod load, so within a
+        // session the prefix stays stable (mid-session activation shifts
+        // it once — the same cost class as a whole-prompt replacement).
+        if let Some(runner) = &extension
+            && let Some(base_prompt) = &base
+            && let Some(with_sections) = runner.append_prompt_sections(base_prompt.clone())
+        {
+            base = Some(with_sections);
+        }
         // §F2b T2 — BeforeAgentStart (transform-capable): a handler may inject
         // a user message (pushed before the user turn) and/or override the
         // system prompt. AgentStart (observe) fires right after.

@@ -69,6 +69,10 @@ pub enum ScriptRegistration {
         description: String,
         callback: rhai::FnPtr,
     },
+    /// Route B — a named system-prompt section captured by the
+    /// `register_prompt_section(id, text)` native. Replayed at
+    /// `configure` via `ExtensionApi::register_prompt_section`.
+    PromptSection { id: String, text: String },
     /// Route A — a declarative provider alias captured by the
     /// `register_provider(spec)` native. Replayed at `configure` via
     /// `ExtensionApi::register_provider_alias`.
@@ -578,6 +582,29 @@ fn register_natives(engine: &mut rhai::Engine, kv: &ModKvStore, cell: &Registrat
         },
     );
 
+    // register_prompt_section(id, text) — route B: append a named,
+    // append-only section to the base system prompt. Sections register at
+    // mod load and are session-stable (prefix-cache discipline); an
+    // explicit before-agent-start whole-prompt replacement still wins.
+    // Validated here so a bad section fails the mod's load.
+    let cell_section = Arc::clone(cell);
+    engine.register_fn(
+        "register_prompt_section",
+        move |id: &str, text: String| -> Result<(), Box<rhai::EvalAltResult>> {
+            if let Err(e) = crate::runner::validate_prompt_section(id, &text) {
+                return Err(script_error(e.to_string()));
+            }
+            cell_section
+                .lock()
+                .expect("mod registration cell poisoned")
+                .push(ScriptRegistration::PromptSection {
+                    id: id.to_string(),
+                    text,
+                });
+            Ok(())
+        },
+    );
+
     // register_provider(spec_map) — route A: declarative provider alias.
     // `#{ id: "my-gw", kind: "openai", base_url: "...", default_model: "...",
     //    headers: #{ "X-Gateway": "acme" } }`.
@@ -839,6 +866,9 @@ impl Extension for RhaiMod {
                         callback: callback.clone(),
                     }))?;
                 }
+                ScriptRegistration::PromptSection { id, text } => {
+                    api.register_prompt_section(id.clone(), text.clone())?;
+                }
                 ScriptRegistration::Provider {
                     id,
                     target,
@@ -918,6 +948,7 @@ mod tests {
                     ScriptRegistration::Tool { name, .. } => format!("t:{name}"),
                     ScriptRegistration::Command { name, .. } => format!("c:{name}"),
                     ScriptRegistration::Provider { id, .. } => format!("p:{id}"),
+                    ScriptRegistration::PromptSection { id, .. } => format!("s:{id}"),
                 })
                 .collect::<Vec<_>>()
         );
@@ -1029,6 +1060,40 @@ mod tests {
         );
         let msg = m.unwrap_err().to_string();
         assert!(msg.contains("shadows a builtin provider kind"), "{msg}");
+    }
+
+    #[test]
+    fn load_captures_prompt_section() {
+        let dir = TempDir::new().unwrap();
+        let m = RhaiMod::load(
+            &discovered_for(
+                &dir,
+                "sec-mod",
+                r#"register_prompt_section("style", "Be terse.");"#,
+            ),
+            kv_for(&dir, "sec-mod"),
+        )
+        .expect("load");
+        assert!(matches!(
+            m.registrations().first(),
+            Some(ScriptRegistration::PromptSection { id, text })
+                if id == "style" && text == "Be terse."
+        ));
+    }
+
+    #[test]
+    fn prompt_section_bad_id_fails_load() {
+        let dir = TempDir::new().unwrap();
+        let m = RhaiMod::load(
+            &discovered_for(
+                &dir,
+                "bad-sec",
+                r#"register_prompt_section("bad id!", "x");"#,
+            ),
+            kv_for(&dir, "bad-sec"),
+        );
+        let msg = m.unwrap_err().to_string();
+        assert!(msg.contains("must match"), "{msg}");
     }
 
     #[test]

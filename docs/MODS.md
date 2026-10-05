@@ -150,6 +150,21 @@ Transform mutable fields (one handler's rewrite is immediately visible to the ne
 | `ok(value) / err(msg)` | Tool-result constructors |
 | `message(msg) / send(msg)` | Command output (display / feed the agent) |
 | `register_provider(spec)` | Register a provider alias (see below) |
+| `register_prompt_section(id, text)` | Append a named section to the base system prompt (see below) |
+
+### Contributing a system-prompt section (route B)
+
+```rhai
+register_prompt_section("style", "Prefer small, reviewable diffs.");
+```
+
+Sections append to the base system prompt in registration order
+(re-registering an id replaces its text). They register at mod load and
+are stable for the session — prefix-cache friendly. Limits: ≤16 sections,
+id must match `[a-zA-Z0-9_-]`, non-empty text (a violation fails the
+mod's **load**). An explicit `before-agent-start` whole-prompt replacement
+by any handler still wins over sections. Reload clears the generation's
+sections.
 
 ### Registering a provider (route A)
 
