@@ -357,6 +357,21 @@ fn env_only_api_key_recovery_hint(api_config: &Config) -> Option<String> {
 /// (strip / `(reasoning omitted)` placeholder injection — #1542 / #1739 /
 /// #1694) plus rig's faithful `reasoning_content` serialization for the OpenAI
 /// / DeepSeek providers. See ROADMAP §A1 / §D1.
+/// Wrap `client` in a [`RecordingClient`](codesmith_agent::llm_client::record_replay::RecordingClient)
+/// when `CODESMITH_RECORD_LLM` is set. Misconfiguration fails loud here:
+/// the recording was explicitly requested, so an unopenable path aborts
+/// engine construction instead of silently running unrecorded.
+fn wrap_with_recording(client: LlmClientHandle) -> LlmClientHandle {
+    let path = std::env::var("CODESMITH_RECORD_LLM").unwrap_or_default();
+    if path.is_empty() {
+        return client;
+    }
+    match codesmith_agent::llm_client::record_replay::RecordingClient::new(client, &path) {
+        Ok(recorder) => Arc::new(recorder) as LlmClientHandle,
+        Err(e) => panic!("CODESMITH_RECORD_LLM={path}: cannot open recording file: {e}"),
+    }
+}
+
 /// Route A — the process-shared provider registry. Seeded once from the
 /// builtin `default_registry`; the extension runner upserts
 /// extension-registered factories into it (via `attach_shared_providers`),
@@ -1035,6 +1050,10 @@ pub fn build_engine(
         },
     };
     let api_key_env_only_recovery = env_only_api_key_recovery_hint(api_config);
+    // Record/replay (dev plan capability 1+2): wrap the resolved client in
+    // a JSONL recorder when CODESMITH_RECORD_LLM is set, so any model call
+    // (full request envelope + streamed response) is replayable keyless.
+    let llm_client = llm_client.map(wrap_with_recording);
 
     let mut session = Session::new(
         config.model.clone(),

@@ -52,6 +52,25 @@ exit codes, type errors from rust-analyzer arriving between turns, sandbox
 denials — these are fed back as correction vectors. The model uses its own
 drift to self-correct.
 
+## Recording and replaying model calls
+
+Set `CODESMITH_RECORD_LLM=<path.jsonl>` to wrap the resolved LLM client in a
+recorder: every model call (including utility-model, seam, and compaction
+calls) appends one JSONL line — the full request envelope exactly as sent
+(after every extension transform: messages, system prompt, the complete
+tool schema, sampling parameters) plus the streamed response events or the
+non-streaming response. For the recorded session, any historical provider
+request is a pure function of the log. A bad path aborts startup loudly.
+
+`ReplayClient::load(path)` (in `codesmith-agent`, `llm_client::record_replay`)
+feeds the recorded events back through the real turn loop — keyless,
+networkless regression tests. Replay is strict FIFO (no request matching;
+retried calls consume an extra line) and replays streams verbatim, including
+a missing terminal `message_stop` (the engine treats that as a disconnect,
+exactly like the original run). The engine test
+`record_then_replay_round_trip` is the working example. Fixtures contain
+full model I/O — never commit ones with secrets.
+
 ## Modes and sandboxing
 
 Three modes control the action space. Plan is read-only. Agent gates

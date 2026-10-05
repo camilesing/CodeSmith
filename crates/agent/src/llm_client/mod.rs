@@ -54,7 +54,10 @@ pub type LlmClientHandle = Arc<dyn LlmClient>;
 /// - `fim_completion` and `translate` have default error implementations;
 ///   a provider that supports them overrides them with its provider-specific
 ///   endpoints.
-#[allow(dead_code, unused_variables)] // Trait methods + default-impl params are part of the LLM provider interface
+pub mod record_replay;
+
+// Trait methods + default-impl params are part of the LLM provider interface
+#[allow(dead_code, unused_variables)]
 pub trait LlmClient: Send + Sync {
     /// Returns the provider name (e.g., "openai", "deepseek")
     fn provider_name(&self) -> &'static str;

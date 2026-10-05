@@ -20,6 +20,7 @@ futures-util = "0.3.31"
 reqwest = { workspace = true }
 serde.workspace = true
 serde_json = { workspace = true }
+tracing.workspace = true
 tokio = { workspace = true }
 # §F1 — ExtensionContext::signal() returns tokio_util::sync::CancellationToken
 # (the codebase's standard cancel handle; host_executor.rs uses the same).
