@@ -1300,6 +1300,15 @@ pub struct App {
             std::sync::Mutex<codesmith_agent_runtime::compaction::fact_ledger::FactLedger>,
         >,
     >,
+    /// Event-sourcing slice 6 — the live engine's recent-read-files working
+    /// set (same `Arc` the executor feeds; `None` before the engine spawns).
+    pub recent_read_files: Option<
+        std::sync::Arc<
+            std::sync::Mutex<
+                std::collections::VecDeque<codesmith_agent_runtime::session::RecentReadFile>,
+            >,
+        >,
+    >,
     /// Durable runtime services exposed to model-visible task/automation tools.
     pub runtime_services: RuntimeToolServices,
     /// Per-workspace code index service (`symbol_search` /
@@ -2036,6 +2045,7 @@ impl App {
             plan_tool_used_in_turn: false,
             todos: new_shared_todo_list(),
             fact_ledger: None,
+            recent_read_files: None,
             shell_manager: shell_manager.clone(),
             runtime_services: RuntimeToolServices {
                 shell_manager: Some(wrap_shell_manager(shell_manager)),

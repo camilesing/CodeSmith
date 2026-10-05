@@ -164,6 +164,11 @@ pub struct EngineHandle {
     /// `extension_runner` precedent). Same `Arc` the engine's compaction
     /// feeds.
     pub fact_ledger: Arc<StdMutex<codesmith_agent_runtime::compaction::fact_ledger::FactLedger>>,
+    /// Event-sourcing slice 6 — the session's recent-read-files working set
+    /// (same `Arc` the executor's record site feeds), surfaced so session
+    /// load can rebuild it from the transcript without an engine rebuild.
+    pub recent_read_files:
+        Arc<StdMutex<std::collections::VecDeque<codesmith_agent_runtime::session::RecentReadFile>>>,
 }
 
 // `impl EngineHandle { ... }` lives in `engine/handle.rs`.
@@ -1283,6 +1288,7 @@ pub fn build_engine(
         tx_user_input,
         tx_steer,
         fact_ledger: engine.session.fact_ledger.clone(),
+        recent_read_files: engine.session.recent_read_files.clone(),
         extension_runner: Some(extension_runner),
         mods_pending: mods_report.pending_mods,
         mods_audit: mods_report.audit,
@@ -1483,6 +1489,7 @@ pub(crate) fn mock_engine_handle() -> MockEngineHandle {
         mods_pending: Vec::new(),
         mods_audit: Vec::new(),
         fact_ledger: Arc::new(StdMutex::new(Default::default())),
+        recent_read_files: Arc::new(StdMutex::new(Default::default())),
     };
 
     MockEngineHandle {

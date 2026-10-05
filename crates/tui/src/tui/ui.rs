@@ -633,6 +633,8 @@ pub async fn run_tui(
     app.extension_runner = engine_handle.extension_runner.clone();
     // Event-sourcing slice 4 — the live session's fact ledger.
     app.fact_ledger = Some(engine_handle.fact_ledger.clone());
+    // Slice 6 — the live session's recent-read-files working set.
+    app.recent_read_files = Some(engine_handle.recent_read_files.clone());
     // §F2c — surface the engine's shared cancel-token `Arc` so
     // `/extension reload` can pass the live engine token (not a fresh one)
     // into the reloaded context.
@@ -7900,6 +7902,16 @@ async fn apply_loaded_session(app: &mut App, config: &Config, session: &SavedSes
     if let Some(ledger) = &app.fact_ledger {
         let mut guard = ledger.lock().unwrap_or_else(|e| e.into_inner());
         *guard = session.fact_ledger.clone().unwrap_or_default();
+    }
+    // Slice 6 — the working-set projection: rebuild recent-read-files from
+    // the transcript into the LIVE engine's queue (same `Arc`) — the
+    // compaction reinjection + freshness sections see the restored set.
+    if let Some(files) = &app.recent_read_files {
+        let rebuilt = codesmith_agent_runtime::session::rebuild_recent_read_files_from_messages(
+            &app.api_messages,
+        );
+        let mut guard = files.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = rebuilt.lock().unwrap_or_else(|e| e.into_inner()).clone();
     }
     app.clear_history();
     app.tool_cells.clear();
