@@ -473,8 +473,14 @@ pub fn spawn_mods_watcher(
 }
 
 /// Load one discovered mod — used by `populate_extension_runtime` and tests.
-/// `kv_dir` is the mods-state directory (from [`ModStateStore::kv_dir`]).
-pub fn load_rhai_mod(m: &DiscoveredMod, kv_dir: Option<&Path>) -> Result<RhaiMod, String> {
+/// `kv_dir` is the mods-state directory (from [`ModStateStore::kv_dir`]);
+/// `hub` is the runner's message-projection hub (baked into the mod's
+/// `projection_state` reads).
+pub fn load_rhai_mod(
+    m: &DiscoveredMod,
+    kv_dir: Option<&Path>,
+    hub: codesmith_agent::extension::MessageProjectionHubArc,
+) -> Result<RhaiMod, String> {
     let kv = match kv_dir {
         Some(dir) => {
             let scope = if m.global { "global" } else { "project" };
@@ -484,7 +490,7 @@ pub fn load_rhai_mod(m: &DiscoveredMod, kv_dir: Option<&Path>) -> Result<RhaiMod
             ModKvStore::new(std::env::temp_dir().join(format!("codesmith-mod-kv-{}.json", m.id)))
         }
     };
-    RhaiMod::load(m, kv).map_err(|e| e.to_string())
+    RhaiMod::load(m, kv, hub).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -711,7 +717,14 @@ trust_level = "trusted"
         let state = store_in(&dir);
         let found = discover_workspace_mods(&ws);
         let m = found.iter().find(|m| m.id == "loadable").unwrap();
-        let rhai = load_rhai_mod(m, state.kv_dir().as_deref()).unwrap();
+        let rhai = load_rhai_mod(
+            m,
+            state.kv_dir().as_deref(),
+            codesmith_agent::extension::MessageProjectionHubArc::new(
+                codesmith_agent::extension::MessageProjectionHub::new(),
+            ),
+        )
+        .unwrap();
         use codesmith_agent::extension::Extension as _;
         assert_eq!(rhai.metadata().id, "loadable");
         assert_eq!(rhai.registrations().len(), 1);

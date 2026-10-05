@@ -83,6 +83,15 @@ pub enum ScriptRegistration {
         default_model: Option<String>,
         http_headers: Option<std::collections::HashMap<String, String>>,
     },
+    /// A session-log fold captured by the `register_message_projection(key,
+    /// init, fold)` native. Replayed at `configure` via
+    /// `ExtensionApi::register_message_projection` (the closure adapter
+    /// converts JSON state / `Message` ↔ Rhai `Dynamic`).
+    MessageProjection {
+        key: String,
+        init: serde_json::Value,
+        fold: rhai::FnPtr,
+    },
 }
 
 type RegistrationCell = Arc<Mutex<Vec<ScriptRegistration>>>;
@@ -504,8 +513,16 @@ fn valid_tool_name(name: &str) -> bool {
 }
 
 /// Register the mod-facing native functions on `engine`, capturing
-/// registrations into `cell` and baking `kv` in for `mod_state_*`.
-fn register_natives(engine: &mut rhai::Engine, kv: &ModKvStore, cell: &RegistrationCell) {
+/// registrations into `cell` and baking `kv` in for `mod_state_*`. The
+/// message-projection hub (with the mod's own id) is baked into
+/// `projection_state` so reads are mod-namespaced without a ctx round-trip.
+fn register_natives(
+    engine: &mut rhai::Engine,
+    kv: &ModKvStore,
+    cell: &RegistrationCell,
+    mod_id: &str,
+    hub: codesmith_agent::extension::MessageProjectionHubArc,
+) {
     // on(event, callback)
     let cell_on = Arc::clone(cell);
     engine.register_fn(
@@ -723,6 +740,68 @@ fn register_natives(engine: &mut rhai::Engine, kv: &ModKvStore, cell: &Registrat
             .unwrap_or(0)
     });
 
+    // register_message_projection(key, init, fold) — a session-log fold the
+    // host maintains: every transcript mutation folds through `fold(state,
+    // message)`, and the state is rebuilt from the log on session reload
+    // (event-sourcing projection). `state`/`init` are plain values (JSON
+    // round-trip), `message` is the wire-format message map. A duplicate key
+    // within this mod fails the load (pick a new key — states are not
+    // migratable); a fold error at runtime drops the projection (logged),
+    // never the turn.
+    let cell_proj = Arc::clone(cell);
+    engine.register_fn(
+        "register_message_projection",
+        move |key: &str,
+              init: Dynamic,
+              fold: rhai::FnPtr|
+              -> Result<(), Box<rhai::EvalAltResult>> {
+            if key.is_empty()
+                || key.len() > 64
+                || !key
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            {
+                return Err(script_error(format!(
+                    "register_message_projection(): key {key:?} must match [a-zA-Z0-9_-] and be 1-64 chars"
+                )));
+            }
+            let init = dynamic_to_json(&init).map_err(script_error)?;
+            let mut cell = cell_proj.lock().expect("mod registration cell poisoned");
+            if cell.iter().any(|reg| {
+                matches!(reg, ScriptRegistration::MessageProjection { key: k, .. } if k == key)
+            }) {
+                return Err(script_error(format!(
+                    "register_message_projection(): key {key:?} already registered in this mod — pick a new key"
+                )));
+            }
+            cell.push(ScriptRegistration::MessageProjection {
+                key: key.to_string(),
+                init,
+                fold,
+            });
+            Ok(())
+        },
+    );
+
+    // projection_state(key) — read this mod's projection state (the value
+    // as of the last fold). Missing key is a script error (fail loud: read
+    // what you registered).
+    let hub_read = Arc::clone(&hub);
+    let reader_mod = mod_id.to_string();
+    engine.register_fn(
+        "projection_state",
+        move |key: &str| -> Result<Dynamic, Box<rhai::EvalAltResult>> {
+            hub_read
+                .state(&reader_mod, key)
+                .map(|v| json_to_dynamic(&v))
+                .ok_or_else(|| {
+                    script_error(format!(
+                        "projection_state(): no projection {key:?} registered by this mod"
+                    ))
+                })
+        },
+    );
+
     // Control-value constructors.
     engine.register_fn("proceed", || control_value("proceed", Dynamic::UNIT));
     engine.register_fn("block", |reason: &str| {
@@ -759,8 +838,14 @@ pub struct RhaiMod {
 
 impl RhaiMod {
     /// Compile + run the mod's entry script once, capturing registrations.
-    /// `kv` is the mod's persistent store (baked into the engine natives).
-    pub fn load(discovered: &DiscoveredMod, kv: ModKvStore) -> Result<Self, ExtensionError> {
+    /// `kv` is the mod's persistent store (baked into the engine natives);
+    /// `hub` is the host's message-projection hub (baked into
+    /// `projection_state` reads — same `Arc` the engine folds through).
+    pub fn load(
+        discovered: &DiscoveredMod,
+        kv: ModKvStore,
+        hub: codesmith_agent::extension::MessageProjectionHubArc,
+    ) -> Result<Self, ExtensionError> {
         let source = std::fs::read_to_string(&discovered.entry_path).map_err(|e| {
             ExtensionError::Load(format!(
                 "read mod entry {}: {e}",
@@ -779,7 +864,7 @@ impl RhaiMod {
         // natives are registered: absence is the sandbox (plan §三.4).
 
         let cell: RegistrationCell = Arc::new(Mutex::new(Vec::new()));
-        register_natives(&mut engine, &kv, &cell);
+        register_natives(&mut engine, &kv, &cell, &discovered.id, hub);
 
         let ast = engine
             .compile(&source)
@@ -889,6 +974,27 @@ impl Extension for RhaiMod {
                         http_headers: http_headers.clone(),
                     })?;
                 }
+                ScriptRegistration::MessageProjection { key, init, fold } => {
+                    let runtime = Arc::clone(&self.runtime);
+                    let callback = fold.clone();
+                    let fold_fn: codesmith_agent::extension::MessageFoldFn =
+                        Arc::new(move |state, message| {
+                            let st = json_to_dynamic(&state);
+                            let msg = serde_json::to_value(message)
+                                .map(|v| json_to_dynamic(&v))
+                                .map_err(|e| e.to_string())?;
+                            let out = callback
+                                .call::<Dynamic>(&runtime.engine, &runtime.ast, (st, msg))
+                                .map_err(|e| e.to_string())?;
+                            dynamic_to_json(&out)
+                        });
+                    api.register_message_projection(
+                        self.metadata.id.to_string(),
+                        key.clone(),
+                        init.clone(),
+                        fold_fn,
+                    )?;
+                }
             }
         }
         Ok(())
@@ -922,6 +1028,13 @@ mod tests {
         ModKvStore::new(dir.path().join(format!("global-{id}.json")))
     }
 
+    /// Fresh message-projection hub for `RhaiMod::load` test calls.
+    fn hub() -> codesmith_agent::extension::MessageProjectionHubArc {
+        codesmith_agent::extension::MessageProjectionHubArc::new(
+            codesmith_agent::extension::MessageProjectionHub::new(),
+        )
+    }
+
     #[test]
     fn load_captures_handler_tool_and_command_registrations() {
         let dir = TempDir::new().unwrap();
@@ -938,6 +1051,7 @@ mod tests {
         let m = RhaiMod::load(
             &discovered_for(&dir, "all-kinds", script),
             kv_for(&dir, "all-kinds"),
+            hub(),
         )
         .expect("load");
         assert_eq!(m.metadata.id, "all-kinds");
@@ -954,6 +1068,7 @@ mod tests {
                     ScriptRegistration::Command { name, .. } => format!("c:{name}"),
                     ScriptRegistration::Provider { id, .. } => format!("p:{id}"),
                     ScriptRegistration::PromptSection { id, .. } => format!("s:{id}"),
+                    ScriptRegistration::MessageProjection { key, .. } => format!("m:{key}"),
                 })
                 .collect::<Vec<_>>()
         );
@@ -969,6 +1084,7 @@ mod tests {
                 r#"on("no-such-event", |e| { proceed() });"#,
             ),
             kv_for(&dir, "bad-event"),
+            hub(),
         );
         assert!(matches!(m, Err(ExtensionError::Load(_))), "got {m:?}");
         let msg = m.unwrap_err().to_string();
@@ -985,6 +1101,7 @@ mod tests {
                 r#"register_tool(#{name: "bad name!", description: "x"}, |i| ok(1));"#,
             ),
             kv_for(&dir, "bad-tool"),
+            hub(),
         );
         assert!(matches!(m, Err(ExtensionError::Load(_))), "got {m:?}");
     }
@@ -1009,6 +1126,7 @@ mod tests {
                 "#,
             ),
             kv_for(&dir, "gw-alias"),
+            hub(),
         )
         .expect("load");
         let (id, target, base_url, default_model, http_headers) = match m.registrations().first() {
@@ -1047,6 +1165,7 @@ mod tests {
                 r#"register_provider(#{id: "x", kind: "nope"});"#,
             ),
             kv_for(&dir, "bad-kind"),
+            hub(),
         );
         let msg = m.unwrap_err().to_string();
         assert!(msg.contains("not a builtin provider"), "{msg}");
@@ -1062,6 +1181,7 @@ mod tests {
                 r#"register_provider(#{id: "deepseek", kind: "openai"});"#,
             ),
             kv_for(&dir, "shadow"),
+            hub(),
         );
         let msg = m.unwrap_err().to_string();
         assert!(msg.contains("shadows a builtin provider kind"), "{msg}");
@@ -1077,6 +1197,7 @@ mod tests {
                 r#"register_prompt_section("style", "Be terse.");"#,
             ),
             kv_for(&dir, "sec-mod"),
+            hub(),
         )
         .expect("load");
         assert!(matches!(
@@ -1096,6 +1217,7 @@ mod tests {
                 r#"register_prompt_section("bad id!", "x");"#,
             ),
             kv_for(&dir, "bad-sec"),
+            hub(),
         );
         let msg = m.unwrap_err().to_string();
         assert!(msg.contains("must match"), "{msg}");
@@ -1107,6 +1229,7 @@ mod tests {
         let m = RhaiMod::load(
             &discovered_for(&dir, "no-id", r#"register_provider(#{kind: "openai"});"#),
             kv_for(&dir, "no-id"),
+            hub(),
         );
         let msg = m.unwrap_err().to_string();
         assert!(msg.contains("must include a string `id`"), "{msg}");
@@ -1206,6 +1329,7 @@ mod tests {
                 "#,
             ),
             kv_for(&dir, "e2e-gw"),
+            hub(),
         )
         .expect("load mod");
 
@@ -1240,7 +1364,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let d = discovered_for(&dir, "gone", "// never written");
         std::fs::remove_file(d.entry_path.clone()).unwrap();
-        let m = RhaiMod::load(&d, kv_for(&dir, "gone"));
+        let m = RhaiMod::load(&d, kv_for(&dir, "gone"), hub());
         assert!(matches!(m, Err(ExtensionError::Load(_))), "got {m:?}");
         // Entry path must have been the default mod.rhai.
         d.entry_path
@@ -1256,6 +1380,7 @@ mod tests {
         let m = RhaiMod::load(
             &discovered_for(&dir, "looper", "let x = 0; while true { x += 1; }"),
             kv_for(&dir, "looper"),
+            hub(),
         );
         assert!(
             matches!(m, Err(ExtensionError::Load(ref e)) if e.contains("operations") || e.contains("Terminated")),
@@ -1269,6 +1394,7 @@ mod tests {
         let m = RhaiMod::load(
             &discovered_for(&dir, "broken", "fn ( {"),
             kv_for(&dir, "broken"),
+            hub(),
         );
         assert!(matches!(m, Err(ExtensionError::Load(_))), "got {m:?}");
     }
@@ -1287,6 +1413,7 @@ mod tests {
         let m = RhaiMod::load(
             &discovered_for(&dir, "kv-mod", script),
             kv_for(&dir, "kv-mod"),
+            hub(),
         )
         .expect("load");
         assert_eq!(m.registrations.len(), 1);
@@ -1303,7 +1430,7 @@ mod tests {
             mod_state_set("resolved", v);
         "#;
         let kv = kv_for(&dir, "nullish");
-        RhaiMod::load(&discovered_for(&dir, "nullish", script), kv.clone()).expect("load");
+        RhaiMod::load(&discovered_for(&dir, "nullish", script), kv.clone(), hub()).expect("load");
         assert_eq!(kv.get("resolved"), Some(serde_json::json!("fallback")));
     }
 
@@ -1416,5 +1543,96 @@ mod tests {
             out,
             codesmith_agent::extension::HandlerOutcome::Continue
         ));
+    }
+
+    #[test]
+    fn message_projection_registers_folds_and_reads() {
+        // Mirror the production wiring: the hub baked into the mod's natives
+        // is the SAME instance the runner flushes into at bind_core.
+        let runner = crate::ExtensionRunner::new();
+        let hub = runner.message_projection_hub();
+        let dir = TempDir::new().unwrap();
+        let rhai_mod = RhaiMod::load(
+            &discovered_for(
+                &dir,
+                "proj-mod",
+                r#"
+                    register_message_projection("counts", #{ users: 0 }, |state, m| {
+                        if m.role == "user" { state.users = state.users + 1; }
+                        state
+                    });
+                    on("session-shutdown", |e| {
+                        let s = projection_state("counts");
+                        mod_state_set("seen_users", s.users);
+                    });
+                "#,
+            ),
+            kv_for(&dir, "proj-mod"),
+            hub.clone(),
+        )
+        .expect("load mod");
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        rt.block_on(runner.load(&rhai_mod)).expect("configure");
+        struct Ctx;
+        #[async_trait]
+        impl codesmith_agent::extension::ExtensionContext for Ctx {
+            fn cwd(&self) -> &std::path::Path {
+                std::path::Path::new(".")
+            }
+            fn mode(&self) -> codesmith_agent::extension::ExtensionMode {
+                codesmith_agent::extension::ExtensionMode::Tui
+            }
+            fn is_idle(&self) -> bool {
+                true
+            }
+            fn signal(&self) -> tokio_util::sync::CancellationToken {
+                tokio_util::sync::CancellationToken::new()
+            }
+            fn generation(&self) -> u64 {
+                1
+            }
+        }
+        impl codesmith_agent::extension::ExtensionCommandContext for Ctx {}
+        runner.bind_core(Arc::new(Ctx));
+
+        let msg = |role: &str| codesmith_agent::models::Message {
+            role: role.to_string(),
+            content: vec![codesmith_agent::models::ContentBlock::Text {
+                text: "x".into(),
+                cache_control: None,
+            }],
+        };
+        hub.fold_message(&msg("user"));
+        hub.fold_message(&msg("assistant"));
+        hub.fold_message(&msg("user"));
+        assert_eq!(
+            hub.state("proj-mod", "counts"),
+            Some(serde_json::json!({ "users": 2 }))
+        );
+
+        // The mod reads its own projection through the baked-in native.
+        let _ = rt.block_on(runner.emit(ExtensionEvent::SessionShutdown));
+        assert_eq!(
+            kv_for(&dir, "proj-mod").get("seen_users"),
+            Some(serde_json::json!(2))
+        );
+    }
+
+    #[test]
+    fn message_projection_duplicate_key_fails_load() {
+        let dir = TempDir::new().unwrap();
+        let m = RhaiMod::load(
+            &discovered_for(
+                &dir,
+                "dup-proj",
+                r#"
+                    register_message_projection("k", 0, |s, m| s);
+                    register_message_projection("k", 0, |s, m| s);
+                "#,
+            ),
+            kv_for(&dir, "dup-proj"),
+            hub(),
+        );
+        assert!(matches!(m, Err(ExtensionError::Load(_))), "got {m:?}");
     }
 }

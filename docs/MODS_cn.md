@@ -150,6 +150,8 @@ Transform 可变字段（一个 handler 的改写对后续 handler 立即可见�
 | `message(msg) / send(msg)` | 命令输出（展示 / 注入对话） |
 | `register_provider(spec)` | 注册 provider 别名（见下） |
 | `register_prompt_section(id, text)` | 向基础系统提示词追加命名分段（见下） |
+| `register_message_projection(key, init, fold)` | 注册由宿主维护的会话日志折叠（见下） |
+| `projection_state(key)` | 读取本 mod 的投影状态（钩子/工具内可用） |
 
 ### 贡献系统提示词分段（路线 B）
 
@@ -162,6 +164,27 @@ mod 加载时注册、会话内稳定——对前缀缓存友好。限制：≤1
 `[a-zA-Z0-9_-]`、文本非空（违反即 mod **加载失败**）。任何 handler 经
 `before-agent-start` 的整段替换仍优先于分段。reload 清除该 generation
 的全部分段。
+
+### 注册消息投影（会话日志折叠）
+
+```rhai
+register_message_projection("counts", #{ users: 0 }, |state, m| {
+    if m.role == "user" { state.users = state.users + 1; }
+    state
+});
+```
+
+宿主把每条转录消息经 `fold(state, message)` 折叠进状态——追加式增量
+折叠，整体替换（会话重载、压缩、`/edit` 回滚）则从 `init` 全量重折。
+任何 natives 可用之处（钩子/工具/命令）都能用 `projection_state(key)`
+读状态。状态从不以快照持久化：它始终是"当前转录的折叠"，因此跨会话
+重载靠重建存活。与 `mod_state_get/set`（mod 自写的持久状态）的区别：
+投影由宿主维护、从日志派生。
+
+限制：`message` 为线格式消息 map（`role`、`content` 块）；fold 出错即
+丢弃该投影直到下次 mod 加载（记日志，绝不杀回合）；mod 内 `key` 重复
+即 mod **加载失败**；全部 mod 合计 ≤16 个投影；`/extension reload` 后
+新 generation 的状态在下个回合开始时重建。
 
 ### 注册 provider（路线 A）
 

@@ -1537,6 +1537,9 @@ impl Engine {
                 crate::prompt_zones::RebuildReason::VerifyAndReplanReset,
                 kept,
             );
+            // Direct rebuild (not the engine wrapper — this path emits its
+            // own capacity events); projections still refold.
+            self.refold_message_projections();
         }
 
         self.merge_compaction_summary(Some(self.canonical_prompt(

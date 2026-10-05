@@ -756,6 +756,10 @@ impl Engine {
                         let kept = self.session.messages.as_slice()[..idx].to_vec();
                         self.session
                             .rebuild_transcript(RebuildReason::EditRollback, kept);
+                        // Direct rebuild (engine wrapper not used here —
+                        // the op handler emits its own events); projections
+                        // still refold.
+                        self.refold_message_projections();
                     }
                     // Now dispatch the new message as a normal send,
                     // reusing the engine's stored mode/model config.
@@ -963,8 +967,29 @@ impl Engine {
     }
 
     pub async fn add_session_message(&mut self, message: Message) {
+        if let Some(hub) = self.message_projection_hub() {
+            hub.fold_message(&message);
+        }
         self.session.add_message(message);
         self.emit_session_updated().await;
+    }
+
+    /// The runner's message-projection hub, when an extension runtime is
+    /// wired (`None` for embeds/tests — every fold site no-ops).
+    fn message_projection_hub(
+        &self,
+    ) -> Option<codesmith_agent::extension::MessageProjectionHubArc> {
+        self.extension_runner
+            .as_ref()
+            .map(|r| r.message_projection_hub())
+    }
+
+    /// Rebuild every projection from the current transcript (wholesale
+    /// replacement paths).
+    fn refold_message_projections(&self) {
+        if let Some(hub) = self.message_projection_hub() {
+            hub.refold_all(&self.session.messages);
+        }
     }
 
     /// Audited transcript replacement + `Event::TranscriptRebuilt`
@@ -976,6 +1001,7 @@ impl Engine {
     /// precedent (`TurnComplete` still carries the final transcript).
     fn rebuild_transcript(&mut self, reason: RebuildReason, messages: Vec<Message>) {
         self.session.rebuild_transcript(reason, messages);
+        self.refold_message_projections();
         if let Some(record) = self.session.messages.last_rebuild() {
             let _ = self.tx_event.try_send(Event::TranscriptRebuilt {
                 reason: record.reason.to_string(),
@@ -1209,8 +1235,19 @@ impl Engine {
         // claim verifier can scan exactly this turn's assistant/tool traffic.
         let result_verifier_turn_start = self.session.messages.len();
         self.turn_scratch.user_message = Some(user_msg);
-        self.session
-            .add_message(self.turn_scratch.user_message.take().expect("staged above"));
+        let user_message = self.turn_scratch.user_message.take().expect("staged above");
+        // Post-reload projection self-heal: `clear_message_projections`
+        // (reload) marked the hub dirty; the new generation registered
+        // before this turn started, so refold from the live transcript
+        // first, then fold this turn's user message on top — the state
+        // stays "fold of the log".
+        if let Some(hub) = self.message_projection_hub() {
+            if hub.take_dirty() {
+                hub.refold_all(&self.session.messages);
+            }
+            hub.fold_message(&user_message);
+        }
+        self.session.add_message(user_message);
 
         let previous_goal_objective = self.config.goal_objective.clone();
 
@@ -1451,8 +1488,10 @@ impl Engine {
                 .map(crate::compaction::message_text)
                 .as_deref(),
         ));
+        let projection_hub = self.message_projection_hub();
         let mut history =
-            SessionChatHistory::new_with_event_tx(&mut self.session, Some(self.tx_event.clone()));
+            SessionChatHistory::new_with_event_tx(&mut self.session, Some(self.tx_event.clone()))
+                .with_projection_hub_if_some(projection_hub);
         // Drain steers queued between turns (mirrors the retired pre-turn
         // `while rx_steer.try_recv().is_ok() {}`).
         executor.drain_stale_steers().await;
