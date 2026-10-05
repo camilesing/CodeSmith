@@ -247,7 +247,13 @@ impl HostAgentExecutor {
                     // §F2b T1 — honor `Block` at `ToolCall` (parallel arm):
                     // record per-plan block reasons here, then skip dispatch
                     // for those indices (mirrors the loop-guard blocked path).
+                    // Route B (pipeline refinement) — the seam is also
+                    // transform-capable: a rewritten `input` (transform
+                    // chain's terminal event) replaces the call's input
+                    // before dispatch, so approval + execution gate what
+                    // actually runs.
                     let mut ext_blocks: HashMap<usize, String> = HashMap::new();
+                    let mut ext_rewrites: HashMap<usize, serde_json::Value> = HashMap::new();
                     for plan in &batch_plans {
                         callback
                             .on_tool_start(&plan.id, &plan.name, &plan.input)
@@ -266,6 +272,17 @@ impl HostAgentExecutor {
                                 out.outcome
                             {
                                 ext_blocks.insert(plan.index, reason);
+                            } else if let codesmith_agent::extension::ExtensionEvent::ToolCall(e) =
+                                out.event
+                                && e.input != plan.input
+                            {
+                                tracing::info!(
+                                    target: "codesmith_extensions",
+                                    "tool-call input rewritten by extension: {} ({})",
+                                    plan.name,
+                                    plan.id
+                                );
+                                ext_rewrites.insert(plan.index, e.input);
                             }
                         }
                     }
@@ -288,7 +305,12 @@ impl HostAgentExecutor {
                         let ext = extension.clone();
                         let id = plan.id.clone();
                         let name = plan.name.clone();
-                        let input = plan.input.clone();
+                        // Route B — the extension chain's terminal input
+                        // (rewritten by a transform), else the plan's.
+                        let input = ext_rewrites
+                            .get(&plan.index)
+                            .cloned()
+                            .unwrap_or_else(|| plan.input.clone());
                         let index = plan.index;
                         futs.push(Box::pin(async move {
                             let blocked = guard.is_some() || ext_block_reason.is_some();
@@ -417,7 +439,11 @@ impl HostAgentExecutor {
                     // §F2b T1 — honor `Block` at `ToolCall` (serial arm):
                     // capture the block reason, then skip approval/`tool.run`
                     // below (mirrors the loop-guard blocked path — a failed
-                    // result, not an execution error).
+                    // result, not an execution error). Route B (pipeline
+                    // refinement) — the seam is also transform-capable: a
+                    // rewritten `input` replaces the call's input for
+                    // approval + execution (what runs is what was gated).
+                    let mut ext_input: Option<serde_json::Value> = None;
                     let ext_blocked_reason: Option<String> = if let Some(runner) = &extension {
                         let out = runner
                             .emit(codesmith_agent::extension::ExtensionEvent::ToolCall(
@@ -433,11 +459,24 @@ impl HostAgentExecutor {
                         {
                             Some(reason)
                         } else {
+                            if let codesmith_agent::extension::ExtensionEvent::ToolCall(e) =
+                                out.event
+                                && e.input != plan.input
+                            {
+                                tracing::info!(
+                                    target: "codesmith_extensions",
+                                    "tool-call input rewritten by extension: {} ({})",
+                                    plan.name,
+                                    plan.id
+                                );
+                                ext_input = Some(e.input);
+                            }
                             None
                         }
                     } else {
                         None
                     };
+                    let run_input = ext_input.unwrap_or_else(|| plan.input.clone());
                     // approval gate: a tool that requires approval is gated
                     // behind the decision channel; denied ⇒ the tool never
                     // runs and a `permission_denied` error is fed back so the
@@ -466,7 +505,7 @@ impl HostAgentExecutor {
                                     .request_approval(
                                         &plan.id,
                                         &plan.name,
-                                        &plan.input,
+                                        &run_input,
                                         tool,
                                         intent_summary,
                                     )
@@ -478,7 +517,7 @@ impl HostAgentExecutor {
                                         match early_for_plan[idx].take() {
                                             Some(mut early)
                                                 if early.name == plan.name
-                                                    && early.input == plan.input =>
+                                                    && early.input == run_input =>
                                             {
                                                 let handle = early
                                                     .handle
@@ -500,9 +539,9 @@ impl HostAgentExecutor {
                                                 // dropped `EarlyToolTask` (Drop
                                                 // aborts) cleans up the orphaned
                                                 // speculative task.
-                                                (tool.run(plan.input.clone()).await, false)
+                                                (tool.run(run_input.clone()).await, false)
                                             }
-                                            None => (tool.run(plan.input.clone()).await, false),
+                                            None => (tool.run(run_input.clone()).await, false),
                                         }
                                     }
                                     Err(denial) => {
@@ -566,7 +605,11 @@ impl HostAgentExecutor {
                         index: idx,
                         id: plan.id.clone(),
                         name: plan.name.clone(),
-                        input: plan.input.clone(),
+                        // The executed input (possibly extension-rewritten) —
+                        // the persisted record must agree with what ran
+                        // (model-visible means logged); mirrors the parallel
+                        // arm's captured `input`.
+                        input: run_input.clone(),
                         result: final_result,
                         blocked,
                     });
