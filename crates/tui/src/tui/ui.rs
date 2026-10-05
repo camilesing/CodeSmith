@@ -512,7 +512,7 @@ pub async fn run_tui(
 
         match load_result {
             Ok(Some(saved)) => {
-                let recovered = apply_loaded_session(&mut app, config, &saved);
+                let recovered = apply_loaded_session(&mut app, config, &saved).await;
                 if !recovered {
                     app.status_message = Some(format!(
                         "Resumed session: {}",
@@ -7278,7 +7278,7 @@ async fn handle_view_events(
 
                 match manager.load_session(&session_id) {
                     Ok(session) => {
-                        let recovered = apply_loaded_session(app, config, &session);
+                        let recovered = apply_loaded_session(app, config, &session).await;
                         sync_runtime_workspace_state(task_manager, app.workspace.clone()).await;
                         let _ = engine_handle
                             .send(Op::SyncSession {
@@ -7866,13 +7866,21 @@ fn set_provider_auth_mode_in_memory(config: &mut Config, provider: ApiProvider, 
     entry.auth_mode = Some(auth_mode);
 }
 
-fn apply_loaded_session(app: &mut App, config: &Config, session: &SavedSession) -> bool {
+async fn apply_loaded_session(app: &mut App, config: &Config, session: &SavedSession) -> bool {
     let (messages, recovered_draft) = recover_interrupted_user_tail(&session.messages);
     app.api_messages = messages;
     // Event-sourcing slice 2 — restore the persisted request envelope
     // (tool catalog + base URL of the last model request).
     app.session.last_tool_catalog = session.last_tool_catalog.clone();
     app.session.last_base_url = session.last_base_url.clone();
+    // Event-sourcing slice 3 — projections: rebuild todo/plan state from
+    // the transcript (each tool call replaces the whole state, so the fold
+    // is last-write-wins). The shared `Arc`s are the live engine's — the
+    // restored state is visible without an engine rebuild.
+    *app.todos.lock().await =
+        crate::tools::todo::TodoList::rebuild_from_messages(&app.api_messages);
+    *app.plan_state.lock().await =
+        crate::tools::plan::PlanState::rebuild_from_messages(&app.api_messages);
     app.clear_history();
     app.tool_cells.clear();
     app.tool_details_by_cell.clear();

@@ -122,6 +122,35 @@ pub struct PlanState {
 }
 
 impl PlanState {
+    /// Event-sourcing slice 3 — the plan projection: rebuild the plan
+    /// from a transcript by folding every `update_plan` call (each input
+    /// replaces the plan — last write wins). Step timing is stamped at
+    /// rebuild time (instants are not persisted); it is display-only
+    /// metadata. A malformed input is skipped (serde round-trip through
+    /// [`UpdatePlanArgs`]).
+    pub fn rebuild_from_messages(messages: &[codesmith_agent::models::Message]) -> Self {
+        use codesmith_agent::models::ContentBlock;
+
+        let mut state = Self::default();
+        for message in messages {
+            if message.role != "assistant" {
+                continue;
+            }
+            for block in &message.content {
+                let ContentBlock::ToolUse { name, input, .. } = block else {
+                    continue;
+                };
+                if name != "update_plan" {
+                    continue;
+                }
+                if let Ok(args) = serde_json::from_value::<UpdatePlanArgs>(input.clone()) {
+                    state.update(args);
+                }
+            }
+        }
+        state
+    }
+
     /// Check whether the plan is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -277,4 +306,71 @@ pub type SharedPlanState = Arc<Mutex<PlanState>>;
 /// Create a new shared `PlanState`
 pub fn new_shared_plan_state() -> SharedPlanState {
     Arc::new(Mutex::new(PlanState::default()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assistant_tool_use(
+        name: &str,
+        input: serde_json::Value,
+    ) -> codesmith_agent::models::Message {
+        codesmith_agent::models::Message {
+            role: "assistant".to_string(),
+            content: vec![codesmith_agent::models::ContentBlock::ToolUse {
+                id: "call_x".to_string(),
+                name: name.to_string(),
+                input,
+                caller: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn plan_projection_last_write_wins() {
+        let messages = vec![
+            assistant_tool_use(
+                "update_plan",
+                serde_json::json!({"explanation": "first", "plan": [
+                    {"step": "s1", "status": "pending"},
+                    {"step": "s2", "status": "pending"},
+                ]}),
+            ),
+            assistant_tool_use(
+                "update_plan",
+                serde_json::json!({"plan": [
+                    {"step": "s1", "status": "completed"},
+                    {"step": "s3", "status": "in_progress"},
+                ]}),
+            ),
+            // Malformed (missing `plan`) is skipped, not fatal.
+            assistant_tool_use("update_plan", serde_json::json!({"explanation": "broken"})),
+            // Unrelated calls ignored.
+            assistant_tool_use("read_file", serde_json::json!({"path": "x"})),
+        ];
+        let state = PlanState::rebuild_from_messages(&messages);
+        assert!(
+            state.explanation.is_none(),
+            "last write carried no explanation"
+        );
+        let snap = state.snapshot();
+        assert_eq!(snap.items.len(), 2);
+        assert_eq!(snap.items[0].step, "s1");
+        assert_eq!(snap.items[0].status, StepStatus::Completed);
+        assert_eq!(snap.items[1].step, "s3");
+        assert_eq!(snap.items[1].status, StepStatus::InProgress);
+    }
+
+    #[test]
+    fn plan_projection_empty_when_no_calls() {
+        let messages = vec![codesmith_agent::models::Message {
+            role: "user".to_string(),
+            content: vec![codesmith_agent::models::ContentBlock::Text {
+                text: "hi".to_string(),
+                cache_control: None,
+            }],
+        }];
+        assert!(PlanState::rebuild_from_messages(&messages).is_empty());
+    }
 }
