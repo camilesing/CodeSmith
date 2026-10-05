@@ -4204,13 +4204,25 @@ async fn engine_128k_window_long_session_compacts_without_prompt_too_long() {
 
     let turn = vec![canned::simple_text_turn("ok")];
     let mock = MockLlmClient::new(turn).with_model("test-128k");
-    // Non-streaming summary served to `compact_messages_safe`.
+    // Non-streaming summary served to `compact_messages_safe`. The text
+    // carries all four required layered-summary headers — the section gate
+    // (compaction P0-2) rejects a flat summary and retries once, and the
+    // retry's fallback path consumes the (only) canned stream turn, failing
+    // the turn. A gate-compliant fixture exercises the happy path this
+    // acceptance test owns.
+    let gate_compliant_summary = [
+        "### Decisions & Confirmed Facts\n- seeded 70 filler messages",
+        "### Failed Approaches\n- none",
+        "### Brief Process\n- filler session for capacity acceptance",
+        "### Refuted Assumptions & Invariants\n- none",
+    ]
+    .join("\n\n");
     mock.push_message_response(crate::models::MessageResponse {
         id: "summary".to_string(),
         r#type: "message".to_string(),
         role: "assistant".to_string(),
         content: vec![ContentBlock::Text {
-            text: "session summary".to_string(),
+            text: gate_compliant_summary,
             cache_control: None,
         }],
         model: "test-128k".to_string(),
