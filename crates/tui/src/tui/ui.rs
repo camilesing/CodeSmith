@@ -1355,6 +1355,9 @@ async fn run_event_loop(
                     continue;
                 }
                 match event {
+                    // Event-sourcing slice 5 — per-step request envelope;
+                    // log-facing (the /threads event stream), not display.
+                    EngineEvent::LlmRequest { .. } => {}
                     EngineEvent::MessageStarted { .. } => {
                         // Assistant text starting after parallel tool work
                         // means the tool group is done. Flush the active

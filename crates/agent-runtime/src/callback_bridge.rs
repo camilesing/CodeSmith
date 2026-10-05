@@ -23,7 +23,7 @@
 //! |-----------------------|----------------------------|-----------------------|
 //! | `on_tool_start`       | `ToolCallStarted`          | `ToolCallBefore`      |
 //! | `on_tool_end`         | `ToolCallComplete`         | `ToolCallAfter`       |
-//! | `on_llm_start`        | — (no precise event¹; resets block-announcement dedup⁵) | — (no LLM-start hook) |
+//! | `on_llm_start`        | `LlmRequest` (per-step envelope summary⁵) | — (no LLM-start hook) |
 //! | `on_llm_end`          | — (content not on wire²)   | — (no LLM-end hook)   |
 //! | `on_step`             | — (no step event variant)  | —                     |
 //! | `on_complete`         | — (`TurnComplete`³)         | —                     |
@@ -334,8 +334,18 @@ impl Callback for CallbackBridge {
         request: &'a MessageRequest,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         let state = self.state.clone();
+        let tx = self.tx.clone();
         Box::pin(async move {
-            let _ = request;
+            // Event-sourcing slice 5 — one envelope event per LLM step (the
+            // bridge table's "no precise event" gap for `on_llm_start`).
+            // Best-effort: a dead UI channel must not break the step.
+            if let Some(tx) = tx {
+                let _ = tx
+                    .send(Event::LlmRequest {
+                        summary: crate::events::LlmRequestSummary::from_request(request),
+                    })
+                    .await;
+            }
             // One LLM step = one logical message per block index. The
             // executor fires `on_llm_start` once per step (retries are
             // transparent), so this is the reset point for the
@@ -355,7 +365,8 @@ impl Callback for CallbackBridge {
     // apply; the host's `TurnStarted` / `TurnComplete` events are emitted
     // directly by the engine caller, not through this bridge.
     // (`on_llm_start` IS overridden above — as the per-step reset point for
-    // the block-announcement dedup, not as a forwarder.)
+    // the block-announcement dedup, and since event-sourcing slice 5 also
+    // forwards the per-step `Event::LlmRequest` envelope summary.)
     // `on_tool_progress` (§F2c) has no host `Event` variant — a streaming
     // `Tool` contract would add one (§F-later); until then it stays unbridged.
 }
@@ -782,12 +793,16 @@ mod tests {
             .on_stream_delta(&StreamDelta::MessageStarted { index: 0 })
             .await;
         let events = drain(&mut rx);
+        // Since event-sourcing slice 5, `on_llm_start` also forwards the
+        // per-step `LlmRequest` envelope — it rides ahead of the
+        // re-announcement.
         assert_eq!(
             events.len(),
-            1,
-            "post-reset announcement must forward: {events:?}"
+            2,
+            "envelope + post-reset announcement must forward: {events:?}"
         );
-        assert!(matches!(events[0], Event::MessageStarted { index: 0 }));
+        assert!(matches!(events[0], Event::LlmRequest { .. }));
+        assert!(matches!(events[1], Event::MessageStarted { index: 0 }));
     }
 
     // === Executor integration ================================================
@@ -920,5 +935,61 @@ mod tests {
         assert_eq!(calls[1].1.tool_success, Some(true));
         // Turn-level template field flowed through to both hook contexts.
         assert_eq!(calls[0].1.session_id.as_deref(), Some("test"));
+    }
+}
+
+#[cfg(test)]
+mod llm_request_tests {
+    use super::*;
+    use codesmith_agent::models::{ContentBlock, MessageRequest};
+
+    /// Event-sourcing slice 5 — `on_llm_start` forwards one
+    /// `Event::LlmRequest` carrying the compact envelope summary of the
+    /// final outgoing request.
+    #[tokio::test]
+    async fn on_llm_start_forwards_llm_request_event() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let bridge = CallbackBridge::new(Some(tx), None, HookContext::default());
+        let request = MessageRequest {
+            model: "test-model".to_string(),
+            messages: vec![
+                codesmith_agent::models::Message {
+                    role: "user".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: "hi".to_string(),
+                        cache_control: None,
+                    }],
+                },
+                codesmith_agent::models::Message {
+                    role: "assistant".to_string(),
+                    content: vec![],
+                },
+            ],
+            max_tokens: 4096,
+            temperature: Some(0.3),
+            reasoning_effort: Some("low".to_string()),
+            tools: Some(vec![]),
+            stream: Some(true),
+            top_p: None,
+            system: None,
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+        };
+
+        bridge.on_llm_start(&request).await;
+
+        let event = rx.recv().await.expect("LlmRequest event forwarded");
+        match event {
+            Event::LlmRequest { summary } => {
+                assert_eq!(summary.model, "test-model");
+                assert_eq!(summary.max_tokens, 4096);
+                assert_eq!(summary.temperature, Some(0.3));
+                assert_eq!(summary.reasoning_effort.as_deref(), Some("low"));
+                assert_eq!(summary.message_count, 2);
+                assert!(summary.stream, "streaming request");
+            }
+            other => panic!("expected LlmRequest, got {other:?}"),
+        }
     }
 }
