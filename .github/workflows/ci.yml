@@ -50,6 +50,8 @@ jobs:
         run: cargo clippy --workspace --all-features --locked -- -D warnings
       - name: Check provider registry drift
         run: python3 scripts/check-provider-registry.py
+      - name: Check framework dependency direction
+        run: python3 scripts/check-framework-deps.py
       - name: Linux clippy location
         run: echo "Linux clippy/test gates run on CNB for mirrored fix/*, rebrand/*, work/v*, and main branches."
 

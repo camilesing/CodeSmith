@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+pub mod index_api;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use codesmith_protocol::{ToolKind, ToolOutput, ToolPayload};

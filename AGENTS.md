@@ -140,6 +140,17 @@ casually it reads as taking the work even when credit is preserved.
 
 ## Current contracts
 
+- The workspace is split into a **framework group** (`protocol`, `tools`,
+  `agent`, `config`, `secrets`, `extensions`, `agent-runtime`) and an
+  **implementation group** (everything else: `providers`, `tool-impls`,
+  `tui`, `cli`, `app-server`, ...). Framework crates must not depend, in the
+  build graph, on workspace crates outside the framework group; the rule is
+  enforced by `python3 scripts/check-framework-deps.py` (runs in CI;
+  dev-dependencies are exempt — they never enter a framework artifact). When
+  a framework crate needs something an implementation crate owns, invert the
+  dependency: define the trait in a framework crate, let the implementation
+  crate provide it and re-export for path compatibility. The boundary note
+  at the top of `docs/ARCHITECTURE.md` is the live reference.
 - The model-facing sub-agent surface is `agent_open`/`agent_eval`/
   `agent_close` (implementation in `crates/tui/src/tools/subagent/`) plus
   persistent RLM sessions (`crates/tool-impls/src/tools/rlm.rs`); no
