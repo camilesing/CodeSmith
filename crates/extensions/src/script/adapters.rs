@@ -287,12 +287,20 @@ mod tests {
         super::super::RhaiMod::load(
             &discovered,
             super::super::ModKvStore::new(dir.path().join(format!("global-{id}.json"))),
+            hub(),
         )
         .expect("load mod")
     }
 
     fn block_on<F: std::future::Future>(f: F) -> F::Output {
         tokio::runtime::Runtime::new().expect("rt").block_on(f)
+    }
+
+    /// Fresh message-projection hub for `RhaiMod::load` test calls.
+    fn hub() -> codesmith_agent::extension::MessageProjectionHubArc {
+        codesmith_agent::extension::MessageProjectionHubArc::new(
+            codesmith_agent::extension::MessageProjectionHub::new(),
+        )
     }
 
     // Handler outcome mapping — the four outcomes from plan §三.3.
@@ -599,6 +607,7 @@ mod tests {
         let m1 = super::super::RhaiMod::load(
             &discovered,
             super::super::ModKvStore::new(kv_path.clone()),
+            hub(),
         )
         .unwrap();
         let runner = crate::ExtensionRunner::new();
@@ -617,8 +626,9 @@ mod tests {
             ok(mod_state_get("last") ?? "missing")
         });"#;
         std::fs::write(mod_dir.join("mod.rhai"), script2).unwrap();
-        let m2 = super::super::RhaiMod::load(&discovered, super::super::ModKvStore::new(kv_path))
-            .unwrap();
+        let m2 =
+            super::super::RhaiMod::load(&discovered, super::super::ModKvStore::new(kv_path), hub())
+                .unwrap();
         let runner2 = crate::ExtensionRunner::new();
         block_on(runner2.load(&m2)).unwrap();
         runner2.bind_core(Arc::new(ctx()));

@@ -52,6 +52,11 @@ pub struct SessionChatHistory<'a> {
     /// ([`new_with_event_tx`](Self::new_with_event_tx)) so every
     /// assistant/tool-result/steer/LSP push refreshes the host UI.
     event_tx: Option<mpsc::Sender<Event>>,
+    /// Mod-registered message projections (session log folds). `None` when
+    /// no extension runtime is wired (embeds/tests). `push` folds each
+    /// appended message; `replace_all` / `clear` refold from the new
+    /// transcript — the projection state is always "fold of the log".
+    projection_hub: Option<codesmith_agent::extension::MessageProjectionHubArc>,
 }
 
 impl<'a> SessionChatHistory<'a> {
@@ -78,6 +83,26 @@ impl<'a> SessionChatHistory<'a> {
         Self {
             session,
             event_tx: None,
+            projection_hub: None,
+        }
+    }
+
+    /// Attach the message-projection hub (production wire-in; `None`
+    /// leaves the adapter fold-free for embeds/tests).
+    #[must_use]
+    pub fn with_projection_hub_if_some(
+        mut self,
+        hub: Option<codesmith_agent::extension::MessageProjectionHubArc>,
+    ) -> Self {
+        self.projection_hub = hub;
+        self
+    }
+
+    /// Rebuild every projection from the post-replacement transcript
+    /// (wholesale replacement: `clear` / `replace_all`).
+    fn refold_projections(&self) {
+        if let Some(hub) = &self.projection_hub {
+            hub.refold_all(&self.session.messages);
         }
     }
 
@@ -91,7 +116,11 @@ impl<'a> SessionChatHistory<'a> {
         session: &'a mut Session,
         event_tx: Option<mpsc::Sender<Event>>,
     ) -> Self {
-        Self { session, event_tx }
+        Self {
+            session,
+            event_tx,
+            projection_hub: None,
+        }
     }
 }
 
@@ -101,6 +130,11 @@ impl<'a> ChatHistory for SessionChatHistory<'a> {
     }
 
     fn push(&mut self, message: Message) {
+        // Message projections fold the appended message BEFORE the move
+        // into the transcript (the fold takes the message by reference).
+        if let Some(hub) = &self.projection_hub {
+            hub.fold_message(&message);
+        }
         // `Session::add_message` is a plain `push` (no side effects); call it
         // for parity with the rest of the engine, which routes message appends
         // through `add_message`.
@@ -126,6 +160,7 @@ impl<'a> ChatHistory for SessionChatHistory<'a> {
         // AppendLog store has no in-place `clear`.
         self.session
             .rebuild_transcript(crate::prompt_zones::RebuildReason::TraitClear, Vec::new());
+        self.refold_projections();
         self.emit_transcript_rebuilt();
     }
 
@@ -140,6 +175,7 @@ impl<'a> ChatHistory for SessionChatHistory<'a> {
             crate::prompt_zones::RebuildReason::Runtime(reason),
             messages,
         );
+        self.refold_projections();
         self.emit_transcript_rebuilt();
         if let Some(tx) = &self.event_tx {
             let _ = tx.try_send(Event::SessionUpdated {
@@ -211,5 +247,49 @@ mod tests {
         assert!(hist.is_empty());
         // Clear propagated to the Session.
         assert!(sess.messages.is_empty());
+    }
+
+    #[test]
+    fn push_folds_and_replace_refolds_projections() {
+        use codesmith_agent::extension::{
+            MessageFoldFn, MessageProjectionHub, MessageProjectionHubArc,
+        };
+        use serde_json::json;
+        use std::sync::Arc;
+
+        let hub: MessageProjectionHubArc = Arc::new(MessageProjectionHub::new());
+        let fold: MessageFoldFn = Arc::new(|state, m| {
+            let n = state.get("users").and_then(|v| v.as_u64()).unwrap_or(0)
+                + u64::from(m.role == "user");
+            Ok(json!({ "users": n }))
+        });
+        hub.register("m", "stats", json!({ "users": 0 }), fold)
+            .unwrap();
+
+        let mut sess = fresh_session();
+        {
+            let mut hist =
+                SessionChatHistory::new(&mut sess).with_projection_hub_if_some(Some(hub.clone()));
+            hist.push(user_text("one"));
+            hist.push(Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "hi".to_string(),
+                    cache_control: None,
+                }],
+            });
+            hist.push(user_text("two"));
+            assert_eq!(hub.state("m", "stats"), Some(json!({ "users": 2 })));
+
+            // Wholesale replacement refolds from the new transcript — the
+            // state is "fold of the log", not "fold of what I saw".
+            hist.replace_all("test", vec![user_text("a"), user_text("b"), user_text("c")]);
+            assert_eq!(hub.state("m", "stats"), Some(json!({ "users": 3 })));
+        }
+        // And a plain clear refolds over the (now empty) transcript.
+        let mut hist =
+            SessionChatHistory::new(&mut sess).with_projection_hub_if_some(Some(hub.clone()));
+        hist.clear();
+        assert_eq!(hub.state("m", "stats"), Some(json!({ "users": 0 })));
     }
 }

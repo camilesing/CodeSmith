@@ -152,6 +152,25 @@ impl ExtensionApi for StubExtensionApi {
             .push((id, text));
         Ok(())
     }
+
+    fn register_message_projection(
+        &self,
+        owner: String,
+        key: String,
+        init: serde_json::Value,
+        fold: MessageFoldFn,
+    ) -> Result<(), ExtensionError> {
+        assert_live(&self.generation, self.captured_gen)?;
+        self.pending.lock().unwrap().message_projections.push(
+            crate::runner::PendingMessageProjection {
+                owner,
+                key,
+                init,
+                fold,
+            },
+        );
+        Ok(())
+    }
 }
 
 /// Real api — live after `bind_core`; flushes registrations directly into
@@ -172,10 +191,14 @@ pub struct RealExtensionApi {
     /// Route B — prompt-section contributions (same storage the runner
     /// reads at assembly; shared so late registrations are honored).
     prompt_sections: Arc<Mutex<Vec<(String, String)>>>,
+    /// Session log folds — the runner's shared hub (same `Arc` the engine
+    /// folds through).
+    message_projection_hub: codesmith_agent::extension::MessageProjectionHubArc,
 }
 
 #[allow(dead_code)]
 impl RealExtensionApi {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         generation: Arc<AtomicU64>,
         tools: Arc<Mutex<HashMap<String, Arc<dyn ToolDefinition>>>>,
@@ -184,6 +207,7 @@ impl RealExtensionApi {
         providers: Arc<Mutex<Vec<ProviderRegistration>>>,
         shared: SharedProviderRegistry,
         prompt_sections: Arc<Mutex<Vec<(String, String)>>>,
+        message_projection_hub: codesmith_agent::extension::MessageProjectionHubArc,
     ) -> Self {
         let captured_gen = generation.load(Ordering::Acquire);
         Self {
@@ -195,6 +219,7 @@ impl RealExtensionApi {
             providers,
             shared,
             prompt_sections,
+            message_projection_hub,
         }
     }
 }
@@ -275,6 +300,19 @@ impl ExtensionApi for RealExtensionApi {
             sections.push((id, text));
         }
         Ok(())
+    }
+
+    fn register_message_projection(
+        &self,
+        owner: String,
+        key: String,
+        init: serde_json::Value,
+        fold: MessageFoldFn,
+    ) -> Result<(), ExtensionError> {
+        assert_live(&self.generation, self.captured_gen)?;
+        self.message_projection_hub
+            .register(&owner, &key, init, fold)
+            .map_err(ExtensionError::Config)
     }
 }
 

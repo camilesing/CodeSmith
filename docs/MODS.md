@@ -152,6 +152,8 @@ Transform mutable fields (one handler's rewrite is immediately visible to the ne
 | `message(msg) / send(msg)` | Command output (display / feed the agent) |
 | `register_provider(spec)` | Register a provider alias (see below) |
 | `register_prompt_section(id, text)` | Append a named section to the base system prompt (see below) |
+| `register_message_projection(key, init, fold)` | Register a session-log fold the host maintains (see below) |
+| `projection_state(key)` | Read this mod's projection state (inside hooks/tools) |
 
 ### Contributing a system-prompt section (route B)
 
@@ -166,6 +168,30 @@ id must match `[a-zA-Z0-9_-]`, non-empty text (a violation fails the
 mod's **load**). An explicit `before-agent-start` whole-prompt replacement
 by any handler still wins over sections. Reload clears the generation's
 sections.
+
+### Registering a message projection (session log folds)
+
+```rhai
+register_message_projection("counts", #{ users: 0 }, |state, m| {
+    if m.role == "user" { state.users = state.users + 1; }
+    state
+});
+```
+
+The host folds every transcript message through `fold(state, message)` —
+appends fold incrementally, wholesale replacements (session reload,
+compaction, `/edit` rollback) refold the whole log from `init`. Read the
+state anywhere natives run (hooks, tools, commands) with
+`projection_state(key)`. The state is never persisted as a snapshot: it is
+always "the fold of the current transcript", so it survives session reload
+by rebuild. This differs from `mod_state_get/set` (mod-written persistent
+state): a projection is host-maintained and log-derived.
+
+Limits: `message` is the wire-format message map (`role`, `content`
+blocks); a fold error drops the projection for the session (logged, never
+kills the turn); duplicate `key` within a mod fails the mod's **load**;
+≤16 projections across all mods; after `/extension reload` the new
+generation's states rebuild at the next turn start.
 
 ### Registering a provider (route A)
 

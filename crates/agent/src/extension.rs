@@ -31,7 +31,7 @@
 
 use std::borrow::Cow;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use codesmith_tools::{ToolCapability, ToolError, ToolResult};
@@ -638,6 +638,221 @@ pub trait ExtensionApi: Send + Sync {
     /// `BeforeAgentStart` seam — an explicit whole-prompt replacement by a
     /// handler still wins. `id` is diagnostics/dedup identity, not display.
     fn register_prompt_section(&self, id: String, text: String) -> Result<(), ExtensionError>;
+
+    /// Register a **message projection**: a fold the host runs over the
+    /// session transcript, maintaining a per-`(owner, key)` state that
+    /// survives session reload (rebuilt from the log — the event-sourcing
+    /// projection model; no snapshot is persisted). `init` is the fold's
+    /// starting value; `fold` folds one transcript message into the state
+    /// and returns the new state. Keys are mod-namespaced (`owner`), so
+    /// mods cannot collide. A fold error drops the projection (logged,
+    /// never kills the turn); re-registering happens at the next mod load.
+    fn register_message_projection(
+        &self,
+        owner: String,
+        key: String,
+        init: Value,
+        fold: MessageFoldFn,
+    ) -> Result<(), ExtensionError>;
+}
+
+// === Message projections (session log folds) ===============================
+
+/// The fold function of a mod-registered message projection. Folds one
+/// transcript message into the projection state and returns the new state;
+/// `Err` poisons the projection (host drops it and logs — a mod bug must
+/// not kill the turn). The state currency is [`serde_json::Value`] so the
+/// framework crate stays script-runtime-agnostic (the Rhai adapter converts
+/// at the boundary).
+pub type MessageFoldFn =
+    Arc<dyn Fn(Value, &crate::models::Message) -> Result<Value, String> + Send + Sync>;
+
+/// Cap on registered projections across all mods (fail loud beyond, at
+/// registration — mirrors `MAX_PROMPT_SECTIONS`).
+pub const MAX_MESSAGE_PROJECTIONS: usize = 16;
+
+/// Host-side store of mod-registered message projections. The engine folds
+/// every transcript mutation through this hub (append → [`fold_message`],
+/// wholesale replacement → [`refold_all`]), so a projection's state is
+/// always "the fold of the current transcript" — session restore, compaction,
+/// and `/edit` rollback rebuild it for free. `clear` (reload) marks the hub
+/// dirty; the engine refolds from the transcript at the next turn start.
+///
+/// [`fold_message`]: MessageProjectionHub::fold_message
+/// [`refold_all`]: MessageProjectionHub::refold_all
+///
+/// Known limitations: a fold error removes the projection until the next
+/// mod load (no retry); projection states are not persisted — reload/restore
+/// rebuilds them from the transcript, which is the point, but a projection
+/// whose fold depends on messages compaction drops will diverge from the
+/// pre-compaction state (same boundary as the fact-ledger snapshot note).
+#[derive(Default)]
+pub struct MessageProjectionHub {
+    inner: Mutex<HubState>,
+}
+
+/// Shared-handle alias — the runner owns one, the engine folds through the
+/// same `Arc`, mod scripts read via `projection_state(key)`.
+pub type MessageProjectionHubArc = Arc<MessageProjectionHub>;
+
+/// Manual `Debug` (the fold closures are not `Debug`); reports the count.
+impl std::fmt::Debug for MessageProjectionHub {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MessageProjectionHub")
+            .field(
+                "projections",
+                &self
+                    .inner
+                    .lock()
+                    .expect("projection hub poisoned")
+                    .projections
+                    .len(),
+            )
+            .finish()
+    }
+}
+
+#[derive(Default)]
+struct HubState {
+    projections: Vec<StoredProjection>,
+    /// Set by `clear`; the engine consumes it (`take_dirty`) to refold from
+    /// the live transcript after a reload.
+    dirty: bool,
+}
+
+struct StoredProjection {
+    owner: String,
+    key: String,
+    init: Value,
+    state: Value,
+    fold: MessageFoldFn,
+}
+
+impl MessageProjectionHub {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a projection. Fails loud on a bad key, a duplicate
+    /// `(owner, key)` (pick a new key — states are not migratable), or the
+    /// global cap.
+    pub fn register(
+        &self,
+        owner: &str,
+        key: &str,
+        init: Value,
+        fold: MessageFoldFn,
+    ) -> Result<(), String> {
+        if key.is_empty()
+            || key.len() > 64
+            || !key
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        {
+            return Err(format!(
+                "projection key {key:?} must match [a-zA-Z0-9_-] and be 1-64 chars"
+            ));
+        }
+        let mut state = self.inner.lock().expect("projection hub poisoned");
+        if state
+            .projections
+            .iter()
+            .any(|p| p.owner == owner && p.key == key)
+        {
+            return Err(format!(
+                "projection key {key:?} already registered by mod {owner:?} — pick a new key"
+            ));
+        }
+        if state.projections.len() >= MAX_MESSAGE_PROJECTIONS {
+            return Err(format!(
+                "too many message projections (>{MAX_MESSAGE_PROJECTIONS})"
+            ));
+        }
+        state.projections.push(StoredProjection {
+            owner: owner.to_string(),
+            key: key.to_string(),
+            init: init.clone(),
+            state: init,
+            fold,
+        });
+        Ok(())
+    }
+
+    /// Fold one newly-appended transcript message into every projection.
+    /// No-ops when empty. A fold error drops that projection (logged via
+    /// `tracing` by the host, error string returned per-entry is logged at
+    /// the call site) — the turn keeps running.
+    pub fn fold_message(&self, message: &crate::models::Message) {
+        let mut state = self.inner.lock().expect("projection hub poisoned");
+        if state.projections.is_empty() {
+            return;
+        }
+        let mut doomed: Vec<(String, String)> = Vec::new();
+        for p in &mut state.projections {
+            match (p.fold)(p.state.clone(), message) {
+                Ok(next) => p.state = next,
+                Err(e) => {
+                    tracing::error!(
+                        target: "codesmith_extensions",
+                        "message projection {}/{} failed and was dropped: {e}",
+                        p.owner,
+                        p.key
+                    );
+                    doomed.push((p.owner.clone(), p.key.clone()));
+                }
+            }
+        }
+        state
+            .projections
+            .retain(|p| !doomed.contains(&(p.owner.clone(), p.key.clone())));
+    }
+
+    /// Reset every projection to its `init` and fold the whole transcript
+    /// (wholesale replacement: session restore, compaction, rollback).
+    pub fn refold_all(&self, messages: &[crate::models::Message]) {
+        {
+            let mut state = self.inner.lock().expect("projection hub poisoned");
+            if state.projections.is_empty() {
+                return;
+            }
+            for p in &mut state.projections {
+                p.state = p.init.clone();
+            }
+            state.dirty = false;
+        }
+        for message in messages {
+            self.fold_message(message);
+        }
+    }
+
+    /// Drop all registered projections and mark the hub dirty (reload drops
+    /// the generation's contributions; the engine refolds after the new
+    /// generation registers).
+    pub fn clear(&self) {
+        let mut state = self.inner.lock().expect("projection hub poisoned");
+        state.projections.clear();
+        state.dirty = true;
+    }
+
+    /// Consume the dirty flag (the engine refolds the transcript when this
+    /// returns `true`).
+    pub fn take_dirty(&self) -> bool {
+        let mut state = self.inner.lock().expect("projection hub poisoned");
+        std::mem::replace(&mut state.dirty, false)
+    }
+
+    /// Read a projection's current state (mod-namespaced).
+    #[must_use]
+    pub fn state(&self, owner: &str, key: &str) -> Option<Value> {
+        self.inner
+            .lock()
+            .expect("projection hub poisoned")
+            .projections
+            .iter()
+            .find(|p| p.owner == owner && p.key == key)
+            .map(|p| p.state.clone())
+    }
 }
 
 // === Extension (the factory) ==============================================
@@ -1071,5 +1286,106 @@ mod tests {
         let ctx = TestContext::new();
         let out = block_on(h.handle(&ExtensionEvent::SessionShutdown, &ctx)).unwrap();
         assert!(matches!(out, HandlerOutcome::Continue));
+    }
+
+    // === Message projections ==================================================
+
+    use crate::models::{ContentBlock, Message};
+
+    fn proj_msg(role: &str) -> Message {
+        Message {
+            role: role.to_string(),
+            content: vec![ContentBlock::Text {
+                text: "x".into(),
+                cache_control: None,
+            }],
+        }
+    }
+
+    fn counting_fold() -> MessageFoldFn {
+        Arc::new(|state, msg| {
+            let n = state.as_u64().unwrap_or(0) + u64::from(msg.role == "assistant");
+            Ok(Value::from(n))
+        })
+    }
+
+    #[test]
+    fn projection_register_fold_refold_clear_round_trip() {
+        let hub = MessageProjectionHub::new();
+        hub.register("mod-a", "count", Value::from(0), counting_fold())
+            .unwrap();
+        // Duplicate (owner, key) is rejected — states are not migratable.
+        assert!(
+            hub.register("mod-a", "count", Value::from(0), counting_fold())
+                .is_err()
+        );
+        // The same key under another mod is a different projection.
+        hub.register(
+            "mod-b",
+            "count",
+            Value::from(7),
+            Arc::new(|state, _| Ok(state)),
+        )
+        .unwrap();
+
+        hub.fold_message(&proj_msg("assistant"));
+        hub.fold_message(&proj_msg("user"));
+        hub.fold_message(&proj_msg("assistant"));
+        assert_eq!(hub.state("mod-a", "count"), Some(Value::from(2)));
+        assert_eq!(hub.state("mod-b", "count"), Some(Value::from(7)));
+
+        // Refold resets to init and folds the whole transcript.
+        hub.refold_all(&[
+            proj_msg("assistant"),
+            proj_msg("assistant"),
+            proj_msg("assistant"),
+        ]);
+        assert_eq!(hub.state("mod-a", "count"), Some(Value::from(3)));
+
+        // Clear drops entries and turns the hub dirty (reload signal).
+        hub.clear();
+        assert_eq!(hub.state("mod-a", "count"), None);
+        assert!(hub.take_dirty());
+        assert!(!hub.take_dirty(), "dirty is one-shot");
+    }
+
+    #[test]
+    fn projection_fold_error_drops_the_projection() {
+        let hub = MessageProjectionHub::new();
+        // Fails from the second fold on (state-driven — the fold is `Fn`).
+        let fold: MessageFoldFn = Arc::new(|state, _| {
+            if state.as_u64().is_some_and(|n| n >= 1) {
+                Err("script bug".to_string())
+            } else {
+                Ok(Value::from(1u64))
+            }
+        });
+        hub.register("m", "flaky", Value::from(0), fold).unwrap();
+        hub.fold_message(&proj_msg("user"));
+        assert_eq!(hub.state("m", "flaky"), Some(Value::from(1)));
+        hub.fold_message(&proj_msg("user"));
+        assert_eq!(hub.state("m", "flaky"), None, "poisoned projection dropped");
+        // A dropped projection is gone for good until the next mod load.
+        hub.fold_message(&proj_msg("user"));
+        assert_eq!(hub.state("m", "flaky"), None);
+    }
+
+    #[test]
+    fn projection_key_format_and_cap_enforced() {
+        let hub = MessageProjectionHub::new();
+        assert!(
+            hub.register("m", "bad key", Value::Null, counting_fold())
+                .is_err()
+        );
+        assert!(hub.register("m", "", Value::Null, counting_fold()).is_err());
+        let identity: MessageFoldFn = Arc::new(|state, _| Ok(state));
+        for i in 0..MAX_MESSAGE_PROJECTIONS {
+            hub.register("m", &format!("p{i}"), Value::Null, identity.clone())
+                .unwrap();
+        }
+        assert!(
+            hub.register("m", "overflow", Value::Null, identity)
+                .is_err()
+        );
     }
 }

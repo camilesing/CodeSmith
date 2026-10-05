@@ -855,7 +855,11 @@ fn populate_extension_runtime(
                 // Failed).
                 for m in mods_to_load {
                     let (id, global) = (m.id.clone(), m.global);
-                    match crate::mod_ops::load_rhai_mod(&m, mods_kv_dir.as_deref()) {
+                    match crate::mod_ops::load_rhai_mod(
+                        &m,
+                        mods_kv_dir.as_deref(),
+                        runner_for_thread.message_projection_hub(),
+                    ) {
                         Ok(rhai_mod) => match load_rt.block_on(runner_for_thread.load(&rhai_mod)) {
                             Ok(()) => {
                                 loaded_mods_cell.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -973,6 +977,10 @@ pub fn reload_extension_runtime(
     runner.clear_providers();
     // Route B — prompt sections are generation-scoped like providers.
     runner.clear_prompt_sections();
+    // Session log folds — same generation scoping; the hub turns dirty and
+    // the engine refolds from the live transcript at the next turn start
+    // (after the new generation re-registers).
+    runner.clear_message_projections();
     // §F5d T4 — move the live dylib `Library`s into `pending_drop` (UI-thread
     // MOVE: `mem::take` under one lock, the `Library` stays alive). The engine
     // op-loop top then `drop_pending`s them at the one moment the main-thread

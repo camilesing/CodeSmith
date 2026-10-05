@@ -111,6 +111,15 @@ pub(crate) struct Pending {
     pub handlers: Vec<PendingHandler>,
     pub providers: Vec<PendingProvider>,
     pub prompt_sections: Vec<(String, String)>,
+    pub message_projections: Vec<PendingMessageProjection>,
+}
+
+/// A message projection queued by the stub `ExtensionApi`.
+pub(crate) struct PendingMessageProjection {
+    pub owner: String,
+    pub key: String,
+    pub init: serde_json::Value,
+    pub fold: codesmith_agent::extension::MessageFoldFn,
 }
 
 /// The host runtime. Constructed by [`ExtensionRunner::new`] +
@@ -172,6 +181,13 @@ pub struct ExtensionRunner {
     /// them (a dropped section shifts the prompt prefix once, the same
     /// cost class as a whole-prompt replacement).
     prompt_sections: Mutex<Vec<(String, String)>>,
+    /// Session log folds — mod-registered message projections. The hub is
+    /// runner-created but host-shared: the engine folds transcript
+    /// mutations through the same `Arc` (`fold_message` / `refold_all`),
+    /// `projection_state(key)` reads from inside mod scripts, and
+    /// `clear_message_projections` / reload drop the generation's entries
+    /// (the engine refolds from the transcript on the next turn).
+    message_projection_hub: codesmith_agent::extension::MessageProjectionHubArc,
 }
 
 impl ExtensionRunner {
@@ -190,6 +206,9 @@ impl ExtensionRunner {
             shared: Mutex::new(SharedProviderRegistry::new()),
             providers: Mutex::new(Vec::new()),
             prompt_sections: Mutex::new(Vec::new()),
+            message_projection_hub: codesmith_agent::extension::MessageProjectionHubArc::new(
+                codesmith_agent::extension::MessageProjectionHub::new(),
+            ),
         }
     }
 
@@ -341,6 +360,21 @@ impl ExtensionRunner {
             .clear();
     }
 
+    /// The shared message-projection hub. The engine folds transcript
+    /// mutations through this `Arc`; `RhaiMod` bakes it into the
+    /// `projection_state(key)` native.
+    #[must_use]
+    pub fn message_projection_hub(&self) -> codesmith_agent::extension::MessageProjectionHubArc {
+        codesmith_agent::extension::MessageProjectionHubArc::clone(&self.message_projection_hub)
+    }
+
+    /// Drop the generation's message projections (reload). The hub turns
+    /// dirty; the engine refolds from the live transcript at the next turn
+    /// start, once the new generation has registered.
+    pub fn clear_message_projections(&self) {
+        self.message_projection_hub.clear();
+    }
+
     /// Route A — point the runner at the host's shared provider registry
     /// (the one the host's client-resolution path reads). Call before
     /// `load`/`bind_core` (host wiring at construction); registrations
@@ -459,6 +493,17 @@ impl ExtensionRunner {
                 tracing::warn!(
                     target: "codesmith_extensions",
                     "prompt section rejected at bind: {e}"
+                );
+            }
+        }
+        for mp in pending.message_projections.drain(..) {
+            if let Err(e) = self
+                .message_projection_hub
+                .register(&mp.owner, &mp.key, mp.init, mp.fold)
+            {
+                tracing::warn!(
+                    target: "codesmith_extensions",
+                    "message projection rejected at bind: {e}"
                 );
             }
         }
