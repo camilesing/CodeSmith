@@ -1211,7 +1211,10 @@ disabled = ["edit_file", "apply_patch"]   # 任意来源：内置、插件、mod
 被禁用的工具在回合分发的组合点移除——从注册表本身移除，而不只是
 目录——因此既不可见也不可执行，回合级掩码（preset 的
 `tools.include`/`exclude`、斜杠命令 frontmatter）在主回合无法将其
-复活。子代理工具集走独立构建路径，暂不读该清单。未知名字是无害的
+复活。子代理工具集遵循同一基线：每个子代理注册表
+（`agent_spawn`/`agent_open` 后代，任意 spawn 深度）都会移除被禁用
+名字，自定义子代理的 `allowed_tools` 显式列出被禁用工具时会在
+spawn 时报错并归因到 `capabilities.toml`。未知名字是无害的
 no-op（工具名有增有减）；文件格式错误会在启动时报出字段路径并失败。
 `CODESMITH_CAPABILITIES_MANIFEST` 环境变量可覆盖文件路径（运维/测试）。
 `/tools` 按来源分组展示当前目录，并列出被禁用名字。文件每进程读一次

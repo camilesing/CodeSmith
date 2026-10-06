@@ -10,15 +10,18 @@
 //! resurrect a disabled tool — the same precedence the legacy
 //! registry-level `Disabled` override had.
 //!
-//! Known limitations: main-turn dispatch only (sub-agent toolsets build on
-//! a separate path and do not consult the manifest yet); the file is read
-//! once per process (restart picks up edits); mods enable/consent state
-//! intentionally stays in `ModStateStore` — that is lifecycle, not
-//! selection, and converging it is a later slice. Legacy config.toml
+//! Known limitations: the file is read once per process (restart picks up
+//! edits); mods enable/consent state intentionally stays in
+//! `ModStateStore` — that is lifecycle, not selection, and converging it
+//! is a later slice. Legacy config.toml
 //! `[tools].overrides <name> = { type = "disabled" }` still parses
 //! (external config contract) and is honored — unioned into the effective
 //! set with a deprecation warning; its enforcement point moved to the
-//! dispatch composition point (`EngineConfig.disabled_tools`).
+//! dispatch composition point (`EngineConfig.disabled_tools`), which both
+//! the main turn (`build_turn_dispatcher`) and every sub-agent registry
+//! (`SubAgentRuntime::capability_disabled_tools` →
+//! `SubAgentToolRegistry::new`) apply — a disabled tool is neither visible
+//! nor executable on either path, at any spawn depth.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
