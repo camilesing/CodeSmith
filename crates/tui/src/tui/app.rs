@@ -1882,7 +1882,14 @@ impl App {
         let plan_state = new_shared_plan_state();
 
         let skills_dir = resolve_skills_dir(&workspace, &global_skills_dir, config);
-        let cached_skills = Self::discover_cached_skills(&workspace, &skills_dir);
+        // Filesystem-only at construction: mods register during engine
+        // build (after this), and `refresh_skill_cache` re-merges them.
+        let cached_skills = crate::skills::discover_for_workspace_and_dir(&workspace, &skills_dir)
+            .list()
+            .iter()
+            .filter(|s| s.user_invocable)
+            .map(|s| (s.name.clone(), s.description.clone()))
+            .collect::<Vec<(String, String)>>();
 
         let input_history = crate::composer_history::load_history();
         let (initial_input_text, initial_input_cursor, auto_submit_initial_input) =
@@ -2161,21 +2168,22 @@ impl App {
         }
     }
 
-    fn discover_cached_skills(
-        workspace: &std::path::Path,
-        skills_dir: &std::path::Path,
-    ) -> Vec<(String, String)> {
-        crate::skills::discover_for_workspace_and_dir(workspace, skills_dir)
+    pub fn refresh_skill_cache(&mut self) {
+        let skills_dir = self.skills_dir.clone();
+        let registered = self
+            .extension_runner
+            .as_ref()
+            .map(|runner| crate::skills::skills_from_registrations(&runner.registered_skills()))
+            .unwrap_or_default();
+        let mut registry =
+            crate::skills::discover_for_workspace_and_dir(&self.workspace, &skills_dir);
+        registry.merge_registered(&registered);
+        self.cached_skills = registry
             .list()
             .iter()
             .filter(|s| s.user_invocable)
             .map(|s| (s.name.clone(), s.description.clone()))
-            .collect()
-    }
-
-    pub fn refresh_skill_cache(&mut self) {
-        let skills_dir = self.skills_dir.clone();
-        self.cached_skills = Self::discover_cached_skills(&self.workspace, &skills_dir);
+            .collect();
     }
 
     pub fn submit_api_key(&mut self) -> Result<SavedCredential, ApiKeyError> {

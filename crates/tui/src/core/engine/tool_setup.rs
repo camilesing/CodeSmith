@@ -97,6 +97,16 @@ pub(super) fn build_tool_context_for(
     // Hand the user-memory path to tools so the model-callable
     // `remember` tool can append entries (#489). `None` when the
     // feature is disabled — tools short-circuit on that.
+    // Route B — mod-registered skills ride the context so `load_skill`
+    // resolves them by name (same merge the catalogue render applies).
+    // Sub-agent contexts build separately and stay empty (documented in
+    // `SkillSource`'s known limitations).
+    if let Some(runner) = host.extension_runner.as_ref() {
+        ctx = ctx.with_registered_skills(crate::skills::skills_from_registrations(
+            &runner.registered_skills(),
+        ));
+    }
+
     if config.memory_enabled {
         ctx.memory_path = Some(config.memory_path.clone());
     }

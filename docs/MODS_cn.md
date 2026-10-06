@@ -153,6 +153,7 @@ Transform 可变字段（一个 handler 的改写对后续 handler 立即可见�
 | `message(msg) / send(msg)` | 命令输出（展示 / 注入对话） |
 | `register_provider(spec)` | 注册 provider 别名（见下） |
 | `register_prompt_section(id, text)` | 向基础系统提示词追加命名分段（见下） |
+| `register_skill(spec)` | 向会话技能目录贡献一个内存技能（见下） |
 | `register_message_projection(key, init, fold)` | 注册由宿主维护的会话日志折叠（见下） |
 | `projection_state(key)` | 读取本 mod 的投影状态（钩子/工具内可用） |
 
@@ -167,6 +168,26 @@ mod 加载时注册、会话内稳定——对前缀缓存友好。限制：≤1
 `[a-zA-Z0-9_-]`、文本非空（违反即 mod **加载失败**）。任何 handler 经
 `before-agent-start` 的整段替换仍优先于分段。reload 清除该 generation
 的全部分段。
+
+### 贡献技能（路线 B）
+
+```rhai
+register_skill(#{
+    name: "commit-helper",
+    description: "Write well-scoped commit messages",
+    body: "# Steps\n1. Read the diff.\n2. Draft the message.",
+    when_to_use: "the user asks for a commit",
+});
+```
+
+注册技能是内存中的目录条目（磁盘上没有 `SKILL.md`）：会出现在系统提示词的
+`## Skills` 块、`/skills` 与命令面板中，`load_skill` 按名解析——来源归因到
+mod（`mod: <mod-id>`）而非文件路径。名字与文件系统目录冲突时文件系统获胜
+（该注册被跳过并在 `/skills` 出警告）；名字已被**别的** mod 注册则本 mod
+**加载失败**（错误点名持有者）。限制：≤16 个、名字须匹配
+`[a-zA-Z0-9_-]`（1-64 字符）、description 与 body 非空。注册技能不带
+`paths`，因此不参与条件（工作集）技能匹配；子代理会话不渲染技能目录。
+reload 清除该 generation 的全部注册。
 
 ### 注册消息投影（会话日志折叠）
 

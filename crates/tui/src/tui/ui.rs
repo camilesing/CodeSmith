@@ -3244,6 +3244,14 @@ async fn run_event_loop(
                         &app.workspace,
                         &app.mcp_config_path,
                         app.mcp_snapshot.as_ref(),
+                        &app.extension_runner
+                            .as_ref()
+                            .map(|runner| {
+                                crate::skills::skills_from_registrations(
+                                    &runner.registered_skills(),
+                                )
+                            })
+                            .unwrap_or_default(),
                     )));
                 continue;
             }
@@ -5058,8 +5066,13 @@ async fn dispatch_user_message(
                 show_thinking: app.show_thinking,
                 is_simple: app.is_simple,
                 personality: config.personality(),
-                skills_block: crate::skills::render_available_skills_context_for_workspace(
+                skills_block: crate::skills::render_available_skills_context_with_registered(
                     &app.workspace,
+                    None,
+                    &app.extension_runner
+                        .as_ref()
+                        .map(|runner| runner.registered_skills())
+                        .unwrap_or_default(),
                 ),
             },
         ),

@@ -65,6 +65,15 @@ projections (session log folds) are done**:
 reads) registers a host-maintained fold over the session transcript —
 appends fold incrementally, wholesale replacements (reload-from-log,
 compaction, `/edit` rollback) refold; the state is never snapshotted.
+**Mod-registered skills (route B) are done**:
+`ExtensionApi::register_skill` (Rhai shape: `register_skill(spec)` with
+`name`/`description`/`body`/optional `when_to_use`) contributes an
+in-memory skill to the session catalogue — system-prompt `## Skills`
+block, `/skills`, the command palette, and `load_skill` by name,
+attributed `mod: <owner>`. The filesystem catalogue wins on a name
+collision; a name owned by a different mod fails the load; ≤16 skills;
+reload clears the generation's registrations. Registered skills carry no
+`paths` (no conditional matching) and sub-agents render no catalogue.
 **The `tools-change` catalog event is done** (capability-composition
 slice 1): the turn dispatcher diffs the compiled model-visible catalog
 against the previous main-turn baseline (origin-classified snapshot in
