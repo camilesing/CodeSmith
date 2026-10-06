@@ -7898,6 +7898,56 @@ fn set_provider_auth_mode_in_memory(config: &mut Config, provider: ApiProvider, 
     entry.auth_mode = Some(auth_mode);
 }
 
+/// The load-path transcript projections, gathered into one registry. A new
+/// projection is one `register` call here — not another hand-wired rebuild
+/// block in `apply_loaded_session`. Engine-held projections (the working
+/// set) rebuild engine-side on `Op::SyncSession`; see the registry module's
+/// known-limitations note for that boundary.
+fn session_projections(app: &App) -> codesmith_agent_runtime::projections::ProjectionRegistry {
+    use codesmith_agent_runtime::projections::ProjectionInput;
+
+    let mut registry = codesmith_agent_runtime::projections::ProjectionRegistry::default();
+    let todos = app.todos.clone();
+    registry.register(
+        "todo",
+        Arc::new(move |input: ProjectionInput| {
+            let todos = todos.clone();
+            Box::pin(async move {
+                *todos.lock().await =
+                    crate::tools::todo::TodoList::rebuild_from_messages(&input.messages);
+            })
+        }),
+    );
+    let plan_state = app.plan_state.clone();
+    registry.register(
+        "plan",
+        Arc::new(move |input: ProjectionInput| {
+            let plan_state = plan_state.clone();
+            Box::pin(async move {
+                *plan_state.lock().await =
+                    crate::tools::plan::PlanState::rebuild_from_messages(&input.messages);
+            })
+        }),
+    );
+    if let Some(files) = app.recent_read_files.clone() {
+        registry.register(
+            "recent_read_files",
+            Arc::new(move |input: ProjectionInput| {
+                let files = files.clone();
+                Box::pin(async move {
+                    let rebuilt =
+                        codesmith_agent_runtime::session::rebuild_recent_read_files_from_messages(
+                            &input.messages,
+                        );
+                    let mut guard = files.lock().unwrap_or_else(|e| e.into_inner());
+                    *guard = rebuilt.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                })
+            }),
+        );
+    }
+    registry
+}
+
 async fn apply_loaded_session(app: &mut App, config: &Config, session: &SavedSession) -> bool {
     let (messages, recovered_draft) = recover_interrupted_user_tail(&session.messages);
     app.api_messages = messages;
@@ -7905,30 +7955,24 @@ async fn apply_loaded_session(app: &mut App, config: &Config, session: &SavedSes
     // (tool catalog + base URL of the last model request).
     app.session.last_tool_catalog = session.last_tool_catalog.clone();
     app.session.last_base_url = session.last_base_url.clone();
-    // Event-sourcing slice 3 — projections: rebuild todo/plan state from
-    // the transcript (each tool call replaces the whole state, so the fold
-    // is last-write-wins). The shared `Arc`s are the live engine's — the
-    // restored state is visible without an engine rebuild.
-    *app.todos.lock().await =
-        crate::tools::todo::TodoList::rebuild_from_messages(&app.api_messages);
-    *app.plan_state.lock().await =
-        crate::tools::plan::PlanState::rebuild_from_messages(&app.api_messages);
+    // Event-sourcing closing package — the load-path projections (todo /
+    // plan / recent-read-files) rebuild through one registry entry; the
+    // shared `Arc`s are the live engine's, so the restored state is visible
+    // without an engine rebuild.
+    session_projections(app)
+        .rebuild_all(codesmith_agent_runtime::projections::ProjectionInput {
+            messages: Arc::new(app.api_messages.clone()),
+            workspace: app.workspace.clone(),
+        })
+        .await;
     // Slice 4 — restore the fact ledger (compaction invariants) into the
     // LIVE engine's ledger (same `Arc`); a saved `None` clears it, matching
-    // sessions saved before the field existed.
+    // sessions saved before the field existed. A snapshot, not a fold: its
+    // source messages may already be compacted away, so it cannot register
+    // as a projection.
     if let Some(ledger) = &app.fact_ledger {
         let mut guard = ledger.lock().unwrap_or_else(|e| e.into_inner());
         *guard = session.fact_ledger.clone().unwrap_or_default();
-    }
-    // Slice 6 — the working-set projection: rebuild recent-read-files from
-    // the transcript into the LIVE engine's queue (same `Arc`) — the
-    // compaction reinjection + freshness sections see the restored set.
-    if let Some(files) = &app.recent_read_files {
-        let rebuilt = codesmith_agent_runtime::session::rebuild_recent_read_files_from_messages(
-            &app.api_messages,
-        );
-        let mut guard = files.lock().unwrap_or_else(|e| e.into_inner());
-        *guard = rebuilt.lock().unwrap_or_else(|e| e.into_inner()).clone();
     }
     app.clear_history();
     app.tool_cells.clear();

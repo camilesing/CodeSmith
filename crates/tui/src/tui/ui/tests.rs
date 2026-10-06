@@ -1667,6 +1667,33 @@ async fn apply_loaded_session_does_not_restore_slash_command_tail_as_retry_draft
 }
 
 #[tokio::test]
+async fn apply_loaded_session_rebuilds_projections_via_registry() {
+    // Pins the load-path projection registry contract: the loaded
+    // transcript rebuilds todo state through `session_projections` —
+    // a new projection is one `register` call there, not a hand-wired
+    // block in `apply_loaded_session`.
+    let mut app = create_test_app();
+    let session = saved_session_with_messages(vec![Message {
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::ToolUse {
+            id: "call-todo".to_string(),
+            name: "todo_write".to_string(),
+            input: serde_json::json!({"todos": [
+                {"content": "fold projections", "status": "in_progress"},
+            ]}),
+            caller: None,
+        }],
+    }]);
+
+    let recovered = apply_loaded_session(&mut app, &Config::default(), &session).await;
+
+    assert!(!recovered);
+    let todos = app.todos.lock().await.snapshot();
+    assert_eq!(todos.items.len(), 1);
+    assert_eq!(todos.items[0].content, "fold projections");
+}
+
+#[tokio::test]
 async fn apply_loaded_session_resets_unpersisted_telemetry() {
     let mut app = create_test_app();
     app.session.session_cost = 1.25;

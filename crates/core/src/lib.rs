@@ -493,7 +493,7 @@ impl ThreadManager {
             },
             name: None,
         };
-        self.persist_thread(&thread, None)?;
+        self.persist_thread(&thread)?;
         match &initial_history {
             InitialHistory::Forked(items) => {
                 for item in items {
@@ -560,7 +560,7 @@ impl ThreadManager {
             .cwd
             .clone()
             .unwrap_or_else(|| fallback_cwd.to_path_buf());
-        self.persist_thread(&thread, None)?;
+        self.persist_thread(&thread)?;
         self.running_threads
             .insert(thread.id.clone(), thread.clone());
         if let Some(history) = params.history.as_ref() {
@@ -688,10 +688,9 @@ impl ThreadManager {
         Ok(())
     }
 
-    fn persist_thread(&self, thread: &Thread, rollout_path: Option<PathBuf>) -> Result<()> {
+    fn persist_thread(&self, thread: &Thread) -> Result<()> {
         self.store.upsert_thread(&ThreadMetadata {
             id: thread.id.clone(),
-            rollout_path,
             preview: thread.preview.clone(),
             ephemeral: thread.ephemeral,
             model_provider: thread.model_provider.clone(),

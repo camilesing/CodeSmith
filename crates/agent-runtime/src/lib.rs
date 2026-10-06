@@ -64,6 +64,7 @@ pub mod ops;
 pub mod prefix_cache;
 pub mod pricing;
 pub mod project_context;
+pub mod projections;
 pub mod prompt_inspect;
 pub mod prompt_runtime;
 pub mod prompt_sources;

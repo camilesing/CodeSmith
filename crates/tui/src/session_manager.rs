@@ -5,6 +5,16 @@
 //! - Listing previous sessions
 //! - Resuming sessions by ID
 //! - Managing session lifecycle
+//!
+//! Recording-layer role (one of four layers; each owning module states its
+//! role): a `SavedSession` file is a **loadable snapshot** — a copy of the
+//! transcript plus cache/snapshot fields (last request envelope, fact
+//! ledger). Foldable state is deliberately NOT persisted here: todo/plan/
+//! recent-read-file projections rebuild from the transcript at load (see
+//! `codesmith_agent_runtime::projections`), while non-refoldable state
+//! (the fact ledger, whose source messages compaction may drop) snapshots.
+//! The transcript remains the authority — a damaged snapshot field
+//! degrades one field, not the session.
 
 use crate::artifacts::ArtifactRecord;
 use crate::models::{ContentBlock, Message, SystemPrompt};

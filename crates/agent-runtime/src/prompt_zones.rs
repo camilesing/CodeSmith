@@ -276,6 +276,13 @@ pub struct RebuildRecord {
 
 /// Append-only conversation history — the `Session` transcript store.
 ///
+/// Recording-layer role (one of four layers; each owning module states its
+/// role): while the session runs this log is the **authoritative record** —
+/// every transcript projection folds from it (see
+/// `crate::projections`), and every durable layer (the session snapshot
+/// file, the JSONL event stream, the SQLite query index) is downstream of
+/// it. Nothing downstream holds authority over it.
+///
 /// `push` is the only everyday mutation this type expresses. Wholesale
 /// replacement exists solely through [`rebuild`](Self::rebuild), which
 /// demands a [`RebuildReason`]. There is deliberately no way to insert,
