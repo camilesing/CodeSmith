@@ -1,5 +1,14 @@
 //! Fact ledger: rule-extracted must-not-lose facts that survive compaction.
 //!
+//! Recording-layer role (one of four layers; each owning module states its
+//! role): the ledger is **runtime state**, not a log — it cannot be
+//! re-folded from the transcript once compaction drops the source
+//! messages, so it persists as a snapshot field of the session file
+//! instead of registering as a transcript projection
+//! (`crate::projections`). That foldability boundary is the deciding
+//! test: foldable state becomes a projection, non-foldable state a
+//! snapshot.
+//!
 //! Long sessions lose early constraints through summarization: the first
 //! task instruction gets summarized away, schema docs read from disk are
 //! pruned from tool results, and the one-line reason an approach failed

@@ -1,17 +1,29 @@
 //! Persistent state management for conversation threads, messages, and jobs.
 //!
-//! The [`StateStore`] is the primary entry point, backed by a SQLite database and an
-//! append-only JSONL session index file. It provides CRUD operations for:
+//! The [`StateStore`] is the primary entry point, backed by a SQLite
+//! database. It provides CRUD operations for:
 //!
-//! - **Threads** — conversation metadata, archival, and session indexing.
+//! - **Threads** — conversation metadata and archival.
 //! - **Messages** — append-only message storage with tree-structured branching.
 //! - **Checkpoints** — named state snapshots for restoring conversation progress.
 //! - **Jobs** — background task tracking with status and progress.
 //! - **Dynamic tools** — per-thread tool registrations.
+//!
+//! Recording-layer role (one of four layers; each owning module states its
+//! role): this store is a **query index** for the app-server and background
+//! surfaces (thread listing, message-history queries). It holds derived,
+//! re-queryable data — it is not the TUI's resume source (that path loads a
+//! `SavedSession` file and rebuilds projections from the transcript), and
+//! it is not the authoritative record (that is the transcript/event stream
+//! in its owning modules).
+//!
+//! Retired 2026-10 (zero consumers repo-wide, verified by grep before
+//! removal): the `threads.rollout_path` write — every production writer
+//! passed `None` — and the `session_index.jsonl` sidecar, appended on every
+//! upsert but never read. The SQLite column stays in the schema for on-disk
+//! stability (old databases keep it; nothing reads or writes it).
 
-use std::collections::HashMap;
-use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -66,8 +78,6 @@ pub enum SessionSource {
 pub struct ThreadMetadata {
     /// Unique identifier for this thread.
     pub id: String,
-    /// Optional filesystem path to the rollout (JSONL transcript) file.
-    pub rollout_path: Option<PathBuf>,
     /// Short preview or summary of the thread content.
     pub preview: String,
     /// Whether this thread is ephemeral (not persisted long-term).
@@ -213,22 +223,13 @@ impl Default for ThreadListFilters {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SessionIndexEntry {
-    thread_id: String,
-    thread_name: Option<String>,
-    updated_at: i64,
-    rollout_path: Option<PathBuf>,
-}
-
 /// Persistent storage for conversation threads, messages, checkpoints, and jobs.
 ///
-/// Backed by a SQLite database and an append-only JSONL session index file.
-/// The database schema is automatically initialized and migrated on [`open`](Self::open).
+/// Backed by a SQLite database. The database schema is automatically
+/// initialized and migrated on [`open`](Self::open).
 #[derive(Debug, Clone)]
 pub struct StateStore {
     db_path: PathBuf,
-    session_index_path: PathBuf,
 }
 
 impl StateStore {
@@ -239,19 +240,12 @@ impl StateStore {
     /// The database schema is created automatically if it does not exist.
     pub fn open(path: Option<PathBuf>) -> Result<Self> {
         let db_path = path.unwrap_or_else(default_state_db_path);
-        let session_index_path = db_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join("session_index.jsonl");
         if let Some(parent) = db_path.parent() {
             fs::create_dir_all(parent).with_context(|| {
                 format!("failed to create state directory {}", parent.display())
             })?;
         }
-        let store = Self {
-            db_path,
-            session_index_path,
-        };
+        let store = Self { db_path };
         store.init_schema()?;
         Ok(store)
     }
@@ -291,6 +285,8 @@ impl StateStore {
                 BEGIN;
                 CREATE TABLE IF NOT EXISTS threads (
                     id TEXT PRIMARY KEY,
+                    -- Retired 2026-10: never written (NULL), never read.
+                    -- Kept so v1 databases keep one stable shape.
                     rollout_path TEXT,
                     preview TEXT NOT NULL,
                     ephemeral INTEGER NOT NULL,
@@ -399,16 +395,15 @@ impl StateStore {
         conn.execute(
             r#"
             INSERT INTO threads (
-                id, rollout_path, preview, ephemeral, model_provider, created_at, updated_at, status, path, cwd,
+                id, preview, ephemeral, model_provider, created_at, updated_at, status, path, cwd,
                 cli_version, source, title, sandbox_policy, approval_mode, archived, archived_at,
                 git_sha, git_branch, git_origin_url, memory_mode
             ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                ?18, ?19, ?20, ?21
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+                ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                ?17, ?18, ?19, ?20
             )
             ON CONFLICT(id) DO UPDATE SET
-                rollout_path=excluded.rollout_path,
                 preview=excluded.preview,
                 ephemeral=excluded.ephemeral,
                 model_provider=excluded.model_provider,
@@ -431,7 +426,6 @@ impl StateStore {
             "#,
             params![
                 thread.id,
-                path_to_opt_string(thread.rollout_path.as_deref()),
                 thread.preview,
                 bool_to_i64(thread.ephemeral),
                 thread.model_provider,
@@ -454,13 +448,6 @@ impl StateStore {
             ],
         )
         .context("failed to upsert thread metadata")?;
-
-        self.append_thread_name(
-            &thread.id,
-            thread.name.clone(),
-            thread.updated_at,
-            thread.rollout_path.clone(),
-        )?;
         Ok(())
     }
 
@@ -471,7 +458,7 @@ impl StateStore {
         let conn = self.conn()?;
         conn.query_row(
             r#"
-            SELECT id, rollout_path, preview, ephemeral, model_provider, created_at, updated_at, status, path, cwd,
+            SELECT id, preview, ephemeral, model_provider, created_at, updated_at, status, path, cwd,
                    cli_version, source, title, sandbox_policy, approval_mode, archived, archived_at,
                    git_sha, git_branch, git_origin_url, memory_mode, current_leaf_id
             FROM threads
@@ -491,9 +478,9 @@ impl StateStore {
     pub fn list_threads(&self, filters: ThreadListFilters) -> Result<Vec<ThreadMetadata>> {
         let conn = self.conn()?;
         let sql = if filters.include_archived {
-            "SELECT id, rollout_path, preview, ephemeral, model_provider, created_at, updated_at, status, path, cwd, cli_version, source, title, sandbox_policy, approval_mode, archived, archived_at, git_sha, git_branch, git_origin_url, memory_mode, current_leaf_id FROM threads ORDER BY updated_at DESC LIMIT ?1"
+            "SELECT id, preview, ephemeral, model_provider, created_at, updated_at, status, path, cwd, cli_version, source, title, sandbox_policy, approval_mode, archived, archived_at, git_sha, git_branch, git_origin_url, memory_mode, current_leaf_id FROM threads ORDER BY updated_at DESC LIMIT ?1"
         } else {
-            "SELECT id, rollout_path, preview, ephemeral, model_provider, created_at, updated_at, status, path, cwd, cli_version, source, title, sandbox_policy, approval_mode, archived, archived_at, git_sha, git_branch, git_origin_url, memory_mode, current_leaf_id FROM threads WHERE archived = 0 ORDER BY updated_at DESC LIMIT ?1"
+            "SELECT id, preview, ephemeral, model_provider, created_at, updated_at, status, path, cwd, cli_version, source, title, sandbox_policy, approval_mode, archived, archived_at, git_sha, git_branch, git_origin_url, memory_mode, current_leaf_id FROM threads WHERE archived = 0 ORDER BY updated_at DESC LIMIT ?1"
         };
 
         let mut stmt = conn.prepare(sql).context("failed to prepare list query")?;
@@ -1127,132 +1114,6 @@ impl StateStore {
             .with_context(|| format!("failed to delete job {id}"))?;
         Ok(())
     }
-
-    /// Look up the rollout file path for a thread by its ID.
-    pub fn find_rollout_path_by_id(&self, id: &str) -> Result<Option<PathBuf>> {
-        let conn = self.conn()?;
-        conn.query_row(
-            "SELECT rollout_path FROM threads WHERE id = ?1",
-            params![id],
-            |row| row.get::<_, Option<String>>(0),
-        )
-        .optional()
-        .context("failed to lookup rollout path")
-        .map(|opt| opt.flatten().map(PathBuf::from))
-    }
-
-    /// Append an entry to the JSONL session index file.
-    ///
-    /// The session index is an append-only log that maps thread IDs to their names,
-    /// update timestamps, and rollout paths. It is used for fast name-based lookups
-    /// without opening the SQLite database.
-    pub fn append_thread_name(
-        &self,
-        thread_id: &str,
-        thread_name: Option<String>,
-        updated_at: i64,
-        rollout_path: Option<PathBuf>,
-    ) -> Result<()> {
-        if let Some(parent) = self.session_index_path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!(
-                    "failed to create session index directory {}",
-                    parent.display()
-                )
-            })?;
-        }
-        let entry = SessionIndexEntry {
-            thread_id: thread_id.to_string(),
-            thread_name,
-            updated_at,
-            rollout_path,
-        };
-        let encoded =
-            serde_json::to_string(&entry).context("failed to serialize session index entry")?;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.session_index_path)
-            .with_context(|| {
-                format!(
-                    "failed to open session index {}",
-                    self.session_index_path.display()
-                )
-            })?;
-        writeln!(file, "{encoded}").context("failed to append session index entry")?;
-        Ok(())
-    }
-
-    /// Find the display name for a thread by its ID, using the session index.
-    ///
-    /// Returns `None` if the thread is not in the index or has no name.
-    pub fn find_thread_name_by_id(&self, thread_id: &str) -> Result<Option<String>> {
-        let map = self.session_index_map()?;
-        Ok(map
-            .get(thread_id)
-            .and_then(|entry| entry.thread_name.clone()))
-    }
-
-    /// Look up display names for multiple thread IDs at once.
-    ///
-    /// Returns a map from thread ID to its name (which may be `None`).
-    pub fn find_thread_names_by_ids(
-        &self,
-        ids: &[String],
-    ) -> Result<HashMap<String, Option<String>>> {
-        let map = self.session_index_map()?;
-        let mut out = HashMap::new();
-        for id in ids {
-            let name = map.get(id).and_then(|entry| entry.thread_name.clone());
-            out.insert(id.clone(), name);
-        }
-        Ok(out)
-    }
-
-    /// Find the rollout path for a thread by its display name (case-insensitive).
-    ///
-    /// If multiple threads share the same name, the most recently updated one is returned.
-    /// Returns `None` if no matching thread is found.
-    pub fn find_thread_path_by_name_str(&self, name: &str) -> Result<Option<PathBuf>> {
-        let map = self.session_index_map()?;
-        let matched = map
-            .values()
-            .filter(|entry| {
-                entry
-                    .thread_name
-                    .as_deref()
-                    .is_some_and(|n| n.eq_ignore_ascii_case(name))
-            })
-            .max_by_key(|entry| entry.updated_at);
-        Ok(matched.and_then(|entry| entry.rollout_path.clone()))
-    }
-
-    fn session_index_map(&self) -> Result<HashMap<String, SessionIndexEntry>> {
-        if !self.session_index_path.exists() {
-            return Ok(HashMap::new());
-        }
-        let file = OpenOptions::new()
-            .read(true)
-            .open(&self.session_index_path)
-            .with_context(|| {
-                format!(
-                    "failed to read session index {}",
-                    self.session_index_path.display()
-                )
-            })?;
-        let reader = BufReader::new(file);
-        let mut latest = HashMap::<String, SessionIndexEntry>::new();
-        for line in reader.lines() {
-            let line = line.context("failed to read session index line")?;
-            if line.trim().is_empty() {
-                continue;
-            }
-            let parsed: SessionIndexEntry =
-                serde_json::from_str(&line).context("failed to parse session index entry")?;
-            latest.insert(parsed.thread_id.clone(), parsed);
-        }
-        Ok(latest)
-    }
 }
 
 fn default_state_db_path() -> PathBuf {
@@ -1352,33 +1213,31 @@ fn job_state_status_from_str(value: &str) -> JobStateStatus {
 }
 
 fn row_to_thread(row: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadMetadata> {
-    let status_raw: String = row.get(7)?;
-    let source_raw: String = row.get(11)?;
-    let rollout_path: Option<String> = row.get(1)?;
-    let path: Option<String> = row.get(8)?;
+    let status_raw: String = row.get(6)?;
+    let source_raw: String = row.get(10)?;
+    let path: Option<String> = row.get(7)?;
     Ok(ThreadMetadata {
         id: row.get(0)?,
-        rollout_path: rollout_path.map(PathBuf::from),
-        preview: row.get(2)?,
-        ephemeral: i64_to_bool(row.get(3)?),
-        model_provider: row.get(4)?,
-        created_at: row.get(5)?,
-        updated_at: row.get(6)?,
+        preview: row.get(1)?,
+        ephemeral: i64_to_bool(row.get(2)?),
+        model_provider: row.get(3)?,
+        created_at: row.get(4)?,
+        updated_at: row.get(5)?,
         status: thread_status_from_str(&status_raw),
         path: path.map(PathBuf::from),
-        cwd: PathBuf::from(row.get::<_, String>(9)?),
-        cli_version: row.get(10)?,
+        cwd: PathBuf::from(row.get::<_, String>(8)?),
+        cli_version: row.get(9)?,
         source: session_source_from_str(&source_raw),
-        name: row.get(12)?,
-        sandbox_policy: row.get(13)?,
-        approval_mode: row.get(14)?,
-        archived: i64_to_bool(row.get(15)?),
-        archived_at: row.get(16)?,
-        git_sha: row.get(17)?,
-        git_branch: row.get(18)?,
-        git_origin_url: row.get(19)?,
-        memory_mode: row.get(20)?,
-        current_leaf_id: row.get(21)?,
+        name: row.get(11)?,
+        sandbox_policy: row.get(12)?,
+        approval_mode: row.get(13)?,
+        archived: i64_to_bool(row.get(14)?),
+        archived_at: row.get(15)?,
+        git_sha: row.get(16)?,
+        git_branch: row.get(17)?,
+        git_origin_url: row.get(18)?,
+        memory_mode: row.get(19)?,
+        current_leaf_id: row.get(20)?,
     })
 }
 
@@ -1390,7 +1249,6 @@ mod tests {
         let now = chrono::Utc::now().timestamp();
         ThreadMetadata {
             id: id.to_string(),
-            rollout_path: None,
             preview: "test".to_string(),
             ephemeral: false,
             model_provider: "deepseek".to_string(),

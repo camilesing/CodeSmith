@@ -19,7 +19,6 @@ fn upsert_and_resume_thread_metadata() {
     let now = chrono::Utc::now().timestamp();
     let thread = ThreadMetadata {
         id: "thread-test-1".to_string(),
-        rollout_path: Some(PathBuf::from("/tmp/rollout.jsonl")),
         preview: "hello".to_string(),
         ephemeral: false,
         model_provider: "deepseek".to_string(),
@@ -50,10 +49,6 @@ fn upsert_and_resume_thread_metadata() {
     assert_eq!(loaded.id, "thread-test-1");
     assert_eq!(loaded.name.as_deref(), Some("Test Thread"));
     assert_eq!(loaded.memory_mode.as_deref(), Some("extended"));
-    assert_eq!(
-        loaded.rollout_path,
-        Some(PathBuf::from("/tmp/rollout.jsonl"))
-    );
 
     store
         .mark_archived("thread-test-1")
@@ -164,7 +159,6 @@ fn test_fork() {
     let now = chrono::Utc::now().timestamp();
     let thread = ThreadMetadata {
         id: "thread-test-1".to_string(),
-        rollout_path: Some(PathBuf::from("/tmp/rollout.jsonl")),
         preview: "hello".to_string(),
         ephemeral: false,
         model_provider: "deepseek".to_string(),

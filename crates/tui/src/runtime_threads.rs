@@ -2,6 +2,14 @@
 //!
 //! This module keeps DeepSeek-only execution while exposing Codex-like lifecycle
 //! semantics (threads, turns, items, interrupt/steer, and replayable events).
+//!
+//! Recording-layer role (one of four layers; each owning module states its
+//! role): the per-thread JSONL event stream this module appends is the
+//! **durable authoritative record** — append-only, replayable, the
+//! substrate the HTTP API serves history from. The other layers are
+//! downstream of a transcript like this one: `SavedSession` files snapshot
+//! it for resume, the SQLite store (`codesmith-state`) indexes it for
+//! queries, and projections fold from it at load.
 
 // Background-task runtime — runs alongside the TUI. Raw stdio prints
 // here would still land in the alt-screen on whichever terminal the
