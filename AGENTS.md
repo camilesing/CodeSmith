@@ -11,7 +11,8 @@ instructions or memory. The nearest scoped `AGENTS.md` adds path-specific rules.
 Repo map and layer boundaries: `docs/ARCHITECTURE.md` (boundary note at the
 top), `CONTRIBUTING.md` ("Project Structure"), `docs/HARNESS.md`; script mods
 (Rhai) are documented in `docs/MODS.md`. Docs are maintained in bilingual pairs
-(`X.md` + `X_cn.md`) — update both or neither.
+(`X.md` + `X_cn.md`) — update both or neither (drift guard:
+`scripts/verify-docs-pairs.py`).
 
 ## The ponytail method
 
@@ -47,7 +48,7 @@ prompt" is rung 2 with a name. Two corollaries earned here:
   ticket the rest, silence the warning: that ships two systems and a comment
   that is no longer true. If the migration will not fit, narrow the slice —
   never the adoption. The standing `#[allow(dead_code)]` count is the running
-  receipt.
+  receipt (ratcheted by `scripts/verify-deadcode-budget.py`).
 
 ## Working rules
 
