@@ -600,6 +600,68 @@ pub trait Handler: Send + Sync {
     ) -> Result<HandlerOutcome, ExtensionError>;
 }
 
+// === Tool guards (deny-only, route B alignment) ===========================
+
+/// A deny-only tool-call guard (the `ctx.tools.guard()` alignment surface).
+/// `Some(reason)` denies the call, `None` abstains. A guard has **no allow
+/// result**: the [`HandlerOutcome::Block`] it maps to short-circuits the
+/// handler chain, so neither registration order nor other `ToolCall`
+/// handlers can turn a denial back into permission — the monotonic ratchet
+/// is structural, not conventional.
+pub type ToolGuardFn = Arc<dyn Fn(&ToolCallEvent) -> Option<String> + Send + Sync>;
+
+/// A [`ToolGuardFn`] wrapped as a [`Handler`] for the [`ExtensionEventKind::ToolCall`]
+/// seam. Register via [`ExtensionApi::on_variant`] with
+/// [`ExtensionEventKind::ToolCall`] (Rhai shape: the `register_guard(callback)`
+/// native); reload clears it with the generation's handlers. A denial is
+/// attributed: the block reason reads `"<label>: <reason>"`, so the blocked
+/// result names the guard that denied the call.
+///
+/// Known limitations (deliberate, dsh `tools.guard()` placement differs):
+/// - Evaluated at the `ToolCall` seam, i.e. before approval. A denied call
+///   is never dispatched, so no approval path observes or flips it; there
+///   is no post-approval evaluation point (CodeSmith has no execution path
+///   that bypasses the seam, so the deny-only floor is equivalent).
+/// - Main-turn calls only: sub-agent registries bind no extension runner
+///   (§F5d structural exclusion), so their executions pass no guard.
+/// - A guard closure that errors abstains; the error is logged by the
+///   caller (same fail-open isolation policy as handler errors).
+pub struct GuardHandler {
+    label: String,
+    guard: ToolGuardFn,
+}
+
+impl GuardHandler {
+    /// Wrap `guard` with the attribution `label` (e.g. `guard (mod: safety)`).
+    pub fn new(label: impl Into<String>, guard: ToolGuardFn) -> Self {
+        Self {
+            label: label.into(),
+            guard,
+        }
+    }
+}
+
+#[async_trait]
+impl Handler for GuardHandler {
+    async fn handle(
+        &self,
+        event: &ExtensionEvent,
+        _ctx: &dyn ExtensionContext,
+    ) -> Result<HandlerOutcome, ExtensionError> {
+        match event {
+            ExtensionEvent::ToolCall(e) => Ok(match (self.guard)(e) {
+                Some(reason) => HandlerOutcome::Block {
+                    reason: format!("{}: {}", self.label, reason),
+                },
+                None => HandlerOutcome::Continue,
+            }),
+            // Unreachable behind a `ToolCall` kind filter; a misrouted
+            // guard abstains rather than denying an event it never saw.
+            _ => Ok(HandlerOutcome::Continue),
+        }
+    }
+}
+
 // === ExtensionApi (registration surface, two-phase) =======================
 
 /// The imperative registration surface an [`Extension::configure`] receives.
@@ -1445,5 +1507,62 @@ mod tests {
             hub.register("m", "overflow", Value::Null, identity)
                 .is_err()
         );
+    }
+
+    fn guard_call_event(name: &str, command: &str) -> ExtensionEvent {
+        ExtensionEvent::ToolCall(ToolCallEvent {
+            id: "t1".to_string(),
+            name: name.to_string(),
+            input: json!({ "command": command }),
+        })
+    }
+
+    #[test]
+    fn guard_handler_denial_maps_to_attributed_block() {
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let guard: ToolGuardFn = Arc::new(|e| {
+            (e.name == "exec_shell" && e.input["command"].as_str()?.contains("rm -rf"))
+                .then(|| "destructive command".to_string())
+        });
+        let h = GuardHandler::new("guard (mod: safety)", guard);
+        let out = rt
+            .block_on(h.handle(
+                &guard_call_event("exec_shell", "rm -rf /tmp/x"),
+                &TestContext::new(),
+            ))
+            .unwrap();
+        assert!(matches!(
+            &out,
+            HandlerOutcome::Block { reason }
+                if reason == "guard (mod: safety): destructive command"
+        ));
+    }
+
+    #[test]
+    fn guard_handler_abstention_and_misroute_continue() {
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let guard: ToolGuardFn = Arc::new(|e| {
+            (e.name == "exec_shell" && e.input["command"].as_str()?.contains("rm -rf"))
+                .then(|| "destructive command".to_string())
+        });
+        let h = GuardHandler::new("guard (mod: safety)", guard);
+        let ctx = TestContext::new();
+        // Abstains on a non-matching call…
+        let out = rt
+            .block_on(h.handle(&guard_call_event("exec_shell", "ls"), &ctx))
+            .unwrap();
+        assert!(matches!(out, HandlerOutcome::Continue));
+        // …denies on a matching one…
+        let out = rt
+            .block_on(h.handle(&guard_call_event("exec_shell", "rm -rf /"), &ctx))
+            .unwrap();
+        assert!(matches!(out, HandlerOutcome::Block { .. }));
+        // …and abstains on a non-ToolCall event (the kind filter makes this
+        // unreachable in practice; the arm must not deny what it never
+        // matched).
+        let out = rt
+            .block_on(h.handle(&ExtensionEvent::ToolExecutionStart, &ctx))
+            .unwrap();
+        assert!(matches!(out, HandlerOutcome::Continue));
     }
 }
