@@ -54,6 +54,12 @@ jobs:
         run: python3 scripts/check-framework-deps.py
       - name: Check capability graph freshness
         run: python3 scripts/capability-graph.py --check
+      - name: Check docs bilingual pairs
+        run: python3 scripts/verify-docs-pairs.py
+      - name: Check dead-code budget
+        run: python3 scripts/verify-deadcode-budget.py
+      - name: Guard script self-tests
+        run: python3 scripts/test-guards.py
       - name: Linux clippy location
         run: echo "Linux clippy/test gates run on CNB for mirrored fix/*, rebrand/*, work/v*, and main branches."
 
