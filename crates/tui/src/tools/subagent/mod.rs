@@ -624,6 +624,15 @@ pub struct SubAgentRuntime {
     /// the spawn-tool runtime clone. This is the CodeSmith analog of Claude
     /// Code's `restrictToSubset(parentContext.toolPermissionContext)`.
     pub child_subset_basis: Option<Vec<String>>,
+    /// Session-level capability-manifest disabled tool names
+    /// (`capabilities.toml [tools] disabled`, plus the deprecated config
+    /// `[tools].overrides` disabled entries — resolved once into
+    /// `EngineConfig.disabled_tools` at engine construction). Enforced in
+    /// `SubAgentToolRegistry::new`: a disabled name is neither visible nor
+    /// executable at any spawn depth, so the sub-agent path cannot
+    /// resurrect a tool the user deliberately disabled for the session.
+    /// Empty = no manifest restrictions (tests / legacy callers).
+    pub capability_disabled_tools: std::collections::HashSet<String>,
 }
 
 impl SubAgentRuntime {
@@ -662,6 +671,7 @@ impl SubAgentRuntime {
             step_api_timeout: DEFAULT_STEP_API_TIMEOUT,
             inherit_full_registry: false,
             child_subset_basis: None,
+            capability_disabled_tools: std::collections::HashSet::new(),
         }
     }
 
@@ -692,6 +702,20 @@ impl SubAgentRuntime {
     #[must_use]
     pub fn with_inherit_full_registry(mut self, inherit: bool) -> Self {
         self.inherit_full_registry = inherit;
+        self
+    }
+
+    /// Attach the session-level capability-manifest disabled set
+    /// (`EngineConfig.disabled_tools`). Called by the engine host at every
+    /// `SubAgentRuntime::new` construction site; `child_runtime()` /
+    /// `background_runtime()` propagate it, so every generation re-applies
+    /// it when its registry is built.
+    #[must_use]
+    pub fn with_capability_disabled_tools(
+        mut self,
+        disabled: std::collections::HashSet<String>,
+    ) -> Self {
+        self.capability_disabled_tools = disabled;
         self
     }
 
@@ -835,6 +859,7 @@ impl SubAgentRuntime {
             // (grandchildren) — which is already ⊆ the parent's basis because
             // `build_allowed_tools` intersected it.
             child_subset_basis: self.child_subset_basis.clone(),
+            capability_disabled_tools: self.capability_disabled_tools.clone(),
         }
     }
 
@@ -4674,9 +4699,21 @@ async fn run_subagent(
     );
     let unavailable_tools = tool_registry.unavailable_allowed_tools();
     if !unavailable_tools.is_empty() {
+        // Attribute manifest-disabled names so the fix points at
+        // capabilities.toml, not the spawn request.
+        let described: Vec<String> = unavailable_tools
+            .iter()
+            .map(|name| {
+                if tool_registry.is_capability_disabled(name) {
+                    format!("{name} (disabled by capabilities.toml)")
+                } else {
+                    name.clone()
+                }
+            })
+            .collect();
         return Err(anyhow!(
             "Sub-agent requested unavailable tools: {}",
-            unavailable_tools.join(", ")
+            described.join(", ")
         ));
     }
     let tools = tool_registry.tools_for_model(&agent_type);
@@ -6150,6 +6187,10 @@ struct SubAgentToolRegistry {
     /// the child without the parent runtime being auto-approved (#1828, #1833).
     agent_type: SubAgentType,
     registry: ToolRegistry,
+    /// Mirror of the runtime's capability-manifest disabled names — kept
+    /// only to attribute them in the unavailable-tools spawn error (the
+    /// enforcement itself is the registry removal in `new`).
+    capability_disabled: std::collections::HashSet<String>,
 }
 
 impl SubAgentToolRegistry {
@@ -6235,14 +6276,43 @@ impl SubAgentToolRegistry {
             registry = registry.with_mcp_tools(std::sync::Arc::clone(pool));
         }
 
-        let registry = registry.build(context);
+        let capability_disabled = runtime.capability_disabled_tools.clone();
+        let mut registry = registry.build(context);
+        // Capability manifest (composition layer, slice 2b): the same
+        // session-level selection the main turn applies in
+        // `build_turn_dispatcher`. Registry-level removal keeps it
+        // origin-agnostic — builtins and MCP adapters live in this map
+        // (plugin/extension tools are structurally absent from this fresh
+        // build) — and makes a disabled tool neither visible
+        // (`tools_for_model`) nor executable (`execute`).
+        for name in &capability_disabled {
+            if registry.remove_tool(name) {
+                tracing::info!(
+                    target: "codesmith_capabilities",
+                    "tool '{name}' disabled by capability manifest (sub-agent registry)"
+                );
+            } else {
+                tracing::debug!(
+                    target: "codesmith_capabilities",
+                    "capability manifest disables '{name}' but no such sub-agent tool"
+                );
+            }
+        }
 
         Self {
             allowed_tools: explicit_allowed_tools,
             auto_approve: runtime.context.auto_approve,
             agent_type,
             registry,
+            capability_disabled,
         }
+    }
+
+    /// Whether `name` is disabled by the session capability manifest (used
+    /// to attribute spawn failures — the config, not the spawn request, is
+    /// what needs fixing).
+    fn is_capability_disabled(&self, name: &str) -> bool {
+        self.capability_disabled.contains(name)
     }
 
     /// Whether this role is allowed to use `Suggest`-level tools (write_file,

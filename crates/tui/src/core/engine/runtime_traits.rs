@@ -196,6 +196,7 @@ impl HostServices for super::EngineHost {
         .with_max_spawn_depth(req.config.max_spawn_depth)
         .with_step_api_timeout(req.config.subagent_api_timeout)
         .with_inherit_full_registry(req.config.subagent_inherit_full_registry)
+        .with_capability_disabled_tools(req.config.disabled_tools.clone())
         .with_mcp_pool(req.mcp_pool)
         .background_runtime();
         let route =
@@ -360,6 +361,7 @@ impl HostServices for super::EngineHost {
                         .with_max_spawn_depth(config.max_spawn_depth)
                         .with_step_api_timeout(config.subagent_api_timeout)
                         .with_inherit_full_registry(config.subagent_inherit_full_registry)
+                        .with_capability_disabled_tools(config.disabled_tools.clone())
                         .with_mcp_pool(mcp_pool.clone())
                         .with_parent_completion_tx(req.tx_subagent_completion.clone());
                         if let Some(context) = fork_context_for_runtime.clone() {
@@ -410,6 +412,7 @@ impl HostServices for super::EngineHost {
                     .with_max_spawn_depth(config.max_spawn_depth)
                     .with_step_api_timeout(config.subagent_api_timeout)
                     .with_inherit_full_registry(config.subagent_inherit_full_registry)
+                    .with_capability_disabled_tools(config.disabled_tools.clone())
                     .with_mcp_pool(mcp_pool.clone())
                     .with_parent_completion_tx(req.tx_subagent_completion.clone());
                     if let Some(context) = fork_context_for_runtime.clone() {

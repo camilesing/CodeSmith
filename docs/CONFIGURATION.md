@@ -1298,8 +1298,11 @@ A disabled tool is removed at the turn-dispatch composition point — from
 the registry itself, not just the catalog — so it is neither visible nor
 executable, and turn-scoped masks (preset `tools.include`/`exclude`,
 slash-command frontmatter) cannot resurrect it on the main turn.
-Sub-agent toolsets build on a separate path and do not consult the
-manifest yet. Unknown names are no-ops (tool names come and go); a
+Sub-agent toolsets apply the same baseline: every sub-agent registry
+(`agent_spawn`/`agent_open` descendants, at any spawn depth) removes the
+disabled names, and a custom sub-agent whose `allowed_tools` explicitly
+lists one fails at spawn with the `capabilities.toml` attribution.
+Unknown names are no-ops (tool names come and go); a
 malformed file fails startup with the offending field path. The
 `CODESMITH_CAPABILITIES_MANIFEST` env var overrides the file path
 (ops/tests). `/tools` renders the current catalog grouped by origin plus

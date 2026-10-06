@@ -1001,6 +1001,83 @@ fn subagent_ext_tool_excluded_from_effective_set() {
     );
 }
 
+// === Capability manifest on the sub-agent path (slice 2b) =================
+//
+// `capabilities.toml [tools] disabled` is a session-level baseline. The
+// sub-agent registry build is a separate path from `build_turn_dispatcher`;
+// without wiring the disabled set into `SubAgentRuntime`, a child would
+// resurrect a tool the user deliberately disabled — the unsafe direction
+// the manifest exists to close.
+
+#[test]
+fn subagent_capability_disabled_tools_neither_visible_nor_registered() {
+    let tmp = tempdir().expect("tempdir");
+    let mut runtime = stub_runtime()
+        .with_capability_disabled_tools(["web_search".to_string()].into_iter().collect());
+    runtime.context = ToolContext::new(tmp.path().to_path_buf());
+    let registry = SubAgentToolRegistry::new(
+        runtime,
+        SubAgentType::General,
+        None,
+        Arc::new(Mutex::new(TodoList::new())),
+        Arc::new(Mutex::new(PlanState::default())),
+    );
+    let tools = registry.tools_for_model(&SubAgentType::General);
+    assert!(
+        !tools.iter().any(|t| t.name == "web_search"),
+        "manifest-disabled tool must not be model-visible in a sub-agent: {:?}",
+        tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>()
+    );
+    assert!(
+        !registry.registry.contains("web_search"),
+        "manifest-disabled tool must not stay registered (executable) in a sub-agent"
+    );
+    assert!(
+        registry.registry.contains("read_file"),
+        "untouched tools stay registered (precondition)"
+    );
+}
+
+#[test]
+fn subagent_capability_disabled_explicit_request_fails_loud_with_attribution() {
+    let tmp = tempdir().expect("tempdir");
+    let mut runtime = stub_runtime()
+        .with_capability_disabled_tools(["web_search".to_string()].into_iter().collect());
+    runtime.context = ToolContext::new(tmp.path().to_path_buf());
+    let registry = SubAgentToolRegistry::new(
+        runtime,
+        SubAgentType::Custom,
+        Some(vec!["web_search".to_string(), "read_file".to_string()]),
+        Arc::new(Mutex::new(TodoList::new())),
+        Arc::new(Mutex::new(PlanState::default())),
+    );
+    // The disabled name surfaces as unavailable (spawn fails loud) and is
+    // attributable to the manifest, not to a typo'd tool name.
+    assert_eq!(registry.unavailable_allowed_tools(), vec!["web_search"]);
+    assert!(registry.is_capability_disabled("web_search"));
+    assert!(!registry.is_capability_disabled("read_file"));
+}
+
+#[test]
+fn subagent_capability_disabled_set_propagates_to_descendants() {
+    let runtime = stub_runtime()
+        .with_capability_disabled_tools(["web_search".to_string()].into_iter().collect());
+    assert!(
+        runtime
+            .child_runtime()
+            .capability_disabled_tools
+            .contains("web_search"),
+        "child_runtime must carry the disabled set (grandchildren re-apply it)"
+    );
+    assert!(
+        runtime
+            .background_runtime()
+            .capability_disabled_tools
+            .contains("web_search"),
+        "background_runtime must carry the disabled set (agent_open children)"
+    );
+}
+
 #[tokio::test]
 async fn test_wait_for_result_reports_timeout_when_still_running() {
     let manager = Arc::new(RwLock::new(SubAgentManager::new(PathBuf::from("."), 2)));
@@ -2239,6 +2316,7 @@ fn stub_runtime() -> SubAgentRuntime {
         step_api_timeout: DEFAULT_STEP_API_TIMEOUT,
         inherit_full_registry: false,
         child_subset_basis: None,
+        capability_disabled_tools: std::collections::HashSet::new(),
     }
 }
 
