@@ -101,6 +101,11 @@ pub enum ScriptRegistration {
         init: serde_json::Value,
         fold: rhai::FnPtr,
     },
+    /// A deny-only tool guard captured by the `register_guard(callback)`
+    /// native. Replayed at `configure` via `ExtensionApi::on_variant` with a
+    /// `codesmith_agent::extension::GuardHandler` (label baked to the mod
+    /// id; a returned string denies, anything else abstains).
+    Guard { callback: rhai::FnPtr },
 }
 
 type RegistrationCell = Arc<Mutex<Vec<ScriptRegistration>>>;
@@ -701,6 +706,28 @@ fn register_natives(
         },
     );
 
+    // register_guard(callback) — route B (1.2 alignment): a deny-only tool
+    // guard (dsh `ctx.tools.guard()`). The closure takes the tool-call
+    // payload (`|e|` — `#{kind, id, name, input}`, same shape as a
+    // `tool-call` handler's payload); returning a string denies the call
+    // with that reason, anything else abstains. There is no allow or
+    // transform vocabulary by design — a denial maps to a
+    // chain-short-circuiting Block, so listener order can never resurrect
+    // a denied call, and the block reason is attributed
+    // `guard (mod: <id>)`. A closure error at evaluation time abstains
+    // with a `tracing` warn (same fail-open policy as handler errors).
+    let cell_guard = Arc::clone(cell);
+    engine.register_fn(
+        "register_guard",
+        move |callback: rhai::FnPtr| -> Result<(), Box<rhai::EvalAltResult>> {
+            cell_guard
+                .lock()
+                .expect("mod registration cell poisoned")
+                .push(ScriptRegistration::Guard { callback });
+            Ok(())
+        },
+    );
+
     // register_provider(spec_map) — route A: declarative provider alias.
     // `#{ id: "my-gw", kind: "openai", base_url: "...", default_model: "...",
     //    headers: #{ "X-Gateway": "acme" } }`.
@@ -1083,6 +1110,33 @@ impl Extension for RhaiMod {
                         fold_fn,
                     )?;
                 }
+                ScriptRegistration::Guard { callback } => {
+                    let runtime = Arc::clone(&self.runtime);
+                    let callback = callback.clone();
+                    let guard: codesmith_agent::extension::ToolGuardFn = Arc::new(move |e| {
+                        let payload = event_to_dynamic(&ExtensionEvent::ToolCall(e.clone()));
+                        match callback.call::<Dynamic>(&runtime.engine, &runtime.ast, (payload,)) {
+                            Ok(ret) => ret.try_cast::<String>(),
+                            Err(err) => {
+                                // Fail-open: a broken guard abstains (warn),
+                                // mirroring the handler error policy — one
+                                // broken mod must not kill the chain.
+                                tracing::warn!(
+                                    target: "codesmith_mods",
+                                    "mod guard failed: {err}"
+                                );
+                                None
+                            }
+                        }
+                    });
+                    api.on_variant(
+                        ExtensionEventKind::ToolCall,
+                        Arc::new(codesmith_agent::extension::GuardHandler::new(
+                            format!("guard (mod: {})", self.metadata.id),
+                            guard,
+                        )),
+                    )?;
+                }
             }
         }
         Ok(())
@@ -1158,6 +1212,7 @@ mod tests {
                     ScriptRegistration::PromptSection { id, .. } => format!("s:{id}"),
                     ScriptRegistration::Skill { name, .. } => format!("k:{name}"),
                     ScriptRegistration::MessageProjection { key, .. } => format!("m:{key}"),
+                    ScriptRegistration::Guard { .. } => "g:guard".to_string(),
                 })
                 .collect::<Vec<_>>()
         );
@@ -1806,5 +1861,152 @@ mod tests {
             hub(),
         );
         assert!(matches!(m, Err(ExtensionError::Load(_))), "got {m:?}");
+    }
+
+    #[test]
+    fn load_captures_registered_guard() {
+        let dir = TempDir::new().unwrap();
+        let m = RhaiMod::load(
+            &discovered_for(
+                &dir,
+                "guard-mod",
+                r#"
+                    register_guard(|e| {
+                        if e.name == "exec_shell" && e.input.command.contains("rm -rf") {
+                            "destructive command"
+                        }
+                    });
+                "#,
+            ),
+            kv_for(&dir, "guard-mod"),
+            hub(),
+        )
+        .expect("load");
+        assert!(matches!(
+            m.registrations().first(),
+            Some(ScriptRegistration::Guard { .. })
+        ));
+    }
+
+    /// Route B end-to-end: script guard → runner load → `bind_core` →
+    /// `ToolCall` emit. A matching call is denied with the mod-attributed
+    /// reason; a non-matching call passes; a listener's `proceed()` cannot
+    /// flip a guard's denial (monotonic ratchet); a broken guard abstains
+    /// (fail-open, same policy as handler errors).
+    #[test]
+    fn guard_denies_matching_call_through_bound_runner() {
+        use codesmith_agent::extension::HandlerOutcome;
+
+        let runner = crate::ExtensionRunner::new();
+        let dir = TempDir::new().unwrap();
+        let rhai_mod = RhaiMod::load(
+            &discovered_for(
+                &dir,
+                "safety",
+                r#"
+                    on("tool-call", |e| { proceed(); });
+                    register_guard(|e| {
+                        if e.name == "exec_shell" && e.input.command.contains("rm -rf") {
+                            "destructive command"
+                        }
+                    });
+                "#,
+            ),
+            kv_for(&dir, "safety"),
+            hub(),
+        )
+        .expect("load mod");
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        rt.block_on(runner.load(&rhai_mod)).expect("configure");
+        struct Ctx;
+        #[async_trait]
+        impl codesmith_agent::extension::ExtensionContext for Ctx {
+            fn cwd(&self) -> &std::path::Path {
+                std::path::Path::new(".")
+            }
+            fn mode(&self) -> codesmith_agent::extension::ExtensionMode {
+                codesmith_agent::extension::ExtensionMode::Tui
+            }
+            fn is_idle(&self) -> bool {
+                true
+            }
+            fn signal(&self) -> tokio_util::sync::CancellationToken {
+                tokio_util::sync::CancellationToken::new()
+            }
+            fn generation(&self) -> u64 {
+                1
+            }
+        }
+        impl codesmith_agent::extension::ExtensionCommandContext for Ctx {}
+        runner.bind_core(Arc::new(Ctx));
+
+        let call = |id: &str, command: &str| {
+            ExtensionEvent::ToolCall(ToolCallEvent {
+                id: id.to_string(),
+                name: "exec_shell".to_string(),
+                input: serde_json::json!({ "command": command }),
+            })
+        };
+
+        // Matching call: the tool-call listener's `proceed()` runs first,
+        // the guard then denies — and the denial is final.
+        let denied = rt.block_on(runner.emit(call("t1", "rm -rf /tmp/x")));
+        assert!(matches!(
+            denied.outcome,
+            HandlerOutcome::Block { ref reason }
+                if reason == "guard (mod: safety): destructive command"
+        ));
+
+        // Non-matching call (an if without an else yields `()` = abstain).
+        let allowed = rt.block_on(runner.emit(call("t2", "ls -la")));
+        assert!(matches!(allowed.outcome, HandlerOutcome::Continue));
+    }
+
+    #[test]
+    fn guard_script_error_abstains_fail_open() {
+        use codesmith_agent::extension::HandlerOutcome;
+
+        let runner = crate::ExtensionRunner::new();
+        let dir = TempDir::new().unwrap();
+        let rhai_mod = RhaiMod::load(
+            &discovered_for(
+                &dir,
+                "broken-guard",
+                r#"register_guard(|e| { let z = 1 / 0; "never" });"#,
+            ),
+            kv_for(&dir, "broken-guard"),
+            hub(),
+        )
+        .expect("load mod");
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        rt.block_on(runner.load(&rhai_mod)).expect("configure");
+        struct Ctx;
+        #[async_trait]
+        impl codesmith_agent::extension::ExtensionContext for Ctx {
+            fn cwd(&self) -> &std::path::Path {
+                std::path::Path::new(".")
+            }
+            fn mode(&self) -> codesmith_agent::extension::ExtensionMode {
+                codesmith_agent::extension::ExtensionMode::Tui
+            }
+            fn is_idle(&self) -> bool {
+                true
+            }
+            fn signal(&self) -> tokio_util::sync::CancellationToken {
+                tokio_util::sync::CancellationToken::new()
+            }
+            fn generation(&self) -> u64 {
+                1
+            }
+        }
+        impl codesmith_agent::extension::ExtensionCommandContext for Ctx {}
+        runner.bind_core(Arc::new(Ctx));
+
+        let out = rt.block_on(runner.emit(ExtensionEvent::ToolCall(ToolCallEvent {
+            id: "t1".to_string(),
+            name: "exec_shell".to_string(),
+            input: serde_json::json!({ "command": "anything" }),
+        })));
+        assert!(matches!(out.outcome, HandlerOutcome::Continue));
     }
 }

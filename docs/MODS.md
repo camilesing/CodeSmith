@@ -156,6 +156,7 @@ Transform mutable fields (one handler's rewrite is immediately visible to the ne
 | `register_provider(spec)` | Register a provider alias (see below) |
 | `register_prompt_section(id, text)` | Append a named section to the base system prompt (see below) |
 | `register_skill(spec)` | Contribute an in-memory skill to the session catalogue (see below) |
+| `register_guard(callback)` | Register a deny-only tool-call guard (see below) |
 | `register_message_projection(key, init, fold)` | Register a session-log fold the host maintains (see below) |
 | `projection_state(key)` | Read this mod's projection state (inside hooks/tools) |
 
@@ -195,6 +196,31 @@ name must match `[a-zA-Z0-9_-]` (1-64 chars), non-empty description and
 body. Registered skills carry no `paths`, so they never match the
 conditional (working-set) skills block, and sub-agent sessions render no
 skills catalogue at all. Reload clears the generation's registrations.
+
+### Registering a guard (deny-only tool policy)
+
+```rhai
+register_guard(|e| {
+    if e.name == "exec_shell" && e.input.command.contains("rm -rf") {
+        "destructive command"
+    }
+});
+```
+
+A guard is a **deny-only** tool-call policy. The closure takes the
+tool-call payload (`|e|` — same shape as a `tool-call` handler's payload);
+returning a string denies the call with that reason, anything else
+(including `()`) abstains. There is no allow or transform vocabulary by
+design: a denial maps to a chain-short-circuiting block, so neither
+registration order nor another handler can resurrect a denied call, and
+the blocked result is attributed (`guard (mod: <mod-id>): <reason>`). Use
+`on("tool-call", ...)` when you need to rewrite inputs; use a guard when
+you need a policy floor. A guard whose script errors abstains with a
+`tracing` warn (same fail-open policy as handler errors). Guards evaluate
+at the tool-call seam (before approval — a denied call is never dispatched,
+so no approval path can flip it), cover main-turn calls only (sub-agent
+registries bind no extension runner), and reload clears the generation's
+guards.
 
 ### Registering a message projection (session log folds)
 

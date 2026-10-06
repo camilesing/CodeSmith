@@ -74,6 +74,14 @@ attributed `mod: <owner>`. The filesystem catalogue wins on a name
 collision; a name owned by a different mod fails the load; ≤16 skills;
 reload clears the generation's registrations. Registered skills carry no
 `paths` (no conditional matching) and sub-agents render no catalogue.
+**Deny-only tool guards are done** (route B 1.2 alignment, dsh
+`ctx.tools.guard()`): `codesmith_agent::extension::GuardHandler` (Rhai
+shape: `register_guard(callback)`) wraps a deny-only closure over the
+`ToolCall` seam — returning a string denies the call (attributed
+`guard (mod: <id>)`), anything else abstains; there is no allow or
+transform vocabulary, so a denial is monotonic by construction (block
+short-circuits the chain). Guards evaluate pre-approval at the seam and
+cover main-turn calls only; a script error abstains with a warn.
 **The `tools-change` catalog event is done** (capability-composition
 slice 1): the turn dispatcher diffs the compiled model-visible catalog
 against the previous main-turn baseline (origin-classified snapshot in

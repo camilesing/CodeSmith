@@ -154,6 +154,7 @@ Transform 可变字段（一个 handler 的改写对后续 handler 立即可见�
 | `register_provider(spec)` | 注册 provider 别名（见下） |
 | `register_prompt_section(id, text)` | 向基础系统提示词追加命名分段（见下） |
 | `register_skill(spec)` | 向会话技能目录贡献一个内存技能（见下） |
+| `register_guard(callback)` | 注册 deny-only 的工具调用守卫（见下） |
 | `register_message_projection(key, init, fold)` | 注册由宿主维护的会话日志折叠（见下） |
 | `projection_state(key)` | 读取本 mod 的投影状态（钩子/工具内可用） |
 
@@ -188,6 +189,27 @@ mod（`mod: <mod-id>`）而非文件路径。名字与文件系统目录冲突�
 `[a-zA-Z0-9_-]`（1-64 字符）、description 与 body 非空。注册技能不带
 `paths`，因此不参与条件（工作集）技能匹配；子代理会话不渲染技能目录。
 reload 清除该 generation 的全部注册。
+
+### 注册守卫（deny-only 工具策略）
+
+```rhai
+register_guard(|e| {
+    if e.name == "exec_shell" && e.input.command.contains("rm -rf") {
+        "destructive command"
+    }
+});
+```
+
+守卫是 **deny-only** 的工具调用策略。闭包收到工具调用载荷（`|e|`——与
+`tool-call` 钩子的载荷同形）；返回字符串即以该理由**拒绝调用**，返回其他
+任何值（包括 `()`）则弃权。刻意没有 allow / transform 词汇：拒绝映射为
+链短路的 block，因此注册顺序与其他 handler 都无法把一次拒绝翻回允许，
+被拒结果带归因（`guard (mod: <mod-id>): <理由>`）。需要改写输入用
+`on("tool-call", ...)`；需要策略底线用守卫。守卫脚本出错则弃权并打
+`tracing` warn（与 handler 错误同款 fail-open 策略）。守卫在 tool-call
+接缝处评估（审批之前——被拒调用根本不会派发，审批路径无从翻转）；仅覆盖
+主回合调用（子代理注册表不绑 extension runner）；reload 清除该 generation
+的全部守卫。
 
 ### 注册消息投影（会话日志折叠）
 
