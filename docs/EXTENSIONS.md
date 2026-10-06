@@ -329,7 +329,7 @@ seams use `let _ =`; capability seams inspect `out.outcome` / `out.event`).
 | `BeforeProviderRequest(BeforeProviderRequestEvent)` | `host_executor` after `request` built, before stream | **Transform** | rewrites `request.messages` |
 | `AfterProviderResponse(AfterProviderResponseEvent)` | `host_executor` `Content` arm after `accumulate_usage` | observe | — |
 | `ToolCall(ToolCallEvent)` | `host_executor` parallel + serial tool dispatch | **Block** | skips approval + `tool.run` → `Err(ToolError::permission_denied(reason))`, `blocked = true` |
-| `ToolResult(ToolResultEvent)` | `host_executor` parallel + serial, emit reordered BEFORE `on_tool_end` | **Transform** | replaces the result; `on_tool_end` + downstream `outcomes[idx].result` see the transformed result |
+| `ToolResult(ToolResultEvent)` | `host_executor` parallel + serial, emit reordered BEFORE `on_tool_end` | **Transform** | replaces the result; `on_tool_end` + downstream `outcomes[idx].result` see the transformed result. `ToolResult` carries a canonical/rendered split: `content` is the model-visible rendering, `canonical` the structured machine value (live-process only, not persisted in the transcript) — rewriting `content` must not rewrite `canonical` |
 | `ToolExecutionStart` | `host_executor` tool closure (before `tool.run`) | observe | — |
 | `ToolExecutionEnd` | `host_executor` tool closure (after `tool.run`) | observe | — |
 | `AgentEnd` | `host_executor::run_inner` each `return Ok(...)` | observe | — |

@@ -107,13 +107,28 @@ impl ToolError {
 }
 
 /// Result of a tool execution.
+///
+/// Canonical/rendered separation: `content` is the model-visible rendering;
+/// `canonical` is the structured machine-readable value of the same result
+/// for program callers (host consumers, tools calling tools, mod handlers),
+/// which must not re-parse the rendering. The two channels are independent —
+/// rewriting the rendering does not rewrite the machine value.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {
     /// The output content, which may be JSON or plain text.
     pub content: String,
     /// Whether the execution was successful.
     pub success: bool,
-    /// Optional structured metadata.
+    /// Structured machine-readable value of this result (canonical value).
+    /// Populated by [`ToolResult::json`] and by producers that render prose
+    /// over structured data via [`ToolResult::with_canonical`]. Known
+    /// limitation: live-process only — the transcript persists the rendered
+    /// `content`, so canonical is not reconstructed on session load.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canonical: Option<Value>,
+    /// Optional structured metadata — auxiliary annotations about the
+    /// execution (exit codes, sandbox flags, summaries), not the result's
+    /// own value.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
 }
@@ -125,6 +140,7 @@ impl ToolResult {
         Self {
             content: content.into(),
             success: true,
+            canonical: None,
             metadata: None,
         }
     }
@@ -135,15 +151,19 @@ impl ToolResult {
         Self {
             content: message.into(),
             success: false,
+            canonical: None,
             metadata: None,
         }
     }
 
-    /// Create a successful result from JSON.
+    /// Create a successful result from JSON. The value is kept as the
+    /// canonical machine-readable value; `content` renders it pretty for
+    /// the model.
     pub fn json<T: Serialize>(value: &T) -> std::result::Result<Self, serde_json::Error> {
         Ok(Self {
             content: serde_json::to_string_pretty(value)?,
             success: true,
+            canonical: Some(serde_json::to_value(value)?),
             metadata: None,
         })
     }
@@ -152,6 +172,13 @@ impl ToolResult {
     #[must_use]
     pub fn with_metadata(mut self, metadata: Value) -> Self {
         self.metadata = Some(metadata);
+        self
+    }
+
+    /// Set the canonical machine-readable value on a prose-rendered result.
+    #[must_use]
+    pub fn with_canonical(mut self, canonical: Value) -> Self {
+        self.canonical = Some(canonical);
         self
     }
 }
@@ -528,6 +555,46 @@ mod tests {
         let result = ToolResult::json(&json!({"ok": true})).expect("json");
         assert!(result.success);
         assert!(result.content.contains("\"ok\": true"));
+    }
+
+    /// Canonical/rendered separation: `json` keeps the structured value as
+    /// `canonical` while `content` stays the pretty rendering for the model.
+    #[test]
+    fn tool_result_json_sets_canonical_alongside_rendered_content() {
+        let result = ToolResult::json(&json!({"ok": true, "items": [1, 2]})).expect("json");
+        assert_eq!(result.canonical, Some(json!({"ok": true, "items": [1, 2]})));
+    }
+
+    /// Prose constructors carry no canonical value; `with_canonical` attaches
+    /// one without touching the rendering.
+    #[test]
+    fn tool_result_prose_constructors_default_to_no_canonical() {
+        assert!(ToolResult::success("done").canonical.is_none());
+        assert!(ToolResult::error("boom").canonical.is_none());
+        let prose = ToolResult::success("Added todo #1 (pending)")
+            .with_canonical(json!({"items": [{"id": 1}]}));
+        assert_eq!(prose.canonical, Some(json!({"items": [{"id": 1}]})));
+        assert_eq!(prose.content, "Added todo #1 (pending)");
+    }
+
+    /// Results serialized before the canonical channel existed (no field)
+    /// deserialize with `canonical: None`, and canonical round-trips when
+    /// present. Serialization keeps field order stable for old readers.
+    #[test]
+    fn tool_result_serde_omits_absent_canonical_and_defaults_on_read() {
+        let legacy = serde_json::from_str::<ToolResult>(r#"{"content":"ok","success":true}"#)
+            .expect("legacy");
+        assert!(legacy.canonical.is_none());
+
+        let with = ToolResult::json(&json!({"v": 1})).expect("json");
+        let text = serde_json::to_string(&with).expect("ser");
+        assert!(text.contains(r#""canonical""#), "{text}");
+        let back: ToolResult = serde_json::from_str(&text).expect("de");
+        assert_eq!(back.canonical, Some(json!({"v": 1})));
+
+        let without = ToolResult::success("plain");
+        let text = serde_json::to_string(&without).expect("ser");
+        assert!(!text.contains("canonical"), "{text}");
     }
 
     #[test]

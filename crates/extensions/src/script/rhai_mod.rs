@@ -11,7 +11,8 @@
 //! resolvable after the load-time script run completes.
 //!
 //! Event payloads are hand-mapped to Rhai object maps (the plan's
-//! `#{content, success, is_error}` flattening for `ToolResult` included);
+//! `#{content, success, is_error, canonical}` flattening for `ToolResult`
+//! included);
 //! `serde_json::Value` fields (`ToolCall.input`, provider `messages`) go
 //! through `rhai::serde::to_dynamic` / `from_dynamic`.
 
@@ -261,7 +262,8 @@ pub(crate) fn ctx_to_dynamic(ctx: &dyn ExtensionContext) -> Dynamic {
 
 /// Convert an event into the script-side payload map. Every payload carries
 /// a `kind` field (the kebab-case event name) plus its variant fields;
-/// `ToolResult` flattens to `#{content, success, is_error}` (plan §三.3).
+/// `ToolResult` flattens to `#{content, success, is_error, canonical}`
+/// (`canonical` is `()` when the tool produced none).
 pub(crate) fn event_to_dynamic(event: &ExtensionEvent) -> Dynamic {
     let kind = event_name_from_kind(event.kind());
     let mut entries: Vec<(&str, Dynamic)> = match event {
@@ -317,15 +319,26 @@ pub(crate) fn event_to_dynamic(event: &ExtensionEvent) -> Dynamic {
             ("message", Dynamic::from(e.message.clone())),
         ],
         ExtensionEvent::ToolResult(e) => {
-            // Flatten `Result<ToolResult, ToolError>` → `#{content, success, is_error}`.
-            let (content, success, is_error) = match &e.result {
-                Ok(r) => (r.content.clone(), r.success, false),
-                Err(err) => (err.to_string(), false, true),
+            // Flatten `Result<ToolResult, ToolError>` →
+            // `#{content, success, is_error, canonical}`. `canonical` is the
+            // structured machine value (`()` when the tool produced none).
+            let (content, success, is_error, canonical) = match &e.result {
+                Ok(r) => (
+                    r.content.clone(),
+                    r.success,
+                    false,
+                    r.canonical
+                        .as_ref()
+                        .map(json_to_dynamic)
+                        .unwrap_or(Dynamic::UNIT),
+                ),
+                Err(err) => (err.to_string(), false, true, Dynamic::UNIT),
             };
             vec![
                 ("content", Dynamic::from(content)),
                 ("success", Dynamic::from(success)),
                 ("is_error", Dynamic::from(is_error)),
+                ("canonical", canonical),
                 ("id", Dynamic::from(e.id.clone())),
                 ("name", Dynamic::from(e.name.clone())),
             ]
@@ -463,9 +476,14 @@ pub(crate) fn merge_transform(
             }
         }
         ExtensionEvent::ToolResult(cur) => {
-            let (mut content, mut success) = match &cur.result {
-                Ok(r) => (r.content.clone(), r.success),
-                Err(err) => (err.to_string(), false),
+            let (mut content, mut success, mut canonical, metadata) = match &cur.result {
+                Ok(r) => (
+                    r.content.clone(),
+                    r.success,
+                    r.canonical.clone(),
+                    r.metadata.clone(),
+                ),
+                Err(err) => (err.to_string(), false, None, None),
             };
             let mut changed = false;
             if let Some(c) = map_field_string(&map, "content") {
@@ -476,8 +494,23 @@ pub(crate) fn merge_transform(
                 success = s;
                 changed = true;
             }
+            // Canonical/rendered separation: rewriting the rendering leaves
+            // the machine value untouched; only an explicit `canonical`
+            // field replaces it. Metadata (host bookkeeping) carries
+            // through, never rewritten from scripts.
+            if let Some(d) = map.get("canonical") {
+                match dynamic_to_json(d) {
+                    Ok(value) => {
+                        canonical = Some(value);
+                        changed = true;
+                    }
+                    Err(e) => {
+                        tracing::warn!(target: "codesmith_mods", "tool-result transform: canonical: {e}");
+                    }
+                }
+            }
             if !changed {
-                tracing::warn!(target: "codesmith_mods", "tool-result transform recognized no fields (need content / success)");
+                tracing::warn!(target: "codesmith_mods", "tool-result transform recognized no fields (need content / success / canonical)");
                 return HandlerOutcome::Continue;
             }
             let is_error = map_field_bool(&map, "is_error").unwrap_or(!success);
@@ -487,7 +520,8 @@ pub(crate) fn merge_transform(
                 Ok(ToolResult {
                     content,
                     success,
-                    metadata: None,
+                    canonical,
+                    metadata,
                 })
             };
             HandlerOutcome::Transform(ExtensionEvent::ToolResult(ToolResultEvent {
@@ -1757,6 +1791,96 @@ mod tests {
                 let r = tr.result.expect("ok arm");
                 assert_eq!(r.content, "rewritten");
                 assert!(r.success);
+            }
+            other => panic!("expected Transform, got {other:?}"),
+        }
+    }
+
+    /// Canonical/rendered separation at the mod surface: the payload exposes
+    /// the structured value (`()` when the tool produced none).
+    #[test]
+    fn tool_result_payload_carries_canonical() {
+        let with = ExtensionEvent::ToolResult(ToolResultEvent {
+            id: "c1".into(),
+            name: "agent_spawn".into(),
+            result: Ok(ToolResult::json(&serde_json::json!({"agent_id": "a1"})).expect("json")),
+        });
+        let map = event_to_dynamic(&with)
+            .try_cast::<rhai::Map>()
+            .expect("map");
+        let canonical = map.get("canonical").cloned().expect("canonical key");
+        let inner = canonical.try_cast::<rhai::Map>().expect("canonical map");
+        assert_eq!(
+            inner
+                .get("agent_id")
+                .cloned()
+                .and_then(|d| d.try_cast::<String>()),
+            Some("a1".into())
+        );
+
+        let without = ExtensionEvent::ToolResult(ToolResultEvent {
+            id: "c2".into(),
+            name: "echo".into(),
+            result: Ok(ToolResult::success("plain")),
+        });
+        let map = event_to_dynamic(&without)
+            .try_cast::<rhai::Map>()
+            .expect("map");
+        assert!(
+            map.get("canonical")
+                .cloned()
+                .unwrap_or(Dynamic::UNIT)
+                .is_unit()
+        );
+    }
+
+    /// A content-only transform keeps the machine value (and metadata):
+    /// rewriting the rendering must not rewrite the canonical channel.
+    #[test]
+    fn merge_transform_tool_result_content_only_keeps_canonical_and_metadata() {
+        let mut original = ToolResult::json(&serde_json::json!({"agent_id": "a1"})).expect("json");
+        original.metadata = Some(serde_json::json!({"exit_code": 0}));
+        let event = ExtensionEvent::ToolResult(ToolResultEvent {
+            id: "c1".into(),
+            name: "exec_shell".into(),
+            result: Ok(original),
+        });
+        let mut fields = rhai::Map::new();
+        fields.insert("content".into(), Dynamic::from("rewritten".to_string()));
+        let out = merge_transform(&event, &Dynamic::from(fields));
+        match out {
+            codesmith_agent::extension::HandlerOutcome::Transform(ExtensionEvent::ToolResult(
+                tr,
+            )) => {
+                let r = tr.result.expect("ok arm");
+                assert_eq!(r.content, "rewritten");
+                assert_eq!(r.canonical, Some(serde_json::json!({"agent_id": "a1"})));
+                assert_eq!(r.metadata, Some(serde_json::json!({"exit_code": 0})));
+            }
+            other => panic!("expected Transform, got {other:?}"),
+        }
+    }
+
+    /// An explicit `canonical` field replaces the machine value.
+    #[test]
+    fn merge_transform_tool_result_canonical_replaces_machine_value() {
+        let event = ExtensionEvent::ToolResult(ToolResultEvent {
+            id: "c1".into(),
+            name: "echo".into(),
+            result: Ok(ToolResult::success("rendered")),
+        });
+        let mut fields = rhai::Map::new();
+        let mut inner = rhai::Map::new();
+        inner.insert("replaced".into(), Dynamic::from(true));
+        fields.insert("canonical".into(), Dynamic::from(inner));
+        let out = merge_transform(&event, &Dynamic::from(fields));
+        match out {
+            codesmith_agent::extension::HandlerOutcome::Transform(ExtensionEvent::ToolResult(
+                tr,
+            )) => {
+                let r = tr.result.expect("ok arm");
+                assert_eq!(r.content, "rendered");
+                assert_eq!(r.canonical, Some(serde_json::json!({"replaced": true})));
             }
             other => panic!("expected Transform, got {other:?}"),
         }

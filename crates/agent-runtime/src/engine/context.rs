@@ -240,7 +240,11 @@ fn summarize_subagent_snapshot(snapshot: &serde_json::Value, index: usize) -> St
     lines.join("\n")
 }
 
-fn compact_subagent_tool_result_for_context(tool_name: &str, raw: &str) -> Option<String> {
+fn compact_subagent_tool_result_for_context(
+    tool_name: &str,
+    raw: &str,
+    canonical: Option<&serde_json::Value>,
+) -> Option<String> {
     if !matches!(
         tool_name,
         "agent_open"
@@ -254,7 +258,13 @@ fn compact_subagent_tool_result_for_context(tool_name: &str, raw: &str) -> Optio
         return None;
     }
 
-    let parsed: serde_json::Value = serde_json::from_str(raw).ok()?;
+    // Program caller: prefer the canonical structured value; fall back to
+    // parsing the sanitized rendering for results produced before the
+    // canonical channel existed.
+    let parsed: serde_json::Value = match canonical {
+        Some(value) => value.clone(),
+        None => serde_json::from_str(raw).ok()?,
+    };
     let snapshots: Vec<&serde_json::Value> = match &parsed {
         serde_json::Value::Array(items) => items.iter().collect(),
         serde_json::Value::Object(_) => vec![&parsed],
@@ -277,7 +287,11 @@ fn compact_subagent_tool_result_for_context(tool_name: &str, raw: &str) -> Optio
         out.push_str(&summarize_subagent_snapshot(snapshot, idx + 1));
         out.push('\n');
     }
-    Some(out.trim_end().to_string())
+    // The canonical path skips the rendering-side Unicode sanitization, so
+    // re-sanitize here; for the fallback path this is an identity pass.
+    Some(crate::sanitization::partially_sanitize_unicode(
+        out.trim_end(),
+    ))
 }
 
 fn tool_result_context_limits_for_model(model: &str) -> ToolResultContextLimits {
@@ -311,7 +325,9 @@ pub fn compact_tool_result_for_context(
         return String::new();
     }
 
-    if let Some(summary) = compact_subagent_tool_result_for_context(tool_name, &raw) {
+    if let Some(summary) =
+        compact_subagent_tool_result_for_context(tool_name, &raw, output.canonical.as_ref())
+    {
         return summary;
     }
 
@@ -630,5 +646,43 @@ mod tests {
         );
         assert!(result.chars().count() < body.chars().count());
         assert!(!result.contains('\u{200B}'));
+    }
+
+    /// The sub-agent summary prefers the canonical structured value over the
+    /// rendering, and the canonical path is re-sanitized — a hidden-character
+    /// payload in the machine value must not reach the model context even
+    /// though it never passed through the rendering-side sanitizer.
+    #[test]
+    fn compact_subagent_summary_prefers_canonical_and_sanitizes_it() {
+        let snapshot = serde_json::json!({
+            "agent_id": "agent_deadbeef",
+            "agent_type": "general",
+            "status": "Completed",
+            "assignment": {"objective": "do\u{200B}work"},
+            "result": "finished",
+            "steps_taken": 3,
+        });
+        let mut output = ToolResult::success("rendering that disagrees");
+        output.canonical = Some(snapshot);
+        let summary = compact_tool_result_for_context("deepseek-chat", "agent_open", &output);
+        assert!(summary.contains("agent_deadbeef"));
+        assert!(summary.contains("status=Completed"));
+        assert!(summary.contains("result: finished"));
+        assert!(
+            !summary.contains('\u{200B}'),
+            "canonical path must be sanitized"
+        );
+        // Canonical wins over the rendering.
+        assert!(!summary.contains("rendering that disagrees"));
+
+        // Legacy shape (no canonical): the sanitized rendering is parsed.
+        let legacy = ToolResult::success(
+            serde_json::to_string_pretty(&serde_json::json!({
+                "agent_id": "agent_old", "status": "Running",
+            }))
+            .expect("pretty"),
+        );
+        let summary = compact_tool_result_for_context("deepseek-chat", "agent_open", &legacy);
+        assert!(summary.contains("agent_old"));
     }
 }

@@ -868,6 +868,7 @@ mod tests {
             claim.clone(),
             &command,
             ToolResult {
+                canonical: None,
                 content: "ok".to_string(),
                 success: true,
                 metadata: Some(json!({"exit_code": 0})),
@@ -878,6 +879,7 @@ mod tests {
             claim,
             &command,
             ToolResult {
+                canonical: None,
                 content: "FAILED".to_string(),
                 success: false,
                 metadata: Some(json!({"exit_code": 1})),
@@ -903,6 +905,7 @@ mod tests {
             claim,
             &command,
             ToolResult {
+                canonical: None,
                 content: String::new(),
                 success: false,
                 metadata: Some(json!({"sandbox_denied": true})),

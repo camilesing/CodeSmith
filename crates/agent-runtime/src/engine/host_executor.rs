@@ -3840,6 +3840,7 @@ mod tests {
                 .unwrap_or("")
                 .to_string();
             Ok(ToolResult {
+                canonical: None,
                 content: format!("{}|{text}", context.workspace.display()),
                 success: true,
                 metadata: None,
@@ -3883,6 +3884,7 @@ mod tests {
                 .unwrap_or("")
                 .to_string();
             Ok(ToolResult {
+                canonical: None,
                 content: format!("{}|{text}", context.workspace.display()),
                 success: true,
                 metadata: None,
@@ -3925,6 +3927,7 @@ mod tests {
                 .unwrap_or("?")
                 .to_string();
             Ok(ToolResult {
+                canonical: None,
                 content: format!("wrote:{path}"),
                 success: true,
                 metadata: None,
@@ -3967,6 +3970,7 @@ mod tests {
                 .unwrap_or("?")
                 .to_string();
             Ok(ToolResult {
+                canonical: None,
                 content: format!("ran:{cmd}"),
                 success: true,
                 metadata: None,
@@ -4008,6 +4012,7 @@ mod tests {
                 .unwrap_or("")
                 .to_string();
             Ok(ToolResult {
+                canonical: None,
                 content: format!("edited:{path}"),
                 success: true,
                 metadata: None,
@@ -4048,6 +4053,7 @@ mod tests {
                 .unwrap_or("")
                 .to_string();
             Ok(ToolResult {
+                canonical: None,
                 content: format!("edit failed:{path}"),
                 success: false,
                 metadata: None,
@@ -4102,6 +4108,7 @@ mod tests {
             _context: &ToolContext,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult {
+                canonical: None,
                 content: self.content.clone(),
                 success: self.success,
                 metadata: None,
@@ -12701,6 +12708,7 @@ mod tests {
         ) -> Result<ToolResult, ToolError> {
             self.notify.notify_one();
             Ok(ToolResult {
+                canonical: None,
                 content: "signaled".to_string(),
                 success: true,
                 metadata: None,
@@ -12737,6 +12745,7 @@ mod tests {
         ) -> Result<ToolResult, ToolError> {
             self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(ToolResult {
+                canonical: None,
                 content: "counted".to_string(),
                 success: true,
                 metadata: None,
@@ -12774,6 +12783,7 @@ mod tests {
         ) -> Result<ToolResult, ToolError> {
             self.token.cancel();
             Ok(ToolResult {
+                canonical: None,
                 content: "cancelled".to_string(),
                 success: true,
                 metadata: None,
@@ -13080,6 +13090,7 @@ mod tests {
         ) -> Result<ToolResult, ToolError> {
             self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(ToolResult {
+                canonical: None,
                 content: "wrote".to_string(),
                 success: true,
                 metadata: None,
@@ -13167,6 +13178,7 @@ mod tests {
         ) -> Result<ToolResult, ToolError> {
             let _ = self.barrier.wait().await;
             Ok(ToolResult {
+                canonical: None,
                 content: format!("{}-done", self.tool_name),
                 success: true,
                 metadata: None,
@@ -13204,6 +13216,7 @@ mod tests {
         ) -> Result<ToolResult, ToolError> {
             tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
             Ok(ToolResult {
+                canonical: None,
                 content: format!("{}-done", self.tool_name),
                 success: true,
                 metadata: None,
@@ -13241,6 +13254,7 @@ mod tests {
         ) -> Result<ToolResult, ToolError> {
             self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(ToolResult {
+                canonical: None,
                 content: "counted".to_string(),
                 success: true,
                 metadata: None,

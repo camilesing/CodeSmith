@@ -105,7 +105,7 @@ You've now touched all four registration surfaces: event hooks, tools, commands,
 | `before-provider-request` | `messages` (JSON value) |
 | `after-provider-response` | `response` (JSON value) |
 | `tool-call` | `id`, `name`, `input` (JSON value) |
-| `tool-result` | `id`, `name`, `content`, `success`, `is_error` |
+| `tool-result` | `id`, `name`, `content`, `success`, `is_error`, `canonical` (JSON value, `()` when the tool produced none) |
 | `turn-start` / `turn-end` | `turn_id`; `turn-end` also `reason` |
 | `assistant-stream` | `text` (one incremental chunk; fires per text delta, observe-only) |
 | `tool-execution-update` | `id`, `name`, `message` |
@@ -114,6 +114,8 @@ You've now touched all four registration surfaces: event hooks, tools, commands,
 | `agent-start` / `before-provider-headers` / `tool-execution-start` / `tool-execution-end` / `agent-end` / `agent-settled` / `session-before-switch` / `session-before-fork` / `session-shutdown` / `session-before-compact` / `session-compact` | (`kind` only) |
 
 Unwired events (host seam not yet connected) never fire: `tool-execution-update`, `resources-discover`, `session-before-fork`.
+
+`tool-result` payloads carry the canonical/rendered separation: `content` is the model-visible rendering; `canonical` is the structured machine-readable value of the same result (the `ToolResult::json` value, or what a tool attached via `with_canonical`). Read `canonical` instead of re-parsing `content` — prose-rendered results (`todo_add` prefixes a sentence before the JSON) are not parseable at all. Canonical is live-process only: the transcript persists the rendered `content`.
 
 `tools-change` fires at the turn boundary when the compiled model-visible catalog changed since the previous main turn (mode switch, mod reload, selection change). The first turn establishes the baseline silently; sub-agent toolsets never trigger it, and there is no API to read the current catalog — the event carries the diff only. `/tools` renders the current baseline grouped by origin (builtin / plugin / extension / mcp).
 
@@ -140,7 +142,7 @@ Transform mutable fields (one handler's rewrite is immediately visible to the ne
 - `tool-call`: `input` (JSON value — the pre-execute rewrite; the host applies it before approval + execution and records it)
 - `before-agent-start`: `system_prompt`, `inject_message` (string = set, `()` = clear, absent = keep)
 - `before-provider-request`: `messages`
-- `tool-result`: `content`, `success`, `is_error`
+- `tool-result`: `content`, `success`, `is_error`, `canonical` (JSON value — the machine-readable result; rewriting `content` alone leaves it untouched, and it can be replaced explicitly)
 
 ### Capability functions
 

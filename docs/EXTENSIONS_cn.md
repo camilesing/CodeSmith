@@ -142,7 +142,7 @@ async fn configure(api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
 | `BeforeProviderRequest(BeforeProviderRequestEvent)` | `host_executor` 在 `request` 构建后、流式开始前 | **Transform** | 重写 `request.messages` |
 | `AfterProviderResponse(AfterProviderResponseEvent)` | `host_executor` `Content` 分支在 `accumulate_usage` 之后 | observe | — |
 | `ToolCall(ToolCallEvent)` | `host_executor` 并行 + 串行工具分发 | **Block** | 跳过审批 + `tool.run` → `Err(ToolError::permission_denied(reason))`，`blocked = true` |
-| `ToolResult(ToolResultEvent)` | `host_executor` 并行 + 串行，emit 重排到 `on_tool_end` 之前 | **Transform** | 替换结果；`on_tool_end` + 下游 `outcomes[idx].result` 看到的是变换后的结果 |
+| `ToolResult(ToolResultEvent)` | `host_executor` 并行 + 串行，emit 重排到 `on_tool_end` 之前 | **Transform** | 替换结果；`on_tool_end` + 下游 `outcomes[idx].result` 看到的是变换后的结果。`ToolResult` 携带 canonical/rendered 分离：`content` 是模型可见渲染，`canonical` 是结构化机器值（仅存活于当前进程，不随转录持久化）——改写 `content` 不得改写 `canonical` |
 | `ToolExecutionStart` | `host_executor` 工具闭包（`tool.run` 之前） | observe | — |
 | `ToolExecutionEnd` | `host_executor` 工具闭包（`tool.run` 之后） | observe | — |
 | `AgentEnd` | `host_executor::run_inner` 每个 `return Ok(...)` | observe | — |
