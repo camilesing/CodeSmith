@@ -73,6 +73,15 @@ pub enum ScriptRegistration {
     /// `register_prompt_section(id, text)` native. Replayed at
     /// `configure` via `ExtensionApi::register_prompt_section`.
     PromptSection { id: String, text: String },
+    /// Route B — a mod-contributed skill captured by the
+    /// `register_skill(spec)` native. Replayed at `configure` via
+    /// `ExtensionApi::register_skill` (owner baked to the mod id).
+    Skill {
+        name: String,
+        description: String,
+        body: String,
+        when_to_use: Option<String>,
+    },
     /// Route A — a declarative provider alias captured by the
     /// `register_provider(spec)` native. Replayed at `configure` via
     /// `ExtensionApi::register_provider_alias`.
@@ -645,6 +654,53 @@ fn register_natives(
         },
     );
 
+    // register_skill(spec_map) — route B: contribute an in-memory skill to
+    // the session catalogue (system-prompt `## Skills` block, `/skills`,
+    // `load_skill` by name). `#{ name: "commit-helper", description:
+    // "...", body: "...", when_to_use: "..." }` — `when_to_use` optional.
+    // Validated at capture so a bad skill fails the mod's load; the
+    // filesystem catalogue wins over a registered name at merge time.
+    let cell_skill = Arc::clone(cell);
+    engine.register_fn(
+        "register_skill",
+        move |spec: rhai::Map| -> Result<(), Box<rhai::EvalAltResult>> {
+            let name = spec
+                .get("name")
+                .and_then(|d| d.clone().try_cast::<String>())
+                .ok_or_else(|| {
+                    script_error("register_skill(): spec must include a string `name`")
+                })?;
+            let description = spec
+                .get("description")
+                .and_then(|d| d.clone().try_cast::<String>())
+                .ok_or_else(|| {
+                    script_error("register_skill(): spec must include a string `description`")
+                })?;
+            let body = spec
+                .get("body")
+                .and_then(|d| d.clone().try_cast::<String>())
+                .ok_or_else(|| {
+                    script_error("register_skill(): spec must include a string `body`")
+                })?;
+            let when_to_use = spec
+                .get("when_to_use")
+                .and_then(|d| d.clone().try_cast::<String>());
+            if let Err(e) = crate::runner::validate_skill_registration(&name, &description, &body) {
+                return Err(script_error(e.to_string()));
+            }
+            cell_skill
+                .lock()
+                .expect("mod registration cell poisoned")
+                .push(ScriptRegistration::Skill {
+                    name,
+                    description,
+                    body,
+                    when_to_use,
+                });
+            Ok(())
+        },
+    );
+
     // register_provider(spec_map) — route A: declarative provider alias.
     // `#{ id: "my-gw", kind: "openai", base_url: "...", default_model: "...",
     //    headers: #{ "X-Gateway": "acme" } }`.
@@ -977,6 +1033,20 @@ impl Extension for RhaiMod {
                 ScriptRegistration::PromptSection { id, text } => {
                     api.register_prompt_section(id.clone(), text.clone())?;
                 }
+                ScriptRegistration::Skill {
+                    name,
+                    description,
+                    body,
+                    when_to_use,
+                } => {
+                    api.register_skill(codesmith_agent::extension::SkillRegistration {
+                        owner: self.metadata.id.to_string(),
+                        name: name.clone(),
+                        description: description.clone(),
+                        body: body.clone(),
+                        when_to_use: when_to_use.clone(),
+                    })?;
+                }
                 ScriptRegistration::Provider {
                     id,
                     target,
@@ -1086,6 +1156,7 @@ mod tests {
                     ScriptRegistration::Command { name, .. } => format!("c:{name}"),
                     ScriptRegistration::Provider { id, .. } => format!("p:{id}"),
                     ScriptRegistration::PromptSection { id, .. } => format!("s:{id}"),
+                    ScriptRegistration::Skill { name, .. } => format!("k:{name}"),
                     ScriptRegistration::MessageProjection { key, .. } => format!("m:{key}"),
                 })
                 .collect::<Vec<_>>()
@@ -1223,6 +1294,58 @@ mod tests {
             Some(ScriptRegistration::PromptSection { id, text })
                 if id == "style" && text == "Be terse."
         ));
+    }
+
+    #[test]
+    fn load_captures_registered_skill() {
+        let dir = TempDir::new().unwrap();
+        let m = RhaiMod::load(
+            &discovered_for(
+                &dir,
+                "skill-mod",
+                r##"register_skill(#{name: "commit-helper", description: "Write commits", body: "# Steps\n1. Stage.", when_to_use: "commit time"});"##,
+            ),
+            kv_for(&dir, "skill-mod"),
+            hub(),
+        )
+        .expect("load");
+        assert!(matches!(
+            m.registrations().first(),
+            Some(ScriptRegistration::Skill { name, description, body, when_to_use })
+                if name == "commit-helper"
+                    && description == "Write commits"
+                    && body.contains("Stage")
+                    && when_to_use.as_deref() == Some("commit time")
+        ));
+    }
+
+    #[test]
+    fn registered_skill_bad_spec_fails_load() {
+        let dir = TempDir::new().unwrap();
+        let m = RhaiMod::load(
+            &discovered_for(
+                &dir,
+                "bad-skill",
+                r#"register_skill(#{name: "bad name!", description: "x", body: "y"});"#,
+            ),
+            kv_for(&dir, "bad-skill"),
+            hub(),
+        );
+        let msg = m.unwrap_err().to_string();
+        assert!(msg.contains("must match"), "{msg}");
+
+        let dir = TempDir::new().unwrap();
+        let m = RhaiMod::load(
+            &discovered_for(
+                &dir,
+                "no-body",
+                r#"register_skill(#{name: "ok", description: "x"});"#,
+            ),
+            kv_for(&dir, "no-body"),
+            hub(),
+        );
+        let msg = m.unwrap_err().to_string();
+        assert!(msg.contains("must include a string `body`"), "{msg}");
     }
 
     #[test]

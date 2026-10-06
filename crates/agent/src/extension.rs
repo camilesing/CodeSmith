@@ -651,6 +651,18 @@ pub trait ExtensionApi: Send + Sync {
     /// handler still wins. `id` is diagnostics/dedup identity, not display.
     fn register_prompt_section(&self, id: String, text: String) -> Result<(), ExtensionError>;
 
+    /// Route B (skills) — contribute a skill to the session's skill
+    /// catalogue. Registered skills are in-memory only (no `SKILL.md` on
+    /// disk): they appear in the system-prompt `## Skills` block, in
+    /// `/skills`, and the `load_skill` tool resolves them by name.
+    /// [`SkillRegistration::owner`] is the contributing mod's id
+    /// (attribution + replace identity). Registration happens at mod load
+    /// and is session-stable (prefix-cache discipline, same as prompt
+    /// sections). A name already registered by a *different* owner is
+    /// rejected (fail loud); the filesystem catalogue wins over a
+    /// registered name at merge time.
+    fn register_skill(&self, skill: SkillRegistration) -> Result<(), ExtensionError>;
+
     /// Register a **message projection**: a fold the host runs over the
     /// session transcript, maintaining a per-`(owner, key)` state that
     /// survives session reload (rebuilt from the log — the event-sourcing
@@ -682,6 +694,34 @@ pub type MessageFoldFn =
 /// Cap on registered projections across all mods (fail loud beyond, at
 /// registration — mirrors `MAX_PROMPT_SECTIONS`).
 pub const MAX_MESSAGE_PROJECTIONS: usize = 16;
+
+/// Route B (skills) — a mod-contributed skill, registered via
+/// [`ExtensionApi::register_skill`]. The framework-level mirror of a
+/// `SKILL.md`: only the fields the catalogue lists and `load_skill`
+/// returns are carried. No `paths` (workspace path-trigger matching is a
+/// filesystem-skill concept), no `allowed_tools`/`model`/`effort` tuning
+/// — add them here when a mod needs them.
+#[derive(Debug, Clone)]
+pub struct SkillRegistration {
+    /// Owning mod id. Set by the host at registration (the mod never
+    /// names itself here); also the replace identity: a mod re-registering
+    /// its own name replaces in place.
+    pub owner: String,
+    /// Skill name — the `load_skill` / `/skill` key. `[a-zA-Z0-9_-]`,
+    /// 1-64 chars.
+    pub name: String,
+    /// One-line catalogue description (must be non-empty).
+    pub description: String,
+    /// Full skill body shown when the skill is loaded.
+    pub body: String,
+    /// Optional "use when ..." hint rendered in the catalogue listing.
+    pub when_to_use: Option<String>,
+}
+
+/// Cap on registered skills across all mods (fail loud beyond, at
+/// registration — mirrors `MAX_PROMPT_SECTIONS`; each entry is one line
+/// in the system-prompt catalogue).
+pub const MAX_REGISTERED_SKILLS: usize = 16;
 
 /// Host-side store of mod-registered message projections. The engine folds
 /// every transcript mutation through this hub (append → [`fold_message`],

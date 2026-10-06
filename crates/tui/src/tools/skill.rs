@@ -87,11 +87,12 @@ impl ToolSpec for LoadSkillTool {
         // #432: walk every candidate skill directory (workspace
         // .agents/skills, skills, .opencode/skills, .claude/skills,
         // .cursor/skills, ~/.agents/skills, global default), merging with
-        // first-wins precedence. The
-        // tool's lookup mirrors what the system-prompt skills block
-        // already lists, so the model never asks for a name it
-        // can't find.
-        let registry = discover_in_workspace(&context.workspace);
+        // first-wins precedence. Mod-registered skills (route B) merge in
+        // with the same precedence, so the tool's lookup mirrors what the
+        // system-prompt skills block already lists — the model never asks
+        // for a name it can't find.
+        let mut registry = discover_in_workspace(&context.workspace);
+        registry.merge_registered(&context.registered_skills);
         let Some(skill) = registry.get(name) else {
             let available: Vec<&str> = registry.list().iter().map(|s| s.name.as_str()).collect();
             let hint = if available.is_empty() {
@@ -115,9 +116,13 @@ impl ToolSpec for LoadSkillTool {
         };
 
         let body = format_skill_body(skill);
+        let source = match &skill.loaded_from {
+            crate::skills::SkillSource::Extension { owner } => format!("mod: {owner}"),
+            _ => skill.path.display().to_string(),
+        };
         Ok(ToolResult::success(body).with_metadata(json!({
             "skill_name": skill.name,
-            "skill_path": skill.path.display().to_string(),
+            "skill_path": source,
             "description": skill.description,
             "when_to_use": skill.when_to_use,
             "allowed_tools": skill.allowed_tools,
@@ -164,7 +169,12 @@ fn format_skill_body(skill: &Skill) -> String {
     {
         out.push_str(&format!("Allowed tools: {}\n\n", allowed_tools.join(", ")));
     }
-    out.push_str(&format!("Source: `{}`\n\n", skill.path.display()));
+    // Mod-registered skills have no file — attribute the owning mod.
+    let source = match &skill.loaded_from {
+        crate::skills::SkillSource::Extension { owner } => format!("mod: {owner}"),
+        _ => skill.path.display().to_string(),
+    };
+    out.push_str(&format!("Source: `{source}`\n\n"));
     out.push_str("## SKILL.md\n\n");
     out.push_str(skill.body.trim());
     out.push('\n');
@@ -225,6 +235,69 @@ mod tests {
             format!("---\nname: {name}\ndescription: {description}\n---\n{body}\n"),
         )
         .unwrap();
+    }
+
+    fn mod_registration(
+        owner: &str,
+        name: &str,
+        body: &str,
+    ) -> codesmith_agent::extension::SkillRegistration {
+        codesmith_agent::extension::SkillRegistration {
+            owner: owner.to_string(),
+            name: name.to_string(),
+            description: "From a mod".to_string(),
+            body: body.to_string(),
+            when_to_use: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn load_skill_resolves_registered_mod_skills() {
+        let tmp = tempdir().unwrap();
+        // `discover_in_workspace` scans `<ws>/skills/` (plus home dirs, in
+        // which workspace-first precedence keeps these names deterministic).
+        write_skill(&tmp.path().join("skills"), "fs-skill", "On disk", "fs body");
+        // A mod registration colliding with the filesystem name: the disk
+        // skill must win (same merge the system-prompt catalogue applies).
+        let ctx = ToolContext::new(tmp.path()).with_registered_skills(
+            crate::skills::skills_from_registrations(&[
+                mod_registration("alpha", "mod-skill", "mod body with steps"),
+                mod_registration("beta", "fs-skill", "should lose"),
+            ]),
+        );
+
+        let out = LoadSkillTool
+            .execute(json!({"name": "mod-skill"}), &ctx)
+            .await
+            .expect("mod skill loadable");
+        assert!(out.content.contains("mod body with steps"), "{out:?}");
+        assert!(out.content.contains("Source: `mod: alpha`"), "{out:?}");
+        assert!(
+            out.content.contains("# Skill: mod-skill"),
+            "self-contained header: {out:?}"
+        );
+
+        let fs = LoadSkillTool
+            .execute(json!({"name": "fs-skill"}), &ctx)
+            .await
+            .expect("fs skill loadable");
+        assert!(fs.content.contains("fs body"), "{fs:?}");
+        assert!(!fs.content.contains("should lose"), "{fs:?}");
+    }
+
+    #[test]
+    fn format_skill_body_attributes_mod_source() {
+        let skills = crate::skills::skills_from_registrations(&[mod_registration(
+            "alpha",
+            "mod-skill",
+            "body",
+        )]);
+        let body = format_skill_body(&skills[0]);
+        assert!(body.contains("Source: `mod: alpha`"), "{body}");
+        assert!(
+            !body.contains("Companion files"),
+            "no companion section for in-memory skills: {body}"
+        );
     }
 
     #[test]

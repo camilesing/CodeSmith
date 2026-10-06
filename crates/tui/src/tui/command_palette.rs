@@ -52,6 +52,7 @@ pub fn build_entries(
     workspace: &Path,
     mcp_config_path: &Path,
     mcp_snapshot: Option<&crate::mcp::McpManagerSnapshot>,
+    registered_skills: &[crate::skills::Skill],
 ) -> Vec<CommandPaletteEntry> {
     let mut entries = Vec::new();
 
@@ -79,8 +80,9 @@ pub fn build_entries(
         });
     }
 
-    let skills = skills::discover_for_workspace_and_dir(workspace, skills_dir);
-    for skill in skills.list() {
+    let mut skills_registry = skills::discover_for_workspace_and_dir(workspace, skills_dir);
+    skills_registry.merge_registered(registered_skills);
+    for skill in skills_registry.list() {
         entries.push(CommandPaletteEntry {
             section: PaletteSection::Skill,
             label: format!("skill:{}", skill.name),
@@ -976,6 +978,7 @@ mod tests {
             workspace.as_path(),
             Path::new("mcp.json"),
             None,
+            &[],
         );
         let skill_labels = entries
             .iter()
@@ -995,6 +998,7 @@ mod tests {
             Path::new("."),
             Path::new("mcp.json"),
             None,
+            &[],
         );
         let command_labels = entries
             .iter()
@@ -1017,6 +1021,7 @@ mod tests {
             Path::new("."),
             Path::new("mcp.json"),
             None,
+            &[],
         );
         let model = entries
             .iter()
@@ -1038,6 +1043,7 @@ mod tests {
             Path::new("."),
             Path::new("mcp.json"),
             None,
+            &[],
         );
         let change = entries
             .iter()
@@ -1099,6 +1105,7 @@ mod tests {
             Path::new("."),
             Path::new("mcp.json"),
             Some(&snapshot),
+            &[],
         );
 
         assert!(entries.iter().any(|entry| entry.label == "mcp:manager"));
@@ -1153,6 +1160,7 @@ mod tests {
             Path::new("."),
             Path::new("mcp.json"),
             Some(&snapshot),
+            &[],
         );
 
         let muted = entries

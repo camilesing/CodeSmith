@@ -53,6 +53,38 @@ pub(crate) fn validate_prompt_section(id: &str, text: &str) -> Result<(), Extens
     Ok(())
 }
 
+/// Route B (skills) — shared validation (stub-time and live registration
+/// paths). Name mirrors the `register_tool` charset; description/body must
+/// carry content (a catalogue line and a loadable body are the whole point
+/// of a registered skill).
+pub(crate) fn validate_skill_registration(
+    name: &str,
+    description: &str,
+    body: &str,
+) -> Result<(), ExtensionError> {
+    if name.is_empty()
+        || name.len() > 64
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        return Err(ExtensionError::Config(format!(
+            "skill name {name:?} must match [a-zA-Z0-9_-] and be 1-64 chars"
+        )));
+    }
+    if description.trim().is_empty() {
+        return Err(ExtensionError::Config(format!(
+            "skill {name:?} description must be non-empty"
+        )));
+    }
+    if body.trim().is_empty() {
+        return Err(ExtensionError::Config(format!(
+            "skill {name:?} body must be non-empty"
+        )));
+    }
+    Ok(())
+}
+
 /// A provider factory queued by the stub `ExtensionApi` during `configure`,
 /// awaiting `bind_core` flush into the runner's [`SharedProviderRegistry`]
 /// (route A).
@@ -111,6 +143,7 @@ pub(crate) struct Pending {
     pub handlers: Vec<PendingHandler>,
     pub providers: Vec<PendingProvider>,
     pub prompt_sections: Vec<(String, String)>,
+    pub skills: Vec<codesmith_agent::extension::SkillRegistration>,
     pub message_projections: Vec<PendingMessageProjection>,
 }
 
@@ -181,6 +214,11 @@ pub struct ExtensionRunner {
     /// them (a dropped section shifts the prompt prefix once, the same
     /// cost class as a whole-prompt replacement).
     prompt_sections: Mutex<Vec<(String, String)>>,
+    /// Route B (skills) — mod-registered skills in registration order.
+    /// `clear_skills` / reload drop the generation's set. Hosts read via
+    /// [`Self::registered_skills`] at catalogue render / `load_skill`
+    /// snapshot time.
+    skills: Mutex<Vec<codesmith_agent::extension::SkillRegistration>>,
     /// Session log folds — mod-registered message projections. The hub is
     /// runner-created but host-shared: the engine folds transcript
     /// mutations through the same `Arc` (`fold_message` / `refold_all`),
@@ -206,6 +244,7 @@ impl ExtensionRunner {
             shared: Mutex::new(SharedProviderRegistry::new()),
             providers: Mutex::new(Vec::new()),
             prompt_sections: Mutex::new(Vec::new()),
+            skills: Mutex::new(Vec::new()),
             message_projection_hub: codesmith_agent::extension::MessageProjectionHubArc::new(
                 codesmith_agent::extension::MessageProjectionHub::new(),
             ),
@@ -360,6 +399,64 @@ impl ExtensionRunner {
             .clear();
     }
 
+    /// Route B (skills) — register (or, for the same owner+name, replace in
+    /// place) a mod-contributed skill. Fails loud at registration on a bad
+    /// name/description/body, on exceeding [`MAX_REGISTERED_SKILLS`], or
+    /// when the name is already registered by a *different* owner (the
+    /// error names the incumbent so the mod author knows who owns the key).
+    pub fn register_skill(
+        &self,
+        skill: codesmith_agent::extension::SkillRegistration,
+    ) -> Result<(), ExtensionError> {
+        validate_skill_registration(&skill.name, &skill.description, &skill.body)?;
+        let mut skills = self.skills.lock().expect("registered skills poisoned");
+        if skills.len() >= codesmith_agent::extension::MAX_REGISTERED_SKILLS {
+            return Err(ExtensionError::Config(format!(
+                "too many registered skills (>{}), rejecting {:?} from mod {:?}",
+                codesmith_agent::extension::MAX_REGISTERED_SKILLS,
+                skill.name,
+                skill.owner
+            )));
+        }
+        if let Some(existing) = skills
+            .iter()
+            .find(|s| s.name == skill.name && s.owner != skill.owner)
+        {
+            return Err(ExtensionError::Config(format!(
+                "skill {:?} already registered by mod {:?}",
+                skill.name, existing.owner
+            )));
+        }
+        // Same owner re-registering replaces in place (owner+name is
+        // identity); otherwise append in registration order.
+        if let Some(slot) = skills.iter_mut().find(|s| s.name == skill.name) {
+            *slot = skill;
+        } else {
+            skills.push(skill);
+        }
+        Ok(())
+    }
+
+    /// Route B (skills) — snapshot the generation's registered skills
+    /// (registration order). Hosts convert + merge these into the
+    /// filesystem skill catalogue at render points.
+    #[must_use]
+    pub fn registered_skills(&self) -> Vec<codesmith_agent::extension::SkillRegistration> {
+        self.skills
+            .lock()
+            .expect("registered skills poisoned")
+            .clone()
+    }
+
+    /// Route B (skills) — clear all registered skills (reload drops the
+    /// generation's contributions).
+    pub fn clear_skills(&self) {
+        self.skills
+            .lock()
+            .expect("registered skills poisoned")
+            .clear();
+    }
+
     /// The shared message-projection hub. The engine folds transcript
     /// mutations through this `Arc`; `RhaiMod` bakes it into the
     /// `projection_state(key)` native.
@@ -493,6 +590,14 @@ impl ExtensionRunner {
                 tracing::warn!(
                     target: "codesmith_extensions",
                     "prompt section rejected at bind: {e}"
+                );
+            }
+        }
+        for skill in pending.skills.drain(..) {
+            if let Err(e) = self.register_skill(skill.clone()) {
+                tracing::warn!(
+                    target: "codesmith_extensions",
+                    "registered skill rejected at bind: {e}"
                 );
             }
         }
@@ -1453,6 +1558,110 @@ mod tests {
                 .append_prompt_sections(codesmith_agent::models::SystemPrompt::Text("b".into()))
                 .is_some(),
             "flushed at bind_core"
+        );
+    }
+
+    fn skill_reg(owner: &str, name: &str) -> codesmith_agent::extension::SkillRegistration {
+        codesmith_agent::extension::SkillRegistration {
+            owner: owner.to_string(),
+            name: name.to_string(),
+            description: "does one thing".to_string(),
+            body: "# Steps\n1. Do the thing.".to_string(),
+            when_to_use: None,
+        }
+    }
+
+    #[test]
+    fn skills_register_replace_and_clear() {
+        let runner = ExtensionRunner::new();
+        assert!(runner.registered_skills().is_empty());
+
+        runner
+            .register_skill(skill_reg("alpha", "commit-helper"))
+            .unwrap();
+        runner
+            .register_skill(skill_reg("beta", "release-notes"))
+            .unwrap();
+        // Same owner re-registering replaces in place, not appends.
+        let mut updated = skill_reg("alpha", "commit-helper");
+        updated.body = "# Steps\n1. Updated.".to_string();
+        runner.register_skill(updated).unwrap();
+
+        let snapshot = runner.registered_skills();
+        assert_eq!(snapshot.len(), 2, "replace, not append");
+        let helper = snapshot.iter().find(|s| s.name == "commit-helper").unwrap();
+        assert_eq!(helper.body, "# Steps\n1. Updated.");
+        assert_eq!(helper.owner, "alpha");
+
+        runner.clear_skills();
+        assert!(runner.registered_skills().is_empty(), "cleared");
+    }
+
+    #[test]
+    fn skills_validation_cap_and_cross_owner_reject() {
+        let runner = ExtensionRunner::new();
+        let mut bad_name = skill_reg("alpha", "bad name!");
+        assert!(runner.register_skill(bad_name.clone()).is_err());
+        bad_name.name = "ok".into();
+        bad_name.description = "  ".into();
+        assert!(runner.register_skill(bad_name).is_err());
+        let mut empty_body = skill_reg("alpha", "ok2");
+        empty_body.body = String::new();
+        assert!(runner.register_skill(empty_body).is_err());
+
+        runner.register_skill(skill_reg("alpha", "shared")).unwrap();
+        let err = runner
+            .register_skill(skill_reg("beta", "shared"))
+            .expect_err("cross-owner name is rejected");
+        assert!(
+            err.to_string().contains("alpha"),
+            "error names the incumbent owner: {err}"
+        );
+
+        for i in 0..codesmith_agent::extension::MAX_REGISTERED_SKILLS - 1 {
+            runner
+                .register_skill(skill_reg("filler", &format!("s{i}")))
+                .unwrap();
+        }
+        assert!(
+            runner
+                .register_skill(skill_reg("filler", "overflow"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn skills_flush_at_bind_core() {
+        struct SkillExt;
+        #[async_trait::async_trait]
+        impl Extension for SkillExt {
+            fn metadata(&self) -> &ExtensionMetadata {
+                static M: ExtensionMetadata = ExtensionMetadata::new("skill-ext");
+                &M
+            }
+            async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+                api.register_skill(codesmith_agent::extension::SkillRegistration {
+                    owner: "skill-ext".to_string(),
+                    name: "inline-skill".to_string(),
+                    description: "registered inline".to_string(),
+                    body: "Do the thing.".to_string(),
+                    when_to_use: Some("the thing comes up".to_string()),
+                })?;
+                Ok(())
+            }
+        }
+        let runner = ExtensionRunner::new();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        rt.block_on(runner.load(&SkillExt)).expect("load");
+        // Two-phase: pending until bind_core flushes.
+        assert!(runner.registered_skills().is_empty());
+        runner.bind_core(Arc::new(Ctx { generation: 1 }));
+        let snapshot = runner.registered_skills();
+        assert_eq!(snapshot.len(), 1, "flushed at bind_core");
+        assert_eq!(snapshot[0].name, "inline-skill");
+        assert_eq!(
+            snapshot[0].when_to_use.as_deref(),
+            Some("the thing comes up")
         );
     }
 

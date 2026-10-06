@@ -155,6 +155,7 @@ Transform mutable fields (one handler's rewrite is immediately visible to the ne
 | `message(msg) / send(msg)` | Command output (display / feed the agent) |
 | `register_provider(spec)` | Register a provider alias (see below) |
 | `register_prompt_section(id, text)` | Append a named section to the base system prompt (see below) |
+| `register_skill(spec)` | Contribute an in-memory skill to the session catalogue (see below) |
 | `register_message_projection(key, init, fold)` | Register a session-log fold the host maintains (see below) |
 | `projection_state(key)` | Read this mod's projection state (inside hooks/tools) |
 
@@ -171,6 +172,29 @@ id must match `[a-zA-Z0-9_-]`, non-empty text (a violation fails the
 mod's **load**). An explicit `before-agent-start` whole-prompt replacement
 by any handler still wins over sections. Reload clears the generation's
 sections.
+
+### Contributing a skill (route B)
+
+```rhai
+register_skill(#{
+    name: "commit-helper",
+    description: "Write well-scoped commit messages",
+    body: "# Steps\n1. Read the diff.\n2. Draft the message.",
+    when_to_use: "the user asks for a commit",
+});
+```
+
+Registered skills are in-memory catalogue entries (no `SKILL.md` on disk):
+they appear in the system-prompt `## Skills` block, in `/skills` and the
+command palette, and `load_skill` resolves them by name — attributed to
+the mod (`mod: <mod-id>`) instead of a file path. The filesystem catalogue
+wins on a name collision (the registration is skipped with a warning in
+`/skills`); a name already registered by a *different* mod fails the
+mod's **load** (the error names the incumbent). Limits: ≤16 skills,
+name must match `[a-zA-Z0-9_-]` (1-64 chars), non-empty description and
+body. Registered skills carry no `paths`, so they never match the
+conditional (working-set) skills block, and sub-agent sessions render no
+skills catalogue at all. Reload clears the generation's registrations.
 
 ### Registering a message projection (session log folds)
 

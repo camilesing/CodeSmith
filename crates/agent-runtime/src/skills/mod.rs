@@ -66,12 +66,22 @@ pub fn claude_global_skills_dir() -> Option<PathBuf> {
 
 /// Where a skill definition originated. File-system skills are local
 /// `SKILL.md` files, bundled skills are CodeSmith-provided definitions
-/// materialized on disk, and MCP skills describe remote MCP prompts.
+/// materialized on disk, MCP skills describe remote MCP prompts, and
+/// extension skills are mod-contributed in-memory registrations (no
+/// `SKILL.md` — [`ExtensionApi::register_skill`]).
+///
+/// [`ExtensionApi::register_skill`]: codesmith_agent::extension::ExtensionApi::register_skill
+///
+/// Known limitations of extension skills: no `paths`, so they never match
+/// the conditional (working-set) skills block; no companion files; and
+/// sub-agent sessions don't render a skills catalogue at all, so they see
+/// them only if the host snapshots them into the sub-agent's tool context.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SkillSource {
     FileSystem,
     Bundled,
     Mcp { server: String, prompt: String },
+    Extension { owner: String },
 }
 
 /// Parsed representation of a SKILL.md definition.
@@ -526,6 +536,28 @@ impl SkillRegistry {
         &self.warnings
     }
 
+    /// Merge mod-registered skills into a discovered registry. First-wins:
+    /// an on-disk skill (or an earlier registration) keeps the name and the
+    /// skipped registration produces a warning (surfaces via `/skills`),
+    /// mirroring [`discover_in_workspace`]'s directory precedence. Call at
+    /// every catalogue render point so the listing and `load_skill` agree.
+    pub fn merge_registered(&mut self, registered: &[Skill]) {
+        for skill in registered {
+            if self.skills.iter().any(|s| s.name == skill.name) {
+                let owner = match &skill.loaded_from {
+                    SkillSource::Extension { owner } => owner.clone(),
+                    _ => "unknown".to_string(),
+                };
+                self.warnings.push(format!(
+                    "registered skill `{}` (mod `{owner}`) skipped: a skill with that name already exists",
+                    skill.name
+                ));
+                continue;
+            }
+            self.skills.push(skill.clone());
+        }
+    }
+
     /// Check whether any skills were loaded.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -929,6 +961,52 @@ pub fn render_available_skills_context(skills_dir: &Path) -> Option<String> {
     render_skills_block(&registry)
 }
 
+/// Convert mod-registered skills ([`ExtensionApi::register_skill`]) into
+/// catalogue [`Skill`]s. In-memory: empty path, no companion files,
+/// `SkillSource::Extension` carries the owning mod for attribution.
+///
+/// [`ExtensionApi::register_skill`]: codesmith_agent::extension::ExtensionApi::register_skill
+#[must_use]
+pub fn skills_from_registrations(
+    registered: &[codesmith_agent::extension::SkillRegistration],
+) -> Vec<Skill> {
+    registered
+        .iter()
+        .map(|r| {
+            let mut skill =
+                Skill::with_defaults(r.name.clone(), r.description.clone(), r.body.clone());
+            skill.when_to_use = r.when_to_use.clone();
+            skill.loaded_from = SkillSource::Extension {
+                owner: r.owner.clone(),
+            };
+            skill
+        })
+        .collect()
+}
+
+/// [`render_available_skills_context_for_workspace`] with mod-registered
+/// skills merged in. The filesystem decision keeps its existing two-step
+/// shape (workspace set first, configured install dir as fallback);
+/// registered skills are appended to whichever registry won, so a mod's
+/// contribution never suppresses the configured install dir. A
+/// registered-only catalogue renders too (the filesystem set being empty
+/// is not a reason to hide a mod's contribution).
+#[must_use]
+pub fn render_available_skills_context_with_registered(
+    workspace: &Path,
+    skills_dir: Option<&Path>,
+    registered: &[codesmith_agent::extension::SkillRegistration],
+) -> Option<String> {
+    let mut registry = discover_in_workspace(workspace);
+    if render_skills_block(&registry).is_none()
+        && let Some(dir) = skills_dir
+    {
+        registry = SkillRegistry::discover(dir);
+    }
+    registry.merge_registered(&skills_from_registrations(registered));
+    render_skills_block(&registry)
+}
+
 fn render_skills_block(registry: &SkillRegistry) -> Option<String> {
     let visible = registry.visible_list();
     if visible.is_empty() {
@@ -961,39 +1039,29 @@ instructions when using a specific skill.\n\n",
         } else {
             format!(" paths: {}.", skill.paths.join(", "))
         };
+        // Attribution suffix: on-disk skills point at their `SKILL.md`
+        // (use the real path captured at discovery — the directory name
+        // can differ from the frontmatter `name` for community installs);
+        // mod-registered skills have no file, so attribute the mod.
+        let source = match &skill.loaded_from {
+            SkillSource::Extension { owner } => format!("mod: {owner}"),
+            _ => format!("file: {}", skill.path.display()),
+        };
         let line = if description.is_empty() {
             match usage {
                 Some(usage) if !usage.is_empty() => format!(
-                    "- {}: use when {}{} (file: {})\n",
-                    skill.name,
-                    usage,
-                    paths,
-                    skill.path.display()
+                    "- {}: use when {}{} ({})\n",
+                    skill.name, usage, paths, source
                 ),
-                _ => format!(
-                    "- {}:{} (file: {})\n",
-                    skill.name,
-                    paths,
-                    skill.path.display()
-                ),
+                _ => format!("- {}:{} ({})\n", skill.name, paths, source),
             }
         } else {
             match usage {
                 Some(usage) if !usage.is_empty() => format!(
-                    "- {}: {} Use when {}{} (file: {})\n",
-                    skill.name,
-                    description,
-                    usage,
-                    paths,
-                    skill.path.display()
+                    "- {}: {} Use when {}{} ({})\n",
+                    skill.name, description, usage, paths, source
                 ),
-                _ => format!(
-                    "- {}: {}{} (file: {})\n",
-                    skill.name,
-                    description,
-                    paths,
-                    skill.path.display()
-                ),
+                _ => format!("- {}: {}{} ({})\n", skill.name, description, paths, source),
             }
         };
 
@@ -1090,6 +1158,108 @@ mod tests {
         let skill_dir = tmpdir.path().join("skills").join(skill_name);
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(skill_dir.join("SKILL.md"), skill_content).unwrap();
+    }
+
+    fn registered(owner: &str, name: &str) -> codesmith_agent::extension::SkillRegistration {
+        codesmith_agent::extension::SkillRegistration {
+            owner: owner.to_string(),
+            name: name.to_string(),
+            description: "From a mod".to_string(),
+            body: "# Mod skill\nDo the mod thing.".to_string(),
+            when_to_use: Some("mod context appears".to_string()),
+        }
+    }
+
+    #[test]
+    fn merge_registered_appends_and_filesystem_wins() {
+        let tmpdir = TempDir::new().unwrap();
+        create_skill_dir(
+            &tmpdir,
+            "shared-name",
+            "---\nname: shared-name\ndescription: On disk\n---\nBody",
+        );
+        let mut registry = super::discover_for_workspace_and_dir_with_home(
+            tmpdir.path(),
+            &tmpdir.path().join("skills"),
+            None, // no home dir: discovery sees only the workspace set
+        );
+        assert_eq!(registry.len(), 1);
+
+        let skills = super::skills_from_registrations(&[
+            registered("alpha", "shared-name"),
+            registered("beta", "mod-only"),
+        ]);
+        registry.merge_registered(&skills);
+
+        assert_eq!(registry.len(), 2, "filesystem winner + mod-only appended");
+        assert_eq!(registry.get("shared-name").unwrap().description, "On disk");
+        let modded = registry.get("mod-only").expect("mod skill present");
+        assert_eq!(
+            modded.loaded_from,
+            super::SkillSource::Extension {
+                owner: "beta".to_string()
+            }
+        );
+        assert!(
+            registry
+                .warnings()
+                .iter()
+                .any(|w| w.contains("shared-name") && w.contains("alpha")),
+            "collision warning names skill + owner: {:?}",
+            registry.warnings()
+        );
+    }
+
+    #[test]
+    fn render_with_registered_shows_mod_attribution() {
+        let tmpdir = TempDir::new().unwrap();
+        // Empty filesystem catalogue: a registered-only set still renders.
+        let rendered = super::render_available_skills_context_with_registered(
+            tmpdir.path(),
+            Some(&tmpdir.path().join("skills")),
+            &[registered("alpha", "mod-skill")],
+        )
+        .expect("registered-only catalogue renders");
+        assert!(rendered.contains("- mod-skill: From a mod"), "{rendered}");
+        assert!(rendered.contains("(mod: alpha)"), "{rendered}");
+        assert!(
+            !rendered.contains("(mod: alpha) (file:"),
+            "no dangling file suffix for mod skills"
+        );
+        // Registered skill is loadable through the merged registry shape
+        // the load_skill tool uses.
+        let mut registry = super::discover_for_workspace_and_dir_with_home(
+            tmpdir.path(),
+            &tmpdir.path().join("skills"),
+            None,
+        );
+        registry.merge_registered(&super::skills_from_registrations(&[registered(
+            "alpha",
+            "mod-skill",
+        )]));
+        let skill = registry.get("mod-skill").expect("loadable");
+        assert!(skill.body.contains("mod thing"));
+    }
+
+    #[test]
+    fn render_with_registered_keeps_directory_fallback() {
+        let tmpdir = TempDir::new().unwrap();
+        // Workspace set empty; the configured install dir holds the only
+        // filesystem skill — the pre-existing two-step fallback shape.
+        create_skill_dir(
+            &tmpdir,
+            "installed",
+            "---\nname: installed\ndescription: Installed\n---\nBody",
+        );
+        let rendered = super::render_available_skills_context_with_registered(
+            tmpdir.path(),
+            Some(&tmpdir.path().join("skills")),
+            &[registered("alpha", "mod-skill")],
+        )
+        .expect("renders from fallback dir");
+        assert!(rendered.contains("installed"), "{rendered}");
+        assert!(rendered.contains("mod-skill"), "{rendered}");
+        assert!(rendered.contains("(mod: alpha)"), "{rendered}");
     }
 
     #[test]

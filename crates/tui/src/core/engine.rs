@@ -988,6 +988,10 @@ pub fn reload_extension_runtime(
     runner.clear_providers();
     // Route B — prompt sections are generation-scoped like providers.
     runner.clear_prompt_sections();
+    // Route B — registered skills are generation-scoped the same way; the
+    // next catalogue render (prompt refresh) picks up the new generation's
+    // set.
+    runner.clear_skills();
     // Session log folds — same generation scoping; the hub turns dirty and
     // the engine refolds from the live transcript at the next turn start
     // (after the new generation re-registers).
@@ -1124,13 +1128,11 @@ pub fn build_engine(
         show_thinking: config.show_thinking,
         is_simple: config.is_simple,
         personality: config.personality,
-        skills_block: crate::skills::render_available_skills_context_for_workspace(
+        skills_block: crate::skills::render_available_skills_context_with_registered(
             &config.workspace,
-        )
-        .or_else(|| {
-            Some(config.skills_dir.as_path())
-                .and_then(crate::skills::render_available_skills_context)
-        }),
+            Some(config.skills_dir.as_path()),
+            &extension_runner.registered_skills(),
+        ),
     }
     .runtime();
     let system_prompt =

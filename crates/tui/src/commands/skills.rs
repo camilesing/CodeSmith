@@ -13,8 +13,18 @@ use crate::tui::history::HistoryCell;
 
 use super::CommandResult;
 
+/// Discovery for every `/skills` + `/skill` surface: filesystem catalogue
+/// plus mod-registered skills (route B) merged with first-wins precedence,
+/// so the list, the activation path, and the not-found hint all agree with
+/// the system-prompt catalogue.
 fn discover_visible_skills(app: &App) -> SkillRegistry {
-    crate::skills::discover_for_workspace_and_dir(&app.workspace, &app.skills_dir)
+    let mut registry =
+        crate::skills::discover_for_workspace_and_dir(&app.workspace, &app.skills_dir);
+    if let Some(runner) = &app.extension_runner {
+        let registered = crate::skills::skills_from_registrations(&runner.registered_skills());
+        registry.merge_registered(&registered);
+    }
+    registry
 }
 
 fn render_skill_warnings(registry: &SkillRegistry) -> String {

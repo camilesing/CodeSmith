@@ -2837,6 +2837,17 @@ impl Engine {
             .await;
     }
 
+    /// Mod-registered skills (route B) from the bound extension runner.
+    /// Empty for embeds/tests without a runner. Snapshot-per-use: the
+    /// catalogue render reads the live set, reload-clears take effect at
+    /// the next refresh (same generation scoping as prompt sections).
+    fn registered_skills_snapshot(&self) -> Vec<codesmith_agent::extension::SkillRegistration> {
+        self.extension_runner
+            .as_ref()
+            .map(|runner| runner.registered_skills())
+            .unwrap_or_default()
+    }
+
     /// Refresh the system prompt based on current mode and context.
     pub fn refresh_system_prompt(&mut self, mode: AppMode) {
         let (user_memory_block, knowledge_prompt_block) = if self.config.kod_enabled {
@@ -2872,13 +2883,11 @@ impl Engine {
             show_thinking: self.config.show_thinking,
             is_simple: self.config.is_simple,
             personality: self.config.personality,
-            skills_block: crate::skills::render_available_skills_context_for_workspace(
+            skills_block: crate::skills::render_available_skills_context_with_registered(
                 &self.config.workspace,
-            )
-            .or_else(|| {
-                Some(self.config.skills_dir.as_path())
-                    .and_then(crate::skills::render_available_skills_context)
-            }),
+                Some(self.config.skills_dir.as_path()),
+                &self.registered_skills_snapshot(),
+            ),
         }
         .runtime();
         let base = prompts::effective_prompt_bundle_for_mode_with_runtime_context_and_approval(

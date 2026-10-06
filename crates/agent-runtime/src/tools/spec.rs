@@ -227,6 +227,12 @@ pub struct ToolContext {
     /// short-circuit on `None` rather than fall back to a workspace-local
     /// default.
     pub memory_path: Option<PathBuf>,
+    /// Mod-registered skills (route B), snapshotted from the extension
+    /// runner at context build. `load_skill` merges these into the
+    /// filesystem catalogue so a listed mod skill is loadable by name.
+    /// Empty for sub-agent contexts and embeds (they render no skills
+    /// catalogue; see `skills::SkillSource` known limitations).
+    pub registered_skills: Vec<crate::skills::Skill>,
     /// Path to the KoD memory directory. `None` when Knowledge On Demand
     /// is disabled — tools that need directory-based memory should
     /// short-circuit on `None`.
@@ -315,6 +321,7 @@ impl ToolContext {
             search_provider: crate::config_types::SearchProvider::default(),
             search_api_key: None,
             workshop_vars: None,
+            registered_skills: Vec::new(),
         }
     }
 
@@ -362,6 +369,7 @@ impl ToolContext {
             search_provider: crate::config_types::SearchProvider::default(),
             search_api_key: None,
             workshop_vars: None,
+            registered_skills: Vec::new(),
         }
     }
 
@@ -409,6 +417,7 @@ impl ToolContext {
             search_provider: crate::config_types::SearchProvider::default(),
             search_api_key: None,
             workshop_vars: None,
+            registered_skills: Vec::new(),
         }
     }
 
@@ -416,6 +425,15 @@ impl ToolContext {
     #[must_use]
     pub fn with_network_policy(mut self, policy: NetworkPolicyDecider) -> Self {
         self.network_policy = Some(policy);
+        self
+    }
+
+    /// Attach mod-registered skills (route B) so `load_skill` resolves
+    /// them by name. Takes the converted catalogue form — see
+    /// [`crate::skills::skills_from_registrations`].
+    #[must_use]
+    pub fn with_registered_skills(mut self, skills: Vec<crate::skills::Skill>) -> Self {
+        self.registered_skills = skills;
         self
     }
 

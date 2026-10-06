@@ -153,6 +153,18 @@ impl ExtensionApi for StubExtensionApi {
         Ok(())
     }
 
+    fn register_skill(
+        &self,
+        skill: codesmith_agent::extension::SkillRegistration,
+    ) -> Result<(), ExtensionError> {
+        assert_live(&self.generation, self.captured_gen)?;
+        // Validate now so a bad skill fails its load (fail loud), not at
+        // first catalogue render.
+        crate::runner::validate_skill_registration(&skill.name, &skill.description, &skill.body)?;
+        self.pending.lock().unwrap().skills.push(skill);
+        Ok(())
+    }
+
     fn register_message_projection(
         &self,
         owner: String,
@@ -191,6 +203,9 @@ pub struct RealExtensionApi {
     /// Route B — prompt-section contributions (same storage the runner
     /// reads at assembly; shared so late registrations are honored).
     prompt_sections: Arc<Mutex<Vec<(String, String)>>>,
+    /// Route B (skills) — registered skills (same storage the runner
+    /// snapshots for catalogue render / `load_skill`).
+    skills: Arc<Mutex<Vec<codesmith_agent::extension::SkillRegistration>>>,
     /// Session log folds — the runner's shared hub (same `Arc` the engine
     /// folds through).
     message_projection_hub: codesmith_agent::extension::MessageProjectionHubArc,
@@ -207,6 +222,7 @@ impl RealExtensionApi {
         providers: Arc<Mutex<Vec<ProviderRegistration>>>,
         shared: SharedProviderRegistry,
         prompt_sections: Arc<Mutex<Vec<(String, String)>>>,
+        skills: Arc<Mutex<Vec<codesmith_agent::extension::SkillRegistration>>>,
         message_projection_hub: codesmith_agent::extension::MessageProjectionHubArc,
     ) -> Self {
         let captured_gen = generation.load(Ordering::Acquire);
@@ -219,6 +235,7 @@ impl RealExtensionApi {
             providers,
             shared,
             prompt_sections,
+            skills,
             message_projection_hub,
         }
     }
@@ -298,6 +315,30 @@ impl ExtensionApi for RealExtensionApi {
             slot.1 = text;
         } else {
             sections.push((id, text));
+        }
+        Ok(())
+    }
+
+    fn register_skill(
+        &self,
+        skill: codesmith_agent::extension::SkillRegistration,
+    ) -> Result<(), ExtensionError> {
+        assert_live(&self.generation, self.captured_gen)?;
+        crate::runner::validate_skill_registration(&skill.name, &skill.description, &skill.body)?;
+        let mut skills = self.skills.lock().unwrap();
+        if let Some(existing) = skills
+            .iter()
+            .find(|s| s.name == skill.name && s.owner != skill.owner)
+        {
+            return Err(ExtensionError::Config(format!(
+                "skill {:?} already registered by mod {:?}",
+                skill.name, existing.owner
+            )));
+        }
+        if let Some(slot) = skills.iter_mut().find(|s| s.name == skill.name) {
+            *slot = skill;
+        } else {
+            skills.push(skill);
         }
         Ok(())
     }
