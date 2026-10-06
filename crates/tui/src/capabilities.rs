@@ -12,8 +12,12 @@
 //!
 //! Known limitations: the file is read once per process (restart picks up
 //! edits); mods enable/consent state intentionally stays in
-//! `ModStateStore` — that is lifecycle, not selection, and converging it
-//! is a later slice. Legacy config.toml
+//! `ModStateStore` — that is lifecycle, not selection, and the separation
+//! is final (settled 2026-10-06): merging would need format-preserving
+//! AST edits plus reconcile-on-write, and neither the consent record
+//! (activation that survives disable) nor the opposite failure semantics
+//! (malformed mod state degrades to not-loaded; a malformed manifest
+//! fails loud) has a natural single-file expression. Legacy config.toml
 //! `[tools].overrides <name> = { type = "disabled" }` still parses
 //! (external config contract) and is honored — unioned into the effective
 //! set with a deprecation warning; its enforcement point moved to the
