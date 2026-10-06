@@ -588,6 +588,7 @@ mod tests {
         let input = serde_json::json!({"text":"world"});
         bridge.on_tool_start("wire-1", "echo", &input).await;
         let result = Ok(ToolResult {
+            canonical: None,
             content: "echo:world".to_string(),
             success: true,
             metadata: None,
@@ -671,6 +672,7 @@ mod tests {
             .on_tool_end(
                 "echo",
                 &Ok(ToolResult {
+                    canonical: None,
                     content: "echo:hi".to_string(),
                     success: true,
                     metadata: None,
@@ -862,6 +864,7 @@ mod tests {
                     .unwrap_or("")
                     .to_string();
                 Ok(ToolResult {
+                    canonical: None,
                     content: format!("echo:{text}"),
                     success: true,
                     metadata: None,

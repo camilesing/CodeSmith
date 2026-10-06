@@ -768,6 +768,7 @@ pub fn execute_tool_search(
     });
 
     Ok(ToolResult {
+        canonical: None,
         content: serde_json::to_string(&payload).unwrap_or_else(|_| payload.to_string()),
         success: true,
         metadata: Some(json!({
@@ -833,6 +834,7 @@ pub async fn execute_code_execution_tool(
     });
 
     Ok(ToolResult {
+        canonical: None,
         content: serde_json::to_string(&payload).unwrap_or_else(|_| payload.to_string()),
         success,
         metadata: Some(payload),

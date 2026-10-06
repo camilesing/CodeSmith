@@ -498,6 +498,7 @@ impl ToolSpec for ExecShellTool {
             execpolicy_decision = Some(decision.clone());
             if let ExecPolicyDecision::Deny(reason) = decision {
                 return Ok(ToolResult {
+                    canonical: None,
                     content: format!("BLOCKED: {reason}"),
                     success: false,
                     metadata: Some(json!({
@@ -522,6 +523,7 @@ impl ToolSpec for ExecShellTool {
                         format!("\nSuggestions: {}", safety.suggestions.join("; "))
                     };
                     return Ok(ToolResult {
+                        canonical: None,
                         content: format!(
                             "BLOCKED: This command was blocked for safety reasons.\n\nReasons: {reasons}{suggestions}"
                         ),
@@ -710,6 +712,7 @@ impl ToolSpec for ExecShellTool {
             attach_cargo_failure_summary(&mut metadata, command, &result);
 
             let mut tool_result = ToolResult {
+                canonical: None,
                 content: output,
                 success: result.status == ShellStatus::Completed,
                 metadata: Some(metadata),
@@ -951,6 +954,7 @@ impl ToolSpec for ExecShellTool {
                 attach_cargo_failure_summary(&mut metadata, command, &result);
 
                 let mut tool_result = ToolResult {
+                    canonical: None,
                     content: output,
                     success: result.status == ShellStatus::Completed
                         || result.status == ShellStatus::Running,
@@ -1082,6 +1086,7 @@ fn build_shell_delta_tool_result(delta: ShellDeltaResult, context: &ToolContext)
     attach_cargo_failure_summary(&mut metadata, &delta.command, &result);
 
     let mut tool_result = ToolResult {
+        canonical: None,
         content: output,
         success: matches!(result.status, ShellStatus::Completed | ShellStatus::Running),
         metadata: Some(metadata),
@@ -1319,6 +1324,7 @@ impl ToolSpec for ShellCancelTool {
                 .map_err(|err| ToolError::execution_failed(err.to_string()))?;
             if results.is_empty() {
                 return Ok(ToolResult {
+                    canonical: None,
                     content: "No running background commands.".to_string(),
                     success: true,
                     metadata: Some(json!({
@@ -1334,6 +1340,7 @@ impl ToolSpec for ShellCancelTool {
                 .filter_map(|result| result.task_id.clone())
                 .collect::<Vec<_>>();
             return Ok(ToolResult {
+                canonical: None,
                 content: format!(
                     "Canceled {} background command{}: {}",
                     task_ids.len(),
@@ -1358,6 +1365,7 @@ impl ToolSpec for ShellCancelTool {
             .clone()
             .unwrap_or_else(|| task_id.to_string());
         Ok(ToolResult {
+            canonical: None,
             content: format!("Canceled background command: {task_id}"),
             success: true,
             metadata: Some(json!({

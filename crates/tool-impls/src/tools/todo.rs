@@ -122,7 +122,8 @@ impl ToolSpec for TodoAddTool {
             item.status.as_str(),
             result
         ))
-        .with_metadata(checklist_metadata(&snapshot, self.tool_name)))
+        .with_metadata(checklist_metadata(&snapshot, self.tool_name))
+        .with_canonical(serde_json::to_value(&snapshot).unwrap_or_else(|_| serde_json::json!({}))))
     }
 }
 
@@ -216,7 +217,10 @@ impl ToolSpec for TodoUpdateTool {
                 item.status.as_str(),
                 result
             ))
-            .with_metadata(checklist_metadata(&snapshot, self.tool_name))),
+            .with_metadata(checklist_metadata(&snapshot, self.tool_name))
+            .with_canonical(
+                serde_json::to_value(&snapshot).unwrap_or_else(|_| serde_json::json!({})),
+            )),
             None => Ok(ToolResult::error(format!("Todo id {id} not found"))),
         }
     }
@@ -380,7 +384,8 @@ impl ToolSpec for TodoWriteTool {
             snapshot.completion_pct,
             result
         ))
-        .with_metadata(checklist_metadata(&snapshot, self.tool_name)))
+        .with_metadata(checklist_metadata(&snapshot, self.tool_name))
+        .with_canonical(serde_json::to_value(&snapshot).unwrap_or_else(|_| serde_json::json!({}))))
     }
 }
 

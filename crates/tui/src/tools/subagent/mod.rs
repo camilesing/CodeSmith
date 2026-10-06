@@ -2035,7 +2035,12 @@ impl ToolSpec for AgentOpenTool {
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let spawn_tool = AgentSpawnTool::new(self.manager.clone(), self.runtime.clone());
         let result = spawn_tool.execute(input, context).await?;
-        let snapshot: SubAgentResult = serde_json::from_str(&result.content).map_err(|e| {
+        // Program caller of a sibling tool: take the canonical value instead
+        // of re-parsing the rendered content.
+        let canonical = result.canonical.clone().ok_or_else(|| {
+            ToolError::execution_failed("agent_open projection failed: no canonical value")
+        })?;
+        let snapshot: SubAgentResult = serde_json::from_value(canonical).map_err(|e| {
             ToolError::execution_failed(format!("agent_open projection failed: {e}"))
         })?;
         let projection = subagent_session_projection(snapshot, false, context).await;

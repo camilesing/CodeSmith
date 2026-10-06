@@ -133,6 +133,7 @@ mod tests {
                 .unwrap_or("")
                 .to_string();
             Ok(ToolResult {
+                canonical: None,
                 content: format!("{}|{text}", context.workspace.display()),
                 success: true,
                 metadata: None,

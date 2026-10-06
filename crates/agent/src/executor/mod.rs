@@ -439,6 +439,7 @@ mod tests {
                     .unwrap_or("")
                     .to_string();
                 Ok(ToolResult {
+                    canonical: None,
                     content: format!("echo:{text}"),
                     success: true,
                     metadata: None,

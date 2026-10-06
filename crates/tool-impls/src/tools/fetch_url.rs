@@ -290,6 +290,9 @@ impl ToolSpec for FetchUrlTool {
                     ToolError::execution_failed(format!("failed to serialize response: {e}"))
                 })?,
                 success: false,
+                canonical: Some(serde_json::to_value(&response).map_err(|e| {
+                    ToolError::execution_failed(format!("failed to serialize response: {e}"))
+                })?),
                 metadata: None,
             });
         }

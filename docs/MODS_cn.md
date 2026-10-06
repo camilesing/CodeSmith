@@ -105,7 +105,7 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 | `before-provider-request` | `messages`（JSON 值） |
 | `after-provider-response` | `response`（JSON 值） |
 | `tool-call` | `id`、`name`、`input`（JSON 值） |
-| `tool-result` | `id`、`name`、`content`、`success`、`is_error` |
+| `tool-result` | `id`、`name`、`content`、`success`、`is_error`、`canonical`（JSON 值，工具未产出时为 `()`） |
 | `turn-start` / `turn-end` | `turn_id`；`turn-end` 另有 `reason` |
 | `assistant-stream` | `text`（单个增量块；随文本 delta 逐次触发，仅观察） |
 | `tool-execution-update` | `id`、`name`、`message` |
@@ -114,6 +114,8 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 | `agent-start` / `before-provider-headers` / `tool-execution-start` / `tool-execution-end` / `agent-end` / `agent-settled` / `session-before-switch` / `session-before-fork` / `session-shutdown` / `session-before-compact` / `session-compact` | （仅 `kind`） |
 
 未接线事件（宿主 seam 尚未兑现）订阅不触发：`tool-execution-update`、`resources-discover`、`session-before-fork`。
+
+`tool-result` 载荷携带 canonical/rendered 分离：`content` 是模型可见的渲染文本；`canonical` 是同一结果的结构化机器可读值（`ToolResult::json` 的值，或工具经 `with_canonical` 附加的值）。请读 `canonical` 而不是重新解析 `content`——散文式渲染的结果（如 `todo_add` 在 JSON 前拼了一句提示）根本无法解析。canonical 仅存活于当前进程：转录持久化的是渲染后的 `content`。
 
 `tools-change` 在回合边界触发：当编译后的模型可见目录相对上一主回合发生变化（模式切换、mod 重载、选择变更）。首回合只建立基线、不触发；sub-agent 工具集不会触发；没有读取当前目录的 API——事件只携带差量。`/tools` 按来源（builtin / plugin / extension / mcp）分组展示当前基线。
 
@@ -138,7 +140,7 @@ Transform 可变字段（一个 handler 的改写对后续 handler 立即可见�
 - `input`：`text`
 - `before-agent-start`：`system_prompt`、`inject_message`（字符串=设置，`()`=清除，缺省=保持）
 - `before-provider-request`：`messages`
-- `tool-result`：`content`、`success`、`is_error`
+- `tool-result`：`content`、`success`、`is_error`、`canonical`（JSON 值——结果的机器可读值；仅改写 `content` 不动它，可显式替换）
 
 ### 能力面函数
 

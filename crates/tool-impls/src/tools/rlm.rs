@@ -558,8 +558,10 @@ async fn load_source(
     let result = FetchUrlTool
         .execute(json!({"url": url, "format": "raw"}), context)
         .await?;
-    let parsed: Value = serde_json::from_str(&result.content).map_err(|e| {
-        ToolError::execution_failed(format!("rlm_open: fetch_url returned invalid JSON: {e}"))
+    // Program caller of a sibling tool: take the canonical value instead of
+    // re-parsing the rendered content.
+    let parsed: Value = result.canonical.clone().ok_or_else(|| {
+        ToolError::execution_failed("rlm_open: fetch_url returned no canonical value")
     })?;
     let body = parsed
         .get("content")
