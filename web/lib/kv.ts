@@ -3,6 +3,7 @@
  * Falls back to in-memory cache for `next dev` outside of `wrangler dev`.
  */
 import type { CuratedDispatch } from "./types";
+import { isDispatchPayload } from "./types";
 
 const MEM = new Map<string, string>();
 
@@ -56,14 +57,7 @@ export async function getDispatch(): Promise<CuratedDispatch | null> {
     const parsed: unknown = JSON.parse(raw);
     // Shape guard: valid JSON of the wrong shape must degrade to "absent",
     // not render a broken dispatch.
-    if (
-      typeof parsed !== "object" ||
-      parsed === null ||
-      typeof (parsed as CuratedDispatch).headline !== "string" ||
-      typeof (parsed as CuratedDispatch).summary !== "string" ||
-      !Array.isArray((parsed as CuratedDispatch).highlights) ||
-      !Array.isArray((parsed as CuratedDispatch).movers)
-    ) {
+    if (!isDispatchPayload(parsed)) {
       return null;
     }
     return parsed as CuratedDispatch;

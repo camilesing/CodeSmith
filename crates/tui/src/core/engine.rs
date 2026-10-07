@@ -1087,8 +1087,10 @@ pub fn build_engine(
     };
     let api_key_env_only_recovery = env_only_api_key_recovery_hint(api_config);
     // Record/replay (dev plan capability 1+2): wrap the resolved client in
-    // a JSONL recorder when CODESMITH_RECORD_LLM is set, so any model call
-    // (full request envelope + streamed response) is replayable keyless.
+    // a JSONL recorder when CODESMITH_RECORD_LLM is set, so main-turn model
+    // calls (full request envelope + streamed response) are replayable
+    // keyless. Known gap: a cross-provider `[utility_model]` client is
+    // built separately in `resolve_utility_llm` and is not recorded.
     let llm_client = llm_client.map(wrap_with_recording);
 
     let mut session = Session::new(

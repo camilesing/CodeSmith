@@ -18,9 +18,11 @@
 //!
 //! Hosts wrap their resolved client: `CODESMITH_RECORD_LLM=<path>` (the
 //! TUI's `build_engine` honors it; opening the file fails loud). The
-//! wrapper sits at the client boundary, so utility-model, seam, and
-//! compaction calls are recorded too — the log covers **every** model
-//! request, which is the point.
+//! wrapper sits at the client boundary, so every call served through the
+//! wrapped handle — including utility/seam/compaction calls that share it
+//! — is recorded. Known gap: a cross-provider `[utility_model]` client is
+//! built separately and remains unwrapped, so recordings of sessions that
+//! exercise it are incomplete.
 //!
 //! # Known limitations
 //!
@@ -33,6 +35,10 @@
 //! - Recording is best-effort *for the session*: on the first write error
 //!   it stops recording and logs loudly (target `codesmith_llm_record`);
 //!   the live turn is never failed by the recorder.
+//! - Writes are synchronous `fs` IO under a mutex, executed from inside
+//!   the async call path (opt-in dev mode, one small line per model call —
+//!   accepted tradeoff; a dedicated writer thread would change failure
+//!   semantics for little gain).
 //! - The file records full model I/O — never commit fixtures containing
 //!   secrets, and mind privacy when sharing recordings.
 
@@ -189,7 +195,16 @@ impl LlmClient for RecordingClient {
                             }
                             Some((Ok(event), state))
                         }
-                        Some(Err(e)) => Some((Err(e), state)),
+                        Some(Err(e)) => {
+                            // The engine's stream reducer returns on the
+                            // FIRST error and drops the stream — without a
+                            // write here, a disconnect is never recorded at
+                            // all, desyncing strict-FIFO replay. The
+                            // `written` flag keeps a later drain from
+                            // double-writing.
+                            state.write_line();
+                            Some((Err(e), state))
+                        }
                         None => {
                             state.write_line();
                             None
@@ -203,6 +218,40 @@ impl LlmClient for RecordingClient {
 
     fn base_url(&self) -> &str {
         self.inner.base_url()
+    }
+
+    // Forwarded, unrecorded: the recorder is a decorator and must not
+    // disable capabilities the inner client supports. Before these
+    // forwards, the trait defaults took over under CODESMITH_RECORD_LLM —
+    // silently breaking FIM completions (the TUI hands this same handle to
+    // the FIM tool) and translation with errors that named the real
+    // provider. Recording these calls can come later; the JSONL contract
+    // only covers create_message/create_message_stream.
+    fn fim_completion(
+        &self,
+        model: String,
+        prompt: String,
+        suffix: String,
+        max_tokens: u32,
+    ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + '_>> {
+        self.inner.fim_completion(model, prompt, suffix, max_tokens)
+    }
+
+    fn translate(
+        &self,
+        text: String,
+        model: String,
+        target_language: String,
+    ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + '_>> {
+        self.inner.translate(text, model, target_language)
+    }
+
+    fn health_check(&self) -> Pin<Box<dyn Future<Output = Result<bool>> + Send + '_>> {
+        self.inner.health_check()
+    }
+
+    fn list_models(&self) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + '_>> {
+        self.inner.list_models()
     }
 }
 
@@ -273,7 +322,8 @@ impl TeeState {
             base_url: self.envelope.base_url.clone(),
             request: self.envelope.request.clone(),
             outcome: RecordOutcome::Stream {
-                response_events: self.events.clone(),
+                // `events` is never read after this one-shot write.
+                response_events: std::mem::take(&mut self.events),
             },
         };
         write_line_shared(&self.writer, &self.path, &line);
@@ -593,5 +643,168 @@ mod tests {
             }
             other => panic!("expected stream outcome, got {other:?}"),
         }
+    }
+
+    // ── RecordingClient tee behavior ─────────────────────────────────────
+
+    fn temp_recording_path(tag: &str) -> std::path::PathBuf {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        std::env::temp_dir().join(format!(
+            "codesmith-record-replay-test-{}-{tag}-{n}.jsonl",
+            std::process::id()
+        ))
+    }
+
+    fn minimal_request() -> MessageRequest {
+        MessageRequest {
+            model: "test-model".into(),
+            messages: vec![crate::models::Message {
+                role: "user".into(),
+                content: vec![ContentBlock::Text {
+                    text: "hi".into(),
+                    cache_control: None,
+                }],
+            }],
+            max_tokens: 16,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: None,
+            stream: Some(true),
+            temperature: None,
+            top_p: None,
+        }
+    }
+
+    /// A mock whose stream yields two events and then errors — the
+    /// disconnect shape the engine drops the stream on.
+    struct DisconnectingMock;
+
+    impl LlmClient for DisconnectingMock {
+        fn provider_name(&self) -> &'static str {
+            "mock"
+        }
+
+        fn model(&self) -> &str {
+            "test-model"
+        }
+
+        fn create_message(
+            &self,
+            _request: MessageRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<MessageResponse>> + Send + '_>> {
+            Box::pin(async { Err(anyhow!("not used in this test")) })
+        }
+
+        fn create_message_stream(
+            &self,
+            _request: MessageRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<StreamEventBox>> + Send + '_>> {
+            Box::pin(async {
+                let events = vec![
+                    Ok(StreamEvent::ContentBlockStart {
+                        index: 0,
+                        content_block: ContentBlockStart::Text {
+                            text: String::new(),
+                        },
+                    }),
+                    Ok(StreamEvent::ContentBlockDelta {
+                        index: 0,
+                        delta: Delta::TextDelta {
+                            text: "partial".into(),
+                        },
+                    }),
+                    Err(anyhow!("connection reset")),
+                ];
+                Ok(Box::pin(futures_util::stream::iter(events)) as StreamEventBox)
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_error_records_partial_events() {
+        // The engine's reducer returns on the first error and drops the
+        // stream; without a write on the error path the call was never
+        // recorded, desyncing strict-FIFO replay.
+        let path = temp_recording_path("err");
+        let recorder = RecordingClient::new(Arc::new(DisconnectingMock), &path).expect("open");
+        let handle: LlmClientHandle = Arc::new(recorder);
+        let mut stream = handle
+            .create_message_stream(minimal_request())
+            .await
+            .expect("stream starts");
+
+        let mut saw_error = false;
+        while let Some(event) = futures_util::StreamExt::next(&mut stream).await {
+            if event.is_err() {
+                saw_error = true;
+                break; // drop the stream, exactly like the reducer does
+            }
+        }
+        assert!(saw_error);
+        drop(stream);
+
+        let text = std::fs::read_to_string(&path).expect("recording file written");
+        let line: RecordLine =
+            serde_json::from_str(text.lines().next().expect("one line")).expect("valid JSONL");
+        match line.outcome {
+            RecordOutcome::Stream { response_events } => assert_eq!(
+                response_events.len(),
+                2,
+                "the events seen before the error are recorded partial"
+            ),
+            other => panic!("expected stream outcome, got {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn fim_completion_is_forwarded_not_stubbed() {
+        // The recorder is a decorator: before the forwards, the trait
+        // default answered with a hard error naming the real provider.
+        struct FimMock;
+
+        impl LlmClient for FimMock {
+            fn provider_name(&self) -> &'static str {
+                "mock"
+            }
+            fn model(&self) -> &str {
+                "test-model"
+            }
+            fn create_message(
+                &self,
+                _request: MessageRequest,
+            ) -> Pin<Box<dyn Future<Output = Result<MessageResponse>> + Send + '_>> {
+                Box::pin(async { Err(anyhow!("not used in this test")) })
+            }
+            fn create_message_stream(
+                &self,
+                _request: MessageRequest,
+            ) -> Pin<Box<dyn Future<Output = Result<StreamEventBox>> + Send + '_>> {
+                Box::pin(async { Err(anyhow!("not used in this test")) })
+            }
+            fn fim_completion(
+                &self,
+                _model: String,
+                prompt: String,
+                _suffix: String,
+                _max_tokens: u32,
+            ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + '_>> {
+                Box::pin(async move { Ok(format!("fim:{prompt}")) })
+            }
+        }
+
+        let path = temp_recording_path("fim");
+        let recorder = RecordingClient::new(Arc::new(FimMock), &path).expect("open");
+        let handle: LlmClientHandle = Arc::new(recorder);
+        let out = handle
+            .fim_completion("test-model".into(), "prefix".into(), "suffix".into(), 32)
+            .await
+            .expect("forwarded to the inner client");
+        assert_eq!(out, "fim:prefix");
+        let _ = std::fs::remove_file(&path);
     }
 }

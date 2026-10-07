@@ -94,19 +94,23 @@ pub(super) fn build_tool_context_for(
     // durable store). Fresh per turn — absent captures keep prior behavior.
     ctx = ctx.with_session_cwd(std::sync::Arc::new(std::sync::Mutex::new(None)));
 
-    // Hand the user-memory path to tools so the model-callable
-    // `remember` tool can append entries (#489). `None` when the
-    // feature is disabled — tools short-circuit on that.
     // Route B — mod-registered skills ride the context so `load_skill`
     // resolves them by name (same merge the catalogue render applies).
     // Sub-agent contexts build separately and stay empty (documented in
-    // `SkillSource`'s known limitations).
+    // `SkillSource`'s known limitations). The configured install directory
+    // rides along for the same reason: the catalogue falls back to it when
+    // the workspace set is empty, and `load_skill` must resolve what the
+    // catalogue lists.
     if let Some(runner) = host.extension_runner.as_ref() {
         ctx = ctx.with_registered_skills(crate::skills::skills_from_registrations(
             &runner.registered_skills(),
         ));
     }
+    ctx = ctx.with_skills_dir(Some(config.skills_dir.clone()));
 
+    // Hand the user-memory path to tools so the model-callable
+    // `remember` tool can append entries (#489). `None` when the
+    // feature is disabled — tools short-circuit on that.
     if config.memory_enabled {
         ctx.memory_path = Some(config.memory_path.clone());
     }

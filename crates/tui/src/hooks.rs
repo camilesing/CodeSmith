@@ -907,7 +907,14 @@ impl HookExecutor {
         let cmd = hook.command.clone();
         let env = env_vars.clone();
         let wd = working_dir.clone();
-        let timeout_secs = hook.timeout_secs;
+        // Same resolution as the sync path: the executor-level
+        // `default_timeout_secs` override must bound background hooks too —
+        // binding `hook.timeout_secs` directly killed them at the serde
+        // default while foreground hooks ran to the configured override.
+        let timeout_secs = self
+            .config
+            .default_timeout_secs
+            .unwrap_or(hook.timeout_secs);
 
         // Spawn in a detached thread
         std::thread::spawn(move || {

@@ -1276,10 +1276,16 @@ fn extract_into(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) ->
         // Trust markers are never extractable from a tarball: a community
         // bundle shipping `.trusted` would otherwise arrive pre-trusted.
         // Trust is granted by the local install flow, not by the artifact.
+        // The name comparison is case-insensitive: the read-back side is an
+        // OS path lookup (`dir.join(".trusted").is_file()`), and APFS/NTFS
+        // resolve `.TRUSTED` to it — a case-sensitive skip here would let a
+        // variant through to exactly that (matching the SKILL.md handling
+        // elsewhere in this file).
         if entry_type.is_file()
-            && stripped_path
-                .file_name()
-                .is_some_and(|name| name == TRUSTED_MARKER)
+            && stripped_path.file_name().is_some_and(|name| {
+                name.as_encoded_bytes()
+                    .eq_ignore_ascii_case(TRUSTED_MARKER.as_bytes())
+            })
         {
             continue;
         }
@@ -1670,6 +1676,16 @@ mod tests {
             builder
                 .append_data(&mut header, ".trusted", std::io::Cursor::new(marker))
                 .expect("append .trusted");
+            // Case variant: the read-back side is a path lookup, and
+            // APFS/NTFS resolve `.TRUSTED` to `.trusted` — the filter must
+            // catch it, not just the exact spelling.
+            let mut header = tar::Header::new_gnu();
+            header.set_size(0);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, ".TRUSTED", std::io::Cursor::new(marker))
+                .expect("append .TRUSTED");
             builder.into_inner().expect("finalize tar");
             encoder.finish().expect("finalize gz");
         }
@@ -1689,6 +1705,10 @@ mod tests {
         assert!(
             !dest.join(TRUSTED_MARKER).exists(),
             "a tarball-shipped .trusted marker must never be extracted"
+        );
+        assert!(
+            !dest.join(".TRUSTED").exists(),
+            "case-variant trust markers must be filtered too"
         );
     }
 

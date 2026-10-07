@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { InstallCodeBlock } from "@/components/install-code-block";
 import { Seal } from "@/components/seal";
-import { GITHUB_REPO } from "../lib/constants";
+import { GITHUB_REPO_URL } from "@/lib/constants";
 
 export async function generateMetadata({ params }: { params: Promise<{ locale: string }> }) {
   const { locale } = await params;
@@ -20,28 +20,28 @@ const stepsEn = [
     title: "Find a thread to pull",
     cn: "选择切入点",
     body: "Browse open issues. The good first issue label means the path is clear. The help wanted label means the path is open but contested. Anything else, ask first.",
-    cta: { label: "Open issues", href: `https://github.com/${GITHUB_REPO}/issues` },
+    cta: { label: "Open issues", href: `${GITHUB_REPO_URL}/issues` },
   },
   {
     n: "②",
     title: "Fork and branch",
     cn: "复刻并分支",
     body: "git clone your fork, then git checkout -b feat/short-name or fix/short-name. We use conventional commits — feat:, fix:, docs:, refactor:, test:, chore:.",
-    cta: { label: "Repo on GitHub", href: `https://github.com/${GITHUB_REPO}` },
+    cta: { label: "Repo on GitHub", href: `${GITHUB_REPO_URL}` },
   },
   {
     n: "③",
     title: "Match the local checks",
     cn: "本地检查",
     body: "CI runs cargo fmt --all -- --check, cargo clippy --workspace --all-targets --all-features --locked -- -D warnings, and cargo test --workspace --all-features --locked. Run them before you push.",
-    cta: { label: "Contributing guide", href: `https://github.com/${GITHUB_REPO}/blob/main/CONTRIBUTING.md` },
+    cta: { label: "Contributing guide", href: `${GITHUB_REPO_URL}/blob/main/CONTRIBUTING.md` },
   },
   {
     n: "④",
     title: "Open the PR",
     cn: "提交合并",
     body: "PR description should explain WHY, not WHAT (the diff covers what). Link the issue. The maintainer reviews everything personally — response times vary.",
-    cta: { label: "PR template", href: `https://github.com/${GITHUB_REPO}/blob/main/.github/PULL_REQUEST_TEMPLATE.md` },
+    cta: { label: "PR template", href: `${GITHUB_REPO_URL}/blob/main/.github/PULL_REQUEST_TEMPLATE.md` },
   },
 ];
 
@@ -51,28 +51,28 @@ const stepsZh = [
     title: "选择切入点",
     cn: "Find a thread",
     body: "浏览 open issues。good first issue 标签意味着路径清晰。help wanted 标签意味着路径开放但有争议。其他情况请先询问。",
-    cta: { label: "查看议题", href: `https://github.com/${GITHUB_REPO}/issues` },
+    cta: { label: "查看议题", href: `${GITHUB_REPO_URL}/issues` },
   },
   {
     n: "②",
     title: "复刻并创建分支",
     cn: "Fork & branch",
     body: "git clone 你的复刻，然后 git checkout -b feat/short-name 或 fix/short-name。使用约定式提交——feat:、fix:、docs:、refactor:、test:、chore:。",
-    cta: { label: "GitHub 仓库", href: `https://github.com/${GITHUB_REPO}` },
+    cta: { label: "GitHub 仓库", href: `${GITHUB_REPO_URL}` },
   },
   {
     n: "③",
     title: "通过本地检查",
     cn: "Local checks",
     body: "CI 运行 cargo fmt --all -- --check、cargo clippy --workspace --all-targets --all-features --locked -- -D warnings 和 cargo test --workspace --all-features --locked。推送前请先运行。",
-    cta: { label: "贡献指南", href: `https://github.com/${GITHUB_REPO}/blob/main/CONTRIBUTING.md` },
+    cta: { label: "贡献指南", href: `${GITHUB_REPO_URL}/blob/main/CONTRIBUTING.md` },
   },
   {
     n: "④",
     title: "提交 PR",
     cn: "Open the PR",
     body: "PR 描述应说明「为什么」而非「做了什么」（diff 已经展示了做了什么）。关联相关 issue。维护者亲自审查所有 PR——响应时间视情况而定。",
-    cta: { label: "PR 模板", href: `https://github.com/${GITHUB_REPO}/blob/main/.github/PULL_REQUEST_TEMPLATE.md` },
+    cta: { label: "PR 模板", href: `${GITHUB_REPO_URL}/blob/main/.github/PULL_REQUEST_TEMPLATE.md` },
   },
 ];
 
@@ -155,7 +155,7 @@ export default async function ContributePage({ params }: { params: Promise<{ loc
               <p className="mt-4 text-ink-soft leading-[1.9] tracking-wide">
                 100:1 提示词把 DeepSeek V4 Pro 的缓存注意力、工具调用与子智能体，凝结为一个可审查的小补丁——而不是一堆点子。
               </p>
-              <Link href={`https://github.com/${GITHUB_REPO}/blob/main/docs/RECURSIVE_SELF_IMPROVEMENT.md`} className="inline-block mt-5 font-mono text-[0.72rem] uppercase tracking-wider text-indigo hover:underline">
+              <Link href={`${GITHUB_REPO_URL}/blob/main/docs/RECURSIVE_SELF_IMPROVEMENT.md`} className="inline-block mt-5 font-mono text-[0.72rem] uppercase tracking-wider text-indigo hover:underline">
                 完整多语言提示词 →
               </Link>
             </div>
@@ -173,7 +173,7 @@ export default async function ContributePage({ params }: { params: Promise<{ loc
               </h2>
               <p className="text-ink-soft mt-4 leading-[1.9] tracking-wide">
                 简而言之：做实事，别折腾元数据。完整的
-                <Link href={`https://github.com/${GITHUB_REPO}/blob/main/CODE_OF_CONDUCT.md`} className="body-link mx-1">行为准则</Link>
+                <Link href={`${GITHUB_REPO_URL}/blob/main/CODE_OF_CONDUCT.md`} className="body-link mx-1">行为准则</Link>
                 是详细版。
               </p>
             </div>
@@ -276,7 +276,7 @@ gh pr create --fill`}
               <p className="mt-4 text-ink-soft leading-relaxed">
                 The 100-to-1 prompt turns DeepSeek V4 Pro's cached attention, tool use, and sub-agents into one small, reviewable patch — not a pile of ideas.
               </p>
-              <Link href={`https://github.com/${GITHUB_REPO}/blob/main/docs/RECURSIVE_SELF_IMPROVEMENT.md`} className="inline-block mt-5 font-mono text-[0.72rem] uppercase tracking-wider text-indigo hover:underline">
+              <Link href={`${GITHUB_REPO_URL}/blob/main/docs/RECURSIVE_SELF_IMPROVEMENT.md`} className="inline-block mt-5 font-mono text-[0.72rem] uppercase tracking-wider text-indigo hover:underline">
                 Full multilingual prompt →
               </Link>
             </div>
@@ -293,7 +293,7 @@ gh pr create --fill`}
               </h2>
               <p className="text-ink-soft mt-4 leading-relaxed">
                 Short version: build the thing, don't polish the meta. The full
-                <Link href={`https://github.com/${GITHUB_REPO}/blob/main/CODE_OF_CONDUCT.md`} className="body-link mx-1">Code of Conduct</Link>
+                <Link href={`${GITHUB_REPO_URL}/blob/main/CODE_OF_CONDUCT.md`} className="body-link mx-1">Code of Conduct</Link>
                 is the long version.
               </p>
             </div>

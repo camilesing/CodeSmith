@@ -2,19 +2,6 @@ import { fetchFeed, fetchRepoStats } from "@/lib/github";
 import { curate } from "@/lib/llm";
 import { putDispatchWithKv } from "@/lib/kv";
 import {
-
-/// Parse LLM output as JSON with a descriptive error — raw JSON.parse
-/// failure messages ("Unexpected token …") carry no task context.
-function parseLlmJson(content: string): unknown {
-  try {
-    return JSON.parse(content);
-  } catch (err) {
-    throw new Error(
-      `LLM returned invalid JSON: ${err instanceof Error ? err.message : String(err)}`
-    );
-  }
-}
-
   agentChat,
   TRIAGE_PROMPT,
   PR_REVIEW_PROMPT,
@@ -27,6 +14,18 @@ function parseLlmJson(content: string): unknown {
   type AgentDraft,
   type LlmEnv,
 } from "@/lib/community-agent";
+
+/** Parse LLM output as JSON with a descriptive error — raw JSON.parse
+ *  failure messages ("Unexpected token …") carry no task context. */
+function parseLlmJson(content: string): unknown {
+  try {
+    return JSON.parse(content);
+  } catch (err) {
+    throw new Error(
+      `LLM returned invalid JSON: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
 
 export interface AgentEnv {
   CURATED_KV?: {

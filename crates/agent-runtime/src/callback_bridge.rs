@@ -295,15 +295,20 @@ impl Callback for CallbackBridge {
             // Route B (streaming observation) — forward assistant TEXT
             // deltas as `AssistantStream` (observe-only), independent of
             // the UI channel below. Handlers run inline with the stream —
-            // cheap by contract. Thinking deltas stay UI-only for now.
+            // "cheap by contract" — but nothing enforces that contract, so
+            // bound the emit: a slow (script) extension must not delay this
+            // delta's first UI paint, let alone stall the stream. The
+            // outcome is already discarded (Observe mode); a timeout
+            // preserves delta ordering where a fire-and-forget spawn would
+            // not. Thinking deltas stay UI-only for now.
             if let (Some(runner), StreamDelta::Text { content, .. }) = (&extension, delta) {
-                let _ = runner
-                    .emit(codesmith_agent::extension::ExtensionEvent::AssistantStream(
+                let emit =
+                    runner.emit(codesmith_agent::extension::ExtensionEvent::AssistantStream(
                         codesmith_agent::extension::AssistantStreamEvent {
                             text: content.clone(),
                         },
-                    ))
-                    .await;
+                    ));
+                let _ = tokio::time::timeout(std::time::Duration::from_millis(250), emit).await;
             }
             let Some(tx) = tx.as_ref() else {
                 return;

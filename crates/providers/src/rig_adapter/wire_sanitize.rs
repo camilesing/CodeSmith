@@ -13,10 +13,12 @@
 //! popped as the prompt — for every rig-backed provider. It enforces,
 //! idempotently and only on broken shapes:
 //!
-//! 1. every `ToolResult` answers a `ToolCall` present in some assistant
-//!    message (orphans are dropped, whole messages included);
-//! 2. a call id is answered at most once (duplicates keep the latest result —
-//!    the freshest information);
+//! 1. every `ToolResult` answers a `ToolCall` **earlier** in the list
+//!    (orphans and results preceding their call are dropped, whole
+//!    messages included);
+//! 2. a call id is answered at most once and requests at most once
+//!    (duplicate results *and* duplicate calls keep the latest occurrence —
+//!    the freshest information — so a reused id never travels twice);
 //! 3. every `ToolCall` has a later result somewhere in the list (dangling
 //!    calls are stripped; a message left without content is dropped);
 //! 4. adjacent same-role messages merge — except user batches containing tool
@@ -58,19 +60,33 @@ const CONTINUATION_NOTE: &str = "[context note] Earlier conversation context is 
 /// the enforced invariants. Runs to a fixpoint — dropping or merging items
 /// can expose further violations in degenerate histories — bounded by
 /// [`FIXPOINT_PASSES`]: every changed pass strictly shrinks the list or its
-/// items, so the bound is only a guard against logic slips, not part of the
-/// convergence argument.
+/// items (placeholder items are exempt from the empty filter, so a second
+/// pass over a placeholder is a no-op and the bound is only a guard against
+/// logic slips, not part of the convergence argument).
 pub(crate) fn sanitize_wire_messages(messages: &mut Vec<RigMessage>) {
+    let mut changed_any = false;
     for _ in 0..FIXPOINT_PASSES {
         let mut changed = repair_tool_pairs(messages);
         changed |= normalize_empty_content(messages);
         changed |= merge_adjacent_same_role(messages);
+        changed_any |= changed;
         if !changed {
             break;
         }
     }
     // Insert-only, no interplay with the fixpoint passes above.
-    ensure_user_text_message(messages);
+    let note_inserted = ensure_user_text_message(messages);
+    if changed_any || note_inserted {
+        // Aggregate counts only — never content. When the model suddenly
+        // behaves differently after an emergency trim or `/undo`, this line
+        // is the evidence that its history was rewritten on the wire.
+        tracing::warn!(
+            target: "codesmith_wire_sanitize",
+            messages = messages.len(),
+            note_inserted,
+            "rewrote outbound history to satisfy wire invariants"
+        );
+    }
 }
 
 /// Upper bound on fixpoint iterations. Each changing pass removes at least one
@@ -115,10 +131,21 @@ fn user_has_tool_result(msg: &RigMessage) -> bool {
 }
 
 /// Enforce pairing invariants 1–3. In-place via take-and-restore so the
-/// per-request sweep never deep-copies tool-result payloads.
+/// per-request sweep never deep-copies tool-result payloads. Liveness is
+/// position-aware: a result lives only when its call sits at a strictly
+/// earlier index, a call only when a (surviving) result sits strictly later
+/// — a transcript mutation that reorders a pair (`/undo`, an extension
+/// transform) must not ship the invalid ordering to a strict provider.
 fn repair_tool_pairs(messages: &mut Vec<RigMessage>) -> bool {
+    use std::collections::HashMap;
+
     let mut changed = false;
-    let call_ids: HashSet<String> = messages.iter().flat_map(call_ids_of).collect();
+    let mut first_call_pos: HashMap<String, usize> = HashMap::new();
+    for (idx, msg) in messages.iter().enumerate() {
+        for id in call_ids_of(msg) {
+            first_call_pos.entry(id).or_insert(idx);
+        }
+    }
 
     // Reverse walk over user messages: drop orphan results, keep only the
     // latest result per call id, and drop user messages left with no items.
@@ -137,7 +164,12 @@ fn repair_tool_pairs(messages: &mut Vec<RigMessage>) -> bool {
             .into_iter()
             .filter(|item| match item {
                 UserContent::ToolResult(result) => {
-                    call_ids.contains(&result.id) && seen_results.insert(result.id.clone())
+                    let live = first_call_pos
+                        .get(&result.id)
+                        .is_some_and(|&call_idx| call_idx < idx)
+                        && seen_results.insert(result.id.clone());
+                    changed |= !live;
+                    live
                 }
                 _ => true,
             })
@@ -151,10 +183,17 @@ fn repair_tool_pairs(messages: &mut Vec<RigMessage>) -> bool {
         }
     }
 
-    // Drop dangling calls: a `ToolCall` without any later result is stripped
-    // (OpenAI tool APIs only make sense with their result present); an
-    // assistant message left with no items is dropped.
-    let result_ids: HashSet<String> = messages.iter().flat_map(result_ids_of).collect();
+    // Drop dangling calls: a `ToolCall` without a surviving later result is
+    // stripped (OpenAI tool APIs only make sense with their result present);
+    // duplicate calls keep the latest occurrence, mirroring the result
+    // dedupe; an assistant message left with no items is dropped.
+    let mut last_result_pos: HashMap<String, usize> = HashMap::new();
+    for (idx, msg) in messages.iter().enumerate() {
+        for id in result_ids_of(msg) {
+            last_result_pos.insert(id, idx); // overwrite: keep the max
+        }
+    }
+    let mut seen_calls: HashSet<String> = HashSet::new();
     for idx in (0..messages.len()).rev() {
         let RigMessage::Assistant { content, .. } = &mut messages[idx] else {
             continue;
@@ -169,7 +208,10 @@ fn repair_tool_pairs(messages: &mut Vec<RigMessage>) -> bool {
             .into_iter()
             .filter(|item| match item {
                 AssistantContent::ToolCall(call) => {
-                    let live = result_ids.contains(&call.id);
+                    let live = last_result_pos
+                        .get(&call.id)
+                        .is_some_and(|&result_idx| result_idx > idx)
+                        && seen_calls.insert(call.id.clone());
                     changed |= !live;
                     live
                 }
@@ -187,14 +229,21 @@ fn repair_tool_pairs(messages: &mut Vec<RigMessage>) -> bool {
     changed
 }
 
-/// Enforce content-shape invariants 5–6.
+/// Enforce content-shape invariants 5–6. The exact `" "` placeholder is
+/// exempt from the empty-text filter so it survives every pass — without
+/// the exemption it was dropped and re-inserted each round, and any
+/// history tripping invariant 5 burned all [`FIXPOINT_PASSES`] without
+/// converging.
 fn normalize_empty_content(messages: &mut [RigMessage]) -> bool {
+    /// The exact placeholder text is stable under this pass.
+    const PLACEHOLDER: &str = " ";
+
     let mut changed = false;
     for msg in messages.iter_mut() {
         match msg {
             RigMessage::System { content } => {
-                if content.trim().is_empty() {
-                    *content = " ".to_string();
+                if content.trim().is_empty() && content.as_str() != PLACEHOLDER {
+                    *content = PLACEHOLDER.to_string();
                     changed = true;
                 }
             }
@@ -209,7 +258,9 @@ fn normalize_empty_content(messages: &mut [RigMessage]) -> bool {
                 let mut kept: Vec<AssistantContent> = items
                     .into_iter()
                     .filter(|item| match item {
-                        AssistantContent::Text(text) => !text.text.trim().is_empty(),
+                        AssistantContent::Text(text) => {
+                            text.text.as_str() == PLACEHOLDER || !text.text.trim().is_empty()
+                        }
                         _ => true,
                     })
                     .collect();
@@ -218,7 +269,7 @@ fn normalize_empty_content(messages: &mut [RigMessage]) -> bool {
                 // at best noise and at worst a strict-provider 400; a
                 // one-space placeholder keeps the message valid.
                 if kept.is_empty() {
-                    kept.push(AssistantContent::text(" ".to_string()));
+                    kept.push(AssistantContent::text(PLACEHOLDER.to_string()));
                     changed = true;
                 }
                 *content = OneOrMany::many(kept).expect("assistant content is non-empty");
@@ -232,7 +283,8 @@ fn normalize_empty_content(messages: &mut [RigMessage]) -> bool {
                 for item in items {
                     match item {
                         UserContent::Text(text) => {
-                            let keep = !text.text.trim().is_empty();
+                            let keep =
+                                text.text.as_str() == PLACEHOLDER || !text.text.trim().is_empty();
                             changed |= !keep;
                             if keep {
                                 kept.push(UserContent::Text(text));
@@ -255,7 +307,7 @@ fn normalize_empty_content(messages: &mut [RigMessage]) -> bool {
                     }
                 }
                 if kept.is_empty() {
-                    kept.push(UserContent::text(" ".to_string()));
+                    kept.push(UserContent::text(PLACEHOLDER.to_string()));
                     changed = true;
                 }
                 *content = OneOrMany::many(kept).expect("kept user content is non-empty");
@@ -678,5 +730,62 @@ mod tests {
         let mut sanitized = messages.clone();
         sanitize_wire_messages(&mut sanitized);
         assert_eq!(sanitized, messages);
+    }
+
+    #[test]
+    fn duplicate_calls_keep_only_the_latest() {
+        // Two assistant messages reusing one call id with a single result is
+        // the duplicate-id shape strict OpenAI-compatible endpoints reject.
+        let mut messages = vec![
+            user_text("go"),
+            assistant_text_and_call("first attempt", "call_1"),
+            assistant_text_and_call("retry", "call_1"),
+            user_result("call_1", "ok"),
+        ];
+        sanitize_wire_messages(&mut messages);
+        // Adjacent assistants merge (invariant 4); the point here is that
+        // exactly ONE call id survives — the superseded call is stripped
+        // while its text legally stays.
+        let calls: Vec<String> = messages.iter().flat_map(call_ids_of).collect();
+        assert_eq!(calls, vec!["call_1".to_string()]);
+        assert_eq!(
+            assistant_texts(&messages[1]),
+            vec!["first attempt", "retry"]
+        );
+    }
+
+    #[test]
+    fn result_preceding_its_call_is_dropped_on_both_sides() {
+        // A /undo-style mutation can leave a result before its call;
+        // presence-only liveness would ship the invalid ordering and eat
+        // the strict-provider 400 this module exists to prevent.
+        let mut messages = vec![
+            user_text("go"),
+            user_result("call_1", "early"),
+            assistant_call("call_1"),
+            user_text("after"),
+        ];
+        sanitize_wire_messages(&mut messages);
+        assert!(
+            messages.iter().all(|m| call_ids_of(m).is_empty()),
+            "the late call must be stripped"
+        );
+        assert!(
+            messages.iter().all(|m| result_ids_of(m).is_empty()),
+            "the early result must be dropped as an orphan"
+        );
+    }
+
+    #[test]
+    fn placeholder_survives_a_second_pass() {
+        // The one-space placeholder is stable under the empty filter; a
+        // history that trips invariant 5 must converge (a single pass over
+        // the sanitized output reports no further change).
+        let mut messages = vec![assistant_text(""), user_text("hello")];
+        sanitize_wire_messages(&mut messages);
+        assert_eq!(assistant_texts(&messages[0]), vec![" "]);
+        let once = messages.clone();
+        sanitize_wire_messages(&mut messages);
+        assert_eq!(messages, once, "second pass is a no-op");
     }
 }

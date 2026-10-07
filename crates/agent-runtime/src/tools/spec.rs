@@ -233,6 +233,12 @@ pub struct ToolContext {
     /// Empty for sub-agent contexts and embeds (they render no skills
     /// catalogue; see `skills::SkillSource` known limitations).
     pub registered_skills: Vec<crate::skills::Skill>,
+    /// Configured skills install directory (`[features] skills_dir`).
+    /// `load_skill` appends it to the workspace discovery set so the tool
+    /// resolves exactly what the system-prompt catalogue lists (the
+    /// catalogue falls back to this directory when the workspace set is
+    /// empty — without it the tool answered "not found" for listed skills).
+    pub skills_dir: Option<PathBuf>,
     /// Path to the KoD memory directory. `None` when Knowledge On Demand
     /// is disabled — tools that need directory-based memory should
     /// short-circuit on `None`.
@@ -322,6 +328,7 @@ impl ToolContext {
             search_api_key: None,
             workshop_vars: None,
             registered_skills: Vec::new(),
+            skills_dir: None,
         }
     }
 
@@ -370,6 +377,7 @@ impl ToolContext {
             search_api_key: None,
             workshop_vars: None,
             registered_skills: Vec::new(),
+            skills_dir: None,
         }
     }
 
@@ -418,6 +426,7 @@ impl ToolContext {
             search_api_key: None,
             workshop_vars: None,
             registered_skills: Vec::new(),
+            skills_dir: None,
         }
     }
 
@@ -434,6 +443,14 @@ impl ToolContext {
     #[must_use]
     pub fn with_registered_skills(mut self, skills: Vec<crate::skills::Skill>) -> Self {
         self.registered_skills = skills;
+        self
+    }
+
+    /// Attach the configured skills install directory so `load_skill`
+    /// walks the same set the system-prompt catalogue lists.
+    #[must_use]
+    pub fn with_skills_dir(mut self, skills_dir: Option<PathBuf>) -> Self {
+        self.skills_dir = skills_dir;
         self
     }
 

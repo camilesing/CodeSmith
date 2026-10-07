@@ -76,6 +76,13 @@ pub fn claude_global_skills_dir() -> Option<PathBuf> {
 /// the conditional (working-set) skills block; no companion files; and
 /// sub-agent sessions don't render a skills catalogue at all, so they see
 /// them only if the host snapshots them into the sub-agent's tool context.
+/// Their shell snippets also always render the "trust this skill with
+/// `/skill trust <name>`" gate: `skill_is_trusted` needs an on-disk
+/// `.trusted` marker beside a real path, and `install::trust` needs an
+/// on-disk `.installed-from` marker — neither can ever exist for an
+/// in-memory registration, so the hint is (safely) a dead end for mod
+/// skills. Fail-closed by design; mod authors should point users at
+/// document-form bodies instead of gated snippets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SkillSource {
     FileSystem,
@@ -831,6 +838,12 @@ pub fn resolve_skills_dir(workspace: &Path) -> PathBuf {
 /// Only directories that exist on disk are returned — callers don't
 /// need to filter further. Returns an empty vec when nothing is
 /// installed (the system-prompt skills block is then suppressed).
+///
+/// When no home directory is resolvable, the `/tmp/codesmith/skills`
+/// install fallback is **skipped**: /tmp is world-writable, and this
+/// candidate set feeds the system-prompt catalogue — a planted
+/// `SKILL.md` there must not reach the prompt. `default_skills_dir`
+/// keeps the fallback (with a warning) for the write/install side.
 #[must_use]
 pub fn skills_directories(workspace: &Path) -> Vec<PathBuf> {
     let home = dirs::home_dir();
@@ -850,8 +863,6 @@ fn skills_directories_with_home(workspace: &Path, home_dir: Option<&Path>) -> Ve
         candidates.push(home.join(".agents").join("skills"));
         candidates.push(home.join(".claude").join("skills"));
         candidates.push(home.join(".codesmith").join("skills"));
-    } else {
-        candidates.push(PathBuf::from("/tmp/codesmith/skills"));
     }
     existing_skill_dirs(candidates)
 }
@@ -1153,6 +1164,19 @@ pub fn show(skills_dir: &Path, name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use tempfile::TempDir;
+
+    #[test]
+    fn discovery_candidates_skip_world_writable_tmp_when_home_is_unresolvable() {
+        // The candidate set feeds the system-prompt catalogue: with no home
+        // directory, /tmp/codesmith/skills must NOT appear — any local user
+        // could plant a SKILL.md (and a .trusted marker) there.
+        let workspace = std::path::Path::new("/nonexistent-workspace-for-test");
+        let dirs = super::skills_directories_with_home(workspace, None);
+        assert!(
+            !dirs.iter().any(|d| d.starts_with("/tmp")),
+            "/tmp must never feed discovery, got {dirs:?}"
+        );
+    }
 
     fn create_skill_dir(tmpdir: &TempDir, skill_name: &str, skill_content: &str) {
         let skill_dir = tmpdir.path().join("skills").join(skill_name);

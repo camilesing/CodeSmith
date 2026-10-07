@@ -1,4 +1,6 @@
 import type { CuratedDispatch, FeedItem, RepoStats } from "./types";
+import { isDispatchPayload } from "./types";
+import { GITHUB_REPO, GITHUB_REPO_URL } from "./constants";
 // Thin wrapper over an OpenAI-compatible chat endpoint (DeepSeek by default).
 
 const FALLBACK_BASE = "https://api.deepseek.com";
@@ -101,7 +103,7 @@ export async function curate(
   }));
 
   const userPayload = {
-    repo: "camilesing/CodeSmith",
+    repo: GITHUB_REPO,
     stats: {
       stars: stats.stars,
       forks: stats.forks,
@@ -122,29 +124,22 @@ export async function curate(
     dsEnv
   );
 
-  let parsed: Omit<CuratedDispatch, "generatedAt">;
+  let parsed: unknown;
   try {
-    parsed = JSON.parse(raw) as Omit<CuratedDispatch, "generatedAt">;
+    parsed = JSON.parse(raw);
   } catch (err) {
     throw new Error(
       `LLM did not return valid JSON for the dispatch (json_mode=on): ${err instanceof Error ? err.message : String(err)}`
     );
   }
-  if (
-    typeof parsed !== "object" ||
-    parsed === null ||
-    typeof parsed.headline !== "string" ||
-    typeof parsed.summary !== "string" ||
-    !Array.isArray(parsed.highlights) ||
-    !Array.isArray(parsed.movers)
-  ) {
+  if (!isDispatchPayload(parsed)) {
     throw new Error("LLM dispatch payload has the wrong shape (headline/summary/highlights/movers)");
   }
   return { ...sanitizeDispatch(parsed), generatedAt: new Date().toISOString() };
 }
 
 const SAFE_HREF_RE = /^https:\/\/(?:github\.com|api\.github\.com|codesmith\.net|crates\.io|www\.npmjs\.com|docs\.rs)\//;
-const FALLBACK_HREF = "https://github.com/camilesing/CodeSmith";
+const FALLBACK_HREF = GITHUB_REPO_URL;
 
 function safeHref(u: unknown): string {
   return typeof u === "string" && SAFE_HREF_RE.test(u) ? u : FALLBACK_HREF;

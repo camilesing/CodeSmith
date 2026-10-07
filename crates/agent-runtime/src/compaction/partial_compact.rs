@@ -148,6 +148,15 @@ pub async fn partial_compact(
     cache_summary: bool,
 ) -> anyhow::Result<PartialCompactResult> {
     if messages.is_empty() || request.pivot_index >= messages.len() {
+        // Budget-recovery callers (engine overflow retry) treat the
+        // unchanged result as an attempt; without a log the wasted attempt
+        // is invisible.
+        tracing::warn!(
+            target: "compaction",
+            pivot = request.pivot_index,
+            len = messages.len(),
+            "partial compaction no-op: pivot at or past the end of the message list"
+        );
         return Ok(PartialCompactResult {
             messages: messages.to_vec(),
             summary_prompt: None,
@@ -174,6 +183,15 @@ pub async fn partial_compact(
         };
 
     if to_summarize.is_empty() {
+        // The pair sweep cascaded the pivot to the very end (the tail is
+        // one call/result pair): the From direction has nothing left to
+        // summarize, and the budget-recovery request silently no-ops.
+        tracing::warn!(
+            target: "compaction",
+            pivot,
+            len = messages.len(),
+            "partial compaction no-op: pair sweep left no summarizable messages"
+        );
         return Ok(PartialCompactResult {
             messages: messages.to_vec(),
             summary_prompt: None,
