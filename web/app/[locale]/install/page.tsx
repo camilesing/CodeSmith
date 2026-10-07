@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Seal } from "@/components/seal";
 import { InstallCodeBlock } from "@/components/install-code-block";
 import { InstallBinary } from "@/components/install-binary";
+import { GITHUB_REPO_URL } from "@/lib/constants";
 
 export async function generateMetadata({ params }: { params: Promise<{ locale: string }> }) {
   const { locale } = await params;
@@ -48,7 +49,7 @@ docker run --rm -it \\
   -v "$PWD:/workspace" -w /workspace \\
   ghcr.io/camilesing/codesmith:latest`;
 
-const FROM_SOURCE = `git clone https://github.com/camilesing/CodeSmith
+const FROM_SOURCE = `git clone ${GITHUB_REPO_URL}
 cd codesmith
 cargo build --release --locked
 
@@ -323,14 +324,14 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
                 {isZh ? (
                   <>
                     npm 包装器仍会从{" "}
-                    <code className="inline">github.com/camilesing/CodeSmith/releases</code>{" "}
+                    <code className="inline">{GITHUB_REPO_URL}/releases</code>{" "}
                     下载二进制，国内可能较慢。Cargo + Tuna 完全绕开 GitHub。
                     DeepSeek API（<code className="inline">api.deepseek.com</code>）在国内直连，无需代理。
                   </>
                 ) : (
                   <>
                     The npm wrapper still downloads the binary from{" "}
-                    <code className="inline">github.com/camilesing/CodeSmith/releases</code>, which can
+                    <code className="inline">{GITHUB_REPO_URL}/releases</code>, which can
                     be slow over GFW. Cargo + Tuna routes around GitHub entirely. The DeepSeek API
                     at <code className="inline">api.deepseek.com</code> is reachable from mainland
                     China without a proxy.
@@ -367,6 +368,11 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
                     : "Binary won't run? Pick your architecture above (Intel Macs need macOS · Intel)."
                 }
               />
+              <p className="mt-3 text-sm text-ink-soft leading-relaxed max-w-2xl">
+                {isZh
+                  ? "粘贴片段请用 bash 或 zsh 运行——它依赖 pipefail，POSIX sh 不支持。"
+                  : "Paste the snippet into bash or zsh — it relies on pipefail, which POSIX sh lacks."}
+              </p>
             </div>
 
             {/* Docker */}

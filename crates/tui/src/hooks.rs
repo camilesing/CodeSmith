@@ -953,8 +953,14 @@ impl HookExecutor {
                     Ok(None) => std::thread::sleep(Duration::from_millis(50)),
                     // A wait error must not abandon the child un-reaped —
                     // same kill+reap as the timeout arm (the sync path's
-                    // wait-error arm does this too).
-                    Err(_) => {
+                    // wait-error arm does this too). Unlike the sync path
+                    // there is no HookResult to carry the error, so leave
+                    // a trace — a hook dying this way must stay diagnosable.
+                    Err(err) => {
+                        tracing::warn!(
+                            target: "codesmith::hooks",
+                            "background hook '{cmd}' wait failed: {err}"
+                        );
                         kill_hook_child(&mut child);
                         break;
                     }

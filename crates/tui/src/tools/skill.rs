@@ -122,7 +122,13 @@ impl ToolSpec for LoadSkillTool {
             return Err(ToolError::execution_failed(hint));
         };
 
-        let body = format_skill_body(skill);
+        // Gate shell snippets exactly like the /skill command paths
+        // (commands/skills.rs, commands/review.rs) so the catalogue's
+        // "community skill snippets are disabled until trusted" promise
+        // holds on the tool path too. Fail-closed for mod skills: the
+        // empty in-memory path never carries a `.trusted` marker.
+        let gated_body = crate::skills::preprocess_skill_body_for_activation(skill);
+        let body = format_skill_body_with_body(skill, &gated_body);
         let source = skill.loaded_from.label(&skill.path);
         // `skill_path` stays a real filesystem path (empty for file-less
         // mod skills); the mod label lives in its own `skill_source` key so
@@ -156,7 +162,11 @@ impl ToolSpec for LoadSkillTool {
 /// cross-reference the system-prompt catalogue. Companion-file paths
 /// land at the bottom under a clearly-named heading so the model can
 /// open them with `read_file` if they're relevant to the task.
-fn format_skill_body(skill: &Skill) -> String {
+///
+/// `body` is the (possibly gated — see
+/// `skills::preprocess_skill_body_for_activation`) body to embed; the
+/// bare [`format_skill_body`] formats `skill.body` as-is.
+fn format_skill_body_with_body(skill: &Skill, body: &str) -> String {
     let mut out = String::new();
     out.push_str(&format!("# Skill: {}\n\n", skill.name));
     if !skill.description.trim().is_empty() {
@@ -181,7 +191,7 @@ fn format_skill_body(skill: &Skill) -> String {
     let source = skill.loaded_from.label(&skill.path);
     out.push_str(&format!("Source: `{source}`\n\n"));
     out.push_str("## SKILL.md\n\n");
-    out.push_str(skill.body.trim());
+    out.push_str(body.trim());
     out.push('\n');
 
     let companions = collect_companion_files(skill);
@@ -195,6 +205,13 @@ fn format_skill_body(skill: &Skill) -> String {
         }
     }
     out
+}
+
+/// [`format_skill_body_with_body`] over the skill's raw body — test
+/// convenience (production paths always pass a gated body).
+#[cfg(test)]
+fn format_skill_body(skill: &Skill) -> String {
+    format_skill_body_with_body(skill, &skill.body)
 }
 
 /// List sibling files of `SKILL.md` in the skill's own directory.
@@ -303,6 +320,43 @@ mod tests {
             .expect("fs skill loadable");
         assert!(fs.content.contains("fs body"), "{fs:?}");
         assert!(!fs.content.contains("should lose"), "{fs:?}");
+    }
+
+    #[tokio::test]
+    async fn load_skill_gates_shell_snippets_for_untrusted_sources() {
+        let tmp = tempdir().unwrap();
+        // A mod-registered body carrying a live shell snippet: mod skills
+        // have no `.trusted` marker (empty in-memory path), so the snippet
+        // must render the trust gate — the catalogue footer promises
+        // snippets are "disabled until the skill is trusted" on every load
+        // path, this tool included.
+        let ctx = ToolContext::new(tmp.path()).with_registered_skills(
+            crate::skills::skills_from_registrations(&[mod_registration(
+                "alpha",
+                "snippy",
+                "Before:\n```!\necho pwned\n```\nAfter",
+            )]),
+        );
+
+        let out = LoadSkillTool
+            .execute(json!({"name": "snippy"}), &ctx)
+            .await
+            .expect("mod skill loadable");
+        // The gate text quotes the disabled command by design; what must
+        // NOT survive is the live ```! fenced block itself.
+        assert!(
+            !out.content.contains("```!"),
+            "the fenced shell snippet must not reach the model live: {out:?}"
+        );
+        assert!(
+            out.content.contains("/skill trust snippy"),
+            "gate text must name the trust command: {out:?}"
+        );
+        assert!(
+            out.content
+                .contains("[Skill shell snippet disabled until this skill is trusted"),
+            "gate text must render: {out:?}"
+        );
     }
 
     #[test]

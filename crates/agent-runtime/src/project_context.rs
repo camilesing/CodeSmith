@@ -477,22 +477,23 @@ fn load_project_context_with_parents_and_home(
                 workspace = %workspace.display(),
                 "workspace outside home; skipping the parent-context walk"
             );
-        }
-        let mut current = canon_workspace.parent();
+        } else {
+            let mut current = canon_workspace.parent();
 
-        while let Some(parent) = current {
-            if !parent.starts_with(&canon_home) {
-                break;
-            }
-            let parent_ctx = load_project_context(parent);
-            ctx.warnings.extend(parent_ctx.warnings.iter().cloned());
-            if parent_ctx.has_instructions() {
-                ctx.instructions = parent_ctx.instructions;
-                ctx.source_path = parent_ctx.source_path;
-                break;
-            }
+            while let Some(parent) = current {
+                if !parent.starts_with(&canon_home) {
+                    break;
+                }
+                let parent_ctx = load_project_context(parent);
+                ctx.warnings.extend(parent_ctx.warnings.iter().cloned());
+                if parent_ctx.has_instructions() {
+                    ctx.instructions = parent_ctx.instructions;
+                    ctx.source_path = parent_ctx.source_path;
+                    break;
+                }
 
-            current = parent.parent();
+                current = parent.parent();
+            }
         }
     }
 

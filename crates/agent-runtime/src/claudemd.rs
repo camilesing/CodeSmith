@@ -201,7 +201,8 @@ fn process_memory_file(
     let mut out = String::new();
     // Track ``` / ~~~ fence state so `@include` lines shown inside a code
     // block (documentation examples) are treated as the prose they are.
-    let mut in_fence = false;
+    // `Some(marker)` while inside a fence opened with that marker char.
+    let mut fence: Option<char> = None;
     // `split_inclusive('\n')` keeps the trailing newline so non-directive
     // lines round-trip byte-for-byte; directive lines are dropped and
     // replaced by the included file's expanded text.
@@ -210,21 +211,37 @@ fn process_memory_file(
             Some(b) => (b, "\n"),
             None => (line, ""),
         };
-        // CommonMark fence rules, reduced to what fence tracking needs: a
-        // delimiter line is a run of >=3 marker chars (` or ~) followed by
-        // an info string containing no marker char — so a same-line span
-        // like ```code``` is prose, not a fence, and must not toggle the
-        // state (a single toggle there inverts tracking for the rest of
-        // the file).
+        // CommonMark fence rules, reduced to what fence tracking needs.
+        // Opening: a run of >=3 marker chars (` or ~) followed by an info
+        // string containing no marker char — so a same-line span like
+        // ```code``` is prose, not a fence, and must not toggle the state
+        // (a single toggle there inverts tracking for the rest of the
+        // file). Closing: the SAME marker char as the opening fence and a
+        // bare rest (markers + optional trailing whitespace, no info
+        // string) — a documented nested example like ```sh inside an open
+        // fence is content, not a closer.
         let trimmed = body.trim_start();
-        let fence_delim = |marker: char| {
-            let rest = trimmed.trim_start_matches(marker);
-            trimmed.len() - rest.len() >= 3 && !rest.contains(marker)
-        };
-        if fence_delim('`') || fence_delim('~') {
-            in_fence = !in_fence;
+        let after_marker = |marker: char| trimmed.trim_start_matches(marker);
+        match fence {
+            Some(active) => {
+                let rest = after_marker(active);
+                if trimmed.len() - rest.len() >= 3 && rest.trim().is_empty() {
+                    fence = None;
+                }
+            }
+            None => {
+                for marker in ['`', '~'] {
+                    let rest = after_marker(marker);
+                    if trimmed.len() - rest.len() >= 3 && !rest.contains(marker) {
+                        fence = Some(marker);
+                        break;
+                    }
+                }
+            }
         }
-        if !in_fence && let Some(target) = match_include_directive(body) {
+        if fence.is_none()
+            && let Some(target) = match_include_directive(body)
+        {
             let resolved = resolve_include_target(target, &base);
             if !include_target_permitted(&resolved, tier_root) {
                 tracing::warn!(
@@ -318,9 +335,12 @@ fn load_user_tier(
 /// or a workspace reached through a symlinked ancestor must not end the walk
 /// one level early over a spelling mismatch. When home cannot be
 /// established, or the workspace lives outside it, the walk is skipped
-/// entirely — the fail-safe direction. Include targets for every walked
-/// file are bounded by `workspace` (the tier root), not the file's own
-/// directory.
+/// entirely — the fail-safe direction. Include targets of a walked file
+/// are bounded by the walked directory itself (the tier root), not the
+/// innermost workspace: the walk already trusts that directory enough to
+/// load instructions from it, and bounding at the workspace would drop
+/// legitimate monorepo includes (a root `CLAUDE.md` pulling
+/// `docs/style.md` at the same root).
 fn load_project_tier(
     workspace: &Path,
     home: Option<&Path>,
@@ -366,14 +386,8 @@ fn load_project_tier(
             break;
         }
         if let Some(found) = find_project_file(parent)
-            && let Some(c) = process_memory_file(
-                &found,
-                MemoryTier::Project,
-                workspace,
-                processed,
-                excludes,
-                0,
-            )
+            && let Some(c) =
+                process_memory_file(&found, MemoryTier::Project, parent, processed, excludes, 0)
         {
             return Some(c);
         }
@@ -630,6 +644,74 @@ mod tests {
             merged.contains("INCLUDED_BODY"),
             "the include after a same-line span must still expand"
         );
+    }
+
+    #[test]
+    fn fence_closes_only_on_matching_marker() {
+        // CommonMark: the closing fence uses the same marker as the opening
+        // one — a ``` line inside a ~~~ fence is content, so the @include
+        // shown after it is still fenced prose and must not expand.
+        let tmp = tempdir().unwrap();
+        let ws = tmp.path();
+        write(&ws.join("extra.md"), "INCLUDED_BODY");
+        write(
+            &ws.join("AGENTS.md"),
+            "intro\n~~~\n```\n@include extra.md\n~~~\nafter",
+        );
+
+        let merged = load_all_memory_tiers(ws, None, &[]);
+        assert!(
+            !merged.contains("INCLUDED_BODY"),
+            "an @include inside a ~~~ fence stays inert across a ``` line"
+        );
+        assert!(merged.contains("@include extra.md"));
+    }
+
+    #[test]
+    fn fence_closer_must_be_bare_not_an_info_string() {
+        // CommonMark: a closing fence is markers + optional whitespace; a
+        // fenced example of a shell block (```sh) inside an open fence is
+        // content, so the @include shown after it stays inert.
+        let tmp = tempdir().unwrap();
+        let ws = tmp.path();
+        write(&ws.join("extra.md"), "INCLUDED_BODY");
+        write(
+            &ws.join("AGENTS.md"),
+            "intro\n```text\nusage:\n```sh\n@include extra.md\n```\nafter",
+        );
+
+        let merged = load_all_memory_tiers(ws, None, &[]);
+        assert!(
+            !merged.contains("INCLUDED_BODY"),
+            "an @include after an info-string line inside an open fence stays inert"
+        );
+        assert!(merged.contains("@include extra.md"));
+    }
+
+    #[test]
+    fn parent_walked_root_file_can_include_within_its_own_root() {
+        // Monorepo shape: the workspace is a sub-package, the project file
+        // is found by the parent walk at the repo root, and its @include
+        // targets the root's docs/ — outside the innermost workspace but
+        // inside the walked directory. Bounding the walked file at the
+        // workspace dropped exactly this include.
+        let tmp = tempdir().unwrap();
+        let ws = tmp.path().join("repo").join("apps").join("client");
+        let docs = tmp.path().join("repo").join("docs");
+        fs::create_dir_all(&ws).unwrap();
+        fs::create_dir_all(&docs).unwrap();
+        write(&docs.join("style.md"), "SHARED_STYLE");
+        write(
+            &tmp.path().join("repo").join("CLAUDE.md"),
+            "@include docs/style.md\nroot body",
+        );
+
+        let merged = load_all_memory_tiers(&ws, Some(tmp.path()), &[]);
+        assert!(
+            merged.contains("SHARED_STYLE"),
+            "a parent-walked root file may include within its own root"
+        );
+        assert!(merged.contains("root body"));
     }
 
     #[test]

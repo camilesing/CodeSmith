@@ -1037,6 +1037,13 @@ fn render_skills_block(registry: &SkillRegistry) -> Option<String> {
     if visible.is_empty() {
         return None;
     }
+    // Mod-registered entries (SkillSource::Extension) have no on-disk
+    // `SKILL.md`, so the usage footer must tell the model how to load
+    // those. `load_skill` is the TUI's skill tool — a cross-crate name
+    // contract; if that tool is ever renamed, this text follows.
+    let has_mod_skills = visible
+        .iter()
+        .any(|s| matches!(s.loaded_from, SkillSource::Extension { .. }));
 
     let mut out = String::new();
     out.push_str("## Skills\n");
@@ -1114,10 +1121,19 @@ instructions when using a specific skill.\n\n",
         }
     }
 
+    // File-backed skills open their `SKILL.md`; mod-registered entries
+    // have no file, so only then does the first bullet add the
+    // `load_skill` instruction (keeping the no-mod footer byte-identical
+    // to its long-standing form for prompt-cache stability).
+    let open_instruction = if has_mod_skills {
+        "- Skill bodies live on disk at the listed paths. When a skill is relevant, open only that skill's `SKILL.md` and the specific companion files it references. Skills attributed `mod: <owner>` are mod-registered with no on-disk file — load those with the `load_skill` tool instead of opening a path.\n"
+    } else {
+        "- Skill bodies live on disk at the listed paths. When a skill is relevant, open only that skill's `SKILL.md` and the specific companion files it references.\n"
+    };
+    out.push_str("\n### How to use skills\n");
+    out.push_str(open_instruction);
     out.push_str(
-        "\n### How to use skills\n\
-- Skill bodies live on disk at the listed paths. When a skill is relevant, open only that skill's `SKILL.md` and the specific companion files it references.\n\
-- Trigger rules: use a skill when the user names it (`$SkillName`, `/skill <name>`, or plain text), the task clearly matches its description/when_to_use, or the current working paths match its paths metadata. Do not carry skills across turns unless re-mentioned.\n\
+        "- Trigger rules: use a skill when the user names it (`$SkillName`, `/skill <name>`, or plain text), the task clearly matches its description/when_to_use, or the current working paths match its paths metadata. Do not carry skills across turns unless re-mentioned.\n\
 - Missing/blocked: if a named skill is missing or cannot be read, say so briefly and continue with the best fallback.\n\
 - Safety: skill shell snippets must go through the `exec_shell` tool so normal approval and sandbox policy apply. MCP skill shell snippets are disabled; community skill snippets are disabled until the skill is trusted with `/skill trust <name>`.\n",
     );
@@ -1266,6 +1282,10 @@ mod tests {
             !rendered.contains("(mod: alpha) (file:"),
             "no dangling file suffix for mod skills"
         );
+        assert!(
+            rendered.contains("load those with the `load_skill` tool"),
+            "mod skills have no file — the footer must route them to load_skill: {rendered}"
+        );
         // Registered skill is loadable through the merged registry shape
         // the load_skill tool uses.
         let mut registry = super::discover_for_workspace_and_dir_with_home(
@@ -1284,16 +1304,28 @@ mod tests {
     #[test]
     fn render_with_registered_keeps_directory_fallback() {
         let tmpdir = TempDir::new().unwrap();
-        // Workspace set empty; the configured install dir holds the only
-        // filesystem skill — the pre-existing two-step fallback shape.
-        create_skill_dir(
-            &tmpdir,
-            "installed",
+        // The fallback only runs when the entire workspace candidate set is
+        // empty, so the installed skill must live OUTSIDE the workspace
+        // candidate dirs (`<workspace>/skills` is candidate #2) — and HOME
+        // is redirected to an empty dir so the dev machine's own global
+        // skills cannot leak into the workspace set. The configured install
+        // dir holds the only filesystem skill — the two-step fallback shape.
+        let ws = tmpdir.path().join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        let install_root = tmpdir.path().join("install-root");
+        let skill_dir = install_root.join("installed");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
             "---\nname: installed\ndescription: Installed\n---\nBody",
-        );
+        )
+        .unwrap();
+        let home = TempDir::new().unwrap();
+        let _env = crate::test_support::lock_test_env();
+        let _home_guard = crate::test_support::EnvVarGuard::set("HOME", home.path());
         let rendered = super::render_available_skills_context_with_registered(
-            tmpdir.path(),
-            Some(&tmpdir.path().join("skills")),
+            &ws,
+            Some(&install_root),
             &[registered("alpha", "mod-skill")],
         )
         .expect("renders from fallback dir");

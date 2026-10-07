@@ -144,7 +144,6 @@ pub fn assert_byte_identical(label: &str, a: &str, b: &str) {
 /// Transcript helper for projection tests (todo/plan folds): an assistant
 /// message carrying one tool call with a stable id, so tests can pair it
 /// with a [`tool_result`] of the same id.
-#[cfg(test)]
 pub fn assistant_tool_use(
     id: &str,
     name: &str,
@@ -164,7 +163,6 @@ pub fn assistant_tool_use(
 /// Transcript helper for projection tests: a user message carrying the
 /// tool result for `id` (`is_error: Some(true)` marks a failed call, which
 /// the folds must skip).
-#[cfg(test)]
 pub fn tool_result(id: &str, is_error: bool) -> codesmith_agent::models::Message {
     codesmith_agent::models::Message {
         role: "user".to_string(),

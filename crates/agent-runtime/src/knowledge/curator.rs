@@ -98,12 +98,17 @@ pub fn parse_pointer_line(line: &str) -> Option<PointerLine> {
 /// classifies every real pointer as stale and lets pointer-less proposals
 /// pass validation).
 fn topic_files_on_disk(memory_dir: &Path) -> std::io::Result<HashSet<String>> {
-    let entries = fs::read_dir(memory_dir)?;
-    Ok(entries
-        .flatten()
-        .map(|entry| entry.file_name().to_string_lossy().to_string())
-        .filter(|name| name.ends_with(".md") && name != "MEMORY.md")
-        .collect())
+    let mut files = HashSet::new();
+    for entry in fs::read_dir(memory_dir)? {
+        // Per-entry errors surface instead of being dropped: a silently
+        // shrunk set misclassifies live pointers as stale.
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.ends_with(".md") && name != "MEMORY.md" {
+            files.insert(name);
+        }
+    }
+    Ok(files)
 }
 
 /// Run the deterministic consolidation pass over `<memory_dir>/MEMORY.md`.

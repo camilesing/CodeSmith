@@ -718,15 +718,19 @@ fn test_build_assignment_prompt_includes_metadata() {
 
 #[test]
 fn subagent_auto_model_routes_unconfigured_assignments() {
+    // No tier pair configured (embedders/tests: `AutoRouteContext::default`
+    // carries `tier_models: None`): tier routing falls back to the
+    // runtime's main model instead of vendor-specific default IDs that may
+    // not exist on the active provider.
     let runtime = stub_runtime().with_auto_model(true);
 
     assert_eq!(
         fallback_subagent_assignment_route(&runtime, None, "implement the release fix").model,
-        "deepseek-v4-pro"
+        runtime.model
     );
     assert_eq!(
         fallback_subagent_assignment_route(&runtime, None, "say hello").model,
-        "deepseek-v4-flash"
+        runtime.model
     );
 }
 

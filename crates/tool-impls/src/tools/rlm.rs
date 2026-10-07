@@ -560,10 +560,15 @@ async fn load_source(
         .await?;
     // Program caller of a sibling tool: take the canonical value instead of
     // re-parsing the rendered content — the fetch body can be megabytes, so
-    // move it rather than clone.
-    let parsed: Value = result.canonical.take().ok_or_else(|| {
-        ToolError::execution_failed("rlm_open: fetch_url returned no canonical value")
-    })?;
+    // move it rather than clone (Arc::unwrap_or_clone copies only if the
+    // event fanout kept another holder alive).
+    let parsed: Value = result
+        .canonical
+        .take()
+        .map(std::sync::Arc::unwrap_or_clone)
+        .ok_or_else(|| {
+            ToolError::execution_failed("rlm_open: fetch_url returned no canonical value")
+        })?;
     let body = parsed
         .get("content")
         .and_then(Value::as_str)

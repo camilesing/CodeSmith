@@ -96,6 +96,19 @@ impl ToolSpec for SymbolSearchTool {
         };
         let limit =
             optional_u64(&input, "limit", DEFAULT_SYMBOL_LIMIT).clamp(1, MAX_SYMBOL_LIMIT) as usize;
+        // The glob is model input passed through unvalidated; the matcher's
+        // DP cost scales with pattern size, so bound it (1024 chars is far
+        // beyond any real path filter) instead of letting adversarial
+        // patterns scale the per-row cost.
+        const MAX_FILE_GLOB_CHARS: usize = 1024;
+        let file_glob = optional_str(&input, "file_glob").map(str::to_string);
+        if let Some(glob) = file_glob.as_deref()
+            && glob.chars().count() > MAX_FILE_GLOB_CHARS
+        {
+            return Err(ToolError::invalid_input(format!(
+                "file_glob must be at most {MAX_FILE_GLOB_CHARS} chars"
+            )));
+        }
 
         let service = context
             .runtime
@@ -109,7 +122,7 @@ impl ToolSpec for SymbolSearchTool {
         let query = SymbolQuery {
             query: query_str,
             kind,
-            file_glob: optional_str(&input, "file_glob").map(str::to_string),
+            file_glob,
             limit,
         };
         let symbols = tokio::time::timeout(INDEX_TOOL_TIMEOUT, service.search_symbols(query))

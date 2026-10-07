@@ -225,8 +225,12 @@ pub struct AfterProviderResponseEvent {
 
 /// Payload for [`ExtensionEvent::AssistantStream`] (streaming
 /// observation, route B): one incremental assistant **text** chunk as the
-/// wire stream yields it. Observe-only; handlers run inline with the
-/// stream, so they must be cheap.
+/// wire stream yields it. Observe-only; handlers must be cheap. The host
+/// dispatches each delta's emit off-thread under a wall-clock budget: a
+/// handler that exceeds the budget is detached — it runs to completion
+/// with its outcome discarded and is never cancelled mid-flight — and
+/// later deltas' handlers may then overlap it, so handlers must also
+/// tolerate concurrent invocation.
 #[derive(Debug, Clone)]
 pub struct AssistantStreamEvent {
     pub text: String,

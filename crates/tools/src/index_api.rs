@@ -44,7 +44,14 @@ pub const DEFAULT_FILE_LIMIT: usize = 50;
 pub enum Language {
     Rust,
     Python,
+    // The serde keys of the two multi-word variants are pinned to
+    // `as_str()` (`javascript`/`typescript`), not the snake_case spelling
+    // (`java_script`/`type_script`): the store column, config tables, and
+    // diagnostics all use `as_str()`, and the JSON channel must
+    // round-trip with them.
+    #[serde(rename = "javascript")]
     JavaScript,
+    #[serde(rename = "typescript")]
     TypeScript,
     Go,
 }
@@ -277,7 +284,7 @@ impl Default for SymbolQuery {
 }
 
 /// Query shape for `list_files`.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct FileQuery {
     /// Optional glob on the workspace-relative path.
     pub glob: Option<String>,
@@ -287,13 +294,15 @@ pub struct FileQuery {
     pub limit: usize,
 }
 
-impl FileQuery {
-    /// Default-bounded query (limit [`DEFAULT_FILE_LIMIT`]).
-    #[must_use]
-    pub fn default_bounded() -> Self {
+impl Default for FileQuery {
+    /// Manual like `SymbolQuery`'s: a derived `Default` would produce
+    /// `limit: 0`, which the store's `list_files` treats as "stop after
+    /// the first matching row".
+    fn default() -> Self {
         Self {
+            glob: None,
+            extension: None,
             limit: DEFAULT_FILE_LIMIT,
-            ..Self::default()
         }
     }
 }
@@ -318,17 +327,41 @@ impl Default for RefreshBudget {
     }
 }
 
+/// Precompiled glob: the pattern is split and char-collected once per
+/// query, then matched per candidate row. Providers evaluate one glob
+/// against up to hundreds of rows (sometimes while holding the store
+/// mutex) — re-splitting the pattern per row is pure waste.
+#[derive(Debug, Clone)]
+pub struct GlobMatcher {
+    segments: Vec<Vec<char>>,
+}
+
+impl GlobMatcher {
+    #[must_use]
+    pub fn new(pattern: &str) -> Self {
+        Self {
+            segments: pattern.split('/').map(|s| s.chars().collect()).collect(),
+        }
+    }
+
+    #[must_use]
+    pub fn matches(&self, path: &str) -> bool {
+        let segs: Vec<Vec<char>> = path.split('/').map(|s| s.chars().collect()).collect();
+        match_segments(&self.segments, &segs)
+    }
+}
+
 /// Path glob matcher used by query filters. Supports `*` (any run inside a
 /// segment), `?` (one char), and `**` (any number of whole segments).
 /// Operates on `char`s, never byte slices, so non-ASCII paths are safe.
+/// Thin wrapper over [`GlobMatcher`]; precompile when matching many paths
+/// against one pattern.
 #[must_use]
 pub fn glob_match(pattern: &str, path: &str) -> bool {
-    let pat: Vec<&str> = pattern.split('/').collect();
-    let segs: Vec<&str> = path.split('/').collect();
-    match_segments(&pat, &segs)
+    GlobMatcher::new(pattern).matches(path)
 }
 
-fn match_segments(pat: &[&str], segs: &[&str]) -> bool {
+fn match_segments(pat: &[Vec<char>], segs: &[Vec<char>]) -> bool {
     // Bottom-up DP over (pattern index, segment index): `dp[i][j]` asks
     // whether `pat[i..]` matches `segs[j..]`. The naive recursion retries
     // `**` at every split point (O(segs^k) for k double-stars) — model
@@ -337,26 +370,21 @@ fn match_segments(pat: &[&str], segs: &[&str]) -> bool {
     // able to burn unbounded CPU. Each grid cell is evaluated once:
     // O(pattern segments × path segments).
     let (m, n) = (pat.len(), segs.len());
+    let is_double_star = |i: usize| pat[i].len() == 2 && pat[i][0] == '*' && pat[i][1] == '*';
     let mut dp = vec![vec![false; n + 1]; m + 1];
     dp[m][n] = true;
     for i in (0..m).rev() {
         for j in (0..=n).rev() {
-            dp[i][j] = if pat[i] == "**" {
+            dp[i][j] = if is_double_star(i) {
                 // Consume no segment, or consume one more and stay on the
                 // double-star (it may absorb any number of segments).
                 dp[i + 1][j] || (j < n && dp[i][j + 1])
             } else {
-                j < n && segment_match(pat[i], segs[j]) && dp[i + 1][j + 1]
+                j < n && chars_match(&pat[i], &segs[j]) && dp[i + 1][j + 1]
             };
         }
     }
     dp[0][0]
-}
-
-fn segment_match(pat: &str, text: &str) -> bool {
-    let p: Vec<char> = pat.chars().collect();
-    let s: Vec<char> = text.chars().collect();
-    chars_match(&p, &s)
 }
 
 fn chars_match(p: &[char], s: &[char]) -> bool {

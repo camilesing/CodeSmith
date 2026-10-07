@@ -326,7 +326,7 @@ pub fn compact_tool_result_for_context(
     }
 
     if let Some(summary) =
-        compact_subagent_tool_result_for_context(tool_name, &raw, output.canonical.as_ref())
+        compact_subagent_tool_result_for_context(tool_name, &raw, output.canonical.as_deref())
     {
         return summary;
     }
@@ -663,7 +663,7 @@ mod tests {
             "steps_taken": 3,
         });
         let mut output = ToolResult::success("rendering that disagrees");
-        output.canonical = Some(snapshot);
+        output.canonical = Some(std::sync::Arc::new(snapshot));
         let summary = compact_tool_result_for_context("deepseek-chat", "agent_open", &output);
         assert!(summary.contains("agent_deadbeef"));
         assert!(summary.contains("status=Completed"));

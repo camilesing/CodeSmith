@@ -157,6 +157,10 @@ pub struct CallbackBridge {
     /// forwarding assistant text deltas as `AssistantStream` events.
     /// `None` when no runner is bound (tests / runner-less hosts).
     extension: Option<Arc<codesmith_extensions::ExtensionRunner>>,
+    /// Route B rate-limit: AssistantStream budget warnings log once per
+    /// bridge (per turn) instead of once per delta — a consistently slow
+    /// handler must not flood the log with hundreds of lines per turn.
+    stream_warned: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl CallbackBridge {
@@ -186,6 +190,7 @@ impl CallbackBridge {
             hook_template,
             state: Arc::new(Mutex::new(BridgeState::default())),
             extension: None,
+            stream_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 }
@@ -291,6 +296,7 @@ impl Callback for CallbackBridge {
         let tx = self.tx.clone();
         let state = self.state.clone();
         let extension = self.extension.clone();
+        let stream_warned = self.stream_warned.clone();
         Box::pin(async move {
             // First-wins dedup for block-lifecycle announcements within the
             // current LLM step (see `BridgeState::announced_blocks`). `None`
@@ -348,30 +354,55 @@ impl Callback for CallbackBridge {
                 let _ = tx.send(event).await;
             }
             // Route B (streaming observation) — forward assistant TEXT
-            // deltas as `AssistantStream` (observe-only). Handlers run
-            // inline with the stream — "cheap by contract" — but nothing
-            // enforces that contract, so bound the emit: a slow (script)
-            // extension must not stall the stream for more than the budget.
-            // The outcome is discarded (Observe mode) but an elapsed budget
-            // is logged — a misbehaving extension stays observable instead
-            // of silently degrading every delta. A timeout preserves delta
-            // ordering where a fire-and-forget spawn would not. Thinking
+            // deltas as `AssistantStream` (observe-only). Rhai script
+            // handlers run `handle()` to completion inside its first poll
+            // — there is no await point — so a wrapping timeout alone can
+            // never preempt them; the emit therefore runs on the blocking
+            // pool, awaited under the budget. Deltas stay ordered while
+            // handlers meet the budget (each emit is awaited before the
+            // next delta is dispatched); past a deadline the handler is
+            // detached — it runs to completion off-thread with its
+            // outcome discarded (observe-only) and may overlap later
+            // deltas' handlers, so no handler is ever cancelled
+            // mid-flight. The pre-check skips the clone + dispatch
+            // entirely when nothing subscribes to AssistantStream (the
+            // common case on the token-streaming hot path). Thinking
             // deltas stay UI-only for now.
-            if let (Some(runner), StreamDelta::Text { content, .. }) = (&extension, delta) {
-                let emit =
-                    runner.emit(codesmith_agent::extension::ExtensionEvent::AssistantStream(
-                        codesmith_agent::extension::AssistantStreamEvent {
-                            text: content.clone(),
-                        },
-                    ));
-                if tokio::time::timeout(std::time::Duration::from_millis(250), emit)
-                    .await
-                    .is_err()
-                {
-                    tracing::warn!(
-                        target: "codesmith_runtime::callback_bridge",
-                        "AssistantStream handler dispatch exceeded 250ms; delta dropped for extensions"
-                    );
+            if let (Some(runner), StreamDelta::Text { content, .. }) = (&extension, delta)
+                && runner
+                    .has_handlers(codesmith_agent::extension::ExtensionEventKind::AssistantStream)
+            {
+                let runner = Arc::clone(runner);
+                let event = codesmith_agent::extension::ExtensionEvent::AssistantStream(
+                    codesmith_agent::extension::AssistantStreamEvent {
+                        text: content.clone(),
+                    },
+                );
+                let handle = tokio::runtime::Handle::current();
+                let dispatch =
+                    tokio::task::spawn_blocking(move || handle.block_on(runner.emit(event)));
+                let warn_once = || !stream_warned.swap(true, std::sync::atomic::Ordering::Relaxed);
+                match tokio::time::timeout(std::time::Duration::from_millis(250), dispatch).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(join_err)) => {
+                        // emit's catch_unwind normally contains handler
+                        // panics, so a JoinError here is unexpected.
+                        if warn_once() {
+                            tracing::warn!(
+                                target: "codesmith_runtime::callback_bridge",
+                                "AssistantStream dispatch task failed: {join_err}"
+                            );
+                        }
+                    }
+                    Err(_) => {
+                        if warn_once() {
+                            tracing::warn!(
+                                target: "codesmith_runtime::callback_bridge",
+                                "AssistantStream handler dispatch exceeded 250ms; \
+                                 detached — later deltas may overlap it (logged once per turn)"
+                            );
+                        }
+                    }
                 }
             }
         })

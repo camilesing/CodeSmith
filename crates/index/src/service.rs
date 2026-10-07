@@ -475,7 +475,7 @@ mod tests {
         let files = service
             .list_files(FileQuery {
                 extension: Some("rs".into()),
-                ..FileQuery::default_bounded()
+                ..FileQuery::default()
             })
             .await
             .expect("files");
@@ -607,7 +607,7 @@ mod tests {
         assert!(err.to_string().contains("disabled"), "{}", err);
 
         let files = service
-            .list_files(FileQuery::default_bounded())
+            .list_files(FileQuery::default())
             .await
             .expect("files");
         assert_eq!(files.len(), 1);

@@ -698,6 +698,7 @@ asks to debug engine internals.\n\n\
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::assistant_tool_use;
     use serde_json::json;
 
     fn assistant_text(text: &str) -> Message {
@@ -706,18 +707,6 @@ mod tests {
             content: vec![ContentBlock::Text {
                 text: text.to_string(),
                 cache_control: None,
-            }],
-        }
-    }
-
-    fn assistant_tool_use(id: &str, name: &str, input: serde_json::Value) -> Message {
-        Message {
-            role: "assistant".to_string(),
-            content: vec![ContentBlock::ToolUse {
-                id: id.to_string(),
-                name: name.to_string(),
-                input,
-                caller: None,
             }],
         }
     }

@@ -3312,21 +3312,35 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                     &api_target.base_url,
                     &api_target.model,
                 );
+                // The EL escape is gated on the same colorize check that
+                // governs the rest of doctor's coloring: piped/redirected
+                // output must not carry raw escape bytes.
+                let el = if colored::control::SHOULD_COLORIZE.should_colorize() {
+                    "\u{1b}[K"
+                } else {
+                    ""
+                };
                 match doctor_llm::analyze_findings(&client, &model, &payload).await {
-                    Some(analysis) => {
+                    Ok(Some(analysis)) => {
                         // \x1b[K (EL): the progress line above is longer than
                         // this one, and a bare \r leaves its stale tail.
                         println!(
-                            "\r  {} analysis below is advisory — the deterministic results above take precedence\u{1b}[K",
+                            "\r  {} analysis below is advisory — the deterministic results above take precedence{el}",
                             "✓".truecolor(aqua_r, aqua_g, aqua_b)
                         );
                         for line in analysis.lines() {
                             println!("    {line}");
                         }
                     }
-                    None => {
+                    Ok(None) => {
                         println!(
-                            "\r  {} {model} returned no analysis (empty/error/timeout) — skipping\u{1b}[K",
+                            "\r  {} {model} returned no analysis (empty) — skipping{el}",
+                            "·".dimmed()
+                        );
+                    }
+                    Err(reason) => {
+                        println!(
+                            "\r  {} {model} returned no analysis ({reason}) — skipping{el}",
                             "·".dimmed()
                         );
                     }
@@ -4965,6 +4979,12 @@ fn run_sandbox_command(args: SandboxArgs) -> Result<()> {
     // spawn when the selected backend cannot actually enforce isolation.
     // Landlock has no child-process enforcement wired and `None` means no
     // backend at all — either way the command would run fully unconfined.
+    // Known platform consequence (intended): `SandboxType::Windows` never
+    // enforces isolation and Linux-without-bubblewrap falls back to
+    // Landlock (non-enforcing), so a policy-bearing `sandbox run` always
+    // fails on those hosts — degraded confinement is the interactive
+    // engine's posture ("commands run best-effort" in doctor), not this
+    // subcommand's.
     let selected = manager.select_sandbox(&spec.sandbox_policy);
     if spec.sandbox_policy.should_sandbox() && !selected.enforces_isolation() {
         // The remediation hint is platform-aware — "install bubblewrap" is
@@ -5916,6 +5936,9 @@ async fn run_exec_agent(
         show_thinking: settings.show_thinking,
         is_simple: settings.is_simple,
         personality: config.personality(),
+        // Headless exec takes the full engine budget (1024) by design, not
+        // drift — unlike the tighter automation-thread budget
+        // (AUTOMATION_DEFAULT_MAX_STEPS); see DEFAULT_ENGINE_MAX_STEPS.
         max_steps: codesmith_agent_runtime::engine_config::DEFAULT_ENGINE_MAX_STEPS,
         max_subagents,
         features: config.features(),
@@ -6499,6 +6522,8 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
         show_thinking: settings.show_thinking,
         is_simple: settings.is_simple,
         personality: config.personality(),
+        // Headless team-teammate runs take the full engine budget (1024)
+        // by design, not drift — see DEFAULT_ENGINE_MAX_STEPS.
         max_steps: codesmith_agent_runtime::engine_config::DEFAULT_ENGINE_MAX_STEPS,
         max_subagents: config.max_subagents(),
         features: config.features(),

@@ -2120,8 +2120,9 @@ mod tests {
         let ctx = cfg.auto_route_context();
         assert!(ctx.cost_saving);
         assert_eq!(ctx.router_model.as_deref(), Some("deepseek-v4-pro"));
-        assert_eq!(ctx.tier_models.heavy, "deepseek-v4-pro");
-        assert_eq!(ctx.tier_models.light, "deepseek-v4-flash");
+        let tiers = ctx.tier_models.as_ref().expect("configured pair is Some");
+        assert_eq!(tiers.heavy, "deepseek-v4-pro");
+        assert_eq!(tiers.light, "deepseek-v4-flash");
     }
 
     #[test]

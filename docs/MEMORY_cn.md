@@ -290,8 +290,9 @@ memory_path = "~/.codesmith/memory.md"
   现存主题文件仍被恰好引用一次、没有引入未知文件、预算未超时才会
   被接受；任何违例都回退到确定性结果。
 - **写入门控**：默认是干跑，只打印统一 diff；`--apply` 才写盘，且
-  先做 `MEMORY.md.bak` 备份。下一个会话的提示词刷新会自动拿到
-  新索引。
+  先做带时间戳的 `MEMORY.md.bak.<unix_ts>` 备份（每次运行一个新文件，
+  首次合并前的原件也不会被后续合并覆盖）。下一个会话的提示词刷新会
+  自动拿到新索引。
 
 ```bash
 codesmith memory consolidate                      # 干跑：报告 + diff

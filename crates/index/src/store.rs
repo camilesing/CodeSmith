@@ -15,8 +15,8 @@ use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::types::{
-    FileEntry, FileQuery, Language, Location, Occurrence, OccurrenceRole, Symbol, SymbolKind,
-    SymbolQuery, glob_match,
+    FileEntry, FileQuery, GlobMatcher, Language, Location, Occurrence, OccurrenceRole, Symbol,
+    SymbolKind, SymbolQuery,
 };
 
 /// Current store schema version. Bump on any breaking shape change; older
@@ -325,9 +325,9 @@ impl IndexStore {
                 .collect::<std::result::Result<Vec<_>, _>>()?,
         };
         drop(stmt);
-        let glob = query.file_glob.as_deref();
-        if let Some(g) = glob {
-            candidates.retain(|s| glob_match(g, &s.path));
+        let glob = query.file_glob.as_deref().map(GlobMatcher::new);
+        if let Some(matcher) = glob.as_ref() {
+            candidates.retain(|s| matcher.matches(&s.path));
         }
         let needle_ci = needle;
         candidates.sort_by(|a, b| {
@@ -397,11 +397,14 @@ impl IndexStore {
     }
 
     /// File inventory listing with glob / extension filters applied while
-    /// rows stream out of SQLite (stops at `limit`).
+    /// rows stream out of SQLite (stops at `limit`). The glob matcher is
+    /// precompiled once per query — this loop runs under the store mutex
+    /// and a non-matching glob scans the whole files table.
     pub fn list_files(&self, query: &FileQuery) -> Result<Vec<FileEntry>> {
         let conn = self.conn.lock().expect("index store mutex poisoned");
         let mut stmt =
             conn.prepare("SELECT path, mtime_ms, size, language FROM files ORDER BY path")?;
+        let glob = query.glob.as_deref().map(GlobMatcher::new);
         let mut out = Vec::new();
         let mut rows = stmt.query_map([], file_entry_from_row)?;
         for row in rows.by_ref() {
@@ -415,8 +418,8 @@ impl IndexStore {
                     continue;
                 }
             }
-            if let Some(glob) = query.glob.as_deref()
-                && !glob_match(glob, &entry.path)
+            if let Some(matcher) = glob.as_ref()
+                && !matcher.matches(&entry.path)
             {
                 continue;
             }
