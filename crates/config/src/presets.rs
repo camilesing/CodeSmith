@@ -603,6 +603,19 @@ mod tests {
         // the opt-in cheap router.
         assert_eq!(middle.auto_cost_saving, Some(false));
         assert_eq!(middle.lsp_include_warnings, Some(false));
+        // The router posture is catalog-wide, not middle-specific: every
+        // tier that carries the dial pins it off; only `plan` omits it.
+        for id in ["simple", "all", "experiment"] {
+            assert_eq!(
+                catalog.get(id).unwrap().definition.auto_cost_saving,
+                Some(false),
+                "preset {id} must keep the quality-first router default"
+            );
+        }
+        assert_eq!(
+            catalog.get("plan").unwrap().definition.auto_cost_saving,
+            None
+        );
 
         let all = &catalog.get("all").unwrap().definition;
         // Notebook (not elephant): KOD arrives only with experiment.

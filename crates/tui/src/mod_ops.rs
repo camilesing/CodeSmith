@@ -218,6 +218,13 @@ pub fn mod_info(workspace: &Path, state: &ModStateStore, id: &str) -> Option<Str
 /// file, so two unlocked racing mutations are last-writer-wins — one record
 /// silently disappears. Take this guard BEFORE `ModStateStore::load_default`
 /// and hold it across mutate + persist.
+///
+/// Constraint: the reload path (`reload_mods` → `reload_extension_runtime` →
+/// `populate_extension_runtime`) must NOT hold this guard across populate —
+/// the backfill acquires it, and `std::sync::Mutex` is not reentrant. The
+/// reload path's own store load therefore stays lock-free; the backfill
+/// re-loads fresh state under the guard before recording, so that lock-free
+/// snapshot is never persisted back over a concurrent writer.
 pub fn mod_state_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     match LOCK.lock() {
@@ -346,25 +353,76 @@ pub fn write_mod(
         }
         (false, _) => paths.project_root,
     };
-    // Trust gate: writing project mods into an untrusted workspace would
-    // create a discoverable-but-shadowed mod; refuse instead.
-    if !global && !crate::config::is_workspace_trusted(workspace) {
-        return Err("workspace is not trusted; project mods are refused".to_string());
+    // Trust gate: an untrusted workspace must not persist mod code. A
+    // project write would create a discoverable-but-shadowed mod; a global
+    // write would put executable code into `~/.codesmith/mods`, which loads
+    // in EVERY workspace — including other untrusted ones
+    // (`apply_mod_trust_gate` retains globals). Refuse both so the trust
+    // signal cannot be bypassed via the `global` flag; per-call approval
+    // and first-activation consent remain additional gates, not
+    // replacements for it.
+    // Trust gate: an untrusted workspace must not persist mod code. A
+    // project write would create a discoverable-but-shadowed mod; a global
+    // write would put executable code into `~/.codesmith/mods`, which loads
+    // in EVERY workspace — including other untrusted ones
+    // (`apply_mod_trust_gate` retains globals). Refuse both so the trust
+    // signal cannot be bypassed via the `global` flag; per-call approval
+    // and first-activation consent remain additional gates, not
+    // replacements for it.
+    if !crate::config::is_workspace_trusted(workspace) {
+        return Err(
+            "workspace is not trusted; project and global mod writes are refused".to_string(),
+        );
     }
     let mod_dir = root.join(id);
     for (rel, _content) in files {
         sanitize_rel_path(rel)?;
     }
     std::fs::create_dir_all(&mod_dir).map_err(|e| format!("create {}: {e}", mod_dir.display()))?;
-    // `sanitize_rel_path` is purely lexical, and both `create_dir_all` and
-    // `fs::write` follow symlinks: a pre-planted symlink at `<mods-root>/<id>`
-    // (or a subdirectory inside it) would carry the approved write outside
-    // the mods root. Bind every target to the canonicalized mod dir.
-    let root_canon = mod_dir
+    // `sanitize_rel_path` is purely lexical, and `create_dir_all` /
+    // `fs::write` follow symlinks. Anchor containment on the canonicalized
+    // mods ROOT — anchoring on `mod_dir.canonicalize()` alone is the hole:
+    // a pre-planted symlink at `<mods-root>/<id>` leaves `create_dir_all`
+    // successful while the canonicalized mod dir already resolves to the
+    // attacker-chosen target, so every check anchored there passes while
+    // the approved write lands outside the root. Known limitation: the
+    // check-then-write gap is still a TOCTOU window (a symlink swapped in
+    // between check and write wins); closing that needs O_NOFOLLOW-style
+    // opens, which std does not expose.
+    // `sanitize_rel_path` is purely lexical, and `create_dir_all` /
+    // `fs::write` follow symlinks. Anchor containment on the canonicalized
+    // mods ROOT — anchoring on `mod_dir.canonicalize()` alone is the hole:
+    // a pre-planted symlink at `<mods-root>/<id>` leaves `create_dir_all`
+    // successful while the canonicalized mod dir already resolves to the
+    // attacker-chosen target, so every check anchored there passes while
+    // the approved write lands outside the root. Known limitation: the
+    // check-then-write gap is still a TOCTOU window (a symlink swapped in
+    // between check and write wins); closing that needs O_NOFOLLOW-style
+    // opens, which std does not expose.
+    let root_canon = root
+        .canonicalize()
+        .map_err(|e| format!("resolve {}: {e}", root.display()))?;
+    let mod_dir_canon = mod_dir
         .canonicalize()
         .map_err(|e| format!("resolve {}: {e}", mod_dir.display()))?;
+    if !mod_dir_canon.starts_with(&root_canon) {
+        return Err(format!(
+            "mod dir {} resolves outside the mods root (symlink?) — refusing to write",
+            mod_dir.display()
+        ));
+    }
     for (rel, content) in files {
         let target = mod_dir.join(sanitize_rel_path(rel)?);
+        // Final-component symlinks are invisible to the parent check below
+        // (`fs::write` follows them) — reject outright.
+        if std::fs::symlink_metadata(&target)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            return Err(format!(
+                "path {rel:?} is a symlink — refusing to write through it"
+            ));
+        }
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("create {}: {e}", parent.display()))?;
@@ -373,7 +431,7 @@ pub fn write_mod(
             .parent()
             .and_then(|p| p.canonicalize().ok())
             .ok_or_else(|| format!("path {rel:?} escapes the mod directory (symlink?)"))?;
-        if !parent_canon.starts_with(&root_canon) {
+        if !parent_canon.starts_with(&mod_dir_canon) {
             return Err(format!(
                 "path {rel:?} escapes the mod directory (symlink?) — refusing to write"
             ));
@@ -409,7 +467,7 @@ pub fn reload_mods(
             );
         }
     };
-    let mut mod_state = match ModStateStore::load_default() {
+    let mod_state = match ModStateStore::load_default() {
         Ok(s) => s,
         Err(e) => {
             return format!("Reload aborted: mod state unreadable ({e}); current bindings kept.");
@@ -420,7 +478,7 @@ pub fn reload_mods(
         runner,
         workspace,
         &ext_state,
-        &mut mod_state,
+        &mod_state,
         mods_enabled,
         shared_cancel_token,
     );
@@ -719,6 +777,84 @@ trust_level = "trusted"
 
         let err = write_mod(&ws, "bad id", &files, false);
         assert!(err.is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_mod_refuses_symlinked_mod_dir() {
+        // Review round 5: anchoring containment on the canonicalized MOD
+        // DIR let a pre-planted `<mods-root>/<id>` symlink carry the
+        // approved write outside the root — `create_dir_all` succeeds on
+        // the symlinked dir and every per-file check anchored at the
+        // symlink target passed. The anchor must be the mods root.
+        let _env = crate::test_support::lock_test_env();
+        let dir = TempDir::new().unwrap();
+        let _home = ScopedHome::set_trusted(&dir, &dir.path().join("ws"));
+        let ws = workspace_in(&dir);
+        let mods_root = ws.join(".codesmith").join("mods");
+        std::fs::create_dir_all(&mods_root).unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, mods_root.join("pwn")).unwrap();
+        let files = vec![(
+            "mod.toml".to_string(),
+            "id = \"pwn\"\nversion = \"0.1.0\"\n".to_string(),
+        )];
+        let err = write_mod(&ws, "pwn", &files, false).unwrap_err();
+        assert!(err.contains("outside the mods root"), "{err}");
+        assert!(
+            !outside.join("mod.toml").exists(),
+            "nothing may land in the symlink target"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_mod_refuses_final_component_symlink() {
+        // A symlinked FILE inside an honest mod dir: `fs::write` follows
+        // it, and the parent-containment check cannot see it.
+        let _env = crate::test_support::lock_test_env();
+        let dir = TempDir::new().unwrap();
+        let _home = ScopedHome::set_trusted(&dir, &dir.path().join("ws"));
+        let ws = workspace_in(&dir);
+        let mods_root = ws.join(".codesmith").join("mods");
+        let mod_dir = write_fixture_mod(&mods_root, "hooked");
+        let victim = dir.path().join("victim.toml");
+        std::fs::write(&victim, "original").unwrap();
+        std::fs::remove_file(mod_dir.join("mod.toml")).unwrap();
+        std::os::unix::fs::symlink(&victim, mod_dir.join("mod.toml")).unwrap();
+        let files = vec![(
+            "mod.toml".to_string(),
+            "id = \"hooked\"\nversion = \"0.1.0\"\n".to_string(),
+        )];
+        let err = write_mod(&ws, "hooked", &files, false).unwrap_err();
+        assert!(err.contains("symlink"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(&victim).unwrap(),
+            "original",
+            "the write must not follow the file symlink"
+        );
+    }
+
+    #[test]
+    fn write_mod_refuses_global_writes_from_untrusted_workspace() {
+        // Review round 5: the trust gate covered only project writes; a
+        // `global=true` write persisted executable mod code into
+        // ~/.codesmith/mods, which every workspace (including other
+        // untrusted ones) discovers and loads once activated.
+        let _env = crate::test_support::lock_test_env();
+        let dir = TempDir::new().unwrap();
+        // No trust config written → the workspace is untrusted.
+        let _home = ScopedHome::set(&dir);
+        let ws = workspace_in(&dir);
+        let files = vec![(
+            "mod.toml".to_string(),
+            "id = \"g\"\nversion = \"0.1.0\"\n".to_string(),
+        )];
+        let err = write_mod(&ws, "g", &files, true).unwrap_err();
+        assert!(err.contains("not trusted"), "{err}");
+        let err = write_mod(&ws, "g", &files, false).unwrap_err();
+        assert!(err.contains("not trusted"), "{err}");
     }
 
     #[test]

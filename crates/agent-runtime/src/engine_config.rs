@@ -15,15 +15,18 @@ use std::time::Duration;
 use crate::capacity::CapacityControllerConfig;
 use crate::compaction::{CompactionConfig, DEFAULT_TEXT_MODEL};
 use crate::config_types::{
-    DEFAULT_MAX_SUBAGENTS, DEFAULT_SUBAGENT_API_TIMEOUT_SECS, SearchProvider, ToolsConfig,
-    VisionModelConfig, WorkshopConfig,
+    AutoRouteContext, DEFAULT_MAX_SUBAGENTS, DEFAULT_SUBAGENT_API_TIMEOUT_SECS, SearchProvider,
+    ToolsConfig, VisionModelConfig, WorkshopConfig,
 };
 
-/// Default step budget for the engine's tool loop. Embedders constructing
-/// [`EngineConfig`](crate::engine_config::EngineConfig) field-by-field should
-/// read this constant instead of hard-coding a step cap so every entry point
-/// (TUI, exec agent, team teammate, runtime threads) shares one budget.
-pub const DEFAULT_MAX_STEPS: u32 = 1024;
+/// Default step budget for the engine's tool loop, consumed by the headless
+/// entry points (`run_exec_agent`, `run_team_teammate`) and by embedders
+/// starting from [`EngineConfig::default`]. It is NOT a repo-wide budget:
+/// the interactive TUI runs uncapped (`max_steps: u32::MAX` in `tui/ui.rs`),
+/// unattended automations stay well below it
+/// (`AUTOMATION_DEFAULT_MAX_STEPS = 100`), and sub-agents carry their own
+/// spawn-budget default in `tui::tools::subagent` — hence the specific name.
+pub const DEFAULT_ENGINE_MAX_STEPS: u32 = 1024;
 /// Default stream idle watchdog budget (P0-1). Long enough that a reasoning
 /// model's quiet thinking phase (no text deltas yet, connection healthy)
 /// doesn't trip it, short enough that a silently-stalled stream recovers
@@ -35,7 +38,6 @@ pub const DEFAULT_STREAM_IDLE_TIMEOUT_SECS: u64 = 120;
 /// window per retry gives each attempt a longer lease. `0` disables the
 /// widening (fixed window on every retry).
 pub const DEFAULT_STREAM_IDLE_RETRY_INCREMENT_SECS: u64 = 30;
-use crate::config_types::AutoRouteContext;
 use crate::cycle_manager::CycleConfig;
 use crate::features::Features;
 use crate::lsp_config::LspConfig;
@@ -199,9 +201,10 @@ pub struct EngineConfig {
     /// deprecated config.toml `[tools].overrides` disabled entries by the
     /// host). Removed from the registry at dispatch, before the per-turn
     /// masks: a disabled tool is neither visible nor executable and a turn
-    /// mask cannot resurrect it. Main-turn dispatch only (sub-agent
-    /// toolsets do not consult it yet).
-    pub disabled_tools: std::collections::HashSet<String>,
+    /// mask cannot resurrect it. Both the main-turn registry and sub-agent
+    /// toolsets enforce it (`SubAgentRuntime::with_capability_disabled_tools`
+    /// → `SubAgentToolRegistry::new`, re-applied at every spawn depth).
+    pub disabled_tools: HashSet<String>,
     /// Resolved BCP-47 locale tag (e.g. `"en"`, `"zh-Hans"`, `"ja"`)
     /// for the `## Environment` block in the system prompt. The
     /// caller resolves this from `Settings` once at engine
@@ -323,7 +326,7 @@ impl Default for EngineConfig {
             show_thinking: true,
             is_simple: false,
             personality: crate::prompts::Personality::Calm,
-            max_steps: DEFAULT_MAX_STEPS,
+            max_steps: DEFAULT_ENGINE_MAX_STEPS,
             max_subagents: DEFAULT_MAX_SUBAGENTS,
             features: Features::with_defaults(),
             parse_gate: true,
@@ -353,7 +356,7 @@ impl Default for EngineConfig {
             goal_objective: None,
             allowed_tools: None,
             blocked_tools: Vec::new(),
-            disabled_tools: std::collections::HashSet::new(),
+            disabled_tools: HashSet::new(),
             locale_tag: "en".to_string(),
             workshop: None,
             search_provider: SearchProvider::default(),

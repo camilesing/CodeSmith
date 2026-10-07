@@ -15,6 +15,8 @@
 //! [`ModStateStore`](crate::mod_state::ModStateStore) from disk (the store
 //! is file-backed; the `/mods` commands and this tool can never diverge).
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
@@ -167,36 +169,45 @@ impl ToolSpec for ManageModsTool {
                 require_id()?;
                 // Serialize with the /mods command path: each persist
                 // rewrites the whole state file, so unlocked racing
-                // mutations are last-writer-wins.
-                let _guard = crate::mod_ops::mod_state_lock();
-                let mut state = crate::mod_state::ModStateStore::load_default()
-                    .map_err(|e| ToolError::not_available(format!("load mod state: {e}")))?;
-                let msg = mod_ops::activate(workspace, &mut state, &id)
-                    .map_err(ToolError::execution_failed)?;
-                let reload_note = self.reload_note();
+                // mutations are last-writer-wins. The guard scopes to
+                // load→mutate→persist ONLY — reload re-acquires it at the
+                // activation-hash backfill inside populate (std Mutex is
+                // not reentrant; holding it across reload deadlocks).
+                let msg = {
+                    let _guard = crate::mod_ops::mod_state_lock();
+                    let mut state = crate::mod_state::ModStateStore::load_default()
+                        .map_err(|e| ToolError::not_available(format!("load mod state: {e}")))?;
+                    mod_ops::activate(workspace, &mut state, &id)
+                        .map_err(ToolError::execution_failed)?
+                };
+                let reload_note = self.reload_note().await;
                 Ok(ToolResult::success(format!("{msg}\n{reload_note}")))
             }
             "disable" | "enable" => {
                 require_id()?;
-                let _guard = crate::mod_ops::mod_state_lock();
-                let mut state = crate::mod_state::ModStateStore::load_default()
-                    .map_err(|e| ToolError::not_available(format!("load mod state: {e}")))?;
-                let msg = mod_ops::set_enabled(&mut state, &id, action == "enable")
-                    .map_err(ToolError::execution_failed)?;
-                let reload_note = self.reload_note();
+                let msg = {
+                    let _guard = crate::mod_ops::mod_state_lock();
+                    let mut state = crate::mod_state::ModStateStore::load_default()
+                        .map_err(|e| ToolError::not_available(format!("load mod state: {e}")))?;
+                    mod_ops::set_enabled(&mut state, &id, action == "enable")
+                        .map_err(ToolError::execution_failed)?
+                };
+                let reload_note = self.reload_note().await;
                 Ok(ToolResult::success(format!("{msg}\n{reload_note}")))
             }
             "remove" => {
                 require_id()?;
-                let _guard = crate::mod_ops::mod_state_lock();
-                let mut state = crate::mod_state::ModStateStore::load_default()
-                    .map_err(|e| ToolError::not_available(format!("load mod state: {e}")))?;
-                let msg = mod_ops::remove(workspace, &mut state, &id)
-                    .map_err(ToolError::execution_failed)?;
-                let reload_note = self.reload_note();
+                let msg = {
+                    let _guard = crate::mod_ops::mod_state_lock();
+                    let mut state = crate::mod_state::ModStateStore::load_default()
+                        .map_err(|e| ToolError::not_available(format!("load mod state: {e}")))?;
+                    mod_ops::remove(workspace, &mut state, &id)
+                        .map_err(ToolError::execution_failed)?
+                };
+                let reload_note = self.reload_note().await;
                 Ok(ToolResult::success(format!("{msg}\n{reload_note}")))
             }
-            "reload" => Ok(ToolResult::success(self.reload_note())),
+            "reload" => Ok(ToolResult::success(self.reload_note().await)),
             other => Err(ToolError::invalid_input(format!(
                 "unknown action {other:?} (expected list | write | activate | disable | enable | remove | reload)"
             ))),
@@ -205,17 +216,24 @@ impl ToolSpec for ManageModsTool {
 }
 
 impl ManageModsTool {
-    fn reload_note(&self) -> String {
+    async fn reload_note(&self) -> String {
         match &self.reload {
             // mods_enabled captured at engine build (next to the runner) —
             // a tool-triggered reload must not resurrect the mod layer
-            // against `[mods] enabled = false`.
-            Some(ctx) => mod_ops::reload_mods(
-                &ctx.runner,
-                &ctx.workspace,
-                ctx.shared_cancel_token.clone(),
-                ctx.mods_enabled,
-            ),
+            // against `[mods] enabled = false`. reload_mods is synchronous
+            // disk work (recursive scans, TOML parsing, Rhai compilation)
+            // — keep it off the tokio worker, like the watcher path does.
+            Some(ctx) => {
+                let runner = Arc::clone(&ctx.runner);
+                let workspace = ctx.workspace.clone();
+                let token = ctx.shared_cancel_token.clone();
+                let mods_enabled = ctx.mods_enabled;
+                tokio::task::spawn_blocking(move || {
+                    mod_ops::reload_mods(&runner, &workspace, token, mods_enabled)
+                })
+                .await
+                .unwrap_or_else(|e| format!("mods reload failed: {e}"))
+            }
             None => "Reload unavailable in this session (no bound extension runner); \
                      changes take effect on the next session start or /mods reload."
                 .to_string(),

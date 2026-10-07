@@ -575,12 +575,12 @@ fn build_extension_runtime(
     // providers are visible to every resolution path.
     runner.attach_shared_providers(shared_providers().clone());
     let state = crate::extension_state::ExtensionStateStore::load_default().unwrap_or_default();
-    let mut mod_state = crate::mod_state::ModStateStore::load_default().unwrap_or_default();
+    let mod_state = crate::mod_state::ModStateStore::load_default().unwrap_or_default();
     let report = populate_extension_runtime(
         &runner,
         workspace,
         &state,
-        &mut mod_state,
+        &mod_state,
         mods_enabled,
         shared_cancel_token,
     );
@@ -688,7 +688,7 @@ fn populate_extension_runtime(
     runner: &Arc<codesmith_extensions::ExtensionRunner>,
     workspace: &std::path::Path,
     state: &crate::extension_state::ExtensionStateStore,
-    mod_state: &mut crate::mod_state::ModStateStore,
+    mod_state: &crate::mod_state::ModStateStore,
     mods_enabled: bool,
     shared_cancel_token: Arc<StdMutex<tokio_util::sync::CancellationToken>>,
 ) -> PopulateReport {
@@ -759,8 +759,9 @@ fn populate_extension_runtime(
     // entry-file hash no longer matches the recorded activation hash also
     // returns to pending: activation consent is bound to the content the
     // user approved (review round 3 — a git-pulled or auto-edited .rhai
-    // must not execute on standing consent). `&mut mod_state` lets a
-    // hash-less legacy activation load once and backfill its hash.
+    // must not execute on standing consent). A hash-less legacy activation
+    // loads once and backfills its hash — on state re-loaded under
+    // `mod_state_lock`, NOT on this (lock-free) snapshot.
     let mut pending_mods: Vec<crate::mod_ops::PendingModInfo> = Vec::new();
     let mut mods_to_load: Vec<codesmith_extensions::DiscoveredMod> = Vec::new();
     if mods_enabled {
@@ -797,13 +798,30 @@ fn populate_extension_runtime(
             match mod_state.activation_hash_state(&m.id, &actual_hash) {
                 crate::mod_state::ActivationHashState::Matches => {}
                 crate::mod_state::ActivationHashState::NoRecord => {
+                    // Review round 5: record on a store re-loaded UNDER the
+                    // lock, not on the caller's snapshot. The snapshot was
+                    // loaded without the guard (the reload path must not
+                    // hold it across populate — this branch acquires it),
+                    // and persisting it wholesale would erase any /mods or
+                    // manage_mods mutation that landed since that load (a
+                    // lost activate returns a mod to pending; a lost
+                    // disable silently re-enables it).
                     let _guard = crate::mod_ops::mod_state_lock();
-                    if let Err(e) = mod_state.record_activation_hash(&m.id, &actual_hash) {
-                        tracing::warn!(
+                    match mod_state.reload() {
+                        Ok(mut fresh) => {
+                            if let Err(e) = fresh.record_activation_hash(&m.id, &actual_hash) {
+                                tracing::warn!(
+                                    target: "codesmith_mods",
+                                    "backfill activation hash for {}: {e}",
+                                    m.id
+                                );
+                            }
+                        }
+                        Err(e) => tracing::warn!(
                             target: "codesmith_mods",
-                            "backfill activation hash for {}: {e}",
+                            "backfill activation hash for {}: state unreadable ({e})",
                             m.id
-                        );
+                        ),
                     }
                 }
                 crate::mod_state::ActivationHashState::Changed => {
@@ -1011,7 +1029,7 @@ pub fn reload_extension_runtime(
     runner: &Arc<codesmith_extensions::ExtensionRunner>,
     workspace: &std::path::Path,
     state: &crate::extension_state::ExtensionStateStore,
-    mod_state: &mut crate::mod_state::ModStateStore,
+    mod_state: &crate::mod_state::ModStateStore,
     mods_enabled: bool,
     shared_cancel_token: Arc<StdMutex<tokio_util::sync::CancellationToken>>,
 ) -> PopulateReport {

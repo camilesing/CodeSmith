@@ -4814,12 +4814,12 @@ async fn f2b_extension_reload_clears_and_rebinds_live() {
     // is cleared (it wasn't discovered via `discover_static`, so it isn't
     // re-bound); generation bumps.
     let state = crate::extension_state::ExtensionStateStore::load_default().unwrap_or_default();
-    let mut mod_state = crate::mod_state::ModStateStore::load_default().unwrap_or_default();
+    let mod_state = crate::mod_state::ModStateStore::load_default().unwrap_or_default();
     super::reload_extension_runtime(
         &runner,
         &workspace,
         &state,
-        &mut mod_state,
+        &mod_state,
         true,
         std::sync::Arc::new(std::sync::Mutex::new(
             tokio_util::sync::CancellationToken::new(),
@@ -4912,7 +4912,7 @@ async fn mods_populate_gates_pending_activation_then_loads_after_activate() {
         &runner,
         &workspace,
         &ext_state,
-        &mut mod_state,
+        &mod_state,
         true,
         cancel.clone(),
     );
@@ -4942,7 +4942,7 @@ async fn mods_populate_gates_pending_activation_then_loads_after_activate() {
         &runner,
         &workspace,
         &ext_state,
-        &mut mod_state,
+        &mod_state,
         true,
         cancel.clone(),
     );
@@ -4978,7 +4978,7 @@ async fn mods_populate_gates_pending_activation_then_loads_after_activate() {
         &runner,
         &workspace,
         &ext_state,
-        &mut mod_state,
+        &mod_state,
         true,
         cancel.clone(),
     );
@@ -5004,14 +5004,8 @@ async fn mods_populate_gates_pending_activation_then_loads_after_activate() {
         "register_tool(#{name: \"e2e_evil\", description: \"tampered\"}, |input| { ok(\"no\") });",
     )
     .expect("tampered entry");
-    let report = super::reload_extension_runtime(
-        &runner,
-        &workspace,
-        &ext_state,
-        &mut mod_state,
-        true,
-        cancel,
-    );
+    let report =
+        super::reload_extension_runtime(&runner, &workspace, &ext_state, &mod_state, true, cancel);
     assert_eq!(report.loaded_mods, 0, "changed content must not load");
     assert_eq!(report.pending_mods.len(), 1, "{:?}", report.pending_mods);
     assert!(
@@ -5024,6 +5018,68 @@ async fn mods_populate_gates_pending_activation_then_loads_after_activate() {
     assert!(
         !runner.bound_tools().iter().any(|(n, _)| n == "e2e_evil"),
         "tampered tool must not bind"
+    );
+}
+
+/// Review round 5: the activation-hash backfill must re-load state under
+/// `mod_state_lock` before persisting. The reload path's snapshot is loaded
+/// WITHOUT the guard (populate's backfill acquires it — the lock is not
+/// reentrant), so persisting that snapshot wholesale would erase any
+/// concurrent writer that landed in between: a lost `activate` sends a mod
+/// back to pending, a lost `disable` silently re-enables it.
+#[test]
+fn mods_backfill_does_not_clobber_concurrent_state_writes() {
+    let _guard = lock_test_env();
+    let tmp = tempdir().expect("tempdir");
+    let _home = ScopedHome::set(tmp.path());
+    let workspace = tmp.path().to_path_buf();
+
+    // Legacy activation (pre-hash format): activated, no recorded hash, so
+    // populate takes the NoRecord backfill branch.
+    let mod_dir = tmp.path().join(".codesmith").join("mods").join("legacy");
+    fs::create_dir_all(&mod_dir).expect("mod dir");
+    fs::write(
+        mod_dir.join("mod.toml"),
+        "id = \"legacy\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("mod.toml");
+    fs::write(mod_dir.join("mod.rhai"), "mod_log(\"x\");").expect("mod.rhai");
+    fs::write(
+        tmp.path().join(".codesmith").join("mods_state.toml"),
+        "activated = [\"legacy\"]\n",
+    )
+    .expect("state");
+
+    // The reload path's (lock-free) snapshot, taken BEFORE the concurrent
+    // writer lands.
+    let stale = crate::mod_state::ModStateStore::load_default().expect("stale store");
+
+    // A concurrent /mods or manage_mods mutation persists between that
+    // snapshot and populate's backfill.
+    let mut concurrent = crate::mod_state::ModStateStore::load_default().expect("writer store");
+    concurrent
+        .activate("peer", "hash-peer")
+        .expect("concurrent activate");
+
+    let ext_state = crate::extension_state::ExtensionStateStore::load_default().unwrap_or_default();
+    let cancel = std::sync::Arc::new(std::sync::Mutex::new(
+        tokio_util::sync::CancellationToken::new(),
+    ));
+    let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
+    let report =
+        super::populate_extension_runtime(&runner, &workspace, &ext_state, &stale, true, cancel);
+    assert_eq!(report.loaded_mods, 1, "hash-less legacy activation loads");
+
+    let final_state = crate::mod_state::ModStateStore::load_default().expect("final store");
+    assert!(
+        final_state.is_activated("peer"),
+        "concurrent activation must survive the backfill persist"
+    );
+    let actual = crate::mod_ops::entry_file_hash(&mod_dir.join("mod.rhai")).expect("hash");
+    assert_eq!(
+        final_state.activation_hash_state("legacy", &actual),
+        crate::mod_state::ActivationHashState::Matches,
+        "backfill still records the legacy hash"
     );
 }
 
@@ -5067,12 +5123,7 @@ async fn mods_populate_audits_broken_mod_as_failed_with_original_error() {
 
     let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
     let report = super::populate_extension_runtime(
-        &runner,
-        &workspace,
-        &ext_state,
-        &mut mod_state,
-        true,
-        cancel,
+        &runner, &workspace, &ext_state, &mod_state, true, cancel,
     );
     assert_eq!(report.loaded_mods, 0);
     let entry = report

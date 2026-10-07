@@ -188,6 +188,17 @@ pub struct Engine {
     /// pre-request flush (same tail-injection semantics as
     /// [`Self::pending_lsp_blocks`]).
     pub(crate) pending_result_verifications: Arc<StdMutex<Vec<result_verifier::VerdictBlock>>>,
+    /// P3-8 replay cost bound: per-tool-call execution durations
+    /// (`duration_ms` metadata, keyed by tool-use id), recorded by each
+    /// turn's executor at the transcript chokepoint. The post-turn claim
+    /// verifier reads the selected command's duration to skip replaying
+    /// originals that ran longer than
+    /// `result_verifier::REPLAY_SOURCE_DURATION_LIMIT_MS`. Arc-shared with
+    /// the per-turn executors like [`Self::pending_result_verifications`].
+    /// Known limitation: one small entry per executed tool call, retained
+    /// for the session's lifetime — tool-use ids are unique per session, so
+    /// there is no key reuse, and the map dies with the engine.
+    pub(crate) tool_durations: Arc<StdMutex<std::collections::HashMap<String, u64>>>,
     /// W2 P1-1 deliverables watchdog probe, built lazily on the first turn
     /// whose instruction parses deliverable paths. Engine-held so the
     /// re-note schedule (`DeliverablesProgress`) survives across turns —
@@ -1506,6 +1517,9 @@ impl Engine {
         // flushes them as a synthetic runtime_event message before the
         // turn's first API request (mirrors the LSP probe wire-in above).
         .with_result_verifications(Some(Arc::clone(&self.pending_result_verifications)))
+        // P3-8 replay cost bound: per-tool-call durations recorded at the
+        // transcript chokepoint, read by the post-turn claim verifier.
+        .with_tool_durations(Arc::clone(&self.tool_durations))
         // W2 P1-1: the engine-held deliverables probe (see the lazy init
         // above) — clone shares the re-note schedule across turns.
         .with_deliverables(self.deliverables_probe.clone());
@@ -1773,7 +1787,21 @@ impl Engine {
             let turn_messages: Vec<Message> = self.session.messages[start..].to_vec();
             if let Some(claim) = result_verifier::detect_claim(&turn_messages) {
                 let command =
-                    result_verifier::find_verification_command(&turn_messages, claim.kind);
+                    result_verifier::find_verification_command(&turn_messages, claim.kind).map(
+                        |mut command| {
+                            // The original execution's duration is not in the
+                            // persisted transcript (tool-result blocks carry
+                            // rendered content only) — read it from the
+                            // engine-held per-turn duration record.
+                            command.source_duration_ms = self
+                                .tool_durations
+                                .lock()
+                                .expect("tool_durations poisoned")
+                                .get(&command.tool_use_id)
+                                .copied();
+                            command
+                        },
+                    );
                 let dispatcher = plan.tool_registry.clone();
                 let pending = Arc::clone(&self.pending_result_verifications);
                 let tx_event = self.tx_event.clone();
@@ -3194,6 +3222,7 @@ impl Engine {
             turn_scratch: crate::prompt_zones::TurnScratch::new(),
             pending_lsp_blocks: Vec::new(),
             pending_result_verifications: Arc::new(StdMutex::new(Vec::new())),
+            tool_durations: Arc::new(StdMutex::new(std::collections::HashMap::new())),
             deliverables_probe: None,
             slop_ledger_gate_cache: None,
             knowledge_prefetch: crate::knowledge::prefetch::KnowledgePrefetch::new(),

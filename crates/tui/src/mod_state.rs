@@ -2,8 +2,11 @@
 //! layer).
 //!
 //! Backs `/mods activate|disable|enable` + the `manage_mods` tool. Mirrors
-//! `ExtensionStateStore` (`crates/tui/src/extension_state.rs`) verbatim —
-//! same atomic-write, malformed→default, BTreeSet-for-determinism strategy.
+//! `ExtensionStateStore` (`crates/tui/src/extension_state.rs`) — same
+//! atomic-write, malformed→default, BTreeSet-for-determinism strategy —
+//! with one divergence: a malformed file is set aside as
+//! `mods_state.toml.bak` before the default fallback, so the next persist
+//! cannot destroy the original (the sibling stores do not do this).
 //!
 //! Storage shape (TOML at `~/.codesmith/mods_state.toml`):
 //!
@@ -31,8 +34,10 @@
 //! files the entry reads at runtime are not part of the consent receipt.
 //!
 //! Default state when the file does not exist: empty lists (nothing
-//! activated — the first-activation gate). A corrupt file is logged and
-//! treated as the default, so upgrades never silently activate mods.
+//! activated — the first-activation gate). A corrupt file is logged, set
+//! aside as `mods_state.toml.bak`, and treated as the default, so upgrades
+//! never silently activate mods and the original survives the next persist
+//! for manual recovery.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -96,11 +101,17 @@ impl ModStateStore {
         let parsed: OnDiskState = match toml::from_str(&raw) {
             Ok(v) => v,
             Err(err) => {
+                // Set the unreadable original aside (best-effort) before
+                // falling back: the store keeps `path`, so the next
+                // mutation's whole-file persist would otherwise destroy the
+                // only hand-recoverable copy.
                 tracing::warn!(
-                    "mods_state.toml at {} is malformed ({}); treating nothing as activated",
+                    "mods_state.toml at {} is malformed ({}); treating nothing as activated \
+                     (original set aside as mods_state.toml.bak)",
                     path.display(),
                     err
                 );
+                let _ = fs::rename(&path, path.with_extension("toml.bak"));
                 OnDiskState::default()
             }
         };
@@ -117,6 +128,19 @@ impl ModStateStore {
     /// not disabled.
     pub fn should_load(&self, mod_id: &str) -> bool {
         self.activated.contains(mod_id) && !self.disabled.contains(mod_id)
+    }
+
+    /// Re-read this store's file from disk. For read-modify-write cycles
+    /// that run under `mod_ops::mod_state_lock` but started from a
+    /// lock-free snapshot (the reload backfill path): persisting the stale
+    /// snapshot would clobber a concurrent writer, so the mutation re-loads
+    /// first. A path-less (in-memory) store re-loads as empty — the
+    /// backfill no-ops rather than write anywhere unexpected.
+    pub fn reload(&self) -> Result<Self> {
+        match self.path.as_ref() {
+            Some(path) => Self::load_from(path.clone()),
+            None => Ok(Self::default()),
+        }
     }
 
     pub fn is_activated(&self, mod_id: &str) -> bool {
@@ -305,12 +329,27 @@ mod tests {
     }
 
     #[test]
-    fn malformed_file_falls_back_to_default() {
+    fn malformed_file_falls_back_to_default_and_keeps_a_backup() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join(STATE_FILE_NAME);
         fs::write(&path, b"this is not toml = { broken").unwrap();
-        let store = ModStateStore::load_from(path).unwrap();
+        let store = ModStateStore::load_from(path.clone()).unwrap();
         assert!(!store.should_load("anything"));
+        // The corrupt original is set aside, not destroyed by the fallback
+        // store's next whole-file persist.
+        let bak = dir.path().join("mods_state.toml.bak");
+        assert_eq!(
+            fs::read_to_string(&bak).unwrap(),
+            "this is not toml = { broken"
+        );
+        // And the fresh file persists cleanly over the fallback state.
+        let mut store = ModStateStore::load_from(path).unwrap();
+        store.activate("m", "h").unwrap();
+        assert!(
+            fs::read_to_string(dir.path().join(STATE_FILE_NAME))
+                .unwrap()
+                .contains("m")
+        );
     }
 
     #[test]

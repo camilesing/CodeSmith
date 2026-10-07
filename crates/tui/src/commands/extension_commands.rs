@@ -241,7 +241,7 @@ fn reload(app: &mut App) -> CommandResult {
             ));
         }
     };
-    let mut mod_state = match crate::mod_state::ModStateStore::load_default() {
+    let mod_state = match crate::mod_state::ModStateStore::load_default() {
         Ok(s) => s,
         Err(e) => {
             return CommandResult::error(format!(
@@ -253,7 +253,7 @@ fn reload(app: &mut App) -> CommandResult {
         &runner,
         &app.workspace,
         &ext_state,
-        &mut mod_state,
+        &mod_state,
         app.mods_enabled,
         shared_cancel_token,
     );

@@ -911,7 +911,10 @@ If you are upgrading from older releases:
   re-checked against the approval policy (skipped as a `verify-error`
   when it no longer classifies as auto-approved), bracketed with the
   same tool start/end events, and aborts with the session cancel token.
-  `false` restores the pre-P3-8 behavior of trusting the claim.
+  The replay is also duration-bounded: when the original execution ran
+  longer than two minutes, the re-run is skipped as a `verify-error`
+  (re-running a slow suite would double its wall-clock before the next
+  request). `false` restores the pre-P3-8 behavior of trusting the claim.
 - `[doctor] llm_fallback` (bool, optional, default `true`): the
   `codesmith doctor` LLM fallback layer (P3-8 step 2). After the
   deterministic checks complete, any collected warnings/errors are handed

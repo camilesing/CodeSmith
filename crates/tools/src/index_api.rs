@@ -329,14 +329,28 @@ pub fn glob_match(pattern: &str, path: &str) -> bool {
 }
 
 fn match_segments(pat: &[&str], segs: &[&str]) -> bool {
-    match pat.split_first() {
-        None => segs.is_empty(),
-        Some((&"**", rest)) => (0..=segs.len()).any(|skip| match_segments(rest, &segs[skip..])),
-        Some((p, rest)) => match segs.split_first() {
-            Some((s, stail)) => segment_match(p, s) && match_segments(rest, stail),
-            None => false,
-        },
+    // Bottom-up DP over (pattern index, segment index): `dp[i][j]` asks
+    // whether `pat[i..]` matches `segs[j..]`. The naive recursion retries
+    // `**` at every split point (O(segs^k) for k double-stars) — model
+    // input reaches this via the unvalidated `symbol_search` `file_glob`
+    // param, evaluated per candidate, so adversarial globs must not be
+    // able to burn unbounded CPU. Each grid cell is evaluated once:
+    // O(pattern segments × path segments).
+    let (m, n) = (pat.len(), segs.len());
+    let mut dp = vec![vec![false; n + 1]; m + 1];
+    dp[m][n] = true;
+    for i in (0..m).rev() {
+        for j in (0..=n).rev() {
+            dp[i][j] = if pat[i] == "**" {
+                // Consume no segment, or consume one more and stay on the
+                // double-star (it may absorb any number of segments).
+                dp[i + 1][j] || (j < n && dp[i][j + 1])
+            } else {
+                j < n && segment_match(pat[i], segs[j]) && dp[i + 1][j + 1]
+            };
+        }
     }
+    dp[0][0]
 }
 
 fn segment_match(pat: &str, text: &str) -> bool {
@@ -346,15 +360,34 @@ fn segment_match(pat: &str, text: &str) -> bool {
 }
 
 fn chars_match(p: &[char], s: &[char]) -> bool {
-    match (p.split_first(), s.split_first()) {
-        (None, None) => true,
-        (Some((&'*', ptail)), _) => {
-            chars_match(ptail, s) || (!s.is_empty() && chars_match(p, &s[1..]))
+    // Greedy single-segment wildcard match (`*` and `?` only — `*` never
+    // crosses segments). Classic last-star backtracking: on a mismatch,
+    // retry from one character further into the text instead of recursing
+    // into both branches, so the `*a*a*a*a*a*b`-shaped patterns that make
+    // the two-branch recursion exponential cost at most O(len(p) × len(s)).
+    let (mut pi, mut si) = (0usize, 0usize);
+    let (mut star, mut mark) = (usize::MAX, 0usize);
+    while si < s.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == s[si]) {
+            pi += 1;
+            si += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = pi;
+            mark = si;
+            pi += 1;
+        } else if star != usize::MAX {
+            // The star swallows one more character; resume after it.
+            pi = star + 1;
+            mark += 1;
+            si = mark;
+        } else {
+            return false;
         }
-        (Some((&'?', ptail)), Some((_, stail))) => chars_match(ptail, stail),
-        (Some((&pc, ptail)), Some((&sc, stail))) if pc == sc => chars_match(ptail, stail),
-        _ => false,
     }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
 }
 
 /// Outcome of a lazy incremental refresh: what the refresh did plus the
@@ -483,5 +516,26 @@ mod tests {
         assert!(glob_match("*.rs", "中文模块.rs"));
         assert!(glob_match("源/**", "源/子/文件.rs"));
         assert!(glob_match("文?.rs", "文件.rs"));
+    }
+
+    #[test]
+    fn glob_match_adversarial_patterns_terminate() {
+        // Exponential-backtracking regression (review round 5): the naive
+        // two-branch recursion does not finish these in human timescales —
+        // `chars_match`'s `*` handling and `match_segments`' `**` split
+        // enumeration. The DP/greedy implementation must terminate fast
+        // and answer correctly.
+        let pat = "*a*a*a*a*a*a*a*a*b";
+        let text: String = "a".repeat(64);
+        assert!(!glob_match(pat, &text));
+        let deep = "a/".repeat(24);
+        let deep = deep.trim_end_matches('/');
+        assert!(!glob_match("**/**/**/**/**/**/zzz.rs", deep));
+        // Same shapes, positive controls — the bound must not change the
+        // semantics, only the cost.
+        assert!(glob_match("*a*a*a*b", "xa-xa-xa-b"));
+        assert!(glob_match("**/**/*.rs", "x/y/z/a.rs"));
+        assert!(glob_match("**", "any/deep/path/here"));
+        assert!(glob_match("*", ""));
     }
 }
