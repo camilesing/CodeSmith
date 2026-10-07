@@ -1063,6 +1063,18 @@ pub struct HostAgentExecutor {
     pub(crate) result_verifications:
         Option<Arc<std::sync::Mutex<Vec<super::result_verifier::VerdictBlock>>>>,
 
+    /// P3-8 replay cost bound: per-tool-call execution durations
+    /// (`duration_ms` result metadata) keyed by tool-use id, recorded at the
+    /// Phase-4 transcript chokepoint (`turn::batches`). The Arc is
+    /// engine-held (`Engine.tool_durations`) and shared across the per-turn
+    /// executors like `result_verifications` above; the post-turn claim
+    /// verifier reads the selected command's duration to skip replaying
+    /// originals that ran longer than
+    /// `result_verifier::REPLAY_SOURCE_DURATION_LIMIT_MS`. `None`
+    /// (embeds/tests) ⇒ nothing is recorded.
+    pub(crate) tool_durations:
+        Option<Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>>,
+
     /// Deliverables watchdog (W2 P1-1). `None` (default; embeds/tests) ⇒ no
     /// periodic disk checks. When `Some`, [`run_inner`]'s pre-request seam
     /// checks the deliverable paths every
@@ -1430,6 +1442,7 @@ impl HostAgentExecutor {
             ),
             prefix_stability: None,
             result_verifications: None,
+            tool_durations: None,
             deliverables: None,
         }
     }
@@ -1587,6 +1600,20 @@ impl HostAgentExecutor {
         >,
     ) -> Self {
         self.result_verifications = result_verifications;
+        self
+    }
+
+    /// Opt into per-tool-call duration recording for the P3-8 replay cost
+    /// bound (see the `tool_durations` field). The production wire-in calls
+    /// this with an `Arc` clone of `Engine.tool_durations`. `pub(crate)`
+    /// like [`Self::with_result_verifications`]. Consumes and returns
+    /// `self` (builder).
+    #[must_use]
+    pub(crate) fn with_tool_durations(
+        mut self,
+        durations: Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>,
+    ) -> Self {
+        self.tool_durations = Some(durations);
         self
     }
 

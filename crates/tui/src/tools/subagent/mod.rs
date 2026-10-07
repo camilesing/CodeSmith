@@ -4704,13 +4704,17 @@ async fn run_subagent(
     );
     let unavailable_tools = tool_registry.unavailable_allowed_tools();
     if !unavailable_tools.is_empty() {
-        // Attribute manifest-disabled names so the fix points at
-        // capabilities.toml, not the spawn request.
+        // Attribute disabled names so the fix points at the disable
+        // sources — capabilities.toml, or the deprecated config.toml
+        // `[tools].overrides` entries unioned into the same set — not the
+        // spawn request.
         let described: Vec<String> = unavailable_tools
             .iter()
             .map(|name| {
                 if tool_registry.is_capability_disabled(name) {
-                    format!("{name} (disabled by capabilities.toml)")
+                    format!(
+                        "{name} (disabled by capabilities.toml or config.toml [tools].overrides)"
+                    )
                 } else {
                     name.clone()
                 }

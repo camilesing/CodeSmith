@@ -158,10 +158,16 @@ impl ToolResult {
 
     /// Create a successful result from JSON. The value is kept as the
     /// canonical machine-readable value; `content` renders it pretty for
-    /// the model. Serialized once to a `Value` — pretty-printing that same
-    /// `Value` halves the CPU and retained memory per result versus
-    /// serializing `T` twice (results can be large: grep output, parallel
-    /// dispatcher aggregation).
+    /// the model. `T` is serialized once, into a `Value`, and the pretty
+    /// rendering prints that same tree. Honest baseline: versus the
+    /// pre-canonical code (a single `to_string_pretty` on `T`) the CPU is
+    /// unchanged — the "halves" claim only held against an intermediate
+    /// revision that serialized `T` twice. The real cost of the canonical
+    /// channel is retained memory: every JSON result carries the `Value`
+    /// tree (typically several times the size of its rendered text) for
+    /// its lifetime, event-fanout clones included, whether or not a
+    /// program caller reads it (results can be large: grep output,
+    /// parallel dispatcher aggregation).
     pub fn json<T: Serialize>(value: &T) -> std::result::Result<Self, serde_json::Error> {
         let canonical = serde_json::to_value(value)?;
         Ok(Self {

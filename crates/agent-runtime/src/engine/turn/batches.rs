@@ -720,6 +720,25 @@ impl HostAgentExecutor {
                 }
             }
 
+            // P3-8 replay cost bound: record the executed duration (when
+            // the tool reports one in metadata) keyed by tool-call id.
+            // This is the single chokepoint where a result enters the
+            // transcript, and the persisted block carries only rendered
+            // content — the post-turn claim verifier cannot recover the
+            // duration any other way.
+            if let Some(durations) = &self.tool_durations
+                && let Ok(r) = &o.result
+                && let Some(ms) = r
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.get("duration_ms"))
+                    .and_then(serde_json::Value::as_u64)
+            {
+                durations
+                    .lock()
+                    .expect("tool_durations poisoned")
+                    .insert(o.id.clone(), ms);
+            }
             let (content_str, is_error) = match &o.result {
                 Ok(r) => (
                     // P1-4: provenance delimiter for external-network tool

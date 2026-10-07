@@ -29,10 +29,14 @@
 //!   execution, not a second unattended one); the call is
 //!   bracketed with [`Callback::on_tool_start`](codesmith_agent::callback::Callback::on_tool_start)
 //!   / `on_tool_end` so hooks and the UI observe it, and it aborts on the
-//!   session cancel token. Verification grants no authority the turn didn't
-//!   already have. (Same philosophy as the capacity controller's read-only
-//!   tool replay, extended from read-only tools to verification-class
-//!   commands under the same gates.)
+//!   session cancel token. The replay is also duration-bounded: a command
+//!   whose original run exceeded
+//!   [`REPLAY_SOURCE_DURATION_LIMIT_MS`](self::REPLAY_SOURCE_DURATION_LIMIT_MS "const")
+//!   is skipped as a `verify-error` — re-running it would double that
+//!   wall-clock before the next request. Verification grants no authority
+//!   the turn didn't already have. (Same philosophy as the capacity
+//!   controller's read-only tool replay, extended from read-only tools to
+//!   verification-class commands under the same gates.)
 //! * **Read-only over capabilities.** The verifier never writes files, never
 //!   edits prompts, never changes the tool surface, and never touches the
 //!   approval gate, validators, or release thresholds — 安全机制不可自我修改.
@@ -148,6 +152,15 @@ const EVIDENCE_EXCERPT_LIMIT: usize = 2000;
 /// bounded so a hung command cannot pin a background task forever.
 const DEFAULT_VERIFICATION_TIMEOUT_MS: u64 = 300_000;
 
+/// Replay cost bound: when the ORIGINAL execution of the selected command
+/// took longer than this, the replay is skipped as a `verify-error`.
+/// Re-running a slow suite would double its wall-clock before the next
+/// request (verdicts flush pre-request); short commands — the common case —
+/// replay unchanged. Two minutes sits above the typical filtered
+/// `cargo test`/`pytest` run and below the heavy suites whose re-run cost
+/// this bound exists to cap.
+const REPLAY_SOURCE_DURATION_LIMIT_MS: u64 = 120_000;
+
 /// Which kind of result the claim asserts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClaimKind {
@@ -219,6 +232,13 @@ pub(crate) struct VerificationCommand {
     pub(crate) display_command: String,
     pub(crate) tool_name: String,
     pub(crate) tool_use_id: String,
+    /// Duration of the original execution in milliseconds (the tool result's
+    /// `duration_ms` metadata), when one was recorded. Drives the replay
+    /// cost bound ([`REPLAY_SOURCE_DURATION_LIMIT_MS`]). Filled by the
+    /// engine's post-turn site from its per-turn duration record — the
+    /// persisted `ContentBlock::ToolResult` carries only rendered content,
+    /// so this cannot be recovered from the transcript alone.
+    pub(crate) source_duration_ms: Option<u64>,
 }
 
 /// Find the most recent verification-class command of `kind` in the turn's
@@ -258,6 +278,7 @@ pub(crate) fn find_verification_command(
                         display_command: command.to_string(),
                         tool_name: name.clone(),
                         tool_use_id: id.clone(),
+                        source_duration_ms: None,
                     });
                 }
                 "run_tests" => {
@@ -276,6 +297,7 @@ pub(crate) fn find_verification_command(
                         display_command: command,
                         tool_name: name.clone(),
                         tool_use_id: id.clone(),
+                        source_duration_ms: None,
                     });
                 }
                 _ => {}
@@ -484,6 +506,21 @@ pub(crate) async fn verify_claim(
             evidence_excerpt: String::new(),
         };
     };
+    // Replay cost bound: the original execution already paid this much
+    // wall-clock once, and paying it again before the next request is the
+    // cost the duration limit exists to cap. Skip with an honest
+    // verify-error — same posture as the approval skip below. `None` (no
+    // duration recorded — metadata-less tools, reconstructed `run_tests`)
+    // replays as before.
+    if let Some(ms) = command.source_duration_ms
+        && ms > REPLAY_SOURCE_DURATION_LIMIT_MS
+    {
+        return error_verdict(
+            claim,
+            &command,
+            "original run exceeded the replay duration limit; replay skipped",
+        );
+    }
     let Some(dispatcher) = dispatcher else {
         return error_verdict(claim, &command, "tool dispatcher unavailable this turn");
     };
@@ -943,6 +980,7 @@ mod tests {
             display_command: "cargo test".to_string(),
             tool_name: "exec_shell".to_string(),
             tool_use_id: "t1".to_string(),
+            source_duration_ms: None,
         };
         let pass = verdict_from_tool_result(
             claim.clone(),
@@ -980,6 +1018,7 @@ mod tests {
             display_command: "cargo build".to_string(),
             tool_name: "exec_shell".to_string(),
             tool_use_id: "t2".to_string(),
+            source_duration_ms: None,
         };
         let block = verdict_from_tool_result(
             claim,
@@ -1010,6 +1049,7 @@ mod tests {
                 display_command: "cargo test".to_string(),
                 tool_name: "exec_shell".to_string(),
                 tool_use_id: "t3".to_string(),
+                source_duration_ms: None,
             };
             let block = verdict_from_tool_result(
                 claim,
@@ -1024,5 +1064,91 @@ mod tests {
             assert_eq!(block.kind, ResultVerdict::VerifyError, "status {status}");
             assert!(block.error_reason.is_some(), "status {status}");
         }
+    }
+
+    // ── replay cost bound ─────────────────────────────────────────────
+
+    fn bounded_claim() -> DetectedClaim {
+        DetectedClaim {
+            kind: ClaimKind::Test,
+            phrase: "tests pass".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn long_running_original_skips_replay() {
+        let command = VerificationCommand {
+            replay_input: json!({"command": "cargo test --workspace"}),
+            display_command: "cargo test --workspace".to_string(),
+            tool_name: "exec_shell".to_string(),
+            tool_use_id: "t1".to_string(),
+            source_duration_ms: Some(REPLAY_SOURCE_DURATION_LIMIT_MS + 1),
+        };
+        let block = verify_claim(
+            None,
+            None,
+            CancellationToken::new(),
+            bounded_claim(),
+            Some(command),
+        )
+        .await;
+        assert_eq!(block.kind, ResultVerdict::VerifyError);
+        let reason = block.error_reason.expect("skip carries a reason");
+        assert!(reason.contains("duration limit"), "reason: {reason}");
+    }
+
+    #[tokio::test]
+    async fn short_running_original_is_not_duration_skipped() {
+        // No dispatcher on this path, so a short-duration command fails at
+        // the dispatcher gate — a distinct reason, proving the duration
+        // gate did not fire first.
+        let command = VerificationCommand {
+            replay_input: json!({"command": "cargo test"}),
+            display_command: "cargo test".to_string(),
+            tool_name: "exec_shell".to_string(),
+            tool_use_id: "t2".to_string(),
+            source_duration_ms: Some(1_000),
+        };
+        let block = verify_claim(
+            None,
+            None,
+            CancellationToken::new(),
+            bounded_claim(),
+            Some(command),
+        )
+        .await;
+        assert_eq!(block.kind, ResultVerdict::VerifyError);
+        let reason = block.error_reason.expect("reason present");
+        assert!(
+            reason.contains("dispatcher unavailable"),
+            "reason: {reason}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_duration_replays_per_the_other_gates() {
+        // `None` duration (metadata-less tool, reconstructed run_tests) must
+        // not trip the bound — again provable only via the next gate's
+        // distinct reason.
+        let command = VerificationCommand {
+            replay_input: json!({"command": "cargo test"}),
+            display_command: "cargo test".to_string(),
+            tool_name: "exec_shell".to_string(),
+            tool_use_id: "t3".to_string(),
+            source_duration_ms: None,
+        };
+        let block = verify_claim(
+            None,
+            None,
+            CancellationToken::new(),
+            bounded_claim(),
+            Some(command),
+        )
+        .await;
+        let reason = block.error_reason.expect("reason present");
+        assert!(
+            reason.contains("dispatcher unavailable"),
+            "reason: {reason}"
+        );
     }
 }
