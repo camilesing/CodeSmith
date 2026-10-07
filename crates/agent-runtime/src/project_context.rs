@@ -457,13 +457,31 @@ fn load_project_context_with_parents_and_home(
     // by the user's home so a planted /AGENTS.md (or /tmp/AGENTS.md for a
     // workspace under /tmp) never loads. Outside home (or without a
     // resolvable home) the walk is skipped: the fail-safe direction.
+    // `HOME=/` (valid in minimal containers) would make the prefix test
+    // vacuously true and re-enable the walk to `/`, so it counts as no
+    // home; both sides are canonicalized first so a symlinked home or a
+    // workspace reached through a symlinked ancestor doesn't end the walk
+    // one level early over a spelling mismatch (mirrors the
+    // `claudemd::load_project_tier` walk).
+    let home_for_walk = home_dir.filter(|h| *h != Path::new("/"));
     if !ctx.has_instructions()
-        && let Some(home) = home_dir
+        && let Some(home) = home_for_walk
     {
-        let mut current = workspace.parent();
+        let canon_home = crate::workspace_trust::canonicalize_or_keep(home);
+        let canon_workspace = crate::workspace_trust::canonicalize_or_keep(workspace);
+        if !canon_workspace.starts_with(&canon_home) {
+            // Keep the skip visible: devcontainer /workspaces/… and
+            // container /app workspaces lose monorepo instructions here.
+            tracing::debug!(
+                target: "codesmith::project_context",
+                workspace = %workspace.display(),
+                "workspace outside home; skipping the parent-context walk"
+            );
+        }
+        let mut current = canon_workspace.parent();
 
         while let Some(parent) = current {
-            if !parent.starts_with(home) {
+            if !parent.starts_with(&canon_home) {
                 break;
             }
             let parent_ctx = load_project_context(parent);

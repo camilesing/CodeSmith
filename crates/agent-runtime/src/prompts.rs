@@ -252,15 +252,7 @@ pub fn render_instructions_block(sources: &[InstructionSource]) -> Option<String
         if trimmed.is_empty() {
             continue;
         }
-        let body = if trimmed.len() > INSTRUCTIONS_FILE_MAX_BYTES {
-            let head_end = (0..=INSTRUCTIONS_FILE_MAX_BYTES)
-                .rev()
-                .find(|&i| trimmed.is_char_boundary(i))
-                .unwrap_or(0);
-            format!("{}\n[…elided]", &trimmed[..head_end])
-        } else {
-            trimmed.to_string()
-        };
+        let body = cap_untrusted_block(trimmed, INSTRUCTIONS_FILE_MAX_BYTES);
         // Source name lands in a double-quoted attribute, body inside the
         // element — both are config/workspace-supplied, so escape the
         // attribute and defuse any `</instructions` sequence that would
@@ -278,13 +270,30 @@ pub fn render_instructions_block(sources: &[InstructionSource]) -> Option<String
     }
 }
 
+/// Cap an untrusted, prompt-bound text block at `max_bytes`: keep the head
+/// (char-boundary safe) and mark the cut with `[…elided]`. Every
+/// workspace/config-supplied block loaded into the system prompt goes
+/// through this — an oversized or adversarially planted artifact must not
+/// flood the prompt unbounded.
+fn cap_untrusted_block(trimmed: &str, max_bytes: usize) -> String {
+    if trimmed.len() <= max_bytes {
+        return trimmed.to_string();
+    }
+    let head_end = (0..=max_bytes)
+        .rev()
+        .find(|&i| trimmed.is_char_boundary(i))
+        .unwrap_or(0);
+    format!("{}\n[…elided]", &trimmed[..head_end])
+}
+
 /// Read the workspace-local relay artifact, if present, and format it as a
 /// system-prompt block. Returns `None` when the file is absent or empty so
 /// callers can keep the default-uncluttered prompt for fresh workspaces.
 ///
 /// The artifact is workspace-supplied (untrusted): it is wrapped in a
-/// framing tag and its closing-tag sequences defused, matching the tier
-/// blocks, so it cannot impersonate other prompt sections.
+/// framing tag, its closing-tag sequences defused, and its body capped at
+/// [`INSTRUCTIONS_FILE_MAX_BYTES`] like every other untrusted block, so it
+/// cannot impersonate other prompt sections or flood the prompt.
 pub fn load_handoff_block(workspace: &Path) -> Option<String> {
     let path = workspace.join(HANDOFF_RELATIVE_PATH);
     let raw = std::fs::read_to_string(&path).ok()?;
@@ -292,9 +301,10 @@ pub fn load_handoff_block(workspace: &Path) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
+    let body = cap_untrusted_block(trimmed, INSTRUCTIONS_FILE_MAX_BYTES);
     Some(format!(
         "## Previous Session Relay\n\nThe previous session in this workspace left a relay artifact at `{HANDOFF_RELATIVE_PATH}`. Consider it the first artifact to read on this turn — open blockers, in-flight changes, and recent decisions live there. Update or rewrite it before exiting if state changes materially.\n\n<handoff>\n{}\n</handoff>",
-        defuse_closing_tag(trimmed, "handoff")
+        defuse_closing_tag(&body, "handoff")
     ))
 }
 
@@ -1000,15 +1010,7 @@ pub fn render_append_system_prompt_block(sources: &[PromptAppendSource]) -> Opti
         if trimmed.is_empty() {
             continue;
         }
-        let body = if trimmed.len() > INSTRUCTIONS_FILE_MAX_BYTES {
-            let head_end = (0..=INSTRUCTIONS_FILE_MAX_BYTES)
-                .rev()
-                .find(|&i| trimmed.is_char_boundary(i))
-                .unwrap_or(0);
-            format!("{}\n[…elided]", &trimmed[..head_end])
-        } else {
-            trimmed.to_string()
-        };
+        let body = cap_untrusted_block(trimmed, INSTRUCTIONS_FILE_MAX_BYTES);
         // Same framing-injection treatment as `render_instructions_block`:
         // escape the attribute, defuse the body's closing-tag sequences.
         sections.push(format!(

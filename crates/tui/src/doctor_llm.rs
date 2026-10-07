@@ -130,7 +130,9 @@ impl DoctorFindings {
 
     /// Serialize the findings plus environment context into the prompt
     /// payload. Plain JSON — the analysis contract below tells the model
-    /// how to read it.
+    /// how to read it. Finding details are home-redacted (`~`) so the
+    /// payload does not ship the local username / directory layout to the
+    /// LLM endpoint.
     pub(crate) fn to_prompt_payload(
         &self,
         os: &str,
@@ -146,7 +148,7 @@ impl DoctorFindings {
                 json!({
                     "section": f.section,
                     "status": f.status.as_str(),
-                    "detail": f.detail,
+                    "detail": redact_home(&f.detail),
                 })
             })
             .collect();
@@ -154,13 +156,27 @@ impl DoctorFindings {
             "environment": {
                 "os": os,
                 "provider": provider,
-                "base_url": base_url,
+                "base_url": redact_home(base_url),
                 "model": model,
             },
             "findings": findings,
         })
         .to_string()
     }
+}
+
+/// Replace an absolute home-directory prefix with `~` in a string, so the
+/// advisory payload carries `~/...` instead of the local username and
+/// directory layout. No-op when the home directory cannot be resolved.
+fn redact_home(text: &str) -> String {
+    let Some(home) = dirs::home_dir() else {
+        return text.to_string();
+    };
+    let home = home.display().to_string();
+    if home.is_empty() || !text.contains(&home) {
+        return text.to_string();
+    }
+    text.replace(&home, "~")
 }
 
 fn plural(n: usize) -> &'static str {

@@ -103,11 +103,22 @@ pub(crate) fn recent_unique_reference_count(
 /// post-`run` `Engine::apply_verify_and_replan` (via `&mut Vec<Message>`)
 /// share one extraction source (§E slice 3a).
 pub(crate) fn latest_user_and_verified(messages: &[Message]) -> (Option<Message>, Option<Message>) {
+    // Engine-injected runtime events (verdict flushes, deliverables notes,
+    // sub-agent completions) are user-role Text messages appended *after*
+    // the real query — skipping them keeps the reset anchored on the human's
+    // instruction instead of the newest engine note.
+    let is_runtime_note = |msg: &Message| {
+        msg.content.iter().any(|block| match block {
+            ContentBlock::Text { text, .. } => text.starts_with(super::RUNTIME_EVENT_PREFIX),
+            _ => false,
+        })
+    };
     let latest_user = messages
         .iter()
         .rev()
         .find(|msg| {
             msg.role == "user"
+                && !is_runtime_note(msg)
                 && msg
                     .content
                     .iter()
@@ -166,9 +177,33 @@ pub(crate) fn kept_verify_and_replan_messages(messages: &[Message]) -> Vec<Messa
         return kept;
     };
     match verification_call_message(messages, &verified) {
-        Some(call) => {
-            kept.push(call);
-            kept.push(verified);
+        Some(mut call) => {
+            // The pairing message may carry parallel `ToolUse` blocks whose
+            // results are NOT kept — dropping those calls here, or an
+            // assistant `tool_calls` entry without its following tool message
+            // is the same strict-provider 400 as an orphaned result.
+            let paired: std::collections::HashSet<&str> = verified
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+                    _ => None,
+                })
+                .collect();
+            call.content.retain(|block| match block {
+                ContentBlock::ToolUse { id, .. } => paired.contains(&id.as_str()),
+                _ => true,
+            });
+            if call
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::ToolUse { .. }))
+            {
+                kept.push(call);
+                kept.push(verified);
+            } else {
+                kept.push(flatten_tool_results_to_text(verified));
+            }
         }
         None => kept.push(flatten_tool_results_to_text(verified)),
     }
@@ -1975,5 +2010,84 @@ mod front_trim_tests {
         let history = vec![user_text("only question")];
         let kept = kept_verify_and_replan_messages(&history);
         assert_eq!(kept.len(), 1);
+    }
+
+    #[test]
+    fn verify_reset_trims_unpaired_parallel_calls_from_the_pairing_message() {
+        // The pairing assistant message ran A and B in parallel; only B's
+        // replay result is kept. Shipping the call message with both ToolUse
+        // blocks gives the next request a tool_call with no tool message —
+        // the same strict-provider 400 as an orphaned result.
+        let parallel_calls = Message {
+            role: "assistant".to_string(),
+            content: vec![
+                ContentBlock::Text {
+                    text: "running both".to_string(),
+                    cache_control: None,
+                },
+                ContentBlock::ToolUse {
+                    id: "A".to_string(),
+                    name: "bash".to_string(),
+                    input: serde_json::json!({"command": "ls"}),
+                    caller: None,
+                },
+                ContentBlock::ToolUse {
+                    id: "B".to_string(),
+                    name: "bash".to_string(),
+                    input: serde_json::json!({"command": "pwd"}),
+                    caller: None,
+                },
+            ],
+        };
+        let history = vec![
+            user_text("do X"),
+            parallel_calls,
+            tool_result("A"),
+            tool_result("B"),
+            verification_replay("B"),
+        ];
+        let kept = kept_verify_and_replan_messages(&history);
+        assert_eq!(kept.len(), 3, "user + trimmed call + replay result");
+        let call_ids: Vec<&str> = kept[1]
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::ToolUse { id, .. } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(call_ids, ["B"], "sibling call A must be dropped");
+        // The assistant text block survives alongside the paired call.
+        assert!(matches!(&kept[1].content[0], ContentBlock::Text { .. }));
+    }
+
+    #[test]
+    fn verify_reset_skips_runtime_notes_when_picking_the_latest_user() {
+        // Verdict/deliverables notes are user-role Text appended after the
+        // real query; the reset must keep the human's instruction, not the
+        // engine's newest note.
+        let runtime_note = user_text(
+            "<codesmith:runtime_event kind=\"result_verification\" visibility=\"internal\">\nverdict: verified-pass\n</codesmith:runtime_event>",
+        );
+        let history = vec![
+            user_text("fix the login bug"),
+            assistant_call("A"),
+            tool_result("A"),
+            verification_replay("A"),
+            runtime_note,
+        ];
+        let kept = kept_verify_and_replan_messages(&history);
+        match &kept[0].content[0] {
+            ContentBlock::Text { text, .. } => assert_eq!(text, "fix the login bug"),
+            other => panic!("expected the real user query, got {other:?}"),
+        }
+        assert!(
+            !kept.iter().any(|m| m
+                .content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { text, .. }
+                    if text.starts_with(super::RUNTIME_EVENT_PREFIX)))),
+            "the runtime note must not survive the reset"
+        );
     }
 }

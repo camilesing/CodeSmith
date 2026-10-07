@@ -36,6 +36,12 @@ export async function fetchRepoStats(token?: string): Promise<RepoStats> {
   const repo = (await safeJson(repoRes)) as
     | { stargazers_count?: number; forks_count?: number; open_issues_count?: number }
     | null;
+  if (!repo) {
+    // Let callers keep their fallback (the homepage's FALLBACK_STATS)
+    // instead of rendering authoritative-looking zeros for a
+    // rate-limited/failed repo fetch.
+    throw new Error(`github repo fetch failed: ${repoRes.status}`);
+  }
 
   const contributors = await contributorCount(contribRes);
 
@@ -46,7 +52,7 @@ export async function fetchRepoStats(token?: string): Promise<RepoStats> {
   );
   const prJson = (await safeJson(prRes)) as { total_count?: number } | null;
   const openPulls = prJson?.total_count ?? 0;
-  const openIssues = Math.max(0, (repo?.open_issues_count ?? openPulls) - openPulls);
+  const openIssues = Math.max(0, (repo.open_issues_count ?? openPulls) - openPulls);
 
   const r = (await safeJson(releaseRes)) as
     | { tag_name: string; published_at: string; html_url: string }
@@ -55,8 +61,8 @@ export async function fetchRepoStats(token?: string): Promise<RepoStats> {
   if (r) latestRelease = { tag: r.tag_name, publishedAt: r.published_at, url: r.html_url };
 
   return {
-    stars: repo?.stargazers_count ?? 0,
-    forks: repo?.forks_count ?? 0,
+    stars: repo.stargazers_count ?? 0,
+    forks: repo.forks_count ?? 0,
     openIssues,
     openPulls,
     contributors,

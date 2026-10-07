@@ -16,15 +16,23 @@
 //!
 //! Safety contract (P3-8 boundary #4, non-negotiable):
 //!
-//! * **Approved-replay only.** The re-run goes through the session's own
-//!   [`ToolDispatcher::execute`](crate::tool_dispatch::ToolDispatcher::execute)
-//!   and replays *exactly* the input the model already sent (same command,
-//!   same cwd, same timeout) during this turn — an input that already passed
-//!   the approval gate once. Only commands starting with a known test/build
-//!   prefix are eligible; arbitrary `exec_shell` history is never replayed.
-//!   Verification grants no authority the turn didn't already have. (Same
-//!   philosophy as the capacity controller's read-only tool replay, extended
-//!   from read-only tools to already-approved verification-class commands.)
+//! * **Gated replay.** The re-run goes through the session's own
+//!   [`ToolDispatcher`](crate::tool_dispatch::ToolDispatcher) and replays the
+//!   input the model already sent during this turn — verbatim for
+//!   `exec_shell` (same command, cwd, timeout), reconstructed as the
+//!   equivalent `cargo test` invocation for `run_tests` claims. Only commands
+//!   starting with a known test/build prefix are eligible; arbitrary
+//!   `exec_shell` history is never replayed. Before executing, the replay
+//!   re-consults the dispatcher's approval classification for the exact
+//!   replay input and is skipped as a `verify-error` when it classifies as
+//!   `Required` (a per-invocation approval grant covered the original
+//!   execution, not a second unattended one); the call is
+//!   bracketed with [`Callback::on_tool_start`](codesmith_agent::callback::Callback::on_tool_start)
+//!   / `on_tool_end` so hooks and the UI observe it, and it aborts on the
+//!   session cancel token. Verification grants no authority the turn didn't
+//!   already have. (Same philosophy as the capacity controller's read-only
+//!   tool replay, extended from read-only tools to verification-class
+//!   commands under the same gates.)
 //! * **Read-only over capabilities.** The verifier never writes files, never
 //!   edits prompts, never changes the tool surface, and never touches the
 //!   approval gate, validators, or release thresholds — 安全机制不可自我修改.
@@ -39,10 +47,13 @@
 
 use std::sync::Arc;
 
+use codesmith_agent::callback::Callback;
 use codesmith_agent::models::{ContentBlock, Message};
-use codesmith_tools::ToolResult;
+use codesmith_tools::{ApprovalRequirement, ToolResult};
+use tokio_util::sync::CancellationToken;
 
 use super::context::summarize_text;
+use crate::events::{ResultFailureType, ResultVerdict};
 
 /// Claim phrases asserting a passing test suite. Matched as contiguous
 /// substrings against the lowercased text of the turn's final assistant
@@ -145,10 +156,10 @@ pub(crate) enum ClaimKind {
 }
 
 impl ClaimKind {
-    fn failure_label(self) -> &'static str {
+    fn failure_type(self) -> ResultFailureType {
         match self {
-            ClaimKind::Test => "test-failure",
-            ClaimKind::Build => "build-failure",
+            ClaimKind::Test => ResultFailureType::TestFailure,
+            ClaimKind::Build => ResultFailureType::BuildFailure,
         }
     }
 }
@@ -285,13 +296,24 @@ fn reconstruct_run_tests_command(input: &serde_json::Value) -> Option<String> {
     {
         command.push_str(" --all-features");
     }
-    if let Some(args) = input.get("args").and_then(|v| v.as_array()) {
-        for arg in args {
-            if let Some(arg) = arg.as_str() {
+    // The tool schema declares `args` as a shell-style string (test_runner
+    // parses it with shlex), so the string form is what real inputs carry;
+    // an array is accepted as a legacy transcript shape only.
+    match input.get("args") {
+        Some(serde_json::Value::String(args)) => {
+            let args = args.trim();
+            if !args.is_empty() {
+                command.push(' ');
+                command.push_str(args);
+            }
+        }
+        Some(serde_json::Value::Array(args)) => {
+            for arg in args.iter().filter_map(serde_json::Value::as_str) {
                 command.push(' ');
                 command.push_str(arg);
             }
         }
+        _ => {}
     }
     Some(command)
 }
@@ -361,38 +383,18 @@ fn strip_env_assignment(segment: &str) -> Option<&str> {
     segment.get(rest_start..).map(str::trim_start)
 }
 
-/// Verdict outcome. Labels double as the wire vocabulary used by the
-/// injected message and `Event::ResultVerification`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum VerdictKind {
-    VerifiedPass,
-    VerifiedFail,
-    /// The re-run itself did not complete (timeout / sandbox denial / tool
-    /// unavailable). Never reported as pass or fail — an unverifiable check
-    /// must not masquerade as either.
-    VerifyError,
-    /// The model claimed success but executed no verification-class command
-    /// during the turn — the highest-value signal this checker produces
-    /// (a claim with no execution evidence behind it).
-    Unsubstantiated,
-}
-
-impl VerdictKind {
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            VerdictKind::VerifiedPass => "verified-pass",
-            VerdictKind::VerifiedFail => "verified-fail",
-            VerdictKind::VerifyError => "verify-error",
-            VerdictKind::Unsubstantiated => "unsubstantiated",
-        }
-    }
-}
+// Verdict outcome. `ResultVerdict` (events.rs) is the one typed definition
+// shared by the event, the injected message, and the evolution log; labels
+// double as the wire vocabulary (`verified-pass` / `verified-fail` /
+// `verify-error` / `unsubstantiated`). See the enum's own docs for the
+// per-variant contracts (`VerifyError` never masquerades as pass or fail;
+// `Unsubstantiated` is a claim with no execution evidence behind it).
 
 /// One recorded verdict — the unit the pending buffer accumulates and the
 /// pre-request flush renders. Field set mirrors 笔记9's four elements.
 #[derive(Debug, Clone)]
 pub(crate) struct VerdictBlock {
-    pub(crate) kind: VerdictKind,
+    pub(crate) kind: ResultVerdict,
     pub(crate) claim_kind: ClaimKind,
     pub(crate) phrase: String,
     pub(crate) command: Option<String>,
@@ -405,20 +407,20 @@ pub(crate) struct VerdictBlock {
 }
 
 impl VerdictBlock {
-    pub(crate) fn failure_type(&self) -> Option<&'static str> {
+    pub(crate) fn failure_type(&self) -> Option<ResultFailureType> {
         match self.kind {
-            VerdictKind::VerifiedFail => Some(self.claim_kind.failure_label()),
-            VerdictKind::VerifyError => Some("verify-error"),
-            VerdictKind::Unsubstantiated => Some("unsubstantiated-claim"),
-            VerdictKind::VerifiedPass => None,
+            ResultVerdict::VerifiedFail => Some(self.claim_kind.failure_type()),
+            ResultVerdict::VerifyError => Some(ResultFailureType::VerifyError),
+            ResultVerdict::Unsubstantiated => Some(ResultFailureType::UnsubstantiatedClaim),
+            ResultVerdict::VerifiedPass => None,
         }
     }
 
     /// Render the four-element verdict text (结论/维度/证据位置/失败类型).
     fn render(&self) -> String {
         let mut out = String::new();
-        out.push_str(&format!("verdict: {}", self.kind.label()));
-        if self.kind == VerdictKind::VerifiedFail {
+        out.push_str(&format!("verdict: {}", self.kind.as_str()));
+        if self.kind == ResultVerdict::VerifiedFail {
             out.push_str(" (claim mismatch)");
         }
         out.push('\n');
@@ -449,7 +451,7 @@ nothing to re-run\n",
             );
         }
         if let Some(failure_type) = self.failure_type() {
-            out.push_str(&format!("failure_type: {failure_type}\n"));
+            out.push_str(&format!("failure_type: {}\n", failure_type.as_str()));
         }
         out
     }
@@ -458,14 +460,21 @@ nothing to re-run\n",
 /// Execute the verification re-run and produce the verdict. Pure with respect
 /// to engine state — the caller decides what to do with the returned block
 /// (push to the pending buffer, emit the event).
+///
+/// `cancel` aborts an in-flight replay (the session token — a detached
+/// background re-run must die with the session); `callback` brackets the
+/// replay with `on_tool_start`/`on_tool_end` so hooks, extensions, and the
+/// UI observe exactly what the verifier executed.
 pub(crate) async fn verify_claim(
     dispatcher: Option<Arc<dyn crate::tool_dispatch::ToolDispatcher>>,
+    callback: Option<Arc<dyn Callback>>,
+    cancel: CancellationToken,
     claim: DetectedClaim,
     command: Option<VerificationCommand>,
 ) -> VerdictBlock {
     let Some(command) = command else {
         return VerdictBlock {
-            kind: VerdictKind::Unsubstantiated,
+            kind: ResultVerdict::Unsubstantiated,
             claim_kind: claim.kind,
             phrase: claim.phrase,
             command: None,
@@ -488,9 +497,41 @@ pub(crate) async fn verify_claim(
     } else {
         command.tool_name.as_str()
     };
-    let result = dispatcher
-        .execute(replay_name, command.replay_input.clone(), None)
-        .await;
+    // Approval gate: the original execution's approval covered *that*
+    // invocation, not a second unattended one. A `Required` classification
+    // for the exact replay input — per-invocation grants, input-sensitive
+    // policies — means the replay is skipped rather than run ungated (a
+    // persistent-allow or sandboxed-auto classification returns `Auto`
+    // and replays normally). `Suggest` tools ran without a hard gate in
+    // the turn itself, so they keep that posture here.
+    if dispatcher.approval_requirement_for(replay_name, &command.replay_input)
+        == Some(ApprovalRequirement::Required)
+    {
+        return error_verdict(
+            claim,
+            &command,
+            "replay input requires approval under the current policy; replay skipped",
+        );
+    }
+    let replay_id = format!("result-verifier:{}", command.tool_use_id);
+    if let Some(callback) = callback.as_ref() {
+        callback
+            .on_tool_start(&replay_id, replay_name, &command.replay_input)
+            .await;
+    }
+    let result = tokio::select! {
+        biased;
+        () = cancel.cancelled() => {
+            // No `on_tool_end`: the dropped execute future is the record; the
+            // bridge is verifier-owned, so the unpaired start cannot leak
+            // into another tool's end event.
+            return error_verdict(claim, &command, "replay cancelled before completion");
+        }
+        result = dispatcher.execute(replay_name, command.replay_input.clone(), None) => result,
+    };
+    if let Some(callback) = callback.as_ref() {
+        callback.on_tool_end(replay_name, &result).await;
+    }
     match result {
         Ok(tool_result) => verdict_from_tool_result(claim, &command, tool_result),
         Err(err) => error_verdict(claim, &command, &format!("replay error: {err}")),
@@ -503,7 +544,7 @@ fn error_verdict(
     reason: &str,
 ) -> VerdictBlock {
     VerdictBlock {
-        kind: VerdictKind::VerifyError,
+        kind: ResultVerdict::VerifyError,
         claim_kind: claim.kind,
         phrase: claim.phrase,
         command: Some(command.display_command.clone()),
@@ -537,21 +578,32 @@ fn verdict_from_tool_result(
     let evidence_excerpt = summarize_text(result.content.trim(), EVIDENCE_EXCERPT_LIMIT);
 
     let kind = if sandbox_denied {
-        VerdictKind::VerifyError
+        ResultVerdict::VerifyError
     } else if exit_code == Some(0) {
-        VerdictKind::VerifiedPass
+        ResultVerdict::VerifiedPass
     } else if exit_code.is_some() {
-        VerdictKind::VerifiedFail
+        ResultVerdict::VerifiedFail
     } else if result.success {
-        VerdictKind::VerifiedPass
-    } else if status.contains("timeout") {
-        VerdictKind::VerifyError
+        ResultVerdict::VerifiedPass
+    } else if status == "timedout" || status == "killed" {
+        // `{:?}` of `ShellStatus`, lowercased: "timedout" does not contain
+        // "timeout" — an exact match, or a killed/timed-out re-run falls to
+        // the fail arm below and is misreported as a claim mismatch.
+        ResultVerdict::VerifyError
     } else {
         // No exit code and no success flag: treat as a failed run rather
         // than pass — the checker fails closed like every other validator.
-        VerdictKind::VerifiedFail
+        ResultVerdict::VerifiedFail
     };
-    let error_reason = sandbox_denied.then(|| "sandbox denied the replayed command".to_string());
+    let error_reason = match kind {
+        ResultVerdict::VerifyError if sandbox_denied => {
+            Some("sandbox denied the replayed command".to_string())
+        }
+        ResultVerdict::VerifyError if status == "timedout" || status == "killed" => {
+            Some(format!("re-run did not complete (status: {status})"))
+        }
+        _ => None,
+    };
     VerdictBlock {
         kind,
         claim_kind: claim.kind,
@@ -591,14 +643,15 @@ pub(crate) fn verdict_runtime_message(rendered: &str) -> Message {
         role: "user".to_string(),
         content: vec![ContentBlock::Text {
             text: format!(
-                "<codesmith:runtime_event kind=\"result_verification\" visibility=\"internal\">\n\
+                "{} kind=\"result_verification\" visibility=\"internal\">\n\
 This is an internal runtime event, not user input. The engine re-ran a verification command \
 from the previous turn and checked it against a claim made there. Treat the exit code \
 reported below as ground truth and reconcile your earlier claim with it; if the verdict \
 contradicts what you said, say so and fix it. Do not quote the raw XML unless the user \
 asks to debug engine internals.\n\n\
 {rendered}\n\
-</codesmith:runtime_event>"
+</codesmith:runtime_event>",
+                super::RUNTIME_EVENT_PREFIX
             ),
             cache_control: None,
         }],
@@ -764,10 +817,12 @@ mod tests {
 
     #[test]
     fn run_tests_calls_are_reconstructed_as_exec_shell_replay() {
+        // The tool schema declares `args` as a shell-style string — the shape
+        // real `run_tests` inputs carry.
         let msgs = [assistant_tool_use(
             "t9",
             "run_tests",
-            json!({"args": ["--lib"], "all_features": true}),
+            json!({"args": "--lib", "all_features": true}),
         )];
         let cmd = find_verification_command(&msgs, ClaimKind::Test).expect("found");
         assert_eq!(cmd.display_command, "cargo test --all-features --lib");
@@ -777,9 +832,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn run_tests_args_string_is_appended_verbatim() {
+        let msgs = [assistant_tool_use(
+            "t9",
+            "run_tests",
+            json!({"args": "--lib string_utils -- --nocapture"}),
+        )];
+        let cmd = find_verification_command(&msgs, ClaimKind::Test).expect("found");
+        assert_eq!(
+            cmd.display_command,
+            "cargo test --lib string_utils -- --nocapture"
+        );
+    }
+
+    #[test]
+    fn run_tests_legacy_array_args_still_reconstruct() {
+        let msgs = [assistant_tool_use(
+            "t9",
+            "run_tests",
+            json!({"args": ["--lib"], "all_features": true}),
+        )];
+        let cmd = find_verification_command(&msgs, ClaimKind::Test).expect("found");
+        assert_eq!(cmd.display_command, "cargo test --all-features --lib");
+    }
+
     // ── verdict rendering ──────────────────────────────────────────────
 
-    fn sample_verdict(kind: VerdictKind) -> VerdictBlock {
+    fn sample_verdict(kind: ResultVerdict) -> VerdictBlock {
         VerdictBlock {
             kind,
             claim_kind: ClaimKind::Test,
@@ -794,7 +874,7 @@ mod tests {
 
     #[test]
     fn verdict_render_carries_the_four_elements() {
-        let rendered = sample_verdict(VerdictKind::VerifiedFail).render();
+        let rendered = sample_verdict(ResultVerdict::VerifiedFail).render();
         assert!(rendered.contains("verdict: verified-fail (claim mismatch)"));
         assert!(rendered.contains("dimension: result"));
         assert!(rendered.contains("evidence: re-ran `cargo test`"));
@@ -806,7 +886,7 @@ mod tests {
     #[test]
     fn unsubstantiated_verdict_names_the_missing_evidence() {
         let block = VerdictBlock {
-            kind: VerdictKind::Unsubstantiated,
+            kind: ResultVerdict::Unsubstantiated,
             claim_kind: ClaimKind::Test,
             phrase: "tests pass".to_string(),
             command: None,
@@ -823,7 +903,7 @@ mod tests {
 
     #[test]
     fn pass_verdict_has_no_failure_type() {
-        let rendered = sample_verdict(VerdictKind::VerifiedPass).render();
+        let rendered = sample_verdict(ResultVerdict::VerifiedPass).render();
         assert!(rendered.contains("verdict: verified-pass"));
         assert!(!rendered.contains("failure_type"));
     }
@@ -846,7 +926,7 @@ mod tests {
     fn render_verdicts_joins_blocks_and_handles_empty() {
         assert!(render_verdicts(&[]).is_none());
         let joined =
-            render_verdicts(&[sample_verdict(VerdictKind::VerifiedPass)]).expect("rendered");
+            render_verdicts(&[sample_verdict(ResultVerdict::VerifiedPass)]).expect("rendered");
         assert!(joined.contains("verdict: verified-pass"));
     }
 
@@ -874,7 +954,7 @@ mod tests {
                 metadata: Some(json!({"exit_code": 0})),
             },
         );
-        assert_eq!(pass.kind, VerdictKind::VerifiedPass);
+        assert_eq!(pass.kind, ResultVerdict::VerifiedPass);
         let fail = verdict_from_tool_result(
             claim,
             &command,
@@ -885,8 +965,8 @@ mod tests {
                 metadata: Some(json!({"exit_code": 1})),
             },
         );
-        assert_eq!(fail.kind, VerdictKind::VerifiedFail);
-        assert_eq!(fail.failure_type(), Some("test-failure"));
+        assert_eq!(fail.kind, ResultVerdict::VerifiedFail);
+        assert_eq!(fail.failure_type(), Some(ResultFailureType::TestFailure));
     }
 
     #[test]
@@ -911,7 +991,38 @@ mod tests {
                 metadata: Some(json!({"sandbox_denied": true})),
             },
         );
-        assert_eq!(block.kind, VerdictKind::VerifyError);
-        assert_eq!(block.failure_type(), Some("verify-error"));
+        assert_eq!(block.kind, ResultVerdict::VerifyError);
+        assert_eq!(block.failure_type(), Some(ResultFailureType::VerifyError));
+    }
+
+    #[test]
+    fn timedout_or_killed_replays_are_errors_never_fails() {
+        // Regression: shell metadata lowercases `{:?}` of `ShellStatus`, so
+        // "TimedOut" → "timedout", which does not contain "timeout". The
+        // old substring check misfiled these as claim-mismatch fails.
+        for status in ["TimedOut", "Killed"] {
+            let claim = DetectedClaim {
+                kind: ClaimKind::Test,
+                phrase: "tests pass".to_string(),
+            };
+            let command = VerificationCommand {
+                replay_input: json!({"command": "cargo test"}),
+                display_command: "cargo test".to_string(),
+                tool_name: "exec_shell".to_string(),
+                tool_use_id: "t3".to_string(),
+            };
+            let block = verdict_from_tool_result(
+                claim,
+                &command,
+                ToolResult {
+                    canonical: None,
+                    content: String::new(),
+                    success: false,
+                    metadata: Some(json!({"status": status, "exit_code": null})),
+                },
+            );
+            assert_eq!(block.kind, ResultVerdict::VerifyError, "status {status}");
+            assert!(block.error_reason.is_some(), "status {status}");
+        }
     }
 }

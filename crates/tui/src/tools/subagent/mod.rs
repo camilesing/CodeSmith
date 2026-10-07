@@ -2081,7 +2081,7 @@ impl ToolSpec for ToolAgentTool {
 
     fn description(&self) -> &'static str {
         concat!(
-            "Open an experimental fast-lane execution agent (Fin): DeepSeek V4 Flash with thinking forced off. ",
+            "Open an experimental fast-lane execution agent (Fin): the active provider's light tier with thinking forced off. ",
             "Use it for simple tool-bound work such as OCR, file/search lookups, fetches, or command probes where the parent model should keep planning and synthesis context clean. ",
             "Returns the same session projection as agent_open; use agent_eval to fetch/wait and agent_close to close it. ",
             "Do not use this for nuanced implementation, architecture, release decisions, or tasks that need careful reasoning."
@@ -5875,24 +5875,34 @@ pub(crate) async fn resolve_subagent_assignment_route(
     let explicit_model = configured_model.is_some();
     let mut route = fallback_subagent_assignment_route(runtime, configured_model, prompt);
 
-    let router_outcome = if should_use_subagent_router(runtime) {
+    let router_ran = should_use_subagent_router(runtime);
+    let router_outcome = if router_ran {
         subagent_model_router(runtime, prompt).await
     } else {
         Ok(None)
     };
     // The only place sub-agent routing quality can be diagnosed — a
     // misconfigured router_model, the 4s timeout, or malformed JSON all
-    // used to degrade to the heuristic with zero trace.
-    match &router_outcome {
-        Err(e) => tracing::warn!(
+    // used to degrade to the heuristic with zero trace. The skipped case
+    // is logged separately so a fixed-model session doesn't read as a
+    // router call that came back empty.
+    if router_ran {
+        match &router_outcome {
+            Err(e) => tracing::warn!(
+                target: "codesmith_subagent_router",
+                "sub-agent model router failed; falling back to heuristic: {e}"
+            ),
+            Ok(None) => tracing::debug!(
+                target: "codesmith_subagent_router",
+                "sub-agent model router returned no recommendation; using heuristic"
+            ),
+            Ok(Some(_)) => {}
+        }
+    } else {
+        tracing::debug!(
             target: "codesmith_subagent_router",
-            "sub-agent model router failed; falling back to heuristic: {e}"
-        ),
-        Ok(None) => tracing::debug!(
-            target: "codesmith_subagent_router",
-            "sub-agent model router returned no recommendation; using heuristic"
-        ),
-        Ok(Some(_)) => {}
+            "sub-agent model router skipped (model mode fixed); using heuristic"
+        );
     }
     if let Ok(Some(recommendation)) = router_outcome {
         if runtime.auto_model && !explicit_model {

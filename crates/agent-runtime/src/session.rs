@@ -357,10 +357,21 @@ pub fn rebuild_recent_read_files_from_messages(
                 is_error,
                 ..
             } = block
-                && is_error.is_none()
+                // The production record site (executor batches) always writes
+                // `Some(!success)`; `None` stays accepted as a defensive /
+                // legacy-transcript shape.
+                && matches!(is_error, None | Some(false))
                 && let Some(input) = calls.get(tool_use_id)
             {
-                record_read_file_result_into(&files, input, content);
+                // Mirror the live observe site's hidden-Unicode strip (the
+                // security property the raw-content path would lose) before
+                // the preview is recorded — the rebuilt queue re-enters model
+                // context post-compaction. Known limitation: the live site
+                // additionally runs model-dependent head/tail compaction
+                // (`compact_tool_result_for_context`); the projection rebuild
+                // has no model in scope and applies only the sanitize step.
+                let sanitized = crate::sanitization::partially_sanitize_unicode(content.trim());
+                record_read_file_result_into(&files, input, &sanitized);
             }
         }
     }
@@ -396,7 +407,9 @@ mod tests {
         let tool_result = |id: &str, content: &str| ContentBlock::ToolResult {
             tool_use_id: id.to_string(),
             content: content.to_string(),
-            is_error: None,
+            // Production transcripts always carry Some(!success) — the live
+            // record site writes it for every tool result.
+            is_error: Some(false),
             content_blocks: None,
         };
         let messages = vec![
@@ -426,6 +439,21 @@ mod tests {
             Message {
                 role: "user".to_string(),
                 content: vec![tool_result("c5", "contents of a (re-read)")],
+            },
+            // A failed read (the production shape for an error result) must
+            // not enter the rebuilt queue.
+            Message {
+                role: "assistant".to_string(),
+                content: vec![tool_use("c6", "read_file", json!({"path": "e.rs"}))],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "c6".to_string(),
+                    content: "no such file".to_string(),
+                    is_error: Some(true),
+                    content_blocks: None,
+                }],
             },
         ];
 

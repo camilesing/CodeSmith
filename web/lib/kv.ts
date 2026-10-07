@@ -60,7 +60,10 @@ export async function getDispatch(): Promise<CuratedDispatch | null> {
     if (!isDispatchPayload(parsed)) {
       return null;
     }
-    return parsed as CuratedDispatch;
+    // Stamp a default timestamp so consumers reading `generatedAt` (the
+    // homepage date line calls `new Date(...).toISOString()` unguarded)
+    // cannot crash on a payload written without one.
+    return { ...parsed, generatedAt: new Date().toISOString() };
   } catch {
     return null;
   }

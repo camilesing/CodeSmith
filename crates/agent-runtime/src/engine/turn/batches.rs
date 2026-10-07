@@ -33,7 +33,26 @@ use crate::engine::dispatch::{ToolExecutionBatch, ToolExecutionPlan, plan_tool_e
 use crate::engine::host_executor::HostAgentExecutor;
 use crate::engine::loop_guard::{AttemptDecision, LoopGuard, OutcomeDecision};
 use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope};
+use crate::tool_dispatch::ToolDispatcher;
 use crate::tools::spec::ApprovalRequirement;
+
+/// Classify whether `name`+`input` requires approval, mirroring
+/// `request_approval`'s merge (turn::approval): a host dispatcher's
+/// per-input override wins; `Auto` or `None` falls back to the static
+/// capability gate. Phase 1 plans on it, and the parallel arm re-runs it
+/// after an extension rewrites an input — the batch's approval-free
+/// classification only holds for the exact input it was computed from.
+fn input_requires_approval(
+    dispatcher: Option<&Arc<dyn ToolDispatcher>>,
+    name: &str,
+    input: &serde_json::Value,
+    caps: &[ToolCapability],
+) -> bool {
+    match dispatcher.and_then(|d| d.approval_requirement_for(name, input)) {
+        Some(req) => req != ApprovalRequirement::Auto,
+        None => requires_approval(caps),
+    }
+}
 
 /// The `ToolResult` fed back when the loop-guard blocks an identical repeat
 /// call (mirrors `handle_deepseek_turn`'s `loop_guard_block_tool_result`). Duplicated here
@@ -198,14 +217,8 @@ impl HostAgentExecutor {
             // own logic in `turn::approval`): a host dispatcher's
             // `Required` / `Suggest` downgrades/upgrades the gate per
             // input; `Auto` or `None` falls back to the static capability gate.
-            let approval_required = match self
-                .tool_dispatcher
-                .as_ref()
-                .and_then(|d| d.approval_requirement_for(&name, &input))
-            {
-                Some(req) => req != ApprovalRequirement::Auto,
-                None => requires_approval(&caps),
-            };
+            let approval_required =
+                input_requires_approval(self.tool_dispatcher.as_ref(), &name, &input, &caps);
             plans.push(ToolExecutionPlan {
                 index: i,
                 id: id.clone(),
@@ -255,9 +268,12 @@ impl HostAgentExecutor {
                     let mut ext_blocks: HashMap<usize, String> = HashMap::new();
                     let mut ext_rewrites: HashMap<usize, serde_json::Value> = HashMap::new();
                     for plan in &batch_plans {
-                        callback
-                            .on_tool_start(&plan.id, &plan.name, &plan.input)
-                            .await;
+                        // Resolve the extension transform FIRST so
+                        // `on_tool_start` reports the input that will
+                        // actually run — hook hosts and audit records must
+                        // agree with the executed call, not the pre-rewrite
+                        // plan input.
+                        let mut effective_input = plan.input.clone();
                         if let Some(runner) = &extension {
                             let out = runner
                                 .emit(codesmith_agent::extension::ExtensionEvent::ToolCall(
@@ -282,9 +298,38 @@ impl HostAgentExecutor {
                                     plan.name,
                                     plan.id
                                 );
-                                ext_rewrites.insert(plan.index, e.input);
+                                // The parallel batch was classified on the
+                                // ORIGINAL input; the rewritten input must
+                                // re-classify as auto-approved or the call is
+                                // blocked here — a rewrite cannot smuggle a
+                                // non-approved input through the approval-free
+                                // batch. The model can re-issue the call to
+                                // route it through the serial approval gate.
+                                let caps = tool_for_plan[plan.index]
+                                    .as_ref()
+                                    .map(|t| t.capabilities())
+                                    .unwrap_or_default();
+                                if input_requires_approval(
+                                    self.tool_dispatcher.as_ref(),
+                                    &plan.name,
+                                    &e.input,
+                                    &caps,
+                                ) {
+                                    ext_blocks.insert(
+                                        plan.index,
+                                        "extension-rewritten input requires approval; the \
+                                         call was blocked from the parallel batch — re-issue it"
+                                            .to_string(),
+                                    );
+                                } else {
+                                    effective_input = e.input.clone();
+                                    ext_rewrites.insert(plan.index, e.input);
+                                }
                             }
                         }
+                        callback
+                            .on_tool_start(&plan.id, &plan.name, &effective_input)
+                            .await;
                     }
                     let mut futs: FuturesUnordered<
                         Pin<Box<dyn Future<Output = DispatchedTool> + Send>>,
@@ -433,9 +478,6 @@ impl HostAgentExecutor {
                 }
                 ToolExecutionBatch::Serial(plan) => {
                     let idx = plan.index;
-                    callback
-                        .on_tool_start(&plan.id, &plan.name, &plan.input)
-                        .await;
                     // §F2b T1 — honor `Block` at `ToolCall` (serial arm):
                     // capture the block reason, then skip approval/`tool.run`
                     // below (mirrors the loop-guard blocked path — a failed
@@ -477,6 +519,12 @@ impl HostAgentExecutor {
                         None
                     };
                     let run_input = ext_input.unwrap_or_else(|| plan.input.clone());
+                    // `on_tool_start` fires with the input that will actually
+                    // run (post-rewrite) so hooks and audit records agree
+                    // with the executed call.
+                    callback
+                        .on_tool_start(&plan.id, &plan.name, &run_input)
+                        .await;
                     // approval gate: a tool that requires approval is gated
                     // behind the decision channel; denied ⇒ the tool never
                     // runs and a `permission_denied` error is fed back so the

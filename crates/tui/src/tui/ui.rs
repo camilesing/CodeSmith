@@ -2139,7 +2139,9 @@ async fn run_event_loop(
                         // or never ran at all); a pass is a quiet
                         // confirmation.
                         let claim = crate::utils::truncate_with_ellipsis(&claim, 24, "…");
-                        let (level, icon) = if verdict == "verified-pass" {
+                        let (level, icon) = if verdict
+                            == codesmith_agent_runtime::events::ResultVerdict::VerifiedPass
+                        {
                             (crate::tui::app::StatusToastLevel::Info, "✓")
                         } else {
                             (crate::tui::app::StatusToastLevel::Warning, "⚠️")
@@ -2152,12 +2154,13 @@ async fn run_event_loop(
                             _ => "no verification command run this turn".to_string(),
                         };
                         let failure = failure_type
-                            .as_deref()
-                            .map(|t| format!(" ({t})"))
+                            .as_ref()
+                            .map(|t| format!(" ({})", t.as_str()))
                             .unwrap_or_default();
                         app.push_status_toast(
                             format!(
-                                "{icon} claim check {verdict}{failure}: 「{claim}」 vs {detail}"
+                                "{icon} claim check {}{failure}: 「{claim}」 vs {detail}",
+                                verdict.as_str()
                             ),
                             level,
                             Some(10_000),

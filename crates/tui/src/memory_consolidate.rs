@@ -16,7 +16,7 @@
 //! *contents* are never touched — merging or deleting content is a
 //! semantic decision that stays with the human.
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 
 use crate::llm_client::LlmClientHandle;
 
@@ -160,6 +160,12 @@ pub(crate) async fn run_memory_consolidate(
         );
         return Ok(());
     }
+    // An unreadable index/directory must abort, never apply: the curator's
+    // passes on a failed read look like mass staleness (which `--apply`
+    // would write) — a misdiagnosed cleanup, not a cleanup.
+    if let Some(read_error) = &report.read_error {
+        bail!("memory consolidation aborted: {read_error}");
+    }
 
     println!("  · pointer lines: {}", report.pointer_lines_total);
     println!(
@@ -194,16 +200,23 @@ pub(crate) async fn run_memory_consolidate(
                 print!("  · Requesting merge proposal from {model}...");
                 use std::io::Write;
                 std::io::stdout().flush().ok();
+                // Uncapped scan: the validator requires EVERY on-disk topic
+                // file to be referenced, so a MAX_MEMORY_FILES-truncated
+                // list would guarantee rejection of an otherwise-perfect
+                // proposal (>200 topic files) with a misleading
+                // "drops pointers" reason.
                 let headers: Vec<serde_json::Value> =
-                    codesmith_agent_runtime::knowledge::scan::scan_memory_files(&memory_dir)
-                        .into_iter()
-                        .map(|header| {
-                            serde_json::json!({
-                                "file": header.filename,
-                                "description": header.description.clone().unwrap_or_default(),
-                            })
+                    codesmith_agent_runtime::knowledge::scan::scan_memory_files_uncapped(
+                        &memory_dir,
+                    )
+                    .into_iter()
+                    .map(|header| {
+                        serde_json::json!({
+                            "file": header.filename,
+                            "description": header.description.clone().unwrap_or_default(),
                         })
-                        .collect();
+                    })
+                    .collect();
                 let headers_json = serde_json::to_string(&headers).unwrap_or_default();
                 let proposed = propose_consolidated_index(
                     &client,

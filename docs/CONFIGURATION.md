@@ -858,15 +858,18 @@ If you are upgrading from older releases:
   `minimal`/`balanced`/`maximal` map to `simple`/`middle`/`all`).
 - `sandbox_mode` (string, optional): `read-only`, `workspace-write`, `danger-full-access`, `external-sandbox`.
   Platform support is not identical. macOS uses Seatbelt for policy
-  enforcement. Linux support is helper-gated around Landlock or optional
-  bubblewrap (`prefer_bwrap = true`). Windows does not currently advertise an OS
+  enforcement. Linux selects bubblewrap whenever the `bubblewrap`
+  package is installed (the `prefer_bwrap` key is deprecated and
+  ignored), falling back to the Landlock path otherwise. Windows does
+  not currently advertise an OS
   sandbox; the planned Windows helper contract starts with process-tree
   containment only and must not be described as read-only filesystem isolation,
   workspace-write enforcement, network blocking, registry isolation, or
   AppContainer isolation until those are implemented. Advanced sandbox controls
   can be set under `[sandbox]`: `enabled`, `fail_if_unavailable`,
   `enabled_platforms`, `excluded_commands`, `auto_allow_bash_if_sandboxed`,
-  `prefer_bwrap`, plus `[sandbox.filesystem]` and `[sandbox.network]` tables.
+  plus `[sandbox.filesystem]` and `[sandbox.network]` tables
+  (`prefer_bwrap` is deprecated and ignored).
   Shell results report both requested and effective sandbox metadata so fallback
   behavior is explicit.
 - `sandbox_backend` / `sandbox_url` / `sandbox_api_key` (optional):
@@ -900,15 +903,24 @@ If you are upgrading from older releases:
   appended to the conversation as an internal runtime event before the
   next request, so the model must reconcile a mismatch, and surfaced as a
   status toast. A claim with no verification command behind it is reported
-  as `unsubstantiated`. The re-run replays exactly the input the model
-  already sent through the same sandbox/network policy — it grants no
-  authority the turn did not already have. `false` restores the pre-P3-8
-  behavior of trusting the claim.
+  as `unsubstantiated`. The re-run replays the verification command the
+  model already sent through the same sandbox/network policy —
+  `exec_shell` calls verbatim (same command, cwd, timeout), `run_tests`
+  claims as the equivalent reconstructed `cargo test` invocation — and it
+  grants no authority the turn did not already have: the replay input is
+  re-checked against the approval policy (skipped as a `verify-error`
+  when it no longer classifies as auto-approved), bracketed with the
+  same tool start/end events, and aborts with the session cancel token.
+  `false` restores the pre-P3-8 behavior of trusting the claim.
 - `[doctor] llm_fallback` (bool, optional, default `true`): the
   `codesmith doctor` LLM fallback layer (P3-8 step 2). After the
   deterministic checks complete, any collected warnings/errors are handed
   to one advisory LLM call — the `[utility_model]` when configured, else
-  the main client — which proposes root causes (preferring explanations
+  the main client — together with environment context (OS, provider,
+  base_url, and model of the configured API target). Doctor prints an
+  explicit notice naming the endpoint before sending, and finding
+  details are redacted (`~` replaces home-directory prefixes). The call
+  proposes root causes (preferring explanations
   that connect multiple findings) and one concrete next action per
   finding, skipping findings whose built-in hint already covers them.
   The section renders after "All checks complete!", is explicitly

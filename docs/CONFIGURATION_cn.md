@@ -798,14 +798,15 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   `mode` 键仍作为弃用别名被接受（`minimal`/`balanced`/`maximal` 分别
   映射到 `simple`/`middle`/`all`）。
 - `sandbox_mode`（字符串，可选）：`read-only`、`workspace-write`、`danger-full-access`、`external-sandbox`。
-  各平台的支持并不相同。macOS 使用 Seatbelt 进行策略执行。Linux 支持
-  通过辅助程序围绕 Landlock 或可选的 bubblewrap（`prefer_bwrap = true`）
-  把关。Windows 目前没有 OS 沙箱；计划中的 Windows 辅助程序契约仅从
+  各平台的支持并不相同。macOS 使用 Seatbelt 进行策略执行。Linux 在
+  安装了 `bubblewrap` 软件包时总是选择 bubblewrap（`prefer_bwrap` 键
+  已废弃并被忽略），否则回退到 Landlock 路径。Windows 目前没有 OS 沙箱；计划中的 Windows 辅助程序契约仅从
   进程树隔离开始，在实现之前不得将其描述为只读文件系统隔离、工作区
   写入强制、网络阻断、注册表隔离或 AppContainer 隔离。高级沙箱控件
   可在 `[sandbox]` 下设置：`enabled`、`fail_if_unavailable`、
-  `enabled_platforms`、`excluded_commands`、`auto_allow_bash_if_sandboxed`、
-  `prefer_bwrap`，以及 `[sandbox.filesystem]` 和 `[sandbox.network]` 表。
+  `enabled_platforms`、`excluded_commands`、`auto_allow_bash_if_sandboxed`，
+  以及 `[sandbox.filesystem]` 和 `[sandbox.network]` 表（`prefer_bwrap`
+  已废弃并被忽略）。
   Shell 结果会同时报告请求的和实际生效的沙箱元数据，使回退行为
   明确可见。
 - `sandbox_backend` / `sandbox_url` / `sandbox_api_key`（可选）：外部
@@ -834,13 +835,20 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   （结论 / 维度 / 证据位置 / 失败类型）会作为内部运行时事件在下一次
   请求前追加进会话，模型必须让先前的声明与它对账；同时以状态
   toast 提示用户。声明背后没有任何验证命令时报告为
-  `unsubstantiated`（无据声明）。重跑原样重放模型已发送的输入、
-  走同一套沙箱/网络策略——不授予回合本来没有的任何权限。设为
+  `unsubstantiated`（无据声明）。重放模型已发送的验证命令、走同一套
+  沙箱/网络策略——`exec_shell` 调用逐字重放（同一命令、cwd、超时），
+  `run_tests` 声明重放为等价重构的 `cargo test` 调用——且不授予回合
+  本来没有的任何权限：重放输入会重新对照审批策略（不再属于自动
+  批准时跳过并记为 `verify-error`）、以与回合自身分发相同的工具
+  开始/结束事件可见化，并随会话取消令牌中止。设为
   `false` 恢复 P3-8 之前信任声明的行为。
 - `[doctor] llm_fallback`（布尔，可选，默认 `true`）：`codesmith doctor`
-  的 LLM 兜底层（P3-8 第 2 步）。确定性检查跑完后，收集到的警告/错误会
-  交给一次咨询式 LLM 调用——配置了 `[utility_model]` 时用它，否则用主
-  客户端——由它给出根因推测（优先能串联多个发现的解释）和每个发现
+  的 LLM 兜底层（P3-8 第 2 步）。确定性检查跑完后，收集到的警告/错误
+  会连同环境上下文（操作系统、provider、base_url 与所配置 API 目标的
+  模型名）交给一次咨询式 LLM 调用——配置了 `[utility_model]` 时用它，
+  否则用主客户端。发送前 doctor 会打印明确的提示，指明载荷发往的
+  provider 与 base_url；发现详情在离开本机前会脱敏（home 目录前缀替换
+  为 `~`）。由它给出根因推测（优先能串联多个发现的解释）和每个发现
   的一条具体后续动作，内建提示已覆盖的发现会被跳过。该段落渲染在
   "All checks complete!" 之后，明确标注咨询性质（确定性结果优先），
   模型不执行任何操作。跳过条件（无法解析客户端、空响应、传输错误、

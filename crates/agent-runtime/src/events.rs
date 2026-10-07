@@ -26,6 +26,58 @@ pub enum TurnOutcomeStatus {
     Failed,
 }
 
+/// Verdict of a result-claim verification re-run (P3-8). One typed
+/// definition shared by the emitter (`engine::result_verifier`), this event,
+/// and the evolution log — producers and consumers cannot drift apart on a
+/// typo'd string. `as_str` is the wire vocabulary used by the injected
+/// runtime-event message and the jsonl log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ResultVerdict {
+    VerifiedPass,
+    VerifiedFail,
+    /// The re-run itself did not complete (timeout / cancellation / sandbox
+    /// denial / tool unavailable) — never reported as pass or fail.
+    VerifyError,
+    /// The claim had no verification-class command behind it.
+    Unsubstantiated,
+}
+
+impl ResultVerdict {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ResultVerdict::VerifiedPass => "verified-pass",
+            ResultVerdict::VerifiedFail => "verified-fail",
+            ResultVerdict::VerifyError => "verify-error",
+            ResultVerdict::Unsubstantiated => "unsubstantiated",
+        }
+    }
+}
+
+/// Failure taxonomy attached to non-pass verdicts. Same sharing rationale as
+/// [`ResultVerdict`]; `as_str` matches the injected-message vocabulary
+/// (`test-failure` / `build-failure` / `verify-error` /
+/// `unsubstantiated-claim`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ResultFailureType {
+    TestFailure,
+    BuildFailure,
+    VerifyError,
+    UnsubstantiatedClaim,
+}
+
+impl ResultFailureType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ResultFailureType::TestFailure => "test-failure",
+            ResultFailureType::BuildFailure => "build-failure",
+            ResultFailureType::VerifyError => "verify-error",
+            ResultFailureType::UnsubstantiatedClaim => "unsubstantiated-claim",
+        }
+    }
+}
+
 /// Compact per-request envelope summary (event-sourcing slice 5). Built
 /// from the final `MessageRequest` at the `on_llm_start` seam — after every
 /// extension transform — so any step's provider envelope is reconstructable
@@ -387,17 +439,15 @@ pub enum Event {
     /// transcript as a synthetic runtime_event message before the next
     /// request; this event lets the UI surface it immediately as a toast.
     ResultVerification {
-        /// `verified-pass` | `verified-fail` | `verify-error` | `unsubstantiated`.
-        verdict: String,
+        verdict: ResultVerdict,
         /// The matched claim phrase (e.g. "测试通过").
         claim: String,
         /// The re-run command, when one was found.
         command: Option<String>,
         /// Exit code of the re-run, when it produced one.
         exit_code: Option<i64>,
-        /// `test-failure` / `build-failure` / `unsubstantiated-claim` /
-        /// `verify-error`; absent on a pass.
-        failure_type: Option<String>,
+        /// Failure taxonomy for non-pass verdicts; absent on a pass.
+        failure_type: Option<ResultFailureType>,
     },
 
     /// A sanctioned wholesale transcript replacement landed in the session's

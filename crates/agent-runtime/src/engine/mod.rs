@@ -98,6 +98,13 @@ use host_executor::{
     CapacityProbe, CompactionProbe, HostAgentExecutor, LspProbe, ReinjectProbe, TurnMetaProbe,
 };
 
+/// Prefix of every engine-injected runtime-event user message (verdict
+/// flushes, deliverables notes, sub-agent completions). The VerifyAndReplan
+/// reset and any other "latest user message" extraction must treat messages
+/// starting with this prefix as runtime data, never as the user's
+/// instruction — the engine appends these notes after the real query.
+pub(crate) const RUNTIME_EVENT_PREFIX: &str = "<codesmith:runtime_event";
+
 /// Reason the active turn was cancelled. The token from `tokio_util`
 /// does not carry a cause, so the engine keeps a sibling latch for
 /// approval and user-input waits that need to explain cancellation.
@@ -181,6 +188,12 @@ pub struct Engine {
     /// pre-request flush (same tail-injection semantics as
     /// [`Self::pending_lsp_blocks`]).
     pub(crate) pending_result_verifications: Arc<StdMutex<Vec<result_verifier::VerdictBlock>>>,
+    /// W2 P1-1 deliverables watchdog probe, built lazily on the first turn
+    /// whose instruction parses deliverable paths. Engine-held so the
+    /// re-note schedule (`DeliverablesProgress`) survives across turns —
+    /// rebuilding per turn reset it and re-noted an unchanged gap every
+    /// turn. Cloned into each turn's executor (clone shares the progress).
+    pub(crate) deliverables_probe: Option<deliverables::DeliverablesProbe>,
     /// Cached SlopLedger gate block keyed by the ledger file's modified time.
     /// This keeps prompt refreshes cheap while still noticing append/update
     /// writes from slop ledger tools during the same session.
@@ -1406,6 +1419,22 @@ impl Engine {
             self.session.model.clone(),
             self.api_provider,
         );
+        // W2 P1-1: deliverables watchdog — parse the output paths named in
+        // the task instruction (first user text query) and let the turn
+        // loop re-check them on disk every cadence, noting gaps mid-run.
+        // Built lazily (a fresh engine may not have the first query yet)
+        // and then held on the engine, so the re-note schedule survives
+        // across turns instead of resetting with each turn's probe.
+        if self.deliverables_probe.is_none() {
+            self.deliverables_probe = non_empty_deliverables_probe(
+                self.session
+                    .messages
+                    .iter()
+                    .find(|m| crate::compaction::is_user_text_query(m))
+                    .map(crate::compaction::message_text)
+                    .as_deref(),
+            );
+        }
         let executor = HostAgentExecutor::new(
             client,
             tools,
@@ -1477,17 +1506,9 @@ impl Engine {
         // flushes them as a synthetic runtime_event message before the
         // turn's first API request (mirrors the LSP probe wire-in above).
         .with_result_verifications(Some(Arc::clone(&self.pending_result_verifications)))
-        // W2 P1-1: deliverables watchdog — parse the output paths named in
-        // the task instruction (first user text query) and let the turn
-        // loop re-check them on disk every cadence, noting gaps mid-run.
-        .with_deliverables(non_empty_deliverables_probe(
-            self.session
-                .messages
-                .iter()
-                .find(|m| crate::compaction::is_user_text_query(m))
-                .map(crate::compaction::message_text)
-                .as_deref(),
-        ));
+        // W2 P1-1: the engine-held deliverables probe (see the lazy init
+        // above) — clone shares the re-note schedule across turns.
+        .with_deliverables(self.deliverables_probe.clone());
         let projection_hub = self.message_projection_hub();
         let mut history =
             SessionChatHistory::new_with_event_tx(&mut self.session, Some(self.tx_event.clone()))
@@ -1757,11 +1778,36 @@ impl Engine {
                 let pending = Arc::clone(&self.pending_result_verifications);
                 let tx_event = self.tx_event.clone();
                 let model = self.session.model.clone();
+                // The replay must pass the same gates the turn's own
+                // dispatch would: a dedicated callback bridge (hooks +
+                // UI events bracket the re-run — `verify_claim` emits
+                // on_tool_start/on_tool_end through it) and the session
+                // cancel token, so a detached re-run dies with the
+                // session instead of outliving Esc.
+                let hook_host = plan.tool_registry.as_ref().and_then(|r| r.hook_host());
+                let replay_callback: Arc<dyn Callback> = Arc::new(
+                    CallbackBridge::new(
+                        Some(self.tx_event.clone()),
+                        hook_host,
+                        crate::hooks::HookContext::new()
+                            .with_workspace(self.session.workspace.clone())
+                            .with_model(&self.session.model),
+                    )
+                    .with_extension_runner_if_some(self.extension_runner.clone()),
+                );
+                let cancel_token = self.cancel_token.clone();
                 spawn_supervised(
                     "result-verifier",
                     std::panic::Location::caller(),
                     async move {
-                        let block = result_verifier::verify_claim(dispatcher, claim, command).await;
+                        let block = result_verifier::verify_claim(
+                            dispatcher,
+                            Some(replay_callback),
+                            cancel_token,
+                            claim,
+                            command,
+                        )
+                        .await;
                         pending
                             .lock()
                             .expect("pending_result_verifications poisoned")
@@ -1772,7 +1818,7 @@ impl Engine {
                         // observable before anything tries to evaluate it.
                         crate::evolution_log::record_verdict(
                             &model,
-                            block.kind.label(),
+                            block.kind,
                             block.failure_type(),
                             &block.phrase,
                             block.command.as_deref(),
@@ -1780,11 +1826,11 @@ impl Engine {
                         );
                         let _ = tx_event
                             .send(Event::ResultVerification {
-                                verdict: block.kind.label().to_string(),
+                                verdict: block.kind,
                                 claim: block.phrase.clone(),
                                 command: block.command.clone(),
                                 exit_code: block.exit_code,
-                                failure_type: block.failure_type().map(str::to_string),
+                                failure_type: block.failure_type(),
                             })
                             .await;
                     },
@@ -3148,6 +3194,7 @@ impl Engine {
             turn_scratch: crate::prompt_zones::TurnScratch::new(),
             pending_lsp_blocks: Vec::new(),
             pending_result_verifications: Arc::new(StdMutex::new(Vec::new())),
+            deliverables_probe: None,
             slop_ledger_gate_cache: None,
             knowledge_prefetch: crate::knowledge::prefetch::KnowledgePrefetch::new(),
             tx_op,

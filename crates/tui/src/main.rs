@@ -3292,7 +3292,17 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         println!("{}", "LLM Analysis (advisory):".bold());
         match doctor_llm::resolve_analysis_target(config) {
             Ok((client, model)) => {
-                print!("  · Analyzing {} with {model}...", findings.summary_line());
+                // The payload leaves the machine — say so explicitly before
+                // the call (findings + environment context: os, provider,
+                // base_url, model), so the default-on fallback is never a
+                // silent network send.
+                print!(
+                    "  · Analyzing {} with {model} — sending findings + environment \
+                     context to {} ({})...",
+                    findings.summary_line(),
+                    api_target.provider,
+                    api_target.base_url,
+                );
                 use std::io::Write;
                 std::io::stdout().flush().ok();
                 let payload = findings.to_prompt_payload(
@@ -4956,8 +4966,8 @@ fn run_sandbox_command(args: SandboxArgs) -> Result<()> {
     if spec.sandbox_policy.should_sandbox() && !selected.enforces_isolation() {
         bail!(
             "refusing to run unsandboxed: sandbox backend '{selected}' enforces no \
-             isolation on this platform; install bubblewrap and enable prefer_bwrap, \
-             or use a policy that does not require sandboxing"
+             isolation on this platform; install bubblewrap, or use a policy that \
+             does not require sandboxing"
         );
     }
     let exec_env = manager.prepare(&spec);

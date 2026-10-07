@@ -100,7 +100,12 @@ export async function GET(req: Request) {
         // unreachable — guarded by TASKS check above
         result = { error: "unknown task" };
     }
-    return NextResponse.json({ ok: true, task, result });
+    // Task functions catch their own errors and return `{ ok: false }` in
+    // `result` — propagate that to the status code too, or a status-based
+    // monitor cannot distinguish a failed task from success.
+    const failed =
+      typeof result === "object" && result !== null && (result as { ok?: unknown }).ok === false;
+    return NextResponse.json({ ok: !failed, task, result }, { status: failed ? 500 : 200 });
   } catch (e) {
     // 500 (not 200): status-based monitors must see cron task failures —
     // a 200 with ok:false in the body is indistinguishable from success.

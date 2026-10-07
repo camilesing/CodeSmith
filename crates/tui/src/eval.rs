@@ -670,7 +670,18 @@ fn apply_patch(root: &Path, patch: &str) -> Result<()> {
     let file_rel = header
         .strip_prefix("*** Update File: ")
         .ok_or_else(|| anyhow!("only *** Update File patches are supported"))?;
-    if file_rel.contains("..") || Path::new(file_rel).is_absolute() {
+    // Component validation instead of `is_absolute()`: on Windows the
+    // drive-relative (`C:secret.txt`) and root-without-prefix (`\x`)
+    // forms are NOT absolute but still replace the base on `root.join`,
+    // and `contains("..")` misses Windows separators. Every component
+    // being `Normal` covers all platforms in one pass. Known limitation:
+    // no symlink canonicalization — eval workspaces are harness-created
+    // tempdirs, not user-controlled directories.
+    use std::path::Component;
+    let mut components = Path::new(file_rel).components();
+    let is_plain_relative = matches!(components.next(), Some(Component::Normal(_)))
+        && components.all(|c| matches!(c, Component::Normal(_)));
+    if !is_plain_relative {
         return Err(anyhow!("patch path must be workspace-relative"));
     }
 

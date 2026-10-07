@@ -95,9 +95,13 @@ for `Bad system call`, `bad system call`, `SIGSYS`, `seccomp`.
 
 ### 4. Bubblewrap / bwrap (Linux, optional)
 
-**When it runs:** If `/usr/bin/bwrap` is present AND either the legacy
-`prefer_bwrap = true` key or `[sandbox] prefer_bwrap = true` is set. Runs as
-an outer wrapper around the child command.
+**When it runs:** Whenever `/usr/bin/bwrap` is present — bwrap wins the
+Linux backend selection unconditionally, because the Landlock path
+enforces nothing today (`prepare_landlock` is a documented passthrough)
+and a real bwrap confinement beats degrading to unsandboxed execution.
+The `prefer_bwrap` key (legacy top-level and `[sandbox]`) is therefore
+deprecated and ignored. Runs as an outer wrapper around the child
+command.
 
 **What it does:**
 - Creates a new mount namespace with `--unshare-all`
@@ -198,8 +202,10 @@ Relevant config keys in `~/.codesmith/config.toml`:
 # Sandbox policy mode
 sandbox_mode = "workspace-write"  # read-only | workspace-write | danger-full-access | external-sandbox
 
-# Linux bubblewrap passthrough
-prefer_bwrap = false              # requires `bubblewrap` package installed
+# Linux bubblewrap — DEPRECATED: bwrap is now selected whenever the
+# `bubblewrap` package is installed; this key is parsed for compatibility
+# and ignored.
+# prefer_bwrap = false
 
 # Structured runtime policy. These keys are optional and layer on top of
 # the legacy flat keys above.
@@ -209,7 +215,7 @@ fail_if_unavailable = false       # true = fail closed instead of unsandboxed fa
 enabled_platforms = ["macos", "linux"]
 excluded_commands = []            # program names or command prefixes
 auto_allow_bash_if_sandboxed = true
-prefer_bwrap = false
+# prefer_bwrap — deprecated & ignored (see above)
 
 [sandbox.filesystem]
 mode = "workspace-write"          # read-only | workspace-write | danger-full-access | external-sandbox
@@ -236,7 +242,8 @@ sandbox_api_key = "YOUR_API_KEY"
 Environment variable overrides:
 
 - `CODESMITH_SANDBOX_MODE` → `sandbox_mode`
-- `CODESMITH_PREFER_BWRAP=true` → `prefer_bwrap`
+- `CODESMITH_PREFER_BWRAP=true` → `prefer_bwrap` (deprecated & ignored — bwrap
+  is selected automatically whenever installed)
 - `CODESMITH_SANDBOX_BACKEND` → `sandbox_backend`
 - `CODESMITH_SANDBOX_URL` → `sandbox_url`
 - `CODESMITH_SANDBOX_API_KEY` → `sandbox_api_key`

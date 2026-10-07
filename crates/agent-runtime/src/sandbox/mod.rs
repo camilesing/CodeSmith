@@ -1023,12 +1023,21 @@ impl SandboxManager {
             return forced;
         }
 
-        // Use platform default. On Linux, bwrap wins when preferred (#2184)
-        // and also serves as the fallback when Landlock is unavailable —
-        // a real bwrap confinement beats degrading to unsandboxed execution.
+        // Use platform default. On Linux, any available bwrap confinement
+        // wins: Landlock selection is strictly worse whenever bwrap is
+        // installed, because `prepare_landlock` is a documented passthrough
+        // (no child-process enforcement is wired) — falling through to it
+        // would execute "sandboxed-requested" commands fully unconfined
+        // while a working bwrap backend sits unused.
         #[cfg(target_os = "linux")]
         {
-            if bwrap::is_available() && (self.prefer_bwrap || !landlock::is_available()) {
+            if self.prefer_bwrap {
+                tracing::debug!(
+                    "prefer_bwrap is the default behavior since Landlock never enforces; \
+                     the setting is ignored"
+                );
+            }
+            if bwrap::is_available() {
                 return SandboxType::LinuxBwrap;
             }
         }

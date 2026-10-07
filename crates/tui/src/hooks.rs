@@ -256,6 +256,17 @@ impl HookExecutor {
         }
     }
 
+    /// Put a hook child in its own process group (unix) so a timeout kill
+    /// can take the whole tree — `sh -c` alone dying leaves grandchildren
+    /// (backgrounded jobs, daemonizers) running. No-op on Windows.
+    #[cfg(not(windows))]
+    fn own_process_group(cmd: &mut Command) {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    #[cfg(windows)]
+    fn own_process_group(_cmd: &mut Command) {}
+
     /// Create a new `HookExecutor` with configuration
     pub fn new(config: HooksConfig, default_working_dir: PathBuf) -> Self {
         // Generate a session ID
@@ -817,6 +828,7 @@ impl HookExecutor {
         };
 
         let mut command = Self::build_shell_command(&hook.command);
+        Self::own_process_group(&mut command);
         command
             .current_dir(&working_dir)
             .envs(env_vars)
@@ -859,8 +871,7 @@ impl HookExecutor {
                 error: None,
             },
             Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                kill_hook_child(&mut child);
                 // Do not join pipe threads on timeout: descendant processes can
                 // inherit pipe fds, and waiting for those threads would defeat
                 // the hook timeout we just enforced.
@@ -875,8 +886,7 @@ impl HookExecutor {
                 }
             }
             Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                kill_hook_child(&mut child);
                 HookResult {
                     name: hook.name.clone(),
                     success: false,
@@ -894,8 +904,10 @@ impl HookExecutor {
     ///
     /// Unlike the old fire-and-forget `.output()`, the child's lifetime is
     /// bounded by `hook.timeout_secs` (default 30): a hook that never exits
-    /// is killed instead of leaking a process forever. Output is discarded
-    /// (null stdio) — the previous form collected it and then threw it away.
+    /// is killed instead of leaking a process forever — on Unix the whole
+    /// process group dies with it; on Windows only the direct child can be
+    /// killed. Output is discarded (null stdio) — the previous form
+    /// collected it and then threw it away.
     fn execute_background(&self, hook: &Hook, env_vars: &HashMap<String, String>) -> HookResult {
         let started = Instant::now();
         let working_dir = self
@@ -918,7 +930,9 @@ impl HookExecutor {
 
         // Spawn in a detached thread
         std::thread::spawn(move || {
-            let Ok(mut child) = HookExecutor::build_shell_command(&cmd)
+            let mut command = HookExecutor::build_shell_command(&cmd);
+            HookExecutor::own_process_group(&mut command);
+            let Ok(mut child) = command
                 .current_dir(&wd)
                 .envs(&env)
                 .stdin(std::process::Stdio::null())
@@ -933,8 +947,7 @@ impl HookExecutor {
                 match child.try_wait() {
                     Ok(Some(_)) => break,
                     Ok(None) if Instant::now() >= deadline => {
-                        let _ = child.kill();
-                        let _ = child.wait();
+                        kill_hook_child(&mut child);
                         break;
                     }
                     Ok(None) => std::thread::sleep(Duration::from_millis(50)),
@@ -953,6 +966,24 @@ impl HookExecutor {
             duration: started.elapsed(),
             error: None,
         }
+    }
+}
+
+/// Kill a timed-out hook child. On Unix the hook runs in its own process
+/// group (see [`HookExecutor::own_process_group`]), so the kill takes the
+/// whole tree — killing only the `sh -c` wrapper leaves grandchildren
+/// (backgrounded jobs, daemonizers) running, which the timeout exists to
+/// prevent. On Windows only the direct child can be killed.
+fn kill_hook_child(child: &mut std::process::Child) {
+    #[cfg(not(windows))]
+    {
+        let _ = codesmith_agent_runtime::shell_manager::kill_child_process_group(child);
+        let _ = child.wait();
+    }
+    #[cfg(windows)]
+    {
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 

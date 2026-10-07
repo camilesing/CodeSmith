@@ -39,6 +39,22 @@ pub struct Frontmatter {
 /// Skips `MEMORY.md` entrypoint — it is handled separately by `entrypoint.rs`.
 /// Respects `MAX_MEMORY_FILES` limit — older files are dropped if exceeded.
 pub fn scan_memory_files(memory_dir: &Path) -> Vec<MemoryHeader> {
+    scan_memory_files_with_limit(memory_dir, Some(MAX_MEMORY_FILES))
+}
+
+/// [`scan_memory_files`] without the [`MAX_MEMORY_FILES`] truncation, for
+/// callers whose consumer requires the *complete* on-disk set — the
+/// consolidation validator rejects proposals that drop any existing topic
+/// file, so the LLM topic list built from a truncated scan is guaranteed
+/// to be rejected when more than [`MAX_MEMORY_FILES`] topic files exist.
+/// Known limitation: an unbounded list makes the prompt grow with the
+/// topic count; consolidation is an explicit offline command, so that is
+/// the accepted trade.
+pub fn scan_memory_files_uncapped(memory_dir: &Path) -> Vec<MemoryHeader> {
+    scan_memory_files_with_limit(memory_dir, None)
+}
+
+fn scan_memory_files_with_limit(memory_dir: &Path, limit: Option<usize>) -> Vec<MemoryHeader> {
     let entries = collect_md_files(memory_dir);
     let mut headers: Vec<MemoryHeader> = entries
         .into_iter()
@@ -49,9 +65,11 @@ pub fn scan_memory_files(memory_dir: &Path) -> Vec<MemoryHeader> {
     // Sort by mtime descending (most recent first).
     headers.sort_by(|a, b| b.mtime_ms.cmp(&a.mtime_ms));
 
-    // Enforce MAX_MEMORY_FILES limit — drop oldest.
-    if headers.len() > MAX_MEMORY_FILES {
-        headers.truncate(MAX_MEMORY_FILES);
+    // Enforce the limit — drop oldest.
+    if let Some(limit) = limit
+        && headers.len() > limit
+    {
+        headers.truncate(limit);
     }
 
     headers
