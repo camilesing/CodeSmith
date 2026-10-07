@@ -60,10 +60,14 @@ export async function getDispatch(): Promise<CuratedDispatch | null> {
     if (!isDispatchPayload(parsed)) {
       return null;
     }
-    // Stamp a default timestamp so consumers reading `generatedAt` (the
-    // homepage date line calls `new Date(...).toISOString()` unguarded)
-    // cannot crash on a payload written without one.
-    return { ...parsed, generatedAt: new Date().toISOString() };
+    // Stamp a default timestamp only when the stored payload lacks one (the
+    // write side stamps the real generation time; overwriting it here would
+    // mask a stale cache — the homepage date line would always show today).
+    const stored = (parsed as { generatedAt?: unknown }).generatedAt;
+    return {
+      ...parsed,
+      generatedAt: typeof stored === "string" ? stored : new Date().toISOString(),
+    };
   } catch {
     return null;
   }

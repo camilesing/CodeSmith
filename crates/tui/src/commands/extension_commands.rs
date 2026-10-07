@@ -28,11 +28,15 @@ pub fn try_dispatch(app: &mut App, input: &str) -> Option<CommandResult> {
     if command != "extension" && command != "ext" {
         return None;
     }
-    let sub = parts
-        .get(1)
-        .and_then(|s| s.split_whitespace().next())
-        .unwrap_or("");
-    let arg = parts.get(1).map(|s| s.trim()).unwrap_or("");
+    // Split the remainder ONCE into subcommand + argument (same fix as
+    // `mod_commands::try_dispatch`): taking `sub` as the first word but
+    // `arg` as the whole remainder made every id-taking subcommand look up
+    // "info some-name" as the id.
+    let rest = parts.get(1).map(|s| s.trim()).unwrap_or("");
+    let (sub, arg) = match rest.split_once(char::is_whitespace) {
+        Some((s, a)) => (s, a.trim()),
+        None => (rest, ""),
+    };
     Some(match sub {
         "list" | "ls" => list(app),
         "info" => info(app, arg),
@@ -223,19 +227,55 @@ fn reload(app: &mut App) -> CommandResult {
     let Some(shared_cancel_token) = app.extension_shared_cancel_token.clone() else {
         return CommandResult::error("Extension runner not bound.");
     };
-    crate::core::engine::reload_extension_runtime(
+    // Disk-fresh state, not the App copies: the manage_mods tool mutates
+    // the stores behind the App's back, and reloading from a stale copy
+    // would unload tool-activated mods and resurrect user-disabled
+    // extensions. The fresh copy is written back so subsequent /mods reads
+    // agree with what was just reloaded. Read failure aborts the reload
+    // (current bindings stay live) rather than reloading an empty state.
+    let ext_state = match crate::extension_state::ExtensionStateStore::load_default() {
+        Ok(s) => s,
+        Err(e) => {
+            return CommandResult::error(format!(
+                "Reload aborted: extension state unreadable ({e}); current bindings kept."
+            ));
+        }
+    };
+    let mut mod_state = match crate::mod_state::ModStateStore::load_default() {
+        Ok(s) => s,
+        Err(e) => {
+            return CommandResult::error(format!(
+                "Reload aborted: mod state unreadable ({e}); current bindings kept."
+            ));
+        }
+    };
+    let report = crate::core::engine::reload_extension_runtime(
         &runner,
         &app.workspace,
-        &app.extension_state,
-        &app.mod_state,
+        &ext_state,
+        &mut mod_state,
         app.mods_enabled,
         shared_cancel_token,
     );
-    CommandResult::message(format!(
+    app.extension_state = ext_state;
+    app.mod_state = mod_state;
+    let mut msg = format!(
         "Extension runner reloaded (generation {} → {}). Re-discovered + re-loaded compiled-in extensions on the shared runner (live for the next turn).",
         gen_before,
         runner.generation()
-    ))
+    );
+    if !report.pending_mods.is_empty() {
+        msg.push_str(&format!(
+            " Pending activation: {}.",
+            report
+                .pending_mods
+                .iter()
+                .map(|p| p.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    CommandResult::message(msg)
 }
 
 /// Pre-App validation for `/extension install`: parse + arg check (§F5c R4
@@ -396,6 +436,50 @@ fn uninstall(app: &mut App, arg: &str) -> CommandResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::app::App;
+    use tempfile::TempDir;
+
+    fn create_test_app_with_tmpdir(tmpdir: &TempDir) -> App {
+        let options = TuiOptions {
+            model: "deepseek-v4-pro".to_string(),
+            workspace: tmpdir.path().to_path_buf(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            use_alt_screen: true,
+            use_mouse_capture: false,
+            use_bracketed_paste: true,
+            max_subagents: 1,
+            skills_dir: tmpdir.path().join("skills"),
+            memory_path: tmpdir.path().join("memory.md"),
+            notes_path: tmpdir.path().join("notes.txt"),
+            mcp_config_path: tmpdir.path().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: false,
+            skip_onboarding: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+        };
+        App::new(options, &Config::default())
+    }
+
+    /// Regression (review round 3, mirrors the `/mods` fix): `arg` used to
+    /// include the subcommand token, so `/extension info some-name` looked
+    /// up the id "info some-name" and always failed.
+    #[test]
+    fn dispatch_passes_only_the_argument_to_id_taking_subcommands() {
+        let tmpdir = TempDir::new().unwrap();
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        let result =
+            try_dispatch(&mut app, "/extension info some-name").expect("an /extension command");
+        assert!(result.is_error);
+        let msg = result.message.unwrap_or_default();
+        assert!(
+            !msg.contains("info some-name"),
+            "id-taking subcommand got the subcommand token too: {msg}"
+        );
+    }
 
     #[test]
     fn try_dispatch_prefix_guard_rejects_non_extension_command() {

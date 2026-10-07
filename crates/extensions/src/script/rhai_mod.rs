@@ -111,7 +111,7 @@ pub enum ScriptRegistration {
 
 type RegistrationCell = Arc<Mutex<Vec<ScriptRegistration>>>;
 
-// === Event-name mapping (24 kinds, kebab-case) =============================
+// === Event-name mapping (25 kinds, kebab-case) =============================
 
 /// Parse a script-side event name (kebab-case) into its
 /// [`ExtensionEventKind`]. `None` for unknown names (surfaced as a script
@@ -442,13 +442,37 @@ pub(crate) fn merge_transform(
             };
             let mut changed = false;
             if let Some(d) = map.get("system_prompt") {
-                // string → Some(value), unit → None (clear), absent → keep.
-                next.system_prompt = d.clone().try_cast::<String>();
-                changed = true;
+                // string → Some(value), unit `()` → None (explicit clear),
+                // absent → keep. Any other type is a mod bug — warn and
+                // keep, so a typo'd `system_prompt: 42` cannot silently
+                // wipe the whole system prompt.
+                if d.is_unit() {
+                    next.system_prompt = None;
+                    changed = true;
+                } else if let Some(s) = d.clone().try_cast::<String>() {
+                    next.system_prompt = Some(s);
+                    changed = true;
+                } else {
+                    tracing::warn!(
+                        target: "codesmith_mods",
+                        "before-agent-start transform: system_prompt must be a string or () — ignored"
+                    );
+                }
             }
             if let Some(d) = map.get("inject_message") {
-                next.inject_message = d.clone().try_cast::<String>();
-                changed = true;
+                // Same three-way contract as `system_prompt` above.
+                if d.is_unit() {
+                    next.inject_message = None;
+                    changed = true;
+                } else if let Some(s) = d.clone().try_cast::<String>() {
+                    next.inject_message = Some(s);
+                    changed = true;
+                } else {
+                    tracing::warn!(
+                        target: "codesmith_mods",
+                        "before-agent-start transform: inject_message must be a string or () — ignored"
+                    );
+                }
             }
             if changed {
                 HandlerOutcome::Transform(ExtensionEvent::BeforeAgentStart(next))
@@ -603,7 +627,7 @@ fn register_natives(
                     Ok(())
                 }
                 None => Err(script_error(format!(
-                    "on(): unknown event name '{event}' (see docs/MODS.md for the 24 event names)"
+                    "on(): unknown event name '{event}' (see docs/MODS.md for the 25 event names)"
                 ))),
             }
         },
@@ -812,6 +836,23 @@ fn register_natives(
             let base_url = spec
                 .get("base_url")
                 .and_then(|d| d.clone().try_cast::<String>());
+            // The alias factory sends the user's api_key and full prompts to
+            // this URL — refuse anything but https or a loopback http
+            // endpoint (local gateways: Ollama, vLLM, LM Studio) at capture
+            // time, so a mod cannot redirect provider traffic to an
+            // attacker-controlled plaintext host.
+            if let Some(url) = &base_url {
+                let loopback_http = url.starts_with("http://localhost")
+                    || url.starts_with("http://127.0.0.1")
+                    || url.starts_with("http://[::1]");
+                if !url.starts_with("https://") && !loopback_http {
+                    return Err(script_error(format!(
+                        "register_provider(): base_url must be https:// (or an http:// \
+                         loopback address for local gateways) — got {url:?}; the alias sends \
+                         the user's api_key and full prompts to this URL"
+                    )));
+                }
+            }
             let default_model = spec
                 .get("default_model")
                 .and_then(|d| d.clone().try_cast::<String>());
@@ -1145,6 +1186,25 @@ impl Extension for RhaiMod {
                     )?;
                 }
                 ScriptRegistration::Guard { callback } => {
+                    // Guards are deny-only controls invoked with exactly one
+                    // argument; a `|e, ctx|`-arity callback can never bind and
+                    // would abstain silently forever (fail-open hole). Fail the
+                    // mod's load instead when the AST metadata names a wrong
+                    // arity (an unresolvable name falls through to the
+                    // runtime error log below).
+                    let arity_ok = self
+                        .runtime
+                        .ast
+                        .iter_functions()
+                        .find(|m| m.name == callback.fn_name())
+                        .is_none_or(|m| m.params.len() == 1);
+                    if !arity_ok {
+                        return Err(codesmith_agent::extension::ExtensionError::Load(
+                            "register_guard(): callback must take a single parameter (|e|) — \
+                             guards receive the tool-call payload only"
+                                .to_string(),
+                        ));
+                    }
                     let runtime = Arc::clone(&self.runtime);
                     let callback = callback.clone();
                     let guard: codesmith_agent::extension::ToolGuardFn = Arc::new(move |e| {
@@ -1152,13 +1212,25 @@ impl Extension for RhaiMod {
                         match callback.call::<Dynamic>(&runtime.engine, &runtime.ast, (payload,)) {
                             Ok(ret) => ret.try_cast::<String>(),
                             Err(err) => {
-                                // Fail-open: a broken guard abstains (warn),
-                                // mirroring the handler error policy — one
-                                // broken mod must not kill the chain.
-                                tracing::warn!(
-                                    target: "codesmith_mods",
-                                    "mod guard failed: {err}"
-                                );
+                                // Fail-open: a broken guard abstains, mirroring
+                                // the handler error policy — one broken mod
+                                // must not kill the chain. An arity mismatch
+                                // means the guard NEVER ran: say so loudly
+                                // (the load-time check above normally
+                                // catches this).
+                                if matches!(*err, rhai::EvalAltResult::ErrorFunctionNotFound(_, _))
+                                {
+                                    tracing::error!(
+                                        target: "codesmith_mods",
+                                        "mod guard never bound (wrong arity? guards must be \
+                                         single-parameter |e|): {err}"
+                                    );
+                                } else {
+                                    tracing::warn!(
+                                        target: "codesmith_mods",
+                                        "mod guard failed: {err}"
+                                    );
+                                }
                                 None
                             }
                         }
@@ -1665,7 +1737,7 @@ mod tests {
     }
 
     #[test]
-    fn event_kind_name_round_trips_all_24() {
+    fn event_kind_name_round_trips_all_25() {
         let kinds = [
             ExtensionEventKind::ProjectTrust,
             ExtensionEventKind::SessionStart,
@@ -1678,6 +1750,7 @@ mod tests {
             ExtensionEventKind::BeforeProviderRequest,
             ExtensionEventKind::AfterProviderResponse,
             ExtensionEventKind::ToolExecutionStart,
+            ExtensionEventKind::AssistantStream,
             ExtensionEventKind::ToolCall,
             ExtensionEventKind::ToolExecutionUpdate,
             ExtensionEventKind::ToolResult,
@@ -1692,7 +1765,7 @@ mod tests {
             ExtensionEventKind::SessionCompact,
             ExtensionEventKind::ToolsChange,
         ];
-        assert_eq!(kinds.len(), 24);
+        assert_eq!(kinds.len(), 25);
         for kind in kinds {
             let name = event_name_from_kind(kind);
             assert_eq!(event_kind_from_name(name), Some(kind), "round-trip {name}");

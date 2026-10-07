@@ -41,6 +41,22 @@ function dsEnv(env: AgentEnv): LlmEnv {
   };
 }
 
+/**
+ * Validate + narrow a bilingual-body LLM payload. Throws on wrong shape so
+ * the per-issue `catch` counts it as skipped instead of saving a draft with
+ * `undefined` bodies (which crashes the admin page's `draft.bodyEn.slice`).
+ */
+function parseBodyDraft(
+  content: string,
+  context: string
+): { bodyEn: string; bodyZh: string } {
+  const parsed = parseLlmJson(content, context) as { bodyEn?: unknown; bodyZh?: unknown };
+  if (typeof parsed.bodyEn !== "string" || typeof parsed.bodyZh !== "string") {
+    throw new Error(`${context}: payload has the wrong shape (bodyEn/bodyZh must be strings)`);
+  }
+  return { bodyEn: parsed.bodyEn, bodyZh: parsed.bodyZh };
+}
+
 export async function runCurate(env: AgentEnv): Promise<Record<string, unknown>> {
   if (!env.DEEPSEEK_API_KEY) {
     return { skipped: true, reason: "DEEPSEEK_API_KEY not set" };
@@ -119,7 +135,7 @@ export async function runTriage(env: AgentEnv): Promise<Record<string, unknown>>
           true,
           dsEnv(env)
         );
-        const parsed = parseLlmJson(content) as { bodyEn: string; bodyZh: string };
+        const parsed = parseBodyDraft(content, "triage draft");
         const draft: AgentDraft = {
           id: String(issue.number),
           type: "triage",
@@ -203,7 +219,7 @@ export async function runPrReview(env: AgentEnv): Promise<Record<string, unknown
           true,
           dsEnv(env)
         );
-        const parsed = parseLlmJson(content) as { bodyEn: string; bodyZh: string };
+        const parsed = parseBodyDraft(content, "pr-review draft");
         const draft: AgentDraft = {
           id: String(pr.number),
           type: "pr-review",
@@ -270,7 +286,7 @@ export async function runStale(env: AgentEnv): Promise<Record<string, unknown>> 
           true,
           dsEnv(env)
         );
-        const parsed = parseLlmJson(content) as { bodyEn: string; bodyZh: string };
+        const parsed = parseBodyDraft(content, "stale draft");
         const draft: AgentDraft = {
           id: String(issue.number),
           type: "stale",
@@ -330,8 +346,19 @@ export async function runDupes(env: AgentEnv): Promise<Record<string, unknown>> 
       dsEnv(env)
     );
 
-    const parsed = parseLlmJson(content) as { suggestions?: { targetNumber: number; duplicateNumber: number; reason: string; bodyEn: string; bodyZh: string }[] };
-    const suggestions = parsed.suggestions ?? [];
+    const parsed = parseLlmJson(content, "dupes suggestions") as { suggestions?: unknown };
+    if (!Array.isArray(parsed.suggestions)) {
+      // Wrong-shape must surface as failure, not `ok: true, processed: 0`.
+      throw new Error("dupes suggestions: payload has the wrong shape (suggestions must be an array)");
+    }
+    const suggestions = parsed.suggestions.filter(
+      (s): s is { duplicateNumber: number; bodyEn: string; bodyZh: string } =>
+        typeof s === "object" &&
+        s !== null &&
+        typeof (s as { duplicateNumber?: unknown }).duplicateNumber === "number" &&
+        typeof (s as { bodyEn?: unknown }).bodyEn === "string" &&
+        typeof (s as { bodyZh?: unknown }).bodyZh === "string"
+    );
 
     let processed = 0;
     for (const s of suggestions) {
@@ -414,7 +441,34 @@ export async function runDigest(env: AgentEnv): Promise<Record<string, unknown>>
       dsEnv(env)
     );
 
-    const parsed = parseLlmJson(content) as { titleEn: string; titleZh: string; summaryEn: string; summaryZh: string; sections: { heading: string; items: string[] }[] };
+    const parsed = parseLlmJson(content, "weekly digest") as {
+      titleEn?: unknown;
+      titleZh?: unknown;
+      summaryEn?: unknown;
+      summaryZh?: unknown;
+      sections?: unknown;
+    };
+    if (
+      typeof parsed.titleEn !== "string" ||
+      typeof parsed.titleZh !== "string" ||
+      typeof parsed.summaryEn !== "string" ||
+      typeof parsed.summaryZh !== "string" ||
+      !Array.isArray(parsed.sections) ||
+      !parsed.sections.every(
+        (s) =>
+          typeof s === "object" &&
+          s !== null &&
+          typeof (s as { heading?: unknown }).heading === "string" &&
+          Array.isArray((s as { items?: unknown }).items)
+      )
+    ) {
+      // Without this a missing title/summary bakes "# undefined" into a
+      // draft that gets persisted to KV and rendered.
+      throw new Error(
+        "weekly digest: payload has the wrong shape (titleEn/titleZh/summaryEn/summaryZh/sections)"
+      );
+    }
+    const sections = parsed.sections as { heading: string; items: string[] }[];
 
     // Compute week ID
     const now = new Date();
@@ -425,8 +479,8 @@ export async function runDigest(env: AgentEnv): Promise<Record<string, unknown>>
     const draft: AgentDraft = {
       id: weekId,
       type: "digest",
-      bodyEn: `# ${parsed.titleEn}\n\n${parsed.summaryEn}\n\n${parsed.sections.map((s) => `## ${s.heading}\n${s.items.map((i) => `- ${i}`).join("\n")}`).join("\n\n")}`,
-      bodyZh: `# ${parsed.titleZh}\n\n${parsed.summaryZh}\n\n${parsed.sections.map((s) => `## ${s.heading}\n${s.items.map((i) => `- ${i}`).join("\n")}`).join("\n\n")}`,
+      bodyEn: `# ${parsed.titleEn}\n\n${parsed.summaryEn}\n\n${sections.map((s) => `## ${s.heading}\n${s.items.map((i) => `- ${i}`).join("\n")}`).join("\n\n")}`,
+      bodyZh: `# ${parsed.titleZh}\n\n${parsed.summaryZh}\n\n${sections.map((s) => `## ${s.heading}\n${s.items.map((i) => `- ${i}`).join("\n")}`).join("\n\n")}`,
       generatedAt: new Date().toISOString(),
       posted: false,
     };

@@ -48,7 +48,7 @@ export default async function FeedPage({ params }: { params: Promise<{ locale: s
             </h1>
             <p className="mt-5 max-w-3xl text-ink-soft text-lg leading-[1.9] tracking-wide">
               来自{" "}
-              <Link href={`${GITHUB_REPO_URL}`} className="body-link">{GITHUB_REPO}</Link>
+              <Link href={GITHUB_REPO_URL} className="body-link">{GITHUB_REPO}</Link>
               {" "}的议题与合并请求实时镜像。每十分钟刷新一次。点击任意条目跳转至 GitHub。
             </p>
           </section>
@@ -116,7 +116,7 @@ export default async function FeedPage({ params }: { params: Promise<{ locale: s
             </h1>
             <p className="mt-5 max-w-3xl text-ink-soft text-lg leading-relaxed">
               A live mirror of issues and pull requests from{" "}
-              <Link href={`${GITHUB_REPO_URL}`} className="body-link">{GITHUB_REPO}</Link>.
+              <Link href={GITHUB_REPO_URL} className="body-link">{GITHUB_REPO}</Link>.
               Refreshed every ten minutes. Click any item to jump to GitHub.
             </p>
           </section>

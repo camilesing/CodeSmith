@@ -27,7 +27,7 @@ const stepsEn = [
     title: "Fork and branch",
     cn: "复刻并分支",
     body: "git clone your fork, then git checkout -b feat/short-name or fix/short-name. We use conventional commits — feat:, fix:, docs:, refactor:, test:, chore:.",
-    cta: { label: "Repo on GitHub", href: `${GITHUB_REPO_URL}` },
+    cta: { label: "Repo on GitHub", href: GITHUB_REPO_URL },
   },
   {
     n: "③",
@@ -58,7 +58,7 @@ const stepsZh = [
     title: "复刻并创建分支",
     cn: "Fork & branch",
     body: "git clone 你的复刻，然后 git checkout -b feat/short-name 或 fix/short-name。使用约定式提交——feat:、fix:、docs:、refactor:、test:、chore:。",
-    cta: { label: "GitHub 仓库", href: `${GITHUB_REPO_URL}` },
+    cta: { label: "GitHub 仓库", href: GITHUB_REPO_URL },
   },
   {
     n: "③",

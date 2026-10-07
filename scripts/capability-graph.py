@@ -71,8 +71,12 @@ def crate_of(path: Path) -> str:
 
 
 def scan() -> list[tuple[str, str, list[str], list[str]]]:
+    # Read every source once and reuse the text across all seams (the seam
+    # count multiplies the tree walk otherwise).
     sources = [
-        p for p in (REPO_ROOT / "crates").glob("*/src/**/*.rs") if "target" not in p.parts
+        (crate_of(p), p.read_text(encoding="utf-8", errors="replace"))
+        for p in (REPO_ROOT / "crates").glob("*/src/**/*.rs")
+        if "target" not in p.parts
     ]
     rows = []
     for seam in SEAMS:
@@ -82,9 +86,7 @@ def scan() -> list[tuple[str, str, list[str], list[str]]]:
         impl_re = re.compile(rf"\bimpl\s*(?:<[^>]*>\s*)?{seam}\s+for\b")
         def_re = re.compile(rf"\bpub trait {seam}\b")
         dyn_re = re.compile(rf"\bdyn {seam}\b")
-        for path in sources:
-            text = path.read_text(errors="replace")
-            crate = crate_of(path)
+        for crate, text in sources:
             if def_re.search(text):
                 definition = crate
             if impl_re.search(text):
@@ -125,7 +127,7 @@ def main() -> int:
 
     generated = render(scan())
     if args.check:
-        committed = OUT_PATH.read_text() if OUT_PATH.exists() else ""
+        committed = OUT_PATH.read_text(encoding="utf-8") if OUT_PATH.exists() else ""
         if committed != generated:
             print("error: docs/CAPABILITY_GRAPH.md is stale; regenerate with")
             print("  python3 scripts/capability-graph.py")
@@ -133,7 +135,7 @@ def main() -> int:
         print(f"capability graph fresh ({len(SEAMS)} seams)")
         return 0
 
-    OUT_PATH.write_text(generated)
+    OUT_PATH.write_text(generated, encoding="utf-8")
     print(f"wrote {OUT_PATH.relative_to(REPO_ROOT)} ({len(SEAMS)} seams)")
     return 0
 

@@ -76,6 +76,12 @@ impl BackgroundTaskOutputManager {
     /// Get the total size of a task's output file.
     #[allow(dead_code)]
     pub fn output_size(&self, task_id: &str) -> Result<usize> {
+        // Same guard as append/remove: `output_path_for` joins the id into a
+        // path, and this helper must not become the unguarded future caller
+        // the doc on `task_id_is_safe` warns about.
+        if !Self::task_id_is_safe(task_id) {
+            anyhow::bail!("invalid task id {task_id:?}: must be a single safe path component");
+        }
         let path = self.output_path_for(task_id);
         if !path.exists() {
             return Ok(0);

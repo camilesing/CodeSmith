@@ -53,22 +53,23 @@ export interface CuratedDispatch {
 export function isDispatchPayload(v: unknown): v is Omit<CuratedDispatch, "generatedAt"> {
   if (typeof v !== "object" || v === null) return false;
   const d = v as CuratedDispatch;
-  const wellFormedHighlight = (it: unknown) =>
+  const wellFormedItem = (it: unknown): boolean =>
     typeof it === "object" &&
     it !== null &&
     typeof (it as { title?: unknown }).title === "string" &&
     typeof (it as { href?: unknown }).href === "string";
-  const wellFormedMover = (it: unknown) =>
-    typeof it === "object" &&
-    it !== null &&
-    typeof (it as { title?: unknown }).title === "string" &&
-    typeof (it as { href?: unknown }).href === "string";
+  // Optional zh sections: the zh homepage falls back to the English fields
+  // only when they are ABSENT — a present-but-malformed zh array must degrade
+  // to the fallback too, not crash the render (`highlights.slice(...)`).
+  const wellFormedZhArray = (v: unknown) => Array.isArray(v) && v.every(wellFormedItem);
   return (
     typeof d.headline === "string" &&
     typeof d.summary === "string" &&
     Array.isArray(d.highlights) &&
-    d.highlights.every(wellFormedHighlight) &&
+    d.highlights.every(wellFormedItem) &&
     Array.isArray(d.movers) &&
-    d.movers.every(wellFormedMover)
+    d.movers.every(wellFormedItem) &&
+    (d.highlightsZh === undefined || wellFormedZhArray(d.highlightsZh)) &&
+    (d.moversZh === undefined || wellFormedZhArray(d.moversZh))
   );
 }

@@ -241,7 +241,7 @@ pub struct ToolExecutionUpdateEvent {
 }
 
 /// Lifecycle events. §F1 minimal set (spec §10.1) + §F2a full set (spec
-/// §10.2 + §4): 24 variants total (23 §F2a + `AssistantStream`), `#[non_exhaustive]` so future slices can
+/// §10.2 + §4): 25 variants total (23 §F2a + `AssistantStream` + `ToolsChange`), `#[non_exhaustive]` so future slices can
 /// add variants without breaking downstream match arms. Handler dispatch is
 /// open (any `Handler` may subscribe to any variant via `on` /
 /// `on_variant`). Variant-specific outcome semantics are part of the
@@ -696,14 +696,26 @@ pub trait ExtensionApi: Send + Sync {
     /// [`crate::provider::ProviderRegistration`]). A registration takes
     /// effect at the next client resolution — an already-built client is
     /// not hot-swapped.
-    fn register_provider(&self, factory: Arc<dyn ProviderFactory>) -> Result<(), ExtensionError>;
+    ///
+    /// Default: hosts that do not support provider registration get a loud
+    /// error, keeping the trait implementable (source- and binary-compatible)
+    /// for api surfaces that predate the route-A methods.
+    fn register_provider(&self, _factory: Arc<dyn ProviderFactory>) -> Result<(), ExtensionError> {
+        Err(ExtensionError::Load(
+            "provider registration not supported by this api".into(),
+        ))
+    }
 
     /// Route A, script-mod shape — register a declarative alias onto a
     /// builtin provider (new custom id + optional `base_url` /
     /// `default_model` / `http_headers` overrides). Rhai mods cannot
     /// implement `LlmClient` (no async/net by design), so their provider
     /// contribution is this alias form; see [`ProviderAlias`].
-    fn register_provider_alias(&self, alias: ProviderAlias) -> Result<(), ExtensionError>;
+    fn register_provider_alias(&self, _alias: ProviderAlias) -> Result<(), ExtensionError> {
+        Err(ExtensionError::Load(
+            "provider alias registration not supported by this api".into(),
+        ))
+    }
 
     /// Route B (systemPrompt sections) — contribute a named, append-only
     /// section to the base system prompt. Sections register at mod load and
@@ -711,7 +723,11 @@ pub trait ExtensionApi: Send + Sync {
     /// appends them to the base prompt each turn, BEFORE the
     /// `BeforeAgentStart` seam — an explicit whole-prompt replacement by a
     /// handler still wins. `id` is diagnostics/dedup identity, not display.
-    fn register_prompt_section(&self, id: String, text: String) -> Result<(), ExtensionError>;
+    fn register_prompt_section(&self, _id: String, _text: String) -> Result<(), ExtensionError> {
+        Err(ExtensionError::Load(
+            "prompt-section registration not supported by this api".into(),
+        ))
+    }
 
     /// Route B (skills) — contribute a skill to the session's skill
     /// catalogue. Registered skills are in-memory only (no `SKILL.md` on
@@ -723,7 +739,11 @@ pub trait ExtensionApi: Send + Sync {
     /// sections). A name already registered by a *different* owner is
     /// rejected (fail loud); the filesystem catalogue wins over a
     /// registered name at merge time.
-    fn register_skill(&self, skill: SkillRegistration) -> Result<(), ExtensionError>;
+    fn register_skill(&self, _skill: SkillRegistration) -> Result<(), ExtensionError> {
+        Err(ExtensionError::Load(
+            "skill registration not supported by this api".into(),
+        ))
+    }
 
     /// Register a **message projection**: a fold the host runs over the
     /// session transcript, maintaining a per-`(owner, key)` state that
@@ -735,11 +755,15 @@ pub trait ExtensionApi: Send + Sync {
     /// never kills the turn); re-registering happens at the next mod load.
     fn register_message_projection(
         &self,
-        owner: String,
-        key: String,
-        init: Value,
-        fold: MessageFoldFn,
-    ) -> Result<(), ExtensionError>;
+        _owner: String,
+        _key: String,
+        _init: Value,
+        _fold: MessageFoldFn,
+    ) -> Result<(), ExtensionError> {
+        Err(ExtensionError::Load(
+            "message-projection registration not supported by this api".into(),
+        ))
+    }
 }
 
 // === Message projections (session log folds) ===============================
@@ -757,6 +781,11 @@ pub type MessageFoldFn =
 /// registration — mirrors `MAX_PROMPT_SECTIONS`).
 pub const MAX_MESSAGE_PROJECTIONS: usize = 16;
 
+/// Bound on [`MessageProjectionHub::refold_all`] follow-up passes for
+/// projections registered while a refold was running (caps a pathological
+/// register-during-refold loop; one pass is the norm).
+const REFOLD_MAX_PASSES: usize = 3;
+
 /// Route B (skills) — a mod-contributed skill, registered via
 /// [`ExtensionApi::register_skill`]. The framework-level mirror of a
 /// `SKILL.md`: only the fields the catalogue lists and `load_skill`
@@ -765,9 +794,12 @@ pub const MAX_MESSAGE_PROJECTIONS: usize = 16;
 /// — add them here when a mod needs them.
 #[derive(Debug, Clone)]
 pub struct SkillRegistration {
-    /// Owning mod id. Set by the host at registration (the mod never
-    /// names itself here); also the replace identity: a mod re-registering
-    /// its own name replaces in place.
+    /// Owning mod id, also the replace identity: a mod re-registering its
+    /// own name replaces in place, and a name already registered by a
+    /// *different* owner is rejected at registration. Caller-supplied at
+    /// the trait level (a compiled-in/dylib extension names itself); the
+    /// script-mod seam stamps the mod's own id and offers no way to name
+    /// another owner.
     pub owner: String,
     /// Skill name — the `load_skill` / `/skill` key. `[a-zA-Z0-9_-]`,
     /// 1-64 chars.
@@ -894,27 +926,67 @@ impl MessageProjectionHub {
     }
 
     /// Fold one newly-appended transcript message into every projection.
-    /// No-ops when empty. A fold error drops that projection (logged via
-    /// `tracing` by the host, error string returned per-entry is logged at
-    /// the call site) — the turn keeps running.
+    /// No-ops when empty. A fold error (or panic) drops that projection
+    /// (logged via `tracing`) — the turn keeps running.
+    ///
+    /// Folds run OUTSIDE the hub mutex: a script-mod fold re-enters the
+    /// same Rhai engine whose `projection_state` native locks this hub, so
+    /// folding under the lock deadlocks the turn on the same thread; a
+    /// panicking fold is contained by `catch_unwind` instead of poisoning
+    /// the mutex; a slow fold (Rhai op budget, `mod_state_set` file I/O)
+    /// cannot block other hub operations while it runs. The re-lock after
+    /// the folds commits by `(owner, key)` identity, so a concurrent
+    /// `register`/`clear` interleaving never applies a fold result to a
+    /// projection it did not start from.
     pub fn fold_message(&self, message: &crate::models::Message) {
-        let mut state = self.inner.lock().expect("projection hub poisoned");
-        if state.projections.is_empty() {
-            return;
-        }
+        let snapshot: Vec<(String, String, Value, MessageFoldFn)> = {
+            let state = self.inner.lock().expect("projection hub poisoned");
+            if state.projections.is_empty() {
+                return;
+            }
+            state
+                .projections
+                .iter()
+                .map(|p| {
+                    (
+                        p.owner.clone(),
+                        p.key.clone(),
+                        p.state.clone(),
+                        Arc::clone(&p.fold),
+                    )
+                })
+                .collect()
+        };
+        let mut folded: Vec<(String, String, Value)> = Vec::new();
         let mut doomed: Vec<(String, String)> = Vec::new();
-        for p in &mut state.projections {
-            match (p.fold)(p.state.clone(), message) {
-                Ok(next) => p.state = next,
-                Err(e) => {
+        for (owner, key, current, fold) in snapshot {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fold(current, message)))
+            {
+                Ok(Ok(next)) => folded.push((owner, key, next)),
+                Ok(Err(e)) => {
                     tracing::error!(
                         target: "codesmith_extensions",
-                        "message projection {}/{} failed and was dropped: {e}",
-                        p.owner,
-                        p.key
+                        "message projection {owner}/{key} failed and was dropped: {e}"
                     );
-                    doomed.push((p.owner.clone(), p.key.clone()));
+                    doomed.push((owner, key));
                 }
+                Err(_) => {
+                    tracing::error!(
+                        target: "codesmith_extensions",
+                        "message projection {owner}/{key} panicked and was dropped"
+                    );
+                    doomed.push((owner, key));
+                }
+            }
+        }
+        let mut state = self.inner.lock().expect("projection hub poisoned");
+        for (owner, key, next) in folded {
+            if let Some(p) = state
+                .projections
+                .iter_mut()
+                .find(|p| p.owner == owner && p.key == key)
+            {
+                p.state = next;
             }
         }
         state
@@ -924,19 +996,123 @@ impl MessageProjectionHub {
 
     /// Reset every projection to its `init` and fold the whole transcript
     /// (wholesale replacement: session restore, compaction, rollback).
+    ///
+    /// The folds run outside the lock (see [`fold_message`]) but the
+    /// resulting states land in ONE lock step, so no window exists where a
+    /// concurrent `register`, `clear`, or `fold_message` (the reload thread
+    /// races the engine here) can observe a reset-then-partially-folded
+    /// hub. A projection registered DURING the fold would otherwise stay
+    /// at its init forever; it is picked up by a bounded follow-up pass
+    /// ([`REFOLD_MAX_PASSES`] caps registration storms).
     pub fn refold_all(&self, messages: &[crate::models::Message]) {
-        {
-            let mut state = self.inner.lock().expect("projection hub poisoned");
+        let mut pending: Vec<(String, String, Value, MessageFoldFn)> = {
+            let state = self.inner.lock().expect("projection hub poisoned");
             if state.projections.is_empty() {
                 return;
             }
-            for p in &mut state.projections {
-                p.state = p.init.clone();
+            state
+                .projections
+                .iter()
+                .map(|p| {
+                    (
+                        p.owner.clone(),
+                        p.key.clone(),
+                        p.init.clone(),
+                        Arc::clone(&p.fold),
+                    )
+                })
+                .collect()
+        };
+        let mut passes = 0;
+        loop {
+            if pending.is_empty() {
+                return;
             }
-            state.dirty = false;
-        }
-        for message in messages {
-            self.fold_message(message);
+            passes += 1;
+            if passes > REFOLD_MAX_PASSES {
+                tracing::warn!(
+                    target: "codesmith_extensions",
+                    "message projection refold stopped after {REFOLD_MAX_PASSES} passes; \
+                     {} projection(s) registered mid-refold stay at init until the next refold",
+                    pending.len()
+                );
+                return;
+            }
+            let mut folded: Vec<(String, String, Option<Value>)> = Vec::new();
+            for (owner, key, init, fold) in &pending {
+                let mut state = init.clone();
+                let mut failed = false;
+                for message in messages {
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        fold(state.clone(), message)
+                    })) {
+                        Ok(Ok(next)) => state = next,
+                        Ok(Err(e)) => {
+                            tracing::error!(
+                                target: "codesmith_extensions",
+                                "message projection {owner}/{key} failed during refold \
+                                 and was dropped: {e}"
+                            );
+                            failed = true;
+                            break;
+                        }
+                        Err(_) => {
+                            tracing::error!(
+                                target: "codesmith_extensions",
+                                "message projection {owner}/{key} panicked during refold \
+                                 and was dropped"
+                            );
+                            failed = true;
+                            break;
+                        }
+                    }
+                }
+                let next = if failed { None } else { Some(state) };
+                folded.push((owner.clone(), key.clone(), next));
+            }
+            pending = {
+                let mut state = self.inner.lock().expect("projection hub poisoned");
+                state.dirty = false;
+                let done: Vec<(String, String)> = folded
+                    .iter()
+                    .map(|(owner, key, _)| (owner.clone(), key.clone()))
+                    .collect();
+                state.projections.retain(|p| {
+                    match folded
+                        .iter()
+                        .find(|(owner, key, _)| *owner == p.owner && *key == p.key)
+                    {
+                        // Not ours: registered while we were folding — keep,
+                        // and pick it up on the next pass.
+                        None => true,
+                        Some((_, _, Some(_))) => true,
+                        Some((_, _, None)) => false,
+                    }
+                });
+                for (owner, key, next) in folded {
+                    if let Some(next) = next
+                        && let Some(p) = state
+                            .projections
+                            .iter_mut()
+                            .find(|p| p.owner == owner && p.key == key)
+                    {
+                        p.state = next;
+                    }
+                }
+                state
+                    .projections
+                    .iter()
+                    .filter(|p| !done.contains(&(p.owner.clone(), p.key.clone())))
+                    .map(|p| {
+                        (
+                            p.owner.clone(),
+                            p.key.clone(),
+                            p.init.clone(),
+                            Arc::clone(&p.fold),
+                        )
+                    })
+                    .collect()
+            };
         }
     }
 

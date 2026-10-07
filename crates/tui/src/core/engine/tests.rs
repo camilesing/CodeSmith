@@ -4814,12 +4814,12 @@ async fn f2b_extension_reload_clears_and_rebinds_live() {
     // is cleared (it wasn't discovered via `discover_static`, so it isn't
     // re-bound); generation bumps.
     let state = crate::extension_state::ExtensionStateStore::load_default().unwrap_or_default();
-    let mod_state = crate::mod_state::ModStateStore::load_default().unwrap_or_default();
+    let mut mod_state = crate::mod_state::ModStateStore::load_default().unwrap_or_default();
     super::reload_extension_runtime(
         &runner,
         &workspace,
         &state,
-        &mod_state,
+        &mut mod_state,
         true,
         std::sync::Arc::new(std::sync::Mutex::new(
             tokio_util::sync::CancellationToken::new(),
@@ -4912,7 +4912,7 @@ async fn mods_populate_gates_pending_activation_then_loads_after_activate() {
         &runner,
         &workspace,
         &ext_state,
-        &mod_state,
+        &mut mod_state,
         true,
         cancel.clone(),
     );
@@ -4934,12 +4934,15 @@ async fn mods_populate_gates_pending_activation_then_loads_after_activate() {
     );
 
     // 2. Activate + reload: the mod loads and its tool binds.
-    mod_state.activate("e2e-mod").expect("activate");
+    let entry_hash = crate::mod_ops::entry_file_hash(&mod_dir.join("mod.rhai")).expect("hash");
+    mod_state
+        .activate("e2e-mod", &entry_hash)
+        .expect("activate");
     let report = super::reload_extension_runtime(
         &runner,
         &workspace,
         &ext_state,
-        &mod_state,
+        &mut mod_state,
         true,
         cancel.clone(),
     );
@@ -4971,8 +4974,14 @@ async fn mods_populate_gates_pending_activation_then_loads_after_activate() {
     // 4. Disable + reload: the tool binding clears (and the audit records
     // the Disabled entry — a disabled extension stays visible).
     mod_state.set_enabled("e2e-mod", false).expect("disable");
-    let report =
-        super::reload_extension_runtime(&runner, &workspace, &ext_state, &mod_state, true, cancel);
+    let report = super::reload_extension_runtime(
+        &runner,
+        &workspace,
+        &ext_state,
+        &mut mod_state,
+        true,
+        cancel.clone(),
+    );
     assert!(
         !runner.bound_tools().iter().any(|(n, _)| n == "e2e_greet"),
         "disabled mod's tool must clear on reload"
@@ -4984,6 +4993,37 @@ async fn mods_populate_gates_pending_activation_then_loads_after_activate() {
             .any(|e| e.id == "e2e-mod" && matches!(e.status, super::AuditStatus::Disabled)),
         "audit: {:?}",
         report.audit
+    );
+
+    // 5. Content-change gate (review round 3): an activated mod whose entry
+    // file changed since the recorded activation hash goes back to pending
+    // (with the re-consent reason) and does NOT load on standing consent.
+    mod_state.set_enabled("e2e-mod", true).expect("re-enable");
+    fs::write(
+        mod_dir.join("mod.rhai"),
+        "register_tool(#{name: \"e2e_evil\", description: \"tampered\"}, |input| { ok(\"no\") });",
+    )
+    .expect("tampered entry");
+    let report = super::reload_extension_runtime(
+        &runner,
+        &workspace,
+        &ext_state,
+        &mut mod_state,
+        true,
+        cancel,
+    );
+    assert_eq!(report.loaded_mods, 0, "changed content must not load");
+    assert_eq!(report.pending_mods.len(), 1, "{:?}", report.pending_mods);
+    assert!(
+        report.pending_mods[0]
+            .reason
+            .is_some_and(|r| r.contains("changed since activation")),
+        "pending reason: {:?}",
+        report.pending_mods[0].reason
+    );
+    assert!(
+        !runner.bound_tools().iter().any(|(n, _)| n == "e2e_evil"),
+        "tampered tool must not bind"
     );
 }
 
@@ -5014,7 +5054,12 @@ async fn mods_populate_audits_broken_mod_as_failed_with_original_error() {
         tmp.path().join(".codesmith").join("mods_state.toml"),
     )
     .expect("mod state");
-    mod_state.activate("broken-mod").expect("activate");
+    mod_state
+        .activate(
+            "broken-mod",
+            &crate::mod_ops::entry_file_hash(&mod_dir.join("mod.rhai")).expect("hash"),
+        )
+        .expect("activate");
     let ext_state = crate::extension_state::ExtensionStateStore::load_default().unwrap_or_default();
     let cancel = std::sync::Arc::new(std::sync::Mutex::new(
         tokio_util::sync::CancellationToken::new(),
@@ -5022,7 +5067,12 @@ async fn mods_populate_audits_broken_mod_as_failed_with_original_error() {
 
     let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
     let report = super::populate_extension_runtime(
-        &runner, &workspace, &ext_state, &mod_state, true, cancel,
+        &runner,
+        &workspace,
+        &ext_state,
+        &mut mod_state,
+        true,
+        cancel,
     );
     assert_eq!(report.loaded_mods, 0);
     let entry = report

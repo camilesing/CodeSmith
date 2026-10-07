@@ -682,6 +682,7 @@ pub async fn run_tui(
             runner,
             app.workspace.clone(),
             engine_handle.cancel_token.clone(),
+            config.mods_enabled(),
         );
     }
     // The translation client is optional: it never crashes the TUI on
@@ -5071,7 +5072,11 @@ async fn dispatch_user_message(
                 personality: config.personality(),
                 skills_block: crate::skills::render_available_skills_context_with_registered(
                     &app.workspace,
-                    None,
+                    // Same configured install dir the engine-side prompt
+                    // builder passes (core/engine.rs) — without it, skills
+                    // installed there appear in engine-built prompts but
+                    // not in this TUI-dispatched one.
+                    Some(config.skills_dir().as_path()),
                     &app.extension_runner
                         .as_ref()
                         .map(|runner| runner.registered_skills())
@@ -6376,8 +6381,12 @@ async fn steer_user_message(
 /// The command runs as the user's own action (they typed it), so it does
 /// not pass the tool-approval gate.
 ///
-/// Known limitation: output is captured, not streamed — the UI stays
-/// frozen while the command runs, capped by [`SHELL_BANG_TIMEOUT_SECS`].
+/// Known limitations: output is captured, not streamed — the UI stays
+/// frozen while the command runs, capped by [`SHELL_BANG_TIMEOUT_SECS`]
+/// (Esc cannot cancel it); and capture is bounded to
+/// [`SHELL_BANG_MAX_CAPTURE_BYTES`] per stream — a high-volume command is
+/// truncated at capture time (kept draining so the child can exit) rather
+/// than buffered whole into memory.
 async fn run_shell_bang_input(
     app: &mut App,
     config: &Config,
@@ -6397,17 +6406,39 @@ async fn run_shell_bang_input(
     let mut cmd = shell_bang_command(&command);
     cmd.current_dir(&app.workspace);
     cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            app.push_status_toast(
+                format!("Failed to spawn `{command}`: {err}"),
+                StatusToastLevel::Error,
+                Some(5_000),
+            );
+            return Ok(());
+        }
+    };
 
-    let output = match tokio::time::timeout(
-        Duration::from_secs(SHELL_BANG_TIMEOUT_SECS),
-        cmd.output(),
-    )
+    // On timeout the awaited future is dropped with the child still
+    // running — kill_on_drop (set in shell_bang_command) is the kill
+    // backstop, and the bounded readers below never buffer past the cap.
+    let output = match tokio::time::timeout(Duration::from_secs(SHELL_BANG_TIMEOUT_SECS), async {
+        let stdout_pipe = child.stdout.take();
+        let stderr_pipe = child.stderr.take();
+        let (stdout_bytes, stderr_bytes) = tokio::join!(
+            read_bounded(stdout_pipe, SHELL_BANG_MAX_CAPTURE_BYTES),
+            read_bounded(stderr_pipe, SHELL_BANG_MAX_CAPTURE_BYTES),
+        );
+        let status = child.wait().await?;
+        Ok::<_, std::io::Error>((stdout_bytes?, stderr_bytes?, status))
+    })
     .await
     {
         Ok(Ok(output)) => output,
         Ok(Err(err)) => {
             app.push_status_toast(
-                format!("Failed to spawn `{command}`: {err}"),
+                format!("`{command}` failed: {err}"),
                 StatusToastLevel::Error,
                 Some(5_000),
             );
@@ -6423,8 +6454,8 @@ async fn run_shell_bang_input(
         }
     };
 
-    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut text = String::from_utf8_lossy(&output.0).into_owned();
+    let stderr = String::from_utf8_lossy(&output.1);
     if !stderr.trim().is_empty() {
         if !text.is_empty() {
             text.push('\n');
@@ -6440,10 +6471,10 @@ async fn run_shell_bang_input(
                 .collect::<String>()
         );
     }
-    let status_note = if output.status.success() {
+    let status_note = if output.2.success() {
         String::new()
     } else {
-        format!("\n[exit status: {}]", output.status)
+        format!("\n[exit status: {}]", output.2)
     };
 
     let body = format!("! `{command}`\n\n```\n{text}{status_note}\n```");
@@ -6451,8 +6482,45 @@ async fn run_shell_bang_input(
     submit_or_steer_message(app, config, engine_handle, queued).await
 }
 
+/// Byte budget per captured stream — roughly 4× the char cap, so the final
+/// char-level truncation is what the user sees while capture stays bounded.
+const SHELL_BANG_MAX_CAPTURE_BYTES: usize = 4 * SHELL_BANG_MAX_OUTPUT_CHARS;
+
+/// Read a piped stream up to `budget` bytes, then keep draining and
+/// discarding so the child cannot block on a full pipe. Truncation happens
+/// at capture time instead of after buffering the whole stream — `cmd.output()`
+/// would otherwise buffer gigabytes under the 60s timeout (`yes`, `find /`).
+async fn read_bounded<R: tokio::io::AsyncRead + Unpin>(
+    pipe: Option<R>,
+    budget: usize,
+) -> std::io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let Some(mut reader) = pipe else {
+        return Ok(Vec::new());
+    };
+    let mut captured = Vec::new();
+    let mut discard = [0u8; 8192];
+    loop {
+        let n = reader.read(&mut discard).await?;
+        if n == 0 {
+            break;
+        }
+        if captured.len() < budget {
+            let room = budget - captured.len();
+            captured.extend_from_slice(&discard[..n.min(room)]);
+        }
+        // Past the budget: keep draining (discard) so the child can exit.
+    }
+    Ok(captured)
+}
+
 fn shell_bang_command(command: &str) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(shell_bang_program());
+    // On timeout the output future is dropped with the child still
+    // running — kill_on_drop is the SIGKILL backstop (same contract as
+    // js_execution / tool_catalog) so a timed-out command cannot keep
+    // holding locks/ports in the workspace.
+    cmd.kill_on_drop(true);
     #[cfg(unix)]
     cmd.arg("-c");
     #[cfg(windows)]
@@ -6494,9 +6562,22 @@ async fn flush_queued_messages_now(
     }
     let count = bodies.len();
     let merged = QueuedMessage::new(bodies.join("\n\n"), skill_instruction);
-    let result = submit_or_steer_message(app, config, engine_handle, merged).await;
-    if result.is_ok() && app.queued_message_count() == 0 {
-        app.status_message = Some(format!("Sent {count} queued message(s)"));
+    let result = submit_or_steer_message(app, config, engine_handle, merged.clone()).await;
+    match &result {
+        // Mirror the TurnComplete drain: never lose queued messages on a
+        // failed dispatch — put the merged message back on the queue.
+        Err(_) => {
+            app.queue_message(merged);
+            app.status_message = Some(format!(
+                "Dispatch failed; kept {} queued message(s) — ↑ to edit, /queue list",
+                app.queued_message_count()
+            ));
+        }
+        Ok(()) => {
+            if app.queued_message_count() == 0 {
+                app.status_message = Some(format!("Sent {count} queued message(s)"));
+            }
+        }
     }
     result
 }

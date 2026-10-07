@@ -29,4 +29,20 @@ describe("isDispatchPayload", () => {
       })
     ).toBe(false);
   });
+
+  it("accepts well-formed optional zh sections", () => {
+    expect(
+      isDispatchPayload({
+        ...validPayload,
+        highlightsZh: [{ title: "t", href: "https://github.com/z", tag: "tag", blurb: "b" }],
+        moversZh: [{ number: 1, title: "t", href: "https://github.com/z", reason: "r" }],
+      })
+    ).toBe(true);
+  });
+
+  it("rejects present-but-malformed zh sections (zh homepage renders them unguarded)", () => {
+    expect(isDispatchPayload({ ...validPayload, highlightsZh: "n/a" })).toBe(false);
+    expect(isDispatchPayload({ ...validPayload, highlightsZh: [{ title: "t" }] })).toBe(false);
+    expect(isDispatchPayload({ ...validPayload, moversZh: ["n/a"] })).toBe(false);
+  });
 });

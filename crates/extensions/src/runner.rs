@@ -950,10 +950,10 @@ mod tests {
             event: &ExtensionEvent,
             _ctx: &dyn ExtensionContext,
         ) -> Result<HandlerOutcome, ExtensionError> {
-            if let ExtensionEvent::ToolResult(tr) = event {
-                if let Ok(r) = &tr.result {
-                    self.seen.lock().unwrap().push(r.content.clone());
-                }
+            if let ExtensionEvent::ToolResult(tr) = event
+                && let Ok(r) = &tr.result
+            {
+                self.seen.lock().unwrap().push(r.content.clone());
             }
             Ok(HandlerOutcome::Continue)
         }

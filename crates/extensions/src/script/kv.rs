@@ -15,7 +15,9 @@ use std::sync::{Arc, Mutex};
 pub struct ModKvStore(Arc<Mutex<KvInner>>);
 
 struct KvInner {
-    path: PathBuf,
+    /// Backing file; `None` for an [`ModKvStore::ephemeral`] store (never
+    /// persisted). `map` stays `None` until first access (lazy load).
+    path: Option<PathBuf>,
     /// `None` until first access (lazy load); `Some` thereafter.
     map: Option<BTreeMap<String, serde_json::Value>>,
 }
@@ -23,7 +25,16 @@ struct KvInner {
 impl std::fmt::Debug for ModKvStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ModKvStore")
-            .field("path", &self.0.lock().expect("kv lock poisoned").path)
+            .field(
+                "path",
+                &self
+                    .0
+                    .lock()
+                    .expect("kv lock poisoned")
+                    .path
+                    .as_deref()
+                    .map(std::path::Path::display),
+            )
             .finish()
     }
 }
@@ -34,7 +45,21 @@ impl ModKvStore {
     /// read until the first `get`/`set`.
     #[must_use]
     pub fn new(path: PathBuf) -> Self {
-        Self(Arc::new(Mutex::new(KvInner { path, map: None })))
+        Self(Arc::new(Mutex::new(KvInner {
+            path: Some(path),
+            map: None,
+        })))
+    }
+
+    /// Create an in-memory-only store: reads see an empty map and writes are
+    /// never persisted. For callers with no owning state directory (tests,
+    /// path-less stores) — never persist mod data into a shared temp dir.
+    #[must_use]
+    pub fn ephemeral() -> Self {
+        Self(Arc::new(Mutex::new(KvInner {
+            path: None,
+            map: None,
+        })))
     }
 
     /// Read a key. `None` when absent or when the backing file is malformed
@@ -54,7 +79,7 @@ impl ModKvStore {
             map.insert(key.to_string(), value);
         }
         if let Err(e) = inner.persist() {
-            tracing::warn!("mod kv persist failed ({}): {e}", inner.path.display());
+            tracing::warn!("mod kv persist failed ({}): {e}", inner.path_display());
         }
     }
 
@@ -65,25 +90,48 @@ impl ModKvStore {
         if let Some(map) = inner.map.as_mut() {
             map.remove(key);
         }
-        let _ = inner.persist();
+        if let Err(e) = inner.persist() {
+            tracing::warn!("mod kv persist failed ({}): {e}", inner.path_display());
+        }
     }
 }
 
 impl KvInner {
+    fn path_display(&self) -> std::borrow::Cow<'_, str> {
+        self.path
+            .as_deref()
+            .map(|p| std::borrow::Cow::Owned(p.display().to_string()))
+            .unwrap_or_else(|| std::borrow::Cow::Borrowed("(ephemeral)"))
+    }
+
     fn ensure_loaded(&mut self) {
         if self.map.is_some() {
             return;
         }
-        self.map = Some(match std::fs::read_to_string(&self.path) {
+        let Some(path) = self.path.as_deref() else {
+            // Ephemeral store: nothing on disk, start empty.
+            self.map = Some(BTreeMap::new());
+            return;
+        };
+        self.map = Some(match std::fs::read_to_string(path) {
             Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|e| {
                 tracing::warn!(
-                    "mod kv file {} malformed ({}); treating as empty",
-                    self.path.display(),
-                    e
+                    "mod kv file {} malformed ({e}); treating as empty",
+                    path.display()
                 );
                 BTreeMap::new()
             }),
-            Err(_) => BTreeMap::new(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+            Err(e) => {
+                // An unreadable-but-present file is NOT the same as an empty
+                // store — warn, otherwise the next `set` would silently
+                // persist the empty map over keys this process never read.
+                tracing::warn!(
+                    "mod kv file {} unreadable ({e}); treating as empty",
+                    path.display()
+                );
+                BTreeMap::new()
+            }
         });
     }
 
@@ -91,22 +139,35 @@ impl KvInner {
         let Some(map) = &self.map else {
             return Ok(());
         };
+        let Some(path) = self.path.as_deref() else {
+            return Ok(()); // ephemeral: nothing to persist
+        };
         let body = serde_json::to_string_pretty(map)
             .map_err(|e| std::io::Error::other(format!("serialize kv: {e}")))?;
-        atomic_write(&self.path, body.as_bytes())
+        atomic_write(path, body.as_bytes())
     }
 }
 
 /// Write bytes to a sibling temp file then rename over `path` (atomic on
 /// both Unix `rename` and Windows `MoveFileEx` semantics of `fs::rename`
 /// best-effort).
+///
+/// The temp name carries the pid: a global mod's KV file is shared across
+/// concurrent sessions (two TUI windows, TUI + CLI), and a fixed sibling
+/// name would have one process rename the other's half-written content (or
+/// fail on ENOENT). The file is fsynced before the rename so a crash never
+/// leaves an empty file behind the (atomic) rename point.
 fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
     let parent = path.parent().ok_or_else(|| {
         std::io::Error::other(format!("kv path {} has no parent", path.display()))
     })?;
     std::fs::create_dir_all(parent)?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, bytes)?;
+    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    let mut file = std::fs::File::create(&tmp)?;
+    file.write_all(bytes)?;
+    file.flush()?;
+    file.sync_all()?;
     std::fs::rename(&tmp, path)
 }
 
@@ -189,5 +250,15 @@ mod tests {
         let clone = kv.clone();
         clone.set("k", json!("v"));
         assert_eq!(kv.get("k"), Some(json!("v")));
+    }
+
+    #[test]
+    fn ephemeral_store_round_trips_in_memory_only() {
+        let kv = ModKvStore::ephemeral();
+        kv.set("k", json!("v"));
+        kv.remove("nope");
+        assert_eq!(kv.get("k"), Some(json!("v")));
+        // A distinct ephemeral store shares nothing (no backing file).
+        assert_eq!(ModKvStore::ephemeral().get("k"), None);
     }
 }

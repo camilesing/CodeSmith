@@ -53,7 +53,7 @@ In CodeSmith, type:
 /mods activate hello
 ```
 
-**What you'll see**: this is the **one-time consent** for this id (a mod is in-process code that persists across sessions — first activation requires your approval). After approval the mod is live immediately; same-id reloads (including hot reloads) never ask again. Any shell call containing `rm -rf` is now blocked, and the model receives your reason and adapts.
+**What you'll see**: this is the **one-time consent** for this content (a mod is in-process code that persists across sessions — first activation requires your approval). After approval the mod is live immediately; same-id reloads (including hot reloads) never ask again — unless the mod's entry file changed since you approved it (git pull, an edit): a changed mod goes back to pending and asks for a fresh `/mods activate`. Any shell call containing `rm -rf` is now blocked, and the model receives your reason and adapts.
 
 ### Step 3: Register a model-visible tool + KV state
 
@@ -96,7 +96,7 @@ You've now touched all four registration surfaces: event hooks, tools, commands,
 
 ### Event hooks
 
-`on("<event>", |e, ctx| { ... })` — `e` is the event payload map (every payload carries `kind`), `ctx` is `#{cwd, mode, idle, generation}`; **ctx is optional** (`|e|` works). Event names are the kebab-case spelling of all 24 `ExtensionEventKind` variants:
+`on("<event>", |e, ctx| { ... })` — `e` is the event payload map (every payload carries `kind`), `ctx` is `#{cwd, mode, idle, generation}`; **ctx is optional** (`|e|` works). Event names are the kebab-case spelling of all 25 `ExtensionEventKind` variants:
 
 | Event | Payload fields |
 |---|---|
@@ -303,7 +303,7 @@ rejection. A mod whose manifest fails validation is skipped at discovery
 
 ## Lifecycle & Security Model
 
-- **First activation requires consent**: a newly discovered mod is skipped + passively announced as pending. Activation has exactly two paths: `/mods activate <id>`, or approving a `manage_mods(action="activate")` tool call. The activation record persists (`~/.codesmith/mods_state.toml`); same-id reloads need no re-approval. **Why**: mods are in-process code that persists across sessions — a prompt injection could plant a resident hook unnoticed; first-activation consent is exactly the guard against that.
+- **First activation requires consent**: a newly discovered mod is skipped + passively announced as pending. Activation has exactly two paths: `/mods activate <id>`, or approving a `manage_mods(action="activate")` tool call. The activation record persists (`~/.codesmith/mods_state.toml`); same-id reloads need no re-approval — **the consent is bound to the entry file's content hash**, so an activated mod whose `.rhai` later changes (git pull, an auto-approved edit) goes back to pending and asks for a fresh consent. **Why**: mods are in-process code that persists across sessions — a prompt injection could plant a resident hook unnoticed, and one approval must not become standing code-execution for that id; first-activation consent (plus re-consent on content change) is exactly the guard against that.
 - **Let the agent write mods for you**: just ask ("write me a mod that blocks git push") — the model writes files via the `manage_mods` tool (`write`) and requests your approval to activate (`activate`).
 - **Project mods** follow workspace trust: an untrusted workspace discovers nothing; `manage_mods` likewise refuses to write project mods into an untrusted workspace.
 - **Known boundaries**: mod tools, like Rust-extension tools, are main-turn only (sub-agents structurally never see them); network install sources (git clone into the mods dir) are out of MVP scope.

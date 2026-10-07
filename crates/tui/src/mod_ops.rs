@@ -62,6 +62,10 @@ pub struct PendingModInfo {
     pub description: Option<String>,
     /// `"global"` / `"project"` — which root it came from.
     pub source: &'static str,
+    /// Why the mod is pending: `None` = awaits first activation;
+    /// `Some(reason)` = previously activated but the entry file's content
+    /// changed since the recorded consent (re-activation required).
+    pub reason: Option<&'static str>,
 }
 
 impl PendingModInfo {
@@ -72,6 +76,16 @@ impl PendingModInfo {
             version: m.version.clone(),
             description: m.description.clone(),
             source: if m.global { "global" } else { "project" },
+            reason: None,
+        }
+    }
+
+    /// A previously-activated mod whose entry-file content no longer matches
+    /// the recorded activation hash — consent does not cover the new content.
+    pub fn changed_content(m: &DiscoveredMod) -> Self {
+        Self {
+            reason: Some("entry file changed since activation — /mods activate to re-consent"),
+            ..Self::from_discovered(m)
         }
     }
 }
@@ -84,6 +98,10 @@ pub struct ModReloadCtx {
     pub runner: Arc<ExtensionRunner>,
     pub workspace: PathBuf,
     pub shared_cancel_token: Arc<StdMutex<CancellationToken>>,
+    /// Captured at engine build (the same flag that gates registration) —
+    /// a tool-triggered or watcher reload must not resurrect the mod layer
+    /// against `[mods] enabled = false`.
+    pub mods_enabled: bool,
 }
 
 impl std::fmt::Debug for ModReloadCtx {
@@ -194,19 +212,47 @@ pub fn mod_info(workspace: &Path, state: &ModStateStore, id: &str) -> Option<Str
 
 // === Mutating operations ====================================================
 
-/// Activate a mod (first-activation consent) — persisted, then the mod layer
-/// reloads so the mod's tools/commands/hooks are live immediately.
+/// Serializes mod-state load→mutate→persist across every writer in the
+/// process: the `/mods` command path, the `manage_mods` tool path, and the
+/// activation-hash backfill during reload. Each persist rewrites the whole
+/// file, so two unlocked racing mutations are last-writer-wins — one record
+/// silently disappears. Take this guard BEFORE `ModStateStore::load_default`
+/// and hold it across mutate + persist.
+pub fn mod_state_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    match LOCK.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// SHA-256 hex of a mod's entry file — the content the activation consent
+/// is bound to. Known limitation: companion files beside the entry are not
+/// hashed (the entry script is the executable unit mods load).
+pub(crate) fn entry_file_hash(path: &Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let digest = Sha256::digest(&bytes);
+    Ok(digest.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Activate a mod (first-activation consent, bound to the entry file's
+/// current content) — persisted, then the mod layer reloads so the mod's
+/// tools/commands/hooks are live immediately.
 pub fn activate(workspace: &Path, state: &mut ModStateStore, id: &str) -> Result<String, String> {
     let mods = discover_workspace_mods(workspace);
     let m = mods
         .into_iter()
         .find(|m| m.id == id)
         .ok_or_else(|| format!("No mod with id '{id}'. Run /mods list."))?;
+    let entry_hash = entry_file_hash(&m.entry_path)?;
     state
-        .activate(id)
+        .activate(id, &entry_hash)
         .map_err(|e| format!("persist activation: {e}"))?;
     Ok(format!(
-        "Activated mod '{}' (v{}, {}). One-time consent recorded — same-id reloads need no further approval.",
+        "Activated mod '{}' (v{}, {}). One-time consent recorded for this \
+         content — same-id reloads need no further approval, but a changed \
+         entry file asks for activation again.",
         m.id,
         m.version,
         m.dir.display()
@@ -278,15 +324,12 @@ pub fn write_mod(
     files: &[(String, String)],
     global: bool,
 ) -> Result<PathBuf, String> {
-    if id.is_empty()
-        || !id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
-        || id == "."
-        || id == ".."
-    {
+    // Canonical helper (also rejects leading/trailing dots: ".git"-style
+    // hidden names, and Windows trailing-dot aliasing) — same guard class
+    // the automation/background-task ids use.
+    if !codesmith_agent_runtime::utils::is_safe_path_component(id) {
         return Err(format!(
-            "mod id {id:?} must be [a-zA-Z0-9._-] and non-empty"
+            "mod id {id:?} must be [a-zA-Z0-9._-], non-empty, and must not start or end with '.'"
         ));
     }
     if files.is_empty() {
@@ -313,11 +356,27 @@ pub fn write_mod(
         sanitize_rel_path(rel)?;
     }
     std::fs::create_dir_all(&mod_dir).map_err(|e| format!("create {}: {e}", mod_dir.display()))?;
+    // `sanitize_rel_path` is purely lexical, and both `create_dir_all` and
+    // `fs::write` follow symlinks: a pre-planted symlink at `<mods-root>/<id>`
+    // (or a subdirectory inside it) would carry the approved write outside
+    // the mods root. Bind every target to the canonicalized mod dir.
+    let root_canon = mod_dir
+        .canonicalize()
+        .map_err(|e| format!("resolve {}: {e}", mod_dir.display()))?;
     for (rel, content) in files {
         let target = mod_dir.join(sanitize_rel_path(rel)?);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("create {}: {e}", parent.display()))?;
+        }
+        let parent_canon = target
+            .parent()
+            .and_then(|p| p.canonicalize().ok())
+            .ok_or_else(|| format!("path {rel:?} escapes the mod directory (symlink?)"))?;
+        if !parent_canon.starts_with(&root_canon) {
+            return Err(format!(
+                "path {rel:?} escapes the mod directory (symlink?) — refusing to write"
+            ));
         }
         std::fs::write(&target, content).map_err(|e| format!("write {}: {e}", target.display()))?;
     }
@@ -337,15 +396,31 @@ pub fn reload_mods(
     mods_enabled: bool,
 ) -> String {
     // Disk-fresh stores: the tool path may have mutated them since the App
-    // copies were loaded.
-    let ext_state = crate::extension_state::ExtensionStateStore::load_default().unwrap_or_default();
-    let mod_state = ModStateStore::load_default().unwrap_or_default();
+    // copies were loaded. An unreadable store must NOT silently become an
+    // empty one — `reload_extension_runtime` clears every binding and
+    // repopulates from these stores, so an empty read would unload every
+    // activated mod AND re-enable user-disabled extensions until the next
+    // successful reload. Abort instead; current bindings stay live.
+    let ext_state = match crate::extension_state::ExtensionStateStore::load_default() {
+        Ok(s) => s,
+        Err(e) => {
+            return format!(
+                "Reload aborted: extension state unreadable ({e}); current bindings kept."
+            );
+        }
+    };
+    let mut mod_state = match ModStateStore::load_default() {
+        Ok(s) => s,
+        Err(e) => {
+            return format!("Reload aborted: mod state unreadable ({e}); current bindings kept.");
+        }
+    };
     let gen_before = runner.generation();
     let report = crate::core::engine::reload_extension_runtime(
         runner,
         workspace,
         &ext_state,
-        &mod_state,
+        &mut mod_state,
         mods_enabled,
         shared_cancel_token,
     );
@@ -355,7 +430,14 @@ pub fn reload_mods(
         report.loaded_mods
     );
     if !report.pending_mods.is_empty() {
-        let ids: Vec<&str> = report.pending_mods.iter().map(|p| p.id.as_str()).collect();
+        let ids: Vec<String> = report
+            .pending_mods
+            .iter()
+            .map(|p| match p.reason {
+                None => p.id.clone(),
+                Some(reason) => format!("{} ({reason})", p.id),
+            })
+            .collect();
         msg.push_str(&format!(
             " Pending activation (one-time consent): {} — /mods activate <id>.",
             ids.join(", ")
@@ -393,10 +475,14 @@ fn event_is_relevant(ev: &notify::Event) -> bool {
 /// (hot-reload is best-effort, never fatal).
 ///
 /// Must be called from a tokio runtime context (spawns the watch task).
+/// `mods_enabled` is captured at spawn (the same flag that gates the
+/// watcher itself) so a reload can never resurrect the mod layer against
+/// the user's `[mods] enabled = false`.
 pub fn spawn_mods_watcher(
     runner: Arc<ExtensionRunner>,
     workspace: PathBuf,
     shared_cancel_token: Arc<StdMutex<CancellationToken>>,
+    mods_enabled: bool,
 ) {
     let paths = mod_paths(&workspace);
     let roots: Vec<PathBuf> = paths
@@ -466,7 +552,19 @@ pub fn spawn_mods_watcher(
                 tokio::time::sleep(WATCH_COOLDOWN - elapsed).await;
             }
             last_fire = Instant::now();
-            let msg = reload_mods(&runner, &workspace, shared_cancel_token.clone(), true);
+            // reload_mods is synchronous disk work (recursive scans, TOML
+            // parsing, Rhai compilation on the load thread) — keep it off
+            // the tokio worker so a reload doesn't stall other tasks.
+            let msg = {
+                let runner = Arc::clone(&runner);
+                let workspace = workspace.clone();
+                let token = shared_cancel_token.clone();
+                tokio::task::spawn_blocking(move || {
+                    reload_mods(&runner, &workspace, token, mods_enabled)
+                })
+                .await
+                .unwrap_or_else(|e| format!("mods watcher reload failed: {e}"))
+            };
             tracing::info!(target: "codesmith_mods", "watcher reload: {msg}");
         }
     });
@@ -486,9 +584,9 @@ pub fn load_rhai_mod(
             let scope = if m.global { "global" } else { "project" };
             ModKvStore::new(dir.join(format!("{scope}-{}.json", m.id)))
         }
-        None => {
-            ModKvStore::new(std::env::temp_dir().join(format!("codesmith-mod-kv-{}.json", m.id)))
-        }
+        // No state directory (path-less store): in-memory only — never
+        // persist mod data into the shared temp dir.
+        None => ModKvStore::ephemeral(),
     };
     RhaiMod::load(m, kv, hub).map_err(|e| e.to_string())
 }
@@ -665,7 +763,7 @@ trust_level = "trusted"
         let mods_root = ws.join(".codesmith").join("mods");
         write_fixture_mod(&mods_root, "bye");
         let mut state = store_in(&dir);
-        state.activate("bye").unwrap();
+        state.activate("bye", "irrelevant-to-remove").unwrap();
         // Simulate a kv file left by a previous load.
         std::fs::create_dir_all(dir.path().join("mods-state")).unwrap();
         std::fs::write(dir.path().join("mods-state").join("project-bye.json"), "{}").unwrap();
@@ -694,7 +792,7 @@ trust_level = "trusted"
         assert!(listing.contains("pending activation"), "{listing}");
         let status = mod_status(&ws, &state);
         assert!(status.contains("pending: listed"), "{status}");
-        state.activate("listed").unwrap();
+        state.activate("listed", "irrelevant-to-listing").unwrap();
         let listing = list_mods(&ws, &state);
         assert!(listing.contains("activated"), "{listing}");
         let info = mod_info(&ws, &state, "listed").unwrap();

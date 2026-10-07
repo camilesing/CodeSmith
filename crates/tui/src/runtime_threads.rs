@@ -152,6 +152,30 @@ pub struct ThreadRecord {
     pub coherence_state: CoherenceState,
 }
 
+/// The `turn.completed` event payload: the serialized turn with the tool
+/// catalog reduced to its length. The turn record (save_turn) keeps the
+/// authoritative catalog; embedding the full turn clone in the event
+/// duplicated the whole catalog into the append-only stream on every
+/// completed turn, against the dedup design documented on
+/// `EngineEvent::LlmRequest` (agent-runtime events.rs). The SSE compat
+/// layer reads only `turn.usage` from this payload.
+fn turn_completed_payload(turn: &TurnRecord) -> serde_json::Value {
+    let mut view = match serde_json::to_value(turn) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("turn.completed payload failed to serialize: {e}");
+            serde_json::json!({})
+        }
+    };
+    if let Some(obj) = view.as_object_mut()
+        && let Some(catalog) = obj.remove("tool_catalog")
+    {
+        let count = catalog.as_array().map_or(0, Vec::len);
+        obj.insert("tool_count".to_string(), serde_json::json!(count));
+    }
+    json!({ "turn": view })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TurnRecord {
     #[serde(default = "default_runtime_schema_version")]
@@ -178,8 +202,9 @@ pub struct TurnRecord {
     /// Request envelope (event-sourcing slice 2): the tool catalog sent
     /// with this turn's model request, and the client's base URL. Any
     /// historical turn's provider envelope is recoverable from the record
-    /// (and from the `turn.completed` event that embeds it). `None` on
-    /// records written before the field existed.
+    /// (the sole authoritative copy — the `turn.completed` event carries
+    /// only the catalog length). `None` on records written before the
+    /// field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_catalog: Option<Vec<crate::models::Tool>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2038,6 +2063,10 @@ impl RuntimeThreadManager {
             show_thinking: settings.show_thinking,
             is_simple: settings.is_simple,
             personality: self.config.personality(),
+            // Deliberate behavior change with the engine-config
+            // unification: background automations used to cap at 100 steps;
+            // DEFAULT_MAX_STEPS (= 1024) now applies here too, so a runaway
+            // automation can loop (and spend) ~10× longer per turn.
             max_steps: codesmith_agent_runtime::engine_config::DEFAULT_MAX_STEPS,
             max_subagents: self.config.max_subagents().clamp(1, MAX_SUBAGENTS),
             features: self.config.features(),
@@ -2999,8 +3028,15 @@ impl RuntimeThreadManager {
                 // envelope into the append-only event stream (step-level
                 // facts the turn record does not carry).
                 EngineEvent::LlmRequest { summary } => {
-                    let payload =
-                        serde_json::to_value(&summary).unwrap_or_else(|_| serde_json::json!({}));
+                    let payload = serde_json::to_value(&summary).unwrap_or_else(|e| {
+                        // LlmRequestSummary is a plain Serialize struct of
+                        // primitives today, so this is theoretical — but a
+                        // future field that fails to serialize must not
+                        // silently erase per-step envelope facts from the
+                        // durable event stream.
+                        tracing::warn!("llm.request summary failed to serialize: {e}");
+                        serde_json::json!({})
+                    });
                     self.emit_event(&thread_id, Some(&turn_id), None, "llm.request", payload)
                         .await?;
                 }
@@ -3109,7 +3145,14 @@ impl RuntimeThreadManager {
             Some(&turn_id),
             None,
             "turn.completed",
-            json!({ "turn": turn.clone() }),
+            // Event-stream dedup design (see EngineEvent::LlmRequest in
+            // agent-runtime events.rs): the authoritative tool catalog rides
+            // the TURN RECORD (save_turn above); embedding the full turn
+            // clone here would duplicate the whole catalog into the
+            // append-only stream on every completed turn. The event carries
+            // the turn view with the catalog reduced to its length — the
+            // SSE compat layer reads only `turn.usage`.
+            turn_completed_payload(&turn),
         )
         .await?;
 
