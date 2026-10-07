@@ -27,8 +27,9 @@
 //!   a validator that could act on its own verdicts would be a validator
 //!   you cannot trust.
 //! * **Fail silent, never block.** No client resolvable, empty response,
-//!   transport error, or timeout (30s) skips the section with a `·` line —
-//!   doctor must never get *less* reliable because an LLM was added.
+//!   transport error, or timeout (30s) skips the section with a `·` line
+//!   naming the cause where known (transport vs. timeout) — doctor must
+//!   never get *less* reliable because an LLM was added.
 
 use serde_json::json;
 
@@ -130,9 +131,10 @@ impl DoctorFindings {
 
     /// Serialize the findings plus environment context into the prompt
     /// payload. Plain JSON — the analysis contract below tells the model
-    /// how to read it. Finding details are home-redacted (`~`) so the
-    /// payload does not ship the local username / directory layout to the
-    /// LLM endpoint.
+    /// how to read it. Finding details are scrubbed for the outbound trip
+    /// ([`redact_outbound`]): home folded to `~`, credential-like runs and
+    /// non-home absolute paths masked, so the payload does not ship the
+    /// local username, keys, or directory layout to the LLM endpoint.
     pub(crate) fn to_prompt_payload(
         &self,
         os: &str,
@@ -148,7 +150,7 @@ impl DoctorFindings {
                 json!({
                     "section": f.section,
                     "status": f.status.as_str(),
-                    "detail": redact_home(&f.detail),
+                    "detail": redact_outbound(&f.detail),
                 })
             })
             .collect();
@@ -177,6 +179,61 @@ fn redact_home(text: &str) -> String {
         return text.to_string();
     }
     text.replace(&home, "~")
+}
+
+/// Credential-like assignments (`api_key=…`, `"token": …`,
+/// `Authorization: Bearer …`) masked before the payload leaves the
+/// machine — transport error text can quote request URLs with query
+/// strings or header values verbatim.
+fn redact_credentials(text: &str) -> String {
+    static CREDENTIAL_RUN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = CREDENTIAL_RUN.get_or_init(|| {
+        regex::Regex::new(
+            r#"(?i)\b(api[_-]?key|token|secret|password|authorization)["']?\s*[:=]\s*\S+|\bbearer\s+\S+"#,
+        )
+        .expect("static credential regex compiles")
+    });
+    re.replace_all(text, "<redacted>").to_string()
+}
+
+/// Mask absolute filesystem paths outside the home directory: diagnostic
+/// text can quote workspace roots under other mount points (`/etc/…`,
+/// `/workspaces/…`, `C:\…`). Applied per whitespace token after
+/// [`redact_home`] folded the home prefix to `~`, so any remaining token
+/// that starts with `/` or a drive letter is a non-home absolute path.
+/// Whitespace is normalized (tokens rejoined with single spaces).
+fn redact_absolute_paths(text: &str) -> String {
+    text.split_whitespace()
+        .map(|tok| {
+            let is_unix_abs = tok.starts_with('/') && !tok.starts_with("//");
+            let is_windows_abs = {
+                let bytes = tok.as_bytes();
+                bytes.len() >= 3
+                    && bytes[0].is_ascii_alphabetic()
+                    && bytes[1] == b':'
+                    && (bytes[2] == b'\\' || bytes[2] == b'/')
+            };
+            if is_unix_abs || is_windows_abs {
+                "<path>"
+            } else {
+                tok
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Outbound scrubber for finding details: home-fold (`~`), then mask
+/// credential-like runs, then non-home absolute paths.
+///
+/// Known limitations (accepted): URL hosts and query strings embedded in
+/// error text stay visible unless they match the credential pattern, and
+/// the env block's `base_url` is sent home-folded but intact — endpoint
+/// identity is part of what the analysis reasons about, and the send
+/// itself is announced and switchable via `[doctor] llm_fallback`
+/// (documented in `config.example.toml`).
+fn redact_outbound(text: &str) -> String {
+    redact_absolute_paths(&redact_credentials(&redact_home(text)))
 }
 
 fn plural(n: usize) -> &'static str {
@@ -221,16 +278,16 @@ pub(crate) fn resolve_analysis_target(
     }
 }
 
-/// Run the advisory analysis. Returns `None` on every skip condition
-/// (no findings, empty response, transport error, timeout) — callers
-/// print a `·` line and move on. Reports usage through the cost
-/// side-channel so the tokens stay visible (workshop-synthesis
-/// precedent).
+/// Run the advisory analysis. `Ok(None)` on empty response; `Err(reason)`
+/// names the transport error vs. the timeout so the caller's `·` skip line
+/// can tell them apart — callers skip the section either way (fail silent,
+/// never block). Reports usage through the cost side-channel so the tokens
+/// stay visible (workshop-synthesis precedent).
 pub(crate) async fn analyze_findings(
     client: &LlmClientHandle,
     model: &str,
     payload: &str,
-) -> Option<String> {
+) -> Result<Option<String>, String> {
     use crate::models::{ContentBlock, Message, MessageRequest};
 
     let request = MessageRequest {
@@ -260,8 +317,8 @@ Apply the analysis contract from your instructions."
     let response =
         match tokio::time::timeout(timeout_duration, client.create_message(request)).await {
             Ok(Ok(response)) => response,
-            Ok(Err(_)) => return None,
-            Err(_) => return None,
+            Ok(Err(err)) => return Err(format!("request failed: {err}")),
+            Err(_) => return Err(format!("timed out after {ANALYSIS_TIMEOUT_SECS}s")),
         };
     codesmith_agent_runtime::cost_status::report(model, &response.usage);
     let text: String = response
@@ -275,9 +332,9 @@ Apply the analysis contract from your instructions."
         .join("\n");
     let text = text.trim();
     if text.is_empty() {
-        None
+        Ok(None)
     } else {
-        Some(text.to_string())
+        Ok(Some(text.to_string()))
     }
 }
 
@@ -331,6 +388,22 @@ mod tests {
     }
 
     #[test]
+    fn outbound_details_mask_credentials_and_non_home_paths() {
+        let mut findings = DoctorFindings::new();
+        findings.error(
+            "API Connectivity",
+            "GET https://gw.internal/v1 failed at /workspaces/proj with api_key=sk-live-123",
+        );
+        let payload = findings.to_prompt_payload("linux", "openai", "https://gw.internal", "gpt");
+        assert!(!payload.contains("sk-live-123"), "{payload}");
+        assert!(payload.contains("<redacted>"), "{payload}");
+        assert!(!payload.contains("/workspaces"), "{payload}");
+        // URL hosts stay visible by documented design (the analysis needs
+        // endpoint identity).
+        assert!(payload.contains("gw.internal"), "{payload}");
+    }
+
+    #[test]
     fn system_prompt_states_the_safety_contract() {
         let prompt = analysis_system_prompt();
         assert!(prompt.contains("advisory"), "must declare advisory status");
@@ -357,18 +430,19 @@ mod tests {
             r#"{"findings":[{"section":"API Keys","status":"error","detail":"401"}]}"#,
         )
         .await
+        .expect("transport ok")
         .expect("analysis text");
         assert!(text.contains("codesmith auth set"));
     }
 
     #[tokio::test]
-    async fn analyze_findings_returns_none_on_transport_error() {
-        // No canned response queued → the mock errors → silent skip.
+    async fn analyze_findings_errors_carry_reason() {
+        // No canned response queued → the mock errors → the reason must
+        // surface (transport vs. timeout) instead of a silent None.
         let handle: LlmClientHandle = std::sync::Arc::new(MockLlmClient::new(Vec::new()));
-        assert!(
-            analyze_findings(&handle, "mock-model", r#"{"findings":[]}"#)
-                .await
-                .is_none()
-        );
+        let reason = analyze_findings(&handle, "mock-model", r#"{"findings":[]}"#)
+            .await
+            .expect_err("transport error must surface as Err");
+        assert!(reason.starts_with("request failed:"), "{reason}");
     }
 }

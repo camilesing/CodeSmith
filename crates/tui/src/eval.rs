@@ -678,6 +678,11 @@ fn apply_patch(root: &Path, patch: &str) -> Result<()> {
     // no symlink canonicalization — eval workspaces are harness-created
     // tempdirs, not user-controlled directories.
     use std::path::Component;
+    // A leading `./` survives `components()` normalization as `CurDir`,
+    // but model-emitted `*** Update File:` headers commonly carry it and
+    // it can never escape the root — strip it before the walk (`..`,
+    // absolute, and drive-relative forms are still rejected below).
+    let file_rel = file_rel.strip_prefix("./").unwrap_or(file_rel);
     let mut components = Path::new(file_rel).components();
     let is_plain_relative = matches!(components.next(), Some(Component::Normal(_)))
         && components.all(|c| matches!(c, Component::Normal(_)));
@@ -781,5 +786,39 @@ mod tests {
         assert_eq!(unix.program, "sh");
         assert_eq!(unix.args, vec!["-c".to_string(), command.to_string()]);
         assert!(!unix.raw_payload_on_windows);
+    }
+
+    #[test]
+    fn apply_patch_accepts_dot_slash_prefixed_update_paths() {
+        // Model-generated `*** Update File:` headers commonly carry a
+        // leading `./`; `Path::components()` preserves it as `CurDir`, so
+        // the plain-relative walk rejected these before the strip. A
+        // leading `./` can never escape the root.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("hello.txt"), "one\ntwo\n").unwrap();
+
+        let patch = "\
+*** Begin Patch
+*** Update File: ./hello.txt
+@@
+ one
+-two
++TWO
+*** End Patch";
+        apply_patch(tmp.path(), patch).expect("./-prefixed patch path accepted");
+
+        let updated = std::fs::read_to_string(tmp.path().join("hello.txt")).unwrap();
+        assert_eq!(updated, "one\nTWO\n");
+
+        let escape = "\
+*** Begin Patch
+*** Update File: ../evil.txt
+@@
+ one
+*** End Patch";
+        assert!(
+            apply_patch(tmp.path(), escape).is_err(),
+            "`..` must still be rejected"
+        );
     }
 }

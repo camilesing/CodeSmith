@@ -3754,6 +3754,13 @@ mod tests {
                 break buf.len();
             }
             buf.extend_from_slice(&chunk[..n]);
+            // Fail fast instead of hanging (and growing without bound) if
+            // the peer never sends the header terminator.
+            assert!(
+                buf.len() <= 64 * 1024,
+                "peer never completed HTTP headers after {} bytes",
+                buf.len()
+            );
         };
         let head = String::from_utf8_lossy(&buf[..head_end.min(buf.len())]).to_string();
         let content_length = head

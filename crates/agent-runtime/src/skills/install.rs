@@ -1273,19 +1273,30 @@ fn extract_into(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) ->
             return Err(InstallError::SymlinkRejected.into());
         }
 
-        // Trust markers are never extractable from a tarball: a community
-        // bundle shipping `.trusted` would otherwise arrive pre-trusted.
-        // Trust is granted by the local install flow, not by the artifact.
-        // The name comparison is case-insensitive: the read-back side is an
-        // OS path lookup (`dir.join(".trusted").is_file()`), and APFS/NTFS
-        // resolve `.TRUSTED` to it — a case-sensitive skip here would let a
-        // variant through to exactly that (matching the SKILL.md handling
-        // elsewhere in this file).
-        if entry_type.is_file()
-            && stripped_path.file_name().is_some_and(|name| {
-                name.as_encoded_bytes()
-                    .eq_ignore_ascii_case(TRUSTED_MARKER.as_bytes())
+        // Trust and provenance markers are never extractable from a
+        // tarball: a community bundle shipping `.trusted` would arrive
+        // pre-trusted, and a shipped `.installed-from` would forge the
+        // provenance that `trust`/`update` gate on. Both are granted by
+        // the local install flow, not by the artifact. The name comparison
+        // is case-insensitive (the read-back side is an OS path lookup,
+        // and APFS/NTFS resolve `.TRUSTED` to it — a case-sensitive skip
+        // here would let a variant through to exactly that, matching the
+        // SKILL.md handling elsewhere in this file) and ignores trailing
+        // dots/spaces: Win32 path normalization strips them, so
+        // `.trusted.` / `.trusted ` land on disk as `.trusted`.
+        let forbidden_marker = |marker: &str| {
+            stripped_path.file_name().is_some_and(|name| {
+                // `&[u8]` has no pattern trims — strip trailing dots/spaces
+                // by hand (Win32 strips them on CreateFileW).
+                let mut bytes = name.as_encoded_bytes();
+                while matches!(bytes.last(), Some(b'.') | Some(b' ')) {
+                    bytes = &bytes[..bytes.len() - 1];
+                }
+                bytes.eq_ignore_ascii_case(marker.as_bytes())
             })
+        };
+        if entry_type.is_file()
+            && (forbidden_marker(TRUSTED_MARKER) || forbidden_marker(INSTALLED_FROM_MARKER))
         {
             continue;
         }
@@ -1686,6 +1697,31 @@ mod tests {
             builder
                 .append_data(&mut header, ".TRUSTED", std::io::Cursor::new(marker))
                 .expect("append .TRUSTED");
+            // Trailing dot/space variants: Win32 path normalization strips
+            // them, so `.trusted.` / `.trusted ` land on disk as `.trusted`
+            // — the filter must normalize before comparing.
+            for variant in [".trusted.", ".trusted "] {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(0);
+                header.set_mode(0o644);
+                header.set_cksum();
+                builder
+                    .append_data(&mut header, variant, std::io::Cursor::new(marker))
+                    .expect("append trailing-dot/space trust marker");
+            }
+            // Provenance marker: same invariant — provenance comes from
+            // the local install flow, never from the artifact.
+            let mut header = tar::Header::new_gnu();
+            header.set_size(0);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(
+                    &mut header,
+                    INSTALLED_FROM_MARKER,
+                    std::io::Cursor::new(marker),
+                )
+                .expect("append .installed-from");
             builder.into_inner().expect("finalize tar");
             encoder.finish().expect("finalize gz");
         }
@@ -1709,6 +1745,22 @@ mod tests {
         assert!(
             !dest.join(".TRUSTED").exists(),
             "case-variant trust markers must be filtered too"
+        );
+        // Literal-name assertions fail on every platform without the
+        // normalization fix (on unix the literal `.trusted.` file would be
+        // created); the `.trusted` check additionally covers the Win32
+        // normalization landing.
+        assert!(
+            !dest.join(".trusted.").exists(),
+            "trailing-dot trust markers must be filtered"
+        );
+        assert!(
+            !dest.join(".trusted ").exists(),
+            "trailing-space trust markers must be filtered"
+        );
+        assert!(
+            !dest.join(INSTALLED_FROM_MARKER).exists(),
+            "a tarball-shipped .installed-from marker must never be extracted"
         );
     }
 

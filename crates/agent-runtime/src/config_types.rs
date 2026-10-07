@@ -366,22 +366,16 @@ impl ModelTier {
     }
 }
 
-/// A resolved heavy/light model pair for tier routing. Defaults to the
-/// DeepSeek pair so runtimes that never see a full config (tests, embedders)
-/// keep the historical concrete IDs.
+/// A resolved heavy/light model pair for tier routing. Carried as
+/// `Option<TierModels>` in [`AutoRouteContext`]: `None` means "not
+/// configured" (runtimes that never see a full config — tests, embedders),
+/// and consumers then fall back to the main model instead of silently
+/// routing to vendor-specific IDs that may not exist on the active
+/// provider.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TierModels {
     pub heavy: String,
     pub light: String,
-}
-
-impl Default for TierModels {
-    fn default() -> Self {
-        Self {
-            heavy: "deepseek-v4-pro".to_string(),
-            light: "deepseek-v4-flash".to_string(),
-        }
-    }
 }
 
 impl TierModels {
@@ -396,11 +390,12 @@ impl TierModels {
 
 /// Auto-routing context distilled from the host config for runtimes that
 /// route tiers without carrying the full config (sub-agents): the resolved
-/// heavy/light pair, the `[auto] router_model` override, and the
+/// heavy/light pair (`None` = not configured; tier routes then fall back
+/// to the main model), the `[auto] router_model` override, and the
 /// cost-saving switch.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AutoRouteContext {
-    pub tier_models: TierModels,
+    pub tier_models: Option<TierModels>,
     pub router_model: Option<String>,
     pub cost_saving: bool,
 }

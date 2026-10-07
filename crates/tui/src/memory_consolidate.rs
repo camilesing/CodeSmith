@@ -11,10 +11,12 @@
 //! here runs inside a session.
 //!
 //! Write gating: default is a dry run that prints a unified diff of the
-//! proposed index; `--apply` writes it, taking a `MEMORY.md.bak` backup
-//! first (side-git's rollback discipline, at memory scale). Topic file
-//! *contents* are never touched — merging or deleting content is a
-//! semantic decision that stays with the human.
+//! proposed index; `--apply` writes it, taking a timestamped
+//! `MEMORY.md.bak.<unix_ts>` backup first (side-git's rollback discipline,
+//! at memory scale — a fresh file per run, so the pre-first-consolidation
+//! original survives later consolidations too). Topic file *contents* are
+//! never touched — merging or deleting content is a semantic decision that
+//! stays with the human.
 
 use anyhow::{Result, bail};
 
@@ -66,17 +68,18 @@ pub(crate) fn strip_code_fence(text: &str) -> String {
     }
 }
 
-/// Ask the model for a consolidated index. `None` on empty response,
-/// transport error, or timeout — callers fall back to the deterministic
-/// result. Usage flows through the cost side-channel (doctor-llm and
-/// workshop precedent).
+/// Ask the model for a consolidated index. `Ok(None)` on empty response;
+/// `Err(reason)` names the transport error vs. the timeout so the caller's
+/// skip line can tell them apart — callers fall back to the deterministic
+/// result either way. Usage flows through the cost side-channel (doctor-llm
+/// and workshop precedent).
 pub(crate) async fn propose_consolidated_index(
     client: &LlmClientHandle,
     model: &str,
     cleaned_index: &str,
     topic_headers_json: &str,
     line_budget: usize,
-) -> Option<String> {
+) -> Result<Option<String>, String> {
     use crate::models::{ContentBlock, Message, MessageRequest};
 
     let request = MessageRequest {
@@ -107,7 +110,8 @@ Topic files on disk (frontmatter):\n\n{topic_headers_json}"
     let timeout = std::time::Duration::from_secs(PROPOSAL_TIMEOUT_SECS);
     let response = match tokio::time::timeout(timeout, client.create_message(request)).await {
         Ok(Ok(response)) => response,
-        Ok(Err(_)) | Err(_) => return None,
+        Ok(Err(err)) => return Err(format!("request failed: {err}")),
+        Err(_) => return Err(format!("timed out after {PROPOSAL_TIMEOUT_SECS}s")),
     };
     codesmith_agent_runtime::cost_status::report(model, &response.usage);
     let text: String = response
@@ -122,9 +126,9 @@ Topic files on disk (frontmatter):\n\n{topic_headers_json}"
     let stripped = strip_code_fence(&text);
     let stripped = stripped.trim();
     if stripped.is_empty() {
-        None
+        Ok(None)
     } else {
-        Some(format!("{stripped}\n"))
+        Ok(Some(format!("{stripped}\n")))
     }
 }
 
@@ -217,37 +221,56 @@ pub(crate) async fn run_memory_consolidate(
                         })
                     })
                     .collect();
-                let headers_json = serde_json::to_string(&headers).unwrap_or_default();
-                let proposed = propose_consolidated_index(
-                    &client,
-                    &model,
-                    &report.cleaned_index,
-                    &headers_json,
-                    codesmith_agent_runtime::knowledge::budget::MAX_ENTRYPOINT_LINES,
-                )
-                .await;
-                match proposed {
-                    Some(proposed) => {
-                        match codesmith_agent_runtime::knowledge::curator::validate_proposed_index(
-                            &memory_dir,
-                            &proposed,
-                        ) {
-                            Ok(()) => {
+                // `serde_json::to_string` on this Vec<Value> of strings
+                // cannot realistically fail, but an empty `[]` topic list
+                // (the old swallow) would guarantee validator rejection
+                // ("drops pointers") with a misleading reason when topic
+                // files exist — skip the LLM leg loudly instead; the
+                // deterministic result already stands in `final_index`.
+                match serde_json::to_string(&headers) {
+                    Ok(headers_json) => {
+                        let proposed = propose_consolidated_index(
+                            &client,
+                            &model,
+                            &report.cleaned_index,
+                            &headers_json,
+                            codesmith_agent_runtime::knowledge::budget::MAX_ENTRYPOINT_LINES,
+                        )
+                        .await;
+                        match proposed {
+                            Ok(Some(proposed)) => {
+                                match codesmith_agent_runtime::knowledge::curator::validate_proposed_index(
+                                    &memory_dir,
+                                    &proposed,
+                                ) {
+                                    Ok(()) => {
+                                        println!(
+                                            "\r  ✓ merge proposal validated — every topic file still referenced"
+                                        );
+                                        final_index = proposed;
+                                    }
+                                    Err(reason) => {
+                                        println!(
+                                            "\r  ! merge proposal rejected ({reason}) — keeping the deterministic result"
+                                        );
+                                    }
+                                }
+                            }
+                            Ok(None) => {
                                 println!(
-                                    "\r  ✓ merge proposal validated — every topic file still referenced"
+                                    "\r  · {model} returned no proposal (empty) — keeping the deterministic result"
                                 );
-                                final_index = proposed;
                             }
                             Err(reason) => {
                                 println!(
-                                    "\r  ! merge proposal rejected ({reason}) — keeping the deterministic result"
+                                    "\r  · {model} returned no proposal ({reason}) — keeping the deterministic result"
                                 );
                             }
                         }
                     }
-                    None => {
+                    Err(err) => {
                         println!(
-                            "\r  · {model} returned no proposal (empty/error/timeout) — keeping the deterministic result"
+                            "\r  · cannot serialize topic headers ({err}) — keeping the deterministic result"
                         );
                     }
                 }
@@ -274,7 +297,11 @@ pub(crate) async fn run_memory_consolidate(
         &final_index,
     );
     for line in diff.lines() {
-        if line.starts_with('-') {
+        // `--- a/…` / `+++ b/…` are git-style file headers, not content
+        // removals/additions — only real content lines get the +/- colors.
+        if line.starts_with("---") || line.starts_with("+++") {
+            println!("{line}");
+        } else if line.starts_with('-') {
             println!("{}", line.red());
         } else if line.starts_with('+') {
             println!("{}", line.green());
@@ -286,11 +313,19 @@ pub(crate) async fn run_memory_consolidate(
     if !apply {
         println!();
         println!(
-            "  · dry run — re-run with --apply to write (a MEMORY.md.bak backup is taken first)"
+            "  · dry run — re-run with --apply to write (a MEMORY.md.bak.<timestamp> backup is taken first)"
         );
         return Ok(());
     }
-    let backup = memory_dir.join("MEMORY.md.bak");
+    // A fresh timestamped backup per run: consolidation is a repeatable
+    // chained rewrite, and a fixed `MEMORY.md.bak` would overwrite the
+    // pre-first-consolidation original on the second `--apply` — the only
+    // recovery path for pointers dropped by a bad rewrite.
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let backup = memory_dir.join(format!("MEMORY.md.bak.{ts}"));
     std::fs::copy(&report.index_path, &backup)?;
     codesmith_agent_runtime::utils::write_atomic(&report.index_path, final_index.as_bytes())?;
     println!();
@@ -338,18 +373,18 @@ mod tests {
             200,
         )
         .await
+        .expect("transport ok")
         .expect("proposal");
         assert!(proposed.contains("rust-role.md"));
         assert!(!proposed.contains("```"), "fence must be stripped");
     }
 
     #[tokio::test]
-    async fn propose_consolidated_index_returns_none_on_error() {
+    async fn propose_consolidated_index_errors_carry_reason() {
         let handle: LlmClientHandle = std::sync::Arc::new(MockLlmClient::new(Vec::new()));
-        assert!(
-            propose_consolidated_index(&handle, "mock-model", "idx", "[]", 200)
-                .await
-                .is_none()
-        );
+        let reason = propose_consolidated_index(&handle, "mock-model", "idx", "[]", 200)
+            .await
+            .expect_err("transport error must surface as Err, not silent None");
+        assert!(reason.starts_with("request failed:"), "{reason}");
     }
 }

@@ -628,6 +628,20 @@ impl ExtensionRunner {
         }
     }
 
+    /// Cheap pre-check for hot-path emitters: whether any bound handler
+    /// would receive `kind` (`None` kind_filter = subscribe-to-all, so it
+    /// counts). Racy with reload by design — it mirrors the snapshot
+    /// `emit` itself takes under the same lock and is only ever used to
+    /// skip dispatch, never to change emit semantics.
+    #[must_use]
+    pub fn has_handlers(&self, kind: ExtensionEventKind) -> bool {
+        self.handlers
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|rh| rh.kind_filter.is_none() || rh.kind_filter == Some(kind))
+    }
+
     /// Emit `event` to every bound handler whose variant filter matches,
     /// chaining transforms (spec §4: "一个 handler 的修改对下一个可见").
     /// Returns [`EmitOutcome`] — the final (possibly transformed) event +

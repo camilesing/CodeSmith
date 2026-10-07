@@ -330,8 +330,10 @@ index, never topic file contents:
   exactly once, no unknown files appear, and the budget holds; any
   violation falls back to the deterministic result.
 - **Writing is gated**: default is a dry run that prints a unified diff;
-  `--apply` writes the index after taking a `MEMORY.md.bak` backup. The
-  next session's prompt refresh picks the new index up automatically.
+  `--apply` writes the index after taking a timestamped
+  `MEMORY.md.bak.<unix_ts>` backup (a fresh file per run, so the
+  pre-first-consolidation original survives later consolidations too).
+  The next session's prompt refresh picks the new index up automatically.
 
 ```bash
 codesmith memory consolidate                      # dry run: report + diff

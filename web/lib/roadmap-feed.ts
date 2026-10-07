@@ -3,6 +3,7 @@
  *
  *   "Shipped"    ← last 8 published Releases on camilesing/CodeSmith
  *   "Underway"   ← open issues with label `roadmap:underway`
+import { GITHUB_REPO_URL } from "@/lib/constants";
  *   "Considered" ← open issues with label `roadmap:considered`
  *   "Ruled out"  ← issues (open or closed) with label `roadmap:ruled-out`
  *
@@ -59,7 +60,7 @@ const FALLBACK_SHIPPED: RoadmapItem[] = [
   {
     title: "v0.8.45",
     note: "Moonshot/Kimi provider support, API-key setup guidance, provider-surface sync, and current Windows install/runtime guidance",
-    href: "https://github.com/camilesing/CodeSmith/releases/tag/v0.8.45",
+    href: `${GITHUB_REPO_URL}/releases/tag/v0.8.45`,
   },
 ];
 

@@ -121,11 +121,14 @@ pub struct ToolResult {
     pub success: bool,
     /// Structured machine-readable value of this result (canonical value).
     /// Populated by [`ToolResult::json`] and by producers that render prose
-    /// over structured data via [`ToolResult::with_canonical`]. Known
-    /// limitation: live-process only — the transcript persists the rendered
-    /// `content`, so canonical is not reconstructed on session load.
+    /// over structured data via [`ToolResult::with_canonical`]. Held as
+    /// `Arc` so event-fanout clones (the event channel and every mod
+    /// handler receive a `ToolResult` clone) are O(1) instead of
+    /// deep-copying the tree. Known limitation: live-process only — the
+    /// transcript persists the rendered `content`, so canonical is not
+    /// reconstructed on session load.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub canonical: Option<Value>,
+    pub canonical: Option<std::sync::Arc<Value>>,
     /// Optional structured metadata — auxiliary annotations about the
     /// execution (exit codes, sandbox flags, summaries), not the result's
     /// own value.
@@ -173,7 +176,7 @@ impl ToolResult {
         Ok(Self {
             content: serde_json::to_string_pretty(&canonical)?,
             success: true,
-            canonical: Some(canonical),
+            canonical: Some(std::sync::Arc::new(canonical)),
             metadata: None,
         })
     }
@@ -188,7 +191,7 @@ impl ToolResult {
     /// Set the canonical machine-readable value on a prose-rendered result.
     #[must_use]
     pub fn with_canonical(mut self, canonical: Value) -> Self {
-        self.canonical = Some(canonical);
+        self.canonical = Some(std::sync::Arc::new(canonical));
         self
     }
 }
@@ -572,7 +575,10 @@ mod tests {
     #[test]
     fn tool_result_json_sets_canonical_alongside_rendered_content() {
         let result = ToolResult::json(&json!({"ok": true, "items": [1, 2]})).expect("json");
-        assert_eq!(result.canonical, Some(json!({"ok": true, "items": [1, 2]})));
+        assert_eq!(
+            result.canonical,
+            Some(std::sync::Arc::new(json!({"ok": true, "items": [1, 2]})))
+        );
     }
 
     /// Prose constructors carry no canonical value; `with_canonical` attaches
@@ -583,7 +589,10 @@ mod tests {
         assert!(ToolResult::error("boom").canonical.is_none());
         let prose = ToolResult::success("Added todo #1 (pending)")
             .with_canonical(json!({"items": [{"id": 1}]}));
-        assert_eq!(prose.canonical, Some(json!({"items": [{"id": 1}]})));
+        assert_eq!(
+            prose.canonical,
+            Some(std::sync::Arc::new(json!({"items": [{"id": 1}]})))
+        );
         assert_eq!(prose.content, "Added todo #1 (pending)");
     }
 
@@ -600,7 +609,7 @@ mod tests {
         let text = serde_json::to_string(&with).expect("ser");
         assert!(text.contains(r#""canonical""#), "{text}");
         let back: ToolResult = serde_json::from_str(&text).expect("de");
-        assert_eq!(back.canonical, Some(json!({"v": 1})));
+        assert_eq!(back.canonical, Some(std::sync::Arc::new(json!({"v": 1}))));
 
         let without = ToolResult::success("plain");
         let text = serde_json::to_string(&without).expect("ser");

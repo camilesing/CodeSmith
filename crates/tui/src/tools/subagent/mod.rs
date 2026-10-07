@@ -2040,9 +2040,12 @@ impl ToolSpec for AgentOpenTool {
         let canonical = result.canonical.take().ok_or_else(|| {
             ToolError::execution_failed("agent_open projection failed: no canonical value")
         })?;
-        let snapshot: SubAgentResult = serde_json::from_value(canonical).map_err(|e| {
-            ToolError::execution_failed(format!("agent_open projection failed: {e}"))
-        })?;
+        // `canonical` is an `Arc<Value>`; `from_value` needs the owned
+        // tree, so unwrap the Arc (cloning only if another holder exists).
+        let snapshot: SubAgentResult = serde_json::from_value(Arc::unwrap_or_clone(canonical))
+            .map_err(|e| {
+                ToolError::execution_failed(format!("agent_open projection failed: {e}"))
+            })?;
         let projection = subagent_session_projection(snapshot, false, context).await;
         let mut tool_result = ToolResult::json(&projection)
             .map_err(|e| ToolError::execution_failed(e.to_string()))?;
@@ -5913,8 +5916,9 @@ pub(crate) async fn resolve_subagent_assignment_route(
             route.model = runtime
                 .auto_route
                 .tier_models
-                .get(recommendation.tier)
-                .to_string();
+                .as_ref()
+                .map(|pair| pair.get(recommendation.tier).to_string())
+                .unwrap_or_else(|| runtime.model.clone());
         }
         if runtime.reasoning_effort_auto {
             route.reasoning_effort = recommendation
@@ -5931,13 +5935,15 @@ fn tool_agent_route(runtime: &SubAgentRuntime) -> SubAgentResolvedRoute {
     // Quick interactive tool work runs on the light tier of the active
     // provider (historically hardcoded to deepseek-v4-flash, which errored
     // on non-DeepSeek providers). Providers without a light model resolve
-    // it to their heavy default or the main model via the tier pair.
+    // it to their heavy default or the main model via the tier pair; with
+    // no pair configured (embedders/tests) it is the main model directly.
     SubAgentResolvedRoute {
         model: runtime
             .auto_route
             .tier_models
-            .get(crate::config::ModelTier::Light)
-            .to_string(),
+            .as_ref()
+            .map(|pair| pair.get(crate::config::ModelTier::Light).to_string())
+            .unwrap_or_else(|| runtime.model.clone()),
         reasoning_effort: Some("off".to_string()),
     }
 }
@@ -5956,7 +5962,12 @@ fn fallback_subagent_assignment_route(
     } else if runtime.auto_model {
         let tier =
             crate::commands::auto_model_heuristic_tier(prompt, runtime.auto_route.cost_saving);
-        runtime.auto_route.tier_models.get(tier).to_string()
+        runtime
+            .auto_route
+            .tier_models
+            .as_ref()
+            .map(|pair| pair.get(tier).to_string())
+            .unwrap_or_else(|| runtime.model.clone())
     } else {
         runtime.model.clone()
     };
@@ -6010,8 +6021,9 @@ async fn subagent_model_router(
             runtime
                 .auto_route
                 .tier_models
-                .get(crate::config::ModelTier::Heavy)
-                .to_string(),
+                .as_ref()
+                .map(|pair| pair.get(crate::config::ModelTier::Heavy).to_string())
+                .unwrap_or_else(|| runtime.client.model().to_string()),
         )
     };
 

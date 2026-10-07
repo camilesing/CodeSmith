@@ -23,9 +23,13 @@ use crate::config_types::{
 /// entry points (`run_exec_agent`, `run_team_teammate`) and by embedders
 /// starting from [`EngineConfig::default`]. It is NOT a repo-wide budget:
 /// the interactive TUI runs uncapped (`max_steps: u32::MAX` in `tui/ui.rs`),
-/// unattended automations stay well below it
-/// (`AUTOMATION_DEFAULT_MAX_STEPS = 100`), and sub-agents carry their own
-/// spawn-budget default in `tui::tools::subagent` — hence the specific name.
+/// long-running automation threads stay tighter
+/// (`AUTOMATION_DEFAULT_MAX_STEPS = 100` in `tui::config`), and sub-agents
+/// carry their own spawn-budget default in `tui::tools::subagent` — hence
+/// the specific name. The headless budget deliberately matches this default:
+/// an unattended `exec`/team run has no human to cut it short or resume it,
+/// so it gets the full engine budget rather than the tighter
+/// automation-thread cap.
 pub const DEFAULT_ENGINE_MAX_STEPS: u32 = 1024;
 /// Default stream idle watchdog budget (P0-1). Long enough that a reasoning
 /// model's quiet thinking phase (no text deltas yet, connection healthy)

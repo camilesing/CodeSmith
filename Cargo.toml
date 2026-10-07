@@ -57,7 +57,7 @@ rhai = { version = "1", features = ["sync", "serde"] }
 # (Strategy A: rig is one swappable impl, not the framework vocabulary).
 rig-core = { version = "0.39", default-features = false, features = ["reqwest", "rustls"] }
 rusqlite = { version = "0.32.1", features = ["bundled"] }
-serde = { version = "1.0.228", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_json = "1.0.149"
 semver = "1.0.28"
 thiserror = "2.0"

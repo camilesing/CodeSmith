@@ -328,7 +328,7 @@ pub(crate) fn event_to_dynamic(event: &ExtensionEvent) -> Dynamic {
                     r.success,
                     false,
                     r.canonical
-                        .as_ref()
+                        .as_deref()
                         .map(json_to_dynamic)
                         .unwrap_or(Dynamic::UNIT),
                 ),
@@ -525,7 +525,7 @@ pub(crate) fn merge_transform(
             if let Some(d) = map.get("canonical") {
                 match dynamic_to_json(d) {
                     Ok(value) => {
-                        canonical = Some(value);
+                        canonical = Some(std::sync::Arc::new(value));
                         changed = true;
                     }
                     Err(e) => {
@@ -1927,7 +1927,10 @@ mod tests {
             )) => {
                 let r = tr.result.expect("ok arm");
                 assert_eq!(r.content, "rewritten");
-                assert_eq!(r.canonical, Some(serde_json::json!({"agent_id": "a1"})));
+                assert_eq!(
+                    r.canonical,
+                    Some(std::sync::Arc::new(serde_json::json!({"agent_id": "a1"})))
+                );
                 assert_eq!(r.metadata, Some(serde_json::json!({"exit_code": 0})));
             }
             other => panic!("expected Transform, got {other:?}"),
@@ -1953,7 +1956,10 @@ mod tests {
             )) => {
                 let r = tr.result.expect("ok arm");
                 assert_eq!(r.content, "rendered");
-                assert_eq!(r.canonical, Some(serde_json::json!({"replaced": true})));
+                assert_eq!(
+                    r.canonical,
+                    Some(std::sync::Arc::new(serde_json::json!({"replaced": true})))
+                );
             }
             other => panic!("expected Transform, got {other:?}"),
         }

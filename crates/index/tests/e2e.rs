@@ -123,7 +123,7 @@ async fn fixture_repo_symbol_navigation_end_to_end() {
     let files = service
         .list_files(FileQuery {
             extension: Some("rs".into()),
-            ..FileQuery::default_bounded()
+            ..FileQuery::default()
         })
         .await
         .expect("files");

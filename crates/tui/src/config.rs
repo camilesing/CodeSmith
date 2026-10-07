@@ -1856,10 +1856,10 @@ impl Config {
     #[must_use]
     pub fn auto_route_context(&self) -> AutoRouteContext {
         AutoRouteContext {
-            tier_models: TierModels {
+            tier_models: Some(TierModels {
                 heavy: self.resolve_model_tier(ModelTier::Heavy),
                 light: self.resolve_model_tier(ModelTier::Light),
-            },
+            }),
             router_model: self.auto_router_model_override(),
             cost_saving: self.auto_cost_saving(),
         }
