@@ -39,6 +39,7 @@ pub enum ModalKind {
     ThemePicker,
     ContextMenu,
     ShellControl,
+    ShellBangConfirm,
 }
 
 #[derive(Debug, Clone)]
@@ -196,6 +197,14 @@ pub enum ViewEvent {
     },
     ShellControlBackground,
     ShellControlCancel,
+    /// Emitted by the `!cmd` passthrough confirmation when the command was
+    /// classified `Dangerous` by `command_safety` — the passthrough does
+    /// not pass the tool-approval gate, so this confirmation is the one
+    /// prompt it cannot skip.
+    ShellBangConfirm {
+        approved: bool,
+        command: String,
+    },
     /// Emitted by the pager (`c` / `y`) to copy its body to the system
     /// clipboard. The host handler writes via `app.clipboard` and surfaces a
     /// status message — modal views cannot reach `app` directly. `label` is
@@ -485,6 +494,110 @@ impl ModalView for ShellControlView {
                     )]))
                     .title_bottom(Line::from(Span::styled(
                         " Enter select | Esc close ",
+                        Style::default().fg(palette::TEXT_MUTED),
+                    )))
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(palette::BORDER_COLOR))
+                    .style(Style::default().bg(palette::CODESMITH_INK))
+                    .padding(Padding::uniform(1)),
+            )
+            .style(Style::default().fg(palette::TEXT_PRIMARY));
+
+        view.render(popup_area, buf);
+    }
+}
+
+/// Confirmation for a `!cmd` shell passthrough that `command_safety`
+/// classified as `Dangerous` (remote-pipe-into-shell, forced deletion,
+/// …). The passthrough executes the user's typed command directly — it
+/// does not pass the tool-approval gate — so dangerous commands get this
+/// one explicit prompt before running.
+pub struct ShellBangConfirmView {
+    command: String,
+}
+
+impl ShellBangConfirmView {
+    pub fn new(command: String) -> Self {
+        Self { command }
+    }
+
+    fn decision(&self, approved: bool) -> ViewEvent {
+        ViewEvent::ShellBangConfirm {
+            approved,
+            command: self.command.clone(),
+        }
+    }
+}
+
+impl ModalView for ShellBangConfirmView {
+    fn kind(&self) -> ModalKind {
+        ModalKind::ShellBangConfirm
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) -> ViewAction {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                ViewAction::EmitAndClose(self.decision(true))
+            }
+            KeyCode::Esc
+            | KeyCode::Char('n')
+            | KeyCode::Char('N')
+            | KeyCode::Char('q')
+            | KeyCode::Char('Q') => ViewAction::EmitAndClose(self.decision(false)),
+            _ => ViewAction::None,
+        }
+    }
+
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        use ratatui::{
+            style::Style,
+            text::{Line, Span},
+            widgets::{Block, Borders, Clear, Padding, Paragraph, Widget},
+        };
+
+        let popup_width = 64.min(area.width.saturating_sub(4));
+        let popup_height = 8.min(area.height.saturating_sub(2));
+
+        let popup_area = Rect {
+            x: (area.width - popup_width) / 2,
+            y: (area.height - popup_height) / 2,
+            width: popup_width,
+            height: popup_height,
+        };
+
+        Clear.render(popup_area, buf);
+
+        let mut command = self.command.clone();
+        if command.chars().count() > 52 {
+            command = format!("{}…", command.chars().take(52).collect::<String>());
+        }
+
+        let lines = vec![
+            Line::from(Span::styled(
+                "! passthrough: dangerous command",
+                Style::default().fg(palette::CODESMITH_RED).bold(),
+            )),
+            Line::from(""),
+            Line::from(vec![Span::raw("  "), Span::raw(command)]),
+            Line::from(Span::styled(
+                "Runs in your shell in this workspace, unconfined.",
+                Style::default().fg(palette::TEXT_MUTED),
+            )),
+        ];
+
+        let view = Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .title(Line::from(vec![Span::styled(
+                        " Confirm ",
+                        Style::default().fg(palette::CODESMITH_BLUE).bold(),
+                    )]))
+                    .title_bottom(Line::from(Span::styled(
+                        " y/Enter run | n/Esc cancel ",
                         Style::default().fg(palette::TEXT_MUTED),
                     )))
                     .borders(Borders::ALL)

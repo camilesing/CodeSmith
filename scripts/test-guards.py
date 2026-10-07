@@ -82,6 +82,21 @@ class DocsPairsGuard(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertIn("CLI.md: allowlisted but no such doc", result.stdout)
 
+    def test_allowlisted_doc_gaining_pair_fails_and_names_it(self) -> None:
+        # The docstring promises "landing a _cn pair removes an entry" —
+        # the guard must say so instead of passing with dead config.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_allowlisted(root)
+            write(root, "docs/GUIDE.md")
+            write(root, "docs/GUIDE_cn.md")
+            write(root, "docs/CLI_cn.md")
+            result = run_guard("verify-docs-pairs.py", root)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn(
+                "CLI.md: allowlisted but its _cn pair now exists", result.stdout
+            )
+
     def test_orphan_cn_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

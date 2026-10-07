@@ -46,30 +46,40 @@ export interface CuratedDispatch {
  * fallback. `generatedAt` is checked by neither side (the write side stamps it
  * itself; the read side tolerates its absence and stamps a default).
  *
- * Array items are validated for the fields the homepage renders directly
- * (`title`/`href` as strings): "valid JSON of the wrong shape" must degrade
- * to the fallback, not persist blank/garbage dispatch cards for 7 days.
+ * Item fields are validated per list shape — everything the homepage renders
+ * directly, plus what the write side persists (movers' `number`/`reason` are
+ * not rendered today but stay checked so a malformed payload cannot squat in
+ * KV for 7 days): "valid JSON of the wrong shape" must degrade to the
+ * fallback, not persist blank/garbage dispatch cards.
  */
 export function isDispatchPayload(v: unknown): v is Omit<CuratedDispatch, "generatedAt"> {
   if (typeof v !== "object" || v === null) return false;
   const d = v as CuratedDispatch;
-  const wellFormedItem = (it: unknown): boolean =>
-    typeof it === "object" &&
-    it !== null &&
-    typeof (it as { title?: unknown }).title === "string" &&
-    typeof (it as { href?: unknown }).href === "string";
-  // Optional zh sections: the zh homepage falls back to the English fields
-  // only when they are ABSENT — a present-but-malformed zh array must degrade
-  // to the fallback too, not crash the render (`highlights.slice(...)`).
-  const wellFormedZhArray = (v: unknown) => Array.isArray(v) && v.every(wellFormedItem);
+  const hasStr = (it: unknown, key: string): boolean =>
+    typeof (it as { [k: string]: unknown })[key] === "string";
+  const wellFormedBase = (it: unknown): boolean =>
+    typeof it === "object" && it !== null && hasStr(it, "title") && hasStr(it, "href");
+  const wellFormedHighlight = (it: unknown): boolean =>
+    wellFormedBase(it) && hasStr(it, "tag") && hasStr(it, "blurb");
+  const wellFormedMover = (it: unknown): boolean =>
+    wellFormedBase(it) &&
+    typeof (it as { number?: unknown }).number === "number" &&
+    hasStr(it, "reason");
+  const wellFormedList = (v: unknown, pred: (it: unknown) => boolean): boolean =>
+    Array.isArray(v) && v.every(pred);
   return (
     typeof d.headline === "string" &&
     typeof d.summary === "string" &&
-    Array.isArray(d.highlights) &&
-    d.highlights.every(wellFormedItem) &&
-    Array.isArray(d.movers) &&
-    d.movers.every(wellFormedItem) &&
-    (d.highlightsZh === undefined || wellFormedZhArray(d.highlightsZh)) &&
-    (d.moversZh === undefined || wellFormedZhArray(d.moversZh))
+    wellFormedList(d.highlights, wellFormedHighlight) &&
+    wellFormedList(d.movers, wellFormedMover) &&
+    // Optional zh fields: the zh homepage falls back to the English fields
+    // only when they are ABSENT — a present-but-malformed zh value (scalar
+    // or array) must degrade to the fallback too: a number renders raw, an
+    // object throws "Objects are not valid as a React child" and crashes
+    // the zh homepage until the next curate run overwrites the key.
+    (d.headlineZh === undefined || typeof d.headlineZh === "string") &&
+    (d.summaryZh === undefined || typeof d.summaryZh === "string") &&
+    (d.highlightsZh === undefined || wellFormedList(d.highlightsZh, wellFormedHighlight)) &&
+    (d.moversZh === undefined || wellFormedList(d.moversZh, wellFormedMover))
   );
 }

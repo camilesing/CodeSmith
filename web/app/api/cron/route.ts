@@ -102,9 +102,17 @@ export async function GET(req: Request) {
     }
     // Task functions catch their own errors and return `{ ok: false }` in
     // `result` — propagate that to the status code too, or a status-based
-    // monitor cannot distinguish a failed task from success.
+    // monitor cannot distinguish a failed task from success. A per-issue
+    // `failed` count > 0 (distinct from fresh-draft `skipped`) is a failure
+    // for the same reason: a run where every LLM call errored must not
+    // read as a clean 200.
+    const failedCount =
+      typeof result === "object" && result !== null && typeof (result as { failed?: unknown }).failed === "number"
+        ? (result as { failed: number }).failed
+        : 0;
     const failed =
-      typeof result === "object" && result !== null && (result as { ok?: unknown }).ok === false;
+      (typeof result === "object" && result !== null && (result as { ok?: unknown }).ok === false) ||
+      failedCount > 0;
     return NextResponse.json({ ok: !failed, task, result }, { status: failed ? 500 : 200 });
   } catch (e) {
     // 500 (not 200): status-based monitors must see cron task failures —

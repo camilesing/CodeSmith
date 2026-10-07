@@ -94,8 +94,17 @@ impl ApprovalGrants {
     }
 
     /// Record a grant. Returns `true` when it was new (the caller may skip
-    /// the save when `false`).
+    /// the save when `false`). A same-session re-grant clears the removal
+    /// tombstone — otherwise the next `save`'s tombstone subtraction would
+    /// strip the fresh approval from the persisted file while
+    /// `is_granted` still returned `true`.
     pub fn insert(&mut self, workspace_key: &str, grouping_key: &str) -> bool {
+        if let Some(tombstones) = self.removed.get_mut(workspace_key) {
+            tombstones.remove(grouping_key);
+            if tombstones.is_empty() {
+                self.removed.remove(workspace_key);
+            }
+        }
         self.projects
             .entry(workspace_key.to_string())
             .or_default()
@@ -150,7 +159,7 @@ impl ApprovalGrants {
     ///
     /// The file keeps owner-only permissions (0o600 on Unix), same
     /// posture as config.toml writes.
-    pub fn save(&self, path: &Path) -> Result<()> {
+    pub fn save(&mut self, path: &Path) -> Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
         let on_disk = load_doc(path);
         let mut merged: BTreeMap<String, BTreeSet<String>> = self.projects.clone();
@@ -204,6 +213,10 @@ impl ApprovalGrants {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
         }
+        // The removals are now durably applied: retire the tombstones so a
+        // later save can't strip a grant a *newer* writer (another session)
+        // re-approved after this one.
+        self.removed.clear();
         Ok(())
     }
 }
@@ -319,6 +332,61 @@ mod tests {
         assert!(final_state.is_granted("/w/b", "shell:git status"));
     }
 
+    /// Review round 4: a same-session remove → re-grant → save must persist
+    /// the fresh approval — `insert` used to leave the tombstone in place,
+    /// so `save`'s subtraction stripped it from the file while
+    /// `is_granted` still returned `true`.
+    #[test]
+    fn regrant_after_remove_survives_save() {
+        let path = temp_path("regrant.toml");
+        let mut ours = ApprovalGrants::default();
+        ours.insert("/w/a", "shell:cargo build");
+        ours.save(&path).expect("initial save");
+
+        assert!(ours.remove("/w/a", "shell:cargo build"));
+        assert!(ours.insert("/w/a", "shell:cargo build"));
+
+        ours.save(&path).expect("re-grant save");
+        let final_state = ApprovalGrants::load(&path);
+        assert!(
+            final_state.is_granted("/w/a", "shell:cargo build"),
+            "same-session re-grant lost by the tombstone subtraction"
+        );
+    }
+
+    /// Review round 4: tombstones retire once their removal is durably
+    /// applied — session A's later save must not strip a grant that a newer
+    /// writer (session B) re-approved after A's removal landed on disk.
+    #[test]
+    fn tombstones_retire_after_durable_save() {
+        let path = temp_path("retire.toml");
+        let mut a = ApprovalGrants::default();
+        a.insert("/w/a", "shell:cargo build");
+        a.save(&path).expect("initial save");
+
+        // Session A removes the grant and makes it durable.
+        assert!(a.remove("/w/a", "shell:cargo build"));
+        a.save(&path).expect("removal save");
+
+        // Session B (fresh state, no tombstone) re-approves the grant —
+        // a newer decision on disk.
+        let mut b = ApprovalGrants::load(&path);
+        assert!(b.insert("/w/a", "shell:cargo build"));
+        b.save(&path).expect("session B save");
+
+        // Session A saves again for an unrelated grant: the retired
+        // tombstone must not strip B's fresh approval.
+        assert!(a.insert("/w/other", "shell:git status"));
+        a.save(&path).expect("session A later save");
+
+        let final_state = ApprovalGrants::load(&path);
+        assert!(
+            final_state.is_granted("/w/a", "shell:cargo build"),
+            "retired tombstone stripped a newer writer's grant"
+        );
+        assert!(final_state.is_granted("/w/other", "shell:git status"));
+    }
+
     #[test]
     fn save_preserves_untouched_projects_updated_at() {
         let path = temp_path("timestamps.toml");
@@ -385,7 +453,7 @@ mod tests {
     }
 
     impl ApprovalGrants {
-        fn save_roundtrip_contains_table(&self, key: &str) -> bool {
+        fn save_roundtrip_contains_table(&mut self, key: &str) -> bool {
             let path = temp_path("husk.toml");
             self.save(&path).expect("save");
             let raw = std::fs::read_to_string(&path).expect("read");

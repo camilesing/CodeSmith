@@ -62,7 +62,7 @@ When `[memory] enabled = true`, typing `# foo` and pressing `Enter` appends `foo
 
 ### `!` shell passthrough
 
-Type `!cmd` at the start of the input and press `Enter` to run `cmd` directly in your shell (`$SHELL`, falling back to `/bin/sh`; workspace as cwd). stdout and stderr are captured (60s timeout, output truncated at 16k chars) and submitted to the session as a user message so the model can respond to the output. The command runs as your own action and does not pass the tool-approval gate.
+Type `!cmd` at the start of the input and press `Enter` to run `cmd` directly in your shell (`$SHELL`, falling back to `/bin/sh`; workspace as cwd). The command runs in the background — the UI keeps responding while it executes, and `Esc` cancels it. stdout and stderr are captured (60s timeout, output truncated at 16k chars) and submitted to the session as a user message so the model can respond to the output. The command runs as your own action and does not pass the tool-approval gate, except that a command `command_safety` classifies as dangerous (e.g. `curl … | sh`) gets an explicit confirmation prompt before it runs.
 
 ### `:` emoji shortcodes
 

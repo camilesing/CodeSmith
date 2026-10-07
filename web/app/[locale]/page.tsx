@@ -115,13 +115,22 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
   let feed: FeedItem[] = [];
   let dispatch: CuratedDispatch = isZh ? FALLBACK_DISPATCH_ZH : FALLBACK_DISPATCH_EN;
 
-  try {
-    [stats, feed] = await Promise.all([
-      fetchRepoStats(env.GITHUB_TOKEN),
-      fetchFeed(env.GITHUB_TOKEN, 12),
-    ]);
-  } catch (e) {
-    console.error("github fetch failed", e);
+  // The two fetches degrade independently: a repo-stats failure (e.g. a 404
+  // after a rename) keeps the feed/Ticker alive instead of dragging it down
+  // with an all-or-nothing Promise.all.
+  const [statsResult, feedResult] = await Promise.allSettled([
+    fetchRepoStats(env.GITHUB_TOKEN),
+    fetchFeed(env.GITHUB_TOKEN, 12),
+  ]);
+  if (statsResult.status === "rejected") {
+    console.error("github repo stats fetch failed", statsResult.reason);
+  } else {
+    stats = statsResult.value;
+  }
+  if (feedResult.status === "rejected") {
+    console.error("github feed fetch failed", feedResult.reason);
+  } else {
+    feed = feedResult.value;
   }
 
   try {

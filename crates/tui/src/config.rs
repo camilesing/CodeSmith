@@ -1225,6 +1225,11 @@ pub struct Config {
     /// Documented in `config.example.toml` + `docs/MODS.md`.
     #[serde(default)]
     pub mods: Option<ModsConfig>,
+    /// Bounds for scheduled automation runs (`[automations] max_steps`).
+    /// Defaults to [`AUTOMATION_DEFAULT_MAX_STEPS`] — see
+    /// [`AutomationsConfig`].
+    #[serde(default)]
+    pub automations: Option<AutomationsConfig>,
     /// External sandbox backend: `"none"` or `"opensandbox"`.
     /// When set, exec_shell routes commands through the backend's HTTP API
     /// instead of spawning a local process.
@@ -1536,6 +1541,13 @@ impl Config {
     pub fn mods_watch(&self) -> bool {
         self.mods.as_ref().and_then(|m| m.watch).unwrap_or(true)
     }
+
+    /// Step cap per turn for scheduled automation runs. `None` when unset —
+    /// callers apply [`AUTOMATION_DEFAULT_MAX_STEPS`].
+    #[must_use]
+    pub fn automation_max_steps(&self) -> Option<u32> {
+        self.automations.as_ref().and_then(|a| a.max_steps)
+    }
 }
 
 /// `[mods]` table (§F script mod layer).
@@ -1543,6 +1555,21 @@ impl Config {
 pub struct ModsConfig {
     pub enabled: Option<bool>,
     pub watch: Option<bool>,
+}
+
+/// Default step cap per turn for scheduled (unattended) automation runs.
+/// Deliberately far below the interactive engine default (`u32::MAX`):
+/// nobody is watching a scheduled run to interrupt a runaway loop, so the
+/// bound is what protects unattended spend.
+pub const AUTOMATION_DEFAULT_MAX_STEPS: u32 = 100;
+
+/// `[automations]` table — bounds for scheduled automation runs.
+/// Documented in `config.example.toml` + `docs/CLI.md`.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct AutomationsConfig {
+    /// Step cap per turn for scheduled (unattended) runs. Defaults to
+    /// [`AUTOMATION_DEFAULT_MAX_STEPS`].
+    pub max_steps: Option<u32>,
 }
 
 /// `[lsp]` table — mirrors [`crate::lsp::LspConfig`]. Documented in
@@ -1765,6 +1792,23 @@ impl Config {
             .unwrap_or(false)
     }
 
+    /// Canonicalize an explicit `[auto]` model override for the active
+    /// provider — same rule as [`Self::resolve_model_tier`]'s explicit
+    /// override arm: custom / pass-through providers keep the verbatim
+    /// value, everything else gets slug normalization (the raw alias 400s
+    /// on providers that serve slugs — deepseek-ai/..., deepseek/...).
+    #[must_use]
+    fn canonicalize_auto_override(&self, model: &str) -> String {
+        if self.custom_provider().is_none()
+            && !provider_passes_model_through(self.api_provider())
+            && !self.active_provider_preserves_custom_base_url_model()
+            && let Some(normalized) = normalize_model_for_provider(self.api_provider(), model)
+        {
+            return normalized;
+        }
+        model.to_string()
+    }
+
     /// Resolve a routing tier to the concrete model ID for this
     /// configuration.
     ///
@@ -1780,19 +1824,7 @@ impl Config {
             ModelTier::Light => a.light_model.as_deref(),
         });
         if let Some(model) = explicit.map(str::trim).filter(|m| !m.is_empty()) {
-            // Same provider-aware canonicalization every other model
-            // resolution path applies (`default_model` runs the same
-            // helper): sending the raw alias verbatim 400s on providers
-            // that serve slugs (deepseek-ai/..., deepseek/...). Custom /
-            // pass-through providers keep the verbatim value.
-            if self.custom_provider().is_none()
-                && !provider_passes_model_through(self.api_provider())
-                && !self.active_provider_preserves_custom_base_url_model()
-                && let Some(normalized) = normalize_model_for_provider(self.api_provider(), model)
-            {
-                return normalized;
-            }
-            return model.to_string();
+            return self.canonicalize_auto_override(model);
         }
         if self.custom_provider().is_none()
             && !provider_passes_model_through(self.api_provider())
@@ -1805,7 +1837,10 @@ impl Config {
 
     /// Explicit `[auto] router_model` override for the routing classifier
     /// itself. `None` → the classifier picks its brain by mode: heavy tier by
-    /// default, `[utility_model]` under `[auto] cost_saving = true`.
+    /// default, `[utility_model]` under `[auto] cost_saving = true`. The
+    /// value goes through the same provider canonicalization as the
+    /// heavy/light overrides — this method feeds both the main-turn router
+    /// and `AutoRouteContext::router_model` (sub-agents).
     #[must_use]
     pub fn auto_router_model_override(&self) -> Option<String> {
         self.auto
@@ -1813,7 +1848,7 @@ impl Config {
             .and_then(|a| a.router_model.as_deref())
             .map(str::trim)
             .filter(|m| !m.is_empty())
-            .map(ToOwned::to_owned)
+            .map(|model| self.canonicalize_auto_override(model))
     }
 
     /// Distilled auto-routing context for runtimes that route tiers without
@@ -4377,6 +4412,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         // `[mods] enabled = false` on any profile/managed-override merge,
         // silently re-enabling the script-mod layer.
         mods: override_cfg.mods.or(base.mods),
+        automations: override_cfg.automations.or(base.automations),
         provider: override_cfg.provider.or(base.provider),
         custom_provider: override_cfg.custom_provider.or(base.custom_provider),
         api_key: override_cfg.api_key.or(base.api_key),

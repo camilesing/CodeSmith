@@ -265,6 +265,16 @@ pub fn is_safe_path_component(component: &str) -> bool {
         .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
 }
 
+/// Bail-shaped companion to [`is_safe_path_component`] for call sites that
+/// join the id into a path and fail loud on a bad one — one shared guard
+/// and message instead of per-caller copies that drift.
+pub fn require_safe_path_component(id: &str) -> anyhow::Result<()> {
+    if !is_safe_path_component(id) {
+        anyhow::bail!("invalid id {id:?}: must be a single safe path component");
+    }
+    Ok(())
+}
+
 /// Open or create a file for appending at `path`, optionally syncing after
 /// every write. Use this for append-only logs like `audit.log`.
 ///

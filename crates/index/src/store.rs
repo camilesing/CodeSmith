@@ -79,6 +79,14 @@ pub struct FileRecord {
 /// across threads (the connection sits behind a mutex — every operation is
 /// short, and refresh work happens outside on a blocking thread before
 /// writing).
+///
+/// Known limitation — poison policy: this mutex *panics* on poison
+/// (`.expect("index store mutex poisoned")`), deliberately unlike
+/// `service.rs`'s stats lock, which recovers. A poisoned guard here may
+/// hold a `Connection` mid-transaction with unknown on-disk state;
+/// continuing on it risks writing through a half-applied transaction, so
+/// fail-loud is the safer failure mode for the conn. (SQLite itself
+/// recovers via WAL on the next open.)
 pub struct IndexStore {
     conn: Mutex<Connection>,
 }

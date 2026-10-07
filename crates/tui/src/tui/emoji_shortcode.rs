@@ -461,29 +461,16 @@ pub(crate) fn partial_shortcode_at_cursor(
 /// When the text immediately before the cursor ends with a known `:name`
 /// token (i.e. the `:` the user is about to type would close it), return
 /// the byte offset of the opening `:` and the emoji to replace the token
-/// with. Called before the closing colon is inserted.
+/// with. Called before the closing colon is inserted. Composed from
+/// [`partial_shortcode_at_cursor`] + [`lookup`] so token matching here
+/// can't drift from the popup's (`lookup("")` is `None`, which covers the
+/// empty-name case).
 pub(crate) fn shortcode_closeable_at(
     input: &str,
     cursor_chars: usize,
 ) -> Option<(usize, &'static str)> {
-    let chars: Vec<char> = input.chars().collect();
-    if cursor_chars == 0 || cursor_chars > chars.len() {
-        return None;
-    }
-    let mut index = cursor_chars;
-    while index > 0 && is_shortcode_name_char(chars[index - 1]) {
-        index -= 1;
-    }
-    if index == 0 || chars[index - 1] != ':' || !is_colon_boundary(&chars, index - 1) {
-        return None;
-    }
-    let name: String = chars[index..cursor_chars].iter().collect();
-    if name.is_empty() {
-        return None;
-    }
+    let (colon_byte, name) = partial_shortcode_at_cursor(input, cursor_chars)?;
     let emoji = lookup(&name)?;
-    // Byte offset of the ':' itself (index - 1), not of the first name char.
-    let colon_byte: usize = chars[..index - 1].iter().map(|c| c.len_utf8()).sum();
     Some((colon_byte, emoji))
 }
 

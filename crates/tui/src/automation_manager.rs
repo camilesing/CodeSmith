@@ -738,33 +738,17 @@ fn validate_name_and_prompt(name: &str, prompt: &str) -> Result<()> {
 }
 
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    use std::io::Write;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create {}", parent.display()))?;
     }
     let content = serde_json::to_string_pretty(value)?;
-    // Pid-suffixed temp name (concurrent sessions share the store dir; a
-    // fixed sibling name would have one rename carry the other's
-    // half-written content) + fsync before the rename so a crash never
-    // leaves an empty file behind the atomic-rename point.
-    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    let mut file =
-        fs::File::create(&tmp).with_context(|| format!("Failed to write {}", tmp.display()))?;
-    file.write_all(content.as_bytes())
-        .with_context(|| format!("Failed to write {}", tmp.display()))?;
-    file.flush()
-        .with_context(|| format!("Failed to write {}", tmp.display()))?;
-    file.sync_all()
-        .with_context(|| format!("Failed to sync {}", tmp.display()))?;
-    fs::rename(&tmp, path).with_context(|| {
-        format!(
-            "Failed to move temporary file {} to {}",
-            tmp.display(),
-            path.display()
-        )
-    })?;
-    Ok(())
+    // The shared atomic-write helper: a unique temp file per call (a fixed
+    // pid-suffixed name would still collide between concurrent writes from
+    // this process), auto-cleaned when an error propagates, and fsynced
+    // before the persist-rename — same convention as the rest of the crate.
+    crate::utils::write_atomic(path, content.as_bytes())
+        .with_context(|| format!("Failed to write {}", path.display()))
 }
 
 pub fn default_automations_dir() -> PathBuf {

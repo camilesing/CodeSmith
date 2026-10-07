@@ -1111,3 +1111,13 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # [mods]
 # enabled = true   # master switch: discovery, manage_mods tool, watcher
 # watch = true     # hot-reload file watcher only (500ms debounce, 1s cooldown)
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Scheduled automations (optional)
+# ─────────────────────────────────────────────────────────────────────────────────
+# Bounds for unattended scheduled runs (`/automations`). Scheduled runs have
+# nobody watching to interrupt a runaway loop, so they are capped below the
+# interactive engine default (which is effectively unlimited).
+#
+# [automations]
+# max_steps = 100  # step cap per turn for scheduled runs (default 100)

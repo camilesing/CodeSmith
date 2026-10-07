@@ -958,10 +958,13 @@ fn expand_tilde(raw: &str) -> String {
 
 /// Auto-select a model based on request complexity.
 ///
-/// Short messages (<100 chars) → Flash (fast & cheap).
-/// Long messages (>500 chars) → Pro (powerful reasoning).
-/// Messages with complex keywords → Pro.
-/// Default → Flash (cost savings).
+/// Short messages (<100 chars) → light tier (fast & cheap).
+/// Long messages (>500 chars; >1000 under cost-saving) → heavy tier.
+/// Messages with complex keywords → heavy tier.
+/// Default (grey zone) → light tier.
+///
+/// Returns the provider-resolved model ID for the selected tier
+/// (`Config::resolve_model_tier`), not a hardcoded DeepSeek model id.
 pub fn auto_model_heuristic(config: &crate::config::Config, input: &str) -> String {
     config.resolve_model_tier(auto_model_heuristic_tier(input, config.auto_cost_saving()))
 }
@@ -1225,7 +1228,16 @@ pub async fn resolve_auto_route(
             reasoning_effort: recommendation.reasoning_effort,
             source: AutoRouteSource::Router,
         },
-        Ok(None) | Err(_) => auto_route_from_heuristic(config, latest_request, heuristic),
+        Ok(None) => auto_route_from_heuristic(config, latest_request, heuristic),
+        Err(ref err) => {
+            // The sub-agent router logs this same fallback; without the log
+            // here a misconfigured `[auto] router_model` no-ops invisibly.
+            tracing::warn!(
+                target: "codesmith_auto_route",
+                "model router failed; falling back to heuristic: {err}"
+            );
+            auto_route_from_heuristic(config, latest_request, heuristic)
+        }
     }
 }
 

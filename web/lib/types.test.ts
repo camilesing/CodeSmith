@@ -30,6 +30,23 @@ describe("isDispatchPayload", () => {
     ).toBe(false);
   });
 
+  it("rejects items missing the fields the homepage renders (tag/blurb) or the write side persists (number/reason)", () => {
+    // highlight without tag — the en/zh homepage renders h.tag directly.
+    expect(
+      isDispatchPayload({
+        ...validPayload,
+        highlights: [{ title: "t", href: "https://github.com/x", blurb: "b" }],
+      })
+    ).toBe(false);
+    // mover with a mistyped number — persisted to KV even though unrendered.
+    expect(
+      isDispatchPayload({
+        ...validPayload,
+        movers: [{ number: "1", title: "t", href: "https://github.com/y", reason: "r" }],
+      })
+    ).toBe(false);
+  });
+
   it("accepts well-formed optional zh sections", () => {
     expect(
       isDispatchPayload({
@@ -44,5 +61,10 @@ describe("isDispatchPayload", () => {
     expect(isDispatchPayload({ ...validPayload, highlightsZh: "n/a" })).toBe(false);
     expect(isDispatchPayload({ ...validPayload, highlightsZh: [{ title: "t" }] })).toBe(false);
     expect(isDispatchPayload({ ...validPayload, moversZh: ["n/a"] })).toBe(false);
+  });
+
+  it("rejects non-string optional zh scalars — truthiness-only render would pass a number or crash on an object", () => {
+    expect(isDispatchPayload({ ...validPayload, headlineZh: 42 })).toBe(false);
+    expect(isDispatchPayload({ ...validPayload, summaryZh: { text: "…" } })).toBe(false);
   });
 });

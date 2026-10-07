@@ -255,7 +255,6 @@ pub enum MessageId {
     KbMoveCursor,
     KbJumpLineStartEnd,
     KbDeleteChar,
-    KbClearDraft,
     KbKillToLineStart,
     KbKillNextWord,
     KbUndoInput,
@@ -275,7 +274,6 @@ pub enum MessageId {
     KbFuzzyFilePicker,
     KbCompactInspector,
     KbLastMessagePager,
-    KbSelectedDetails,
     KbToolDetailsPager,
     KbThinkingPager,
     KbLiveTranscript,
@@ -531,7 +529,6 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::KbMoveCursor,
     MessageId::KbJumpLineStartEnd,
     MessageId::KbDeleteChar,
-    MessageId::KbClearDraft,
     MessageId::KbKillToLineStart,
     MessageId::KbKillNextWord,
     MessageId::KbUndoInput,
@@ -551,7 +548,6 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::KbFuzzyFilePicker,
     MessageId::KbCompactInspector,
     MessageId::KbLastMessagePager,
-    MessageId::KbSelectedDetails,
     MessageId::KbToolDetailsPager,
     MessageId::KbThinkingPager,
     MessageId::KbLiveTranscript,
@@ -1054,7 +1050,6 @@ fn english(id: MessageId) -> &'static str {
         MessageId::KbDeleteChar => {
             "Delete character before / after the cursor, or remove selected attachment"
         }
-        MessageId::KbClearDraft => "Clear the current draft",
         MessageId::KbKillToLineStart => "Kill to start of line (yank with Ctrl+Y)",
         MessageId::KbKillNextWord => "Kill to end of word",
         MessageId::KbUndoInput => "Undo the last input edit",
@@ -1074,9 +1069,6 @@ fn english(id: MessageId) -> &'static str {
         MessageId::KbFuzzyFilePicker => "Open the fuzzy file picker (insert @path on Enter)",
         MessageId::KbCompactInspector => "Open compact session context inspector",
         MessageId::KbLastMessagePager => "Open pager for the last message (when input is empty)",
-        MessageId::KbSelectedDetails => {
-            "Open details for the selected tool or message (when input is empty)"
-        }
         MessageId::KbToolDetailsPager => "Open tool-details pager",
         MessageId::KbThinkingPager => "Open Activity Detail",
         MessageId::KbLiveTranscript => "Open live transcript overlay (sticky-tail auto-scroll)",
@@ -1087,7 +1079,9 @@ fn english(id: MessageId) -> &'static str {
             "Complete /command, queue running-turn follow-up, cycle modes; Shift+Tab cycles reasoning effort"
         }
         MessageId::KbJumpPlanAgentYolo => "Jump directly to Plan / Agent / YOLO mode",
-        MessageId::KbAltJumpPlanAgentYolo => "Alternative jump to Plan / Agent / YOLO mode",
+        MessageId::KbAltJumpPlanAgentYolo => {
+            "After a yank, cycle the kill ring (yank-pop); otherwise jump to YOLO mode"
+        }
         MessageId::KbFocusSidebar => {
             "Focus Work / Tasks / Agents / Context / Auto sidebar; Ctrl+Alt+0 hides it"
         }
@@ -1445,7 +1439,6 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::KbMoveCursor => "在输入框中移动光标",
         MessageId::KbJumpLineStartEnd => "跳转到行首/行尾",
         MessageId::KbDeleteChar => "删除光标前/后的字符，或移除已选附件",
-        MessageId::KbClearDraft => "清空当前草稿",
         MessageId::KbKillToLineStart => "删除到行首（Ctrl+Y 可取回）",
         MessageId::KbKillNextWord => "删除到词尾",
         MessageId::KbUndoInput => "撤销上一次输入编辑",
@@ -1465,7 +1458,6 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::KbFuzzyFilePicker => "打开模糊文件选择器（按 Enter 插入 @path）",
         MessageId::KbCompactInspector => "打开紧凑会话上下文检查器",
         MessageId::KbLastMessagePager => "打开最后一条消息的分页器（输入框为空时）",
-        MessageId::KbSelectedDetails => "打开选中工具或消息的详情（输入框为空时）",
         MessageId::KbToolDetailsPager => "打开工具详情分页器",
         MessageId::KbThinkingPager => "打开 Activity Detail",
         MessageId::KbLiveTranscript => "打开实时对话覆盖层（自动滚动尾随）",
@@ -1474,7 +1466,9 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
             "补全 /command、排队运行轮次跟进、切换模式；Shift+Tab 切换推理强度"
         }
         MessageId::KbJumpPlanAgentYolo => "直接跳转到 Plan / Agent / YOLO 模式",
-        MessageId::KbAltJumpPlanAgentYolo => "替代快捷键跳转到 Plan / Agent / YOLO 模式",
+        MessageId::KbAltJumpPlanAgentYolo => {
+            "粘贴后循环 kill ring（yank-pop）；否则跳转到 YOLO 模式"
+        }
         MessageId::KbFocusSidebar => "聚焦 Work / 任务 / 代理 / Context / 自动 / 隐藏侧边栏",
         MessageId::KbTogglePlanAgent => "在 Plan 和 Agent 模式之间切换",
         MessageId::KbSessionPicker => "打开会话选择器",
@@ -1811,7 +1805,6 @@ fn hindi(id: MessageId) -> Option<&'static str> {
         MessageId::KbMoveCursor => "composer में cursor घुमाएँ",
         MessageId::KbJumpLineStartEnd => "पंक्ति के आरंभ / अंत पर जाएँ",
         MessageId::KbDeleteChar => "cursor से पहले/बाद का अक्षर मिटाएँ, या चुना गया अटैचमेंट हटाएँ",
-        MessageId::KbClearDraft => "वर्तमान ड्राफ़्ट साफ़ करें",
         MessageId::KbKillToLineStart => "पंक्ति के शुरू तक काटें (Ctrl+Y से वापस)",
         MessageId::KbKillNextWord => "शब्द के अंत तक काटें",
         MessageId::KbUndoInput => "अंतिम इनपुट संपादन पूर्ववत करें",
@@ -1831,7 +1824,6 @@ fn hindi(id: MessageId) -> Option<&'static str> {
         MessageId::KbFuzzyFilePicker => "fuzzy file picker खोलें (Enter पर @path जोड़ता है)",
         MessageId::KbCompactInspector => "कॉम्पैक्ट सत्र context इंस्पेक्टर खोलें",
         MessageId::KbLastMessagePager => "अंतिम संदेश के लिए pager खोलें (जब input खाली हो)",
-        MessageId::KbSelectedDetails => "चुने गए tool या संदेश का विवरण खोलें (जब input खाली हो)",
         MessageId::KbToolDetailsPager => "tool-details pager खोलें",
         MessageId::KbThinkingPager => "Activity Detail खोलें",
         MessageId::KbLiveTranscript => "live transcript overlay खोलें (sticky-tail ऑटो-स्क्रॉल)",
@@ -1842,7 +1834,9 @@ fn hindi(id: MessageId) -> Option<&'static str> {
             "/command पूरा करें, चल रहे टर्न का follow-up क़तारबद्ध करें, मोड बदलें; Shift+Tab reasoning effort बदलता है"
         }
         MessageId::KbJumpPlanAgentYolo => "सीधे Plan / Agent / YOLO मोड पर जाएँ",
-        MessageId::KbAltJumpPlanAgentYolo => "Plan / Agent / YOLO मोड पर जाने का वैकल्पिक तरीक़ा",
+        MessageId::KbAltJumpPlanAgentYolo => {
+            "Yank के बाद kill ring चक्रित करें (yank-pop); अन्यथा YOLO मोड पर जाएँ"
+        }
         MessageId::KbFocusSidebar => {
             "Work / Tasks / Agents / Context / Auto sidebar पर फ़ोकस करें; Ctrl+Alt+0 इसे छिपाता है"
         }
@@ -2234,7 +2228,6 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         MessageId::KbDeleteChar => {
             "Eliminar carácter antes / después del cursor, o quitar adjunto seleccionado"
         }
-        MessageId::KbClearDraft => "Limpiar borrador actual",
         MessageId::KbKillToLineStart => "Cortar hasta el inicio de línea (Ctrl+Y recupera)",
         MessageId::KbKillNextWord => "Cortar hasta el final de la palabra",
         MessageId::KbUndoInput => "Deshacer la última edición",
@@ -2260,9 +2253,6 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         MessageId::KbLastMessagePager => {
             "Abrir paginador para el último mensaje (cuando la entrada está vacía)"
         }
-        MessageId::KbSelectedDetails => {
-            "Abrir detalles de la herramienta o mensaje seleccionado (cuando la entrada está vacía)"
-        }
         MessageId::KbToolDetailsPager => "Abrir paginador de detalles de la herramienta",
         MessageId::KbThinkingPager => "Abrir paginador de razonamiento",
         MessageId::KbLiveTranscript => "Abrir superposición de transcripción en vivo (auto-scroll)",
@@ -2273,7 +2263,9 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
             "Completar /command, encolar follow-up, ciclar modos; Shift+Tab cicla esfuerzo de razonamiento"
         }
         MessageId::KbJumpPlanAgentYolo => "Saltar directo a modo Plan / Agent / YOLO",
-        MessageId::KbAltJumpPlanAgentYolo => "Salto alternativo a modo Plan / Agent / YOLO",
+        MessageId::KbAltJumpPlanAgentYolo => {
+            "Tras un yank, recorre el kill ring (yank-pop); si no, salta a modo YOLO"
+        }
         MessageId::KbFocusSidebar => {
             "Enfocar barra lateral Work / Tasks / Agents / Context / Auto / Ocultar"
         }
