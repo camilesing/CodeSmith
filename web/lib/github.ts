@@ -14,6 +14,13 @@ function headers(token?: string): HeadersInit {
   return h;
 }
 
+/** Non-ok and unparseable responses both degrade to null — a rate-limited or
+ *  HTML error body must not crash the render path. */
+async function safeJson(res: Response): Promise<unknown> {
+  if (!res.ok) return null;
+  return res.json().catch(() => null);
+}
+
 export async function fetchRepoStats(token?: string): Promise<RepoStats> {
   const [repoRes, contribRes, releaseRes] = await Promise.all([
     fetch(`${GH}/repos/${REPO}`, { headers: headers(token), next: { revalidate: 1800 } }),
@@ -26,8 +33,7 @@ export async function fetchRepoStats(token?: string): Promise<RepoStats> {
 
   // Guard every payload: a rate-limited or error response body is not the
   // typed shape these were cast to, and `user` is null for ghost accounts.
-  const repoBody = repoRes.ok ? await repoRes.json().catch(() => null) : null;
-  const repo = repoBody as
+  const repo = (await safeJson(repoRes)) as
     | { stargazers_count?: number; forks_count?: number; open_issues_count?: number }
     | null;
 
@@ -38,17 +44,15 @@ export async function fetchRepoStats(token?: string): Promise<RepoStats> {
     `${GH}/search/issues?q=${encodeURIComponent(`repo:${REPO} is:pr is:open`)}&per_page=1`,
     { headers: headers(token), next: { revalidate: 1800 } }
   );
-  const prJson = prRes.ok ? ((await prRes.json().catch(() => null)) as { total_count?: number } | null) : null;
+  const prJson = (await safeJson(prRes)) as { total_count?: number } | null;
   const openPulls = prJson?.total_count ?? 0;
   const openIssues = Math.max(0, (repo?.open_issues_count ?? openPulls) - openPulls);
 
+  const r = (await safeJson(releaseRes)) as
+    | { tag_name: string; published_at: string; html_url: string }
+    | null;
   let latestRelease: RepoStats["latestRelease"];
-  if (releaseRes.ok) {
-    const r = (await releaseRes.json().catch(() => null)) as
-      | { tag_name: string; published_at: string; html_url: string }
-      | null;
-    if (r) latestRelease = { tag: r.tag_name, publishedAt: r.published_at, url: r.html_url };
-  }
+  if (r) latestRelease = { tag: r.tag_name, publishedAt: r.published_at, url: r.html_url };
 
   return {
     stars: repo?.stargazers_count ?? 0,
@@ -67,7 +71,7 @@ async function contributorCount(res: Response): Promise<number> {
   const fromLink = lastPageFromLink(res.headers.get("link"));
   if (fromLink) return Math.max(fromLink, MIN_KNOWN_CONTRIBUTORS);
 
-  const body = await res.json().catch(() => null);
+  const body = await safeJson(res);
   if (Array.isArray(body)) return Math.max(body.length, MIN_KNOWN_CONTRIBUTORS);
 
   return MIN_KNOWN_CONTRIBUTORS;
@@ -96,7 +100,7 @@ interface RawIssue {
   title: string;
   html_url: string;
   state: "open" | "closed";
-  user: { login: string; avatar_url: string };
+  user: { login: string; avatar_url: string } | null;
   created_at: string;
   updated_at: string;
   comments: number;
@@ -118,8 +122,8 @@ export async function fetchFeed(token?: string, limit = 30): Promise<FeedItem[]>
     ),
   ]);
 
-  const issuesBody = issuesRes.ok ? await issuesRes.json().catch(() => null) : null;
-  const pullsBody = pullsRes.ok ? await pullsRes.json().catch(() => null) : null;
+  const issuesBody = await safeJson(issuesRes);
+  const pullsBody = await safeJson(pullsRes);
   const issues = Array.isArray(issuesBody) ? (issuesBody as RawIssue[]) : [];
   const pulls = Array.isArray(pullsBody)
     ? (pullsBody as (RawIssue & { merged_at?: string | null })[])

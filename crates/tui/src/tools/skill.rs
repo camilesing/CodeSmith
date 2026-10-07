@@ -27,7 +27,9 @@
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use crate::skills::{Skill, discover_in_workspace, skills_directories};
+use crate::skills::{
+    Skill, discover_for_workspace_and_dir, discover_in_workspace, skills_directories,
+};
 
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
@@ -87,11 +89,16 @@ impl ToolSpec for LoadSkillTool {
         // #432: walk every candidate skill directory (workspace
         // .agents/skills, skills, .opencode/skills, .claude/skills,
         // .cursor/skills, ~/.agents/skills, global default), merging with
-        // first-wins precedence. Mod-registered skills (route B) merge in
-        // with the same precedence, so the tool's lookup mirrors what the
+        // first-wins precedence; the configured install directory rides
+        // along so the lookup covers the catalogue's empty-workspace
+        // fallback too. Mod-registered skills (route B) merge in with the
+        // same precedence, so the tool's lookup mirrors what the
         // system-prompt skills block already lists — the model never asks
         // for a name it can't find.
-        let mut registry = discover_in_workspace(&context.workspace);
+        let mut registry = match context.skills_dir.as_deref() {
+            Some(dir) => discover_for_workspace_and_dir(&context.workspace, dir),
+            None => discover_in_workspace(&context.workspace),
+        };
         registry.merge_registered(&context.registered_skills);
         let Some(skill) = registry.get(name) else {
             let available: Vec<&str> = registry.list().iter().map(|s| s.name.as_str()).collect();
@@ -120,9 +127,13 @@ impl ToolSpec for LoadSkillTool {
             crate::skills::SkillSource::Extension { owner } => format!("mod: {owner}"),
             _ => skill.path.display().to_string(),
         };
+        // `skill_path` stays a real filesystem path (empty for file-less
+        // mod skills); the mod label lives in its own `skill_source` key so
+        // no consumer ever mistakes "mod: <owner>" for a path.
         Ok(ToolResult::success(body).with_metadata(json!({
             "skill_name": skill.name,
-            "skill_path": source,
+            "skill_path": skill.path.display().to_string(),
+            "skill_source": source,
             "description": skill.description,
             "when_to_use": skill.when_to_use,
             "allowed_tools": skill.allowed_tools,
@@ -275,6 +286,21 @@ mod tests {
         assert!(
             out.content.contains("# Skill: mod-skill"),
             "self-contained header: {out:?}"
+        );
+        // Metadata split: `skill_path` is a real path (empty for file-less
+        // mod skills), the mod label lives in `skill_source`.
+        let metadata = out.metadata.expect("metadata stamped");
+        assert_eq!(
+            metadata
+                .get("skill_path")
+                .and_then(serde_json::Value::as_str),
+            Some("")
+        );
+        assert_eq!(
+            metadata
+                .get("skill_source")
+                .and_then(serde_json::Value::as_str),
+            Some("mod: alpha")
         );
 
         let fs = LoadSkillTool

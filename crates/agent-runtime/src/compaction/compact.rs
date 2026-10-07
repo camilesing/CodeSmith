@@ -962,10 +962,11 @@ pub async fn compact_messages_safe(
     // messages, so all drop shapes below (local prune, session-memory, LLM
     // summary) lose their facts to the ledger first. Accumulation is
     // idempotent; the rendered section carries forward facts captured by
-    // earlier compactions.
+    // earlier compactions. The plan is computed before the lock is taken —
+    // session save and the engine-side compaction share this mutex, and the
+    // full-history planning pass is pure CPU.
     let mut fact_ledger_section = String::new();
     if let Some(ledger) = enhancements.and_then(|e| e.fact_ledger.as_ref()) {
-        let mut guard = ledger.lock().expect("fact ledger poisoned");
         let plan = plan_compaction(
             messages,
             workspace,
@@ -974,6 +975,7 @@ pub async fn compact_messages_safe(
             external_working_set_paths,
         );
         let dropped = plan.summarize_indices.iter().map(|&idx| &messages[idx]);
+        let mut guard = ledger.lock().expect("fact ledger poisoned");
         let added = guard.accumulate(dropped, workspace);
         if added > 0 {
             tracing::info!(
@@ -1039,6 +1041,40 @@ pub async fn compact_messages_safe(
     } else {
         messages
     };
+
+    // The ledger plan above ran on the ORIGINAL messages; the actual
+    // summarize set is planned later on the pruned input. Pruning can strip
+    // the very error marker that pinned a tool result in the original plan,
+    // so a must-not-lose failure line could be excluded from the ledger by
+    // the pin and then summarized away by the pruned plan — falling through
+    // both mechanisms. Re-accumulate from the pruned plan's drop set (still
+    // reading full text from the original messages; accumulation is
+    // idempotent so the overlap contributes nothing).
+    if pruned_bytes > 0
+        && let Some(ledger) = enhancements.and_then(|e| e.fact_ledger.as_ref())
+    {
+        let pruned_plan = plan_compaction(
+            compaction_input,
+            workspace,
+            KEEP_RECENT_MESSAGES,
+            external_pins,
+            external_working_set_paths,
+        );
+        let dropped = pruned_plan
+            .summarize_indices
+            .iter()
+            .map(|&idx| &messages[idx]);
+        let mut guard = ledger.lock().expect("fact ledger poisoned");
+        let added = guard.accumulate(dropped, workspace);
+        if added > 0 {
+            tracing::info!(
+                target: "compaction",
+                added,
+                "fact ledger extracted {added} additional facts from the post-prune drop set"
+            );
+            fact_ledger_section = guard.summary_section();
+        }
+    }
 
     // Session-memory-first: when memory content is available and the
     // conversation exceeds the session-memory threshold, compact using the
@@ -1562,10 +1598,13 @@ pub const LAYERED_SUMMARY_HEADERS: &[&str] = &[
 
 /// How many of the layered-summary section headers `text` carries. A
 /// compliant summary has all of them ([`LAYERED_SUMMARY_HEADERS.len()`]).
+/// Matching is line-anchored: a header merely *quoted* in the body (a code
+/// fence, a bullet, an echo of the instruction) is not a section heading
+/// and must not satisfy the compliance gate.
 pub fn summary_section_count(text: &str) -> usize {
     LAYERED_SUMMARY_HEADERS
         .iter()
-        .filter(|header| text.contains(*header))
+        .filter(|header| text.lines().any(|line| line.trim() == **header))
         .count()
 }
 

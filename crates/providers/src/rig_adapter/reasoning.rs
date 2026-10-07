@@ -100,16 +100,18 @@ pub(crate) fn apply_reasoning_effort(
     // `reasoning_effort` / `thinking` fields even though the official OpenAI
     // endpoint rejects them. `CODESMITH_REASONING_PASSTHROUGH=1` opts the
     // generic `openai` provider arm into verbatim forwarding so those
-    // gateways get thinking control too.
+    // gateways get thinking control too. Empty effort is excluded: the
+    // non-passthrough openai arm sends nothing for it, and forwarding ""
+    // verbatim earns a gateway 400 (the failure mode this adapter works
+    // around) — the deepseek family's deliberate ""→high mapping below is
+    // untouched.
     if provider == "openai"
-        && std::env::var("CODESMITH_REASONING_PASSTHROUGH")
-            .map(|value| {
-                matches!(
-                    value.trim().to_ascii_lowercase().as_str(),
-                    "1" | "true" | "yes" | "on"
-                )
-            })
-            .unwrap_or(false)
+        && !normalized.is_empty()
+        && super::http_fallback::env_flag_enabled(
+            std::env::var("CODESMITH_REASONING_PASSTHROUGH")
+                .ok()
+                .as_deref(),
+        )
     {
         match normalized.as_str() {
             "off" | "disabled" | "none" | "false" => {
@@ -407,6 +409,16 @@ mod tests {
         assert!(m.get("reasoning_effort").is_none());
         assert!(m.get("thinking").is_none());
         assert!(params_for(Some("off"), "openai").is_empty());
+    }
+
+    #[test]
+    fn empty_effort_sends_nothing_for_openai() {
+        // "" must mean "send nothing" for openai (the passthrough arm is
+        // env-gated and likewise excludes it); only the deepseek family
+        // deliberately maps "" to high.
+        assert!(params_for(Some(""), "openai").is_empty());
+        assert!(params_for(Some("   "), "openai").is_empty());
+        assert!(!params_for(Some(""), "deepseek").is_empty());
     }
 
     #[test]

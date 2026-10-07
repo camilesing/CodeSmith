@@ -174,8 +174,8 @@ fn quote_state_is_clean_at(line: &str, offset: usize) -> bool {
     !in_single && !in_double
 }
 
-/// Split a normalized command into top-level segments on shell command
-/// separators (`&&`, `||`, `|`, `;`).
+/// Split a command into top-level segments on shell command separators
+/// (`&&`, `||`, `|`, `;`).
 ///
 /// AST-first: quoted separators are *data*, not boundaries, so
 /// `echo "a && b"` is one segment. If the input cannot be parsed, the
@@ -233,6 +233,27 @@ pub fn pattern_matches(pattern: &str, command: &str) -> bool {
         return wildcard_pattern_matches_single(pattern_first, command_first);
     }
     pattern_matches_legacy(pattern, command)
+}
+
+/// Match `pattern` against one **already-split** segment string. Unlike
+/// [`pattern_matches`], the subject is never re-segmented: a separator that
+/// survived inside the segment (a quoted `&&` in a commit message, resolved
+/// to plain text by the AST split) is that segment's data, not a new command
+/// boundary. A compound pattern therefore cannot match a single segment.
+pub fn pattern_matches_segment(pattern: &str, segment: &str) -> bool {
+    if pattern.trim() == "*" {
+        return true;
+    }
+    match ast_segments(pattern) {
+        Some(segments) if segments.len() > 1 => false,
+        Some(segments) => {
+            let Some(first) = segments.into_iter().next() else {
+                return false;
+            };
+            wildcard_pattern_matches_single(&first, segment)
+        }
+        None => wildcard_pattern_matches_single(&normalize_command_legacy(pattern), segment),
+    }
 }
 
 /// Loose variant for **deny** rules: a compound command is as dangerous as

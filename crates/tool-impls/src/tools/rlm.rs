@@ -555,12 +555,13 @@ async fn load_source(
     let url = rlm_open_source_field(input, "url")
         .map(str::trim)
         .ok_or_else(|| ToolError::invalid_input("rlm_open: missing source"))?;
-    let result = FetchUrlTool
+    let mut result = FetchUrlTool
         .execute(json!({"url": url, "format": "raw"}), context)
         .await?;
     // Program caller of a sibling tool: take the canonical value instead of
-    // re-parsing the rendered content.
-    let parsed: Value = result.canonical.clone().ok_or_else(|| {
+    // re-parsing the rendered content — the fetch body can be megabytes, so
+    // move it rather than clone.
+    let parsed: Value = result.canonical.take().ok_or_else(|| {
         ToolError::execution_failed("rlm_open: fetch_url returned no canonical value")
     })?;
     let body = parsed

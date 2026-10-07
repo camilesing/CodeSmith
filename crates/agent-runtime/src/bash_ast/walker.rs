@@ -23,13 +23,25 @@ use super::facts::{AstParseFailure, BashFacts, CommandSegment, Redirect, Segment
 
 /// Parse `source` and walk the tree into facts. Fails closed when the tree
 /// contains `ERROR`/`MISSING` nodes.
+///
+/// The parser is cached per thread: `analyze_command`, `normalize_command`,
+/// `split_command_segments`, and the rule matchers all parse the same
+/// strings, and `Parser::new` + `set_language` per call dominated that hot
+/// path. `Parser` is `Send` but not `Sync`, so a `thread_local` `RefCell`
+/// is the shareable shape.
 pub(super) fn parse_facts(source: &str) -> Result<BashFacts, AstParseFailure> {
-    let mut parser = Parser::new();
-    let language: tree_sitter::Language = tree_sitter_bash::LANGUAGE.into();
-    parser
-        .set_language(&language)
-        .expect("tree-sitter-bash grammar loads");
-    let Some(tree) = parser.parse(source, None) else {
+    thread_local! {
+        static PARSER: std::cell::RefCell<Parser> = std::cell::RefCell::new({
+            let mut parser = Parser::new();
+            let language: tree_sitter::Language = tree_sitter_bash::LANGUAGE.into();
+            parser
+                .set_language(&language)
+                .expect("tree-sitter-bash grammar loads");
+            parser
+        });
+    }
+    let tree = PARSER.with(|parser| parser.borrow_mut().parse(source, None));
+    let Some(tree) = tree else {
         return Err(AstParseFailure {
             first_error_byte: 0,
         });
@@ -257,6 +269,10 @@ impl<'a> Walker<'a> {
                         self.subtree_has_kind(child, "command_substitution");
                     if assignments_are_argv {
                         segment.argv.push(self.raw_text(child));
+                        // `export X=$(cmd)` executes the value like a prefix
+                        // assignment does — walk it so the embedded command
+                        // flattens into a segment.
+                        self.walk_nested(child, None);
                     } else {
                         // Prefix assignment: not part of argv, but a
                         // substitution in its value still executes.
@@ -266,6 +282,14 @@ impl<'a> Walker<'a> {
                 }
                 "command_name" => {
                     segment.expansion_in_command_name = self.subtree_has_expansion(child);
+                    // `$(cmd) args` puts the substitution in command
+                    // position: flag it and walk it like any argument, so
+                    // the embedded command flattens into a segment.
+                    segment.has_command_substitution |=
+                        self.subtree_has_kind(child, "command_substitution");
+                    segment.has_process_substitution |=
+                        self.subtree_has_kind(child, "process_substitution");
+                    self.walk_nested(child, None);
                     segment.argv.push(self.token_text(child));
                 }
                 "file_redirect" => {
@@ -323,8 +347,10 @@ impl<'a> Walker<'a> {
         let destination = node.child_by_field_name("destination")?;
         let target = self.token_text(destination);
         // Dup redirections (`2>&1`, `>&2`) point at another descriptor, not
-        // a path — not a write target.
-        if operator.contains('&') || target.starts_with('&') {
+        // a path — not a write target. They carry the `&` *after* the `>`;
+        // whole-output forms (`&>`, `&>>`) redirect stdout+stderr to a path
+        // and must stay visible to write-target analysis.
+        if operator.contains(">&") || target.starts_with('&') {
             return None;
         }
         Some(Redirect { operator, target })

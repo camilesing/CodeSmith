@@ -361,7 +361,11 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
               <InstallBinary
                 copyLabel={copyLabel}
                 copiedLabel={copiedLabel}
-                verifyHeading={isZh ? "校验 SHA256" : "Verify checksum"}
+                archHint={
+                  isZh
+                    ? "下载后无法运行？请按上方标签切换到你的 CPU 架构（Intel Mac 为 macOS · Intel）。"
+                    : "Binary won't run? Pick your architecture above (Intel Macs need macOS · Intel)."
+                }
               />
             </div>
 

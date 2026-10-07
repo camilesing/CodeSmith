@@ -38,3 +38,21 @@ export interface CuratedDispatch {
   highlightsZh?: { title: string; href: string; tag: string; blurb: string }[];
   moversZh?: { number: number; title: string; href: string; reason: string }[];
 }
+
+/**
+ * Shape guard for a dispatch payload, shared by the write side (llm.ts curate)
+ * and the read side (kv.ts getDispatch) of the same KV key — kept in one place
+ * so the two halves cannot drift and silently wedge the homepage on the static
+ * fallback. `generatedAt` is checked by neither side (the write side stamps it
+ * itself; the read side tolerates its absence).
+ */
+export function isDispatchPayload(v: unknown): v is Omit<CuratedDispatch, "generatedAt"> {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    typeof (v as CuratedDispatch).headline === "string" &&
+    typeof (v as CuratedDispatch).summary === "string" &&
+    Array.isArray((v as CuratedDispatch).highlights) &&
+    Array.isArray((v as CuratedDispatch).movers)
+  );
+}

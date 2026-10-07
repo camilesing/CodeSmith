@@ -2034,10 +2034,10 @@ impl ToolSpec for AgentOpenTool {
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let spawn_tool = AgentSpawnTool::new(self.manager.clone(), self.runtime.clone());
-        let result = spawn_tool.execute(input, context).await?;
+        let mut result = spawn_tool.execute(input, context).await?;
         // Program caller of a sibling tool: take the canonical value instead
         // of re-parsing the rendered content.
-        let canonical = result.canonical.clone().ok_or_else(|| {
+        let canonical = result.canonical.take().ok_or_else(|| {
             ToolError::execution_failed("agent_open projection failed: no canonical value")
         })?;
         let snapshot: SubAgentResult = serde_json::from_value(canonical).map_err(|e| {
@@ -5827,8 +5827,10 @@ pub(crate) fn normalize_requested_subagent_model(
     }
     crate::config::normalize_model_name(trimmed).ok_or_else(|| {
         ToolError::invalid_input(format!(
-            "Invalid {field} '{trimmed}': expected a model ID your provider serves \
-             (DeepSeek endpoints: deepseek-v4-pro, deepseek-v4-flash, or a deepseek-prefixed id)"
+            "Invalid {field} '{trimmed}': the current normalizer only accepts \
+             DeepSeek-served ids (deepseek-v4-pro, deepseek-v4-flash, or a \
+             deepseek-prefixed id) — non-DeepSeek ids are rejected even on \
+             non-DeepSeek providers"
         ))
     })
 }
@@ -5873,9 +5875,26 @@ pub(crate) async fn resolve_subagent_assignment_route(
     let explicit_model = configured_model.is_some();
     let mut route = fallback_subagent_assignment_route(runtime, configured_model, prompt);
 
-    if should_use_subagent_router(runtime)
-        && let Ok(Some(recommendation)) = subagent_model_router(runtime, prompt).await
-    {
+    let router_outcome = if should_use_subagent_router(runtime) {
+        subagent_model_router(runtime, prompt).await
+    } else {
+        Ok(None)
+    };
+    // The only place sub-agent routing quality can be diagnosed — a
+    // misconfigured router_model, the 4s timeout, or malformed JSON all
+    // used to degrade to the heuristic with zero trace.
+    match &router_outcome {
+        Err(e) => tracing::warn!(
+            target: "codesmith_subagent_router",
+            "sub-agent model router failed; falling back to heuristic: {e}"
+        ),
+        Ok(None) => tracing::debug!(
+            target: "codesmith_subagent_router",
+            "sub-agent model router returned no recommendation; using heuristic"
+        ),
+        Ok(Some(_)) => {}
+    }
+    if let Ok(Some(recommendation)) = router_outcome {
         if runtime.auto_model && !explicit_model {
             route.model = runtime
                 .auto_route
@@ -5962,10 +5981,15 @@ async fn subagent_model_router(
     // to the heuristic — on non-DeepSeek providers.)
     let (client, model) = if let Some(router_model) = runtime.auto_route.router_model.clone() {
         (runtime.client.clone(), router_model)
-    } else if runtime.auto_route.cost_saving
-        && let Some(utility) = runtime.context.utility_llm.as_ref()
-    {
-        (utility.client.clone(), utility.model.clone())
+    } else if runtime.auto_route.cost_saving {
+        // Mirror the main-turn brain (auto_route_model_recommendation):
+        // cheap `[utility_model]` when present, else the main client's own
+        // model — falling to the heavy tier here would invert the
+        // cost-saving opt-in for every sub-agent spawn.
+        match runtime.context.utility_llm.as_ref() {
+            Some(utility) => (utility.client.clone(), utility.model.clone()),
+            None => (runtime.client.clone(), runtime.client.model().to_string()),
+        }
     } else {
         (
             runtime.client.clone(),
@@ -5987,9 +6011,7 @@ async fn subagent_model_router(
             }],
         }],
         max_tokens: 96,
-        system: Some(SystemPrompt::Text(
-            SUBAGENT_ROUTER_SYSTEM_PROMPT.to_string(),
-        )),
+        system: Some(SystemPrompt::Text(subagent_router_system_prompt(runtime))),
         tools: None,
         tool_choice: None,
         metadata: None,
@@ -6017,6 +6039,18 @@ Use the heavy tier for coding, debugging, release work, multi-file changes, secu
 high-risk decisions, ambiguous requests, or work likely to need tool-call judgment. Use thinking \
 off for trivial no-tool work, high for ordinary reasoning, and max only for hard, risky, \
 multi-step, uncertain, or tool-heavy work.";
+
+/// The router's system prompt. Under `[auto] cost_saving` the main-turn
+/// addendum is appended — the base prompt's bias is quality-first ("heavy
+/// for ambiguous"), which silently defeated the cost opt-in on the
+/// sub-agent path while the main turn routed the same ambiguity to light.
+fn subagent_router_system_prompt(runtime: &SubAgentRuntime) -> String {
+    let mut system = SUBAGENT_ROUTER_SYSTEM_PROMPT.to_string();
+    if runtime.auto_route.cost_saving {
+        system.push_str(crate::commands::AUTO_MODEL_ROUTER_COST_SAVING_ADDENDUM);
+    }
+    system
+}
 
 fn subagent_router_prompt(runtime: &SubAgentRuntime, prompt: &str) -> String {
     format!(

@@ -32,9 +32,17 @@
 //! * run an LLM extraction pass over messages (cost/latency; rules first,
 //!   per the plan),
 //! * cover sub-agent transcripts (only the main-loop transcript feeds it),
-//! * bound `TaskConstraint` entries — they are never evicted when the token
-//!   cap is reached, so a pathological instruction corpus can exceed the
-//!   cap rather than silently drop a constraint.
+//! * keep `TaskConstraint` entries unbounded — they are never evicted when
+//!   the token cap is reached, but past [`FACT_LEDGER_MAX_CONSTRAINTS`] the
+//!   oldest are dropped: the capture gate is a heuristic, and noise captured
+//!   by accident must not outlive the high-signal kinds it crowds out.
+//!
+//! Known limitation: [`scrub_credentials`] redaction is a best-effort
+//! pattern set (connection-string passwords, bearer/basic tokens, secret
+//! assignments, common key shapes), applied because ledger entries are
+//! retained indefinitely and re-rendered into live model context long after
+//! the source message is gone — unlike the raw transcript, which compaction
+//! eventually shrinks. Exotic credential shapes can still slip through.
 
 use std::collections::HashSet;
 use std::fmt::Write;
@@ -56,26 +64,17 @@ pub const FACT_LEDGER_MAX_PATHS: usize = 40;
 /// Maximum characters of a single fenced block captured verbatim.
 pub const FACT_BLOCK_MAX_CHARS: usize = 2_000;
 
-/// Maximum fenced blocks captured from one message.
+/// Maximum fenced blocks captured from one message (counted across all of
+/// the message's content blocks, not per block).
 pub const FACT_BLOCKS_PER_MESSAGE: usize = 3;
+
+/// Hard count cap on `TaskConstraint` entries, oldest-first past the cap.
+/// The token-budget eviction in [`FactLedger::enforce_capacity`] never
+/// drops constraints; this bounds heuristic capture noise independently.
+pub const FACT_LEDGER_MAX_CONSTRAINTS: usize = 32;
 
 /// Maximum characters of a single failure-cause line.
 pub const FACT_FAILURE_LINE_MAX_CHARS: usize = 240;
-
-/// Substrings that mark a tool-result block as constraint-bearing (schema
-/// docs, output specs) rather than plain code read-back. Lowercase compare.
-const CONSTRAINT_KEYWORDS: &[&str] = &[
-    "schema",
-    "column",
-    "field",
-    "format",
-    "required",
-    "expected",
-    "output",
-    "constraint",
-    "verifier",
-    "must",
-];
 
 /// Header of the reflection section in a layered summary. Shared by the
 /// summarization instruction (compact.rs) and the parser below — the
@@ -213,13 +212,17 @@ impl FactLedger {
                 // traffic anyway.
                 continue;
             }
+            // The block cap is per message: one message with several
+            // Text/ToolResult blocks must not capture
+            // `FACT_BLOCKS_PER_MESSAGE` × blocks.
+            let mut captured_blocks = 0;
             for block in &message.content {
                 match block {
                     ContentBlock::Text { text, .. } => {
-                        self.accumulate_fenced_blocks(text, false);
+                        self.accumulate_fenced_blocks(text, false, &mut captured_blocks);
                     }
                     ContentBlock::ToolResult { content, .. } => {
-                        self.accumulate_fenced_blocks(content, true);
+                        self.accumulate_fenced_blocks(content, true, &mut captured_blocks);
                         self.accumulate_failure_lines(content);
                     }
                     _ => {}
@@ -241,19 +244,25 @@ impl FactLedger {
 
     /// Capture fenced ``` blocks. When `from_tool_result`, only blocks that
     /// look constraint-bearing are kept (a plain code read-back is not a
-    /// constraint); instruction/steer text is always captured.
-    fn accumulate_fenced_blocks(&mut self, text: &str, from_tool_result: bool) {
-        let mut captured = 0;
-        for block in fenced_blocks(text) {
-            if captured >= FACT_BLOCKS_PER_MESSAGE {
+    /// constraint); instruction/steer text is always captured. `captured`
+    /// counts blocks taken from the *whole message* — see
+    /// [`FACT_BLOCKS_PER_MESSAGE`].
+    fn accumulate_fenced_blocks(
+        &mut self,
+        text: &str,
+        from_tool_result: bool,
+        captured: &mut usize,
+    ) {
+        for (info, block) in fenced_blocks(text) {
+            if *captured >= FACT_BLOCKS_PER_MESSAGE {
                 break;
             }
-            if from_tool_result && !looks_like_constraint(block) {
+            if from_tool_result && !looks_like_constraint(info, block) {
                 continue;
             }
             let truncated = truncate(block, FACT_BLOCK_MAX_CHARS);
             if self.push(FactKind::TaskConstraint, truncated.to_string()) {
-                captured += 1;
+                *captured += 1;
             }
         }
     }
@@ -281,6 +290,10 @@ impl FactLedger {
     }
 
     fn push(&mut self, kind: FactKind, text: String) -> bool {
+        // Ledger entries outlive their source messages and are re-rendered
+        // into live model context indefinitely — scrub credentials before
+        // they persist (best-effort; see the module doc).
+        let text = scrub_credentials(&text);
         let key = normalize_key(&text);
         if key.is_empty() || !self.seen.insert(key) {
             return false;
@@ -330,7 +343,7 @@ impl FactLedger {
                 .map(|e| estimate_text_tokens_conservative(&e.text))
                 .sum();
             if total <= FACT_LEDGER_MAX_TOKENS {
-                return;
+                break;
             }
             let Some(index) = [
                 FactKind::FailureCause,
@@ -339,10 +352,30 @@ impl FactLedger {
             ]
             .iter()
             .find_map(|kind| self.entries.iter().position(|e| e.kind == *kind)) else {
-                return; // only non-evictable kinds remain; let it exceed
+                break; // only non-evictable kinds remain; let it exceed
             };
             self.seen.remove(&normalize_key(&self.entries[index].text));
             self.entries.remove(index);
+        }
+        // Independently of the token budget: constraints are count-capped
+        // oldest-first, because their capture gate is a heuristic and noise
+        // must not accumulate across compactions without bound.
+        let overflow = self
+            .entries
+            .iter()
+            .filter(|e| e.kind == FactKind::TaskConstraint)
+            .count()
+            .saturating_sub(FACT_LEDGER_MAX_CONSTRAINTS);
+        let mut to_drop = overflow;
+        let mut idx = 0;
+        while to_drop > 0 && idx < self.entries.len() {
+            if self.entries[idx].kind == FactKind::TaskConstraint {
+                self.seen.remove(&normalize_key(&self.entries[idx].text));
+                self.entries.remove(idx);
+                to_drop -= 1;
+            } else {
+                idx += 1;
+            }
         }
     }
 
@@ -446,25 +479,97 @@ impl std::fmt::Display for FactEntry {
     }
 }
 
-/// Yield the inner text of ``` fenced blocks.
-fn fenced_blocks(text: &str) -> impl Iterator<Item = &str> {
+/// Yield `(info_string, inner_text)` of ``` fenced blocks.
+fn fenced_blocks(text: &str) -> impl Iterator<Item = (&str, &str)> {
     let mut rest = text;
     std::iter::from_fn(move || {
         let start = rest.find("```")?;
         let after_fence = &rest[start + 3..];
-        // Skip the info string on the opening fence line.
-        let body_start = after_fence.find('\n').map_or(0, |i| i + 1);
+        // Skip the info string on the opening fence line (keep it — a
+        // structural label like `json`/`schema` is constraint signal).
+        let info_end = after_fence.find('\n').unwrap_or(after_fence.len());
+        let info = &after_fence[..info_end];
+        let body_start = (info_end + 1).min(after_fence.len());
         let body = &after_fence[body_start..];
         let end = body.find("\n```")?;
         let block = &body[..end];
         rest = &body[end + 4..];
-        Some(block)
+        Some((info, block))
     })
 }
 
-fn looks_like_constraint(block: &str) -> bool {
+/// Substrings that mark a tool-result block as constraint-bearing (schema
+/// docs, output specs) rather than plain code read-back. Lowercase compare.
+/// Each is individually ubiquitous in ordinary output, so a *single* hit is
+/// not enough — see [`looks_like_constraint`].
+const CONSTRAINT_KEYWORDS: &[&str] = &[
+    "schema",
+    "column",
+    "field",
+    "format",
+    "required",
+    "expected",
+    "output",
+    "constraint",
+    "verifier",
+    "must",
+];
+
+/// Fence info strings that label structural/spec material outright.
+const CONSTRAINT_FENCE_INFO: &[&str] = &["json", "schema", "yaml", "yml", "toml"];
+
+/// Heuristic gate for constraint-looking fenced blocks in tool results: a
+/// structural fence label (a ```json / ```schema fence label) qualifies outright;
+/// otherwise at least **two** distinct [`CONSTRAINT_KEYWORDS`] must appear —
+/// single ubiquitous words ("must", "output") fire on ordinary code
+/// read-backs.
+fn looks_like_constraint(info: &str, block: &str) -> bool {
+    if CONSTRAINT_FENCE_INFO.contains(&info.trim().to_ascii_lowercase().as_str()) {
+        return true;
+    }
     let lower = block.to_lowercase();
-    CONSTRAINT_KEYWORDS.iter().any(|k| lower.contains(k))
+    CONSTRAINT_KEYWORDS
+        .iter()
+        .filter(|k| lower.contains(*k))
+        .count()
+        >= 2
+}
+
+/// Best-effort credential redaction applied to every ledger entry on push
+/// (entries persist across compactions and restarts and are re-rendered
+/// into live model context — see the module doc). Patterns: URL userinfo
+/// (`scheme://user:pass@`), `Bearer`/`Basic` tokens, secret-looking
+/// assignments, AWS access-key ids, and `sk-…` API keys.
+fn scrub_credentials(text: &str) -> String {
+    use std::sync::OnceLock;
+    static SCRUBBERS: OnceLock<Vec<(regex::Regex, &'static str)>> = OnceLock::new();
+    let scrubbers = SCRUBBERS.get_or_init(|| {
+        const URL_USERINFO: &str =
+            r#"([a-z][a-z0-9+.\-]*://)[^\s:/@"']+:[^\s@"']+(@[a-z0-9.\-])"#;
+        const AUTH_TOKEN: &str = r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=\-]{8,}";
+        const SECRET_ASSIGNMENT: &str = r#"(?i)\b(api[_-]?key|apikey|secret|password|passwd|access[_-]?token|auth[_-]?token|client[_-]?secret)['"]?(\s*[=:]\s*)['"]?[^\s'"]{8,}"#;
+        const AWS_KEY: &str = r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b";
+        const SK_KEY: &str = r"\bsk-[A-Za-z0-9_\-]{16,}";
+        [
+            (URL_USERINFO, "${1}[REDACTED]${2}"),
+            (AUTH_TOKEN, "$1 [REDACTED]"),
+            (SECRET_ASSIGNMENT, "${1}${2}[REDACTED]"),
+            (AWS_KEY, "[REDACTED]"),
+            (SK_KEY, "[REDACTED]"),
+        ]
+        .into_iter()
+        .filter_map(|(pattern, replacement)| {
+            regex::Regex::new(pattern)
+                .ok()
+                .map(|re| (re, replacement))
+        })
+        .collect()
+    });
+    let mut out = text.to_string();
+    for (re, replacement) in scrubbers {
+        out = re.replace_all(&out, *replacement).into_owned();
+    }
+    out
 }
 
 fn truncate(text: &str, max_chars: usize) -> &str {
@@ -545,15 +650,33 @@ mod tests {
     }
 
     #[test]
-    fn tool_result_blocks_need_constraint_keyword() {
+    fn tool_result_blocks_need_constraint_signal() {
         let mut ledger = FactLedger::default();
         let plain_code = result_msg("```\nfn main() { println!(\"hi\"); }\n```");
-        let schema = result_msg("```\ncolumns: a,b,c\n```");
+        // One ubiquitous keyword ("column") is not enough anymore —
+        // ordinary code read-backs mention these constantly.
+        let single_keyword = result_msg("```\ncolumns: a,b,c\n```");
+        let json_fence = result_msg("```json\n{\"columns\": [\"a\"]}\n```");
+        let two_keywords = result_msg("```\nrequired columns: a,b,c\n```");
 
-        let added = ledger.accumulate([&plain_code, &schema], None);
+        let added = ledger.accumulate(
+            [&plain_code, &single_keyword, &json_fence, &two_keywords],
+            None,
+        );
 
-        assert_eq!(added, 1);
-        assert!(ledger.entries[0].text.contains("columns"));
+        assert_eq!(added, 2);
+        assert!(
+            ledger
+                .entries
+                .iter()
+                .any(|e| e.text.contains("{\"columns\""))
+        );
+        assert!(
+            ledger
+                .entries
+                .iter()
+                .any(|e| e.text.contains("required columns"))
+        );
     }
 
     #[test]
@@ -671,8 +794,98 @@ mod tests {
     #[test]
     fn fenced_blocks_parses_multiple_blocks() {
         let text = "a\n```\nfirst\n```\nb\n```rust\nsecond\n```\nc";
-        let blocks: Vec<&str> = fenced_blocks(text).collect();
-        assert_eq!(blocks, vec!["first", "second"]);
+        let blocks: Vec<(&str, &str)> = fenced_blocks(text).collect();
+        assert_eq!(
+            blocks,
+            vec![("", "first"), ("rust", "second")],
+            "info strings ride along as constraint signal"
+        );
+    }
+
+    #[test]
+    fn block_cap_counts_across_message_content_blocks() {
+        // FACT_BLOCKS_PER_MESSAGE is a per-message cap: a message with
+        // several ToolResult blocks must not capture 3 × blocks.
+        let mut ledger = FactLedger::default();
+        let message = Message {
+            role: "user".to_string(),
+            content: (0..3)
+                .map(|i| ContentBlock::ToolResult {
+                    tool_use_id: format!("t{i}"),
+                    content: format!("```json\n{{\"part\": {i}}}\n```"),
+                    is_error: None,
+                    content_blocks: None,
+                })
+                .collect(),
+        };
+
+        let added = ledger.accumulate(std::iter::once(&message), None);
+
+        assert_eq!(added, FACT_BLOCKS_PER_MESSAGE);
+    }
+
+    #[test]
+    fn constraint_count_cap_drops_oldest() {
+        let mut ledger = FactLedger::default();
+        let messages: Vec<Message> = (0..(FACT_LEDGER_MAX_CONSTRAINTS + 10))
+            .map(|i| result_msg(&format!("```json\n{{\"part\": {i}}}\n```")))
+            .collect();
+        let refs: Vec<&Message> = messages.iter().collect();
+
+        ledger.accumulate(refs, None);
+
+        let constraints: Vec<&FactEntry> = ledger
+            .entries
+            .iter()
+            .filter(|e| e.kind == FactKind::TaskConstraint)
+            .collect();
+        assert_eq!(constraints.len(), FACT_LEDGER_MAX_CONSTRAINTS);
+        // Oldest-first: the earliest captures are the ones dropped.
+        assert!(!constraints.iter().any(|e| e.text.contains("\"part\": 0")));
+        assert!(constraints.iter().any(|e| {
+            e.text
+                .contains(&format!("\"part\": {}", FACT_LEDGER_MAX_CONSTRAINTS + 9))
+        }));
+    }
+
+    #[test]
+    fn scrub_credentials_masks_common_secret_shapes() {
+        assert_eq!(
+            scrub_credentials("postgres://camile:p4ss@db.internal:5432/prod"),
+            "postgres://[REDACTED]@db.internal:5432/prod"
+        );
+        assert_eq!(
+            scrub_credentials("Authorization: Bearer eyJhbGciOi1234567890"),
+            "Authorization: Bearer [REDACTED]"
+        );
+        let assignment = scrub_credentials("api_key = \"sk-abcdef0123456789abcdef\"");
+        assert!(assignment.contains("api_key"), "{assignment}");
+        assert!(!assignment.contains("sk-abcdef"));
+        assert_eq!(
+            scrub_credentials("key AKIAIOSFODNN7EXAMPLE"),
+            "key [REDACTED]"
+        );
+        // Benign text passes through untouched.
+        assert_eq!(
+            scrub_credentials("error: cannot find function `foo`"),
+            "error: cannot find function `foo`"
+        );
+    }
+
+    #[test]
+    fn credentials_are_scrubbed_from_captured_entries() {
+        let mut ledger = FactLedger::default();
+        let m = result_msg(
+            "error: connect to postgres://camile:p4ss@db.internal:5432/prod failed\n\
+             ```json\n{\"api_key\": \"sk-abcdef0123456789abcdef0123456789\"}\n```",
+        );
+
+        ledger.accumulate(std::iter::once(&m), None);
+
+        let rendered = ledger.summary_section();
+        assert!(!rendered.contains("p4ss"));
+        assert!(!rendered.contains("sk-abcdef"));
+        assert!(rendered.contains("[REDACTED]"));
     }
 
     #[test]

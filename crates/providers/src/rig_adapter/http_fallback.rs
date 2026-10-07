@@ -40,12 +40,14 @@ use futures_util::StreamExt;
 // rig-core's deepseek response types require `prompt_cache_hit_tokens` and
 // `prompt_cache_miss_tokens` as non-Option numbers on every `usage` object.
 // DeepSeek's own API always sends them, but third-party DeepSeek-compatible
-// gateways (e.g. Zhipu GLM) omit the two cache fields — the strict parse then
-// fails the whole response ("data did not match any variant of untagged enum
-// ApiResponse") or the stream's final usage chunk. Defaulting them to 0 —
-// "no cache tokens reported" — at this HTTP backend (wired only by the
-// deepseek factory) makes those gateways parse. Tolerant consumers ignore the
-// extra fields, so unrelated body shapes pass through untouched.
+// gateways (e.g. Zhipu GLM in DeepSeek-compat mode) omit the two cache
+// fields — the strict parse then fails the whole response ("data did not
+// match any variant of untagged enum ApiResponse") or the stream's final
+// usage chunk. Defaulting them to 0 — "no cache tokens reported" — only when
+// the deepseek factory enabled `deepseek_usage_compat` on this backend makes
+// those gateways parse, while OpenAI/Anthropic traffic stays byte-identical
+// (re-serializing every provider's bodies for a DeepSeek-only quirk was the
+// previous, accidental behavior — all four factories wire this backend).
 
 const USAGE_CACHE_FIELDS: [&str; 2] = ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens"];
 
@@ -207,6 +209,11 @@ pub(crate) struct H2FallbackClient {
     /// Sticky, shared with in-flight futures so a failure observed by one
     /// request reroutes all subsequent ones.
     h2_degraded: Arc<AtomicBool>,
+    /// Whether to run the DeepSeek usage-field normalization on response
+    /// bodies (see the module comment). Off by default: only the deepseek
+    /// factory's rig types need the defaulted cache fields, and every
+    /// provider shares this backend.
+    deepseek_usage_compat: bool,
 }
 
 impl H2FallbackClient {
@@ -221,7 +228,14 @@ impl H2FallbackClient {
                 .build()
                 .expect("reqwest http1 client construction cannot fail with a default TLS stack"),
             h2_degraded: Arc::new(AtomicBool::new(false)),
+            deepseek_usage_compat: false,
         }
+    }
+
+    /// Enable the DeepSeek usage-field normalization (deepseek factory only).
+    pub(crate) fn deepseek_usage_compat(mut self, enabled: bool) -> Self {
+        self.deepseek_usage_compat = enabled;
+        self
     }
 }
 
@@ -259,9 +273,11 @@ fn instance_error(error: reqwest::Error) -> HttpError {
 /// process) never clobber each other's dumps.
 static DUMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// Truthy values accepted for `CODESMITH_DUMP_400_PAYLOAD` (same family as the
-/// TUI's `CODESMITH_TUI_DEBUG`).
-fn env_flag_enabled(raw: Option<&str>) -> bool {
+/// Truthy values accepted for env toggles in this adapter
+/// (`CODESMITH_DUMP_400_PAYLOAD`, `CODESMITH_REASONING_PASSTHROUGH` — same
+/// family as the TUI's `CODESMITH_TUI_DEBUG`). Shared so the flags cannot
+/// drift apart; `reasoning.rs` reads one on every request build.
+pub(crate) fn env_flag_enabled(raw: Option<&str>) -> bool {
     raw.is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
 }
 
@@ -395,7 +411,34 @@ fn dump_failed_request(spec: &ReplaySpec, status: reqwest::StatusCode, response_
 
     let mut note = String::new();
     if let Ok(payload) = serde_json::to_string_pretty(&dump) {
-        match std::fs::write(&path, payload) {
+        // `create_new` + `0o600`: the dump carries the full request
+        // transcript (user code, tool outputs), so it must be owner-only —
+        // `fs::write`'s default mode is world-readable — and must never
+        // follow a pre-planted entry at the predictable path (symlink
+        // clobber). Known limitation: dumps accumulate without a cap; the
+        // flag is opt-in forensics, so cleanup stays manual.
+        #[cfg(unix)]
+        use std::os::unix::fs::OpenOptionsExt;
+        #[cfg(unix)]
+        let open = || {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&path)
+        };
+        #[cfg(not(unix))]
+        let open = || {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+        };
+        let write = open().and_then(|mut file| {
+            use std::io::Write;
+            file.write_all(payload.as_bytes())
+        });
+        match write {
             Ok(()) => note = format!("dump written to {}", path.display()),
             Err(error) => note = format!("dump write failed: {error}"),
         }
@@ -503,6 +546,7 @@ impl HttpClientExt for H2FallbackClient {
         let primary = self.primary.clone();
         let http1 = self.http1.clone();
         let degraded = Arc::clone(&self.h2_degraded);
+        let usage_compat = self.deepseek_usage_compat;
 
         async move {
             let response = execute_with_fallback(primary, http1, degraded, &spec).await?;
@@ -517,7 +561,11 @@ impl HttpClientExt for H2FallbackClient {
                     .bytes()
                     .await
                     .map_err(|e| HttpError::Instance(Box::new(e)))?;
-                Ok(U::from(normalize_completion_usage(bytes)))
+                Ok(U::from(if usage_compat {
+                    normalize_completion_usage(bytes)
+                } else {
+                    bytes
+                }))
             });
 
             res.body(body).map_err(HttpError::Protocol)
@@ -585,6 +633,7 @@ impl HttpClientExt for H2FallbackClient {
         let primary = self.primary.clone();
         let http1 = self.http1.clone();
         let degraded = Arc::clone(&self.h2_degraded);
+        let usage_compat = self.deepseek_usage_compat;
 
         async move {
             let response = execute_with_fallback(primary, http1, degraded, &spec).await?;
@@ -600,24 +649,32 @@ impl HttpClientExt for H2FallbackClient {
                 *hs = response.headers().clone();
             }
 
-            // The trailing empty chunk is a flush sentinel: `scan` drops its
-            // state at end-of-stream, so the normalizer emits any pending
-            // partial line when it sees the sentinel.
-            let mapped_stream: BoxedStream = Box::pin(
-                response
-                    .bytes_stream()
-                    .map(|chunk| chunk.map_err(|e| HttpError::Instance(Box::new(e))))
-                    .chain(futures_util::stream::once(async {
-                        Ok::<Bytes, HttpError>(Bytes::new())
-                    }))
-                    .scan(SseUsageNormalizer::default(), |state, chunk| {
-                        let out = match chunk {
-                            Ok(bytes) => state.push(bytes),
-                            Err(e) => return std::future::ready(Some(Err(e))),
-                        };
-                        std::future::ready(Some(Ok(out)))
-                    }),
-            );
+            let byte_stream = response
+                .bytes_stream()
+                .map(|chunk| chunk.map_err(|e| HttpError::Instance(Box::new(e))));
+            // Without the usage compat flag the stream is forwarded
+            // untouched — only the deepseek factory's rig types need the
+            // defaulted cache fields.
+            let mapped_stream: BoxedStream = if usage_compat {
+                // The trailing empty chunk is a flush sentinel: `scan` drops
+                // its state at end-of-stream, so the normalizer emits any
+                // pending partial line when it sees the sentinel.
+                Box::pin(
+                    byte_stream
+                        .chain(futures_util::stream::once(async {
+                            Ok::<Bytes, HttpError>(Bytes::new())
+                        }))
+                        .scan(SseUsageNormalizer::default(), |state, chunk| {
+                            let out = match chunk {
+                                Ok(bytes) => state.push(bytes),
+                                Err(e) => return std::future::ready(Some(Err(e))),
+                            };
+                            std::future::ready(Some(Ok(out)))
+                        }),
+                )
+            } else {
+                Box::pin(byte_stream)
+            };
 
             res.body(mapped_stream).map_err(HttpError::Protocol)
         }

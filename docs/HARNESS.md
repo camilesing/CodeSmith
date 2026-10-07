@@ -55,11 +55,14 @@ drift to self-correct.
 ## Recording and replaying model calls
 
 Set `CODESMITH_RECORD_LLM=<path.jsonl>` to wrap the resolved LLM client in a
-recorder: every model call (including utility-model, seam, and compaction
-calls) appends one JSONL line — the full request envelope exactly as sent
+recorder: every model call served through that client (including
+utility-model, seam, and compaction calls that share it) appends one JSONL
+line — the full request envelope exactly as sent
 (after every extension transform: messages, system prompt, the complete
 tool schema, sampling parameters) plus the streamed response events or the
-non-streaming response. For the recorded session, any historical provider
+non-streaming response. Known gap: a cross-provider `[utility_model]`
+client is built separately and is not recorded. For the recorded session,
+any historical provider
 request is a pure function of the log. A bad path aborts startup loudly.
 
 `ReplayClient::load(path)` (in `codesmith-agent`, `llm_client::record_replay`)
@@ -70,6 +73,17 @@ a missing terminal `message_stop` (the engine treats that as a disconnect,
 exactly like the original run). The engine test
 `record_then_replay_round_trip` is the working example. Fixtures contain
 full model I/O — never commit ones with secrets.
+
+### Provider debug flags (opt-in, off by default)
+
+- `CODESMITH_DUMP_400_PAYLOAD=1` writes the full failed request transcript
+  plus the provider error body to `/tmp/codesmith-400-dump-<pid>-<n>.json`
+  (owner-only mode; redirect the directory with
+  `CODESMITH_DUMP_400_PAYLOAD_DIR`). Dumps accumulate without a cap — clean
+  them up manually.
+- `CODESMITH_REASONING_PASSTHROUGH=1` makes the generic `openai` provider
+  arm forward `reasoning_effort` verbatim for third-party
+  OpenAI-compatible gateways (Zhipu GLM, …) that accept the field.
 
 ## Modes and sandboxing
 

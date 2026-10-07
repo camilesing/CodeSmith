@@ -61,9 +61,12 @@ impl ProviderFactory for DeepSeekFactory {
         // P0-3: backend with a one-shot HTTP/2 → HTTP/1.1 fallback
         // (`rig_adapter::http_fallback`). `http_client` advances the
         // builder's backend type parameter, so it chains into `build`
-        // instead of re-assigning `builder`.
+        // instead of re-assigning `builder`. `deepseek_usage_compat`: this
+        // factory's rig types need the defaulted cache-token fields on
+        // DeepSeek-compatible gateways; other factories keep byte-identical
+        // bodies.
         let client = builder
-            .http_client(H2FallbackClient::new())
+            .http_client(H2FallbackClient::new().deepseek_usage_compat(true))
             .build()
             .context("failed to build rig deepseek client")?;
 
