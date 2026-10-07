@@ -9,38 +9,22 @@ type Arch = "macos-arm64" | "macos-x64" | "linux-x64" | "linux-arm64" | "windows
 // Each snippet downloads, checksum-verifies, then installs in one pass: the
 // files keep their real asset names (codesmith-macos-arm64, …) through the
 // `shasum -c` step so the grep filter matches manifest entries exactly, and
-// the `sudo mv` that removes them only runs after verification succeeded.
+// `set -eo pipefail` at the top aborts the paste before the `sudo mv` unless
+// verification succeeded (an empty grep match fails the pipeline too).
+const unixInstallSnippet = (platform: string, checkCmd: string, isMac: boolean) => `set -eo pipefail
+curl -fsSL -O ${GITHUB_REPO_URL}/releases/latest/download/codesmith-${platform}
+curl -fsSL -O ${GITHUB_REPO_URL}/releases/latest/download/codesmith-tui-${platform}
+curl -fsSL -O ${GITHUB_REPO_URL}/releases/latest/download/codesmith-artifacts-sha256.txt
+grep -E 'codesmith(-tui)?-${platform}$' codesmith-artifacts-sha256.txt | ${checkCmd} -c -
+chmod +x codesmith-${platform} codesmith-tui-${platform}
+${isMac ? `xattr -d com.apple.quarantine codesmith-${platform} codesmith-tui-${platform} 2>/dev/null || true\n` : ""}sudo mv codesmith-${platform} /usr/local/bin/codesmith
+sudo mv codesmith-tui-${platform} /usr/local/bin/codesmith-tui`;
+
 const SNIPPETS: Record<Arch, string> = {
-  "macos-arm64": `curl -fsSL -O ${GITHUB_REPO_URL}/releases/latest/download/codesmith-macos-arm64
-curl -fsSL -O ${GITHUB_REPO_URL}/releases/latest/download/codesmith-tui-macos-arm64
-curl -fsSL -O ${GITHUB_REPO_URL}/releases/latest/download/codesmith-artifacts-sha256.txt
-grep -E 'codesmith(-tui)?-macos-arm64$' codesmith-artifacts-sha256.txt | shasum -a 256 -c -
-chmod +x codesmith-macos-arm64 codesmith-tui-macos-arm64
-xattr -d com.apple.quarantine codesmith-macos-arm64 codesmith-tui-macos-arm64 2>/dev/null || true
-sudo mv codesmith-macos-arm64 /usr/local/bin/codesmith
-sudo mv codesmith-tui-macos-arm64 /usr/local/bin/codesmith-tui`,
-  "macos-x64": `curl -fsSL -O ${GITHUB_REPO_URL}/releases/latest/download/codesmith-macos-x64
-curl -fsSL -O ${GITHUB_REPO_URL}/releases/latest/download/codesmith-tui-macos-x64
-curl -fsSL -O ${GITHUB_REPO_URL}/releases/latest/download/codesmith-artifacts-sha256.txt
-grep -E 'codesmith(-tui)?-macos-x64$' codesmith-artifacts-sha256.txt | shasum -a 256 -c -
-chmod +x codesmith-macos-x64 codesmith-tui-macos-x64
-xattr -d com.apple.quarantine codesmith-macos-x64 codesmith-tui-macos-x64 2>/dev/null || true
-sudo mv codesmith-macos-x64 /usr/local/bin/codesmith
-sudo mv codesmith-tui-macos-x64 /usr/local/bin/codesmith-tui`,
-  "linux-x64": `curl -fsSL -O ${GITHUB_REPO_URL}/releases/latest/download/codesmith-linux-x64
-curl -fsSL -O ${GITHUB_REPO_URL}/releases/latest/download/codesmith-tui-linux-x64
-curl -fsSL -O ${GITHUB_REPO_URL}/releases/latest/download/codesmith-artifacts-sha256.txt
-grep -E 'codesmith(-tui)?-linux-x64$' codesmith-artifacts-sha256.txt | sha256sum -c -
-chmod +x codesmith-linux-x64 codesmith-tui-linux-x64
-sudo mv codesmith-linux-x64 /usr/local/bin/codesmith
-sudo mv codesmith-tui-linux-x64 /usr/local/bin/codesmith-tui`,
-  "linux-arm64": `curl -fsSL -O ${GITHUB_REPO_URL}/releases/latest/download/codesmith-linux-arm64
-curl -fsSL -O ${GITHUB_REPO_URL}/releases/latest/download/codesmith-tui-linux-arm64
-curl -fsSL -O ${GITHUB_REPO_URL}/releases/latest/download/codesmith-artifacts-sha256.txt
-grep -E 'codesmith(-tui)?-linux-arm64$' codesmith-artifacts-sha256.txt | sha256sum -c -
-chmod +x codesmith-linux-arm64 codesmith-tui-linux-arm64
-sudo mv codesmith-linux-arm64 /usr/local/bin/codesmith
-sudo mv codesmith-tui-linux-arm64 /usr/local/bin/codesmith-tui`,
+  "macos-arm64": unixInstallSnippet("macos-arm64", "shasum -a 256", true),
+  "macos-x64": unixInstallSnippet("macos-x64", "shasum -a 256", true),
+  "linux-x64": unixInstallSnippet("linux-x64", "sha256sum", false),
+  "linux-arm64": unixInstallSnippet("linux-arm64", "sha256sum", false),
   "windows-x64": `# PowerShell
 $ErrorActionPreference = "Stop"
 $dest = "$Env:USERPROFILE\\bin"
@@ -54,9 +38,12 @@ Invoke-WebRequest \`
   -Uri ${GITHUB_REPO_URL}/releases/latest/download/codesmith-tui-windows-x64.exe \`
   -OutFile "$dest\\codesmith-tui.exe"
 
-# Verify both binaries against their manifest entries
-Get-FileHash "$dest\\codesmith.exe","$dest\\codesmith-tui.exe" -Algorithm SHA256
-Select-String -Path codesmith-artifacts-sha256.txt -Pattern 'codesmith(-tui)?-windows-x64\\.exe'
+# Verify both binaries against their manifest entries (abort on mismatch)
+foreach ($bin in @(@("codesmith.exe", "codesmith-windows-x64.exe"), @("codesmith-tui.exe", "codesmith-tui-windows-x64.exe"))) {
+  $actual = (Get-FileHash "$dest\\$($bin[0])" -Algorithm SHA256).Hash.ToLower()
+  $expected = ((Select-String -Path codesmith-artifacts-sha256.txt -Pattern ([regex]::Escape($bin[1]))).Line -split '\\s+')[0].ToLower()
+  if ($actual -ne $expected) { throw "Checksum mismatch for $($bin[0])" }
+}
 
 $Env:Path = "$dest;$Env:Path"`,
 };
@@ -109,9 +96,13 @@ export function InstallBinary({ copyLabel, copiedLabel, archHint }: Props) {
 
   useEffect(() => {
     let cancelled = false;
-    void detectArch().then((detected) => {
-      if (!cancelled) setArch(detected);
-    });
+    void detectArch()
+      .then((detected) => {
+        if (!cancelled) setArch(detected);
+      })
+      .catch(() => {
+        // Keep the default arch if detection fails.
+      });
     return () => {
       cancelled = true;
     };

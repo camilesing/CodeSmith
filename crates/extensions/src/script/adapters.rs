@@ -31,8 +31,13 @@ use super::rhai_mod::{
 /// when the closure declares a single parameter.
 ///
 /// Rhai surfaces an arity mismatch as a TOP-LEVEL
-/// [`ErrorFunctionNotFound`](rhai::EvalAltResult::ErrorFunctionNotFound) —
-/// the closure body never ran, so the retry cannot duplicate side effects.
+/// [`ErrorFunctionNotFound`](rhai::EvalAltResult::ErrorFunctionNotFound)
+/// whose signature string names the callback itself (e.g. `"fn (2 args)"`)
+/// — the closure body never ran, so the retry cannot duplicate side
+/// effects. A same-named function overloaded by arity can run side effects
+/// and then fail on a missing *inner* function; if that inner failure ever
+/// surfaces unwrapped as `ErrorFunctionNotFound` naming some other
+/// function, it must propagate verbatim, not re-execute the callback.
 /// Errors from inside a successfully-bound call arrive wrapped in
 /// `ErrorInFunctionCall` (or as runtime errors) and are returned verbatim.
 fn call_with_optional_ctx(
@@ -43,11 +48,23 @@ fn call_with_optional_ctx(
 ) -> Result<Dynamic, Box<rhai::EvalAltResult>> {
     match callback.call::<Dynamic>(&runtime.engine, &runtime.ast, (payload.clone(), ctx)) {
         Ok(v) => Ok(v),
-        Err(e) if matches!(*e, rhai::EvalAltResult::ErrorFunctionNotFound(_, _)) => {
-            // Single-parameter form (`|e|` without ctx).
-            callback.call::<Dynamic>(&runtime.engine, &runtime.ast, (payload,))
+        Err(e) => {
+            // Single-parameter form (`|e|` without ctx): retry only when the
+            // not-found function IS this callback — an arity mismatch at
+            // bind time, before the body ran.
+            let names_this_callback = match *e {
+                rhai::EvalAltResult::ErrorFunctionNotFound(ref sig, _) => sig
+                    .split('(')
+                    .next()
+                    .is_some_and(|name| name.trim() == callback.fn_name()),
+                _ => false,
+            };
+            if names_this_callback {
+                callback.call::<Dynamic>(&runtime.engine, &runtime.ast, (payload,))
+            } else {
+                Err(e)
+            }
         }
-        Err(e) => Err(e),
     }
 }
 

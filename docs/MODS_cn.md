@@ -53,7 +53,7 @@ on("tool-call", |e| {
 /mods activate hello
 ```
 
-**预期效果**：这是该 id 的**一次性同意**（mod 是进程内代码且跨会话持久，首次激活需要你确认）——确认后 mod 立即生效。此后同 id 的重载（含热载）不再需要审批。之后任何包含 `rm -rf` 的 shell 调用都会被拦截，模型会收到你的 reason 并改道。
+**预期效果**：这是对该内容的一次性同意（mod 是进程内代码且跨会话持久，首次激活需要你确认）——确认后 mod 立即生效。此后同 id 的重载（含热载）不再需要审批；但若入口文件在你批准后发生了变更（git pull、编辑），该 mod 会回到待激活状态，需要重新 `/mods activate`。之后任何包含 `rm -rf` 的 shell 调用都会被拦截，模型会收到你的 reason 并改道。
 
 ### 第 3 步：注册一个模型可见工具 + KV 状态
 
@@ -96,7 +96,7 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 
 ### 事件钩子
 
-`on("<event>", |e, ctx| { ... })`——`e` 是事件 payload map（都带 `kind` 字段），`ctx` 是 `#{cwd, mode, idle, generation}`，**ctx 可省略**（写 `|e|` 即可）。事件名是 `ExtensionEventKind` 的 kebab-case 全量 24 种：
+`on("<event>", |e, ctx| { ... })`——`e` 是事件 payload map（都带 `kind` 字段），`ctx` 是 `#{cwd, mode, idle, generation}`，**ctx 可省略**（写 `|e|` 即可）。事件名是 `ExtensionEventKind` 的 kebab-case 全量 25 种：
 
 | 事件 | payload 字段 |
 |---|---|
@@ -283,7 +283,7 @@ mod 在发现阶段即被跳过（日志有告警），不会进入激活流程�
 
 ## 生命周期与安全模型
 
-- **首次激活需确认**：新 mod 被发现 → 跳过加载 + TUI 被动提示待激活。激活只有两条路：`/mods activate <id>`，或审批 `manage_mods(action="activate")` 工具调用。激活记录持久化（`~/.codesmith/mods_state.toml`），同 id 重载免审批。**为什么**：mod 是进程内代码且跨会话持久——提示注入可以在用户无感时植入常驻钩子，首次确认正是防这一点。
+- **首次激活需确认**：新 mod 被发现 → 跳过加载 + TUI 被动提示待激活。激活只有两条路：`/mods activate <id>`，或审批 `manage_mods(action="activate")` 工具调用。激活记录持久化（`~/.codesmith/mods_state.toml`），同 id 重载免审批——**同意与入口文件的内容哈希绑定**：已激活 mod 的 `.rhai` 若随后变更（git pull、被自动批准的编辑），会回到待激活状态并要求重新确认。**为什么**：mod 是进程内代码且跨会话持久——提示注入可以在用户无感时植入常驻钩子，一次批准不能变成该 id 的常驻任意代码执行；首次确认（加内容变更后的重新确认）正是防这一点。
 - **让智能体代写**：直接说"帮我写一个 mod，拦截 git push"——模型会经 `manage_mods` 工具写文件（`write`）并请求你审批激活（`activate`）。
 - **项目级 mods** 沿用 workspace trust：未信任工作区直接不发现；`manage_mods` 写项目 mod 同样拒绝未信任工作区。
 - **已知边界**：mod 工具与 Rust 扩展工具同为"主 turn 独占"（子代理结构性不可见）；网络安装源（git clone 到 mods 目录）不在 MVP。

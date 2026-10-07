@@ -18,11 +18,15 @@ pub fn try_dispatch(app: &mut App, input: &str) -> Option<CommandResult> {
     if command != "mods" {
         return None;
     }
-    let sub = parts
-        .get(1)
-        .and_then(|s| s.split_whitespace().next())
-        .unwrap_or("");
-    let arg = parts.get(1).map(|s| s.trim()).unwrap_or("");
+    // Split the remainder ONCE into subcommand + argument: taking `sub` as
+    // the first word but `arg` as the whole remainder (the round-3 review
+    // bug) made every id-taking subcommand look up "activate mymod" as the
+    // id and always fail.
+    let rest = parts.get(1).map(|s| s.trim()).unwrap_or("");
+    let (sub, arg) = match rest.split_once(char::is_whitespace) {
+        Some((s, a)) => (s, a.trim()),
+        None => (rest, ""),
+    };
     Some(match sub {
         "list" | "ls" => list(app),
         "status" => status(app),
@@ -48,18 +52,54 @@ fn guard_enabled(app: &App) -> Option<CommandResult> {
     }
 }
 
+/// Disk-fresh read for the read-only subcommands: the `manage_mods` tool
+/// mutates the store behind the App copy's back, so the App copy is only a
+/// startup snapshot — never the truth for display. `Err` is the display
+/// message.
+fn fresh_state() -> Result<crate::mod_state::ModStateStore, String> {
+    crate::mod_state::ModStateStore::load_default()
+        .map_err(|e| format!("Mod state unreadable ({e}); /mods reload after fixing it."))
+}
+
+/// Serialized load→mutate→persist shared with the `manage_mods` tool (each
+/// persist rewrites the whole file — unlocked racing mutations are
+/// last-writer-wins). The fresh store is written back to the App on a
+/// successful mutation so subsequent reads agree with what just happened.
+/// Outer `Err` = state unreadable (message), inner = the operation's own
+/// result.
+fn mutate_state(
+    app: &mut App,
+    f: impl FnOnce(&mut crate::mod_state::ModStateStore) -> Result<String, String>,
+) -> Result<Result<String, String>, String> {
+    let _guard = mod_ops::mod_state_lock();
+    let mut state = fresh_state()?;
+    let inner = f(&mut state);
+    if inner.is_ok() {
+        app.mod_state = state;
+    }
+    Ok(inner)
+}
+
 fn list(app: &App) -> CommandResult {
     if let Some(err) = guard_enabled(app) {
         return err;
     }
-    CommandResult::message(mod_ops::list_mods(&app.workspace, &app.mod_state))
+    let state = match fresh_state() {
+        Ok(s) => s,
+        Err(e) => return CommandResult::error(e),
+    };
+    CommandResult::message(mod_ops::list_mods(&app.workspace, &state))
 }
 
 fn status(app: &App) -> CommandResult {
     if let Some(err) = guard_enabled(app) {
         return err;
     }
-    let mut out = mod_ops::mod_status(&app.workspace, &app.mod_state);
+    let state = match fresh_state() {
+        Ok(s) => s,
+        Err(e) => return CommandResult::error(e),
+    };
+    let mut out = mod_ops::mod_status(&app.workspace, &state);
     if let Some(runner) = app.extension_runner.as_ref() {
         out.push_str(&format!(
             "\nrunner: generation={}, tools={}, commands={}",
@@ -79,7 +119,11 @@ fn info(app: &App, arg: &str) -> CommandResult {
     if id.is_empty() {
         return CommandResult::error("Usage: /mods info <id>");
     }
-    match mod_ops::mod_info(&app.workspace, &app.mod_state, id) {
+    let state = match fresh_state() {
+        Ok(s) => s,
+        Err(e) => return CommandResult::error(e),
+    };
+    match mod_ops::mod_info(&app.workspace, &state, id) {
         Some(text) => CommandResult::message(text),
         None => CommandResult::error(format!("No mod with id '{id}'.")),
     }
@@ -93,15 +137,20 @@ fn activate(app: &mut App, arg: &str) -> CommandResult {
     if id.is_empty() {
         return CommandResult::error("Usage: /mods activate <id>");
     }
-    match mod_ops::activate(&app.workspace, &mut app.mod_state, id) {
-        Ok(msg) => {
+    let outcome: Result<Result<String, String>, String> = {
+        let ws = app.workspace.clone();
+        mutate_state(app, |state| mod_ops::activate(&ws, state, id))
+    };
+    match outcome {
+        Err(e) => CommandResult::error(e),
+        Ok(Err(e)) => CommandResult::error(e),
+        Ok(Ok(msg)) => {
             let reload_note = match reload_runner(app) {
                 Some(note) => note,
                 None => "Runner not bound; the mod loads at the next engine build.".to_string(),
             };
             CommandResult::message(format!("{msg}\n{reload_note}"))
         }
-        Err(e) => CommandResult::error(e),
     }
 }
 
@@ -113,9 +162,10 @@ fn enable(app: &mut App, arg: &str) -> CommandResult {
     if id.is_empty() {
         return CommandResult::error("Usage: /mods enable <id>");
     }
-    match mod_ops::set_enabled(&mut app.mod_state, id, true) {
-        Ok(msg) => CommandResult::message(msg),
+    match mutate_state(app, |state| mod_ops::set_enabled(state, id, true)) {
         Err(e) => CommandResult::error(e),
+        Ok(Err(e)) => CommandResult::error(e),
+        Ok(Ok(msg)) => CommandResult::message(msg),
     }
 }
 
@@ -127,9 +177,10 @@ fn disable(app: &mut App, arg: &str) -> CommandResult {
     if id.is_empty() {
         return CommandResult::error("Usage: /mods disable <id>");
     }
-    match mod_ops::set_enabled(&mut app.mod_state, id, false) {
-        Ok(msg) => CommandResult::message(msg),
+    match mutate_state(app, |state| mod_ops::set_enabled(state, id, false)) {
         Err(e) => CommandResult::error(e),
+        Ok(Err(e)) => CommandResult::error(e),
+        Ok(Ok(msg)) => CommandResult::message(msg),
     }
 }
 
@@ -141,15 +192,20 @@ fn remove(app: &mut App, arg: &str) -> CommandResult {
     if id.is_empty() {
         return CommandResult::error("Usage: /mods remove <id>");
     }
-    match mod_ops::remove(&app.workspace, &mut app.mod_state, id) {
-        Ok(msg) => {
+    let outcome: Result<Result<String, String>, String> = {
+        let ws = app.workspace.clone();
+        mutate_state(app, |state| mod_ops::remove(&ws, state, id))
+    };
+    match outcome {
+        Err(e) => CommandResult::error(e),
+        Ok(Err(e)) => CommandResult::error(e),
+        Ok(Ok(msg)) => {
             let reload_note = match reload_runner(app) {
                 Some(note) => note,
                 None => "Runner not bound; state is cleared regardless.".to_string(),
             };
             CommandResult::message(format!("{msg}\n{reload_note}"))
         }
-        Err(e) => CommandResult::error(e),
     }
 }
 
@@ -176,6 +232,36 @@ fn reload(app: &mut App) -> CommandResult {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::tui::app::{App, TuiOptions};
+    use tempfile::TempDir;
+
+    fn create_test_app_with_tmpdir(tmpdir: &TempDir) -> App {
+        let options = TuiOptions {
+            model: "deepseek-v4-pro".to_string(),
+            workspace: tmpdir.path().to_path_buf(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            use_alt_screen: true,
+            use_mouse_capture: false,
+            use_bracketed_paste: true,
+            max_subagents: 1,
+            skills_dir: tmpdir.path().join("skills"),
+            memory_path: tmpdir.path().join("memory.md"),
+            notes_path: tmpdir.path().join("notes.txt"),
+            mcp_config_path: tmpdir.path().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: false,
+            skip_onboarding: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+        };
+        App::new(options, &Config::default())
+    }
+
     #[test]
     fn try_dispatch_prefix_guard_rejects_non_mods_command() {
         let input = "/extension list";
@@ -183,5 +269,21 @@ mod tests {
         let cmd = parts[0].to_lowercase();
         let cmd = cmd.strip_prefix('/').unwrap_or(&cmd);
         assert_ne!(cmd, "mods");
+    }
+
+    /// Regression (review round 3): `arg` used to include the subcommand
+    /// token, so `/mods activate mymod` looked up the id "activate mymod"
+    /// and every id-taking subcommand always failed.
+    #[test]
+    fn dispatch_passes_only_the_argument_to_id_taking_subcommands() {
+        let tmpdir = TempDir::new().unwrap();
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        let result = try_dispatch(&mut app, "/mods activate mymod").expect("a /mods command");
+        assert!(result.is_error);
+        let msg = result.message.unwrap_or_default();
+        assert!(
+            msg.contains("No mod with id 'mymod'"),
+            "id-taking subcommand got the subcommand token too: {msg}"
+        );
     }
 }

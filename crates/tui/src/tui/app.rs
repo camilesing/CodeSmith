@@ -102,11 +102,14 @@ pub(crate) fn looks_like_slash_command_input(input: &str) -> bool {
 /// `!cmd` shell passthrough: a leading `!` (after optional whitespace)
 /// followed by a non-empty command runs directly in the user's shell and
 /// submits the output to the session (Claude Code's `!` prefix mode).
+/// Whether the input is a `!cmd` shell passthrough. Deliberately strict
+/// (review round 3): only a column-0 `!` on a single-line input
+/// passthroughs — a leading-whitespace `!cmd`, a multi-line paste starting
+/// with `!` (shell transcripts, `!important`), or any other `!`-prefixed
+/// text goes to the model as plain text instead of executing in the user's
+/// shell with no confirmation.
 pub(crate) fn looks_like_shell_bang_input(input: &str) -> bool {
-    input
-        .trim_start()
-        .strip_prefix('!')
-        .is_some_and(|rest| !rest.trim().is_empty())
+    input.starts_with('!') && !input.contains('\n') && !input[1..].trim().is_empty()
 }
 
 fn initial_onboarding_state(
@@ -3607,8 +3610,17 @@ impl App {
                 self.cursor_position,
             )
         {
+            // A selection anchored elsewhere would leave a dangling anchor
+            // after the length-changing replace — take the plain insert
+            // path (which deletes the selection first) instead.
+            if self.selection_range().is_some() {
+                self.insert_char(c);
+                return;
+            }
             self.push_undo_snapshot();
             self.break_edit_sequences();
+            self.clear_input_history_navigation();
+            self.selected_attachment_index = None;
             let start_char = char_count(&self.input[..colon_byte]);
             let cursor_byte = byte_index_at_char(&self.input, self.cursor_position);
             self.input.replace_range(colon_byte..cursor_byte, emoji);
@@ -3763,9 +3775,11 @@ impl App {
             let sb = byte_index_at_char(&self.input, start);
             let eb = byte_index_at_char(&self.input, end);
             let removed = self.input[sb..eb].to_string();
-            self.push_undo_snapshot();
+            // Prepend, like the non-selection branch below: the command's
+            // contract is "kill backward to line start", so a selection kill
+            // followed by the prefix kill must read in buffer order.
             self.yank_span = None;
-            self.kill_push(&removed, false);
+            self.kill_push(&removed, true);
             self.delete_selection();
             return true;
         }
@@ -3797,10 +3811,18 @@ impl App {
         false
     }
 
-    /// Delete the word after the cursor.
+    /// Delete the word after the cursor. A selection is killed into the
+    /// ring first (Alt+D is a kill command) — matching the line-kill
+    /// commands' selection semantics instead of deselect-and-kill-next-word.
     pub fn delete_word_forward(&mut self) {
         self.clear_input_history_navigation();
-        if self.delete_selection() {
+        if let Some((start, end)) = self.selection_range() {
+            let sb = byte_index_at_char(&self.input, start);
+            let eb = byte_index_at_char(&self.input, end);
+            let removed = self.input[sb..eb].to_string();
+            self.yank_span = None;
+            self.kill_push(&removed, false);
+            self.delete_selection();
             return;
         }
         self.selected_attachment_index = None;
@@ -3855,7 +3877,6 @@ impl App {
             let sb = byte_index_at_char(&self.input, start);
             let eb = byte_index_at_char(&self.input, end);
             let removed = self.input[sb..eb].to_string();
-            self.push_undo_snapshot();
             self.yank_span = None;
             self.kill_push(&removed, false);
             self.delete_selection();
@@ -3941,7 +3962,11 @@ impl App {
         if text.is_empty() {
             return false;
         }
-        self.push_undo_snapshot();
+        // With a selection, delete_selection's internal snapshot covers the
+        // pre-state; without one, snapshot here so the yank is undoable.
+        if self.selection_range().is_none() {
+            self.push_undo_snapshot();
+        }
         self.delete_selection();
         self.clear_input_history_navigation();
         let cursor = self.cursor_position.min(char_count(&self.input));
@@ -4023,12 +4048,21 @@ impl App {
         true
     }
 
+    // GNU readline semantics: any command that is neither a kill nor a
+    // yank-pop — including pure cursor motions — breaks the kill-append and
+    // yank-pop sequences. Without this, Ctrl+Y → move anywhere → Alt+Y
+    // still rewrites the stale char range far from the cursor (and hijacks
+    // Alt+Y's Yolo-toggle fallback), and Ctrl+W → move → Ctrl+K merges two
+    // unrelated kills into one ring entry.
+
     pub fn move_cursor_left(&mut self) {
+        self.break_edit_sequences();
         self.cursor_position = self.cursor_position.saturating_sub(1);
         self.needs_redraw = true;
     }
 
     pub fn move_cursor_right(&mut self) {
+        self.break_edit_sequences();
         if self.cursor_position < char_count(&self.input) {
             self.cursor_position += 1;
             self.needs_redraw = true;
@@ -4036,11 +4070,13 @@ impl App {
     }
 
     pub fn move_cursor_start(&mut self) {
+        self.break_edit_sequences();
         self.cursor_position = 0;
         self.needs_redraw = true;
     }
 
     pub fn move_cursor_end(&mut self) {
+        self.break_edit_sequences();
         self.cursor_position = char_count(&self.input);
         self.needs_redraw = true;
     }
@@ -4048,6 +4084,7 @@ impl App {
     /// In a multiline composer, jump to the start of the current line.
     /// On single-line input this is equivalent to `move_cursor_start`.
     pub fn move_cursor_line_start(&mut self) {
+        self.break_edit_sequences();
         let byte_pos = byte_index_at_char(&self.input, self.cursor_position);
         let before = &self.input[..byte_pos];
         if let Some(last_nl_byte) = before.rfind('\n') {
@@ -4063,6 +4100,7 @@ impl App {
     /// (just before the next `\n` or at the end of input).
     /// On single-line input this is equivalent to `move_cursor_end`.
     pub fn move_cursor_line_end(&mut self) {
+        self.break_edit_sequences();
         let search_start = byte_index_at_char(&self.input, self.cursor_position);
         if let Some(offset) = self.input[search_start..].find('\n') {
             self.cursor_position = char_count(&self.input[..search_start + offset]);
@@ -4075,6 +4113,7 @@ impl App {
     /// Move forward one word. Skips over the current word then any trailing
     /// whitespace to land on the first character of the next word.
     pub fn move_cursor_word_forward(&mut self) {
+        self.break_edit_sequences();
         let text = self.input.clone();
         let total = char_count(&text);
         let mut pos = self.cursor_position;
@@ -4106,6 +4145,7 @@ impl App {
     /// Move backward one word. Skips leading whitespace then the preceding
     /// word to land on its first character.
     pub fn move_cursor_word_backward(&mut self) {
+        self.break_edit_sequences();
         let text = self.input.clone();
         let mut pos = self.cursor_position;
         if pos == 0 {
@@ -4170,6 +4210,12 @@ impl App {
         let Some((start, end)) = self.selection_range() else {
             return false;
         };
+        // Snapshot here so EVERY selection-based deletion is undoable:
+        // callers (delete_char*, delete_word*, the Ctrl+X cut) return early
+        // on `true` and never reach their own push_undo_snapshot, so without
+        // this a select-all + Backspace would restore the pre-paste state
+        // and lose the deleted content entirely.
+        self.push_undo_snapshot();
         let sb = byte_index_at_char(&self.input, start);
         let eb = byte_index_at_char(&self.input, end);
         self.input.replace_range(sb..eb, "");
@@ -4614,13 +4660,17 @@ impl App {
         }
         let Some(prompt) = self
             .last_submitted_prompt
-            .as_deref()
+            .clone()
             .filter(|prompt| !prompt.is_empty())
         else {
             return false;
         };
 
-        self.input = prompt.to_string();
+        // Wholesale input replacement — break kill/yank sequences and drop
+        // any selection anchor so the next edit can't corrupt a stale range.
+        self.break_edit_sequences();
+        self.selection_anchor = None;
+        self.input = prompt;
         self.cursor_position = char_count(&self.input);
         self.history_index = None;
         self.history_navigation_draft = None;
@@ -4673,8 +4723,9 @@ impl App {
     /// `\` + Enter line continuation: when the cursor sits at the end of a
     /// logical line whose last character is a single trailing backslash,
     /// Enter removes the backslash and continues on a newline instead of
-    /// submitting. A doubled backslash (`\\`) is literal, so Windows-style
-    /// trailing paths survive.
+    /// submitting. A doubled backslash (`\\`) is literal and submits with
+    /// both characters — to submit text ending in exactly one `\` verbatim,
+    /// use Ctrl+Enter (it bypasses continuation entirely).
     fn consume_backslash_continuation(&mut self) -> bool {
         let chars: Vec<char> = self.input.chars().collect();
         if self.cursor_position == 0 || self.cursor_position > chars.len() {
@@ -4694,8 +4745,17 @@ impl App {
         // Captured before the removal — `chars` still includes the backslash.
         let had_following_newline = self.cursor_position < chars.len();
         let backslash_byte = byte_index_at_char(&self.input, self.cursor_position - 1);
+        // One snapshot for the whole continuation edit (the manual newline
+        // insert below deliberately avoids insert_char's second snapshot —
+        // Ctrl+Z must land on the pre-edit text, not an intermediate state).
+        // The length-changing remove invalidates any selection anchor and
+        // the history-navigation state; clear both, or a stale anchor
+        // corrupts the NEXT keystroke's delete_selection.
         self.push_undo_snapshot();
         self.break_edit_sequences();
+        self.selection_anchor = None;
+        self.selected_attachment_index = None;
+        self.clear_input_history_navigation();
         self.input.remove(backslash_byte);
         self.cursor_position -= 1;
         if had_following_newline {
@@ -4704,7 +4764,14 @@ impl App {
             self.cursor_position += 1;
             self.needs_redraw = true;
         } else {
-            self.insert_char('\n');
+            let byte_index = byte_index_at_char(&self.input, self.cursor_position);
+            self.input.insert(byte_index, '\n');
+            self.cursor_position += 1;
+            self.strip_raw_mouse_reports_from_input();
+            self.slash_menu_hidden = false;
+            self.mention_menu_hidden = false;
+            self.mention_menu_selected = 0;
+            self.needs_redraw = true;
         }
         true
     }
@@ -4800,6 +4867,10 @@ impl App {
         let Some(msg) = self.queued_messages.pop_back() else {
             return false;
         };
+        // Wholesale input replacement — same sequence/selection resets as
+        // the history-navigation paths.
+        self.break_edit_sequences();
+        self.selection_anchor = None;
         self.input = msg.display.clone();
         self.cursor_position = char_count(&self.input);
         self.selected_attachment_index = None;
@@ -4897,7 +4968,11 @@ impl App {
             Some(i) => i.saturating_sub(1),
         };
         self.history_index = Some(new_index);
+        // Wholesale input replacement: snapshot + break the kill/yank
+        // sequences, or a stale yank_span would rewrite the wrong char
+        // range inside the history entry on the next Alt+Y.
         self.push_undo_snapshot();
+        self.break_edit_sequences();
         self.input = self.input_history[new_index].clone();
         self.cursor_position = char_count(&self.input);
         self.selection_anchor = None;
@@ -4916,6 +4991,7 @@ impl App {
                 if i + 1 < self.input_history.len() {
                     self.history_index = Some(i + 1);
                     self.push_undo_snapshot();
+                    self.break_edit_sequences();
                     self.input = self.input_history[i + 1].clone();
                     self.cursor_position = char_count(&self.input);
                     self.selection_anchor = None;
@@ -4926,6 +5002,7 @@ impl App {
                     self.history_index = None;
                     if let Some(draft) = self.history_navigation_draft.take() {
                         self.push_undo_snapshot();
+                        self.break_edit_sequences();
                         self.input = draft.input;
                         self.cursor_position = draft.cursor.min(char_count(&self.input));
                         self.selection_anchor = None;
@@ -6568,7 +6645,11 @@ mod tests {
     #[test]
     fn shell_bang_detection_requires_leading_bang_and_command() {
         assert!(looks_like_shell_bang_input("!ls -la"));
-        assert!(looks_like_shell_bang_input("  !cargo test"));
+        // Column-0 `!` on a single line only: leading whitespace and
+        // multi-line pastes go to the model as plain text (accidental
+        // paste execution guard — review round 3).
+        assert!(!looks_like_shell_bang_input("  !cargo test"));
+        assert!(!looks_like_shell_bang_input("!echo hi\n!rm -rf /"));
         assert!(!looks_like_shell_bang_input("!"));
         assert!(!looks_like_shell_bang_input("!   "));
         assert!(!looks_like_shell_bang_input("run !this"));
@@ -7287,6 +7368,45 @@ mod tests {
 
         assert_eq!(app.input, "hello world");
         assert_eq!(app.cursor_position, char_count("hello"));
+    }
+
+    /// Review round 3: a selection kill (Ctrl+U with a selection) followed
+    /// immediately by the plain backward kill must merge in buffer order —
+    /// the selection branch used to append (`false`) while the plain branch
+    /// prepends (`true`), scrambling the ring entry.
+    #[test]
+    fn selection_kill_merges_in_buffer_order_with_following_backward_kill() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "abcdef".to_string();
+        app.cursor_position = 4;
+        app.selection_anchor = Some(2);
+
+        assert!(app.kill_to_start_of_line()); // kills "cd" (selection)
+        assert_eq!(app.input, "abef");
+        assert!(app.kill_to_start_of_line()); // kills "ab" (plain, same direction)
+
+        let front = app.kill_ring.front().cloned().unwrap_or_default();
+        assert_eq!(front, "abcd", "ring must read in buffer order");
+        // And yanking it back restores the original text.
+        app.yank();
+        assert_eq!(app.input, "abcdef");
+    }
+
+    /// Review round 3: selection deletions used to bypass the undo stack —
+    /// select-all + Backspace after a paste restored the pre-paste state.
+    #[test]
+    fn selection_delete_is_undoable() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.push_undo_snapshot(); // the empty pre-paste state
+        app.input = "pasted payload".to_string();
+        app.cursor_position = char_count(&app.input);
+
+        app.selection_anchor = Some(0);
+        app.delete_char(); // selection branch
+        assert!(app.input.is_empty());
+
+        assert!(app.undo_input_edit());
+        assert_eq!(app.input, "pasted payload");
     }
 
     #[test]

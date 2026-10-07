@@ -194,18 +194,22 @@ fn dedup_by_dylib_path(out: &mut Vec<DiscoveredSource>) {
 }
 
 /// Trust gate (§F5 FirstLoad / §F2c). Drops project-local (`global == false`)
-/// sources when the workspace trust mode is `Untrusted` (`trust_untrusted ==
-/// true`); global sources are retained regardless (their shared-install
+/// sources when the workspace trust mode is `Untrusted` (`workspace_untrusted
+/// == true`); global sources are retained regardless (their shared-install
 /// provenance implies prior consent). Mirrors the `Untrusted` arm of §F2c T3's
 /// per-turn `ProjectTrust{Untrusted}` dispatch, applied at discovery time so
 /// an untrusted workspace never loads a local dylib's `Library`. (§F5c keeps
 /// Model A as-is — no configured-path concept; `apply_trust_gate` is final for
 /// the install/load path.)
+///
+/// `workspace_untrusted: true` means the workspace IS untrusted — project
+/// sources are dropped. (Named for what the flag is, so a `!trusted` call
+/// site reads correctly.)
 pub fn apply_trust_gate(
     sources: Vec<DiscoveredSource>,
-    trust_untrusted: bool,
+    workspace_untrusted: bool,
 ) -> Vec<DiscoveredSource> {
-    if !trust_untrusted {
+    if !workspace_untrusted {
         return sources; // trusted workspace: keep all.
     }
     sources.into_iter().filter(|s| s.global).collect() // untrusted: drop project-local.
@@ -252,7 +256,7 @@ mod dylib_tests {
         );
         let path = dir.path().join(&fname);
         std::fs::write(&path, b"").expect("write dylib placeholder");
-        let found = discover_dylib(&[path.clone()], &[]);
+        let found = discover_dylib(std::slice::from_ref(&path), &[]);
         assert_eq!(found.len(), 1, "expected 1 source, got {found:?}");
         assert_eq!(found[0].id, "bare");
         assert_eq!(found[0].dylib_path, path);

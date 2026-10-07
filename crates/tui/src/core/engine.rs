@@ -575,12 +575,12 @@ fn build_extension_runtime(
     // providers are visible to every resolution path.
     runner.attach_shared_providers(shared_providers().clone());
     let state = crate::extension_state::ExtensionStateStore::load_default().unwrap_or_default();
-    let mod_state = crate::mod_state::ModStateStore::load_default().unwrap_or_default();
+    let mut mod_state = crate::mod_state::ModStateStore::load_default().unwrap_or_default();
     let report = populate_extension_runtime(
         &runner,
         workspace,
         &state,
-        &mod_state,
+        &mut mod_state,
         mods_enabled,
         shared_cancel_token,
     );
@@ -688,7 +688,7 @@ fn populate_extension_runtime(
     runner: &Arc<codesmith_extensions::ExtensionRunner>,
     workspace: &std::path::Path,
     state: &crate::extension_state::ExtensionStateStore,
-    mod_state: &crate::mod_state::ModStateStore,
+    mod_state: &mut crate::mod_state::ModStateStore,
     mods_enabled: bool,
     shared_cancel_token: Arc<StdMutex<tokio_util::sync::CancellationToken>>,
 ) -> PopulateReport {
@@ -755,7 +755,12 @@ fn populate_extension_runtime(
     // §F script mod layer Phase B6 — discover script mods, gate on trust +
     // activation state. Disabled mods skip; discovered-but-not-activated
     // mods skip AND are collected for the passive pending notice (the
-    // first-activation consent gate, plan §五).
+    // first-activation consent gate, plan §五). An activated mod whose
+    // entry-file hash no longer matches the recorded activation hash also
+    // returns to pending: activation consent is bound to the content the
+    // user approved (review round 3 — a git-pulled or auto-edited .rhai
+    // must not execute on standing consent). `&mut mod_state` lets a
+    // hash-less legacy activation load once and backfill its hash.
     let mut pending_mods: Vec<crate::mod_ops::PendingModInfo> = Vec::new();
     let mut mods_to_load: Vec<codesmith_extensions::DiscoveredMod> = Vec::new();
     if mods_enabled {
@@ -777,6 +782,39 @@ fn populate_extension_runtime(
                 ));
                 pending_mods.push(crate::mod_ops::PendingModInfo::from_discovered(&m));
                 continue;
+            }
+            let actual_hash = match crate::mod_ops::entry_file_hash(&m.entry_path) {
+                Ok(h) => h,
+                Err(e) => {
+                    audit.push(StartupAuditEntry::new(
+                        m.id.clone(),
+                        AuditSource::ScriptMod { global: m.global },
+                        AuditStatus::Failed { error: e },
+                    ));
+                    continue;
+                }
+            };
+            match mod_state.activation_hash_state(&m.id, &actual_hash) {
+                crate::mod_state::ActivationHashState::Matches => {}
+                crate::mod_state::ActivationHashState::NoRecord => {
+                    let _guard = crate::mod_ops::mod_state_lock();
+                    if let Err(e) = mod_state.record_activation_hash(&m.id, &actual_hash) {
+                        tracing::warn!(
+                            target: "codesmith_mods",
+                            "backfill activation hash for {}: {e}",
+                            m.id
+                        );
+                    }
+                }
+                crate::mod_state::ActivationHashState::Changed => {
+                    audit.push(StartupAuditEntry::new(
+                        m.id.clone(),
+                        AuditSource::ScriptMod { global: m.global },
+                        AuditStatus::PendingConsent,
+                    ));
+                    pending_mods.push(crate::mod_ops::PendingModInfo::changed_content(&m));
+                    continue;
+                }
             }
             mods_to_load.push(m);
         }
@@ -973,7 +1011,7 @@ pub fn reload_extension_runtime(
     runner: &Arc<codesmith_extensions::ExtensionRunner>,
     workspace: &std::path::Path,
     state: &crate::extension_state::ExtensionStateStore,
-    mod_state: &crate::mod_state::ModStateStore,
+    mod_state: &mut crate::mod_state::ModStateStore,
     mods_enabled: bool,
     shared_cancel_token: Arc<StdMutex<tokio_util::sync::CancellationToken>>,
 ) -> PopulateReport {
@@ -1058,6 +1096,7 @@ pub fn build_engine(
             runner: extension_runner.clone(),
             workspace: config.workspace.clone(),
             shared_cancel_token: shared_cancel_token.clone(),
+            mods_enabled,
         });
     }
 

@@ -103,8 +103,11 @@ pub(crate) fn handle_composer_alt_word_motion_key(app: &mut App, key: KeyEvent) 
             true
         }
         // Readline `Alt+D` — kill from the cursor to the end of the word.
+        // No deselect first: with a selection active, delete_word_forward
+        // kills the SELECTION into the ring (same semantics as the
+        // line-kill commands), which is what a user pressing a kill command
+        // over selected text expects.
         KeyCode::Char('d') | KeyCode::Char('D') => {
-            app.clear_selection();
             app.delete_word_forward();
             true
         }

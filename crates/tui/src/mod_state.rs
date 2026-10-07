@@ -10,20 +10,31 @@
 //! ```toml
 //! disabled = ["mod-id-1"]
 //! activated = ["mod-id-2"]
+//!
+//! [activation_hashes]
+//! mod-id-2 = "<sha256-of-entry-file-at-activation>"
 //! ```
 //!
 //! Semantics:
 //! - `activated` — the user has consented to this mod id (first-activation
 //!   approval, plan §五). Same-id reloads — watcher or manual — need no
-//!   further approval.
+//!   further approval, EXCEPT when the entry file's content changed since
+//!   the recorded `activation_hashes` entry: activation consent is bound to
+//!   the content the user approved, so a changed mod (git pull, an edited
+//!   file) goes back to pending and asks for a fresh `/mods activate`.
+//!   Mods activated before the hash existed load once and get their hash
+//!   backfilled at that load.
 //! - `disabled` — explicitly turned off (implies activated; activation is
 //!   retained so re-enabling needs no fresh consent).
+//!
+//! Known limitation: only the manifest's entry script is hashed — companion
+//! files the entry reads at runtime are not part of the consent receipt.
 //!
 //! Default state when the file does not exist: empty lists (nothing
 //! activated — the first-activation gate). A corrupt file is logged and
 //! treated as the default, so upgrades never silently activate mods.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -37,6 +48,7 @@ pub struct ModStateStore {
     path: Option<PathBuf>,
     disabled: BTreeSet<String>,
     activated: BTreeSet<String>,
+    activation_hashes: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -45,6 +57,22 @@ struct OnDiskState {
     disabled: Vec<String>,
     #[serde(default)]
     activated: Vec<String>,
+    #[serde(default)]
+    activation_hashes: BTreeMap<String, String>,
+}
+
+/// Outcome of comparing a mod's current entry-file hash against the one
+/// recorded at activation (see [`ModStateStore::activation_hash_state`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivationHashState {
+    /// Matches the recorded hash — the recorded consent covers this content.
+    Matches,
+    /// No hash recorded yet (activated before hashes existed): loads, and
+    /// the caller backfills via [`ModStateStore::record_activation_hash`].
+    NoRecord,
+    /// Content changed since activation — consent does not cover it; the
+    /// mod goes back to pending for a fresh `/mods activate`.
+    Changed,
 }
 
 impl ModStateStore {
@@ -59,6 +87,7 @@ impl ModStateStore {
                 path: Some(path),
                 disabled: BTreeSet::new(),
                 activated: BTreeSet::new(),
+                activation_hashes: BTreeMap::new(),
             });
         }
 
@@ -80,6 +109,7 @@ impl ModStateStore {
             path: Some(path),
             disabled: parsed.disabled.into_iter().collect(),
             activated: parsed.activated.into_iter().collect(),
+            activation_hashes: parsed.activation_hashes,
         })
     }
 
@@ -97,11 +127,40 @@ impl ModStateStore {
         self.disabled.contains(mod_id)
     }
 
-    /// Record first-activation consent (and clear any disable).
-    pub fn activate(&mut self, mod_id: &str) -> Result<()> {
+    /// Compare the mod's current entry-file hash with the recorded one.
+    /// Unactivated mods and hash-less legacy activations both load (see
+    /// [`ActivationHashState`]).
+    #[must_use]
+    pub fn activation_hash_state(&self, mod_id: &str, actual: &str) -> ActivationHashState {
+        match self.activation_hashes.get(mod_id) {
+            Some(recorded) if recorded == actual => ActivationHashState::Matches,
+            Some(_) => ActivationHashState::Changed,
+            None => ActivationHashState::NoRecord,
+        }
+    }
+
+    /// Record (or refresh) an activation hash — set by `activate`, and as a
+    /// backfill on the first load of a hash-less legacy activation. Persists
+    /// only when the value actually changes.
+    pub fn record_activation_hash(&mut self, mod_id: &str, entry_hash: &str) -> Result<()> {
+        if self.activation_hashes.get(mod_id) == Some(&entry_hash.to_string()) {
+            return Ok(());
+        }
+        self.activation_hashes
+            .insert(mod_id.to_string(), entry_hash.to_string());
+        self.persist()
+    }
+
+    /// Record first-activation consent (bound to the entry-file content
+    /// hash) and clear any disable.
+    pub fn activate(&mut self, mod_id: &str, entry_hash: &str) -> Result<()> {
         let a_changed = self.activated.insert(mod_id.to_string());
         let d_changed = self.disabled.remove(mod_id);
-        if !a_changed && !d_changed {
+        let h_changed = self
+            .activation_hashes
+            .insert(mod_id.to_string(), entry_hash.to_string())
+            .is_some_and(|old| old != entry_hash);
+        if !a_changed && !d_changed && !h_changed {
             return Ok(());
         }
         self.persist()
@@ -111,7 +170,8 @@ impl ModStateStore {
     pub fn deactivate(&mut self, mod_id: &str) -> Result<()> {
         let a_changed = self.activated.remove(mod_id);
         let d_changed = self.disabled.remove(mod_id);
-        if !a_changed && !d_changed {
+        let h_changed = self.activation_hashes.remove(mod_id).is_some();
+        if !a_changed && !d_changed && !h_changed {
             return Ok(());
         }
         self.persist()
@@ -156,6 +216,7 @@ impl ModStateStore {
         let on_disk = OnDiskState {
             disabled: self.disabled.iter().cloned().collect(),
             activated: self.activated.iter().cloned().collect(),
+            activation_hashes: self.activation_hashes.clone(),
         };
         let body = toml::to_string_pretty(&on_disk).context("serialize mod state")?;
         atomic_write(path, body.as_bytes())
@@ -199,7 +260,7 @@ mod tests {
     #[test]
     fn activate_then_should_load() {
         let (_dir, mut store) = fresh();
-        store.activate("m1").unwrap();
+        store.activate("m1", "hash-m1").unwrap();
         assert!(store.should_load("m1"));
         assert!(!store.should_load("m2"));
     }
@@ -207,7 +268,7 @@ mod tests {
     #[test]
     fn activate_persists_across_reload() {
         let (dir, mut store) = fresh();
-        store.activate("m1").unwrap();
+        store.activate("m1", "hash-m1").unwrap();
         let reloaded = ModStateStore::load_from(dir.path().join(STATE_FILE_NAME)).unwrap();
         assert!(reloaded.should_load("m1"));
     }
@@ -215,7 +276,7 @@ mod tests {
     #[test]
     fn disable_gates_load_but_keeps_activation() {
         let (_dir, mut store) = fresh();
-        store.activate("m1").unwrap();
+        store.activate("m1", "hash-m1").unwrap();
         store.set_enabled("m1", false).unwrap();
         assert!(!store.should_load("m1"));
         assert!(store.is_activated("m1"), "disable keeps consent");
@@ -226,7 +287,7 @@ mod tests {
     #[test]
     fn deactivate_drops_everything() {
         let (_dir, mut store) = fresh();
-        store.activate("m1").unwrap();
+        store.activate("m1", "hash-m1").unwrap();
         store.set_enabled("m1", false).unwrap();
         store.deactivate("m1").unwrap();
         assert!(!store.is_activated("m1"));
@@ -236,9 +297,9 @@ mod tests {
     #[test]
     fn redundant_activate_is_noop() {
         let (dir, mut store) = fresh();
-        store.activate("m1").unwrap();
+        store.activate("m1", "hash-m1").unwrap();
         let before = fs::read_to_string(dir.path().join(STATE_FILE_NAME)).unwrap();
-        store.activate("m1").unwrap();
+        store.activate("m1", "hash-m1").unwrap();
         let after = fs::read_to_string(dir.path().join(STATE_FILE_NAME)).unwrap();
         assert_eq!(before, after, "no-op activate must not rewrite the file");
     }
@@ -255,8 +316,8 @@ mod tests {
     #[test]
     fn lists_are_deterministic_order() {
         let (_dir, mut store) = fresh();
-        store.activate("zeta").unwrap();
-        store.activate("alpha").unwrap();
+        store.activate("zeta", "hash-zeta").unwrap();
+        store.activate("alpha", "hash-alpha").unwrap();
         store.set_enabled("beta", false).unwrap();
         assert_eq!(
             store.activated(),
@@ -268,7 +329,7 @@ mod tests {
     #[test]
     fn disable_then_reload_persists() {
         let (dir, mut store) = fresh();
-        store.activate("m1").unwrap();
+        store.activate("m1", "hash-m1").unwrap();
         store.set_enabled("m1", false).unwrap();
         let reloaded = ModStateStore::load_from(dir.path().join(STATE_FILE_NAME)).unwrap();
         assert!(!reloaded.should_load("m1"));
@@ -278,7 +339,7 @@ mod tests {
     #[test]
     fn activated_serializes_as_toml_array() {
         let (dir, mut store) = fresh();
-        store.activate("m1").unwrap();
+        store.activate("m1", "hash-m1").unwrap();
         let raw = fs::read_to_string(dir.path().join(STATE_FILE_NAME)).unwrap();
         assert!(raw.contains("activated"), "raw: {raw}");
         assert!(raw.contains("m1"));

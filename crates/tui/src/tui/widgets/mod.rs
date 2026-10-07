@@ -435,6 +435,12 @@ pub struct ComposerWidget<'a> {
     max_height: u16,
     slash_menu_entries: &'a [SlashMenuEntry],
     mention_menu_entries: &'a [String],
+    /// Computed once in the constructor (like the slash/mention entries):
+    /// it was previously derived up to three times per frame (layout's
+    /// active_menu_row_count + this render branch's is_empty + entries),
+    /// each call re-collecting the composer into chars and re-scanning the
+    /// shortcode table.
+    emoji_menu_entries: Vec<(&'static str, &'static str)>,
 }
 
 impl<'a> ComposerWidget<'a> {
@@ -449,18 +455,8 @@ impl<'a> ComposerWidget<'a> {
             max_height,
             slash_menu_entries,
             mention_menu_entries,
+            emoji_menu_entries: crate::tui::emoji_shortcode::visible_emoji_menu_entries(app),
         }
-    }
-
-    /// Number of popup rows below the input. Mention and slash menus are
-    /// mutually exclusive — the cursor can only sit inside an `@token` OR
-    /// a `/cmd` token, not both at once. Mention takes precedence because
-    /// the partial-mention check is positional and stricter than slash's
-    /// "starts-with-/" check. The emoji popup is a pure function of the
-    /// composer state (no fs walk), so it is derived here instead of being
-    /// threaded through the constructor.
-    fn emoji_menu_entries(&self) -> Vec<(&'static str, &'static str)> {
-        crate::tui::emoji_shortcode::visible_emoji_menu_entries(self.app)
     }
 
     fn active_menu_row_count(&self) -> usize {
@@ -471,7 +467,7 @@ impl<'a> ComposerWidget<'a> {
         } else if !self.slash_menu_entries.is_empty() {
             self.slash_menu_entries.len()
         } else {
-            self.emoji_menu_entries().len()
+            self.emoji_menu_entries.len()
         }
     }
 
@@ -836,8 +832,8 @@ impl Renderable for ComposerWidget<'_> {
                     Span::styled(format!("@{entry}"), style),
                 ]));
             }
-        } else if !self.emoji_menu_entries().is_empty() {
-            let entries = self.emoji_menu_entries();
+        } else if !self.emoji_menu_entries.is_empty() {
+            let entries = &self.emoji_menu_entries;
             let selected = self
                 .app
                 .emoji_menu_selected

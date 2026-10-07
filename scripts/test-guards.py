@@ -34,10 +34,18 @@ def write(root: Path, relpath: str, text: str = "") -> None:
     path.write_text(text)
 
 
+def write_allowlisted(root: Path) -> None:
+    # The guard errors on allowlist entries with no matching doc, so every
+    # fixture tree must carry the full allowlist (see verify-docs-pairs.py).
+    for name in ("CAPABILITY_GRAPH.md", "CLI.md", "DESIGN_INTERNALS.md", "HARNESS.md"):
+        write(root, f"docs/{name}")
+
+
 class DocsPairsGuard(unittest.TestCase):
     def test_paired_tree_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            write_allowlisted(root)
             write(root, "docs/GUIDE.md")
             write(root, "docs/GUIDE_cn.md")
             result = run_guard("verify-docs-pairs.py", root)
@@ -47,6 +55,7 @@ class DocsPairsGuard(unittest.TestCase):
     def test_unpaired_doc_fails_and_names_it(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            write_allowlisted(root)
             write(root, "docs/GUIDE.md")
             write(root, "docs/GUIDE_cn.md")
             write(root, "docs/NEW.md")
@@ -57,14 +66,26 @@ class DocsPairsGuard(unittest.TestCase):
     def test_allowlisted_doc_passes_without_pair(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            write(root, "docs/HARNESS.md")
+            write_allowlisted(root)
             result = run_guard("verify-docs-pairs.py", root)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("1 allowlisted", result.stdout)
+            self.assertIn("4 allowlisted", result.stdout)
+
+    def test_stale_allowlist_entry_fails_and_names_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ("CAPABILITY_GRAPH.md", "DESIGN_INTERNALS.md", "HARNESS.md"):
+                write(root, f"docs/{name}")
+            write(root, "docs/GUIDE.md")
+            write(root, "docs/GUIDE_cn.md")
+            result = run_guard("verify-docs-pairs.py", root)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("CLI.md: allowlisted but no such doc", result.stdout)
 
     def test_orphan_cn_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            write_allowlisted(root)
             write(root, "docs/GUIDE.md")
             write(root, "docs/GUIDE_cn.md")
             write(root, "docs/ORPHAN_cn.md")
@@ -75,6 +96,7 @@ class DocsPairsGuard(unittest.TestCase):
     def test_subdirectories_out_of_scope(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            write_allowlisted(root)
             write(root, "docs/legacy/README-upstream.md")
             result = run_guard("verify-docs-pairs.py", root)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

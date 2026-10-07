@@ -165,6 +165,10 @@ impl ToolSpec for ManageModsTool {
             }
             "activate" => {
                 require_id()?;
+                // Serialize with the /mods command path: each persist
+                // rewrites the whole state file, so unlocked racing
+                // mutations are last-writer-wins.
+                let _guard = crate::mod_ops::mod_state_lock();
                 let mut state = crate::mod_state::ModStateStore::load_default()
                     .map_err(|e| ToolError::not_available(format!("load mod state: {e}")))?;
                 let msg = mod_ops::activate(workspace, &mut state, &id)
@@ -174,6 +178,7 @@ impl ToolSpec for ManageModsTool {
             }
             "disable" | "enable" => {
                 require_id()?;
+                let _guard = crate::mod_ops::mod_state_lock();
                 let mut state = crate::mod_state::ModStateStore::load_default()
                     .map_err(|e| ToolError::not_available(format!("load mod state: {e}")))?;
                 let msg = mod_ops::set_enabled(&mut state, &id, action == "enable")
@@ -183,6 +188,7 @@ impl ToolSpec for ManageModsTool {
             }
             "remove" => {
                 require_id()?;
+                let _guard = crate::mod_ops::mod_state_lock();
                 let mut state = crate::mod_state::ModStateStore::load_default()
                     .map_err(|e| ToolError::not_available(format!("load mod state: {e}")))?;
                 let msg = mod_ops::remove(workspace, &mut state, &id)
@@ -201,11 +207,14 @@ impl ToolSpec for ManageModsTool {
 impl ManageModsTool {
     fn reload_note(&self) -> String {
         match &self.reload {
+            // mods_enabled captured at engine build (next to the runner) —
+            // a tool-triggered reload must not resurrect the mod layer
+            // against `[mods] enabled = false`.
             Some(ctx) => mod_ops::reload_mods(
                 &ctx.runner,
                 &ctx.workspace,
                 ctx.shared_cancel_token.clone(),
-                true,
+                ctx.mods_enabled,
             ),
             None => "Reload unavailable in this session (no bound extension runner); \
                      changes take effect on the next session start or /mods reload."

@@ -47,7 +47,8 @@ def main() -> int:
 
     per_file: dict[str, int] = {}
     for path in sorted((args.root / "crates").rglob("*.rs")):
-        hits = sum(1 for line in path.read_text().splitlines() if PATTERN.search(line))
+        text = path.read_text(encoding="utf-8", errors="replace")
+        hits = sum(1 for line in text.splitlines() if PATTERN.search(line))
         if hits:
             per_file[str(path.relative_to(args.root))] = hits
     count = sum(per_file.values())

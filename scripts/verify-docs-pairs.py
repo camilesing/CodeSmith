@@ -62,6 +62,14 @@ def main() -> int:
         else:
             pairs += 1
 
+    # Stale allowlist entries are dead config (the doc was deleted or gained
+    # its pair) — error so the receipt stays honest (same posture as
+    # check-framework-deps.py's unknown-crate check).
+    stale = sorted(name for name in ALLOWLIST if not (docs / name).exists())
+    violations.extend(
+        f"{name}: allowlisted but no such doc — remove the entry" for name in stale
+    )
+
     for line in violations:
         print(line)
     if violations:

@@ -1063,16 +1063,21 @@ pub use codesmith_agent_runtime::config_types::{AutoRouteContext, ModelTier, Tie
 /// providers (unknown catalogues) never reach this table; the caller falls
 /// back to the effective main model instead.
 fn tier_default_model_for_provider(provider: ApiProvider, tier: ModelTier) -> &'static str {
+    // No Volcengine arm: it is a pass-through provider
+    // (`provider_passes_model_through`), so `resolve_model_tier` falls
+    // through to the effective main model before ever consulting this
+    // table — keeping an arm here would contradict the table's own doc
+    // (pass-through providers never reach it).
     let light = match provider {
         ApiProvider::Deepseek => DEFAULT_DEEPSEEK_FLASH_MODEL,
         ApiProvider::NvidiaNim => DEFAULT_NVIDIA_NIM_FLASH_MODEL,
-        ApiProvider::Volcengine => DEFAULT_VOLCENGINE_FLASH_MODEL,
         ApiProvider::Openrouter => DEFAULT_OPENROUTER_FLASH_MODEL,
         ApiProvider::Novita => DEFAULT_NOVITA_FLASH_MODEL,
         ApiProvider::Siliconflow => DEFAULT_SILICONFLOW_FLASH_MODEL,
         ApiProvider::Sglang => DEFAULT_SGLANG_FLASH_MODEL,
         ApiProvider::Vllm => DEFAULT_VLLM_FLASH_MODEL,
         ApiProvider::Openai
+        | ApiProvider::Volcengine
         | ApiProvider::Atlascloud
         | ApiProvider::WanjieArk
         | ApiProvider::XiaomiMimo
@@ -1414,10 +1419,6 @@ impl SkillsConfig {
     }
 }
 
-/// `[network]` table — mirrors `codesmith_config::NetworkPolicyToml` so the live
-/// TUI runtime can construct a [`crate::network_policy::NetworkPolicy`]
-/// without reaching into the workspace config crate. See `config.example.toml`
-/// for documentation.
 /// `[verification]` table — post-turn claim checks (P3-8). See
 /// `config.example.toml` for documentation.
 #[derive(Debug, Clone, Deserialize)]
@@ -1441,6 +1442,10 @@ pub struct DoctorToml {
     pub llm_fallback: Option<bool>,
 }
 
+/// `[network]` table — mirrors `codesmith_config::NetworkPolicyToml` so the live
+/// TUI runtime can construct a [`crate::network_policy::NetworkPolicy`]
+/// without reaching into the workspace config crate. See `config.example.toml`
+/// for documentation.
 #[derive(Debug, Clone, Deserialize)]
 pub struct NetworkPolicyToml {
     /// Decision for hosts that are not in `allow` or `deny`. One of
@@ -1775,6 +1780,18 @@ impl Config {
             ModelTier::Light => a.light_model.as_deref(),
         });
         if let Some(model) = explicit.map(str::trim).filter(|m| !m.is_empty()) {
+            // Same provider-aware canonicalization every other model
+            // resolution path applies (`default_model` runs the same
+            // helper): sending the raw alias verbatim 400s on providers
+            // that serve slugs (deepseek-ai/..., deepseek/...). Custom /
+            // pass-through providers keep the verbatim value.
+            if self.custom_provider().is_none()
+                && !provider_passes_model_through(self.api_provider())
+                && !self.active_provider_preserves_custom_base_url_model()
+                && let Some(normalized) = normalize_model_for_provider(self.api_provider(), model)
+            {
+                return normalized;
+            }
             return model.to_string();
         }
         if self.custom_provider().is_none()
@@ -4355,7 +4372,11 @@ fn apply_profile(config: ConfigFile, profile: Option<&str>) -> Result<Config> {
 
 fn merge_config(base: Config, override_cfg: Config) -> Config {
     Config {
-        mods: None,
+        // `[mods]` follows the same override-or-base pattern as every other
+        // Option field: resetting it to None here would discard the user's
+        // `[mods] enabled = false` on any profile/managed-override merge,
+        // silently re-enabling the script-mod layer.
+        mods: override_cfg.mods.or(base.mods),
         provider: override_cfg.provider.or(base.provider),
         custom_provider: override_cfg.custom_provider.or(base.custom_provider),
         api_key: override_cfg.api_key.or(base.api_key),

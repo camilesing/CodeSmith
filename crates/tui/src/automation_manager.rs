@@ -289,10 +289,16 @@ impl AutomationManager {
                 CURRENT_AUTOMATION_SCHEMA_VERSION
             );
         }
+        // The record's own id reaches Path::join downstream (save_automation,
+        // run_path) and never has to match the (validated) filename it was
+        // read from — a hand-edited `automations/<uuid>.json` with
+        // `"id": "../../x"` would otherwise traverse out of the store.
+        require_safe_automation_id(&record.id)?;
         Ok(record)
     }
 
     pub fn save_automation(&self, record: &AutomationRecord) -> Result<()> {
+        require_safe_automation_id(&record.id)?;
         write_json_atomic(&self.automation_path(&record.id), record)
     }
 
@@ -316,6 +322,18 @@ impl AutomationManager {
                     record.schema_version,
                     CURRENT_AUTOMATION_SCHEMA_VERSION
                 );
+            }
+            // A record-carried id that is not a safe path component would
+            // poison the scheduler tick downstream (save/run path joins);
+            // skip + warn instead of failing the whole listing — one
+            // hand-edited file must not halt scheduling for the rest.
+            if !codesmith_agent_runtime::utils::is_safe_path_component(&record.id) {
+                tracing::warn!(
+                    "skipping automation record {} with unsafe id {:?}",
+                    path.display(),
+                    record.id
+                );
+                continue;
             }
             out.push(record);
         }
@@ -438,6 +456,20 @@ impl AutomationManager {
                     CURRENT_RUN_SCHEMA_VERSION
                 );
             }
+            // Same posture as list_automations: a record-carried unsafe id
+            // (run.id / run.automation_id reach Path::join in save_run)
+            // skips with a warn instead of failing the whole listing.
+            if !codesmith_agent_runtime::utils::is_safe_path_component(&run.id)
+                || !codesmith_agent_runtime::utils::is_safe_path_component(&run.automation_id)
+            {
+                tracing::warn!(
+                    "skipping automation run record {} with unsafe id ({:?} / {:?})",
+                    path.display(),
+                    run.id,
+                    run.automation_id
+                );
+                continue;
+            }
             out.push(run);
         }
 
@@ -449,6 +481,11 @@ impl AutomationManager {
     }
 
     fn save_run(&self, run: &AutomationRunRecord) -> Result<()> {
+        // Both ids are joined into the run path; `run.automation_id` comes
+        // from the JSON file on disk (never has to match the validated
+        // filename it was listed under), so validate here too.
+        require_safe_automation_id(&run.automation_id)?;
+        require_safe_automation_id(&run.id)?;
         let dir = self.runs_dir_for(&run.automation_id);
         fs::create_dir_all(&dir).with_context(|| format!("Failed to create {}", dir.display()))?;
         write_json_atomic(&self.run_path(&run.automation_id, &run.id), run)
@@ -701,13 +738,25 @@ fn validate_name_and_prompt(name: &str, prompt: &str) -> Result<()> {
 }
 
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    use std::io::Write;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create {}", parent.display()))?;
     }
     let content = serde_json::to_string_pretty(value)?;
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, content).with_context(|| format!("Failed to write {}", tmp.display()))?;
+    // Pid-suffixed temp name (concurrent sessions share the store dir; a
+    // fixed sibling name would have one rename carry the other's
+    // half-written content) + fsync before the rename so a crash never
+    // leaves an empty file behind the atomic-rename point.
+    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    let mut file =
+        fs::File::create(&tmp).with_context(|| format!("Failed to write {}", tmp.display()))?;
+    file.write_all(content.as_bytes())
+        .with_context(|| format!("Failed to write {}", tmp.display()))?;
+    file.flush()
+        .with_context(|| format!("Failed to write {}", tmp.display()))?;
+    file.sync_all()
+        .with_context(|| format!("Failed to sync {}", tmp.display()))?;
     fs::rename(&tmp, path).with_context(|| {
         format!(
             "Failed to move temporary file {} to {}",

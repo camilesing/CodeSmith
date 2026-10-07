@@ -211,21 +211,42 @@ fn discover_mod_dir(dir: &Path, global: bool) -> Option<DiscoveredMod> {
 }
 
 /// Drop later occurrences of a mod whose canonicalized dir was already seen
-/// (a mod reached via two roots loads once). Falls back to the raw path
-/// when `canonicalize` fails.
+/// (a mod reached via two roots loads once) or whose manifest `id` was
+/// already taken by an earlier mod. Everything downstream is keyed by id —
+/// one KV file (`<scope>-<id>.json`), one activation record — so two
+/// directories sharing an id would silently clobber each other's state and
+/// last-wins-replace each other's tools at `bind_core`. Falls back to the
+/// raw path when `canonicalize` fails.
 fn dedup_by_dir(out: &mut Vec<DiscoveredMod>) {
-    let mut seen = HashSet::new();
+    let mut seen_dirs = HashSet::new();
+    let mut seen_ids: HashSet<String> = HashSet::new();
     out.retain(|m| {
+        if !seen_ids.insert(m.id.clone()) {
+            tracing::warn!(
+                "skipping mod at {}: id {:?} already discovered — mod ids must be \
+                 unique (state and KV files are keyed by id)",
+                m.dir.display(),
+                m.id
+            );
+            return false;
+        }
         let key = m.dir.canonicalize().unwrap_or_else(|_| m.dir.clone());
-        seen.insert(key)
+        seen_dirs.insert(key)
     });
 }
 
 /// Trust gate (mirrors `discovery::apply_trust_gate`): drops project-local
 /// mods when the workspace is untrusted; global mods are retained (shared
 /// install provenance implies prior consent).
-pub fn apply_mod_trust_gate(mods: Vec<DiscoveredMod>, trust_untrusted: bool) -> Vec<DiscoveredMod> {
-    if !trust_untrusted {
+///
+/// `workspace_untrusted: true` means the workspace IS untrusted — project
+/// mods are dropped. (Named for what the flag is, not what it does to the
+/// list, so a `!trusted` call site reads correctly.)
+pub fn apply_mod_trust_gate(
+    mods: Vec<DiscoveredMod>,
+    workspace_untrusted: bool,
+) -> Vec<DiscoveredMod> {
+    if !workspace_untrusted {
         return mods;
     }
     mods.into_iter().filter(|m| m.global).collect()
