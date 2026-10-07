@@ -236,7 +236,10 @@ fn tool_agent_description_explains_fast_lane() {
     let description = tool.description();
 
     assert!(description.contains("Fin"));
-    assert!(description.contains("Flash"));
+    // Provider-neutral routing: the light tier of the active provider, not
+    // a hardcoded DeepSeek model name.
+    assert!(description.contains("light tier"));
+    assert!(!description.contains("Flash"));
     assert!(description.contains("thinking forced off"));
     assert!(description.contains("OCR"));
 }

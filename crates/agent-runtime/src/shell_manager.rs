@@ -113,8 +113,12 @@ pub enum ShellChild {
     Pty(Box<dyn portable_pty::Child + Send>),
 }
 
+/// Kill `child`'s whole process group (the child must have been spawned
+/// with `process_group(0)`), falling back to the direct child. ESRCH is
+/// tolerated — the group may already be gone. Public so the TUI hook
+/// executor can enforce its timeout against `sh -c` grandchildren too.
 #[cfg(unix)]
-fn kill_child_process_group(child: &mut Child) -> std::io::Result<()> {
+pub fn kill_child_process_group(child: &mut Child) -> std::io::Result<()> {
     let pgid = child.id() as libc::pid_t;
     if pgid <= 0 {
         return child.kill();

@@ -22,19 +22,29 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::events::{ResultFailureType, ResultVerdict};
+
 /// Filename of the verdict log inside the evolution directory.
 pub const VERDICTS_FILE: &str = "verdicts.jsonl";
 
-/// One recorded claim-check verdict. Field names match the injected
-/// runtime-event vocabulary (`verified-pass` / `verified-fail` /
-/// `verify-error` / `unsubstantiated`) so the log and the conversation
-/// agree on what happened.
+/// Retention cap for the verdict log. The log is append-only with no natural
+/// bound, while the only consumer (`/verify stats`) folds it for a readout —
+/// so once the file exceeds this size, the next append rotates it down to the
+/// trailing half-cap of records. Bounded I/O on long-lived installs, at the
+/// cost of "all time" becoming "recent history" past the cap.
+const MAX_VERDICTS_BYTES: u64 = 1024 * 1024;
+
+/// One recorded claim-check verdict. Field vocabulary matches the injected
+/// runtime-event message (`verified-pass` / `verified-fail` /
+/// `verify-error` / `unsubstantiated` — the typed [`ResultVerdict`], whose
+/// kebab-case serde form keeps existing jsonl lines loadable) so the log and
+/// the conversation agree on what happened.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VerdictRecord {
     /// RFC-3339 UTC timestamp of the check.
     pub ts: String,
-    pub verdict: String,
-    pub failure_type: Option<String>,
+    pub verdict: ResultVerdict,
+    pub failure_type: Option<ResultFailureType>,
     /// The matched claim phrase (e.g. "测试通过").
     pub claim: String,
     /// The re-run command, when one was found.
@@ -63,8 +73,8 @@ pub fn verdicts_path() -> Option<PathBuf> {
 /// break the engine that produced the event (telemetry-sink precedent).
 pub fn record_verdict(
     model: &str,
-    verdict: &str,
-    failure_type: Option<&str>,
+    verdict: ResultVerdict,
+    failure_type: Option<ResultFailureType>,
     claim: &str,
     command: Option<&str>,
     exit_code: Option<i64>,
@@ -74,8 +84,8 @@ pub fn record_verdict(
     };
     let record = VerdictRecord {
         ts: chrono::Utc::now().to_rfc3339(),
-        verdict: verdict.to_string(),
-        failure_type: failure_type.map(str::to_string),
+        verdict,
+        failure_type,
         claim: claim.to_string(),
         command: command.map(str::to_string),
         exit_code,
@@ -89,14 +99,56 @@ pub fn record_verdict(
 /// Append one record as a jsonl line. Directory is created lazily.
 pub fn append_record(path: &Path, record: &VerdictRecord) -> std::io::Result<()> {
     let Ok(mut line) = serde_json::to_string(record) else {
+        // The record would vanish with no trace while the caller's WARN
+        // posture claims failures are logged — keep that honest.
+        tracing::warn!("evolution log record serialization failed; record dropped");
         return Ok(());
     };
     line.push('\n');
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
+    rotate_if_oversized(path, MAX_VERDICTS_BYTES);
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     file.write_all(line.as_bytes())
+}
+
+/// Size-based retention: when the log exceeds `max_bytes`, rewrite it
+/// keeping only the trailing records that fit in half the cap. Best-effort —
+/// a rotation failure is logged and must not block the append.
+fn rotate_if_oversized(path: &Path, max_bytes: u64) {
+    let Ok(metadata) = fs::metadata(path) else {
+        return;
+    };
+    if metadata.len() <= max_bytes {
+        return;
+    }
+    let records = load_verdicts(path);
+    let keep_bytes = max_bytes / 2;
+    let line_len =
+        |record: &VerdictRecord| serde_json::to_string(record).map(|s| s.len() as u64 + 1);
+    let mut retained: Vec<&VerdictRecord> = Vec::new();
+    let mut retained_bytes = 0u64;
+    for record in records.iter().rev() {
+        let Ok(len) = line_len(record) else {
+            continue;
+        };
+        if retained_bytes + len > keep_bytes && !retained.is_empty() {
+            break;
+        }
+        retained_bytes += len;
+        retained.push(record);
+    }
+    let mut out = String::new();
+    for record in retained.into_iter().rev() {
+        if let Ok(line) = serde_json::to_string(record) {
+            out.push_str(&line);
+            out.push('\n');
+        }
+    }
+    if let Err(err) = crate::utils::write_atomic(path, out.as_bytes()) {
+        tracing::warn!("evolution log rotation failed at {}: {err}", path.display());
+    }
 }
 
 /// Load records from a jsonl file, skipping malformed lines (a truncated
@@ -133,15 +185,17 @@ pub fn summarize(records: &[VerdictRecord]) -> VerdictStats {
     let mut stats = VerdictStats::default();
     for record in records {
         stats.total += 1;
-        match record.verdict.as_str() {
-            "verified-pass" => stats.verified_pass += 1,
-            "verified-fail" => stats.verified_fail += 1,
-            "unsubstantiated" => stats.unsubstantiated += 1,
-            "verify-error" => stats.verify_error += 1,
-            _ => {}
+        match record.verdict {
+            ResultVerdict::VerifiedPass => stats.verified_pass += 1,
+            ResultVerdict::VerifiedFail => stats.verified_fail += 1,
+            ResultVerdict::Unsubstantiated => stats.unsubstantiated += 1,
+            ResultVerdict::VerifyError => stats.verify_error += 1,
         }
-        if let Some(failure_type) = &record.failure_type {
-            *stats.failure_types.entry(failure_type.clone()).or_default() += 1;
+        if let Some(failure_type) = record.failure_type {
+            *stats
+                .failure_types
+                .entry(failure_type.as_str().to_string())
+                .or_default() += 1;
         }
     }
     stats
@@ -169,7 +223,7 @@ impl VerdictStats {
             }
         };
         let mut out = format!(
-            "Claim-check verdicts (all time): {}\n\
+            "Claim-check verdicts (recent history, 1 MiB log cap): {}\n\
              \x20 verified-pass:   {} ({})\n\
              \x20 verified-fail:   {} ({})\n\
              \x20 unsubstantiated: {} ({})\n\
@@ -204,11 +258,11 @@ impl VerdictStats {
 mod tests {
     use super::*;
 
-    fn record(verdict: &str, failure_type: Option<&str>) -> VerdictRecord {
+    fn record(verdict: ResultVerdict, failure_type: Option<ResultFailureType>) -> VerdictRecord {
         VerdictRecord {
             ts: "2026-09-26T00:00:00+00:00".to_string(),
-            verdict: verdict.to_string(),
-            failure_type: failure_type.map(str::to_string),
+            verdict,
+            failure_type,
             claim: "测试通过".to_string(),
             command: Some("cargo test".to_string()),
             exit_code: Some(0),
@@ -220,8 +274,15 @@ mod tests {
     fn append_and_load_round_trip_skips_bad_lines() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("evolution").join(VERDICTS_FILE);
-        append_record(&path, &record("verified-pass", None)).unwrap();
-        append_record(&path, &record("verified-fail", Some("test-failure"))).unwrap();
+        append_record(&path, &record(ResultVerdict::VerifiedPass, None)).unwrap();
+        append_record(
+            &path,
+            &record(
+                ResultVerdict::VerifiedFail,
+                Some(ResultFailureType::TestFailure),
+            ),
+        )
+        .unwrap();
         // Simulate a crash-truncated tail.
         std::fs::write(
             &path,
@@ -233,8 +294,29 @@ mod tests {
         .unwrap();
         let loaded = load_verdicts(&path);
         assert_eq!(loaded.len(), 2, "malformed tail must be skipped");
-        assert_eq!(loaded[0].verdict, "verified-pass");
-        assert_eq!(loaded[1].failure_type.as_deref(), Some("test-failure"));
+        assert_eq!(loaded[0].verdict, ResultVerdict::VerifiedPass);
+        assert_eq!(loaded[1].failure_type, Some(ResultFailureType::TestFailure));
+    }
+
+    #[test]
+    fn legacy_string_verdict_lines_still_load() {
+        // jsonl lines written before the typed enum carry kebab-case strings;
+        // the serde rename must keep them readable.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(VERDICTS_FILE);
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"ts\":\"2026-09-26T00:00:00+00:00\",\"verdict\":\"verified-pass\",",
+                "\"failure_type\":\"test-failure\",\"claim\":\"测试通过\",",
+                "\"command\":\"cargo test\",\"exit_code\":1,\"model\":\"mock-model\"}\n"
+            ),
+        )
+        .unwrap();
+        let loaded = load_verdicts(&path);
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].verdict, ResultVerdict::VerifiedPass);
+        assert_eq!(loaded[0].failure_type, Some(ResultFailureType::TestFailure));
     }
 
     #[test]
@@ -245,11 +327,20 @@ mod tests {
     #[test]
     fn summarize_counts_and_match_rate() {
         let records = vec![
-            record("verified-pass", None),
-            record("verified-pass", None),
-            record("verified-fail", Some("test-failure")),
-            record("unsubstantiated", Some("unsubstantiated-claim")),
-            record("verify-error", Some("verify-error")),
+            record(ResultVerdict::VerifiedPass, None),
+            record(ResultVerdict::VerifiedPass, None),
+            record(
+                ResultVerdict::VerifiedFail,
+                Some(ResultFailureType::TestFailure),
+            ),
+            record(
+                ResultVerdict::Unsubstantiated,
+                Some(ResultFailureType::UnsubstantiatedClaim),
+            ),
+            record(
+                ResultVerdict::VerifyError,
+                Some(ResultFailureType::VerifyError),
+            ),
         ];
         let stats = summarize(&records);
         assert_eq!(stats.total, 5);
@@ -264,20 +355,46 @@ mod tests {
 
     #[test]
     fn match_rate_none_without_checkable_claims() {
-        let records = vec![record("unsubstantiated", Some("unsubstantiated-claim"))];
+        let records = vec![record(
+            ResultVerdict::Unsubstantiated,
+            Some(ResultFailureType::UnsubstantiatedClaim),
+        )];
         assert!(summarize(&records).claim_match_rate().is_none());
     }
 
     #[test]
     fn render_carries_counts_rate_and_types() {
         let records = vec![
-            record("verified-pass", None),
-            record("verified-fail", Some("test-failure")),
+            record(ResultVerdict::VerifiedPass, None),
+            record(
+                ResultVerdict::VerifiedFail,
+                Some(ResultFailureType::TestFailure),
+            ),
         ];
         let text = summarize(&records).render();
-        assert!(text.contains("Claim-check verdicts (all time): 2"));
+        assert!(text.contains("Claim-check verdicts (recent history, 1 MiB log cap): 2"));
         assert!(text.contains("verified-pass:   1 (50%)"));
         assert!(text.contains("claim-match rate"));
         assert!(text.contains("test-failure: 1"));
+    }
+
+    #[test]
+    fn rotation_keeps_the_tail_and_drops_the_head() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(VERDICTS_FILE);
+        for i in 0..8 {
+            let mut rec = record(ResultVerdict::VerifiedPass, None);
+            rec.claim = format!("claim-{i:03}");
+            append_record(&path, &rec).unwrap();
+        }
+        // Cap below the current size so rotation triggers; the kept tail must
+        // fit in half the cap.
+        rotate_if_oversized(&path, 512);
+        let loaded = load_verdicts(&path);
+        assert!(!loaded.is_empty(), "tail survives rotation");
+        let names: Vec<&str> = loaded.iter().map(|r| r.claim.as_str()).collect();
+        let newest = names.last().copied();
+        assert_eq!(newest, Some("claim-007"), "newest record is kept");
+        assert!(names.len() < 8, "oldest records are dropped: {names:?}");
     }
 }

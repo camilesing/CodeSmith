@@ -140,11 +140,14 @@ fn resolve_include_target(target: &str, base: &Path) -> PathBuf {
 }
 
 /// Whether an `@include` resolved target is permitted: it must stay within
-/// the including file's directory subtree (canonicalized comparison, so
-/// symlinks can't sidestep it). Absolute targets, `~`, env-expanded
-/// absolute paths, and `..` escapes (`@include ../../secrets.md`) are all
-/// rejected — an untrusted workspace memory file must not be able to pull
-/// arbitrary files (`~/.ssh/…`, `/etc/…`) into the system prompt.
+/// the *tier root* — workspace for Project/Local files, home for User,
+/// `/etc/codesmith` for Managed — compared canonically, so symlinks can't
+/// sidestep it. Any target — absolute, `~`, env-expanded, or `..`-relative —
+/// whose canonical form escapes that root (`@include ../../secrets.md`) is
+/// rejected: an untrusted workspace memory file must not be able to pull
+/// arbitrary files (`~/.ssh/…`, `/etc/…`) into the system prompt. (An
+/// absolute target that resolves *inside* the root does pass — the
+/// containment is the security property, not the spelling.)
 fn include_target_permitted(resolved: &Path, base: &Path) -> bool {
     let canon_resolved = canonicalize_or_keep(resolved);
     let canon_base = canonicalize_or_keep(base);
@@ -155,6 +158,12 @@ fn include_target_permitted(resolved: &Path, base: &Path) -> bool {
 /// inline at their positions, returning the file's full text (with includes
 /// spliced in) tagged with its `tier`.
 ///
+/// `tier_root` is the trust boundary for include targets (workspace for
+/// Project/Local, home for User, `/etc/codesmith` for Managed) — an include
+/// may reference anywhere within its tier, so a local rule can pull
+/// repo-root shared docs (`@include ../../docs/style.md`), but nothing
+/// outside the tier's root.
+///
 /// Bounding rules (all silent — a skipped include simply contributes nothing,
 /// matching Claude Code's behaviour so a broken include never aborts the
 /// whole tier):
@@ -163,14 +172,16 @@ fn include_target_permitted(resolved: &Path, base: &Path) -> bool {
 /// - Symlink-stable dedup via [`canonicalize_or_keep`] into `processed`; a
 ///   file already seen in this merge is not loaded again (cycle safe).
 /// - A path whose canonical form matches any entry in `excludes` is dropped.
-/// - Targets that escape the including file's directory ([`include_target_permitted`])
-///   are dropped with a warning.
-/// - Directives inside markdown code fences (``` blocks) are inert prose.
+/// - Targets that escape the tier root ([`include_target_permitted`]) are
+///   dropped with a warning.
+/// - Directives inside markdown code fences (``` and ~~~ blocks) are inert
+///   prose.
 /// - Files failing [`load_context_file`] (missing, oversized, empty) are
 ///   skipped.
 fn process_memory_file(
     path: &Path,
     tier: MemoryTier,
+    tier_root: &Path,
     processed: &mut HashSet<PathBuf>,
     excludes: &[PathBuf],
     depth: usize,
@@ -188,8 +199,8 @@ fn process_memory_file(
     let content = load_context_file(path).ok()?;
     let base = path.parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut out = String::new();
-    // Track ``` fence state so `@include` lines shown inside a code block
-    // (documentation examples) are treated as the prose they are.
+    // Track ``` / ~~~ fence state so `@include` lines shown inside a code
+    // block (documentation examples) are treated as the prose they are.
     let mut in_fence = false;
     // `split_inclusive('\n')` keeps the trailing newline so non-directive
     // lines round-trip byte-for-byte; directive lines are dropped and
@@ -199,21 +210,32 @@ fn process_memory_file(
             Some(b) => (b, "\n"),
             None => (line, ""),
         };
-        if body.trim_start().starts_with("```") {
+        // CommonMark fence rules, reduced to what fence tracking needs: a
+        // delimiter line is a run of >=3 marker chars (` or ~) followed by
+        // an info string containing no marker char — so a same-line span
+        // like ```code``` is prose, not a fence, and must not toggle the
+        // state (a single toggle there inverts tracking for the rest of
+        // the file).
+        let trimmed = body.trim_start();
+        let fence_delim = |marker: char| {
+            let rest = trimmed.trim_start_matches(marker);
+            trimmed.len() - rest.len() >= 3 && !rest.contains(marker)
+        };
+        if fence_delim('`') || fence_delim('~') {
             in_fence = !in_fence;
         }
         if !in_fence && let Some(target) = match_include_directive(body) {
             let resolved = resolve_include_target(target, &base);
-            if !include_target_permitted(&resolved, &base) {
+            if !include_target_permitted(&resolved, tier_root) {
                 tracing::warn!(
                     target: "codesmith::memory",
                     path = %resolved.display(),
-                    "@include target escapes the including file's directory; skipped"
+                    "@include target escapes the tier root; skipped"
                 );
                 continue;
             }
             if let Some((_, inc_text)) =
-                process_memory_file(&resolved, tier, processed, excludes, depth + 1)
+                process_memory_file(&resolved, tier, tier_root, processed, excludes, depth + 1)
             {
                 out.push_str(&inc_text);
                 if !inc_text.ends_with('\n') {
@@ -235,11 +257,20 @@ fn load_managed_tier(
     processed: &mut HashSet<PathBuf>,
 ) -> Option<(MemoryTier, String)> {
     let candidates = [Path::new("/etc/codesmith/CLAUDE.md")];
+    // Managed tier root: the file's own directory — org-administered
+    // content, bounded like the pre-tier-root behavior.
+    let tier_root = Path::new("/etc/codesmith");
     for candidate in candidates {
         if candidate.exists()
             && candidate.is_file()
-            && let Some(found) =
-                process_memory_file(candidate, MemoryTier::Managed, processed, excludes, 0)
+            && let Some(found) = process_memory_file(
+                candidate,
+                MemoryTier::Managed,
+                tier_root,
+                processed,
+                excludes,
+                0,
+            )
         {
             return Some(found);
         }
@@ -266,7 +297,7 @@ fn load_user_tier(
         if path.exists()
             && path.is_file()
             && let Some(found) =
-                process_memory_file(&path, MemoryTier::User, processed, excludes, 0)
+                process_memory_file(&path, MemoryTier::User, home, processed, excludes, 0)
         {
             return Some(found);
         }
@@ -280,9 +311,16 @@ fn load_user_tier(
 ///
 /// The walk is bounded by the user's home directory: a planted
 /// `/AGENTS.md` (or `/tmp/AGENTS.md` for a workspace under `/tmp`) must not
-/// load into the system prompt from a world-writable ancestor. When home
-/// cannot be established, or the workspace lives outside it, the walk is
-/// skipped entirely — the fail-safe direction.
+/// load into the system prompt from a world-writable ancestor. `HOME=/`
+/// (valid in minimal containers) would make the prefix test vacuously true
+/// and re-enable the walk all the way to `/`, so it is treated as no home.
+/// Home and workspace are canonicalized before comparing — a symlinked home
+/// or a workspace reached through a symlinked ancestor must not end the walk
+/// one level early over a spelling mismatch. When home cannot be
+/// established, or the workspace lives outside it, the walk is skipped
+/// entirely — the fail-safe direction. Include targets for every walked
+/// file are bounded by `workspace` (the tier root), not the file's own
+/// directory.
 fn load_project_tier(
     workspace: &Path,
     home: Option<&Path>,
@@ -290,19 +328,52 @@ fn load_project_tier(
     processed: &mut HashSet<PathBuf>,
 ) -> Option<(MemoryTier, String)> {
     if let Some(found) = find_project_file(workspace)
-        && let Some(c) = process_memory_file(&found, MemoryTier::Project, processed, excludes, 0)
+        && let Some(c) = process_memory_file(
+            &found,
+            MemoryTier::Project,
+            workspace,
+            processed,
+            excludes,
+            0,
+        )
     {
         return Some(c);
     }
-    let home = home?;
-    let mut current = workspace.parent();
+    let Some(raw_home) = home else {
+        tracing::debug!(
+            target: "codesmith::memory",
+            "no home directory; skipping the project parent walk"
+        );
+        return None;
+    };
+    if raw_home == Path::new("/") {
+        tracing::debug!(
+            target: "codesmith::memory",
+            "home is /; skipping the project parent walk"
+        );
+        return None;
+    }
+    let home = canonicalize_or_keep(raw_home);
+    let canon_workspace = canonicalize_or_keep(workspace);
+    let mut current = canon_workspace.parent();
     while let Some(parent) = current {
-        if !parent.starts_with(home) {
+        if !parent.starts_with(&home) {
+            tracing::debug!(
+                target: "codesmith::memory",
+                parent = %parent.display(),
+                "parent outside home; stopping the project walk"
+            );
             break;
         }
         if let Some(found) = find_project_file(parent)
-            && let Some(c) =
-                process_memory_file(&found, MemoryTier::Project, processed, excludes, 0)
+            && let Some(c) = process_memory_file(
+                &found,
+                MemoryTier::Project,
+                workspace,
+                processed,
+                excludes,
+                0,
+            )
         {
             return Some(c);
         }
@@ -349,7 +420,9 @@ fn load_local_tier(
     files.sort();
     let mut out = Vec::new();
     for file in files {
-        if let Some(found) = process_memory_file(&file, MemoryTier::Local, processed, excludes, 0) {
+        if let Some(found) =
+            process_memory_file(&file, MemoryTier::Local, workspace, processed, excludes, 0)
+        {
             out.push(found);
         }
     }
@@ -516,6 +589,94 @@ mod tests {
             "an @include shown inside a code fence is prose, not a directive"
         );
         assert!(merged.contains("@include extra.md"));
+    }
+
+    #[test]
+    fn include_directive_inside_tilde_fence_is_inert() {
+        // `~~~` fences are CommonMark fences too; only recognizing ``` would
+        // expand a directive shown inside a tilde documentation block.
+        let tmp = tempdir().unwrap();
+        let ws = tmp.path();
+        write(&ws.join("extra.md"), "INCLUDED_BODY");
+        write(
+            &ws.join("AGENTS.md"),
+            "intro\n~~~md\n@include extra.md\n~~~\nafter",
+        );
+
+        let merged = load_all_memory_tiers(ws, None, &[]);
+        assert!(
+            !merged.contains("INCLUDED_BODY"),
+            "an @include shown inside a ~~~ fence is prose, not a directive"
+        );
+        assert!(merged.contains("@include extra.md"));
+    }
+
+    #[test]
+    fn same_line_backtick_span_does_not_toggle_fence_state() {
+        // CommonMark: a backtick fence's info string cannot contain
+        // backticks, so ` ```code``` ` is prose. Treating it as a fence
+        // opener inverts tracking for the rest of the file and silently
+        // suppresses every later legitimate @include.
+        let tmp = tempdir().unwrap();
+        let ws = tmp.path();
+        write(&ws.join("extra.md"), "INCLUDED_BODY");
+        write(
+            &ws.join("AGENTS.md"),
+            "use ```code``` inline\n@include extra.md\nroot",
+        );
+
+        let merged = load_all_memory_tiers(ws, None, &[]);
+        assert!(
+            merged.contains("INCLUDED_BODY"),
+            "the include after a same-line span must still expand"
+        );
+    }
+
+    #[test]
+    fn local_rule_can_include_repo_root_docs_via_tier_root() {
+        // The documented shape: `.claude/rules/x.md` referencing shared docs
+        // at the repo root (`../../docs/style.md`). Bounding at the
+        // workspace (the Local tier root) permits it; bounding at the
+        // including file's own directory dropped it.
+        let tmp = tempdir().unwrap();
+        let ws = tmp.path();
+        let docs = ws.join("docs");
+        let rules = ws.join(".claude").join("rules");
+        fs::create_dir_all(&docs).unwrap();
+        fs::create_dir_all(&rules).unwrap();
+        write(&docs.join("style.md"), "SHARED_STYLE");
+        write(
+            &rules.join("x.md"),
+            "@include ../../docs/style.md\nrule body",
+        );
+
+        let merged = load_all_memory_tiers(ws, None, &[]);
+        assert!(merged.contains("SHARED_STYLE"));
+        assert!(merged.contains("rule body"));
+    }
+
+    #[test]
+    fn symlink_escape_out_of_the_tier_root_is_dropped() {
+        // Pins the canonicalized comparison: a symlink INSIDE the workspace
+        // whose target resolves outside must not smuggle the target in.
+        #[cfg(unix)]
+        {
+            let tmp = tempdir().unwrap();
+            let ws = tmp.path().join("ws");
+            fs::create_dir_all(&ws).unwrap();
+            let secret_dir = tmp.path().join("secrets");
+            fs::create_dir_all(&secret_dir).unwrap();
+            write(&secret_dir.join("token.md"), "SECRET_BODY");
+            std::os::unix::fs::symlink(secret_dir.join("token.md"), ws.join("link.md")).unwrap();
+            write(&ws.join("AGENTS.md"), "@include link.md\nroot");
+
+            let merged = load_all_memory_tiers(&ws, None, &[]);
+            assert!(
+                !merged.contains("SECRET_BODY"),
+                "a symlink resolving outside the tier root must be dropped"
+            );
+            assert!(merged.contains("root"));
+        }
     }
 
     #[test]

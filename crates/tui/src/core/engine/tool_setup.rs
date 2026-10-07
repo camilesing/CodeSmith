@@ -122,6 +122,16 @@ pub(super) fn build_tool_context_for(
         ctx = ctx.with_network_policy(decider.clone());
     }
 
+    // The utility model handle rides along unconditionally so cost-saving
+    // consumers (e.g. the sub-agent model router, which mirrors the main
+    // turn's `resolve_utility_llm` classification) run on `[utility_model]`
+    // whenever it is configured — not only when `[workshop]` is present.
+    // The handle alone is inert: agent-runtime's large-output synthesis
+    // reads it only when the workshop-gated router below is attached.
+    if let Some(utility) = host.utility_llm.clone() {
+        ctx = ctx.with_utility_llm(utility);
+    }
+
     // Wire the large-output router (#548). Only attaches when the
     // [workshop] config table is present; sub-agents don't inherit the
     // router (their ToolContext is built separately) to prevent recursive
@@ -134,9 +144,6 @@ pub(super) fn build_tool_context_for(
         let router =
             crate::tools::large_output_router::LargeOutputRouter::new(workshop_cfg.clone());
         ctx = ctx.with_large_output_router(router, vars_arc.clone());
-        if let Some(utility) = host.utility_llm.clone() {
-            ctx = ctx.with_utility_llm(utility);
-        }
     }
 
     // Wire the external sandbox backend (#516). exec_shell checks this

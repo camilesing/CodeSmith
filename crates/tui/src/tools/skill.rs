@@ -123,10 +123,7 @@ impl ToolSpec for LoadSkillTool {
         };
 
         let body = format_skill_body(skill);
-        let source = match &skill.loaded_from {
-            crate::skills::SkillSource::Extension { owner } => format!("mod: {owner}"),
-            _ => skill.path.display().to_string(),
-        };
+        let source = skill.loaded_from.label(&skill.path);
         // `skill_path` stays a real filesystem path (empty for file-less
         // mod skills); the mod label lives in its own `skill_source` key so
         // no consumer ever mistakes "mod: <owner>" for a path.
@@ -181,10 +178,7 @@ fn format_skill_body(skill: &Skill) -> String {
         out.push_str(&format!("Allowed tools: {}\n\n", allowed_tools.join(", ")));
     }
     // Mod-registered skills have no file — attribute the owning mod.
-    let source = match &skill.loaded_from {
-        crate::skills::SkillSource::Extension { owner } => format!("mod: {owner}"),
-        _ => skill.path.display().to_string(),
-    };
+    let source = skill.loaded_from.label(&skill.path);
     out.push_str(&format!("Source: `{source}`\n\n"));
     out.push_str("## SKILL.md\n\n");
     out.push_str(skill.body.trim());

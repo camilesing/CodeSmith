@@ -20,6 +20,25 @@ export interface LlmEnv {
   model?: string;
 }
 
+/**
+ * Parse LLM output as JSON with a descriptive error — raw `JSON.parse`
+ * failure messages ("Unexpected token …") carry no task context. Exported
+ * because every LLM-consuming task (the dispatch curate here, the
+ * community-agent tasks) needs the same guard; `context` names the caller
+ * in the error. Import direction stays one-way: tasks import from llm.ts,
+ * never the reverse.
+ */
+export function parseLlmJson(content: string, context?: string): unknown {
+  try {
+    return JSON.parse(content);
+  } catch (err) {
+    const where = context ? ` for the ${context}` : "";
+    throw new Error(
+      `LLM did not return valid JSON${where}: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+
 export async function chat(
   messages: ChatMessage[],
   apiKey: string,
@@ -124,14 +143,7 @@ export async function curate(
     dsEnv
   );
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    throw new Error(
-      `LLM did not return valid JSON for the dispatch (json_mode=on): ${err instanceof Error ? err.message : String(err)}`
-    );
-  }
+  const parsed = parseLlmJson(raw, "dispatch (json_mode=on)");
   if (!isDispatchPayload(parsed)) {
     throw new Error("LLM dispatch payload has the wrong shape (headline/summary/highlights/movers)");
   }

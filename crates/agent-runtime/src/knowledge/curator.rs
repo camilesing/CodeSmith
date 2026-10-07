@@ -54,6 +54,11 @@ pub struct CuratorReport {
     pub over_byte_budget: bool,
     /// The index file did not exist — nothing to curate.
     pub index_missing: bool,
+    /// The pass could not read its inputs (index or directory). Set instead
+    /// of classifying an unreadable directory as "every pointer stale" —
+    /// callers must abort rather than apply a cleanup built on a read
+    /// failure.
+    pub read_error: Option<String>,
 }
 
 /// A parsed pointer line: `- [label](target.md) — description` (the
@@ -67,16 +72,17 @@ pub struct PointerLine {
 }
 
 /// Parse one index line as a remember-style pointer line.
-/// `None` for headers, prose, blank lines, or malformed links.
+/// `None` for headers, prose, blank lines, or malformed links. The closing
+/// paren is searched only after the `](` marker, so a label containing `)`
+/// (e.g. `- [Vim (editor)](editor.md) — …`, which `remember` can emit from
+/// a model-supplied name) still parses.
 pub fn parse_pointer_line(line: &str) -> Option<PointerLine> {
     let trimmed = line.trim_start();
     let rest = trimmed.strip_prefix("- [")?;
     let bracket_end = rest.find("](")?;
-    let close_paren = rest.find(')')?;
-    if close_paren < bracket_end {
-        return None;
-    }
-    let target = &rest[bracket_end + 2..close_paren];
+    let target_start = bracket_end + 2;
+    let close_paren = target_start + rest[target_start..].find(')')?;
+    let target = &rest[target_start..close_paren];
     if target.is_empty() || !target.ends_with(".md") || target.contains("..") {
         return None;
     }
@@ -84,6 +90,20 @@ pub fn parse_pointer_line(line: &str) -> Option<PointerLine> {
         raw: line.to_string(),
         target: target.to_string(),
     })
+}
+
+/// List the topic files (top-level `.md`, excluding the index itself) in
+/// `memory_dir`. `Err` when the directory cannot be listed — callers must
+/// never validate or curate against a fabricated empty set (an empty set
+/// classifies every real pointer as stale and lets pointer-less proposals
+/// pass validation).
+fn topic_files_on_disk(memory_dir: &Path) -> std::io::Result<HashSet<String>> {
+    let entries = fs::read_dir(memory_dir)?;
+    Ok(entries
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .filter(|name| name.ends_with(".md") && name != "MEMORY.md")
+        .collect())
 }
 
 /// Run the deterministic consolidation pass over `<memory_dir>/MEMORY.md`.
@@ -100,22 +120,33 @@ pub fn curate_index(memory_dir: &Path) -> CuratorReport {
         orphan_topic_files: Vec::new(),
         over_line_budget: false,
         over_byte_budget: false,
-        index_missing: !index_path.exists(),
+        index_missing: false,
+        read_error: None,
     };
-    if report.index_missing {
-        return report;
-    }
-    let original = fs::read_to_string(&index_path).unwrap_or_default();
-
-    let topic_files_on_disk: HashSet<String> = fs::read_dir(memory_dir)
-        .map(|entries| {
-            entries
-                .flatten()
-                .map(|entry| entry.file_name().to_string_lossy().to_string())
-                .filter(|name| name.ends_with(".md") && name != "MEMORY.md")
-                .collect()
-        })
-        .unwrap_or_default();
+    // Read the index: `NotFound` is the ordinary "nothing to curate" case;
+    // any other failure is surfaced as `read_error` instead of masked as
+    // data — an unreadable index read as "" would look like an
+    // already-clean (or wipe-worthy) one.
+    let original = match fs::read_to_string(&index_path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            report.index_missing = true;
+            return report;
+        }
+        Err(err) => {
+            report.read_error = Some(format!("cannot read {}: {err}", index_path.display()));
+            return report;
+        }
+    };
+    // An unlistable directory read as {} strips every pointer under
+    // `--apply` while looking like mass staleness — surface it instead.
+    let topic_files_on_disk = match topic_files_on_disk(memory_dir) {
+        Ok(files) => files,
+        Err(err) => {
+            report.read_error = Some(format!("cannot list {}: {err}", memory_dir.display()));
+            return report;
+        }
+    };
 
     let mut seen_lines: HashSet<String> = HashSet::new();
     let mut referenced: HashSet<String> = HashSet::new();
@@ -167,15 +198,11 @@ pub fn curate_index(memory_dir: &Path) -> CuratorReport {
 /// * every pointer line parses (remember-style syntax preserved);
 /// * the result fits the entrypoint budgets.
 pub fn validate_proposed_index(memory_dir: &Path, proposed: &str) -> Result<(), String> {
-    let topic_files_on_disk: HashSet<String> = fs::read_dir(memory_dir)
-        .map(|entries| {
-            entries
-                .flatten()
-                .map(|entry| entry.file_name().to_string_lossy().to_string())
-                .filter(|name| name.ends_with(".md") && name != "MEMORY.md")
-                .collect()
-        })
-        .unwrap_or_default();
+    // Never validate against a fabricated empty file set — a pointer-less
+    // proposal would otherwise pass the "every topic file referenced" check
+    // vacuously and could be written under `--apply`.
+    let topic_files_on_disk =
+        topic_files_on_disk(memory_dir).map_err(|err| format!("cannot read memory dir: {err}"))?;
 
     let mut referenced: HashSet<String> = HashSet::new();
     let mut pointer_count = 0usize;
@@ -263,6 +290,52 @@ mod tests {
         assert!(parse_pointer_line("plain prose").is_none());
         assert!(parse_pointer_line("- [x](../escape.md) — traversal").is_none());
         assert!(parse_pointer_line("- [x](noext) — missing extension").is_none());
+    }
+
+    #[test]
+    fn parse_pointer_line_accepts_parens_in_the_label() {
+        // Regression: `remember` passes model-supplied names through with
+        // parens intact, and the old first-`)`-search classified these lines
+        // as prose — silently escaping dedupe, stale removal, and orphan
+        // accounting.
+        let pointer =
+            parse_pointer_line("- [Vim (editor)](editor.md) — prefers vim").expect("parses");
+        assert_eq!(pointer.target, "editor.md");
+    }
+
+    #[test]
+    fn curate_reports_read_error_instead_of_mass_staleness() {
+        // A file where the memory dir should be: reading `<file>/MEMORY.md`
+        // and listing the "directory" both fail with ENOTDIR, and the pass
+        // must surface that rather than treat the topic set as empty
+        // (which would classify every pointer as stale and, under
+        // `--apply`, strip the index).
+        let tmp = tempfile::tempdir().unwrap();
+        let not_a_dir = tmp.path().join("blocker");
+        fs::write(&not_a_dir, "occupied").unwrap();
+        let report = curate_index(&not_a_dir);
+        assert!(
+            report
+                .read_error
+                .as_deref()
+                .is_some_and(|e| e.starts_with("cannot read")),
+            "got: {:?}",
+            report.read_error
+        );
+        assert!(report.stale_pointers_removed.is_empty());
+        assert!(report.cleaned_index.is_empty());
+        assert!(!report.index_missing);
+    }
+
+    #[test]
+    fn validate_rejects_when_memory_dir_cannot_be_read() {
+        // Never validate against a fabricated empty file set — a
+        // pointer-less proposal would otherwise pass vacuously.
+        let tmp = tempfile::tempdir().unwrap();
+        let not_a_dir = tmp.path().join("blocker");
+        fs::write(&not_a_dir, "occupied").unwrap();
+        let err = validate_proposed_index(&not_a_dir, "no pointers at all\n").unwrap_err();
+        assert!(err.contains("cannot read memory dir"), "got: {err}");
     }
 
     #[test]

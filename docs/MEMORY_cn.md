@@ -180,13 +180,23 @@ CodeSmith 此前只加载 Project 和 User 层级；Managed 和 Local 层级以�
 
 ```markdown
 @include ../shared/coding-style.md
-  @include ~/notes/security.md
 ```
+
+以 `~` 锚定的目标（如 `@include ~/notes/security.md`）解析到 home 目录
+内，因此从 User 层文件（层级根为 home）可以加载，从 Project/Local
+文件则会被丢弃。
 
 该指令必须独占一行（允许前导空白），其后跟路径前的空白，因此像
 "see @include" 这样的正文不会被误认为指令。目标会做 `~` 展开并相对
-于包含该指令的文件解析。展开有界且去重：
+于包含该指令的文件解析。Markdown 代码围栏（\`\`\` 或 `~~~` 块）
+内的指令是无效正文。展开有界且去重：
 
+- **层级根边界** — 目标可解析到其层级根内的任意位置（Project/Local
+  文件为工作区、User 层为 home 目录、Managed 为 `/etc/codesmith`），
+  按规范路径比较，符号链接无法绕过。解析结果越出该边界的——`..`
+  逃逸、绝对路径、工作区文件引用 `~` 目标——会被丢弃并告警：不可信
+  的工作区记忆文件不得把任意文件（`~/.ssh/…`、`/etc/…`）拉进系统
+  提示词。
 - **深度上限** — `MAX_INCLUDE_DEPTH = 5`。根文件加上最多五层 include
   会被加载；第六层被静默丢弃。这限制了递归并让提示组装保持缓存友好。
 - **符号链接稳定的去重** — 已加载过的文件（按规范路径判断）不会再次

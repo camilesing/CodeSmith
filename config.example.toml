@@ -739,10 +739,17 @@ exponential_base = 2.0
 # is reported as "unsubstantiated" — the strongest hallucination signal this
 # checker produces, since it needs no re-run at all.
 #
-# Safety: the re-run replays exactly the input the model already sent (same
-# command, cwd and timeout) through the same sandbox/network policy — it
-# grants no authority the turn didn't already have, and only known
-# test/build prefixes are ever eligible for replay.
+# Safety: the re-run replays the verification command the model already
+# sent through the same sandbox/network policy — exec_shell calls are
+# replayed verbatim (same command, cwd and timeout), while run_tests
+# claims are replayed as the equivalent reconstructed `cargo test`
+# invocation (default 300s timeout). Before replaying, the input is
+# re-checked against the approval policy (a replay that no longer
+# classifies as auto-approved is skipped as a verify-error), the call is
+# bracketed with the same tool start/end events the turn's own dispatch
+# emits, and it aborts with the session cancel token. It grants no
+# authority the turn didn't already have, and only known test/build
+# prefixes are ever eligible for replay.
 #
 # Default: on. Set false to restore the pre-P3-8 behavior of trusting the
 # claim.
@@ -753,15 +760,20 @@ exponential_base = 2.0
 # Doctor LLM Fallback (P3-8)
 # ─────────────────────────────────────────────────────────────────────────────────
 # After `codesmith doctor`'s deterministic checks complete, any collected
-# warnings/errors are handed to one advisory LLM call (the [utility_model]
-# when configured, else the main client) that looks for root causes the
-# per-check hints cannot see — usually interactions between findings.
+# warnings/errors — plus environment context (OS, provider, base_url,
+# and model of the configured API target) — are handed to one advisory
+# LLM call (the [utility_model] when configured, else the main client)
+# that looks for root causes the per-check hints cannot see — usually
+# interactions between findings. Before the call, doctor prints an
+# explicit notice naming the provider and base_url the payload is sent
+# to, and finding details are redacted (`~` replaces home-directory
+# prefixes) before leaving the machine.
 # The analysis renders after "All checks complete!" and is explicitly
 # advisory: the deterministic results above take precedence, the model
 # never executes anything, and every skip condition (no client, empty
 # response, error, 30s timeout) degrades to a quiet `·` line. `--json`
-# mode is untouched. Default: on. Set false to keep doctor fully
-# deterministic.
+# mode is untouched. Default: on. Set false to keep the report fully
+# on-machine.
 #[doctor]
 # llm_fallback = true
 

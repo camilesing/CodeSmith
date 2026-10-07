@@ -4416,7 +4416,13 @@ async fn collect_until_turn_complete_auto_approving(handle: &EngineHandle) -> Ve
 /// buffer, so the next turn's first request is guaranteed to flush it.
 async fn await_result_verification_event(
     handle: &EngineHandle,
-) -> (String, String, Option<String>, Option<i64>, Option<String>) {
+) -> (
+    codesmith_agent_runtime::events::ResultVerdict,
+    String,
+    Option<String>,
+    Option<i64>,
+    Option<codesmith_agent_runtime::events::ResultFailureType>,
+) {
     let (verdict, claim, command, exit_code, failure_type) =
         tokio::time::timeout(std::time::Duration::from_secs(30), async {
             let mut rx = handle.rx_event.write().await;
@@ -4465,12 +4471,16 @@ fn make_send_op_allow_shell(content: &str) -> Op {
 }
 
 #[tokio::test]
-async fn result_verifier_replays_test_command_and_injects_verdict() {
+async fn result_verifier_gates_approval_required_replays_and_injects_verdict() {
     let _guard = lock_test_env();
     let tmp = tempdir().expect("tempdir");
 
     // `cargo test --help` is prefix-eligible ("cargo test") and
     // completes in well under a second without needing a Cargo project.
+    // Without a platform sandbox in the test env, its per-input approval
+    // classification is `Required`, so the original call ran on a
+    // per-invocation grant — the replay must be skipped, not re-executed
+    // (the verdict + injection pipeline is what stays under test).
     let turn1 = canned::tool_call_turn(
         "call_1",
         "exec_shell",
@@ -4493,11 +4503,22 @@ async fn result_verifier_replays_test_command_and_injects_verdict() {
 
     let (verdict, claim, command, exit_code, failure_type) =
         await_result_verification_event(&handle).await;
-    assert_eq!(verdict, "verified-pass");
+    // This test environment has no platform sandbox, so `exec_shell`'s
+    // per-input classification is `Required` — the original call ran on a
+    // per-invocation approval from the auto-approving harness. The replay
+    // gate must respect that: a second unattended run of an input that
+    // requires approval is skipped as a verify-error, never executed.
+    assert_eq!(
+        verdict,
+        codesmith_agent_runtime::events::ResultVerdict::VerifyError
+    );
     assert_eq!(claim, "测试通过");
     assert_eq!(command.as_deref(), Some("cargo test --help"));
-    assert_eq!(exit_code, Some(0));
-    assert_eq!(failure_type, None);
+    assert_eq!(exit_code, None);
+    assert_eq!(
+        failure_type,
+        Some(codesmith_agent_runtime::events::ResultFailureType::VerifyError)
+    );
 
     // The next turn's first request must carry the flushed verdict.
     handle
@@ -4517,12 +4538,16 @@ async fn result_verifier_replays_test_command_and_injects_verdict() {
         "expected the verdict runtime_event wrapper, got: {user_text}"
     );
     assert!(
-        user_text.contains("verdict: verified-pass"),
-        "expected the pass verdict, got: {user_text}"
+        user_text.contains("verdict: verify-error"),
+        "expected the approval-skip verdict, got: {user_text}"
+    );
+    assert!(
+        user_text.contains("replay input requires approval"),
+        "expected the skip reason as evidence, got: {user_text}"
     );
     assert!(
         user_text.contains("cargo test --help"),
-        "expected the replayed command as evidence, got: {user_text}"
+        "expected the original command as evidence, got: {user_text}"
     );
 }
 
@@ -4547,11 +4572,17 @@ async fn result_verifier_flags_unsubstantiated_claim() {
 
     let (verdict, claim, command, exit_code, failure_type) =
         await_result_verification_event(&handle).await;
-    assert_eq!(verdict, "unsubstantiated");
+    assert_eq!(
+        verdict,
+        codesmith_agent_runtime::events::ResultVerdict::Unsubstantiated
+    );
     assert_eq!(claim, "测试通过");
     assert_eq!(command, None);
     assert_eq!(exit_code, None);
-    assert_eq!(failure_type.as_deref(), Some("unsubstantiated-claim"));
+    assert_eq!(
+        failure_type,
+        Some(codesmith_agent_runtime::events::ResultFailureType::UnsubstantiatedClaim)
+    );
 
     handle
         .send(make_send_op("anything else"))

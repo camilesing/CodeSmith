@@ -108,13 +108,14 @@ pub(crate) fn subagent_completion_runtime_message(payload: &str) -> Message {
         role: "user".to_string(),
         content: vec![ContentBlock::Text {
             text: format!(
-                "<codesmith:runtime_event kind=\"subagent_completion\" visibility=\"internal\">\n\
+                "{} kind=\"subagent_completion\" visibility=\"internal\">\n\
 This is an internal runtime event, not user input. Use the sub-agent completion \
 data below to continue coordinating the current task. Do not tell the user they \
 pasted sentinels, do not explain the sentinel protocol, and do not quote the raw \
 XML unless the user explicitly asks to debug sub-agent internals.\n\n\
 {payload}\n\
-</codesmith:runtime_event>"
+</codesmith:runtime_event>",
+                crate::engine::RUNTIME_EVENT_PREFIX
             ),
             cache_control: None,
         }],

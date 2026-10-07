@@ -44,15 +44,31 @@ export interface CuratedDispatch {
  * and the read side (kv.ts getDispatch) of the same KV key — kept in one place
  * so the two halves cannot drift and silently wedge the homepage on the static
  * fallback. `generatedAt` is checked by neither side (the write side stamps it
- * itself; the read side tolerates its absence).
+ * itself; the read side tolerates its absence and stamps a default).
+ *
+ * Array items are validated for the fields the homepage renders directly
+ * (`title`/`href` as strings): "valid JSON of the wrong shape" must degrade
+ * to the fallback, not persist blank/garbage dispatch cards for 7 days.
  */
 export function isDispatchPayload(v: unknown): v is Omit<CuratedDispatch, "generatedAt"> {
+  if (typeof v !== "object" || v === null) return false;
+  const d = v as CuratedDispatch;
+  const wellFormedHighlight = (it: unknown) =>
+    typeof it === "object" &&
+    it !== null &&
+    typeof (it as { title?: unknown }).title === "string" &&
+    typeof (it as { href?: unknown }).href === "string";
+  const wellFormedMover = (it: unknown) =>
+    typeof it === "object" &&
+    it !== null &&
+    typeof (it as { title?: unknown }).title === "string" &&
+    typeof (it as { href?: unknown }).href === "string";
   return (
-    typeof v === "object" &&
-    v !== null &&
-    typeof (v as CuratedDispatch).headline === "string" &&
-    typeof (v as CuratedDispatch).summary === "string" &&
-    Array.isArray((v as CuratedDispatch).highlights) &&
-    Array.isArray((v as CuratedDispatch).movers)
+    typeof d.headline === "string" &&
+    typeof d.summary === "string" &&
+    Array.isArray(d.highlights) &&
+    d.highlights.every(wellFormedHighlight) &&
+    Array.isArray(d.movers) &&
+    d.movers.every(wellFormedMover)
   );
 }

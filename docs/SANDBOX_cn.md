@@ -95,8 +95,11 @@ Landlock。
 
 ### 4. Bubblewrap / bwrap（Linux，可选）
 
-**何时运行：** 当 `/usr/bin/bwrap` 存在**并且**设置了旧版
-`prefer_bwrap = true` 键或 `[sandbox] prefer_bwrap = true` 时。作为
+**何时运行：** 只要 `/usr/bin/bwrap` 存在就会运行——bwrap 无条件赢得
+Linux 后端选择，因为 Landlock 路径当前不做任何强制（`prepare_landlock`
+是有文档记录的透传），真正的 bwrap 约束优于退化为无沙箱执行。旧版
+顶层 `prefer_bwrap` 键与 `[sandbox] prefer_bwrap` 因此已废弃并被忽略。
+作为
 子命令的外层包装运行。
 
 **做什么：**
@@ -197,8 +200,10 @@ bwrap (namespace isolation)  ← optional outer wrapper
 # Sandbox policy mode
 sandbox_mode = "workspace-write"  # read-only | workspace-write | danger-full-access | external-sandbox
 
-# Linux bubblewrap passthrough
-prefer_bwrap = false              # requires `bubblewrap` package installed
+# Linux bubblewrap — DEPRECATED: bwrap is now selected whenever the
+# `bubblewrap` package is installed; this key is parsed for compatibility
+# and ignored.
+# prefer_bwrap = false
 
 # Structured runtime policy. These keys are optional and layer on top of
 # the legacy flat keys above.
@@ -208,7 +213,7 @@ fail_if_unavailable = false       # true = fail closed instead of unsandboxed fa
 enabled_platforms = ["macos", "linux"]
 excluded_commands = []            # program names or command prefixes
 auto_allow_bash_if_sandboxed = true
-prefer_bwrap = false
+# prefer_bwrap — deprecated & ignored (see above)
 
 [sandbox.filesystem]
 mode = "workspace-write"          # read-only | workspace-write | danger-full-access | external-sandbox
@@ -235,7 +240,8 @@ sandbox_api_key = "YOUR_API_KEY"
 环境变量覆盖：
 
 - `CODESMITH_SANDBOX_MODE` → `sandbox_mode`
-- `CODESMITH_PREFER_BWRAP=true` → `prefer_bwrap`
+- `CODESMITH_PREFER_BWRAP=true` → `prefer_bwrap` (deprecated & ignored — bwrap
+  is selected automatically whenever installed)
 - `CODESMITH_SANDBOX_BACKEND` → `sandbox_backend`
 - `CODESMITH_SANDBOX_URL` → `sandbox_url`
 - `CODESMITH_SANDBOX_API_KEY` → `sandbox_api_key`

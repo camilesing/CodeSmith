@@ -81,8 +81,8 @@ mod tests {
             &path,
             &codesmith_agent_runtime::evolution_log::VerdictRecord {
                 ts: "2026-09-26T00:00:00+00:00".to_string(),
-                verdict: "verified-fail".to_string(),
-                failure_type: Some("test-failure".to_string()),
+                verdict: codesmith_agent_runtime::events::ResultVerdict::VerifiedFail,
+                failure_type: Some(codesmith_agent_runtime::events::ResultFailureType::TestFailure),
                 claim: "测试通过".to_string(),
                 command: Some("cargo test".to_string()),
                 exit_code: Some(1),
@@ -92,7 +92,7 @@ mod tests {
         .unwrap();
         let text = stats_text_from(Some(&path));
         assert!(
-            text.contains("Claim-check verdicts (all time): 1"),
+            text.contains("Claim-check verdicts (recent history, 1 MiB log cap): 1"),
             "got: {text}"
         );
         assert!(text.contains("verified-fail:   1 (100%)"));

@@ -204,15 +204,26 @@ Any instruction file — in any tier — may pull another file in inline:
 
 ```markdown
 @include ../shared/coding-style.md
-  @include ~/notes/security.md
 ```
+
+A `~`-anchored target such as `@include ~/notes/security.md` resolves
+inside the home directory, so it loads from User-tier files (whose tier
+root is home) and is dropped from Project/Local files.
 
 The directive must be on its own line (leading whitespace is allowed)
 followed by whitespace before the path, so prose like "see @include"
 isn't mistaken for a directive. Targets are `~`-expanded and resolved
-relative to the file that contains the directive. Expansion is bounded
-and deduplicated:
+relative to the file that contains the directive. Directives inside
+markdown code fences (\`\`\` or `~~~` blocks) are inert prose.
+Expansion is bounded and deduplicated:
 
+- **Tier-root bound** — a target may resolve anywhere inside its tier's
+  root (the workspace for Project/Local files, the home directory for
+  User, `/etc/codesmith` for Managed), compared by canonical path so
+  symlinks can't sidestep it. Anything resolving outside that root —
+  `..` escapes, absolute paths, `~` targets from a workspace file — is
+  dropped with a warning: an untrusted workspace memory file must not
+  pull arbitrary files (`~/.ssh/…`, `/etc/…`) into the system prompt.
 - **Depth cap** — `MAX_INCLUDE_DEPTH = 5`. The root file plus up to
   five include levels load; the sixth level is silently dropped. This
   bounds recursion and keeps prompt assembly cache-friendly.

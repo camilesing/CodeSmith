@@ -43,7 +43,12 @@ pub trait ToolRegistryPluginExt {
     /// Apply config.toml tool overrides to this registry.
     ///
     /// For each entry in `overrides`:
-    /// - `Disabled` removes the tool.
+    /// - `Disabled` is a **no-op here**: removal moved to the single
+    ///   enforcement point — legacy config `disabled` entries are unioned
+    ///   into `EngineConfig.disabled_tools` (with a deprecation warning)
+    ///   and removed from the registry in `build_turn_dispatcher`. The
+    ///   registry deliberately keeps the tool so callers like
+    ///   `configure_plugin_tools` can diff registered names.
     /// - `Script` / `Command` replaces the tool with the user's implementation.
     ///
     /// `plugin_dir` is used as the base for relative script paths.

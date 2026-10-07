@@ -91,6 +91,20 @@ pub enum SkillSource {
     Extension { owner: String },
 }
 
+impl SkillSource {
+    /// Human-facing attribution label: `mod: <owner>` for mod-registered
+    /// skills, the file path otherwise. One definition shared by the
+    /// catalogue renderer, the `skill` tool's metadata, and its body —
+    /// so the `skill_source` key and the `Source:` line cannot drift
+    /// apart when a variant is added or the format changes.
+    pub fn label(&self, path: &Path) -> String {
+        match self {
+            Self::Extension { owner } => format!("mod: {owner}"),
+            _ => path.display().to_string(),
+        }
+    }
+}
+
 /// Parsed representation of a SKILL.md definition.
 #[derive(Debug, Clone)]
 pub struct Skill {
@@ -1054,9 +1068,11 @@ instructions when using a specific skill.\n\n",
         // (use the real path captured at discovery — the directory name
         // can differ from the frontmatter `name` for community installs);
         // mod-registered skills have no file, so attribute the mod.
+        // Mod skills attribute the mod; every file-backed source shows
+        // `file: <path>` (the shared label plus the file prefix).
         let source = match &skill.loaded_from {
-            SkillSource::Extension { owner } => format!("mod: {owner}"),
-            _ => format!("file: {}", skill.path.display()),
+            SkillSource::Extension { .. } => skill.loaded_from.label(&skill.path),
+            _ => format!("file: {}", skill.loaded_from.label(&skill.path)),
         };
         let line = if description.is_empty() {
             match usage {

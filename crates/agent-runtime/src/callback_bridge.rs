@@ -292,27 +292,6 @@ impl Callback for CallbackBridge {
         let state = self.state.clone();
         let extension = self.extension.clone();
         Box::pin(async move {
-            // Route B (streaming observation) — forward assistant TEXT
-            // deltas as `AssistantStream` (observe-only), independent of
-            // the UI channel below. Handlers run inline with the stream —
-            // "cheap by contract" — but nothing enforces that contract, so
-            // bound the emit: a slow (script) extension must not delay this
-            // delta's first UI paint, let alone stall the stream. The
-            // outcome is already discarded (Observe mode); a timeout
-            // preserves delta ordering where a fire-and-forget spawn would
-            // not. Thinking deltas stay UI-only for now.
-            if let (Some(runner), StreamDelta::Text { content, .. }) = (&extension, delta) {
-                let emit =
-                    runner.emit(codesmith_agent::extension::ExtensionEvent::AssistantStream(
-                        codesmith_agent::extension::AssistantStreamEvent {
-                            text: content.clone(),
-                        },
-                    ));
-                let _ = tokio::time::timeout(std::time::Duration::from_millis(250), emit).await;
-            }
-            let Some(tx) = tx.as_ref() else {
-                return;
-            };
             // First-wins dedup for block-lifecycle announcements within the
             // current LLM step (see `BridgeState::announced_blocks`). `None`
             // means "already announced — skip the send".
@@ -358,10 +337,43 @@ impl Callback for CallbackBridge {
                     })
                 }
             };
-            let Some(event) = event else {
-                return;
-            };
-            let _ = tx.send(event).await;
+            // UI paint first — the extension emit below is bounded but can
+            // still consume its whole budget per delta, and a slow (script)
+            // extension must not delay this delta's first paint (the reason
+            // the bound exists). The emit runs even when `tx` is `None`:
+            // extension observation is independent of the UI channel.
+            if let Some(tx) = tx.as_ref()
+                && let Some(event) = event
+            {
+                let _ = tx.send(event).await;
+            }
+            // Route B (streaming observation) — forward assistant TEXT
+            // deltas as `AssistantStream` (observe-only). Handlers run
+            // inline with the stream — "cheap by contract" — but nothing
+            // enforces that contract, so bound the emit: a slow (script)
+            // extension must not stall the stream for more than the budget.
+            // The outcome is discarded (Observe mode) but an elapsed budget
+            // is logged — a misbehaving extension stays observable instead
+            // of silently degrading every delta. A timeout preserves delta
+            // ordering where a fire-and-forget spawn would not. Thinking
+            // deltas stay UI-only for now.
+            if let (Some(runner), StreamDelta::Text { content, .. }) = (&extension, delta) {
+                let emit =
+                    runner.emit(codesmith_agent::extension::ExtensionEvent::AssistantStream(
+                        codesmith_agent::extension::AssistantStreamEvent {
+                            text: content.clone(),
+                        },
+                    ));
+                if tokio::time::timeout(std::time::Duration::from_millis(250), emit)
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!(
+                        target: "codesmith_runtime::callback_bridge",
+                        "AssistantStream handler dispatch exceeded 250ms; delta dropped for extensions"
+                    );
+                }
+            }
         })
     }
 

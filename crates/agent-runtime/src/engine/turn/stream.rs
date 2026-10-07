@@ -1156,6 +1156,14 @@ impl HostAgentExecutor {
                         *stream_retry_attempts = 0;
                         continue;
                     }
+                    // `try_rate_limit_hold` also returns false when the
+                    // cancel token fired during the poll sleep — a user
+                    // Esc riding out a quota window is an interruption,
+                    // not a stream failure (mirrors the pre-stream guard).
+                    if self.is_cancelled() {
+                        self.emit_status("Request cancelled".to_string()).await;
+                        return Ok(StreamRoundOutcome::Interrupted);
+                    }
                     crate::retry_status::failed(format!(
                         "stream failed ({category}); {MAX_TRANSPARENT_STREAM_RETRIES} retries exhausted"
                     ));

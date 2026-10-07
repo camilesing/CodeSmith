@@ -56,13 +56,25 @@ pub fn parse_deliverables(instruction: &str) -> Vec<String> {
         let lower = line.to_lowercase();
         let has_verb = DELIVERABLE_VERBS.iter().any(|v| lower.contains(v));
         for candidate in deliverable_path_regex().find_iter(line) {
+            let start = candidate.start();
+            // A genuine absolute path starts at a delimiter (line start,
+            // whitespace, or an opening quote/bracket). A match preceded by
+            // other characters is a URL path fragment — `https://host/app/x`
+            // yields `/host/app/x` from the second slash — which would
+            // become a tracked deliverable that can never exist on disk.
+            let preceded_by_delim = start == 0
+                || line[..start].ends_with(char::is_whitespace)
+                || line[..start].ends_with(['"', '\'', '(', '[']);
+            if !preceded_by_delim {
+                continue;
+            }
             let raw = candidate
                 .as_str()
                 .trim_end_matches(['.', ',', ';', ':', ')']);
             if raw.len() < 2 {
                 continue;
             }
-            if raw.contains("/inputs") || raw.ends_with("/inputs") {
+            if raw.contains("/inputs/") || raw.ends_with("/inputs") {
                 continue;
             }
             let looks_like_file = raw.rsplit('/').next().is_some_and(|name| {
@@ -86,15 +98,24 @@ pub fn parse_deliverables(instruction: &str) -> Vec<String> {
     out
 }
 
-/// Return the subset of `paths` that do not exist on disk (or cannot be
-/// stat'd). Async (`tokio::fs`) — safe to call from the turn loop.
+/// Return the subset of `paths` that do not exist on disk. A stat *error*
+/// (permission denied on a parent, broken mount) is not evidence of a
+/// missing file — reporting it as one would produce a persistent false
+/// "still missing" alarm, so it is logged and skipped instead. Async
+/// (`tokio::fs`) — safe to call from the turn loop.
 pub async fn missing_deliverables(paths: &[String]) -> Vec<String> {
     let mut missing = Vec::new();
     for path in paths {
-        if tokio::fs::try_exists(path).await.unwrap_or(false) {
-            continue;
+        match tokio::fs::try_exists(path).await {
+            Ok(true) => continue,
+            Ok(false) => missing.push(path.clone()),
+            Err(err) => tracing::debug!(
+                target: "deliverables",
+                path,
+                error = %err,
+                "stat failed; not reporting as missing"
+            ),
         }
-        missing.push(path.clone());
     }
     missing
 }
@@ -114,13 +135,14 @@ pub fn deliverables_runtime_message(missing: &[String], total: usize) -> Message
         role: "user".to_string(),
         content: vec![ContentBlock::Text {
             text: format!(
-                "<codesmith:runtime_event kind=\"deliverables_check\" visibility=\"internal\">\n\
+                "{} kind=\"deliverables_check\" visibility=\"internal\">\n\
 This is an internal runtime event, not user input. The engine checked the deliverable paths \
 named in the task instruction against disk. The following are still missing:\n\
 {list}\n\
 Create them before finishing — a missing deliverable fails the task regardless of other \
 work. ({present}/{total} present.)\n\
-</codesmith:runtime_event>"
+</codesmith:runtime_event>",
+                super::RUNTIME_EVENT_PREFIX
             ),
             cache_control: None,
         }],
@@ -131,9 +153,15 @@ work. ({present}/{total} present.)\n\
 /// state. Cadence-gated; re-notes a persistent gap only after
 /// [`RE_NOTE_INTERVAL_STEPS`] so an agent that ignores the note is nudged,
 /// not spammed.
+///
+/// `Clone` shares the schedule state (`Arc`'d progress), and the engine
+/// holds the original for the whole session — a fresh probe per turn would
+/// reset `last_note_step` and re-note an unchanged gap on every turn,
+/// defeating the anti-spam cadence across a multi-turn session.
+#[derive(Clone)]
 pub(crate) struct DeliverablesProbe {
     deliverables: Vec<String>,
-    progress: std::sync::Mutex<DeliverablesProgress>,
+    progress: std::sync::Arc<std::sync::Mutex<DeliverablesProgress>>,
 }
 
 #[derive(Default)]
@@ -146,7 +174,7 @@ impl DeliverablesProbe {
     pub(crate) fn new(deliverables: Vec<String>) -> Self {
         Self {
             deliverables,
-            progress: std::sync::Mutex::new(DeliverablesProgress::default()),
+            progress: std::sync::Arc::new(std::sync::Mutex::new(DeliverablesProgress::default())),
         }
     }
 
@@ -264,5 +292,34 @@ mod tests {
         assert!(!probe.due(0)); // empty probe is never due
         let empty = DeliverablesProbe::new(Vec::new());
         assert!(!empty.due(20));
+    }
+
+    #[test]
+    fn url_path_fragments_are_not_deliverables() {
+        // `https://host/data/report.xlsx` must not yield "/host/data/
+        // report.xlsx" — a tracked deliverable that can never exist on disk
+        // produces a persistent false "still missing" alarm.
+        let instruction =
+            "Fetch https://example.com/data/report.xlsx and write /app/out/report.xlsx";
+        let deliverables = parse_deliverables(instruction);
+        assert_eq!(deliverables, vec!["/app/out/report.xlsx".to_string()]);
+    }
+
+    #[test]
+    fn inputs_segment_match_does_not_over_skip() {
+        // `/inputs` as a substring would reject these legitimate outputs;
+        // only a whole path segment may match.
+        let deliverables = parse_deliverables(
+            "write /app/outputs/inputs_report.csv and /data/inputs_v2/report.xlsx",
+        );
+        assert_eq!(
+            deliverables,
+            vec![
+                "/app/outputs/inputs_report.csv".to_string(),
+                "/data/inputs_v2/report.xlsx".to_string(),
+            ]
+        );
+        let skipped = parse_deliverables("read /app/inputs/config.yaml then write /app/out.csv");
+        assert_eq!(skipped, vec!["/app/out.csv".to_string()]);
     }
 }
