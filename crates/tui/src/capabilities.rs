@@ -127,13 +127,20 @@ fn manifest_path() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("capabilities.toml"))
 }
 
-fn manifest() -> &'static CapabilityManifest {
-    static MANIFEST: OnceLock<CapabilityManifest> = OnceLock::new();
-    MANIFEST.get_or_init(|| {
-        let path = manifest_path();
-        CapabilityManifest::load_from(&path)
-            .unwrap_or_else(|e| panic!("capabilities manifest invalid ({e}) — fix {path:?}"))
-    })
+fn manifest() -> Result<&'static CapabilityManifest, String> {
+    static MANIFEST: OnceLock<Result<CapabilityManifest, String>> = OnceLock::new();
+    MANIFEST
+        .get_or_init(|| {
+            let path = manifest_path();
+            CapabilityManifest::load_from(&path).map_err(|e| {
+                format!(
+                    "capabilities manifest invalid ({e}) — fix {}",
+                    path.display()
+                )
+            })
+        })
+        .as_ref()
+        .map_err(Clone::clone)
 }
 
 /// Union legacy config.toml `[tools].overrides` `disabled` entries into
@@ -156,10 +163,15 @@ fn union_legacy(set: &mut HashSet<String>, tools: Option<&crate::config::ToolsCo
 }
 
 /// The session-level disabled set: the manifest plus the legacy entries.
-pub fn effective_disabled(tools: Option<&crate::config::ToolsConfig>) -> HashSet<String> {
-    let mut set = manifest().tools_disabled.clone();
+/// A malformed manifest propagates as an error (fail loud, with the file
+/// path) instead of a panic — the interactive TUI build path surfaces it
+/// without tearing down the alternate screen.
+pub fn effective_disabled(
+    tools: Option<&crate::config::ToolsConfig>,
+) -> Result<HashSet<String>, String> {
+    let mut set = manifest()?.tools_disabled.clone();
     union_legacy(&mut set, tools);
-    set
+    Ok(set)
 }
 
 #[cfg(test)]

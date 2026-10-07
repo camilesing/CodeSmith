@@ -1165,6 +1165,14 @@ If you are upgrading from older releases:
   - `[auto].router_model` (string, optional) — override the routing
     classifier itself. Default: the heavy tier under quality-first
     routing, the `[utility_model]` under cost saving.
+- `automations.*` (optional): bounds for scheduled automation runs
+  (`/automations`). Scheduled runs are unattended — nobody is watching to
+  interrupt a runaway loop — so they are capped below the interactive
+  engine default:
+  - `[automations].max_steps` (int, default `100`) — step cap per turn for
+    scheduled runs. The interactive engine default is effectively
+    unlimited; raise this only if an automation legitimately needs longer
+    turns.
 - `workshop.*` (optional): large-tool-output routing (#548). Tool results
   above the threshold are condensed by the `[utility_model]` model; only
   the synthesis enters the parent context while the raw text is kept in

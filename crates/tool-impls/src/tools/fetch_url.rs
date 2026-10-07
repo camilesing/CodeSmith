@@ -284,17 +284,14 @@ impl ToolSpec for FetchUrlTool {
         if !status.is_success() {
             // Don't `Err` on 4xx/5xx — the caller often wants to see the body
             // (e.g. a JSON error envelope). Mark the result as a failure so the
-            // engine renders it as such.
-            return Ok(ToolResult {
-                content: serde_json::to_string_pretty(&response).map_err(|e| {
-                    ToolError::execution_failed(format!("failed to serialize response: {e}"))
-                })?,
-                success: false,
-                canonical: Some(serde_json::to_value(&response).map_err(|e| {
-                    ToolError::execution_failed(format!("failed to serialize response: {e}"))
-                })?),
-                metadata: None,
-            });
+            // engine renders it as such. Built via `ToolResult::json` (then
+            // flipping `success`) so the non-success rendering cannot drift
+            // from the success path.
+            let mut result = ToolResult::json(&response).map_err(|e| {
+                ToolError::execution_failed(format!("failed to serialize response: {e}"))
+            })?;
+            result.success = false;
+            return Ok(result);
         }
 
         ToolResult::json(&response)

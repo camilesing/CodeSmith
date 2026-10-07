@@ -73,14 +73,19 @@ impl TodoList {
     }
 
     /// Event-sourcing slice 3 — the todo projection: rebuild the list from
-    /// a transcript. Every `todo_write` / `checklist_write` call replaces
-    /// the whole list, so the fold is last-write-wins over assistant
-    /// `ToolUse` blocks. A malformed write is skipped (the fold keeps the
-    /// last coherent state) — recorded history is evidence, not a veto.
-    /// Rebuilt ids/statuses match live semantics (`add` re-enforces the
-    /// single-in-progress rule).
+    /// a transcript by folding every checklist tool call that actually
+    /// executed (see [`super::executed_tool_call_ids`]). Mirrors the live
+    /// tools registered by `with_todo_tool` (tool-impls `todo.rs`):
+    /// `*_write` replaces the whole list, `*_add` appends, `*_update`
+    /// updates one status, and a missing or unrecognized `status` defaults
+    /// to pending — so the rebuild matches what the live list held. A write
+    /// whose item has a non-string `content` is skipped (the fold keeps the
+    /// last coherent state). Rebuilt ids/statuses match live semantics
+    /// (`add` re-enforces the single-in-progress rule).
     pub fn rebuild_from_messages(messages: &[codesmith_agent::models::Message]) -> Self {
         use codesmith_agent::models::ContentBlock;
+
+        let executed = super::executed_tool_call_ids(messages);
 
         let mut list = Self::new();
         for message in messages {
@@ -88,31 +93,65 @@ impl TodoList {
                 continue;
             }
             for block in &message.content {
-                let ContentBlock::ToolUse { name, input, .. } = block else {
+                let ContentBlock::ToolUse {
+                    id, name, input, ..
+                } = block
+                else {
                     continue;
                 };
-                if name != "todo_write" && name != "checklist_write" {
+                if !executed.contains(id.as_str()) {
                     continue;
                 }
-                let Some(todos) = input.get("todos").and_then(|t| t.as_array()) else {
-                    continue;
-                };
-                let mut rebuilt = Self::new();
-                let mut coherent = true;
-                for item in todos {
-                    let (Some(content), Some(status)) = (
-                        item.get("content").and_then(|v| v.as_str()),
-                        item.get("status")
+                match name.as_str() {
+                    "todo_write" | "checklist_write" => {
+                        let Some(todos) = input.get("todos").and_then(|t| t.as_array()) else {
+                            continue;
+                        };
+                        let mut rebuilt = Self::new();
+                        let mut coherent = true;
+                        for item in todos {
+                            let Some(content) = item.get("content").and_then(|v| v.as_str()) else {
+                                coherent = false;
+                                break;
+                            };
+                            let status = item
+                                .get("status")
+                                .and_then(|v| v.as_str())
+                                .and_then(TodoStatus::from_str)
+                                .unwrap_or(TodoStatus::Pending);
+                            rebuilt.add(content.to_string(), status);
+                        }
+                        if coherent {
+                            list = rebuilt;
+                        }
+                    }
+                    "todo_add" | "checklist_add" => {
+                        let Some(content) = input.get("content").and_then(|v| v.as_str()) else {
+                            continue;
+                        };
+                        let status = input
+                            .get("status")
                             .and_then(|v| v.as_str())
-                            .and_then(TodoStatus::from_str),
-                    ) else {
-                        coherent = false;
-                        break;
-                    };
-                    rebuilt.add(content.to_string(), status);
-                }
-                if coherent {
-                    list = rebuilt;
+                            .and_then(TodoStatus::from_str)
+                            .unwrap_or(TodoStatus::Pending);
+                        list.add(content.to_string(), status);
+                    }
+                    "todo_update" | "checklist_update" => {
+                        let (Some(item_id), Some(status)) = (
+                            input
+                                .get("id")
+                                .and_then(|v| v.as_u64())
+                                .and_then(|v| u32::try_from(v).ok()),
+                            input
+                                .get("status")
+                                .and_then(|v| v.as_str())
+                                .and_then(TodoStatus::from_str),
+                        ) else {
+                            continue;
+                        };
+                        list.update_status(item_id, status);
+                    }
+                    _ => continue,
                 }
             }
         }
@@ -217,35 +256,23 @@ pub fn new_shared_todo_list() -> SharedTodoList {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Transcript helper: an assistant message carrying one tool call.
-    #[cfg(test)]
-    pub(crate) fn assistant_tool_use(
-        name: &str,
-        input: serde_json::Value,
-    ) -> codesmith_agent::models::Message {
-        codesmith_agent::models::Message {
-            role: "assistant".to_string(),
-            content: vec![codesmith_agent::models::ContentBlock::ToolUse {
-                id: "call_x".to_string(),
-                name: name.to_string(),
-                input,
-                caller: None,
-            }],
-        }
-    }
+    use crate::test_support::{assistant_tool_use, tool_result};
 
     #[test]
     fn todo_projection_last_write_wins() {
         let messages = vec![
+            tool_result("call_1", false),
             assistant_tool_use(
+                "call_1",
                 "todo_write",
                 serde_json::json!({"todos": [
                     {"content": "a", "status": "pending"},
                     {"content": "b", "status": "in_progress"},
                 ]}),
             ),
+            tool_result("call_2", false),
             assistant_tool_use(
+                "call_2",
                 "checklist_write",
                 serde_json::json!({"todos": [
                     {"content": "a", "status": "completed"},
@@ -262,18 +289,100 @@ mod tests {
     }
 
     #[test]
-    fn todo_projection_skips_malformed_write() {
+    fn todo_projection_defaults_unrecognized_status_like_live_tool() {
+        // The live TodoWriteTool adds the item as pending when `status` is
+        // missing or unrecognized — the rebuild must match, not skip the
+        // write (that would restore a stale list on reload).
         let messages = vec![
+            tool_result("call_1", false),
             assistant_tool_use(
+                "call_1",
                 "todo_write",
                 serde_json::json!({"todos": [{"content": "ok", "status": "pending"}]}),
             ),
-            // Malformed: unknown status — the fold keeps the last coherent list.
+            tool_result("call_2", false),
             assistant_tool_use(
+                "call_2",
                 "todo_write",
                 serde_json::json!({"todos": [{"content": "bad", "status": "wat"}]}),
             ),
+        ];
+        let list = TodoList::rebuild_from_messages(&messages);
+        let snap = list.snapshot();
+        assert_eq!(snap.items.len(), 1);
+        assert_eq!(snap.items[0].content, "bad");
+        assert!(snap.items[0].status == TodoStatus::Pending);
+    }
+
+    #[test]
+    fn todo_projection_folds_add_and_update() {
+        // `with_todo_tool` registers add/update against the same shared
+        // list; a session that used them must reload to the same state.
+        let messages = vec![
+            tool_result("call_1", false),
+            assistant_tool_use(
+                "call_1",
+                "checklist_write",
+                serde_json::json!({"todos": [
+                    {"content": "a", "status": "pending"},
+                    {"content": "b", "status": "pending"},
+                ]}),
+            ),
+            tool_result("call_2", false),
+            assistant_tool_use(
+                "call_2",
+                "checklist_add",
+                serde_json::json!({"content": "c"}),
+            ),
+            tool_result("call_3", false),
+            assistant_tool_use(
+                "call_3",
+                "todo_update",
+                serde_json::json!({"id": 1, "status": "in_progress"}),
+            ),
+        ];
+        let list = TodoList::rebuild_from_messages(&messages);
+        let snap = list.snapshot();
+        assert_eq!(snap.items.len(), 3);
+        assert_eq!(snap.items[2].content, "c");
+        assert!(snap.items[0].status == TodoStatus::InProgress);
+        assert_eq!(snap.in_progress_id, Some(1));
+    }
+
+    #[test]
+    fn todo_projection_skips_errored_and_unpaired_calls() {
+        // Blocked/errored calls carry an error result; an interrupted turn
+        // persists the ToolUse with no result at all. Neither mutated the
+        // live list, so neither folds.
+        let messages = vec![
+            tool_result("call_1", false),
+            assistant_tool_use(
+                "call_1",
+                "todo_write",
+                serde_json::json!({"todos": [{"content": "ok", "status": "pending"}]}),
+            ),
+            // Errored write: not folded.
+            tool_result("call_2", true),
+            assistant_tool_use(
+                "call_2",
+                "todo_write",
+                serde_json::json!({"todos": [{"content": "err", "status": "pending"}]}),
+            ),
+            // Errored add: not folded.
+            tool_result("call_3", true),
+            assistant_tool_use(
+                "call_3",
+                "checklist_add",
+                serde_json::json!({"content": "err-add"}),
+            ),
+            // Unpaired write (interrupted turn): not folded.
+            assistant_tool_use(
+                "call_4",
+                "todo_write",
+                serde_json::json!({"todos": [{"content": "dangling", "status": "pending"}]}),
+            ),
             // Unrelated tool calls and user messages are ignored.
+            assistant_tool_use("call_5", "read_file", serde_json::json!({"path": "x"})),
             codesmith_agent::models::Message {
                 role: "user".to_string(),
                 content: vec![codesmith_agent::models::ContentBlock::Text {
@@ -281,7 +390,28 @@ mod tests {
                     cache_control: None,
                 }],
             },
-            assistant_tool_use("read_file", serde_json::json!({"path": "x"})),
+        ];
+        let list = TodoList::rebuild_from_messages(&messages);
+        let snap = list.snapshot();
+        assert_eq!(snap.items.len(), 1);
+        assert_eq!(snap.items[0].content, "ok");
+    }
+
+    #[test]
+    fn todo_projection_skips_write_with_non_string_content() {
+        let messages = vec![
+            tool_result("call_1", false),
+            assistant_tool_use(
+                "call_1",
+                "todo_write",
+                serde_json::json!({"todos": [{"content": "ok", "status": "pending"}]}),
+            ),
+            tool_result("call_2", false),
+            assistant_tool_use(
+                "call_2",
+                "todo_write",
+                serde_json::json!({"todos": [{"content": 42, "status": "pending"}]}),
+            ),
         ];
         let list = TodoList::rebuild_from_messages(&messages);
         let snap = list.snapshot();

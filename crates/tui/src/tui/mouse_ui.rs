@@ -664,12 +664,7 @@ pub(crate) fn handle_context_menu_action(app: &mut App, action: ContextMenuActio
                     &app.workspace,
                     &app.mcp_config_path,
                     app.mcp_snapshot.as_ref(),
-                    &app.extension_runner
-                        .as_ref()
-                        .map(|runner| {
-                            crate::skills::skills_from_registrations(&runner.registered_skills())
-                        })
-                        .unwrap_or_default(),
+                    &app.registered_skills(),
                 )));
         }
         ContextMenuAction::OpenContextInspector => {

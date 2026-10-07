@@ -123,13 +123,20 @@ pub struct PlanState {
 
 impl PlanState {
     /// Event-sourcing slice 3 — the plan projection: rebuild the plan
-    /// from a transcript by folding every `update_plan` call (each input
-    /// replaces the plan — last write wins). Step timing is stamped at
+    /// from a transcript by folding every `update_plan` call that actually
+    /// executed (see [`super::executed_tool_call_ids`]); each input
+    /// replaces the plan — last write wins. Parsing mirrors the live
+    /// `UpdatePlanTool::execute` (tool-impls `plan.rs`): a non-string
+    /// `explanation` is ignored, a missing or unrecognized `status`
+    /// defaults to pending — a serde round-trip would reject inputs the
+    /// live tool accepted and restore a stale plan. An item with a
+    /// non-string `step` skips the whole write. Step timing is stamped at
     /// rebuild time (instants are not persisted); it is display-only
-    /// metadata. A malformed input is skipped (serde round-trip through
-    /// [`UpdatePlanArgs`]).
+    /// metadata.
     pub fn rebuild_from_messages(messages: &[codesmith_agent::models::Message]) -> Self {
         use codesmith_agent::models::ContentBlock;
+
+        let executed = super::executed_tool_call_ids(messages);
 
         let mut state = Self::default();
         for message in messages {
@@ -137,14 +144,44 @@ impl PlanState {
                 continue;
             }
             for block in &message.content {
-                let ContentBlock::ToolUse { name, input, .. } = block else {
+                let ContentBlock::ToolUse {
+                    id, name, input, ..
+                } = block
+                else {
                     continue;
                 };
-                if name != "update_plan" {
+                if name != "update_plan" || !executed.contains(id.as_str()) {
                     continue;
                 }
-                if let Ok(args) = serde_json::from_value::<UpdatePlanArgs>(input.clone()) {
-                    state.update(args);
+                let explanation = input
+                    .get("explanation")
+                    .and_then(|v| v.as_str())
+                    .map(std::string::ToString::to_string);
+                let Some(plan) = input.get("plan").and_then(|v| v.as_array()) else {
+                    continue;
+                };
+                let mut items = Vec::new();
+                let mut coherent = true;
+                for item in plan {
+                    let Some(step) = item.get("step").and_then(|v| v.as_str()) else {
+                        coherent = false;
+                        break;
+                    };
+                    let status = item
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .and_then(StepStatus::from_str)
+                        .unwrap_or(StepStatus::Pending);
+                    items.push(PlanItemArg {
+                        step: step.to_string(),
+                        status,
+                    });
+                }
+                if coherent {
+                    state.update(UpdatePlanArgs {
+                        explanation,
+                        plan: items,
+                    });
                 }
             }
         }
@@ -311,33 +348,23 @@ pub fn new_shared_plan_state() -> SharedPlanState {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn assistant_tool_use(
-        name: &str,
-        input: serde_json::Value,
-    ) -> codesmith_agent::models::Message {
-        codesmith_agent::models::Message {
-            role: "assistant".to_string(),
-            content: vec![codesmith_agent::models::ContentBlock::ToolUse {
-                id: "call_x".to_string(),
-                name: name.to_string(),
-                input,
-                caller: None,
-            }],
-        }
-    }
+    use crate::test_support::{assistant_tool_use, tool_result};
 
     #[test]
     fn plan_projection_last_write_wins() {
         let messages = vec![
+            tool_result("call_1", false),
             assistant_tool_use(
+                "call_1",
                 "update_plan",
                 serde_json::json!({"explanation": "first", "plan": [
                     {"step": "s1", "status": "pending"},
                     {"step": "s2", "status": "pending"},
                 ]}),
             ),
+            tool_result("call_2", false),
             assistant_tool_use(
+                "call_2",
                 "update_plan",
                 serde_json::json!({"plan": [
                     {"step": "s1", "status": "completed"},
@@ -345,9 +372,15 @@ mod tests {
                 ]}),
             ),
             // Malformed (missing `plan`) is skipped, not fatal.
-            assistant_tool_use("update_plan", serde_json::json!({"explanation": "broken"})),
+            tool_result("call_3", false),
+            assistant_tool_use(
+                "call_3",
+                "update_plan",
+                serde_json::json!({"explanation": "broken"}),
+            ),
             // Unrelated calls ignored.
-            assistant_tool_use("read_file", serde_json::json!({"path": "x"})),
+            tool_result("call_4", false),
+            assistant_tool_use("call_4", "read_file", serde_json::json!({"path": "x"})),
         ];
         let state = PlanState::rebuild_from_messages(&messages);
         assert!(
@@ -360,6 +393,58 @@ mod tests {
         assert_eq!(snap.items[0].status, StepStatus::Completed);
         assert_eq!(snap.items[1].step, "s3");
         assert_eq!(snap.items[1].status, StepStatus::InProgress);
+    }
+
+    #[test]
+    fn plan_projection_parses_leniently_like_live_tool() {
+        // The live UpdatePlanTool accepts "done"/"inprogress" statuses and
+        // defaults a missing status to pending; a serde round-trip would
+        // reject both and restore a stale plan on reload.
+        let messages = vec![
+            tool_result("call_1", false),
+            assistant_tool_use(
+                "call_1",
+                "update_plan",
+                serde_json::json!({"plan": [
+                    {"step": "s1", "status": "done"},
+                    {"step": "s2"},
+                ]}),
+            ),
+        ];
+        let state = PlanState::rebuild_from_messages(&messages);
+        let snap = state.snapshot();
+        assert_eq!(snap.items.len(), 2);
+        assert_eq!(snap.items[0].status, StepStatus::Completed);
+        assert_eq!(snap.items[1].status, StepStatus::Pending);
+    }
+
+    #[test]
+    fn plan_projection_skips_errored_and_unpaired_calls() {
+        let messages = vec![
+            tool_result("call_1", false),
+            assistant_tool_use(
+                "call_1",
+                "update_plan",
+                serde_json::json!({"plan": [{"step": "ok", "status": "pending"}]}),
+            ),
+            // Errored write: not folded.
+            tool_result("call_2", true),
+            assistant_tool_use(
+                "call_2",
+                "update_plan",
+                serde_json::json!({"plan": [{"step": "err", "status": "pending"}]}),
+            ),
+            // Unpaired write (interrupted turn): not folded.
+            assistant_tool_use(
+                "call_3",
+                "update_plan",
+                serde_json::json!({"plan": [{"step": "dangling", "status": "pending"}]}),
+            ),
+        ];
+        let state = PlanState::rebuild_from_messages(&messages);
+        let snap = state.snapshot();
+        assert_eq!(snap.items.len(), 1);
+        assert_eq!(snap.items[0].step, "ok");
     }
 
     #[test]

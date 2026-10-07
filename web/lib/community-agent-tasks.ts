@@ -112,6 +112,7 @@ export async function runTriage(env: AgentEnv): Promise<Record<string, unknown>>
 
     let processed = 0;
     let skipped = 0;
+    let failed = 0;
 
     for (const issue of newIssues) {
       // Must match the draft.type used in saveDraft below ("triage"), or dedup silently breaks.
@@ -150,11 +151,13 @@ export async function runTriage(env: AgentEnv): Promise<Record<string, unknown>>
         await logUsage(env.CURATED_KV, usage.input, usage.output);
         processed++;
       } catch {
-        skipped++;
+        failed++;
       }
     }
 
-    return { ok: true, processed, skipped };
+    // `failed` is distinct from `skipped` (fresh-draft skips): a run where
+    // every LLM call errored must not read as a clean HTTP 200 success.
+    return { ok: true, processed, skipped, failed };
   } catch (e) {
     return { ok: false, error: String(e) };
   }
@@ -178,6 +181,7 @@ export async function runPrReview(env: AgentEnv): Promise<Record<string, unknown
 
     let processed = 0;
     let skipped = 0;
+    let failed = 0;
 
     for (const pr of prs.slice(0, 10)) {
       // Must match the draft.type used in saveDraft below ("pr-review"), or dedup silently breaks.
@@ -234,11 +238,13 @@ export async function runPrReview(env: AgentEnv): Promise<Record<string, unknown
         await logUsage(env.CURATED_KV, usage.input, usage.output);
         processed++;
       } catch {
-        skipped++;
+        failed++;
       }
     }
 
-    return { ok: true, processed, skipped };
+    // `failed` is distinct from `skipped` (fresh-draft skips): a run where
+    // every LLM call errored must not read as a clean HTTP 200 success.
+    return { ok: true, processed, skipped, failed };
   } catch (e) {
     return { ok: false, error: String(e) };
   }
@@ -264,6 +270,7 @@ export async function runStale(env: AgentEnv): Promise<Record<string, unknown>> 
 
     let processed = 0;
     let skipped = 0;
+    let failed = 0;
 
     for (const issue of issues.slice(0, 10)) {
       if (await hasFreshDraft(env.CURATED_KV, "stale", String(issue.number), issue.updated_at)) {
@@ -301,11 +308,13 @@ export async function runStale(env: AgentEnv): Promise<Record<string, unknown>> 
         await logUsage(env.CURATED_KV, usage.input, usage.output);
         processed++;
       } catch {
-        skipped++;
+        failed++;
       }
     }
 
-    return { ok: true, processed, skipped };
+    // `failed` is distinct from `skipped` (fresh-draft skips): a run where
+    // every LLM call errored must not read as a clean HTTP 200 success.
+    return { ok: true, processed, skipped, failed };
   } catch (e) {
     return { ok: false, error: String(e) };
   }
@@ -359,6 +368,10 @@ export async function runDupes(env: AgentEnv): Promise<Record<string, unknown>> 
         typeof (s as { bodyEn?: unknown }).bodyEn === "string" &&
         typeof (s as { bodyZh?: unknown }).bodyZh === "string"
     );
+    // Malformed entries are dropped, not fatal — surface the count so a
+    // partially-garbage payload reads differently from "no duplicates
+    // found".
+    const dropped = parsed.suggestions.length - suggestions.length;
 
     let processed = 0;
     for (const s of suggestions) {
@@ -376,7 +389,7 @@ export async function runDupes(env: AgentEnv): Promise<Record<string, unknown>> 
     }
 
     await logUsage(env.CURATED_KV, usage.input, usage.output);
-    return { ok: true, processed };
+    return { ok: true, processed, ...(dropped > 0 ? { dropped } : {}) };
   } catch (e) {
     return { ok: false, error: String(e) };
   }
@@ -459,7 +472,10 @@ export async function runDigest(env: AgentEnv): Promise<Record<string, unknown>>
           typeof s === "object" &&
           s !== null &&
           typeof (s as { heading?: unknown }).heading === "string" &&
-          Array.isArray((s as { items?: unknown }).items)
+          Array.isArray((s as { items?: unknown }).items) &&
+          // Non-string entries would bake `- undefined` / `- [object Object]`
+          // into the persisted draft below.
+          ((s as { items?: unknown }).items as unknown[]).every((i) => typeof i === "string")
       )
     ) {
       // Without this a missing title/summary bakes "# undefined" into a

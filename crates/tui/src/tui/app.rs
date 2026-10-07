@@ -112,6 +112,14 @@ pub(crate) fn looks_like_shell_bang_input(input: &str) -> bool {
     input.starts_with('!') && !input.contains('\n') && !input[1..].trim().is_empty()
 }
 
+/// An in-flight `!cmd` passthrough run (background execution).
+pub struct ShellBangRun {
+    /// The command being executed (for status messages).
+    pub command: String,
+    /// Cancelled by Esc; the runner task kills the process group.
+    pub cancel: tokio_util::sync::CancellationToken,
+}
+
 fn initial_onboarding_state(
     skip_onboarding: bool,
     was_onboarded: bool,
@@ -1461,6 +1469,10 @@ pub struct App {
     /// Active decision card (v0.8.43 truth-surface). When set, keyboard input
     /// is routed through the card navigation instead of the composer.
     pub decision_card: Option<crate::tui::widgets::decision_card::DecisionCard>,
+    /// An in-flight `!cmd` shell passthrough run. The command executes on a
+    /// spawned task (the event loop keeps running); Esc cancels through the
+    /// token when no engine turn is streaming.
+    pub shell_bang: Option<ShellBangRun>,
     /// Wall-clock time when this TUI session started. Used by the Work
     /// sidebar projection to hide completed durable tasks that finished
     /// before the current session (bug #1913).
@@ -2125,6 +2137,7 @@ impl App {
             workspace_context_refreshed_at: None,
             task_panel: Vec::new(),
             decision_card: None,
+            shell_bang: None,
             session_started_at: chrono::Utc::now(),
             needs_redraw: true,
             thinking_started_at: None,
@@ -2171,13 +2184,20 @@ impl App {
         }
     }
 
-    pub fn refresh_skill_cache(&mut self) {
-        let skills_dir = self.skills_dir.clone();
-        let registered = self
-            .extension_runner
+    /// Skills registered by the extension runner, in the shared shape the
+    /// command palette and skill cache consume. The single source for all
+    /// palette-open paths so their registration source can't drift.
+    #[must_use]
+    pub fn registered_skills(&self) -> Vec<crate::skills::Skill> {
+        self.extension_runner
             .as_ref()
             .map(|runner| crate::skills::skills_from_registrations(&runner.registered_skills()))
-            .unwrap_or_default();
+            .unwrap_or_default()
+    }
+
+    pub fn refresh_skill_cache(&mut self) {
+        let skills_dir = self.skills_dir.clone();
+        let registered = self.registered_skills();
         let mut registry =
             crate::skills::discover_for_workspace_and_dir(&self.workspace, &skills_dir);
         registry.merge_registered(&registered);
@@ -3652,6 +3672,10 @@ impl App {
         };
         self.push_undo_snapshot();
         self.break_edit_sequences();
+        // Drop any active selection: the length-changing replace below
+        // would leave a dangling anchor pointing into moved text (the
+        // next Backspace would then delete from the stale anchor).
+        self.selection_anchor = None;
         let start_char = char_count(&self.input[..colon_byte]);
         let cursor_byte = byte_index_at_char(&self.input, self.cursor_position);
         self.input.replace_range(colon_byte..cursor_byte, emoji);
@@ -3677,6 +3701,13 @@ impl App {
 
     pub fn delete_char(&mut self) {
         self.clear_input_history_navigation();
+        if self.selection_range().is_some() {
+            // A pure delete must not continue a kill/yank sequence started
+            // elsewhere — a mouse-drag selection sets cursor/anchor without
+            // breaking the sequence, so yank_pop would otherwise rewrite a
+            // stale range on the next Alt+Y.
+            self.break_edit_sequences();
+        }
         if self.delete_selection() {
             return;
         }
@@ -3699,11 +3730,17 @@ impl App {
 
     pub fn delete_char_forward(&mut self) {
         self.clear_input_history_navigation();
+        if self.selection_range().is_some() {
+            // See delete_char: a pure delete breaks the kill/yank sequence.
+            self.break_edit_sequences();
+        }
         if self.delete_selection() {
             return;
         }
         self.selected_attachment_index = None;
-        if self.input.is_empty() {
+        // Mirror the backward variant's guard: snapshot only when a
+        // character can actually be removed (cursor at end is a no-op).
+        if self.cursor_position >= char_count(&self.input) {
             return;
         }
         self.push_undo_snapshot();
@@ -3719,10 +3756,19 @@ impl App {
         self.needs_redraw = true;
     }
 
-    /// Delete the word before the cursor.
+    /// Delete the word before the cursor. A selection is killed into the
+    /// ring first (Ctrl+W / Alt+Backspace are kill commands) — matching
+    /// `delete_word_forward` and the line-kill commands' selection
+    /// semantics, so the next Ctrl+Y pastes what was on screen.
     pub fn delete_word_backward(&mut self) {
         self.clear_input_history_navigation();
-        if self.delete_selection() {
+        if let Some((start, end)) = self.selection_range() {
+            let sb = byte_index_at_char(&self.input, start);
+            let eb = byte_index_at_char(&self.input, end);
+            let removed = self.input[sb..eb].to_string();
+            self.yank_span = None;
+            self.kill_push(&removed, true);
+            self.delete_selection();
             return;
         }
         self.selected_attachment_index = None;
@@ -4721,11 +4767,13 @@ impl App {
     }
 
     /// `\` + Enter line continuation: when the cursor sits at the end of a
-    /// logical line whose last character is a single trailing backslash,
-    /// Enter removes the backslash and continues on a newline instead of
-    /// submitting. A doubled backslash (`\\`) is literal and submits with
-    /// both characters — to submit text ending in exactly one `\` verbatim,
-    /// use Ctrl+Enter (it bypasses continuation entirely).
+    /// logical line ending in an *odd* number of backslashes (the last one
+    /// is therefore unescaped), Enter removes that backslash and continues
+    /// on a newline instead of submitting — readline/bash parity, so any
+    /// run length behaves the same (1 and 3 continue, 2 submits with both
+    /// characters literal). An even run is fully escaped (literal) and
+    /// submits. To submit text ending in an odd backslash verbatim, use
+    /// Ctrl+Enter (it bypasses continuation entirely).
     fn consume_backslash_continuation(&mut self) -> bool {
         let chars: Vec<char> = self.input.chars().collect();
         if self.cursor_position == 0 || self.cursor_position > chars.len() {
@@ -4738,8 +4786,16 @@ impl App {
         if chars[self.cursor_position - 1] != '\\' {
             return false;
         }
-        let doubled = self.cursor_position >= 2 && chars[self.cursor_position - 2] == '\\';
-        if doubled {
+        // Count the trailing backslash run: even = fully escaped (literal,
+        // submit); odd = the final backslash is unescaped and continues the
+        // line.
+        let mut run = 0usize;
+        let mut i = self.cursor_position;
+        while i > 0 && chars[i - 1] == '\\' {
+            run += 1;
+            i -= 1;
+        }
+        if run.is_multiple_of(2) {
             return false;
         }
         // Captured before the removal — `chars` still includes the backslash.
@@ -7407,6 +7463,105 @@ mod tests {
 
         assert!(app.undo_input_edit());
         assert_eq!(app.input, "pasted payload");
+    }
+
+    /// Review round 4: an odd trailing backslash run continues the line
+    /// (readline parity) — the pairwise check treated any run ≥ 2 as
+    /// literal, so `foo\\\` submitted a dangling escape instead of
+    /// continuing with one literal `\`.
+    #[test]
+    fn triple_backslash_run_continues_line() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "foo\\\\\\".to_string(); // foo + 3 backslashes
+        app.cursor_position = app.input.chars().count();
+
+        let submitted = app.handle_composer_enter();
+
+        assert!(submitted.is_none());
+        // The unescaped third backslash is consumed; the two literal ones
+        // stay, followed by the continuation newline.
+        assert_eq!(app.input, "foo\\\\\n");
+    }
+
+    /// Review round 4: a pure selection delete must break the kill/yank
+    /// sequence — a mouse-drag selection (which sets cursor/anchor without
+    /// passing through move_cursor_*) followed by Backspace used to leave
+    /// yank_span live, so Alt+Y rewrote a stale char range.
+    #[test]
+    fn selection_delete_breaks_yank_sequence() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello world".to_string();
+        app.cursor_position = char_count(&app.input);
+        app.kill_ring.push_front("XYZ".to_string());
+        assert!(app.yank()); // sets yank_span
+        assert!(app.yank_span.is_some());
+
+        // Mouse-drag selection: anchor set directly, bypassing move_cursor_*.
+        app.selection_anchor = Some(0);
+        app.cursor_position = char_count(&app.input);
+        app.delete_char(); // selection branch — a pure delete
+        assert!(app.input.is_empty());
+
+        // The sequence is broken: yank_pop must not fire (and must not
+        // rewrite text at a stale range) after the delete.
+        assert!(!app.yank_pop());
+        assert!(app.input.is_empty());
+    }
+
+    /// Review round 4: Ctrl+W over a selection must kill it into the ring
+    /// (it is a kill command, like Alt+D / Ctrl+U / Ctrl+K) — it used to
+    /// plain-delete, so the next Ctrl+Y pasted stale ring content.
+    #[test]
+    fn delete_word_backward_selection_kills_into_ring() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello world".to_string();
+        app.selection_anchor = Some(0);
+        app.cursor_position = char_count(&app.input);
+
+        app.delete_word_backward();
+
+        assert!(app.input.is_empty());
+        assert_eq!(
+            app.kill_ring.front().map(String::as_str),
+            Some("hello world")
+        );
+        assert!(app.yank());
+        assert_eq!(app.input, "hello world");
+    }
+
+    /// Review round 4: applying an emoji popup entry while a selection is
+    /// anchored elsewhere must drop the anchor — the length-changing
+    /// replace used to leave a dangling anchor, so the next Backspace
+    /// deleted from the stale anchor to the new cursor.
+    #[test]
+    fn emoji_menu_selection_clears_dangling_anchor() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hi :fi".to_string();
+        app.cursor_position = char_count(&app.input);
+        let entries: &[(&'static str, &'static str)] = &[("fire", "🔥")];
+        app.selection_anchor = Some(0);
+
+        assert!(app.apply_emoji_menu_selection(entries));
+        assert_eq!(app.input, "hi 🔥");
+        assert!(app.selection_anchor.is_none(), "anchor must not dangle");
+
+        // The next Backspace deletes exactly one char, not a stale range.
+        app.delete_char();
+        assert_eq!(app.input, "hi ");
+    }
+
+    /// Review round 4: forward-delete at end-of-input is a no-op and must
+    /// not push an undo snapshot (the user would need a dead Ctrl+Z press).
+    #[test]
+    fn delete_char_forward_at_end_pushes_no_snapshot() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "abc".to_string();
+        app.cursor_position = char_count(&app.input);
+
+        app.delete_char_forward();
+
+        assert_eq!(app.input, "abc");
+        assert!(!app.undo_input_edit(), "no no-op undo entry");
     }
 
     #[test]

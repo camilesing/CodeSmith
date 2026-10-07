@@ -159,19 +159,24 @@ pub struct ThreadRecord {
 /// completed turn, against the dedup design documented on
 /// `EngineEvent::LlmRequest` (agent-runtime events.rs). The SSE compat
 /// layer reads only `turn.usage` from this payload.
-fn turn_completed_payload(turn: &TurnRecord) -> serde_json::Value {
-    let mut view = match serde_json::to_value(turn) {
+fn turn_completed_payload(turn: &mut TurnRecord) -> serde_json::Value {
+    // Take the catalog off the record before serializing: serializing it
+    // only to remove the key afterwards would spend the catalog's
+    // serialization cost on every completed turn. `tool_count` is always
+    // present (0 when no catalog was captured), so the payload shape is
+    // stable across turns.
+    let catalog = turn.tool_catalog.take();
+    let tool_count = catalog.as_ref().map_or(0, Vec::len);
+    let mut view = match serde_json::to_value(&*turn) {
         Ok(v) => v,
         Err(e) => {
             tracing::warn!("turn.completed payload failed to serialize: {e}");
             serde_json::json!({})
         }
     };
-    if let Some(obj) = view.as_object_mut()
-        && let Some(catalog) = obj.remove("tool_catalog")
-    {
-        let count = catalog.as_array().map_or(0, Vec::len);
-        obj.insert("tool_count".to_string(), serde_json::json!(count));
+    turn.tool_catalog = catalog;
+    if let Some(obj) = view.as_object_mut() {
+        obj.insert("tool_count".to_string(), serde_json::json!(tool_count));
     }
     json!({ "turn": view })
 }
@@ -2063,11 +2068,15 @@ impl RuntimeThreadManager {
             show_thinking: settings.show_thinking,
             is_simple: settings.is_simple,
             personality: self.config.personality(),
-            // Deliberate behavior change with the engine-config
-            // unification: background automations used to cap at 100 steps;
-            // DEFAULT_MAX_STEPS (= 1024) now applies here too, so a runaway
-            // automation can loop (and spend) ~10× longer per turn.
-            max_steps: codesmith_agent_runtime::engine_config::DEFAULT_MAX_STEPS,
+            // Unattended scheduled runs are bounded well below the
+            // interactive engine default: nobody is watching a scheduled
+            // run to interrupt a runaway loop, so the step cap is what
+            // protects unattended spend. Operators can raise it with
+            // `[automations] max_steps`.
+            max_steps: self
+                .config
+                .automation_max_steps()
+                .unwrap_or(crate::config::AUTOMATION_DEFAULT_MAX_STEPS),
             max_subagents: self.config.max_subagents().clamp(1, MAX_SUBAGENTS),
             features: self.config.features(),
             parse_gate: self.config.edit_config().parse_gate_enabled(),
@@ -2124,7 +2133,8 @@ impl RuntimeThreadManager {
             index_enabled: false,
             search_api_key: self.config.search.as_ref().and_then(|s| s.api_key.clone()),
             tools_always_load: self.config.tools_always_load(),
-            disabled_tools: crate::capabilities::effective_disabled(self.config.tools.as_ref()),
+            disabled_tools: crate::capabilities::effective_disabled(self.config.tools.as_ref())
+                .map_err(anyhow::Error::msg)?,
             tools: self.config.tools.clone(),
             team_context: None,
             file_freshness_tracker:
@@ -3152,7 +3162,7 @@ impl RuntimeThreadManager {
             // append-only stream on every completed turn. The event carries
             // the turn view with the catalog reduced to its length — the
             // SSE compat layer reads only `turn.usage`.
-            turn_completed_payload(&turn),
+            turn_completed_payload(&mut turn),
         )
         .await?;
 

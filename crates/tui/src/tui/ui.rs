@@ -622,7 +622,7 @@ pub async fn run_tui(
     };
     refresh_active_task_panel(&mut app, &task_manager).await;
 
-    let engine_config = build_engine_config(&app, config);
+    let engine_config = build_engine_config(&app, config)?;
 
     // Spawn the Engine - it will handle all API communication
     let engine_handle = spawn_engine(engine_config, config, build_engine_host(&app));
@@ -874,8 +874,8 @@ fn handle_memory_quick_add(app: &mut App, input: &str, config: &Config) {
     }
 }
 
-fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
-    EngineConfig {
+fn build_engine_config(app: &App, config: &Config) -> anyhow::Result<EngineConfig> {
+    Ok(EngineConfig {
         model: app.model.clone(),
         workspace: app.workspace.clone(),
         allow_shell: app.allow_shell,
@@ -964,13 +964,14 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         search_api_key: config.search.as_ref().and_then(|s| s.api_key.clone()),
         index_enabled: config.index_tools_enabled(),
         tools_always_load: config.tools_always_load(),
-        disabled_tools: crate::capabilities::effective_disabled(config.tools.as_ref()),
+        disabled_tools: crate::capabilities::effective_disabled(config.tools.as_ref())
+            .map_err(anyhow::Error::msg)?,
         tools: config.tools.clone(),
         team_context: None,
         file_freshness_tracker:
             codesmith_agent_runtime::tools::freshness::FileFreshnessTracker::new(),
         telemetry_sink: app.telemetry_sink.clone(),
-    }
+    })
 }
 
 /// Build the host-injected runtime services + hooks for an engine spawn.
@@ -1172,6 +1173,8 @@ async fn run_event_loop(
     let mut current_streaming_text = String::new();
     let (translation_tx, mut translation_rx) =
         tokio::sync::mpsc::unbounded_channel::<TranslationEvent>();
+    let (shell_bang_tx, mut shell_bang_rx) =
+        tokio::sync::mpsc::unbounded_channel::<ShellBangEvent>();
     let mut pending_translations = 0usize;
     let mut pending_thinking_translations = 0usize;
     let mut last_queue_state = (app.queued_messages.clone(), app.queued_draft.clone());
@@ -1329,6 +1332,13 @@ async fn run_event_loop(
                     app.needs_redraw = true;
                 }
             }
+        }
+
+        // `!cmd` passthrough completions arrive from the spawned runner
+        // task; the event loop keeps running while the command executes.
+        while let Ok(event) = shell_bang_rx.try_recv() {
+            app.shell_bang = None;
+            handle_shell_bang_event(app, config, &engine_handle, event).await?;
         }
 
         if last_task_refresh.elapsed() >= Duration::from_millis(2500) {
@@ -2640,6 +2650,7 @@ async fn run_event_loop(
                 &task_manager,
                 &mut engine_handle,
                 &mut web_config_session,
+                &shell_bang_tx,
                 events,
             )
             .await?
@@ -2934,6 +2945,7 @@ async fn run_event_loop(
                     &task_manager,
                     &mut engine_handle,
                     &mut web_config_session,
+                    &shell_bang_tx,
                     events,
                 )
                 .await?
@@ -3078,24 +3090,26 @@ async fn run_event_loop(
                                         Some(4_000),
                                     );
                                     app.status_message = None;
-                                    // Recreate the engine so it picks up the newly saved key
-                                    // without requiring a full process restart.
-                                    let _ = engine_handle.send(Op::Shutdown).await;
-                                    // Stamp the new key on the long-lived
-                                    // `Config` reference so any future clone
-                                    // (e.g. a subsequent /provider switch)
-                                    // sees it; the explicit-override path
-                                    // in `provider_api_key` (#343) makes
-                                    // this win immediately.
                                     config.api_key = Some(key.clone());
                                     let mut refreshed_config = config.clone();
                                     refreshed_config.api_key = Some(key);
-                                    let engine_config = build_engine_config(app, &refreshed_config);
-                                    engine_handle = spawn_engine(
-                                        engine_config,
-                                        &refreshed_config,
-                                        build_engine_host(app),
-                                    );
+                                    // Build before shutting the old engine
+                                    // down — a failed build (e.g. malformed
+                                    // capabilities.toml) keeps the live
+                                    // engine and surfaces the error.
+                                    match build_engine_config(app, &refreshed_config) {
+                                        Ok(engine_config) => {
+                                            let _ = engine_handle.send(Op::Shutdown).await;
+                                            engine_handle = spawn_engine(
+                                                engine_config,
+                                                &refreshed_config,
+                                                build_engine_host(app),
+                                            );
+                                        }
+                                        Err(e) => {
+                                            app.status_message = Some(e.to_string());
+                                        }
+                                    }
                                     app.offline_mode = false;
                                     app.api_key_env_only = false;
 
@@ -3248,14 +3262,7 @@ async fn run_event_loop(
                         &app.workspace,
                         &app.mcp_config_path,
                         app.mcp_snapshot.as_ref(),
-                        &app.extension_runner
-                            .as_ref()
-                            .map(|runner| {
-                                crate::skills::skills_from_registrations(
-                                    &runner.registered_skills(),
-                                )
-                            })
-                            .unwrap_or_default(),
+                        &app.registered_skills(),
                     )));
                 continue;
             }
@@ -3352,6 +3359,7 @@ async fn run_event_loop(
                     &task_manager,
                     &mut engine_handle,
                     &mut web_config_session,
+                    &shell_bang_tx,
                     events,
                 )
                 .await?
@@ -3657,6 +3665,15 @@ async fn run_event_loop(
                     // cursor moves, so typing immediately re-opens suggestions.
                     app.emoji_menu_suppressed_at = Some((app.input.clone(), app.cursor_position));
                     app.emoji_menu_selected = 0;
+                }
+                KeyCode::Esc if app.shell_bang.is_some() && !app.is_loading => {
+                    // An in-flight `!cmd` passthrough run owns Esc when no
+                    // engine turn is streaming: Esc kills its process group.
+                    if let Some(run) = app.shell_bang.take() {
+                        run.cancel.cancel();
+                        app.status_message = Some(format!("Cancelling `{}`…", run.command));
+                        app.needs_redraw = true;
+                    }
                 }
                 KeyCode::Esc => {
                     match next_escape_action(app, slash_menu_open) {
@@ -4048,10 +4065,11 @@ async fn run_event_loop(
                             continue;
                         }
                         // `!cmd` shell passthrough — run the command in the
-                        // user's shell and submit the captured output as a
-                        // user message so the model can respond to it.
+                        // user's shell (background task; the UI keeps
+                        // running, Esc cancels) and submit the captured
+                        // output as a user message when it completes.
                         if looks_like_shell_bang_input(&input) {
-                            run_shell_bang_input(app, config, &engine_handle, &input).await?;
+                            start_shell_bang_input(app, &input, &shell_bang_tx).await?;
                             continue;
                         }
                         if looks_like_slash_command_input(&input) {
@@ -5447,9 +5465,15 @@ async fn switch_provider(
         app.session.last_completion_tokens = None;
     }
 
-    let _ = engine_handle.send(Op::Shutdown).await;
-    let engine_config = build_engine_config(app, config);
-    *engine_handle = spawn_engine(engine_config, config, build_engine_host(app));
+    match build_engine_config(app, config) {
+        Ok(engine_config) => {
+            let _ = engine_handle.send(Op::Shutdown).await;
+            *engine_handle = spawn_engine(engine_config, config, build_engine_host(app));
+        }
+        // A failed build (e.g. malformed capabilities.toml) keeps the live
+        // engine and surfaces the error.
+        Err(e) => app.status_message = Some(e.to_string()),
+    }
 
     if !app.api_messages.is_empty() {
         let _ = engine_handle
@@ -5934,10 +5958,16 @@ async fn apply_command_result(
                         app.session.last_prompt_tokens = None;
                         app.session.last_completion_tokens = None;
                         // Rebuild the engine with the new config so API key/model/base URL take effect.
-                        let _ = engine_handle.send(Op::Shutdown).await;
-                        let engine_config = build_engine_config(app, config);
-                        *engine_handle =
-                            spawn_engine(engine_config, config, build_engine_host(app));
+                        match build_engine_config(app, config) {
+                            Ok(engine_config) => {
+                                let _ = engine_handle.send(Op::Shutdown).await;
+                                *engine_handle =
+                                    spawn_engine(engine_config, config, build_engine_host(app));
+                            }
+                            // A failed build (e.g. malformed capabilities.toml)
+                            // keeps the live engine and surfaces the error.
+                            Err(e) => app.status_message = Some(e.to_string()),
+                        }
                         if !app.api_messages.is_empty() {
                             let _ = engine_handle
                                 .send(Op::SyncSession {
@@ -6084,9 +6114,15 @@ async fn switch_workspace(
     apply_workspace_runtime_state(app, config, workspace.clone());
     sync_runtime_workspace_state(task_manager, workspace.clone()).await;
 
-    let _ = engine_handle.send(Op::Shutdown).await;
-    let engine_config = build_engine_config(app, config);
-    *engine_handle = spawn_engine(engine_config, config, build_engine_host(app));
+    match build_engine_config(app, config) {
+        Ok(engine_config) => {
+            let _ = engine_handle.send(Op::Shutdown).await;
+            *engine_handle = spawn_engine(engine_config, config, build_engine_host(app));
+        }
+        // A failed build (e.g. malformed capabilities.toml) keeps the live
+        // engine and surfaces the error.
+        Err(e) => app.status_message = Some(e.to_string()),
+    }
     if !app.api_messages.is_empty() {
         let _ = engine_handle
             .send(Op::SyncSession {
@@ -6374,112 +6410,244 @@ async fn steer_user_message(
 }
 
 /// `!cmd` shell passthrough: run the command in the user's shell (cwd =
-/// workspace), then submit the command plus captured output as a user
-/// message so the model can respond to it — and the session log records
-/// it (model-visible means logged).
+/// workspace) on a spawned task, then submit the command plus captured
+/// output as a user message so the model can respond to it — and the
+/// session log records it (model-visible means logged).
 ///
 /// The command runs as the user's own action (they typed it), so it does
-/// not pass the tool-approval gate.
+/// not pass the tool-approval gate — but a command `command_safety`
+/// classifies as `Dangerous` gets an explicit confirmation prompt first
+/// ([`ShellBangConfirmView`]); one Enter can no longer run a pasted
+/// `curl … | sh` unconfirmed.
 ///
-/// Known limitations: output is captured, not streamed — the UI stays
-/// frozen while the command runs, capped by [`SHELL_BANG_TIMEOUT_SECS`]
-/// (Esc cannot cancel it); and capture is bounded to
+/// Execution is backgrounded: the event loop keeps running while the
+/// command executes (Esc kills its process group), capped by
+/// [`SHELL_BANG_TIMEOUT_SECS`]. Capture is bounded to
 /// [`SHELL_BANG_MAX_CAPTURE_BYTES`] per stream — a high-volume command is
 /// truncated at capture time (kept draining so the child can exit) rather
 /// than buffered whole into memory.
-async fn run_shell_bang_input(
-    app: &mut App,
-    config: &Config,
-    engine_handle: &EngineHandle,
-    input: &str,
-) -> Result<()> {
+enum ShellBangEvent {
+    Done {
+        command: String,
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
+        status: std::process::ExitStatus,
+    },
+    Failed {
+        command: String,
+        error: String,
+    },
+    TimedOut {
+        command: String,
+    },
+    Cancelled {
+        command: String,
+    },
+}
+
+/// Extract the command text from a `!cmd` passthrough input.
+fn shell_bang_command_text(input: &str) -> Option<String> {
     let command = input
         .trim_start()
         .strip_prefix('!')
         .map(str::trim)
         .unwrap_or_default()
         .to_string();
-    if command.is_empty() {
+    (!command.is_empty()).then_some(command)
+}
+
+/// Whether a `!cmd` passthrough needs an explicit confirmation prompt —
+/// only commands `command_safety` flags as `Dangerous`.
+fn shell_bang_requires_confirmation(command: &str) -> bool {
+    matches!(
+        crate::command_safety::analyze_command(command).level,
+        crate::command_safety::SafetyLevel::Dangerous
+    )
+}
+
+/// Entry point for a `!cmd` passthrough: dangerous commands get the
+/// confirmation modal; anything else starts the background run.
+async fn start_shell_bang_input(
+    app: &mut App,
+    input: &str,
+    tx: &tokio::sync::mpsc::UnboundedSender<ShellBangEvent>,
+) -> Result<()> {
+    let Some(command) = shell_bang_command_text(input) else {
+        return Ok(());
+    };
+    if app.shell_bang.is_some() {
+        app.push_status_toast(
+            "A `!` command is already running — Esc cancels it".to_string(),
+            StatusToastLevel::Info,
+            Some(3_000),
+        );
         return Ok(());
     }
+    if shell_bang_requires_confirmation(&command) {
+        app.view_stack
+            .push(crate::tui::views::ShellBangConfirmView::new(command));
+        return Ok(());
+    }
+    spawn_shell_bang_run(app, command, tx.clone());
+    Ok(())
+}
 
-    let mut cmd = shell_bang_command(&command);
-    cmd.current_dir(&app.workspace);
-    cmd.stdin(std::process::Stdio::null());
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
-    let mut child = match cmd.spawn() {
-        Ok(child) => child,
-        Err(err) => {
+/// Spawn the background runner for a (confirmed) `!cmd` passthrough and
+/// record the run on `app` so Esc can cancel it.
+fn spawn_shell_bang_run(
+    app: &mut App,
+    command: String,
+    tx: tokio::sync::mpsc::UnboundedSender<ShellBangEvent>,
+) {
+    let cancel = tokio_util::sync::CancellationToken::new();
+    app.shell_bang = Some(crate::tui::app::ShellBangRun {
+        command: command.clone(),
+        cancel: cancel.clone(),
+    });
+    app.push_status_toast(
+        format!("Running `{command}`… (Esc to cancel)"),
+        StatusToastLevel::Info,
+        None,
+    );
+    let workspace = app.workspace.clone();
+    tokio::spawn(async move {
+        let mut cmd = shell_bang_command(&command);
+        cmd.current_dir(&workspace);
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        let mut child = match cmd.spawn() {
+            Ok(child) => child,
+            Err(err) => {
+                let _ = tx.send(ShellBangEvent::Failed {
+                    command,
+                    error: err.to_string(),
+                });
+                return;
+            }
+        };
+        // Captured before the select: the runner arms killpg by pid so no
+        // arm needs `&mut child` after the future is dropped.
+        let child_pid = child.id();
+        let run = async {
+            let stdout_pipe = child.stdout.take();
+            let stderr_pipe = child.stderr.take();
+            let (stdout_bytes, stderr_bytes) = tokio::join!(
+                read_bounded(stdout_pipe, SHELL_BANG_MAX_CAPTURE_BYTES),
+                read_bounded(stderr_pipe, SHELL_BANG_MAX_CAPTURE_BYTES),
+            );
+            let status = child.wait().await?;
+            Ok::<_, std::io::Error>((stdout_bytes?, stderr_bytes?, status))
+        };
+        tokio::select! {
+            () = cancel.cancelled() => {
+                kill_shell_bang_process_group(child_pid);
+                let _ = tx.send(ShellBangEvent::Cancelled { command });
+            }
+            outcome = tokio::time::timeout(
+                Duration::from_secs(SHELL_BANG_TIMEOUT_SECS),
+                run,
+            ) => match outcome {
+                Ok(Ok((stdout, stderr, status))) => {
+                    let _ = tx.send(ShellBangEvent::Done {
+                        command,
+                        stdout,
+                        stderr,
+                        status,
+                    });
+                }
+                Ok(Err(error)) => {
+                    kill_shell_bang_process_group(child_pid);
+                    let _ = tx.send(ShellBangEvent::Failed {
+                        command,
+                        error: error.to_string(),
+                    });
+                }
+                Err(_) => {
+                    kill_shell_bang_process_group(child_pid);
+                    let _ = tx.send(ShellBangEvent::TimedOut { command });
+                }
+            },
+        }
+    });
+}
+
+/// Kill a passthrough run's whole process group (the shell runs with
+/// `process_group(0)`, so `kill_on_drop`'s direct-child kill is not
+/// enough — backgrounded grandchildren would outlive the timeout). On
+/// Windows only the direct child can be killed (same contract as the
+/// hook executor).
+fn kill_shell_bang_process_group(pid: Option<u32>) {
+    #[cfg(unix)]
+    if let Some(pid) = pid {
+        let _ = codesmith_agent_runtime::shell_manager::kill_process_group_of(pid);
+    }
+    #[cfg(not(unix))]
+    let _ = pid;
+}
+
+/// Drain side: turn a finished run into a submitted message (or a toast).
+async fn handle_shell_bang_event(
+    app: &mut App,
+    config: &Config,
+    engine_handle: &EngineHandle,
+    event: ShellBangEvent,
+) -> Result<()> {
+    match event {
+        ShellBangEvent::Done {
+            command,
+            stdout,
+            stderr,
+            status,
+        } => {
+            let mut text = String::from_utf8_lossy(&stdout).into_owned();
+            let stderr = String::from_utf8_lossy(&stderr);
+            if !stderr.trim().is_empty() {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str("[stderr]\n");
+                text.push_str(&stderr);
+            }
+            if text.chars().count() > SHELL_BANG_MAX_OUTPUT_CHARS {
+                text = format!(
+                    "{}\n…(output truncated)",
+                    text.chars()
+                        .take(SHELL_BANG_MAX_OUTPUT_CHARS)
+                        .collect::<String>()
+                );
+            }
+            let status_note = if status.success() {
+                String::new()
+            } else {
+                format!("\n[exit status: {status}]")
+            };
+            let body = format!("! `{command}`\n\n```\n{text}{status_note}\n```");
+            let queued = build_queued_message(app, body);
+            submit_or_steer_message(app, config, engine_handle, queued).await
+        }
+        ShellBangEvent::Failed { command, error } => {
             app.push_status_toast(
-                format!("Failed to spawn `{command}`: {err}"),
+                format!("`{command}` failed: {error}"),
                 StatusToastLevel::Error,
                 Some(5_000),
             );
-            return Ok(());
+            Ok(())
         }
-    };
-
-    // On timeout the awaited future is dropped with the child still
-    // running — kill_on_drop (set in shell_bang_command) is the kill
-    // backstop, and the bounded readers below never buffer past the cap.
-    let output = match tokio::time::timeout(Duration::from_secs(SHELL_BANG_TIMEOUT_SECS), async {
-        let stdout_pipe = child.stdout.take();
-        let stderr_pipe = child.stderr.take();
-        let (stdout_bytes, stderr_bytes) = tokio::join!(
-            read_bounded(stdout_pipe, SHELL_BANG_MAX_CAPTURE_BYTES),
-            read_bounded(stderr_pipe, SHELL_BANG_MAX_CAPTURE_BYTES),
-        );
-        let status = child.wait().await?;
-        Ok::<_, std::io::Error>((stdout_bytes?, stderr_bytes?, status))
-    })
-    .await
-    {
-        Ok(Ok(output)) => output,
-        Ok(Err(err)) => {
-            app.push_status_toast(
-                format!("`{command}` failed: {err}"),
-                StatusToastLevel::Error,
-                Some(5_000),
-            );
-            return Ok(());
-        }
-        Err(_) => {
+        ShellBangEvent::TimedOut { command } => {
             app.push_status_toast(
                 format!("`{command}` timed out after {SHELL_BANG_TIMEOUT_SECS}s"),
                 StatusToastLevel::Error,
                 Some(5_000),
             );
-            return Ok(());
+            Ok(())
         }
-    };
-
-    let mut text = String::from_utf8_lossy(&output.0).into_owned();
-    let stderr = String::from_utf8_lossy(&output.1);
-    if !stderr.trim().is_empty() {
-        if !text.is_empty() {
-            text.push('\n');
+        ShellBangEvent::Cancelled { command } => {
+            app.status_message = Some(format!("Cancelled `{command}`"));
+            app.needs_redraw = true;
+            Ok(())
         }
-        text.push_str("[stderr]\n");
-        text.push_str(&stderr);
     }
-    if text.chars().count() > SHELL_BANG_MAX_OUTPUT_CHARS {
-        text = format!(
-            "{}\n…(output truncated)",
-            text.chars()
-                .take(SHELL_BANG_MAX_OUTPUT_CHARS)
-                .collect::<String>()
-        );
-    }
-    let status_note = if output.2.success() {
-        String::new()
-    } else {
-        format!("\n[exit status: {}]", output.2)
-    };
-
-    let body = format!("! `{command}`\n\n```\n{text}{status_note}\n```");
-    let queued = build_queued_message(app, body);
-    submit_or_steer_message(app, config, engine_handle, queued).await
 }
 
 /// Byte budget per captured stream — roughly 4× the char cap, so the final
@@ -6516,10 +6684,18 @@ async fn read_bounded<R: tokio::io::AsyncRead + Unpin>(
 
 fn shell_bang_command(command: &str) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(shell_bang_program());
-    // On timeout the output future is dropped with the child still
-    // running — kill_on_drop is the SIGKILL backstop (same contract as
-    // js_execution / tool_catalog) so a timed-out command cannot keep
-    // holding locks/ports in the workspace.
+    // Own process group (unix): a `sh -c 'server & wait'` style command
+    // backgrounds grandchildren outside kill_on_drop's direct-child reach
+    // — the group kill on timeout/cancel ([`kill_shell_bang_process_group`])
+    // is what actually reclaims the whole tree.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.as_std_mut().process_group(0);
+    }
+    // On timeout/cancel the runner kills the process group; kill_on_drop
+    // (SIGKILL on the direct child when the runner task ends) is the
+    // backstop (same contract as js_execution / tool_catalog).
     cmd.kill_on_drop(true);
     #[cfg(unix)]
     cmd.arg("-c");
@@ -6543,6 +6719,13 @@ fn shell_bang_program() -> String {
 /// Send every queued message right now instead of waiting for the current
 /// turn to end: busy → one merged steer into the running turn, idle →
 /// normal dispatch. Reached via Ctrl+Enter on an empty composer.
+///
+/// While idle each queued message dispatches individually — every message
+/// keeps its own boundary and its own skill framing, matching the
+/// TurnComplete drain (merging here would collapse N queued skill
+/// invocations into one message framed with only the first skill's
+/// body). Merging remains only for the steer case, where the queue is
+/// consumed in bulk into the running turn anyway.
 async fn flush_queued_messages_now(
     app: &mut App,
     config: &Config,
@@ -6552,22 +6735,45 @@ async fn flush_queued_messages_now(
     if drained.is_empty() {
         return Ok(());
     }
-    let mut skill_instruction: Option<String> = None;
-    let mut bodies: Vec<String> = Vec::with_capacity(drained.len());
-    for msg in drained {
-        if skill_instruction.is_none() {
-            skill_instruction = msg.skill_instruction;
+    let count = drained.len();
+    let result = match app.decide_submit_disposition() {
+        SubmitDisposition::Steer => {
+            let mut skill_instruction: Option<String> = None;
+            let mut bodies: Vec<String> = Vec::with_capacity(drained.len());
+            for msg in &drained {
+                if skill_instruction.is_none() {
+                    skill_instruction = msg.skill_instruction.clone();
+                }
+                bodies.push(msg.display.clone());
+            }
+            let merged = QueuedMessage::new(bodies.join("\n\n"), skill_instruction);
+            let result = submit_or_steer_message(app, config, engine_handle, merged.clone()).await;
+            if result.is_err() {
+                app.queue_message(merged);
+            }
+            result
         }
-        bodies.push(msg.display);
-    }
-    let count = bodies.len();
-    let merged = QueuedMessage::new(bodies.join("\n\n"), skill_instruction);
-    let result = submit_or_steer_message(app, config, engine_handle, merged.clone()).await;
+        _ => {
+            let mut result = Ok(());
+            for message in drained {
+                let backup = message.clone();
+                match submit_or_steer_message(app, config, engine_handle, message).await {
+                    Ok(()) => {}
+                    // Never lose queued messages on a failed dispatch —
+                    // put the failed message back (its successors never
+                    // left the loop).
+                    Err(err) => {
+                        app.queue_message(backup);
+                        result = Err(err);
+                        break;
+                    }
+                }
+            }
+            result
+        }
+    };
     match &result {
-        // Mirror the TurnComplete drain: never lose queued messages on a
-        // failed dispatch — put the merged message back on the queue.
         Err(_) => {
-            app.queue_message(merged);
             app.status_message = Some(format!(
                 "Dispatch failed; kept {} queued message(s) — ↑ to edit, /queue list",
                 app.queued_message_count()
@@ -7250,6 +7456,7 @@ async fn handle_view_events(
     task_manager: &SharedTaskManager,
     engine_handle: &mut EngineHandle,
     web_config_session: &mut Option<WebConfigSession>,
+    shell_bang_tx: &tokio::sync::mpsc::UnboundedSender<ShellBangEvent>,
     events: Vec<ViewEvent>,
 ) -> Result<bool> {
     for event in events {
@@ -7283,6 +7490,13 @@ async fn handle_view_events(
             },
             ViewEvent::OpenTextPager { title, content } => {
                 open_text_pager(app, title, content);
+            }
+            ViewEvent::ShellBangConfirm { approved, command } => {
+                if approved {
+                    spawn_shell_bang_run(app, command, shell_bang_tx.clone());
+                } else {
+                    app.status_message = Some("! command not run".to_string());
+                }
             }
             ViewEvent::CopyToClipboard { text, label } => {
                 if text.is_empty() {
@@ -7383,6 +7597,16 @@ async fn handle_view_events(
                     Some("Plan prompt closed. Type 1-4 and press Enter to choose.".to_string());
             }
             ViewEvent::SessionSelected { session_id } => {
+                // Swapping the live session mid-turn would mix the
+                // in-flight turn's tool-result fact writes into the
+                // newly-loaded session's ledger — the turn keeps running
+                // (`Op::SyncSession` does not stop it). Refuse while a
+                // request is in flight, like workspace switch.
+                if app.is_loading {
+                    app.status_message =
+                        Some("Cannot switch sessions while a request is running.".to_string());
+                    continue;
+                }
                 let manager = match SessionManager::default_location() {
                     Ok(manager) => manager,
                     Err(err) => {

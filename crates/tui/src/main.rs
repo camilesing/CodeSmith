@@ -3314,8 +3314,10 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                 );
                 match doctor_llm::analyze_findings(&client, &model, &payload).await {
                     Some(analysis) => {
+                        // \x1b[K (EL): the progress line above is longer than
+                        // this one, and a bare \r leaves its stale tail.
                         println!(
-                            "\r  {} analysis below is advisory — the deterministic results above take precedence",
+                            "\r  {} analysis below is advisory — the deterministic results above take precedence\u{1b}[K",
                             "✓".truecolor(aqua_r, aqua_g, aqua_b)
                         );
                         for line in analysis.lines() {
@@ -3324,7 +3326,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                     }
                     None => {
                         println!(
-                            "\r  {} {model} returned no analysis (empty/error/timeout) — skipping",
+                            "\r  {} {model} returned no analysis (empty/error/timeout) — skipping\u{1b}[K",
                             "·".dimmed()
                         );
                     }
@@ -4965,9 +4967,16 @@ fn run_sandbox_command(args: SandboxArgs) -> Result<()> {
     // backend at all — either way the command would run fully unconfined.
     let selected = manager.select_sandbox(&spec.sandbox_policy);
     if spec.sandbox_policy.should_sandbox() && !selected.enforces_isolation() {
+        // The remediation hint is platform-aware — "install bubblewrap" is
+        // Linux-only advice and misleads on macOS/Windows.
+        let hint = match std::env::consts::OS {
+            "linux" => "install bubblewrap",
+            "macos" => "verify the seatbelt runtime is available",
+            _ => "no enforcing sandbox backend is available on this platform",
+        };
         bail!(
             "refusing to run unsandboxed: sandbox backend '{selected}' enforces no \
-             isolation on this platform; install bubblewrap, or use a policy that \
+             isolation on this platform; {hint}, or use a policy that \
              does not require sandboxing"
         );
     }
@@ -5957,7 +5966,8 @@ async fn run_exec_agent(
         index_enabled: config.index_tools_enabled(),
         search_api_key: config.search.as_ref().and_then(|s| s.api_key.clone()),
         tools_always_load: config.tools_always_load(),
-        disabled_tools: crate::capabilities::effective_disabled(config.tools.as_ref()),
+        disabled_tools: crate::capabilities::effective_disabled(config.tools.as_ref())
+            .map_err(anyhow::Error::msg)?,
         tools: config.tools.clone(),
         team_context: None,
         file_freshness_tracker:
@@ -6539,7 +6549,8 @@ async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()
         index_enabled: config.index_tools_enabled(),
         search_api_key: config.search.as_ref().and_then(|s| s.api_key.clone()),
         tools_always_load: config.tools_always_load(),
-        disabled_tools: crate::capabilities::effective_disabled(config.tools.as_ref()),
+        disabled_tools: crate::capabilities::effective_disabled(config.tools.as_ref())
+            .map_err(anyhow::Error::msg)?,
         tools: config.tools.clone(),
         file_freshness_tracker:
             codesmith_agent_runtime::tools::freshness::FileFreshnessTracker::new(),

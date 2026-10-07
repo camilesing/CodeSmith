@@ -64,11 +64,18 @@ def main() -> int:
 
     # Stale allowlist entries are dead config (the doc was deleted or gained
     # its pair) — error so the receipt stays honest (same posture as
-    # check-framework-deps.py's unknown-crate check).
-    stale = sorted(name for name in ALLOWLIST if not (docs / name).exists())
-    violations.extend(
-        f"{name}: allowlisted but no such doc — remove the entry" for name in stale
-    )
+    # check-framework-deps.py's unknown-crate check). Both halves of the
+    # docstring's contract are enforced: deletion (file gone) and pairing
+    # (the _cn twin now exists, so the exemption is obsolete).
+    stale = []
+    for name in sorted(ALLOWLIST):
+        if not (docs / name).exists():
+            stale.append(f"{name}: allowlisted but no such doc — remove the entry")
+        elif (docs / f"{name[: -len('.md')]}_cn.md").exists():
+            stale.append(
+                f"{name}: allowlisted but its _cn pair now exists — remove the entry"
+            )
+    violations.extend(stale)
 
     for line in violations:
         print(line)

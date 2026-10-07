@@ -951,7 +951,13 @@ impl HookExecutor {
                         break;
                     }
                     Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-                    Err(_) => break,
+                    // A wait error must not abandon the child un-reaped —
+                    // same kill+reap as the timeout arm (the sync path's
+                    // wait-error arm does this too).
+                    Err(_) => {
+                        kill_hook_child(&mut child);
+                        break;
+                    }
                 }
             }
         });

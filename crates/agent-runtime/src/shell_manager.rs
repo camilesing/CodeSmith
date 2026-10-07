@@ -113,17 +113,16 @@ pub enum ShellChild {
     Pty(Box<dyn portable_pty::Child + Send>),
 }
 
-/// Kill `child`'s whole process group (the child must have been spawned
-/// with `process_group(0)`), falling back to the direct child. ESRCH is
-/// tolerated — the group may already be gone. Public so the TUI hook
-/// executor can enforce its timeout against `sh -c` grandchildren too.
+/// Kill the process group led by `pid` (the child must have been spawned
+/// with `process_group(0)`). ESRCH is tolerated — the group may already
+/// be gone. Unlike [`kill_child_process_group`] there is no child handle
+/// to fall back to, so other errors propagate to the caller.
 #[cfg(unix)]
-pub fn kill_child_process_group(child: &mut Child) -> std::io::Result<()> {
-    let pgid = child.id() as libc::pid_t;
+pub fn kill_process_group_of(pid: u32) -> std::io::Result<()> {
+    let pgid = pid as libc::pid_t;
     if pgid <= 0 {
-        return child.kill();
+        return Ok(());
     }
-
     let result = unsafe { libc::kill(-pgid, libc::SIGKILL) };
     if result == 0 {
         Ok(())
@@ -132,8 +131,21 @@ pub fn kill_child_process_group(child: &mut Child) -> std::io::Result<()> {
         if err.raw_os_error() == Some(libc::ESRCH) {
             Ok(())
         } else {
-            child.kill()
+            Err(err)
         }
+    }
+}
+
+/// Kill `child`'s whole process group (the child must have been spawned
+/// with `process_group(0)`), falling back to the direct child. ESRCH is
+/// tolerated — the group may already be gone. Public so the TUI hook
+/// executor can enforce its timeout against `sh -c` grandchildren too.
+#[cfg(unix)]
+pub fn kill_child_process_group(child: &mut Child) -> std::io::Result<()> {
+    if kill_process_group_of(child.id()).is_err() {
+        child.kill()
+    } else {
+        Ok(())
     }
 }
 

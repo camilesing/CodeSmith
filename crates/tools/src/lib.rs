@@ -158,12 +158,16 @@ impl ToolResult {
 
     /// Create a successful result from JSON. The value is kept as the
     /// canonical machine-readable value; `content` renders it pretty for
-    /// the model.
+    /// the model. Serialized once to a `Value` — pretty-printing that same
+    /// `Value` halves the CPU and retained memory per result versus
+    /// serializing `T` twice (results can be large: grep output, parallel
+    /// dispatcher aggregation).
     pub fn json<T: Serialize>(value: &T) -> std::result::Result<Self, serde_json::Error> {
+        let canonical = serde_json::to_value(value)?;
         Ok(Self {
-            content: serde_json::to_string_pretty(value)?,
+            content: serde_json::to_string_pretty(&canonical)?,
             success: true,
-            canonical: Some(serde_json::to_value(value)?),
+            canonical: Some(canonical),
             metadata: None,
         })
     }
