@@ -464,13 +464,14 @@ pub(crate) fn partial_shortcode_at_cursor(
 /// with. Called before the closing colon is inserted. Composed from
 /// [`partial_shortcode_at_cursor`] + [`lookup`] so token matching here
 /// can't drift from the popup's (`lookup("")` is `None`, which covers the
-/// empty-name case).
+/// empty-name case). The name is lowercased like `matching` does for the
+/// popup — names are stored lowercase-only, so `:Fire` closes like `:fire`.
 pub(crate) fn shortcode_closeable_at(
     input: &str,
     cursor_chars: usize,
 ) -> Option<(usize, &'static str)> {
     let (colon_byte, name) = partial_shortcode_at_cursor(input, cursor_chars)?;
-    let emoji = lookup(&name)?;
+    let emoji = lookup(&name.to_ascii_lowercase())?;
     Some((colon_byte, emoji))
 }
 
@@ -540,6 +541,13 @@ mod tests {
         // Unknown name stays text.
         let unknown = "nice :notanemoji";
         assert!(shortcode_closeable_at(unknown, unknown.chars().count()).is_none());
+        // Mixed case closes like the popup (which lowercases its prefix):
+        // `:Fire` shows the `fire 🔥` suggestion, so the closing `:` must
+        // insert the emoji, not a literal colon.
+        let caps = "nice :Fire";
+        let (byte, emoji) = shortcode_closeable_at(caps, caps.chars().count()).unwrap();
+        assert_eq!(&caps[byte..], ":Fire");
+        assert_eq!(emoji, "🔥");
         // `12:30` — the name part is digits after a non-boundary colon.
         let time = "at 12:30";
         assert!(shortcode_closeable_at(time, time.chars().count()).is_none());

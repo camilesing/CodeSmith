@@ -494,6 +494,11 @@ pub async fn run_tui(
     crate::presets::apply_at_startup(&mut app, config.preset.as_deref().unwrap_or("middle"));
 
     // Load existing session if resuming.
+    // The engine-backed restores (fact ledger, recent-read working set)
+    // inside `apply_loaded_session` need the engine Arcs, which are only
+    // wired after `spawn_engine` below — remember the snapshot and
+    // re-apply it there (`restore_engine_backed_session_state`).
+    let mut resumed_session: Option<crate::session_manager::SavedSession> = None;
     if let Some(ref session_id) = options.resume_session_id
         && let Ok(manager) = SessionManager::default_location()
     {
@@ -519,6 +524,7 @@ pub async fn run_tui(
                         crate::session_manager::truncate_id(&saved.metadata.id)
                     ));
                 }
+                resumed_session = Some(saved);
             }
             Ok(None) => {
                 app.status_message = Some("No sessions found to resume".to_string());
@@ -638,6 +644,14 @@ pub async fn run_tui(
     app.fact_ledger = Some(engine_handle.fact_ledger.clone());
     // Slice 6 — the live session's recent-read-files working set.
     app.recent_read_files = Some(engine_handle.recent_read_files.clone());
+    // Startup-resume follow-up (round 7): `apply_loaded_session` ran
+    // before these Arcs existed, so its ledger/recent-read restores
+    // no-opped — and the later `Op::SyncSession` rebuilds only the
+    // working set, so without this the next save would persist the empty
+    // ledger over the resumed session's saved one.
+    if let Some(saved) = &resumed_session {
+        restore_engine_backed_session_state(&mut app, saved);
+    }
     // §F2c — surface the engine's shared cancel-token `Arc` so
     // `/extension reload` can pass the live engine token (not a fresh one)
     // into the reloaded context.
@@ -6504,7 +6518,11 @@ fn spawn_shell_bang_run(
         command: command.clone(),
         cancel: cancel.clone(),
     });
-    app.push_status_toast(
+    // Sticky slot, not a queue toast: the run can outlive any finite TTL,
+    // and a `None`-ttl queue toast never expires on its own — the footer
+    // would keep claiming the command is running after it finished.
+    // `handle_shell_bang_event` clears it on every outcome arm.
+    app.set_sticky_status(
         format!("Running `{command}`… (Esc to cancel)"),
         StatusToastLevel::Info,
         None,
@@ -6593,6 +6611,9 @@ async fn handle_shell_bang_event(
     engine_handle: &EngineHandle,
     event: ShellBangEvent,
 ) -> Result<()> {
+    // The "Running …" sticky from `spawn_shell_bang_run` must go on every
+    // outcome — Done, Failed, TimedOut, and Cancelled alike.
+    app.clear_sticky_status();
     match event {
         ShellBangEvent::Done {
             command,
@@ -6755,15 +6776,21 @@ async fn flush_queued_messages_now(
         }
         _ => {
             let mut result = Ok(());
-            for message in drained {
+            let mut pending: std::collections::VecDeque<QueuedMessage> = drained.into();
+            while let Some(message) = pending.pop_front() {
                 let backup = message.clone();
                 match submit_or_steer_message(app, config, engine_handle, message).await {
                     Ok(()) => {}
                     // Never lose queued messages on a failed dispatch —
-                    // put the failed message back (its successors never
-                    // left the loop).
+                    // the whole queue was drained up front, so re-queue the
+                    // failed message AND every un-dispatched successor
+                    // (round 7: the old loop dropped k+1..N with the
+                    // iterator).
                     Err(err) => {
                         app.queue_message(backup);
+                        for rest in pending.drain(..) {
+                            app.queue_message(rest);
+                        }
                         result = Err(err);
                         break;
                     }
@@ -8256,6 +8283,27 @@ fn session_projections(app: &App) -> codesmith_agent_runtime::projections::Proje
     registry
 }
 
+/// Restore the engine-backed session state that cannot ride the
+/// projection registry: the fact-ledger snapshot (a snapshot, not a fold —
+/// its source messages may already be compacted away) and the
+/// recent-read-files working set. No-op until the engine Arcs are wired
+/// (`app.fact_ledger` / `app.recent_read_files`); the startup `--resume`
+/// path re-invokes this after `spawn_engine` because
+/// [`apply_loaded_session`] runs before the handles exist.
+fn restore_engine_backed_session_state(app: &mut App, session: &SavedSession) {
+    if let Some(files) = app.recent_read_files.clone() {
+        let rebuilt = codesmith_agent_runtime::session::rebuild_recent_read_files_from_messages(
+            &app.api_messages,
+        );
+        let mut guard = files.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = rebuilt.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    }
+    if let Some(ledger) = &app.fact_ledger {
+        let mut guard = ledger.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = session.fact_ledger.clone().unwrap_or_default();
+    }
+}
+
 async fn apply_loaded_session(app: &mut App, config: &Config, session: &SavedSession) -> bool {
     let (messages, recovered_draft) = recover_interrupted_user_tail(&session.messages);
     app.api_messages = messages;
@@ -8273,15 +8321,11 @@ async fn apply_loaded_session(app: &mut App, config: &Config, session: &SavedSes
             workspace: app.workspace.clone(),
         })
         .await;
-    // Slice 4 — restore the fact ledger (compaction invariants) into the
-    // LIVE engine's ledger (same `Arc`); a saved `None` clears it, matching
-    // sessions saved before the field existed. A snapshot, not a fold: its
-    // source messages may already be compacted away, so it cannot register
-    // as a projection.
-    if let Some(ledger) = &app.fact_ledger {
-        let mut guard = ledger.lock().unwrap_or_else(|e| e.into_inner());
-        *guard = session.fact_ledger.clone().unwrap_or_default();
-    }
+    // Slice 4 + slice 6 — fact-ledger snapshot and recent-read working
+    // set (see `restore_engine_backed_session_state`; no-op when the
+    // engine Arcs are not wired yet — the startup resume path re-applies
+    // after `spawn_engine`).
+    restore_engine_backed_session_state(app, session);
     app.clear_history();
     app.tool_cells.clear();
     app.tool_details_by_cell.clear();

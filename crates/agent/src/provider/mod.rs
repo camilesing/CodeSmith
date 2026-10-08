@@ -27,7 +27,7 @@
 //! client type, so the implementation is freely replaceable.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Weak};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
@@ -355,8 +355,9 @@ pub struct ProviderAlias {
 impl ProviderAlias {
     /// Validate + build the aliasing factory. Errors as strings (for the
     /// caller to wrap in its own error type) when `id` shadows a builtin
-    /// kind or `target` is not builtin — misconfiguration fails loud at
-    /// registration, not at first client build.
+    /// kind, `target` is not builtin, or `base_url` is not an https (or
+    /// loopback-http) URL — misconfiguration fails loud at registration,
+    /// not at first client build.
     pub fn into_factory(self, shared: SharedProviderRegistry) -> Result<AliasingFactory, String> {
         let id = ProviderId::from(self.id.as_str());
         if let ProviderId::Builtin(kind) = &id {
@@ -372,14 +373,59 @@ impl ProviderAlias {
                 self.target.as_str()
             ));
         }
+        if let Some(url) = &self.base_url {
+            // Canonical enforcement point (script capture and native
+            // registration both funnel through here): the alias factory
+            // sends the user's api_key and full prompts to this URL.
+            validate_alias_base_url(url)?;
+        }
         Ok(AliasingFactory {
             id,
             target: self.target,
-            shared,
+            shared: Arc::downgrade(&shared.inner),
             base_url: self.base_url,
             default_model: self.default_model,
             http_headers: self.http_headers,
         })
+    }
+}
+
+/// Validate a provider-alias `base_url` override: https on any host (the
+/// user opted into the gateway), or http on a **loopback** host only
+/// (local gateways: Ollama, vLLM, LM Studio). The host must match exactly
+/// after stripping the port and IPv6 brackets — a prefix check would let
+/// `http://localhost.evil.example` through. Anything else could redirect
+/// the user's provider credentials and full prompts to an
+/// attacker-controlled host.
+pub fn validate_alias_base_url(url: &str) -> Result<(), String> {
+    let reject = |reason: &str| {
+        Err(format!(
+            "base_url must be https:// (or an http:// loopback address for \
+             local gateways) — got {url:?}{reason}; the alias sends the \
+             user's api_key and full prompts to this URL"
+        ))
+    };
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return reject(" (no scheme)");
+    };
+    if scheme.eq_ignore_ascii_case("https") {
+        return Ok(());
+    }
+    if !scheme.eq_ignore_ascii_case("http") {
+        return reject(" (not http(s))");
+    }
+    let host_port = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = if let Some(bracketed) = host_port.strip_prefix('[') {
+        // [::1] or [::1]:port
+        bracketed.split(']').next().unwrap_or_default()
+    } else {
+        host_port.rsplit_once(':').map_or(host_port, |(h, _)| h)
+    };
+    let loopback = host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1";
+    if loopback {
+        Ok(())
+    } else {
+        reject(&format!(" (host {host:?} is not loopback)"))
     }
 }
 
@@ -391,7 +437,11 @@ impl ProviderAlias {
 pub struct AliasingFactory {
     id: ProviderId,
     target: ProviderId,
-    shared: SharedProviderRegistry,
+    /// Weak back-reference: the registry's map owns this factory via
+    /// `Arc`, so a strong ref here would form an ownership cycle that
+    /// pins the whole registry (every seeded builtin included) for the
+    /// process lifetime if a registration ever outlived its guard.
+    shared: Weak<RwLock<ProviderRegistry>>,
     base_url: Option<String>,
     default_model: Option<String>,
     http_headers: Option<HashMap<String, String>>,
@@ -403,7 +453,14 @@ impl ProviderFactory for AliasingFactory {
     }
 
     fn build(&self, cfg: &ProviderConfig) -> Result<LlmClientHandle> {
-        let Some(target) = self.shared.resolve(&self.target) else {
+        let Some(inner) = self.shared.upgrade() else {
+            bail!(
+                "provider alias '{}': owning registry is gone (registration outlived it)",
+                self.id.as_str()
+            )
+        };
+        let shared = SharedProviderRegistry { inner };
+        let Some(target) = shared.resolve(&self.target) else {
             bail!(
                 "provider alias '{}': target factory '{}' is not registered",
                 self.id.as_str(),
@@ -697,6 +754,55 @@ mod tests {
             .err()
             .expect("non-builtin target must fail");
         assert!(err.contains("must be a builtin provider"));
+    }
+
+    #[test]
+    fn alias_rejects_non_https_non_loopback_base_url() {
+        // The alias factory sends the user's api_key and full prompts to
+        // the overridden URL — plaintext non-loopback hosts (including the
+        // `localhost.evil.example` prefix-bypass shape) must fail loud at
+        // registration.
+        let mut alias = alias_for("my-gw", "openai");
+        for bad in [
+            "http://localhost.evil.example/v1",
+            "http://127.0.0.1.evil.example/v1",
+            "http://attacker.example/v1",
+            "ftp://attacker.example/v1",
+            "attacker.example/v1",
+        ] {
+            alias.base_url = Some(bad.to_string());
+            let err = alias
+                .clone()
+                .into_factory(SharedProviderRegistry::new())
+                .err()
+                .unwrap_or_else(|| panic!("base_url {bad:?} must be rejected"));
+            assert!(
+                err.contains("base_url must be https://"),
+                "rejection explains the rule: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn alias_accepts_https_and_loopback_http_base_urls() {
+        let mut alias = alias_for("my-gw", "openai");
+        for good in [
+            "https://gw.example.test/v1",
+            "HTTPS://gw.example.test/v1",
+            "http://localhost:11434/v1",
+            "http://127.0.0.1:8000/v1",
+            "http://[::1]:1234/v1",
+            "http://[::1]/v1",
+        ] {
+            alias.base_url = Some(good.to_string());
+            assert!(
+                alias
+                    .clone()
+                    .into_factory(SharedProviderRegistry::new())
+                    .is_ok(),
+                "base_url {good:?} must be accepted"
+            );
+        }
     }
 
     #[test]

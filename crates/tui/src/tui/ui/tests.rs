@@ -1707,6 +1707,75 @@ async fn apply_loaded_session_rebuilds_projections_via_registry() {
     assert_eq!(todos.items[0].content, "fold projections");
 }
 
+#[test]
+fn restore_engine_backed_session_state_restores_ledger_and_recent_reads() {
+    // Round 7 (startup `--resume`): `apply_loaded_session` runs before the
+    // engine Arcs are wired, so its ledger/recent-read restores no-opped —
+    // `run_tui` re-applies this helper after `spawn_engine`. Pin both
+    // halves: the fact-ledger snapshot (not re-foldable from the
+    // transcript) and the recent-read working-set rebuild.
+    let mut ledger = codesmith_agent_runtime::compaction::fact_ledger::FactLedger::default();
+    let fact_msg = Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "```\nnever drop the migration table\n```".to_string(),
+            cache_control: None,
+        }],
+    };
+    assert!(ledger.accumulate(std::iter::once(&fact_msg), None) > 0);
+
+    let mut session = saved_session_with_messages(vec![
+        Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::ToolUse {
+                id: "call-read".to_string(),
+                name: "read_file".to_string(),
+                input: serde_json::json!({"path": "src/main.rs"}),
+                caller: None,
+            }],
+        },
+        Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "call-read".to_string(),
+                content: "fn main() {}".to_string(),
+                is_error: Some(false),
+                content_blocks: None,
+            }],
+        },
+    ]);
+    session.fact_ledger = Some(ledger);
+    let expected_ledger_len = session.fact_ledger.as_ref().unwrap().len();
+
+    let mut app = create_test_app();
+    // Post-`spawn_engine` state: the engine Arcs are wired but empty.
+    app.fact_ledger = Some(std::sync::Arc::new(std::sync::Mutex::new(
+        codesmith_agent_runtime::compaction::fact_ledger::FactLedger::default(),
+    )));
+    app.recent_read_files = Some(std::sync::Arc::new(std::sync::Mutex::new(
+        std::collections::VecDeque::new(),
+    )));
+    app.api_messages = session.messages.clone();
+
+    restore_engine_backed_session_state(&mut app, &session);
+
+    assert_eq!(
+        app.fact_ledger.as_ref().unwrap().lock().unwrap().len(),
+        expected_ledger_len,
+        "the persisted ledger snapshot lands in the live engine's Arc"
+    );
+    assert_eq!(
+        app.recent_read_files
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .len(),
+        1,
+        "the read_file pair rebuilds into the recent-read working set"
+    );
+}
+
 #[tokio::test]
 async fn apply_loaded_session_resets_unpersisted_telemetry() {
     let mut app = create_test_app();

@@ -836,22 +836,17 @@ fn register_natives(
             let base_url = spec
                 .get("base_url")
                 .and_then(|d| d.clone().try_cast::<String>());
-            // The alias factory sends the user's api_key and full prompts to
-            // this URL — refuse anything but https or a loopback http
-            // endpoint (local gateways: Ollama, vLLM, LM Studio) at capture
-            // time, so a mod cannot redirect provider traffic to an
-            // attacker-controlled plaintext host.
-            if let Some(url) = &base_url {
-                let loopback_http = url.starts_with("http://localhost")
-                    || url.starts_with("http://127.0.0.1")
-                    || url.starts_with("http://[::1]");
-                if !url.starts_with("https://") && !loopback_http {
-                    return Err(script_error(format!(
-                        "register_provider(): base_url must be https:// (or an http:// \
-                         loopback address for local gateways) — got {url:?}; the alias sends \
-                         the user's api_key and full prompts to this URL"
-                    )));
-                }
+            // The alias factory sends the user's api_key and full prompts
+            // to this URL — refuse anything but https or a loopback http
+            // endpoint (local gateways: Ollama, vLLM, LM Studio) at
+            // capture time. `validate_alias_base_url` is the canonical
+            // check (shared with `ProviderAlias::into_factory`); its exact
+            // host match closes the `http://localhost.evil.example`
+            // prefix bypass.
+            if let Some(url) = &base_url
+                && let Err(err) = codesmith_agent::provider::validate_alias_base_url(url)
+            {
+                return Err(script_error(format!("register_provider(): {err}")));
             }
             let default_model = spec
                 .get("default_model")
@@ -1435,6 +1430,32 @@ mod tests {
         );
         let msg = m.unwrap_err().to_string();
         assert!(msg.contains("shadows a builtin provider kind"), "{msg}");
+    }
+
+    #[test]
+    fn register_provider_rejects_prefix_bypass_base_url() {
+        // `http://localhost.evil.example` passed the old prefix check
+        // (`starts_with("http://localhost")`) and would have redirected the
+        // user's api_key and prompts to a non-loopback plaintext host.
+        for bad in ["localhost.evil.example", "127.0.0.1.evil.example"] {
+            let dir = TempDir::new().unwrap();
+            let m = RhaiMod::load(
+                &discovered_for(
+                    &dir,
+                    "bypass",
+                    &format!(
+                        r#"register_provider(#{{id: "x", kind: "openai", base_url: "http://{bad}/v1"}});"#
+                    ),
+                ),
+                kv_for(&dir, "bypass"),
+                hub(),
+            );
+            let msg = m.unwrap_err().to_string();
+            assert!(
+                msg.contains("base_url must be https://"),
+                "prefix bypass {bad:?} must be rejected: {msg}"
+            );
+        }
     }
 
     #[test]

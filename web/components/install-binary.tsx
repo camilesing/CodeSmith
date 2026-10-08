@@ -9,10 +9,13 @@ type Arch = "macos-arm64" | "macos-x64" | "linux-x64" | "linux-arm64" | "windows
 // Each snippet downloads, checksum-verifies, then installs in one pass: the
 // files keep their real asset names (codesmith-macos-arm64, …) through the
 // `shasum -c` step so the grep filter matches manifest entries exactly, and
-// `set -eo pipefail` at the top aborts the paste before the `sudo mv` unless
-// verification succeeded (an empty grep match fails the pipeline too —
-// which is why pipefail stays despite needing bash/zsh, not POSIX sh).
+// `set -eo pipefail` inside a subshell aborts the paste before the `sudo mv`
+// unless verification succeeded (an empty grep match fails the pipeline too
+// — which is why pipefail stays despite needing bash/zsh, not POSIX sh).
+// The subshell keeps errexit/pipefail from leaking into the user's
+// interactive session after the paste finishes.
 const unixInstallSnippet = (platform: string, checkCmd: string, isMac: boolean) => `# Requires bash or zsh (pipefail is not POSIX sh)
+(
 set -eo pipefail
 curl -fsSL -O ${GITHUB_REPO_URL}/releases/latest/download/codesmith-${platform}
 curl -fsSL -O ${GITHUB_REPO_URL}/releases/latest/download/codesmith-tui-${platform}
@@ -21,7 +24,8 @@ grep -E 'codesmith(-tui)?-${platform}$' codesmith-artifacts-sha256.txt | ${check
 chmod +x codesmith-${platform} codesmith-tui-${platform}
 ${isMac ? `xattr -d com.apple.quarantine codesmith-${platform} codesmith-tui-${platform} 2>/dev/null || true\n` : ""}sudo mv codesmith-${platform} /usr/local/bin/codesmith
 sudo mv codesmith-tui-${platform} /usr/local/bin/codesmith-tui
-rm -f codesmith-artifacts-sha256.txt`;
+rm -f codesmith-artifacts-sha256.txt
+)`;
 
 const SNIPPETS: Record<Arch, string> = {
   "macos-arm64": unixInstallSnippet("macos-arm64", "shasum -a 256", true),
@@ -33,7 +37,11 @@ $ErrorActionPreference = "Stop"
 $dest = "$Env:USERPROFILE\\bin"
 New-Item -ItemType Directory -Force $dest | Out-Null
 
-Invoke-RestMethod ${GITHUB_REPO_URL}/releases/latest/download/codesmith-artifacts-sha256.txt -OutFile codesmith-artifacts-sha256.txt
+# Manifest goes next to the binaries in $dest — an elevated PowerShell may
+# start in a non-writable CWD (C:\\Windows\\System32), where a relative
+# -OutFile would abort the whole install.
+$manifest = "$dest\\codesmith-artifacts-sha256.txt"
+Invoke-RestMethod ${GITHUB_REPO_URL}/releases/latest/download/codesmith-artifacts-sha256.txt -OutFile $manifest
 Invoke-WebRequest \`
   -Uri ${GITHUB_REPO_URL}/releases/latest/download/codesmith-windows-x64.exe \`
   -OutFile "$dest\\codesmith.exe"
@@ -44,13 +52,13 @@ Invoke-WebRequest \`
 # Verify both binaries against their manifest entries (abort on mismatch)
 foreach ($bin in @(@("codesmith.exe", "codesmith-windows-x64.exe"), @("codesmith-tui.exe", "codesmith-tui-windows-x64.exe"))) {
   $actual = (Get-FileHash "$dest\\$($bin[0])" -Algorithm SHA256).Hash.ToLower()
-  $line = (Select-String -Path codesmith-artifacts-sha256.txt -Pattern ([regex]::Escape($bin[1]) + '$')).Line
+  $line = (Select-String -Path $manifest -Pattern ([regex]::Escape($bin[1]) + '$')).Line
   if (-not $line) { throw "Manifest entry missing for $($bin[1])" }
   $expected = ($line -split '\\s+')[0].ToLower()
   if ($actual -ne $expected) { throw "Checksum mismatch for $($bin[0])" }
 }
 
-Remove-Item codesmith-artifacts-sha256.txt
+Remove-Item $manifest
 $Env:Path = "$dest;$Env:Path"`,
 };
 

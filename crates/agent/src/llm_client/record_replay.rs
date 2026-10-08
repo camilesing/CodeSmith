@@ -27,8 +27,10 @@
 //! # Known limitations
 //!
 //! - Replay is strict FIFO: each `create_message_stream`/`create_message`
-//!   consumes the next line; it does not match requests (a retried call
-//!   eats an extra line — replaying failures faithfully is future work).
+//!   consumes the next line; it does not match requests. Failed calls are
+//!   recorded too (an `error` outcome) and replay returns the same
+//!   failure, so a live run's transparent retries line up with their
+//!   recorded counterparts.
 //! - A recorded stream replays verbatim, including a missing terminal
 //!   `MessageStop` (the engine treats that as a disconnect, exactly like
 //!   the original run). Unlike the test mock, replay never auto-appends.
@@ -86,6 +88,10 @@ pub enum RecordOutcome {
     Message {
         response_message: Box<MessageResponse>,
     },
+    /// The call failed before yielding a response (HTTP error, auth
+    /// failure, stream that never opened). Replayed as the same failure
+    /// so strict-FIFO order stays aligned with the recorded run.
+    Error { message: String },
 }
 
 // === RecordingClient ========================================================
@@ -137,19 +143,27 @@ impl LlmClient for RecordingClient {
         let path = self.path.clone();
         let inner = self.inner.clone();
         Box::pin(async move {
-            let response = inner.create_message(request.clone()).await?;
+            let result = inner.create_message(request.clone()).await;
+            // Record failures too: every call through the wrapper must
+            // yield exactly one line — a failed call that vanishes
+            // desyncs strict-FIFO replay for every later call.
             let line = RecordLine {
                 version: RECORD_VERSION,
                 provider,
                 model,
                 base_url,
                 request,
-                outcome: RecordOutcome::Message {
-                    response_message: Box::new(response.clone()),
+                outcome: match &result {
+                    Ok(response) => RecordOutcome::Message {
+                        response_message: Box::new(response.clone()),
+                    },
+                    Err(e) => RecordOutcome::Error {
+                        message: e.to_string(),
+                    },
                 },
             };
             write_line_shared(&writer, &path, &line);
-            Ok(response)
+            result
         })
     }
 
@@ -164,7 +178,29 @@ impl LlmClient for RecordingClient {
         let path = self.path.clone();
         let inner = self.inner.clone();
         Box::pin(async move {
-            let stream = inner.create_message_stream(request.clone()).await?;
+            let stream = match inner.create_message_stream(request.clone()).await {
+                Ok(stream) => stream,
+                Err(e) => {
+                    // Same one-line-per-call invariant as `create_message`:
+                    // a stream that never opened still consumed a model
+                    // call slot in the recorded run.
+                    write_line_shared(
+                        &writer,
+                        &path,
+                        &RecordLine {
+                            version: RECORD_VERSION,
+                            provider,
+                            model,
+                            base_url,
+                            request,
+                            outcome: RecordOutcome::Error {
+                                message: e.to_string(),
+                            },
+                        },
+                    );
+                    return Err(e);
+                }
+            };
             // Tee: forward every event while collecting them. The line is
             // written when the terminal proof (`MessageStop`) is SEEN —
             // consumers may drop the stream right after it instead of
@@ -330,6 +366,16 @@ impl TeeState {
     }
 }
 
+impl Drop for TeeState {
+    fn drop(&mut self) {
+        // Cancelled mid-stream (turn cancelled, shutdown): the consumer
+        // drops the tee before any terminal proof — still emit the partial
+        // line so the one-line-per-call invariant (and strict-FIFO replay)
+        // holds. Idempotent via `written`.
+        self.write_line();
+    }
+}
+
 // === ReplayClient ===========================================================
 
 /// Replays a recording file through the real turn loop: strict FIFO, one
@@ -348,7 +394,13 @@ impl ReplayClient {
         let text = std::fs::read_to_string(path.as_ref())
             .map_err(|e| anyhow!("replay fixture {}: {e}", path.as_ref().display()))?;
         let mut lines = VecDeque::new();
-        for (idx, line) in text.lines().filter(|l| !l.trim().is_empty()).enumerate() {
+        for (idx, line) in text
+            .lines()
+            // Physical line numbers in load errors: enumerate before the
+            // blank-line filter so "line {idx + 1}" names the real line.
+            .enumerate()
+            .filter(|(_, l)| !l.trim().is_empty())
+        {
             let parsed: RecordLine = serde_json::from_str(line).map_err(|e| {
                 anyhow!(
                     "replay fixture {} line {}: {e}",
@@ -412,15 +464,19 @@ impl LlmClient for ReplayClient {
         &self,
         _request: MessageRequest,
     ) -> Pin<Box<dyn Future<Output = Result<MessageResponse>> + Send + '_>> {
-        let line = match self.pop_line("create_message") {
-            Ok(l) => l,
-            Err(e) => return Box::pin(async move { Err(e) }),
-        };
         Box::pin(async move {
+            // Pop at first poll, not at call time: every other LlmClient
+            // impl is lazy, and a future built then dropped unpolled (a
+            // losing select! branch, a timeout kill) must not silently
+            // consume a fixture line.
+            let line = self.pop_line("create_message")?;
             match line.outcome {
                 RecordOutcome::Message { response_message } => Ok(*response_message),
                 RecordOutcome::Stream { response_events } => {
                     Ok(synthesize_message_response(&response_events, &line.model))
+                }
+                RecordOutcome::Error { message } => {
+                    Err(anyhow!("ReplayClient: recorded call failed: {message}"))
                 }
             }
         })
@@ -430,11 +486,9 @@ impl LlmClient for ReplayClient {
         &self,
         _request: MessageRequest,
     ) -> Pin<Box<dyn Future<Output = Result<StreamEventBox>> + Send + '_>> {
-        let line = match self.pop_line("create_message_stream") {
-            Ok(l) => l,
-            Err(e) => return Box::pin(async move { Err(e) }),
-        };
         Box::pin(async move {
+            // Lazy for the same reason as `create_message`.
+            let line = self.pop_line("create_message_stream")?;
             match line.outcome {
                 RecordOutcome::Stream { response_events } => {
                     let s = futures_util::stream::iter(response_events.into_iter().map(Ok));
@@ -444,6 +498,9 @@ impl LlmClient for ReplayClient {
                     "ReplayClient: next fixture line is a non-stream record; \
                      the recorded call order does not match this run"
                 )),
+                RecordOutcome::Error { message } => {
+                    Err(anyhow!("ReplayClient: recorded call failed: {message}"))
+                }
             }
         })
     }
@@ -454,7 +511,8 @@ impl LlmClient for ReplayClient {
 }
 
 /// Collapse streamed events into a `MessageResponse` (text deltas joined,
-/// first stop_reason wins) — the fallback when a stream record is consumed
+/// last non-None stop_reason wins — the same accumulation the executor's
+/// stream reducer performs) — the fallback when a stream record is consumed
 /// by a non-streaming call (compaction paths). Mirrors the test mock's
 /// synthesize helper.
 fn synthesize_message_response(events: &[StreamEvent], model: &str) -> MessageResponse {
@@ -755,6 +813,134 @@ mod tests {
                 response_events.len(),
                 2,
                 "the events seen before the error are recorded partial"
+            ),
+            other => panic!("expected stream outcome, got {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A mock whose non-streaming call always fails — the shape that used
+    /// to vanish from recordings entirely.
+    struct FailingMock;
+
+    impl LlmClient for FailingMock {
+        fn provider_name(&self) -> &'static str {
+            "mock"
+        }
+        fn model(&self) -> &str {
+            "test-model"
+        }
+        fn create_message(
+            &self,
+            _request: MessageRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<MessageResponse>> + Send + '_>> {
+            Box::pin(async { Err(anyhow!("429 rate limited")) })
+        }
+        fn create_message_stream(
+            &self,
+            _request: MessageRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<StreamEventBox>> + Send + '_>> {
+            Box::pin(async { Err(anyhow!("not used in this test")) })
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_create_message_records_one_line_and_replays_as_err() {
+        // One line per call, success or failure: without the error line a
+        // failed call is invisible to the recording and strict-FIFO replay
+        // pops the wrong line for every later call.
+        let path = temp_recording_path("fail");
+        let recorder = RecordingClient::new(Arc::new(FailingMock), &path).expect("open");
+        let handle: LlmClientHandle = Arc::new(recorder);
+        let err = handle
+            .create_message(minimal_request())
+            .await
+            .expect_err("the call fails");
+        assert!(err.to_string().contains("429"));
+
+        let text = std::fs::read_to_string(&path).expect("failure was recorded");
+        let line: RecordLine = serde_json::from_str(text.lines().next().expect("exactly one line"))
+            .expect("valid JSONL");
+        match line.outcome {
+            RecordOutcome::Error { message } => {
+                assert_eq!(message, "429 rate limited");
+            }
+            other => panic!("expected error outcome, got {other:?}"),
+        }
+
+        let replay = ReplayClient::load(&path).expect("load");
+        assert_eq!(replay.remaining(), 1);
+        let replayed = replay
+            .create_message(minimal_request())
+            .await
+            .expect_err("failure replays as a failure");
+        assert_eq!(
+            replayed.to_string(),
+            "ReplayClient: recorded call failed: 429 rate limited"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A mock stream that yields one event and then never resolves — the
+    /// cancelled-mid-stream shape (turn cancelled, shutdown).
+    struct SlowStartMock;
+
+    impl LlmClient for SlowStartMock {
+        fn provider_name(&self) -> &'static str {
+            "mock"
+        }
+        fn model(&self) -> &str {
+            "test-model"
+        }
+        fn create_message(
+            &self,
+            _request: MessageRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<MessageResponse>> + Send + '_>> {
+            Box::pin(async { Err(anyhow!("not used in this test")) })
+        }
+        fn create_message_stream(
+            &self,
+            _request: MessageRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<StreamEventBox>> + Send + '_>> {
+            Box::pin(async {
+                let head = vec![Ok(StreamEvent::ContentBlockStart {
+                    index: 0,
+                    content_block: ContentBlockStart::Text {
+                        text: String::new(),
+                    },
+                })];
+                let s = futures_util::stream::iter(head)
+                    .chain(futures_util::stream::pending::<Result<StreamEvent>>());
+                Ok(Box::pin(s) as StreamEventBox)
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn dropped_mid_stream_records_partial_line() {
+        // The tee's Drop closes the cancellation gap: dropping the stream
+        // before any terminal proof must still write the partial line.
+        let path = temp_recording_path("drop");
+        let recorder = RecordingClient::new(Arc::new(SlowStartMock), &path).expect("open");
+        let handle: LlmClientHandle = Arc::new(recorder);
+        let mut stream = handle
+            .create_message_stream(minimal_request())
+            .await
+            .expect("stream starts");
+        let first = futures_util::StreamExt::next(&mut stream)
+            .await
+            .expect("one event before cancellation");
+        assert!(first.is_ok());
+        drop(stream); // cancel mid-stream, no stop and no error
+
+        let text = std::fs::read_to_string(&path).expect("partial line written by Drop");
+        let line: RecordLine =
+            serde_json::from_str(text.lines().next().expect("one line")).expect("valid JSONL");
+        match line.outcome {
+            RecordOutcome::Stream { response_events } => assert_eq!(
+                response_events.len(),
+                1,
+                "the event seen before cancellation is recorded partial"
             ),
             other => panic!("expected stream outcome, got {other:?}"),
         }

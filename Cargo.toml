@@ -50,13 +50,18 @@ reqwest = { version = "0.13.1", default-features = false, features = ["json", "r
 # requirement — the `Handler`/`ToolDefinition` trait objects a mod registers
 # must be Send+Sync; `serde` gives `rhai::serde::{to_dynamic, from_dynamic}`
 # for the JSON-schema / tool-input conversions.
-rhai = { version = "1", features = ["sync", "serde"] }
+rhai = { version = "1.26", features = ["sync", "serde"] }
 # rig: LLM provider framework. `reqwest`+`rustls` mirrors our TLS stack and
 # unifies with the workspace `reqwest 0.13.x` (Cargo merges features into one
 # build). `derive` is off — CodeSmith keeps its own `Tool`/`LlmClient` traits
 # (Strategy A: rig is one swappable impl, not the framework vocabulary).
 rig-core = { version = "0.39", default-features = false, features = ["reqwest", "rustls"] }
 rusqlite = { version = "0.32.1", features = ["bundled"] }
+# `rc` enables serde's Arc<T>/Rc<T> impls workspace-wide — required by
+# `ToolResult::canonical: Option<Arc<serde_json::Value>>` (codesmith-tools)
+# so event-fanout clones stay O(1). Deserialize targets behind Arc/Rc must
+# be deeply immutable (no Mutex/RefCell pointees) — these types cross
+# provider/mod payload boundaries.
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_json = "1.0.149"
 semver = "1.0.28"

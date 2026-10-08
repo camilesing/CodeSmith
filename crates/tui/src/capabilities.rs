@@ -114,24 +114,26 @@ impl CapabilityManifest {
     }
 }
 
-fn manifest_path() -> PathBuf {
+fn manifest_path() -> Result<PathBuf, String> {
     if let Ok(path) = std::env::var(CAPABILITIES_MANIFEST_ENV)
         && !path.trim().is_empty()
     {
-        return PathBuf::from(path);
+        return Ok(PathBuf::from(path));
     }
     // Same state dir ModStateStore/ExtensionStateStore use (~/.codesmith).
+    // An unresolvable state dir fails loud here — a CWD-relative fallback
+    // would silently load (or break on) a stray ./capabilities.toml in
+    // whatever directory the binary was launched from.
     codesmith_config::ensure_state_dir(".")
         .map(|dir| dir.join("capabilities.toml"))
-        // An unresolvable state dir surfaces as a read error at load.
-        .unwrap_or_else(|_| PathBuf::from("capabilities.toml"))
+        .map_err(|e| format!("cannot resolve state dir for capabilities.toml: {e:#}"))
 }
 
 fn manifest() -> Result<&'static CapabilityManifest, String> {
     static MANIFEST: OnceLock<Result<CapabilityManifest, String>> = OnceLock::new();
     MANIFEST
         .get_or_init(|| {
-            let path = manifest_path();
+            let path = manifest_path()?;
             CapabilityManifest::load_from(&path).map_err(|e| {
                 format!(
                     "capabilities manifest invalid ({e}) — fix {}",

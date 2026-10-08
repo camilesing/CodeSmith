@@ -537,6 +537,39 @@ impl Event {
 mod tests {
     use super::*;
 
+    /// The hand-maintained `as_str` tables and the serde kebab-case wire
+    /// form are two copies of the same vocabulary — pin their equivalence
+    /// so they cannot drift apart and desync the jsonl log (serde form)
+    /// from the injected runtime-event messages and stats histogram keys
+    /// (`as_str` form).
+    #[test]
+    fn as_str_matches_serde_wire_form() {
+        for verdict in [
+            ResultVerdict::VerifiedPass,
+            ResultVerdict::VerifiedFail,
+            ResultVerdict::VerifyError,
+            ResultVerdict::Unsubstantiated,
+        ] {
+            assert_eq!(
+                serde_json::to_value(verdict).unwrap(),
+                serde_json::json!(verdict.as_str()),
+                "ResultVerdict::{verdict:?}: as_str and serde form diverged"
+            );
+        }
+        for failure_type in [
+            ResultFailureType::TestFailure,
+            ResultFailureType::BuildFailure,
+            ResultFailureType::VerifyError,
+            ResultFailureType::UnsubstantiatedClaim,
+        ] {
+            assert_eq!(
+                serde_json::to_value(failure_type).unwrap(),
+                serde_json::json!(failure_type.as_str()),
+                "ResultFailureType::{failure_type:?}: as_str and serde form diverged"
+            );
+        }
+    }
+
     /// Finding 5a: the safe analytics fields of capacity events are
     /// `VerifiedAnalyticsMetadata` (ids + enum-derived labels + controlled
     /// `reason`), which forces conscious construction and still renders via
