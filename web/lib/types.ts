@@ -51,14 +51,26 @@ export interface CuratedDispatch {
  * not rendered today but stay checked so a malformed payload cannot squat in
  * KV for 7 days): "valid JSON of the wrong shape" must degrade to the
  * fallback, not persist blank/garbage dispatch cards.
+ *
+ * `href` is additionally required to be an https URL — the write side
+ * (llm.ts safeHref) enforces an https allowlist before persisting, and this
+ * guard exists precisely to distrust what is stored (manual KV edit, a
+ * future writer that bypasses curate): a `javascript:` or relative href
+ * would otherwise render straight into homepage anchors. The check is
+ * scheme-level only and inlined (not imported from llm.ts) to keep this
+ * module dependency-free.
  */
 export function isDispatchPayload(v: unknown): v is Omit<CuratedDispatch, "generatedAt"> {
   if (typeof v !== "object" || v === null) return false;
   const d = v as CuratedDispatch;
   const hasStr = (it: unknown, key: string): boolean =>
     typeof (it as { [k: string]: unknown })[key] === "string";
+  const hasSafeHref = (it: unknown): boolean => {
+    const href = (it as { href?: unknown }).href;
+    return typeof href === "string" && href.startsWith("https://");
+  };
   const wellFormedBase = (it: unknown): boolean =>
-    typeof it === "object" && it !== null && hasStr(it, "title") && hasStr(it, "href");
+    typeof it === "object" && it !== null && hasStr(it, "title") && hasSafeHref(it);
   const wellFormedHighlight = (it: unknown): boolean =>
     wellFormedBase(it) && hasStr(it, "tag") && hasStr(it, "blurb");
   const wellFormedMover = (it: unknown): boolean =>

@@ -3472,6 +3472,12 @@ impl App {
             reference.start_byte
         };
 
+        // Same mutating-edit contract as the other input-changing paths:
+        // undoable + sequence-breaking, so a following Ctrl+Z restores this
+        // removal alone (Backspace variants route here when an attachment
+        // is selected — without the snapshot one undo reverts two edits).
+        self.push_undo_snapshot();
+        self.break_edit_sequences();
         self.input
             .replace_range(reference.start_byte..reference.end_byte, "");
         self.cursor_position = self.input[..new_cursor_byte.min(self.input.len())]
@@ -4058,7 +4064,11 @@ impl App {
         }
         self.push_undo_snapshot();
         let end = end.min(char_count(&self.input));
-        let start_byte = byte_index_at_char(&self.input, start.min(end));
+        // Clamp start too, and use the clamped value everywhere: a stale
+        // span whose start outlived buffer mutations would otherwise land
+        // the cursor (and the re-stored span) past the end of the input.
+        let start = start.min(end);
+        let start_byte = byte_index_at_char(&self.input, start);
         let end_byte = byte_index_at_char(&self.input, end);
         self.input.replace_range(start_byte..end_byte, &text);
         self.cursor_position = start + char_count(&text);
@@ -4274,6 +4284,12 @@ impl App {
         // this a select-all + Backspace would restore the pre-paste state
         // and lose the deleted content entirely.
         self.push_undo_snapshot();
+        // A deletion invalidates any pending yank-pop span: direct callers
+        // (the Ctrl+X cut) would otherwise leave `yank_span` pointing at
+        // moved text for the next Alt+Y. `last_edit_was_kill` is
+        // deliberately preserved — the kill branches call `kill_push`
+        // before this and rely on the merge flag surviving.
+        self.yank_span = None;
         let sb = byte_index_at_char(&self.input, start);
         let eb = byte_index_at_char(&self.input, end);
         self.input.replace_range(sb..eb, "");
@@ -4744,8 +4760,12 @@ impl App {
             return false;
         };
 
-        // Wholesale input replacement — break kill/yank sequences and drop
-        // any selection anchor so the next edit can't corrupt a stale range.
+        // Wholesale input replacement — snapshot for undo (like the
+        // history-navigation paths: without it, one Ctrl+Z after a
+        // Ctrl+C cancel-restore skips past the restore), break kill/yank
+        // sequences, and drop any selection anchor so the next edit can't
+        // corrupt a stale range.
+        self.push_undo_snapshot();
         self.break_edit_sequences();
         self.selection_anchor = None;
         self.input = prompt;
@@ -4755,6 +4775,19 @@ impl App {
         self.selected_attachment_index = None;
         self.needs_redraw = true;
         true
+    }
+
+    /// Wholesale input replacement from outside the editor keymap (the
+    /// Ctrl+O external-editor outcome): same contract as the
+    /// history-navigation paths — snapshot for undo, break kill/yank
+    /// sequences, drop the selection anchor, cursor to the end.
+    pub(crate) fn set_input_wholesale(&mut self, input: String) {
+        self.push_undo_snapshot();
+        self.break_edit_sequences();
+        self.selection_anchor = None;
+        self.input = input;
+        self.move_cursor_end();
+        self.needs_redraw = true;
     }
 
     /// Composer-Enter dispatch. Returns `Some(input)` when the press should
@@ -4850,17 +4883,18 @@ impl App {
             // A newline already follows the (removed) backslash — reuse it
             // and step over it instead of inserting a second one.
             self.cursor_position += 1;
-            self.needs_redraw = true;
         } else {
             let byte_index = byte_index_at_char(&self.input, self.cursor_position);
             self.input.insert(byte_index, '\n');
             self.cursor_position += 1;
-            self.strip_raw_mouse_reports_from_input();
-            self.slash_menu_hidden = false;
-            self.mention_menu_hidden = false;
-            self.mention_menu_selected = 0;
-            self.needs_redraw = true;
         }
+        // Post-edit resets shared by both branches — skipping them on the
+        // reuse-newline path left stale popup state.
+        self.strip_raw_mouse_reports_from_input();
+        self.slash_menu_hidden = false;
+        self.mention_menu_hidden = false;
+        self.mention_menu_selected = 0;
+        self.needs_redraw = true;
         true
     }
 
@@ -4955,8 +4989,9 @@ impl App {
         let Some(msg) = self.queued_messages.pop_back() else {
             return false;
         };
-        // Wholesale input replacement — same sequence/selection resets as
-        // the history-navigation paths.
+        // Wholesale input replacement — same snapshot/sequence/selection
+        // resets as the history-navigation paths.
+        self.push_undo_snapshot();
         self.break_edit_sequences();
         self.selection_anchor = None;
         self.input = msg.display.clone();
@@ -7538,6 +7573,58 @@ mod tests {
         // rewrite text at a stale range) after the delete.
         assert!(!app.yank_pop());
         assert!(app.input.is_empty());
+    }
+
+    /// Review round 9: the Ctrl+X cut calls `delete_selection` directly
+    /// (none of the callers' own `break_edit_sequences` runs first) — it
+    /// must clear `yank_span` or the next Alt+Y rewrites whatever text
+    /// now sits at the stale range.
+    #[test]
+    fn cut_via_delete_selection_clears_yank_span() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello world".to_string();
+        app.cursor_position = char_count(&app.input);
+        app.kill_ring.push_front("STALE".to_string());
+        assert!(app.yank()); // sets yank_span over the yanked text
+        assert!(app.yank_span.is_some());
+
+        // Ctrl+X shape: a selection cut routes straight into delete_selection.
+        app.selection_anchor = Some(0);
+        assert!(app.delete_selection());
+        assert!(
+            app.yank_span.is_none(),
+            "the cut must break the yank sequence"
+        );
+        assert!(!app.yank_pop());
+        assert!(app.input.is_empty(), "declined yank-pop rewrites nothing");
+    }
+
+    /// Review round 9: `yank_pop` clamped `end` but not `start` — a stale
+    /// span whose start outlived buffer-shrinking mutations put the cursor
+    /// (and the re-stored span) past the end of the input.
+    #[test]
+    fn yank_pop_clamps_stale_span_start() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "abc".to_string();
+        app.cursor_position = char_count(&app.input);
+        app.kill_ring.push_front("XY".to_string());
+        // A stale span a bypassing path can leave behind; yank_span is a
+        // plain field, not a derived one.
+        app.yank_span = Some((usize::MAX, usize::MAX));
+
+        assert!(app.yank_pop());
+        assert!(
+            app.cursor_position <= char_count(&app.input),
+            "cursor must stay in bounds, got {} of {}",
+            app.cursor_position,
+            char_count(&app.input)
+        );
+        let (start, end) = app.yank_span.expect("span re-stored");
+        assert!(
+            end <= char_count(&app.input),
+            "re-stored span end in bounds"
+        );
+        assert!(start <= end, "re-stored span start clamped");
     }
 
     /// Review round 7: vim motions (`0`/`$`/`j`/`k`/`a`/Esc) set the

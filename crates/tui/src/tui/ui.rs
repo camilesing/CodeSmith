@@ -3667,6 +3667,16 @@ async fn run_event_loop(
                     app.vim_enter_normal();
                     continue;
                 }
+                // The in-flight `!cmd` run owns Esc first: the footer
+                // advertises "Esc to cancel", and a composer popup opened
+                // by typing during the run must not eat the first press.
+                KeyCode::Esc if app.shell_bang.is_some() && !app.is_loading => {
+                    if let Some(run) = app.shell_bang.take() {
+                        run.cancel.cancel();
+                        app.status_message = Some(format!("Cancelling `{}`…", run.command));
+                        app.needs_redraw = true;
+                    }
+                }
                 KeyCode::Esc if app.clear_composer_attachment_selection() => {
                     continue;
                 }
@@ -3679,15 +3689,6 @@ async fn run_event_loop(
                     // cursor moves, so typing immediately re-opens suggestions.
                     app.emoji_menu_suppressed_at = Some((app.input.clone(), app.cursor_position));
                     app.emoji_menu_selected = 0;
-                }
-                KeyCode::Esc if app.shell_bang.is_some() && !app.is_loading => {
-                    // An in-flight `!cmd` passthrough run owns Esc when no
-                    // engine turn is streaming: Esc kills its process group.
-                    if let Some(run) = app.shell_bang.take() {
-                        run.cancel.cancel();
-                        app.status_message = Some(format!("Cancelling `{}`…", run.command));
-                        app.needs_redraw = true;
-                    }
                 }
                 KeyCode::Esc => {
                     match next_escape_action(app, slash_menu_open) {
@@ -3995,7 +3996,12 @@ async fn run_event_loop(
                     // instead of waiting for the turn to end (Claude Code's
                     // "send queued messages immediately").
                     if app.input.is_empty() && app.queued_message_count() > 0 {
-                        flush_queued_messages_now(app, config, &engine_handle).await?;
+                        // Recovery (re-queue + status message) is handled
+                        // inside flush_queued_messages_now; propagating would
+                        // abort the event loop and the user would never see
+                        // the recovery (nor the queue-state persistence at
+                        // the end of this loop iteration).
+                        let _ = flush_queued_messages_now(app, config, &engine_handle).await;
                         continue;
                     }
                     if let Some(input) = app.submit_input() {
@@ -4252,8 +4258,9 @@ async fn run_event_loop(
                         &seed,
                     ) {
                         Ok(super::external_editor::EditorOutcome::Edited(new)) => {
-                            app.input = new;
-                            app.move_cursor_end();
+                            // Same wholesale-replacement contract as the
+                            // history paths: undoable, sequence-breaking.
+                            app.set_input_wholesale(new);
                             let editor = std::env::var("VISUAL")
                                 .ok()
                                 .filter(|s| !s.trim().is_empty())
@@ -6490,11 +6497,17 @@ async fn start_shell_bang_input(
         return Ok(());
     };
     if app.shell_bang.is_some() {
+        // handle_composer_enter already consumed the input — restore it so
+        // the user can re-submit once the running command finishes instead
+        // of retyping the whole `!cmd` line.
+        app.input = input.to_string();
+        app.move_cursor_end();
         app.push_status_toast(
             "A `!` command is already running — Esc cancels it".to_string(),
             StatusToastLevel::Info,
             Some(3_000),
         );
+        app.needs_redraw = true;
         return Ok(());
     }
     if shell_bang_requires_confirmation(&command) {
@@ -6645,7 +6658,21 @@ async fn handle_shell_bang_event(
             };
             let body = format!("! `{command}`\n\n```\n{text}{status_note}\n```");
             let queued = build_queued_message(app, body);
-            submit_or_steer_message(app, config, engine_handle, queued).await
+            // The shell work already ran — a dispatch failure (engine
+            // channel closed during a provider/model switch race) must not
+            // exit the TUI and lose the captured output. Mirror the
+            // steer-failure handling: re-queue + toast.
+            if let Err(err) =
+                submit_or_steer_message(app, config, engine_handle, queued.clone()).await
+            {
+                app.queue_message(queued);
+                app.push_status_toast(
+                    format!("Could not submit `!` output ({err}); queued"),
+                    StatusToastLevel::Warning,
+                    Some(5_000),
+                );
+            }
+            Ok(())
         }
         ShellBangEvent::Failed { command, error } => {
             app.push_status_toast(
@@ -6746,7 +6773,9 @@ fn shell_bang_program() -> String {
 /// TurnComplete drain (merging here would collapse N queued skill
 /// invocations into one message framed with only the first skill's
 /// body). Merging remains only for the steer case, where the queue is
-/// consumed in bulk into the running turn anyway.
+/// consumed in bulk into the running turn anyway. An offline (Queue) or
+/// follow-up-parking (QueueFollowUp) entry disposition passes through
+/// `submit_or_steer_message` untouched, preserving its re-queue semantics.
 async fn flush_queued_messages_now(
     app: &mut App,
     config: &Config,
@@ -6757,7 +6786,8 @@ async fn flush_queued_messages_now(
         return Ok(());
     }
     let count = drained.len();
-    let result = match app.decide_submit_disposition() {
+    let entry_disposition = app.decide_submit_disposition();
+    let result = match entry_disposition {
         SubmitDisposition::Steer => {
             let mut skill_instruction: Option<String> = None;
             let mut bodies: Vec<String> = Vec::with_capacity(drained.len());
@@ -6775,11 +6805,23 @@ async fn flush_queued_messages_now(
             result
         }
         _ => {
+            // Entry Immediate: dispatch each message directly. Routing
+            // through submit_or_steer_message would re-evaluate the
+            // disposition per call — and the first dispatch sets
+            // `is_loading` synchronously, so messages 2..N would be
+            // classified Steer and merged into message 1's turn instead
+            // of keeping their own boundary.
+            let dispatch_direct = matches!(entry_disposition, SubmitDisposition::Immediate);
             let mut result = Ok(());
             let mut pending: std::collections::VecDeque<QueuedMessage> = drained.into();
             while let Some(message) = pending.pop_front() {
                 let backup = message.clone();
-                match submit_or_steer_message(app, config, engine_handle, message).await {
+                let dispatched = if dispatch_direct {
+                    dispatch_user_message(app, config, engine_handle, message).await
+                } else {
+                    submit_or_steer_message(app, config, engine_handle, message).await
+                };
+                match dispatched {
                     Ok(()) => {}
                     // Never lose queued messages on a failed dispatch —
                     // the whole queue was drained up front, so re-queue the

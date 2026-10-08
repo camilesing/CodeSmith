@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { GITHUB_REPO_URL } from "@/lib/constants";
 import { InstallCodeBlock } from "./install-code-block";
 
@@ -12,11 +12,17 @@ type Arch = "macos-arm64" | "macos-x64" | "linux-x64" | "linux-arm64" | "windows
 // `set -eo pipefail` inside a subshell aborts the paste before the `sudo mv`
 // unless verification succeeded (an empty grep match fails the pipeline too
 // — which is why pipefail stays despite needing bash/zsh, not POSIX sh).
-// The subshell keeps errexit/pipefail from leaking into the user's
-// interactive session after the paste finishes.
+// Downloads land in a mktemp dir with an EXIT trap: pasting from a
+// read-only CWD never reaches the curls, and a verification failure leaves
+// nothing behind (the binaries are sudo-mv'd out on success, so the trap
+// only ever cleans scratch). The subshell keeps errexit/pipefail from
+// leaking into the user's interactive session after the paste finishes.
 const unixInstallSnippet = (platform: string, checkCmd: string, isMac: boolean) => `# Requires bash or zsh (pipefail is not POSIX sh)
 (
 set -eo pipefail
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+cd "$tmpdir"
 curl -fsSL -O ${GITHUB_REPO_URL}/releases/latest/download/codesmith-${platform}
 curl -fsSL -O ${GITHUB_REPO_URL}/releases/latest/download/codesmith-tui-${platform}
 curl -fsSL -O ${GITHUB_REPO_URL}/releases/latest/download/codesmith-artifacts-sha256.txt
@@ -24,7 +30,6 @@ grep -E 'codesmith(-tui)?-${platform}$' codesmith-artifacts-sha256.txt | ${check
 chmod +x codesmith-${platform} codesmith-tui-${platform}
 ${isMac ? `xattr -d com.apple.quarantine codesmith-${platform} codesmith-tui-${platform} 2>/dev/null || true\n` : ""}sudo mv codesmith-${platform} /usr/local/bin/codesmith
 sudo mv codesmith-tui-${platform} /usr/local/bin/codesmith-tui
-rm -f codesmith-artifacts-sha256.txt
 )`;
 
 const SNIPPETS: Record<Arch, string> = {
@@ -107,12 +112,17 @@ interface Props {
 
 export function InstallBinary({ copyLabel, copiedLabel, archHint }: Props) {
   const [arch, setArch] = useState<Arch>("macos-arm64");
+  // A manual tab click wins over the async detection: without this, a
+  // pending getHighEntropyValues resolve (slowest on macOS Chrome, where
+  // the archHint encourages clicking Intel while it is in flight) would
+  // reset the user's choice back to the detected arch.
+  const userTouched = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
     void detectArch()
       .then((detected) => {
-        if (!cancelled) setArch(detected);
+        if (!cancelled && !userTouched.current) setArch(detected);
       })
       .catch(() => {
         // Keep the default arch if detection fails.
@@ -130,7 +140,10 @@ export function InstallBinary({ copyLabel, copiedLabel, archHint }: Props) {
             key={a}
             type="button"
             aria-pressed={arch === a}
-            onClick={() => setArch(a)}
+            onClick={() => {
+              userTouched.current = true;
+              setArch(a);
+            }}
             className={`px-4 py-1.5 font-mono text-[0.7rem] tracking-wider transition-colors ${
               i > 0 ? "hairline-l" : ""
             } ${arch === a ? "bg-ink text-paper" : "bg-paper hover:bg-paper-deep"}`}

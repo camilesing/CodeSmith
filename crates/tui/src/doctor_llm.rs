@@ -191,12 +191,15 @@ fn redact_home(text: &str) -> String {
 /// redacts the bearer value too — a generic `\S+` after `[:=]` stops at
 /// the space and leaked the token (review round 7). The underscore
 /// compounds are listed explicitly because `\b` cannot hold between `_`
-/// and `token`/`secret` (`_` is a word character).
+/// and `token`/`secret` (`_` is a word character). The compounds allow
+/// whitespace separators too (`api[\s_-]?key`): the most common provider
+/// phrasing is "invalid API key: sk-…", and over-masking is the safe
+/// direction for an outbound scrubber.
 fn redact_credentials(text: &str) -> String {
     static CREDENTIAL_RUN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re = CREDENTIAL_RUN.get_or_init(|| {
         regex::Regex::new(
-            r#"(?i)\bauthorization\b["']?\s*[:=][^\n]*|\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|token|secret|password)["']?\s*[:=]\s*\S+|\bbearer\s+\S+"#,
+            r#"(?i)\bauthorization\b["']?\s*[:=][^\n]*|\b(?:api[\s_-]?key|access[\s_-]?token|refresh[\s_-]?token|client[\s_-]?secret|token|secret|password)["']?\s*[:=]\s*\S+|\bbearer\s+\S+"#,
         )
         .expect("static credential regex compiles")
     });
@@ -241,7 +244,7 @@ fn redact_absolute_paths(text: &str) -> String {
 /// error text stay visible unless they match the credential pattern, and
 /// the env block's `base_url` is sent home-folded but intact — endpoint
 /// identity is part of what the analysis reasons about, and the send
-/// itself is announced and switchable via `[doctor] llm_fallback`
+/// itself is announced and opt-in via `[doctor] llm_fallback`
 /// (documented in `config.example.toml`).
 fn redact_outbound(text: &str) -> String {
     redact_absolute_paths(&redact_credentials(&redact_home(text)))
@@ -280,7 +283,12 @@ beyond the printed hints, say so in a single line."
 pub(crate) fn resolve_analysis_target(
     config: &crate::config::Config,
 ) -> Result<(LlmClientHandle, String), String> {
-    let main = crate::core::engine::resolve_llm_client(config).ok();
+    let main_result = crate::core::engine::resolve_llm_client(config);
+    // Lossy by design (see doc above), but keep the root cause — a
+    // diagnostic command's skip line should say WHY the stack is broken
+    // ("no provider factory registered for 'x'"), not just that it is.
+    let main_err = main_result.as_ref().err().map(ToString::to_string);
+    let main = main_result.ok();
     if let Some(crate::tools::large_output_router::UtilityLlm { client, model }) =
         crate::core::engine::resolve_utility_llm(config, main.as_ref())
     {
@@ -291,7 +299,12 @@ pub(crate) fn resolve_analysis_target(
             let model = main.model().to_string();
             Ok((main, model))
         }
-        None => Err("no LLM client resolved (main and utility both unavailable)".to_string()),
+        None => Err(match main_err {
+            Some(cause) => {
+                format!("no LLM client resolved (main and utility both unavailable; main: {cause})")
+            }
+            None => "no LLM client resolved (main and utility both unavailable)".to_string(),
+        }),
     }
 }
 
@@ -433,8 +446,13 @@ mod tests {
             "Auth",
             "handshake failed: access_token=t1 client_secret=c1 refresh_token=r1",
         );
+        // Round 9: the space-separated compound shapes ("invalid API key:
+        // sk-…") — the most common provider phrasing — fell through every
+        // alternative before the separator class allowed whitespace.
+        findings.error("Auth", "invalid API key: sk-space-7 (revoked)");
+        findings.error("Auth", "bad client secret: cs-space-2");
         let payload = findings.to_prompt_payload("linux", "openai", "https://gw.internal", "gpt");
-        for secret in ["sk-header-9", "t1", "c1", "r1"] {
+        for secret in ["sk-header-9", "t1", "c1", "r1", "sk-space-7", "cs-space-2"] {
             assert!(
                 !payload.contains(secret),
                 "credential leaked into outbound payload: {secret} in {payload}"

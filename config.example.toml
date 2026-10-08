@@ -753,7 +753,7 @@ exponential_base = 2.0
 #
 # Default: on. Set false to restore the pre-P3-8 behavior of trusting the
 # claim.
-#[verification]
+# [verification]
 # result_claims = true
 
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -772,10 +772,11 @@ exponential_base = 2.0
 # advisory: the deterministic results above take precedence, the model
 # never executes anything, and every skip condition (no client, empty
 # response, error, 30s timeout) degrades to a quiet `·` line. `--json`
-# mode is untouched. Default: on. Set false to keep the report fully
-# on-machine.
-#[doctor]
-# llm_fallback = true
+# mode is untouched. Default: off — `doctor` is a local diagnostics
+# command, so the advisory network send (and its token cost) is an
+# explicit choice. Set true to enable it.
+# [doctor]
+# llm_fallback = false
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Context Compaction

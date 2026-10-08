@@ -415,6 +415,14 @@ pub fn validate_alias_base_url(url: &str) -> Result<(), String> {
         return reject(" (not http(s))");
     }
     let host_port = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    // Userinfo is not allowed: in `http://localhost:11434@evil.example`
+    // the colon split below would extract `localhost` and accept it as
+    // loopback, while the HTTP client parses the authority with host
+    // `evil.example` — same hole through the IPv6 bracket branch for
+    // `http://[::1]@evil.example`.
+    if host_port.contains('@') {
+        return reject(" (userinfo not allowed)");
+    }
     let host = if let Some(bracketed) = host_port.strip_prefix('[') {
         // [::1] or [::1]:port
         bracketed.split(']').next().unwrap_or_default()
@@ -760,12 +768,15 @@ mod tests {
     fn alias_rejects_non_https_non_loopback_base_url() {
         // The alias factory sends the user's api_key and full prompts to
         // the overridden URL — plaintext non-loopback hosts (including the
-        // `localhost.evil.example` prefix-bypass shape) must fail loud at
-        // registration.
+        // `localhost.evil.example` prefix-bypass and the
+        // `loopback:port@evil.host` userinfo-bypass shapes) must fail loud
+        // at registration.
         let mut alias = alias_for("my-gw", "openai");
         for bad in [
             "http://localhost.evil.example/v1",
             "http://127.0.0.1.evil.example/v1",
+            "http://localhost:11434@evil.example/v1",
+            "http://[::1]@evil.example/v1",
             "http://attacker.example/v1",
             "ftp://attacker.example/v1",
             "attacker.example/v1",

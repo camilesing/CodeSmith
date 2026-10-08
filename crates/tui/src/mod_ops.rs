@@ -22,7 +22,7 @@ use codesmith_extensions::{
     DiscoveredMod, ExtensionRunner, ModKvStore, RhaiMod, apply_mod_trust_gate, discover_mods,
 };
 
-use crate::mod_state::ModStateStore;
+use crate::mod_state::{ActivationHashState, ModStateStore};
 
 /// Mods roots for a workspace: global `~/.codesmith/mods` + project
 /// `<workspace>/.codesmith/mods`.
@@ -115,6 +115,53 @@ impl std::fmt::Debug for ModReloadCtx {
 
 // === Read-only listings =====================================================
 
+/// Per-mod listing status, derived exactly the way the engine's populate
+/// gate derives it (core/engine.rs): a hash-drifted or unreadable entry
+/// file is pending re-consent, not loaded — the listings must not report
+/// it as loaded precisely when the user needs to re-approve.
+pub(crate) enum ModListStatus {
+    Disabled,
+    /// Discovered, never activated — awaits first consent.
+    PendingActivation,
+    /// Activated, consent still valid — what the runner loads.
+    Loaded,
+    /// Activated, but the entry file changed since the recorded consent
+    /// (or is unreadable) — the populate gate pends it instead of loading.
+    PendingReconsent {
+        reason: String,
+    },
+}
+
+/// Classify one discovered mod against the state store, mirroring the
+/// engine's populate gate (disabled → pending → hash check → load).
+pub(crate) fn classify_mod(state: &ModStateStore, m: &DiscoveredMod) -> ModListStatus {
+    if !state.should_load(&m.id) {
+        // `should_load` = activated && !disabled; disabled outranks pending
+        // in the display split (a disabled-but-unactivated mod shows as
+        // disabled only).
+        return if state.is_disabled(&m.id) {
+            ModListStatus::Disabled
+        } else {
+            ModListStatus::PendingActivation
+        };
+    }
+    match entry_file_hash(&m.entry_path) {
+        Ok(hash) => match state.activation_hash_state(&m.id, &hash) {
+            ActivationHashState::Changed => ModListStatus::PendingReconsent {
+                reason: "entry file changed since activation".to_string(),
+            },
+            // `Matches` and legacy `NoRecord` both load (the gate backfills
+            // the hash on first load).
+            _ => ModListStatus::Loaded,
+        },
+        // Unreadable entry: the populate gate audits Failed and does not
+        // load it — the listing must not claim it loaded either.
+        Err(e) => ModListStatus::PendingReconsent {
+            reason: format!("entry file unreadable ({e})"),
+        },
+    }
+}
+
 /// `/mods list` — every discovered mod with its activation state.
 pub fn list_mods(workspace: &Path, state: &ModStateStore) -> String {
     let mods = discover_workspace_mods(workspace);
@@ -123,12 +170,13 @@ pub fn list_mods(workspace: &Path, state: &ModStateStore) -> String {
     }
     let mut out = String::from("Script mods:\n");
     for m in &mods {
-        let status = if state.is_disabled(&m.id) {
-            "disabled"
-        } else if state.is_activated(&m.id) {
-            "activated"
-        } else {
-            "pending activation"
+        let status = match classify_mod(state, m) {
+            ModListStatus::Disabled => "disabled".to_string(),
+            ModListStatus::PendingActivation => "pending activation".to_string(),
+            ModListStatus::Loaded => "activated".to_string(),
+            ModListStatus::PendingReconsent { reason } => {
+                format!("pending re-activation ({reason})")
+            }
         };
         out.push_str(&format!(
             "  {} (v{}) [{}] — {}\n",
@@ -145,28 +193,30 @@ pub fn list_mods(workspace: &Path, state: &ModStateStore) -> String {
 /// `/mods status` — runner generation + activated/pending/disabled split.
 pub fn mod_status(workspace: &Path, state: &ModStateStore) -> String {
     let mods = discover_workspace_mods(workspace);
-    let activated: Vec<&str> = mods
-        .iter()
-        .filter(|m| state.should_load(&m.id))
-        .map(|m| m.id.as_str())
-        .collect();
-    let pending: Vec<&str> = mods
-        .iter()
-        .filter(|m| !state.is_activated(&m.id))
-        .map(|m| m.id.as_str())
-        .collect();
+    let mut loaded: Vec<String> = Vec::new();
+    let mut pending: Vec<String> = Vec::new();
+    for m in &mods {
+        match classify_mod(state, m) {
+            ModListStatus::Loaded => loaded.push(m.id.clone()),
+            ModListStatus::PendingActivation => pending.push(m.id.clone()),
+            ModListStatus::PendingReconsent { reason } => {
+                pending.push(format!("{} ({reason})", m.id));
+            }
+            ModListStatus::Disabled => {}
+        }
+    }
     let disabled = state.disabled();
     let activated_ids = state.activated();
     format!(
         "Mod state: {} discovered, {} loaded, {} pending, {} disabled.\nloaded: {}\npending: {}\ndisabled: {}\nactivated ids on record: {}",
         mods.len(),
-        activated.len(),
+        loaded.len(),
         pending.len(),
         disabled.len(),
-        if activated.is_empty() {
+        if loaded.is_empty() {
             "(none)"
         } else {
-            &activated.join(", ")
+            &loaded.join(", ")
         },
         if pending.is_empty() {
             "(none)"
@@ -190,12 +240,13 @@ pub fn mod_status(workspace: &Path, state: &ModStateStore) -> String {
 pub fn mod_info(workspace: &Path, state: &ModStateStore, id: &str) -> Option<String> {
     let mods = discover_workspace_mods(workspace);
     let m = mods.into_iter().find(|m| m.id == id)?;
-    let status = if state.is_disabled(&m.id) {
-        "disabled"
-    } else if state.is_activated(&m.id) {
-        "activated"
-    } else {
-        "pending activation"
+    let status = match classify_mod(state, &m) {
+        ModListStatus::Disabled => "disabled".to_string(),
+        ModListStatus::PendingActivation => "pending activation".to_string(),
+        ModListStatus::Loaded => "activated".to_string(),
+        ModListStatus::PendingReconsent { reason } => {
+            format!("pending re-activation ({reason})")
+        }
     };
     Some(format!(
         "id: {}\nname: {}\nversion: {}\nsource: {}\ndir: {}\nentry: {}\ndescription: {}\nstate: {}",
@@ -267,6 +318,8 @@ pub fn activate(workspace: &Path, state: &mut ModStateStore, id: &str) -> Result
 }
 
 /// Enable/disable an already-known mod id (no fresh consent either way).
+/// Both entry points (`/mods enable|disable` and the manage_mods tool)
+/// reload immediately after this, so enablement takes effect right away.
 pub fn set_enabled(state: &mut ModStateStore, id: &str, enabled: bool) -> Result<String, String> {
     if !state.is_activated(id) {
         return Err(format!(
@@ -277,9 +330,9 @@ pub fn set_enabled(state: &mut ModStateStore, id: &str, enabled: bool) -> Result
         .set_enabled(id, enabled)
         .map_err(|e| format!("persist enablement: {e}"))?;
     Ok(if enabled {
-        format!("Enabled mod '{id}' (takes effect on the next mods reload).")
+        format!("Enabled mod '{id}'.")
     } else {
-        format!("Disabled mod '{id}' (takes effect on the next mods reload).")
+        format!("Disabled mod '{id}'.")
     })
 }
 
@@ -290,14 +343,19 @@ pub fn remove(workspace: &Path, state: &mut ModStateStore, id: &str) -> Result<S
         .into_iter()
         .find(|m| m.id == id)
         .ok_or_else(|| format!("No mod with id '{id}' on disk."))?;
+    // Clear state FIRST: once the directory is gone, discovery can no
+    // longer resolve the id, so a persist failure after a successful
+    // directory removal would leave a stale activated record that no
+    // retry can clear. Deactivating first keeps every failure retryable —
+    // a failed dir deletion leaves a discoverable-but-unactivated mod.
+    state
+        .deactivate(id)
+        .map_err(|e| format!("clear state: {e}"))?;
     std::fs::remove_dir_all(&m.dir).map_err(|e| format!("remove {}: {e}", m.dir.display()))?;
     if let Some(kv_dir) = state.kv_dir() {
         let scope = if m.global { "global" } else { "project" };
         let _ = std::fs::remove_file(kv_dir.join(format!("{scope}-{}.json", m.id)));
     }
-    state
-        .deactivate(id)
-        .map_err(|e| format!("clear state: {e}"))?;
     Ok(format!(
         "Removed mod '{id}' ({}). Bindings clear on the next mods reload.",
         m.dir.display()
@@ -361,14 +419,6 @@ pub fn write_mod(
     // signal cannot be bypassed via the `global` flag; per-call approval
     // and first-activation consent remain additional gates, not
     // replacements for it.
-    // Trust gate: an untrusted workspace must not persist mod code. A
-    // project write would create a discoverable-but-shadowed mod; a global
-    // write would put executable code into `~/.codesmith/mods`, which loads
-    // in EVERY workspace — including other untrusted ones
-    // (`apply_mod_trust_gate` retains globals). Refuse both so the trust
-    // signal cannot be bypassed via the `global` flag; per-call approval
-    // and first-activation consent remain additional gates, not
-    // replacements for it.
     if !crate::config::is_workspace_trusted(workspace) {
         return Err(
             "workspace is not trusted; project and global mod writes are refused".to_string(),
@@ -379,16 +429,6 @@ pub fn write_mod(
         sanitize_rel_path(rel)?;
     }
     std::fs::create_dir_all(&mod_dir).map_err(|e| format!("create {}: {e}", mod_dir.display()))?;
-    // `sanitize_rel_path` is purely lexical, and `create_dir_all` /
-    // `fs::write` follow symlinks. Anchor containment on the canonicalized
-    // mods ROOT — anchoring on `mod_dir.canonicalize()` alone is the hole:
-    // a pre-planted symlink at `<mods-root>/<id>` leaves `create_dir_all`
-    // successful while the canonicalized mod dir already resolves to the
-    // attacker-chosen target, so every check anchored there passes while
-    // the approved write lands outside the root. Known limitation: the
-    // check-then-write gap is still a TOCTOU window (a symlink swapped in
-    // between check and write wins); closing that needs O_NOFOLLOW-style
-    // opens, which std does not expose.
     // `sanitize_rel_path` is purely lexical, and `create_dir_all` /
     // `fs::write` follow symlinks. Anchor containment on the canonicalized
     // mods ROOT — anchoring on `mod_dir.canonicalize()` alone is the hole:
@@ -446,7 +486,6 @@ pub fn write_mod(
 /// Reload the whole extension layer (compiled-in + dylib + script mods) from
 /// disk-fresh state. Safe from any thread; idempotent
 /// (clear → invalidate → populate).
-#[allow(clippy::too_many_arguments)]
 pub fn reload_mods(
     runner: &Arc<ExtensionRunner>,
     workspace: &Path,
@@ -590,21 +629,27 @@ pub fn spawn_mods_watcher(
             if !event_is_relevant(&ev) {
                 continue;
             }
-            // Debounce: wait out the quiet window, discarding further events.
-            let deadline = tokio::time::Instant::now() + WATCH_DEBOUNCE;
+            // Debounce: wait for a quiet window — every relevant event
+            // pushes the deadline forward, so a burst longer than one
+            // window does not fire a reload mid-write.
+            let mut deadline = tokio::time::Instant::now() + WATCH_DEBOUNCE;
             loop {
                 tokio::select! {
                     _ = tokio::time::sleep_until(deadline) => break,
                     ev2 = rx.recv() => {
                         match ev2 {
-                            Some(Ok(e2)) if event_is_relevant(&e2) => {}
+                            Some(Ok(e2)) if event_is_relevant(&e2) => {
+                                deadline = tokio::time::Instant::now() + WATCH_DEBOUNCE;
+                            }
                             Some(_) => {}
                             None => return,
                         }
                     }
                 }
             }
-            // Cooldown vs the last fire (manual reload included, best-effort).
+            // Cooldown vs the last watcher-initiated fire only (manual /
+            // tool reloads don't share this clock; overlapping reloads are
+            // idempotent clear→populate cycles).
             let elapsed = last_fire.elapsed();
             if elapsed < WATCH_COOLDOWN {
                 tokio::time::sleep(WATCH_COOLDOWN - elapsed).await;
@@ -928,11 +973,47 @@ trust_level = "trusted"
         assert!(listing.contains("pending activation"), "{listing}");
         let status = mod_status(&ws, &state);
         assert!(status.contains("pending: listed"), "{status}");
-        state.activate("listed", "irrelevant-to-listing").unwrap();
+        // Activate against the REAL entry hash — a stale hash is the
+        // hash-drift case covered by `status_and_list_reflect_hash_drift`.
+        let entry = discover_workspace_mods(&ws)
+            .into_iter()
+            .find(|m| m.id == "listed")
+            .unwrap()
+            .entry_path;
+        let hash = entry_file_hash(&entry).unwrap();
+        state.activate("listed", &hash).unwrap();
         let listing = list_mods(&ws, &state);
         assert!(listing.contains("activated"), "{listing}");
         let info = mod_info(&ws, &state, "listed").unwrap();
         assert!(info.contains("test mod"), "{info}");
+    }
+
+    #[test]
+    fn status_and_list_reflect_hash_drift() {
+        // The engine's populate gate pends an activated mod whose entry
+        // content changed since consent — the listings must agree instead
+        // of reporting it loaded exactly when re-consent is needed.
+        let _env = crate::test_support::lock_test_env();
+        let dir = TempDir::new().unwrap();
+        let _home = ScopedHome::set_trusted(&dir, &dir.path().join("ws"));
+        let ws = workspace_in(&dir);
+        write_fixture_mod(&ws.join(".codesmith").join("mods"), "drifted");
+        let mut state = store_in(&dir);
+        // Recorded consent hash ≠ actual content → Changed.
+        state.activate("drifted", "stale-hash").unwrap();
+        let status = mod_status(&ws, &state);
+        assert!(
+            status.contains("pending: drifted (entry file changed since activation)"),
+            "{status}"
+        );
+        assert!(!status.contains("loaded: drifted"), "{status}");
+        let listing = list_mods(&ws, &state);
+        assert!(
+            listing.contains("pending re-activation (entry file changed since activation)"),
+            "{listing}"
+        );
+        let info = mod_info(&ws, &state, "drifted").unwrap();
+        assert!(info.contains("pending re-activation"), "{info}");
     }
 
     #[test]

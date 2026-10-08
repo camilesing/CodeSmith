@@ -112,7 +112,7 @@ impl ToolSpec for ManageModsTool {
     fn is_destructive(&self, input: &Value) -> bool {
         matches!(
             input.get("action").and_then(Value::as_str),
-            Some("write") | Some("activate") | Some("disable") | Some("remove")
+            Some("write") | Some("activate") | Some("disable") | Some("enable") | Some("remove")
         )
     }
 
@@ -145,9 +145,17 @@ impl ToolSpec for ManageModsTool {
 
         match action {
             "list" => {
-                let state = crate::mod_state::ModStateStore::load_default()
-                    .map_err(|e| ToolError::not_available(format!("load mod state: {e}")))?;
-                Ok(ToolResult::success(mod_ops::list_mods(workspace, &state)))
+                // Disk-bound (state load + recursive discovery scan) — keep
+                // it off the tokio worker, like `reload_note` does.
+                let ws = workspace.clone();
+                let listing = tokio::task::spawn_blocking(move || {
+                    let state = crate::mod_state::ModStateStore::load_default()
+                        .map_err(|e| ToolError::not_available(format!("load mod state: {e}")))?;
+                    Ok::<String, ToolError>(mod_ops::list_mods(&ws, &state))
+                })
+                .await
+                .map_err(|e| ToolError::execution_failed(format!("join: {e}")))??;
+                Ok(ToolResult::success(listing))
             }
             "write" => {
                 require_id()?;
@@ -156,8 +164,14 @@ impl ToolSpec for ManageModsTool {
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
                 let files = parse_files(input.get("files"))?;
-                let dir = mod_ops::write_mod(workspace, &id, &files, global)
-                    .map_err(ToolError::invalid_input)?;
+                let ws = workspace.clone();
+                let id_in = id.clone();
+                let dir = tokio::task::spawn_blocking(move || {
+                    mod_ops::write_mod(&ws, &id_in, &files, global)
+                })
+                .await
+                .map_err(|e| ToolError::execution_failed(format!("join: {e}")))?
+                .map_err(ToolError::invalid_input)?;
                 Ok(ToolResult::success(format!(
                     "Wrote mod '{id}' to {}. It is NOT active yet — the user activates it \
                      (this action=activate call requires their approval), then it loads.",
@@ -172,38 +186,50 @@ impl ToolSpec for ManageModsTool {
                 // mutations are last-writer-wins. The guard scopes to
                 // load→mutate→persist ONLY — reload re-acquires it at the
                 // activation-hash backfill inside populate (std Mutex is
-                // not reentrant; holding it across reload deadlocks).
-                let msg = {
+                // not reentrant; holding it across reload deadlocks). All
+                // of it is synchronous disk work (discovery scan +
+                // SHA-256) — off the tokio worker, like `reload_note`.
+                let ws = workspace.clone();
+                let id_in = id.clone();
+                let msg = tokio::task::spawn_blocking(move || {
                     let _guard = crate::mod_ops::mod_state_lock();
                     let mut state = crate::mod_state::ModStateStore::load_default()
                         .map_err(|e| ToolError::not_available(format!("load mod state: {e}")))?;
-                    mod_ops::activate(workspace, &mut state, &id)
-                        .map_err(ToolError::execution_failed)?
-                };
+                    mod_ops::activate(&ws, &mut state, &id_in).map_err(ToolError::execution_failed)
+                })
+                .await
+                .map_err(|e| ToolError::execution_failed(format!("join: {e}")))??;
                 let reload_note = self.reload_note().await;
                 Ok(ToolResult::success(format!("{msg}\n{reload_note}")))
             }
             "disable" | "enable" => {
                 require_id()?;
-                let msg = {
+                let id_in = id.clone();
+                let enable = action == "enable";
+                let msg = tokio::task::spawn_blocking(move || {
                     let _guard = crate::mod_ops::mod_state_lock();
                     let mut state = crate::mod_state::ModStateStore::load_default()
                         .map_err(|e| ToolError::not_available(format!("load mod state: {e}")))?;
-                    mod_ops::set_enabled(&mut state, &id, action == "enable")
-                        .map_err(ToolError::execution_failed)?
-                };
+                    mod_ops::set_enabled(&mut state, &id_in, enable)
+                        .map_err(ToolError::execution_failed)
+                })
+                .await
+                .map_err(|e| ToolError::execution_failed(format!("join: {e}")))??;
                 let reload_note = self.reload_note().await;
                 Ok(ToolResult::success(format!("{msg}\n{reload_note}")))
             }
             "remove" => {
                 require_id()?;
-                let msg = {
+                let ws = workspace.clone();
+                let id_in = id.clone();
+                let msg = tokio::task::spawn_blocking(move || {
                     let _guard = crate::mod_ops::mod_state_lock();
                     let mut state = crate::mod_state::ModStateStore::load_default()
                         .map_err(|e| ToolError::not_available(format!("load mod state: {e}")))?;
-                    mod_ops::remove(workspace, &mut state, &id)
-                        .map_err(ToolError::execution_failed)?
-                };
+                    mod_ops::remove(&ws, &mut state, &id_in).map_err(ToolError::execution_failed)
+                })
+                .await
+                .map_err(|e| ToolError::execution_failed(format!("join: {e}")))??;
                 let reload_note = self.reload_note().await;
                 Ok(ToolResult::success(format!("{msg}\n{reload_note}")))
             }

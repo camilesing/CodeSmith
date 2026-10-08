@@ -134,6 +134,16 @@ struct BridgeState {
     pending: Vec<(String, serde_json::Value)>,
 }
 
+/// Per-delta budget for one AssistantStream handler dispatch; a dispatch
+/// that exceeds it is detached (never cancelled) and trips the breaker.
+const STREAM_DISPATCH_BUDGET_MS: u64 = 250;
+/// Cumulative per-turn dispatch budget: a handler that consistently
+/// finishes *just under* the per-delta budget never trips the miss path
+/// but still taxes every remaining delta of the turn with its full
+/// latency — the breaker also trips once the aggregate dispatch time
+/// exceeds this.
+const STREAM_DISPATCH_CUMULATIVE_BUDGET_MS: u64 = 1_000;
+
 /// A [`Callback`] that forwards tool-lifecycle hooks onto the host's
 /// `mpsc::Sender<Event>` UI channel and `HookHost` shell-hook surface.
 ///
@@ -158,14 +168,17 @@ pub struct CallbackBridge {
     /// `None` when no runner is bound (tests / runner-less hosts).
     extension: Option<Arc<codesmith_extensions::ExtensionRunner>>,
     /// Route B budget state, per bridge (per turn): the first budget miss
+    /// (or cumulative overshoot, see [`STREAM_DISPATCH_CUMULATIVE_BUDGET_MS`])
     /// logs once instead of once per delta (a consistently slow handler
     /// must not flood the log with hundreds of lines per turn), and —
     /// once tripped — circuit-breaks later deltas' handler dispatch
     /// entirely (`spawn_blocking` tasks cannot be cancelled, so a hung
     /// handler would otherwise hold one blocking-pool thread per
     /// detached dispatch, and a slow-but-completing one would stall the
-    /// delta loop for the full 250ms budget each time).
+    /// delta loop for the full per-delta budget each time).
     stream_warned: Arc<std::sync::atomic::AtomicBool>,
+    /// Cumulative AssistantStream dispatch time this bridge (turn), in ms.
+    stream_dispatch_spent_ms: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl CallbackBridge {
@@ -196,6 +209,7 @@ impl CallbackBridge {
             state: Arc::new(Mutex::new(BridgeState::default())),
             extension: None,
             stream_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            stream_dispatch_spent_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 }
@@ -302,6 +316,7 @@ impl Callback for CallbackBridge {
         let state = self.state.clone();
         let extension = self.extension.clone();
         let stream_warned = self.stream_warned.clone();
+        let stream_dispatch_spent_ms = self.stream_dispatch_spent_ms.clone();
         Box::pin(async move {
             // First-wins dedup for block-lifecycle announcements within the
             // current LLM step (see `BridgeState::announced_blocks`). `None`
@@ -389,11 +404,35 @@ impl Callback for CallbackBridge {
                     },
                 );
                 let handle = tokio::runtime::Handle::current();
+                let started = std::time::Instant::now();
                 let dispatch =
                     tokio::task::spawn_blocking(move || handle.block_on(runner.emit(event)));
                 let warn_once = || !stream_warned.swap(true, std::sync::atomic::Ordering::Relaxed);
-                match tokio::time::timeout(std::time::Duration::from_millis(250), dispatch).await {
-                    Ok(Ok(_)) => {}
+                match tokio::time::timeout(
+                    std::time::Duration::from_millis(STREAM_DISPATCH_BUDGET_MS),
+                    dispatch,
+                )
+                .await
+                {
+                    Ok(Ok(_)) => {
+                        // Trip on cumulative overshoot too: a handler that
+                        // consistently finishes *just under* the per-delta
+                        // budget never trips the miss path but still taxes
+                        // every remaining delta of the turn.
+                        let spent = started.elapsed().as_millis() as u64;
+                        let total = stream_dispatch_spent_ms
+                            .fetch_add(spent, std::sync::atomic::Ordering::Relaxed)
+                            .saturating_add(spent);
+                        if total > STREAM_DISPATCH_CUMULATIVE_BUDGET_MS && warn_once() {
+                            tracing::warn!(
+                                target: "codesmith_runtime::callback_bridge",
+                                "AssistantStream handler dispatches consumed \
+                                 {total}ms cumulative this turn (each under the \
+                                 {STREAM_DISPATCH_BUDGET_MS}ms budget); later \
+                                 deltas skip handler dispatch (logged once per turn)"
+                            );
+                        }
+                    }
                     Ok(Err(join_err)) => {
                         // emit's catch_unwind normally contains handler
                         // panics, so a JoinError here is unexpected.
@@ -408,9 +447,10 @@ impl Callback for CallbackBridge {
                         if warn_once() {
                             tracing::warn!(
                                 target: "codesmith_runtime::callback_bridge",
-                                "AssistantStream handler dispatch exceeded 250ms; \
-                                 detached — later deltas skip handler dispatch \
-                                 this turn (logged once per turn)"
+                                "AssistantStream handler dispatch exceeded \
+                                 {STREAM_DISPATCH_BUDGET_MS}ms; detached — later \
+                                 deltas skip handler dispatch this turn \
+                                 (logged once per turn)"
                             );
                         }
                     }
@@ -1301,6 +1341,82 @@ mod assistant_stream_tests {
             start.elapsed() < std::time::Duration::from_millis(200),
             "second delta skipped the dispatch, took {:?}",
             start.elapsed()
+        );
+    }
+
+    /// Route B circuit breaker, cumulative half: a handler that
+    /// consistently finishes *just under* the per-delta budget never trips
+    /// the miss path, yet its latency is paid by every delta of the turn —
+    /// once the aggregate dispatch time crosses the cumulative budget, the
+    /// breaker trips and later deltas skip the dispatch.
+    #[tokio::test]
+    async fn near_budget_stream_handler_trips_breaker_via_cumulative_time() {
+        struct TrickleStream(Arc<Mutex<Vec<String>>>);
+        #[async_trait::async_trait]
+        impl codesmith_agent::extension::Handler for TrickleStream {
+            async fn handle(
+                &self,
+                event: &codesmith_agent::extension::ExtensionEvent,
+                _ctx: &dyn codesmith_agent::extension::ExtensionContext,
+            ) -> Result<
+                codesmith_agent::extension::HandlerOutcome,
+                codesmith_agent::extension::ExtensionError,
+            > {
+                if let codesmith_agent::extension::ExtensionEvent::AssistantStream(e) = event {
+                    self.0.lock().unwrap().push(e.text.clone());
+                    // Well under the 250ms per-delta budget, but ten of
+                    // these tax the turn past the 1s cumulative budget.
+                    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+                }
+                Ok(codesmith_agent::extension::HandlerOutcome::Continue)
+            }
+        }
+        struct TrickleExt(Arc<Mutex<Vec<String>>>);
+        #[async_trait::async_trait]
+        impl codesmith_agent::extension::Extension for TrickleExt {
+            fn metadata(&self) -> &codesmith_agent::extension::ExtensionMetadata {
+                static M: codesmith_agent::extension::ExtensionMetadata =
+                    codesmith_agent::extension::ExtensionMetadata::new("trickle-stream-ext");
+                &M
+            }
+            async fn configure(
+                &self,
+                api: &dyn codesmith_agent::extension::ExtensionApi,
+            ) -> Result<(), codesmith_agent::extension::ExtensionError> {
+                api.on_variant(
+                    codesmith_agent::extension::ExtensionEventKind::AssistantStream,
+                    Arc::new(TrickleStream(self.0.clone())),
+                )?;
+                Ok(())
+            }
+        }
+
+        let runner = codesmith_extensions::ExtensionRunner::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        runner.load(&TrickleExt(seen.clone())).await.expect("load");
+        runner.bind_core(Arc::new(NoopCtx));
+
+        let bridge = CallbackBridge::new(None, None, HookContext::default())
+            .with_extension_runner_if_some(Some(Arc::new(runner)));
+
+        for i in 0..10 {
+            bridge
+                .on_stream_delta(&StreamDelta::Text {
+                    index: 0,
+                    content: format!("d{i}"),
+                })
+                .await;
+        }
+        assert!(
+            bridge
+                .stream_warned
+                .load(std::sync::atomic::Ordering::Relaxed),
+            "cumulative dispatch time past the budget trips the flag"
+        );
+        let dispatched = seen.lock().unwrap().len();
+        assert!(
+            dispatched < 10,
+            "at least the deltas after the trip were skipped (dispatched {dispatched})"
         );
 
         // Let the detached first dispatch finish before the test runtime

@@ -2337,7 +2337,16 @@ pub fn resolve_state_dir(subdir: &str) -> Result<PathBuf> {
 /// Ensure a state subdirectory exists under the primary CodeSmith root,
 /// creating it if necessary. This is the write-path resolver.
 pub fn ensure_state_dir(subdir: &str) -> Result<PathBuf> {
-    let dir = codesmith_home()?.join(subdir);
+    // `join(".")` (the "the root itself" convention used by every state
+    // store) would leave a trailing `/./` component — `mkdir` on macOS
+    // fails that with ENOENT while the parent chain is still being
+    // created (a first-run user has no ~/.codesmith yet), so map it to
+    // the root instead of appending it.
+    let dir = if subdir == "." || subdir.is_empty() {
+        codesmith_home()?
+    } else {
+        codesmith_home()?.join(subdir)
+    };
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("failed to create {}/", dir.display()))?;
     Ok(dir)
@@ -2725,6 +2734,7 @@ mod tests {
 
     struct EnvGuard {
         deepseek_api_key: Option<OsString>,
+        codesmith_api_key: Option<OsString>,
         codesmith_output_mode: Option<OsString>,
         codesmith_auth_mode: Option<OsString>,
         codesmith_log_level: Option<OsString>,
@@ -2784,6 +2794,7 @@ mod tests {
         fn without_runtime_overrides() -> Self {
             let guard = Self {
                 deepseek_api_key: env::var_os("DEEPSEEK_API_KEY"),
+                codesmith_api_key: env::var_os("CODESMITH_API_KEY"),
                 codesmith_output_mode: env::var_os("CODESMITH_OUTPUT_MODE"),
                 codesmith_auth_mode: env::var_os("CODESMITH_AUTH_MODE"),
                 codesmith_log_level: env::var_os("CODESMITH_LOG_LEVEL"),
@@ -2841,6 +2852,7 @@ mod tests {
             // Safety: test-only environment mutation guarded by a module mutex.
             unsafe {
                 env::remove_var("DEEPSEEK_API_KEY");
+                env::remove_var("CODESMITH_API_KEY");
                 env::remove_var("CODESMITH_OUTPUT_MODE");
                 env::remove_var("CODESMITH_AUTH_MODE");
                 env::remove_var("CODESMITH_LOG_LEVEL");
@@ -2911,6 +2923,7 @@ mod tests {
             // Safety: test-only environment mutation guarded by a module mutex.
             unsafe {
                 Self::restore_var("DEEPSEEK_API_KEY", self.deepseek_api_key.take());
+                Self::restore_var("CODESMITH_API_KEY", self.codesmith_api_key.take());
                 Self::restore_var("CODESMITH_OUTPUT_MODE", self.codesmith_output_mode.take());
                 Self::restore_var("CODESMITH_AUTH_MODE", self.codesmith_auth_mode.take());
                 Self::restore_var("CODESMITH_LOG_LEVEL", self.codesmith_log_level.take());
@@ -3266,8 +3279,42 @@ mod tests {
         assert_eq!(resolved.provider, ProviderKind::NvidiaNim);
         // DEEPSEEK_API_KEY is deliberately not a nvidia-nim candidate
         // (secrets::env_for): presenting a DeepSeek-issued credential to
-        // NVIDIA endpoints would leak it to a third party.
+        // NVIDIA endpoints would leak it to a third party. CODESMITH_API_KEY
+        // remains a candidate, so EnvGuard must clear it too (see
+        // without_runtime_overrides) for this absence assertion to be hermetic.
         assert!(resolved.api_key.is_none());
+    }
+
+    #[test]
+    fn ensure_state_dir_dot_creates_root_on_fresh_home() {
+        // macOS regression (review round 9): `join(".")` left a trailing
+        // `/./` component, and mkdir("…/.codesmith/.") fails with ENOENT
+        // there while the parent chain is still being created — every
+        // state store broke on a first-run home with no ~/.codesmith yet.
+        use tempfile::TempDir;
+        let _lock = env_lock();
+        let dir = TempDir::new().unwrap();
+        let home_prev = env::var_os("HOME");
+        let codesmith_home_prev = env::var_os("CODESMITH_HOME");
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("HOME", dir.path());
+            env::remove_var("CODESMITH_HOME");
+        }
+        let state = ensure_state_dir(".").expect("root creatable on a fresh home");
+        assert!(state.starts_with(dir.path()));
+        assert!(dir.path().join(".codesmith").is_dir());
+        // Safety: restore under the same lock.
+        unsafe {
+            match home_prev {
+                Some(prev) => env::set_var("HOME", prev),
+                None => env::remove_var("HOME"),
+            }
+            match codesmith_home_prev {
+                Some(prev) => env::set_var("CODESMITH_HOME", prev),
+                None => env::remove_var("CODESMITH_HOME"),
+            }
+        }
     }
 
     #[test]

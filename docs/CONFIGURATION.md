@@ -915,23 +915,25 @@ If you are upgrading from older releases:
   longer than two minutes, the re-run is skipped as a `verify-error`
   (re-running a slow suite would double its wall-clock before the next
   request). `false` restores the pre-P3-8 behavior of trusting the claim.
-- `[doctor] llm_fallback` (bool, optional, default `true`): the
-  `codesmith doctor` LLM fallback layer (P3-8 step 2). After the
-  deterministic checks complete, any collected warnings/errors are handed
-  to one advisory LLM call — the `[utility_model]` when configured, else
-  the main client — together with environment context (OS, provider,
-  base_url, and model of the configured API target). Doctor prints an
-  explicit notice naming the endpoint before sending, and finding
-  details are redacted (`~` replaces home-directory prefixes). The call
-  proposes root causes (preferring explanations
+- `[doctor] llm_fallback` (bool, optional, default `false`): the
+  `codesmith doctor` LLM fallback layer (P3-8 step 2). `doctor` is a
+  local diagnostics command, so the advisory network send (and its
+  token cost) is opt-in: set `true` to enable it. When enabled, after
+  the deterministic checks complete, any collected warnings/errors are
+  handed to one advisory LLM call — the `[utility_model]` when
+  configured, else the main client — together with environment context
+  (OS, provider, base_url, and model of the configured API target).
+  Doctor prints an explicit notice naming the endpoint before sending,
+  and finding details are redacted (`~` replaces home-directory
+  prefixes). The call proposes root causes (preferring explanations
   that connect multiple findings) and one concrete next action per
   finding, skipping findings whose built-in hint already covers them.
   The section renders after "All checks complete!", is explicitly
   advisory (deterministic results take precedence), and the model never
   executes anything. Skip conditions (no resolvable client, empty
   response, transport error, 30s timeout) degrade to a quiet `·` line;
-  `--json` mode adds no live calls. `false` keeps doctor fully
-  deterministic.
+  `--json` mode adds no live calls. `false` (or unset) keeps doctor
+  fully deterministic.
 - `subagents.*` (optional): per-role/type model defaults for `agent_open` and
   related persistent sub-agent sessions. Explicit tool `model` values win, then role/type
   overrides, then the parent runtime model. Supported convenience keys are
