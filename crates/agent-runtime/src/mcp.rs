@@ -4714,7 +4714,10 @@ mod tests {
         }
     }
 
+    // ENV_LOCK serializes the whole async test (env mutation): the guard
+    // intentionally outlives every await in the body.
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn auth_failures_are_cached_as_needs_auth() {
         let _guard = ENV_LOCK.lock().unwrap();
         let home = tempfile::tempdir().unwrap();

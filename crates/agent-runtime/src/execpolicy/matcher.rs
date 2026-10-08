@@ -526,12 +526,10 @@ mod tests {
     fn ast_normalize_drops_redirect_glue_consistently() {
         // `2>/dev/null` renders as `2> /dev/null` on both sides of the
         // match, so glued-form patterns still hit.
-        assert!(
-            pattern_matches(
-                "cargo build 2>/dev/null",
-                "cargo build 2>/dev/null && cargo test"
-            ) == false
-        ); // one pattern segment vs two command segments
+        assert!(!pattern_matches(
+            "cargo build 2>/dev/null",
+            "cargo build 2>/dev/null && cargo test"
+        )); // one pattern segment vs two command segments
         assert!(pattern_matches(
             "cargo build 2> *",
             "cargo build 2>/dev/null"

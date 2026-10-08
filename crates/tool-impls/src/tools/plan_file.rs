@@ -154,7 +154,10 @@ mod tests {
         assert_ne!(s1, s2);
     }
 
+    // lock_test_env serializes the whole async test (env mutation): the
+    // guard intentionally outlives every await in the body.
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn write_plan_file_creates_and_reads_back() {
         let _guard = lock_test_env();
         let _home = ScopedCodeSmithHome::new();
@@ -166,7 +169,10 @@ mod tests {
         assert_eq!(content, Some("# My plan\nStep 1".to_string()));
     }
 
+    // lock_test_env serializes the whole async test (env mutation): the
+    // guard intentionally outlives every await in the body.
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn read_plan_file_returns_none_for_missing() {
         let _guard = lock_test_env();
         let _home = ScopedCodeSmithHome::new();
@@ -174,7 +180,10 @@ mod tests {
         assert_eq!(result, None);
     }
 
+    // lock_test_env serializes the whole async test (env mutation): the
+    // guard intentionally outlives every await in the body.
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn delete_plan_file_removes_file() {
         let _guard = lock_test_env();
         let _home = ScopedCodeSmithHome::new();
