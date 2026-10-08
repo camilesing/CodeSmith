@@ -20,16 +20,20 @@ impl BackgroundTaskOutputManager {
         Self { output_dir }
     }
 
-    /// Compute the output file path for a task id.
-    pub fn output_path_for(&self, task_id: &str) -> PathBuf {
-        self.output_dir.join(task_id).join("output.txt")
+    /// Compute the output file path for a task id. Single choke point for
+    /// the traversal guard: the id is joined into a path here, so callers
+    /// cannot get a path for an unchecked id — siblings below must not
+    /// join the id themselves (the one exception is `remove_output`,
+    /// which owns its own guarded join).
+    pub fn output_path_for(&self, task_id: &str) -> Result<PathBuf> {
+        codesmith_agent_runtime::utils::require_safe_path_component(task_id)?;
+        Ok(self.output_dir.join(task_id).join("output.txt"))
     }
 
     /// Write incremental output to a task's output file.
     #[allow(dead_code)]
     pub fn append_output(&self, task_id: &str, content: &str) -> Result<()> {
-        codesmith_agent_runtime::utils::require_safe_path_component(task_id)?;
-        let path = self.output_path_for(task_id);
+        let path = self.output_path_for(task_id)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).with_context(|| format!("create dir {:?}", parent))?;
         }
@@ -44,7 +48,9 @@ impl BackgroundTaskOutputManager {
     }
 
     /// Read output from a file starting at the given offset.
-    /// Returns (content, new_offset).
+    /// Returns (content, new_offset). The path must come from
+    /// [`Self::output_path_for`] (the validated join) — this helper
+    /// takes it pre-built so the UI can hold one path across polls.
     pub fn read_from_offset(&self, path: &Path, offset: usize) -> Result<(String, usize)> {
         if !path.exists() {
             return Ok((String::new(), offset));
@@ -68,11 +74,7 @@ impl BackgroundTaskOutputManager {
     /// Get the total size of a task's output file.
     #[allow(dead_code)]
     pub fn output_size(&self, task_id: &str) -> Result<usize> {
-        // Same guard as append/remove: `output_path_for` joins the id into
-        // a path, and this helper must not become the unguarded future
-        // caller.
-        codesmith_agent_runtime::utils::require_safe_path_component(task_id)?;
-        let path = self.output_path_for(task_id);
+        let path = self.output_path_for(task_id)?;
         if !path.exists() {
             return Ok(0);
         }
@@ -99,7 +101,7 @@ mod tests {
     #[test]
     fn output_path_for_constructs_correct_path() {
         let mgr = BackgroundTaskOutputManager::new(PathBuf::from("/tmp/bg"));
-        let path = mgr.output_path_for("task-1");
+        let path = mgr.output_path_for("task-1").expect("path");
         assert_eq!(path, PathBuf::from("/tmp/bg/task-1/output.txt"));
     }
 
@@ -108,7 +110,7 @@ mod tests {
         let tmp = tempdir().expect("tempdir");
         let mgr = BackgroundTaskOutputManager::new(tmp.path().to_path_buf());
         mgr.append_output("t1", "hello").expect("append");
-        let path = mgr.output_path_for("t1");
+        let path = mgr.output_path_for("t1").expect("path");
         let content = std::fs::read_to_string(&path).expect("read");
         assert_eq!(content, "hello");
     }
@@ -119,7 +121,7 @@ mod tests {
         let mgr = BackgroundTaskOutputManager::new(tmp.path().to_path_buf());
         mgr.append_output("t1", "hello").expect("append1");
         mgr.append_output("t1", " world").expect("append2");
-        let path = mgr.output_path_for("t1");
+        let path = mgr.output_path_for("t1").expect("path");
         let content = std::fs::read_to_string(&path).expect("read");
         assert_eq!(content, "hello world");
     }
@@ -129,7 +131,7 @@ mod tests {
         let tmp = tempdir().expect("tempdir");
         let mgr = BackgroundTaskOutputManager::new(tmp.path().to_path_buf());
         mgr.append_output("t1", "0123456789").expect("write");
-        let path = mgr.output_path_for("t1");
+        let path = mgr.output_path_for("t1").expect("path");
         let (content, new_offset) = mgr.read_from_offset(&path, 5).expect("read");
         assert_eq!(content, "56789");
         assert_eq!(new_offset, 10);
@@ -139,7 +141,7 @@ mod tests {
     fn read_from_offset_returns_empty_for_missing_file() {
         let tmp = tempdir().expect("tempdir");
         let mgr = BackgroundTaskOutputManager::new(tmp.path().to_path_buf());
-        let path = mgr.output_path_for("nonexistent");
+        let path = mgr.output_path_for("nonexistent").expect("path");
         let (content, offset) = mgr.read_from_offset(&path, 0).expect("read");
         assert_eq!(content, "");
         assert_eq!(offset, 0);
@@ -150,7 +152,7 @@ mod tests {
         let tmp = tempdir().expect("tempdir");
         let mgr = BackgroundTaskOutputManager::new(tmp.path().to_path_buf());
         mgr.append_output("t1", "short").expect("write");
-        let path = mgr.output_path_for("t1");
+        let path = mgr.output_path_for("t1").expect("path");
         let (content, _) = mgr.read_from_offset(&path, 5).expect("read");
         assert_eq!(content, "");
     }
@@ -167,8 +169,14 @@ mod tests {
         let tmp = tempdir().expect("tempdir");
         let mgr = BackgroundTaskOutputManager::new(tmp.path().to_path_buf());
         mgr.append_output("t1", "data").expect("write");
-        assert!(mgr.output_path_for("t1").exists());
+        assert!(mgr.output_path_for("t1").expect("path").exists());
         mgr.remove_output("t1").expect("remove");
-        assert!(!mgr.output_path_for("t1").parent().unwrap().exists());
+        assert!(
+            !mgr.output_path_for("t1")
+                .expect("path")
+                .parent()
+                .unwrap()
+                .exists()
+        );
     }
 }

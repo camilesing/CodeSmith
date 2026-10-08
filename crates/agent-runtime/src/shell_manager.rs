@@ -149,6 +149,21 @@ pub fn kill_child_process_group(child: &mut Child) -> std::io::Result<()> {
     }
 }
 
+/// Kill the process group led by `pid` when only the pid is known (the
+/// child handle was consumed by a dropped wait future). ESRCH-tolerant
+/// like [`kill_process_group_of`]; errors are ignored — this runs on a
+/// best-effort timeout path. Non-unix no-op: only the direct child can
+/// be killed there (`kill_on_drop`'s reach). Public so the
+/// js_execution / code_execution tool paths share one cfg dance.
+pub fn kill_process_group_of_opt(pid: Option<u32>) {
+    #[cfg(unix)]
+    if let Some(pid) = pid {
+        let _ = kill_process_group_of(pid);
+    }
+    #[cfg(not(unix))]
+    let _ = pid;
+}
+
 /// Configure parent-death signaling so shell-spawned children are reaped when
 /// the TUI dies abnormally (#421). On Linux this installs
 /// `PR_SET_PDEATHSIG(SIGTERM)` via `pre_exec` — the kernel then sends SIGTERM

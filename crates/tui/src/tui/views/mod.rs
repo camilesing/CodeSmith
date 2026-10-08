@@ -516,6 +516,25 @@ pub struct ShellBangConfirmView {
     command: String,
 }
 
+/// Preview an over-long command for the confirmation popup. The
+/// dangerous part of a Dangerous-classified command sits at the END (a
+/// trailing `| sh`, `--force`, a redirect target), so truncation keeps
+/// the tail and drops the head — the user must see what one Enter will
+/// actually run.
+fn truncate_command_tail(command: &str, max_chars: usize) -> String {
+    if command.chars().count() <= max_chars {
+        command.to_string()
+    } else {
+        // Room for the leading ellipsis.
+        let keep = max_chars - 1;
+        let count = command.chars().count();
+        format!(
+            "…{}",
+            command.chars().skip(count - keep).collect::<String>()
+        )
+    }
+}
+
 impl ShellBangConfirmView {
     pub fn new(command: String) -> Self {
         Self { command }
@@ -539,15 +558,24 @@ impl ModalView for ShellBangConfirmView {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction {
+        // Bare letters only: Ctrl+Y / Alt+Y are the app-level yank chords
+        // and must not approve a Dangerous command while this modal is
+        // open. SHIFT is accepted so kitty-protocol terminals (which
+        // report Shift+Y as Char('Y')+SHIFT) keep capital letters
+        // working (same shape as command_palette / help views). Enter
+        // and Esc stay modifier-insensitive.
+        let bare = |m: KeyModifiers| m.is_empty() || m == KeyModifiers::SHIFT;
         match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+            KeyCode::Enter => ViewAction::EmitAndClose(self.decision(true)),
+            KeyCode::Char('y') | KeyCode::Char('Y') if bare(key.modifiers) => {
                 ViewAction::EmitAndClose(self.decision(true))
             }
-            KeyCode::Esc
-            | KeyCode::Char('n')
-            | KeyCode::Char('N')
-            | KeyCode::Char('q')
-            | KeyCode::Char('Q') => ViewAction::EmitAndClose(self.decision(false)),
+            KeyCode::Esc => ViewAction::EmitAndClose(self.decision(false)),
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Char('q') | KeyCode::Char('Q')
+                if bare(key.modifiers) =>
+            {
+                ViewAction::EmitAndClose(self.decision(false))
+            }
             _ => ViewAction::None,
         }
     }
@@ -571,10 +599,7 @@ impl ModalView for ShellBangConfirmView {
 
         Clear.render(popup_area, buf);
 
-        let mut command = self.command.clone();
-        if command.chars().count() > 52 {
-            command = format!("{}…", command.chars().take(52).collect::<String>());
-        }
+        let command = truncate_command_tail(&self.command, 52);
 
         let lines = vec![
             Line::from(Span::styled(
@@ -2168,8 +2193,9 @@ fn truncate_view_text(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ConfigListItem, ConfigSection, ConfigView, ModalKind, ModalView, ShellControlView,
-        ViewAction, ViewEvent, ViewStack, subagent_view_agents, truncate_view_text,
+        ConfigListItem, ConfigSection, ConfigView, ModalKind, ModalView, ShellBangConfirmView,
+        ShellControlView, ViewAction, ViewEvent, ViewStack, subagent_view_agents,
+        truncate_command_tail, truncate_view_text,
     };
     use crate::config::Config;
     use crate::localization::Locale;
@@ -2777,6 +2803,69 @@ mod tests {
             action,
             ViewAction::EmitAndClose(ViewEvent::ShellControlCancel)
         ));
+    }
+
+    #[test]
+    fn shell_bang_confirm_truncation_keeps_dangerous_tail() {
+        let long = format!("curl https://example.invalid/{} | sh", "a".repeat(80));
+        let preview = truncate_command_tail(&long, 52);
+        assert!(preview.starts_with('…'), "head is dropped: {preview:?}");
+        assert!(preview.ends_with("| sh"), "tail stays visible: {preview:?}");
+        assert_eq!(preview.chars().count(), 52, "same rendered width as before");
+
+        // Short commands pass through untouched.
+        assert_eq!(truncate_command_tail("rm -rf /", 52), "rm -rf /");
+    }
+
+    #[test]
+    fn shell_bang_confirm_rejects_modified_approval_keys() {
+        // Ctrl+Y is the app-level yank chord and Alt+Y the yank-pop
+        // shortcut; while the Dangerous-command confirmation is open they
+        // must do nothing — not approve. One Enter must not be reachable
+        // through a modifier chord by accident.
+        let mut view = ShellBangConfirmView::new("curl https://example.invalid/x | sh".into());
+        for (code, modifiers) in [
+            (KeyCode::Char('y'), KeyModifiers::CONTROL),
+            (KeyCode::Char('Y'), KeyModifiers::ALT),
+            (KeyCode::Char('n'), KeyModifiers::CONTROL),
+            (KeyCode::Char('q'), KeyModifiers::ALT),
+        ] {
+            assert!(
+                matches!(
+                    view.handle_key(KeyEvent::new(code, modifiers)),
+                    ViewAction::None
+                ),
+                "{code:?}+{modifiers:?} must not act on the confirmation"
+            );
+        }
+    }
+
+    #[test]
+    fn shell_bang_confirm_accepts_bare_and_shift_letters() {
+        // Bare letters approve/deny; SHIFT is accepted so kitty-protocol
+        // terminals (which report Shift+Y as Char('Y')+SHIFT) keep
+        // capital-letter input working; Enter stays modifier-insensitive.
+        let mut view = ShellBangConfirmView::new("rm -rf /".into());
+        for (code, modifiers) in [
+            (KeyCode::Char('y'), KeyModifiers::NONE),
+            (KeyCode::Char('Y'), KeyModifiers::SHIFT),
+            (KeyCode::Enter, KeyModifiers::NONE),
+        ] {
+            match view.handle_key(KeyEvent::new(code, modifiers)) {
+                ViewAction::EmitAndClose(ViewEvent::ShellBangConfirm {
+                    approved: true, ..
+                }) => {}
+                other => panic!("{code:?}+{modifiers:?} should approve, got {other:?}"),
+            }
+        }
+
+        let mut view = ShellBangConfirmView::new("rm -rf /".into());
+        match view.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)) {
+            ViewAction::EmitAndClose(ViewEvent::ShellBangConfirm {
+                approved: false, ..
+            }) => {}
+            other => panic!("bare n should deny, got {other:?}"),
+        }
     }
 
     /// A modal that doesn't override `handle_paste` must report

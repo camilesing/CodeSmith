@@ -316,6 +316,7 @@ fn contains_auth_keyword(lower: &str) -> bool {
                     | "apikey"
                     | "authenticate"
                     | "authentication"
+                    | "authorized"
                     | "unauthorized"
                     | "unauthenticated"
             )
@@ -597,6 +598,24 @@ mod tests {
             "invalid auth_token",
             "auth-failure: token expired",
             "invalid api_key",
+        ] {
+            assert_eq!(
+                classify(msg),
+                ErrorCategory::Authentication,
+                "expected Authentication for `{msg}`",
+            );
+        }
+    }
+
+    #[test]
+    fn not_authorized_phrasing_classifies_as_authentication() {
+        // "authorized" as a whole token: gateway/IAM-style "user is not
+        // authorized to perform: …" must land on an auth category (both
+        // hard-fail in the stream loop) — falling through to `Internal`
+        // would transparently retry a credential error to exhaustion.
+        for msg in [
+            "user is not authorized to perform: dynamodb:GetItem",
+            "caller is not authorized to execute this operation",
         ] {
             assert_eq!(
                 classify(msg),

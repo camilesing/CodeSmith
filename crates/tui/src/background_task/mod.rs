@@ -156,7 +156,10 @@ impl BackgroundTaskRegistry {
         cwd: PathBuf,
     ) -> BackgroundTaskState {
         let id = format!("bg_shell_{}", &uuid::Uuid::new_v4().to_string()[..8]);
-        let output_file = self.output_mgr.output_path_for(&id);
+        let output_file = self
+            .output_mgr
+            .output_path_for(&id)
+            .expect("generated bg_shell id is a safe path component");
         let description = summarize_command(&command, 80);
         let state = BackgroundTaskState {
             id: id.clone(),

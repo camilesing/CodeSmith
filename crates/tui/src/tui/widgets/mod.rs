@@ -460,14 +460,22 @@ impl<'a> ComposerWidget<'a> {
     }
 
     fn active_menu_row_count(&self) -> usize {
+        // Keep this order in sync with the render chain below (mention →
+        // emoji → slash). The three menus are mutually exclusive by
+        // construction — slash = whitespace-free leading `/` token, emoji
+        // = `:token` whose `:` sits at start or after whitespace, mention
+        // = `@word` at a whitespace/opener boundary — so exactly one
+        // branch can ever be non-empty; but if that ever changes, the
+        // reserved-row count must come from the menu that actually
+        // renders, not whichever this chain happens to check first.
         if self.app.is_history_search_active() {
             self.app.history_search_matches().len().max(1)
         } else if !self.mention_menu_entries.is_empty() {
             self.mention_menu_entries.len()
-        } else if !self.slash_menu_entries.is_empty() {
-            self.slash_menu_entries.len()
-        } else {
+        } else if !self.emoji_menu_entries.is_empty() {
             self.emoji_menu_entries.len()
+        } else {
+            self.slash_menu_entries.len()
         }
     }
 
