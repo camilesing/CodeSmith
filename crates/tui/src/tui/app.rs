@@ -99,9 +99,9 @@ pub(crate) fn looks_like_slash_command_input(input: &str) -> bool {
     !command.contains('/')
 }
 
-/// `!cmd` shell passthrough: a leading `!` (after optional whitespace)
-/// followed by a non-empty command runs directly in the user's shell and
-/// submits the output to the session (Claude Code's `!` prefix mode).
+/// `!cmd` shell passthrough: a column-0 `!` followed by a non-empty
+/// single-line command runs directly in the user's shell and submits the
+/// output to the session (Claude Code's `!` prefix mode).
 /// Whether the input is a `!cmd` shell passthrough. Deliberately strict
 /// (review round 3): only a column-0 `!` on a single-line input
 /// passthroughs — a leading-whitespace `!cmd`, a multi-line paste starting
@@ -3617,6 +3617,10 @@ impl App {
         self.slash_menu_hidden = false;
         self.mention_menu_hidden = false;
         self.mention_menu_selected = 0;
+        // Each keystroke produces a different filtered list — reset the
+        // emoji popup selection like the mention popup's (round 7: a stale
+        // index highlighted an arbitrary row after ArrowDown + typing).
+        self.emoji_menu_selected = 0;
         self.needs_redraw = true;
     }
 
@@ -4031,8 +4035,16 @@ impl App {
 
     /// Replace the text inserted by the last yank with the next kill-ring
     /// entry (readline `Alt+Y` yank-pop). Returns `false` when no yank is
-    /// active or the next entry is empty.
+    /// active or the next entry is empty. An active selection means the
+    /// user moved (mouse click/drag bypass `move_cursor_*`): treat it as a
+    /// sequence break instead of rewriting the stale `yank_span` char range
+    /// while a live anchor dangles — `false` also restores Alt+Y's
+    /// Yolo-toggle fallback, consistent with a broken sequence.
     pub fn yank_pop(&mut self) -> bool {
+        if self.selection_range().is_some() {
+            self.break_edit_sequences();
+            return false;
+        }
         let Some((start, end)) = self.yank_span else {
             return false;
         };
@@ -4284,6 +4296,9 @@ impl App {
 
     /// Move the cursor to the start of the current logical line (vim `0`).
     pub fn vim_move_line_start(&mut self) {
+        // GNU-readline contract (see `break_edit_sequences`): a plain
+        // cursor motion breaks the kill-append/yank-pop sequences.
+        self.break_edit_sequences();
         let text = self.input.clone();
         let cursor_byte = byte_index_at_char(&text, self.cursor_position);
         // Walk backward until we find a newline or the start of the string.
@@ -4294,6 +4309,7 @@ impl App {
 
     /// Move the cursor to the end of the current logical line (vim `$`).
     pub fn vim_move_line_end(&mut self) {
+        self.break_edit_sequences();
         let text = self.input.clone();
         let cursor_byte = byte_index_at_char(&text, self.cursor_position);
         // Walk forward to the next newline or end-of-string.
@@ -4323,6 +4339,8 @@ impl App {
         if self.cursor_position >= total {
             return;
         }
+        self.push_undo_snapshot();
+        self.break_edit_sequences();
         let pos = self.cursor_position;
         remove_char_at(&mut self.input, pos);
         // Keep cursor in bounds after deletion.
@@ -4335,6 +4353,8 @@ impl App {
 
     /// Delete the entire current logical line (vim `dd`).
     pub fn vim_delete_line(&mut self) {
+        self.push_undo_snapshot();
+        self.break_edit_sequences();
         let text = self.input.clone();
         let cursor_byte = byte_index_at_char(&text, self.cursor_position);
         let line_start_byte = text[..cursor_byte].rfind('\n').map_or(0, |idx| idx + 1);
@@ -4368,6 +4388,7 @@ impl App {
 
     /// Enter insert mode after the cursor (vim `a`).
     pub fn vim_enter_append(&mut self) {
+        self.break_edit_sequences();
         let total = char_count(&self.input);
         if self.cursor_position < total {
             self.cursor_position += 1;
@@ -4386,6 +4407,7 @@ impl App {
 
     /// Return to Normal mode from Insert or Visual (vim `Esc`).
     pub fn vim_enter_normal(&mut self) {
+        self.break_edit_sequences();
         self.vim_mode = VimMode::Normal;
         self.vim_pending_d = false;
         // In Normal mode the cursor sits on a character, not after the last one.
@@ -4412,6 +4434,7 @@ impl App {
     /// Move the cursor down one logical line within the buffer (vim `j`).
     /// Falls back to history-down when already on the last line.
     pub fn vim_move_down(&mut self) {
+        self.break_edit_sequences();
         let text = self.input.clone();
         let total = char_count(&text);
         if self.cursor_position >= total {
@@ -4440,6 +4463,7 @@ impl App {
     /// Move the cursor up one logical line within the buffer (vim `k`).
     /// Falls back to history-up when already on the first line.
     pub fn vim_move_up(&mut self) {
+        self.break_edit_sequences();
         let text = self.input.clone();
         let cursor_byte = byte_index_at_char(&text, self.cursor_position);
         if let Some(prev_nl) = text[..cursor_byte].rfind('\n') {
@@ -4645,6 +4669,11 @@ impl App {
             .get(search.selected.min(matches.len().saturating_sub(1)))
             .cloned()
         {
+            // Wholesale input replacement: snapshot so Ctrl+Z can come
+            // back, and break the yank/kill sequences (stale spans must
+            // not survive the rewrite).
+            self.push_undo_snapshot();
+            self.break_edit_sequences();
             self.input = selected;
             self.cursor_position = char_count(&self.input);
             self.history_index = None;
@@ -4663,6 +4692,9 @@ impl App {
         let Some(search) = self.composer_history_search.take() else {
             return;
         };
+        // Same wholesale-replacement contract as `accept_history_search`.
+        self.push_undo_snapshot();
+        self.break_edit_sequences();
         self.input = search.pre_search_input;
         self.cursor_position = search.pre_search_cursor.min(char_count(&self.input));
         self.status_message = Some("History search canceled".to_string());
@@ -7506,6 +7538,51 @@ mod tests {
         // rewrite text at a stale range) after the delete.
         assert!(!app.yank_pop());
         assert!(app.input.is_empty());
+    }
+
+    /// Review round 7: vim motions (`0`/`$`/`j`/`k`/`a`/Esc) set the
+    /// cursor directly and bypassed the round-4 break contract — Ctrl+Y →
+    /// vim motion → Alt+Y rewrote the stale `yank_span` char range.
+    #[test]
+    fn vim_motion_breaks_yank_sequence() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello world".to_string();
+        app.cursor_position = char_count(&app.input);
+        app.kill_ring.push_front("XYZ".to_string());
+        assert!(app.yank()); // sets yank_span
+        assert!(app.yank_span.is_some());
+
+        app.vim_move_line_start(); // vim `0`
+        assert!(
+            app.yank_span.is_none(),
+            "vim motion must break the yank sequence"
+        );
+        assert!(!app.yank_pop());
+        assert_eq!(
+            app.input, "hello worldXYZ",
+            "input untouched by declined yank-pop"
+        );
+    }
+
+    /// Review round 7: a mouse-set selection (anchor set directly,
+    /// bypassing `move_cursor_*`) must break the sequence instead of
+    /// letting `yank_pop` rewrite the stale range while a live anchor
+    /// dangles (corrupting the next `delete_selection`).
+    #[test]
+    fn live_selection_blocks_yank_pop() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello world".to_string();
+        app.cursor_position = char_count(&app.input);
+        app.kill_ring.push_front("XYZ".to_string());
+        assert!(app.yank()); // sets yank_span
+        assert!(app.yank_span.is_some());
+
+        // Mouse click elsewhere: anchor set, cursor moved directly.
+        app.selection_anchor = Some(0);
+        app.cursor_position = 2;
+        assert!(app.selection_range().is_some());
+        assert!(!app.yank_pop(), "yank-pop declines over a live selection");
+        assert_eq!(app.input, "hello worldXYZ", "stale range not rewritten");
     }
 
     /// Review round 4: Ctrl+W over a selection must kill it into the ring

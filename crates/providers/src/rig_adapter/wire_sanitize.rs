@@ -436,7 +436,7 @@ mod tests {
     fn assistant_reasoning(text: &str) -> RigMessage {
         RigMessage::Assistant {
             id: None,
-            content: OneOrMany::one(AssistantContent::reasoning(text.to_string())),
+            content: OneOrMany::one(AssistantContent::reasoning(text)),
         }
     }
 

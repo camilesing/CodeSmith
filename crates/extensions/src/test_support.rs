@@ -7,15 +7,12 @@
 //! `<target>/<profile>/deps/` (un-hashed copy and/or content-hashed artifact)
 //! and no export link is created. Fresh environments (CI, new clones) never
 //! have the export link, so stale local artifacts must not be load-bearing:
-//! prefer the hint when it exists, else resolve inside `deps/`.
+//! the hint and the `deps/` candidates compete on mtime and the newest wins.
 
 /// Locate the fixture cdylib. Panics when neither the un-hashed export link
 /// nor a `deps/` artifact exists.
 pub(crate) fn fixture_dylib_path() -> std::path::PathBuf {
     let hinted = std::path::PathBuf::from(env!("CODESMITH_FIXTURE_DYLIB"));
-    if hinted.exists() {
-        return hinted;
-    }
 
     let deps_dir = hinted
         .parent()
@@ -46,6 +43,12 @@ pub(crate) fn fixture_dylib_path() -> std::path::PathBuf {
                     .collect()
             })
             .unwrap_or_default();
+    // The hint competes on mtime too: a direct build at rev A leaves the
+    // export link behind, and preferring it unconditionally would shadow
+    // the fresh content-hashed artifact a later dev-dep build produced.
+    if let Ok(modified) = std::fs::metadata(&hinted).and_then(|m| m.modified()) {
+        candidates.push((hinted.clone(), modified));
+    }
     candidates.sort_by_key(|(_, modified)| *modified);
 
     candidates

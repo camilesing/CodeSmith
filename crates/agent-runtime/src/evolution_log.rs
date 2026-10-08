@@ -71,6 +71,9 @@ pub fn verdicts_path() -> Option<PathBuf> {
 /// Record one verdict to the default log path. Best-effort: resolution
 /// or IO failure is logged at WARN and swallowed — the log must never
 /// break the engine that produced the event (telemetry-sink precedent).
+/// The append itself (sync fs I/O; rotation = full read + fsync + rename)
+/// runs fire-and-forget on the blocking pool so an async worker is never
+/// stalled (post-turn-snapshot precedent).
 pub fn record_verdict(
     model: &str,
     verdict: ResultVerdict,
@@ -80,6 +83,7 @@ pub fn record_verdict(
     exit_code: Option<i64>,
 ) {
     let Some(path) = verdicts_path() else {
+        tracing::warn!("evolution log unavailable: codesmith home not resolved");
         return;
     };
     let record = VerdictRecord {
@@ -91,12 +95,20 @@ pub fn record_verdict(
         exit_code,
         model: model.to_string(),
     };
-    if let Err(err) = append_record(&path, &record) {
-        tracing::warn!("evolution log append failed at {}: {err}", path.display());
-    }
+    crate::utils::spawn_blocking_supervised("evolution-log-append", move || {
+        if let Err(err) = append_record(&path, &record) {
+            tracing::warn!("evolution log append failed at {}: {err}", path.display());
+        }
+    });
 }
 
-/// Append one record as a jsonl line. Directory is created lazily.
+/// Append one record as a jsonl line. Directory is created lazily. The
+/// size-check/rotate/append sequence holds a sidecar fd-lock so a
+/// concurrent appender (overlapping verifier tasks, another CodeSmith
+/// process sharing the home) cannot lose records to the rotation rename —
+/// the lock cannot live on the log itself because `write_atomic` replaces
+/// its inode. A lock failure is an IO failure like any other: the caller
+/// warns and the record is dropped, never the engine.
 pub fn append_record(path: &Path, record: &VerdictRecord) -> std::io::Result<()> {
     let Ok(mut line) = serde_json::to_string(record) else {
         // The record would vanish with no trace while the caller's WARN
@@ -108,6 +120,14 @@ pub fn append_record(path: &Path, record: &VerdictRecord) -> std::io::Result<()>
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path.with_extension("lock"))?;
+    let mut lock = fd_lock::RwLock::new(lock_file);
+    let _guard = lock
+        .write()
+        .map_err(|err| std::io::Error::other(format!("evolution log lock failed: {err}")))?;
     rotate_if_oversized(path, MAX_VERDICTS_BYTES);
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     file.write_all(line.as_bytes())
@@ -219,7 +239,9 @@ impl VerdictStats {
             if self.total == 0 {
                 "0%".to_string()
             } else {
-                format!("{}%", n * 100 / self.total)
+                // Round to nearest: truncation renders a nonzero row as 0%
+                // (1 of 300) and the four rows sum below 100%.
+                format!("{}%", (n * 100 + self.total / 2) / self.total)
             }
         };
         let mut out = format!(

@@ -300,11 +300,14 @@ fn contains_status_code(lower: &str, code: &str) -> bool {
 /// matched "author"/"authoring"; plain "authorization" stays on the
 /// Authorization branch below.
 fn contains_auth_keyword(lower: &str) -> bool {
-    if lower.contains("api key") || lower.contains("api-key") {
+    if lower.contains("api key") || lower.contains("api-key") || lower.contains("api_key") {
         return true;
     }
     lower
-        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+        // Same split as `contains_status_code`: '-' and '_' are separators,
+        // so "auth_token" / "auth-failure" still yield the "auth" token
+        // while "author" remains a non-matching whole token.
+        .split(|c: char| !c.is_ascii_alphanumeric())
         .any(|token| {
             matches!(
                 token,
@@ -580,6 +583,20 @@ mod tests {
             "Invalid API key provided",
             "Authentication failed",
             "401 Unauthorized",
+        ] {
+            assert_eq!(
+                classify(msg),
+                ErrorCategory::Authentication,
+                "expected Authentication for `{msg}`",
+            );
+        }
+        // Hyphen/underscore compounds: '-' and '_' are separators (same
+        // split as `contains_status_code`), so these still yield the
+        // "auth"/"api key" tokens instead of one unmatchable compound.
+        for msg in [
+            "invalid auth_token",
+            "auth-failure: token expired",
+            "invalid api_key",
         ] {
             assert_eq!(
                 classify(msg),

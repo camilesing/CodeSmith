@@ -185,11 +185,18 @@ fn redact_home(text: &str) -> String {
 /// `Authorization: Bearer …`) masked before the payload leaves the
 /// machine — transport error text can quote request URLs with query
 /// strings or header values verbatim.
+///
+/// Regex-shape notes (leftmost-first matters): the `authorization` branch
+/// runs first and swallows to end-of-line, so `Authorization: Bearer sk-…`
+/// redacts the bearer value too — a generic `\S+` after `[:=]` stops at
+/// the space and leaked the token (review round 7). The underscore
+/// compounds are listed explicitly because `\b` cannot hold between `_`
+/// and `token`/`secret` (`_` is a word character).
 fn redact_credentials(text: &str) -> String {
     static CREDENTIAL_RUN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re = CREDENTIAL_RUN.get_or_init(|| {
         regex::Regex::new(
-            r#"(?i)\b(api[_-]?key|token|secret|password|authorization)["']?\s*[:=]\s*\S+|\bbearer\s+\S+"#,
+            r#"(?i)\bauthorization\b["']?\s*[:=][^\n]*|\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|token|secret|password)["']?\s*[:=]\s*\S+|\bbearer\s+\S+"#,
         )
         .expect("static credential regex compiles")
     });
@@ -198,14 +205,18 @@ fn redact_credentials(text: &str) -> String {
 
 /// Mask absolute filesystem paths outside the home directory: diagnostic
 /// text can quote workspace roots under other mount points (`/etc/…`,
-/// `/workspaces/…`, `C:\…`). Applied per whitespace token after
+/// `/workspaces/…`, `C:\…`, and Windows `\workspaces\…` / UNC
+/// `\\server\share\…` shapes). Applied per whitespace token after
 /// [`redact_home`] folded the home prefix to `~`, so any remaining token
-/// that starts with `/` or a drive letter is a non-home absolute path.
-/// Whitespace is normalized (tokens rejoined with single spaces).
+/// that starts with `/`, a drive letter, or `\` is a non-home absolute
+/// path (leading `//` stays excluded — protocol-relative URLs). Over-
+/// masking is the safe direction for an outbound scrubber. Whitespace is
+/// normalized (tokens rejoined with single spaces).
 fn redact_absolute_paths(text: &str) -> String {
     text.split_whitespace()
         .map(|tok| {
-            let is_unix_abs = tok.starts_with('/') && !tok.starts_with("//");
+            let is_unix_abs =
+                (tok.starts_with('/') && !tok.starts_with("//")) || tok.starts_with('\\');
             let is_windows_abs = {
                 let bytes = tok.as_bytes();
                 bytes.len() >= 3
@@ -261,20 +272,26 @@ beyond the printed hints, say so in a single line."
 
 /// Resolve the client/model pair for the advisory call: the utility model
 /// when configured (the designated cheap brain for side calls), else the
-/// main client. `Err` carries the skip reason for the `·` line.
+/// main client. `Err` carries the skip reason for the `·` line. The main
+/// client resolves lossily — a dedicated `[utility_model]` (its own
+/// provider + key) must still serve the analysis when the main provider's
+/// key is the broken thing doctor is diagnosing; only when both are
+/// unavailable does this fail.
 pub(crate) fn resolve_analysis_target(
     config: &crate::config::Config,
 ) -> Result<(LlmClientHandle, String), String> {
-    let main = crate::core::engine::resolve_llm_client(config)
-        .map_err(|err| format!("no LLM client resolved: {err}"))?;
-    match crate::core::engine::resolve_utility_llm(config, Some(&main)) {
-        Some(crate::tools::large_output_router::UtilityLlm { client, model }) => {
-            Ok((client, model))
-        }
-        None => {
+    let main = crate::core::engine::resolve_llm_client(config).ok();
+    if let Some(crate::tools::large_output_router::UtilityLlm { client, model }) =
+        crate::core::engine::resolve_utility_llm(config, main.as_ref())
+    {
+        return Ok((client, model));
+    }
+    match main {
+        Some(main) => {
             let model = main.model().to_string();
             Ok((main, model))
         }
+        None => Err("no LLM client resolved (main and utility both unavailable)".to_string()),
     }
 }
 
@@ -401,6 +418,49 @@ mod tests {
         // URL hosts stay visible by documented design (the analysis needs
         // endpoint identity).
         assert!(payload.contains("gw.internal"), "{payload}");
+    }
+
+    #[test]
+    fn outbound_details_mask_bearer_headers_and_underscore_credentials() {
+        // Round 7: the old leftmost-first alternation matched the
+        // `authorization` branch whose `\S+` stopped at the space — only
+        // "Bearer" was redacted and `sk-header-9` leaked. The underscore
+        // compounds were unreachable too (`\b` cannot hold between `_` and
+        // `token`/`secret`).
+        let mut findings = DoctorFindings::new();
+        findings.error("Auth", "Authorization: Bearer sk-header-9 rejected");
+        findings.error(
+            "Auth",
+            "handshake failed: access_token=t1 client_secret=c1 refresh_token=r1",
+        );
+        let payload = findings.to_prompt_payload("linux", "openai", "https://gw.internal", "gpt");
+        for secret in ["sk-header-9", "t1", "c1", "r1"] {
+            assert!(
+                !payload.contains(secret),
+                "credential leaked into outbound payload: {secret} in {payload}"
+            );
+        }
+        assert!(payload.contains("<redacted>"), "{payload}");
+    }
+
+    #[test]
+    fn outbound_details_mask_backslash_and_unc_paths() {
+        // Windows path shapes `path.display()` emits on that platform:
+        // root-without-prefix (`\workspaces\proj`) and UNC
+        // (`\\server\share\log`) both leaked under the `/`-only check.
+        let mut findings = DoctorFindings::new();
+        findings.error(
+            "Filesystem",
+            "read failed at \\workspaces\\proj and \\\\server\\share\\log",
+        );
+        let payload = findings.to_prompt_payload("windows", "openai", "https://gw.internal", "gpt");
+        assert!(!payload.contains("workspaces"), "{payload}");
+        assert!(!payload.contains("server"), "{payload}");
+        // Protocol-relative URLs stay visible (host identity by design).
+        let mut findings = DoctorFindings::new();
+        findings.error("Net", "redirected to //cdn.example.com/x");
+        let payload = findings.to_prompt_payload("linux", "openai", "https://gw.internal", "gpt");
+        assert!(payload.contains("//cdn.example.com/x"), "{payload}");
     }
 
     #[test]
