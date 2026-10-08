@@ -63,6 +63,29 @@ describe("isDispatchPayload", () => {
     expect(isDispatchPayload({ ...validPayload, moversZh: ["n/a"] })).toBe(false);
   });
 
+  it("rejects non-https hrefs — the write side's allowlist, defended in depth on the read side", () => {
+    // A payload from a manual KV edit or a future writer that bypasses
+    // curate must degrade to the fallback, not render into homepage anchors.
+    expect(
+      isDispatchPayload({
+        ...validPayload,
+        highlights: [{ title: "t", href: "javascript:alert(1)", tag: "tag", blurb: "b" }],
+      })
+    ).toBe(false);
+    expect(
+      isDispatchPayload({
+        ...validPayload,
+        movers: [{ number: 1, title: "t", href: "/relative/path", reason: "r" }],
+      })
+    ).toBe(false);
+    expect(
+      isDispatchPayload({
+        ...validPayload,
+        movers: [{ number: 1, title: "t", href: "http://insecure.example/y", reason: "r" }],
+      })
+    ).toBe(false);
+  });
+
   it("rejects non-string optional zh scalars — truthiness-only render would pass a number or crash on an object", () => {
     expect(isDispatchPayload({ ...validPayload, headlineZh: 42 })).toBe(false);
     expect(isDispatchPayload({ ...validPayload, summaryZh: { text: "…" } })).toBe(false);

@@ -59,7 +59,11 @@ function parseBodyDraft(
 
 export async function runCurate(env: AgentEnv): Promise<Record<string, unknown>> {
   if (!env.DEEPSEEK_API_KEY) {
-    return { skipped: true, reason: "DEEPSEEK_API_KEY not set" };
+    // Config-missing is a failure, not a skip: a deployment where curate
+    // can never run must not read as a green HTTP 200 to status monitors
+    // while the homepage dispatch silently degrades to the static
+    // fallback (data-dependent skips like "too few issues" stay ok:true).
+    return { ok: false, skipped: true, reason: "DEEPSEEK_API_KEY not set" };
   }
   try {
     const [stats, feed] = await Promise.all([
@@ -150,7 +154,8 @@ export async function runTriage(env: AgentEnv): Promise<Record<string, unknown>>
         await saveDraft(env.CURATED_KV, draft);
         await logUsage(env.CURATED_KV, usage.input, usage.output);
         processed++;
-      } catch {
+      } catch (e) {
+        console.error(`triage draft failed for issue #${issue.number}`, e);
         failed++;
       }
     }
@@ -237,7 +242,8 @@ export async function runPrReview(env: AgentEnv): Promise<Record<string, unknown
         await saveDraft(env.CURATED_KV, draft);
         await logUsage(env.CURATED_KV, usage.input, usage.output);
         processed++;
-      } catch {
+      } catch (e) {
+        console.error(`pr-review draft failed for PR #${pr.number}`, e);
         failed++;
       }
     }
@@ -307,7 +313,8 @@ export async function runStale(env: AgentEnv): Promise<Record<string, unknown>> 
         await saveDraft(env.CURATED_KV, draft);
         await logUsage(env.CURATED_KV, usage.input, usage.output);
         processed++;
-      } catch {
+      } catch (e) {
+        console.error(`stale draft failed for issue #${issue.number}`, e);
         failed++;
       }
     }

@@ -165,7 +165,17 @@ fn enable(app: &mut App, arg: &str) -> CommandResult {
     match mutate_state(app, |state| mod_ops::set_enabled(state, id, true)) {
         Err(e) => CommandResult::error(e),
         Ok(Err(e)) => CommandResult::error(e),
-        Ok(Ok(msg)) => CommandResult::message(msg),
+        Ok(Ok(msg)) => {
+            // Reload immediately, matching activate/remove here AND the
+            // manage_mods tool: the runner is built per generation, so a
+            // deferred enablement would have no effect until an unrelated
+            // reload.
+            let reload_note = match reload_runner(app) {
+                Some(note) => note,
+                None => "Runner not bound; takes effect at the next engine build.".to_string(),
+            };
+            CommandResult::message(format!("{msg}\n{reload_note}"))
+        }
     }
 }
 
@@ -180,7 +190,13 @@ fn disable(app: &mut App, arg: &str) -> CommandResult {
     match mutate_state(app, |state| mod_ops::set_enabled(state, id, false)) {
         Err(e) => CommandResult::error(e),
         Ok(Err(e)) => CommandResult::error(e),
-        Ok(Ok(msg)) => CommandResult::message(msg),
+        Ok(Ok(msg)) => {
+            let reload_note = match reload_runner(app) {
+                Some(note) => note,
+                None => "Runner not bound; takes effect at the next engine build.".to_string(),
+            };
+            CommandResult::message(format!("{msg}\n{reload_note}"))
+        }
     }
 }
 
@@ -264,11 +280,15 @@ mod tests {
 
     #[test]
     fn try_dispatch_prefix_guard_rejects_non_mods_command() {
-        let input = "/extension list";
-        let parts: Vec<&str> = input.trim().splitn(2, ' ').collect();
-        let cmd = parts[0].to_lowercase();
-        let cmd = cmd.strip_prefix('/').unwrap_or(&cmd);
-        assert_ne!(cmd, "mods");
+        // Assert on the real dispatch path — a locally re-implemented
+        // prefix parse would pass even if `try_dispatch` matched every
+        // command.
+        let tmpdir = TempDir::new().unwrap();
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        assert!(
+            try_dispatch(&mut app, "/extension list").is_none(),
+            "non-/mods input must fall through to the static match"
+        );
     }
 
     /// Regression (review round 3): `arg` used to include the subcommand
@@ -276,7 +296,13 @@ mod tests {
     /// and every id-taking subcommand always failed.
     #[test]
     fn dispatch_passes_only_the_argument_to_id_taking_subcommands() {
+        // Hermetic: this drives the real dispatch chain (try_dispatch →
+        // mutate_state → ModStateStore::load_default), which otherwise
+        // resolves/creates the real user state dir and discovery scans the
+        // real ~/.codesmith/mods.
+        let _env = crate::test_support::lock_test_env();
         let tmpdir = TempDir::new().unwrap();
+        let _home = crate::test_support::EnvVarGuard::set("HOME", tmpdir.path());
         let mut app = create_test_app_with_tmpdir(&tmpdir);
         let result = try_dispatch(&mut app, "/mods activate mymod").expect("a /mods command");
         assert!(result.is_error);

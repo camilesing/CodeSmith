@@ -143,6 +143,14 @@ impl LlmClient for RecordingClient {
         let path = self.path.clone();
         let inner = self.inner.clone();
         Box::pin(async move {
+            // Armed until the real outcome line is written: if this future
+            // is dropped mid-flight, Drop still emits one line so strict-
+            // FIFO replay stays aligned (mirrors TeeState::written).
+            let mut cancel_guard = CancelledCallLine::arm(
+                Arc::clone(&writer),
+                path.clone(),
+                cancelled_record_line(&provider, &model, &base_url, &request),
+            );
             let result = inner.create_message(request.clone()).await;
             // Record failures too: every call through the wrapper must
             // yield exactly one line — a failed call that vanishes
@@ -163,6 +171,7 @@ impl LlmClient for RecordingClient {
                 },
             };
             write_line_shared(&writer, &path, &line);
+            cancel_guard.disarm();
             result
         })
     }
@@ -178,6 +187,15 @@ impl LlmClient for RecordingClient {
         let path = self.path.clone();
         let inner = self.inner.clone();
         Box::pin(async move {
+            // Same cancellation gap as `create_message`, one window
+            // earlier: TeeState (and its Drop) only exists after the
+            // connect await resolves, so a drop while still connecting
+            // needs this guard to write the line.
+            let mut cancel_guard = CancelledCallLine::arm(
+                Arc::clone(&writer),
+                path.clone(),
+                cancelled_record_line(&provider, &model, &base_url, &request),
+            );
             let stream = match inner.create_message_stream(request.clone()).await {
                 Ok(stream) => stream,
                 Err(e) => {
@@ -198,9 +216,11 @@ impl LlmClient for RecordingClient {
                             },
                         },
                     );
+                    cancel_guard.disarm();
                     return Err(e);
                 }
             };
+            cancel_guard.disarm();
             // Tee: forward every event while collecting them. The line is
             // written when the terminal proof (`MessageStop`) is SEEN —
             // consumers may drop the stream right after it instead of
@@ -322,6 +342,67 @@ fn write_line_shared(
             path.display()
         );
         *guard = None;
+    }
+}
+
+/// The line a call dropped mid-flight leaves behind: the replay
+/// counterpart pops its line at first poll, so the recording side must
+/// still yield exactly one line for a call that never resolved.
+fn cancelled_record_line(
+    provider: &str,
+    model: &str,
+    base_url: &str,
+    request: &MessageRequest,
+) -> RecordLine {
+    RecordLine {
+        version: RECORD_VERSION,
+        provider: provider.to_string(),
+        model: model.to_string(),
+        base_url: base_url.to_string(),
+        request: request.clone(),
+        outcome: RecordOutcome::Error {
+            message: "cancelled mid-flight".to_string(),
+        },
+    }
+}
+
+/// Armed while a recorded call is in flight and its outcome line has not
+/// been written yet: if the boxed future is dropped mid-flight (timeout
+/// wrapper, turn cancel, shutdown), Drop still emits one line so the
+/// one-line-per-call invariant — and strict-FIFO replay — holds. The
+/// stream path covers its post-return phase via [`TeeState`]'s Drop; this
+/// guard covers the pre-stream await window.
+struct CancelledCallLine {
+    writer: Arc<Mutex<Option<BufWriter<std::fs::File>>>>,
+    path: PathBuf,
+    line: Option<RecordLine>,
+}
+
+impl CancelledCallLine {
+    fn arm(
+        writer: Arc<Mutex<Option<BufWriter<std::fs::File>>>>,
+        path: PathBuf,
+        line: RecordLine,
+    ) -> Self {
+        Self {
+            writer,
+            path,
+            line: Some(line),
+        }
+    }
+
+    /// Disarm once the real outcome line is written — a later drop must
+    /// not emit a second line.
+    fn disarm(&mut self) {
+        self.line = None;
+    }
+}
+
+impl Drop for CancelledCallLine {
+    fn drop(&mut self) {
+        if let Some(line) = self.line.take() {
+            write_line_shared(&self.writer, &self.path, &line);
+        }
     }
 }
 
@@ -991,6 +1072,97 @@ mod tests {
             .await
             .expect("forwarded to the inner client");
         assert_eq!(out, "fim:prefix");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A mock whose calls never resolve — the cancelled-mid-flight shape
+    /// (timeout wrapper, turn cancel, shutdown).
+    struct HangingMock;
+
+    impl LlmClient for HangingMock {
+        fn provider_name(&self) -> &'static str {
+            "mock"
+        }
+        fn model(&self) -> &str {
+            "test-model"
+        }
+        fn create_message(
+            &self,
+            _request: MessageRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<MessageResponse>> + Send + '_>> {
+            Box::pin(futures_util::future::pending())
+        }
+        fn create_message_stream(
+            &self,
+            _request: MessageRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<StreamEventBox>> + Send + '_>> {
+            Box::pin(futures_util::future::pending())
+        }
+    }
+
+    /// Poll a boxed future once so the inner call is in flight, then hand
+    /// it back for the caller to drop.
+    async fn poll_once<T>(fut: &mut Pin<Box<dyn Future<Output = T> + Send + '_>>) {
+        let () = futures_util::future::poll_fn(|cx| {
+            let _ = std::future::Future::poll(fut.as_mut(), cx);
+            std::task::Poll::Ready(())
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn dropped_mid_flight_create_message_records_cancel_line() {
+        // The replay counterpart pops its line at first poll, so a
+        // recording run that drops this future mid-flight must still write
+        // exactly one line — otherwise every later call replays the wrong
+        // fixture line.
+        let path = temp_recording_path("cancel-msg");
+        let recorder = RecordingClient::new(Arc::new(HangingMock), &path).expect("open");
+        let handle: LlmClientHandle = Arc::new(recorder);
+        let mut fut = handle.create_message(minimal_request());
+        poll_once(&mut fut).await;
+        drop(fut);
+
+        let text = std::fs::read_to_string(&path).expect("cancel line written by Drop");
+        let line: RecordLine =
+            serde_json::from_str(text.lines().next().expect("one line")).expect("valid JSONL");
+        match line.outcome {
+            RecordOutcome::Error { message } => assert_eq!(message, "cancelled mid-flight"),
+            other => panic!("expected error outcome, got {other:?}"),
+        }
+
+        let replay = ReplayClient::load(&path).expect("load");
+        assert_eq!(replay.remaining(), 1);
+        let replayed = replay
+            .create_message(minimal_request())
+            .await
+            .expect_err("a cancelled call replays as a failure");
+        assert!(
+            replayed.to_string().contains("cancelled mid-flight"),
+            "replay surfaces the cancel: {replayed}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn dropped_during_connect_records_cancel_line() {
+        // Same invariant one window earlier: the tee (and its Drop) only
+        // exists after the connect await resolves, so a drop while still
+        // connecting needs the armed guard to write the line.
+        let path = temp_recording_path("cancel-connect");
+        let recorder = RecordingClient::new(Arc::new(HangingMock), &path).expect("open");
+        let handle: LlmClientHandle = Arc::new(recorder);
+        let mut fut = handle.create_message_stream(minimal_request());
+        poll_once(&mut fut).await;
+        drop(fut);
+
+        let text = std::fs::read_to_string(&path).expect("cancel line written by Drop");
+        let line: RecordLine =
+            serde_json::from_str(text.lines().next().expect("one line")).expect("valid JSONL");
+        match line.outcome {
+            RecordOutcome::Error { message } => assert_eq!(message, "cancelled mid-flight"),
+            other => panic!("expected error outcome, got {other:?}"),
+        }
         let _ = std::fs::remove_file(&path);
     }
 }

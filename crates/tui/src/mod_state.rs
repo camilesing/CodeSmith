@@ -5,8 +5,10 @@
 //! `ExtensionStateStore` (`crates/tui/src/extension_state.rs`) — same
 //! atomic-write, malformed→default, BTreeSet-for-determinism strategy —
 //! with one divergence: a malformed file is set aside as
-//! `mods_state.toml.bak` before the default fallback, so the next persist
-//! cannot destroy the original (the sibling stores do not do this).
+//! `mods_state.toml.bak` (then `.bak.1`, `.bak.2`, … — first free slot)
+//! before the default fallback, so the next persist cannot destroy the
+//! original and a later corruption never overwrites an earlier recovery
+//! copy (the sibling stores do not do this).
 //!
 //! Storage shape (TOML at `~/.codesmith/mods_state.toml`):
 //!
@@ -35,9 +37,9 @@
 //!
 //! Default state when the file does not exist: empty lists (nothing
 //! activated — the first-activation gate). A corrupt file is logged, set
-//! aside as `mods_state.toml.bak`, and treated as the default, so upgrades
-//! never silently activate mods and the original survives the next persist
-//! for manual recovery.
+//! aside as `mods_state.toml.bak` (numbered on repeat corruption), and
+//! treated as the default, so upgrades never silently activate mods and
+//! the original survives the next persist for manual recovery.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -104,14 +106,24 @@ impl ModStateStore {
                 // Set the unreadable original aside (best-effort) before
                 // falling back: the store keeps `path`, so the next
                 // mutation's whole-file persist would otherwise destroy the
-                // only hand-recoverable copy.
+                // only hand-recoverable copy. Numbered slots — `fs::rename`
+                // replaces an existing destination, so a fixed `.bak` name
+                // would destroy the earlier recovery copy on a SECOND
+                // corruption event.
+                let mut backup = path.with_extension("toml.bak");
+                let mut n = 1;
+                while backup.exists() {
+                    backup = path.with_extension(format!("toml.bak.{n}"));
+                    n += 1;
+                }
                 tracing::warn!(
                     "mods_state.toml at {} is malformed ({}); treating nothing as activated \
-                     (original set aside as mods_state.toml.bak)",
+                     (original set aside as {})",
                     path.display(),
-                    err
+                    err,
+                    backup.display()
                 );
-                let _ = fs::rename(&path, path.with_extension("toml.bak"));
+                let _ = fs::rename(&path, backup);
                 OnDiskState::default()
             }
         };
@@ -349,6 +361,27 @@ mod tests {
             fs::read_to_string(dir.path().join(STATE_FILE_NAME))
                 .unwrap()
                 .contains("m")
+        );
+    }
+
+    #[test]
+    fn repeated_corruption_keeps_every_backup() {
+        // `fs::rename` replaces an existing destination on Unix — a second
+        // corruption event must not overwrite the first hand-recovery copy.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(STATE_FILE_NAME);
+        fs::write(&path, b"first corruption = { broken").unwrap();
+        let _ = ModStateStore::load_from(path.clone()).unwrap();
+        fs::write(&path, b"second corruption = { broken").unwrap();
+        let _ = ModStateStore::load_from(path.clone()).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dir.path().join("mods_state.toml.bak")).unwrap(),
+            "first corruption = { broken"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("mods_state.toml.bak.1")).unwrap(),
+            "second corruption = { broken"
         );
     }
 

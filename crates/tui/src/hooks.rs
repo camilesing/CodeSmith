@@ -903,11 +903,12 @@ impl HookExecutor {
     /// Execute a hook in the background (non-blocking).
     ///
     /// Unlike the old fire-and-forget `.output()`, the child's lifetime is
-    /// bounded by `hook.timeout_secs` (default 30): a hook that never exits
-    /// is killed instead of leaking a process forever — on Unix the whole
-    /// process group dies with it; on Windows only the direct child can be
-    /// killed. Output is discarded (null stdio) — the previous form
-    /// collected it and then threw it away.
+    /// bounded by `default_timeout_secs` when set, else `hook.timeout_secs`
+    /// (serde default 30) — the same resolution as the sync path: a hook
+    /// that never exits is killed instead of leaking a process forever —
+    /// on Unix the whole process group dies with it; on Windows only the
+    /// direct child can be killed. Output is discarded (null stdio) — the
+    /// previous form collected it and then threw it away.
     fn execute_background(&self, hook: &Hook, env_vars: &HashMap<String, String>) -> HookResult {
         let started = Instant::now();
         let working_dir = self

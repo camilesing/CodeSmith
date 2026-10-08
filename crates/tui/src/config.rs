@@ -1440,10 +1440,11 @@ pub struct VerificationToml {
 /// step 2). See `config.example.toml` for documentation.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DoctorToml {
-    /// When `true` (the default), doctor's post-check advisory analysis
-    /// runs when the deterministic checks collected warnings/errors and
-    /// an LLM client resolves (utility model when configured, else the
-    /// main client). `false` keeps doctor fully deterministic.
+    /// When `true` (opt-in; the default is `false`), doctor's post-check
+    /// advisory analysis runs when the deterministic checks collected
+    /// warnings/errors and an LLM client resolves (utility model when
+    /// configured, else the main client). `false` (or unset) keeps doctor
+    /// fully deterministic.
     pub llm_fallback: Option<bool>,
 }
 
@@ -3055,13 +3056,14 @@ impl Config {
     }
 
     /// Resolved doctor LLM fallback switch (P3-8 step 2). Reads `[doctor]
-    /// llm_fallback`; `None` resolves to `true` (on).
+    /// llm_fallback`; `None` resolves to `false` (off) — `doctor` is a
+    /// local diagnostics command, so the advisory network send is opt-in.
     #[must_use]
     pub fn doctor_llm_fallback(&self) -> bool {
         self.doctor
             .as_ref()
             .and_then(|d| d.llm_fallback)
-            .unwrap_or(true)
+            .unwrap_or(false)
     }
 
     /// Resolved stream idle watchdog budget, in seconds (P0-1).

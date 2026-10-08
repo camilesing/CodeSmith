@@ -3,9 +3,9 @@
 # workspace snapshots, sub-agents, web search, MCP, and the strong-brain
 # auto router (heavy tier classifies, quality-first). Experimental/preview
 # seams stay off. Set [auto] cost_saving = true to restore the cheap-model
-# cost-saving router.
+# cost-saving router. Keep `description` below in sync with this posture.
 name = "middle"
-description = "Factory default: high-value low-cost features on, experimental seams off."
+description = "Factory default: high-value features on (memory, index, LSP, snapshots, sub-agents, web search, MCP) with the quality-first strong-brain auto router; experimental seams off."
 max_subagents = 10
 index_enabled = true
 lsp_enabled = true

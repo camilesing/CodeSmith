@@ -565,16 +565,37 @@ fn canonicalize_best_effort(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// Strip the Windows verbatim-prefix forms `canonicalize()` yields on that
+/// platform (`\\?\C:\…`, `\\?\UNC\server\share\…`) so the URI carries the
+/// spec-shaped path servers resolve. No-op for input without the prefix.
+fn strip_windows_verbatim(text: &str) -> std::borrow::Cow<'_, str> {
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        std::borrow::Cow::Owned(format!(r"\\{rest}"))
+    } else {
+        text.strip_prefix(r"\\?\")
+            .map_or(std::borrow::Cow::Borrowed(text), std::borrow::Cow::from)
+    }
+}
+
 /// Convert a filesystem path to a `file://` URI with the path component
 /// percent-encoded per RFC 3986: `/` and the unreserved characters
 /// (ALPHA / DIGIT / `-._~`) stay literal, everything else (spaces, `#`,
 /// `?`, `%`, non-ASCII, …) is encoded as UTF-8 `%XX` with uppercase hex.
 /// Raw paths break diagnostics matching because `#`/`?` truncate the URI
-/// and spaces are rejected by stricter servers. Best-effort — we do not
-/// support Windows drive letters perfectly.
+/// and spaces are rejected by stricter servers. Windows paths get the
+/// `\\?\` verbatim prefix stripped and separators normalized to `/`
+/// (`file:///C:/…`); on Unix a backslash is a legal filename character and
+/// stays percent-encoded as-is.
 fn uri_from_path(path: &Path) -> String {
     let canonical = canonicalize_best_effort(path);
-    let encoded = percent_encode_path(&canonical.to_string_lossy());
+    let lossy = canonical.to_string_lossy();
+    let text = strip_windows_verbatim(&lossy);
+    let text = if cfg!(windows) {
+        std::borrow::Cow::Owned(text.replace('\\', "/"))
+    } else {
+        text
+    };
+    let encoded = percent_encode_path(&text);
     if encoded.starts_with('/') {
         format!("file://{encoded}")
     } else {
@@ -785,11 +806,21 @@ mod tests {
         assert!(path_from_uri("http://example.com/foo.rs").is_none());
     }
 
-    // Quarantined on Windows: canonicalize there yields extended-length
-    // `\\?\C:\…` paths, which `uri_from_path` does not yet convert to a
-    // spec-shaped `file:///C:/…` URI (see its "drive letters" note) — a
-    // design follow-up, not something this roundtrip test should paper over.
-    #[cfg(not(windows))]
+    #[test]
+    fn strip_windows_verbatim_removes_prefix_forms() {
+        // Windows canonicalize() yields these; the URI must carry the
+        // spec-shaped path instead. Runs everywhere — pure string logic.
+        assert_eq!(
+            strip_windows_verbatim(r"\\?\C:\Users\cam\file.rs"),
+            r"C:\Users\cam\file.rs"
+        );
+        assert_eq!(
+            strip_windows_verbatim(r"\\?\UNC\server\share\file.rs"),
+            r"\\server\share\file.rs"
+        );
+        assert_eq!(strip_windows_verbatim("/tmp/plain.rs"), "/tmp/plain.rs");
+    }
+
     #[test]
     fn uri_from_path_percent_encodes_and_round_trips() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -797,18 +828,35 @@ mod tests {
         std::fs::write(&path, b"fn main() {}").expect("write file");
         let canonical = path.canonicalize().expect("canonicalize");
         let uri = uri_from_path(&path);
-        // Exact wire form: only unreserved chars and `/` survive literal.
-        assert_eq!(
-            uri,
-            format!(
-                "file://{}",
-                percent_encode_path(&canonical.to_string_lossy())
-            )
-        );
         assert!(uri.contains("%20"), "space encoded in {uri}");
         assert!(uri.contains("%23"), "hash encoded in {uri}");
         assert!(uri.contains("%25"), "percent encoded in {uri}");
-        assert_eq!(path_from_uri(&uri), Some(canonical));
+        #[cfg(not(windows))]
+        {
+            // Exact wire form: only unreserved chars and `/` survive literal.
+            assert_eq!(
+                uri,
+                format!(
+                    "file://{}",
+                    percent_encode_path(&canonical.to_string_lossy())
+                )
+            );
+            assert_eq!(path_from_uri(&uri), Some(canonical));
+        }
+        #[cfg(windows)]
+        {
+            // Spec-shaped drive-letter URI — no verbatim `\\?\` prefix
+            // (would encode as %5C%3F%5C) and no encoded backslashes.
+            assert!(
+                uri.starts_with("file:///"),
+                "drive-letter URIs need the triple slash: {uri}"
+            );
+            assert!(!uri.contains("%5C"), "backslash must be '/': {uri}");
+            assert!(!uri.contains("%3F"), "verbatim '?' must be stripped: {uri}");
+            let spec_shape =
+                strip_windows_verbatim(&canonical.to_string_lossy()).replace('\\', "/");
+            assert_eq!(path_from_uri(&uri), Some(PathBuf::from(spec_shape)));
+        }
     }
 
     #[tokio::test]

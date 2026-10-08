@@ -3294,8 +3294,8 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             Ok((client, model)) => {
                 // The payload leaves the machine — say so explicitly before
                 // the call (findings + environment context: os, provider,
-                // model), so the default-on fallback is never a silent
-                // network send. Name the RESOLVED client's provider, not the
+                // model), so the opt-in fallback is never a silent network
+                // send. Name the RESOLVED client's provider, not the
                 // main config's: with a cross-provider `[utility_model]` the
                 // request actually goes to a different endpoint.
                 let dest_provider = client.provider_name();
