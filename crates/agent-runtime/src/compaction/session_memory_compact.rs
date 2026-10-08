@@ -283,7 +283,7 @@ mod tests {
         };
         assert!(!should_use_session_memory_compact(
             "memory",
-            &vec![msg("user", "test")],
+            &[msg("user", "test")],
             &config
         ));
     }
@@ -293,7 +293,7 @@ mod tests {
         let config = SessionMemoryCompactConfig::default();
         assert!(!should_use_session_memory_compact(
             "",
-            &vec![msg("user", "test")],
+            &[msg("user", "test")],
             &config
         ));
     }

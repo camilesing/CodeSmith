@@ -3,7 +3,6 @@
  *
  *   "Shipped"    ← last 8 published Releases on camilesing/CodeSmith
  *   "Underway"   ← open issues with label `roadmap:underway`
-import { GITHUB_REPO_URL } from "@/lib/constants";
  *   "Considered" ← open issues with label `roadmap:considered`
  *   "Ruled out"  ← issues (open or closed) with label `roadmap:ruled-out`
  *
@@ -13,6 +12,8 @@ import { GITHUB_REPO_URL } from "@/lib/constants";
  * Categories that come back empty fall through to the page's static items —
  * the maintainer can adopt label-driven roadmap incrementally.
  */
+import { GITHUB_REPO_URL } from "@/lib/constants";
+
 const REPO = process.env.GITHUB_REPO ?? "camilesing/CodeSmith";
 const KV_KEY = "roadmap:feed";
 const KV_TTL = 60 * 30;

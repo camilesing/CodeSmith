@@ -4842,14 +4842,13 @@ mod tests {
         assert_eq!(calls[0].1.tool_name.as_deref(), Some("echo"));
         assert_eq!(calls[0].1.session_id.as_deref(), Some("test"));
         assert_eq!(calls[1].1.tool_name.as_deref(), Some("echo"));
-        assert_eq!(
+        assert!(
             calls[1]
                 .1
                 .tool_result
                 .as_deref()
                 .unwrap()
-                .ends_with("|world"),
-            true
+                .ends_with("|world")
         );
         assert_eq!(calls[1].1.tool_success, Some(true));
     }
@@ -9760,7 +9759,7 @@ mod tests {
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
         let mock = Arc::new(MockLlm::new(vec![read_file_call("evil.txt"), end_call()]));
         // Content with a zero-width space injected mid-token.
-        let poisoned = format!("clean_start\u{200B}secret_end");
+        let poisoned = "clean_start\u{200B}secret_end".to_string();
         let executor = HostAgentExecutor::new(
             mock.clone(),
             read_file_tools(ReadFileSpec::new(&poisoned)),
