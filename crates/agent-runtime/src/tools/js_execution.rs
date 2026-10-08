@@ -89,14 +89,33 @@ pub async fn execute_js_execution_tool(
         ToolError::execution_failed("js_execution: Node.js runtime became unavailable".to_string())
     })?;
     cmd.arg(&script_path).current_dir(workspace);
-    // kill_on_drop: on timeout the `output()` future is dropped with the
-    // child — without this the Node process keeps running detached in the
-    // workspace cwd after the tool already returned a Timeout error.
+    // Own a process group (unix) so the timeout kill also reaches
+    // grandchildren spawned via `child_process` — kill_on_drop only
+    // signals the direct child (same shape as the shell-bang path in
+    // tui/src/tui/ui.rs and the hook executor). Windows: only the direct
+    // child can be killed.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.as_std_mut().process_group(0);
+    }
     cmd.kill_on_drop(true);
-
-    let output = tokio::time::timeout(Duration::from_secs(120), cmd.output())
+    // Same stdio as `output()` would set: stdin closed, pipes captured.
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let child = cmd
+        .spawn()
+        .map_err(|e| ToolError::execution_failed(e.to_string()))?;
+    // Captured before the wait future: `wait_with_output` consumes the
+    // child, and the timeout arm needs the pid to kill the group.
+    let child_pid = child.id();
+    let output = tokio::time::timeout(Duration::from_secs(120), child.wait_with_output())
         .await
-        .map_err(|_| ToolError::Timeout { seconds: 120 })
+        .map_err(|_| {
+            crate::shell_manager::kill_process_group_of_opt(child_pid);
+            ToolError::Timeout { seconds: 120 }
+        })
         .and_then(|res| res.map_err(|e| ToolError::execution_failed(e.to_string())))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();

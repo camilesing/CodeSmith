@@ -932,15 +932,27 @@ impl HookExecutor {
         std::thread::spawn(move || {
             let mut command = HookExecutor::build_shell_command(&cmd);
             HookExecutor::own_process_group(&mut command);
-            let Ok(mut child) = command
+            let mut child = match command
                 .current_dir(&wd)
                 .envs(&env)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .spawn()
-            else {
-                return;
+            {
+                Ok(child) => child,
+                // Same diagnosability as the wait-error arm below: there
+                // is no HookResult to carry the error (fire-and-forget),
+                // so leave a trace — a hook that never spawned (missing
+                // shell, deleted working dir, resource exhaustion) must
+                // not fail silently.
+                Err(err) => {
+                    tracing::warn!(
+                        target: "codesmith::hooks",
+                        "background hook '{cmd}' failed to spawn: {err}"
+                    );
+                    return;
+                }
             };
             let deadline = started + Duration::from_secs(timeout_secs.max(1));
             loop {

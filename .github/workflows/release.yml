@@ -291,7 +291,11 @@ jobs:
             fi
 
             local archive="codesmith-${platform}${variant:+-}${variant}.${ext}"
-            sha256sum "bundles/${archive}" | awk '{printf "%s  %s\n", $1, $2}' >> "$MANIFEST"
+            # Bare archive names: release assets download flat, and the
+            # release body tells users to `sha256sum -c` this manifest in
+            # the download dir (same shape as the artifacts manifest's
+            # `basename` entries in the release job below).
+            sha256sum "bundles/${archive}" | awk -v base="${archive}" '{printf "%s  %s\n", $1, base}' >> "$MANIFEST"
             echo "  Created bundles/${archive}"
           }
 

@@ -233,17 +233,25 @@ impl AutomationManager {
         Self::open(default_automations_dir())
     }
 
-    fn automation_path(&self, id: &str) -> PathBuf {
-        self.automations_dir.join(format!("{id}.json"))
+    /// Ids joined into record/run paths (`<dir>/<id>.json`,
+    /// `<runs>/<id>/`) come straight from tool input — validate at the
+    /// join itself so no in-module caller can bypass the traversal guard
+    /// by forgetting the pre-check.
+    fn automation_path(&self, id: &str) -> Result<PathBuf> {
+        require_safe_automation_id(id)?;
+        Ok(self.automations_dir.join(format!("{id}.json")))
     }
 
-    fn runs_dir_for(&self, automation_id: &str) -> PathBuf {
-        self.runs_dir.join(automation_id)
+    fn runs_dir_for(&self, automation_id: &str) -> Result<PathBuf> {
+        require_safe_automation_id(automation_id)?;
+        Ok(self.runs_dir.join(automation_id))
     }
 
-    fn run_path(&self, automation_id: &str, run_id: &str) -> PathBuf {
-        self.runs_dir_for(automation_id)
-            .join(format!("{run_id}.json"))
+    fn run_path(&self, automation_id: &str, run_id: &str) -> Result<PathBuf> {
+        require_safe_automation_id(run_id)?;
+        Ok(self
+            .runs_dir_for(automation_id)?
+            .join(format!("{run_id}.json")))
     }
 
     pub fn create_automation(&self, req: CreateAutomationRequest) -> Result<AutomationRecord> {
@@ -276,8 +284,7 @@ impl AutomationManager {
     }
 
     pub fn get_automation(&self, id: &str) -> Result<AutomationRecord> {
-        require_safe_automation_id(id)?;
-        let path = self.automation_path(id);
+        let path = self.automation_path(id)?;
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read automation {}", path.display()))?;
         let record: AutomationRecord = serde_json::from_str(&raw)
@@ -293,13 +300,29 @@ impl AutomationManager {
         // run_path) and never has to match the (validated) filename it was
         // read from — a hand-edited `automations/<uuid>.json` with
         // `"id": "../../x"` would otherwise traverse out of the store.
+        // (The joins validate too; this fails loud at read time instead.)
         require_safe_automation_id(&record.id)?;
         Ok(record)
     }
 
+    /// Tolerant read for the delete path: validates the requested id
+    /// (that is what gets joined for removal) but tolerates a record
+    /// whose internal fields would quarantine it elsewhere — a
+    /// hand-edited `automations/<uuid>.json` with an unsafe or
+    /// newer-schema internal id is skipped by `list_automations` and
+    /// bounces off `get_automation`, so without this the file (and its
+    /// runs dir) could only be removed by hand.
+    fn get_automation_tolerant(&self, id: &str) -> Result<AutomationRecord> {
+        let path = self.automation_path(id)?;
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read automation {}", path.display()))?;
+        let record: AutomationRecord = serde_json::from_str(&raw)
+            .with_context(|| format!("Failed to parse automation {}", path.display()))?;
+        Ok(record)
+    }
+
     pub fn save_automation(&self, record: &AutomationRecord) -> Result<()> {
-        require_safe_automation_id(&record.id)?;
-        write_json_atomic(&self.automation_path(&record.id), record)
+        write_json_atomic(&self.automation_path(&record.id)?, record)
     }
 
     pub fn list_automations(&self) -> Result<Vec<AutomationRecord>> {
@@ -408,14 +431,16 @@ impl AutomationManager {
     }
 
     pub fn delete_automation(&self, id: &str) -> Result<AutomationRecord> {
-        // get_automation validates the id first; delete then removes both
-        // the record file and the runs directory under the same guarantee.
-        let existing = self.get_automation(id)?;
-        let path = self.automation_path(id);
+        // Tolerant read: the file and runs dir removed below are keyed on
+        // the validated *requested* id; the record's own (possibly
+        // hand-edited, quarantined) internal id never reaches a join
+        // here, so it must not block eviction either.
+        let existing = self.get_automation_tolerant(id)?;
+        let path = self.automation_path(id)?;
         fs::remove_file(&path)
             .with_context(|| format!("Failed to delete automation {}", path.display()))?;
 
-        let runs_dir = self.runs_dir_for(id);
+        let runs_dir = self.runs_dir_for(id)?;
         if runs_dir.exists() {
             fs::remove_dir_all(&runs_dir).with_context(|| {
                 format!("Failed to delete automation runs {}", runs_dir.display())
@@ -430,8 +455,7 @@ impl AutomationManager {
         automation_id: &str,
         limit: Option<usize>,
     ) -> Result<Vec<AutomationRunRecord>> {
-        require_safe_automation_id(automation_id)?;
-        let dir = self.runs_dir_for(automation_id);
+        let dir = self.runs_dir_for(automation_id)?;
         if !dir.exists() {
             return Ok(Vec::new());
         }
@@ -481,14 +505,12 @@ impl AutomationManager {
     }
 
     fn save_run(&self, run: &AutomationRunRecord) -> Result<()> {
-        // Both ids are joined into the run path; `run.automation_id` comes
-        // from the JSON file on disk (never has to match the validated
-        // filename it was listed under), so validate here too.
-        require_safe_automation_id(&run.automation_id)?;
-        require_safe_automation_id(&run.id)?;
-        let dir = self.runs_dir_for(&run.automation_id);
+        // `run.automation_id` / `run.id` come from the JSON file on disk
+        // (never have to match the validated filename it was listed
+        // under); the join helpers validate them at the join.
+        let dir = self.runs_dir_for(&run.automation_id)?;
         fs::create_dir_all(&dir).with_context(|| format!("Failed to create {}", dir.display()))?;
-        write_json_atomic(&self.run_path(&run.automation_id, &run.id), run)
+        write_json_atomic(&self.run_path(&run.automation_id, &run.id)?, run)
     }
 
     async fn enqueue_run_task(
@@ -950,13 +972,62 @@ mod tests {
             error: None,
         };
         manager.save_run(&run).expect("save run");
-        assert!(manager.runs_dir_for(&created.id).exists());
+        assert!(
+            manager
+                .runs_dir_for(&created.id)
+                .expect("runs dir")
+                .exists()
+        );
 
         manager
             .delete_automation(&created.id)
             .expect("delete automation");
 
         assert!(manager.get_automation(&created.id).is_err());
-        assert!(!manager.runs_dir_for(&created.id).exists());
+        assert!(
+            !manager
+                .runs_dir_for(&created.id)
+                .expect("runs dir")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn deletes_quarantined_record_with_unsafe_internal_id() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let manager = AutomationManager::open(tempdir.path().to_path_buf()).expect("manager");
+
+        let created = manager
+            .create_automation(CreateAutomationRequest {
+                name: "Poisoned".to_string(),
+                prompt: "prompt".to_string(),
+                rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
+                cwds: Vec::new(),
+                status: Some(AutomationStatus::Active),
+            })
+            .expect("create");
+
+        // Hand-edit the record on disk to carry a traversal internal id:
+        // strict reads bounce off it and listings skip it — but delete
+        // must still be able to evict the file and its runs dir.
+        let path = tempdir
+            .path()
+            .join("automations")
+            .join(format!("{}.json", created.id));
+        let mut record: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read record"))
+                .expect("parse record");
+        record["id"] = serde_json::json!("../../evil");
+        std::fs::write(&path, record.to_string()).expect("rewrite record");
+        let runs_dir = manager.runs_dir_for(&created.id).expect("runs dir");
+        std::fs::create_dir_all(&runs_dir).expect("runs dir");
+
+        assert!(manager.get_automation(&created.id).is_err());
+        assert!(manager.list_automations().expect("list").is_empty());
+
+        manager.delete_automation(&created.id).expect("delete");
+
+        assert!(!path.exists());
+        assert!(!runs_dir.exists());
     }
 }

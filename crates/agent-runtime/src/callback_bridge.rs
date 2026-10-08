@@ -157,9 +157,14 @@ pub struct CallbackBridge {
     /// forwarding assistant text deltas as `AssistantStream` events.
     /// `None` when no runner is bound (tests / runner-less hosts).
     extension: Option<Arc<codesmith_extensions::ExtensionRunner>>,
-    /// Route B rate-limit: AssistantStream budget warnings log once per
-    /// bridge (per turn) instead of once per delta — a consistently slow
-    /// handler must not flood the log with hundreds of lines per turn.
+    /// Route B budget state, per bridge (per turn): the first budget miss
+    /// logs once instead of once per delta (a consistently slow handler
+    /// must not flood the log with hundreds of lines per turn), and —
+    /// once tripped — circuit-breaks later deltas' handler dispatch
+    /// entirely (`spawn_blocking` tasks cannot be cancelled, so a hung
+    /// handler would otherwise hold one blocking-pool thread per
+    /// detached dispatch, and a slow-but-completing one would stall the
+    /// delta loop for the full 250ms budget each time).
     stream_warned: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -364,13 +369,18 @@ impl Callback for CallbackBridge {
             // detached — it runs to completion off-thread with its
             // outcome discarded (observe-only) and may overlap later
             // deltas' handlers, so no handler is ever cancelled
-            // mid-flight. The pre-check skips the clone + dispatch
-            // entirely when nothing subscribes to AssistantStream (the
-            // common case on the token-streaming hot path). Thinking
-            // deltas stay UI-only for now.
+            // mid-flight — and the budget flag trips a circuit breaker:
+            // later deltas this turn skip the clone + dispatch
+            // entirely, because a detached miss would otherwise hold a
+            // blocking-pool thread forever (hung handler) or cost the
+            // next delta its full budget (slow-but-completing handler).
+            // The pre-check also skips when nothing subscribes to
+            // AssistantStream (the common case on the token-streaming
+            // hot path). Thinking deltas stay UI-only for now.
             if let (Some(runner), StreamDelta::Text { content, .. }) = (&extension, delta)
                 && runner
                     .has_handlers(codesmith_agent::extension::ExtensionEventKind::AssistantStream)
+                && !stream_warned.load(std::sync::atomic::Ordering::Relaxed)
             {
                 let runner = Arc::clone(runner);
                 let event = codesmith_agent::extension::ExtensionEvent::AssistantStream(
@@ -399,7 +409,8 @@ impl Callback for CallbackBridge {
                             tracing::warn!(
                                 target: "codesmith_runtime::callback_bridge",
                                 "AssistantStream handler dispatch exceeded 250ms; \
-                                 detached — later deltas may overlap it (logged once per turn)"
+                                 detached — later deltas skip handler dispatch \
+                                 this turn (logged once per turn)"
                             );
                         }
                     }
@@ -1173,5 +1184,133 @@ mod assistant_stream_tests {
 
         let got = seen.lock().unwrap().clone();
         assert_eq!(got, vec!["hel".to_string(), "lo".to_string()], "text only");
+    }
+
+    /// Route B circuit breaker, tripped-state half: once the budget flag
+    /// is set, later text deltas must skip the clone + dispatch entirely —
+    /// `spawn_blocking` tasks cannot be cancelled, so a hung handler holds
+    /// a blocking-pool thread per detached dispatch, and a slow-but-
+    /// completing one stalls the delta loop for the full 250ms each time.
+    #[tokio::test]
+    async fn tripped_stream_flag_skips_later_delta_dispatch() {
+        let runner = codesmith_extensions::ExtensionRunner::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let ext = StreamExt(seen.clone());
+        runner.load(&ext).await.expect("load");
+        runner.bind_core(Arc::new(NoopCtx));
+
+        let bridge = CallbackBridge::new(None, None, HookContext::default())
+            .with_extension_runner_if_some(Some(Arc::new(runner)));
+        bridge
+            .stream_warned
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        bridge
+            .on_stream_delta(&StreamDelta::Text {
+                index: 0,
+                content: "skipped".to_string(),
+            })
+            .await;
+
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "no dispatch once the flag is tripped"
+        );
+    }
+
+    /// Route B circuit breaker, tripping half: a handler slower than the
+    /// 250ms dispatch budget trips the flag on the first delta; the second
+    /// delta must then return promptly instead of paying the full timeout
+    /// again.
+    #[tokio::test]
+    async fn slow_stream_handler_trips_breaker_for_rest_of_turn() {
+        struct SlowStream(Arc<Mutex<Vec<String>>>);
+        #[async_trait::async_trait]
+        impl codesmith_agent::extension::Handler for SlowStream {
+            async fn handle(
+                &self,
+                event: &codesmith_agent::extension::ExtensionEvent,
+                _ctx: &dyn codesmith_agent::extension::ExtensionContext,
+            ) -> Result<
+                codesmith_agent::extension::HandlerOutcome,
+                codesmith_agent::extension::ExtensionError,
+            > {
+                if let codesmith_agent::extension::ExtensionEvent::AssistantStream(e) = event {
+                    self.0.lock().unwrap().push(e.text.clone());
+                    // Well past the 250ms dispatch budget, but completing:
+                    // the detached first dispatch finishes soon after.
+                    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                    self.0.lock().unwrap().push(format!("{}-done", e.text));
+                }
+                Ok(codesmith_agent::extension::HandlerOutcome::Continue)
+            }
+        }
+        struct SlowExt(Arc<Mutex<Vec<String>>>);
+        #[async_trait::async_trait]
+        impl codesmith_agent::extension::Extension for SlowExt {
+            fn metadata(&self) -> &codesmith_agent::extension::ExtensionMetadata {
+                static M: codesmith_agent::extension::ExtensionMetadata =
+                    codesmith_agent::extension::ExtensionMetadata::new("slow-stream-ext");
+                &M
+            }
+            async fn configure(
+                &self,
+                api: &dyn codesmith_agent::extension::ExtensionApi,
+            ) -> Result<(), codesmith_agent::extension::ExtensionError> {
+                api.on_variant(
+                    codesmith_agent::extension::ExtensionEventKind::AssistantStream,
+                    Arc::new(SlowStream(self.0.clone())),
+                )?;
+                Ok(())
+            }
+        }
+
+        let runner = codesmith_extensions::ExtensionRunner::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        runner.load(&SlowExt(seen.clone())).await.expect("load");
+        runner.bind_core(Arc::new(NoopCtx));
+
+        let bridge = CallbackBridge::new(None, None, HookContext::default())
+            .with_extension_runner_if_some(Some(Arc::new(runner)));
+
+        // First delta: dispatch exceeds the 250ms budget, detaches, and
+        // trips the flag.
+        bridge
+            .on_stream_delta(&StreamDelta::Text {
+                index: 0,
+                content: "one".to_string(),
+            })
+            .await;
+        assert!(
+            bridge
+                .stream_warned
+                .load(std::sync::atomic::Ordering::Relaxed),
+            "budget miss trips the flag"
+        );
+
+        // Second delta: must skip the dispatch (no fresh 250ms stall).
+        // The bound sits under the 250ms timeout the unfixed path would
+        // pay, with margin for scheduler noise.
+        let start = std::time::Instant::now();
+        bridge
+            .on_stream_delta(&StreamDelta::Text {
+                index: 0,
+                content: "two".to_string(),
+            })
+            .await;
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(200),
+            "second delta skipped the dispatch, took {:?}",
+            start.elapsed()
+        );
+
+        // Let the detached first dispatch finish before the test runtime
+        // drops — a `block_on` inside `spawn_blocking` panics if the
+        // runtime is shut down mid-sleep.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !seen.lock().unwrap().iter().any(|s| s == "one-done")
+            && std::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
     }
 }
