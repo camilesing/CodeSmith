@@ -12,11 +12,18 @@
   跨仓库 `Whalescale#N` 引用、以及无编号的已知问题 / TODO / 限制。
 - `.zcode/plans/`（本地工具会话产物）不在范围内；
   `docs/superpowers/plans/`（未跟踪的工作产物）亦不逐条收录。
-- `crates/tui/CHANGELOG.md` 是根 `CHANGELOG.md` 的逐行相同副本，
-  以下引用一律使用根文件。
+- 根 `CHANGELOG.md` 现在只包含 fork 之后的历史；下文 fork 前的引用一律指向
+  `docs/legacy/CHANGELOG-upstream.md`——它逐字保留了旧根文件（行号未变）。
 
 后续在代码 / 文档中新增 issue 引用时，请记录到本文件，不再指向已废弃的
 GitHub tracker。
+
+2026-10-09 清扫：按本政策从 `docs/` 下所有文档中剥离了裸 `#N` tracker
+引用与失效的 `github.com/Hmbown/CodeSmith` 链接。上游 CodeWhale 仓库
+（`Hmbown/CodeSmith`）已无法访问（404），其 issue 编号同样无法验证；
+指名上游工作的编号只保留在 `docs/legacy/`（冻结历史）与下文引用中。
+`docs/REVIEW_PIPELINE.md` 与 `docs/RLM_BRANCHING_ROADMAP.md` 已在同次
+清扫中移入 `docs/legacy/`。
 
 ## 1. 内部 `CX#N` 编号
 
@@ -77,9 +84,10 @@ Tag 块）。设计参考：
 - `crates/agent-runtime/src/engine/host_executor.rs:1569`
 - `crates/agent-runtime/src/engine/host_executor.rs:8204`
 - `crates/agent-runtime/src/mcp.rs:3010`
-- `docs/rfcs/extra-findings-01-unicode-sanitization.md:12`
-- `CHANGELOG.md:64`（Unreleased 清理条目）
-- `ROADMAP.md:1580`（read-file observe 路径）
+- `docs/rfcs/extra-findings-01-unicode-sanitization.md:12`（文件已删除；
+  记录在此保留）
+- `docs/legacy/CHANGELOG-upstream.md:64`（Unreleased 清理条目）
+- `docs/legacy/ROADMAP-upstream.md:1580`（read-file observe 路径）
 
 ### GHSA-72w5-pf8h-xfp4 — 子代理默认权限必须显式开启
 
@@ -91,7 +99,7 @@ shell。
 - `crates/tui/src/config.rs:5023`（回归测试）
 - `crates/tui/src/task_manager.rs:582`
 - `crates/tui/src/task_manager.rs:1615`（回归测试）
-- `CHANGELOG.md:2690`
+- `docs/legacy/CHANGELOG-upstream.md:2690`
 
 ### GHSA-88gh-2526-gfrr — `fetch_url` 网络目标校验
 
@@ -100,13 +108,13 @@ IPv6 字面量的解析。
 
 - `crates/tool-impls/src/tools/fetch_url.rs:338`
 - `crates/tool-impls/src/tools/fetch_url.rs:687`（回归测试）
-- `CHANGELOG.md:2688`
+- `docs/legacy/CHANGELOG-upstream.md:2688`
 
 ### 依赖侧通告（为完整起见记录）
 
 Changelog 中记录的第三方依赖升级，非本代码库缺陷：
 
-- `CHANGELOG.md:1985` — `next` 15.5.16 → 15.5.18（GHSA-26hh-7cqf-hhc6，
+- `docs/legacy/CHANGELOG-upstream.md:1985` — `next` 15.5.16 → 15.5.18（GHSA-26hh-7cqf-hhc6，
   App Router middleware/proxy 经 segment-prefetch 路由绕过）及
   `mermaid` 的 GHSA 家族升级。
 
@@ -151,7 +159,7 @@ runtime API 为 Whalescale 桌面桥接增加可配置的 CORS 来源：`config.
 - `crates/tui/src/config.rs:1218`
 - `crates/tui/src/main.rs:668`
 - `crates/tui/src/main.rs:1699`
-- `CHANGELOG.md:3766`（runtime API 四件套条目）
+- `docs/legacy/CHANGELOG-upstream.md:3766`（runtime API 四件套条目）
 
 ### whalescale#260 — `archived_only` 线程过滤
 
@@ -186,7 +194,7 @@ usage 端点按天/模型聚合计费回合的 token 与成本，供桌面 UI �
 全仓库唯一的 `TODO`。子代理的权限请求目前只发一条状态消息（"X needs
 permission for Y"）；路由到真正的审批对话框待 UI 支持。
 
-- `crates/agent-runtime/src/engine/team_inbox.rs:82`
+- `crates/agent-runtime/src/engine/team_inbox.rs:97`
 
 ### OSC 8 渲染损坏（issue 未创建）
 
@@ -238,34 +246,34 @@ composer 文本；PTY dump 中出现任一信号即说明 bug 触发。
 
 ### CHANGELOG 的 "Known issues" 章节
 
-- **v0.8.32**（`CHANGELOG.md:1869`）— agent 思考或流式输出期间，终端原生
+- **v0.8.32**（`docs/legacy/CHANGELOG-upstream.md:1869`）— agent 思考或流式输出期间，终端原生
   文本选择仍可能被阻断。v0.8.32 移除了吵闹的 Shift 绕过鼠标捕获路径
   （"scroll demon"），但替代的选择路径当时尚未完成；文本选择修复计划在
   v0.8.33。
-- **v0.8.25**（`CHANGELOG.md:2862`）— Windows 10 conhost 闪烁回归：
+- **v0.8.25**（`docs/legacy/CHANGELOG-upstream.md:2862`）— Windows 10 conhost 闪烁回归：
   v0.8.22 引入的 viewport 重置转义序列需要 Windows 平台守卫（延期到
   v0.8.26）。快照系统仍每回合快照、不区分工作区是否变化（写感知跳过计划
   在 v0.8.26）。代码块中 `▏` 字形泄漏、鼠标选区跨越侧栏、拖选边缘自动
   滚动、运行中 MCP 服务器 stderr 捕获——全部延期到 v0.8.26。后续条目表明
   拖选自动滚动、字形与 MCP stderr 修复已在 v0.8.26 落地
-  （`CHANGELOG.md:2736`–`2753`），跨终端闪烁修复见于 v0.8.27–v0.8.29 区段
-  （`CHANGELOG.md:2457`、`:2525`）。
-- **v0.8.24**（`CHANGELOG.md:2957`）— Windows 闪烁/抖动根因：viewport
+  （`docs/legacy/CHANGELOG-upstream.md:2736`–`2753`），跨终端闪烁修复见于 v0.8.27–v0.8.29 区段
+  （`docs/legacy/CHANGELOG-upstream.md:2457`、`:2525`）。
+- **v0.8.24**（`docs/legacy/CHANGELOG-upstream.md:2957`）— Windows 闪烁/抖动根因：viewport
   重置序列（`\x1b[r\x1b[?6l\x1b[H\x1b[2J\x1b[3J`）在 conhost 下可能每次
   重绘触发全屏清除；需要平台守卫或更温和的序列。
-- **v0.8.23**（`CHANGELOG.md:3039`）— 运行中 MCP 服务器 stderr 被抑制：
+- **v0.8.23**（`docs/legacy/CHANGELOG-upstream.md:3039`）— 运行中 MCP 服务器 stderr 被抑制：
   stdio 服务器成功启动但随后崩溃（如在 `initialize` 期间）时没有 stderr
-  捕获；计划在 v0.8.24，实际于 v0.8.26 落地（`CHANGELOG.md:2744`）。
+  捕获；计划在 v0.8.24，实际于 v0.8.26 落地（`docs/legacy/CHANGELOG-upstream.md:2744`）。
 
 ### docs/INDEX.md — 代码索引 v1 限制
 
-- `docs/INDEX.md:94` — 引用是基于名字（词法）的，非作用域解析；索引绑定
+- `docs/INDEX.md:93` — 引用是基于名字（词法）的，非作用域解析；索引绑定
   工作区根（v1 不重索引 worktree 下的文件）；后台 runtime 线程运行时没有
   索引；语义搜索（`[index.semantic]`）是预留缝隙，尚未编译任何后端。
 
 ### docs/SANDBOX.md — 沙箱不防护面
 
-- `docs/SANDBOX.md:268` — 网络攻击（Linux 与 Windows v1 保持网络开放）、
+- `docs/SANDBOX.md:277` — 网络攻击（Linux 与 Windows v1 保持网络开放）、
   git hook / fsmonitor 执行、内存攻击、时序侧信道、资源耗尽（不限制 CPU、
   文件描述符、磁盘 I/O）、内核漏洞、供应链。平台差异缺口：Linux seccomp
   白名单可能需要为新 syscall 更新；macOS 运行时生成的 Seatbelt profile
@@ -273,19 +281,19 @@ composer 文本；PTY dump 中出现任一信号即说明 bug 触发。
 
 ### docs/KEYBINDINGS.md — 可配置键位延期
 
-- `docs/KEYBINDINGS.md:129` — 可配置键位映射与 `tui.toml` 仍然延期：
+- `docs/KEYBINDINGS.md:155` — 可配置键位映射与 `tui.toml` 仍然延期：
   `TuiPrefs` 结构体与加载器已存在于 `settings.rs`，但未在启动时接线；
   让 `~/.codesmith/tui.toml` 覆盖单个条目的命名绑定注册表仍在待办中。
-  （中文镜像：`docs/KEYBINDINGS_cn.md:129`。）
+  （中文镜像：`docs/KEYBINDINGS_cn.md:155`。）
 
 ### docs/EXTENSIONS.md — 禁用在 reload 时生效
 
 - `docs/EXTENSIONS.md:78` — `/extension disable <id>` 会标记扩展为禁用，
   但效果在下一次 `/extension reload` 才落地（同一 reload 注意事项）。
 
-### docs/superpowers/todo.md — §F 扩展系统交接
+### 扩展系统交接（源自已删除的 `docs/superpowers/todo.md`）
 
-- `docs/superpowers/todo.md` — §F5（dylib 加载）与 §F2（事件、handler
+- §F5（dylib 加载）与 §F2（事件、handler
   链、热重载）已完成。其余阶段按需启动（尚无 spec/plan）：**§F3**
   EventBus 真实现（`crates/extensions/src/bus.rs` 的 `subscribe`/`publish`
   目前返回 `ExtensionError::Unimplemented`）、**§F4** registerProvider、
@@ -294,31 +302,31 @@ composer 文本；PTY dump 中出现任一信号即说明 bug 触发。
   `streamable_http`（agent-runtime）与 `runtime_api`（tui）——均为既有
   状态，触发时隔离重跑。
 
-### docs/plans/codebase-health.md — 清理待办
+### 清理待办（源自已删除的 `docs/plans/codebase-health.md`）
 
-- `docs/plans/codebase-health.md:34` — 把 `crates/agent-runtime/src/engine/`
+- 把 `crates/agent-runtime/src/engine/`
   中的 `allow(dead_code)` 归零（或每个幸存者附 migration-issue 链接）；
   清理指向已删代码的注释；确认纯 re-export 后合并/删除 TUI 镜像模块
   （`tui/src/compaction/`、`tui/src/prompts.rs`、`tui/src/mcp.rs`、
   `tui/src/sandbox/`、`tui/src/execpolicy/`）。
-- `docs/plans/codebase-health.md:37` — 自 v0.8.33 起废弃的约 12 个子代理
+- 自 v0.8.33 起废弃的约 12 个子代理
   工具（`agent_spawn`、`agent_result`、`agent_wait`、`delegate_to_agent`
   等）仍注册在目录中，占用工具面与提示词预算。
 
-### ROADMAP.md — 已知缺口与延期 re-wire
+### docs/legacy/ROADMAP-upstream.md — 已知缺口与延期 re-wire
 
-- **thinking-only 处理的 by-design 缺口**（`ROADMAP.md:1922`–`1940`）—
+- **thinking-only 处理的 by-design 缺口**（`docs/legacy/ROADMAP-upstream.md:1922`–`1940`）—
   goal-continuation 与 inline-REPL resume 分支延期（基础设施仍在但未接线：
   `tool_state/goal.rs`、`repl/`）；tool-call 回合缺 reasoning 时的
   `"(reasoning omitted)"` 占位 Thinking 块未被执行器注入（DeepSeek
   thinking-mode 要求 tool-call assistant 消息携带 `reasoning_content`）。
   该处列为最后一项 "still to come" 的 seam-3 parallel dispatch 缺口此后
   已闭合（slice 40；`crates/agent-runtime/src/engine/host_executor.rs:251`）。
-- **compaction 收尾**（`ROADMAP.md:1536`–`1565`）— 25a（summary-prompt
+- **compaction 收尾**（`docs/legacy/ROADMAP-upstream.md:1536`–`1565`）— 25a（summary-prompt
   合并）与 25b（附件重注入）已落地；**25c** `post_compact_cleanup` 仍延期
   （merge 与 cleanup 互斥 + 分离的 `CompactionProbe` 槽位）；read-file
   observe 站点尚无生产调用方，是独立的后续切片。
-- **`#[allow(dead_code)]` 下保留的被取代成员**（`ROADMAP.md:1716`–`1722`）
+- **`#[allow(dead_code)]` 下保留的被取代成员**（`docs/legacy/ROADMAP-upstream.md:1716`–`1722`）
   — `layered_context_checkpoint`（零调用方；为 nav-aids re-wire 参考而
   保留）、`Engine::recover_context_overflow`（容量级联参考）、KoD 集群
   （Knowledge-on-Demand，已规划）、`rx_user_input`（与 tui sender 成对
@@ -326,9 +334,9 @@ composer 文本；PTY dump 中出现任一信号即说明 bug 触发。
   `EarlyToolResult` / `EarlyToolTask`（投机派发）、预留的 `CancelReason`
   枚举变体。
 
-### docs/rfcs/2189-persistence-sqlite.md — 持久化痛点
+### 持久化痛点（源自已删除的 `docs/rfcs/2189-persistence-sqlite.md`）
 
-- `docs/rfcs/2189-persistence-sqlite.md:68` — 驱动 SQLite 持久化 RFC 的
+- 驱动 SQLite 持久化 RFC 的
   五大痛点：列出线程/会话/任务需扫描并反序列化所有文件；过滤需全量扫描；
   无事务一致性（回合与其条目保存之间崩溃会产生孤儿）；JSONL 事件回放
   O(n) 且无索引；四个模块中存在六个不同的 schema 版本常量。

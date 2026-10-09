@@ -13,7 +13,7 @@ CodeSmith 执行由 AI 推理派生的 shell 命令。沙箱模块限制这些�
 | seccomp BPF | Linux | 系统调用过滤 | 已强制执行 |
 | 进程加固 | Linux | 内核 prctl / rlimit | 已强制执行 |
 | Bubblewrap (bwrap) | Linux | 命名空间隔离 | 可选 |
-| Windows Job Object | Windows | 进程树遏制 | v1（PR #2220） |
+| Windows Job Object | Windows | 进程树遏制 | v1 |
 
 ## 威胁模型：每一层针对什么
 
@@ -150,7 +150,7 @@ CodeSmith 不会内置（vendor）bwrap。
 
 **检测：** 检查 stderr 中的 `file-write` 和 `network` 拒绝模式。
 
-### 6. Windows Job Object（v1，PR #2220）
+### 6. Windows Job Object(v1)
 
 **何时运行：** 在进程派生时通过 `PROC_THREAD_ATTRIBUTE_JOB_LIST`
 和受限令牌（restricted token）分配应用。
@@ -311,10 +311,3 @@ sandbox_api_key = "YOUR_API_KEY"
   `sandbox_available`、`sandbox_type`、`bwrap_available`、
   `cgroup_version`
 - `config.example.toml` — 带注释的配置参考
-- Issue #2180 — 本文档
-- Issue #2182 — seccomp 过滤器实现
-- Issue #2183 — 进程加固
-- Issue #2184 — bwrap 透传
-- Issue #2185 — Windows Job Object v1
-- Issue #2186 — SandboxExecutor trait 统一
-- Issue #2187 — 沙箱一致性测试

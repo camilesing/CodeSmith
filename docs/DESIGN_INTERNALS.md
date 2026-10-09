@@ -123,7 +123,7 @@ depending on `codesmith-agent-runtime`'s production `Engine`.
 
 - **`Tool`** (`tools::Tool`) — the executable tool contract (LangChain
   `BaseTool` analog). Host-agnostic: each impl owns its dependencies and
-  [`run`](tools::Tool::run) takes only a parsed `input` — there is **no fat
+  `tools::Tool::run` takes only a parsed `input` — there is **no fat
   per-call `ToolContext`** in the core (that lives in
   `codesmith-agent-runtime::tools::spec`). The bridge onto the production
   `ToolSpec`+`ToolContext` is `ToolSpecAdapter` (in

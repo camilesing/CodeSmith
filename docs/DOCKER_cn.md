@@ -133,8 +133,8 @@ docker run --rm -it \
 ```
 
 对于工具链不同的项目，构建不同的 toolbox tag，例如
-`codesmith-toolbox:frontend` 和 `codesmith-toolbox:backend`。Issue
-#2217 中讨论的独立启动器想法可以建立在这一契约之上，但它有意
+`codesmith-toolbox:frontend` 和 `codesmith-toolbox:backend`。上游
+讨论过的独立启动器想法可以建立在这一契约之上，但它有意
 不放在核心 Docker 镜像的范围内。
 
 ## 项目引导脚本

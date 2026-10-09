@@ -20,7 +20,7 @@ runtime:
 - `crates/tui/src/tui/onboarding/trust_directory.rs`
 - `crates/tui/src/tui/ui.rs`
 - `crates/tui/src/hooks.rs`
-- `crates/tui/src/tools/spec.rs`
+- `crates/agent-runtime/src/tools/spec.rs`
 - `crates/tui/src/workspace_trust.rs`
 
 The audit focuses on when CodeSmith first reads or executes workspace-sensitive
@@ -117,7 +117,7 @@ may CodeSmith file tools access while `trust_mode` is false?"
 | Startup action | Location | Current phase | Classification | Risk | Recommended action |
 |---|---|---|---|---|---|
 | CLI dispatcher direct commands and TUI delegation | `crates/cli/src/lib.rs` | Before TUI runtime | Pre-trust safe for pure dispatch; command-specific behavior varies | Some delegated commands enter TUI without a shared startup boundary document. | Keep dispatcher behavior, but make TUI startup boundary the runtime source of truth. |
-| Process hardening | `crates/tui/src/main.rs`, `crates/tui/src/sandbox/process_hardening.rs` | Very early in TUI `main()` | Pre-trust safe | Defensive process setup should not depend on workspace trust. | Keep pre-trust. |
+| Process hardening | `crates/tui/src/main.rs`, `crates/agent-runtime/src/sandbox/process_hardening.rs` | Very early in TUI `main()` | Pre-trust safe | Defensive process setup should not depend on workspace trust. | Keep pre-trust. |
 | Panic hook / crash dump setup | `crates/tui/src/main.rs` | Very early in TUI `main()` | Pre-trust safe | May write diagnostic state, but does not read workspace-controlled startup input. | Keep pre-trust; ensure crash dumps avoid leaking secrets. |
 | Signal cleanup task | `crates/tui/src/main.rs` | Very early in TUI `main()` | Pre-trust safe | Cleanup registration is process-scoped. | Keep pre-trust. |
 | Workspace `.env` loading | `crates/tui/src/main.rs` | After workspace resolution and startup boundary calculation in interactive startup | Post-trust only / explicit bypass | The old `dotenvy::dotenv()` cwd search has been removed. Interactive startup now loads only `workspace/.env` and only when the workspace is already trusted or explicitly bypassed by YOLO/skip-onboarding. Non-interactive dotenv policy is still pending. | Keep explicit-path loading. Define non-interactive dotenv behavior in a follow-up slice. |
@@ -139,7 +139,7 @@ may CodeSmith file tools access while `trust_mode` is false?"
 | Tool hooks | `crates/tui/src/tui/tool_routing.rs` | Around tool execution | Post-trust/tool-policy controlled | Tool calls should occur only after runtime trust and approval policy are active. | Keep under tool policy; document relationship to trust mode. |
 | MCP config loading for counts/status | `crates/tui/src/tui/app.rs`, `crates/tui/src/mcp.rs` | During App construction | Pre-trust safe if sourced from global config | Project config currently denies `mcp_config_path`; global MCP config is user input. | Keep pre-trust for global config only; do not allow project MCP config pre-trust. |
 | Workspace-local skills discovery | `crates/tui/src/tui/app.rs`, skills modules | During App construction / tool catalog build | Uncertain / requires review | Workspace-local skill metadata may be repo-controlled. Loading text is less risky than executing commands, but model-visible instructions can affect behavior. | Audit exact discovery and execution points. Prefer post-trust for workspace-local skills or label as constrained pre-trust read. |
-| Tool path enforcement | `crates/tui/src/tools/spec.rs`, `crates/tui/src/core/engine.rs` | During tool execution | Post-trust/tool-policy controlled | `trust_mode` bypasses workspace path checks; allowlist narrows external access while untrusted. | Keep enforcement centralized in `ToolContext`; document the three trust concepts. |
+| Tool path enforcement | `crates/agent-runtime/src/tools/spec.rs`, `crates/tui/src/core/engine.rs` | During tool execution | Post-trust/tool-policy controlled | `trust_mode` bypasses workspace path checks; allowlist narrows external access while untrusted. | Keep enforcement centralized in `ToolContext`; document the three trust concepts. |
 
 ## Findings
 

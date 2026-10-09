@@ -65,7 +65,6 @@ same frontmatter `name`, the first match wins.
 | 7 | global | `~/.agents/skills` |
 | 8 | global | `~/.claude/skills` |
 | 9 | global | `~/.codesmith/skills` |
-| 10 | global | `~/.codesmith/skills` (legacy fallback) |
 
 The cross-tool locations (`.agents`, `.opencode`, `.claude`, `.cursor`) mean
 skills you already maintain for other agents are reused as-is — no

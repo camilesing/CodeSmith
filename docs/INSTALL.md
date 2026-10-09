@@ -11,7 +11,7 @@ If you just want the short version, see the
 > [!WARNING]
 > **Package installs are not ready yet.** npm / Homebrew / Scoop / crates.io /
 > Docker packages — and their China mirror variants (npmmirror, TUNA/Cargo
-> mirrors, CNB, release-asset mirrors) — are not published yet.
+> mirrors, release-asset mirrors) — are not published yet.
 > [Build from source](#7-build-from-source) is the only working install path
 > today. Mirror configuration for toolchain downloads still applies to source
 > builds.
@@ -196,7 +196,11 @@ is fastest from your network.
 For an always-on workspace that can be controlled from a phone, use the
 Tencent-native path instead of treating install as a single laptop step:
 
-- CNB mirror/source: `https://cnb.cool/codesmith.net/codesmith.git`
+- Source repo: `https://github.com/camilesing/CodeSmith` (canonical). The CNB
+  mirror `https://cnb.cool/codesmith.net/codesmith.git` is not currently
+  receiving syncs — its copy may be missing or stale, so do not rely on it
+  without verifying (see [RELEASE_RUNBOOK.md](RELEASE_RUNBOOK.md) for manual
+  mirror updates)
 - Tencent Lighthouse HK: `/opt/whalebro` remote workspace
 - Feishu/Lark: long-connection phone bridge
 - EdgeOne: optional public HTTPS edge for docs/status/webhook surfaces
@@ -474,9 +478,9 @@ cargo install codesmith-tui     --locked
 
 ### `codesmith update` reports `no asset found for platform codesmith-linux-aarch64`
 
-This is [#503](https://github.com/Hmbown/CodeSmith/issues/503) in v0.8.7 —
-the self-updater used Rust's `aarch64`/`x86_64` arch names instead of the
-release artifact's `arm64`/`x64`. Workaround until v0.8.8:
+This was a v0.8.7 bug — the self-updater used Rust's `aarch64`/`x86_64`
+arch names instead of the release artifact's `arm64`/`x64`. Workaround
+until v0.8.8:
 
 ```bash
 npm i -g codesmith@latest
@@ -493,16 +497,24 @@ Cargo mirror setup in [Section 4](#4-install-via-cargo-any-tier-1-rust-target).
 ### `codesmith update` is blocked by GitHub from mainland China
 
 `codesmith update` normally contacts GitHub Releases for metadata and binary
-assets. On networks where GitHub is blocked or unreliable, use the CNB source
-mirror instead and install both binaries from the release tag:
+assets. On networks where GitHub is blocked or unreliable, use one of these
+paths instead (to check the latest release without downloading or replacing
+binaries, run `codesmith update --check`):
 
-To check the latest release without downloading or replacing binaries, run
-`codesmith update --check`.
+- Install from crates.io — the registry is reachable through the Cargo
+  mirrors configured in Step 2 and needs no GitHub access:
 
 ```bash
-cargo install --git https://cnb.cool/codesmith.net/codesmith --tag vX.Y.Z codesmith-cli --locked --force
-cargo install --git https://cnb.cool/codesmith.net/codesmith --tag vX.Y.Z codesmith-tui     --locked --force
+cargo install codesmith-cli --locked
+cargo install codesmith-tui     --locked
 ```
+
+- Or point `codesmith update` at a mirrored release-asset directory, as
+  shown below.
+
+The former CNB source mirror (`https://cnb.cool/codesmith.net/codesmith.git`)
+is no longer synced and its copy may be missing or stale — do not install
+from it.
 
 If you operate a binary asset mirror, `codesmith update` can use it directly:
 

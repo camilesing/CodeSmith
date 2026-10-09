@@ -1,12 +1,13 @@
- # 提供商注册表
+# 提供商注册表
 
 本注册表描述已接入当前 CodeSmith 代码库的提供商行为。它刻意保持保守：
 已交付的条目仅限于代码已知的提供商 ID、配置键、认证路径、base URL、
 模型解析和能力元数据。
 
-DeepSeek 仍然是一等默认提供商。NVIDIA NIM、OpenRouter、
-Volcengine Ark、Xiaomi MiMo、Novita、Fireworks、SiliconFlow、通用
-OpenAI 兼容端点、自托管运行时以及 Moonshot/Kimi 是附加路由，
+DeepSeek 仍然是一等默认提供商。Anthropic Claude、NVIDIA NIM、
+OpenRouter、Volcengine Ark、Xiaomi MiMo、Novita、Fireworks、
+SiliconFlow、通用 OpenAI 兼容端点、自托管运行时以及 Moonshot/Kimi
+是附加路由，
 用于让同一终端框架对接其他托管或本地模型端点。Hugging Face Inference
 Providers 是规划中的附加开源模型路由层；它们在当前检出中还不是原生
 提供商。
@@ -14,7 +15,9 @@ Providers 是规划中的附加开源模型路由层；它们在当前检出中�
 需要保持同步的来源：
 
 - `crates/config/src/lib.rs` - 共享的提供商 ID、默认值、环境变量优先级。
-- `crates/tui/src/config.rs` - TUI 提供商 ID、提供商能力元数据
+- `crates/agent-runtime/src/config_types.rs` - 活跃 TUI `ApiProvider` ID
+  （已从 `crates/tui/src/config.rs` 移出，后者现在仅重新导出）。
+- `crates/tui/src/config.rs` - 提供商能力元数据
   以及提供商特定的环境变量处理。
 - `crates/agent/src/lib.rs` - 供 `codesmith model list` 和
   `codesmith model resolve` 使用的静态 `ModelRegistry`。
@@ -27,9 +30,9 @@ Providers 是规划中的附加开源模型路由层；它们在当前检出中�
 
 规范的提供商 ID 为：
 
-`deepseek`、`nvidia-nim`、`openai`、`atlascloud`、`wanjie-ark`、`volcengine`、
-`openrouter`、`xiaomi-mimo`、`novita`、`fireworks`、`siliconflow`、`moonshot`、
-`sglang`、`vllm` 和 `ollama`。
+`deepseek`、`anthropic`、`nvidia-nim`、`openai`、`atlascloud`、
+`wanjie-ark`、`volcengine`、`openrouter`、`xiaomi-mimo`、`novita`、
+`fireworks`、`siliconflow`、`moonshot`、`sglang`、`vllm` 和 `ollama`。
 
 使用以下任一入口选择提供商：
 
@@ -111,6 +114,7 @@ model = "your-deepseek-compatible-model"
 | 提供商 ID | TOML 表 | 认证环境变量 | Base URL 环境变量与默认值 | 默认或静态模型 | 备注 |
 | --- | --- | --- | --- | --- | --- |
 | `deepseek` | `[providers.deepseek]` | `DEEPSEEK_API_KEY` | `CODESMITH_BASE_URL`；默认 `https://api.deepseek.com/beta` | `deepseek-v4-pro`、`deepseek-v4-flash`；兼容别名 `deepseek-chat`、`deepseek-reasoner` | 一等默认提供商。Beta URL 启用 strict tool mode、chat prefix completion 和 FIM completion。显式设置 `https://api.deepseek.com` 或 `/v1` 可退出仅限 beta 的功能。 |
+| `anthropic` | `[providers.anthropic]` | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL`；默认 `https://api.anthropic.com/v1` | `claude-sonnet-4-5` | Anthropic Claude 路由。接受 `claude`、`anthropic-claude` 和 `claude-ai` 作为提供商别名。 |
 | `nvidia-nim` | `[providers.nvidia_nim]` | `NVIDIA_API_KEY`、`NVIDIA_NIM_API_KEY`、回退 `DEEPSEEK_API_KEY` | `NVIDIA_NIM_BASE_URL`、`NIM_BASE_URL`、`NVIDIA_BASE_URL`；默认 `https://integrate.api.nvidia.com/v1` | `deepseek-ai/deepseek-v4-pro`、`deepseek-ai/deepseek-v4-flash` | 通过 NVIDIA NIM 托管的 DeepSeek V4。TUI 配置路径接受 `NVIDIA_NIM_MODEL`。 |
 | `openai` | `[providers.openai]` | `OPENAI_API_KEY` | `OPENAI_BASE_URL`；默认 `https://api.openai.com/v1` | 注册表条目：`gpt-5`、`deepseek-v4-pro`、`deepseek-v4-flash`；默认配置模型 `gpt-5` | 用于网关和自定义端点的通用 OpenAI 兼容路由。对显式的第三方 OpenAI 兼容路由请使用它，而不是发明新的提供商 ID。接受 `OPENAI_MODEL`。自定义 `OPENAI_BASE_URL` 若未指定显式模型，会在启动时快速失败。 |
 | `atlascloud` | `[providers.atlascloud]` | `ATLASCLOUD_API_KEY` | `ATLASCLOUD_BASE_URL`；默认 `https://api.atlascloud.ai/v1` | `deepseek-ai/deepseek-v4-flash`、`deepseek-ai/deepseek-v4-pro` | OpenAI 兼容的托管路由。TUI 配置路径接受 `ATLASCLOUD_MODEL`，静态 `ModelRegistry` 中包含用于 CLI 模型解析的 AtlasCloud 回退行。 |
@@ -222,8 +226,8 @@ python3 scripts/check-provider-registry.py
 检查在以下情况失败：
 
 - `docs/PROVIDERS.md` 遗漏了规范的 `ProviderKind::as_str()` ID。
-- `crates/tui/src/config.rs` 的 `ApiProvider::as_str()` 与
-  `ProviderKind::as_str()` 不一致（显式的 `deepseek-cn` 旧版别名除外）。
+- `crates/agent-runtime/src/config_types.rs` 的 `ApiProvider::as_str()` 与
+  `ProviderKind::as_str()` 不一致。
 - 已交付提供商表遗漏或新增了 `[providers.*]` TOML 表。
 - 静态模型注册表表与 `crates/agent/src/lib.rs` 使用的
   提供商发生漂移。
@@ -252,3 +256,62 @@ python3 scripts/check-provider-registry.py
 提供商访问显式配置的 Hugging Face 兼容 OpenAI 路由。这是一条
 用户显式选择的路由，不是内置的 Hub 发现，
 也不是 DeepSeek 的替代品。
+
+## 示例设置命令
+
+```bash
+# NVIDIA NIM
+codesmith auth set --provider nvidia-nim --api-key "YOUR_NVIDIA_API_KEY"
+codesmith --provider nvidia-nim
+
+# AtlasCloud
+codesmith auth set --provider atlascloud --api-key "YOUR_ATLASCLOUD_API_KEY"
+codesmith --provider atlascloud
+
+# Wanjie Ark
+codesmith auth set --provider wanjie-ark --api-key "YOUR_WANJIE_API_KEY"
+codesmith --provider wanjie-ark --model deepseek-reasoner
+
+# OpenRouter
+codesmith auth set --provider openrouter --api-key "YOUR_OPENROUTER_API_KEY"
+codesmith --provider openrouter --model deepseek/deepseek-v4-pro
+codesmith --provider openrouter --model arcee-ai/trinity-large-thinking
+codesmith --provider openrouter --model qwen/qwen3.7-max
+
+# Xiaomi MiMo
+codesmith auth set --provider xiaomi-mimo --api-key "YOUR_XIAOMI_KEY"
+codesmith --provider xiaomi-mimo --model mimo-v2.5-pro
+
+# Novita
+codesmith auth set --provider novita --api-key "YOUR_NOVITA_API_KEY"
+codesmith --provider novita --model deepseek/deepseek-v4-pro
+
+# Fireworks
+codesmith auth set --provider fireworks --api-key "YOUR_FIREWORKS_API_KEY"
+codesmith --provider fireworks --model deepseek-v4-pro
+
+# SiliconFlow
+codesmith auth set --provider siliconflow --api-key "YOUR_SILICONFLOW_API_KEY"
+codesmith --provider siliconflow --model deepseek-ai/DeepSeek-V4-Pro
+
+# Generic OpenAI-compatible endpoint
+codesmith auth set --provider openai --api-key "YOUR_OPENAI_COMPATIBLE_API_KEY"
+OPENAI_BASE_URL="https://openai-compatible.example/v4" codesmith --provider openai --model glm-5
+
+# Custom DeepSeek-compatible endpoint
+CODESMITH_BASE_URL="https://your-provider.example/v1" \
+  CODESMITH_MODEL="deepseek-ai/DeepSeek-V4-Pro" \
+  codesmith --provider deepseek
+
+# Self-hosted SGLang
+SGLANG_BASE_URL="http://localhost:30000/v1" codesmith --provider sglang --model deepseek-v4-flash
+
+# Self-hosted vLLM
+VLLM_BASE_URL="http://localhost:8000/v1" codesmith --provider vllm --model deepseek-v4-flash
+# Trusted LAN vLLM over HTTP
+VLLM_BASE_URL="http://192.168.0.110:8000/v1" codesmith --provider vllm --model deepseek-v4-flash
+
+# Self-hosted Ollama
+ollama pull codesmith-coder:1.3b
+codesmith --provider ollama --model codesmith-coder:1.3b
+```

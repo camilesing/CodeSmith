@@ -143,7 +143,7 @@ cancelled records persist for inspection but don't occupy a slot.
 Agents that lost their `task_handle` (e.g. across a process
 restart) also don't count against the cap.
 
-## Per-step API timeout (#1806, #1808)
+## Per-step API timeout
 
 Each sub-agent step wraps its DeepSeek `create_message` call in a
 per-step timeout so a single stuck request can't pin the parent's
@@ -173,7 +173,7 @@ handle is gone — typically after a process restart that loaded the workspace's
 persisted state from `.codesmith/state/subagents.v1.json`. The parent can open a
 replacement session with the same assignment or treat it as a terminal state.
 
-### Session boundaries (#405)
+### Session boundaries
 
 Each `SubAgentManager` instance assigns itself a fresh `session_boot_id` on
 construction. Every new session stamps the agent with that id; the workspace
@@ -204,7 +204,7 @@ The exact format lives in `crates/agent-runtime/src/prompts/subagent_output_form
 The parent reads `EVIDENCE` as a working set for the next turn, so
 explorers and reviewers should be precise here.
 
-## Memory and the `remember` tool (#489)
+## Memory and the `remember` tool
 
 Sub-agents inherit the parent's memory file when memory is enabled
 (`[memory] enabled = true` or `CODESMITH_MEMORY=on`). They can
@@ -226,7 +226,7 @@ don't go through the standard write-approval flow.
   parent turn cancellation does not stop detached background sessions.
 - The `is_running` check ignores agents whose `task_handle` is
   `None`; this avoids counting persisted-but-detached records
-  toward the concurrency cap (#509).
+  toward the concurrency cap.
 - `SharedSubAgentManager` is `Arc<RwLock<...>>` — read paths use
   read locks so `/agents` and the sidebar projection don't block
-  the main loop during multi-agent fan-out (#510).
+  the main loop during multi-agent fan-out.

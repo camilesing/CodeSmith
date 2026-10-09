@@ -135,7 +135,7 @@ change, and every `ExtensionEventKind` declares its dispatch mode
 
 ### LLM Integration
 
-- **`crates/agent/src/llm_client.rs`** - Abstract `LlmClient` trait with retry logic (`LlmClientHandle`, `with_retry`)
+- **`crates/agent/src/llm_client/`** - Abstract `LlmClient` trait with retry logic (`LlmClientHandle`, `with_retry`)
 - **`crates/agent/src/models.rs`** - Data structures for API requests/responses (including `ContentBlock` / `ImageSource` wire types)
 - **`crates/providers/`** - Concrete provider clients (openai-compat, anthropic, mock) plus the `rig_adapter` request shaper; the TUI resolves the active client through the provider registry (`default_registry`)
 
@@ -184,7 +184,7 @@ Tool implementations are split between the TUI (host-coupled tools) and
 
 ### LSP Integration
 
-- **`lsp/`** - Post-edit diagnostics injection (#136)
+- **`lsp/`** - Post-edit diagnostics injection
   - `mod.rs` - `LspManager` — lazy per-language transport pool + config
   - `client.rs` - `StdioLspTransport` — JSON-RPC over stdio with `didOpen`/`didChange`/`publishDiagnostics`
   - `diagnostics.rs` - Diagnostic types, severity, and HTML-block renderer
@@ -232,7 +232,7 @@ Tool implementations are split between the TUI (host-coupled tools) and
 
 1. User input received in TUI
 2. Input processed by the engine (`crates/agent-runtime/src/engine/mod.rs`)
-3. Message sent to LLM via the `LlmClient` trait (`crates/agent/src/llm_client.rs`, provider client from `crates/providers`)
+3. Message sent to LLM via the `LlmClient` trait (`crates/agent/src/llm_client/`, provider client from `crates/providers`)
 4. Response streamed back through the stream reducer (`engine/turn/stream.rs`)
 5. Tool calls extracted and executed via `tools/`
 6. Hooks triggered before/after tool execution
@@ -337,7 +337,7 @@ command = "echo 'Running tool: $TOOL_NAME'"
    platform matrix).
 5. **Minimal dependencies**: Careful dependency selection for build speed
 6. **Local-first runtime API**: HTTP/SSE endpoints are intended for trusted localhost access and are served by the `crates/tui` runtime today
-7. **Three-zone prompt contract (#2264)**: every request is divided into a
+7. **Three-zone prompt contract**: every request is divided into a
    `PinnedPrefix` (system prompt + tool catalog, fingerprinted per step by
    `prompt_zones::PinnedPrefix::freeze` and drift-checked by
    `prefix_cache::PrefixStabilityManager`), an `AppendLog` (the `Session`

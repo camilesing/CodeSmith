@@ -41,6 +41,25 @@ macOS workbench (or any local supervisor)
 请使用 `codesmith serve --http`，当其他客户端需要将 CodeSmith 的工具
 作为 MCP 工具使用时请使用 `codesmith serve --mcp`。
 
+在 Zed 中添加自定义 agent 服务器：
+
+```json
+{
+  "agent_servers": {
+    "CodeSmith": {
+      "type": "custom",
+      "command": "codesmith",
+      "args": ["serve", "--acp"],
+      "env": {}
+    }
+  }
+}
+```
+
+社区维护的适配器：[acp-codesmith-adapter](https://github.com/rockeverm3m/acp-codesmith-adapter)
+将 `codesmith exec --auto` 桥接到 `cc-connect`，适合需要在内置 Zed
+切片之外使用带工具 ACP 工作流的用户。
+
 ## 能力端点：`codesmith doctor --json`
 
 返回一个描述当前安装就绪状态的 JSON 对象。
@@ -186,11 +205,11 @@ URL。传入 `--host 127.0.0.1` 可将移动页限制为仅环回访问。如果
 
 `archived_only=true` 仅返回已归档线程（与
 `include_archived` 互斥覆盖）。默认行为不变：`include_archived=false`
-且 `archived_only=false` 返回活动线程。在 v0.8.10（#563）中添加。
+且 `archived_only=false` 返回活动线程。在 v0.8.10中添加。
 
 `PATCH /v1/threads/{id}` 请求体 —— 每个字段都是可选的，缺失表示
 "无变更"。至少必须存在一个字段。`title` 和 `system_prompt`
-接受空字符串以清除先前设置的值。在 v0.8.10（#562）中添加：
+接受空字符串以清除先前设置的值。在 v0.8.10中添加：
 
 ```json
 {
@@ -251,7 +270,7 @@ URL。传入 `--host 127.0.0.1` 可将移动页限制为仅环回访问。如果
 边界）。`group_by` 默认为 `day`。桶按键升序排序。
 空时间范围产生空的 `buckets`（绝不返回 404）。成本通过
 模型→定价映射计算；模型没有定价条目的 turn 贡献
-令牌但成本为 `0.0`。在 v0.8.10（#564）中添加。
+令牌但成本为 `0.0`。在 v0.8.10中添加。
 
 ```json
 {
@@ -387,7 +406,7 @@ URL。传入 `--host 127.0.0.1` 可将移动页限制为仅环回访问。如果
 
 用户提供的来源**叠加在**内置默认值之上；它们不会
 替换内置默认值。不支持通配符来源 —— 显式允许列表
-模型被保留。在 v0.8.10（#561）中添加。
+模型被保留。在 v0.8.10中添加。
 
 ## 会话生命周期（原生 UI 监督）
 

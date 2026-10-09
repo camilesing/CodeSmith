@@ -60,10 +60,12 @@ cargo publish --dry-run --locked --allow-dirty -p codesmith-tui
 manifests, `npm/codesmith/package.json`, and `Cargo.lock` is caught before
 release time rather than at it.
 
-The source-controlled CNB pipeline mirrors the heavy Linux version/fmt/check/
-clippy/test/npm-smoke gates for `fix/*`, `rebrand/*`, `work/v*`, and `main`.
-GitHub Actions keeps the cheap drift/fmt statuses plus macOS and Windows
-coverage, while CNB carries the Linux work.
+Linux gates currently have **no CI carrier**. The GitHub test job skips its
+Linux clippy/test steps (they were written for a CNB mirror lane that never
+operated — see "CNB Cool mirror" below), so re-enable them in
+`.github/workflows/ci.yml` before relying on Linux test coverage. GitHub
+Actions today carries the drift/fmt statuses plus macOS and Windows
+coverage.
 
 `publish-crates.sh dry-run` performs a full `cargo publish --dry-run` for crates
 without unpublished workspace dependencies and a packaging preflight for dependent
@@ -95,8 +97,9 @@ CODESMITH_VERSION=X.Y.Z CODESMITH_RELEASE_BASE_URL=http://127.0.0.1:8123/ npm ru
 
 Set `CODESMITH_VERSION` to the npm package version you are verifying for that local run.
 
-The CNB workflow runs the Linux tarball install + delegated-entrypoint smoke
-test; GitHub Actions keeps macOS and Windows smoke coverage.
+The Linux tarball install + delegated-entrypoint smoke test likewise has no
+CI carrier (the CNB lane meant to run it never operated); GitHub Actions
+keeps macOS and Windows smoke coverage.
 
 After publishing, prove the release is visible in both registries:
 

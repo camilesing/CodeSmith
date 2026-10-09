@@ -54,7 +54,7 @@ preset = "experiment"  # 全部开启，含预览特性与侵入式机制
 5. requirements 校验（`requirements_path`，默认
    `/etc/codesmith/requirements.toml`），可在启动时拒绝最终结果
 
-### 按项目叠加（#485）
+### 按项目叠加
 
 当 TUI 在包含 `<workspace>/.codesmith/config.toml` 文件的工作区中启动时，
 该文件中声明的值会合并到全局配置之上。overlay 只在工作区通过启动
@@ -83,7 +83,7 @@ preset = "experiment"  # 全部开启，含预览特性与侵入式机制
 文件读取应用同样的规则，并额外接受项目文件中的 `output_mode`、
 `log_level`、`[tools]` 表以及各 provider 的 `model` 覆盖。
 
-项目作用域中被拒绝的键（#417）：`provider`、`api_key`、`base_url` 和
+项目作用域中被拒绝的键：`provider`、`api_key`、`base_url` 和
 `mcp_config_path` 会被忽略并在 stderr 给出警告。否则一个恶意项目文件
 可以通过替换用户的凭据和目标主机把提示词外传到仿冒端点，或让 MCP
 加载器指向一个以用户身份启动任意 stdio 服务器的配置。其余一切
@@ -227,7 +227,7 @@ base_url = "https://api.xiaomimimo.com/v1"
 `[utility_model]` 指定一个廉价/快速的次级 LLM 用于后台辅助，
 让主模型的预算花在实际对话上：
 
-- Workshop 大输出综合（#548）：超过 `large_output_threshold_tokens`
+- Workshop 大输出综合：超过 `large_output_threshold_tokens`
   阈值的工具结果由该模型压缩；只有综合结果进入父上下文，原始文本
   保留在 workshop 变量 `last_tool_result` 中（工具调用上设置
   `raw = true` 可绕过路由）
@@ -502,7 +502,7 @@ default_text_model = "codesmith-coder:1.3b"
   PEM 捆绑包（或单个 DER 证书），这些证书会被添加到平台系统信任库
   旁边。失败会记录警告并继续——现有的系统根证书仍然适用。
 
-### 指令来源（`instructions = [...]`，#454）
+### 指令来源（`instructions = [...]`）
 
 添加一组额外的系统提示词来源，它们会按声明顺序与自动加载的
 `AGENTS.md` 拼接在一起：
@@ -694,11 +694,11 @@ codesmith 还将用户偏好存储在：
 ### 附属文件
 
 - `~/.codesmith/tui.toml` — 与代理/项目配置解耦的 TUI 专属偏好，
-  因此切换项目后仍然保留（#437）：`theme`（默认 `"dark"`）、
+  因此切换项目后仍然保留：`theme`（默认 `"dark"`）、
   `font_size`（`0` = 终端默认，转发给支持的前端）、以及 `[keybinds]`
   按键覆盖，如 `submit = "ctrl+enter"` / `new_line = "enter"`。文件
   缺失时回退到 `config.toml` 的 `[tui]` 节，再回退到内置默认值。
-  注意：加载器已定义但尚未接入启动流程（#657）——目前编辑该文件
+  注意：加载器已定义但尚未接入启动流程——目前编辑该文件
   不产生效果。
 - `providers.toml` — 内置 provider 清单（每个 provider 一条：id、
   backend、base URL、默认模型），进程内只读一次。可用
@@ -999,7 +999,7 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   （先检测 `$TERM_PROGRAM`，再检测 `$LC_TERMINAL`）解析为 `osc9`。
   否则回退为 macOS / Linux 上的 `bel` 和 Windows 上的 `off`（在
   Windows 上 BEL 会映射为系统错误提示音——完整原因请参阅
-  [通知](#通知)小节，#583）。`kitty` 和 `ghostty` 分别显式选择
+  [通知](#通知)小节）。`kitty` 和 `ghostty` 分别显式选择
   Kitty OSC 99 和 Ghostty OSC 777 通知协议。
 - `[notifications].threshold_secs`（整数，可选）：默认为 `30`。
   只有耗时达到或超过该值的已完成轮次才会触发通知。
@@ -1016,7 +1016,7 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   激活时的 Windows Terminal/ConEmu/Cmder 上默认为 `true`；在旧版
   Windows 控制台和 JetBrains JediTerm 内——PyCharm/IDEA/CLion 等——
   默认为 `false`，因为在这些环境中鼠标事件转义序列会以乱码文本的
-  形式泄漏到输入流中，参见 #878 / #898）：启用内部鼠标滚动、会话
+  形式泄漏到输入流中）：启用内部鼠标滚动、会话
   记录选择、右键上下文操作以及会话记录滚动条拖动。TUI 拥有的拖动
   选择只复制会话记录文本，移除段落中因视觉换行产生的换行符，并使
   选区限定在会话记录窗格内。将其设为 `false` 或使用
@@ -1046,7 +1046,7 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
 - `tui.composer_arrows_scroll`（布尔，可选）：空输入框上的普通
   Up/Down 滚动会话记录而不是召回输入历史——对把滚轮手势映射为
   方向键的终端有用。仅在鼠标捕获关闭时默认 `true`，否则 `false`。
-- `network.*`（可选）：按域名的出站网络策略（#135），管
+- `network.*`（可选）：按域名的出站网络策略，管
   `fetch_url`、`web_search` 和 MCP HTTP 调用：
   - `[network].default`（`"allow"` | `"deny"` | `"prompt"`，默认
     `prompt`）——不在 allow/deny 列表中的主机的决策
@@ -1059,12 +1059,12 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   表缺失时，运行时应用同样的 `prompt` 默认（首次调用未批准主机
   会弹出标准审批提示），而不是静默放行所有主机；YOLO 会话照常
   自动批准。
-- `skills.*`（可选）：社区技能安装器（#140）：
+- `skills.*`（可选）：社区技能安装器：
   - `[skills].registry_url`——`/skill install <name>` 查询的精选
     registry 索引；默认为内置 registry
   - `[skills].max_install_size_bytes`——单个技能的最大未压缩体积
     （默认 5 MiB）；超限的 tarball 在校验期间被拒绝
-- `lsp.*`（可选）：编辑后 LSP 诊断注入（#136）。表缺失时：启用、
+- `lsp.*`（可选）：编辑后 LSP 诊断注入。表缺失时：启用、
   5 秒轮询、每文件 20 条诊断、仅错误：
   - `[lsp].enabled`（布尔，默认 `true`）
   - `[lsp].poll_after_edit_ms`（整数，默认 `5000`）——`didOpen`/
@@ -1075,7 +1075,7 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
     `rust = ["rust-analyzer"]`），覆盖内置服务器命令（rust →
     rust-analyzer、go → gopls、python → pyright、ts →
     typescript-language-server、java → jdtls 等）
-- `auto.*`（可选）：`--model auto` 路由器调优（#1207）：
+- `auto.*`（可选）：`--model auto` 路由器调优：
   - `[auto].cost_saving`（布尔，默认 `false`）——让路由偏向
     flash 级模型以节省成本
 - `automations.*`（可选）：计划自动化运行（`/automations`）的边界。
@@ -1084,7 +1084,7 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   - `[automations].max_steps`（整数，默认 `100`）——计划运行每回合
     的步数上限。交互式引擎默认值实际不设限；仅当某个自动化确实需要
     更长的回合时才调高。
-- `workshop.*`（可选）：大工具输出路由（#548）。超过阈值的工具
+- `workshop.*`（可选）：大工具输出路由。超过阈值的工具
   结果由 `[utility_model]` 模型压缩；只有综合结果进入父上下文，
   原文保留在 workshop 变量 `last_tool_result` 中（工具调用上设置
   `raw = true` 可绕过路由）：
@@ -1167,7 +1167,7 @@ include_summary = false   # include elapsed time + cost in the notification body
   `bel`。**在 Windows 上回退为 `off`** 而不是 `bel`，因为 Windows
   音频栈会把 `\x07` 映射为 `SystemAsterisk` / `MB_OK` 提示音——与
   应用错误弹窗使用的声音相同，因此成功轮次的通知听起来会像错误
-  （#583）。
+ 。
 - `osc9` —— 发出 `\x1b]9;<msg>\x07`。在 tmux 内该序列会被包装在
   DCS passthrough 中，以便到达外层终端。
 - `bel` —— 发出单个 `\x07` 字节。在 Windows 上只有当你确实想要恢复
@@ -1408,4 +1408,4 @@ codesmith 仅通过 API 工具通道（结构化的 `tool_use` / `tool_call` 项
 文本中清除，而绝不会把它们变成结构化工具调用。当包装器被剥离时，
 循环会在该轮发出一条紧凑的 `status` 通知，让用户明白为什么可见文本
 变少了。任何重新启用基于文本的工具执行的更改都应视为回归；
-`crates/tui/tests/protocol_recovery.rs` 中的协议恢复测试锁定了该契约。
+`crates/agent-runtime/tests/protocol_recovery.rs` 中的协议恢复测试锁定了该契约。

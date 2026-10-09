@@ -56,7 +56,7 @@ Consolidated resolution order (highest first):
    `/etc/codesmith/requirements.toml`), which can reject the final result
    at startup
 
-### Per-project overlay (#485)
+### Per-project overlay
 
 When the TUI starts in a workspace that contains a
 `<workspace>/.codesmith/config.toml` file, the values declared in that
@@ -89,7 +89,7 @@ facade applies the same rules to its own file reads and additionally
 honours `output_mode`, `log_level`, the `[tools]` table, and per-provider
 `model` overrides from the project file.
 
-Denied at project scope (#417): `provider`, `api_key`, `base_url`, and
+Denied at project scope: `provider`, `api_key`, `base_url`, and
 `mcp_config_path` are ignored with a stderr warning. A malicious project
 file could otherwise exfiltrate prompts to a look-alike endpoint by
 swapping the user's credentials and target host, or point the MCP loader
@@ -242,7 +242,7 @@ base_url = "https://api.xiaomimimo.com/v1"
 `[utility_model]` designates a cheap/fast secondary LLM for background
 assists so the main model's budget is spent on the actual conversation:
 
-- Workshop large-output synthesis (#548): tool results above the
+- Workshop large-output synthesis: tool results above the
   `large_output_threshold_tokens` threshold are condensed by this model;
   only the synthesis enters the parent context, the raw text is kept in
   the workshop variable `last_tool_result` (`raw = true` on a tool call
@@ -527,7 +527,7 @@ Remaining app-level variables:
   log a warning and continue — the existing system roots still
   apply.
 
-### Instruction sources (`instructions = [...]`, #454)
+### Instruction sources (`instructions = [...]`)
 
 Add a list of additional system-prompt sources that get
 concatenated, in declared order, alongside the auto-loaded
@@ -743,13 +743,13 @@ Common settings keys:
 ### Companion files
 
 - `~/.codesmith/tui.toml` — TUI-only preferences decoupled from agent and
-  project config so they survive project switches (#437): `theme`
+  project config so they survive project switches: `theme`
   (default `"dark"`), `font_size` (`0` = terminal default, forwarded to
   supporting front-ends), and `[keybinds]` chord overrides such as
   `submit = "ctrl+enter"` / `new_line = "enter"`. When the file is
   absent, values fall back to the `[tui]` section of `config.toml` and
   then to built-in defaults. Note: the loader is defined but not yet
-  wired into startup (#657) — editing this file has no effect yet.
+  wired into startup — editing this file has no effect yet.
 - `providers.toml` — the bundled builtin-provider manifest (one entry per
   provider: id, backend, base URL, default model), read once per
   process. Override its path with `CODESMITH_PROVIDERS_MANIFEST` to test
@@ -1092,7 +1092,7 @@ If you are upgrading from older releases:
   `$TERM_PROGRAM`, then `$LC_TERMINAL`). Otherwise the fallback is
   `bel` on macOS / Linux and `off` on Windows (where BEL maps to the
   system error chime — see the [Notifications](#notifications) section
-  for the full rationale, #583). `kitty` and `ghostty` select the
+  for the full rationale). `kitty` and `ghostty` select the
   Kitty OSC 99 and Ghostty OSC 777 notification protocols explicitly.
 - `[notifications].threshold_secs` (int, optional): defaults to `30`.
   Only completed turns whose elapsed time meets or exceeds this fire a
@@ -1105,7 +1105,7 @@ If you are upgrading from older releases:
   alongside the ✅ marker. `beep` uses the system notification sound
   (`MessageBeep` on Windows); `bell` emits a `\x07` byte.
 - `tui.alternate_screen` (string, optional): `auto`, `always`, or `never`. This is retained for config compatibility, but interactive sessions now always use the TUI-owned alternate screen so host terminal scrollback cannot hijack the viewport.
-- `tui.mouse_capture` (bool, optional, default `true` on non-Windows terminals and on Windows Terminal/ConEmu/Cmder when the alternate screen is active; `false` on legacy Windows console and inside JetBrains JediTerm — PyCharm/IDEA/CLion/etc. — where mouse-event escapes leak into the input stream as garbled text, see #878 / #898): enable internal mouse scrolling, transcript selection, right-click context actions, and transcript scrollbar dragging. TUI-owned drag selection copies only transcript text, removes visual wrap-column line breaks from paragraphs, and keeps selection scoped to the transcript pane. Set this to `false` or run with `--no-mouse-capture` for raw terminal selection; set it to `true` or run with `--mouse-capture` to opt in anywhere it's defaulted off. On raw terminal selection, especially on legacy Windows console or when mouse capture is disabled, selection may cross the right sidebar and include visual wraps because the terminal, not the TUI, owns the selection.
+- `tui.mouse_capture` (bool, optional, default `true` on non-Windows terminals and on Windows Terminal/ConEmu/Cmder when the alternate screen is active; `false` on legacy Windows console and inside JetBrains JediTerm — PyCharm/IDEA/CLion/etc. — where mouse-event escapes leak into the input stream as garbled text): enable internal mouse scrolling, transcript selection, right-click context actions, and transcript scrollbar dragging. TUI-owned drag selection copies only transcript text, removes visual wrap-column line breaks from paragraphs, and keeps selection scoped to the transcript pane. Set this to `false` or run with `--no-mouse-capture` for raw terminal selection; set it to `true` or run with `--mouse-capture` to opt in anywhere it's defaulted off. On raw terminal selection, especially on legacy Windows console or when mouse capture is disabled, selection may cross the right sidebar and include visual wraps because the terminal, not the TUI, owns the selection.
 - `tui.terminal_probe_timeout_ms` (int, optional, default `500`): startup terminal-mode probe timeout in milliseconds. Values are clamped to `100..=5000`; timeout emits a warning and aborts startup instead of hanging indefinitely.
 - `tui.osc8_links` (bool, optional, default `true`): emit OSC 8 escape sequences around URLs in transcript output so terminals that support them (iTerm2, Terminal.app 13+, Ghostty, Kitty, WezTerm, Alacritty, recent gnome-terminal/konsole) render them as Cmd+click hyperlinks. Terminals without OSC 8 support render the plain URL and ignore the escape. Set `false` for terminals that misrender the sequence; selection/clipboard output always strips the escapes.
 - `tui.status_items` (array, optional): ordered footer items. Absent means
@@ -1124,7 +1124,7 @@ If you are upgrading from older releases:
   composer scroll the transcript instead of recalling input history —
   useful for terminals that map mouse-wheel gestures to arrow keys.
   Defaults to `true` only when mouse capture is off, otherwise `false`.
-- `network.*` (optional): per-domain outbound network policy (#135)
+- `network.*` (optional): per-domain outbound network policy
   governing `fetch_url`, `web_search`, and MCP HTTP calls:
   - `[network].default` (`"allow"` | `"deny"` | `"prompt"`, default
     `prompt`) — decision for hosts not in the allow/deny lists
@@ -1139,12 +1139,12 @@ If you are upgrading from older releases:
   (the first call to an unapproved host raises the standard approval
   prompt) instead of silently allowing every host; YOLO sessions
   auto-approve as usual.
-- `skills.*` (optional): community skill installer (#140):
+- `skills.*` (optional): community skill installer:
   - `[skills].registry_url` — curated registry index consulted by
     `/skill install <name>`; defaults to the bundled registry
   - `[skills].max_install_size_bytes` — per-skill maximum uncompressed
     size (default 5 MiB); larger tarballs are rejected during validation
-- `lsp.*` (optional): post-edit LSP diagnostics injection (#136). When
+- `lsp.*` (optional): post-edit LSP diagnostics injection. When
   the table is absent: enabled, 5 s poll, 20 diagnostics per file,
   errors only:
   - `[lsp].enabled` (bool, default `true`)
@@ -1156,7 +1156,7 @@ If you are upgrading from older releases:
     `rust = ["rust-analyzer"]`) overriding the built-in server commands
     (rust → rust-analyzer, go → gopls, python → pyright, ts →
     typescript-language-server, java → jdtls, …)
-- `auto.*` (optional): `--model auto` router tuning (#1207):
+- `auto.*` (optional): `--model auto` router tuning:
   - `[auto].cost_saving` (bool, default `false`) — full cheap-routing
     opt-in: the router classifier runs on the `[utility_model]` cheap brain
     and ambiguous requests resolve to the light tier. Default (`false`)
@@ -1178,7 +1178,7 @@ If you are upgrading from older releases:
     scheduled runs. The interactive engine default is effectively
     unlimited; raise this only if an automation legitimately needs longer
     turns.
-- `workshop.*` (optional): large-tool-output routing (#548). Tool results
+- `workshop.*` (optional): large-tool-output routing. Tool results
   above the threshold are condensed by the `[utility_model]` model; only
   the synthesis enters the parent context while the raw text is kept in
   the workshop variable `last_tool_result` (`raw = true` on a tool call
@@ -1260,7 +1260,7 @@ include_summary = false   # include elapsed time + cost in the notification body
 
 Method semantics:
 
-- `auto` (default) — picks `osc9` for `iTerm.app`, `Ghostty`, and `WezTerm` (detected via `$TERM_PROGRAM`). On macOS and Linux it falls back to `bel`. **On Windows the fallback is `off`** instead of `bel`, because the Windows audio stack maps `\x07` to the `SystemAsterisk` / `MB_OK` chime — the same sound application error popups use, so a successful-turn notification ends up sounding like an error (#583).
+- `auto` (default) — picks `osc9` for `iTerm.app`, `Ghostty`, and `WezTerm` (detected via `$TERM_PROGRAM`). On macOS and Linux it falls back to `bel`. **On Windows the fallback is `off`** instead of `bel`, because the Windows audio stack maps `\x07` to the `SystemAsterisk` / `MB_OK` chime — the same sound application error popups use, so a successful-turn notification ends up sounding like an error.
 - `osc9` — emit `\x1b]9;<msg>\x07`. Inside tmux the sequence is wrapped in DCS passthrough so it reaches the outer terminal.
 - `bel` — emit a single `\x07` byte. Use this on Windows only if you actively want the chime back.
 - `off` — disable post-turn notifications entirely.
@@ -1516,4 +1516,4 @@ turning them into structured tool calls. When a wrapper is stripped, the loop
 emits one compact `status` notice per turn so the user can see why their
 visible text shrank. Treat any change that re-enables text-based tool
 execution as a regression; the protocol-recovery tests in
-`crates/tui/tests/protocol_recovery.rs` lock the contract.
+`crates/agent-runtime/tests/protocol_recovery.rs` lock the contract.

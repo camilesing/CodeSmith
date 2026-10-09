@@ -1,5 +1,12 @@
 # CodeSmith Review Pipeline
 
+> **Retired (frozen 2026-10).** The community-PR pipeline described here —
+> review bots, the `autonomous-ready` merge queue, post-merge automation —
+> belonged to the upstream project; the workflows do not exist in this
+> repository, and PR/issue review workflows are disabled by founder
+> decision. How a contribution actually lands today is documented in
+> [../../CONTRIBUTING.md](../../CONTRIBUTING.md).
+
 Welcome to CodeSmith! We receive a high volume of community PRs. To ensure a smooth and fast review process, please review our pipeline expectations below.
 
 ## 1. CI Gates (Pre-Review Checklist)

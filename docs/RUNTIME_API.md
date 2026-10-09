@@ -202,11 +202,11 @@ complete tree.
 
 `archived_only=true` returns archived threads only (mutually overrides
 `include_archived`). Default behavior is unchanged: `include_archived=false`
-and `archived_only=false` returns active threads. Added in v0.8.10 (#563).
+and `archived_only=false` returns active threads. Added in v0.8.10.
 
 `PATCH /v1/threads/{id}` body — every field is optional, missing means
 "no change". At least one field must be present. `title` and `system_prompt`
-accept an empty string to clear a previously-set value. Added in v0.8.10 (#562):
+accept an empty string to clear a previously-set value. Added in v0.8.10:
 
 ```json
 {
@@ -267,7 +267,7 @@ accept an empty string to clear a previously-set value. Added in v0.8.10 (#562):
 bound). `group_by` defaults to `day`. Buckets are sorted by ascending key.
 Empty time ranges produce empty `buckets` (never a 404). Cost is computed via
 the model→pricing map; turns whose model has no pricing entry contribute
-tokens but `0.0` cost. Added in v0.8.10 (#564).
+tokens but `0.0` cost. Added in v0.8.10.
 
 ```json
 {
@@ -404,7 +404,7 @@ when developing a UI on Vite's default `:5173`), use any of:
 
 User-supplied origins **stack on top of** the built-in defaults; they do not
 replace them. Wildcard origins are not supported — the explicit allow-list
-model is preserved. Added in v0.8.10 (#561).
+model is preserved. Added in v0.8.10.
 
 ## Session lifecycle (native UI supervision)
 

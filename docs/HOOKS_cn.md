@@ -5,8 +5,7 @@ CodeSmith 可以在代理生命周期的明确定义节点上运行你的 shell 
 以及上下文压缩（compaction）前后。钩子可用于审计日志、通知、临时凭据
 注入和提交前文本转换。
 
-钩子配置在 `~/.codesmith/config.toml` 的 `[hooks]` 表下（旧版
-`~/.codesmith/config.toml` 也会被解析）。项目级
+钩子配置在 `~/.codesmith/config.toml` 的 `[hooks]` 表下。项目级
 `<workspace>/.codesmith/config.toml` 可以携带自己的 `[hooks]` 表——
 存在时它会**整体替换**用户级表，而不是合并（与 `instructions` 的规则
 相同）。如果两者都要，请在项目表内再次列出全局钩子。
