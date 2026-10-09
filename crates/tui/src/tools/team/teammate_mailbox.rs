@@ -6,7 +6,7 @@
 #![allow(clippy::suspicious_open_options)]
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use fd_lock::RwLock;
 use serde::{Deserialize, Serialize};
@@ -209,16 +209,18 @@ fn inbox_lock_path(agent_name: &str, team_name: &str) -> anyhow::Result<PathBuf>
     Ok(inbox_path(agent_name, team_name)?.with_extension("lock"))
 }
 
-/// Acquire exclusive flock on the inbox lock file. The guard holds the lock
-/// for the duration of the mutation operation (same pattern as TaskV2).
+/// Acquire flock on the inbox lock file. The guard holds the lock for the
+/// duration of the operation (same pattern as TaskV2). The handle is opened
+/// read-write because an exclusive (`write`) flock on Windows requires write
+/// access through the handle.
 fn acquire_inbox_lock(agent_name: &str, team_name: &str) -> anyhow::Result<RwLock<fs::File>> {
     let lock_path = inbox_lock_path(agent_name, team_name)?;
-    // Ensure lock file exists.
-    fs::OpenOptions::new()
+    let file = fs::OpenOptions::new()
         .create(true)
+        .read(true)
         .write(true)
+        .truncate(false)
         .open(&lock_path)?;
-    let file = fs::File::open(&lock_path)?;
     Ok(RwLock::new(file))
 }
 
@@ -228,6 +230,8 @@ pub fn read_mailbox(agent_name: &str, team_name: &str) -> anyhow::Result<Vec<Tea
     if !path.exists() {
         return Ok(Vec::new());
     }
+    let lock = acquire_inbox_lock(agent_name, team_name)?;
+    let _guard = lock.read()?;
     let json = fs::read_to_string(&path)?;
     let messages: Vec<TeammateMessage> = serde_json::from_str(&json)?;
     Ok(messages)
@@ -250,26 +254,21 @@ pub fn write_to_mailbox(
 ) -> anyhow::Result<()> {
     let path = inbox_path(recipient_name, team_name)?;
 
-    // Ensure inbox file exists.
-    if !path.exists() {
-        let parent = path.parent().unwrap();
+    if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
-        fs::write(&path, "[]")?;
     }
 
     // Acquire exclusive lock via separate .lock file.
     let mut lock = acquire_inbox_lock(recipient_name, team_name)?;
     let _guard = lock.write()?;
 
-    // Read current messages, append new one, write back.
-    let existing: Vec<TeammateMessage> = {
-        let content = fs::read_to_string(&path)?;
-        serde_json::from_str(&content).unwrap_or_default()
-    };
-    let mut updated = existing;
+    // Read current messages, append new one, write back. A corrupt inbox is
+    // quarantined instead of silently replaced — `unwrap_or_default` here
+    // used to drop every stored message on one bad read.
+    let mut updated = read_inbox_or_quarantine(&path);
     updated.push(message);
     let json = serde_json::to_string(&updated)?;
-    fs::write(&path, json)?;
+    write_inbox_atomic(&path, &json)?;
 
     Ok(())
 }
@@ -284,11 +283,7 @@ pub fn mark_messages_as_read(agent_name: &str, team_name: &str) -> anyhow::Resul
     let mut lock = acquire_inbox_lock(agent_name, team_name)?;
     let _guard = lock.write()?;
 
-    let existing: Vec<TeammateMessage> = {
-        let content = fs::read_to_string(&path)?;
-        serde_json::from_str(&content).unwrap_or_default()
-    };
-    let updated: Vec<TeammateMessage> = existing
+    let updated: Vec<TeammateMessage> = read_inbox_or_quarantine(&path)
         .into_iter()
         .map(|mut m| {
             m.read = true;
@@ -296,7 +291,7 @@ pub fn mark_messages_as_read(agent_name: &str, team_name: &str) -> anyhow::Resul
         })
         .collect();
     let json = serde_json::to_string(&updated)?;
-    fs::write(&path, json)?;
+    write_inbox_atomic(&path, &json)?;
 
     Ok(())
 }
@@ -305,10 +300,57 @@ pub fn mark_messages_as_read(agent_name: &str, team_name: &str) -> anyhow::Resul
 #[allow(dead_code)]
 pub fn clear_mailbox(agent_name: &str, team_name: &str) -> anyhow::Result<()> {
     let path = inbox_path(agent_name, team_name)?;
-    if path.exists() {
-        fs::write(&path, "[]")?;
+    if !path.exists() {
+        return Ok(());
     }
+    let mut lock = acquire_inbox_lock(agent_name, team_name)?;
+    let _guard = lock.write()?;
+    write_inbox_atomic(&path, "[]")?;
     Ok(())
+}
+
+/// Read the inbox JSON, or — when the file exists but cannot be parsed —
+/// move it aside (evidence preserved) and continue with an empty inbox.
+/// Must be called while holding the inbox write lock.
+fn read_inbox_or_quarantine(path: &Path) -> Vec<TeammateMessage> {
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(err) => {
+            crate::logging::warn(format!(
+                "teammate inbox unreadable ({}): {}",
+                err,
+                path.display()
+            ));
+            return Vec::new();
+        }
+    };
+    match serde_json::from_str(&content) {
+        Ok(messages) => messages,
+        Err(err) => {
+            let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
+            let quarantined = path.with_extension(format!("corrupt-{timestamp}.json"));
+            let quarantine_result = fs::rename(path, &quarantined);
+            crate::logging::warn(format!(
+                "teammate inbox corrupt ({err}); {} — continuing with an empty inbox at {}",
+                match &quarantine_result {
+                    Ok(()) => format!("quarantined to {}", quarantined.display()),
+                    Err(rename_err) => format!("quarantine failed: {rename_err}"),
+                },
+                path.display()
+            ));
+            Vec::new()
+        }
+    }
+}
+
+/// Write the inbox file atomically so an unlocked reader never observes a
+/// torn write. Must be called while holding the inbox write lock.
+fn write_inbox_atomic(path: &Path, json: &str) -> anyhow::Result<()> {
+    Ok(codesmith_agent_runtime::utils::write_atomic(
+        path,
+        json.as_bytes(),
+    )?)
 }
 
 #[cfg(test)]
@@ -422,6 +464,34 @@ mod tests {
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].text, "hello");
         assert_eq!(msgs[1].text, "world");
+    }
+
+    #[test]
+    fn write_to_mailbox_quarantines_corrupt_inbox_instead_of_wiping() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&make_team_file("mb-corrupt")).expect("team");
+
+        // Seed a valid inbox, then corrupt it the way a torn write would.
+        write_to_mailbox("worker1", "mb-corrupt", make_message("leader", "keep")).expect("seed");
+        let path = inbox_path("worker1", "mb-corrupt").expect("path");
+        fs::write(&path, "{\"torn\": tru").expect("corrupt");
+
+        // The next append must not silently drop history: the corrupt file
+        // is quarantined beside the inbox and delivery still succeeds.
+        write_to_mailbox("worker1", "mb-corrupt", make_message("leader", "new")).expect("write");
+
+        let msgs = read_mailbox("worker1", "mb-corrupt").expect("read");
+        assert_eq!(msgs.len(), 1, "inbox restarts empty after quarantine");
+        assert_eq!(msgs[0].text, "new");
+
+        let parent = path.parent().expect("parent");
+        let quarantined = fs::read_dir(parent)
+            .expect("read dir")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .any(|name| name.starts_with("worker1.corrupt-"));
+        assert!(quarantined, "corrupt inbox file should be preserved aside");
     }
 
     #[test]

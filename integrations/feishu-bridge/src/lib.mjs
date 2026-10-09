@@ -293,7 +293,7 @@ export function validateBridgeConfig(env, options = {}) {
     add(errors, "open_group_control", "Group control cannot be enabled while unlisted chats are allowed");
   }
   if (allowGroups && !requirePrefix) {
-    add(warnings, "group_without_prefix", "Group control is enabled without requiring FEISHU_GROUP_PREFIX");
+    add(warnings, "group_without_prefix", "Group control is enabled with FEISHU_REQUIRE_PREFIX_IN_GROUP=false; group messages will not require a prefix");
   }
   if (!allowGroups) {
     add(info, "dm_only", "Direct-message control is enabled; group chats are disabled");

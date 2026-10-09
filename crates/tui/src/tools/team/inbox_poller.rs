@@ -294,31 +294,6 @@ pub fn classify_inbox_messages(
                 // Responses are handled by teammate side, not leader.
                 // No classification needed on leader inbox.
             }
-            StructuredProtocolMessage::SandboxPermissionRequest {
-                request_id,
-                agent_id,
-                domain,
-                ..
-            } => {
-                cls.sandbox_permission_requests
-                    .push(SandboxPermissionRequestEntry {
-                        request_id: request_id.clone(),
-                        agent_id: agent_id.clone(),
-                        domain: domain.clone(),
-                    });
-            }
-            StructuredProtocolMessage::SandboxPermissionResponse {
-                request_id,
-                subtype,
-                error,
-            } => {
-                cls.sandbox_permission_responses
-                    .push(SandboxPermissionResponseEntry {
-                        request_id: request_id.clone(),
-                        subtype: subtype.clone(),
-                        error: error.clone(),
-                    });
-            }
         }
     }
 
@@ -375,6 +350,60 @@ pub async fn run_leader_inbox_poller(
                     dispatch: InboxDispatch::PlanApprovalAutoApprove {
                         from: entry.from.clone(),
                         request_id: entry.request_id.clone(),
+                    },
+                })
+                .await;
+        }
+
+        // Dispatch shutdown requests (a teammate asking the leader to shut it
+        // down — passed through for the model to decide).
+        for entry in &cls.shutdown_requests {
+            let _ = tx_op
+                .send(Op::TeamInboxDispatch {
+                    dispatch: InboxDispatch::ShutdownRequestMessage {
+                        from: entry.from.clone(),
+                        request_id: entry.request_id.clone(),
+                        reason: entry.reason.clone(),
+                    },
+                })
+                .await;
+        }
+
+        // Dispatch sandbox permission requests/responses. There is no
+        // dedicated engine action for them; surface them in the conversation
+        // (the same informational treatment task assignments get) so the
+        // leader model can respond. Previously these buckets were populated
+        // but never dispatched, silently dropping the messages.
+        for entry in &cls.sandbox_permission_requests {
+            let _ = tx_op
+                .send(Op::TeamInboxDispatch {
+                    dispatch: InboxDispatch::TeammateMessage {
+                        from: entry.agent_id.clone(),
+                        text: format!(
+                            "sandbox permission request ({}): agent {} requests domain '{}'",
+                            entry.request_id, entry.agent_id, entry.domain
+                        ),
+                        summary: Some("sandbox permission request".to_string()),
+                    },
+                })
+                .await;
+        }
+        for entry in &cls.sandbox_permission_responses {
+            let _ = tx_op
+                .send(Op::TeamInboxDispatch {
+                    dispatch: InboxDispatch::TeammateMessage {
+                        from: "sandbox-permission".to_string(),
+                        text: format!(
+                            "sandbox permission response ({}): {}{}",
+                            entry.request_id,
+                            entry.subtype,
+                            entry
+                                .error
+                                .as_deref()
+                                .map(|e| format!(": {e}"))
+                                .unwrap_or_default()
+                        ),
+                        summary: Some("sandbox permission response".to_string()),
                     },
                 })
                 .await;

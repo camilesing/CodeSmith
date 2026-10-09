@@ -13,7 +13,6 @@ pub use codesmith_tool_impls::tools::apply_patch;
 pub mod approval_cache;
 pub mod arg_repair;
 pub mod automation;
-pub mod cargo_failure_summary;
 pub use codesmith_tool_impls::tools::diagnostics;
 pub mod diff_format;
 pub mod file;

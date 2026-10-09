@@ -73,7 +73,9 @@ assert_status() {
     fi
 
     local url="http://127.0.0.1:${PORT}${path}"
-    local curl_args=(-sf -o /dev/null -w '%{http_code}' -X "$method")
+    # No -f: HTTP error responses must still surface their status/body to the
+    # assertions below (curl's write-out prints the code either way).
+    local curl_args=(-s -o /dev/null -w '%{http_code}' -X "$method")
     if [[ -n "$header" ]]; then
         curl_args+=(-H "$header")
     fi
@@ -95,7 +97,7 @@ assert_status() {
 assert_body_contains() {
     local method="$1" path="$2" header="$3" substring="$4"
     local url="http://127.0.0.1:${PORT}${path}"
-    local curl_args=(-sf -X "$method")
+    local curl_args=(-s -X "$method")
     if [[ -n "$header" ]]; then
         curl_args+=(-H "$header")
     fi
@@ -103,7 +105,7 @@ assert_body_contains() {
     local body
     body=$(curl "${curl_args[@]}" "$url" 2>/dev/null || true)
 
-    if echo "$body" | grep -q "$substring"; then
+    if echo "$body" | grep -qF -- "$substring"; then
         pass "$method $path body contains '$substring'"
     else
         fail "$method $path body missing '$substring'"
@@ -172,7 +174,7 @@ fi
 STDOUT=$(cat "$STDOUT_FILE")
 rm -f "$STDOUT_FILE"
 
-if echo "$STDOUT" | grep -q "0.0.0.0"; then
+if echo "$STDOUT" | grep -qF -- "0.0.0.0"; then
     pass "stdout/stderr contains 0.0.0.0 binding warning"
 else
     fail "stdout/stderr missing 0.0.0.0 binding warning"

@@ -160,14 +160,14 @@ pub fn spawn_persistence_actor(manager: SessionManager) -> PersistActorHandle {
 
                 // Write coalesced work.
                 if should_clear {
-                    let _ = manager.clear_checkpoint();
+                    warn_persist_err("clear_checkpoint", manager.clear_checkpoint());
                     should_clear = false;
                 }
                 if let Some(ref session) = latest_checkpoint.take() {
-                    let _ = manager.save_checkpoint(session);
+                    warn_persist_err("save_checkpoint", manager.save_checkpoint(session));
                 }
                 if let Some(ref session) = latest_session.take() {
-                    let _ = manager.save_session(session);
+                    warn_persist_err("save_session", manager.save_session(session));
                 }
                 if let Some(ref request) = latest_offline_queue.take() {
                     apply_offline_queue_request(&manager, request);
@@ -229,13 +229,13 @@ fn flush_inner(
     should_clear: bool,
 ) {
     if should_clear {
-        let _ = manager.clear_checkpoint();
+        warn_persist_err("clear_checkpoint", manager.clear_checkpoint());
     }
     if let Some(s) = checkpoint {
-        let _ = manager.save_checkpoint(s);
+        warn_persist_err("save_checkpoint", manager.save_checkpoint(s));
     }
     if let Some(s) = session {
-        let _ = manager.save_session(s);
+        warn_persist_err("save_session", manager.save_session(s));
     }
     if let Some(request) = offline_queue {
         apply_offline_queue_request(manager, request);
@@ -245,11 +245,25 @@ fn flush_inner(
 fn apply_offline_queue_request(manager: &SessionManager, request: &PendingOfflineQueue) {
     match request {
         PendingOfflineQueue::Save { state, session_id } => {
-            let _ = manager.save_offline_queue_state(state, session_id.as_deref());
+            warn_persist_err(
+                "save_offline_queue_state",
+                manager.save_offline_queue_state(state, session_id.as_deref()),
+            );
         }
         PendingOfflineQueue::Clear => {
-            let _ = manager.clear_offline_queue_state();
+            warn_persist_err(
+                "clear_offline_queue_state",
+                manager.clear_offline_queue_state(),
+            );
         }
+    }
+}
+
+/// Log a failed persistence write instead of silently discarding it — a lost
+/// checkpoint or session save is invisible to the user otherwise.
+fn warn_persist_err<T>(operation: &str, result: std::io::Result<T>) {
+    if let Err(e) = result {
+        tracing::warn!("persistence actor: {operation} failed: {e}");
     }
 }
 

@@ -22,7 +22,7 @@ Slice 1 扩展通过 [`inventory::submit!`](https://docs.rs/inventory) 编译进
 | `/extension disable <id>` | | ✅ 可用 | 将扩展标记为禁用；同样的重载注意事项。 |
 | `/extension status` | | ✅ 可用 | 报告已绑定 runner 的 generation + 已绑定的命令/工具计数。 |
 | `/extension reload` | | ✅ 可用（实时重载） | 重新填充**共享的 runner `Arc`**：`clear_handlers` → `clear_tools` → `clear_commands` → `clear_providers`（路线 A，丢弃注册 guard）→ `drain_libraries_to_pending`（§F5d T3+T4）→ `invalidate`（递增 generation）→ `discover_static` + `discover_dylib` → 与状态对账 → 逐个 `load` → `bind_core`（全新的 `HostExtensionContext`）。`App.extension_runner` 和 Engine 的字段都会实时更新（没有 `Arc` 交换 —— 它们共享引擎构建的那一个）。被排空的 `Library` 会在引擎 op-loop 的下一次顶部（轮边界，§F5d T4）被 `drop_pending`。重载前绑定的处理器之后不再观察（被清除，而不是重复）；新编译内置的扩展会在下一次重载时被拾取。 |
-| `/extension install <source> [--global]` | | ✅ 可用（§F5c） | 拉取（`git:`/`path:`）→ 构建（`cargo build`）→ 放置到 `<root>/<id>/` + 写入 `extension.toml` + 记录 `installed[]` 来源；`--global` 为可选（默认为项目级）。`crate:` 从 crates.io 拉取（sparse-index → 版本 → sha256 校验的 `.crate` → `tar` 解压 → 构建）；`prebuilt:<https-url>` 拉取预构建的 cdylib（仅限 HTTPS，可选 `--checksum <sha256>`）；两者在项目级且未受信任时都会警告；用 `/extension reload` 加载。 |
+| `/extension install <source> [--global]` | | ✅ 可用（§F5c） | 拉取（`git:`/`path:`）→ 构建（`cargo build`）→ 放置到 `<root>/<id>/` + 写入 `extension.toml` + 记录 `installed[]` 来源 + 写入 sha256 边车（`<dylib>.sha256`，加载器会校验 —— 安装后被替换过的 dylib 在加载时会被拒绝）；`--global` 为可选（默认为项目级）。`crate:` 从 crates.io 拉取（sparse-index → 版本 → sha256 校验的 `.crate` → `tar` 解压 → 构建）；`prebuilt:<https-url>` 拉取预构建的 cdylib（仅限 HTTPS，重定向不可降级到明文 HTTP，可选 `--checksum <sha256>`）；两者在项目级且未受信任时都会警告；用 `/extension reload` 加载。 |
 | `/extension uninstall <id>` | | ✅ 可用（§F5c） | 移除 `<root>/<id>/` + 清除 `installed[]` 来源记录。活跃的工具/命令绑定在下一次 `/extension reload` 时清除；dylib 在下一个轮边界安全卸载（§F5d 两阶段 drop）。 |
 
 ## 发现

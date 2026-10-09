@@ -14,7 +14,7 @@
 //! (kept-alive) `Library`. **No `abi_stable`** (§2.4 — same trait, no ABI
 //! churn).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use codesmith_agent::extension::{Extension, ExtensionError};
 use libloading::{Library, Symbol};
@@ -23,12 +23,73 @@ use libloading::{Library, Symbol};
 /// `#[no_mangle] pub extern "C" fn codesmith_register_extension() -> *mut dyn Extension`.
 pub const REGISTER_SYMBOL: &[u8] = b"codesmith_register_extension";
 
+/// Path of the sha256 sidecar guarding `dylib` (written at install time by
+/// the installer).
+pub(crate) fn sha256_sidecar_path(dylib: &Path) -> PathBuf {
+    let mut name = dylib.as_os_str().to_os_string();
+    name.push(".sha256");
+    dylib.with_file_name(name)
+}
+
+pub(crate) fn dylib_sha256(dylib: &Path) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read(dylib)?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Record the install-time sha256 sidecar next to a freshly placed dylib so
+/// the loader can later refuse a silently swapped artifact.
+pub(crate) fn write_sha256_sidecar(dylib: &Path) -> Result<(), ExtensionError> {
+    let digest = dylib_sha256(dylib)
+        .map_err(|e| ExtensionError::Install(format!("hash {}: {e}", dylib.display())))?;
+    let sidecar = sha256_sidecar_path(dylib);
+    std::fs::write(&sidecar, digest)
+        .map_err(|e| ExtensionError::Install(format!("write {}: {e}", sidecar.display())))
+}
+
+/// Refuse to load a dylib whose recorded sha256 sidecar no longer matches:
+/// `Library::new` maps file bytes straight to executable code, so a swapped
+/// artifact must never reach it. Dylibs installed before the sidecar
+/// existed — and bare dylib sources — have no sidecar and load unchanged.
+fn verify_dylib_integrity(path: &Path) -> Result<(), ExtensionError> {
+    let sidecar = sha256_sidecar_path(path);
+    let expected = match std::fs::read_to_string(&sidecar) {
+        Ok(content) => content.trim().to_string(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            tracing::debug!(
+                "dylib {} has no sha256 sidecar; loading unverified",
+                path.display()
+            );
+            return Ok(());
+        }
+        Err(err) => {
+            return Err(ExtensionError::Load(format!(
+                "read {}: {err}",
+                sidecar.display()
+            )));
+        }
+    };
+    let digest = dylib_sha256(path)
+        .map_err(|e| ExtensionError::Load(format!("read {}: {e}", path.display())))?;
+    if digest != expected {
+        return Err(ExtensionError::Load(format!(
+            "dylib {} failed integrity check: found sha256 {digest}, recorded {expected}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
 /// Load a dylib + construct its `Extension`. Returns the `Library` (which
 /// the caller MUST keep alive for as long as any registered contribution's
 /// vtable is reachable) and the `Box<dyn Extension>` (consumed by
 /// `ExtensionRunner::load` during `configure`, then dropped). Errors →
-/// [`ExtensionError::Load`] (open / symbol lookup / null return).
+/// [`ExtensionError::Load`] (integrity / open / symbol lookup / null
+/// return).
 pub fn load_dylib(path: &Path) -> Result<(Library, Box<dyn Extension>), ExtensionError> {
+    verify_dylib_integrity(path)?;
     let library = unsafe { Library::new(path) }.map_err(|e| {
         // libloading's `Display` for `DlOpen` is just "dlopen failed"; the OS
         // reason (dlerror string) lives in the error's `source`.
@@ -114,6 +175,43 @@ mod tests {
             matches!(r, Err(ExtensionError::Load(_))),
             "expected ExtensionError::Load"
         );
+    }
+
+    #[test]
+    fn load_dylib_refuses_sidecar_mismatch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("swapped.dylib");
+        std::fs::write(&path, b"attacker bytes").expect("write");
+        std::fs::write(sha256_sidecar_path(&path), "0".repeat(64)).expect("sidecar");
+
+        match load_dylib(&path) {
+            Err(ExtensionError::Load(msg)) => assert!(
+                msg.contains("failed integrity check"),
+                "expected integrity failure, got: {msg}"
+            ),
+            Err(other) => panic!("expected Load error, got: {other}"),
+            Ok(_) => panic!("expected Load error, got Ok"),
+        }
+    }
+
+    #[test]
+    fn load_dylib_matching_sidecar_passes_the_gate() {
+        // A valid sidecar passes integrity; the failure must then come from
+        // the open step (the file is not a real dylib), not the gate.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("ok.dylib");
+        std::fs::write(&path, b"still not a dylib").expect("write");
+        let digest = dylib_sha256(&path).expect("hash");
+        std::fs::write(sha256_sidecar_path(&path), digest).expect("sidecar");
+
+        match load_dylib(&path) {
+            Err(ExtensionError::Load(msg)) => assert!(
+                msg.contains("open dylib"),
+                "expected open failure past the gate, got: {msg}"
+            ),
+            Err(other) => panic!("expected Load error, got: {other}"),
+            Ok(_) => panic!("expected Load error, got Ok"),
+        }
     }
 
     /// §F5b — the fixture cdylib is built as a dev-dep; `build.rs` emits its

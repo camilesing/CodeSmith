@@ -747,7 +747,11 @@ impl Runtime {
         hooks: HookDispatcher,
     ) -> Self {
         let mut jobs = JobManager::default();
-        let _ = jobs.load_from_store(&state);
+        if let Err(err) = jobs.load_from_store(&state) {
+            // Starting with an empty job list is recoverable, but it must be
+            // visible — otherwise persisted jobs vanish with no trace.
+            tracing::error!("failed to load jobs from state store: {err:#}");
+        }
         Self {
             config,
             model_registry,

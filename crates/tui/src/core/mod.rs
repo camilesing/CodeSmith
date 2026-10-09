@@ -22,7 +22,6 @@ pub mod events;
 pub mod ops;
 pub mod session;
 pub mod tool_catalog;
-pub mod tool_parser;
 pub mod turn;
 
 // Re-exports

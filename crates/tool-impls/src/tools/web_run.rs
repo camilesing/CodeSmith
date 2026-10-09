@@ -21,6 +21,10 @@ use std::time::{Duration, Instant};
 const MAX_RESULTS: usize = 10;
 const DEFAULT_TIMEOUT_MS: u64 = 15_000;
 const DEFAULT_OPEN_TIMEOUT_MS: u64 = 20_000;
+
+/// Redirect hops [`fetch_page`] will follow at most (mirrors reqwest's own
+/// default bound); every hop is re-checked against the network policy.
+const MAX_REDIRECT_HOPS: usize = 10;
 const MAX_WEB_RUN_SESSIONS: usize = 64;
 const MAX_PAGES_PER_SESSION: usize = 256;
 const WEB_RUN_SESSION_TTL: Duration = Duration::from_secs(30 * 60);
@@ -439,10 +443,11 @@ impl ToolSpec for WebRunTool {
     }
 
     /// P1-5: gate the URLs this batch of browser actions will actually
-    /// contact (`open` items' `ref_id`s that look like URLs, plus a
-    /// top-level `url` field if present). A `Prompt` decision on any of
-    /// them raises the standard inline approval prompt; later actions on
-    /// an already-open page have no new host to gate, so they stay `Auto`.
+    /// contact (`open` items' `ref_id`s that look like URLs, a top-level
+    /// `url` field if present, and the search endpoints when a search or
+    /// image search is requested). A `Prompt` decision on any of them raises
+    /// the standard inline approval prompt; later actions on an
+    /// already-open page have no new host to gate, so they stay `Auto`.
     fn approval_requirement_for_input(
         &self,
         input: &serde_json::Value,
@@ -454,7 +459,7 @@ impl ToolSpec for WebRunTool {
         {
             hosts.push(host);
         }
-        if let Some(opens) = input.get("open").and_then(serde_json::Value::as_array) {
+        if let Some(opens) = input.get("open").and_then(|v| v.as_array()) {
             for open in opens {
                 if let Some(ref_id) = open.get("ref_id").and_then(serde_json::Value::as_str)
                     && looks_like_url(ref_id)
@@ -463,6 +468,22 @@ impl ToolSpec for WebRunTool {
                     hosts.push(host);
                 }
             }
+        }
+        // Searches contact fixed endpoints; gate them the same way.
+        if input
+            .get("search_query")
+            .and_then(|v| v.as_array())
+            .is_some_and(|a| !a.is_empty())
+        {
+            hosts.push("html.duckduckgo.com".to_string());
+            hosts.push("www.bing.com".to_string());
+        }
+        if input
+            .get("image_query")
+            .and_then(|v| v.as_array())
+            .is_some_and(|a| !a.is_empty())
+        {
+            hosts.push("duckduckgo.com".to_string());
         }
         for host in &hosts {
             if codesmith_agent_runtime::network_policy::network_approval_requirement(
@@ -515,7 +536,7 @@ impl ToolSpec for WebRunTool {
                     .unwrap_or_default();
 
                 let (entries, source, warning) =
-                    run_search(&query, max_results, timeout_ms, &domains).await?;
+                    run_search(&query, max_results, timeout_ms, &domains, context).await?;
                 let mut warnings = Vec::new();
                 if recency > 0 {
                     warnings.push(format!(
@@ -577,7 +598,7 @@ impl ToolSpec for WebRunTool {
                     .unwrap_or_default();
 
                 let (entries, warning) =
-                    run_image_search(&query, max_results, timeout_ms, &domains).await?;
+                    run_image_search(&query, max_results, timeout_ms, &domains, context).await?;
 
                 let mut warnings = Vec::new();
                 if recency > 0 {
@@ -738,7 +759,7 @@ async fn resolve_or_fetch_page(
     }
     if looks_like_url(ref_id) {
         check_network_policy(ref_id, context)?;
-        return fetch_page(ref_id, timeout_ms).await;
+        return fetch_page(ref_id, timeout_ms, context).await;
     }
     Err(ToolError::invalid_input(format!(
         "Unknown ref_id '{ref_id}'"
@@ -754,6 +775,7 @@ async fn run_search(
     max_results: usize,
     timeout_ms: u64,
     domains: &[String],
+    context: &ToolContext,
 ) -> Result<(Vec<SearchEntry>, String, Option<String>), ToolError> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(timeout_ms))
@@ -763,6 +785,7 @@ async fn run_search(
 
     let encoded = url_encode(query);
     let url = format!("https://html.duckduckgo.com/html/?q={encoded}");
+    check_network_policy(&url, context)?;
     let resp = client
         .get(&url)
         .header(
@@ -793,27 +816,35 @@ async fn run_search(
 
     if results.is_empty() {
         let duckduckgo_blocked = is_duckduckgo_challenge(&body);
-        match run_bing_search(&client, query, max_results).await {
-            Ok(fallback_results) if !fallback_results.is_empty() => {
-                results = fallback_results;
-                source = "bing".to_string();
-                warnings.push(if duckduckgo_blocked {
-                    "DuckDuckGo returned a bot challenge; used Bing fallback".to_string()
-                } else {
-                    "DuckDuckGo returned no parseable results; used Bing fallback".to_string()
-                });
+        // The Bing fallback contacts a second host; honour the policy for it
+        // too, degrading to a warning instead of an error so a Bing-denied
+        // policy still returns the (empty) DuckDuckGo results.
+        match check_network_policy("https://www.bing.com/", context) {
+            Err(policy_err) => {
+                warnings.push(format!("Bing fallback skipped: {policy_err}"));
             }
-            Ok(_) if duckduckgo_blocked => {
-                return Err(ToolError::execution_failed(
-                    "DuckDuckGo returned a bot challenge and Bing fallback returned no results",
-                ));
-            }
-            Err(err) if duckduckgo_blocked => {
-                return Err(ToolError::execution_failed(format!(
-                    "DuckDuckGo returned a bot challenge and Bing fallback failed: {err}"
-                )));
-            }
-            Ok(_) | Err(_) => {}
+            Ok(()) => match run_bing_search(&client, query, max_results).await {
+                Ok(fallback_results) if !fallback_results.is_empty() => {
+                    results = fallback_results;
+                    source = "bing".to_string();
+                    warnings.push(if duckduckgo_blocked {
+                        "DuckDuckGo returned a bot challenge; used Bing fallback".to_string()
+                    } else {
+                        "DuckDuckGo returned no parseable results; used Bing fallback".to_string()
+                    });
+                }
+                Ok(_) if duckduckgo_blocked => {
+                    return Err(ToolError::execution_failed(
+                        "DuckDuckGo returned a bot challenge and Bing fallback returned no results",
+                    ));
+                }
+                Err(err) if duckduckgo_blocked => {
+                    return Err(ToolError::execution_failed(format!(
+                        "DuckDuckGo returned a bot challenge and Bing fallback failed: {err}"
+                    )));
+                }
+                Ok(_) | Err(_) => {}
+            },
         }
     }
 
@@ -950,6 +981,7 @@ async fn run_image_search(
     max_results: usize,
     timeout_ms: u64,
     domains: &[String],
+    context: &ToolContext,
 ) -> Result<(Vec<ImageResultEntry>, Option<String>), ToolError> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(timeout_ms))
@@ -960,6 +992,7 @@ async fn run_image_search(
     // Step 1: fetch the HTML page to obtain the `vqd` token used by the images API.
     let encoded = url_encode(query);
     let seed_url = format!("https://duckduckgo.com/?q={encoded}&iax=images&ia=images");
+    check_network_policy(&seed_url, context)?;
     let seed_resp = client
         .get(&seed_url)
         .header(
@@ -991,6 +1024,7 @@ async fn run_image_search(
 
     // Step 2: query the DuckDuckGo images JSON endpoint.
     let api_url = format!("https://duckduckgo.com/i.js?l=us-en&o=json&q={encoded}&vqd={vqd}&p=1");
+    check_network_policy(&api_url, context)?;
     let api_resp = client
         .get(&api_url)
         .header("Accept", "application/json")
@@ -1102,57 +1136,100 @@ fn check_network_policy(url: &str, context: &ToolContext) -> Result<(), ToolErro
     }
 }
 
-async fn fetch_page(url: &str, timeout_ms: u64) -> Result<WebPage, ToolError> {
+async fn fetch_page(
+    url: &str,
+    timeout_ms: u64,
+    context: &ToolContext,
+) -> Result<WebPage, ToolError> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(timeout_ms))
         .user_agent(USER_AGENT)
+        // Redirects are followed manually below so every hop re-runs the
+        // network policy check; a denied host must not be reachable by
+        // redirect from an allowed one.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| ToolError::execution_failed(format!("Failed to build HTTP client: {e}")))?;
 
-    let resp = client
-        .get(url)
-        .header(
-            "Accept",
-            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        )
-        .header("Accept-Language", "en-US,en;q=0.5")
-        .send()
-        .await
-        .map_err(|e| ToolError::execution_failed(format!("Web request failed: {e}")))?;
+    let mut current = url.to_string();
+    for _ in 0..=MAX_REDIRECT_HOPS {
+        check_network_policy(&current, context)?;
+        let resp = client
+            .get(&current)
+            .header(
+                "Accept",
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            )
+            .header("Accept-Language", "en-US,en;q=0.5")
+            .send()
+            .await
+            .map_err(|e| ToolError::execution_failed(format!("Web request failed: {e}")))?;
 
-    let status = resp.status();
-    let content_type = resp
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| ToolError::execution_failed(format!("Failed to read response: {e}")))?;
+        let status = resp.status();
+        if status.is_redirection() {
+            let Some(location) = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+            else {
+                return Err(ToolError::execution_failed(format!(
+                    "Web request failed: HTTP {} without a redirect location",
+                    status.as_u16()
+                )));
+            };
+            current = resolve_redirect_url(&current, location)?;
+            continue;
+        }
 
-    if !status.is_success() {
-        return Err(ToolError::execution_failed(format!(
-            "Web request failed: HTTP {}",
-            status.as_u16()
-        )));
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| ToolError::execution_failed(format!("Failed to read response: {e}")))?;
+
+        if !status.is_success() {
+            return Err(ToolError::execution_failed(format!(
+                "Web request failed: HTTP {}",
+                status.as_u16()
+            )));
+        }
+
+        if is_pdf(&content_type, &current) {
+            return parse_pdf_page(&current, content_type, &bytes);
+        }
+
+        let body = String::from_utf8_lossy(&bytes).to_string();
+        let (lines, links, title) = parse_html(&body, &current);
+
+        return Ok(WebPage {
+            url: current,
+            title,
+            content_type,
+            lines,
+            links,
+            pdf_pages: None,
+        });
     }
 
-    if is_pdf(&content_type, url) {
-        return parse_pdf_page(url, content_type, &bytes);
-    }
+    Err(ToolError::execution_failed(format!(
+        "Web request failed: more than {MAX_REDIRECT_HOPS} redirects"
+    )))
+}
 
-    let body = String::from_utf8_lossy(&bytes).to_string();
-    let (lines, links, title) = parse_html(&body, url);
-
-    Ok(WebPage {
-        url: url.to_string(),
-        title,
-        content_type,
-        lines,
-        links,
-        pdf_pages: None,
-    })
+/// Resolve a redirect `Location` (possibly relative) against the URL that
+/// produced it.
+fn resolve_redirect_url(base: &str, location: &str) -> Result<String, ToolError> {
+    let base_url = reqwest::Url::parse(base).map_err(|e| {
+        ToolError::execution_failed(format!("Invalid redirect base URL '{base}': {e}"))
+    })?;
+    let next = base_url.join(location).map_err(|e| {
+        ToolError::execution_failed(format!("Invalid redirect location '{location}': {e}"))
+    })?;
+    Ok(next.to_string())
 }
 
 fn is_pdf(content_type: &Option<String>, url: &str) -> bool {
@@ -1881,5 +1958,64 @@ mod tests {
         let err = check_network_policy("https://example.com/private", &ctx)
             .expect_err("blocked host should fail");
         assert!(format!("{err}").contains("blocked by network policy"));
+    }
+
+    #[test]
+    fn redirect_location_resolves_relative_and_absolute() {
+        assert_eq!(
+            resolve_redirect_url("https://a.example/x/y", "/z").unwrap(),
+            "https://a.example/z"
+        );
+        assert_eq!(
+            resolve_redirect_url("https://a.example/x/y", "../w").unwrap(),
+            "https://a.example/w"
+        );
+        assert_eq!(
+            resolve_redirect_url("https://a.example/x/y", "https://b.example/c").unwrap(),
+            "https://b.example/c"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_page_rechecks_network_policy_on_redirect() {
+        use codesmith_agent_runtime::network_policy::{
+            Decision, NetworkPolicy, NetworkPolicyDecider,
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // Minimal server: any request answers with a redirect to a denied host.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
+        let addr = listener.local_addr().expect("local addr");
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.expect("accept");
+            let mut buf = [0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let resp = "HTTP/1.1 302 Found\r\n\
+                        Location: https://denied.example/landing\r\n\
+                        Content-Length: 0\r\n\
+                        Connection: close\r\n\r\n";
+            let _ = sock.write_all(resp.as_bytes()).await;
+        });
+
+        let policy = NetworkPolicy {
+            default: Decision::Allow.into(),
+            allow: vec![],
+            deny: vec!["denied.example".to_string()],
+            proxy: Vec::new(),
+            audit: false,
+        };
+        let decider = NetworkPolicyDecider::new(policy, None);
+        let ctx = ToolContext::new(PathBuf::from(".")).with_network_policy(decider);
+
+        let err = fetch_page(&format!("http://{addr}/hop"), 5_000, &ctx)
+            .await
+            .expect_err("redirect to a denied host must be blocked");
+        assert!(
+            format!("{err}").contains("denied.example"),
+            "error should name the denied host: {err}"
+        );
+        server.await.expect("server task");
     }
 }

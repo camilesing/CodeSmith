@@ -148,8 +148,6 @@ def default_strings(tui_config_rs: str) -> set[str]:
         r'const\s+(DEFAULT_[A-Z0-9_]+(?:MODEL|BASE_URL)):\s*&str\s*=\s*"([^"]+)"',
         tui_config_rs,
     ):
-        if name == "DEFAULT_DEEPSEEKCN_BASE_URL":
-            continue
         defaults.add(value)
     if not defaults:
         raise ValueError("no default provider model/base URL constants found")

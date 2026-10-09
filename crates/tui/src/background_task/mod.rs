@@ -504,21 +504,23 @@ impl BackgroundTaskRegistry {
 // ---------------------------------------------------------------------------
 
 fn summarize_command(cmd: &str, max_len: usize) -> String {
-    if cmd.len() <= max_len {
+    if cmd.chars().count() <= max_len {
         cmd.to_string()
     } else {
-        format!("{}…", &cmd[..max_len])
+        format!("{}…", truncate_chars(cmd, max_len))
     }
 }
 
 fn summarize_prompt(prompt: &str, max_len: usize) -> String {
     let first_line = prompt.lines().next().unwrap_or("");
-    if first_line.len() <= max_len {
+    if first_line.chars().count() <= max_len {
         first_line.to_string()
     } else {
-        format!("{}…", &first_line[..max_len])
+        format!("{}…", truncate_chars(first_line, max_len))
     }
 }
+
+use codesmith_agent_runtime::tools::handle::truncate_chars;
 
 #[cfg(test)]
 mod tests {
@@ -547,6 +549,23 @@ mod tests {
     fn summarize_prompt_truncates_long_first_line() {
         let long = "b".repeat(100);
         let result = summarize_prompt(&long, 50);
+        assert!(result.ends_with('…'));
+    }
+
+    #[test]
+    fn summarize_command_multibyte_boundary_no_panic() {
+        // Truncation points used to fall inside multi-byte chars and panic.
+        let cjk = "检查".repeat(50);
+        let result = summarize_command(&cjk, 5);
+        assert_eq!(result.chars().count(), 6); // 5 chars + ellipsis
+        assert!(result.ends_with('…'));
+    }
+
+    #[test]
+    fn summarize_prompt_multibyte_boundary_no_panic() {
+        let emoji = "😀".repeat(50);
+        let result = summarize_prompt(&emoji, 3);
+        assert_eq!(result.chars().count(), 4);
         assert!(result.ends_with('…'));
     }
 }

@@ -224,8 +224,8 @@ allow_read = []
 deny_read = []
 allow_write = []
 deny_write = []
-exclude_tmpdir = true
-exclude_slash_tmp = false
+exclude_tmpdir = true            # temp dirs are excluded by default; set to false to opt back in
+exclude_slash_tmp = true
 
 [sandbox.network]
 enabled = true

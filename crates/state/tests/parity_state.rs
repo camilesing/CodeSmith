@@ -209,14 +209,14 @@ fn test_fork() {
             assert_eq!(message.thread_id, "thread-test-1");
             assert_eq!(message.role, format!("foo{}", i));
             assert_eq!(message.content, format!("bar{}", i));
-            message.id.to_string()
+            message.id
         })
         .collect::<Vec<_>>();
 
     store.upsert_thread(&thread).expect("upsert thread");
 
     store
-        .fork_at_message(&ids[2], "foo5", "bar5", None)
+        .fork_at_message(ids[2], "foo5", "bar5", None)
         .expect("fork at message");
     let messages = store
         .list_messages("thread-test-1", None)
@@ -237,7 +237,7 @@ fn test_fork() {
     assert_eq!(leaves.len(), 2);
 
     store
-        .set_current_leaf_id("thread-test-1", &ids[4])
+        .set_current_leaf_id("thread-test-1", ids[4])
         .expect("set current leaf id");
     store
         .append_message("thread-test-1", "foo6", "bar6", None)

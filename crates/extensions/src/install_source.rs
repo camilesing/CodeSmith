@@ -174,12 +174,28 @@ impl GitSource {
 
 impl ExtensionSource for GitSource {
     fn fetch(&self, dest: &Path) -> Result<SourceArtifact, ExtensionError> {
+        // A URL or ref beginning with `-` would be parsed by git as an
+        // option (argument injection); refuse it up front and keep `--`
+        // before the operands.
+        if self.url.starts_with('-') {
+            return Err(ExtensionError::Install(format!(
+                "git url must not start with '-': {}",
+                self.url
+            )));
+        }
+        if let Some(r) = &self.ref_
+            && r.starts_with('-')
+        {
+            return Err(ExtensionError::Install(format!(
+                "git ref must not start with '-': {r}"
+            )));
+        }
         let mut cmd = Command::new("git");
         cmd.arg("clone").arg("--depth").arg("1");
         if let Some(r) = &self.ref_ {
             cmd.arg("--branch").arg(r);
         }
-        cmd.arg(&self.url).arg(dest);
+        cmd.arg("--").arg(&self.url).arg(dest);
         let out = cmd
             .output()
             .map_err(|e| ExtensionError::Install(format!("spawn git (on PATH?): {e}")))?;
@@ -371,6 +387,15 @@ impl CratesIoSource {
 
 impl ExtensionSource for CratesIoSource {
     fn fetch(&self, dest: &Path) -> Result<SourceArtifact, ExtensionError> {
+        // The name comes straight from CLI input and is joined into paths;
+        // reject anything that is not a single safe component
+        // (`crate:../../evil@1.0.0` must not escape `dest`).
+        if !crate::installer::is_safe_id(&self.name) {
+            return Err(ExtensionError::Install(format!(
+                "invalid crate name {:?}: must be a single safe path component",
+                self.name
+            )));
+        }
         // 1. sparse-index lookup
         let index_json = self.http.fetch_text(&self.index_url())?;
         // 2. parse JSON-lines → entries (serde ignores unknown fields)
@@ -398,7 +423,14 @@ impl ExtensionSource for CratesIoSource {
             })?,
         }
         .clone();
-        // 4. download .crate
+        // 4. download .crate — the registry-supplied version string is
+        // joined into paths too, so it gets the same single-component check.
+        if !crate::installer::is_safe_id(&entry.vers) {
+            return Err(ExtensionError::Install(format!(
+                "invalid version {:?} from registry for {}: must be a single safe path component",
+                entry.vers, self.name
+            )));
+        }
         let crate_file = dest.join(format!("{}-{}.crate", self.name, entry.vers));
         let crate_url = format!(
             "https://static.crates.io/crates/{}/{}-{}.crate",
@@ -507,6 +539,11 @@ impl ExtensionSource for PrebuiltDylibSource {
             .filter(|s| !s.is_empty())
             .map(str::to_string)
             .unwrap_or_else(|| format!("dylib.{}", std::env::consts::DLL_EXTENSION));
+        if !crate::installer::is_safe_id(&filename) {
+            return Err(ExtensionError::Install(format!(
+                "prebuilt URL basename must be a single safe path component: {filename:?}"
+            )));
+        }
         let dest_file = dest.join(&filename);
         self.http.fetch_to(&self.url, &dest_file)?;
         // 3. optional checksum verify (warn-absent is tui's job; source errors
@@ -563,6 +600,14 @@ impl Placer {
 
 impl ExtensionPlacer for Placer {
     fn place(&self, artifact: &Path) -> Result<PathBuf, ExtensionError> {
+        // `id` can originate from the dylib's own metadata; it becomes a
+        // directory under `root`, so it must be a single safe component.
+        if !crate::installer::is_safe_id(&self.id) {
+            return Err(ExtensionError::Install(format!(
+                "invalid extension id {:?}: must be a single safe path component",
+                self.id
+            )));
+        }
         let dir = self.dir();
         std::fs::create_dir_all(&dir)
             .map_err(|e| ExtensionError::Install(format!("mkdir {}: {e}", dir.display())))?;
@@ -615,11 +660,18 @@ impl HttpFetcher for CurlHttpFetcher {
     fn fetch_to(&self, url: &str, dest: &Path) -> Result<(), ExtensionError> {
         let out = Command::new("curl")
             .arg("-fsSL")
+            // HTTPS only, including across redirects: curl would otherwise
+            // follow an https→http downgrade silently.
+            .arg("--proto")
+            .arg("=https")
+            .arg("--proto-redir")
+            .arg("=https")
             .arg("-A")
             .arg(&self.user_agent)
-            .arg(url)
             .arg("-o")
             .arg(dest)
+            .arg("--")
+            .arg(url)
             .output()
             .map_err(|e| ExtensionError::Install(format!("spawn curl (on PATH?): {e}")))?;
         if !out.status.success() {
@@ -635,8 +687,13 @@ impl HttpFetcher for CurlHttpFetcher {
     fn fetch_text(&self, url: &str) -> Result<String, ExtensionError> {
         let out = Command::new("curl")
             .arg("-fsSL")
+            .arg("--proto")
+            .arg("=https")
+            .arg("--proto-redir")
+            .arg("=https")
             .arg("-A")
             .arg(&self.user_agent)
+            .arg("--")
             .arg(url)
             .output()
             .map_err(|e| ExtensionError::Install(format!("spawn curl (on PATH?): {e}")))?;

@@ -671,25 +671,17 @@ pub(crate) fn load_context_file(path: &Path) -> Result<String, ProjectContextErr
     Ok(content)
 }
 
-/// Check if this project is marked as trusted
+/// Check if this project is marked as trusted in the *user's* CodeSmith
+/// config (`~/.codesmith/config.toml`).
+///
+/// Trust is never granted by anything inside the repository itself: a
+/// cloned repo that ships `.codesmith/trusted` must not be able to mark
+/// itself trusted, so no in-repo marker is consulted.
+///
+/// Known limitation: the resulting `ProjectContext::is_trusted` flag is
+/// informational only — it does not gate instruction loading.
 fn check_trust_status(workspace: &Path) -> bool {
-    if crate::workspace_trust::is_workspace_trusted(workspace) {
-        return true;
-    }
-
-    // Check for trust markers
-    let trust_markers = [
-        workspace.join(".codesmith").join("trusted"),
-        workspace.join(".codesmith").join("trust.json"),
-    ];
-
-    for marker in &trust_markers {
-        if marker.exists() {
-            return true;
-        }
-    }
-
-    false
+    crate::workspace_trust::is_workspace_trusted(workspace)
 }
 
 /// Create a default AGENTS.md file for a project
@@ -874,12 +866,15 @@ mod tests {
         // Not trusted by default
         assert!(!check_trust_status(tmp.path()));
 
-        // Create trust marker
+        // An in-repo trust marker must NOT grant trust: a cloned malicious
+        // repo can ship `.codesmith/trusted`. Trust comes only from the
+        // user's own config, which this test does not touch.
         let codesmith_dir = tmp.path().join(".codesmith");
         fs::create_dir(&codesmith_dir).expect("mkdir");
         fs::write(codesmith_dir.join("trusted"), "").expect("write");
+        fs::write(codesmith_dir.join("trust.json"), "{}").expect("write");
 
-        assert!(check_trust_status(tmp.path()));
+        assert!(!check_trust_status(tmp.path()));
     }
 
     #[test]

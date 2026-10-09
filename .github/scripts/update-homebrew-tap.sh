@@ -5,7 +5,7 @@
 #   TAG       – git tag, e.g. "v0.8.31"
 #   MANIFEST  – path to codesmith-artifacts-sha256.txt
 #   TAP_REPO  – owner/repo of the Homebrew tap
-#   TOKEN     – PAT with contents:write on TAP_REPO (optional; skips if unset)
+#   TOKEN     – PAT with contents:write on TAP_REPO (required)
 
 set -euo pipefail
 
@@ -14,8 +14,8 @@ set -euo pipefail
 : "${TAP_REPO:?}"
 
 if [ -z "${TOKEN:-}" ]; then
-  echo "No Homebrew tap token configured; skipping."
-  exit 0
+  echo "::error::No Homebrew tap token configured (TOKEN); refusing to update the tap." >&2
+  exit 1
 fi
 
 VERSION="${TAG#v}"
@@ -109,11 +109,12 @@ end
 EOF
 
 # --- push to tap repo --------------------------------------------------
+# Auth goes through an HTTP extra header instead of the URL so a git failure
+# never echoes the PAT. The header is scoped to github.com only.
+AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${TOKEN}" | base64)"
 
-ENCODED_TOKEN="$(printf '%s' "${TOKEN}" | python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read(),safe=""))')"
-TAP_URL="https://x-access-token:${ENCODED_TOKEN}@github.com/${TAP_REPO}.git"
-
-git clone --depth 1 "${TAP_URL}" "${TAP_DIR}"
+git -c "http.https://github.com/.extraheader=${AUTH_HEADER}" \
+  clone --depth 1 "https://github.com/${TAP_REPO}.git" "${TAP_DIR}"
 
 mkdir -p "${TAP_DIR}/Formula"
 cp "${FORMULA_FILE}" "${TAP_DIR}/Formula/codesmith.rb"
@@ -133,5 +134,5 @@ git commit -m "chore: bump formula to ${VERSION}
 
 Automated update from the release workflow."
 
-git push origin HEAD:main
+git -c "http.https://github.com/.extraheader=${AUTH_HEADER}" push origin HEAD:main
 echo "Pushed formula update to ${TAP_REPO} (v${VERSION})"

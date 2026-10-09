@@ -43,16 +43,30 @@ pub fn enabled() -> bool {
 ///
 /// Does **not** check [`enabled()`]; callers wanting the runtime gate should
 /// branch on it before calling this. That keeps the helper test-friendly.
+///
+/// Control characters (`ESC`, `BEL`, other C0 bytes) are stripped from both
+/// `target` and `label`: an embedded terminator would close the OSC early and
+/// let the remainder parse as arbitrary terminal escapes. Inputs come from
+/// model/tool output, so they are untrusted by default.
 #[must_use]
 pub fn wrap_link(target: &str, label: &str) -> String {
+    let target: String = target.chars().filter(|&c| is_osc_safe(c)).collect();
+    let label: String = label.chars().filter(|&c| is_osc_safe(c)).collect();
     let mut out = String::with_capacity(target.len() + label.len() + 12);
     out.push_str(OSC8_PREFIX);
-    out.push_str(target);
+    out.push_str(&target);
     out.push_str(OSC8_TERMINATOR);
-    out.push_str(label);
+    out.push_str(&label);
     out.push_str(OSC8_PREFIX);
     out.push_str(OSC8_TERMINATOR);
     out
+}
+
+/// Characters that may appear inside an OSC 8 payload: printable bytes and
+/// whitespace only — no `ESC`/`BEL`/C0 controls that could terminate or
+/// re-shape the escape sequence.
+fn is_osc_safe(c: char) -> bool {
+    !c.is_control()
 }
 
 /// Strip every ANSI escape sequence from `s` into `out`, preserving only the
@@ -218,6 +232,22 @@ mod tests {
             wrapped,
             "\x1b]8;;https://example.com\x1b\\click me\x1b]8;;\x1b\\"
         );
+    }
+
+    #[test]
+    fn wrap_link_strips_control_characters_from_payload() {
+        // An embedded ESC/BEL would terminate the OSC early and let the rest
+        // parse as arbitrary terminal escapes.
+        let wrapped = wrap_link(
+            "https://example.com/\x1b]8;;https://evil.example\x07",
+            "click \x1b[2Jme\x07",
+        );
+        assert_eq!(
+            wrapped,
+            "\x1b]8;;https://example.com/]8;;https://evil.example\x1b\\click [2Jme\x1b]8;;\x1b\\"
+        );
+        // No payload may contain a raw ESC or BEL.
+        assert!(!wrapped[..wrapped.len() - 2].contains('\x07'));
     }
 
     #[test]

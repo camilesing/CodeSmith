@@ -32,12 +32,23 @@ struct SandboxRunResponse {
 ///
 /// Constructed with a base URL (e.g. `"http://localhost:8080"`), an optional
 /// API key sent as a `Bearer` token, and a timeout in seconds.
-#[derive(Debug)]
+///
+/// Manual `Debug` so the API key never prints in plaintext.
 pub struct OpenSandboxBackend {
     base_url: String,
     api_key: Option<String>,
     timeout_secs: u64,
     client: reqwest::Client,
+}
+
+impl std::fmt::Debug for OpenSandboxBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenSandboxBackend")
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("timeout_secs", &self.timeout_secs)
+            .finish()
+    }
 }
 
 impl OpenSandboxBackend {

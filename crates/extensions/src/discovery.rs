@@ -142,7 +142,21 @@ fn discover_manifest_dir(dir: &Path, global: bool) -> Option<DiscoveredSource> {
             }
             dir.join(entry_path)
         }
-        None => dir.join(default_dylib_filename(&manifest.id)),
+        None => {
+            // The manifest-supplied `id` builds the default dylib filename.
+            // It is untrusted data from disk: anything but a single safe
+            // component (`../x`, `x/../../evil`, a Windows drive-relative
+            // `C:evil`) would point the loader outside the extension dir.
+            if !crate::installer::is_safe_id(&manifest.id) {
+                tracing::warn!(
+                    "skipping extension manifest {}: id {:?} is not a single safe path component",
+                    dir.join("extension.toml").display(),
+                    manifest.id
+                );
+                return None;
+            }
+            dir.join(default_dylib_filename(&manifest.id))
+        }
     };
     Some(DiscoveredSource {
         id: manifest.id,

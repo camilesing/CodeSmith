@@ -79,6 +79,9 @@ impl<'a> Installer<'a> {
         // 6. place (Placer constructed here — id from D8; R3).
         let placer = Placer::new(&id, &self.root);
         let placed = placer.place(&cdylib)?;
+        // 6b. record the install-time digest so the loader refuses a later,
+        //     silently swapped artifact.
+        crate::loader::write_sha256_sidecar(&placed)?;
         // 7. write extension.toml. `entry` is omitted so `discover_dylib`
         //    resolves `default_dylib_filename(id)`, matching the placed file.
         let mut manifest = format!("id = \"{id}\"\nversion = \"{version}\"\n");
@@ -127,8 +130,10 @@ impl<'a> Installer<'a> {
 /// Strict single-component whitelist mirroring
 /// `codesmith_agent_runtime::utils::is_safe_path_component` (a dependency
 /// would be circular here): non-empty, ASCII alphanumerics plus `_`, `-`,
-/// `.` in non-leading/trailing position.
-fn is_safe_id(id: &str) -> bool {
+/// `.` in non-leading/trailing position. Shared by install paths
+/// (uninstall, crates.io names/versions, placer ids, dylib filenames) so
+/// nothing user- or registry-supplied is joined into a path unchecked.
+pub(crate) fn is_safe_id(id: &str) -> bool {
     let bytes = id.as_bytes();
     if bytes.is_empty() || bytes[0] == b'.' || bytes[bytes.len() - 1] == b'.' {
         return false;

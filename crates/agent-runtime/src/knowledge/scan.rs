@@ -161,13 +161,27 @@ fn collect_md_files(memory_dir: &Path) -> Vec<PathBuf> {
 }
 
 fn build_header(path: &Path, memory_dir: &Path) -> Option<MemoryHeader> {
-    let mtime = fs::metadata(path).ok()?.modified().ok()?;
+    // Skip on failure, but loudly — a memory file that silently vanishes
+    // from the listing hides real corruption.
+    let mtime = match fs::metadata(path) {
+        Ok(meta) => meta.modified().ok()?,
+        Err(err) => {
+            tracing::warn!("knowledge scan: skipping {}: {err}", path.display());
+            return None;
+        }
+    };
     let mtime_ms = mtime
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
         .as_millis() as i64;
 
-    let content = fs::read_to_string(path).ok()?;
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(err) => {
+            tracing::warn!("knowledge scan: skipping {}: {err}", path.display());
+            return None;
+        }
+    };
     let (fm, _body) = parse_frontmatter(&content);
 
     let filename = path

@@ -10,6 +10,22 @@
 //! `auto_allow = ["git status"]` must match `git status -s` and
 //! `git status --porcelain`, but **not** `git push`.
 //!
+//! Two hardening rules guard the match itself:
+//!
+//! 1. Flags whose value *executes* a command (`--receive-pack=`,
+//!    `--upload-pack=`, `--exec=`, ssh `-oProxy*`, git `-c core.sshCommand=`)
+//!    deny the match outright — an allow rule never authorizes them, whatever
+//!    the base command.
+//! 2. A bare single-word pattern whose base command has more specific arity
+//!    entries (e.g. `"git"` with `git push` in the table) does not silently
+//!    cover every subcommand; the rule must name the subcommand.
+//!
+//! ## Known limitations
+//!
+//! The flag deny-list is not exhaustive; exec-by-positioning vectors such as
+//! `xargs <cmd>` fall back to the ordinary approval path rather than being
+//! matched here.
+//!
 //! ## Coverage
 //!
 //! 30+ common tools are covered across: git, npm, yarn, pnpm, cargo, docker,
@@ -343,6 +359,11 @@ impl BashArityDict {
     /// - `"git status"` does **not** match `"git push origin main"`.
     /// - Exact string patterns (e.g. `"ls"`) still work as before.
     ///
+    /// Commands carrying an exec-capable flag never match (see the module
+    /// invariant), and a bare base-command pattern whose command has more
+    /// specific arity entries (e.g. `"git"`) does not cover those
+    /// subcommands.
+    ///
     /// For patterns that are not in the arity table, the function falls back to
     /// a plain prefix test on the normalised command so that existing exact-match
     /// rules continue to work unchanged.
@@ -350,6 +371,10 @@ impl BashArityDict {
     pub fn allow_rule_matches(&self, pattern: &str, command: &str) -> bool {
         let pattern_lower = pattern.trim().to_ascii_lowercase();
         let command_tokens: Vec<&str> = command.split_whitespace().collect();
+
+        if contains_exec_capable_flag(&command_tokens) {
+            return false;
+        }
 
         // Classify the concrete command through the arity dictionary.
         let canonical = self.classify(&command_tokens);
@@ -371,6 +396,22 @@ impl BashArityDict {
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
+
+        // A single-word pattern whose base command has more specific arity
+        // entries must not cover those subcommands: `auto_allow = ["git"]`
+        // does not authorize `git push`.
+        let Some(base_word) = pattern_norm.split(' ').next() else {
+            return false;
+        };
+        if pattern_norm == base_word
+            && self
+                .entries
+                .iter()
+                .any(|(key, _)| key.starts_with(&format!("{base_word} ")))
+        {
+            return false;
+        }
+
         command_norm == pattern_norm || command_norm.starts_with(&format!("{pattern_norm} "))
     }
 
@@ -396,6 +437,37 @@ impl Default for BashArityDict {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Flags whose value executes a command when the matched tool runs it
+/// (`git push --receive-pack=<cmd>` runs `<cmd>` through the transport,
+/// `ssh -oProxyCommand=<cmd>` runs it locally). An allow rule never
+/// authorizes a command carrying one of these.
+fn contains_exec_capable_flag(tokens: &[&str]) -> bool {
+    const EXEC_FLAG_NAMES: &[&str] = &["--receive-pack", "--upload-pack", "--exec", "-exec"];
+    tokens.iter().enumerate().any(|(idx, token)| {
+        let lower = token.to_ascii_lowercase();
+        let flag_name = lower.split('=').next().unwrap_or("");
+        if EXEC_FLAG_NAMES.contains(&flag_name) {
+            return true;
+        }
+        // ssh `-oProxyCommand=…` (attached) or `-o ProxyCommand=…` (split).
+        if lower.starts_with("-o") && lower[2..].starts_with("proxy") {
+            return true;
+        }
+        if lower == "-o"
+            && tokens
+                .get(idx + 1)
+                .is_some_and(|next| next.to_ascii_lowercase().starts_with("proxy"))
+        {
+            return true;
+        }
+        // git `-c core.sshCommand=<cmd>` / `-c core.editor=<cmd>` /
+        // `-c core.pager=<cmd>` execute their value.
+        lower.contains("core.sshcommand=")
+            || lower.contains("core.editor=")
+            || lower.contains("core.pager=")
+    })
 }
 
 #[cfg(test)]
@@ -560,6 +632,34 @@ mod tests {
         assert!(dict().allow_rule_matches("aws s3 ls", "aws s3 ls"));
         // "aws s3 cp" should not match "aws s3 ls"
         assert!(!dict().allow_rule_matches("aws s3 ls", "aws s3 cp src dst"));
+    }
+
+    #[test]
+    fn allow_rule_bare_base_command_does_not_cover_subcommands() {
+        // "git" has more specific arity entries, so it must not cover them.
+        assert!(!dict().allow_rule_matches("git", "git push origin main"));
+        assert!(!dict().allow_rule_matches("git", "git status"));
+        // Bare invocation still matches, and commands without more specific
+        // table entries keep the legacy prefix behaviour.
+        assert!(dict().allow_rule_matches("git", "git"));
+        assert!(dict().allow_rule_matches("ls", "ls -la"));
+        assert!(dict().allow_rule_matches("make", "make all"));
+    }
+
+    #[test]
+    fn allow_rule_exec_capable_flags_denied() {
+        // Whatever the allow rule matches, a flag whose value executes a
+        // command must not be authorized by it.
+        assert!(!dict().allow_rule_matches(
+            "git push",
+            "git push --receive-pack=/bin/sh -c pwned origin"
+        ));
+        assert!(!dict().allow_rule_matches("git push", "git push --receive-pack /bin/sh origin"));
+        assert!(!dict().allow_rule_matches("git fetch", "git fetch --upload-pack=/bin/sh origin"));
+        assert!(!dict().allow_rule_matches("ssh", "ssh -oProxyCommand=touch$IFS/tmp/pwned host"));
+        assert!(!dict().allow_rule_matches("ssh", "ssh -o ProxyCommand=cmd host"));
+        assert!(!dict().allow_rule_matches("git push", "git -c core.sshCommand=/bin/sh push"));
+        assert!(!dict().allow_rule_matches("find", "find . -exec rm {} ;"));
     }
 
     // ── coverage count ────────────────────────────────────────────────────────

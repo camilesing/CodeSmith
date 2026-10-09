@@ -10,6 +10,10 @@ interface Props {
   typeLabels: Record<string, { en: string; zh: string }>;
 }
 
+// Single source of truth for the draft key the server derives too — a
+// divergent copy here silently breaks discard/post matching.
+const draftKey = (d: Pick<AgentDraft, "type" | "id">) => `draft:${d.type}:${d.id}`;
+
 export function AdminClient({ drafts, posted, isZh, typeLabels }: Props) {
   const [items, setItems] = useState(drafts);
   const [postedItems, setPostedItems] = useState(posted);
@@ -17,22 +21,22 @@ export function AdminClient({ drafts, posted, isZh, typeLabels }: Props) {
   const [editBody, setEditBody] = useState("");
   const [loading, setLoading] = useState<string | null>(null);
 
-  const handleAction = async (draftKey: string, action: "post" | "discard", editedBody?: string) => {
-    setLoading(draftKey);
+  const handleAction = async (key: string, action: "post" | "discard", editedBody?: string) => {
+    setLoading(key);
     try {
       const res = await fetch("/api/admin/post", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, draftKey, editedBody, lang: isZh ? "zh" : "en" }),
+        body: JSON.stringify({ action, draftKey: key, editedBody, lang: isZh ? "zh" : "en" }),
       });
       const data = await res.json();
       if (data.ok) {
         if (action === "discard") {
-          setItems((prev) => prev.filter((d) => `draft:${d.type}:${d.id}` !== draftKey));
+          setItems((prev) => prev.filter((d) => draftKey(d) !== key));
         } else if (action === "post") {
-          const posted = items.find((d) => `draft:${d.type}:${d.id}` === draftKey);
+          const posted = items.find((d) => draftKey(d) === key);
           if (posted) {
-            setItems((prev) => prev.filter((d) => `draft:${d.type}:${d.id}` !== draftKey));
+            setItems((prev) => prev.filter((d) => draftKey(d) !== key));
             setPostedItems((prev) => [{ ...posted, posted: true }, ...prev]);
           }
         }
@@ -48,7 +52,7 @@ export function AdminClient({ drafts, posted, isZh, typeLabels }: Props) {
   };
 
   const startEdit = (draft: AgentDraft) => {
-    const key = `draft:${draft.type}:${draft.id}`;
+    const key = draftKey(draft);
     setEditing(key);
     setEditBody(draft.bodyEn);
   };
@@ -62,7 +66,7 @@ export function AdminClient({ drafts, posted, isZh, typeLabels }: Props) {
             {isZh ? "待审阅" : "Pending"} <span className="font-mono text-sm text-ink-mute ml-2">({items.length})</span>
           </h2>
           {items.map((draft) => {
-            const key = `draft:${draft.type}:${draft.id}`;
+            const key = draftKey(draft);
             const label = typeLabels[draft.type] ?? { en: draft.type, zh: draft.type };
             return (
               <div key={key} className="hairline-t hairline-b hairline-l hairline-r bg-paper">
@@ -147,7 +151,7 @@ export function AdminClient({ drafts, posted, isZh, typeLabels }: Props) {
             {isZh ? "已发布" : "Posted"} <span className="font-mono text-sm text-ink-mute ml-2">({postedItems.length})</span>
           </h2>
           {postedItems.map((draft) => {
-            const key = `draft:${draft.type}:${draft.id}`;
+            const key = draftKey(draft);
             const label = typeLabels[draft.type] ?? { en: draft.type, zh: draft.type };
             return (
               <div key={key} className="hairline-t py-3 px-4 opacity-60">

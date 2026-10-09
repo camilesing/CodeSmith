@@ -94,11 +94,22 @@ impl SandboxRuntimeConfig {
     pub fn command_is_excluded(&self, program: &str, command_line: &str) -> bool {
         self.excluded_commands.iter().any(|entry| {
             let trimmed = entry.trim();
+            // Word-anchored match only: a bare string prefix would let
+            // excluding "ls" also exclude "lsof" (and run it unsandboxed).
             !trimmed.is_empty()
                 && (trimmed.eq_ignore_ascii_case(program)
-                    || command_line.trim_start().starts_with(trimmed))
+                    || is_word_anchored_prefix(trimmed, command_line))
         })
     }
+}
+
+/// Whether every whitespace-separated word of `pattern` matches the leading
+/// words of `command_line` (case-insensitive). Multi-word patterns must match
+/// whole words, so "git push" matches "git push origin" but never "git pushx".
+fn is_word_anchored_prefix(pattern: &str, command_line: &str) -> bool {
+    let mut pattern_words = pattern.split_whitespace();
+    let mut line_words = command_line.split_whitespace();
+    pattern_words.all(|p| line_words.next().is_some_and(|c| c.eq_ignore_ascii_case(p)))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -214,6 +225,11 @@ pub enum SandboxPolicy {
         network_access: bool,
     },
     /// Read-only filesystem access plus write access to specified directories.
+    ///
+    /// Known limitation: the system temp dirs (`/tmp` and `TMPDIR`) are
+    /// excluded from the writable roots by default; a policy that wants them
+    /// writable must be constructed (or configured) with the corresponding
+    /// exclude flag set to `false` explicitly.
     #[serde(rename = "workspace-write")]
     WorkspaceWrite {
         /// Additional directories where writes are allowed.
@@ -222,23 +238,29 @@ pub enum SandboxPolicy {
         /// Whether outbound network connections are permitted.
         #[serde(default)]
         network_access: bool,
-        /// Exclude TMPDIR from writable paths.
-        #[serde(default)]
+        /// Exclude TMPDIR from writable paths (default: true).
+        #[serde(default = "default_exclude_temp_dirs")]
         exclude_tmpdir: bool,
-        /// Exclude /tmp from writable paths.
-        #[serde(default)]
+        /// Exclude /tmp from writable paths (default: true).
+        #[serde(default = "default_exclude_temp_dirs")]
         exclude_slash_tmp: bool,
     },
 }
 
+/// Temp dirs are excluded unless a policy explicitly includes them.
+fn default_exclude_temp_dirs() -> bool {
+    true
+}
+
 impl Default for SandboxPolicy {
-    /// Returns the default policy: workspace-write with no extra roots and no network.
+    /// Returns the default policy: workspace-write with no extra roots, no
+    /// network, and no temp-dir writes.
     fn default() -> Self {
         SandboxPolicy::WorkspaceWrite {
             writable_roots: vec![],
             network_access: false,
-            exclude_tmpdir: false,
-            exclude_slash_tmp: false,
+            exclude_tmpdir: true,
+            exclude_slash_tmp: true,
         }
     }
 }
@@ -263,8 +285,8 @@ pub fn sandbox_policy_for_mode(mode: AppMode, workspace: &Path) -> SandboxPolicy
         AppMode::Agent => SandboxPolicy::WorkspaceWrite {
             writable_roots: vec![workspace.to_path_buf()],
             network_access: true,
-            exclude_tmpdir: false,
-            exclude_slash_tmp: false,
+            exclude_tmpdir: true,
+            exclude_slash_tmp: true,
         },
         AppMode::Yolo => SandboxPolicy::DangerFullAccess,
     }
@@ -287,8 +309,8 @@ impl SandboxPolicy {
         SandboxPolicy::WorkspaceWrite {
             writable_roots: vec![],
             network_access: true,
-            exclude_tmpdir: false,
-            exclude_slash_tmp: false,
+            exclude_tmpdir: true,
+            exclude_slash_tmp: true,
         }
     }
 
@@ -297,8 +319,8 @@ impl SandboxPolicy {
         SandboxPolicy::WorkspaceWrite {
             writable_roots: roots,
             network_access: network,
-            exclude_tmpdir: false,
-            exclude_slash_tmp: false,
+            exclude_tmpdir: true,
+            exclude_slash_tmp: true,
         }
     }
 
@@ -339,8 +361,8 @@ impl SandboxPolicy {
     /// This includes:
     /// - The current working directory
     /// - Any explicitly specified `writable_roots`
-    /// - /tmp (unless excluded)
-    /// - TMPDIR (unless excluded)
+    /// - /tmp and TMPDIR, only when the policy explicitly includes them
+    ///   (the corresponding exclude flag is `false`)
     ///
     /// For policies with full write access, returns an empty vec since
     /// there's no need to enumerate specific paths.
@@ -468,20 +490,52 @@ impl WritableRoot {
     ///
     /// Returns true if the path is under the root and not under any read-only subpath.
     pub fn is_path_writable(&self, path: &Path) -> bool {
-        // Must be under the root
-        if !path.starts_with(&self.root) {
+        // Normalize before comparing: the component-prefix check alone would
+        // let `/root/../etc/shadow` count as "under" `/root`.
+        let normalized = normalize_for_containment(path);
+        if !normalized.starts_with(&self.root) {
             return false;
         }
 
         // Must not be under any read-only subpath
         for subpath in &self.read_only_subpaths {
-            if path.starts_with(subpath) {
+            if normalized.starts_with(subpath) {
                 return false;
             }
         }
 
         true
     }
+}
+
+/// Resolve `path` for containment checks: canonicalize it when it exists,
+/// otherwise canonicalize the deepest existing ancestor and re-join the
+/// remaining tail. Falls back to the input unchanged when nothing along the
+/// path exists, which keeps lexical comparisons (and the mismatch visible)
+/// rather than silently passing or failing.
+fn normalize_for_containment(path: &Path) -> PathBuf {
+    if let Ok(canonical) = path.canonicalize() {
+        return canonical;
+    }
+    let mut current = path.to_path_buf();
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    while let Some(parent) = current.parent() {
+        if parent == current {
+            break;
+        }
+        if let Ok(canonical_parent) = current.canonicalize() {
+            let mut resolved = canonical_parent;
+            for part in tail.iter().rev() {
+                resolved.push(part);
+            }
+            return resolved;
+        }
+        if let Some(name) = current.file_name() {
+            tail.push(name.to_os_string());
+        }
+        current = parent.to_path_buf();
+    }
+    path.to_path_buf()
 }
 
 // ---------------------------------------------------------------------------
@@ -1286,6 +1340,64 @@ mod tests {
     fn sandbox_policy_for_mode_yolo_is_danger_full_access() {
         let policy = sandbox_policy_for_mode(AppMode::Yolo, Path::new("/repo"));
         assert!(matches!(policy, SandboxPolicy::DangerFullAccess));
+    }
+
+    #[test]
+    fn command_exclusion_is_word_anchored() {
+        let config = SandboxRuntimeConfig {
+            excluded_commands: vec!["ls".to_string(), "git status".to_string()],
+            ..SandboxRuntimeConfig::default()
+        };
+        // Exact program and whole-word matches still exclude.
+        assert!(config.command_is_excluded("ls", "ls -la /repo"));
+        assert!(config.command_is_excluded("git", "git status --short"));
+        // A string-prefix lookalike must NOT be excluded ("ls" vs "lsof").
+        assert!(!config.command_is_excluded("lsof", "lsof -i :8080"));
+        // Multi-word entries match leading words, not substrings.
+        assert!(!config.command_is_excluded("git", "git statusx"));
+    }
+
+    #[test]
+    fn writable_root_containment_rejects_parent_escape() {
+        let tmp = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonical TMPDIR");
+        let root = WritableRoot::new(tmp.clone());
+        assert!(root.is_path_writable(&tmp.join("file.txt")));
+        let escape = tmp.join("..").join("etc").join("passwd");
+        assert!(
+            !root.is_path_writable(&escape),
+            "`..` escape must not satisfy the containment check"
+        );
+    }
+
+    #[test]
+    fn workspace_write_excludes_temp_dirs_by_default() {
+        let policy = SandboxPolicy::default();
+        let SandboxPolicy::WorkspaceWrite {
+            exclude_tmpdir,
+            exclude_slash_tmp,
+            ..
+        } = policy
+        else {
+            panic!("default policy must be workspace-write");
+        };
+        assert!(exclude_tmpdir, "TMPDIR must be excluded by default");
+        assert!(exclude_slash_tmp, "/tmp must be excluded by default");
+
+        let canonical_tmp = Path::new("/tmp").canonicalize().unwrap_or_default();
+        let roots = policy.get_writable_roots(Path::new("/nonexistent-cwd"));
+        assert!(!roots.iter().any(|r| r.root == canonical_tmp));
+
+        // Explicit opt-in still adds them back.
+        let opted_in = SandboxPolicy::WorkspaceWrite {
+            writable_roots: vec![],
+            network_access: false,
+            exclude_tmpdir: false,
+            exclude_slash_tmp: false,
+        };
+        let roots = opted_in.get_writable_roots(Path::new("/nonexistent-cwd"));
+        assert!(roots.iter().any(|r| r.root == canonical_tmp));
     }
 
     #[test]
