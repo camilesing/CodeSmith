@@ -96,12 +96,36 @@ impl ToolSpec for TeamDeleteTool {
             )));
         }
 
-        // Destroy git worktrees for members that have them.
+        // Destroy git worktrees for members that have them. `worktree_path`
+        // comes from a JSON file any file-write tool can edit, so validate
+        // the shape before handing it to git. Failures are surfaced instead
+        // of swallowed: `git worktree remove` refuses dirty worktrees
+        // without --force, and that refusal is the uncommitted-work
+        // protection, so it must stay visible.
+        let mut worktree_errors: Vec<String> = Vec::new();
         for member in &team_file.members {
-            if let Some(wt_path) = &member.worktree_path {
-                let _ = std::process::Command::new("git")
-                    .args(["worktree", "remove", wt_path])
-                    .output();
+            let Some(wt_path) = &member.worktree_path else {
+                continue;
+            };
+            if let Err(reason) = validate_worktree_path(wt_path) {
+                crate::logging::warn(format!(
+                    "team_delete: skipping suspicious worktree_path for {}: {} ({})",
+                    member.name, reason, wt_path
+                ));
+                continue;
+            }
+            match std::process::Command::new("git")
+                .args(["worktree", "remove", "--"])
+                .arg(wt_path)
+                .output()
+            {
+                Ok(out) if out.status.success() => {}
+                Ok(out) => worktree_errors.push(format!(
+                    "{}: {}",
+                    wt_path,
+                    String::from_utf8_lossy(&out.stderr).trim()
+                )),
+                Err(e) => worktree_errors.push(format!("{wt_path}: {e}")),
             }
         }
 
@@ -132,7 +156,62 @@ impl ToolSpec for TeamDeleteTool {
             *tc = None;
         }
 
-        let result = json!({"deleted_team": team_name});
+        let mut result = json!({"deleted_team": team_name});
+        if !worktree_errors.is_empty() {
+            result["worktree_errors"] = json!(worktree_errors);
+        }
         ToolResult::json(&result).map_err(|e| ToolError::execution_failed(e.to_string()))
+    }
+}
+
+/// A member `worktree_path` must look like one the worktree tool created:
+/// absolute, no `..` components, and located under a `.codesmith/worktrees`
+/// directory. The team file is LLM-writable JSON, so an arbitrary path must
+/// never reach `git worktree remove` unvalidated.
+fn validate_worktree_path(path: &str) -> Result<(), String> {
+    use std::path::{Component, Path};
+    let path = Path::new(path);
+    if !path.is_absolute() {
+        return Err("not an absolute path".to_string());
+    }
+    // The `..` scan must cover the whole path — accepting on the marker pair
+    // alone would let `/repo/.codesmith/worktrees/../../etc` through.
+    let mut components = path.components().peekable();
+    let mut under_worktrees = false;
+    while let Some(component) = components.next() {
+        if let Component::ParentDir = component {
+            return Err("contains a `..` component".to_string());
+        }
+        if !under_worktrees
+            && let Component::Normal(name) = component
+            && name == ".codesmith"
+            && matches!(components.peek(), Some(Component::Normal(next)) if *next == "worktrees")
+        {
+            under_worktrees = true;
+        }
+    }
+    if under_worktrees {
+        Ok(())
+    } else {
+        Err("not under a .codesmith/worktrees directory".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_worktree_path;
+
+    #[test]
+    fn worktree_path_accepts_tool_shaped_paths() {
+        assert!(validate_worktree_path("/repo/.codesmith/worktrees/alpha").is_ok());
+        assert!(validate_worktree_path("/repo/.codesmith/worktrees/team-x-beta").is_ok());
+    }
+
+    #[test]
+    fn worktree_path_rejects_escaping_or_foreign_paths() {
+        assert!(validate_worktree_path("relative/.codesmith/worktrees/x").is_err());
+        assert!(validate_worktree_path("/repo/.codesmith/worktrees/../../etc").is_err());
+        assert!(validate_worktree_path("/etc/passwd").is_err());
+        assert!(validate_worktree_path("/some/other/repo").is_err());
     }
 }

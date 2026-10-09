@@ -426,6 +426,33 @@ impl FileKeyringStore {
             _ => PathBuf::from(name),
         }
     }
+
+    /// Run a read-modify-write cycle under an exclusive flock on a sibling
+    /// lock file. Without it, two concurrent processes both load the same
+    /// blob and the last `store_unlocked` wins, silently dropping the
+    /// other's write (lost update over the whole secrets file).
+    fn with_write_lock<T>(
+        &self,
+        f: impl FnOnce() -> Result<T, SecretsError>,
+    ) -> Result<T, SecretsError> {
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        // Read-write handle: an exclusive flock on Windows requires write
+        // access through the handle.
+        let lock_path = self.path.with_extension("json.lock");
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)?;
+        let mut rw = fd_lock::RwLock::new(file);
+        let _guard = rw
+            .write()
+            .map_err(|e| SecretsError::Io(std::io::Error::other(e)))?;
+        f()
+    }
 }
 
 /// Degenerate store used when no safe on-disk location can be resolved.
@@ -468,17 +495,23 @@ impl KeyringStore for FileKeyringStore {
         // (insecure permissions, corrupt JSON, transient I/O) MUST surface to
         // the caller — propagating it via `unwrap_or_default()` silently
         // wipes every previously stored secret on the next `store_unlocked`.
-        let mut blob = self.load_unlocked()?;
-        blob.entries.insert(key.to_string(), value.to_string());
-        self.store_unlocked(&blob)
+        // The whole cycle runs under the sibling flock so a concurrent
+        // set/delete in another process cannot interleave load/store.
+        self.with_write_lock(|| {
+            let mut blob = self.load_unlocked()?;
+            blob.entries.insert(key.to_string(), value.to_string());
+            self.store_unlocked(&blob)
+        })
     }
 
     fn delete(&self, key: &str) -> Result<(), SecretsError> {
         // Same invariant as `set`: never fall back to an empty blob on read
         // error, or `delete <one-key>` becomes `delete <every-key>`.
-        let mut blob = self.load_unlocked()?;
-        blob.entries.remove(key);
-        self.store_unlocked(&blob)
+        self.with_write_lock(|| {
+            let mut blob = self.load_unlocked()?;
+            blob.entries.remove(key);
+            self.store_unlocked(&blob)
+        })
     }
 
     fn backend_name(&self) -> &'static str {

@@ -45,11 +45,9 @@
   "publishConfig": {
     "access": "public"
   },
-  "preferGlobal": true,
   "files": [
     "bin/*.js",
     "scripts/*.js",
-    "test/*.js",
     "README.md",
     "package.json"
   ]

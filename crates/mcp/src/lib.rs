@@ -896,10 +896,14 @@ fn dispatch_stdio_request(
         "server/stop" | "servers/stop" => {
             let parsed: ServerNameParams = parse_params(params_or_object(params))?;
             if state.running.get(&parsed.name).copied().unwrap_or(false) {
-                state
-                    .manager
-                    .stop_server(&parsed.name)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?;
+                // Clear the flag before stopping: returning early on a stop
+                // error used to leave `running == true` forever, which then
+                // blocked every future `server/start` for this name.
+                state.running.insert(parsed.name.clone(), false);
+                if let Err(err) = state.manager.stop_server(&parsed.name) {
+                    tracing::warn!("mcp stop_server '{}' failed: {err}", parsed.name);
+                    return Err(JsonRpcError::internal(err.to_string()));
+                }
             }
             state.running.insert(parsed.name, false);
             Ok((json!({ "lifecycle": lifecycle_snapshot(state) }), false))

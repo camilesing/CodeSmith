@@ -707,11 +707,12 @@ fn apply_patch(root: &Path, patch: &str) -> Result<()> {
             continue;
         }
 
-        let (kind, rest) = raw_line.split_at(1);
-        let content = rest.to_string();
+        let mut line_chars = raw_line.chars();
+        let kind = line_chars.next();
+        let content = line_chars.as_str().to_string();
 
         match kind {
-            " " => {
+            Some(' ') => {
                 let Some(found) = file_lines[cursor..]
                     .iter()
                     .position(|line| line == &content)
@@ -725,7 +726,7 @@ fn apply_patch(root: &Path, patch: &str) -> Result<()> {
                 };
                 cursor = found + 1;
             }
-            "-" => {
+            Some('-') => {
                 if cursor >= file_lines.len() || file_lines[cursor] != content {
                     return Err(anyhow!(
                         "patch removal mismatch in {}: expected '{}'",
@@ -735,7 +736,7 @@ fn apply_patch(root: &Path, patch: &str) -> Result<()> {
                 }
                 file_lines.remove(cursor);
             }
-            "+" => {
+            Some('+') => {
                 file_lines.insert(cursor, content);
                 cursor += 1;
             }

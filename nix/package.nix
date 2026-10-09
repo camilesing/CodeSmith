@@ -51,7 +51,6 @@ rustPlatform.buildRustPackage (finalAttrs: {
     "codesmith-tui"
   ];
   cargoTestFlags = finalAttrs.cargoBuildFlags ++ [
-    "--lib"
     "--bins"
   ];
 

@@ -104,7 +104,7 @@ impl TaskV2Manager {
     }
 
     fn write_highwatermark(&self, value: u64) -> anyhow::Result<()> {
-        fs::write(self.highwatermark_file(), value.to_string())?;
+        crate::utils::write_atomic(&self.highwatermark_file(), value.to_string().as_bytes())?;
         Ok(())
     }
 
@@ -118,7 +118,9 @@ impl TaskV2Manager {
     fn write_task_file(&self, record: &TaskV2Record) -> anyhow::Result<()> {
         let path = self.task_file(&record.id)?;
         let content = serde_json::to_string_pretty(record)?;
-        fs::write(&path, content)?;
+        // Atomic temp-file + rename: readers hold no lock, so a truncate-
+        // then-write could expose a torn file mid-update.
+        crate::utils::write_atomic(&path, content.as_bytes())?;
         Ok(())
     }
 
@@ -390,6 +392,9 @@ impl TaskV2Manager {
 
     /// Delete a task by ID (raw physical deletion without reference cleanup).
     pub fn delete_task(&mut self, id: &str) -> anyhow::Result<()> {
+        let mut lock = self.acquire_write_lock()?;
+        let _guard = lock.write()?;
+
         let path = self.task_file(id)?;
         if path.exists() {
             fs::remove_file(&path)?;

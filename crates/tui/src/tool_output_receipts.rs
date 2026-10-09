@@ -327,12 +327,48 @@ fn summarize_input(value: &Value, max_chars: usize) -> String {
 }
 
 fn summarize_text(text: &str, max_chars: usize) -> String {
-    let escaped = text.replace('\n', "\\n");
+    let redacted = redact_secrets(text);
+    let escaped = redacted.replace('\n', "\\n");
     let mut summary: String = escaped.chars().take(max_chars).collect();
     if escaped.chars().count() > max_chars {
         summary.push_str("...");
     }
     summary
+}
+
+/// Redact secret-shaped substrings before they are persisted into durable
+/// session state via tool-output receipts. The receipts keep only a short
+/// preview of raw tool output and input, but that preview is enough to leak
+/// a printed credential, so known token shapes are masked before the
+/// preview is built.
+///
+/// Known limitation: only prefix-shaped provider tokens and Bearer values
+/// are redacted. A raw high-entropy key with no recognizable prefix passes
+/// through — length-based "long alphanumeric run" heuristics were tried and
+/// rejected for false-positive redaction of ordinary output (hashes,
+/// repeated characters, long identifiers).
+fn redact_secrets(text: &str) -> String {
+    use std::sync::OnceLock;
+
+    use regex::Regex;
+    static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
+    let patterns = PATTERNS.get_or_init(|| {
+        vec![
+            // Prefixed provider tokens (OpenAI/Anthropic, GitHub, Slack,
+            // AWS, Google) with their body.
+            Regex::new(
+                r"(?i)(?:sk-ant-|sk-|ghp_|gho_|ghu_|ghs_|ghr_|xox[baprs]-|AKIA|AIza)[A-Za-z0-9_\-]{12,}",
+            )
+            .expect("provider token regex"),
+            // `Authorization: Bearer <token>` values.
+            Regex::new(r"(?i)bearer\s+[A-Za-z0-9._~+/\-]{16,}").expect("bearer regex"),
+        ]
+    });
+    let mut out = text.to_string();
+    for pattern in patterns {
+        out = pattern.replace_all(&out, "[REDACTED]").into_owned();
+    }
+    out
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -503,5 +539,31 @@ mod tests {
         assert!(rendered.contains("raw over cap"));
         assert!(rendered.contains("compact receipt"));
         assert!(rendered.contains("artifact"));
+    }
+
+    #[test]
+    fn receipt_summaries_redact_secret_shapes() {
+        // Provider-prefixed tokens.
+        let summary = summarize_text(
+            "config loaded\napi_key=sk-abcdef0123456789abcdef0123456789\n",
+            240,
+        );
+        assert!(!summary.contains("sk-abcdef"));
+        assert!(summary.contains("[REDACTED]"));
+
+        // Bearer tokens.
+        let auth = summarize_text(
+            "Authorization: Bearer abcdef0123456789abcdef0123456789xyz",
+            240,
+        );
+        assert!(!auth.contains("abcdef0123456789"));
+
+        // AWS access key ids.
+        let aws = summarize_text("key: AKIAIOSFODNN7EXAMPLE", 240);
+        assert!(!aws.contains("AKIAIOSFODNN7EXAMPLE"));
+
+        // Ordinary prose is untouched.
+        let plain = summarize_text("tests passed: 42, warnings: 0", 240);
+        assert_eq!(plain, "tests passed: 42, warnings: 0");
     }
 }

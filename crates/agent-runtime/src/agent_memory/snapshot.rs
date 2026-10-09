@@ -95,7 +95,18 @@ pub fn load_snapshot_status(
     let synced_path = snapshot_dir.join(".snapshot-synced.json");
     let snapshot = read_snapshot(&snapshot_path);
     let synced = read_snapshot(&synced_path);
-    let current = build_snapshot(agent_type, scope, memory_dir, prompt).ok();
+    let current = match build_snapshot(agent_type, scope, memory_dir, prompt) {
+        Ok(current) => Some(current),
+        Err(err) => {
+            // Downgrade to "no snapshot comparison" but leave a trace — a
+            // silent None here disables change detection without a signal.
+            tracing::warn!(
+                "agent memory: snapshot build failed for {}: {err:#}",
+                memory_dir.display()
+            );
+            None
+        }
+    };
     let prompt_changed = match (&snapshot, &current) {
         (Some(old), Some(current)) => old.prompt_hash != current.prompt_hash,
         _ => false,
@@ -151,8 +162,24 @@ fn build_snapshot(
 }
 
 fn read_snapshot(path: &Path) -> Option<AgentMemorySnapshot> {
-    let content = fs::read_to_string(path).ok()?;
-    serde_json::from_str(&content).ok()
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(err) => {
+            tracing::warn!(
+                "agent memory: snapshot unreadable {}: {err}",
+                path.display()
+            );
+            return None;
+        }
+    };
+    match serde_json::from_str(&content) {
+        Ok(snapshot) => Some(snapshot),
+        Err(err) => {
+            tracing::warn!("agent memory: snapshot corrupt {}: {err}", path.display());
+            None
+        }
+    }
 }
 
 fn hash_memory_dir(memory_dir: &Path) -> std::io::Result<String> {
@@ -188,8 +215,15 @@ fn collect_md_files(
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .replace('\\', "/");
-            let content = fs::read_to_string(&path).unwrap_or_default();
-            entries.push((relative, content));
+            // Hashing an unreadable file as empty would silently skew the
+            // memory hash; skip it with a warning instead.
+            match fs::read_to_string(&path) {
+                Ok(content) => entries.push((relative, content)),
+                Err(err) => tracing::warn!(
+                    "agent memory: skipping unreadable file {}: {err}",
+                    path.display()
+                ),
+            }
         }
     }
     Ok(())

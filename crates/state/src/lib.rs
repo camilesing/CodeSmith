@@ -277,12 +277,20 @@ impl StateStore {
     }
 
     fn init_schema(&self) -> Result<()> {
-        let conn = self.conn()?;
+        let mut conn = self.conn()?;
         let user_version: u32 = conn.query_row("PRAGMA user_version;", [], |row| row.get(0))?;
         if user_version == 0 {
-            conn.execute_batch(
+            // IMMEDIATE so a concurrent first-open cannot both run the
+            // migration; the CREATE statements are idempotent, and the
+            // ALTER-based column additions are conditional so a database
+            // that already carries the columns (schema present,
+            // user_version still 0) initializes instead of failing on
+            // "duplicate column name".
+            let tx = conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .context("failed to begin schema init transaction")?;
+            tx.execute_batch(
                 r#"
-                BEGIN;
                 CREATE TABLE IF NOT EXISTS threads (
                     id TEXT PRIMARY KEY,
                     -- Retired 2026-10: never written (NULL), never read.
@@ -353,37 +361,69 @@ impl StateStore {
                     updated_at INTEGER NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_jobs_updated_at ON jobs(updated_at DESC);
-
-                -- Add parent_entry_id column, and set to last message before current message
-                ALTER TABLE messages ADD COLUMN parent_entry_id INTEGER NULL;
-                UPDATE messages
-                    SET parent_entry_id = (
-                        SELECT m2.id
-                        FROM messages m2
-                        WHERE m2.created_at < messages.created_at AND m2.thread_id = messages.thread_id
-                        ORDER BY m2.id DESC
-                        LIMIT 1
-                    );
-                CREATE INDEX idx_messages_parent_entry_id ON messages(parent_entry_id);
-
-                -- Add current_leaf_id column, and set to last message in thread
-                ALTER TABLE threads ADD COLUMN current_leaf_id INTEGER NULL;
-                UPDATE threads
-                    SET current_leaf_id = (
-                        SELECT m.id
-                        FROM messages m
-                        WHERE m.thread_id = threads.id
-                        ORDER BY m.id DESC
-                        LIMIT 1
-                    );
-
-                PRAGMA user_version = 1;
-                COMMIT;
                 "#,
             )
-            .context("failed to initialize thread schema")?;
+            .context("failed to initialize base thread schema")?;
+
+            // Add parent_entry_id column, and set to last message before current message
+            if !Self::column_exists(&tx, "messages", "parent_entry_id")? {
+                tx.execute_batch(
+                    r#"
+                    ALTER TABLE messages ADD COLUMN parent_entry_id INTEGER NULL;
+                    UPDATE messages
+                        SET parent_entry_id = (
+                            SELECT m2.id
+                            FROM messages m2
+                            WHERE m2.created_at < messages.created_at AND m2.thread_id = messages.thread_id
+                            ORDER BY m2.id DESC
+                            LIMIT 1
+                        );
+                    CREATE INDEX IF NOT EXISTS idx_messages_parent_entry_id ON messages(parent_entry_id);
+                    "#,
+                )
+                .context("failed to add messages.parent_entry_id")?;
+            }
+
+            // Add current_leaf_id column, and set to last message in thread
+            if !Self::column_exists(&tx, "threads", "current_leaf_id")? {
+                tx.execute_batch(
+                    r#"
+                    ALTER TABLE threads ADD COLUMN current_leaf_id INTEGER NULL;
+                    UPDATE threads
+                        SET current_leaf_id = (
+                            SELECT m.id
+                            FROM messages m
+                            WHERE m.thread_id = threads.id
+                            ORDER BY m.id DESC
+                            LIMIT 1
+                        );
+                    "#,
+                )
+                .context("failed to add threads.current_leaf_id")?;
+            }
+
+            tx.pragma_update(None, "user_version", 1)
+                .context("failed to set schema user_version")?;
+            tx.commit()
+                .context("failed to commit schema init transaction")?;
         }
         Ok(())
+    }
+
+    /// Whether `table` already has `column` (drives the conditional ALTERs
+    /// in [`init_schema`](Self::init_schema)).
+    fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .with_context(|| format!("failed to inspect columns of {table}"))?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next().context("failed to iterate table_info rows")? {
+            let name: String = row.get(1).context("failed to read column name")?;
+            if name == column {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Insert or update thread metadata.
@@ -605,7 +645,11 @@ impl StateStore {
     ///
     /// This controls which branch of the conversation tree is considered active
     /// when listing messages via [`list_messages`](Self::list_messages).
-    pub fn set_current_leaf_id(&self, thread_id: &str, current_leaf_id: &str) -> Result<()> {
+    ///
+    /// `current_leaf_id` is an `i64`: `threads.current_leaf_id` is an INTEGER
+    /// column and `messages.id` is INTEGER PRIMARY KEY, so binding a numeric
+    /// string here would never match.
+    pub fn set_current_leaf_id(&self, thread_id: &str, current_leaf_id: i64) -> Result<()> {
         let conn = self.conn()?;
         conn.execute(
             "UPDATE threads SET current_leaf_id = ?1 WHERE id = ?2",
@@ -700,7 +744,7 @@ impl StateStore {
             .context("failed to serialize message item payload")?;
 
         let tx = conn
-            .transaction()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .context("failed to begin append message transaction")?;
 
         let current_leaf_id: Option<i64> = tx
@@ -806,9 +850,11 @@ impl StateStore {
     /// Creates a new message whose parent is `message_id` and updates the thread's
     /// `current_leaf_id` to the new message. Returns the ID of the new message.
     /// This enables branching conversations from any point in the history.
+    ///
+    /// `message_id` is an `i64` matching `messages.id` (INTEGER PRIMARY KEY).
     pub fn fork_at_message(
         &self,
-        message_id: &str,
+        message_id: i64,
         role: &str,
         content: &str,
         item: Option<Value>,
@@ -822,7 +868,7 @@ impl StateStore {
             .context("failed to serialize message item payload")?;
 
         let tx = conn
-            .transaction()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .context("failed to begin fork message transaction")?;
 
         let thread_id: String = tx

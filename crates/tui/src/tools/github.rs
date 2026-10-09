@@ -417,7 +417,7 @@ async fn run_gh_text(context: &ToolContext, args: &[&str]) -> Result<String, Too
         .await
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                ToolError::not_available("gh CLI not found; install it or set DEEPSEEK_GH_BIN")
+                ToolError::not_available("gh CLI not found; install it or set CODESMITH_GH_BIN")
             } else {
                 ToolError::execution_failed(format!("failed to run gh: {e}"))
             }

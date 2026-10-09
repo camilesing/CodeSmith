@@ -222,8 +222,8 @@ allow_read = []
 deny_read = []
 allow_write = []
 deny_write = []
-exclude_tmpdir = true
-exclude_slash_tmp = false
+exclude_tmpdir = true            # 临时目录默认排除写入；需要时显式设为 false 放开
+exclude_slash_tmp = true
 
 [sandbox.network]
 enabled = true

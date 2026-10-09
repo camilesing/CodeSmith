@@ -61,7 +61,7 @@ use crate::tool_state::todo::{SharedTodoList, new_shared_todo_list};
 use crate::tool_state::worktree::{SharedWorktreeSessionState, new_shared_worktree_session_state};
 
 /// Configuration for the engine
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct EngineConfig {
     /// Model identifier to use for responses.
     pub model: String,
@@ -306,6 +306,23 @@ pub struct EngineConfig {
     // stays portable to `codesmith-agent-runtime`. They are host-injected by
     // the embedding binary (TUI `EngineHost`, future `Arc<dyn HostServices>`)
     // — see `host.runtime_services` and `host.hooks` in the engine.
+}
+
+/// Manual `Debug`: `search_api_key` is redacted (a derived impl would print
+/// the plaintext key into logs), and the remaining fields are summarized via
+/// `finish_non_exhaustive` so a future field can never leak through Debug
+/// by accident.
+impl std::fmt::Debug for EngineConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EngineConfig")
+            .field("model", &self.model)
+            .field("workspace", &self.workspace)
+            .field(
+                "search_api_key",
+                &self.search_api_key.as_ref().map(|_| "<redacted>"),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for EngineConfig {

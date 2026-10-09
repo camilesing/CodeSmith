@@ -1,6 +1,10 @@
 //! `js_execution` tool — execute model-provided JavaScript via a local
 //! Node.js runtime, returning stdout / stderr / exit code as JSON.
 //!
+//! Known limitation: the Node process runs with full host privileges (no
+//! `--permission` flags, no OS sandbox); "local runtime" below means local
+//! execution, not isolation.
+//!
 //! Mirrors the shape of `code_execution` (Python) so the model sees a
 //! single consistent surface for "run this snippet locally and tell me
 //! what it printed." The split into a dedicated module (rather than
@@ -41,7 +45,7 @@ pub fn js_execution_tool_definition() -> Tool {
         tool_type: Some(JS_EXECUTION_TOOL_TYPE.to_string()),
         name: JS_EXECUTION_TOOL_NAME.to_string(),
         description:
-            "Execute JavaScript code in a local sandboxed Node.js runtime and return stdout/stderr/return_code as JSON."
+            "Execute JavaScript code in a local Node.js runtime (full host privileges, not sandboxed) and return stdout/stderr/return_code as JSON."
                 .to_string(),
         input_schema: json!({
             "type": "object",

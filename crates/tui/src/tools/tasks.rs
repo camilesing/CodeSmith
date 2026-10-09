@@ -428,7 +428,9 @@ impl ToolSpec for TaskGateRunTool {
         let cwd = resolve_cwd(context, optional_str(&input, "cwd"))?;
 
         let safety = analyze_command(&command);
-        if !context.auto_approve && matches!(safety.level, SafetyLevel::Dangerous) {
+        // The dangerous-command classification blocks unconditionally:
+        // `auto_approve` may skip ordinary confirmations, never this guard.
+        if matches!(safety.level, SafetyLevel::Dangerous) {
             return Ok(ToolResult::error(format!(
                 "BLOCKED: gate command classified dangerous: {}",
                 safety.reasons.join("; ")
