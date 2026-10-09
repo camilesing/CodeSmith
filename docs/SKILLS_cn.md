@@ -62,7 +62,6 @@ CodeSmith 按顺序扫描以下目录，并合并找到的一切。只扫描实�
 | 7 | global | `~/.agents/skills` |
 | 8 | global | `~/.claude/skills` |
 | 9 | global | `~/.codesmith/skills` |
-| 10 | global | `~/.codesmith/skills`（旧版回退） |
 
 这些跨工具位置（`.agents`、`.opencode`、`.claude`、`.cursor`）意味着
 你已为其他代理维护的技能可原样复用——无需复制或建立符号链接。

@@ -69,7 +69,7 @@ enabled = true
 
 ## 添加记忆的三种方式
 
-### 1. `# ` 输入框前缀（#492）
+### 1. `# ` 输入框前缀
 
 在输入框中键入一行以 `#` 开头（但不是 `##` 或 `#!`）的内容：
 
@@ -84,7 +84,7 @@ TUI 会拦截该输入，并向你的记忆文件追加一条带时间戳的条�
 多个 `#` 的前缀会特意放行为正常的回合提交，这样你可以放心粘贴
 Markdown 标题。
 
-### 2. `/memory` 斜杠命令（#491）
+### 2. `/memory` 斜杠命令
 
 查看、清空文件或获取编辑提示：
 
@@ -105,7 +105,7 @@ Markdown 标题。
 - `/help memory` 显示斜杠命令摘要和用法行。
 - `/memory help` 打印记忆专属子命令以及解析后的路径。
 
-### 3. `remember` 工具（自动更新，#489）
+### 3. `remember` 工具（自动更新）
 
 当记忆启用时，模型会获得一个形状如下的 `remember` 工具：
 
@@ -305,5 +305,3 @@ codesmith memory consolidate --deterministic-only # 完全不调 LLM
 - `docs/SUBAGENTS.md` — 子代理会继承记忆，也可以使用 `remember`
   工具。
 - `docs/CONFIGURATION.md` — 完整配置参考。
-- Issue [#489](https://github.com/Hmbown/CodeSmith/issues/489)
-  — 跟踪这项工作的第一阶段 EPIC。

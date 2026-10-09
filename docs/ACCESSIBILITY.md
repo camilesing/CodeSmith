@@ -12,7 +12,7 @@ visual motion and density for screen-reader and low-motion users.
 | `NO_ANIMATIONS=1` env var | unset | At startup, forces `low_motion = true` and `fancy_animations = false`. Overrides whatever's saved in `settings.toml`. |
 | `low_motion` setting | `false` | Uses calmer streaming pacing and a lower redraw cadence so cursor/status motion is less aggressive. The footer water strip is controlled separately by `fancy_animations`. |
 | `fancy_animations` setting | `true` | Footer water-spout strip and pulsing sub-agent counter. Set to `false` to keep live-turn chrome still. |
-| `status_indicator` setting | `whale` | Header status chip. Set to `dots` for the compact dot cycle or `off` to hide it. |
+| `status_indicator` setting | `dots` | Header status chip. `dots` is the compact dot cycle; set to `off` to hide it. |
 | `calm_mode` setting | `false` | Collapses tool-output details by default and trims status messages. Useful for screen readers that announce every redraw. |
 | `show_thinking` setting | `true` | Set to `false` to hide model `reasoning_content` blocks entirely. |
 | `show_tool_details` setting | `true` | Set to `false` to render tool calls as one-liners without expanded payloads. |
@@ -46,7 +46,10 @@ The same toggles are reachable from the command palette:
 * `/settings set calm_mode on`
 * `/settings set status_indicator off`
 
-Settings written this way persist to `~/.config/codesmith/settings.toml`.
+Settings written this way persist to the settings file next to your config:
+`~/.config/deepseek/settings.toml` by default (a historical deepseek-tui
+location — when `CODESMITH_CONFIG_PATH` points at a custom `config.toml`,
+`settings.toml` lives in the same directory).
 The `NO_ANIMATIONS` env var still wins at startup if it's set, so
 unsetting the env var is the way to honor your saved choice.
 
@@ -67,15 +70,12 @@ version renders cleanly.
   service (e.g. macOS Terminal.app, iTerm2, Ghostty, Windows
   Terminal) will pass the rendered content straight through.
 * If you find a UI surface that still produces motion when
-  `low_motion = true`, please file an issue against
-  [`PRIOR: Screen-reader / accessibility flag`](https://github.com/Hmbown/CodeSmith/issues/0)
-  with a screenshot or terminal recording.
+  `low_motion = true`, please record it in [ISSUES.md](ISSUES.md) (the
+  issue ledger) with a screenshot or terminal recording.
 
-## Related issues / history
+## Related history
 
-* [#450](https://github.com/Hmbown/CodeSmith/issues/0) —
-  documenting the existing flag, adding the `NO_ANIMATIONS`
-  startup overlay, and writing this page.
-* [#449](https://github.com/Hmbown/CodeSmith/issues/449) —
-  footer statusline now uses the active theme's contrast pair
+* This page, the existing flag documentation, and the `NO_ANIMATIONS`
+  startup overlay landed as one accessibility pass.
+* The footer statusline now uses the active theme's contrast pair
   instead of a bespoke palette.

@@ -65,7 +65,7 @@ restart-required until the TUI is restarted.
 
 Default path:
 
-- `~/.codesmith/mcp.json` (`~/.codesmith/mcp.json` is still read when the CodeSmith file is absent)
+- `~/.codesmith/mcp.json`
 
 Overrides:
 

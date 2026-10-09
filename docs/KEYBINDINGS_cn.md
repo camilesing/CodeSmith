@@ -2,7 +2,7 @@
 
 这是 TUI 识别的所有键盘快捷键的权威目录。绑定按**上下文**分组——即它们在哪种焦点或模态状态下触发。列在"Composer"下的绑定只在输入框获得焦点时生效；列在"Transcript"下的只在会话记录获得焦点时生效；以此类推。
 
-绑定（目前）尚不支持用户自定义——已列入未来版本计划（#436、#437）。本文档就是未来配置文件覆盖所引用的契约。
+绑定（目前）尚不支持用户自定义——已列入未来版本计划。本文档就是未来配置文件覆盖所引用的契约。
 
 ## 全局（任意上下文）
 
@@ -54,7 +54,7 @@
 
 ### `@` 提及
 
-输入 `@<partial>` 会打开文件提及弹窗。`↑`/`↓` 循环选择条目，`Tab` 或 `Enter` 确认。`Esc` 隐藏弹窗。自 v0.8.10 (#441) 起，补全结果按提及的 frecency 重新排序——你经常且最近提及的文件会浮到顶部。
+输入 `@<partial>` 会打开文件提及弹窗。`↑`/`↓` 循环选择条目，`Tab` 或 `Enter` 确认。`Esc` 隐藏弹窗。自 v0.8.10 起，补全结果按提及的 frecency 重新排序——你经常且最近提及的文件会浮到顶部。
 
 ### `#` 快速添加（记忆）
 
@@ -145,12 +145,12 @@
 
 ## v0.8.29 审计说明
 
-- **`Shift+Enter` / `Alt+Enter` 换行现已在 Windows 上的 VSCode 中可用 (#1359)。** crossterm 的 `PushKeyboardEnhancementFlags` 命令在 Windows 上无条件返回 `Unsupported`（`is_ansi_code_supported() == false`），因此 Kitty 键盘协议的转义序列从未写入终端。没有它，VSCode 的 xterm.js 停留在传统模式，`Shift+Enter` 与普通 `Enter` 无法区分，导致输入框直接发送消息而不是插入换行。修复方案在 Windows 上直接写入 push/pop 转义序列（`\x1b[>1u` / `\x1b[<1u`），绕过 crossterm 的能力检测门控。VSCode 集成终端和 Windows Terminal ≥1.17 都支持 Kitty 键盘协议；不理解这些序列的终端会静默丢弃它们。
+- **`Shift+Enter` / `Alt+Enter` 换行现已在 Windows 上的 VSCode 中可用。** crossterm 的 `PushKeyboardEnhancementFlags` 命令在 Windows 上无条件返回 `Unsupported`（`is_ansi_code_supported() == false`），因此 Kitty 键盘协议的转义序列从未写入终端。没有它，VSCode 的 xterm.js 停留在传统模式，`Shift+Enter` 与普通 `Enter` 无法区分，导致输入框直接发送消息而不是插入换行。修复方案在 Windows 上直接写入 push/pop 转义序列（`\x1b[>1u` / `\x1b[<1u`），绕过 crossterm 的能力检测门控。VSCode 集成终端和 Windows Terminal ≥1.17 都支持 Kitty 键盘协议；不理解这些序列的终端会静默丢弃它们。
 
 ## v0.8.13 审计说明
 
 - **Ctrl-S 是暂存（stash），不是历史搜索。** 在本版本中已修正——`Alt-R` 才是历史搜索。
 - **移除了幻影 `Alt+Up`。** "编辑最后一条排队消息"的绑定曾在 README 中列出，但按键分发代码中从未存在。
 - **输入框为空时裸方向键可滚动会话记录（v0.8.13）。** 此前 `should_scroll_with_arrows` 门控被硬编码为 false，意味着即使输入框为空，裸方向键也总是浏览输入框历史。虚拟终端（Ghostty、Codex、Kitty 协议）中的用户受影响尤其严重，因为他们无法使用 Cmd+Up / Alt+Up 快捷键。
-- **可配置键位映射 (#436) 与 `tui.toml` (#437) 仍然延期。** `TuiPrefs` 结构体和加载器已存在于 `settings.rs` 中，但尚未在启动时接线。能让 `~/.codesmith/tui.toml` 覆盖单个条目的命名绑定注册表仍在待办中。
+- **可配置键位映射 与 `tui.toml` 仍然延期。** `TuiPrefs` 结构体和加载器已存在于 `settings.rs` 中，但尚未在启动时接线。能让 `~/.codesmith/tui.toml` 覆盖单个条目的命名绑定注册表仍在待办中。
 - **未发现其他损坏的绑定。** 上面列出的其他所有按键组合都能在 `crates/tui/src/tui/ui.rs`（按键事件分发）或 `crates/tui/src/tui/app.rs`（模式 + 状态转换）中找到实际的处理程序。

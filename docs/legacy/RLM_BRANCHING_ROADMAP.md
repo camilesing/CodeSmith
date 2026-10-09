@@ -1,5 +1,12 @@
 # RLM Branching Roadmap
 
+> **Historical (frozen 2026-10).** This is the upstream pre-fork roadmap.
+> The v0.8.45–v0.8.48 items landed upstream; the v0.9.0/v0.10.0 items
+> (replay/compile surfaces, DSPy/GEPA worksets) were never built, and the
+> milestone numbers refer to upstream releases, not CodeSmith versions
+> (this workspace reset to 0.1.0 after the fork). One claim below is
+> obsolete on its face: `AGENTS.md` is tracked in git here, not ignored.
+
 This note records the v0.8.45 design direction for RLM, DSPy, GEPA, and Model
 Lab without adding runtime dependencies or changing the live agent loop.
 

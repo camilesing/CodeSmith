@@ -79,7 +79,7 @@ appended so you can see the cut.
 
 ## Three ways to add to memory
 
-### 1. The `# ` composer prefix (#492)
+### 1. The `# ` composer prefix
 
 Type a single line that starts with `#` (but not `##` or `#!`) in
 the composer:
@@ -96,7 +96,7 @@ your real question.
 Multi-`#` prefixes deliberately fall through to normal turn
 submission so you can paste Markdown headings without surprise.
 
-### 2. The `/memory` slash command (#491)
+### 2. The `/memory` slash command
 
 Inspect, clear, or get hints about editing the file:
 
@@ -119,7 +119,7 @@ You can also discover the feature from the general help surfaces:
 - `/memory help` prints the memory-specific subcommands plus the
   resolved path.
 
-### 3. The `remember` tool (auto-update, #489)
+### 3. The `remember` tool (auto-update)
 
 When memory is enabled the model gets a `remember` tool with this
 shape:
@@ -346,5 +346,3 @@ codesmith memory consolidate --deterministic-only # no LLM call at all
 - `docs/SUBAGENTS.md` — sub-agents inherit memory and can use the
   `remember` tool too.
 - `docs/CONFIGURATION.md` — full config reference.
-- Issue [#489](https://github.com/Hmbown/CodeSmith/issues/489)
-  — phase-1 EPIC tracking the work.

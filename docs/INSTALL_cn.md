@@ -5,7 +5,7 @@
 如果你只想要简短版本，请参阅[主 README](../README.md#quickstart) 或[简体中文 README](../README.zh-CN.md#快速开始)。
 
 > [!WARNING]
-> **包管理安装尚未就绪。** npm / Homebrew / Scoop / crates.io / Docker 的包——以及它们的国内镜像方式（npmmirror、TUNA/Cargo 镜像、CNB、release 资产镜像）——均尚未发布，相关安装命令目前都不可用。当前唯一可用的安装路径是[从源码构建](#7-从源码构建)；镜像配置本身仍然适用于源码构建时的工具链下载。
+> **包管理安装尚未就绪。** npm / Homebrew / Scoop / crates.io / Docker 的包——以及它们的国内镜像方式（npmmirror、TUNA/Cargo 镜像、release 资产镜像）——均尚未发布，相关安装命令目前都不可用。当前唯一可用的安装路径是[从源码构建](#7-从源码构建)；镜像配置本身仍然适用于源码构建时的工具链下载。
 
 ---
 
@@ -151,7 +151,8 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
 
 对于可以通过手机控制的常驻工作区，请使用腾讯原生路径，而不是把安装当作笔记本电脑上的一次性步骤：
 
-- CNB 镜像/源：`https://cnb.cool/codesmith.net/codesmith.git`
+- 源仓库：`https://github.com/camilesing/CodeSmith`（权威来源）。CNB 镜像
+  `https://cnb.cool/codesmith.net/codesmith.git` 目前没有接收同步——其副本可能缺失或过期，未经核实不要依赖它（手动更新镜像的方法见 [RELEASE_RUNBOOK.md](RELEASE_RUNBOOK.md)）
 - 腾讯云轻量应用服务器（香港）：`/opt/whalebro` 远程工作区
 - 飞书/Lark：长连接手机桥接
 - EdgeOne：可选的公共 HTTPS 边缘，用于文档/状态/webhook 面
@@ -389,7 +390,7 @@ cargo install codesmith-tui     --locked
 
 ### `codesmith update` 报告 `no asset found for platform codesmith-linux-aarch64`
 
-这是 v0.8.7 中的 [#503](https://github.com/Hmbown/CodeSmith/issues/503) —— 自更新器使用了 Rust 的 `aarch64`/`x86_64` 架构名，而不是 release 工件的 `arm64`/`x64`。在 v0.8.8 之前的解决办法：
+这是 v0.8.7 中的一个 bug —— 自更新器使用了 Rust 的 `aarch64`/`x86_64` 架构名，而不是 release 工件的 `arm64`/`x64`。在 v0.8.8 之前的解决办法：
 
 ```bash
 npm i -g codesmith@latest
@@ -403,14 +404,18 @@ cargo install codesmith-cli --locked
 
 ### 中国大陆 `codesmith update` 被 GitHub 屏蔽
 
-`codesmith update` 通常会访问 GitHub Releases 获取元数据和二进制资产。在 GitHub 被屏蔽或不稳定的网络上，请改用 CNB 源镜像，并从 release tag 安装两个二进制：
+`codesmith update` 通常会访问 GitHub Releases 获取元数据和二进制资产。在 GitHub 被屏蔽或不稳定的网络上，请改用以下路径（要在不下载或替换二进制的情况下检查最新版本，请运行 `codesmith update --check`）：
 
-要在不下载或替换二进制的情况下检查最新版本，请运行 `codesmith update --check`。
+- 从 crates.io 安装——该 registry 可以通过第 2 步配置的 Cargo 镜像访问，且不需要访问 GitHub：
 
 ```bash
-cargo install --git https://cnb.cool/codesmith.net/codesmith --tag vX.Y.Z codesmith-cli --locked --force
-cargo install --git https://cnb.cool/codesmith.net/codesmith --tag vX.Y.Z codesmith-tui     --locked --force
+cargo install codesmith-cli --locked
+cargo install codesmith-tui     --locked
 ```
+
+- 或者让 `codesmith update` 使用镜像的 release 资产目录，方法见下文。
+
+原先的 CNB 源镜像（`https://cnb.cool/codesmith.net/codesmith.git`）不再同步，其副本可能缺失或过期——不要从它安装。
 
 如果你运营二进制资产镜像，`codesmith update` 可以直接使用它：
 

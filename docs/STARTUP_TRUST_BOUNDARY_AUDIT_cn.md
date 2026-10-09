@@ -18,7 +18,7 @@
 - `crates/tui/src/tui/onboarding/trust_directory.rs`
 - `crates/tui/src/tui/ui.rs`
 - `crates/tui/src/hooks.rs`
-- `crates/tui/src/tools/spec.rs`
+- `crates/agent-runtime/src/tools/spec.rs`
 - `crates/tui/src/workspace_trust.rs`
 
 本审计关注 CodeSmith 首次读取或执行工作区敏感输入的时机，
@@ -111,7 +111,7 @@ CodeSmith 文件工具可以访问该工作区之外的哪些具体路径？"
 | 启动操作 | 位置 | 当前阶段 | 分类 | 风险 | 建议操作 |
 |---|---|---|---|---|---|
 | CLI 分发器直接命令与 TUI 委托 | `crates/cli/src/lib.rs` | TUI 运行时之前 | 纯分发改动属信任前安全；命令特定行为各异 | 某些被委托的命令在没有共享启动边界文档的情况下进入 TUI。 | 保持分发器行为，但让 TUI 启动边界成为运行时事实来源。 |
-| 进程加固 | `crates/tui/src/main.rs`、`crates/tui/src/sandbox/process_hardening.rs` | TUI `main()` 中极早期 | 信任前安全 | 防御性进程设置不应依赖工作区信任。 | 保持信任前。 |
+| 进程加固 | `crates/tui/src/main.rs`、`crates/agent-runtime/src/sandbox/process_hardening.rs` | TUI `main()` 中极早期 | 信任前安全 | 防御性进程设置不应依赖工作区信任。 | 保持信任前。 |
 | Panic 钩子 / 崩溃转储设置 | `crates/tui/src/main.rs` | TUI `main()` 中极早期 | 信任前安全 | 可能写入诊断状态，但不读取工作区控制的启动输入。 | 保持信任前；确保崩溃转储不泄露机密。 |
 | 信号清理任务 | `crates/tui/src/main.rs` | TUI `main()` 中极早期 | 信任前安全 | 清理注册是进程作用域的。 | 保持信任前。 |
 | 工作区 `.env` 加载 | `crates/tui/src/main.rs` | 交互式启动中，位于工作区解析和启动边界计算之后 | 仅信任后 / 显式绕过 | 旧的 `dotenvy::dotenv()` cwd 搜索已被移除。交互式启动现在仅加载 `workspace/.env`，且仅当工作区已被信任或被 YOLO/skip-onboarding 显式绕过时。非交互式 dotenv 策略仍待定。 | 保持显式路径加载。在后续切片中定义非交互式 dotenv 行为。 |
@@ -133,7 +133,7 @@ CodeSmith 文件工具可以访问该工作区之外的哪些具体路径？"
 | 工具钩子 | `crates/tui/src/tui/tool_routing.rs` | 工具执行前后 | 信任后/工具策略控制 | 工具调用应仅在运行时信任和审批策略激活后发生。 | 保持在工具策略之下；记录与信任模式的关系。 |
 | 用于计数/状态的 MCP 配置加载 | `crates/tui/src/tui/app.rs`、`crates/tui/src/mcp.rs` | App 构建期间 | 若来源于全局配置则信任前安全 | 项目配置当前拒绝 `mcp_config_path`；全局 MCP 配置是用户输入。 | 仅对全局配置保持信任前；不允许项目 MCP 配置在信任前加载。 |
 | 工作区本地技能发现 | `crates/tui/src/tui/app.rs`、技能模块 | App 构建 / 工具目录构建期间 | 不确定 / 需要评审 | 工作区本地技能元数据可能是仓库控制的。加载文本比执行命令风险更低，但模型可见的指令可影响行为。 | 审计确切的发现和执行点。工作区本地技能倾向于信任后，或标记为受约束的信任前读取。 |
-| 工具路径强制执行 | `crates/tui/src/tools/spec.rs`、`crates/tui/src/core/engine.rs` | 工具执行期间 | 信任后/工具策略控制 | `trust_mode` 绕过工作区路径检查；允许列表在未受信任时收窄外部访问。 | 保持强制执行集中在 `ToolContext`；记录三个信任概念。 |
+| 工具路径强制执行 | `crates/agent-runtime/src/tools/spec.rs`、`crates/tui/src/core/engine.rs` | 工具执行期间 | 信任后/工具策略控制 | `trust_mode` 绕过工作区路径检查；允许列表在未受信任时收窄外部访问。 | 保持强制执行集中在 `ToolContext`；记录三个信任概念。 |
 
 ## 发现
 

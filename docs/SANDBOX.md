@@ -14,7 +14,7 @@ what is best-effort, and what is explicitly out of scope.
 | seccomp BPF | Linux | Syscall filter | Enforced |
 | Process hardening | Linux | Kernel prctl / rlimit | Enforced |
 | Bubblewrap (bwrap) | Linux | Namespace isolation | Optional |
-| Windows Job Object | Windows | Process-tree containment | v1 (PR #2220) |
+| Windows Job Object | Windows | Process-tree containment | v1 |
 
 ## Threat model: what each layer addresses
 
@@ -151,7 +151,7 @@ seatbelt profile is generated dynamically based on the `SandboxPolicy`.
 
 **Detection:** Checks stderr for `file-write` and `network` denial patterns.
 
-### 6. Windows Job Object (v1, PR #2220)
+### 6. Windows Job Object (v1)
 
 **When it runs:** Applied at process spawn time via
 `PROC_THREAD_ATTRIBUTE_JOB_LIST` and restricted token assignment.
@@ -316,10 +316,3 @@ checks. The `denial_message()` method returns a human-readable explanation.
 - `crates/tool-impls/src/tools/diagnostics.rs` — `diagnostics` tool reports
   `sandbox_available`, `sandbox_type`, `bwrap_available`, `cgroup_version`
 - `config.example.toml` — annotated config reference
-- Issue #2180 — this document
-- Issue #2182 — seccomp filter implementation
-- Issue #2183 — process hardening
-- Issue #2184 — bwrap passthrough
-- Issue #2185 — Windows Job Object v1
-- Issue #2186 — SandboxExecutor trait unification
-- Issue #2187 — sandbox parity tests

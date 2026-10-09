@@ -220,7 +220,7 @@ MCP 工具以 `mcp__<server>__<tool>` 的形式暴露（双下划线；旧的单
 - `-r, --resume <ID|PREFIX|latest>`：恢复一个已保存的会话
 - `-c, --continue`：恢复该工作区最近的会话
 - `--max-subagents <N>`：限制为 `1..=20`
-- `--mouse-capture` / `--no-mouse-capture`：选择加入或退出内置鼠标滚动、对话记录选择、右键上下文操作以及对话记录滚动条拖拽。在非 Windows 终端以及 Windows Terminal/ConEmu/Cmder 上，鼠标捕获默认开启，因此拖拽选择只会复制对话记录文本、去掉段落的视觉折行列换行，并限定在对话记录面板内；按住 Shift 拖拽或使用 `--no-mouse-capture` 可使用终端原生选择。在旧版 Windows 控制台（没有 `WT_SESSION` / `ConEmuPID` 的 CMD）以及 JetBrains JediTerm——PyCharm/IDEA/CLion 等——内部默认关闭，因为这些终端声称支持鼠标却把 SGR 鼠标事件当作原始文本转发（#878、#898）。在任何默认关闭的地方都可以用 `--mouse-capture` 选择加入。终端原生选择可能越过右侧栏并包含视觉折行，因为选择由终端而非 TUI 拥有。
+- `--mouse-capture` / `--no-mouse-capture`：选择加入或退出内置鼠标滚动、对话记录选择、右键上下文操作以及对话记录滚动条拖拽。在非 Windows 终端以及 Windows Terminal/ConEmu/Cmder 上，鼠标捕获默认开启，因此拖拽选择只会复制对话记录文本、去掉段落的视觉折行列换行，并限定在对话记录面板内；按住 Shift 拖拽或使用 `--no-mouse-capture` 可使用终端原生选择。在旧版 Windows 控制台（没有 `WT_SESSION` / `ConEmuPID` 的 CMD）以及 JetBrains JediTerm——PyCharm/IDEA/CLion 等——内部默认关闭，因为这些终端声称支持鼠标却把 SGR 鼠标事件当作原始文本转发。在任何默认关闭的地方都可以用 `--mouse-capture` 选择加入。终端原生选择可能越过右侧栏并包含视觉折行，因为选择由终端而非 TUI 拥有。
 - `--profile <NAME>`：选择配置 profile
 - `--config <PATH>`：配置文件路径
 - `-v, --verbose`：详细日志

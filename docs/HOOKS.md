@@ -6,8 +6,8 @@ transitions, on errors, around task creation, and around context compaction.
 Use hooks for audit logging, notifications, ephemeral credential injection,
 and pre-submit text transformation.
 
-Hooks are configured under the `[hooks]` table in `~/.codesmith/config.toml`
-(legacy `~/.codesmith/config.toml` also resolves). A project-level
+Hooks are configured under the `[hooks]` table in `~/.codesmith/config.toml`.
+A project-level
 `<workspace>/.codesmith/config.toml` may carry its own `[hooks]` table — when
 present it **replaces** the user-level table wholesale, it does not merge
 (the same rule as `instructions`). If you want both, list the global hooks

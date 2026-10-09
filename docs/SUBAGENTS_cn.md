@@ -129,7 +129,7 @@ todo 或计划状态时，使用分叉会话。
 已取消的记录会保留以供检查，但不占用槽位。丢失了 `task_handle`
 的代理（例如跨进程重启后）也不计入上限。
 
-## 每步 API 超时 (#1806, #1808)
+## 每步 API 超时
 
 每个子代理的步骤都为其 DeepSeek `create_message` 调用包装了
 每步超时，这样一个卡住的请求不会无限期占住父代理的完成唤醒
@@ -158,7 +158,7 @@ Pending → Running → (Completed | Failed(reason) | Cancelled | Interrupted(re
 `.codesmith/state/subagents.v1.json` 加载工作区持久化状态之后。
 父代理可以用同样的任务打开一个替代会话，或将其视为终态。
 
-### 会话边界 (#405)
+### 会话边界
 
 每个 `SubAgentManager` 实例在构造时为自己分配一个新的
 `session_boot_id`。每个新会话都会给代理打上该 id；工作区
@@ -189,7 +189,7 @@ BLOCKERS:   what stopped you; "None." if you finished cleanly
 父代理会把 `EVIDENCE` 当作下一轮的工作集，因此探索者和审查者
 应在这一部分保持精确。
 
-## 记忆与 `remember` 工具 (#489)
+## 记忆与 `remember` 工具
 
 当启用记忆功能（`[memory] enabled = true` 或
 `CODESMITH_MEMORY=on`）时，子代理继承父代理的记忆文件。它们可以
@@ -210,7 +210,7 @@ BLOCKERS:   what stopped you; "None." if you finished cleanly
   出发，但把回合范围的子令牌替换为一个新的取消令牌，因此父代理
   回合取消不会停止分离式的后台会话。
 - `is_running` 检查会忽略 `task_handle` 为 `None` 的代理；这避免
-  了把已持久化但已分离的记录计入并发上限 (#509)。
+  了把已持久化但已分离的记录计入并发上限。
 - `SharedSubAgentManager` 是 `Arc<RwLock<...>>` —— 读路径使用
   读锁，因此在多代理扇出期间 `/agents` 和侧栏投影不会阻塞
-  主循环 (#510)。
+  主循环。

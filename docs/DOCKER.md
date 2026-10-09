@@ -133,8 +133,8 @@ docker run --rm -it \
 ```
 
 For projects with different toolchains, build different toolbox tags, for
-example `codesmith-toolbox:frontend` and `codesmith-toolbox:backend`. The
-separate launcher idea discussed in issue #2217 can build on this contract, but
+example `codesmith-toolbox:frontend` and `codesmith-toolbox:backend`. A
+separate-launcher idea (discussed upstream) can build on this contract, but
 it is intentionally outside the core Docker image.
 
 ## Project bootstrap scripts

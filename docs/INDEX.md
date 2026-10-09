@@ -88,8 +88,7 @@ register an `Arc<dyn IndexBackendFactory>` into an
 built-ins are `tree-sitter` (feature-gated; the TUI enables it) and `none`
 (a no-op placeholder that fails validation if selected for an enabled
 capability). See `codesmith-index`'s crate docs for a worked example of
-registering a custom backend from a downstream crate, and the design spec
-at `docs/superpowers/specs/2026-08-19-code-index-design.md`.
+registering a custom backend from a downstream crate.
 
 ## Current limitations
 

@@ -15,11 +15,21 @@ in the codebase and its documentation (compiled 2026-08-24).
   references, and un-numbered known issues / TODOs / limitations.
 - `.zcode/plans/` (local tooling session artifacts) is out of scope, as
   are the untracked working artifacts under `docs/superpowers/plans/`.
-- `crates/tui/CHANGELOG.md` is a line-for-line copy of the root
-  `CHANGELOG.md`; all citations below use the root file.
+- The root `CHANGELOG.md` now holds only post-fork history; pre-fork
+  citations below point at `docs/legacy/CHANGELOG-upstream.md`, which
+  preserved the old root file verbatim (line numbers unchanged).
 
 Going forward, record new issue references here instead of pointing at the
 retired GitHub tracker.
+
+Swept 2026-10-09: every bare `#N` tracker reference and dead
+`github.com/Hmbown/CodeSmith` link was stripped from the docs under
+`docs/` per this policy. The upstream CodeWhale repository
+(`Hmbown/CodeSmith`) is no longer resolvable (404), so its issue numbers
+are unverifiable as well; numbers naming upstream work survive only in
+`docs/legacy/` (frozen history) and in the citations below.
+`docs/REVIEW_PIPELINE.md` and `docs/RLM_BRANCHING_ROADMAP.md` moved to
+`docs/legacy/` in the same sweep.
 
 ## 1. Internal `CX#N` references
 
@@ -87,9 +97,10 @@ Design reference:
 - `crates/agent-runtime/src/engine/host_executor.rs:1569`
 - `crates/agent-runtime/src/engine/host_executor.rs:8204`
 - `crates/agent-runtime/src/mcp.rs:3010`
-- `docs/rfcs/extra-findings-01-unicode-sanitization.md:12`
-- `CHANGELOG.md:64` (Unreleased sanitization entry)
-- `ROADMAP.md:1580` (read-file observe path)
+- `docs/rfcs/extra-findings-01-unicode-sanitization.md:12` (file since
+  removed; record preserved here)
+- `docs/legacy/CHANGELOG-upstream.md:64` (Unreleased sanitization entry)
+- `docs/legacy/ROADMAP-upstream.md:1580` (read-file observe path)
 
 ### GHSA-72w5-pf8h-xfp4 — sub-agent default privileges must be opt-in
 
@@ -102,7 +113,7 @@ optional fields must not silently enable shell.
 - `crates/tui/src/config.rs:5023` (regression test)
 - `crates/tui/src/task_manager.rs:582`
 - `crates/tui/src/task_manager.rs:1615` (regression test)
-- `CHANGELOG.md:2690`
+- `docs/legacy/CHANGELOG-upstream.md:2690`
 
 ### GHSA-88gh-2526-gfrr — `fetch_url` network-target validation
 
@@ -111,14 +122,14 @@ v0.8.26). Regression coverage pins parsing of bracketed IPv6 literals.
 
 - `crates/tool-impls/src/tools/fetch_url.rs:338`
 - `crates/tool-impls/src/tools/fetch_url.rs:687` (regression test)
-- `CHANGELOG.md:2688`
+- `docs/legacy/CHANGELOG-upstream.md:2688`
 
 ### Dependency-side advisories (for completeness)
 
 Third-party upgrades recorded in the changelog, not defects of this
 codebase:
 
-- `CHANGELOG.md:1985` — `next` 15.5.16 → 15.5.18 (GHSA-26hh-7cqf-hhc6,
+- `docs/legacy/CHANGELOG-upstream.md:1985` — `next` 15.5.16 → 15.5.18 (GHSA-26hh-7cqf-hhc6,
   App Router middleware/proxy bypass via segment-prefetch routes) and a
   `mermaid` GHSA-family bump.
 
@@ -167,7 +178,7 @@ while preserving first-seen order.
 - `crates/tui/src/config.rs:1218`
 - `crates/tui/src/main.rs:668`
 - `crates/tui/src/main.rs:1699`
-- `CHANGELOG.md:3766` (runtime API quartet entry)
+- `docs/legacy/CHANGELOG-upstream.md:3766` (runtime API quartet entry)
 
 ### whalescale#260 — `archived_only` thread filtering
 
@@ -205,9 +216,9 @@ The only `TODO` in the workspace. A sub-agent permission request
 currently emits just a status message ("X needs permission for Y");
 routing it to the real approval dialog waits on UI support.
 
-- `crates/agent-runtime/src/engine/team_inbox.rs:82`
+- `crates/agent-runtime/src/engine/team_inbox.rs:97`
 
-### OSC 8 rendering corruption (issue forthcoming)
+### OSC 8 rendering corruption (no tracker)
 
 A Windows session reported stray bytes eating the leading column of the
 next line and duplicating the composer panel during scroll (screenshot
@@ -266,12 +277,12 @@ policy; descriptions and version context are kept.
 
 ### CHANGELOG "Known issues" sections
 
-- **v0.8.32** (`CHANGELOG.md:1869`) — terminal-native text selection can
+- **v0.8.32** (`docs/legacy/CHANGELOG-upstream.md:1869`) — terminal-native text selection can
   still be blocked while the agent is thinking or streaming. v0.8.32
   removed the noisy Shift-to-bypass-mouse-capture path (the "scroll
   demon"), but the replacement selection path was not complete yet; the
   text-selection fix was planned for v0.8.33.
-- **v0.8.25** (`CHANGELOG.md:2862`) — Windows 10 conhost flicker
+- **v0.8.25** (`docs/legacy/CHANGELOG-upstream.md:2862`) — Windows 10 conhost flicker
   regression: the viewport-reset escape sequence added in v0.8.22 needs a
   Windows guard (deferred to v0.8.26). Snapshot system still snapshots
   every turn regardless of workspace changes (write-aware skip planned
@@ -279,20 +290,20 @@ policy; descriptions and version context are kept.
   the sidebar, drag-select edge auto-scroll, and mid-run MCP server
   stderr capture — all deferred to v0.8.26. Later entries show the
   drag-select auto-scroll, glyph, and MCP stderr fixes shipped in v0.8.26
-  (`CHANGELOG.md:2736`–`2753`), and cross-terminal flicker fixes in the
-  v0.8.27–v0.8.29 range (`CHANGELOG.md:2457`, `:2525`).
-- **v0.8.24** (`CHANGELOG.md:2957`) — Windows flicker/shake root cause:
+  (`docs/legacy/CHANGELOG-upstream.md:2736`–`2753`), and cross-terminal flicker fixes in the
+  v0.8.27–v0.8.29 range (`docs/legacy/CHANGELOG-upstream.md:2457`, `:2525`).
+- **v0.8.24** (`docs/legacy/CHANGELOG-upstream.md:2957`) — Windows flicker/shake root cause:
   the viewport-reset sequence (`\x1b[r\x1b[?6l\x1b[H\x1b[2J\x1b[3J`) may
   trigger a full screen clear on every repaint under conhost; a platform
   guard or less aggressive sequence was needed.
-- **v0.8.23** (`CHANGELOG.md:3039`) — mid-run MCP server stderr is
+- **v0.8.23** (`docs/legacy/CHANGELOG-upstream.md:3039`) — mid-run MCP server stderr is
   suppressed: a stdio server that spawns successfully but crashes later
   (e.g. during `initialize`) had no stderr capture; planned for v0.8.24,
-  shipped in v0.8.26 (`CHANGELOG.md:2744`).
+  shipped in v0.8.26 (`docs/legacy/CHANGELOG-upstream.md:2744`).
 
 ### docs/INDEX.md — code-index v1 limitations
 
-- `docs/INDEX.md:94` — references are name-based (lexical), not
+- `docs/INDEX.md:93` — references are name-based (lexical), not
   scope-resolved; the index is bound to the workspace root (worktree
   files not re-indexed in v1); background runtime threads run without the
   index; semantic search (`[index.semantic]`) is a reserved seam with no
@@ -300,7 +311,7 @@ policy; descriptions and version context are kept.
 
 ### docs/SANDBOX.md — what the sandbox does NOT protect against
 
-- `docs/SANDBOX.md:268` — network attacks (Linux and Windows v1 leave
+- `docs/SANDBOX.md:277` — network attacks (Linux and Windows v1 leave
   network open), git hook / fsmonitor execution, memory attacks, timing
   side channels, resource exhaustion (no CPU, fd, or disk-I/O limits),
   kernel vulnerabilities, and supply chain. Platform-specific gaps:
@@ -310,11 +321,11 @@ policy; descriptions and version context are kept.
 
 ### docs/KEYBINDINGS.md — configurable keymap deferred
 
-- `docs/KEYBINDINGS.md:129` — configurable keymap and `tui.toml` remain
+- `docs/KEYBINDINGS.md:155` — configurable keymap and `tui.toml` remain
   deferred: the `TuiPrefs` struct and loader exist in `settings.rs` but
   are not wired at startup; the named-binding registry that would let
   `~/.codesmith/tui.toml` override individual entries is still pending.
-  (Chinese mirror: `docs/KEYBINDINGS_cn.md:129`.)
+  (Chinese mirror: `docs/KEYBINDINGS_cn.md:155`.)
 
 ### docs/EXTENSIONS.md — disable takes effect on reload
 
@@ -322,10 +333,10 @@ policy; descriptions and version context are kept.
   disabled, but the effect lands on the next `/extension reload` (same
   reload caveat).
 
-### docs/superpowers/todo.md — §F extension-system handoff
+### Extension-system handoff (from the removed `docs/superpowers/todo.md`)
 
-- `docs/superpowers/todo.md` — §F5 (dylib loading) and §F2 (events,
-  handler chains, live reload) are complete. Remaining phases are
+- §F5 (dylib loading) and §F2 (events, handler chains, live reload) are
+  complete. Remaining phases are
   on-demand (no spec/plan yet): **§F3** EventBus real impl
   (`crates/extensions/src/bus.rs` `subscribe`/`publish` currently return
   `ExtensionError::Unimplemented`), **§F4** registerProvider, **§F6**
@@ -334,22 +345,22 @@ policy; descriptions and version context are kept.
   there: `streamable_http` (agent-runtime) and `runtime_api` (tui) —
   pre-existing, isolate-rerun if they fire.
 
-### docs/plans/codebase-health.md — cleanup backlog
+### Cleanup backlog (from the removed `docs/plans/codebase-health.md`)
 
-- `docs/plans/codebase-health.md:34` — drive `allow(dead_code)` in
+- Drive `allow(dead_code)` in
   `crates/agent-runtime/src/engine/` to zero (or attach a migration-issue
   link to each survivor); retire comments pointing at deleted code;
   merge/delete the TUI mirror modules (`tui/src/compaction/`,
   `tui/src/prompts.rs`, `tui/src/mcp.rs`, `tui/src/sandbox/`,
   `tui/src/execpolicy/`) once confirmed pure re-exports.
-- `docs/plans/codebase-health.md:37` — about 12 sub-agent tools deprecated
+- About 12 sub-agent tools deprecated
   since v0.8.33 (`agent_spawn`, `agent_result`, `agent_wait`,
   `delegate_to_agent`, …) are still registered in the catalog, costing
   tool-surface and prompt budget.
 
-### ROADMAP.md — known gaps and deferred re-wires
+### docs/legacy/ROADMAP-upstream.md — known gaps and deferred re-wires
 
-- **Thinking-only handling, by-design gaps** (`ROADMAP.md:1922`–`1940`) —
+- **Thinking-only handling, by-design gaps** (`docs/legacy/ROADMAP-upstream.md:1922`–`1940`) —
   goal-continuation and inline-REPL resume branches are deferred (infra
   still live but unwired: `tool_state/goal.rs`, `repl/`); the
   placeholder `"(reasoning omitted)"` Thinking block for tool-call turns
@@ -357,14 +368,14 @@ policy; descriptions and version context are kept.
   `reasoning_content` on tool-call assistant messages). The seam-3
   parallel-dispatch gap named there as the last "still to come" item has
   since closed (slice 40; `crates/agent-runtime/src/engine/host_executor.rs:251`).
-- **Compaction closure** (`ROADMAP.md:1536`–`1565`) — 25a
+- **Compaction closure** (`docs/legacy/ROADMAP-upstream.md:1536`–`1565`) — 25a
   (summary-prompt merge) and 25b (attachment reinject) landed; **25c**
   `post_compact_cleanup` is still deferred (merge-XOR-cleanup mutual
   exclusion plus divorced `CompactionProbe` slots); the read-file observe
   site has no production caller yet and is an independent follow-up
   slice.
 - **Kept superseded members under `#[allow(dead_code)]`**
-  (`ROADMAP.md:1716`–`1722`) — `layered_context_checkpoint` (zero
+  (`docs/legacy/ROADMAP-upstream.md:1716`–`1722`) — `layered_context_checkpoint` (zero
   callers; kept for nav-aids re-wire reference), `Engine::recover_context_overflow`
   (capacity-cascade reference), the KoD cluster (Knowledge-on-Demand,
   planned), `rx_user_input` (paired lifetime with the tui sender),
@@ -372,10 +383,9 @@ policy; descriptions and version context are kept.
   `EarlyToolResult` / `EarlyToolTask` (speculative dispatch), and
   reserved `CancelReason` enum variants.
 
-### docs/rfcs/2189-persistence-sqlite.md — persistence pain points
+### Persistence pain points (from the removed `docs/rfcs/2189-persistence-sqlite.md`)
 
-- `docs/rfcs/2189-persistence-sqlite.md:68` — the five pain points
-  motivating the SQLite persistence RFC: listing threads/sessions/tasks
+- The five pain points motivating the SQLite persistence RFC: listing threads/sessions/tasks
   requires scanning and deserializing every file; filtering requires full
   scans; no transactional consistency (a crash between saving a turn and
   its items can leave orphans); JSONL event replay is O(n) with no

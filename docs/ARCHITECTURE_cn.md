@@ -2,7 +2,7 @@
 
 本文档为开发者和贡献者提供 codesmith 架构的概览。
 深度设计叙述（provider 接缝、框架核心执行器、guardrail 吸收、扩展系统）见
-[DESIGN_INTERNALS.md](DESIGN_INTERNALS.md)（英文）。
+[DESIGN_INTERNALS_cn.md](DESIGN_INTERNALS_cn.md)。
 
 当前边界说明（v0.8.6）：
 - **框架层 / 实现层拆分。** 工作区分为框架群 —— `protocol`、`tools`、`agent`、
@@ -131,7 +131,7 @@
 
 ### LLM 集成
 
-- **`crates/agent/src/llm_client.rs`** - 带重试逻辑的抽象 `LlmClient` trait（`LlmClientHandle`、`with_retry`）
+- **`crates/agent/src/llm_client/`** - 带重试逻辑的抽象 `LlmClient` trait（`LlmClientHandle`、`with_retry`）
 - **`crates/agent/src/models.rs`** - API 请求/响应的数据结构（含 `ContentBlock` / `ImageSource` wire 类型）
 - **`crates/providers/`** - 具体提供商客户端（openai-compat、anthropic、mock）及 `rig_adapter` 请求塑形器；TUI 通过提供商注册表（`default_registry`）解析活跃客户端
 
@@ -179,7 +179,7 @@ Chat Completions 驱动 turn。
 
 ### LSP 集成
 
-- **`lsp/`** - 编辑后诊断注入（#136）
+- **`lsp/`** - 编辑后诊断注入
   - `mod.rs` - `LspManager` —— 按语言惰性初始化的传输池 + 配置
   - `client.rs` - `StdioLspTransport` —— 基于 stdio 的 JSON-RPC，支持 `didOpen`/`didChange`/`publishDiagnostics`
   - `diagnostics.rs` - 诊断类型、严重级别和 HTML 块渲染器
@@ -227,7 +227,7 @@ Chat Completions 驱动 turn。
 
 1. 在 TUI 中接收用户输入
 2. 输入由引擎（`crates/agent-runtime/src/engine/mod.rs`）处理
-3. 消息通过 `LlmClient` trait（`crates/agent/src/llm_client.rs`，来自 `crates/providers` 的提供商客户端）发送到 LLM
+3. 消息通过 `LlmClient` trait（`crates/agent/src/llm_client/`，来自 `crates/providers` 的提供商客户端）发送到 LLM
 4. 响应经流式归约器（`engine/turn/stream.rs`）流式返回
 5. 提取工具调用并通过 `tools/` 执行
 6. 在工具执行前后触发钩子

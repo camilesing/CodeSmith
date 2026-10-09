@@ -66,8 +66,7 @@ backend = "none"
 注册到 `IndexBackendRegistry` 中，再由 TOML 的 `backend = "…"` 键选择
 其一。内置后端有 `tree-sitter`（受特性门控；TUI 会启用它）和 `none`
 （空操作占位符；若为已启用的能力选择它会验证失败）。关于从下游 crate
-注册自定义后端的完整示例，参见 `codesmith-index` 的 crate 文档；设计
-规范位于 `docs/superpowers/specs/2026-08-19-code-index-design.md`。
+注册自定义后端的完整示例，参见 `codesmith-index` 的 crate 文档。
 
 ## 当前限制
 
