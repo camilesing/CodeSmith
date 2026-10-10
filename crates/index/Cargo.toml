@@ -14,7 +14,7 @@ description = "Pluggable per-workspace code index: symbol index, file inventory 
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
-codesmith-tools = { path = "../tools", version = "0.1.0" }
+codesmith-tools = { path = "../tools", version = "0.9.0" }
 dirs.workspace = true
 ignore.workspace = true
 rusqlite.workspace = true

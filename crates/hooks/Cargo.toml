@@ -14,7 +14,7 @@ description = "Hook dispatch and notifications parity for the CodeSmith workspac
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
-codesmith-protocol = { path = "../protocol", version = "0.1.0" }
+codesmith-protocol = { path = "../protocol", version = "0.9.0" }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
