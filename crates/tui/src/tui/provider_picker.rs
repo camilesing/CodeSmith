@@ -36,6 +36,31 @@ enum Stage {
     KeyEntry,
 }
 
+/// Environment variable(s) that also satisfy this provider's auth, in the
+/// display form (no commas; `/`-separated alternatives). Module-level rather
+/// than a view method so the onboarding key screen names the same variables
+/// without duplicating the table.
+pub(crate) fn env_var_for(provider: ApiProvider) -> &'static str {
+    match provider {
+        ApiProvider::Deepseek => "DEEPSEEK_API_KEY",
+        ApiProvider::NvidiaNim => "NVIDIA_API_KEY",
+        ApiProvider::Openai => "OPENAI_API_KEY",
+        ApiProvider::Atlascloud => "ATLASCLOUD_API_KEY",
+        ApiProvider::WanjieArk => "WANJIE_ARK_API_KEY",
+        ApiProvider::Volcengine => "VOLCENGINE_API_KEY",
+        ApiProvider::Openrouter => "OPENROUTER_API_KEY",
+        ApiProvider::XiaomiMimo => "XIAOMI_MIMO_API_KEY / XIAOMI_API_KEY / MIMO_API_KEY",
+        ApiProvider::Novita => "NOVITA_API_KEY",
+        ApiProvider::Fireworks => "FIREWORKS_API_KEY",
+        ApiProvider::Siliconflow => "SILICONFLOW_API_KEY",
+        ApiProvider::Moonshot => "MOONSHOT_API_KEY / KIMI_API_KEY",
+        ApiProvider::Sglang => "SGLANG_API_KEY",
+        ApiProvider::Vllm => "VLLM_API_KEY",
+        ApiProvider::Ollama => "OLLAMA_API_KEY",
+        ApiProvider::Anthropic => "ANTHROPIC_API_KEY / CLAUDE_API_KEY",
+    }
+}
+
 pub struct ProviderPickerView {
     providers: Vec<(ApiProvider, bool)>,
     active_provider: ApiProvider,
@@ -92,27 +117,6 @@ impl ProviderPickerView {
 
     fn selected_has_key(&self) -> bool {
         self.providers[self.selected_idx].1
-    }
-
-    fn env_var_for(provider: ApiProvider) -> &'static str {
-        match provider {
-            ApiProvider::Deepseek => "DEEPSEEK_API_KEY",
-            ApiProvider::NvidiaNim => "NVIDIA_API_KEY",
-            ApiProvider::Openai => "OPENAI_API_KEY",
-            ApiProvider::Atlascloud => "ATLASCLOUD_API_KEY",
-            ApiProvider::WanjieArk => "WANJIE_ARK_API_KEY",
-            ApiProvider::Volcengine => "VOLCENGINE_API_KEY",
-            ApiProvider::Openrouter => "OPENROUTER_API_KEY",
-            ApiProvider::XiaomiMimo => "XIAOMI_MIMO_API_KEY / XIAOMI_API_KEY / MIMO_API_KEY",
-            ApiProvider::Novita => "NOVITA_API_KEY",
-            ApiProvider::Fireworks => "FIREWORKS_API_KEY",
-            ApiProvider::Siliconflow => "SILICONFLOW_API_KEY",
-            ApiProvider::Moonshot => "MOONSHOT_API_KEY / KIMI_API_KEY",
-            ApiProvider::Sglang => "SGLANG_API_KEY",
-            ApiProvider::Vllm => "VLLM_API_KEY",
-            ApiProvider::Ollama => "OLLAMA_API_KEY",
-            ApiProvider::Anthropic => "ANTHROPIC_API_KEY / CLAUDE_API_KEY",
-        }
     }
 
     fn provider_hint(provider: ApiProvider, has_key: bool) -> String {
@@ -285,7 +289,7 @@ impl ProviderPickerView {
 
         let hint = format!(
             "Or set the {} environment variable and re-open /provider.",
-            Self::env_var_for(provider),
+            env_var_for(provider),
         );
         Paragraph::new(Line::from(Span::styled(
             hint,

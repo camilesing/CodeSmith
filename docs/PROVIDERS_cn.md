@@ -35,10 +35,17 @@ Providers 是规划中的附加开源模型路由层；它们在当前检出中�
 
 使用以下任一入口选择提供商：
 
+- 首次运行：TUI onboarding 会先让你选择一次，然后才要求填写密钥
 - CLI：`codesmith --provider <id>`
 - TUI：`/provider <id>` 或提供商选择器
 - 环境变量：`CODESMITH_PROVIDER=<id>`
 - 配置：`provider = "<id>"`
+
+首次运行的选择器和 `/provider` 弹窗会把选择记录为
+`~/.codesmith/settings.toml` 中的 `default_provider`；在 TUI 内该设置的
+优先级高于配置文件中的 `provider =`。选中的提供商会以自身默认模型启动，
+而凭据已经可解析的提供商——环境变量、配置文件、或 Ollama 这类自托管运行时
+——会跳过密钥输入。
 
 `deepseek-cn`、`deepseek_china`、`deepseekcn` 和 `deepseek-china` 被接受为
 `deepseek` 的旧版别名。它们不会选择不同的官方主机；

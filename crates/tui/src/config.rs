@@ -2391,6 +2391,60 @@ impl Config {
         .to_string()
     }
 
+    /// Model to start a newly selected provider on.
+    ///
+    /// Used by first-run onboarding, where the config file predates the
+    /// provider choice: `ensure_config_file_exists` writes the DeepSeek
+    /// `default_text_model`, and [`Config::default_model`] maps that onto only
+    /// some providers — for OpenAI, Anthropic, Ollama, Volcengine, Xiaomi MiMo,
+    /// AtlasCloud, and Wanjie Ark it would pass a DeepSeek id through to an
+    /// endpoint that does not serve it.
+    ///
+    /// Resolution order: an explicit per-provider model from settings, then an
+    /// explicit `[providers.<name>] model`, then a root `default_text_model`
+    /// that is *not* the first-run template value (the user configured that
+    /// route themselves, including pass-through providers that take it
+    /// verbatim), otherwise the provider's default heavy model. DeepSeek keeps
+    /// [`Config::default_model`]'s resolution either way.
+    #[must_use]
+    pub fn default_model_for_new_provider(&self, provider: ApiProvider) -> String {
+        let settings = crate::settings::Settings::load().unwrap_or_default();
+        if let Some(model) = settings
+            .provider_models
+            .as_ref()
+            .and_then(|models| models.get(provider.as_str()))
+            .map(|model| model.trim())
+            .filter(|model| !model.is_empty())
+        {
+            return model.to_string();
+        }
+        if let Some(model) = self
+            .provider_config_for(provider)
+            .and_then(|entry| entry.model.as_deref())
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+        {
+            return model.to_string();
+        }
+        let root_model = self
+            .default_text_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|model| !model.is_empty());
+        let root_is_configured_choice =
+            root_model.is_some_and(|model| !model.eq_ignore_ascii_case(DEFAULT_TEXT_MODEL));
+        if matches!(provider, ApiProvider::Deepseek) || root_is_configured_choice {
+            // `default_model` resolves against the *active* provider; the
+            // caller is asking about the provider it just picked, so resolve a
+            // copy with that provider selected instead of mutating `self`
+            // (the switch itself may still fail and needs the original).
+            let mut resolved = self.clone();
+            resolved.provider = Some(provider.as_str().to_string());
+            return resolved.default_model();
+        }
+        tier_default_model_for_provider(provider, ModelTier::Heavy).to_string()
+    }
+
     /// Return the configured API base URL (normalized).
     #[must_use]
     pub fn provider_base_url(&self) -> String {
@@ -5029,6 +5083,17 @@ pub fn active_provider_uses_env_only_api_key(config: &Config) -> bool {
     active_provider_has_env_api_key(config) && !active_provider_has_config_api_key(config)
 }
 
+/// Providers that are expected to serve requests without authentication —
+/// self-hosted runtimes the user started themselves. The single definition of
+/// that rule: [`has_api_key_for`] and the onboarding provider list both read it.
+#[must_use]
+pub fn provider_is_self_hosted(provider: ApiProvider) -> bool {
+    matches!(
+        provider,
+        ApiProvider::Sglang | ApiProvider::Vllm | ApiProvider::Ollama
+    )
+}
+
 /// Check whether the given provider has any usable API key — via env var,
 /// provider/root config. Used by the `/provider` picker to decide whether to
 /// prompt for a key inline.
@@ -5092,10 +5157,7 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
     }
 
     // Self-hosted providers typically run without authentication.
-    if matches!(
-        provider,
-        ApiProvider::Sglang | ApiProvider::Vllm | ApiProvider::Ollama
-    ) {
+    if provider_is_self_hosted(provider) {
         return true;
     }
 
@@ -9468,6 +9530,83 @@ api_key = "moonshot-platform-key"
         };
 
         assert!(has_api_key_for(&config, ApiProvider::Deepseek));
+    }
+
+    #[test]
+    fn new_provider_does_not_inherit_the_first_run_deepseek_model() {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "codesmith-tui-new-provider-model-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root).expect("temp root");
+        let _guard = EnvGuard::new(&temp_root);
+
+        // The first-run template writes this DeepSeek id into `config.toml`
+        // before the user picks a provider.
+        let config = Config {
+            default_text_model: Some(DEFAULT_TEXT_MODEL.to_string()),
+            ..Config::default()
+        };
+
+        // Providers that do not serve DeepSeek ids must start on their own
+        // default instead of the template's model.
+        assert_eq!(
+            config.default_model_for_new_provider(ApiProvider::Anthropic),
+            DEFAULT_ANTHROPIC_MODEL
+        );
+        assert_eq!(
+            config.default_model_for_new_provider(ApiProvider::Openai),
+            DEFAULT_OPENAI_MODEL
+        );
+        assert_eq!(
+            config.default_model_for_new_provider(ApiProvider::Ollama),
+            DEFAULT_OLLAMA_MODEL
+        );
+        // Gateways that do serve DeepSeek models keep the mapped id, and the
+        // fallback provider keeps the curated root model.
+        assert_eq!(
+            config.default_model_for_new_provider(ApiProvider::Openrouter),
+            DEFAULT_OPENROUTER_MODEL
+        );
+        assert_eq!(
+            config.default_model_for_new_provider(ApiProvider::Deepseek),
+            DEFAULT_TEXT_MODEL
+        );
+
+        // An explicit provider-scoped model outranks the provider default.
+        let explicit = Config {
+            default_text_model: Some(DEFAULT_TEXT_MODEL.to_string()),
+            providers: Some(ProvidersConfig {
+                anthropic: ProviderConfig {
+                    model: Some("claude-opus-4-1".to_string()),
+                    ..ProviderConfig::default()
+                },
+                ..ProvidersConfig::default()
+            }),
+            ..Config::default()
+        };
+        assert_eq!(
+            explicit.default_model_for_new_provider(ApiProvider::Anthropic),
+            "claude-opus-4-1"
+        );
+
+        // A root model that is not the template value is the user's own route
+        // configuration — pass-through providers take it verbatim today, so
+        // the picker must not overwrite it with a provider default.
+        let hand_configured = Config {
+            default_text_model: Some("MiniMax-M2.7".to_string()),
+            ..Config::default()
+        };
+        assert_eq!(
+            hand_configured.default_model_for_new_provider(ApiProvider::Openai),
+            "MiniMax-M2.7"
+        );
     }
 
     #[test]

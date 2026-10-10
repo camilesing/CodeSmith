@@ -37,10 +37,18 @@ The canonical provider IDs are:
 
 Use any of these surfaces to select a provider:
 
+- First run: the TUI onboarding asks once, before it asks for a key
 - CLI: `codesmith --provider <id>`
 - TUI: `/provider <id>` or the provider picker
 - Env: `CODESMITH_PROVIDER=<id>`
 - Config: `provider = "<id>"`
+
+The first-run picker and the `/provider` modal record the choice as
+`default_provider` in `~/.codesmith/settings.toml`; within the TUI that setting
+outranks `provider =` in the config file. A picked provider starts on its own
+default model, and a provider whose credential already resolves — an
+environment variable, the config file, or a self-hosted runtime such as Ollama
+— skips the key prompt.
 
 `deepseek-cn`, `deepseek_china`, `deepseekcn`, and `deepseek-china` are accepted
 as legacy aliases for `deepseek`. They do not select a different official host;
