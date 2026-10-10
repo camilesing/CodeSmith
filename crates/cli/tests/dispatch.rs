@@ -4,30 +4,27 @@
 //! wiring in `run()`: the guard helpers are unit-tested next to the code, but a
 //! guard that is never called would still pass those tests.
 
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::Command;
 
 /// `CODESMITH_HOME` keeps config and state lookups out of the developer's real
 /// `~/.codesmith`. The typo path never reads config at all — it fails before
 /// `ConfigStore::load`.
-fn codesmith(home: &PathBuf) -> Command {
+fn codesmith(home: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_codesmith"));
     cmd.env("CODESMITH_HOME", home);
     cmd
 }
 
-fn scratch_home(name: &str) -> PathBuf {
-    let dir =
-        std::env::temp_dir().join(format!("codesmith-dispatch-{name}-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("create scratch CODESMITH_HOME");
-    dir
+fn scratch_home() -> tempfile::TempDir {
+    tempfile::tempdir().expect("create scratch CODESMITH_HOME")
 }
 
 #[test]
 fn unknown_bare_word_fails_loud_without_opening_the_tui() {
     // Regression: before the guard, `codesmith docotr` spawned `codesmith-tui`
     // with `--prompt docotr` and opened an interactive session on the typo.
-    let out = codesmith(&scratch_home("typo"))
+    let out = codesmith(scratch_home().path())
         .arg("docotr")
         .output()
         .expect("spawn codesmith");
@@ -36,7 +33,7 @@ fn unknown_bare_word_fails_loud_without_opening_the_tui() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     for token in [
         "unrecognized subcommand 'docotr'",
-        "codesmith -p 'docotr'",
+        "codesmith -p docotr",
         "codesmith run <COMMAND>",
     ] {
         assert!(
@@ -53,7 +50,7 @@ fn unknown_bare_word_fails_loud_without_opening_the_tui() {
 
 #[test]
 fn version_subcommand_prints_the_build_version() {
-    let out = codesmith(&scratch_home("version"))
+    let out = codesmith(scratch_home().path())
         .arg("version")
         .output()
         .expect("spawn codesmith");
@@ -68,7 +65,7 @@ fn version_subcommand_prints_the_build_version() {
 
 #[test]
 fn docker_subcommand_prints_the_container_quick_start() {
-    let out = codesmith(&scratch_home("docker"))
+    let out = codesmith(scratch_home().path())
         .arg("docker")
         .output()
         .expect("spawn codesmith");

@@ -42,6 +42,8 @@ A bare first word is read as a subcommand name: `codesmith docker` and
 Prompts keep their documented forms: `codesmith "explain this function"` (one
 quoted argument), `codesmith hello world` (the whole unquoted tail), and
 `codesmith -p <PROMPT>` for a single-word prompt such as `codesmith -p docker`.
+A `--` terminator ends subcommand matching too, so `codesmith -- docker` also
+sends `docker` as the prompt.
 
 Without `-p`, a lone ASCII word cannot be told apart from a mistyped command,
 so it is rejected with a hint pointing at `-p`. Non-ASCII words

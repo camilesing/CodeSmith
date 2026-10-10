@@ -165,9 +165,13 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
   anything. Now a single bare command-shaped word (ASCII, no spaces) with no
   `-p` and no `--continue` is read as a subcommand name and rejected with
   clap's `unrecognized subcommand '<word>'` usage error (exit code 2) plus
-  hints for `-p` and `codesmith run <COMMAND>`. Prompt forms are unchanged:
-  quoted sentences, multi-word tails, `-p`, and non-ASCII words still start
-  the interactive session. See `docs/CLI.md` ("Prompts and subcommands").
+  hints for `-p` and `codesmith run <COMMAND>`. A word after the `--`
+  terminator is never treated as a command guess — `codesmith -- docker` is a
+  prompt. The `-p` hint prints the word unquoted so it pastes correctly into
+  POSIX shells, PowerShell, and cmd.exe, which does not treat single quotes as
+  quoting. Other prompt forms are unchanged: quoted sentences, multi-word
+  tails, `-p`, and non-ASCII words still start the interactive session. See
+  `docs/CLI.md` ("Prompts and subcommands").
 
 ## [0.1.0] - 2026-08-25
 
