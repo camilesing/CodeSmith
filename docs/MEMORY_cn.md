@@ -31,8 +31,7 @@ enabled = true
 
 记忆文件默认位于 `~/.codesmith/memory.md`；可通过 `config.toml` 中的
 `memory_path` 或环境中的 `CODESMITH_MEMORY_PATH` 覆盖。两者都设置时
-`CODESMITH_MEMORY_PATH` 优先于配置文件。当不存在 `.codesmith` 记忆
-文件时，已有的 `~/.codesmith/memory.md` 文件仍作为旧版回退被支持。
+`CODESMITH_MEMORY_PATH` 优先于配置文件。
 
 ## 快速示例
 
@@ -152,7 +151,7 @@ Markdown 标题。
 - **用户记忆**（`~/.codesmith/memory.md`，即本功能）——你通过 `#`
   前缀行、`/memory` 或 `remember` 工具逐步积累的唯一持久笔记文件。
 - **指令层级（Instruction tiers）**——从四个信任层级收集并合并进
-  同一个块的 `CLAUDE.md` / `AGENTS.md` / `WHALE.md` 文件。
+  同一个块的 `AGENTS.md` / `CLAUDE.md` 文件。
 
 - 将**用户记忆**用于应跟随你跨仓库、跨会话的持久个人偏好。
 - 将**指令层级**用于应随机器或代码库移动的组织级或仓库级约定。
@@ -166,13 +165,12 @@ Markdown 标题。
 
 | 层级   | 来源                                                                                                | 标签      |
 |--------|-----------------------------------------------------------------------------------------------------|-----------|
-| Managed | `/etc/codesmith/CLAUDE.md`，然后 `/etc/codesmith/CLAUDE.md`（组织策略）                            | `managed` |
-| User    | `~/.codesmith/{WHALE,AGENTS}.md`，然后 `.agents/`，然后旧版 `.codesmith/`                          | `user`    |
-| Project | `{cwd}` 中 `WHALE.md`、`AGENTS.md`、`.claude/instructions.md`、`CLAUDE.md`、`.codesmith/instructions.md`、`.deepseek/instructions.md` 的第一个命中者，然后向父目录遍历 | `project` |
+| Managed | `/etc/codesmith/CLAUDE.md`（组织策略）                                                              | `managed` |
+| User    | `~/.codesmith/AGENTS.md`，然后 `~/.agents/AGENTS.md`                                                 | `user`    |
+| Project | `{cwd}` 中 `AGENTS.md`、`.claude/instructions.md`、`CLAUDE.md`、`.codesmith/instructions.md` 的第一个命中者，然后向父目录遍历 | `project` |
 | Local   | `.claude/rules/` 和 `.codesmith/rules/` 中的 `*.md` 片段（已排序）                                 | `local`   |
 
-CodeSmith 此前只加载 Project 和 User 层级；Managed 和 Local 层级以及
-父目录遍历是新加入的。
+### `@include <path>` 指令
 
 ### `@include <path>` 指令
 
@@ -250,8 +248,7 @@ export CODESMITH_MEMORY_EXCLUDES=~/work/secret/CLAUDE.md:/etc/sandbox-override.m
 `docs/OPERATIONS_RUNBOOK.md` 和 `docs/CONFIGURATION.md`。
 
 该文件按用户划分，而非按项目。如果你想要项目特定的记忆，请改用项目
-级的 `AGENTS.md` 或 `.codesmith/instructions.md` 文件。旧版
-`.deepseek/instructions.md` 文件出于兼容仍会被加载。这些文件由
+级的 `AGENTS.md` 或 `.codesmith/instructions.md` 文件。这些文件由
 `project_context` 加载，位于仓库中（或你提交它们的任何地方）。
 
 ## 配置参考

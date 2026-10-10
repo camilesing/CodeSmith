@@ -100,11 +100,9 @@ telemetry, `[network]`, `[skills]`, `[lsp].servers`, `[edit]`,
 issue describing the specific use case.
 
 The `codesmith` facade and `codesmith-tui` binary share the same config file for
-DeepSeek auth and model defaults. `codesmith auth set --provider deepseek` (and
-the legacy `codesmith login --api-key ...` alias) saves the key to
-`~/.codesmith/config.toml` (migrating legacy `~/.codesmith/config.toml` on first
-launch when needed), and `codesmith --model deepseek-v4-flash` is forwarded to
-the TUI as `CODESMITH_MODEL`.
+provider auth and model defaults. `codesmith auth set --provider <id>` saves the
+key to `~/.codesmith/config.toml`, and `codesmith --model <model>` is forwarded
+to the TUI as `CODESMITH_MODEL`.
 
 Credential lookup uses `config -> keyring -> env` after any explicit CLI
 `--api-key`. Run `codesmith auth status` to inspect the active provider's config
@@ -166,8 +164,9 @@ base_url = "https://your-gateway.example/v1"
 ```
 
 Do not invent a custom provider name; `provider` must be one of the known
-providers listed above. Put the endpoint under `[providers.openai]`, not the
-legacy top-level `base_url`, so the OpenAI-compatible provider receives it.
+providers listed above. Put the endpoint under `[providers.openai]`, not the root
+`base_url` (the root key only feeds the `deepseek` provider), so the
+OpenAI-compatible provider receives it.
 `default_text_model` is the model ID sent to the gateway; if you keep several
 provider tables in one config, `[providers.openai].model` can be used as the
 OpenAI-provider-specific override.
@@ -421,7 +420,6 @@ Remaining app-level variables:
 - `CODESMITH_TELEMETRY` (`1`/`true` enables local-only telemetry)
 - `CODESMITH_YOLO` (`1`/`true` auto-approves every tool call)
 - `CODESMITH_HTTP_HEADERS` (custom model request headers, comma-separated `name=value` pairs)
-- `CODESMITH_DEFAULT_TEXT_MODEL` (extra legacy alias of `CODESMITH_MODEL`)
 - `NVIDIA_API_KEY` or `NVIDIA_NIM_API_KEY` (preferred when provider is `nvidia-nim`; falls back to `CODESMITH_API_KEY` / `DEEPSEEK_API_KEY`)
 - `NVIDIA_NIM_BASE_URL`, `NIM_BASE_URL`, or `NVIDIA_BASE_URL`
 - `NVIDIA_NIM_MODEL`
@@ -492,17 +490,13 @@ Remaining app-level variables:
 - `CODESMITH_REQUIREMENTS_PATH`
 - `CODESMITH_MAX_SUBAGENTS` (clamped to `1..=20`)
 - `CODESMITH_TASKS_DIR` (runtime task queue/artifact storage, default
-  `~/.codesmith/tasks`, with legacy `~/.codesmith/tasks` fallback when only the
-  legacy directory exists)
-- `CODESMITH_HOME` (override the base data directory; defaults to `~/.codesmith`).
-  If you previously exported `DEEPSEEK_HOME`, rename it to `CODESMITH_HOME`;
-  the old env var is not used for new CodeSmith state paths.
+  `~/.codesmith/tasks`)
+- `CODESMITH_HOME` (override the base data directory; defaults to `~/.codesmith`)
 - `CODESMITH_RELEASE_BASE_URL` (release asset mirror used by `codesmith update`
   and by TUI startup update checks when `[update].update_uri` is not set, or as
   a fallback when that configured URI cannot be fetched)
 - `CODESMITH_AUTOMATIONS_DIR` (override the automations storage directory; uses
-  `~/.codesmith/automations` by default, with legacy `~/.codesmith/automations`
-  fallback when only the legacy directory exists)
+  `~/.codesmith/automations` by default)
 - `CODESMITH_CAPACITY_ENABLED`
 - `CODESMITH_CAPACITY_LOW_RISK_MAX`
 - `CODESMITH_CAPACITY_MEDIUM_RISK_MAX`
@@ -548,8 +542,7 @@ Rules:
   truncated with a `[…elided]` marker rather than skipped.
 - Missing files are skipped with a tracing warning so a stale
   entry doesn't fail the launch.
-- Project config (`<workspace>/.codesmith/config.toml`, or legacy
-  `<workspace>/.codesmith/config.toml`)
+- Project config (`<workspace>/.codesmith/config.toml`)
   **replaces** the user array wholesale rather than merging.
   If you want both, list `~/global.md` inside the project
   array. Set `instructions = []` in the project to clear the
@@ -793,19 +786,6 @@ response headroom. Replacement compaction remains opt-in (`auto_compact = false`
 by default), the Flash seam manager remains opt-in (`[context].enabled = false`),
 and the capacity controller remains disabled unless configured.
 
-### Command Migration Notes
-
-If you are upgrading from older releases:
-
-- Old: `/codesmith`
-  New: `/links` (aliases: `/dashboard`, `/api`)
-- Old: `/set model deepseek-reasoner`
-  New: `/config` and edit the `model` row to `deepseek-v4-pro` or `deepseek-v4-flash`
-- Old: visible `Normal` mode or `default_mode = "normal"`
-  New: use `Agent` / `default_mode = "agent"`; legacy `normal` still maps to `agent`
-- Old: discover `/set` in slash UX/help
-  New: use `/config` for editing and `/settings` for read-only inspection
-
 ## Key Reference
 
 ### Core keys (used by the TUI/engine)
@@ -825,7 +805,7 @@ If you are upgrading from older releases:
   tables (`[providers.<name>].auth_mode`) accept the same values, and
   `CODESMITH_AUTH_MODE` overrides from the environment.
 - `base_url` (string, optional): defaults to `https://api.deepseek.com/beta` for DeepSeek's OpenAI-compatible Chat Completions API, including legacy `provider = "deepseek-cn"` configs. Other defaults are `https://integrate.api.nvidia.com/v1` for `nvidia-nim`, `https://api.openai.com/v1` for `openai`, `https://api.atlascloud.ai/v1` for `atlascloud`, `https://maas-openapi.wanjiedata.com/api/v1` for `wanjie-ark`, `https://openrouter.ai/api/v1` for `openrouter`, `https://api.xiaomimimo.com/v1` for `xiaomi-mimo`, `https://api.novita.ai/v1` for `novita`, `https://api.fireworks.ai/inference/v1` for `fireworks`, `https://api.siliconflow.com/v1` for `siliconflow`, `https://api.moonshot.ai/v1` for `moonshot`, `http://localhost:30000/v1` for `sglang`, `http://localhost:8000/v1` for `vllm`, and `http://localhost:11434/v1` for `ollama`. Set `https://api.deepseek.com` or `https://api.deepseek.com/v1` explicitly to opt out of DeepSeek beta features.
-- `default_text_model` (string, optional): defaults to `deepseek-v4-pro` for DeepSeek and generic OpenAI-compatible endpoints, `deepseek-ai/deepseek-v4-pro` for NVIDIA NIM, `deepseek-ai/deepseek-v4-flash` for AtlasCloud, `deepseek-reasoner` for Wanjie Ark, `deepseek/deepseek-v4-pro` for OpenRouter and Novita, `mimo-v2.5-pro` for Xiaomi MiMo, `accounts/fireworks/models/deepseek-v4-pro` for Fireworks, `deepseek-ai/DeepSeek-V4-Pro` for SiliconFlow, `kimi-k2.6` for Moonshot, `deepseek-ai/DeepSeek-V4-Pro` for SGLang/vLLM, and `deepseek-coder:1.3b` for Ollama. Current public DeepSeek IDs are `deepseek-v4-pro` and `deepseek-v4-flash`, both with 1M context windows, 384K max output, and thinking mode enabled by default. Legacy `deepseek-chat` and `deepseek-reasoner` remain compatibility aliases for `deepseek-v4-flash` until July 24, 2026, except SiliconFlow maps `deepseek-reasoner` and `deepseek-r1` to its Pro model while `deepseek-chat` and `deepseek-v3` map to Flash. Provider-specific mappings translate `deepseek-v4-pro` / `deepseek-v4-flash` to each provider's model ID where supported. OpenRouter also recognizes recent large IDs such as `arcee-ai/trinity-large-thinking`, `qwen/qwen3.7-max`, `xiaomi/mimo-v2.5-pro`, `qwen/qwen3.6-35b-a3b`, `google/gemma-4-31b-it`, and `moonshotai/kimi-k2.6`. Generic `openai`, `atlascloud`, `wanjie-ark`, `xiaomi-mimo`, and Ollama model IDs are passed through unchanged. OpenRouter and SiliconFlow provider configs with a custom `base_url` also preserve explicit model values, which lets OpenAI-compatible gateways accept bare model IDs. Use `/models` or `codesmith models` to discover live IDs from your configured endpoint. `CODESMITH_MODEL` overrides this for a single process; `CODESMITH_DEFAULT_TEXT_MODEL` is the legacy alias.
+- `default_text_model` (string, optional): defaults to `deepseek-v4-pro` for DeepSeek and generic OpenAI-compatible endpoints, `deepseek-ai/deepseek-v4-pro` for NVIDIA NIM, `deepseek-ai/deepseek-v4-flash` for AtlasCloud, `deepseek-reasoner` for Wanjie Ark, `deepseek/deepseek-v4-pro` for OpenRouter and Novita, `mimo-v2.5-pro` for Xiaomi MiMo, `accounts/fireworks/models/deepseek-v4-pro` for Fireworks, `deepseek-ai/DeepSeek-V4-Pro` for SiliconFlow, `kimi-k2.6` for Moonshot, `deepseek-ai/DeepSeek-V4-Pro` for SGLang/vLLM, and `deepseek-coder:1.3b` for Ollama. Current public DeepSeek IDs are `deepseek-v4-pro` and `deepseek-v4-flash`, both with 1M context windows, 384K max output, and thinking mode enabled by default. `deepseek-chat` and `deepseek-reasoner` are compatibility aliases for `deepseek-v4-flash`; SiliconFlow maps `deepseek-reasoner` and `deepseek-r1` to its Pro model while `deepseek-chat` and `deepseek-v3` map to Flash. Provider-specific mappings translate `deepseek-v4-pro` / `deepseek-v4-flash` to each provider's model ID where supported. OpenRouter also recognizes recent large IDs such as `arcee-ai/trinity-large-thinking`, `qwen/qwen3.7-max`, `xiaomi/mimo-v2.5-pro`, `qwen/qwen3.6-35b-a3b`, `google/gemma-4-31b-it`, and `moonshotai/kimi-k2.6`. Generic `openai`, `atlascloud`, `wanjie-ark`, `xiaomi-mimo`, and Ollama model IDs are passed through unchanged. OpenRouter and SiliconFlow provider configs with a custom `base_url` also preserve explicit model values, which lets OpenAI-compatible gateways accept bare model IDs. Use `/models` or `codesmith models` to discover live IDs from your configured endpoint. `CODESMITH_MODEL` overrides this for a single process.
 - `model` (string, optional): generic model override slot consumed by the
   `codesmith` facade and the project overlay; the facade forwards the
   resolved model to the TUI as `CODESMITH_MODEL`. Prefer the explicit

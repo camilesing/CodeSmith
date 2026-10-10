@@ -47,9 +47,9 @@ The same toggles are reachable from the command palette:
 * `/settings set status_indicator off`
 
 Settings written this way persist to the settings file next to your config:
-`~/.config/deepseek/settings.toml` by default (a historical deepseek-tui
-location — when `CODESMITH_CONFIG_PATH` points at a custom `config.toml`,
-`settings.toml` lives in the same directory).
+`~/.config/deepseek/settings.toml` by default (when `CODESMITH_CONFIG_PATH`
+points at a custom `config.toml`, `settings.toml` lives in the same
+directory).
 The `NO_ANIMATIONS` env var still wins at startup if it's set, so
 unsetting the env var is the way to honor your saved choice.
 

@@ -156,8 +156,8 @@ All action-capable modes have access to persistent RLM sessions through `rlm_ope
 The fast light-tier path (`deepseek-v4-flash` on DeepSeek endpoints) with
 thinking off is called Fin in the product language. Fin is a seam for quick
 tool work, summaries, and cheap child calls; it does not change approval
-behavior. Model routing itself is no longer Fin's job — the router runs on the
-strongest tier (see Auto Model Routing below).
+behavior. Model routing is the router's job, not Fin's — the router runs on
+the strongest tier (see Auto Model Routing below).
 
 `/goal` sets a session objective with an optional token budget and keeps that
 objective visible as Work context. It does not change the active TUI mode,
@@ -212,8 +212,6 @@ You can override approval behavior at runtime:
 /config
 # edit the approval_mode row to: suggest | auto | never
 ```
-
-Legacy note: `/set approval_mode ...` was retired in favor of `/config`.
 
 - `suggest` (default): uses the per-mode rules above.
 - `auto`: auto-approves all tools (similar to YOLO approval behavior, but without forcing YOLO mode).

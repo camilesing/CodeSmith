@@ -50,12 +50,10 @@ enabled = false             # No built-in backend yet — leave disabled.
 backend = "none"
 ```
 
-Environment overrides (applied at resolution time, legacy aliases in
-parentheses):
+Environment overrides (applied at resolution time):
 
-- `CODESMITH_INDEX_ENABLED` (`CODESMITH_INDEX_ENABLED`) — `true`/`false`
-- `CODESMITH_INDEX_SYMBOLS_BACKEND` (`CODESMITH_INDEX_SYMBOLS_BACKEND`) —
-  backend id
+- `CODESMITH_INDEX_ENABLED` — `true`/`false`
+- `CODESMITH_INDEX_SYMBOLS_BACKEND` — backend id
 
 Unknown backend ids fail fast with a message listing the registered ids.
 

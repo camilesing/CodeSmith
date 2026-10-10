@@ -12,9 +12,10 @@ implemented today.
 
 ## Implemented Today
 
-- DeepSeek is the first-class default provider today, with `deepseek-v4-pro`,
-  `deepseek-v4-flash`, streaming thinking blocks, Fin routing, `CODESMITH_*`
-  environment variables, and `~/.codesmith` config compatibility.
+- All shipped providers are first-class. With no provider configured, CodeSmith
+  falls back to `deepseek` (`deepseek-v4-pro`, `deepseek-v4-flash`). Streaming
+  thinking blocks, Fin routing, `CODESMITH_*` environment variables, and
+  `~/.codesmith` config are implemented.
 - OpenRouter, Novita, Fireworks, NVIDIA NIM, AtlasCloud, Wanjie Ark, generic
   OpenAI-compatible endpoints, SGLang, vLLM, and Ollama are supported provider
   paths where their IDs appear in `/provider`, `codesmith --provider`, or

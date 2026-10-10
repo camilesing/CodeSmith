@@ -1,7 +1,7 @@
 # Issue Ledger
 
 This file is the single consolidated record of every issue reference found
-in the codebase and its documentation (compiled 2026-08-24).
+in the codebase and its documentation.
 
 **Inclusion policy:**
 
@@ -15,21 +15,17 @@ in the codebase and its documentation (compiled 2026-08-24).
   references, and un-numbered known issues / TODOs / limitations.
 - `.zcode/plans/` (local tooling session artifacts) is out of scope, as
   are the untracked working artifacts under `docs/superpowers/plans/`.
-- The root `CHANGELOG.md` now holds only post-fork history; pre-fork
-  citations below point at `docs/legacy/CHANGELOG-upstream.md`, which
-  preserved the old root file verbatim (line numbers unchanged).
+- Citations to pre-fork history point at
+  `docs/legacy/CHANGELOG-upstream.md` (the pre-fork root changelog,
+  preserved verbatim); the root `CHANGELOG.md` covers post-fork changes
+  only.
 
-Going forward, record new issue references here instead of pointing at the
-retired GitHub tracker.
-
-Swept 2026-10-09: every bare `#N` tracker reference and dead
-`github.com/Hmbown/CodeSmith` link was stripped from the docs under
-`docs/` per this policy. The upstream CodeWhale repository
-(`Hmbown/CodeSmith`) is no longer resolvable (404), so its issue numbers
-are unverifiable as well; numbers naming upstream work survive only in
-`docs/legacy/` (frozen history) and in the citations below.
-`docs/REVIEW_PIPELINE.md` and `docs/RLM_BRANCHING_ROADMAP.md` moved to
-`docs/legacy/` in the same sweep.
+Record new issue references here instead of pointing at the GitHub
+tracker. The upstream CodeWhale repository (`Hmbown/CodeSmith`) is
+unresolvable (404), so its issue numbers are unverifiable; numbers naming
+upstream work appear only in `docs/legacy/` (frozen history) and in the
+citations below. `docs/REVIEW_PIPELINE.md` and
+`docs/RLM_BRANCHING_ROADMAP.md` live under `docs/legacy/`.
 
 ## 1. Internal `CX#N` references
 
@@ -47,12 +43,10 @@ opener is provably complete.
 
 ### CX#6 — width-independent parse vs width-dependent render
 
-The previous renderer was a single-pass `render_markdown(content, width)`
-that re-parsed the source on every terminal resize. The fix splits `parse`
-(width-independent block AST, cached per transcript cell) from
-`render_parsed` (width-dependent wrap + span styling), making resize a
-re-flow instead of a re-parse + re-flow. The perf invariant is pinned by
-tests.
+The renderer splits `parse` (width-independent block AST, cached per
+transcript cell) from `render_parsed` (width-dependent wrap + span
+styling), making resize a re-flow instead of a re-parse + re-flow. The
+perf invariant is pinned by tests.
 
 - `crates/tui/src/tui/markdown_render.rs:3` (module doc)
 - `crates/tui/src/tui/markdown_render.rs:1378` (perf invariant)
@@ -97,7 +91,7 @@ Design reference:
 - `crates/agent-runtime/src/engine/host_executor.rs:1569`
 - `crates/agent-runtime/src/engine/host_executor.rs:8204`
 - `crates/agent-runtime/src/mcp.rs:3010`
-- `docs/rfcs/extra-findings-01-unicode-sanitization.md:12` (file since
+- `docs/rfcs/extra-findings-01-unicode-sanitization.md:12` (file
   removed; record preserved here)
 - `docs/legacy/CHANGELOG-upstream.md:64` (Unreleased sanitization entry)
 - `docs/legacy/ROADMAP-upstream.md:1580` (read-file observe path)
@@ -256,8 +250,8 @@ means the bug fired.
 ### Skill discovery ignored vendor-nested subdirectories (fixed, pinned)
 
 Users organizing skills under vendor/category subdirectories (cloned
-skill repos bundling several skills) were silently dropped by the old
-single-level `read_dir`, which only ever surfaced
+skill repos bundling several skills) were silently dropped by a
+single-level `read_dir` sweep, which only ever surfaced
 `<root>/<skill>/SKILL.md` and ignored `<root>/<vendor>/<skill>/SKILL.md`.
 
 - `crates/agent-runtime/src/skills/mod.rs:1524` (regression test)
@@ -335,13 +329,13 @@ policy; descriptions and version context are kept.
 
 ### Extension-system handoff (from the removed `docs/superpowers/todo.md`)
 
-- §F5 (dylib loading) and §F2 (events, handler chains, live reload) are
+- The dylib-loading and events/handler-chains/live-reload phases are
   complete. Remaining phases are
-  on-demand (no spec/plan yet): **§F3** EventBus real impl
+  on-demand (no spec/plan yet): the **EventBus** real impl
   (`crates/extensions/src/bus.rs` `subscribe`/`publish` currently return
-  `ExtensionError::Unimplemented`), **§F4** registerProvider, **§F6**
-  Renderers, **§F7** Shortcut + Flag, **§F8** Embedding API. Hot-load is
-  permanently out (spec §2.4 "never"). Flaky-test baselines recorded
+  `ExtensionError::Unimplemented`), **registerProvider**,
+  **Renderers**, **Shortcut + Flag**, and the **Embedding API**. Hot-load is
+  permanently out. Flaky-test baselines recorded
   there: `streamable_http` (agent-runtime) and `runtime_api` (tui) —
   pre-existing, isolate-rerun if they fire.
 
@@ -353,8 +347,8 @@ policy; descriptions and version context are kept.
   merge/delete the TUI mirror modules (`tui/src/compaction/`,
   `tui/src/prompts.rs`, `tui/src/mcp.rs`, `tui/src/sandbox/`,
   `tui/src/execpolicy/`) once confirmed pure re-exports.
-- About 12 sub-agent tools deprecated
-  since v0.8.33 (`agent_spawn`, `agent_result`, `agent_wait`,
+- About 12 deprecated sub-agent tools
+  (`agent_spawn`, `agent_result`, `agent_wait`,
   `delegate_to_agent`, …) are still registered in the catalog, costing
   tool-surface and prompt budget.
 
@@ -366,14 +360,13 @@ policy; descriptions and version context are kept.
   placeholder `"(reasoning omitted)"` Thinking block for tool-call turns
   is not injected by the executor (DeepSeek thinking-mode requires
   `reasoning_content` on tool-call assistant messages). The seam-3
-  parallel-dispatch gap named there as the last "still to come" item has
-  since closed (slice 40; `crates/agent-runtime/src/engine/host_executor.rs:251`).
-- **Compaction closure** (`docs/legacy/ROADMAP-upstream.md:1536`–`1565`) — 25a
-  (summary-prompt merge) and 25b (attachment reinject) landed; **25c**
+  parallel-dispatch gap named there as the last "still to come" item is
+  closed (`crates/agent-runtime/src/engine/host_executor.rs:251`).
+- **Compaction closure** (`docs/legacy/ROADMAP-upstream.md:1536`–`1565`) —
+  summary-prompt merge and attachment reinject are wired;
   `post_compact_cleanup` is still deferred (merge-XOR-cleanup mutual
   exclusion plus divorced `CompactionProbe` slots); the read-file observe
-  site has no production caller yet and is an independent follow-up
-  slice.
+  site has no production caller yet and is an independent follow-up.
 - **Kept superseded members under `#[allow(dead_code)]`**
   (`docs/legacy/ROADMAP-upstream.md:1716`–`1722`) — `layered_context_checkpoint` (zero
   callers; kept for nav-aids re-wire reference), `Engine::recover_context_overflow`

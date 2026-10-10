@@ -54,7 +54,7 @@ Editing the message you're about to send.
 
 ### `@` mentions
 
-Type `@<partial>` to open the file mention popup. `↑`/`↓` cycle the entries, `Tab` or `Enter` accepts. `Esc` hides the popup. As of v0.8.10, completions are re-ranked by mention frecency — files you mention often + recently float to the top.
+Type `@<partial>` to open the file mention popup. `↑`/`↓` cycle the entries, `Tab` or `Enter` accepts. `Esc` hides the popup. Completions are re-ranked by mention frecency — files you mention often + recently float to the top.
 
 ### `#` quick-add (memory)
 
@@ -72,7 +72,7 @@ Type `:name:` to insert an emoji — the closing `:` replaces the whole token (`
 
 | Chord                | Action                                              |
 |----------------------|-----------------------------------------------------|
-| `↑` / `↓` / `j` / `k`| Scroll one line (v0.8.13+: bare arrows also scroll when composer empty) |
+| `↑` / `↓` / `j` / `k`| Scroll one line (bare arrows also scroll when the composer is empty) |
 | `PgUp` / `PgDn`      | Scroll one page                                    |
 | `Home` / `g`         | Jump to top                                         |
 | `End` / `G`          | Jump to bottom                                     |
@@ -131,26 +131,16 @@ Type `:name:` to insert an emoji — the closing `:` replaces the whole token (`
 | `y` / `Y`            | Trust the workspace (Trust step)                   |
 | `n` / `N`            | Skip the trust prompt                              |
 
-## readline parity revision
-
-This revision brings the composer to (near) readline parity with Claude Code's input editing:
+## Editing notes and known limitations
 
 - **Kill ring.** `Ctrl-U`, `Ctrl-W`, `Alt-D`, and `Ctrl-K` (kill-to-end-of-line) all save their text into a 16-entry kill ring; consecutive kills merge into one entry. `Ctrl-Y` yanks; `Alt-Y` immediately after a yank cycles earlier entries (yank-pop). Outside the post-yank window `Alt-Y` keeps its Yolo-mode shortcut.
-- **Composer undo.** `Ctrl-Z` / `Ctrl+_` restore the previous edit state including cursor position (128-deep, no redo). This replaces the old "Ctrl-Z restores a cleared draft only when the composer is empty" special case.
-- **`\` + Enter continuation** and **`Ctrl-L` redraw** close two long-standing doc/code gaps (Ctrl-L was listed here but had no handler before).
-- **`Alt-M` opens the model picker** — the Claude Code `Option+P` affordance; `Alt-P` stays Plan mode.
-- **Ctrl+Enter on an empty composer flushes the queue** — running turn gets the queued messages steered in immediately instead of waiting for turn end.
-- **`Alt-D` (kill to end of word)** is new; `delete_word_forward` was reachable only via `Alt/Ctrl+Delete` before.
-- Stale rows fixed in this pass: `Ctrl-P`/`Ctrl-N` "cycle composer history" → `Ctrl-P` is the fuzzy file picker; the help catalog's bare `?`, `g`/`G`, `[`/`]`, `l`, `v` entries now read `Alt+?`, `Alt+g`/`Alt+G`, `Alt+[`/`Alt+]`, `Alt+L` (matching the v0.8.30 move of bare-letter navigation to Alt).
-
-## v0.8.29 audit notes
-
-- **`Shift+Enter` / `Alt+Enter` newlines now work in VSCode on Windows.** crossterm's `PushKeyboardEnhancementFlags` command unconditionally returns `Unsupported` on Windows (`is_ansi_code_supported() == false`), so the Kitty keyboard protocol escape was never written to the terminal. Without it, VSCode's xterm.js stays in legacy mode where `Shift+Enter` is indistinguishable from plain `Enter`, causing the composer to send the message instead of inserting a newline. The fix writes the push/pop escapes (`\x1b[>1u` / `\x1b[<1u`) directly on Windows, bypassing crossterm's capability gate. VSCode integrated terminal and Windows Terminal ≥1.17 both honour the Kitty keyboard protocol; terminals that do not understand the sequences silently discard them.
-
-## v0.8.13 audit notes
-
-- **Ctrl-S is stash, not history search.** Fixed in this revision — `Alt-R` is history search.
-- **Phantom `Alt+Up` removed.** The "Edit last queued message" binding was listed in README but never existed in the key dispatch code.
-- **Bare Up/Down arrows scroll transcript when composer empty (v0.8.13).** Previously the `should_scroll_with_arrows` gate was hardcoded to false, meaning bare arrows always navigated composer history even when the composer was empty. Users in virtual terminals (Ghostty, Codex, Kitty-protocol) were especially affected because they couldn't use Cmd+Up / Alt+Up shortcuts.
+- **Composer undo.** `Ctrl-Z` / `Ctrl+_` restore the previous edit state including cursor position (128-deep, no redo).
+- **`\` + Enter inserts a line continuation** and **`Ctrl-L` redraws** the screen.
+- **`Alt-M` opens the model picker**; `Alt-P` toggles Plan mode.
+- **Ctrl+Enter on an empty composer flushes the queue** — the running turn gets the queued messages steered in immediately instead of waiting for turn end.
+- **`Alt-D` kills to end of word**; `delete_word_forward` is also reachable via `Alt/Ctrl+Delete`.
+- **Bare Up/Down arrows scroll the transcript when the composer is empty** (the `should_scroll_with_arrows` gate). This matters in virtual terminals (Ghostty, Codex, Kitty-protocol), where Cmd+Up / Alt+Up shortcuts are unavailable.
+- **Shift+Enter / Alt+Enter insert newlines in VSCode on Windows.** crossterm's `PushKeyboardEnhancementFlags` command unconditionally returns `Unsupported` on Windows (`is_ansi_code_supported() == false`), so the Kitty keyboard protocol escape is written directly (`\x1b[>1u` / `\x1b[<1u`), bypassing crossterm's capability gate. VSCode integrated terminal and Windows Terminal ≥1.17 both honour the Kitty keyboard protocol; terminals that do not understand the sequences silently discard them.
+- **Ctrl-S is stash, not history search**; `Alt-R` is history search.
 - **Configurable keymap and `tui.toml` remain deferred.** The `TuiPrefs` struct and loader exist in `settings.rs` but are not wired at startup. The named-binding registry that would let `~/.codesmith/tui.toml` override individual entries is still pending.
-- **No other broken bindings found.** Every other chord listed above resolves to a live handler in `crates/tui/src/tui/ui.rs` (key-event dispatch) or `crates/tui/src/tui/app.rs` (mode + state transitions).
+- Every other chord listed above resolves to a live handler in `crates/tui/src/tui/ui.rs` (key-event dispatch) or `crates/tui/src/tui/app.rs` (mode + state transitions).

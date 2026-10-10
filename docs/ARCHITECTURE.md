@@ -129,7 +129,7 @@ change, and every `ExtensionEventKind` declares its dispatch mode
 - **`crates/release`** - Release discovery / version comparison.
 - **`crates/secrets`** - OS keyring integration for API key storage.
 - **`crates/state`** - SQLite thread/session persistence layer.
-- **`crates/tool-impls`** - Concrete model-visible tool implementations migrated from the TUI's `tools/` subtree.
+- **`crates/tool-impls`** - Concrete model-visible tool implementations.
 - **`crates/tools`** - Shared tool invocation primitives, including tool result/error/capability types used by the TUI runtime.
 - **`crates/tui-core`** - Event-driven TUI state machine scaffold.
 
@@ -154,8 +154,8 @@ drives turns through Chat Completions.
 ### Tool System
 
 Tool implementations are split between the TUI (host-coupled tools) and
-`crates/tool-impls` (model-visible tools migrated out of the TUI's
-`tools/` subtree; e.g. `grep_files`/`file_search` live there).
+`crates/tool-impls` (model-visible tools; e.g. `grep_files`/`file_search`
+live there).
 
 - **`crates/tui/src/tools/`** - Host-coupled built-in tool implementations and the registry
   - `mod.rs` / `registry.rs` - Tool registry, assembly (`with_subagent_tools`, …), and common types
@@ -164,7 +164,7 @@ Tool implementations are split between the TUI (host-coupled tools) and
   - `tasks.rs` / `task_v2.rs` - Model-visible durable task, gate, background shell, and PR-attempt tools
   - `github.rs` - Read-only GitHub context and guarded comment/closure tools backed by `gh`
   - `automation.rs` - Model-visible scheduling tools over `AutomationManager`
-  - `subagent/` - Persistent sub-agent sessions (`agent_open` / `agent_eval` / `agent_close`, replaces the removed `agent_swarm` surface) and persistent RLM sessions (`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close` — sandboxed Python REPLs with semantic helper calls and `var_handle` output support; runtime in `crates/tui/src/rlm/`)
+  - `subagent/` - Persistent sub-agent sessions (`agent_open` / `agent_eval` / `agent_close`) and persistent RLM sessions (`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close` — sandboxed Python REPLs with semantic helper calls and `var_handle` output support; runtime in `crates/tui/src/rlm/`)
   - `skill.rs` / `plugin.rs` / `web_search.rs` / `goal.rs` / `js_execution.rs` / `large_output_router.rs` and friends - remaining tool surfaces
 
 ### Extension Systems

@@ -15,7 +15,7 @@ chosen over the available shell equivalent. Companion to `crates/agent-runtime/s
   for the same backing operation are a model trap — the LLM will alternate
   between them and the cache hit rate suffers.
 
-## Current surface (v0.8.35)
+## Current surface
 
 ### File operations
 
@@ -242,8 +242,8 @@ complete or cancel no-longer-needed running sessions with `agent_close`.
 
 ## Removed legacy aliases and surfaces
 
-v0.8.33 removed the old model-facing sub-agent fan-out surface from active
-prompting. Do not use these names in new active guidance:
+These one-shot sub-agent fan-out names are not part of the active
+model-facing surface. Do not use them in active guidance:
 `agent_wait`, `agent_result`, `agent_send_input`,
 `agent_assign`, `agent_resume`, `agent_list`, `spawn_agent`,
 `delegate_to_agent`, `send_input`, and `close_agent`.
@@ -255,10 +255,10 @@ is equivalent — and sub-agents recurse through it (see
 `docs/SUBAGENTS.md`). New guidance should still prefer
 `agent_open` / `agent_eval`.
 
-The old one-shot `rlm` model-facing tool is also replaced by persistent
-`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close` sessions.
+The model-facing `rlm` surface is the persistent
+`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close` session form.
 
-Historical compatibility results may include a `_deprecation` block shaped
+Compatibility results may include a `_deprecation` block shaped
 like this:
 
 ```json
@@ -294,17 +294,17 @@ rg -n '"handle_read"|"rlm_open"|"rlm_eval"|"rlm_configure"|"rlm_close"|"agent_op
 rg -n 'handle_read|rlm_open|rlm_eval|rlm_configure|rlm_close|agent_open|agent_eval|agent_close' docs crates/agent-runtime/src/prompts crates/tui/src/tools
 ```
 
-The canonical v0.8.35 live names are:
+The canonical live names are:
 
 - `handle_read`
 - `rlm_open`, `rlm_eval`, `rlm_configure`, `rlm_close`
 - `agent_open`, `agent_eval`, `agent_close`
 
-The active guidance should not advertise the legacy one-shot names
-`agent_wait`, `agent_result`, or the old foreground `rlm` tool
-outside legacy/removal notes (`agent_spawn` stays registered as the
-background/compat alias described above). Historical changelog entries
-and compatibility code may still mention the removed names.
+Active guidance should not advertise the one-shot names
+`agent_wait`, `agent_result`, or a foreground `rlm` tool
+(`agent_spawn` stays registered as the
+background/compat alias described above). Compatibility code and
+stored results may still mention these names.
 
 ## Why we don't ship a single `bash` tool
 

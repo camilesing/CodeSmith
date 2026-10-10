@@ -415,7 +415,7 @@ cargo install codesmith-tui     --locked
 
 - 或者让 `codesmith update` 使用镜像的 release 资产目录，方法见下文。
 
-原先的 CNB 源镜像（`https://cnb.cool/codesmith.net/codesmith.git`）不再同步，其副本可能缺失或过期——不要从它安装。
+不要从 CNB 源镜像（`https://cnb.cool/codesmith.net/codesmith.git`）安装：它未同步，副本可能缺失或过期。
 
 如果你运营二进制资产镜像，`codesmith update` 可以直接使用它：
 

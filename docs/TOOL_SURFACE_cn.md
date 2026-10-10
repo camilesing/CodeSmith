@@ -8,7 +8,7 @@
 - **其余一切交给 `exec_shell`。** 构建、测试、格式化、lint、临时命令、任何平台特定的操作。我们不去包装那条长长的尾巴。
 - **砍掉不比 shell 等价物更好的工具。** 针对同一底层操作的双工具别名是模型陷阱——LLM 会在两者之间来回切换，缓存命中率随之受损。
 
-## 当前工具面（v0.8.35）
+## 当前工具面
 
 ### 文件操作
 
@@ -221,8 +221,9 @@ RLM 现在同样是持久化的：
 
 ## 已移除的旧别名与工具面
 
-v0.8.33 从主动提示中移除了旧的面向模型的子代理扇出工具面。
-不要在新的主动指导中使用这些名称：`agent_wait`、
+这些一次性的子代理扇出名称不属于当前的
+面向模型工具面。
+不要在主动指导中使用这些名称：`agent_wait`、
 `agent_result`、`agent_send_input`、`agent_assign`、`agent_resume`、
 `agent_list`、`spawn_agent`、`delegate_to_agent`、`send_input` 和
 `close_agent`。
@@ -233,10 +234,10 @@ v0.8.33 从主动提示中移除了旧的面向模型的子代理扇出工具面
 通过它递归派生（见 `docs/SUBAGENTS.md`）。新的指导仍应优先使用
 `agent_open` / `agent_eval`。
 
-旧的一次性 `rlm` 面向模型工具也已被持久的
-`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close` 会话取代。
+面向模型的 `rlm` 工具面是持久的
+`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close` 会话形式。
 
-历史兼容结果可能包含形如下例的 `_deprecation` 块：
+兼容结果可能包含形如下例的 `_deprecation` 块：
 
 ```json
 {
@@ -270,16 +271,16 @@ rg -n '"handle_read"|"rlm_open"|"rlm_eval"|"rlm_configure"|"rlm_close"|"agent_op
 rg -n 'handle_read|rlm_open|rlm_eval|rlm_configure|rlm_close|agent_open|agent_eval|agent_close' docs crates/agent-runtime/src/prompts crates/tui/src/tools
 ```
 
-v0.8.35 的权威实时名称为：
+权威的实时名称为：
 
 - `handle_read`
 - `rlm_open`, `rlm_eval`, `rlm_configure`, `rlm_close`
 - `agent_open`, `agent_eval`, `agent_close`
 
-主动指导不应在旧版/移除说明之外宣传旧的一次性名称
-`agent_wait`、`agent_result` 或旧的前台 `rlm` 工具（`agent_spawn`
-按上文所述保留注册，作为后台/兼容别名）。历史变更日志条目
-和兼容性代码仍可能提及已移除的名称。
+主动指导不应宣传一次性名称
+`agent_wait`、`agent_result` 或前台 `rlm` 工具（`agent_spawn`
+按上文所述保留注册，作为后台/兼容别名）。兼容性代码与
+已存储的结果仍可能提及这些名称。
 
 ## 为什么我们不提供单一 `bash` 工具
 
