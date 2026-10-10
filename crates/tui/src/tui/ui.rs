@@ -3044,6 +3044,7 @@ async fn run_event_loop(
                         ) {
                             OnboardingState::Endpoint
                         } else {
+                            app.refresh_onboarding_provider_rows(config);
                             OnboardingState::Provider
                         };
                         app.api_key_input.clear();
@@ -3051,6 +3052,7 @@ async fn run_event_loop(
                         app.status_message = None;
                     }
                     KeyCode::Esc if app.onboarding == OnboardingState::Endpoint => {
+                        app.refresh_onboarding_provider_rows(config);
                         app.onboarding = OnboardingState::Provider;
                         app.onboarding_endpoint_input.clear();
                         app.status_message = None;
@@ -5514,13 +5516,19 @@ async fn apply_model_picker_choice(
 /// so the API client picks up the new base URL/key. When `model_override`
 /// is set, it replaces the active model post-switch (already normalized,
 /// will be provider-prefixed by `Config::default_model`).
+///
+/// Returns whether the engine was actually respawned on the new provider.
+/// `false` covers both failure modes — no client resolves for the target,
+/// or the engine config failed to build — in which case the previous
+/// engine keeps running and the failure is only surfaced, never recorded
+/// as a switch.
 async fn switch_provider(
     app: &mut App,
     engine_handle: &mut EngineHandle,
     config: &mut Config,
     target: ApiProvider,
     model_override: Option<String>,
-) {
+) -> bool {
     let previous_provider = app.api_provider;
     let previous_model = app.model.clone();
     let previous_provider_str = config.provider.clone();
@@ -5561,7 +5569,7 @@ async fn switch_provider(
                 previous_provider.as_str()
             ),
         });
-        return;
+        return false;
     }
 
     let new_model = config.default_model();
@@ -5577,15 +5585,20 @@ async fn switch_provider(
         app.session.last_completion_tokens = None;
     }
 
-    match build_engine_config(app, config) {
+    let switched = match build_engine_config(app, config) {
         Ok(engine_config) => {
             let _ = engine_handle.send(Op::Shutdown).await;
             *engine_handle = spawn_engine(engine_config, config, build_engine_host(app));
+            true
         }
         // A failed build (e.g. malformed capabilities.toml) keeps the live
-        // engine and surfaces the error.
-        Err(e) => app.status_message = Some(e.to_string()),
-    }
+        // engine and surfaces the error; nothing below may record or
+        // persist a switch that did not happen.
+        Err(e) => {
+            app.status_message = Some(e.to_string());
+            false
+        }
+    };
 
     if !app.api_messages.is_empty() {
         let _ = engine_handle
@@ -5604,6 +5617,10 @@ async fn switch_provider(
             config: app.compaction_config(),
         })
         .await;
+
+    if !switched {
+        return false;
+    }
 
     // Only a real change is worth a transcript entry: re-applying the active
     // provider happens during onboarding (the provider is confirmed before its
@@ -5627,6 +5644,8 @@ async fn switch_provider(
         settings.default_provider = Some(target.as_str().to_string());
         let _ = settings.save();
     }
+
+    true
 }
 
 fn sync_config_provider_from_app(config: &mut Config, app: &App) {
@@ -6457,21 +6476,29 @@ async fn execute_command_input(
     // After /logout: clear the in-memory api_key fields so the next
     // onboarding round entering a new key doesn't see the stale value
     // (#343). The on-disk side is handled by clear_api_key() inside
-    // commands::config::logout.
-    if input.trim().eq_ignore_ascii_case("/logout") {
+    // commands::config::logout. Match on the first token so `/logout
+    // <junk>` (logout takes no arguments) still mirrors the wipe.
+    if input
+        .split_whitespace()
+        .next()
+        .is_some_and(|token| token.eq_ignore_ascii_case("/logout"))
+    {
         config.api_key = None;
+        // Mirror clear_api_key()'s disk wipe for every provider table —
+        // provider_config_mut covers all of ApiProvider::all(); guard on
+        // the table's presence so the wipe never creates one.
+        if config.providers.is_some() {
+            for provider in ApiProvider::all() {
+                if let Some(entry) = provider_config_mut(config, *provider) {
+                    entry.api_key = None;
+                }
+            }
+        }
+        // The deprecated `[providers.deepseek_cn]` sink is not in
+        // `ApiProvider::all`, but its api_key lines are wiped from disk
+        // just the same.
         if let Some(providers) = config.providers.as_mut() {
-            providers.deepseek.api_key = None;
             providers.deepseek_cn.api_key = None;
-            providers.nvidia_nim.api_key = None;
-            providers.openai.api_key = None;
-            providers.atlascloud.api_key = None;
-            providers.openrouter.api_key = None;
-            providers.novita.api_key = None;
-            providers.fireworks.api_key = None;
-            providers.sglang.api_key = None;
-            providers.vllm.api_key = None;
-            providers.ollama.api_key = None;
         }
         app.api_key_env_only = crate::config::active_provider_uses_env_only_api_key(config);
     }
@@ -8347,27 +8374,28 @@ fn mirror_provider_base_url(config: &mut Config, provider: ApiProvider, base_url
 }
 
 /// After the provider (and, for the generic routes, its endpoint) is settled:
-/// apply it now when a credential already resolves — a registered Kimi CLI
-/// OAuth credential, an environment or config key, or a self-hosted runtime —
-/// and otherwise collect the API key first.
+/// apply it now when a credential already resolves — an environment or config
+/// key, a self-hosted runtime, or, for a key-less Moonshot, a registered Kimi
+/// CLI OAuth credential — matching the `/provider` picker's list-stage
+/// precedence (an explicit key outranks a linked OAuth credential) — and
+/// otherwise collect the API key first.
 async fn continue_onboarding_after_provider(
     app: &mut App,
     engine_handle: &mut EngineHandle,
     config: &mut Config,
 ) {
     let provider = app.onboarding_provider();
-    let applied =
-        if provider == ApiProvider::Moonshot && crate::config::kimi_cli_credentials_present() {
-            apply_onboarding_provider_auth_mode(app, engine_handle, config, provider).await
-        } else if crate::config::has_api_key_for(config, provider) {
-            apply_onboarding_provider_choice(app, engine_handle, config, provider).await
-        } else {
-            app.api_key_input.clear();
-            app.api_key_cursor = 0;
-            app.status_message = None;
-            app.onboarding = OnboardingState::ApiKey;
-            return;
-        };
+    let applied = if crate::config::has_api_key_for(config, provider) {
+        apply_onboarding_provider_choice(app, engine_handle, config, provider).await
+    } else if provider == ApiProvider::Moonshot && crate::config::kimi_cli_credentials_present() {
+        apply_onboarding_provider_auth_mode(app, engine_handle, config, provider).await
+    } else {
+        app.api_key_input.clear();
+        app.api_key_cursor = 0;
+        app.status_message = None;
+        app.onboarding = OnboardingState::ApiKey;
+        return;
+    };
 
     if applied {
         onboarding::advance_onboarding_after_language(app);
@@ -8382,16 +8410,19 @@ async fn continue_onboarding_after_provider(
 /// the way `/model` does, and then hands off to [`switch_provider`] — the
 /// same path `/provider` uses, including the `default_provider` persistence.
 ///
-/// Returns `false` when the switch failed. The reason is already in the
-/// transcript; the wizard renders the status line, so the failure is
-/// restated there and the caller leaves `onboarding_needs_api_key` set.
+/// Returns `false` when the switch failed — no client resolves for the
+/// provider, or the engine config failed to build; the previous engine keeps
+/// running either way. The reason is in `status_message`; the wizard renders
+/// it on the provider screen, and the caller leaves
+/// `onboarding_needs_api_key` set.
 async fn apply_onboarding_provider_choice(
     app: &mut App,
     engine_handle: &mut EngineHandle,
     config: &mut Config,
     provider: ApiProvider,
 ) -> bool {
-    let model = config.default_model_for_new_provider(provider);
+    let settings = crate::settings::Settings::load();
+    let model = config.default_model_for_new_provider(settings.as_ref().ok(), provider);
     // The `*_BASE_URL` environment overrides are applied at *load* time, for
     // the provider that was active then; a provider picked mid-wizard has never
     // seen its own. Mirror the env value into the live config so this session
@@ -8410,7 +8441,7 @@ async fn apply_onboarding_provider_choice(
     // template's DeepSeek id. When the file already yields this model, pinning
     // it in settings would only shadow later config edits.
     if model != config.default_model() {
-        match crate::settings::Settings::load() {
+        match settings {
             Ok(mut settings) => {
                 settings.set_model_for_provider(provider.as_str(), &model);
                 if let Err(err) = settings.save() {
@@ -8427,18 +8458,17 @@ async fn apply_onboarding_provider_choice(
         }
     }
 
-    switch_provider(app, engine_handle, config, provider, Some(model)).await;
+    let switched = switch_provider(app, engine_handle, config, provider, Some(model)).await;
 
-    let applied = app.api_provider == provider;
+    let applied = switched && app.api_provider == provider;
     if applied {
         app.onboarding_needs_api_key = false;
         app.offline_mode = false;
     } else {
         app.status_message = Some(format!(
-            "Could not switch to {}. The session stays on {}; check `codesmith auth status` \
-             and the provider's config in ~/.codesmith/config.toml.",
-            provider.as_str(),
-            app.api_provider.as_str()
+            "Could not switch to {}. The previous engine is still running; check `codesmith \
+             auth status` and the provider's config in ~/.codesmith/config.toml.",
+            provider.as_str()
         ));
     }
     applied
@@ -8453,7 +8483,7 @@ async fn apply_onboarding_provider_auth_mode(
     config: &mut Config,
     provider: ApiProvider,
 ) -> bool {
-    apply_provider_picker_auth_mode(
+    let switched = apply_provider_picker_auth_mode(
         app,
         engine_handle,
         config,
@@ -8463,21 +8493,22 @@ async fn apply_onboarding_provider_auth_mode(
     )
     .await;
 
-    let applied = app.api_provider == provider;
+    let applied = switched && app.api_provider == provider;
     if applied {
         app.onboarding_needs_api_key = false;
         app.offline_mode = false;
     } else {
         app.status_message = Some(format!(
-            "Could not switch to {}. The session stays on {}; check the credential file \
-             Kimi CLI wrote and try again.",
-            provider.as_str(),
-            app.api_provider.as_str()
+            "Could not switch to {}. The previous engine is still running; check the \
+             credential file Kimi CLI wrote and try again.",
+            provider.as_str()
         ));
     }
     applied
 }
 
+/// Returns whether the engine was actually respawned on the new auth mode
+/// (same contract as [`switch_provider`]).
 async fn apply_provider_picker_auth_mode(
     app: &mut App,
     engine_handle: &mut EngineHandle,
@@ -8485,7 +8516,7 @@ async fn apply_provider_picker_auth_mode(
     provider: ApiProvider,
     auth_mode: &str,
     status_prefix: &str,
-) {
+) -> bool {
     match save_provider_auth_mode_for(provider, auth_mode) {
         Ok(path) => {
             set_provider_auth_mode_in_memory(config, provider, auth_mode.to_string());
@@ -8499,11 +8530,11 @@ async fn apply_provider_picker_auth_mode(
                     provider.as_str()
                 ),
             });
-            return;
+            return false;
         }
     }
 
-    switch_provider(app, engine_handle, config, provider, None).await;
+    switch_provider(app, engine_handle, config, provider, None).await
 }
 
 fn set_provider_auth_mode_in_memory(config: &mut Config, provider: ApiProvider, auth_mode: String) {

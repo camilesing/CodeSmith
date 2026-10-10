@@ -2422,12 +2422,19 @@ impl Config {
     /// route themselves, including pass-through providers that take it
     /// verbatim), otherwise the provider's default heavy model. DeepSeek keeps
     /// [`Config::default_model`]'s resolution either way.
+    ///
+    /// `settings` is the caller's already-loaded settings — `None` when the
+    /// file could not be read, in which case the settings branch is skipped.
+    /// Keeping the I/O at the call boundary leaves this helper pure like
+    /// every other model-resolution method on `Config`.
     #[must_use]
-    pub fn default_model_for_new_provider(&self, provider: ApiProvider) -> String {
-        let settings = crate::settings::Settings::load().unwrap_or_default();
+    pub fn default_model_for_new_provider(
+        &self,
+        settings: Option<&crate::settings::Settings>,
+        provider: ApiProvider,
+    ) -> String {
         if let Some(model) = settings
-            .provider_models
-            .as_ref()
+            .and_then(|settings| settings.provider_models.as_ref())
             .and_then(|models| models.get(provider.as_str()))
             .map(|model| model.trim())
             .filter(|model| !model.is_empty())
@@ -2456,6 +2463,10 @@ impl Config {
             // (the switch itself may still fail and needs the original).
             let mut resolved = self.clone();
             resolved.provider = Some(provider.as_str().to_string());
+            // `default_model` resolves a `custom_provider` selection before
+            // any built-in provider; the caller asked about the provider it
+            // just picked, so drop the stale custom selection on the copy.
+            resolved.custom_provider = None;
             return resolved.default_model();
         }
         tier_default_model_for_provider(provider, ModelTier::Heavy).to_string()
@@ -9552,25 +9563,25 @@ api_key = "moonshot-platform-key"
         // Providers that do not serve DeepSeek ids must start on their own
         // default instead of the template's model.
         assert_eq!(
-            config.default_model_for_new_provider(ApiProvider::Anthropic),
+            config.default_model_for_new_provider(None, ApiProvider::Anthropic),
             DEFAULT_ANTHROPIC_MODEL
         );
         assert_eq!(
-            config.default_model_for_new_provider(ApiProvider::Openai),
+            config.default_model_for_new_provider(None, ApiProvider::Openai),
             DEFAULT_OPENAI_MODEL
         );
         assert_eq!(
-            config.default_model_for_new_provider(ApiProvider::Ollama),
+            config.default_model_for_new_provider(None, ApiProvider::Ollama),
             DEFAULT_OLLAMA_MODEL
         );
         // Gateways that do serve DeepSeek models keep the mapped id, and the
         // fallback provider keeps the curated root model.
         assert_eq!(
-            config.default_model_for_new_provider(ApiProvider::Openrouter),
+            config.default_model_for_new_provider(None, ApiProvider::Openrouter),
             DEFAULT_OPENROUTER_MODEL
         );
         assert_eq!(
-            config.default_model_for_new_provider(ApiProvider::Deepseek),
+            config.default_model_for_new_provider(None, ApiProvider::Deepseek),
             DEFAULT_TEXT_MODEL
         );
 
@@ -9587,7 +9598,7 @@ api_key = "moonshot-platform-key"
             ..Config::default()
         };
         assert_eq!(
-            explicit.default_model_for_new_provider(ApiProvider::Anthropic),
+            explicit.default_model_for_new_provider(None, ApiProvider::Anthropic),
             "claude-opus-4-1"
         );
 
@@ -9599,7 +9610,42 @@ api_key = "moonshot-platform-key"
             ..Config::default()
         };
         assert_eq!(
-            hand_configured.default_model_for_new_provider(ApiProvider::Openai),
+            hand_configured.default_model_for_new_provider(None, ApiProvider::Openai),
+            "MiniMax-M2.7"
+        );
+
+        // A settings-pinned model is the top of the resolution order — this
+        // is how a re-run wizard remembers a prior `/model` choice.
+        let pinned = crate::settings::Settings {
+            provider_models: Some(HashMap::from([(
+                "openai".to_string(),
+                "gpt-5-mini".to_string(),
+            )])),
+            ..Default::default()
+        };
+        assert_eq!(
+            config.default_model_for_new_provider(Some(&pinned), ApiProvider::Openai),
+            "gpt-5-mini"
+        );
+
+        // An active `[[providers.custom]]` selection must not answer for the
+        // builtin provider the wizard just picked.
+        let custom_active = Config {
+            custom_provider: Some("acme".to_string()),
+            providers: Some(ProvidersConfig {
+                custom: vec![CustomProviderConfig {
+                    id: "acme".to_string(),
+                    base_url: Some("https://gateway.acme.example/v1".to_string()),
+                    model: Some("acme-flagship".to_string()),
+                    ..CustomProviderConfig::default()
+                }],
+                ..ProvidersConfig::default()
+            }),
+            default_text_model: Some("MiniMax-M2.7".to_string()),
+            ..Config::default()
+        };
+        assert_eq!(
+            custom_active.default_model_for_new_provider(None, ApiProvider::Openai),
             "MiniMax-M2.7"
         );
     }

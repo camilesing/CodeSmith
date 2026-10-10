@@ -121,7 +121,10 @@ impl ProviderPickerView {
 
     fn provider_hint(provider: ApiProvider, has_key: bool) -> String {
         match provider {
-            ApiProvider::Moonshot if kimi_cli_credentials_present() => {
+            // Key-first, matching the Enter handler below: a resolvable key
+            // is what Enter would apply, so the OAuth label is reached only
+            // when no key resolves.
+            ApiProvider::Moonshot if !has_key && kimi_cli_credentials_present() => {
                 "(Kimi CLI OAuth ready)".to_string()
             }
             ApiProvider::Ollama => "self-hosted; defaults to http://localhost:11434".to_string(),

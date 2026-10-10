@@ -1281,8 +1281,13 @@ pub struct App {
     /// `(provider, has_usable_key)` snapshot for the `Provider` screen rows,
     /// in [`ApiProvider::all`] order. A snapshot (rather than a live
     /// `Config` read) because the onboarding render path has no `Config`;
-    /// it is only read while the wizard is open, and a key saved during the
-    /// wizard is applied to the engine, not to these hints.
+    /// it is taken at startup and refreshed by
+    /// [`App::refresh_onboarding_provider_rows`] whenever the wizard
+    /// re-enters the picker mid-session (`/logout` and the auth-rejection
+    /// re-prompt both re-open the wizard at the key screen, one Esc away
+    /// from this list), so a key cleared after startup is not reported as
+    /// configured. A key saved during the wizard is applied to the engine,
+    /// not to these hints.
     pub onboarding_provider_rows: Vec<(ApiProvider, bool)>,
     /// Custom endpoint URL typed on the `Endpoint` screen. A plain append-only
     /// buffer (no cursor), like the `/provider` modal's key field: the URL is
@@ -2280,8 +2285,21 @@ impl App {
         self.needs_redraw = true;
     }
 
-    /// Move the onboarding provider picker by `delta` rows, wrapping at both
-    /// ends (the picker is a closed list; there is no scrolling off the top).
+    /// Recompute the `Provider` screen rows from the live config. Mid-session
+    /// wizard re-entries (`/logout`, the auth-rejection re-prompt) reach the
+    /// picker through the key screen's Esc; without this the rows would still
+    /// be the startup snapshot.
+    pub fn refresh_onboarding_provider_rows(&mut self, config: &Config) {
+        self.onboarding_provider_rows = ApiProvider::all()
+            .iter()
+            .map(|p| (*p, crate::config::has_api_key_for(config, *p)))
+            .collect();
+        self.needs_redraw = true;
+    }
+
+    /// Move the onboarding provider picker one row in the direction of
+    /// `delta` (only its sign is used), wrapping at both ends (the picker
+    /// is a closed list; there is no scrolling off the top).
     pub fn move_onboarding_provider(&mut self, delta: isize) {
         let len = self.onboarding_provider_rows.len();
         if len == 0 {
