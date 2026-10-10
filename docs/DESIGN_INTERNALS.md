@@ -148,166 +148,202 @@ depending on `codesmith-agent-runtime`'s production `Engine`.
   `HostAgentExecutor` (in `codesmith-agent-runtime::engine::host_executor`,
   §E) mirrors the bare loop over the three bridges and is the designated home
   for absorbing the production `Engine`'s guardrails slice by slice — **ten**
-  are now absorbed: **loop-guard** (block the 3rd identical call, warn/halt on
-  3/8 consecutive failures) at its per-tool / post-tool seams, **LSP flush**
-  (collect diagnostics per successful edit, flush them as a user message before
-  the next request) at its per-tool / per-step-pre-request seams,
-  **transparent-retry** (re-issue the request when the stream dies mid-flight
-  before any content commits, up to 3 times; reset the budget on a healthy
-  round) at its per-step post-stream seam, **steer** (drain queued user
-  inputs as `user` messages before the next request) at its per-step
-  pre-request seam, **approval** (gate write/code-exec tools behind user
-  permission: emit `ApprovalRequired` + block on the decision channel by wire
-  tool id; denied ⇒ `permission_denied` error, tool skipped) at its per-tool
-  seam, **compaction** (micro-compact stale tool results past the 32KB
-  cache trigger without an LLM call, then auto-compact via an LLM summary when
-  `should_compact` passes; both wholesale-replace via `clear()`+`push()`) at
-  its per-step pre-request seam, plus **capacity**, **subagent** (completion
-  hold + sentinel), **early-tool-start**, and the **cycle** guardrail (see the
-  `host_executor.rs` module doc, "Absorbed guardrails", for the full list).
-  The per-step machinery is split by phase into private submodules under
-  `engine/turn/` (`stream.rs`, `batches.rs`, `approval.rs`, `seams.rs`,
-  `postprocess.rs`); `host_executor.rs` keeps the step loop itself plus the
-  cross-cutting guardrails it owns directly. The LSP accumulator, the steer receiver, the
-  approval receiver, and the compaction probe are the
-  **interior-mutability slices**: `LspProbe.pending` is
-  `Arc<std::sync::Mutex<Vec<DiagnosticBlock>>>` (LSP: lock never held across an
-  `await`, matching `CallbackBridge`) and `steer` is
-  `Option<Arc<tokio::sync::Mutex<mpsc::Receiver<String>>>>` — `tokio::sync::Mutex`
-  (not `std`) so the guard may cross the blocking `recv().await` in the subagent
-  blocking hold's `biased select!` steer arm (same rationale as `approval`; the
-  pre-request `try_recv` drain is non-blocking and uncontended — single consumer —
-  so the tokio mutex is a no-cost upgrade there); both interior-mutable because
-  `AgentExecutor::run` is `&self` while the accumulator mutates on collect/flush
-  and `try_recv`/`recv` take `&mut self`, persisting across `run` calls so
-  diagnostics from an edit on a turn ending via `MaxSteps` surface on the next
-  turn's first flush, and a steer queued between turns is picked up on the
-  next turn's first drain. `approval` uses a `tokio::sync::Mutex`
-  (`Option<Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>>`,
-  because the guard must cross the blocking `recv().await`; a std mutex guard
-  isn't `Send`). `compaction` carries
-  `micro_state: Arc<std::sync::Mutex<MicroCompactState>>` and
-  `circuit_breaker: Arc<std::sync::Mutex<CompactionCircuitBreaker>>` (no lock
-  crosses an `await` — messages are cloned out before the async
-  `compact_messages_safe` call), persisting across `run` calls so a failed
-  compaction on turn N still trips the breaker on turn N+1 (matching
-  `Engine.micro_compact_state` / `.compaction_circuit_breaker`). Both the
-  compaction and capacity probes also carry the session fact ledger
-  (`Session::fact_ledger`, `compaction/fact_ledger.rs`): every compaction's
-  drop set feeds it rule-extracted must-not-lose facts (task constraints,
-  key paths, failure causes), its rendered section rides every compaction
-  summary and the cycle-reset seed, and the first task instruction is pinned
-  verbatim by `plan_compaction` when under
-  `TASK_INSTRUCTION_PIN_TOKEN_CAP`. The ledger is also the reflection loop's
-  store: the layered summary's "Refuted Assumptions & Invariants" section —
-  lessons the model derives from its own failures — is parsed back into the
-  ledger as `RefutedAssumption` entries, so a learned invariant outlives the
-  summary that carried it (no external playbook knowledge involved).
-  A separate deliverables watchdog (`engine/deliverables.rs`,
-  `DeliverablesProbe` on the executor) shares the pre-request seam: the
-  output paths parsed from the task instruction are re-checked on disk
-  every `DELIVERABLES_CHECK_CADENCE_STEPS` steps and a missing one is
-  pushed back as a `<codesmith:runtime_event kind="deliverables_check">`
-  user message, so a missing deliverable surfaces mid-run instead of at
-  grading. Compaction summaries also pass a layered-section gate
-  (`summary_section_count`): a flat draw is retried once.
-  transparent-retry reuses the local-state pattern
-  (a per-run `u32` counter, matching loop-guard). Guardrail status surfaces
-  over the host's `Event` channel (`event_tx`), not the `Callback`.
-  `StopReason` (`NoToolCalls` / `MaxSteps` / `Error`) is the terminal outcome.
+  are now absorbed (see the `host_executor.rs` module doc, "Absorbed
+  guardrails", for the full list):
+
+  - **loop-guard** — block the 3rd identical call, warn/halt on 3/8
+    consecutive failures; per-tool / post-tool seams.
+  - **LSP flush** — collect diagnostics per successful edit, flush them as a
+    user message before the next request; per-tool / per-step pre-request
+    seams.
+  - **transparent-retry** — re-issue the request when the stream dies
+    mid-flight before any content commits, up to 3 times, resetting the
+    budget on a healthy round; per-step post-stream seam.
+  - **steer** — drain queued user inputs as `user` messages before the next
+    request; per-step pre-request seam.
+  - **approval** — gate write/code-exec tools behind user permission: emit
+    `ApprovalRequired` + block on the decision channel by wire tool id;
+    denied ⇒ `permission_denied` error, tool skipped; per-tool seam.
+  - **compaction** — micro-compact stale tool results past the 32KB cache
+    trigger without an LLM call, then auto-compact via an LLM summary when
+    `should_compact` passes; both wholesale-replace via `clear()`+`push()`;
+    per-step pre-request seam.
+  - **capacity**, **subagent** (completion hold + sentinel),
+    **early-tool-start**, and the **cycle** guardrail.
+
+The per-step machinery is split by phase into private submodules under
+`engine/turn/` (`stream.rs`, `batches.rs`, `approval.rs`, `seams.rs`,
+`postprocess.rs`); `host_executor.rs` keeps the step loop itself plus the
+cross-cutting guardrails it owns directly.
+
+**Interior-mutability slices.** The LSP accumulator, the steer receiver, the
+approval receiver, and the compaction probe are the interior-mutability
+slices: `AgentExecutor::run` is `&self` while the accumulator mutates on
+collect/flush and `try_recv`/`recv` take `&mut self`. `LspProbe.pending` is
+`Arc<std::sync::Mutex<Vec<DiagnosticBlock>>>` (lock never held across an
+`await`, matching `CallbackBridge`).
+
+`steer` is `Option<Arc<tokio::sync::Mutex<mpsc::Receiver<String>>>>` —
+`tokio::sync::Mutex` (not `std`) so the guard may cross the blocking
+`recv().await` in the subagent blocking hold's `biased select!` steer arm
+(same rationale as `approval`; the pre-request `try_recv` drain is
+non-blocking and uncontended — single consumer — so the tokio mutex is a
+no-cost upgrade there).
+
+These slices persist across `run` calls, so diagnostics from an edit on a
+turn ending via `MaxSteps` surface on the next turn's first flush, and a
+steer queued between turns is picked up on the next turn's first drain.
+`approval` uses `Option<Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>>`
+because the guard must cross the blocking `recv().await` (a std mutex guard
+isn't `Send`).
+
+**Compaction state.** `compaction` carries `micro_state:
+Arc<std::sync::Mutex<MicroCompactState>>` and `circuit_breaker:
+Arc<std::sync::Mutex<CompactionCircuitBreaker>>` (no lock crosses an `await`
+— messages are cloned out before the async `compact_messages_safe` call). It
+persists across `run` calls so a failed compaction on turn N still trips the
+breaker on turn N+1 (matching `Engine.micro_compact_state` /
+`.compaction_circuit_breaker`).
+
+**Session fact ledger.** Both the compaction and capacity probes also carry
+the session fact ledger (`Session::fact_ledger`, `compaction/fact_ledger.rs`):
+every compaction's drop set feeds it rule-extracted must-not-lose facts (task
+constraints, key paths, failure causes), its rendered section rides every
+compaction summary and the cycle-reset seed, and the first task instruction
+is pinned verbatim by `plan_compaction` when under
+`TASK_INSTRUCTION_PIN_TOKEN_CAP`.
+
+The ledger is also the reflection loop's store: the layered summary's
+"Refuted Assumptions & Invariants" section — lessons the model derives from
+its own failures — is parsed back into the ledger as `RefutedAssumption`
+entries, so a learned invariant outlives the summary that carried it (no
+external playbook knowledge involved).
+
+**Deliverables watchdog.** A separate deliverables watchdog
+(`engine/deliverables.rs`, `DeliverablesProbe` on the executor) shares the
+pre-request seam: the output paths parsed from the task instruction are
+re-checked on disk every `DELIVERABLES_CHECK_CADENCE_STEPS` steps and a
+missing one is pushed back as a `<codesmith:runtime_event
+kind="deliverables_check">` user message, so a missing deliverable surfaces
+mid-run instead of at grading. Compaction summaries also pass a
+layered-section gate (`summary_section_count`): a flat draw is retried once.
+
+transparent-retry reuses the local-state pattern (a per-run `u32` counter,
+matching loop-guard). Guardrail status surfaces over the host's `Event`
+channel (`event_tx`), not the `Callback`. `StopReason` (`NoToolCalls` /
+`MaxSteps` / `Error`) is the terminal outcome.
 
 What is here (§E cutover done): the production `Engine` guardrails (formerly
-in the now-deleted `turn_loop.rs`, retired `handle_deepseek_turn`) absorbed
-into `HostAgentExecutor` — the three
-host→framework bridges are all landed (`ToolSpecAdapter`, `CallbackBridge`,
-`SessionChatHistory`), and the host-side `HostAgentExecutor` runs the bare
-LLM↔tool loop over them with **ten guardrails absorbed** (loop-guard, LSP
-flush, transparent-retry, steer, approval, compaction, capacity,
-early-tool-start, subagent post-stream drain, cancel-token; the per-step
-machinery is split by phase into `engine/turn/{stream,batches,approval,seams,postprocess}.rs`
-— see the `host_executor.rs` module doc for the full list): **loop-guard** at
-its per-tool / post-tool seams (block the 3rd identical call, warn/halt on 3/8
-consecutive failures), **LSP flush** at its per-tool (post-edit collect) /
-per-step pre-request (flush) seams — the first guardrail to need `Engine`
+in the now-deleted `turn_loop.rs`; `handle_deepseek_turn` retired) are
+absorbed into `HostAgentExecutor`. The three host→framework bridges are all
+landed (`ToolSpecAdapter`, `CallbackBridge`, `SessionChatHistory`), and the
+host-side `HostAgentExecutor` runs the bare LLM↔tool loop over them with
+**ten guardrails absorbed** (loop-guard, LSP flush, transparent-retry, steer,
+approval, compaction, capacity, early-tool-start, subagent post-stream drain,
+cancel-token; the per-step machinery is split by phase into
+`engine/turn/{stream,batches,approval,seams,postprocess}.rs` — see the
+`host_executor.rs` module doc for the full list).
+
+The earliest guardrails landed with these shapes. **loop-guard** sits at its
+per-tool / post-tool seams (block the 3rd identical call, warn/halt on 3/8
+consecutive failures). **LSP flush** sits at its per-tool (post-edit collect)
+/ per-step pre-request (flush) seams — the first guardrail to need `Engine`
 mutable state, landed as `Arc<std::sync::Mutex<Vec<DiagnosticBlock>>>` on
 `LspProbe` (the first interior-mutability slice; lock never held across an
 `await`, matching `CallbackBridge`; persists across `run` calls so a
-`MaxSteps`-ended turn's edit diagnostics surface next turn) —
-**transparent-retry** at its per-step post-stream seam (re-issue the request
-when the stream dies mid-flight before any content commits, up to 3 times;
-budget resets on a healthy round; transparent to the `Callback`) — and
-**steer** at its per-step pre-request seam (drain queued user inputs as `user`
-messages before the request snapshot), landed as
+`MaxSteps`-ended turn's edit diagnostics surface next turn).
+
+**transparent-retry** sits at its per-step post-stream seam (re-issue the
+request when the stream dies mid-flight before any content commits, up to 3
+times; budget resets on a healthy round; transparent to the `Callback`).
+
+**steer** sits at its per-step pre-request seam (drain queued user inputs as
+`user` messages before the request snapshot), landed as
 `Option<Arc<tokio::sync::Mutex<mpsc::Receiver<String>>>>` — `tokio::sync::Mutex`
 (not `std`) so the guard may cross the blocking `recv().await` in the subagent
 blocking hold's `biased select!` steer arm (same rationale as `approval`; the
-pre-request `try_recv` drain is non-blocking and uncontended); persists across
-`run` calls so a steer
-queued between turns is picked up next turn) — **approval** at its per-tool
-seam (gate write/code-exec tools: emit `ApprovalRequired` + block on the
-decision channel by wire tool id; denied ⇒ `permission_denied` error; the
-a `tokio::sync::Mutex` guardrail because the guard must cross `recv().await`
-(steer shares this rationale for its subagent-blocking-hold arm); static approval
-derivation from `Tool::capabilities`, per-input
-override + sandbox elevation deferred to wire-in) — and **compaction** at its
-per-step pre-request seam (micro-compact stale tool results past the 32KB
-cache trigger without an LLM call, then auto-compact via an LLM summary when
-`should_compact` passes; both wholesale-replace the transcript via `clear()`+
-`push()`; `CompactionProbe` carries `std::sync::Mutex` micro-state + circuit
-breaker that persist across `run` calls; summary-prompt merge absorbed ✅
-(slice 25a §E), attachment reinject absorbed ✅ (slice 25b §E), post-compact
-cleanup absorbed ✅ (slice 25c §E) — see the `host_executor.rs` module doc; only
-enhancements + working-set pins remain deferred to wire-in). Its four seams (per-step
-pre-request / post-stream / per-tool / post-tool) have since grown the
-remaining guardrails too (see the `host_executor.rs` module doc for the full
-set), and `handle_deepseek_turn` retired in the slice 20 §E cutover.
-loop-guard proved `&self` + local state suffices for self-contained
-guardrails; LSP flush proves the `Arc<Mutex<…>>` shape for guardrails needing
-shared mutable state (steer adopts the same shape but `tokio::sync::Mutex`, not
-`std` — see above);
+pre-request `try_recv` drain is non-blocking and uncontended); it persists
+across `run` calls so a steer queued between turns is picked up next turn.
+
+**approval** sits at its per-tool seam: gate write/code-exec tools — emit
+`ApprovalRequired` + block on the decision channel by wire tool id; denied ⇒
+`permission_denied` error. It is a `tokio::sync::Mutex` guardrail because the
+guard must cross `recv().await` (steer shares this rationale for its
+subagent-blocking-hold arm). Static approval derivation is from
+`Tool::capabilities`; per-input override + sandbox elevation are deferred to
+wire-in.
+
+**compaction** sits at its per-step pre-request seam (micro-compact stale
+tool results past the 32KB cache trigger without an LLM call, then
+auto-compact via an LLM summary when `should_compact` passes; both
+wholesale-replace the transcript via `clear()`+`push()`; `CompactionProbe`
+carries `std::sync::Mutex` micro-state + circuit breaker that persist across
+`run` calls). Summary-prompt merge absorbed ✅ (slice 25a §E), attachment
+reinject absorbed ✅ (slice 25b §E), post-compact cleanup absorbed ✅ (slice
+25c §E) — see the `host_executor.rs` module doc; only enhancements +
+working-set pins remain deferred to wire-in.
+
+The executor's four seams (per-step pre-request / post-stream / per-tool /
+post-tool) have since grown the remaining guardrails too (see the
+`host_executor.rs` module doc for the full set), and `handle_deepseek_turn`
+retired in the slice 20 §E cutover.
+
+Each early guardrail proved a pattern: loop-guard proved `&self` + local
+state suffices for self-contained guardrails; LSP flush proves the
+`Arc<Mutex<…>>` shape for guardrails needing shared mutable state (steer
+adopts the same shape but `tokio::sync::Mutex`, not `std` — see above);
 transparent-retry proves the seam-2 post-stream shape (local counter + the
 `accumulate_stream` `Err` signal); approval proves the seam-3 per-tool shape
 with a blocking `recv().await` (`tokio::sync::Mutex`); compaction proves the
 seam-1 pre-request wholesale-replace shape (clone-then-`compact_messages_safe`,
-`clear()`+`push()` apply) with a cross-`run` circuit breaker. **Known gaps in
-the LSP flush (by design):**
-`apply_patch` path derivation is deferred (needs
-`HostServices::preflight_apply_patch_paths`, unreachable from `agent-runtime`
-without the heavy host trait); the synthetic flush message carries no `<turn_meta>` enrichment (the
-framework path has no turn_meta anywhere yet — cross-cutting host-side
-concern, deferred to its own slice); no `emit_session_updated` for the push
-(consistent with the executor's other message pushes; UI surfacing deferred
-to the wire-in step). **Known tradeoffs in transparent-retry (by design):**
-`accumulate_stream` bails on the first erroring stream item and drops partial
-blocks, so the retry fires even when production would ship partial content (it
-tracks `any_content_received` inline) — since the partial content is lost,
-retrying is the only recovery path, and inline stream reduction (a later slice
-that replaces `accumulate_stream`) closes the gap; pre-stream connection
-errors (`create_message_stream` `Err`) are not retried (production treats those
-as context-recovery / hard-fail, a separate guardrail); the cancel-token
+`clear()`+`push()` apply) with a cross-`run` circuit breaker.
+
+**Known gaps in the LSP flush (by design):** `apply_patch` path derivation is
+deferred (needs `HostServices::preflight_apply_patch_paths`, unreachable from
+`agent-runtime` without the heavy host trait); the synthetic flush message
+carries no `<turn_meta>` enrichment (the framework path has no turn_meta
+anywhere yet — cross-cutting host-side concern, deferred to its own slice);
+no `emit_session_updated` for the push (consistent with the executor's other
+message pushes; UI surfacing deferred to the wire-in step).
+
+**Known tradeoffs in transparent-retry (by design):** `accumulate_stream`
+bails on the first erroring stream item and drops partial blocks, so the
+retry fires even when production would ship partial content (it tracks
+`any_content_received` inline) — since the partial content is lost, retrying
+is the only recovery path, and inline stream reduction (a later slice that
+replaces `accumulate_stream`) closes the gap. Pre-stream connection errors
+(`create_message_stream` `Err`) are not retried (production treats those as
+context-recovery / hard-fail, a separate guardrail). The cancel-token
 short-circuit (production's `should_transparently_retry_stream` checks
-`!cancelled`) is absorbed ✅ — Checkpoints B/C/D wired (see the `host_executor.rs`
-module doc); the bounded budget (`MAX_STREAM_RETRIES = 3`) can't loop forever. Streaming deltas
-(`MessageDelta`/`ThinkingDelta`) will keep flowing over the `Event` channel
-directly (no `Callback` method) once an inline stream reducer replaces
-`accumulate_stream`. E4 (declarative `providers.toml` + lazy loading) has
-landed — slice 43 shipped the schema/loader in `codesmith-config`, slice 44
-wired `default_registry` to the bundled `providers.toml` (externalizing the
+`!cancelled`) is absorbed ✅ — Checkpoints B/C/D wired (see the
+`host_executor.rs` module doc); the bounded budget (`MAX_STREAM_RETRIES = 3`)
+can't loop forever.
+
+Streaming deltas (`MessageDelta`/`ThinkingDelta`) will keep flowing over the
+`Event` channel directly (no `Callback` method) once an inline stream reducer
+replaces `accumulate_stream`.
+
+E4 (declarative `providers.toml` + lazy loading) has landed — slice 43
+shipped the schema/loader in `codesmith-config`, slice 44 wired
+`default_registry` to the bundled `providers.toml` (externalizing the
 `COMPAT_KINDS` catalog) with a `OnceLock` cache, and slice 45 populated the
 `base_url`/`model` columns and made the factories consume them as a fallback
 when the host passes an empty `ProviderConfig` value (so the manifest is a
-complete per-provider default source). Two follow-ups are deferred (tracked in
-ROADMAP §E4, slice 51): the resolver chain still falls back to the hardcoded
-`DEFAULT_*` constants rather than the manifest (env override augment —
-cross-layer-unreachable per §C6), and flash/kimi-code model variants stay
-host-side (no manifest entry). The framework traits are validated
-against an inline mock LLM + mock tool (see `crates/agent/src/executor/mod.rs`
-tests) — no `codesmith-providers` dependency required, mirroring the provider
-foundation slice's `mock` sample. The `ToolSpec` adapter is additionally
-validated by driving a real `ToolSpec` through the framework executor
-end-to-end (see `crates/agent-runtime/src/tools/framework_adapter.rs` tests),
-and the `CallbackBridge` is validated by driving a tool-call roundtrip through
-the executor that lights up both a mock `Event` channel and a mock `HookHost`
+complete per-provider default source).
+
+Two E4 follow-ups are deferred (tracked in ROADMAP §E4, slice 51): the
+resolver chain still falls back to the hardcoded `DEFAULT_*` constants rather
+than the manifest (env override augment — cross-layer-unreachable per §C6),
+and flash/kimi-code model variants stay host-side (no manifest entry).
+
+The framework traits are validated against an inline mock LLM + mock tool
+(see `crates/agent/src/executor/mod.rs` tests) — no `codesmith-providers`
+dependency required, mirroring the provider foundation slice's `mock` sample.
+The `ToolSpec` adapter is additionally validated by driving a real `ToolSpec`
+through the framework executor end-to-end (see
+`crates/agent-runtime/src/tools/framework_adapter.rs` tests), and the
+`CallbackBridge` is validated by driving a tool-call roundtrip through the
+executor that lights up both a mock `Event` channel and a mock `HookHost`
 (see `crates/agent-runtime/src/callback_bridge.rs` tests).
 
 The `host_executor.rs` module doc carries the complete set of §E `Known gaps
@@ -368,30 +404,38 @@ bind_core → emit path. `/extension list` shows it.
 ```
 
 Slice 1 (§F1) lands the minimal contract + runtime + adapters + host wiring
-+ sample. Slice 2a (§F2a) upgrades the contract + runtime core: the full
-23-variant `ExtensionEvent` set + `ExtensionEventKind`/`kind()`, the
-`HandlerOutcome` (`Continue`/`Cancel`/`Block`/`Transform`) cross-handler chain
++ sample.
+
+Slice 2a (§F2a) upgrades the contract + runtime core: the full 23-variant
+`ExtensionEvent` set + `ExtensionEventKind`/`kind()`, the `HandlerOutcome`
+(`Continue`/`Cancel`/`Block`/`Transform`) cross-handler chain
 (`Handler::handle` now returns `Result<HandlerOutcome, _>`), per-variant
 `ExtensionApi::on_variant` subscription, and `catch_unwind` isolation in
-`ExtensionRunner::emit` (owned-in / `EmitOutcome`-out). Slice 2b (§F2b) wires
-the host seams: `#[must_use]` on `EmitOutcome` (forces seam inspection), honor
-`Block` at `ToolCall` (skip dispatch → permission-denied), `Cancel` at
-`SessionBefore*` (skip compaction/switch), `Transform` at
-`Input`/`BeforeAgentStart`/`BeforeProviderRequest`/`ToolResult` (rewrite the
-actionable field; `ToolResult` reorders emit→`on_tool_end`→propagate to
-`outcomes[idx]`), out-of-place outcomes → `Continue`; emit 22/23 events
-(`ToolExecutionUpdate` deferred — needs a `Callback::on_tool_progress` stream
-hook); full e2e round-trip test; live reload re-populates the shared runner
-`Arc` via `ExtensionRunner::clear_handlers` + `reload_extension_runtime`
-(clear→invalidate→discover→reconcile→load→bind_core), so
-`/extension reload` updates both `App.extension_runner` and the Engine's field.
+`ExtensionRunner::emit` (owned-in / `EmitOutcome`-out).
+
+Slice 2b (§F2b) wires the host seams: `#[must_use]` on `EmitOutcome` (forces
+seam inspection), honor `Block` at `ToolCall` (skip dispatch →
+permission-denied), `Cancel` at `SessionBefore*` (skip compaction/switch),
+`Transform` at `Input`/`BeforeAgentStart`/`BeforeProviderRequest`/`ToolResult`
+(rewrite the actionable field; `ToolResult` reorders emit→`on_tool_end`→
+propagate to `outcomes[idx]`), out-of-place outcomes → `Continue`; emit 22/23
+events (`ToolExecutionUpdate` deferred — needs a `Callback::on_tool_progress`
+stream hook); full e2e round-trip test.
+
+Live reload re-populates the shared runner `Arc` via
+`ExtensionRunner::clear_handlers` + `reload_extension_runtime`
+(clear→invalidate→discover→reconcile→load→bind_core), so `/extension reload`
+updates both `App.extension_runner` and the Engine's field.
+
 Deferred to §F2c: `ToolExecutionUpdate` (stream hook), reload sharing the
-engine's `cancel_token`, and 3 tui-level seams unreachable from the App runner
-(`ProjectTrust` sync context / `ResourcesDiscover` separate MCP process /
-`SessionBeforeFork` dead-code fork path). Deferred to §F3–§F8: `EventBus` impl,
-`registerProvider`, `registerShortcut`/`registerFlag`/renderers, dylib loading
-(phase 2), install-source impls, embed API. Hot-load is permanently out (spec
-§2.4); install + reload only.
+engine's `cancel_token`, and 3 tui-level seams unreachable from the App
+runner (`ProjectTrust` sync context / `ResourcesDiscover` separate MCP
+process / `SessionBeforeFork` dead-code fork path).
+
+Deferred to §F3–§F8: `EventBus` impl, `registerProvider`,
+`registerShortcut`/`registerFlag`/renderers, dylib loading (phase 2),
+install-source impls, embed API. Hot-load is permanently out (spec §2.4);
+install + reload only.
 
 ## What is wired today (foundation slice + §D1 parity bridge)
 
