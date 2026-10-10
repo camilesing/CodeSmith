@@ -40,7 +40,8 @@ codesmith docker                                  # print the container quick st
 
 prompt 的既有形式不变：`codesmith "explain this function"`（单个带引号的
 参数）、`codesmith hello world`（未加引号的整个尾串），单词 prompt 则要走
-`codesmith -p <PROMPT>`，例如 `codesmith -p docker`。
+`codesmith -p <PROMPT>`，例如 `codesmith -p docker`。`--` 终结符同样结束
+子命令匹配，`codesmith -- docker` 也会把 `docker` 作为 prompt 发送。
 
 没给 `-p` 时，单个 ASCII 词无法与拼错的命令区分，因此会被拒绝并在提示
 中指向 `-p`；非 ASCII 词（`codesmith 总结`）仍按 prompt 处理。

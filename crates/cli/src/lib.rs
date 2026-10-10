@@ -146,7 +146,7 @@ struct Cli {
     prompt_flag: Option<String>,
     /// Initial prompt to submit in the interactive TUI. A single bare word
     /// (ASCII, no spaces) is read as a subcommand name instead — pass
-    /// `-p <PROMPT>` for a one-word prompt.
+    /// `-p <PROMPT>` (or put it after `--`) for a one-word prompt.
     #[arg(
         value_name = "PROMPT",
         trailing_var_arg = true,
@@ -525,10 +525,25 @@ pipelines: https://github.com/camilesing/CodeSmith/blob/main/docs/DOCKER.md
 /// and `codesmith version` used to launch the interactive TUI with that word as
 /// the first chat message. A one-word ASCII prompt is the only input shape
 /// where that is indistinguishable from a mistyped command name; multi-word
-/// tails, quoted sentences, `-p`, and non-ASCII words (which cannot name a
-/// command) all stay prompts.
-fn unknown_subcommand_word(cli: &Cli) -> Option<&str> {
+/// tails, quoted sentences, `-p`, non-ASCII words (which cannot name a
+/// command), and anything after the `--` terminator all stay prompts.
+fn unknown_subcommand_word<'a, S: AsRef<std::ffi::OsStr>>(
+    cli: &'a Cli,
+    argv: &[S],
+) -> Option<&'a str> {
     if cli.command.is_some() || cli.prompt_flag.is_some() || cli.continue_session {
+        return None;
+    }
+    // `--` marks every following word as a literal value, so `codesmith --
+    // doctor` stays an explicitly marked prompt even though `doctor` names a
+    // real subcommand. Within this guard's firing shape (no subcommand, no
+    // `-p`, exactly one prompt word) a bare `--` in argv implies the word came
+    // after it: anything before the terminator either matched a subcommand or
+    // would have added a second prompt word, and both shapes return above.
+    if argv
+        .iter()
+        .any(|arg| arg.as_ref() == std::ffi::OsStr::new("--"))
+    {
         return None;
     }
     let [word] = cli.prompt.as_slice() else {
@@ -561,7 +576,7 @@ fn unknown_subcommand_error(word: &str) -> clap::Error {
     err.insert(
         ContextKind::Suggested,
         ContextValue::StyledStrs(vec![
-            StyledStr::from(format!("to send this as a prompt, run: codesmith -p '{word}'")),
+            StyledStr::from(format!("to send this as a prompt, run: codesmith -p {word}")),
             StyledStr::from(
                 "run `codesmith --help` to see all commands (`codesmith run <COMMAND>` forwards a TUI subcommand)",
             ),
@@ -591,12 +606,13 @@ pub fn run_cli() -> std::process::ExitCode {
 }
 
 fn run() -> Result<()> {
-    let mut cli = Cli::parse();
+    let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let mut cli = Cli::parse_from(argv.clone());
 
     // A mistyped command word fails loud here, before config or secret
     // resolution: the `[PROMPT]` positional would otherwise hand it to the TUI
     // as the first chat message and open an interactive session on a typo.
-    if let Some(word) = unknown_subcommand_word(&cli) {
+    if let Some(word) = unknown_subcommand_word(&cli, &argv) {
         unknown_subcommand_error(word).exit();
     }
 
@@ -3384,10 +3400,11 @@ mod tests {
     #[test]
     fn unknown_bare_command_word_is_rejected_before_the_tui() {
         // Regression: `codesmith docotr` forwarded "docotr" to the TUI as the
-        // first chat message and opened an interactive session on a typo.
-        let cli = parse_ok(&["codesmith", "docotr"]);
+        // first chat message and opened an interactive session on the typo.
+        let argv = ["codesmith", "docotr"];
+        let cli = parse_ok(&argv);
 
-        assert_eq!(unknown_subcommand_word(&cli), Some("docotr"));
+        assert_eq!(unknown_subcommand_word(&cli, &argv), Some("docotr"));
     }
 
     #[test]
@@ -3399,10 +3416,25 @@ mod tests {
             vec!["codesmith", "总结"],
             vec!["codesmith", "--continue", "docker"],
             vec!["codesmith", "doctor"],
+            vec!["codesmith", "--", "doctor"],
+            vec!["codesmith", "--", "summarize"],
         ] {
             let cli = parse_ok(&argv);
-            assert_eq!(unknown_subcommand_word(&cli), None, "{argv:?}");
+            assert_eq!(unknown_subcommand_word(&cli, &argv), None, "{argv:?}");
         }
+    }
+
+    #[test]
+    fn dash_dash_terminated_word_stays_a_prompt() {
+        // `--` ends option and subcommand matching, so the word lands in the
+        // prompt even when it names a real subcommand; the guard must not
+        // second-guess the explicit terminator.
+        let argv = ["codesmith", "--", "doctor"];
+        let cli = parse_ok(&argv);
+
+        assert!(cli.command.is_none());
+        assert_eq!(cli.prompt, vec!["doctor"]);
+        assert_eq!(unknown_subcommand_word(&cli, &argv), None);
     }
 
     #[test]
@@ -3413,7 +3445,7 @@ mod tests {
         let rendered = err.to_string();
         for token in [
             "error: unrecognized subcommand 'docotr'",
-            "tip: to send this as a prompt, run: codesmith -p 'docotr'",
+            "tip: to send this as a prompt, run: codesmith -p docotr",
             "codesmith run <COMMAND>",
             "Usage:",
             "[OPTIONS] [PROMPT]",
