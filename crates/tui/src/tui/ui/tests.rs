@@ -4111,6 +4111,23 @@ fn api_key_validation_warns_without_blocking_unusual_formats() {
 }
 
 #[test]
+fn onboarding_after_language_routes_to_the_provider_picker() {
+    let mut app = create_test_app();
+    app.onboarding = OnboardingState::Language;
+    app.onboarding_needs_api_key = true;
+    app.status_message = Some("stale".to_string());
+
+    crate::tui::onboarding::advance_onboarding_after_language(&mut app);
+
+    assert_eq!(
+        app.onboarding,
+        OnboardingState::Provider,
+        "a first run picks the provider before it types a key"
+    );
+    assert_eq!(app.status_message, None);
+}
+
+#[test]
 fn onboarding_after_api_key_save_does_not_repeat_language_step() {
     let mut app = create_test_app();
     app.onboarding = OnboardingState::ApiKey;
@@ -6395,6 +6412,29 @@ fn env_only_auth_failure_reopens_api_key_onboarding() {
     assert!(
         status.contains("DEEPSEEK_API_KEY"),
         "expected env-specific recovery hint, got {status:?}"
+    );
+
+    // The re-prompt is for the provider the session is actually on: a
+    // rejection from a non-DeepSeek route must not blame DEEPSEEK_API_KEY.
+    let mut app = create_test_app();
+    app.api_key_env_only = true;
+    app.api_provider = ApiProvider::Openrouter;
+    app.onboarding = crate::tui::app::OnboardingState::None;
+    app.onboarding_needs_api_key = false;
+
+    apply_engine_error_to_app(
+        &mut app,
+        ErrorEnvelope::fatal_auth("Authentication failed: invalid API key"),
+    );
+
+    assert_eq!(app.onboarding_provider(), ApiProvider::Openrouter);
+    let status = app
+        .status_message
+        .as_deref()
+        .expect("auth recovery should explain the env key source");
+    assert!(
+        status.contains("OPENROUTER_API_KEY"),
+        "expected the active provider's env var, got {status:?}"
     );
 }
 

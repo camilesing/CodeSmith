@@ -207,33 +207,33 @@ pub fn mod_status(workspace: &Path, state: &ModStateStore) -> String {
     }
     let disabled = state.disabled();
     let activated_ids = state.activated();
+    // Joined into named bindings first: `format!` args that borrow the
+    // temporary from `.join(", ")` inside an `if` arm do not compile (E0716 —
+    // the temporary dies before the args are consumed).
+    let loaded_summary = join_ids_or_none(&loaded);
+    let pending_summary = join_ids_or_none(&pending);
+    let disabled_summary = join_ids_or_none(&disabled);
+    let activated_summary = join_ids_or_none(&activated_ids);
     format!(
         "Mod state: {} discovered, {} loaded, {} pending, {} disabled.\nloaded: {}\npending: {}\ndisabled: {}\nactivated ids on record: {}",
         mods.len(),
         loaded.len(),
         pending.len(),
         disabled.len(),
-        if loaded.is_empty() {
-            "(none)"
-        } else {
-            &loaded.join(", ")
-        },
-        if pending.is_empty() {
-            "(none)"
-        } else {
-            &pending.join(", ")
-        },
-        if disabled.is_empty() {
-            "(none)"
-        } else {
-            &disabled.join(", ")
-        },
-        if activated_ids.is_empty() {
-            "(none)"
-        } else {
-            &activated_ids.join(", ")
-        },
+        loaded_summary,
+        pending_summary,
+        disabled_summary,
+        activated_summary,
     )
+}
+
+/// `"(none)"` for an empty id list, otherwise the ids joined for display.
+fn join_ids_or_none(ids: &[String]) -> String {
+    if ids.is_empty() {
+        "(none)".to_string()
+    } else {
+        ids.join(", ")
+    }
 }
 
 /// `/mods info <id>` — manifest detail for one mod.

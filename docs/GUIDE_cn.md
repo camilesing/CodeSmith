@@ -69,7 +69,9 @@ docker run --rm -it \
 codesmith
 ```
 
-首次启动时，CodeSmith 需要当前 provider 的 API key。所有已交付的 provider 都是一等的；未做任何配置时，回退 provider 是 DeepSeek，其他 provider 可通过 `--provider`、`CODESMITH_PROVIDER` 或 `/provider` 选择。回退 provider 最直接的配置路径是：
+首次启动时，CodeSmith 会先让你选择 provider——列表包含全部已交付的 provider，默认选中回退 provider DeepSeek——然后再要求填写该 provider 的 API key。凭据已经可用的 provider（环境变量，或 Ollama 这类自托管运行时）会跳过密钥输入。之后可随时用 `/provider` 更改选择。
+
+在 TUI 之外，同样的配置入口是 `--provider`、`CODESMITH_PROVIDER`，或配置文件中的 `provider = "<id>"`。回退 provider 最直接的配置路径是：
 
 ```bash
 codesmith auth set --provider deepseek

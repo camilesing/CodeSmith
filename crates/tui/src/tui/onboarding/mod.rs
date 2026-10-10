@@ -2,6 +2,7 @@
 
 pub mod api_key;
 pub mod language;
+pub mod provider;
 pub mod trust_directory;
 pub mod welcome;
 
@@ -23,8 +24,22 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(block, area);
 
     const TOP_MARGIN: u16 = 2;
+    // Every screen but the provider list fits the default panel.
+    const DEFAULT_PANEL_HEIGHT: u16 = 20;
+    // The provider list is 16 rows plus title, blurb, and footer.
+    const PROVIDER_PANEL_HEIGHT: u16 = 28;
+    // Non-list lines the provider screen draws: title, blurb, the blank
+    // pair above the list, and the blank + footer below it.
+    const PROVIDER_LIST_CHROME: u16 = 6;
+    // Panel borders (2) plus vertical padding (2).
+    const PANEL_INSET: u16 = 4;
+
     let content_width = 76.min(area.width.saturating_sub(4));
-    let content_height = 20.min(area.height.saturating_sub(TOP_MARGIN + 2));
+    let wanted_height = match app.onboarding {
+        OnboardingState::Provider => PROVIDER_PANEL_HEIGHT,
+        _ => DEFAULT_PANEL_HEIGHT,
+    };
+    let content_height = wanted_height.min(area.height.saturating_sub(TOP_MARGIN + 2));
     let content_area = Rect {
         x: (area.width.saturating_sub(content_width)) / 2,
         y: TOP_MARGIN,
@@ -35,6 +50,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let lines = match app.onboarding {
         OnboardingState::Welcome => welcome::lines(),
         OnboardingState::Language => language::lines(app),
+        OnboardingState::Provider => {
+            // Rows the panel can hold once its own chrome is subtracted; the
+            // window then always contains the selected row.
+            let list_rows =
+                usize::from(content_height.saturating_sub(PANEL_INSET + PROVIDER_LIST_CHROME));
+            provider::lines(app, list_rows)
+        }
         OnboardingState::ApiKey => api_key::lines(app),
         OnboardingState::TrustDirectory => trust_directory::lines(app),
         OnboardingState::Tips => tips_lines(app),
@@ -83,9 +105,12 @@ fn onboarding_step(app: &App) -> (usize, usize) {
     let step = match app.onboarding {
         OnboardingState::Welcome => 1,
         OnboardingState::Language => 2,
-        OnboardingState::ApiKey => 3,
+        // Provider and ApiKey are one credential step: the key screen may or
+        // may not follow the picker (env keys, self-hosted, Kimi OAuth), so
+        // both report the same slot rather than inflating the count.
+        OnboardingState::Provider | OnboardingState::ApiKey => 3,
         OnboardingState::TrustDirectory => {
-            // Welcome (1) + Language (2) + optional ApiKey
+            // Welcome (1) + Language (2) + optional credential step
             if app.onboarding_needs_api_key { 4 } else { 3 }
         }
         OnboardingState::Tips => total,
@@ -214,12 +239,16 @@ pub fn advance_onboarding_from_welcome(app: &mut App) {
     app.onboarding = OnboardingState::Language;
 }
 
-/// Language → next step. Routes to ApiKey when the session lacks a key,
-/// to TrustDirectory when the workspace is untrusted, otherwise to Tips.
+/// Language → next step. Routes to the provider picker when the session still
+/// needs credentials (the picker decides whether the key screen follows), to
+/// TrustDirectory when the workspace is untrusted, otherwise to Tips.
+///
+/// Also used as "advance past the credential step": by then
+/// `onboarding_needs_api_key` is `false`, so it lands on trust or tips.
 pub fn advance_onboarding_after_language(app: &mut App) {
     app.status_message = None;
     if app.onboarding_needs_api_key {
-        app.onboarding = OnboardingState::ApiKey;
+        app.onboarding = OnboardingState::Provider;
     } else if !app.trust_mode && needs_trust(&app.workspace) {
         app.onboarding = OnboardingState::TrustDirectory;
     } else {

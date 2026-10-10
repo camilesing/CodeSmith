@@ -3034,14 +3034,40 @@ async fn run_event_loop(
                         return Ok(());
                     }
                     KeyCode::Esc if app.onboarding == OnboardingState::ApiKey => {
-                        app.onboarding = OnboardingState::Welcome;
+                        // Back one step: the provider picker precedes the key
+                        // screen in the first-run flow.
+                        app.onboarding = OnboardingState::Provider;
                         app.api_key_input.clear();
                         app.api_key_cursor = 0;
+                        app.status_message = None;
+                    }
+                    KeyCode::Esc if app.onboarding == OnboardingState::Provider => {
+                        app.onboarding = OnboardingState::Language;
                         app.status_message = None;
                     }
                     KeyCode::Esc if app.onboarding == OnboardingState::Language => {
                         app.onboarding = OnboardingState::Welcome;
                         app.status_message = None;
+                    }
+                    // Provider picker navigation. No modal is involved, so the
+                    // wizard owns these keys while its picker is on screen.
+                    KeyCode::Up if app.onboarding == OnboardingState::Provider => {
+                        app.move_onboarding_provider(-1);
+                    }
+                    KeyCode::Down if app.onboarding == OnboardingState::Provider => {
+                        app.move_onboarding_provider(1);
+                    }
+                    KeyCode::Char('k' | 'K')
+                        if app.onboarding == OnboardingState::Provider
+                            && key.modifiers == KeyModifiers::NONE =>
+                    {
+                        app.move_onboarding_provider(-1);
+                    }
+                    KeyCode::Char('j' | 'J')
+                        if app.onboarding == OnboardingState::Provider
+                            && key.modifiers == KeyModifiers::NONE =>
+                    {
+                        app.move_onboarding_provider(1);
                     }
                     // Language picker hotkeys select + persist (#566).
                     //
@@ -3081,7 +3107,47 @@ async fn run_event_loop(
                             // setting (which defaults to "auto").
                             onboarding::advance_onboarding_after_language(app);
                         }
+                        OnboardingState::Provider => {
+                            let provider = app.onboarding_provider();
+                            if provider == ApiProvider::Moonshot
+                                && crate::config::kimi_cli_credentials_present()
+                            {
+                                // A registered Kimi CLI OAuth credential is
+                                // enough: link it and switch, exactly as the
+                                // `/provider` picker does.
+                                if apply_onboarding_provider_auth_mode(
+                                    app,
+                                    &mut engine_handle,
+                                    config,
+                                    provider,
+                                )
+                                .await
+                                {
+                                    onboarding::advance_onboarding_after_language(app);
+                                }
+                            } else if crate::config::has_api_key_for(config, provider) {
+                                // A key is already resolvable (environment,
+                                // config file, or a self-hosted runtime), so
+                                // there is nothing to type.
+                                if apply_onboarding_provider_choice(
+                                    app,
+                                    &mut engine_handle,
+                                    config,
+                                    provider,
+                                )
+                                .await
+                                {
+                                    onboarding::advance_onboarding_after_language(app);
+                                }
+                            } else {
+                                app.api_key_input.clear();
+                                app.api_key_cursor = 0;
+                                app.status_message = None;
+                                app.onboarding = OnboardingState::ApiKey;
+                            }
+                        }
                         OnboardingState::ApiKey => {
+                            let provider = app.onboarding_provider();
                             let key = app.api_key_input.trim().to_string();
                             if let onboarding::ApiKeyValidation::Reject(message) =
                                 onboarding::validate_api_key_for_onboarding(&key)
@@ -3089,7 +3155,7 @@ async fn run_event_loop(
                                 app.status_message = Some(message);
                                 continue;
                             }
-                            match app.submit_api_key() {
+                            match app.submit_api_key_for(provider) {
                                 Ok(saved) => {
                                     // Surface where the key landed so the
                                     // user can verify the shared config
@@ -3104,43 +3170,20 @@ async fn run_event_loop(
                                         Some(4_000),
                                     );
                                     app.status_message = None;
-                                    config.api_key = Some(key.clone());
-                                    let mut refreshed_config = config.clone();
-                                    refreshed_config.api_key = Some(key);
-                                    // Build before shutting the old engine
-                                    // down — a failed build (e.g. malformed
-                                    // capabilities.toml) keeps the live
-                                    // engine and surfaces the error.
-                                    match build_engine_config(app, &refreshed_config) {
-                                        Ok(engine_config) => {
-                                            let _ = engine_handle.send(Op::Shutdown).await;
-                                            engine_handle = spawn_engine(
-                                                engine_config,
-                                                &refreshed_config,
-                                                build_engine_host(app),
-                                            );
-                                        }
-                                        Err(e) => {
-                                            app.status_message = Some(e.to_string());
-                                        }
+                                    // Mirror the key into the engine's config
+                                    // so the switch below sees it without a
+                                    // config reload.
+                                    mirror_provider_api_key(config, provider, &key);
+                                    if apply_onboarding_provider_choice(
+                                        app,
+                                        &mut engine_handle,
+                                        config,
+                                        provider,
+                                    )
+                                    .await
+                                    {
+                                        onboarding::advance_onboarding_after_language(app);
                                     }
-                                    app.offline_mode = false;
-                                    app.api_key_env_only = false;
-
-                                    if !app.api_messages.is_empty() {
-                                        let _ = engine_handle
-                                            .send(Op::SyncSession {
-                                                session_id: app.current_session_id.clone(),
-                                                messages: app.api_messages.clone(),
-                                                system_prompt: app.system_prompt.clone(),
-                                                system_prompt_override: false,
-                                                model: app.model.clone(),
-                                                workspace: app.workspace.clone(),
-                                            })
-                                            .await;
-                                    }
-
-                                    onboarding::advance_onboarding_after_language(app);
                                 }
                                 Err(e) => {
                                     app.status_message = Some(e.to_string());
@@ -4732,9 +4775,14 @@ pub(crate) fn apply_engine_error_to_app(
         app.offline_mode = true;
         app.onboarding_needs_api_key = true;
         app.onboarding = OnboardingState::ApiKey;
-        app.status_message = Some(
-            "The API key from DEEPSEEK_API_KEY was rejected. Paste a valid key to save it to ~/.codesmith/config.toml, or update the environment variable.".to_string(),
-        );
+        // The key screen names the provider it is configuring, so point it at
+        // the active one and name that provider's own environment variable.
+        app.set_onboarding_provider(app.api_provider);
+        let env_var = crate::tui::provider_picker::env_var_for(app.api_provider);
+        app.status_message = Some(format!(
+            "The API key from {env_var} was rejected. Paste a valid key to save it to \
+             ~/.codesmith/config.toml, or update the environment variable."
+        ));
         return;
     }
     if !recoverable {
@@ -5514,15 +5562,21 @@ async fn switch_provider(
         })
         .await;
 
-    app.add_message(HistoryCell::System {
-        content: format!(
-            "Provider switched: {} → {}\nModel: {} → {}",
-            previous_provider.as_str(),
-            target.as_str(),
-            previous_model,
-            new_model
-        ),
-    });
+    // Only a real change is worth a transcript entry: re-applying the active
+    // provider happens during onboarding (the provider is confirmed before its
+    // key is saved) and from the picker's key-entry stage, and "switched
+    // deepseek → deepseek" is noise on both.
+    if cache_scope_changed {
+        app.add_message(HistoryCell::System {
+            content: format!(
+                "Provider switched: {} → {}\nModel: {} → {}",
+                previous_provider.as_str(),
+                target.as_str(),
+                previous_model,
+                new_model
+            ),
+        });
+    }
     app.status_message = Some(format!("Provider: {}", target.as_str()));
 
     // Persist the provider choice so it survives restarts.
@@ -8189,37 +8243,138 @@ async fn apply_provider_picker_api_key(
 
     // Mirror the saved key into the in-memory config so the engine sees it
     // immediately without a reload — `save_api_key_for` only touches disk.
-    if matches!(provider, ApiProvider::Deepseek) {
-        config.api_key = Some(api_key);
-    } else {
-        let providers = config
-            .providers
-            .get_or_insert_with(ProvidersConfig::default);
-        let entry: &mut ProviderConfig = match provider {
-            ApiProvider::Deepseek => {
-                // Guarded by the outer `if` above; safety net against refactors.
-                return;
-            }
-            ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
-            ApiProvider::Openai => &mut providers.openai,
-            ApiProvider::Atlascloud => &mut providers.atlascloud,
-            ApiProvider::WanjieArk => &mut providers.wanjie_ark,
-            ApiProvider::Volcengine => &mut providers.volcengine,
-            ApiProvider::Openrouter => &mut providers.openrouter,
-            ApiProvider::XiaomiMimo => &mut providers.xiaomi_mimo,
-            ApiProvider::Novita => &mut providers.novita,
-            ApiProvider::Fireworks => &mut providers.fireworks,
-            ApiProvider::Siliconflow => &mut providers.siliconflow,
-            ApiProvider::Moonshot => &mut providers.moonshot,
-            ApiProvider::Sglang => &mut providers.sglang,
-            ApiProvider::Vllm => &mut providers.vllm,
-            ApiProvider::Ollama => &mut providers.ollama,
-            ApiProvider::Anthropic => &mut providers.anthropic,
-        };
-        entry.api_key = Some(api_key);
-    }
+    mirror_provider_api_key(config, provider, &api_key);
 
     switch_provider(app, engine_handle, config, provider, None).await;
+}
+
+/// Mirror a credential into the in-memory config, in the slot the provider's
+/// client actually reads: DeepSeek's root `api_key`, every other provider's
+/// `[providers.<name>] api_key`. Disk persistence is the caller's business
+/// (`save_api_key_for`); the engine is rebuilt from this config.
+fn mirror_provider_api_key(config: &mut Config, provider: ApiProvider, api_key: &str) {
+    if matches!(provider, ApiProvider::Deepseek) {
+        config.api_key = Some(api_key.to_string());
+        return;
+    }
+
+    let providers = config
+        .providers
+        .get_or_insert_with(ProvidersConfig::default);
+    let entry: &mut ProviderConfig = match provider {
+        ApiProvider::Deepseek => {
+            // Guarded by the early return above; safety net against refactors.
+            return;
+        }
+        ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
+        ApiProvider::Openai => &mut providers.openai,
+        ApiProvider::Atlascloud => &mut providers.atlascloud,
+        ApiProvider::WanjieArk => &mut providers.wanjie_ark,
+        ApiProvider::Volcengine => &mut providers.volcengine,
+        ApiProvider::Openrouter => &mut providers.openrouter,
+        ApiProvider::XiaomiMimo => &mut providers.xiaomi_mimo,
+        ApiProvider::Novita => &mut providers.novita,
+        ApiProvider::Fireworks => &mut providers.fireworks,
+        ApiProvider::Siliconflow => &mut providers.siliconflow,
+        ApiProvider::Moonshot => &mut providers.moonshot,
+        ApiProvider::Sglang => &mut providers.sglang,
+        ApiProvider::Vllm => &mut providers.vllm,
+        ApiProvider::Ollama => &mut providers.ollama,
+        ApiProvider::Anthropic => &mut providers.anthropic,
+    };
+    entry.api_key = Some(api_key.to_string());
+}
+
+/// Apply the provider picked in first-run onboarding.
+///
+/// Starts the provider on the model that belongs to it
+/// ([`crate::config::default_model_for_new_provider`]) instead of whatever
+/// the pre-existing config file said, remembers that model for the provider
+/// the way `/model` does, and then hands off to [`switch_provider`] — the
+/// same path `/provider` uses, including the `default_provider` persistence.
+///
+/// Returns `false` when the switch failed. The reason is already in the
+/// transcript; the wizard renders the status line, so the failure is
+/// restated there and the caller leaves `onboarding_needs_api_key` set.
+async fn apply_onboarding_provider_choice(
+    app: &mut App,
+    engine_handle: &mut EngineHandle,
+    config: &mut Config,
+    provider: ApiProvider,
+) -> bool {
+    let model = config.default_model_for_new_provider(provider);
+    // Pin the choice only for providers the config file cannot resolve on its
+    // own: startup reads `TuiOptions.model` from `Config::default_model()`,
+    // which for a non-DeepSeek provider still answers with the first-run
+    // template's DeepSeek id. When the file already yields this model, pinning
+    // it in settings would only shadow later config edits.
+    if model != config.default_model() {
+        match crate::settings::Settings::load() {
+            Ok(mut settings) => {
+                settings.set_model_for_provider(provider.as_str(), &model);
+                if let Err(err) = settings.save() {
+                    tracing::warn!(
+                        provider = provider.as_str(),
+                        "failed to persist onboarding model choice: {err}"
+                    );
+                }
+            }
+            Err(err) => tracing::warn!(
+                provider = provider.as_str(),
+                "failed to load settings for onboarding model choice: {err}"
+            ),
+        }
+    }
+
+    switch_provider(app, engine_handle, config, provider, Some(model)).await;
+
+    let applied = app.api_provider == provider;
+    if applied {
+        app.onboarding_needs_api_key = false;
+        app.offline_mode = false;
+    } else {
+        app.status_message = Some(format!(
+            "Could not switch to {}. The session stays on {}; check `codesmith auth status` \
+             and the provider's config in ~/.codesmith/config.toml.",
+            provider.as_str(),
+            app.api_provider.as_str()
+        ));
+    }
+    applied
+}
+
+/// Link a registered Kimi CLI OAuth credential and switch, as the onboarding
+/// Moonshot row and the `/provider` picker both do. Same success signal as
+/// [`apply_onboarding_provider_choice`].
+async fn apply_onboarding_provider_auth_mode(
+    app: &mut App,
+    engine_handle: &mut EngineHandle,
+    config: &mut Config,
+    provider: ApiProvider,
+) -> bool {
+    apply_provider_picker_auth_mode(
+        app,
+        engine_handle,
+        config,
+        provider,
+        "kimi_oauth",
+        "Linked Kimi CLI OAuth",
+    )
+    .await;
+
+    let applied = app.api_provider == provider;
+    if applied {
+        app.onboarding_needs_api_key = false;
+        app.offline_mode = false;
+    } else {
+        app.status_message = Some(format!(
+            "Could not switch to {}. The session stays on {}; check the credential file \
+             Kimi CLI wrote and try again.",
+            provider.as_str(),
+            app.api_provider.as_str()
+        ));
+    }
+    applied
 }
 
 async fn apply_provider_picker_auth_mode(

@@ -54,6 +54,11 @@ pub enum OnboardingState {
     /// Defaults to auto-detection from `LC_ALL` / `LANG`; explicit picks
     /// land in `~/.codesmith/settings.toml` via `Settings::set("locale", …)`.
     Language,
+    /// Pick the model provider for a first run — every shipped provider is
+    /// first-class, not just the DeepSeek fallback. Routed to from
+    /// `Language` when the session still needs credentials; confirming a
+    /// provider whose key is missing lands on `ApiKey`.
+    Provider,
     ApiKey,
     TrustDirectory,
     Tips,
@@ -146,6 +151,18 @@ fn onboarding_is_workspace_trust_gate(
     needs_workspace_trust: bool,
 ) -> bool {
     !skip_onboarding && was_onboarded && !needs_api_key && needs_workspace_trust
+}
+
+/// Index of `provider` in [`ApiProvider::all`] — the coordinate the
+/// onboarding `Provider` screen and the provider-aware `ApiKey` screen
+/// navigate in. Providers outside the list (there are none today) land on
+/// the fallback slot.
+#[must_use]
+pub fn provider_index(provider: ApiProvider) -> usize {
+    ApiProvider::all()
+        .iter()
+        .position(|candidate| *candidate == provider)
+        .unwrap_or(0)
 }
 
 /// Supported application modes for the TUI.
@@ -1250,6 +1267,17 @@ pub struct App {
     pub api_key_env_only: bool,
     pub api_key_input: String,
     pub api_key_cursor: usize,
+    /// Which provider the onboarding credential step is configuring, as an
+    /// index into [`ApiProvider::all`]. Set at startup to the effective
+    /// provider, moved by the `Provider` screen, and re-pointed by
+    /// `/logout` and the auth-rejection re-prompt.
+    pub onboarding_provider_idx: usize,
+    /// `(provider, has_usable_key)` snapshot for the `Provider` screen rows,
+    /// in [`ApiProvider::all`] order. A snapshot (rather than a live
+    /// `Config` read) because the onboarding render path has no `Config`;
+    /// it is only read while the wizard is open, and a key saved during the
+    /// wizard is applied to the engine, not to these hints.
+    pub onboarding_provider_rows: Vec<(ApiProvider, bool)>,
     // Hooks system
     pub hooks: HookExecutor,
     pub session_start_hook_fired: bool,
@@ -2035,6 +2063,16 @@ impl App {
             api_key_env_only,
             api_key_input: String::new(),
             api_key_cursor: 0,
+            onboarding_provider_idx: provider_index(provider),
+            onboarding_provider_rows: ApiProvider::all()
+                .iter()
+                .map(|p| {
+                    (
+                        *p,
+                        crate::config::has_api_key_for(&effective_auth_config, *p),
+                    )
+                })
+                .collect(),
             hooks,
             session_start_hook_fired: false,
             yolo: initial_mode == AppMode::Yolo,
@@ -2209,22 +2247,77 @@ impl App {
             .collect();
     }
 
-    pub fn submit_api_key(&mut self) -> Result<SavedCredential, ApiKeyError> {
+    /// Provider the onboarding credential step is currently pointing at.
+    /// DeepSeek is the fallback when the index is out of range (the list
+    /// never shrinks today, but the accessor must not panic mid-wizard).
+    #[must_use]
+    pub fn onboarding_provider(&self) -> ApiProvider {
+        ApiProvider::all()
+            .get(self.onboarding_provider_idx)
+            .copied()
+            .unwrap_or(ApiProvider::Deepseek)
+    }
+
+    /// Point the onboarding credential step (and its key save) at `provider`.
+    pub fn set_onboarding_provider(&mut self, provider: ApiProvider) {
+        self.onboarding_provider_idx = provider_index(provider);
+        self.needs_redraw = true;
+    }
+
+    /// Move the onboarding provider picker by `delta` rows, wrapping at both
+    /// ends (the picker is a closed list; there is no scrolling off the top).
+    pub fn move_onboarding_provider(&mut self, delta: isize) {
+        let len = self.onboarding_provider_rows.len();
+        if len == 0 {
+            return;
+        }
+        let current = self.onboarding_provider_idx.min(len - 1);
+        self.onboarding_provider_idx = if delta < 0 {
+            current.checked_sub(1).unwrap_or(len - 1)
+        } else {
+            (current + 1) % len
+        };
+        self.needs_redraw = true;
+    }
+
+    /// Save the typed key for the provider onboarding selected.
+    ///
+    /// DeepSeek keeps its root-`api_key` + keyring path; every other
+    /// provider writes `[providers.<name>] api_key` through
+    /// [`crate::config::save_api_key_for`]. Callers mirror the value into
+    /// the in-memory `Config` (the engine reads that, not this struct) and
+    /// clear `onboarding_needs_api_key` once the chosen provider is actually
+    /// applied — a saved key for a provider that failed to switch must not
+    /// let the wizard skip the credential step.
+    pub fn submit_api_key_for(
+        &mut self,
+        provider: ApiProvider,
+    ) -> Result<SavedCredential, ApiKeyError> {
         let key = self.api_key_input.trim().to_string();
         if key.is_empty() {
             return Err(ApiKeyError::Empty);
         }
 
-        match save_api_key(&key) {
-            Ok(saved) => {
-                self.api_key_input.clear();
-                self.api_key_cursor = 0;
-                self.onboarding_needs_api_key = false;
-                self.api_key_env_only = false;
-                Ok(saved)
+        // DeepSeek keeps its root-`api_key` + keyring dual write (#593) and
+        // reports both layers; every other provider writes its
+        // `[providers.<name>] api_key` slot and reports the config file.
+        // `save_api_key_for` owns that routing for the path-only callers.
+        let saved = if matches!(provider, ApiProvider::Deepseek) {
+            match save_api_key(&key) {
+                Ok(saved) => saved,
+                Err(source) => return Err(ApiKeyError::SaveFailed { source }),
             }
-            Err(source) => Err(ApiKeyError::SaveFailed { source }),
-        }
+        } else {
+            match crate::config::save_api_key_for(provider, &key) {
+                Ok(path) => SavedCredential::ConfigFile(path),
+                Err(source) => return Err(ApiKeyError::SaveFailed { source }),
+            }
+        };
+
+        self.api_key_input.clear();
+        self.api_key_cursor = 0;
+        self.api_key_env_only = false;
+        Ok(saved)
     }
 
     pub fn finish_onboarding(&mut self) {
@@ -5444,6 +5537,43 @@ mod tests {
             resume_session_id: None,
             initial_input: None,
         }
+    }
+
+    #[test]
+    fn onboarding_provider_list_matches_the_picker_order() {
+        let _lock = lock_test_env();
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let _config_path =
+            EnvVarGuard::set("CODESMITH_CONFIG_PATH", tmp.path().join("config.toml"));
+        let _provider_env = EnvVarGuard::remove("CODESMITH_PROVIDER");
+
+        let app = App::new(test_options(false), &Config::default());
+        assert_eq!(app.onboarding_provider_rows.len(), ApiProvider::all().len());
+        assert_eq!(
+            app.onboarding_provider(),
+            ApiProvider::Deepseek,
+            "a session with nothing configured preselects the fallback provider"
+        );
+    }
+
+    #[test]
+    fn onboarding_provider_navigation_wraps_both_ways() {
+        let _lock = lock_test_env();
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let _config_path =
+            EnvVarGuard::set("CODESMITH_CONFIG_PATH", tmp.path().join("config.toml"));
+        let _provider_env = EnvVarGuard::remove("CODESMITH_PROVIDER");
+
+        let mut app = App::new(test_options(false), &Config::default());
+        let last = ApiProvider::all().len() - 1;
+
+        app.move_onboarding_provider(-1);
+        assert_eq!(app.onboarding_provider_idx, last, "up from the top wraps");
+        app.move_onboarding_provider(1);
+        assert_eq!(app.onboarding_provider_idx, 0, "down from the bottom wraps");
+
+        app.set_onboarding_provider(ApiProvider::Openrouter);
+        assert_eq!(app.onboarding_provider(), ApiProvider::Openrouter);
     }
 
     #[test]

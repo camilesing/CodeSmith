@@ -80,11 +80,15 @@ Launch CodeSmith from the repository or directory you want it to work in:
 codesmith
 ```
 
-On first launch, CodeSmith needs an API key for the active provider. All
-shipped providers are first-class; with nothing configured, the fallback
-provider is DeepSeek, and any other provider can be selected with
-`--provider`, `CODESMITH_PROVIDER`, or `/provider`. The most direct setup path
-for the fallback provider is:
+On first launch, CodeSmith asks which provider to use — every shipped provider
+is in the list, with DeepSeek preselected as the fallback — and then asks for
+that provider's API key. A provider that already has a usable credential (an
+environment variable, or a self-hosted runtime such as Ollama) skips the key
+screen. The choice can be changed later with `/provider`.
+
+The same setup paths work outside the TUI: `--provider`,
+`CODESMITH_PROVIDER`, or a `provider = "<id>"` line in the config. The most
+direct path for the fallback provider is:
 
 ```bash
 codesmith auth set --provider deepseek

@@ -335,9 +335,23 @@ pub enum MessageId {
     OnboardLanguageTitle,
     OnboardLanguageBlurb,
     OnboardLanguageFooter,
-    // Onboarding screens — API key entry.
-    OnboardApiKeyTitle,
-    OnboardApiKeyStep1,
+    // Onboarding screens — provider picker.
+    OnboardProviderTitle,
+    OnboardProviderBlurb,
+    OnboardProviderFooter,
+    OnboardProviderNeedsKey,
+    OnboardProviderConfigured,
+    OnboardProviderNoKeyRequired,
+    OnboardProviderKimiOAuthReady,
+    // Onboarding screens — API key entry. The title is split so the picked
+    // provider's display name interpolates between prefix and suffix; step 1
+    // has a DeepSeek variant (curated console link) and a generic one.
+    OnboardApiKeyTitlePrefix,
+    OnboardApiKeyTitleSuffix,
+    OnboardApiKeyStep1Deepseek,
+    OnboardApiKeyStep1Generic,
+    OnboardApiKeyEnvHintPrefix,
+    OnboardApiKeyEnvHintSuffix,
     OnboardApiKeyStep2,
     OnboardApiKeySavedHint,
     OnboardApiKeyFormatHint,
@@ -608,8 +622,19 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::OnboardLanguageTitle,
     MessageId::OnboardLanguageBlurb,
     MessageId::OnboardLanguageFooter,
-    MessageId::OnboardApiKeyTitle,
-    MessageId::OnboardApiKeyStep1,
+    MessageId::OnboardProviderTitle,
+    MessageId::OnboardProviderBlurb,
+    MessageId::OnboardProviderFooter,
+    MessageId::OnboardProviderNeedsKey,
+    MessageId::OnboardProviderConfigured,
+    MessageId::OnboardProviderNoKeyRequired,
+    MessageId::OnboardProviderKimiOAuthReady,
+    MessageId::OnboardApiKeyTitlePrefix,
+    MessageId::OnboardApiKeyTitleSuffix,
+    MessageId::OnboardApiKeyStep1Deepseek,
+    MessageId::OnboardApiKeyStep1Generic,
+    MessageId::OnboardApiKeyEnvHintPrefix,
+    MessageId::OnboardApiKeyEnvHintSuffix,
     MessageId::OnboardApiKeyStep2,
     MessageId::OnboardApiKeySavedHint,
     MessageId::OnboardApiKeyFormatHint,
@@ -1146,11 +1171,27 @@ fn english(id: MessageId) -> &'static str {
         MessageId::OnboardLanguageFooter => {
             "Press 1-6 to choose, or Enter to keep the current setting"
         }
+        // Onboarding — provider picker.
+        MessageId::OnboardProviderTitle => "Choose your provider",
+        MessageId::OnboardProviderBlurb => {
+            "Hosted, gateway, and self-hosted providers all work here. Switch later with /provider."
+        }
+        MessageId::OnboardProviderFooter => "↑↓ or j/k to move, Enter to continue, Esc to go back",
+        MessageId::OnboardProviderNeedsKey => "needs API key",
+        MessageId::OnboardProviderConfigured => "API key configured",
+        MessageId::OnboardProviderNoKeyRequired => "no API key required",
+        MessageId::OnboardProviderKimiOAuthReady => "Kimi CLI OAuth ready",
         // Onboarding — API key entry.
-        MessageId::OnboardApiKeyTitle => "Connect your DeepSeek API key",
-        MessageId::OnboardApiKeyStep1 => {
+        MessageId::OnboardApiKeyTitlePrefix => "Connect your ",
+        MessageId::OnboardApiKeyTitleSuffix => " API key",
+        MessageId::OnboardApiKeyStep1Deepseek => {
             "Step 1.  Open https://platform.deepseek.com/api_keys and create a key."
         }
+        MessageId::OnboardApiKeyStep1Generic => {
+            "Step 1.  Create an API key in your provider's console, then copy it."
+        }
+        MessageId::OnboardApiKeyEnvHintPrefix => "Or set ",
+        MessageId::OnboardApiKeyEnvHintSuffix => " in your environment instead.",
         MessageId::OnboardApiKeyStep2 => "Step 2.  Paste it below and press Enter.",
         MessageId::OnboardApiKeySavedHint => {
             "Saved to ~/.codesmith/config.toml so it works from any folder."
@@ -1527,11 +1568,25 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
             "选择界面语言。可随时使用 `/settings set locale <tag>` 修改。"
         }
         MessageId::OnboardLanguageFooter => "按 1-6 选择，或按 Enter 保留当前设置",
+        // Onboarding — provider picker.
+        MessageId::OnboardProviderTitle => "选择服务商",
+        MessageId::OnboardProviderBlurb => {
+            "托管、网关或自托管服务商均可使用。之后可用 /provider 随时切换。"
+        }
+        MessageId::OnboardProviderFooter => "↑↓ 或 j/k 移动，Enter 继续，Esc 返回",
+        MessageId::OnboardProviderNeedsKey => "需要 API 密钥",
+        MessageId::OnboardProviderConfigured => "已配置 API 密钥",
+        MessageId::OnboardProviderNoKeyRequired => "无需 API 密钥",
+        MessageId::OnboardProviderKimiOAuthReady => "Kimi CLI OAuth 已就绪",
         // Onboarding — API key entry.
-        MessageId::OnboardApiKeyTitle => "连接你的 DeepSeek API 密钥",
-        MessageId::OnboardApiKeyStep1 => {
+        MessageId::OnboardApiKeyTitlePrefix => "连接你的 ",
+        MessageId::OnboardApiKeyTitleSuffix => " API 密钥",
+        MessageId::OnboardApiKeyStep1Deepseek => {
             "步骤 1.  打开 https://platform.deepseek.com/api_keys 创建一个密钥。"
         }
+        MessageId::OnboardApiKeyStep1Generic => "步骤 1.  在服务商控制台创建 API 密钥并复制。",
+        MessageId::OnboardApiKeyEnvHintPrefix => "也可以改为设置环境变量 ",
+        MessageId::OnboardApiKeyEnvHintSuffix => "。",
         MessageId::OnboardApiKeyStep2 => "步骤 2.  把密钥粘贴到下方并按 Enter。",
         MessageId::OnboardApiKeySavedHint => {
             "保存到 ~/.codesmith/config.toml，因此在任何目录下都生效。"
@@ -1901,11 +1956,29 @@ fn hindi(id: MessageId) -> Option<&'static str> {
             "UI भाषा चुनें। आप कभी भी `/settings set locale <tag>` से बदल सकते हैं।"
         }
         MessageId::OnboardLanguageFooter => "चुनने के लिए 1-6 दबाएँ, या वर्तमान सेटिंग रखने के लिए Enter",
+        // Onboarding — provider picker.
+        MessageId::OnboardProviderTitle => "अपना provider चुनें",
+        MessageId::OnboardProviderBlurb => {
+            "होस्टेड, गेटवे और सेल्फ-होस्टेड provider सभी काम करते हैं। बाद में /provider से बदलें।"
+        }
+        MessageId::OnboardProviderFooter => {
+            "चलने के लिए ↑↓ या j/k, आगे बढ़ने के लिए Enter, वापस जाने के लिए Esc"
+        }
+        MessageId::OnboardProviderNeedsKey => "API key चाहिए",
+        MessageId::OnboardProviderConfigured => "API key सेट है",
+        MessageId::OnboardProviderNoKeyRequired => "API key की ज़रूरत नहीं",
+        MessageId::OnboardProviderKimiOAuthReady => "Kimi CLI OAuth तैयार",
         // Onboarding — API key entry.
-        MessageId::OnboardApiKeyTitle => "अपनी DeepSeek API key जोड़ें",
-        MessageId::OnboardApiKeyStep1 => {
+        MessageId::OnboardApiKeyTitlePrefix => "अपनी ",
+        MessageId::OnboardApiKeyTitleSuffix => " API key जोड़ें",
+        MessageId::OnboardApiKeyStep1Deepseek => {
             "चरण 1.  https://platform.deepseek.com/api_keys खोलें और key बनाएँ।"
         }
+        MessageId::OnboardApiKeyStep1Generic => {
+            "चरण 1.  अपने provider के console में API key बनाएँ और कॉपी करें।"
+        }
+        MessageId::OnboardApiKeyEnvHintPrefix => "या फिर environment variable ",
+        MessageId::OnboardApiKeyEnvHintSuffix => " सेट करें।",
         MessageId::OnboardApiKeyStep2 => "चरण 2.  इसे नीचे पेस्ट करें और Enter दबाएँ।",
         MessageId::OnboardApiKeySavedHint => {
             "~/.codesmith/config.toml में सहेजा गया ताकि किसी भी फ़ोल्डर से काम करे।"
@@ -2339,10 +2412,29 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         MessageId::OnboardLanguageFooter => {
             "Presiona 1-6 para elegir, o Enter para mantener la configuración actual"
         }
-        MessageId::OnboardApiKeyTitle => "Conecta tu clave de API DeepSeek",
-        MessageId::OnboardApiKeyStep1 => {
+        // Onboarding — provider picker.
+        MessageId::OnboardProviderTitle => "Elige tu proveedor",
+        MessageId::OnboardProviderBlurb => {
+            "Funcionan proveedores alojados, de pasarela y locales. Cambia luego con /provider."
+        }
+        MessageId::OnboardProviderFooter => {
+            "↑↓ o j/k para moverte, Enter para continuar, Esc para volver"
+        }
+        MessageId::OnboardProviderNeedsKey => "necesita clave de API",
+        MessageId::OnboardProviderConfigured => "clave de API configurada",
+        MessageId::OnboardProviderNoKeyRequired => "no necesita clave de API",
+        MessageId::OnboardProviderKimiOAuthReady => "OAuth de Kimi CLI listo",
+        // Onboarding — API key entry.
+        MessageId::OnboardApiKeyTitlePrefix => "Conecta tu clave de API de ",
+        MessageId::OnboardApiKeyTitleSuffix => ".",
+        MessageId::OnboardApiKeyStep1Deepseek => {
             "Paso 1.  Abre https://platform.deepseek.com/api_keys y crea una clave."
         }
+        MessageId::OnboardApiKeyStep1Generic => {
+            "Paso 1.  Crea una clave de API en la consola de tu proveedor y cópiala."
+        }
+        MessageId::OnboardApiKeyEnvHintPrefix => "O define la variable de entorno ",
+        MessageId::OnboardApiKeyEnvHintSuffix => " en su lugar.",
         MessageId::OnboardApiKeyStep2 => "Paso 2.  Pégala abajo y presiona Enter.",
         MessageId::OnboardApiKeySavedHint => {
             "Guardada en ~/.codesmith/config.toml para funcionar en cualquier carpeta."

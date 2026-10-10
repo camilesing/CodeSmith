@@ -23,7 +23,7 @@ pub fn lines() -> Vec<Line<'static>> {
             Style::default().fg(palette::TEXT_PRIMARY),
         )),
         Line::from(Span::styled(
-            "You'll add an API key, review trust for this directory, and then land in the chat.",
+            "You'll pick a provider and its API key, review trust for this directory, then land in the chat.",
             Style::default().fg(palette::TEXT_MUTED),
         )),
         Line::from(Span::styled(

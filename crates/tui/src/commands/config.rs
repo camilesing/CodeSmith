@@ -1425,6 +1425,9 @@ pub fn logout(app: &mut App) -> CommandResult {
         Ok(()) => {
             app.onboarding = OnboardingState::ApiKey;
             app.onboarding_needs_api_key = true;
+            // Re-entering a key after a logout is for the provider the session
+            // is running on — the picker is the first-run step, not this one.
+            app.set_onboarding_provider(app.api_provider);
             app.api_key_input.clear();
             app.api_key_cursor = 0;
             CommandResult::message("Logged out. Enter a new API key to continue.")
