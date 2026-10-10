@@ -59,6 +59,12 @@ pub enum OnboardingState {
     /// `Language` when the session still needs credentials; confirming a
     /// provider whose key is missing lands on `ApiKey`.
     Provider,
+    /// Optional custom endpoint URL, asked only for the generic routes
+    /// (OpenAI-compatible gateways, Anthropic-compatible proxies) — see
+    /// `crate::config::provider_supports_custom_endpoint`. Enter with an empty
+    /// input keeps whatever the provider is already configured with; a pasted
+    /// URL is written to `[providers.<name>] base_url`.
+    Endpoint,
     ApiKey,
     TrustDirectory,
     Tips,
@@ -1278,6 +1284,14 @@ pub struct App {
     /// it is only read while the wizard is open, and a key saved during the
     /// wizard is applied to the engine, not to these hints.
     pub onboarding_provider_rows: Vec<(ApiProvider, bool)>,
+    /// Custom endpoint URL typed on the `Endpoint` screen. A plain append-only
+    /// buffer (no cursor), like the `/provider` modal's key field: the URL is
+    /// pasted, and the key screen above already offers the cursor-based editor.
+    pub onboarding_endpoint_input: String,
+    /// `Default:` URL shown on the `Endpoint` screen, filled from the picked
+    /// provider's configured/built-in URL when the step is entered. `None`
+    /// when this provider's endpoint is not asked about.
+    pub onboarding_endpoint_default: Option<String>,
     // Hooks system
     pub hooks: HookExecutor,
     pub session_start_hook_fired: bool,
@@ -2073,6 +2087,8 @@ impl App {
                     )
                 })
                 .collect(),
+            onboarding_endpoint_input: String::new(),
+            onboarding_endpoint_default: None,
             hooks,
             session_start_hook_fired: false,
             yolo: initial_mode == AppMode::Yolo,
@@ -2277,6 +2293,45 @@ impl App {
         } else {
             (current + 1) % len
         };
+        self.needs_redraw = true;
+    }
+
+    /// Append `c` to the onboarding endpoint buffer. Whitespace is dropped:
+    /// URLs never contain it, and a stray space is always a paste artifact.
+    pub fn insert_onboarding_endpoint_char(&mut self, c: char) {
+        if c.is_whitespace() {
+            return;
+        }
+        self.onboarding_endpoint_input.push(c);
+    }
+
+    /// Paste into the onboarding endpoint buffer, whitespace stripped (a copied
+    /// URL often carries a trailing newline).
+    pub fn insert_onboarding_endpoint_str(&mut self, text: &str) {
+        self.onboarding_endpoint_input
+            .extend(text.chars().filter(|c| !c.is_whitespace()));
+    }
+
+    pub fn delete_onboarding_endpoint_char(&mut self) {
+        self.onboarding_endpoint_input.pop();
+    }
+
+    /// Paste from the clipboard into the onboarding endpoint buffer.
+    pub fn paste_onboarding_endpoint_from_clipboard(&mut self) {
+        if let Some(ClipboardContent::Text(text)) = self.clipboard.read(self.workspace.as_path()) {
+            self.insert_onboarding_endpoint_str(&text);
+        }
+    }
+
+    /// Enter the endpoint step for `provider`: points the wizard at it, clears the
+    /// buffer, and snapshots the `Default:` URL the screen renders (the render
+    /// path has no `Config`).
+    pub fn begin_onboarding_endpoint(&mut self, config: &Config, provider: ApiProvider) {
+        self.set_onboarding_provider(provider);
+        self.onboarding_endpoint_input.clear();
+        self.onboarding_endpoint_default = config.onboarding_endpoint_default(provider);
+        self.status_message = None;
+        self.onboarding = OnboardingState::Endpoint;
         self.needs_redraw = true;
     }
 

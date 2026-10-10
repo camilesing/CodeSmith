@@ -317,7 +317,7 @@ impl ApiProvider {
             Self::Sglang => "SGLang",
             Self::Vllm => "vLLM",
             Self::Ollama => "Ollama",
-            Self::Anthropic => "Anthropic Claude",
+            Self::Anthropic => "Anthropic",
         }
     }
 

@@ -1,6 +1,7 @@
 //! Onboarding flow rendering and helpers.
 
 pub mod api_key;
+pub mod endpoint;
 pub mod language;
 pub mod provider;
 pub mod trust_directory;
@@ -57,6 +58,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 usize::from(content_height.saturating_sub(PANEL_INSET + PROVIDER_LIST_CHROME));
             provider::lines(app, list_rows)
         }
+        OnboardingState::Endpoint => endpoint::lines(app),
         OnboardingState::ApiKey => api_key::lines(app),
         OnboardingState::TrustDirectory => trust_directory::lines(app),
         OnboardingState::Tips => tips_lines(app),
@@ -105,10 +107,11 @@ fn onboarding_step(app: &App) -> (usize, usize) {
     let step = match app.onboarding {
         OnboardingState::Welcome => 1,
         OnboardingState::Language => 2,
-        // Provider and ApiKey are one credential step: the key screen may or
-        // may not follow the picker (env keys, self-hosted, Kimi OAuth), so
-        // both report the same slot rather than inflating the count.
-        OnboardingState::Provider | OnboardingState::ApiKey => 3,
+        // Provider, Endpoint, and ApiKey are one credential step: the endpoint
+        // screen is asked only for the generic routes and the key screen only
+        // when nothing resolves a credential, so all three report the same slot
+        // rather than inflating the count.
+        OnboardingState::Provider | OnboardingState::Endpoint | OnboardingState::ApiKey => 3,
         OnboardingState::TrustDirectory => {
             // Welcome (1) + Language (2) + optional credential step
             if app.onboarding_needs_api_key { 4 } else { 3 }
@@ -187,15 +190,16 @@ pub fn mark_trusted(workspace: &Path) -> anyhow::Result<PathBuf> {
     crate::config::save_workspace_trust(workspace)
 }
 
-// ── API key validation and state-machine transitions ─────────────────
+// ── Input validation and state-machine transitions ───────────────────
 
-/// Result of inspecting an API-key string entered during onboarding.
+/// Result of inspecting a text field entered during onboarding (an API key, a
+/// custom endpoint URL).
 ///
 /// `Accept` always lets the user proceed; the optional `warning` is shown
-/// as a non-blocking status message (short keys, unusual formats, etc.).
+/// as a non-blocking status message (short keys, plain-http endpoints, …).
 /// `Reject` blocks the keystroke flow until the user fixes the input.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ApiKeyValidation {
+pub enum InputValidation {
     Accept { warning: Option<String> },
     Reject(String),
 }
@@ -205,18 +209,18 @@ pub enum ApiKeyValidation {
 /// are accepted with a warning so unusual provider key formats still
 /// work.
 #[must_use]
-pub fn validate_api_key_for_onboarding(api_key: &str) -> ApiKeyValidation {
+pub fn validate_api_key_for_onboarding(api_key: &str) -> InputValidation {
     let trimmed = api_key.trim();
     if trimmed.is_empty() {
-        return ApiKeyValidation::Reject("API key cannot be empty.".to_string());
+        return InputValidation::Reject("API key cannot be empty.".to_string());
     }
     if trimmed.contains(char::is_whitespace) {
-        return ApiKeyValidation::Reject(
+        return InputValidation::Reject(
             "API key appears malformed (contains whitespace).".to_string(),
         );
     }
     if trimmed.len() < 16 {
-        return ApiKeyValidation::Accept {
+        return InputValidation::Accept {
             warning: Some(
                 "API key looks short. Double-check it, but unusual formats are allowed."
                     .to_string(),
@@ -224,13 +228,57 @@ pub fn validate_api_key_for_onboarding(api_key: &str) -> ApiKeyValidation {
         };
     }
     if !trimmed.contains('-') {
-        return ApiKeyValidation::Accept {
+        return InputValidation::Accept {
             warning: Some(
                 "API key format looks unusual. Check that the full key was copied.".to_string(),
             ),
         };
     }
-    ApiKeyValidation::Accept { warning: None }
+    InputValidation::Accept { warning: None }
+}
+
+/// Validate a custom endpoint URL entered during onboarding.
+///
+/// Requires an absolute `http://` / `https://` URL with a host. Plain `http`
+/// to anything but a local address is accepted **with a warning**: a trusted
+/// LAN endpoint is a documented setup for this project, but the API key then
+/// travels in the clear, and a proxy URL is exactly the case where the
+/// credential would be sent somewhere the user did not intend.
+#[must_use]
+pub fn validate_endpoint_url_for_onboarding(url: &str) -> InputValidation {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return InputValidation::Reject("Endpoint URL cannot be empty.".to_string());
+    }
+    if trimmed.contains(char::is_whitespace) {
+        return InputValidation::Reject("Endpoint URL contains whitespace.".to_string());
+    }
+    let Some(rest) = trimmed
+        .strip_prefix("https://")
+        .or_else(|| trimmed.strip_prefix("http://"))
+    else {
+        return InputValidation::Reject(
+            "Endpoint URL must start with https:// or http://.".to_string(),
+        );
+    };
+    if rest.is_empty() || rest.starts_with('/') {
+        return InputValidation::Reject("Endpoint URL is missing a host.".to_string());
+    }
+    let authority = rest.split('/').next().unwrap_or_default();
+    let is_local = authority.starts_with("localhost")
+        || authority.starts_with("127.")
+        || authority.starts_with("[::1]")
+        || authority.ends_with(".local");
+    if trimmed.starts_with("http://") && !is_local {
+        return InputValidation::Accept {
+            warning: Some(
+                "Plain http sends your API key in the clear — use https unless this is a trusted \
+                 LAN endpoint."
+                    .to_string(),
+            ),
+        };
+    }
+    InputValidation::Accept { warning: None }
 }
 
 /// Welcome → Language transition. Clears the status message bar.
@@ -267,10 +315,10 @@ pub fn sync_api_key_validation_status(app: &mut App, show_empty_error: bool) {
     }
 
     match validate_api_key_for_onboarding(&app.api_key_input) {
-        ApiKeyValidation::Accept { warning } => {
+        InputValidation::Accept { warning } => {
             app.status_message = warning;
         }
-        ApiKeyValidation::Reject(message) => {
+        InputValidation::Reject(message) => {
             app.status_message = Some(message);
         }
     }
@@ -284,26 +332,26 @@ mod tests {
     fn validate_rejects_empty_or_whitespace() {
         assert!(matches!(
             validate_api_key_for_onboarding(""),
-            ApiKeyValidation::Reject(_)
+            InputValidation::Reject(_)
         ));
         assert!(matches!(
             validate_api_key_for_onboarding("   "),
-            ApiKeyValidation::Reject(_)
+            InputValidation::Reject(_)
         ));
         assert!(matches!(
             validate_api_key_for_onboarding("sk live abc"),
-            ApiKeyValidation::Reject(_)
+            InputValidation::Reject(_)
         ));
     }
 
     #[test]
     fn validate_warns_on_short_or_no_hyphen_keys_but_accepts() {
         match validate_api_key_for_onboarding("abc123") {
-            ApiKeyValidation::Accept { warning: Some(_) } => {}
+            InputValidation::Accept { warning: Some(_) } => {}
             _ => panic!("expected accept-with-warning"),
         }
         match validate_api_key_for_onboarding("abcdefghijklmnop") {
-            ApiKeyValidation::Accept { warning: Some(_) } => {}
+            InputValidation::Accept { warning: Some(_) } => {}
             _ => panic!("expected accept-with-warning"),
         }
     }
@@ -312,7 +360,48 @@ mod tests {
     fn validate_accepts_well_formed_key() {
         assert_eq!(
             validate_api_key_for_onboarding("sk-1234567890abcdef"),
-            ApiKeyValidation::Accept { warning: None }
+            InputValidation::Accept { warning: None }
         );
+    }
+
+    #[test]
+    fn endpoint_url_rejects_empty_relative_or_scheme_less_input() {
+        for input in ["", "   ", "/v1", "api.openai.com/v1", "ftp://host/v1"] {
+            assert!(
+                matches!(
+                    validate_endpoint_url_for_onboarding(input),
+                    InputValidation::Reject(_)
+                ),
+                "{input:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn endpoint_url_accepts_https_and_local_http() {
+        assert_eq!(
+            validate_endpoint_url_for_onboarding("https://proxy.example.com/v1"),
+            InputValidation::Accept { warning: None }
+        );
+        assert_eq!(
+            validate_endpoint_url_for_onboarding("http://127.0.0.1:8080/v1"),
+            InputValidation::Accept { warning: None }
+        );
+        assert_eq!(
+            validate_endpoint_url_for_onboarding("http://localhost:11434/v1"),
+            InputValidation::Accept { warning: None }
+        );
+    }
+
+    #[test]
+    fn endpoint_url_warns_on_plain_http_to_a_remote_host() {
+        match validate_endpoint_url_for_onboarding("http://gateway.lan:8000/v1") {
+            InputValidation::Accept {
+                warning: Some(message),
+            } => {
+                assert!(message.contains("clear"), "got {message:?}");
+            }
+            other => panic!("expected accept-with-warning, got {other:?}"),
+        }
     }
 }

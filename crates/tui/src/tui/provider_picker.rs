@@ -490,7 +490,7 @@ mod tests {
                 "SGLang",
                 "vLLM",
                 "Ollama",
-                "Anthropic Claude"
+                "Anthropic"
             ]
         );
     }

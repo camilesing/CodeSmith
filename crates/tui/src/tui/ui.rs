@@ -2828,6 +2828,9 @@ async fn run_event_loop(
                     // Paste into API key input
                     app.insert_api_key_str(text);
                     onboarding::sync_api_key_validation_status(app, false);
+                } else if app.onboarding == OnboardingState::Endpoint {
+                    // Paste into the custom endpoint URL input
+                    app.insert_onboarding_endpoint_str(text);
                 } else if app.is_history_search_active() {
                     app.history_search_insert_str(text);
                 } else if app.view_stack.handle_paste(text) {
@@ -3034,11 +3037,22 @@ async fn run_event_loop(
                         return Ok(());
                     }
                     KeyCode::Esc if app.onboarding == OnboardingState::ApiKey => {
-                        // Back one step: the provider picker precedes the key
-                        // screen in the first-run flow.
-                        app.onboarding = OnboardingState::Provider;
+                        // Back one step: the endpoint screen (generic routes
+                        // only) or the provider picker precedes the key screen.
+                        app.onboarding = if crate::config::provider_supports_custom_endpoint(
+                            app.onboarding_provider(),
+                        ) {
+                            OnboardingState::Endpoint
+                        } else {
+                            OnboardingState::Provider
+                        };
                         app.api_key_input.clear();
                         app.api_key_cursor = 0;
+                        app.status_message = None;
+                    }
+                    KeyCode::Esc if app.onboarding == OnboardingState::Endpoint => {
+                        app.onboarding = OnboardingState::Provider;
+                        app.onboarding_endpoint_input.clear();
                         app.status_message = None;
                     }
                     KeyCode::Esc if app.onboarding == OnboardingState::Provider => {
@@ -3109,47 +3123,54 @@ async fn run_event_loop(
                         }
                         OnboardingState::Provider => {
                             let provider = app.onboarding_provider();
-                            if provider == ApiProvider::Moonshot
-                                && crate::config::kimi_cli_credentials_present()
-                            {
-                                // A registered Kimi CLI OAuth credential is
-                                // enough: link it and switch, exactly as the
-                                // `/provider` picker does.
-                                if apply_onboarding_provider_auth_mode(
-                                    app,
-                                    &mut engine_handle,
-                                    config,
-                                    provider,
-                                )
-                                .await
-                                {
-                                    onboarding::advance_onboarding_after_language(app);
-                                }
-                            } else if crate::config::has_api_key_for(config, provider) {
-                                // A key is already resolvable (environment,
-                                // config file, or a self-hosted runtime), so
-                                // there is nothing to type.
-                                if apply_onboarding_provider_choice(
-                                    app,
-                                    &mut engine_handle,
-                                    config,
-                                    provider,
-                                )
-                                .await
-                                {
-                                    onboarding::advance_onboarding_after_language(app);
-                                }
+                            if crate::config::provider_supports_custom_endpoint(provider) {
+                                // The generic routes (OpenAI-compatible
+                                // gateways, Anthropic-compatible proxies) ask
+                                // for their endpoint before any credential.
+                                app.begin_onboarding_endpoint(config, provider);
                             } else {
-                                app.api_key_input.clear();
-                                app.api_key_cursor = 0;
-                                app.status_message = None;
-                                app.onboarding = OnboardingState::ApiKey;
+                                continue_onboarding_after_provider(app, &mut engine_handle, config)
+                                    .await;
                             }
+                        }
+                        OnboardingState::Endpoint => {
+                            let provider = app.onboarding_provider();
+                            let url = app.onboarding_endpoint_input.trim().to_string();
+                            if !url.is_empty() {
+                                match onboarding::validate_endpoint_url_for_onboarding(&url) {
+                                    onboarding::InputValidation::Reject(message) => {
+                                        app.status_message = Some(message);
+                                        continue;
+                                    }
+                                    onboarding::InputValidation::Accept { warning } => {
+                                        match crate::config::save_provider_base_url_for(
+                                            provider, &url,
+                                        ) {
+                                            Ok(path) => {
+                                                mirror_provider_base_url(config, provider, &url);
+                                                app.push_status_toast(
+                                                    format!("Endpoint saved to {}", path.display()),
+                                                    StatusToastLevel::Info,
+                                                    Some(4_000),
+                                                );
+                                                app.status_message = warning;
+                                            }
+                                            Err(err) => {
+                                                app.status_message =
+                                                    Some(format!("Failed to save endpoint: {err}"));
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            continue_onboarding_after_provider(app, &mut engine_handle, config)
+                                .await;
                         }
                         OnboardingState::ApiKey => {
                             let provider = app.onboarding_provider();
                             let key = app.api_key_input.trim().to_string();
-                            if let onboarding::ApiKeyValidation::Reject(message) =
+                            if let onboarding::InputValidation::Reject(message) =
                                 onboarding::validate_api_key_for_onboarding(&key)
                             {
                                 app.status_message = Some(message);
@@ -3267,6 +3288,28 @@ async fn run_event_loop(
                     {
                         app.insert_api_key_char(c);
                         onboarding::sync_api_key_validation_status(app, false);
+                    }
+                    // Endpoint URL entry: append/backspace only (paste is the
+                    // primary path), so no cursor bookkeeping is needed.
+                    KeyCode::Backspace if app.onboarding == OnboardingState::Endpoint => {
+                        app.delete_onboarding_endpoint_char();
+                    }
+                    KeyCode::Char('h')
+                        if key_shortcuts::is_ctrl_h_backspace(&key)
+                            && app.onboarding == OnboardingState::Endpoint =>
+                    {
+                        app.delete_onboarding_endpoint_char();
+                    }
+                    _ if key_shortcuts::is_paste_shortcut(&key)
+                        && app.onboarding == OnboardingState::Endpoint =>
+                    {
+                        app.paste_onboarding_endpoint_from_clipboard();
+                    }
+                    KeyCode::Char(c)
+                        if app.onboarding == OnboardingState::Endpoint
+                            && key_shortcuts::is_text_input_key(&key) =>
+                    {
+                        app.insert_onboarding_endpoint_char(c);
                     }
                     _ => {}
                 }
@@ -8248,24 +8291,19 @@ async fn apply_provider_picker_api_key(
     switch_provider(app, engine_handle, config, provider, None).await;
 }
 
-/// Mirror a credential into the in-memory config, in the slot the provider's
-/// client actually reads: DeepSeek's root `api_key`, every other provider's
-/// `[providers.<name>] api_key`. Disk persistence is the caller's business
-/// (`save_api_key_for`); the engine is rebuilt from this config.
-fn mirror_provider_api_key(config: &mut Config, provider: ApiProvider, api_key: &str) {
+/// Mutable `[providers.<name>]` entry of the live config, creating the table
+/// when the loaded config had none. `None` for DeepSeek, whose credential and
+/// base URL live at the config root — callers handle that themselves.
+fn provider_config_mut(config: &mut Config, provider: ApiProvider) -> Option<&mut ProviderConfig> {
     if matches!(provider, ApiProvider::Deepseek) {
-        config.api_key = Some(api_key.to_string());
-        return;
+        return None;
     }
 
     let providers = config
         .providers
         .get_or_insert_with(ProvidersConfig::default);
-    let entry: &mut ProviderConfig = match provider {
-        ApiProvider::Deepseek => {
-            // Guarded by the early return above; safety net against refactors.
-            return;
-        }
+    Some(match provider {
+        ApiProvider::Deepseek => return None,
         ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
         ApiProvider::Openai => &mut providers.openai,
         ApiProvider::Atlascloud => &mut providers.atlascloud,
@@ -8281,8 +8319,59 @@ fn mirror_provider_api_key(config: &mut Config, provider: ApiProvider, api_key: 
         ApiProvider::Vllm => &mut providers.vllm,
         ApiProvider::Ollama => &mut providers.ollama,
         ApiProvider::Anthropic => &mut providers.anthropic,
-    };
-    entry.api_key = Some(api_key.to_string());
+    })
+}
+
+/// Mirror a credential into the in-memory config, in the slot the provider's
+/// client actually reads: DeepSeek's root `api_key`, every other provider's
+/// `[providers.<name>] api_key`. Disk persistence is the caller's business
+/// (`save_api_key_for`); the engine is rebuilt from this config.
+fn mirror_provider_api_key(config: &mut Config, provider: ApiProvider, api_key: &str) {
+    if matches!(provider, ApiProvider::Deepseek) {
+        config.api_key = Some(api_key.to_string());
+        return;
+    }
+
+    if let Some(entry) = provider_config_mut(config, provider) {
+        entry.api_key = Some(api_key.to_string());
+    }
+}
+
+/// Mirror a custom endpoint URL into the live config's provider table — the
+/// slot `Config::provider_base_url` reads for every non-DeepSeek provider.
+/// Disk persistence is [`crate::config::save_provider_base_url_for`]'s job.
+fn mirror_provider_base_url(config: &mut Config, provider: ApiProvider, base_url: &str) {
+    if let Some(entry) = provider_config_mut(config, provider) {
+        entry.base_url = Some(base_url.to_string());
+    }
+}
+
+/// After the provider (and, for the generic routes, its endpoint) is settled:
+/// apply it now when a credential already resolves — a registered Kimi CLI
+/// OAuth credential, an environment or config key, or a self-hosted runtime —
+/// and otherwise collect the API key first.
+async fn continue_onboarding_after_provider(
+    app: &mut App,
+    engine_handle: &mut EngineHandle,
+    config: &mut Config,
+) {
+    let provider = app.onboarding_provider();
+    let applied =
+        if provider == ApiProvider::Moonshot && crate::config::kimi_cli_credentials_present() {
+            apply_onboarding_provider_auth_mode(app, engine_handle, config, provider).await
+        } else if crate::config::has_api_key_for(config, provider) {
+            apply_onboarding_provider_choice(app, engine_handle, config, provider).await
+        } else {
+            app.api_key_input.clear();
+            app.api_key_cursor = 0;
+            app.status_message = None;
+            app.onboarding = OnboardingState::ApiKey;
+            return;
+        };
+
+    if applied {
+        onboarding::advance_onboarding_after_language(app);
+    }
 }
 
 /// Apply the provider picked in first-run onboarding.
@@ -8303,6 +8392,18 @@ async fn apply_onboarding_provider_choice(
     provider: ApiProvider,
 ) -> bool {
     let model = config.default_model_for_new_provider(provider);
+    // The `*_BASE_URL` environment overrides are applied at *load* time, for
+    // the provider that was active then; a provider picked mid-wizard has never
+    // seen its own. Mirror the env value into the live config so this session
+    // matches what the next launch will do — otherwise a proxy URL from the
+    // environment is silently dropped for one session and the credential is
+    // sent to the service URL instead of the proxy.
+    if let Some(var) = crate::config::provider_base_url_env_var(provider)
+        && let Ok(value) = std::env::var(var)
+        && !value.trim().is_empty()
+    {
+        mirror_provider_base_url(config, provider, value.trim());
+    }
     // Pin the choice only for providers the config file cannot resolve on its
     // own: startup reads `TuiOptions.model` from `Config::default_model()`,
     // which for a non-DeepSeek provider still answers with the first-run
@@ -8406,28 +8507,9 @@ async fn apply_provider_picker_auth_mode(
 }
 
 fn set_provider_auth_mode_in_memory(config: &mut Config, provider: ApiProvider, auth_mode: String) {
-    let providers = config
-        .providers
-        .get_or_insert_with(ProvidersConfig::default);
-    let entry: &mut ProviderConfig = match provider {
-        ApiProvider::Deepseek => return,
-        ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
-        ApiProvider::Openai => &mut providers.openai,
-        ApiProvider::Atlascloud => &mut providers.atlascloud,
-        ApiProvider::WanjieArk => &mut providers.wanjie_ark,
-        ApiProvider::Volcengine => &mut providers.volcengine,
-        ApiProvider::Openrouter => &mut providers.openrouter,
-        ApiProvider::XiaomiMimo => &mut providers.xiaomi_mimo,
-        ApiProvider::Novita => &mut providers.novita,
-        ApiProvider::Fireworks => &mut providers.fireworks,
-        ApiProvider::Siliconflow => &mut providers.siliconflow,
-        ApiProvider::Moonshot => &mut providers.moonshot,
-        ApiProvider::Sglang => &mut providers.sglang,
-        ApiProvider::Vllm => &mut providers.vllm,
-        ApiProvider::Ollama => &mut providers.ollama,
-        ApiProvider::Anthropic => &mut providers.anthropic,
-    };
-    entry.auth_mode = Some(auth_mode);
+    if let Some(entry) = provider_config_mut(config, provider) {
+        entry.auth_mode = Some(auth_mode);
+    }
 }
 
 /// The load-path transcript projections, gathered into one registry. A new
