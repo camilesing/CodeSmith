@@ -57,7 +57,7 @@ cargo install codesmith-cli --locked
 cargo install codesmith-tui --locked
 
 # Homebrew
-# The tap/formula name is legacy; it installs codesmith and codesmith-tui.
+# The tap/formula name differs from the package name; it installs codesmith and codesmith-tui.
 brew tap camilesing/codesmith
 brew install codesmith
 ```
@@ -80,8 +80,11 @@ Launch CodeSmith from the repository or directory you want it to work in:
 codesmith
 ```
 
-On first launch, CodeSmith needs an API key for the active provider. DeepSeek is
-the default provider. The most direct setup path is:
+On first launch, CodeSmith needs an API key for the active provider. All
+shipped providers are first-class; with nothing configured, the fallback
+provider is DeepSeek, and any other provider can be selected with
+`--provider`, `CODESMITH_PROVIDER`, or `/provider`. The most direct setup path
+for the fallback provider is:
 
 ```bash
 codesmith auth set --provider deepseek
@@ -94,9 +97,7 @@ export DEEPSEEK_API_KEY="your-key"
 codesmith
 ```
 
-New CodeSmith config is stored under `~/.codesmith/config.toml`. Legacy
-`~/.codesmith/config.toml` files are still supported for users migrating from
-the old name.
+CodeSmith config is stored under `~/.codesmith/config.toml`.
 
 After setup, run a doctor check:
 
@@ -264,8 +265,8 @@ Common commands for first-time users:
 | `/memory` | Inspect or manage memory when enabled |
 | `/mcp` | Configure or inspect MCP server integration |
 
-Use `/provider` when you want to switch away from the default DeepSeek route.
-Provider IDs, environment variables, model defaults, and capability notes are
+Use `/provider` to switch the active provider. Provider IDs, environment
+variables, model defaults, and capability notes are
 kept in the provider registry document.
 
 Use `/model auto` when you want CodeSmith to choose the model and thinking
@@ -443,10 +444,10 @@ recovery steps.
 
 ### Is CodeSmith only for DeepSeek?
 
-DeepSeek is the default and first-class route, but CodeSmith also supports
-other hosted and local OpenAI-compatible providers. Use `/provider` or
-`codesmith --provider <id>` to choose a provider. Keep the provider registry
-open when configuring a non-default route.
+No. DeepSeek is only the fallback when no provider is configured; every
+shipped provider is first-class, hosted and local OpenAI-compatible endpoints
+alike. Use `/provider` or `codesmith --provider <id>` to choose a provider.
+Keep the provider registry open when configuring a route.
 
 ### Which mode should I use first?
 
@@ -487,8 +488,7 @@ python3 your_file.py
 
 ### Where is my config stored?
 
-New CodeSmith config uses `~/.codesmith/config.toml`. Legacy
-`~/.codesmith/config.toml` remains supported for compatibility. Project overlays
+CodeSmith config lives at `~/.codesmith/config.toml`. Project overlays
 can also affect behavior when a workspace config exists.
 
 ### How do I keep costs predictable?

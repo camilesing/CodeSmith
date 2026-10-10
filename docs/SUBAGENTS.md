@@ -124,10 +124,9 @@ top of — not a replacement for — the approval gate.
 ### `[subagents].inherit_full_registry` escape hatch
 
 Set `[subagents] inherit_full_registry = true` in `~/.codesmith/config.toml`
-(default `false`) to restore the legacy v0.6.6 behavior where every child
-inherits the full agent surface regardless of the parent's effective set. Use
-this only for flows that relied on the old unrestricted default and cannot be
-migrated to the subset posture.
+(default `false`) to make every child inherit the full agent surface
+regardless of the parent's effective set. Use this only for flows that
+need the unrestricted surface; the default posture is the subset.
 
 ## Concurrency cap
 

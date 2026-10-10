@@ -1,12 +1,11 @@
 # Architecture — pluggable framework core
 
-This document describes the **provider pluggability** layer introduced by the
-"foundation slice" refactor: how the CodeSmith stack separates LLM *abstraction*
-from *implementation*, and how a host assembles providers like Lego blocks at
-build time.
+This document describes the **provider pluggability** layer: how the CodeSmith
+stack separates LLM *abstraction* from *implementation*, and how a host
+assembles providers like Lego blocks at build time.
 
 For a gentler whole-codebase overview, see [ARCHITECTURE.md](ARCHITECTURE.md).
-For the backlog of work that extends this slice, see [`ROADMAP.md`](../ROADMAP.md).
+For planned work, see [`ROADMAP.md`](../ROADMAP.md).
 
 ## Design goals
 
@@ -33,13 +32,13 @@ For the backlog of work that extends this slice, see [`ROADMAP.md`](../ROADMAP.m
 ┌──────────────────────────────┐                ┌─────────────────────────────┐
 │ codesmith-agent (CORE)       │                │ codesmith-providers (IMPLS) │
 │  • llm_client::LlmClient     │   traits ─────▶│  • mock (echo, no network)   │
-│  • provider::{ProviderId,    │   ◀──── cfg    │  • openai-compat  (ROADMAP) │
-│      ProviderConfig,         │     features   │  • anthropic      (ROADMAP) │
-│      ProviderFactory,        │                └─────────────────────────────┘
-│      ProviderRegistry}       │                            ▲
-│  • models, retry             │                            │ path dep
-└──────────────┬───────────────┘                            │
-               │ path dep                                    │
+│  • provider::{ProviderId,    │   ◀──── cfg    │  • rig factories: openai /   │
+│      ProviderConfig,         │     features   │    anthropic / deepseek /    │
+│      ProviderFactory,        │                │    openai-compat ×13         │
+│      ProviderRegistry}       │                │    (catalog: providers.toml) │
+│  • models, retry             │                └─────────────────────────────┘
+└──────────────┬───────────────┘                            ▲
+               │ path dep                                    │ path dep
                ▼                                             │
 ┌──────────────────────────────┐                            │
 │ codesmith-agent-runtime      │                            │
@@ -57,8 +56,8 @@ For the backlog of work that extends this slice, see [`ROADMAP.md`](../ROADMAP.m
 
 The arrow that matters: **`codesmith-tui` depends on `codesmith-providers`
 (optional, feature-gated), never the reverse.** Providers depend only on
-`codesmith-agent` (and, for now, `codesmith-agent-runtime` for shared globals —
-see ROADMAP §B for removing that).
+`codesmith-agent` and `codesmith-config` (the declarative `providers.toml`
+schema and loader).
 
 ## The provider seam
 
@@ -91,11 +90,11 @@ A client is built without the host naming a concrete type:
   `register` upserts (last wins, like pi-ai's `setProvider`); `build` resolves
   and delegates, erroring with the registered ids if none match.
 
-## The framework-core agent seam (§E)
+## The framework-core agent seam
 
-The provider seam above is the first LangChain analog. §E extends the core
-toward a fuller agent framework with four host-agnostic traits that mirror
-LangChain's `BaseTool` / `Memory` / `Callbacks` / `AgentExecutor`. They live in
+The provider seam above is the first LangChain analog. The core also carries a
+fuller agent framework with four host-agnostic traits that mirror LangChain's
+`BaseTool` / `Memory` / `Callbacks` / `AgentExecutor`. They live in
 `codesmith-agent` so any provider or host can drive an agent loop without
 depending on `codesmith-agent-runtime`'s production `Engine`.
 
@@ -127,29 +126,28 @@ depending on `codesmith-agent-runtime`'s production `Engine`.
   per-call `ToolContext`** in the core (that lives in
   `codesmith-agent-runtime::tools::spec`). The bridge onto the production
   `ToolSpec`+`ToolContext` is `ToolSpecAdapter` (in
-  `codesmith-agent-runtime::tools::framework_adapter`, §E): it captures a
+  `codesmith-agent-runtime::tools::framework_adapter`): it captures a
   shared `ToolContext` and delegates `run` → `ToolSpec::execute`. The wire
   definition sent to the model is the separate `models::Tool`; `ToolSet`
   converts executable → wire via `to_api_tools()`.
 - **`ChatHistory`** (`memory::ChatHistory`) — the transcript view (LangChain
   `Memory` analog): `messages` / `push` / `clear`. `VecChatHistory` is the
   in-memory default; the host backs it with its `Session` via `SessionChatHistory`
-  (in `codesmith-agent-runtime::session_history`, §E).
+  (in `codesmith-agent-runtime::session_history`).
 - **`Callback`** (`callback::Callback`) — observation hooks (LangChain
   `Callbacks` analog): `on_llm_start` / `on_llm_end` / `on_tool_start` /
   `on_tool_end` / `on_step` / `on_complete`, all default no-ops. `CallbackSet`
   fans out to several observers; `NoopCallback` is the default. The bridge onto
   the host's `Event` UI channel + `HookHost` shell hooks is `CallbackBridge`
-  (in `codesmith-agent-runtime::callback_bridge`, §E): it forwards the
+  (in `codesmith-agent-runtime::callback_bridge`): it forwards the
   tool-lifecycle hooks onto both paths; the LLM/step/complete hooks are
   documented no-ops (the production caller and stream-reduction code own those).
 - **`AgentExecutor`** (`executor::AgentExecutor`) — drives the loop;
   `DefaultAgentExecutor` is the reference impl (core). The host-side
-  `HostAgentExecutor` (in `codesmith-agent-runtime::engine::host_executor`,
-  §E) mirrors the bare loop over the three bridges and is the designated home
-  for absorbing the production `Engine`'s guardrails slice by slice — **ten**
-  are now absorbed (see the `host_executor.rs` module doc, "Absorbed
-  guardrails", for the full list):
+  `HostAgentExecutor` (in `codesmith-agent-runtime::engine::host_executor`)
+  mirrors the bare loop over the three bridges and carries the production
+  guardrails — **ten** in all (see the `host_executor.rs` module doc,
+  "Absorbed guardrails", for the full list):
 
   - **loop-guard** — block the 3rd identical call, warn/halt on 3/8
     consecutive failures; per-tool / post-tool seams.
@@ -163,18 +161,22 @@ depending on `codesmith-agent-runtime`'s production `Engine`.
     request; per-step pre-request seam.
   - **approval** — gate write/code-exec tools behind user permission: emit
     `ApprovalRequired` + block on the decision channel by wire tool id;
-    denied ⇒ `permission_denied` error, tool skipped; per-tool seam.
+    denied ⇒ `permission_denied` error, tool skipped; per-tool seam. Static
+    derivation is from `Tool::capabilities`; per-input override and sandbox
+    elevation are deferred (see the `host_executor.rs` module doc).
   - **compaction** — micro-compact stale tool results past the 32KB cache
     trigger without an LLM call, then auto-compact via an LLM summary when
     `should_compact` passes; both wholesale-replace via `clear()`+`push()`;
-    per-step pre-request seam.
+    the summary path merges the summary prompt, re-injects attachments, and
+    runs post-compact cleanup; per-step pre-request seam. Enhancements and
+    working-set pins are deferred (see the `host_executor.rs` module doc).
   - **capacity**, **subagent** (completion hold + sentinel),
     **early-tool-start**, and the **cycle** guardrail.
 
 The per-step machinery is split by phase into private submodules under
 `engine/turn/` (`stream.rs`, `batches.rs`, `approval.rs`, `seams.rs`,
-`postprocess.rs`); `host_executor.rs` keeps the step loop itself plus the
-cross-cutting guardrails it owns directly.
+`postprocess.rs`, `truncation.rs`); `host_executor.rs` keeps the step loop
+itself plus the cross-cutting guardrails it owns directly.
 
 **Interior-mutability slices.** The LSP accumulator, the steer receiver, the
 approval receiver, and the compaction probe are the interior-mutability
@@ -233,71 +235,6 @@ matching loop-guard). Guardrail status surfaces over the host's `Event`
 channel (`event_tx`), not the `Callback`. `StopReason` (`NoToolCalls` /
 `MaxSteps` / `Error`) is the terminal outcome.
 
-What is here (§E cutover done): the production `Engine` guardrails (formerly
-in the now-deleted `turn_loop.rs`; `handle_deepseek_turn` retired) are
-absorbed into `HostAgentExecutor`. The three host→framework bridges are all
-landed (`ToolSpecAdapter`, `CallbackBridge`, `SessionChatHistory`), and the
-host-side `HostAgentExecutor` runs the bare LLM↔tool loop over them with
-**ten guardrails absorbed** (loop-guard, LSP flush, transparent-retry, steer,
-approval, compaction, capacity, early-tool-start, subagent post-stream drain,
-cancel-token; the per-step machinery is split by phase into
-`engine/turn/{stream,batches,approval,seams,postprocess}.rs` — see the
-`host_executor.rs` module doc for the full list).
-
-The earliest guardrails landed with these shapes. **loop-guard** sits at its
-per-tool / post-tool seams (block the 3rd identical call, warn/halt on 3/8
-consecutive failures). **LSP flush** sits at its per-tool (post-edit collect)
-/ per-step pre-request (flush) seams — the first guardrail to need `Engine`
-mutable state, landed as `Arc<std::sync::Mutex<Vec<DiagnosticBlock>>>` on
-`LspProbe` (the first interior-mutability slice; lock never held across an
-`await`, matching `CallbackBridge`; persists across `run` calls so a
-`MaxSteps`-ended turn's edit diagnostics surface next turn).
-
-**transparent-retry** sits at its per-step post-stream seam (re-issue the
-request when the stream dies mid-flight before any content commits, up to 3
-times; budget resets on a healthy round; transparent to the `Callback`).
-
-**steer** sits at its per-step pre-request seam (drain queued user inputs as
-`user` messages before the request snapshot), landed as
-`Option<Arc<tokio::sync::Mutex<mpsc::Receiver<String>>>>` — `tokio::sync::Mutex`
-(not `std`) so the guard may cross the blocking `recv().await` in the subagent
-blocking hold's `biased select!` steer arm (same rationale as `approval`; the
-pre-request `try_recv` drain is non-blocking and uncontended); it persists
-across `run` calls so a steer queued between turns is picked up next turn.
-
-**approval** sits at its per-tool seam: gate write/code-exec tools — emit
-`ApprovalRequired` + block on the decision channel by wire tool id; denied ⇒
-`permission_denied` error. It is a `tokio::sync::Mutex` guardrail because the
-guard must cross `recv().await` (steer shares this rationale for its
-subagent-blocking-hold arm). Static approval derivation is from
-`Tool::capabilities`; per-input override + sandbox elevation are deferred to
-wire-in.
-
-**compaction** sits at its per-step pre-request seam (micro-compact stale
-tool results past the 32KB cache trigger without an LLM call, then
-auto-compact via an LLM summary when `should_compact` passes; both
-wholesale-replace the transcript via `clear()`+`push()`; `CompactionProbe`
-carries `std::sync::Mutex` micro-state + circuit breaker that persist across
-`run` calls). Summary-prompt merge absorbed ✅ (slice 25a §E), attachment
-reinject absorbed ✅ (slice 25b §E), post-compact cleanup absorbed ✅ (slice
-25c §E) — see the `host_executor.rs` module doc; only enhancements +
-working-set pins remain deferred to wire-in.
-
-The executor's four seams (per-step pre-request / post-stream / per-tool /
-post-tool) have since grown the remaining guardrails too (see the
-`host_executor.rs` module doc for the full set), and `handle_deepseek_turn`
-retired in the slice 20 §E cutover.
-
-Each early guardrail proved a pattern: loop-guard proved `&self` + local
-state suffices for self-contained guardrails; LSP flush proves the
-`Arc<Mutex<…>>` shape for guardrails needing shared mutable state (steer
-adopts the same shape but `tokio::sync::Mutex`, not `std` — see above);
-transparent-retry proves the seam-2 post-stream shape (local counter + the
-`accumulate_stream` `Err` signal); approval proves the seam-3 per-tool shape
-with a blocking `recv().await` (`tokio::sync::Mutex`); compaction proves the
-seam-1 pre-request wholesale-replace shape (clone-then-`compact_messages_safe`,
-`clear()`+`push()` apply) with a cross-`run` circuit breaker.
-
 **Known gaps in the LSP flush (by design):** `apply_patch` path derivation is
 deferred (needs `HostServices::preflight_apply_patch_paths`, unreachable from
 `agent-runtime` without the heavy host trait); the synthetic flush message
@@ -308,33 +245,30 @@ message pushes; UI surfacing deferred to the wire-in step).
 
 **Known tradeoffs in transparent-retry (by design):** `accumulate_stream`
 bails on the first erroring stream item and drops partial blocks, so the
-retry fires even when production would ship partial content (it tracks
-`any_content_received` inline) — since the partial content is lost, retrying
-is the only recovery path, and inline stream reduction (a later slice that
-replaces `accumulate_stream`) closes the gap. Pre-stream connection errors
-(`create_message_stream` `Err`) are not retried (production treats those as
-context-recovery / hard-fail, a separate guardrail). The cancel-token
-short-circuit (production's `should_transparently_retry_stream` checks
-`!cancelled`) is absorbed ✅ — Checkpoints B/C/D wired (see the
+retry fires even when the engine would otherwise ship partial content (it
+tracks `any_content_received` inline) — since the partial content is lost,
+retrying is the only recovery path; the planned inline stream reduction that
+replaces `accumulate_stream` closes the gap. Pre-stream connection errors
+(`create_message_stream` `Err`) are not retried (those are context-recovery /
+hard-fail, a separate guardrail). The cancel-token short-circuit
+(`should_transparently_retry_stream` checks `!cancelled`) is wired (see the
 `host_executor.rs` module doc); the bounded budget (`MAX_STREAM_RETRIES = 3`)
 can't loop forever.
 
-Streaming deltas (`MessageDelta`/`ThinkingDelta`) will keep flowing over the
-`Event` channel directly (no `Callback` method) once an inline stream reducer
-replaces `accumulate_stream`.
+Streaming deltas (`MessageDelta`/`ThinkingDelta`) flow over the `Event`
+channel directly (no `Callback` method); the planned inline stream reducer
+keeps that path.
 
-E4 (declarative `providers.toml` + lazy loading) has landed — slice 43
-shipped the schema/loader in `codesmith-config`, slice 44 wired
-`default_registry` to the bundled `providers.toml` (externalizing the
-`COMPAT_KINDS` catalog) with a `OnceLock` cache, and slice 45 populated the
-`base_url`/`model` columns and made the factories consume them as a fallback
-when the host passes an empty `ProviderConfig` value (so the manifest is a
-complete per-provider default source).
+The provider catalog is declarative: the `providers.toml` manifest (schema and
+loader in `codesmith-config`) drives `default_registry()` behind a `OnceLock`
+cache, and its `base_url`/`model` columns are the per-provider fallback when
+the host passes an empty `ProviderConfig` value — the manifest is a complete
+per-provider default source.
 
-Two E4 follow-ups are deferred (tracked in ROADMAP §E4, slice 51): the
-resolver chain still falls back to the hardcoded `DEFAULT_*` constants rather
-than the manifest (env override augment — cross-layer-unreachable per §C6),
-and flash/kimi-code model variants stay host-side (no manifest entry).
+Known limitations: the resolver chain still falls back to the hardcoded
+`DEFAULT_*` constants rather than the manifest for env overrides, and
+flash/kimi-code model variants stay host-side (no manifest entry). Both are
+tracked in [`ROADMAP.md`](../ROADMAP.md).
 
 The framework traits are validated against an inline mock LLM + mock tool
 (see `crates/agent/src/executor/mod.rs` tests) — no `codesmith-providers`
@@ -346,19 +280,18 @@ through the framework executor end-to-end (see
 executor that lights up both a mock `Event` channel and a mock `HookHost`
 (see `crates/agent-runtime/src/callback_bridge.rs` tests).
 
-The `host_executor.rs` module doc carries the complete set of §E `Known gaps
-(by design)` across nine areas — LSP flush, system-prompt refresh, thinking-only,
+The `host_executor.rs` module doc carries the complete `Known gaps (by
+design)` list across nine areas — LSP flush, system-prompt refresh, thinking-only,
 transparent-retry, approval, compaction, capacity, early-tool-start, and
 subagent. This narrative elaborates the four most load-bearing (LSP flush /
 transparent-retry / approval / compaction); for the remaining five
-(system-prompt refresh / thinking-only / capacity / early-tool-start / subagent
-— each with its own deferred-to-wire-in items), see the module doc directly
-rather than transcribing them here (avoids line-drift on each future slice).
+(system-prompt refresh / thinking-only / capacity / early-tool-start / subagent),
+see the module doc directly.
 
-## The extension system (§F)
+## The extension system
 
-§F builds the extension system on top of the §E framework-core traits. The
-same three-layer split applies:
+The extension system builds on the framework-core traits. The same
+three-layer split applies:
 
 - **Contract** (`codesmith-agent::extension`): host-agnostic traits an
   extension author implements — `Extension` (the factory), `ExtensionApi`
@@ -366,14 +299,14 @@ same three-layer split applies:
   `ExtensionCommandContext` (read-mostly host state + stale-context guard),
   `ExtensionEvent` (`#[non_exhaustive]` minimal 6-variant set), `Handler`
   (observer), `ToolDefinition` / `CommandDefinition` (contribution
-  contracts). The extension traits use `#[async_trait]` (unlike §E's manual
-  `Pin<Box<dyn Future>>`) because they face extension authors in external
-  crates where the macro is markedly friendlier.
-- **Runtime** (`codesmith-extensions`): `ExtensionRunner` (event fan-out
-  best-effort per §8.3, `Arc<AtomicU64>` stale-context guard per §7.3,
+  contracts). The extension traits use `#[async_trait]` (unlike the
+  framework core's manual `Pin<Box<dyn Future>>`) because they face extension
+  authors in external crates where the macro is markedly friendlier.
+- **Runtime** (`codesmith-extensions`): `ExtensionRunner` (best-effort event
+  fan-out, `Arc<AtomicU64>` stale-context guard,
   two-phase stub→real `ExtensionApi`), `inventory`-based static discovery
-  (`discover_static`), `EventBus` skeleton (impl is §F3), install-source
-  traits (impls are §F5).
+  (`discover_static`), `EventBus` skeleton, install-source traits
+  (implementations are planned).
 - **Adapters** (`codesmith-agent-runtime`): `ExtensionToolSpecAdapter`
   wraps a `Box<dyn ToolDefinition>` into a `ToolSpec` so the agent loop
   sees a normal tool (mirrors `ToolSpecAdapter`); `HostAgentExecutor` holds
@@ -384,7 +317,7 @@ same three-layer split applies:
   (shares the engine's `cancel_token` so handlers observe user ESC);
   `ExtensionStateStore` (mirrors `SkillStateStore`) tracks enabled/disabled
   per id; `/extension` command group (list/info/enable/disable/status/
-  reload working; install/uninstall stub "phase 2").
+  reload; install/uninstall are stubs).
 
 The `sample_scratchpad` in-tree extension exercises all three contribution
 points (tool + command + handler) + the full discover → load → configure →
@@ -403,60 +336,49 @@ bind_core → emit path. `/extension list` shows it.
               codesmith_tui (build_extension_runtime + StateStore + /extension cmd)
 ```
 
-Slice 1 (§F1) lands the minimal contract + runtime + adapters + host wiring
-+ sample.
-
-Slice 2a (§F2a) upgrades the contract + runtime core: the full 23-variant
-`ExtensionEvent` set + `ExtensionEventKind`/`kind()`, the `HandlerOutcome`
+The contract and runtime core carry the full 23-variant `ExtensionEvent` set
+plus `ExtensionEventKind`/`kind()`, the `HandlerOutcome`
 (`Continue`/`Cancel`/`Block`/`Transform`) cross-handler chain
-(`Handler::handle` now returns `Result<HandlerOutcome, _>`), per-variant
+(`Handler::handle` returns `Result<HandlerOutcome, _>`), per-variant
 `ExtensionApi::on_variant` subscription, and `catch_unwind` isolation in
 `ExtensionRunner::emit` (owned-in / `EmitOutcome`-out).
 
-Slice 2b (§F2b) wires the host seams: `#[must_use]` on `EmitOutcome` (forces
-seam inspection), honor `Block` at `ToolCall` (skip dispatch →
-permission-denied), `Cancel` at `SessionBefore*` (skip compaction/switch),
-`Transform` at `Input`/`BeforeAgentStart`/`BeforeProviderRequest`/`ToolResult`
-(rewrite the actionable field; `ToolResult` reorders emit→`on_tool_end`→
-propagate to `outcomes[idx]`), out-of-place outcomes → `Continue`; emit 22/23
-events (`ToolExecutionUpdate` deferred — needs a `Callback::on_tool_progress`
-stream hook); full e2e round-trip test.
+At the host seams, `EmitOutcome` is `#[must_use]` (forcing seam inspection):
+`Block` at `ToolCall` skips dispatch (permission-denied), `Cancel` at
+`SessionBefore*` skips compaction/switch, and `Transform` at
+`Input`/`BeforeAgentStart`/`BeforeProviderRequest`/`ToolResult` rewrites the
+actionable field (`ToolResult` reorders emit→`on_tool_end`→propagate to
+`outcomes[idx]`); out-of-place outcomes map to `Continue`. 22 of the 23
+events are emitted; `ToolExecutionUpdate` needs a
+`Callback::on_tool_progress` stream hook.
 
 Live reload re-populates the shared runner `Arc` via
 `ExtensionRunner::clear_handlers` + `reload_extension_runtime`
 (clear→invalidate→discover→reconcile→load→bind_core), so `/extension reload`
 updates both `App.extension_runner` and the Engine's field.
 
-Deferred to §F2c: `ToolExecutionUpdate` (stream hook), reload sharing the
-engine's `cancel_token`, and 3 tui-level seams unreachable from the App
-runner (`ProjectTrust` sync context / `ResourcesDiscover` separate MCP
-process / `SessionBeforeFork` dead-code fork path).
+Not implemented yet: `ToolExecutionUpdate` (stream hook), reload sharing the
+engine's `cancel_token`, 3 tui-level seams unreachable from the App runner
+(`ProjectTrust` sync context / `ResourcesDiscover` separate MCP process /
+`SessionBeforeFork` dead-code fork path), the `EventBus` implementation,
+`registerProvider`, `registerShortcut`/`registerFlag`/renderers, dylib
+loading, install-source implementations, and the embed API. Hot-load is
+permanently out; install + reload only.
 
-Deferred to §F3–§F8: `EventBus` impl, `registerProvider`,
-`registerShortcut`/`registerFlag`/renderers, dylib loading (phase 2),
-install-source impls, embed API. Hot-load is permanently out (spec §2.4);
-install + reload only.
+## What is wired today
 
-## What is wired today (foundation slice + §D1 parity bridge)
-
-| Concern | Status | Where |
-|---|---|---|
-| Core abstractions (`LlmClient`, `ProviderFactory`, `ProviderRegistry`) | ✅ done | `crates/agent/src/{llm_client,provider}/` |
-| Registry in the real engine loop | ✅ done | `crates/tui/src/core/engine.rs` `resolve_llm_client` |
-| TUI-local `DeepSeekProviderFactory` retired — rig `DeepSeekFactory` (via `default_registry()`) replaces it (§A1) | ✅ done — tui holds no provider factory | deleted from `crates/tui/src/core/engine.rs` |
-| `DeepSeekClient` retired — rig `RigLlmClient` replaces it (§A1); `from_parts` deleted with the client | ✅ done | `crates/tui/src/client.rs` deleted (slice 41) |
-| `codesmith-providers` crate + `mock` provider + Cargo features | ✅ done | `crates/providers/` |
-| rig adapter `RigLlmClient<C,S>` impls `LlmClient` | ✅ done | `crates/providers/src/rig_adapter/` |
-| Four rig-backed factories (`openai` / `anthropic` / `deepseek` / `openai-compat` ×13) | ✅ done — catalog now declarative (`providers.toml`, §E4); `base_url`/`model` populated + consumed as manifest-default fallback (§E4 slice 45); follow-ups (env override augment + flash/kimi-code variant sinking) deferred — tracked in ROADMAP §E4 (slice 51) | `crates/providers/src/{openai,anthropic,deepseek,openai_compat}.rs`, `crates/providers/providers.toml` |
-| `resolve_llm_client` seeds from `default_registry()` for all providers | ✅ done (§D1 partial → §A1 full cutover — DeepSeek moved off the tui-local factory onto rig) | `crates/tui/src/core/engine.rs` |
-| `AnthropicClient` retired — rig `AnthropicFactory` replaces it (§A2) | ✅ done | `crates/tui/src/client/anthropic.rs` deleted |
-| Parity bridge: reasoning heuristics + `shape_messages` / `shape_max_tokens` | ✅ done | `crates/providers/src/rig_adapter/{reasoning,shaper}.rs` |
-| Extract `DeepSeekClient` into `codesmith-providers` (retire tui-local factory) | ✅ done (superseded — retired, not extracted) — `DeepSeekClient` retired via the rig adapter; the replay-bridge blocker was found unnecessary (rig's compat layer natively serializes `AssistantContent::Reasoning` as `reasoning_content`); tui `client.rs`/`chat.rs` deleted (slice 41), inspect/warmup migrated to `codesmith-agent-runtime` `prompt_inspect`, reasoning predicates + `sha256_hex` deduped (slice 42) | ROADMAP §A1 |
-| Decoupling substitutions (B3 `ApiProvider`→`ProviderKind`) | ✅ done — `DeepseekCN` folded onto `Deepseek` (slice 52); `&str`-keying was the §C6 decoupling path | ROADMAP §B |
-| Host selects providers via config (e.g. `provider = "mock"` / custom id) | ✅ done (9d47942c) — `custom_provider` selector + `[[providers.custom]]` table; §D2 slice 46 closed the residual polish — `--custom-provider <id>` CLI flag (env-forwarded to the TUI) + per-entry `config set/get/unset providers.custom.<id>.<field>` (find-or-create by id); the bare `provider = "<id>"` form stays **by-design rejected** (see 9d47942c — cascades the closed `ProviderKind` enum through config + overrides + env + every match arm) | ROADMAP §D2 |
-| Agent executor loop, tool/memory abstractions (LangChain parity) | ✅ framework-core traits landed (E1/E2/E3); `ToolSpec`→`Tool` adapter landed (§E); `Event`/`HookHost`→`Callback` bridge landed (§E); `Session`→`ChatHistory` bridge landed (§E); `HostAgentExecutor` is the live production path (slice 20 cutover — `handle_send_message` routes through it, `handle_deepseek_turn` deleted); all guardrails absorbed across slices 11–40 (loop-guard + LSP flush + transparent-retry + steer + approval + compaction + capacity + subagent + early-tool-start/parallel-dispatch + thinking-only) via `event_tx`; interior-mutability `Arc<std::sync::Mutex<…>>` on `LspProbe` + `CompactionProbe` micro-state/breaker, `tokio::sync::Mutex` on steer + approval receivers (both cross `recv().await` in the subagent blocking hold's `biased select!`); transparent-retry at seam-2 post-stream; steer + compaction at seam-1 pre-request; approval at seam-3 per-tool; production `Engine` migration done | `crates/agent/src/{tools,memory,callback,executor}/`, `crates/agent-runtime/src/{tools/framework_adapter,callback_bridge,session_history}.rs`, `crates/agent-runtime/src/engine/host_executor.rs` |
-| Extension system (§F1 foundational core + §F2a contract + §F2b host seam wiring) | ✅ done (slice 1 §F1 + slice 2a §F2a + slice 2b §F2b) — §F1: minimal 6-event contract (`codesmith-agent::extension`) + runtime (`codesmith-extensions`: `ExtensionRunner` + stub→real `ExtensionApi` + `inventory` discovery + `EventBus` skeleton + install-source traits) + adapter (`ExtensionToolSpecAdapter`) + `HostAgentExecutor` 4-seam emits (TurnStart/ToolCall/ToolResult/TurnEnd) + `build_extension_runtime()` + `ExtensionStateStore` + `/extension` command group (list/info/enable/disable/status/reload working; install/uninstall stub "phase 2") + in-tree `scratchpad` sample; §F2a: full 23-variant `ExtensionEvent` set + `ExtensionEventKind`/`kind()` + `HandlerOutcome` (Continue/Cancel/Block/Transform) cross-handler chain + per-variant `on_variant` subscription + `EmitOutcome`-returning chained `emit` with `catch_unwind` isolation; §F2b: `#[must_use]` on `EmitOutcome` + honor Block/Cancel/Transform at the 7 `host_executor` seams (out-of-place → Continue) + emit 22/23 events (ToolExecutionUpdate deferred) + full e2e round-trip + live reload via `clear_handlers` + `reload_extension_runtime` re-populating the shared runner Arc; `ToolExecutionUpdate` (stream hook) + reload sharing engine cancel_token + 3 tui-level seams (ProjectTrust/ResourcesDiscover/SessionBeforeFork) deferred to §F2c; `EventBus` impl + dylib + install-source impls deferred to §F3–§F8; hot-load permanently out | `crates/agent/src/extension.rs`, `crates/extensions/`, `crates/agent-runtime/src/tools/extension.rs`, `crates/agent-runtime/src/engine/{mod.rs,host_executor.rs}`, `crates/tui/src/{extension_state.rs,commands/extension_commands.rs,core/engine.rs,tui/ui.rs}` |
-| Extension system docs | ✅ done (slice 1 §F1) | `docs/EXTENSIONS.md` |
+| Concern | Where |
+|---|---|
+| Core abstractions (`LlmClient`, `ProviderFactory`, `ProviderRegistry`) | `crates/agent/src/{llm_client,provider}/` |
+| Registry in the engine loop (`resolve_llm_client` seeds from `default_registry()`) | `crates/tui/src/core/engine.rs` |
+| `codesmith-providers` crate: `mock` provider, rig adapter `RigLlmClient<C,S>`, Cargo features | `crates/providers/` |
+| Declarative factory catalog (`openai` / `anthropic` / `deepseek` / `openai-compat` ×13) | `crates/providers/providers.toml` |
+| Parity bridge: reasoning heuristics + `shape_messages` / `shape_max_tokens` | `crates/providers/src/rig_adapter/{reasoning,shaper}.rs` |
+| Provider selection via config, including `custom_provider` + `[[providers.custom]]` + `--custom-provider <id>`; the bare `provider = "<custom-id>"` form is rejected by design | `crates/config`, `crates/cli` |
+| Framework-core agent traits (`Tool`, `ChatHistory`, `Callback`, `AgentExecutor`) | `crates/agent/src/{tools,memory,callback,executor}/` |
+| Host bridges (`ToolSpecAdapter`, `CallbackBridge`, `SessionChatHistory`) and the production `HostAgentExecutor` with its guardrail set | `crates/agent-runtime/src/{tools/framework_adapter,callback_bridge,session_history}.rs`, `crates/agent-runtime/src/engine/host_executor.rs` |
+| Extension system (contract + runtime + adapters + host wiring) | `crates/agent/src/extension.rs`, `crates/extensions/`, `crates/agent-runtime/src/tools/extension.rs`, `crates/tui/src/{extension_state.rs,commands/extension_commands.rs}` |
+| Extension system docs | `docs/EXTENSIONS.md` |
 
 ## Registering a provider (developer guide)
 

@@ -61,8 +61,8 @@ manifests, `npm/codesmith/package.json`, and `Cargo.lock` is caught before
 release time rather than at it.
 
 Linux gates currently have **no CI carrier**. The GitHub test job skips its
-Linux clippy/test steps (they were written for a CNB mirror lane that never
-operated — see "CNB Cool mirror" below), so re-enable them in
+Linux clippy/test steps (they target a CNB mirror lane that does not
+operate — see "CNB Cool mirror" below), so re-enable them in
 `.github/workflows/ci.yml` before relying on Linux test coverage. GitHub
 Actions today carries the drift/fmt statuses plus macOS and Windows
 coverage.
@@ -98,7 +98,7 @@ CODESMITH_VERSION=X.Y.Z CODESMITH_RELEASE_BASE_URL=http://127.0.0.1:8123/ npm ru
 Set `CODESMITH_VERSION` to the npm package version you are verifying for that local run.
 
 The Linux tarball install + delegated-entrypoint smoke test likewise has no
-CI carrier (the CNB lane meant to run it never operated); GitHub Actions
+CI carrier (the CNB lane that would run it does not operate); GitHub Actions
 keeps macOS and Windows smoke coverage.
 
 After publishing, prove the release is visible in both registries:
@@ -162,10 +162,10 @@ release verification script both depend on that checksum manifest.
 
 ## npm Wrapper Release
 
-**The npm publish step is manual.** `release.yml` no longer runs `npm publish`
+**The npm publish step is manual.** `release.yml` does not run `npm publish`
 because the npm account requires 2FA OTP on every publish, and an automation
 token that bypasses 2FA has not been provisioned. The GitHub Release flow
-remains fully automated; only the npm wrapper publish requires a developer
+is fully automated; only the npm wrapper publish requires a developer
 on a workstation with `npm login` and an authenticator app.
 
 ### Steps
@@ -193,8 +193,8 @@ To re-enable automated publish: provision an npm automation token with "Bypass 2
 
 ## CNB Cool mirror
 
-The `Sync to CNB` workflow was removed (the `CNB_GIT_TOKEN` secret was never
-configured, so every mirrored push failed). The copy at
+There is no `Sync to CNB` workflow: the `CNB_GIT_TOKEN` secret is not
+configured, so mirrored pushes cannot run. The copy at
 `cnb.cool/codesmith.net/codesmith` may be missing or stale — installs from
 it will not see new releases, and there is
 no mirror to verify after a release tag. To update it by hand, or if

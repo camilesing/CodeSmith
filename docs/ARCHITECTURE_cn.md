@@ -125,7 +125,7 @@
 - **`crates/release`** - 发布发现 / 版本比较。
 - **`crates/secrets`** - 用于 API 密钥存储的操作系统密钥环集成。
 - **`crates/state`** - SQLite 线程/会话持久化层。
-- **`crates/tool-impls`** - 从 TUI 的 `tools/` 子树迁出的具体模型可见工具实现。
+- **`crates/tool-impls`** - 具体的模型可见工具实现。
 - **`crates/tools`** - 共享工具调用原语，包括 TUI 运行时使用的工具结果/错误/能力类型。
 - **`crates/tui-core`** - 事件驱动的 TUI 状态机脚手架。
 
@@ -149,7 +149,7 @@ Chat Completions 驱动 turn。
 ### 工具系统
 
 工具实现分为两部分：TUI（宿主耦合工具）和 `crates/tool-impls`
-（从 TUI 的 `tools/` 子树迁出的模型可见工具；例如
+（模型可见工具；例如
 `grep_files`/`file_search` 位于后者）。
 
 - **`crates/tui/src/tools/`** - 宿主耦合的内置工具实现和注册表
@@ -159,7 +159,7 @@ Chat Completions 驱动 turn。
   - `tasks.rs` / `task_v2.rs` - 模型可见的持久任务、gate、后台 shell 和 PR 尝试工具
   - `github.rs` - 只读 GitHub 上下文以及由 `gh` 支撑的受防护评论/关闭工具
   - `automation.rs` - 基于 `AutomationManager` 的模型可见调度工具
-  - `subagent/` - 持久子代理会话（`agent_open` / `agent_eval` / `agent_close`，替代已移除的 `agent_swarm` 面）和持久 RLM 会话（`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close` —— 带语义辅助调用和 `var_handle` 输出支持的沙箱化 Python REPL；运行时位于 `crates/tui/src/rlm/`）
+  - `subagent/` - 持久子代理会话（`agent_open` / `agent_eval` / `agent_close`）和持久 RLM 会话（`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close` —— 带语义辅助调用和 `var_handle` 输出支持的沙箱化 Python REPL；运行时位于 `crates/tui/src/rlm/`）
   - `skill.rs` / `plugin.rs` / `web_search.rs` / `goal.rs` / `js_execution.rs` / `large_output_router.rs` 等 - 其余工具表面
 
 ### 扩展系统

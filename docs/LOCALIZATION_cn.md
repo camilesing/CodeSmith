@@ -15,7 +15,7 @@ v0.7.6 的对齐（parity）检查使用了实时的 GitHub 源和 `/opt/homebre
 
 ## 已发布的 locale
 
-以下 locale 受 `settings.toml` 中的 `locale` 以及 `LANG` / `LC_ALL` 自动检测支持。语言支持已于 2026-08-24 收缩为此集合；此前发布的 `ja`、`pt-BR`、`vi` 回落到英语，计划中的全球南方 QA 矩阵已放弃。
+以下 locale 受 `settings.toml` 中的 `locale` 以及 `LANG` / `LC_ALL` 自动检测支持；任何其他 locale 值（包括 `ja`、`pt-BR`、`vi`）都回落到英语。
 
 | Locale | 显示名称 | 文字 | 方向 | 回落 | 审校状态 | 备注 |
 |---|---|---|---|---|---|---|

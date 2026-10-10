@@ -36,8 +36,7 @@ Restart the TUI after toggling. Disabling is the same in reverse.
 The memory file lives at `~/.codesmith/memory.md` by default; override
 with `memory_path` in `config.toml` or `CODESMITH_MEMORY_PATH` in
 the environment. `CODESMITH_MEMORY_PATH` wins over the config file when
-both are set. Existing `~/.codesmith/memory.md` files remain supported as a
-legacy fallback when no `.codesmith` memory file exists.
+both are set.
 
 ## Quick examples
 
@@ -172,7 +171,7 @@ Two distinct things feed the system-prompt instruction block, and
 - **User memory** (`~/.codesmith/memory.md`, this feature) — the single
   durable note file you grow with `#`-prefixed lines, `/memory`, or the
   `remember` tool.
-- **Instruction tiers** — `CLAUDE.md` / `AGENTS.md` / `WHALE.md` files
+- **Instruction tiers** — `AGENTS.md` / `CLAUDE.md` files
   collected from four trust tiers and merged into the same block.
 
 - Use **user memory** for durable personal preferences that should
@@ -190,13 +189,10 @@ can tell which level a rule came from when two disagree.
 
 | Tier    | Source                                                                                              | Label     |
 |---------|-----------------------------------------------------------------------------------------------------|-----------|
-| Managed | `/etc/codesmith/CLAUDE.md`, then `/etc/codesmith/CLAUDE.md` (org policy)                             | `managed` |
-| User    | `~/.codesmith/{WHALE,AGENTS}.md`, then `.agents/`, then legacy `.codesmith/`                         | `user`    |
-| Project | First of `WHALE.md`, `AGENTS.md`, `.claude/instructions.md`, `CLAUDE.md`, `.codesmith/instructions.md`, `.codesmith/instructions.md` in `{cwd}`, then a parent-directory walk | `project` |
+| Managed | `/etc/codesmith/CLAUDE.md` (org policy)                                                             | `managed` |
+| User    | `~/.codesmith/AGENTS.md`, then `~/.agents/AGENTS.md`                                                | `user`    |
+| Project | First of `AGENTS.md`, `.claude/instructions.md`, `CLAUDE.md`, `.codesmith/instructions.md` in `{cwd}`, then a parent-directory walk | `project` |
 | Local   | `*.md` snippets in `.claude/rules/` and `.codesmith/rules/` (sorted)                                | `local`   |
-
-CodeSmith previously loaded only the Project and User tiers; the
-Managed and Local tiers and the parent-directory walk are new.
 
 ### `@include <path>` directives
 
@@ -286,8 +282,7 @@ cannot be correlated back to your memory across restarts. See
 
 The file is per-user, not per-project. If you want project-specific
 memory, use the project-level `AGENTS.md` or
-`.codesmith/instructions.md` files instead. Legacy
-`.deepseek/instructions.md` files are still loaded for compatibility. These are
+`.codesmith/instructions.md` files instead. These are
 loaded by `project_context` and live in the repo (or wherever you commit them).
 
 ## Configuration reference

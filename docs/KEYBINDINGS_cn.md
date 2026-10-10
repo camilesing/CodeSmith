@@ -72,7 +72,7 @@
 
 | 按键组合              | 功能                                                  |
 |----------------------|-------------------------------------------------------|
-| `↑` / `↓` / `j` / `k`| 滚动一行（v0.8.13+：输入框为空时裸方向键也可滚动）    |
+| `↑` / `↓` / `j` / `k`| 滚动一行（输入框为空时裸方向键也可滚动）    |
 | `PgUp` / `PgDn`      | 滚动一页                                              |
 | `Home` / `g`         | 跳到顶部                                              |
 | `End` / `G`          | 跳到底部                                              |
@@ -131,26 +131,16 @@
 | `y` / `Y`            | 信任工作区（Trust 步骤）                              |
 | `n` / `N`            | 跳过信任提示                                          |
 
-## readline 对齐修订
-
-本次修订使输入框的编辑能力与 Claude Code 的 readline 惯例（基本）对齐：
+## 编辑说明与已知限制
 
 - **Kill ring。** `Ctrl-U`、`Ctrl-W`、`Alt-D` 与 `Ctrl-K`（删到行尾）都会把文本存入 16 条目的 kill ring；连续的删除命令合并为一个条目。`Ctrl-Y` 粘贴；紧跟其后的 `Alt-Y` 循环更早的条目（yank-pop）。不在 yank 后窗口期时，`Alt-Y` 仍保留 Yolo 模式快捷键。
-- **输入框撤销。** `Ctrl-Z` / `Ctrl+_` 恢复上一次编辑状态（含光标位置，128 层深度，无重做）。这取代了旧的"Ctrl-Z 仅在输入框为空时恢复被清空草稿"特例。
-- **`\` + Enter 续行**与 **`Ctrl-L` 重绘**补上了两处 longstanding 的文档/代码缺口（Ctrl-L 此前列在文档里但没有处理器）。
-- **`Alt-M` 打开模型选择器**——即 Claude Code 的 `Option+P` 能力；`Alt-P` 仍保留为 Plan 模式。
+- **输入框撤销。** `Ctrl-Z` / `Ctrl+_` 恢复上一次编辑状态（含光标位置，128 层深度，无重做）。
+- **`\` + Enter 插入续行**；**`Ctrl-L` 重绘**屏幕。
+- **`Alt-M` 打开模型选择器**；`Alt-P` 切换 Plan 模式。
 - **输入框为空时 Ctrl+Enter 立即冲刷队列**——运行中的回合会立即收到排队消息（steer 注入），而不是等回合结束。
-- **`Alt-D`（删到词尾）** 为新增；此前 `delete_word_forward` 只能通过 `Alt/Ctrl+Delete` 触达。
-- 同步修正的陈旧条目：`Ctrl-P`/`Ctrl-N` "循环输入历史" → `Ctrl-P` 现为模糊文件选择器；帮助目录中的裸 `?`、`g`/`G`、`[`/`]`、`l`、`v` 条目改为 `Alt+?`、`Alt+g`/`Alt+G`、`Alt+[`/`Alt+]`、`Alt+L`（与 v0.8.30 裸字母导航迁移到 Alt 的改动对齐）。
-
-## v0.8.29 审计说明
-
-- **`Shift+Enter` / `Alt+Enter` 换行现已在 Windows 上的 VSCode 中可用。** crossterm 的 `PushKeyboardEnhancementFlags` 命令在 Windows 上无条件返回 `Unsupported`（`is_ansi_code_supported() == false`），因此 Kitty 键盘协议的转义序列从未写入终端。没有它，VSCode 的 xterm.js 停留在传统模式，`Shift+Enter` 与普通 `Enter` 无法区分，导致输入框直接发送消息而不是插入换行。修复方案在 Windows 上直接写入 push/pop 转义序列（`\x1b[>1u` / `\x1b[<1u`），绕过 crossterm 的能力检测门控。VSCode 集成终端和 Windows Terminal ≥1.17 都支持 Kitty 键盘协议；不理解这些序列的终端会静默丢弃它们。
-
-## v0.8.13 审计说明
-
-- **Ctrl-S 是暂存（stash），不是历史搜索。** 在本版本中已修正——`Alt-R` 才是历史搜索。
-- **移除了幻影 `Alt+Up`。** "编辑最后一条排队消息"的绑定曾在 README 中列出，但按键分发代码中从未存在。
-- **输入框为空时裸方向键可滚动会话记录（v0.8.13）。** 此前 `should_scroll_with_arrows` 门控被硬编码为 false，意味着即使输入框为空，裸方向键也总是浏览输入框历史。虚拟终端（Ghostty、Codex、Kitty 协议）中的用户受影响尤其严重，因为他们无法使用 Cmd+Up / Alt+Up 快捷键。
+- **`Alt-D` 删到词尾**；`delete_word_forward` 也可以通过 `Alt/Ctrl+Delete` 触达。
+- **输入框为空时裸方向键滚动会话记录**（`should_scroll_with_arrows` 门控）。在虚拟终端（Ghostty、Codex、Kitty 协议）中这一点尤其重要，因为那里无法使用 Cmd+Up / Alt+Up 快捷键。
+- **`Shift+Enter` / `Alt+Enter` 在 Windows 上的 VSCode 中插入换行。** crossterm 的 `PushKeyboardEnhancementFlags` 命令在 Windows 上无条件返回 `Unsupported`（`is_ansi_code_supported() == false`），因此 Kitty 键盘协议的转义序列被直接写入（`\x1b[>1u` / `\x1b[<1u`），绕过 crossterm 的能力检测门控。VSCode 集成终端和 Windows Terminal ≥1.17 都支持 Kitty 键盘协议；不理解这些序列的终端会静默丢弃它们。
+- **Ctrl-S 是暂存（stash），不是历史搜索**；`Alt-R` 才是历史搜索。
 - **可配置键位映射 与 `tui.toml` 仍然延期。** `TuiPrefs` 结构体和加载器已存在于 `settings.rs` 中，但尚未在启动时接线。能让 `~/.codesmith/tui.toml` 覆盖单个条目的命名绑定注册表仍在待办中。
-- **未发现其他损坏的绑定。** 上面列出的其他所有按键组合都能在 `crates/tui/src/tui/ui.rs`（按键事件分发）或 `crates/tui/src/tui/app.rs`（模式 + 状态转换）中找到实际的处理程序。
+- 上面列出的其他所有按键组合都能在 `crates/tui/src/tui/ui.rs`（按键事件分发）或 `crates/tui/src/tui/app.rs`（模式 + 状态转换）中找到实际的处理程序。

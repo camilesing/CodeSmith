@@ -45,9 +45,8 @@ export NO_COLOR=1            # honored by the underlying ratatui backend
 * `/settings set status_indicator off`
 
 以这种方式写入的设置会持久化到与配置文件同目录的 settings 文件：
-默认为 `~/.config/deepseek/settings.toml`（这是 deepseek-tui 时代的历史
-位置——当 `CODESMITH_CONFIG_PATH` 指向自定义 `config.toml` 时，
-`settings.toml` 位于同一目录）。
+默认为 `~/.config/deepseek/settings.toml`（当 `CODESMITH_CONFIG_PATH`
+指向自定义 `config.toml` 时，`settings.toml` 位于同一目录）。
 如果设置了 `NO_ANIMATIONS` 环境变量，它在启动时仍然优先，因此只有取消该
 环境变量才能让你保存的选择生效。
 

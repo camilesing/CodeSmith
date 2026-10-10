@@ -1,6 +1,6 @@
 # 问题台账（Issue Ledger）
 
-本文件是代码与文档中所有 issue 引用的统一归档记录（整理于 2026-08-24）。
+本文件是代码与文档中所有 issue 引用的统一归档记录。
 英文版见 [ISSUES.md](ISSUES.md)。
 
 **收录规则：**
@@ -12,18 +12,15 @@
   跨仓库 `Whalescale#N` 引用、以及无编号的已知问题 / TODO / 限制。
 - `.zcode/plans/`（本地工具会话产物）不在范围内；
   `docs/superpowers/plans/`（未跟踪的工作产物）亦不逐条收录。
-- 根 `CHANGELOG.md` 现在只包含 fork 之后的历史；下文 fork 前的引用一律指向
-  `docs/legacy/CHANGELOG-upstream.md`——它逐字保留了旧根文件（行号未变）。
+- fork 前的引用一律指向
+  `docs/legacy/CHANGELOG-upstream.md`（逐字保留的 fork 前根变更日志）；
+  根 `CHANGELOG.md` 只覆盖 fork 之后的变化。
 
-后续在代码 / 文档中新增 issue 引用时，请记录到本文件，不再指向已废弃的
-GitHub tracker。
-
-2026-10-09 清扫：按本政策从 `docs/` 下所有文档中剥离了裸 `#N` tracker
-引用与失效的 `github.com/Hmbown/CodeSmith` 链接。上游 CodeWhale 仓库
-（`Hmbown/CodeSmith`）已无法访问（404），其 issue 编号同样无法验证；
-指名上游工作的编号只保留在 `docs/legacy/`（冻结历史）与下文引用中。
-`docs/REVIEW_PIPELINE.md` 与 `docs/RLM_BRANCHING_ROADMAP.md` 已在同次
-清扫中移入 `docs/legacy/`。
+后续在代码 / 文档中新增 issue 引用时，请记录到本文件，不要指向
+GitHub tracker。上游 CodeWhale 仓库（`Hmbown/CodeSmith`）已无法访问
+（404），其 issue 编号无法验证；指名上游工作的编号只出现在
+`docs/legacy/`（冻结历史）与下文引用中。`docs/REVIEW_PIPELINE.md` 与
+`docs/RLM_BRANCHING_ROADMAP.md` 位于 `docs/legacy/` 之下。
 
 ## 1. 内部 `CX#N` 编号
 
@@ -39,8 +36,7 @@ TUI 注释中出现四个内部设计问题编号。代码树中不存在 `CX#1`
 
 ### CX#6 — 宽度无关解析 vs 宽度相关渲染
 
-旧渲染器是单趟的 `render_markdown(content, width)`，每次终端 resize 都要
-重新解析源文本。修复后拆分为 `parse`（宽度无关的块级 AST，按转录单元格
+渲染器拆分为 `parse`（宽度无关的块级 AST，按转录单元格
 缓存）与 `render_parsed`（宽度相关的折行 + span 样式），使 resize 只需
 re-flow 而无需 re-parse + re-flow。性能不变量由测试钉住。
 
@@ -228,7 +224,7 @@ composer 文本；PTY dump 中出现任一信号即说明 bug 触发。
 ### 技能发现忽略 vendor 嵌套子目录（已修复，测试钉住）
 
 把技能组织在 vendor/类别子目录下的用户（克隆下来捆绑多个技能的技能仓库）
-被旧的单层 `read_dir` 静默丢弃——它只会发现 `<root>/<skill>/SKILL.md`，
+被单层 `read_dir` 扫描静默丢弃——它只会发现 `<root>/<skill>/SKILL.md`，
 忽略 `<root>/<vendor>/<skill>/SKILL.md`。
 
 - `crates/agent-runtime/src/skills/mod.rs:1524`（回归测试）
@@ -293,12 +289,12 @@ composer 文本；PTY dump 中出现任一信号即说明 bug 触发。
 
 ### 扩展系统交接（源自已删除的 `docs/superpowers/todo.md`）
 
-- §F5（dylib 加载）与 §F2（事件、handler
-  链、热重载）已完成。其余阶段按需启动（尚无 spec/plan）：**§F3**
-  EventBus 真实现（`crates/extensions/src/bus.rs` 的 `subscribe`/`publish`
-  目前返回 `ExtensionError::Unimplemented`）、**§F4** registerProvider、
-  **§F6** Renderers、**§F7** Shortcut + Flag、**§F8** Embedding API。
-  热加载永久移除（spec §2.4 "never"）。该文件记录的 flaky 测试基线：
+- dylib 加载与事件/handler 链/热重载阶段已完成。其余阶段按需启动（尚无
+  spec/plan）：**EventBus**
+  真实现（`crates/extensions/src/bus.rs` 的 `subscribe`/`publish`
+  目前返回 `ExtensionError::Unimplemented`）、**registerProvider**、
+  **Renderers**、**Shortcut + Flag**、**Embedding API**。
+  热加载永久移除。该文件记录的 flaky 测试基线：
   `streamable_http`（agent-runtime）与 `runtime_api`（tui）——均为既有
   状态，触发时隔离重跑。
 
@@ -309,7 +305,7 @@ composer 文本；PTY dump 中出现任一信号即说明 bug 触发。
   清理指向已删代码的注释；确认纯 re-export 后合并/删除 TUI 镜像模块
   （`tui/src/compaction/`、`tui/src/prompts.rs`、`tui/src/mcp.rs`、
   `tui/src/sandbox/`、`tui/src/execpolicy/`）。
-- 自 v0.8.33 起废弃的约 12 个子代理
+- 约 12 个已废弃的子代理
   工具（`agent_spawn`、`agent_result`、`agent_wait`、`delegate_to_agent`
   等）仍注册在目录中，占用工具面与提示词预算。
 
@@ -320,12 +316,12 @@ composer 文本；PTY dump 中出现任一信号即说明 bug 触发。
   `tool_state/goal.rs`、`repl/`）；tool-call 回合缺 reasoning 时的
   `"(reasoning omitted)"` 占位 Thinking 块未被执行器注入（DeepSeek
   thinking-mode 要求 tool-call assistant 消息携带 `reasoning_content`）。
-  该处列为最后一项 "still to come" 的 seam-3 parallel dispatch 缺口此后
-  已闭合（slice 40；`crates/agent-runtime/src/engine/host_executor.rs:251`）。
-- **compaction 收尾**（`docs/legacy/ROADMAP-upstream.md:1536`–`1565`）— 25a（summary-prompt
-  合并）与 25b（附件重注入）已落地；**25c** `post_compact_cleanup` 仍延期
+  该处列为最后一项 "still to come" 的 seam-3 parallel dispatch 缺口
+  已闭合（`crates/agent-runtime/src/engine/host_executor.rs:251`）。
+- **compaction 收尾**（`docs/legacy/ROADMAP-upstream.md:1536`–`1565`）—
+  summary-prompt 合并与附件重注入已接线；`post_compact_cleanup` 仍延期
   （merge 与 cleanup 互斥 + 分离的 `CompactionProbe` 槽位）；read-file
-  observe 站点尚无生产调用方，是独立的后续切片。
+  observe 站点尚无生产调用方，是独立的后续事项。
 - **`#[allow(dead_code)]` 下保留的被取代成员**（`docs/legacy/ROADMAP-upstream.md:1716`–`1722`）
   — `layered_context_checkpoint`（零调用方；为 nav-aids re-wire 参考而
   保留）、`Engine::recover_context_overflow`（容量级联参考）、KoD 集群

@@ -4,19 +4,18 @@
 已交付的条目仅限于代码已知的提供商 ID、配置键、认证路径、base URL、
 模型解析和能力元数据。
 
-DeepSeek 仍然是一等默认提供商。Anthropic Claude、NVIDIA NIM、
-OpenRouter、Volcengine Ark、Xiaomi MiMo、Novita、Fireworks、
-SiliconFlow、通用 OpenAI 兼容端点、自托管运行时以及 Moonshot/Kimi
-是附加路由，
-用于让同一终端框架对接其他托管或本地模型端点。Hugging Face Inference
+所有已交付的提供商都是一等且提供商中立的：同一个终端框架可以对接
+Anthropic Claude、DeepSeek、NVIDIA NIM、OpenRouter、Volcengine Ark、
+Xiaomi MiMo、Novita、Fireworks、SiliconFlow、通用 OpenAI 兼容网关、
+自托管运行时以及 Moonshot/Kimi 的托管或本地模型端点。未配置提供商时，
+CLI 回退到 `deepseek`（模型 `deepseek-v4-pro`）。Hugging Face Inference
 Providers 是规划中的附加开源模型路由层；它们在当前检出中还不是原生
 提供商。
 
 需要保持同步的来源：
 
 - `crates/config/src/lib.rs` - 共享的提供商 ID、默认值、环境变量优先级。
-- `crates/agent-runtime/src/config_types.rs` - 活跃 TUI `ApiProvider` ID
-  （已从 `crates/tui/src/config.rs` 移出，后者现在仅重新导出）。
+- `crates/agent-runtime/src/config_types.rs` - 活跃 TUI `ApiProvider` ID。
 - `crates/tui/src/config.rs` - 提供商能力元数据
   以及提供商特定的环境变量处理。
 - `crates/agent/src/lib.rs` - 供 `codesmith model list` 和
@@ -38,15 +37,14 @@ Providers 是规划中的附加开源模型路由层；它们在当前检出中�
 
 - CLI：`codesmith --provider <id>`
 - TUI：`/provider <id>` 或提供商选择器
-- 环境变量：`CODESMITH_PROVIDER=<id>`；`CODESMITH_PROVIDER=<id>` 是旧版别名
+- 环境变量：`CODESMITH_PROVIDER=<id>`
 - 配置：`provider = "<id>"`
 
 `deepseek-cn`、`deepseek_china`、`deepseekcn` 和 `deepseek-china` 被接受为
 `deepseek` 的旧版别名。它们不会选择不同的官方主机；
 DeepSeek 在全球使用相同的官方 API 主机。
 
-新建的共享配置写入 `~/.codesmith/config.toml`。已有的
-`~/.codesmith/config.toml` 文件出于兼容性仍会被读取。
+共享配置位于 `~/.codesmith/config.toml`。
 
 ## 认证与环境变量规则
 
@@ -58,8 +56,6 @@ API 密钥。API 密钥环境变量是排在已保存配置和密钥环凭据之
 
 - `CODESMITH_BASE_URL` / `CODESMITH_MODEL`，作用于当前活跃提供商。
 - 下文列出的提供商特定 base URL/模型环境变量。
-- `CODESMITH_BASE_URL`、`CODESMITH_MODEL` 和 `CODESMITH_DEFAULT_TEXT_MODEL` 作为
-  旧版别名。
 
 非本地的 `http://` base URL 会被拒绝，除非设置了
 `CODESMITH_ALLOW_INSECURE_HTTP=1`。环回 HTTP URL 被允许用于
@@ -113,14 +109,14 @@ model = "your-deepseek-compatible-model"
 
 | 提供商 ID | TOML 表 | 认证环境变量 | Base URL 环境变量与默认值 | 默认或静态模型 | 备注 |
 | --- | --- | --- | --- | --- | --- |
-| `deepseek` | `[providers.deepseek]` | `DEEPSEEK_API_KEY` | `CODESMITH_BASE_URL`；默认 `https://api.deepseek.com/beta` | `deepseek-v4-pro`、`deepseek-v4-flash`；兼容别名 `deepseek-chat`、`deepseek-reasoner` | 一等默认提供商。Beta URL 启用 strict tool mode、chat prefix completion 和 FIM completion。显式设置 `https://api.deepseek.com` 或 `/v1` 可退出仅限 beta 的功能。 |
+| `deepseek` | `[providers.deepseek]` | `DEEPSEEK_API_KEY` | `CODESMITH_BASE_URL`；默认 `https://api.deepseek.com/beta` | `deepseek-v4-pro`、`deepseek-v4-flash`；兼容别名 `deepseek-chat`、`deepseek-reasoner` | 未配置提供商时的回退。Beta URL 启用 strict tool mode、chat prefix completion 和 FIM completion。显式设置 `https://api.deepseek.com` 或 `/v1` 可退出仅限 beta 的功能。 |
 | `anthropic` | `[providers.anthropic]` | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL`；默认 `https://api.anthropic.com/v1` | `claude-sonnet-4-5` | Anthropic Claude 路由。接受 `claude`、`anthropic-claude` 和 `claude-ai` 作为提供商别名。 |
 | `nvidia-nim` | `[providers.nvidia_nim]` | `NVIDIA_API_KEY`、`NVIDIA_NIM_API_KEY`、回退 `DEEPSEEK_API_KEY` | `NVIDIA_NIM_BASE_URL`、`NIM_BASE_URL`、`NVIDIA_BASE_URL`；默认 `https://integrate.api.nvidia.com/v1` | `deepseek-ai/deepseek-v4-pro`、`deepseek-ai/deepseek-v4-flash` | 通过 NVIDIA NIM 托管的 DeepSeek V4。TUI 配置路径接受 `NVIDIA_NIM_MODEL`。 |
 | `openai` | `[providers.openai]` | `OPENAI_API_KEY` | `OPENAI_BASE_URL`；默认 `https://api.openai.com/v1` | 注册表条目：`gpt-5`、`deepseek-v4-pro`、`deepseek-v4-flash`；默认配置模型 `gpt-5` | 用于网关和自定义端点的通用 OpenAI 兼容路由。对显式的第三方 OpenAI 兼容路由请使用它，而不是发明新的提供商 ID。接受 `OPENAI_MODEL`。自定义 `OPENAI_BASE_URL` 若未指定显式模型，会在启动时快速失败。 |
 | `atlascloud` | `[providers.atlascloud]` | `ATLASCLOUD_API_KEY` | `ATLASCLOUD_BASE_URL`；默认 `https://api.atlascloud.ai/v1` | `deepseek-ai/deepseek-v4-flash`、`deepseek-ai/deepseek-v4-pro` | OpenAI 兼容的托管路由。TUI 配置路径接受 `ATLASCLOUD_MODEL`，静态 `ModelRegistry` 中包含用于 CLI 模型解析的 AtlasCloud 回退行。 |
 | `wanjie-ark` | `[providers.wanjie_ark]` | `WANJIE_ARK_API_KEY`、`WANJIE_API_KEY`、`WANJIE_MAAS_API_KEY` | `WANJIE_ARK_BASE_URL`、`WANJIE_BASE_URL`、`WANJIE_MAAS_BASE_URL`；默认 `https://maas-openapi.wanjiedata.com/api/v1` | `deepseek-reasoner` | OpenAI 兼容的托管路由。接受 `WANJIE_ARK_MODEL`、`WANJIE_MODEL` 和 `WANJIE_MAAS_MODEL`。 |
 | `volcengine` | `[providers.volcengine]` | `VOLCENGINE_API_KEY`、`VOLCENGINE_ARK_API_KEY`、`ARK_API_KEY` | `VOLCENGINE_BASE_URL`、`VOLCENGINE_ARK_BASE_URL`、`ARK_BASE_URL`；默认 `https://ark.cn-beijing.volces.com/api/coding/v3` | `DeepSeek-V4-Pro`、`DeepSeek-V4-Flash` | Volcengine/火山引擎 Ark OpenAI 兼容编码端点。接受 `VOLCENGINE_MODEL` 和 `VOLCENGINE_ARK_MODEL`。 |
-| `openrouter` | `[providers.openrouter]` | `OPENROUTER_API_KEY` | `OPENROUTER_BASE_URL`；默认 `https://openrouter.ai/api/v1` | `deepseek/deepseek-v4-pro`、`deepseek/deepseek-v4-flash`；近期大型 ID 包括 `arcee-ai/trinity-large-thinking`、`qwen/qwen3.7-max`、`xiaomi/mimo-v2.5-pro`、`qwen/qwen3.6-35b-a3b`、`google/gemma-4-31b-it`、`z-ai/glm-5.1`、`moonshotai/kimi-k2.6` | 附加的开源模型路由层。它不替代 DeepSeek；它让用户在选择时可以通过 OpenRouter 路由受支持的模型 ID。 |
+| `openrouter` | `[providers.openrouter]` | `OPENROUTER_API_KEY` | `OPENROUTER_BASE_URL`；默认 `https://openrouter.ai/api/v1` | `deepseek/deepseek-v4-pro`、`deepseek/deepseek-v4-flash`；近期大型 ID 包括 `arcee-ai/trinity-large-thinking`、`qwen/qwen3.7-max`、`xiaomi/mimo-v2.5-pro`、`qwen/qwen3.6-35b-a3b`、`google/gemma-4-31b-it`、`z-ai/glm-5.1`、`moonshotai/kimi-k2.6` | 面向受支持模型 ID 的开源模型路由层，由用户显式选择。 |
 | `xiaomi-mimo` | `[providers.xiaomi_mimo]` | `XIAOMI_MIMO_API_KEY`、`XIAOMI_API_KEY`、`MIMO_API_KEY` | `XIAOMI_MIMO_BASE_URL`、`MIMO_BASE_URL`；默认 `https://api.xiaomimimo.com/v1` | `mimo-v2.5-pro`、`mimo-v2.5` | 小米 MiMo OpenAI 兼容 chat completions 路由。它发送 `max_completion_tokens` 并使用 MiMo 的 `thinking` 字段进行推理控制。 |
 | `novita` | `[providers.novita]` | `NOVITA_API_KEY` | `NOVITA_BASE_URL`；默认 `https://api.novita.ai/v1` | `deepseek/deepseek-v4-pro`、`deepseek/deepseek-v4-flash` | 用于 DeepSeek 模型 ID 的 OpenAI 兼容托管路由。使用配置或 `CODESMITH_MODEL` / `CODESMITH_MODEL` 进行模型覆盖。 |
 | `fireworks` | `[providers.fireworks]` | `FIREWORKS_API_KEY` | `FIREWORKS_BASE_URL`；默认 `https://api.fireworks.ai/inference/v1` | `accounts/fireworks/models/deepseek-v4-pro` | OpenAI 兼容的托管路由。使用配置或 `CODESMITH_MODEL` / `CODESMITH_MODEL` 进行模型覆盖。 |
@@ -211,8 +207,7 @@ OpenAI 兼容或本地端点即使 CodeSmith
 能够发送 schema，仍可能拒绝工具调用。
 
 DeepSeek 兼容别名 `deepseek-chat` 和 `deepseek-reasoner` 映射到
-`deepseek-v4-flash` 能力元数据。原定的 2026-07-24 退役日期已过但未执行
-移除——别名仍可解析，且未承诺新的移除日期。
+`deepseek-v4-flash` 能力元数据，并持续可解析。
 
 ## 漂移检查
 
@@ -232,7 +227,7 @@ python3 scripts/check-provider-registry.py
 - 静态模型注册表表与 `crates/agent/src/lib.rs` 使用的
   提供商发生漂移。
 - `crates/tui/src/config.rs` 中的提供商默认模型或 base URL 常量
-  不再在此处被提及。
+  未在本文档中被提及。
 
 ## 已规划、尚未交付
 
@@ -254,8 +249,7 @@ python3 scripts/check-provider-registry.py
 
 在原生 Hugging Face 支持落地之前，用户只能通过通用的 `openai`
 提供商访问显式配置的 Hugging Face 兼容 OpenAI 路由。这是一条
-用户显式选择的路由，不是内置的 Hub 发现，
-也不是 DeepSeek 的替代品。
+用户显式选择的路由，不是内置的 Hub 发现。
 
 ## 示例设置命令
 

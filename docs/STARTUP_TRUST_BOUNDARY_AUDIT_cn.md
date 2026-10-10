@@ -31,10 +31,10 @@ CodeSmith 已经具备工作区信任概念，但当前的信任提示
 无法将所有安全的信任前初始化与所有项目敏感的
 信任后初始化分离开来。
 
-首个实现切片的状态：
+当前状态：
 
-- 早期的 `dotenv().ok()` 调用已被移除；交互式启动现在
-  仅在允许启动工作区初始化时才显式加载 `workspace/.env`。
+- 交互式启动仅在允许启动工作区初始化时才显式加载
+  `workspace/.env`。
 - 项目配置覆盖层被门控在同一启动边界之后；未受信任的
   交互式工作区在信任提示之前不会读取 `$WORKSPACE/.codesmith/config.toml`。
 - `SessionStart` 钩子在 `OnboardingState::TrustDirectory` 可见期间被推迟，
@@ -65,7 +65,7 @@ CodeSmith 目前有三个相关但彼此不同的信任概念。
 - 通过 `is_workspace_trusted(workspace)` 读取。
 - 通过 `save_workspace_trust(workspace)` 和引导信任
   提示写入。
-- `.codesmith/` 下的旧版工作区本地标记仍被
+- `.codesmith/` 下的工作区本地标记（`trusted`、`trust.json`）也被
   `needs_trust(workspace)` 接受。
 
 这是一个启动/引导决策。它与运行时 `trust_mode` 相关，但不等同于
@@ -114,14 +114,14 @@ CodeSmith 文件工具可以访问该工作区之外的哪些具体路径？"
 | 进程加固 | `crates/tui/src/main.rs`、`crates/agent-runtime/src/sandbox/process_hardening.rs` | TUI `main()` 中极早期 | 信任前安全 | 防御性进程设置不应依赖工作区信任。 | 保持信任前。 |
 | Panic 钩子 / 崩溃转储设置 | `crates/tui/src/main.rs` | TUI `main()` 中极早期 | 信任前安全 | 可能写入诊断状态，但不读取工作区控制的启动输入。 | 保持信任前；确保崩溃转储不泄露机密。 |
 | 信号清理任务 | `crates/tui/src/main.rs` | TUI `main()` 中极早期 | 信任前安全 | 清理注册是进程作用域的。 | 保持信任前。 |
-| 工作区 `.env` 加载 | `crates/tui/src/main.rs` | 交互式启动中，位于工作区解析和启动边界计算之后 | 仅信任后 / 显式绕过 | 旧的 `dotenvy::dotenv()` cwd 搜索已被移除。交互式启动现在仅加载 `workspace/.env`，且仅当工作区已被信任或被 YOLO/skip-onboarding 显式绕过时。非交互式 dotenv 策略仍待定。 | 保持显式路径加载。在后续切片中定义非交互式 dotenv 行为。 |
+| 工作区 `.env` 加载 | `crates/tui/src/main.rs` | 交互式启动中，位于工作区解析和启动边界计算之后 | 仅信任后 / 显式绕过 | 交互式启动仅加载 `workspace/.env`，且仅当工作区已被信任或被 YOLO/skip-onboarding 显式绕过时。非交互式 dotenv 策略仍待定。 | 保持显式路径加载。在后续工作中定义非交互式 dotenv 行为。 |
 | CLI 参数解析 | `crates/tui/src/main.rs` | TUI `main()` 早期 | 信任前安全 | CLI 参数是用户提供的进程输入，不是仓库控制的文件。 | 保持信任前。 |
 | 全局配置加载 | `crates/tui/src/main.rs`、`crates/tui/src/config.rs` | 运行时分发之前 | 信任前安全 | 用户拥有的全局配置可以启用稍后执行的钩子或路径。但它仍不是工作区控制的输入。 | 保持信任前；记录全局配置是受信任的用户输入。 |
 | 日志设置 | `crates/tui/src/main.rs` | 命令分发之前 | 信任前安全 | 日志目的地可能包含来自用户配置的路径。 | 若仅来源于用户/CLI 配置则保持信任前。 |
 | 工作区解析 | `crates/tui/src/main.rs` | `run_interactive()` 早期 / 命令特定路径 | 信任前安全 | 决定信任状态所需。 | 保持信任前。 |
-| 工作区信任检查 | `crates/tui/src/config.rs`、`crates/tui/src/tui/onboarding/mod.rs` | App/引导状态构建期间 | 信任前安全 | 读取全局受信任工作区列表和旧版标记路径。旧版工作区标记是工作区本地输入。 | 为兼容性保留，但评审旧版标记是否应被视为充分的信任。 |
-| 来自 `$WORKSPACE/.codesmith/config.toml` 或旧版 `.codesmith/config.toml` 的项目配置覆盖 | `crates/tui/src/main.rs` | 仅当允许启动工作区初始化时在 `run_interactive()` 中 | 仅信任后 / 显式绕过 | 未受信任的交互式工作区不再在信任提示之前读取项目配置。现有的拒绝列表仍作为针对已受信任/已绕过项目配置的纵深防御检查。接受信任后的运行时重新加载在本切片中未实现。 | 决定在信任接受后重新加载项目配置，还是仅在下次启动时生效。更新文档以匹配拒绝列表。 |
-| 配置文件创建/迁移 | `crates/tui/src/main.rs` | TUI 启动之前 | 若仅涉及用户状态则信任前安全 | 写入用户配置/状态并可能迁移旧版配置。 | 若不应用工作区控制的输入则保持信任前。 |
+| 工作区信任检查 | `crates/tui/src/config.rs`、`crates/tui/src/tui/onboarding/mod.rs` | App/引导状态构建期间 | 信任前安全 | 读取全局受信任工作区列表和工作区本地标记路径。工作区标记是工作区本地输入。 | 保留；评审工作区标记是否应被视为充分的信任。 |
+| 来自 `$WORKSPACE/.codesmith/config.toml` 的项目配置覆盖 | `crates/tui/src/main.rs` | 仅当允许启动工作区初始化时在 `run_interactive()` 中 | 仅信任后 / 显式绕过 | 未受信任的交互式工作区不会在信任提示之前读取项目配置。拒绝列表仍作为针对已受信任/已绕过项目配置的纵深防御检查。接受信任后的运行时重新加载未实现。 | 决定在信任接受后重新加载项目配置，还是仅在下次启动时生效。更新文档以匹配拒绝列表。 |
+| 配置文件创建/迁移 | `crates/tui/src/main.rs` | TUI 启动之前 | 若仅涉及用户状态则信任前安全 | 写入用户配置/状态。 | 若不应用工作区控制的输入则保持信任前。 |
 | 系统技能安装 | `crates/tui/src/main.rs` | TUI 启动之前 | 若仅限捆绑/全局则信任前安全 | 将捆绑技能安装到用户状态不是工作区控制的，但工作区技能发现是独立的。 | 捆绑技能保持信任前；单独审计工作区本地技能发现。 |
 | 工作区快照清理 | `crates/tui/src/main.rs` | TUI 启动之前 | 不确定 / 需要评审 | 使用工作区路径并删除旧的快照元数据。它很可能影响 CodeSmith 管理的状态，但工作区信任影响应当被记录。 | 对确切的存储目标分类，并仅将 CodeSmith 拥有的缓存清理保留在信任前。 |
 | 溢出/截断缓存清理 | `crates/tui/src/main.rs` | TUI 启动之前 | 若仅限缓存则信任前安全 | CodeSmith 拥有的缓存维护。 | 若缓存路径是用户状态路径则保持信任前。 |

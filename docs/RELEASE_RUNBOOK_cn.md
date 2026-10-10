@@ -61,8 +61,8 @@ cargo publish --dry-run --locked --allow-dirty -p codesmith-tui
 `Cargo.lock` 之间的漂移会在发布之前而不是发布之时被发现。
 
 Linux 门禁目前**没有任何 CI 承载方**。GitHub 的 test 作业跳过了它的
-Linux clippy/test 步骤（它们本是为一条从未运行过的 CNB 镜像车道
-编写的——见下文"CNB Cool 镜像"一节），因此在依赖 Linux 测试覆盖
+Linux clippy/test 步骤（它们面向一条并不运行的 CNB 镜像车道
+——见下文"CNB Cool 镜像"一节），因此在依赖 Linux 测试覆盖
 之前，需要先在 `.github/workflows/ci.yml` 中重新启用这些步骤。
 GitHub Actions 目前承载漂移/fmt 状态以及 macOS 和 Windows 覆盖。
 
@@ -98,7 +98,7 @@ CODESMITH_VERSION=X.Y.Z CODESMITH_RELEASE_BASE_URL=http://127.0.0.1:8123/ npm ru
 包版本。
 
 Linux tarball 安装 + 委托入口点冒烟测试同样没有 CI 承载方
-（原计划运行它的 CNB 车道从未运行过）；GitHub Actions 保留
+（本应运行它的 CNB 车道并不运行）；GitHub Actions 保留
 macOS 和 Windows 的冒烟覆盖。
 
 发布之后，证明 release 在两个 registry 中均可见：
@@ -162,9 +162,9 @@ release 作业还会上传 `codesmith-artifacts-sha256.txt`。npm 安装器和
 
 ## npm 包装器发布
 
-**npm publish 步骤是手动的。** `release.yml` 不再运行
+**npm publish 步骤是手动的。** `release.yml` 不运行
 `npm publish`，因为 npm 账户在每次发布时都要求 2FA OTP，而且尚未
-配置可绕过 2FA 的自动化 token。GitHub Release 流程仍然完全自动
+配置可绕过 2FA 的自动化 token。GitHub Release 流程完全自动
 化；只有 npm 包装器的发布需要开发者在装有 `npm login` 和身份验证
 器应用的工作站上执行。
 
@@ -193,8 +193,8 @@ npm publish --access public
 
 ## CNB Cool 镜像
 
-`Sync to CNB` 工作流已移除（`CNB_GIT_TOKEN` secret 从未配置，
-每次镜像推送都会失败）。`cnb.cool/codesmith.net/codesmith` 上的副本
+没有 `Sync to CNB` 工作流：`CNB_GIT_TOKEN` secret 未配置，
+镜像推送无法运行。`cnb.cool/codesmith.net/codesmith` 上的副本
 可能缺失或已过期——从它安装不会看到新的发布，
 发布 tag 之后也没有镜像可供验证。如需手动更新，或者将来恢复镜像：
 

@@ -46,7 +46,7 @@ cargo install codesmith-cli --locked
 cargo install codesmith-tui --locked
 
 # Homebrew
-# The tap/formula name is legacy; it installs codesmith and codesmith-tui.
+# The tap/formula name differs from the package name; it installs codesmith and codesmith-tui.
 brew tap camilesing/codesmith
 brew install codesmith
 ```
@@ -69,7 +69,7 @@ docker run --rm -it \
 codesmith
 ```
 
-首次启动时，CodeSmith 需要当前 provider 的 API key。DeepSeek 是默认 provider。最直接的配置路径是：
+首次启动时，CodeSmith 需要当前 provider 的 API key。所有已交付的 provider 都是一等的；未做任何配置时，回退 provider 是 DeepSeek，其他 provider 可通过 `--provider`、`CODESMITH_PROVIDER` 或 `/provider` 选择。回退 provider 最直接的配置路径是：
 
 ```bash
 codesmith auth set --provider deepseek
@@ -82,7 +82,7 @@ export DEEPSEEK_API_KEY="your-key"
 codesmith
 ```
 
-新的 CodeSmith 配置存储在 `~/.codesmith/config.toml`。为从旧名称迁移的用户，旧的 `~/.codesmith/config.toml` 文件仍受支持。
+CodeSmith 的配置存储在 `~/.codesmith/config.toml`。
 
 配置完成后，运行一次 doctor 检查：
 
@@ -222,7 +222,7 @@ YOLO 模式适用于你有意让模型不停下来等待审批就行动的受信
 | `/memory` | 在启用时查看或管理记忆 |
 | `/mcp` | 配置或查看 MCP server 集成 |
 
-当你想从默认 DeepSeek 路由切换出去时，使用 `/provider`。Provider ID、环境变量、模型默认值和能力说明保存在 provider 注册表文档中。
+使用 `/provider` 切换当前 provider。Provider ID、环境变量、模型默认值和能力说明保存在 provider 注册表文档中。
 
 当你希望 CodeSmith 每轮自行选择模型和思考级别时，使用 `/model auto`。当你需要可重复的基准测试或严格的成本特征时，使用固定模型。
 
@@ -361,7 +361,7 @@ codesmith doctor --json
 
 ### CodeSmith 只支持 DeepSeek 吗？
 
-DeepSeek 是默认的一等路由，但 CodeSmith 也支持其他托管和本地的 OpenAI 兼容 provider。使用 `/provider` 或 `codesmith --provider <id>` 选择 provider。配置非默认路由时，请打开 provider 注册表文档。
+不是。DeepSeek 只是未配置 provider 时的回退；每一个已交付的 provider 都是一等的，托管与本地 OpenAI 兼容端点一律平等。使用 `/provider` 或 `codesmith --provider <id>` 选择 provider。配置路由时，请打开 provider 注册表文档。
 
 ### 我应该先用哪个模式？
 
@@ -396,7 +396,7 @@ python3 your_file.py
 
 ### 我的配置存储在哪里？
 
-新的 CodeSmith 配置使用 `~/.codesmith/config.toml`。旧的 `~/.codesmith/config.toml` 仍受支持以保持兼容。当存在工作区配置时，项目覆盖层也会影响行为。
+CodeSmith 的配置位于 `~/.codesmith/config.toml`。当存在工作区配置时，项目覆盖层也会影响行为。
 
 ### 如何保持成本可预测？
 

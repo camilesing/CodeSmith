@@ -512,9 +512,9 @@ cargo install codesmith-tui     --locked
 - Or point `codesmith update` at a mirrored release-asset directory, as
   shown below.
 
-The former CNB source mirror (`https://cnb.cool/codesmith.net/codesmith.git`)
-is no longer synced and its copy may be missing or stale — do not install
-from it.
+Do not install from the CNB source mirror
+(`https://cnb.cool/codesmith.net/codesmith.git`): it is unsynced and its
+copy may be missing or stale.
 
 If you operate a binary asset mirror, `codesmith update` can use it directly:
 

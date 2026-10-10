@@ -144,7 +144,7 @@ composer 空闲时循环切换可见模式：**Plan → Agent → YOLO → Plan*
 
 快速的轻量档路径（DeepSeek 端点上的 `deepseek-v4-flash`）+ 关闭思考，在产品
 语言中称为 Fin。Fin 是快速工具调用、摘要和廉价子调用的接缝；它不会改变审批
-行为。模型路由本身已不再由 Fin 负责——路由分类器运行在最强档上（见
+行为。模型路由由路由器而非 Fin 负责——路由分类器运行在最强档上（见
 PRESETS.md 的 Auto Model Routing 一节）。
 
 `/goal` 设置一个带可选 token 预算的会话目标，并将该目标作为 Work 上下文保持
@@ -173,8 +173,6 @@ PRESETS.md 的 Auto Model Routing 一节）。
 /config
 # edit the approval_mode row to: suggest | auto | never
 ```
-
-旧版说明：`/set approval_mode ...` 已被弃用，由 `/config` 取代。
 
 - `suggest`（默认）：使用上述各模式的规则。
 - `auto`：自动批准所有工具（类似 YOLO 的审批行为，但不强制进入 YOLO 模式）。

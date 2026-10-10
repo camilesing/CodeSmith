@@ -32,7 +32,7 @@ codesmith --version
 
 ## 步骤 3：配置 API key（唯一硬性凭据，三选一）
 
-默认 provider 为 DeepSeek（默认模型 `deepseek-v4-pro`，默认 base URL `https://api.deepseek.com/beta`），凭据优先级为 CLI `--api-key` → config 文件 → OS keyring → 环境变量。
+所有 provider 地位平等，可通过 `--provider` / `CODESMITH_PROVIDER` / `provider = "<id>"` 任选；未配置任何 provider 时回退到 DeepSeek（模型 `deepseek-v4-pro`，base URL `https://api.deepseek.com/beta`）。凭据优先级为 CLI `--api-key` → config 文件 → OS keyring → 环境变量。
 
 方式 A（推荐，写入 `~/.codesmith/config.toml`）：
 

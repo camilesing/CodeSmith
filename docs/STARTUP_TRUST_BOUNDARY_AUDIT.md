@@ -34,11 +34,10 @@ primarily a TUI onboarding gate. It is not yet a hard startup pipeline boundary
 that separates all safe pre-trust initialization from all project-sensitive
 post-trust initialization.
 
-First implementation slice status:
+Current status:
 
-- The early `dotenv().ok()` call has been removed; interactive startup now uses
-  explicit `workspace/.env` loading only when startup workspace initialization is
-  allowed.
+- Interactive startup loads `workspace/.env` explicitly, only when startup
+  workspace initialization is allowed.
 - Project config overlay is gated behind the same startup boundary; untrusted
   interactive workspaces do not read `$WORKSPACE/.codesmith/config.toml` before
   the trust prompt.
@@ -71,8 +70,8 @@ trust prompt again?"
 - Read through `is_workspace_trusted(workspace)`.
 - Written through `save_workspace_trust(workspace)` and the onboarding trust
   prompt.
-- Legacy workspace-local markers under `.codesmith/` are still accepted by
-  `needs_trust(workspace)`.
+- Workspace-local markers under `.codesmith/` (`trusted`, `trust.json`) are
+  also accepted by `needs_trust(workspace)`.
 
 This is a startup/onboarding decision. It is related to, but not identical to,
 runtime `trust_mode`.
@@ -120,14 +119,14 @@ may CodeSmith file tools access while `trust_mode` is false?"
 | Process hardening | `crates/tui/src/main.rs`, `crates/agent-runtime/src/sandbox/process_hardening.rs` | Very early in TUI `main()` | Pre-trust safe | Defensive process setup should not depend on workspace trust. | Keep pre-trust. |
 | Panic hook / crash dump setup | `crates/tui/src/main.rs` | Very early in TUI `main()` | Pre-trust safe | May write diagnostic state, but does not read workspace-controlled startup input. | Keep pre-trust; ensure crash dumps avoid leaking secrets. |
 | Signal cleanup task | `crates/tui/src/main.rs` | Very early in TUI `main()` | Pre-trust safe | Cleanup registration is process-scoped. | Keep pre-trust. |
-| Workspace `.env` loading | `crates/tui/src/main.rs` | After workspace resolution and startup boundary calculation in interactive startup | Post-trust only / explicit bypass | The old `dotenvy::dotenv()` cwd search has been removed. Interactive startup now loads only `workspace/.env` and only when the workspace is already trusted or explicitly bypassed by YOLO/skip-onboarding. Non-interactive dotenv policy is still pending. | Keep explicit-path loading. Define non-interactive dotenv behavior in a follow-up slice. |
+| Workspace `.env` loading | `crates/tui/src/main.rs` | After workspace resolution and startup boundary calculation in interactive startup | Post-trust only / explicit bypass | Interactive startup loads only `workspace/.env`, and only when the workspace is already trusted or explicitly bypassed by YOLO/skip-onboarding. Non-interactive dotenv policy is still pending. | Keep explicit-path loading. Define non-interactive dotenv behavior in a follow-up. |
 | CLI argument parsing | `crates/tui/src/main.rs` | Early TUI `main()` | Pre-trust safe | CLI args are user-provided process inputs, not repo-controlled files. | Keep pre-trust. |
 | Global config loading | `crates/tui/src/main.rs`, `crates/tui/src/config.rs` | Before runtime dispatch | Pre-trust safe | User-owned global config can enable hooks or paths that later execute. It is still not workspace-controlled input. | Keep pre-trust; document that global config is trusted user input. |
 | Logging setup | `crates/tui/src/main.rs` | Before command dispatch | Pre-trust safe | Logging sinks may include paths from user config. | Keep pre-trust if sourced only from user/CLI config. |
 | Workspace resolution | `crates/tui/src/main.rs` | Early `run_interactive()` / command-specific paths | Pre-trust safe | Needed to decide trust state. | Keep pre-trust. |
-| Workspace trust check | `crates/tui/src/config.rs`, `crates/tui/src/tui/onboarding/mod.rs` | During App/onboarding state construction | Pre-trust safe | Reads global trusted-workspace list and legacy marker paths. Legacy workspace markers are workspace-local inputs. | Keep for compatibility, but review whether legacy markers should be treated as sufficient trust. |
-| Project config overlay from `$WORKSPACE/.codesmith/config.toml` or legacy `.codesmith/config.toml` | `crates/tui/src/main.rs` | In `run_interactive()` only when startup workspace initialization is allowed | Post-trust only / explicit bypass | Untrusted interactive workspaces no longer read project config before the trust prompt. The existing denylist remains a defense-in-depth check for trusted/bypassed project config. Runtime reload after accepting trust is not implemented in this slice. | Decide whether to reload project config after trust acceptance or apply it only on next launch. Update docs to match the denylist. |
-| Config file creation/migration | `crates/tui/src/main.rs` | Before TUI launch | Pre-trust safe if user-state only | Writes user config/state and may migrate legacy config. | Keep pre-trust if no workspace-controlled input is applied. |
+| Workspace trust check | `crates/tui/src/config.rs`, `crates/tui/src/tui/onboarding/mod.rs` | During App/onboarding state construction | Pre-trust safe | Reads the global trusted-workspace list and workspace-local marker paths. Workspace markers are workspace-local inputs. | Keep; review whether workspace markers should be treated as sufficient trust. |
+| Project config overlay from `$WORKSPACE/.codesmith/config.toml` | `crates/tui/src/main.rs` | In `run_interactive()` only when startup workspace initialization is allowed | Post-trust only / explicit bypass | Untrusted interactive workspaces do not read project config before the trust prompt. The denylist remains a defense-in-depth check for trusted/bypassed project config. Runtime reload after accepting trust is not implemented. | Decide whether to reload project config after trust acceptance or apply it only on next launch. Update docs to match the denylist. |
+| Config file creation/migration | `crates/tui/src/main.rs` | Before TUI launch | Pre-trust safe if user-state only | Writes user config/state. | Keep pre-trust if no workspace-controlled input is applied. |
 | System skill installation | `crates/tui/src/main.rs` | Before TUI launch | Pre-trust safe if bundled/global only | Installing bundled skills into user state is not workspace-controlled, but workspace skill discovery is separate. | Keep pre-trust for bundled skills; audit workspace-local skill discovery separately. |
 | Workspace snapshot pruning | `crates/tui/src/main.rs` | Before TUI launch | Uncertain / requires review | Uses workspace path and deletes old snapshot metadata. It likely affects CodeSmith-managed state, but the workspace trust implication should be documented. | Classify exact storage target and keep only CodeSmith-owned cache cleanup pre-trust. |
 | Spillover/truncate cache pruning | `crates/tui/src/main.rs` | Before TUI launch | Pre-trust safe if cache-only | CodeSmith-owned cache maintenance. | Keep pre-trust if cache paths are user-state paths. |

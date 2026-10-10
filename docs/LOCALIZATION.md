@@ -15,7 +15,7 @@ The v0.7.6 parity check used live GitHub sources with `/opt/homebrew/bin/gh`.
 
 ## Shipped Locales
 
-These locales are supported by `locale` in `settings.toml` and by `LANG` / `LC_ALL` auto-detection. Language support was narrowed to this set on 2026-08-24; previously shipped `ja`, `pt-BR`, and `vi` fall back to English, and the planned Global South QA matrix was dropped.
+These locales are supported by `locale` in `settings.toml` and by `LANG` / `LC_ALL` auto-detection; any other locale value (`ja`, `pt-BR`, and `vi` included) falls back to English.
 
 | Locale | Display | Script | Direction | Fallback | Review status | Notes |
 |---|---|---|---|---|---|---|
