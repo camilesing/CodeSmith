@@ -52,6 +52,7 @@
 │  • Config, logging, retry_status (UI globals)             │
 └───────────────────────────────────────────────────────────┘
 ```
+
 真正要紧的箭头：**`codesmith-tui` 依赖 `codesmith-providers`
 （可选、feature 门控），绝不反向依赖。** Provider 只依赖
 `codesmith-agent`（以及目前出于共享全局量暂时依赖的
@@ -76,6 +77,7 @@
                  ▼
                LlmClientHandle (Arc<dyn LlmClient>)
 ```
+
 - **`ProviderId`** —— 开放联合类型：已知 provider 用 `Builtin(ProviderKind)`，
   其余任何东西用 `Custom(String)`。镜像 pi-ai 的 `KnownProvider | string`。
 - **`ProviderConfig`** —— 中立的构造输入（`api_key`、`base_url`、
@@ -116,6 +118,7 @@
    │   ▶ Callback::on_step; if step+1 >= max_steps → return  │
    └──────────────────────────────────────────────────────────┘
 ```
+
 - **`Tool`**（`tools::Tool`）—— 可执行工具契约（LangChain `BaseTool`
   的类比）。宿主无关：每个实现自带自己的依赖，`tools::Tool::run`
   只接收一个已解析的 `input` —— 核心中**没有每次调用的胖
@@ -142,144 +145,179 @@
   `DefaultAgentExecutor` 是参考实现（核心内）。宿主侧的
   `HostAgentExecutor`（位于
   `codesmith-agent-runtime::engine::host_executor`，§E）镜像了跑在三个桥
-  之上的裸循环，并且是逐片吸收生产 `Engine` 护栏的指定归宿 —— 目前
-  已吸收 **十项**：**loop-guard**（拦截第 3 次相同调用，3/8 次连续失败
-  时警告/中止）位于其 per-tool / post-tool 接缝；**LSP flush**（每次
-  成功的 edit 后收集诊断，在下一次请求前作为一条 user 消息冲刷出去）
-  位于其 per-tool / per-step-pre-request 接缝；**transparent-retry**
-  （流在中途死亡且尚无任何内容提交时重发请求，最多 3 次；一轮健康后
-  重置预算）位于其 per-step post-stream 接缝；**steer**（在下一次请求
-  前把排队的用户输入排空为 `user` 消息）位于其 per-step pre-request
-  接缝；**approval**（把写/代码执行工具挡在用户许可之后：按 wire 工具
-  id 发出 `ApprovalRequired` 并阻塞在决策通道上；被拒绝 ⇒
-  `permission_denied` 错误、工具跳过）位于其 per-tool 接缝；
-  **compaction**（不经过 LLM 调用即对超过 32KB 缓存触发线的陈旧工具
-  结果做 micro-compact，随后在 `should_compact` 通过时经由 LLM 摘要自动
-  压缩；两者都通过 `clear()`+`push()` 整体替换）位于其 per-step
-  pre-request 接缝；另有 **capacity**、**subagent**（完成挂起 + 哨兵）、
-  **early-tool-start**，以及 **cycle** 护栏（完整清单见
-  `host_executor.rs` 模块文档的 "Absorbed guardrails"）。per-step 机制按
-  阶段拆分为 `engine/turn/` 下的私有子模块（`stream.rs`、`batches.rs`、
-  `approval.rs`、`seams.rs`、`postprocess.rs`）；`host_executor.rs` 保留
-  step 循环本身以及它直接拥有的横切护栏。LSP 累加器、steer 接收器、
-  approval 接收器与压缩探针是**内部可变性（interior-mutability）切片**：
-  `LspProbe.pending` 是 `Arc<std::sync::Mutex<Vec<DiagnosticBlock>>>`
-  （LSP：锁绝不跨 `await` 持有，与 `CallbackBridge` 一致），而 `steer`
-  是 `Option<Arc<tokio::sync::Mutex<mpsc::Receiver<String>>>>` —— 用
-  `tokio::sync::Mutex`（而非 `std`）是为了让守卫可以跨越子代理阻塞挂起
-  的 `biased select!` steer 臂里阻塞的 `recv().await`（与 `approval`
-  同理；请求前的 `try_recv` 排空是非阻塞且无竞争的 —— 单消费者 ——
-  因此 tokio mutex 在那里是一次零成本升级）；两者都内部可变，因为
-  `AgentExecutor::run` 是 `&self`，而累加器在 collect/flush 时变更、
-  `try_recv`/`recv` 取 `&mut self`；它们跨 `run` 调用持久存在，因此
-  某个以 `MaxSteps` 结束的 turn 里一次 edit 的诊断会在下一个 turn 的
-  首次 flush 时浮现，turn 之间排队的 steer 会在下一个 turn 的首次排空
-  时被拾取。`approval` 使用 `tokio::sync::Mutex`
-  （`Option<Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>>`，
-  因为守卫必须跨越阻塞的 `recv().await`；std mutex 守卫不是 `Send`）。
-  `compaction` 携带 `micro_state:
-  Arc<std::sync::Mutex<MicroCompactState>>` 和 `circuit_breaker:
-  Arc<std::sync::Mutex<CompactionCircuitBreaker>>`（没有锁跨越 `await`
-  —— 消息在异步 `compact_messages_safe` 调用之前被克隆出去），跨
-  `run` 调用持久存在，因此 turn N 上一次失败的压缩在 turn N+1 上仍会
-  触发熔断器（与 `Engine.micro_compact_state` /
-  `.compaction_circuit_breaker` 一致）。压缩与容量探针还携带会话事实
-  账本（`Session::fact_ledger`，`compaction/fact_ledger.rs`）：每次压缩
-  的丢弃集都会喂给它经规则抽取的绝不可丢失事实（任务约束、关键路径、
-  失败原因），它渲染出的小节搭乘每一次压缩摘要与 cycle 重置种子，而
-  第一条任务指令在低于 `TASK_INSTRUCTION_PIN_TOKEN_CAP` 时由
-  `plan_compaction` 逐字钉住。该账本也是反思循环的存储：分层摘要的
-  "Refuted Assumptions & Invariants"（被推翻的假设与不变量）小节 ——
-  模型从自身失败中得出的教训 —— 会被解析回账本、成为
-  `RefutedAssumption` 条目，因此一条学到的不变量比携带它的摘要活得更久
-  （不涉及任何外部 playbook 知识）。一个独立的交付物看门狗
-  （`engine/deliverables.rs`，执行器上的 `DeliverablesProbe`）共享请求前
-  接缝：从任务指令解析出的输出路径每 `DELIVERABLES_CHECK_CADENCE_STEPS`
-  步在磁盘上复查一次，缺失的路径作为一条
-  `<codesmith:runtime_event kind="deliverables_check">` user 消息推回，
-  使缺失的交付物在运行中途浮现，而不是等到评分时。压缩摘要还要通过
-  一道分层小节门控（`summary_section_count`）：一次平坦抽取会重试一次。
-  transparent-retry 复用局部状态模式（每次运行的 `u32` 计数器，与
-  loop-guard 一致）。护栏状态经宿主的 `Event` 通道（`event_tx`）浮出，
-  而非经 `Callback`。`StopReason`（`NoToolCalls` / `MaxSteps` / `Error`）
-  是终止结果。
+  之上的裸循环，并且是逐片吸收生产 `Engine` 护栏的指定归宿 —— 目前已
+  吸收 **十项**（完整清单见 `host_executor.rs` 模块文档的
+  "Absorbed guardrails"）：
+
+  - **loop-guard** —— 拦截第 3 次相同调用，3/8 次连续失败时警告/中止；
+    per-tool / post-tool 接缝。
+  - **LSP flush** —— 每次成功的 edit 后收集诊断，在下一次请求前作为一条
+    user 消息冲刷出去；per-tool / per-step 请求前接缝。
+  - **transparent-retry** —— 流在中途死亡且尚无任何内容提交时重发请求，
+    最多 3 次，一轮健康后重置预算；per-step post-stream 接缝。
+  - **steer** —— 在下一次请求前把排队的用户输入排空为 `user` 消息；
+    per-step 请求前接缝。
+  - **approval** —— 把写/代码执行工具挡在用户许可之后：按 wire 工具 id
+    发出 `ApprovalRequired` 并阻塞在决策通道上；被拒绝 ⇒
+    `permission_denied` 错误、工具跳过；per-tool 接缝。
+  - **compaction** —— 不经过 LLM 调用即对超过 32KB 缓存触发线的陈旧工具
+    结果做 micro-compact，随后在 `should_compact` 通过时经由 LLM 摘要自动
+    压缩；两者都通过 `clear()`+`push()` 整体替换；per-step 请求前接缝。
+  - 另有 **capacity**、**subagent**（完成挂起 + 哨兵）、
+    **early-tool-start**，以及 **cycle** 护栏。
+
+per-step 机制按阶段拆分为 `engine/turn/` 下的私有子模块（`stream.rs`、
+`batches.rs`、`approval.rs`、`seams.rs`、`postprocess.rs`）；
+`host_executor.rs` 保留 step 循环本身以及它直接拥有的横切护栏。
+
+**内部可变性切片。** LSP 累加器、steer 接收器、approval 接收器与压缩探针
+是内部可变性（interior-mutability）切片：`AgentExecutor::run` 是 `&self`，
+而累加器在 collect/flush 时变更、`try_recv`/`recv` 取 `&mut self`。
+`LspProbe.pending` 是 `Arc<std::sync::Mutex<Vec<DiagnosticBlock>>>`（锁绝不
+跨 `await` 持有，与 `CallbackBridge` 一致）。
+
+`steer` 是 `Option<Arc<tokio::sync::Mutex<mpsc::Receiver<String>>>>` —— 用
+`tokio::sync::Mutex`（而非 `std`）是为了让守卫可以跨越子代理阻塞挂起的
+`biased select!` steer 臂里阻塞的 `recv().await`（与 `approval` 同理；请
+求前的 `try_recv` 排空是非阻塞且无竞争的 —— 单消费者 —— 因此 tokio
+mutex 在那里是一次零成本升级）。
+
+这些切片跨 `run` 调用持久存在：某个以 `MaxSteps` 结束的 turn 里一次
+edit 的诊断会在下一个 turn 的首次 flush 时浮现，turn 之间排队的 steer
+会在下一个 turn 的首次排空时被拾取。`approval` 使用
+`Option<Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>>`，因为
+守卫必须跨越阻塞的 `recv().await`（std mutex 守卫不是 `Send`）。
+
+**压缩状态。** `compaction` 携带
+`micro_state: Arc<std::sync::Mutex<MicroCompactState>>` 和
+`circuit_breaker: Arc<std::sync::Mutex<CompactionCircuitBreaker>>`（没有锁
+跨越 `await` —— 消息在异步 `compact_messages_safe` 调用之前被克隆出
+去），跨 `run` 调用持久存在，因此 turn N 上一次失败的压缩在 turn N+1 上
+仍会触发熔断器（与 `Engine.micro_compact_state` /
+`.compaction_circuit_breaker` 一致）。
+
+**会话事实账本。** 压缩与容量探针还携带会话事实账本（`Session::fact_ledger`，
+`compaction/fact_ledger.rs`）：每次压缩的丢弃集都会喂给它经规则抽取的绝
+不可丢失事实（任务约束、关键路径、失败原因），它渲染出的小节搭乘每一次
+压缩摘要与 cycle 重置种子，而第一条任务指令在低于
+`TASK_INSTRUCTION_PIN_TOKEN_CAP` 时由 `plan_compaction` 逐字钉住。
+
+该账本也是反思循环的存储：分层摘要的 "Refuted Assumptions &
+Invariants"（被推翻的假设与不变量）小节 —— 模型从自身失败中得出的教训
+—— 会被解析回账本、成为 `RefutedAssumption` 条目，因此一条学到的
+不变量比携带它的摘要活得更久（不涉及任何外部 playbook 知识）。
+
+**交付物看门狗。** 一个独立的交付物看门狗（`engine/deliverables.rs`，
+执行器上的 `DeliverablesProbe`）共享请求前接缝：从任务指令解析出的输出
+路径每 `DELIVERABLES_CHECK_CADENCE_STEPS` 步在磁盘上复查一次，缺失的路径
+作为一条 `<codesmith:runtime_event kind="deliverables_check">` user 消息
+推回，使缺失的交付物在运行中途浮现，而不是等到评分时。
+
+压缩摘要还要通过一道分层小节门控（`summary_section_count`）：一次平坦抽
+取会重试一次。transparent-retry 复用局部状态模式（每次运行的 `u32` 计数
+器，与 loop-guard 一致）。护栏状态经宿主的 `Event` 通道（`event_tx`）浮
+出，而非经 `Callback`。`StopReason`（`NoToolCalls` / `MaxSteps` /
+`Error`）是终止结果。
 
 现在已有的内容（§E 切换已完成）：生产 `Engine` 的护栏（原先位于现已
-删除的 `turn_loop.rs`，`handle_deepseek_turn` 已退役）被吸收进
-`HostAgentExecutor` —— 三个宿主→框架桥全部落地（`ToolSpecAdapter`、
+删除的 `turn_loop.rs`；`handle_deepseek_turn` 已退役）被吸收进
+`HostAgentExecutor`。三个宿主→框架桥全部落地（`ToolSpecAdapter`、
 `CallbackBridge`、`SessionChatHistory`），宿主侧的 `HostAgentExecutor`
 在它们之上运行裸 LLM↔工具循环，**已吸收十项护栏**（loop-guard、LSP
 flush、transparent-retry、steer、approval、compaction、capacity、
 early-tool-start、subagent post-stream drain、cancel-token；per-step 机制
 按阶段拆分为 `engine/turn/{stream,batches,approval,seams,postprocess}.rs`
-—— 完整清单见 `host_executor.rs` 模块文档）：**loop-guard** 位于其
-per-tool / post-tool 接缝（拦截第 3 次相同调用，3/8 次连续失败时警告/
-中止）；**LSP flush** 位于其 per-tool（edit 后收集）/ per-step 请求前
-（冲刷）接缝 —— 它是第一个需要 `Engine` 可变状态的护栏，以 `LspProbe`
-上的 `Arc<std::sync::Mutex<Vec<DiagnosticBlock>>>` 落地（第一个内部
-可变性切片；锁绝不跨 `await` 持有，与 `CallbackBridge` 一致；跨 `run`
-调用持久存在，因此以 `MaxSteps` 结束的 turn 的 edit 诊断在下一个 turn
-浮现）—— **transparent-retry** 位于其 per-step post-stream 接缝（流在
-中途死亡且尚无任何内容提交时重发请求，最多 3 次；一轮健康后预算重置；
-对 `Callback` 透明）—— **steer** 位于其 per-step 请求前接缝（在请求
-快照之前把排队的用户输入排空为 `user` 消息），以
+—— 完整清单见 `host_executor.rs` 模块文档）。
+
+最早落地的护栏各有其形态。**loop-guard** 位于其 per-tool / post-tool 接缝
+（拦截第 3 次相同调用，3/8 次连续失败时警告/中止）；**LSP flush** 位于其
+per-tool（edit 后收集）/ per-step 请求前（冲刷）接缝 —— 它是第一个需要
+`Engine` 可变状态的护栏，以 `LspProbe` 上的
+`Arc<std::sync::Mutex<Vec<DiagnosticBlock>>>` 落地（第一个内部可变性切
+片；锁绝不跨 `await` 持有，与 `CallbackBridge` 一致；跨 `run` 调用持久
+存在，因此以 `MaxSteps` 结束的 turn 的 edit 诊断在下一个 turn 浮现）。
+
+**transparent-retry** 位于其 per-step post-stream 接缝（流在中途死亡且
+尚无任何内容提交时重发请求，最多 3 次；一轮健康后预算重置；对
+`Callback` 透明）。
+
+**steer** 位于其 per-step 请求前接缝（在请求快照之前把排队的用户输入排
+空为 `user` 消息），以
 `Option<Arc<tokio::sync::Mutex<mpsc::Receiver<String>>>>` 落地 —— 用
 `tokio::sync::Mutex`（而非 `std`）是为了让守卫可以跨越子代理阻塞挂起的
-`biased select!` steer 臂里阻塞的 `recv().await`（与 `approval` 同理；
-请求前的 `try_recv` 排空是非阻塞且无竞争的）；跨 `run` 调用持久存在，
-因此 turn 之间排队的 steer 在下一个 turn 被拾取）—— **approval** 位于
-其 per-tool 接缝（把写/代码执行工具挡在门后：按 wire 工具 id 发出
-`ApprovalRequired` 并阻塞在决策通道上；被拒绝 ⇒ `permission_denied`
-错误；该护栏用 `tokio::sync::Mutex`，因为守卫必须跨越 `recv().await`
-（steer 的子代理阻塞挂起臂同理）；审批从 `Tool::capabilities` 静态推导，
-逐输入覆盖 + 沙箱提权推迟到 wire-in）—— **compaction** 位于其 per-step
-请求前接缝（不经过 LLM 调用即对超过 32KB 缓存触发线的陈旧工具结果做
-micro-compact，随后在 `should_compact` 通过时经由 LLM 摘要自动压缩；
-两者都通过 `clear()`+`push()` 整体替换转录；`CompactionProbe` 携带跨
-`run` 调用持久存在的 `std::sync::Mutex` 微状态 + 熔断器；摘要提示词
-合并已吸收 ✅（slice 25a §E）、附件重注入已吸收 ✅（slice 25b §E）、
-压缩后清理已吸收 ✅（slice 25c §E）—— 见 `host_executor.rs` 模块文档；
-仅剩增强 + 工作集钉扎推迟到 wire-in）。它的四个接缝（per-step 请求前 /
-post-stream / per-tool / post-tool）此后也长出了其余护栏（完整集合见
-`host_executor.rs` 模块文档），`handle_deepseek_turn` 在 slice 20 §E
-切换中退役。loop-guard 证明了自包含护栏用 `&self` + 局部状态即可；LSP
-flush 证明了需要共享可变状态的护栏所适用的 `Arc<Mutex<…>>` 形态（steer
-采用同一形态，但用 `tokio::sync::Mutex` 而非 `std` —— 见上文）；
-transparent-retry 证明了 seam-2 post-stream 形态（局部计数器 +
-`accumulate_stream` 的 `Err` 信号）；approval 证明了带阻塞
+`biased select!` steer 臂里阻塞的 `recv().await`（与 `approval` 同理；请
+求前的 `try_recv` 排空是非阻塞且无竞争的）；跨 `run` 调用持久存在，因此
+turn 之间排队的 steer 在下一个 turn 被拾取。
+
+**approval** 位于其 per-tool 接缝（把写/代码执行工具挡在门后：按 wire
+工具 id 发出 `ApprovalRequired` 并阻塞在决策通道上；被拒绝 ⇒
+`permission_denied` 错误）；该护栏用 `tokio::sync::Mutex`，因为守卫必须
+跨越 `recv().await`（steer 的子代理阻塞挂起臂同理）。审批从
+`Tool::capabilities` 静态推导；逐输入覆盖 + 沙箱提权推迟到 wire-in。
+
+**compaction** 位于其 per-step 请求前接缝（不经过 LLM 调用即对超过 32KB
+缓存触发线的陈旧工具结果做 micro-compact，随后在 `should_compact` 通过
+时经由 LLM 摘要自动压缩；两者都通过 `clear()`+`push()` 整体替换转录；
+`CompactionProbe` 携带跨 `run` 调用持久存在的 `std::sync::Mutex` 微状态 +
+熔断器）。
+
+摘要提示词合并已吸收 ✅（slice 25a §E）、附件重注入已吸收 ✅（slice 25b
+§E）、压缩后清理已吸收 ✅（slice 25c §E）—— 见 `host_executor.rs` 模块文
+档；仅剩增强 + 工作集钉扎推迟到 wire-in。
+
+执行器的四个接缝（per-step 请求前 / post-stream / per-tool / post-tool）
+此后也长出了其余护栏（完整集合见 `host_executor.rs` 模块文档），
+`handle_deepseek_turn` 在 slice 20 §E 切换中退役。
+
+每个早期护栏都证明了一种模式：loop-guard 证明了自包含护栏用 `&self` +
+局部状态即可；LSP flush 证明了需要共享可变状态的护栏所适用的
+`Arc<Mutex<…>>` 形态（steer 采用同一形态，但用 `tokio::sync::Mutex` 而非
+`std` —— 见上文）；transparent-retry 证明了 seam-2 post-stream 形态（局
+部计数器 + `accumulate_stream` 的 `Err` 信号）；approval 证明了带阻塞
 `recv().await` 的 seam-3 per-tool 形态（`tokio::sync::Mutex`）；compaction
-证明了 seam-1 请求前整体替换形态（先克隆再 `compact_messages_safe`，
-以 `clear()`+`push()` 应用）并带跨 `run` 的熔断器。**LSP flush 的已知
-缺口（设计如此）：** `apply_patch` 路径推导被推迟（需要
-`HostServices::preflight_apply_patch_paths`，没有重量级宿主 trait 就无法
-从 `agent-runtime` 触达）；合成冲刷消息不携带 `<turn_meta>` 增强（框架
-路径目前任何地方都没有 turn_meta —— 横切的宿主侧关注点，推迟到它自己
-的 slice）；推送没有 `emit_session_updated`（与执行器其他消息推送一致；
-UI 呈现推迟到 wire-in 步骤）。**transparent-retry 的已知取舍（设计
-如此）：** `accumulate_stream` 遇到第一个出错的流条目即放弃并丢弃部分
-块，因此即使生产环境本会交付部分内容的场合，重试也会触发（它内联追踪
-`any_content_received`）—— 既然部分内容已经丢失，重试是唯一的恢复
-路径，而内联流归约（后续某个取代 `accumulate_stream` 的 slice）会补上
-这个缺口；流前连接错误（`create_message_stream` 的 `Err`）不重试（生产
-环境将其视为上下文恢复 / 硬失败，一个独立的护栏）；cancel-token 短路
-（生产环境的 `should_transparently_retry_stream` 检查 `!cancelled`）已
-吸收 ✅ —— 检查点 B/C/D 已接线（见 `host_executor.rs` 模块文档）；有界
-预算（`MAX_STREAM_RETRIES = 3`）不会永远循环。流式增量
-（`MessageDelta`/`ThinkingDelta`）将继续直接经 `Event` 通道流动（没有
-对应的 `Callback` 方法），直到某个内联流归约器取代 `accumulate_stream`。
+证明了 seam-1 请求前整体替换形态（先克隆再 `compact_messages_safe`，以
+`clear()`+`push()` 应用）并带跨 `run` 的熔断器。
+
+**LSP flush 的已知缺口（设计如此）：** `apply_patch` 路径推导被推迟（需要
+`HostServices::preflight_apply_patch_paths`，没有重量级宿主 trait 就无法从
+`agent-runtime` 触达）；合成冲刷消息不携带 `<turn_meta>` 增强（框架路径目
+前任何地方都没有 turn_meta —— 横切的宿主侧关注点，推迟到它自己的
+slice）；推送没有 `emit_session_updated`（与执行器其他消息推送一致；UI
+呈现推迟到 wire-in 步骤）。
+
+**transparent-retry 的已知取舍（设计如此）：** `accumulate_stream` 遇到
+第一个出错的流条目即放弃并丢弃部分块，因此即使生产环境本会交付部分内容
+的场合，重试也会触发（它内联追踪 `any_content_received`）—— 既然部分内
+容已经丢失，重试是唯一的恢复路径，而内联流归约（后续某个取代
+`accumulate_stream` 的 slice）会补上这个缺口。
+
+流前连接错误（`create_message_stream` 的 `Err`）不重试（生产环境将其视为
+上下文恢复 / 硬失败，一个独立的护栏）；cancel-token 短路（生产环境的
+`should_transparently_retry_stream` 检查 `!cancelled`）已吸收 ✅ —— 检查
+点 B/C/D 已接线（见 `host_executor.rs` 模块文档）；有界预算
+（`MAX_STREAM_RETRIES = 3`）不会永远循环。
+
+流式增量（`MessageDelta`/`ThinkingDelta`）将继续直接经 `Event` 通道流动
+（没有对应的 `Callback` 方法），直到某个内联流归约器取代
+`accumulate_stream`。
+
 E4（声明式 `providers.toml` + 惰性加载）已落地 —— slice 43 在
 `codesmith-config` 中交付了 schema/加载器；slice 44 将 `default_registry`
 接线到内置的 `providers.toml`（把 `COMPAT_KINDS` 目录外置）并带
 `OnceLock` 缓存；slice 45 填充了 `base_url`/`model` 列，并让工厂在宿主
 传入空的 `ProviderConfig` 值时将它们作为回退消费（因此该清单是一个完整
-的逐 provider 默认来源）。两个后续事项被推迟（记录在 ROADMAP §E4，
-slice 51）：解析器链仍回退到硬编码的 `DEFAULT_*` 常量而非清单（env 覆盖
-增强 —— 按 §C6 跨层不可达），flash/kimi-code 模型变体留在宿主侧（无
-清单条目）。框架 trait 用一个内联 mock LLM + mock 工具验证（见
+的逐 provider 默认来源）。
+
+两个后续事项被推迟（记录在 ROADMAP §E4，slice 51）：解析器链仍回退到硬
+编码的 `DEFAULT_*` 常量而非清单（env 覆盖增强 —— 按 §C6 跨层不可达），
+flash/kimi-code 模型变体留在宿主侧（无清单条目）。
+
+框架 trait 用一个内联 mock LLM + mock 工具验证（见
 `crates/agent/src/executor/mod.rs` 测试）—— 不需要 `codesmith-providers`
 依赖，与 provider foundation slice 的 `mock` 样例呼应。`ToolSpec` 适配器
 还通过在框架执行器上端到端驱动一个真实 `ToolSpec` 得到额外验证（见
-`crates/agent-runtime/src/tools/framework_adapter.rs` 测试）；
+`crates/agent-runtime/src/tools/framework_adapter.rs` 测试）。
+
 `CallbackBridge` 则通过在执行器上驱动一次工具调用往返、同时点亮 mock
 `Event` 通道与 mock `HookHost` 得到验证（见
 `crates/agent-runtime/src/callback_bridge.rs` 测试）。
@@ -338,27 +376,35 @@ slice 都产生行漂移）。
                                         ▼
               codesmith_tui (build_extension_runtime + StateStore + /extension cmd)
 ```
-Slice 1（§F1）落地最小契约 + 运行时 + 适配器 + 宿主接线 + 样例。Slice
-2a（§F2a）升级契约 + 运行时核心：完整的 23 变体 `ExtensionEvent` 集合 +
-`ExtensionEventKind`/`kind()`、`HandlerOutcome`
+
+Slice 1（§F1）落地最小契约 + 运行时 + 适配器 + 宿主接线 + 样例。
+
+Slice 2a（§F2a）升级契约 + 运行时核心：完整的 23 变体 `ExtensionEvent`
+集合 + `ExtensionEventKind`/`kind()`、`HandlerOutcome`
 （`Continue`/`Cancel`/`Block`/`Transform`）跨处理器链（`Handler::handle`
-现在返回 `Result<HandlerOutcome, _>`）、逐变体的
-`ExtensionApi::on_variant` 订阅，以及 `ExtensionRunner::emit` 中的
-`catch_unwind` 隔离（所有权进 / `EmitOutcome` 出）。Slice 2b（§F2b）
-接线宿主接缝：`EmitOutcome` 上的 `#[must_use]`（强制检查接缝返回值）；
-在 `ToolCall` 处遵守 `Block`（跳过分发 → permission-denied）；在
-`SessionBefore*` 处遵守 `Cancel`（跳过压缩/切换）；在 `Input`/
-`BeforeAgentStart`/`BeforeProviderRequest`/`ToolResult` 处遵守
-`Transform`（改写可操作字段；`ToolResult` 把 emit→`on_tool_end`→传播到
-`outcomes[idx]` 的顺序重新安排）；错位的结果 → `Continue`；发射 22/23
-个事件（`ToolExecutionUpdate` 推迟 —— 需要一个 `Callback::on_tool_progress`
-流钩子）；完整的 e2e 往返测试；热重载经 `ExtensionRunner::clear_handlers`
-+ `reload_extension_runtime`（clear→invalidate→discover→reconcile→load→
-bind_core）重新填充共享的 runner `Arc`，因此 `/extension reload` 会同时
-更新 `App.extension_runner` 与 Engine 的字段。推迟到 §F2c：
-`ToolExecutionUpdate`（流钩子）、重载共享引擎的 `cancel_token`，以及从
-App runner 不可触达的 3 个 tui 层接缝（`ProjectTrust` 同步上下文 /
-`ResourcesDiscover` 独立 MCP 进程 / `SessionBeforeFork` 死代码 fork 路径）。
+现在返回 `Result<HandlerOutcome, _>`）、逐变体的 `ExtensionApi::on_variant`
+订阅，以及 `ExtensionRunner::emit` 中的 `catch_unwind` 隔离（所有权进 /
+`EmitOutcome` 出）。
+
+Slice 2b（§F2b）接线宿主接缝：`EmitOutcome` 上的 `#[must_use]`（强制
+检查接缝返回值）；在 `ToolCall` 处遵守 `Block`（跳过分发 →
+permission-denied）；在 `SessionBefore*` 处遵守 `Cancel`（跳过压缩/切
+换）；在 `Input`/`BeforeAgentStart`/`BeforeProviderRequest`/`ToolResult`
+处遵守 `Transform`（改写可操作字段；`ToolResult` 把 emit→`on_tool_end`→
+传播到 `outcomes[idx]` 的顺序重新安排）；错位的结果 → `Continue`。
+
+其余接线：发射 22/23 个事件（`ToolExecutionUpdate` 推迟 —— 需要一个
+`Callback::on_tool_progress` 流钩子）；完整的 e2e 往返测试；热重载经
+`ExtensionRunner::clear_handlers` + `reload_extension_runtime`
+（clear→invalidate→discover→reconcile→load→bind_core）重新填充共享的
+runner `Arc`，因此 `/extension reload` 会同时更新 `App.extension_runner`
+与 Engine 的字段。
+
+推迟到 §F2c：`ToolExecutionUpdate`（流钩子）、重载共享引擎的
+`cancel_token`，以及从 App runner 不可触达的 3 个 tui 层接缝
+（`ProjectTrust` 同步上下文 / `ResourcesDiscover` 独立 MCP 进程 /
+`SessionBeforeFork` 死代码 fork 路径）。
+
 推迟到 §F3–§F8：`EventBus` 实现、`registerProvider`、
 `registerShortcut`/`registerFlag`/渲染器、dylib 加载（phase 2）、
 install-source 实现、embed API。热加载永久排除（规范 §2.4）；只有
@@ -405,6 +451,7 @@ impl ProviderFactory for AcmeFactory {
     }
 }
 ```
+
 宿主播种注册表，并且可以覆盖任何默认项：
 
 ```rust
