@@ -2391,6 +2391,22 @@ impl Config {
         .to_string()
     }
 
+    /// URL the first-run endpoint screen shows as `Default:` — whatever is
+    /// already configured for this provider, else its built-in service URL.
+    /// `None` when the wizard does not ask about this provider's endpoint.
+    #[must_use]
+    pub fn onboarding_endpoint_default(&self, provider: ApiProvider) -> Option<String> {
+        let builtin = custom_endpoint_provider_default(provider)?;
+        Some(
+            self.provider_config_for(provider)
+                .and_then(|entry| entry.base_url.as_deref())
+                .map(str::trim)
+                .filter(|url| !url.is_empty())
+                .unwrap_or(builtin)
+                .to_string(),
+        )
+    }
+
     /// Model to start a newly selected provider on.
     ///
     /// Used by first-run onboarding, where the config file predates the
@@ -5094,6 +5110,41 @@ pub fn provider_is_self_hosted(provider: ApiProvider) -> bool {
     )
 }
 
+/// Built-in service URL for the two generic routes whose endpoint the
+/// first-run flow lets the user re-point: an OpenAI-compatible gateway/proxy
+/// and an Anthropic-compatible one. `None` for every other provider — their
+/// URL is customer-facing service infrastructure, not a user choice the
+/// wizard should ask about (a hand-edited `[providers.<name>] base_url` or the
+/// matching `*_BASE_URL` env var still works for them).
+#[must_use]
+pub fn custom_endpoint_provider_default(provider: ApiProvider) -> Option<&'static str> {
+    match provider {
+        ApiProvider::Openai => Some(DEFAULT_OPENAI_BASE_URL),
+        ApiProvider::Anthropic => Some(DEFAULT_ANTHROPIC_BASE_URL),
+        _ => None,
+    }
+}
+
+/// Whether onboarding offers a custom endpoint step for this provider. The one
+/// definition of that rule; it is derived from
+/// [`custom_endpoint_provider_default`] so the list cannot drift.
+#[must_use]
+pub fn provider_supports_custom_endpoint(provider: ApiProvider) -> bool {
+    custom_endpoint_provider_default(provider).is_some()
+}
+
+/// `*_BASE_URL` environment variable that overrides this provider's URL, for
+/// the providers whose endpoint the wizard asks about. Names mirror the
+/// load-time reader in `apply_env_overrides`.
+#[must_use]
+pub fn provider_base_url_env_var(provider: ApiProvider) -> Option<&'static str> {
+    match provider {
+        ApiProvider::Openai => Some("OPENAI_BASE_URL"),
+        ApiProvider::Anthropic => Some("ANTHROPIC_BASE_URL"),
+        _ => None,
+    }
+}
+
 /// Check whether the given provider has any usable API key — via env var,
 /// provider/root config. Used by the `/provider` picker to decide whether to
 /// prompt for a key inline.
@@ -5207,32 +5258,48 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
         };
     }
 
+    write_provider_config_field(provider, "api_key", api_key, "credential.save")
+}
+
+/// Save a custom endpoint URL for a provider
+/// (`[providers.<name>] base_url = "..."`).
+///
+/// The root `base_url` is the legacy DeepSeek field and is ignored for every
+/// other provider (see [`Config::provider_base_url`]), so a gateway or proxy
+/// URL for the OpenAI-compatible and Anthropic routes has to land in the
+/// provider's own table — which is what the first-run endpoint screen writes.
+pub fn save_provider_base_url_for(provider: ApiProvider, base_url: &str) -> Result<PathBuf> {
+    if matches!(provider, ApiProvider::Deepseek) {
+        anyhow::bail!(
+            "DeepSeek's base URL lives in the root `base_url` field, not in a provider table"
+        );
+    }
+
+    write_provider_config_field(provider, "base_url", base_url, "provider.base_url.set")
+}
+
+pub fn save_provider_auth_mode_for(provider: ApiProvider, auth_mode: &str) -> Result<PathBuf> {
+    write_provider_config_field(provider, "auth_mode", auth_mode, "credential.auth_mode.set")
+}
+
+/// Write `field = value` into `[providers.<provider>]` of the user config
+/// file, creating the table when missing and leaving every sibling field and
+/// section of the file untouched.
+///
+/// The single writer behind [`save_api_key_for`],
+/// [`save_provider_base_url_for`], and [`save_provider_auth_mode_for`]. The
+/// value is never logged — this path carries credentials as well as URLs;
+/// `event` names the audit event and the payload records the field name.
+fn write_provider_config_field(
+    provider: ApiProvider,
+    field: &str,
+    value: &str,
+    event: &str,
+) -> Result<PathBuf> {
+    let key_inside = provider_config_key(provider)?;
     let config_path = default_config_path()
         .context("Failed to resolve config path: home directory not found.")?;
     ensure_parent_dir(&config_path)?;
-
-    let table_name = match provider {
-        ApiProvider::Deepseek => {
-            return Err(anyhow::anyhow!(
-                "save_api_key_for: DeepSeek variants must use the root api_key field, not provider-specific storage"
-            ));
-        }
-        ApiProvider::NvidiaNim => "providers.nvidia_nim",
-        ApiProvider::Openai => "providers.openai",
-        ApiProvider::Atlascloud => "providers.atlascloud",
-        ApiProvider::WanjieArk => "providers.wanjie_ark",
-        ApiProvider::Openrouter => "providers.openrouter",
-        ApiProvider::XiaomiMimo => "providers.xiaomi_mimo",
-        ApiProvider::Novita => "providers.novita",
-        ApiProvider::Fireworks => "providers.fireworks",
-        ApiProvider::Siliconflow => "providers.siliconflow",
-        ApiProvider::Moonshot => "providers.moonshot",
-        ApiProvider::Sglang => "providers.sglang",
-        ApiProvider::Vllm => "providers.vllm",
-        ApiProvider::Ollama => "providers.ollama",
-        ApiProvider::Volcengine => "providers.volcengine",
-        ApiProvider::Anthropic => "providers.anthropic",
-    };
 
     // Parse existing TOML (or start fresh) so we can edit the right table
     // without disturbing other sections.
@@ -5252,94 +5319,22 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
         .or_insert_with(|| toml::Value::Table(toml::value::Table::new()))
         .as_table_mut()
         .context("`providers` must be a table.")?;
-    let key_inside = match provider {
-        ApiProvider::Deepseek => {
-            return Err(anyhow::anyhow!(
-                "save_api_key_for: DeepSeek variants must use the root api_key field, not provider-specific storage"
-            ));
-        }
-        ApiProvider::NvidiaNim => "nvidia_nim",
-        ApiProvider::Openai => "openai",
-        ApiProvider::Atlascloud => "atlascloud",
-        ApiProvider::WanjieArk => "wanjie_ark",
-        ApiProvider::Openrouter => "openrouter",
-        ApiProvider::XiaomiMimo => "xiaomi_mimo",
-        ApiProvider::Novita => "novita",
-        ApiProvider::Fireworks => "fireworks",
-        ApiProvider::Siliconflow => "siliconflow",
-        ApiProvider::Moonshot => "moonshot",
-        ApiProvider::Sglang => "sglang",
-        ApiProvider::Vllm => "vllm",
-        ApiProvider::Ollama => "ollama",
-        ApiProvider::Volcengine => "volcengine",
-        ApiProvider::Anthropic => "anthropic",
-    };
-    let entry = providers
-        .entry(key_inside.to_string())
-        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()))
-        .as_table_mut()
-        .with_context(|| format!("`{table_name}` must be a table."))?;
-    entry.insert(
-        "api_key".to_string(),
-        toml::Value::String(api_key.to_string()),
-    );
-
-    let serialized = toml::to_string_pretty(&doc).context("failed to serialize updated config")?;
-    write_config_file_secure(&config_path, &serialized)
-        .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
-    log_sensitive_event(
-        "credential.save",
-        json!({
-            "backend": "config_file",
-            "provider": provider.as_str(),
-            "config_path": config_path.display().to_string(),
-        }),
-    );
-
-    Ok(config_path)
-}
-
-pub fn save_provider_auth_mode_for(provider: ApiProvider, auth_mode: &str) -> Result<PathBuf> {
-    let config_path = default_config_path()
-        .context("Failed to resolve config path: home directory not found.")?;
-    ensure_parent_dir(&config_path)?;
-
-    let mut doc: toml::Value = if config_path.exists() {
-        let raw = fs::read_to_string(&config_path)?;
-        toml::from_str(&raw)
-            .with_context(|| format!("Failed to parse config at {}", config_path.display()))?
-    } else {
-        toml::Value::Table(toml::value::Table::new())
-    };
-
-    let table = doc
-        .as_table_mut()
-        .context("Config root must be a TOML table.")?;
-    let providers = table
-        .entry("providers".to_string())
-        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()))
-        .as_table_mut()
-        .context("`providers` must be a table.")?;
-    let key_inside = provider_config_key(provider).context("provider auth mode key")?;
     let entry = providers
         .entry(key_inside.to_string())
         .or_insert_with(|| toml::Value::Table(toml::value::Table::new()))
         .as_table_mut()
         .with_context(|| format!("`providers.{key_inside}` must be a table."))?;
-    entry.insert(
-        "auth_mode".to_string(),
-        toml::Value::String(auth_mode.to_string()),
-    );
+    entry.insert(field.to_string(), toml::Value::String(value.to_string()));
 
     let serialized = toml::to_string_pretty(&doc).context("failed to serialize updated config")?;
     write_config_file_secure(&config_path, &serialized)
         .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
     log_sensitive_event(
-        "credential.auth_mode.set",
+        event,
         json!({
             "backend": "config_file",
             "provider": provider.as_str(),
-            "auth_mode": auth_mode,
+            "field": field,
             "config_path": config_path.display().to_string(),
         }),
     );
@@ -5349,7 +5344,7 @@ pub fn save_provider_auth_mode_for(provider: ApiProvider, auth_mode: &str) -> Re
 fn provider_config_key(provider: ApiProvider) -> Result<&'static str> {
     match provider {
         ApiProvider::Deepseek => {
-            anyhow::bail!("DeepSeek stores auth at the root config level")
+            anyhow::bail!("DeepSeek stores its credential and base URL at the root config level")
         }
         ApiProvider::NvidiaNim => Ok("nvidia_nim"),
         ApiProvider::Openai => Ok("openai"),
@@ -9606,6 +9601,73 @@ api_key = "moonshot-platform-key"
         assert_eq!(
             hand_configured.default_model_for_new_provider(ApiProvider::Openai),
             "MiniMax-M2.7"
+        );
+    }
+
+    #[test]
+    fn save_provider_base_url_writes_provider_table_and_keeps_siblings() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "codesmith-tui-save-base-url-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+        unsafe { std::env::set_var("CODESMITH_SECRET_BACKEND", "local") };
+
+        // A seeded credential proves the writer edits columns, not the table.
+        save_api_key_for(ApiProvider::Openai, "openai-saved-key")?;
+        let path = save_provider_base_url_for(ApiProvider::Openai, "https://proxy.example.com/v1")?;
+        let parsed: toml::Value = toml::from_str(&fs::read_to_string(&path)?)?;
+        assert_eq!(
+            parsed
+                .get("providers")
+                .and_then(|providers| providers.get("openai"))
+                .and_then(|table| table.get("base_url"))
+                .and_then(toml::Value::as_str),
+            Some("https://proxy.example.com/v1")
+        );
+        assert_eq!(
+            parsed
+                .get("providers")
+                .and_then(|providers| providers.get("openai"))
+                .and_then(|table| table.get("api_key"))
+                .and_then(toml::Value::as_str),
+            Some("openai-saved-key"),
+            "writing base_url must not disturb the API key column"
+        );
+
+        // DeepSeek's URL is the root field; the provider-table writer refuses.
+        assert!(save_provider_base_url_for(ApiProvider::Deepseek, "https://x.example").is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn custom_endpoint_step_covers_exactly_the_generic_routes() {
+        let gated: Vec<ApiProvider> = ApiProvider::all()
+            .iter()
+            .copied()
+            .filter(|provider| provider_supports_custom_endpoint(*provider))
+            .collect();
+        assert_eq!(
+            gated,
+            vec![ApiProvider::Openai, ApiProvider::Anthropic],
+            "first-run endpoint URL entry is for the OpenAI-compatible and \
+             Anthropic-compatible routes only"
+        );
+        assert_eq!(
+            custom_endpoint_provider_default(ApiProvider::Openai),
+            Some(DEFAULT_OPENAI_BASE_URL)
+        );
+        assert_eq!(
+            custom_endpoint_provider_default(ApiProvider::Anthropic),
+            Some(DEFAULT_ANTHROPIC_BASE_URL)
         );
     }
 

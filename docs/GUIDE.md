@@ -82,9 +82,11 @@ codesmith
 
 On first launch, CodeSmith asks which provider to use — every shipped provider
 is in the list, with DeepSeek preselected as the fallback — and then asks for
-that provider's API key. A provider that already has a usable credential (an
-environment variable, or a self-hosted runtime such as Ollama) skips the key
-screen. The choice can be changed later with `/provider`.
+that provider's API key. Picking the OpenAI-compatible or Anthropic-compatible
+route first asks for an endpoint URL, so a gateway or proxy is one paste away.
+A provider that already has a usable credential (an environment variable, or a
+self-hosted runtime such as Ollama) skips the key screen. The choice can be
+changed later with `/provider`.
 
 The same setup paths work outside the TUI: `--provider`,
 `CODESMITH_PROVIDER`, or a `provider = "<id>"` line in the config. The most

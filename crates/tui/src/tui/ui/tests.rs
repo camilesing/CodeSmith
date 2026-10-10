@@ -4090,23 +4090,23 @@ async fn numeric_plan_choice_still_queues_follow_up_when_busy() {
 fn api_key_validation_warns_without_blocking_unusual_formats() {
     assert!(matches!(
         crate::tui::onboarding::validate_api_key_for_onboarding(""),
-        crate::tui::onboarding::ApiKeyValidation::Reject(_)
+        crate::tui::onboarding::InputValidation::Reject(_)
     ));
     assert!(matches!(
         crate::tui::onboarding::validate_api_key_for_onboarding("sk short"),
-        crate::tui::onboarding::ApiKeyValidation::Reject(_)
+        crate::tui::onboarding::InputValidation::Reject(_)
     ));
     assert!(matches!(
         crate::tui::onboarding::validate_api_key_for_onboarding("short-key"),
-        crate::tui::onboarding::ApiKeyValidation::Accept { warning: Some(_) }
+        crate::tui::onboarding::InputValidation::Accept { warning: Some(_) }
     ));
     assert!(matches!(
         crate::tui::onboarding::validate_api_key_for_onboarding("averylongkeywithoutdash123456"),
-        crate::tui::onboarding::ApiKeyValidation::Accept { warning: Some(_) }
+        crate::tui::onboarding::InputValidation::Accept { warning: Some(_) }
     ));
     assert!(matches!(
         crate::tui::onboarding::validate_api_key_for_onboarding("sk-valid-format-1234567890"),
-        crate::tui::onboarding::ApiKeyValidation::Accept { warning: None }
+        crate::tui::onboarding::InputValidation::Accept { warning: None }
     ));
 }
 

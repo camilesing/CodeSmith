@@ -22,7 +22,7 @@ use crate::palette;
 use crate::tui::app::App;
 
 /// Column the status hint starts at. Wide enough for the longest display name
-/// (`Anthropic Claude`, 16) plus a gap, so hints line up down the list.
+/// (`OpenAI-compatible`, 17) plus a gap, so hints line up down the list.
 const HINT_COLUMN: usize = 20;
 
 /// Smallest list window we will draw, so the marker always has room to move
@@ -201,7 +201,7 @@ mod tests {
         app.set_onboarding_provider(ApiProvider::Anthropic);
         let rendered = body(&app, MIN_VISIBLE_ROWS);
         assert!(
-            rendered.contains("▸ Anthropic Claude"),
+            rendered.contains("▸ Anthropic"),
             "windowed list dropped the selected row: {rendered}"
         );
     }

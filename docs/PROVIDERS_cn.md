@@ -5,7 +5,7 @@
 模型解析和能力元数据。
 
 所有已交付的提供商都是一等且提供商中立的：同一个终端框架可以对接
-Anthropic Claude、DeepSeek、NVIDIA NIM、OpenRouter、Volcengine Ark、
+Anthropic、DeepSeek、NVIDIA NIM、OpenRouter、Volcengine Ark、
 Xiaomi MiMo、Novita、Fireworks、SiliconFlow、通用 OpenAI 兼容网关、
 自托管运行时以及 Moonshot/Kimi 的托管或本地模型端点。未配置提供商时，
 CLI 回退到 `deepseek`（模型 `deepseek-v4-pro`）。Hugging Face Inference
@@ -36,6 +36,7 @@ Providers 是规划中的附加开源模型路由层；它们在当前检出中�
 使用以下任一入口选择提供商：
 
 - 首次运行：TUI onboarding 会先让你选择一次，然后才要求填写密钥
+  （OpenAI 兼容与 Anthropic 兼容这两条路由还会询问接入地址）
 - CLI：`codesmith --provider <id>`
 - TUI：`/provider <id>` 或提供商选择器
 - 环境变量：`CODESMITH_PROVIDER=<id>`
@@ -46,6 +47,12 @@ Providers 是规划中的附加开源模型路由层；它们在当前检出中�
 优先级高于配置文件中的 `provider =`。选中的提供商会以自身默认模型启动，
 而凭据已经可解析的提供商——环境变量、配置文件、或 Ollama 这类自托管运行时
 ——会跳过密钥输入。
+
+在首次运行流程中选择 OpenAI 兼容或 Anthropic 兼容路由会多出一步：自定义
+接入地址。按 Enter 保留服务地址，粘贴的地址会写入
+`[providers.<name>] base_url`，同名的 `OPENAI_BASE_URL` /
+`ANTHROPIC_BASE_URL` 环境变量同样生效。其他提供商也可以手动改地址——
+根级 `base_url` 字段仅属于 DeepSeek，对其他提供商会忽略。
 
 `deepseek-cn`、`deepseek_china`、`deepseekcn` 和 `deepseek-china` 被接受为
 `deepseek` 的旧版别名。它们不会选择不同的官方主机；
@@ -117,9 +124,9 @@ model = "your-deepseek-compatible-model"
 | 提供商 ID | TOML 表 | 认证环境变量 | Base URL 环境变量与默认值 | 默认或静态模型 | 备注 |
 | --- | --- | --- | --- | --- | --- |
 | `deepseek` | `[providers.deepseek]` | `DEEPSEEK_API_KEY` | `CODESMITH_BASE_URL`；默认 `https://api.deepseek.com/beta` | `deepseek-v4-pro`、`deepseek-v4-flash`；兼容别名 `deepseek-chat`、`deepseek-reasoner` | 未配置提供商时的回退。Beta URL 启用 strict tool mode、chat prefix completion 和 FIM completion。显式设置 `https://api.deepseek.com` 或 `/v1` 可退出仅限 beta 的功能。 |
-| `anthropic` | `[providers.anthropic]` | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL`；默认 `https://api.anthropic.com/v1` | `claude-sonnet-4-5` | Anthropic Claude 路由。接受 `claude`、`anthropic-claude` 和 `claude-ai` 作为提供商别名。 |
+| `anthropic` | `[providers.anthropic]` | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL`；默认 `https://api.anthropic.com/v1` | `claude-sonnet-4-5` | Anthropic 路由，也包括 Anthropic 兼容代理。首次运行 onboarding 会询问接入地址；接受 `claude`、`anthropic-claude` 和 `claude-ai` 作为提供商别名。 |
 | `nvidia-nim` | `[providers.nvidia_nim]` | `NVIDIA_API_KEY`、`NVIDIA_NIM_API_KEY`、回退 `DEEPSEEK_API_KEY` | `NVIDIA_NIM_BASE_URL`、`NIM_BASE_URL`、`NVIDIA_BASE_URL`；默认 `https://integrate.api.nvidia.com/v1` | `deepseek-ai/deepseek-v4-pro`、`deepseek-ai/deepseek-v4-flash` | 通过 NVIDIA NIM 托管的 DeepSeek V4。TUI 配置路径接受 `NVIDIA_NIM_MODEL`。 |
-| `openai` | `[providers.openai]` | `OPENAI_API_KEY` | `OPENAI_BASE_URL`；默认 `https://api.openai.com/v1` | 注册表条目：`gpt-5`、`deepseek-v4-pro`、`deepseek-v4-flash`；默认配置模型 `gpt-5` | 用于网关和自定义端点的通用 OpenAI 兼容路由。对显式的第三方 OpenAI 兼容路由请使用它，而不是发明新的提供商 ID。接受 `OPENAI_MODEL`。自定义 `OPENAI_BASE_URL` 若未指定显式模型，会在启动时快速失败。 |
+| `openai` | `[providers.openai]` | `OPENAI_API_KEY` | `OPENAI_BASE_URL`；默认 `https://api.openai.com/v1` | 注册表条目：`gpt-5`、`deepseek-v4-pro`、`deepseek-v4-flash`；默认配置模型 `gpt-5` | 用于网关和自定义端点的通用 OpenAI 兼容路由，也是除 `anthropic` 外唯一在首次运行 onboarding 中询问接入地址的路由。对显式的第三方 OpenAI 兼容路由请使用它，而不是发明新的提供商 ID。接受 `OPENAI_MODEL`。自定义 `OPENAI_BASE_URL` 若未指定显式模型，会在启动时快速失败。 |
 | `atlascloud` | `[providers.atlascloud]` | `ATLASCLOUD_API_KEY` | `ATLASCLOUD_BASE_URL`；默认 `https://api.atlascloud.ai/v1` | `deepseek-ai/deepseek-v4-flash`、`deepseek-ai/deepseek-v4-pro` | OpenAI 兼容的托管路由。TUI 配置路径接受 `ATLASCLOUD_MODEL`，静态 `ModelRegistry` 中包含用于 CLI 模型解析的 AtlasCloud 回退行。 |
 | `wanjie-ark` | `[providers.wanjie_ark]` | `WANJIE_ARK_API_KEY`、`WANJIE_API_KEY`、`WANJIE_MAAS_API_KEY` | `WANJIE_ARK_BASE_URL`、`WANJIE_BASE_URL`、`WANJIE_MAAS_BASE_URL`；默认 `https://maas-openapi.wanjiedata.com/api/v1` | `deepseek-reasoner` | OpenAI 兼容的托管路由。接受 `WANJIE_ARK_MODEL`、`WANJIE_MODEL` 和 `WANJIE_MAAS_MODEL`。 |
 | `volcengine` | `[providers.volcengine]` | `VOLCENGINE_API_KEY`、`VOLCENGINE_ARK_API_KEY`、`ARK_API_KEY` | `VOLCENGINE_BASE_URL`、`VOLCENGINE_ARK_BASE_URL`、`ARK_BASE_URL`；默认 `https://ark.cn-beijing.volces.com/api/coding/v3` | `DeepSeek-V4-Pro`、`DeepSeek-V4-Flash` | Volcengine/火山引擎 Ark OpenAI 兼容编码端点。接受 `VOLCENGINE_MODEL` 和 `VOLCENGINE_ARK_MODEL`。 |

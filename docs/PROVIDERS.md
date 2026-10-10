@@ -6,7 +6,7 @@ limited to provider IDs, config keys, auth paths, base URLs, model resolution,
 and capability metadata that the code already knows about.
 
 All shipped providers are first-class and provider-neutral: the same terminal
-harness runs against hosted or local model endpoints from Anthropic Claude,
+harness runs against hosted or local model endpoints from Anthropic,
 DeepSeek, NVIDIA NIM, OpenRouter, Volcengine Ark, Xiaomi MiMo, Novita, Fireworks,
 SiliconFlow, generic OpenAI-compatible gateways, self-hosted runtimes, and
 Moonshot/Kimi. When no provider is configured, the CLI falls back to `deepseek`
@@ -37,7 +37,8 @@ The canonical provider IDs are:
 
 Use any of these surfaces to select a provider:
 
-- First run: the TUI onboarding asks once, before it asks for a key
+- First run: the TUI onboarding asks once, before it asks for a key (the
+  OpenAI-compatible and Anthropic-compatible routes also ask for an endpoint URL)
 - CLI: `codesmith --provider <id>`
 - TUI: `/provider <id>` or the provider picker
 - Env: `CODESMITH_PROVIDER=<id>`
@@ -49,6 +50,13 @@ outranks `provider =` in the config file. A picked provider starts on its own
 default model, and a provider whose credential already resolves — an
 environment variable, the config file, or a self-hosted runtime such as Ollama
 — skips the key prompt.
+
+Selecting the OpenAI-compatible or Anthropic-compatible route in first-run
+onboarding adds one more step: a custom endpoint URL. Enter keeps the service
+URL, a pasted URL is written to `[providers.<name>] base_url`, and the matching
+`OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` environment variable also works. Every
+other provider can be re-pointed the same way by hand — the root `base_url`
+field is DeepSeek-only and is ignored for the rest.
 
 `deepseek-cn`, `deepseek_china`, `deepseekcn`, and `deepseek-china` are accepted
 as legacy aliases for `deepseek`. They do not select a different official host;
@@ -121,9 +129,9 @@ endpoint.
 | Provider ID | TOML table | Auth env | Base URL env and default | Default or static models | Notes |
 | --- | --- | --- | --- | --- | --- |
 | `deepseek` | `[providers.deepseek]` | `DEEPSEEK_API_KEY` | `CODESMITH_BASE_URL`; default `https://api.deepseek.com/beta` | `deepseek-v4-pro`, `deepseek-v4-flash`; compatibility aliases `deepseek-chat`, `deepseek-reasoner` | Fallback provider when none is configured. Beta URL enables strict tool mode, chat prefix completion, and FIM completion. Set `https://api.deepseek.com` or `/v1` explicitly to opt out of beta-only features. |
-| `anthropic` | `[providers.anthropic]` | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL`; default `https://api.anthropic.com/v1` | `claude-sonnet-4-5` | Anthropic Claude route. `claude`, `anthropic-claude`, and `claude-ai` are accepted as provider aliases. |
+| `anthropic` | `[providers.anthropic]` | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL`; default `https://api.anthropic.com/v1` | `claude-sonnet-4-5` | Anthropic route, including Anthropic-compatible proxies. First-run onboarding offers the endpoint URL; `claude`, `anthropic-claude`, and `claude-ai` are accepted as provider aliases. |
 | `nvidia-nim` | `[providers.nvidia_nim]` | `NVIDIA_API_KEY`, `NVIDIA_NIM_API_KEY`, fallback `DEEPSEEK_API_KEY` | `NVIDIA_NIM_BASE_URL`, `NIM_BASE_URL`, `NVIDIA_BASE_URL`; default `https://integrate.api.nvidia.com/v1` | `deepseek-ai/deepseek-v4-pro`, `deepseek-ai/deepseek-v4-flash` | Hosted DeepSeek V4 through NVIDIA NIM. `NVIDIA_NIM_MODEL` is accepted by the TUI config path. |
-| `openai` | `[providers.openai]` | `OPENAI_API_KEY` | `OPENAI_BASE_URL`; default `https://api.openai.com/v1` | Registry entries: `gpt-5`, `deepseek-v4-pro`, `deepseek-v4-flash`; default config model `gpt-5` | Generic OpenAI-compatible route for gateways and custom endpoints. Use this for explicit third-party OpenAI-compatible routes instead of inventing a new provider ID. `OPENAI_MODEL` is accepted. A custom `OPENAI_BASE_URL` with no explicit model fails fast at startup. |
+| `openai` | `[providers.openai]` | `OPENAI_API_KEY` | `OPENAI_BASE_URL`; default `https://api.openai.com/v1` | Registry entries: `gpt-5`, `deepseek-v4-pro`, `deepseek-v4-flash`; default config model `gpt-5` | Generic OpenAI-compatible route for gateways and custom endpoints, and the only route besides `anthropic` whose first-run onboarding offers the endpoint URL. Use this for explicit third-party OpenAI-compatible routes instead of inventing a new provider ID. `OPENAI_MODEL` is accepted. A custom `OPENAI_BASE_URL` with no explicit model fails fast at startup. |
 | `atlascloud` | `[providers.atlascloud]` | `ATLASCLOUD_API_KEY` | `ATLASCLOUD_BASE_URL`; default `https://api.atlascloud.ai/v1` | `deepseek-ai/deepseek-v4-flash`, `deepseek-ai/deepseek-v4-pro` | OpenAI-compatible hosted route. `ATLASCLOUD_MODEL` is accepted by the TUI config path, and the static `ModelRegistry` includes AtlasCloud fallback rows for CLI model resolution. |
 | `wanjie-ark` | `[providers.wanjie_ark]` | `WANJIE_ARK_API_KEY`, `WANJIE_API_KEY`, `WANJIE_MAAS_API_KEY` | `WANJIE_ARK_BASE_URL`, `WANJIE_BASE_URL`, `WANJIE_MAAS_BASE_URL`; default `https://maas-openapi.wanjiedata.com/api/v1` | `deepseek-reasoner` | OpenAI-compatible hosted route. `WANJIE_ARK_MODEL`, `WANJIE_MODEL`, and `WANJIE_MAAS_MODEL` are accepted. |
 | `volcengine` | `[providers.volcengine]` | `VOLCENGINE_API_KEY`, `VOLCENGINE_ARK_API_KEY`, `ARK_API_KEY` | `VOLCENGINE_BASE_URL`, `VOLCENGINE_ARK_BASE_URL`, `ARK_BASE_URL`; default `https://ark.cn-beijing.volces.com/api/coding/v3` | `DeepSeek-V4-Pro`, `DeepSeek-V4-Flash` | Volcengine/Volcano Engine Ark OpenAI-compatible coding endpoint. `VOLCENGINE_MODEL` and `VOLCENGINE_ARK_MODEL` are accepted. |

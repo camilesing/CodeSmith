@@ -343,6 +343,17 @@ pub enum MessageId {
     OnboardProviderConfigured,
     OnboardProviderNoKeyRequired,
     OnboardProviderKimiOAuthReady,
+    // Onboarding screens — custom endpoint URL (OpenAI-compatible and
+    // Anthropic-compatible routes). The env hint is split around the variable
+    // name, like the key screen's.
+    OnboardEndpointTitle,
+    OnboardEndpointBlurb,
+    OnboardEndpointDefaultLabel,
+    OnboardEndpointEnvHintPrefix,
+    OnboardEndpointEnvHintSuffix,
+    OnboardEndpointLabel,
+    OnboardEndpointPlaceholder,
+    OnboardEndpointFooter,
     // Onboarding screens — API key entry. The title is split so the picked
     // provider's display name interpolates between prefix and suffix; step 1
     // has a DeepSeek variant (curated console link) and a generic one.
@@ -629,6 +640,14 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::OnboardProviderConfigured,
     MessageId::OnboardProviderNoKeyRequired,
     MessageId::OnboardProviderKimiOAuthReady,
+    MessageId::OnboardEndpointTitle,
+    MessageId::OnboardEndpointBlurb,
+    MessageId::OnboardEndpointDefaultLabel,
+    MessageId::OnboardEndpointEnvHintPrefix,
+    MessageId::OnboardEndpointEnvHintSuffix,
+    MessageId::OnboardEndpointLabel,
+    MessageId::OnboardEndpointPlaceholder,
+    MessageId::OnboardEndpointFooter,
     MessageId::OnboardApiKeyTitlePrefix,
     MessageId::OnboardApiKeyTitleSuffix,
     MessageId::OnboardApiKeyStep1Deepseek,
@@ -1181,6 +1200,17 @@ fn english(id: MessageId) -> &'static str {
         MessageId::OnboardProviderConfigured => "API key configured",
         MessageId::OnboardProviderNoKeyRequired => "no API key required",
         MessageId::OnboardProviderKimiOAuthReady => "Kimi CLI OAuth ready",
+        // Onboarding — custom endpoint URL.
+        MessageId::OnboardEndpointTitle => "Custom endpoint URL",
+        MessageId::OnboardEndpointBlurb => {
+            "Route this provider through your own gateway or proxy. Press Enter to keep the default."
+        }
+        MessageId::OnboardEndpointDefaultLabel => "Default: ",
+        MessageId::OnboardEndpointEnvHintPrefix => "Or set ",
+        MessageId::OnboardEndpointEnvHintSuffix => " in your environment.",
+        MessageId::OnboardEndpointLabel => "URL: ",
+        MessageId::OnboardEndpointPlaceholder => "(paste a URL to override)",
+        MessageId::OnboardEndpointFooter => "Press Enter to continue, Esc to go back.",
         // Onboarding — API key entry.
         MessageId::OnboardApiKeyTitlePrefix => "Connect your ",
         MessageId::OnboardApiKeyTitleSuffix => " API key",
@@ -1578,6 +1608,17 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::OnboardProviderConfigured => "已配置 API 密钥",
         MessageId::OnboardProviderNoKeyRequired => "无需 API 密钥",
         MessageId::OnboardProviderKimiOAuthReady => "Kimi CLI OAuth 已就绪",
+        // Onboarding — custom endpoint URL.
+        MessageId::OnboardEndpointTitle => "自定义接入地址",
+        MessageId::OnboardEndpointBlurb => {
+            "让该服务商经由你自己的网关或代理。按 Enter 保留默认值。"
+        }
+        MessageId::OnboardEndpointDefaultLabel => "默认：",
+        MessageId::OnboardEndpointEnvHintPrefix => "也可以改为设置环境变量 ",
+        MessageId::OnboardEndpointEnvHintSuffix => "。",
+        MessageId::OnboardEndpointLabel => "地址：",
+        MessageId::OnboardEndpointPlaceholder => "（粘贴自定义地址）",
+        MessageId::OnboardEndpointFooter => "Enter 继续，Esc 返回。",
         // Onboarding — API key entry.
         MessageId::OnboardApiKeyTitlePrefix => "连接你的 ",
         MessageId::OnboardApiKeyTitleSuffix => " API 密钥",
@@ -1968,6 +2009,17 @@ fn hindi(id: MessageId) -> Option<&'static str> {
         MessageId::OnboardProviderConfigured => "API key सेट है",
         MessageId::OnboardProviderNoKeyRequired => "API key की ज़रूरत नहीं",
         MessageId::OnboardProviderKimiOAuthReady => "Kimi CLI OAuth तैयार",
+        // Onboarding — custom endpoint URL.
+        MessageId::OnboardEndpointTitle => "कस्टम endpoint URL",
+        MessageId::OnboardEndpointBlurb => {
+            "इस provider को अपने gateway या proxy से चलाएँ। डिफ़ॉल्ट रखने के लिए Enter दबाएँ।"
+        }
+        MessageId::OnboardEndpointDefaultLabel => "डिफ़ॉल्ट: ",
+        MessageId::OnboardEndpointEnvHintPrefix => "या फिर environment variable ",
+        MessageId::OnboardEndpointEnvHintSuffix => " सेट करें।",
+        MessageId::OnboardEndpointLabel => "URL: ",
+        MessageId::OnboardEndpointPlaceholder => "(बदलने के लिए URL पेस्ट करें)",
+        MessageId::OnboardEndpointFooter => "आगे बढ़ने के लिए Enter, वापस जाने के लिए Esc।",
         // Onboarding — API key entry.
         MessageId::OnboardApiKeyTitlePrefix => "अपनी ",
         MessageId::OnboardApiKeyTitleSuffix => " API key जोड़ें",
@@ -2424,6 +2476,17 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         MessageId::OnboardProviderConfigured => "clave de API configurada",
         MessageId::OnboardProviderNoKeyRequired => "no necesita clave de API",
         MessageId::OnboardProviderKimiOAuthReady => "OAuth de Kimi CLI listo",
+        // Onboarding — custom endpoint URL.
+        MessageId::OnboardEndpointTitle => "URL de endpoint personalizada",
+        MessageId::OnboardEndpointBlurb => {
+            "Envía este proveedor por tu propia pasarela o proxy. Presiona Enter para mantener la predeterminada."
+        }
+        MessageId::OnboardEndpointDefaultLabel => "Predeterminada: ",
+        MessageId::OnboardEndpointEnvHintPrefix => "O define la variable de entorno ",
+        MessageId::OnboardEndpointEnvHintSuffix => " en su lugar.",
+        MessageId::OnboardEndpointLabel => "URL: ",
+        MessageId::OnboardEndpointPlaceholder => "(pega una URL para cambiarla)",
+        MessageId::OnboardEndpointFooter => "Enter para continuar, Esc para volver.",
         // Onboarding — API key entry.
         MessageId::OnboardApiKeyTitlePrefix => "Conecta tu clave de API de ",
         MessageId::OnboardApiKeyTitleSuffix => ".",
