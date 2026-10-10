@@ -25,19 +25,27 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(block, area);
 
     const TOP_MARGIN: u16 = 2;
-    // Every screen but the provider list fits the default panel.
+    // Every screen but the provider list and the key screen fits the
+    // default panel.
     const DEFAULT_PANEL_HEIGHT: u16 = 20;
     // The provider list is 16 rows plus title, blurb, and footer.
     const PROVIDER_PANEL_HEIGHT: u16 = 28;
-    // Non-list lines the provider screen draws: title, blurb, the blank
-    // pair above the list, and the blank + footer below it.
-    const PROVIDER_LIST_CHROME: u16 = 6;
+    // The key screen stacks two hint lines that wrap in es (and hit zero
+    // slack elsewhere) plus a status line on nearly every keystroke — 17
+    // rows against the default panel's 16 usable.
+    const API_KEY_PANEL_HEIGHT: u16 = 22;
+    // Non-list lines the provider screen draws: title, blurb (wraps to two
+    // lines in en/es/hi at the 70-column inner width; zh fits on one — the
+    // budget is the worst case), the blank pair above the list, and the
+    // blank + footer below it.
+    const PROVIDER_LIST_CHROME: u16 = 7;
     // Panel borders (2) plus vertical padding (2).
     const PANEL_INSET: u16 = 4;
 
     let content_width = 76.min(area.width.saturating_sub(4));
     let wanted_height = match app.onboarding {
         OnboardingState::Provider => PROVIDER_PANEL_HEIGHT,
+        OnboardingState::ApiKey => API_KEY_PANEL_HEIGHT,
         _ => DEFAULT_PANEL_HEIGHT,
     };
     let content_height = wanted_height.min(area.height.saturating_sub(TOP_MARGIN + 2));

@@ -33,7 +33,12 @@ pub const MIN_VISIBLE_ROWS: usize = 3;
 /// hold; the drawn window always contains the selected row.
 pub fn lines(app: &App, visible_rows: usize) -> Vec<Line<'static>> {
     let selected = app.onboarding_provider_idx;
-    let visible_rows = visible_rows.max(MIN_VISIBLE_ROWS);
+    // A status line (a failed switch) takes the place of one list row so
+    // the trailing footer stays inside the panel.
+    let status_rows: usize = usize::from(app.status_message.is_some());
+    let visible_rows = visible_rows
+        .saturating_sub(status_rows)
+        .max(MIN_VISIBLE_ROWS);
 
     let mut out: Vec<Line<'static>> = vec![
         Line::from(Span::styled(
@@ -86,6 +91,12 @@ pub fn lines(app: &App, visible_rows: usize) -> Vec<Line<'static>> {
         ]));
     }
 
+    if let Some(message) = app.status_message.as_deref() {
+        out.push(Line::from(Span::styled(
+            message.to_string(),
+            Style::default().fg(palette::STATUS_WARNING),
+        )));
+    }
     out.push(Line::from(""));
     out.push(Line::from(Span::styled(
         app.tr(MessageId::OnboardProviderFooter).to_string(),
@@ -95,22 +106,24 @@ pub fn lines(app: &App, visible_rows: usize) -> Vec<Line<'static>> {
     out
 }
 
-/// Status label for one row. Order matters: an OAuth route and a
-/// no-authentication route are both "usable without typing a key", which
-/// `has_api_key_for` already reports as `true`, so they are distinguished
-/// before the generic configured/needs-key split.
+/// Status label for one row. Order matters and mirrors the `/provider`
+/// picker's list stage, so the label always names the credential Enter
+/// would actually use: self-hosted runtimes never need a key (and
+/// `has_api_key_for` answers `true` for them, so they are split off before
+/// the generic configured/needs-key split), an explicit key outranks a
+/// registered Kimi CLI credential, and the OAuth label is reached only
+/// when no key resolves.
 fn status_message(provider: ApiProvider, has_key: bool) -> MessageId {
-    if provider == ApiProvider::Moonshot && kimi_cli_credentials_present() {
-        return MessageId::OnboardProviderKimiOAuthReady;
-    }
     if provider_is_self_hosted(provider) {
         return MessageId::OnboardProviderNoKeyRequired;
     }
     if has_key {
-        MessageId::OnboardProviderConfigured
-    } else {
-        MessageId::OnboardProviderNeedsKey
+        return MessageId::OnboardProviderConfigured;
     }
+    if provider == ApiProvider::Moonshot && kimi_cli_credentials_present() {
+        return MessageId::OnboardProviderKimiOAuthReady;
+    }
+    MessageId::OnboardProviderNeedsKey
 }
 
 fn status_color(status: MessageId) -> ratatui::style::Color {
