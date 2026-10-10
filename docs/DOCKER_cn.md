@@ -22,6 +22,9 @@ docker run --rm -it \
   ghcr.io/camilesing/codesmith:latest
 ```
 
+`codesmith docker` 会在命令行打印同一条 run 命令；它既不需要 TUI 二进制
+也不依赖配置，因此在镜像内部也能直接查到。
+
 使用固定的发布 tag 以获得可复现的安装：
 
 ```bash

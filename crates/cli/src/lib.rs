@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, anyhow, bail};
+use clap::builder::StyledStr;
+use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
 use codesmith_agent::ModelRegistry;
@@ -142,6 +144,9 @@ struct Cli {
     continue_session: bool,
     #[arg(short = 'p', long = "prompt", value_name = "PROMPT")]
     prompt_flag: Option<String>,
+    /// Initial prompt to submit in the interactive TUI. A single bare word
+    /// (ASCII, no spaces) is read as a subcommand name instead — pass
+    /// `-p <PROMPT>` for a one-word prompt.
     #[arg(
         value_name = "PROMPT",
         trailing_var_arg = true,
@@ -268,6 +273,10 @@ The command prints the completion script to stdout; redirect it to a path your s
     },
     /// Print a usage rollup from the audit log and session store.
     Metrics(MetricsArgs),
+    /// Print how to run CodeSmith in the published container image.
+    Docker,
+    /// Print the CLI version (same output as `--version`).
+    Version,
     /// Check for and apply updates to the `codesmith` binary.
     Update(UpdateArgs),
 }
@@ -489,6 +498,78 @@ struct AppServerArgs {
 
 const MCP_SERVER_DEFINITIONS_KEY: &str = "mcp.server_definitions";
 
+/// Static snapshot of the container quick start. `docs/DOCKER.md` is the
+/// canonical copy: changing the image tag, volume layout, or env var there
+/// means updating this string and `docs/CLI.md` / `docs/CLI_cn.md` in the
+/// same change.
+const DOCKER_USAGE: &str = "\
+Run CodeSmith in the published container image:
+
+  docker volume create codesmith-home
+
+  docker run --rm -it \\
+    -e CODESMITH_API_KEY=\"$CODESMITH_API_KEY\" \\
+    -v codesmith-home:/home/codesmith/.codesmith \\
+    -v \"$PWD:/workspace\" \\
+    -w /workspace \\
+    ghcr.io/camilesing/codesmith:latest
+
+Pinned tags, local image builds, volume ownership, and non-interactive
+pipelines: https://github.com/camilesing/CodeSmith/blob/main/docs/DOCKER.md
+";
+
+/// The single bare command-shaped word that must be read as a mistyped
+/// subcommand instead of being forwarded to the TUI as a prompt.
+///
+/// The top-level `[PROMPT]` positional accepts anything, so `codesmith docker`
+/// and `codesmith version` used to launch the interactive TUI with that word as
+/// the first chat message. A one-word ASCII prompt is the only input shape
+/// where that is indistinguishable from a mistyped command name; multi-word
+/// tails, quoted sentences, `-p`, and non-ASCII words (which cannot name a
+/// command) all stay prompts.
+fn unknown_subcommand_word(cli: &Cli) -> Option<&str> {
+    if cli.command.is_some() || cli.prompt_flag.is_some() || cli.continue_session {
+        return None;
+    }
+    let [word] = cli.prompt.as_slice() else {
+        return None;
+    };
+    let mut chars = word.chars();
+    if !chars.next()?.is_ascii_alphabetic() {
+        return None;
+    }
+    chars
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        .then_some(word)
+}
+
+/// clap's own `unrecognized subcommand` usage error (exit code 2) carrying the
+/// two ways out: `-p` for a one-word prompt, `run` for a TUI-only subcommand.
+///
+/// Built through the context path rather than `Command::error`, because a raw
+/// message is rendered as-is and would drop the `tip:` lines; the context
+/// formatter is what draws them.
+fn unknown_subcommand_error(word: &str) -> clap::Error {
+    let mut cmd = Cli::command();
+    let usage = cmd.render_usage();
+    let mut err = clap::Error::new(ErrorKind::InvalidSubcommand).with_cmd(&cmd);
+    err.insert(
+        ContextKind::InvalidSubcommand,
+        ContextValue::String(word.to_string()),
+    );
+    err.insert(ContextKind::Usage, ContextValue::StyledStr(usage));
+    err.insert(
+        ContextKind::Suggested,
+        ContextValue::StyledStrs(vec![
+            StyledStr::from(format!("to send this as a prompt, run: codesmith -p '{word}'")),
+            StyledStr::from(
+                "run `codesmith --help` to see all commands (`codesmith run <COMMAND>` forwards a TUI subcommand)",
+            ),
+        ]),
+    );
+    err
+}
+
 pub fn run_cli() -> std::process::ExitCode {
     match run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -511,6 +592,13 @@ pub fn run_cli() -> std::process::ExitCode {
 
 fn run() -> Result<()> {
     let mut cli = Cli::parse();
+
+    // A mistyped command word fails loud here, before config or secret
+    // resolution: the `[PROMPT]` positional would otherwise hand it to the TUI
+    // as the first chat message and open an interactive session on a typo.
+    if let Some(word) = unknown_subcommand_word(&cli) {
+        unknown_subcommand_error(word).exit();
+    }
 
     let mut store = ConfigStore::load(cli.config.clone())?;
     let runtime_overrides = CliRuntimeOverrides {
@@ -620,6 +708,16 @@ fn run() -> Result<()> {
             Ok(())
         }
         Some(Commands::Metrics(args)) => run_metrics_command(args),
+        Some(Commands::Docker) => {
+            print!("{DOCKER_USAGE}");
+            Ok(())
+        }
+        Some(Commands::Version) => {
+            // `--version` renders from the same attribute, so both surfaces
+            // print byte-identical output; neither needs the TUI binary.
+            print!("{}", Cli::command().render_version());
+            Ok(())
+        }
         Some(Commands::Update(args)) => update::run_update(args.beta, args.check, args.proxy),
         None => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
@@ -3284,6 +3382,69 @@ mod tests {
     }
 
     #[test]
+    fn unknown_bare_command_word_is_rejected_before_the_tui() {
+        // Regression: `codesmith docotr` forwarded "docotr" to the TUI as the
+        // first chat message and opened an interactive session on a typo.
+        let cli = parse_ok(&["codesmith", "docotr"]);
+
+        assert_eq!(unknown_subcommand_word(&cli), Some("docotr"));
+    }
+
+    #[test]
+    fn bare_command_like_words_that_are_not_commands_stay_prompts() {
+        for argv in [
+            vec!["codesmith", "-p", "docker"],
+            vec!["codesmith", "hello", "world"],
+            vec!["codesmith", "explain this function"],
+            vec!["codesmith", "总结"],
+            vec!["codesmith", "--continue", "docker"],
+            vec!["codesmith", "doctor"],
+        ] {
+            let cli = parse_ok(&argv);
+            assert_eq!(unknown_subcommand_word(&cli), None, "{argv:?}");
+        }
+    }
+
+    #[test]
+    fn unknown_subcommand_error_uses_clap_usage_shape() {
+        let err = unknown_subcommand_error("docotr");
+
+        assert_eq!(err.kind(), ErrorKind::InvalidSubcommand);
+        let rendered = err.to_string();
+        for token in [
+            "error: unrecognized subcommand 'docotr'",
+            "tip: to send this as a prompt, run: codesmith -p 'docotr'",
+            "codesmith run <COMMAND>",
+            "Usage:",
+            "[OPTIONS] [PROMPT]",
+        ] {
+            assert!(
+                rendered.contains(token),
+                "missing {token:?} in:\n{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn version_and_docker_are_subcommands() {
+        assert!(matches!(
+            parse_ok(&["codesmith", "version"]).command,
+            Some(Commands::Version)
+        ));
+        assert!(matches!(
+            parse_ok(&["codesmith", "docker"]).command,
+            Some(Commands::Docker)
+        ));
+
+        let rendered = Cli::command().render_version();
+        assert!(rendered.starts_with("codesmith "), "{rendered}");
+        assert!(
+            DOCKER_USAGE.contains("ghcr.io/camilesing/codesmith"),
+            "docker help must name the published image"
+        );
+    }
+
+    #[test]
     fn root_help_surface_contains_expected_subcommands_and_globals() {
         let rendered = help_for(&["deepseek", "--help"]);
 
@@ -3305,6 +3466,8 @@ mod tests {
             "app-server",
             "completion",
             "metrics",
+            "docker",
+            "version",
             "--provider",
             "--model",
             "--config",
