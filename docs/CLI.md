@@ -29,7 +29,23 @@ codesmith mcp list                                # list configured MCP servers
 codesmith mcp validate                            # validate MCP config/connectivity
 codesmith mcp-server                              # run dispatcher MCP stdio server
 codesmith update                                  # check for and apply binary updates
+codesmith version                                 # print the CLI version (same output as --version)
+codesmith docker                                  # print the container quick start
 ```
+
+## Prompts and subcommands
+
+A bare first word is read as a subcommand name: `codesmith docker` and
+`codesmith version` are commands, and an unrecognized word fails with
+`unrecognized subcommand '<word>'` (exit code 2) instead of opening the TUI.
+
+Prompts keep their documented forms: `codesmith "explain this function"` (one
+quoted argument), `codesmith hello world` (the whole unquoted tail), and
+`codesmith -p <PROMPT>` for a single-word prompt such as `codesmith -p docker`.
+
+Without `-p`, a lone ASCII word cannot be told apart from a mistyped command,
+so it is rejected with a hint pointing at `-p`. Non-ASCII words
+(`codesmith 总结`) stay prompts, since they cannot name a command.
 
 Inside the TUI, `/provider` opens the provider picker and `/model` opens the
 local model/thinking picker. `/provider openrouter` and `/model <id>` switch
@@ -73,3 +89,6 @@ docker run --rm -it \
 
 Pinned tags, local image builds, volume ownership notes, and non-interactive
 pipeline usage: [DOCKER.md](DOCKER.md).
+
+`codesmith docker` prints the same run command without needing the TUI binary,
+so it also works from a bare container or a CI shell.

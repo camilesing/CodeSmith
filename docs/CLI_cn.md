@@ -28,7 +28,22 @@ codesmith mcp list                                # list configured MCP servers
 codesmith mcp validate                            # validate MCP config/connectivity
 codesmith mcp-server                              # run dispatcher MCP stdio server
 codesmith update                                  # check for and apply binary updates
+codesmith version                                 # print the CLI version (same output as --version)
+codesmith docker                                  # print the container quick start
 ```
+
+## Prompt 与子命令
+
+顶层第一个裸词按子命令名解析：`codesmith docker`、`codesmith version` 都是
+命令；无法识别的词会以 `unrecognized subcommand '<word>'`（退出码 2）报错，
+而不是打开交互界面。
+
+prompt 的既有形式不变：`codesmith "explain this function"`（单个带引号的
+参数）、`codesmith hello world`（未加引号的整个尾串），单词 prompt 则要走
+`codesmith -p <PROMPT>`，例如 `codesmith -p docker`。
+
+没给 `-p` 时，单个 ASCII 词无法与拼错的命令区分，因此会被拒绝并在提示
+中指向 `-p`；非 ASCII 词（`codesmith 总结`）仍按 prompt 处理。
 
 在 TUI 内，`/provider` 打开 provider 选择器，`/model` 打开本地模型/
 思考选择器。`/provider openrouter` 和 `/model <id>` 直接切换；当当前
@@ -68,3 +83,6 @@ docker run --rm -it \
 
 固定 tag、本地镜像构建、卷所有权说明和非交互流水线用法：
 [DOCKER.md](DOCKER.md)。
+
+`codesmith docker` 会打印同一条 run 命令，且不需要 TUI 二进制，因此在
+纯容器或 CI shell 里同样可用。

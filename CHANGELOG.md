@@ -13,6 +13,12 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
 
 ### Added
 
+- **`codesmith version` and `codesmith docker`**: the two commands users type
+  expecting output now exist. `version` prints byte-identical output to
+  `--version` (same `CODESMITH_BUILD_VERSION`), and `docker` prints the
+  container quick start from `docs/DOCKER.md` plus a link to it. Both run in
+  the dispatcher itself — no `codesmith-tui` spawn, no config dependency — so
+  they work in a plain container or CI shell.
 - **Evolution event log + `/verify stats` (P3-9 step 1)**: the
   continuous-evolution machinery is now observable. Every result-claim
   verdict is appended to `~/.codesmith/evolution/verdicts.jsonl`
@@ -150,6 +156,18 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
   countdown, reason — rendered in the TUI footer). All four rig-backed
   provider factories inject a reqwest backend that falls back to HTTP/1.1
   after the first HTTP/2 protocol failure (sticky, one replay).
+
+### Changed
+
+- **A mistyped top-level command fails loud instead of opening the TUI**:
+  `codesmith docker` and `codesmith version` used to reach the interactive TUI
+  as an initial prompt, because the top-level `[PROMPT]` positional accepts
+  anything. Now a single bare command-shaped word (ASCII, no spaces) with no
+  `-p` and no `--continue` is read as a subcommand name and rejected with
+  clap's `unrecognized subcommand '<word>'` usage error (exit code 2) plus
+  hints for `-p` and `codesmith run <COMMAND>`. Prompt forms are unchanged:
+  quoted sentences, multi-word tails, `-p`, and non-ASCII words still start
+  the interactive session. See `docs/CLI.md` ("Prompts and subcommands").
 
 ## [0.1.0] - 2026-08-25
 

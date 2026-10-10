@@ -22,6 +22,9 @@ docker run --rm -it \
   ghcr.io/camilesing/codesmith:latest
 ```
 
+`codesmith docker` prints the same run command from the CLI; it needs neither
+the TUI binary nor a config, so it also answers from inside the image.
+
 Use a pinned release tag for reproducible installs:
 
 ```bash
