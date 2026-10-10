@@ -13,116 +13,130 @@ registers its contributions against an `ExtensionApi`.
 > hooks, tools, slash commands and persistent KV without compiling Rust,
 > first-activation-gated and hot-reloaded. They ride the exact runner /
 > seam / reload machinery documented here. Author guide:
-> [MODS.md](MODS.md). The host discovers
-compiled-in extensions at startup via `inventory`, reconciles them with the
-on-disk `ExtensionStateStore` (skip disabled), loads + configures each
-against a stub api, then `bind_core`s the host context — after which the
-runner fans lifecycle events to registered handlers. Per §F5d (T1+T2),
-extension-contributed tools + slash commands are wired live into the host
-per-turn: tools are registered into the per-turn `ToolRegistry` via
-`register_extension_tools` in `EngineHost::build_turn_dispatcher`, and
-slash commands dispatch via `try_dispatch_extension_command` in
-`commands::execute` — so the agent loop sees extension tools as normal
-`ToolSpec`s (main-turn only; not inherited by sub-agents — see Sandbox
-Stance).
+> [MODS.md](MODS.md).
 
-> **Slice status.** §F1 (compiled-in extensions + minimal 6-event contract),
-> §F2a (full 23-variant `ExtensionEvent` set + `HandlerOutcome`
+The host discovers compiled-in extensions at startup via `inventory`,
+reconciles them with the on-disk `ExtensionStateStore` (skip disabled),
+loads + configures each against a stub api, then `bind_core`s the host
+context — after which the runner fans lifecycle events to registered
+handlers. Per §F5d (T1+T2), extension-contributed tools + slash commands
+are wired live into the host per-turn: tools are registered into the
+per-turn `ToolRegistry` via `register_extension_tools` in
+`EngineHost::build_turn_dispatcher`, and slash commands dispatch via
+`try_dispatch_extension_command` in `commands::execute` — so the agent
+loop sees extension tools as normal `ToolSpec`s (main-turn only; not
+inherited by sub-agents — see Sandbox Stance).
+
+> **Slice status.** §F1 (compiled-in extensions + minimal 6-event
+> contract), §F2a (full 23-variant `ExtensionEvent` set + `HandlerOutcome`
 > cancel/block/transform chain + per-variant subscription + `catch_unwind`
 > isolation), and §F2b (host seam wiring — honor `EmitOutcome` at the 7
 > `host_executor` seams + emit 22/23 events + full e2e round-trip + live
-> reload) are done. Dylib loading, `extension.toml` manifests,
-> install/uninstall, renderers, shortcuts, flags, the
-> `EventBus` impl are deferred to §F3–§F8. **Provider registration (route
-> A) is done**: `ExtensionApi::register_provider` (Rust/dylib shape, a full
-> `Arc<dyn ProviderFactory>`) and `ExtensionApi::register_provider_alias`
-> (script shape, a declarative alias onto a builtin provider — the Rhai
-> `register_provider(spec)` native) flush into a
-> `codesmith_agent::provider::SharedProviderRegistry` the host resolves
-> clients through; unregistration is symmetric via the
+> reload) are done. Renderers, shortcuts, flags, and the `EventBus` impl
+> are deferred to §F3–§F8.
+>
+> **Provider registration (route A) is done**: `ExtensionApi::register_provider`
+> (Rust/dylib shape, a full `Arc<dyn ProviderFactory>`) and
+> `ExtensionApi::register_provider_alias` (script shape, a declarative alias
+> onto a builtin provider — the Rhai `register_provider(spec)` native) flush
+> into a `codesmith_agent::provider::SharedProviderRegistry` the host
+> resolves clients through; unregistration is symmetric via the
 > `ProviderRegistration` drop guard (reload drops the generation's guards).
 > Registration is logged (target `codesmith_extensions`); it takes effect
-> at the next client resolution, not mid-session. **Startup composition
-> audit (discipline 5) is done**: every populate/reload pass collects one
-> structured entry per discovered extension/mod — `Loaded` /
-> `Failed { original error }` / `PendingConsent` / `Disabled` /
-> `TrustGated` — surfaced as a passive startup notice, in the reload
-> message, and as a `tracing` summary when anything failed. mod.toml
+> at the next client resolution, not mid-session.
+>
+> **Startup composition audit (discipline 5) is done**: every
+> populate/reload pass collects one structured entry per discovered
+> extension/mod — `Loaded` / `Failed { original error }` / `PendingConsent` /
+> `Disabled` / `TrustGated` — surfaced as a passive startup notice, in the
+> reload message, and as a `tracing` summary when anything failed. mod.toml
 > validation is schema-aggregated with path-tagged errors (discipline 6).
+>
 > **Event dispatch contracts (discipline 3) are done**: every
-> `ExtensionEventKind` declares its dispatch mode
-> (`dispatch_mode()` — observe / transform-chain / cancel-veto /
-> transform-and-deny at `ToolCall`: a handler may rewrite the call's
-> `input` (the rewritten input is what approval gates, what runs, and
-> what is recorded) or deny it), exhaustive-match guarded like `kind()` and pinned by the
+> `ExtensionEventKind` declares its dispatch mode (`dispatch_mode()` —
+> observe / transform-chain / cancel-veto / transform-and-deny at
+> `ToolCall`: a handler may rewrite the call's `input` (the rewritten input
+> is what approval gates, what runs, and what is recorded) or deny it),
+> exhaustive-match guarded like `kind()` and pinned by the
 > `event_dispatch_contract_table` test. The capability graph
-> (`docs/CAPABILITY_GRAPH.md`, generated by
-> `scripts/capability-graph.py`, CI-checked) lists every seam's
-> definition/provider/consumer triple (discipline 2 admission). **Prompt
-> sections (route B) are done**: `register_prompt_section` appends named,
-> session-stable sections to the base system prompt (≤16 sections,
+> (`docs/CAPABILITY_GRAPH.md`, generated by `scripts/capability-graph.py`,
+> CI-checked) lists every seam's definition/provider/consumer triple
+> (discipline 2 admission).
+>
+> **Prompt sections (route B) are done**: `register_prompt_section` appends
+> named, session-stable sections to the base system prompt (≤16 sections,
 > validated at load; the wholesale `before-agent-start` replacement still
-> takes precedence; reload clears the generation's sections). **Message
-projections (session log folds) are done**:
-`ExtensionApi::register_message_projection` (Rhai shape:
-`register_message_projection(key, init, fold)` + `projection_state(key)`
-reads) registers a host-maintained fold over the session transcript —
-appends fold incrementally, wholesale replacements (reload-from-log,
-compaction, `/edit` rollback) refold; the state is never snapshotted.
-**Mod-registered skills (route B) are done**:
-`ExtensionApi::register_skill` (Rhai shape: `register_skill(spec)` with
-`name`/`description`/`body`/optional `when_to_use`) contributes an
-in-memory skill to the session catalogue — system-prompt `## Skills`
-block, `/skills`, the command palette, and `load_skill` by name,
-attributed `mod: <owner>`. The filesystem catalogue wins on a name
-collision; a name owned by a different mod fails the load; ≤16 skills;
-reload clears the generation's registrations. Registered skills carry no
-`paths` (no conditional matching) and sub-agents render no catalogue.
-**Deny-only tool guards are done** (route B 1.2 alignment, dsh
-`ctx.tools.guard()`): `codesmith_agent::extension::GuardHandler` (Rhai
-shape: `register_guard(callback)`) wraps a deny-only closure over the
-`ToolCall` seam — returning a string denies the call (attributed
-`guard (mod: <id>)`), anything else abstains; there is no allow or
-transform vocabulary, so a denial is monotonic by construction (block
-short-circuits the chain). Guards evaluate pre-approval at the seam and
-cover main-turn calls only; a script error abstains with a warn.
-**The `tools-change` catalog event is done** (capability-composition
-slice 1): the turn dispatcher diffs the compiled model-visible catalog
-against the previous main-turn baseline (origin-classified snapshot in
-`tui/src/core/tool_catalog.rs`), emits `ToolsChange { added, removed }`
-observe-only, and `/tools` renders the baseline grouped by origin.
-Slice 2 adds the capability manifest (`~/.codesmith/capabilities.toml`,
-`[tools] disabled`): session-level selection enforced at the same
-composition point (registry removal), with the legacy config
-`[tools].overrides` `disabled` shape deprecated but honored.
-§F2c (reload sharing the engine's
-> live `cancel_token`; `on_tool_progress` `Callback` hook as forward-looking
-> API surface for `ToolExecutionUpdate`; `ProjectTrust` per-turn wire) is
-> done. §F5 slice 1 (`ProjectTrust { FirstLoad }` emit at the onboarding
-> trust-accept site — the once-per-session signal extension handlers observe
-> when the user accepts the workspace trust prompt) is done; the §F5 dylib
-> LOAD side (`libloading` + `extension.toml` manifests + three-shape
-> discovery + project-local trust gate [Model A — consume
-> `is_workspace_trusted(workspace)`/`FirstLoad`] + reload wiring) landed in
-> §F5b; the INSTALL side (Git/LocalPath sources + `CargoBuilder` + `Placer`
-> + `Installer` orchestrator + `/extension install`/`uninstall` real impl +
-> `installed[]` provenance write) landed in §F5c. §F5e (done) adds the real
-> `crate:`/`prebuilt:` source impls (was §F5c "§F5c-later" stub). §F5d (done)
-> wires extension tools + slash commands live
-> into the host per-turn (T1 tools via `register_extension_tools` in
+> takes precedence; reload clears the generation's sections).
+>
+> **Message projections (session log folds) are done**:
+> `ExtensionApi::register_message_projection` (Rhai shape:
+> `register_message_projection(key, init, fold)` + `projection_state(key)`
+> reads) registers a host-maintained fold over the session transcript —
+> appends fold incrementally, wholesale replacements (reload-from-log,
+> compaction, `/edit` rollback) refold; the state is never snapshotted.
+>
+> **Mod-registered skills (route B) are done**: `ExtensionApi::register_skill`
+> (Rhai shape: `register_skill(spec)` with `name`/`description`/`body`/
+> optional `when_to_use`) contributes an in-memory skill to the session
+> catalogue — system-prompt `## Skills` block, `/skills`, the command
+> palette, and `load_skill` by name, attributed `mod: <owner>`. The
+> filesystem catalogue wins on a name collision; a name owned by a
+> different mod fails the load; ≤16 skills; reload clears the generation's
+> registrations. Registered skills carry no `paths` (no conditional
+> matching) and sub-agents render no catalogue.
+>
+> **Deny-only tool guards are done** (route B 1.2 alignment, dsh
+> `ctx.tools.guard()`): `codesmith_agent::extension::GuardHandler` (Rhai
+> shape: `register_guard(callback)`) wraps a deny-only closure over the
+> `ToolCall` seam — returning a string denies the call (attributed
+> `guard (mod: <id>)`), anything else abstains; there is no allow or
+> transform vocabulary, so a denial is monotonic by construction (block
+> short-circuits the chain). Guards evaluate pre-approval at the seam and
+> cover main-turn calls only; a script error abstains with a warn.
+>
+> **The `tools-change` catalog event is done** (capability-composition
+> slice 1): the turn dispatcher diffs the compiled model-visible catalog
+> against the previous main-turn baseline (origin-classified snapshot in
+> `tui/src/core/tool_catalog.rs`), emits `ToolsChange { added, removed }`
+> observe-only, and `/tools` renders the baseline grouped by origin. Slice
+> 2 adds the capability manifest (`~/.codesmith/capabilities.toml`,
+> `[tools] disabled`): session-level selection enforced at the same
+> composition point (registry removal), with the legacy config
+> `[tools].overrides` `disabled` shape deprecated but honored.
+>
+> **§F2c is done**: reload shares the engine's live `cancel_token`; the
+> `on_tool_progress` `Callback` hook landed as forward-looking API surface
+> for `ToolExecutionUpdate`; `ProjectTrust` is wired per-turn.
+>
+> **§F5 landed in slices.** Slice 1 (`ProjectTrust { FirstLoad }` emit at
+> the onboarding trust-accept site — the once-per-session signal extension
+> handlers observe when the user accepts the workspace trust prompt) is
+> done. The dylib LOAD side (`libloading` + `extension.toml` manifests +
+> three-shape discovery + project-local trust gate [Model A — consume
+> `is_workspace_trusted(workspace)`/`FirstLoad`] + reload wiring) landed
+> in §F5b; the INSTALL side (Git/LocalPath sources + `CargoBuilder` +
+> `Placer` + `Installer` orchestrator + `/extension install`/`uninstall`
+> real impl + `installed[]` provenance write) landed in §F5c. §F5e (done)
+> adds the real `crate:`/`prebuilt:` source impls (was §F5c "§F5c-later"
+> stub).
+>
+> **§F5d (done)** wires extension tools + slash commands live into the
+> host per-turn (T1 tools via `register_extension_tools` in
 > `EngineHost::build_turn_dispatcher`; T2 commands via
 > `try_dispatch_extension_command` in `commands::execute`) and adds safe
 > unload: `clear_tools`/`clear_commands` on reload (T3) + a two-phase
 > `Library` drop (`pending_drop` + `drain_libraries_to_pending` on the UI
-> thread + `drop_pending` at the engine op-loop turn boundary, T4) — so an
-> uninstalled extension's live bindings clear on the next `/extension
-> reload` and the dylib unloads safely at the next turn boundary (no UB; ext
-> tools are main-turn-only + never inherited by subagents, §4b structural).
-> (§F5 slice 1 emitted the `FirstLoad` *event* only — no dylib machinery.)
+> thread + `drop_pending` at the engine op-loop turn boundary, T4) — so
+> an uninstalled extension's live bindings clear on the next
+> `/extension reload` and the dylib unloads safely at the next turn
+> boundary (no UB; ext tools are main-turn-only + never inherited by
+> subagents, §4b structural). (§F5 slice 1 emitted the `FirstLoad`
+> *event* only — no dylib machinery.)
+>
 > `ToolExecutionUpdate` (needs a streaming `Tool` contract — `Tool::run`
 > is one-shot), `ResourcesDiscover`, and `SessionBeforeFork` stay deferred
-> with corrected rationale (see the host-seam table). Hot-load is permanently
-> out (spec §2.4) — install + reload only.
+> with corrected rationale (see the host-seam table). Hot-load is
+> permanently out (spec §2.4) — install + reload only.
 
 ## Bootstrap
 
@@ -356,31 +370,37 @@ seams use `let _ =`; capability seams inspect `out.outcome` / `out.event`).
 
 ## Sandbox Stance
 
-CodeSmith does **not** sandbox extensions (spec §8.1). Extensions run in the
-same process as the agent loop with full host access — **trust the source**.
-For untrusted extensions, containerize the whole CodeSmith process. Project
-local dylib install (phase 2, §F5) will require a trust prompt before the
-first load. The `ProjectTrust { FirstLoad }` event (§F5 slice 1) now fires at
-onboarding trust acceptance — it is an *observe-only signal* extension
-handlers can subscribe to, distinct from (and not delivering) the phase-2
-dylib loader that *consumes* project-local trust. The dylib loader (`libloading` + lockstep `*mut dyn Extension` via
-`codesmith_register_extension`), `extension.toml` manifest, and project-local
-discovery trust gate (Model A — `apply_trust_gate` drops project-local
-(`global == false`) dylibs when `is_workspace_trusted(workspace)` is false; the
-`ProjectTrust { FirstLoad }` event flips that trust at onboarding accept) are
-§F5b (done). §F5c (done) adds the INSTALL side: `/extension install` fetches
-(`git:`/`path:`) → `cargo build --release --locked` → `Placer` writes
-`<root>/<id>/<default_dylib_filename(id)>` → `extension.toml` → `installed[]`
-provenance. `cargo build` runs the source's `build.rs` — **arbitrary code
-execution, accepted per §8.1 (trust the source)**; containerize for untrusted
+CodeSmith does **not** sandbox extensions (spec §8.1). Extensions run in
+the same process as the agent loop with full host access — **trust the
+source**. For untrusted extensions, containerize the whole CodeSmith
+process. Project local dylib install (phase 2, §F5) will require a trust
+prompt before the first load. The `ProjectTrust { FirstLoad }` event
+(§F5 slice 1) now fires at onboarding trust acceptance — it is an
+*observe-only signal* extension handlers can subscribe to, distinct from
+(and not delivering) the phase-2 dylib loader that *consumes*
+project-local trust.
+
+The dylib loader (`libloading` + lockstep `*mut dyn Extension` via
+`codesmith_register_extension`), the `extension.toml` manifest, and the
+project-local discovery trust gate are §F5b (done; Model A —
+`apply_trust_gate` drops project-local (`global == false`) dylibs when
+`is_workspace_trusted(workspace)` is false; the `ProjectTrust { FirstLoad
+}` event flips that trust at onboarding accept). §F5c (done) adds the
+INSTALL side: `/extension install` fetches (`git:`/`path:`) →
+`cargo build --release --locked` → `Placer` writes
+`<root>/<id>/<default_dylib_filename(id)>` → `extension.toml` →
+`installed[]` provenance.
+
+`cargo build` runs the source's `build.rs` — **arbitrary code execution,
+accepted per §8.1 (trust the source)**; containerize for untrusted
 sources. Install is trust-agnostic (it only *reads* trust to warn: a
-project-local install won't load until the workspace is trusted). A loaded
-dylib runs in-process with full host access — trust the source; containerize
-for untrusted sources. `crate:`/`prebuilt:` sources shipped in §F5e (real
-`CratesIoSource`/`PrebuiltDylibSource` impls; was §F5c "§F5c-later" stub).
-§F5d (done) wires extension tools +
-slash commands live into the host per-turn `ToolRegistry` (main-turn only) +
-adds safe unload:
+project-local install won't load until the workspace is trusted). A
+loaded dylib runs in-process with full host access — trust the source;
+containerize for untrusted sources. `crate:`/`prebuilt:` sources shipped
+in §F5e (real `CratesIoSource`/`PrebuiltDylibSource` impls; was §F5c
+"§F5c-later" stub). §F5d (done) wires extension tools + slash commands
+live into the host per-turn `ToolRegistry` (main-turn only) + adds safe
+unload:
 
 - **Ext tools are main-turn-only (§4b structural):** extension tools are
   registered into the host's per-turn `ToolRegistry` (the main agent turn),
