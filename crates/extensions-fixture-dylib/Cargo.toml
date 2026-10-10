@@ -14,6 +14,6 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 async-trait = "0.1"
-codesmith-agent = { path = "../agent", version = "0.1.0" }
-codesmith-tools = { path = "../tools", version = "0.1.0" }
+codesmith-agent = { path = "../agent", version = "0.9.0" }
+codesmith-tools = { path = "../tools", version = "0.9.0" }
 serde_json.workspace = true

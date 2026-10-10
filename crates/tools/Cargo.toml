@@ -14,7 +14,7 @@ description = "Tool invocation lifecycle, schema validation, and scheduler paral
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
-codesmith-protocol = { path = "../protocol", version = "0.1.0" }
+codesmith-protocol = { path = "../protocol", version = "0.9.0" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

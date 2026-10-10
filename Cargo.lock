@@ -817,7 +817,7 @@ checksum = "e9b18233253483ce2f65329a24072ec414db782531bdbb7d0bbc4bd2ce6b7e21"
 
 [[package]]
 name = "codesmith-agent"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -836,7 +836,7 @@ dependencies = [
 
 [[package]]
 name = "codesmith-agent-runtime"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -887,7 +887,7 @@ dependencies = [
 
 [[package]]
 name = "codesmith-app-server"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -912,7 +912,7 @@ dependencies = [
 
 [[package]]
 name = "codesmith-cli"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -939,7 +939,7 @@ dependencies = [
 
 [[package]]
 name = "codesmith-config"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "codesmith-secrets",
@@ -953,7 +953,7 @@ dependencies = [
 
 [[package]]
 name = "codesmith-core"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -972,7 +972,7 @@ dependencies = [
 
 [[package]]
 name = "codesmith-execpolicy"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "codesmith-protocol",
@@ -981,7 +981,7 @@ dependencies = [
 
 [[package]]
 name = "codesmith-extensions"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1005,7 +1005,7 @@ dependencies = [
 
 [[package]]
 name = "codesmith-hooks"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1019,7 +1019,7 @@ dependencies = [
 
 [[package]]
 name = "codesmith-index"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1046,7 +1046,7 @@ dependencies = [
 
 [[package]]
 name = "codesmith-mcp"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -1056,7 +1056,7 @@ dependencies = [
 
 [[package]]
 name = "codesmith-protocol"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1064,7 +1064,7 @@ dependencies = [
 
 [[package]]
 name = "codesmith-providers"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1081,7 +1081,7 @@ dependencies = [
 
 [[package]]
 name = "codesmith-release"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -1092,7 +1092,7 @@ dependencies = [
 
 [[package]]
 name = "codesmith-secrets"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "dirs",
  "fd-lock",
@@ -1106,7 +1106,7 @@ dependencies = [
 
 [[package]]
 name = "codesmith-state"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1119,7 +1119,7 @@ dependencies = [
 
 [[package]]
 name = "codesmith-tool-impls"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1158,7 +1158,7 @@ dependencies = [
 
 [[package]]
 name = "codesmith-tools"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1173,7 +1173,7 @@ dependencies = [
 
 [[package]]
 name = "codesmith-tui"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1250,7 +1250,7 @@ dependencies = [
 
 [[package]]
 name = "codesmith-tui-core"
-version = "0.1.0"
+version = "0.9.0"
 
 [[package]]
 name = "colorchoice"
@@ -2074,7 +2074,7 @@ dependencies = [
 
 [[package]]
 name = "extensions-fixture-dylib"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "codesmith-agent",
