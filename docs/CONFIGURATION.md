@@ -685,9 +685,14 @@ replacement compaction. You can inspect or update these from the TUI with
 
 Common settings keys:
 
-- `theme` (`system`, `dark`, `light`, `grayscale`, `catppuccin-mocha`,
-  `tokyo-night`, `dracula`, `gruvbox-dark`; default `system`): `system`
-  follows terminal background detection, `dark`/`light` use the built-in dark
+- `theme` (`terminal`, `system`, `dark`, `light`, `grayscale`,
+  `catppuccin-mocha`, `tokyo-night`, `dracula`, `gruvbox-dark`, `claude`,
+  `matrix`, `solarized-light`; default `terminal`): `terminal` paints no
+  background of its own — surfaces use the terminal's default colors and
+  accents are ANSI named colors, so the TUI inherits whatever palette the
+  terminal is running (Solarized, Nord, custom schemes, …) just like CLI
+  output. `system` follows terminal background detection (`COLORFGBG`, then
+  macOS appearance), `dark`/`light` use the built-in
   palettes, `grayscale` is the low-opinion black/white theme, and the named
   community presets apply across the TUI. Aliases such as `whale`, `mono`,
   `black-white`, `tokyonight`, and `gruvbox` are accepted.

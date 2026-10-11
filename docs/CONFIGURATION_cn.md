@@ -641,9 +641,13 @@ codesmith 还将用户偏好存储在：
 
 常用设置键：
 
-- `theme`（`system`、`dark`、`light`、`grayscale`、`catppuccin-mocha`、
-  `tokyo-night`、`dracula`、`gruvbox-dark`；默认 `system`）：`system`
-  跟随终端背景检测，`dark`/`light` 使用内置深色调色板，`grayscale`
+- `theme`（`terminal`、`system`、`dark`、`light`、`grayscale`、
+  `catppuccin-mocha`、`tokyo-night`、`dracula`、`gruvbox-dark`、`claude`、
+  `matrix`、`solarized-light`；默认 `terminal`）：`terminal` 不自行绘制
+  背景——各表面使用终端默认色，强调色使用 ANSI 命名色，因此 TUI 会像
+  CLI 输出一样继承终端正在使用的调色板（Solarized、Nord、自定义配色
+  等）。`system` 跟随终端背景检测（`COLORFGBG`，其次 macOS 外观），
+  `dark`/`light` 使用内置深色调色板，`grayscale`
   是极简的黑/白主题，具名社区预设则应用于整个 TUI。接受诸如 `whale`、
   `mono`、`black-white`、`tokyonight` 和 `gruvbox` 之类的别名。
 - `auto_compact`（开/关，默认关）
