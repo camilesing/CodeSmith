@@ -144,7 +144,7 @@ casually it reads as taking the work even when credit is preserved.
 - The workspace is split into a **framework group** (`protocol`, `tools`,
   `agent`, `config`, `secrets`, `extensions`, `agent-runtime`) and an
   **implementation group** (everything else: `providers`, `tool-impls`,
-  `tui`, `cli`, `app-server`, ...). Framework crates must not depend, in the
+  `cli`, `app-server`, ...). Framework crates must not depend, in the
   build graph, on workspace crates outside the framework group; the rule is
   enforced by `python3 scripts/check-framework-deps.py` (runs in CI;
   dev-dependencies are exempt — they never enter a framework artifact). When
@@ -157,16 +157,16 @@ in an implementation crate, consumer — and lands in
 `scripts/capability-graph.py`'s seam list (regenerate
 `docs/CAPABILITY_GRAPH.md`; CI checks freshness).
 - The model-facing sub-agent surface is `agent_open`/`agent_eval`/
-  `agent_close` (implementation in `crates/tui/src/tools/subagent/`) plus
+  `agent_close` (implementation in `crates/cli/src/tools/subagent/`) plus
   persistent RLM sessions (`crates/tool-impls/src/tools/rlm.rs`); no
   model-visible swarm tool remains. If the shape must move, move the code
   and update the boundary note in `docs/ARCHITECTURE.md`.
 - `BASE_PROMPT` in `crates/agent-runtime/src/prompts.rs` (prose in
   `crates/agent-runtime/src/prompts/base.md`) is the sole base prompt by
-  convention; `crates/tui/src/prompts.rs` has tests asserting required tags.
+  convention; `crates/cli/src/prompts.rs` has tests asserting required tags.
   Same rule: move the code, not the prose, if that changes.
 - There is one turn loop, in `crates/agent-runtime/src/engine/` (turn phases
-  in `engine/turn/`). `crates/tui/src/core/` is a thin re-export and
+  in `engine/turn/`). `crates/cli/src/core/` is a thin re-export and
   construction bridge (`EngineHost`/`build_engine`), not a second loop;
   `crates/core` is a separate crate and runs no turns. The boundary note at
   the top of `docs/ARCHITECTURE.md` is the live reference.
@@ -242,12 +242,14 @@ Useful commands, selected according to risk rather than run ritualistically:
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked
-cargo build --release --locked -p codesmith-cli -p codesmith-tui
+cargo build --release --locked -p codesmith-cli
 ```
 
 Edition 2024 (`let_chains` is used throughout); the toolchain is pinned in
-`rust-toolchain.toml`. Workspace default-members are `cli`, `app-server`,
-`tui`, so a bare `cargo build` covers the user-facing binaries. CI lanes live
+`rust-toolchain.toml`. Workspace default-members are `cli` and
+`app-server`, so a bare `cargo build` covers the user-facing binaries
+(the single `codesmith` binary lives in `crates/cli`; the ratatui TUI was
+removed in 0.9.0). CI lanes live
 in `.github/workflows/ci.yml`. The CNB mirror (`sync-cnb.yml`) was removed —
 it never ran successfully because the `CNB_GIT_TOKEN` secret was not
 configured. GitHub's test job skips its Linux steps (they were meant for the
