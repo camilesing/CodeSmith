@@ -47,7 +47,6 @@ jobs:
       - name: Workspace tests
         run: cargo test --workspace --all-features --locked
       - name: TUI snapshot parity
-        run: cargo test -p codesmith-tui-core --test snapshot --locked
       - name: Protocol schema parity
         run: cargo test -p codesmith-protocol --test parity_protocol --locked
       - name: State persistence parity
@@ -131,31 +130,6 @@ jobs:
             target: x86_64-pc-windows-msvc
             binary: codesmith.exe
             artifact_name: codesmith-windows-x64.exe
-          # --- codesmith-tui (TUI runtime, canonical) ---
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            binary: codesmith-tui
-            artifact_name: codesmith-tui-linux-x64
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            binary: codesmith-tui
-            artifact_name: codesmith-tui-linux-arm64
-          - os: ubuntu-latest
-            target: riscv64gc-unknown-linux-gnu
-            binary: codesmith-tui
-            artifact_name: codesmith-tui-linux-riscv64
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            binary: codesmith-tui
-            artifact_name: codesmith-tui-macos-x64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            binary: codesmith-tui
-            artifact_name: codesmith-tui-macos-arm64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            binary: codesmith-tui.exe
-            artifact_name: codesmith-tui-windows-x64.exe
     runs-on: ${{ matrix.os }}
     # One stuck leg (RISC-V cross-setup, network retries) otherwise parks at
     # the hosted-runner 6h cap while bundle/docker/release all wait on build.
@@ -254,7 +228,6 @@ jobs:
           bundle() {
             local platform="$1"   # linux-x64, linux-arm64, macos-x64, macos-arm64, windows-x64
             local cli_src="$2"    # artifact name for codesmith binary
-            local tui_src="$3"    # artifact name for codesmith-tui binary
             local ext="$4"        # tar.gz or zip
             local variant="$5"    # '' (standard) or 'portable' (Windows only, no install script)
             shift 5
@@ -264,13 +237,10 @@ jobs:
 
             # Copy binaries, stripping platform suffixes
             local cli_dst="codesmith"
-            local tui_dst="codesmith-tui"
             if [[ "$platform" == windows-* ]]; then
               cli_dst="codesmith.exe"
-              tui_dst="codesmith-tui.exe"
             fi
             cp "artifacts/${cli_src}/${cli_src}" "$dir/${cli_dst}"
-            cp "artifacts/${tui_src}/${tui_src}" "$dir/${tui_dst}"
 
             # Add install script (standard variant only)
             if [[ "$variant" != "portable" ]]; then
@@ -301,29 +271,29 @@ jobs:
 
           # Platform: linux-x64
           bundle linux-x64 \
-            codesmith-linux-x64 codesmith-tui-linux-x64 tar.gz ""
+            codesmith-linux-x64 tar.gz ""
 
           # Platform: linux-arm64
           bundle linux-arm64 \
-            codesmith-linux-arm64 codesmith-tui-linux-arm64 tar.gz ""
+            codesmith-linux-arm64 tar.gz ""
 
           # Platform: linux-riscv64
           bundle linux-riscv64 \
-            codesmith-linux-riscv64 codesmith-tui-linux-riscv64 tar.gz ""
+            codesmith-linux-riscv64 tar.gz ""
 
           # Platform: macos-x64
           bundle macos-x64 \
-            codesmith-macos-x64 codesmith-tui-macos-x64 tar.gz ""
+            codesmith-macos-x64 tar.gz ""
 
           # Platform: macos-arm64
           bundle macos-arm64 \
-            codesmith-macos-arm64 codesmith-tui-macos-arm64 tar.gz ""
+            codesmith-macos-arm64 tar.gz ""
 
           # Platform: windows-x64 (standard + portable)
           bundle windows-x64 \
-            codesmith-windows-x64.exe codesmith-tui-windows-x64.exe zip ""
+            codesmith-windows-x64.exe zip ""
           bundle windows-x64 \
-            codesmith-windows-x64.exe codesmith-tui-windows-x64.exe zip "portable"
+            codesmith-windows-x64.exe zip "portable"
 
           echo ""
           echo "=== Archive checksums ==="
@@ -455,19 +425,19 @@ jobs:
               ghcr.io/camilesing/codesmith:${{ needs.resolve.outputs.tag }}
             ```
 
-            The image ships the `codesmith` dispatcher and `codesmith-tui` runtime. The `latest` tag is also updated on release.
+            The image ships the single `codesmith` binary. The `latest` tag is also updated on release.
 
             ### Cargo (Linux / macOS)
 
             ```bash
-            cargo install codesmith-cli codesmith-tui --locked
+            cargo install codesmith-cli --locked
             ```
 
-            Both crates are required — `codesmith-cli` produces the `codesmith` dispatcher and `codesmith-tui` produces the interactive runtime that the dispatcher delegates to. Installing only one binary will fail at runtime with a `MISSING_COMPANION_BINARY` error.
+            The crate produces the single `codesmith` binary: REPL frontend, headless subcommands, and servers in one executable.
 
             ### Manual download — platform archives (recommended)
 
-            Each archive below contains **both** the `codesmith` dispatcher and `codesmith-tui` runtime, plus an install script:
+            Each archive below contains the `codesmith` binary plus an install script:
 
             | Platform | Archive | Install script |
             |---|---|---|

@@ -56,10 +56,10 @@ RUN --mount=type=cache,id=codesmith-target-${TARGETARCH},target=/build/target,sh
     --mount=type=cache,id=codesmith-cargo-registry-${TARGETARCH},target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=codesmith-cargo-git-${TARGETARCH},target=/usr/local/cargo/git,sharing=locked \
     cargo build --release --locked --target "$(cat /rust-target)" \
-      -p codesmith-cli -p codesmith-tui \
+      -p codesmith-cli \
     && mkdir -p /out \
     && cp target/$(cat /rust-target)/release/codesmith /out/ \
-    && cp target/$(cat /rust-target)/release/codesmith-tui /out/
+    && cp target/$(cat /rust-target)/release/codesmith /out/
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────
 FROM debian:bookworm-slim
@@ -77,7 +77,7 @@ USER codesmith
 WORKDIR /home/codesmith
 
 COPY --from=builder --chown=codesmith:codesmith /out/codesmith /usr/local/bin/codesmith
-COPY --from=builder --chown=codesmith:codesmith /out/codesmith-tui /usr/local/bin/codesmith-tui
+COPY --from=builder --chown=codesmith:codesmith /out/codesmith /usr/local/bin/codesmith
 
 # The dispatcher expects to find its companion binary next to it.
 # Both are in /usr/local/bin — no further path setup needed.

@@ -37,7 +37,7 @@ async function runCodeSmith() {
 }
 
 async function runCodeSmithTui() {
-  await run("codesmith-tui");
+  await run("codesmith");
 }
 
 module.exports = {

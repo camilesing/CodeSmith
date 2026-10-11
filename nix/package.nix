@@ -44,12 +44,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
     cacert
   ];
 
-  cargoBuildFlags = [
-    "--package"
-    "codesmith-cli"
-    "--package"
-    "codesmith-tui"
-  ];
+  cargoBuildFlags = [ "--package" "codesmith-cli" ];
   cargoTestFlags = finalAttrs.cargoBuildFlags ++ [
     "--bins"
   ];

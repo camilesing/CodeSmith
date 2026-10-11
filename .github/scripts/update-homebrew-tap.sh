@@ -36,13 +36,9 @@ sha() {
 
 # Canonical dispatcher and TUI
 readonly SHA_COD_MACOS_ARM="$(sha codesmith-macos-arm64)"
-readonly SHA_TUI_MACOS_ARM="$(sha codesmith-tui-macos-arm64)"
 readonly SHA_COD_MACOS_X64="$(sha codesmith-macos-x64)"
-readonly SHA_TUI_MACOS_X64="$(sha codesmith-tui-macos-x64)"
 readonly SHA_COD_LINUX_ARM="$(sha codesmith-linux-arm64)"
-readonly SHA_TUI_LINUX_ARM="$(sha codesmith-tui-linux-arm64)"
 readonly SHA_COD_LINUX_X64="$(sha codesmith-linux-x64)"
-readonly SHA_TUI_LINUX_X64="$(sha codesmith-tui-linux-x64)"
 
 # --- temp dirs --------------------------------------------------------
 
@@ -65,41 +61,15 @@ class Codesmith < Formula
     if Hardware::CPU.arm?
       url "${BASE_URL}/codesmith-macos-arm64", using: :nounzip
       sha256 "${SHA_COD_MACOS_ARM}"
-      resource "tui" do
-        url "${BASE_URL}/codesmith-tui-macos-arm64", using: :nounzip
-        sha256 "${SHA_TUI_MACOS_ARM}"
-      end
-    else
-      url "${BASE_URL}/codesmith-macos-x64", using: :nounzip
-      sha256 "${SHA_COD_MACOS_X64}"
-      resource "tui" do
-        url "${BASE_URL}/codesmith-tui-macos-x64", using: :nounzip
-        sha256 "${SHA_TUI_MACOS_X64}"
-      end
-    end
-  end
-
+    
   on_linux do
     if Hardware::CPU.arm?
       url "${BASE_URL}/codesmith-linux-arm64", using: :nounzip
       sha256 "${SHA_COD_LINUX_ARM}"
-      resource "tui" do
-        url "${BASE_URL}/codesmith-tui-linux-arm64", using: :nounzip
-        sha256 "${SHA_TUI_LINUX_ARM}"
-      end
-    else
-      url "${BASE_URL}/codesmith-linux-x64", using: :nounzip
-      sha256 "${SHA_COD_LINUX_X64}"
-      resource "tui" do
-        url "${BASE_URL}/codesmith-tui-linux-x64", using: :nounzip
-        sha256 "${SHA_TUI_LINUX_X64}"
-      end
-    end
-  end
-
+    
   def install
     bin.install Dir["*"].first => "codesmith"
-    resource("tui").stage { bin.install Dir["*"].first => "codesmith-tui" }
+    resource("tui").stage {  }
   end
 
   test do

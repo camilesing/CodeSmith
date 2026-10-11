@@ -16,15 +16,15 @@ explaining.
 |---|---|---|---|
 | `AgentExecutor` | `agent` | `agent`, `agent-runtime` | `agent` |
 | `ChatHistory` | `agent` | `agent`, `agent-runtime` | `agent`, `agent-runtime` |
-| `CommandDefinition` | `agent` | `agent`, `extensions`, `tui` | `agent`, `extensions` |
-| `Extension` | `agent` | `agent-runtime`, `extensions`, `extensions-fixture-dylib`, `tui` | `extensions`, `extensions-fixture-dylib` |
+| `CommandDefinition` | `agent` | `agent`, `extensions` | `agent`, `extensions` |
+| `Extension` | `agent` | `agent-runtime`, `cli`, `extensions`, `extensions-fixture-dylib` | `extensions`, `extensions-fixture-dylib` |
 | `Handler` | `agent` | `agent`, `agent-runtime`, `extensions`, `extensions-fixture-dylib` | `agent`, `extensions` |
-| `HostServices` | `agent-runtime` | `tui` | `agent-runtime`, `tool-impls`, `tui` |
+| `HostServices` | `agent-runtime` | `cli` | `agent-runtime`, `cli`, `tool-impls` |
 | `IndexBackend` | `index` | `index` | `index` |
 | `IndexBackendFactory` | `index` | `index` | `index` |
-| `IndexServiceApi` | `tools` | `index`, `tool-impls` | `agent-runtime`, `index`, `tools`, `tui` |
+| `IndexServiceApi` | `tools` | `index`, `tool-impls` | `agent-runtime`, `cli`, `index`, `tools` |
 | `KeyringStore` | `secrets` | `cli`, `secrets` | `secrets` |
-| `LlmClient` | `agent` | `agent`, `agent-runtime`, `extensions`, `providers`, `tui` | `agent`, `agent-runtime`, `providers`, `tui` |
+| `LlmClient` | `agent` | `agent`, `agent-runtime`, `cli`, `extensions`, `providers` | `agent`, `agent-runtime`, `cli`, `providers` |
 | `ProviderFactory` | `agent` | `agent`, `extensions`, `providers` | `agent`, `extensions` |
-| `SandboxBackend` | `agent-runtime` | `tui` | `agent-runtime`, `tui` |
-| `ToolDefinition` | `agent` | `agent`, `agent-runtime`, `extensions`, `extensions-fixture-dylib`, `tui` | `agent`, `agent-runtime`, `extensions` |
+| `SandboxBackend` | `agent-runtime` | `cli` | `agent-runtime`, `cli` |
+| `ToolDefinition` | `agent` | `agent`, `agent-runtime`, `cli`, `extensions`, `extensions-fixture-dylib` | `agent`, `agent-runtime`, `extensions` |

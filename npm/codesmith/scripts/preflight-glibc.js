@@ -70,7 +70,7 @@ function buildFromSourceHint() {
     "",
     "  # Requires Rust 1.88+ (https://rustup.rs)",
     "  cargo install codesmith-cli --locked   # provides `codesmith`",
-    "  cargo install codesmith-tui --locked   # provides `codesmith-tui`",
+    "  cargo install codesmith --locked   # provides `codesmith`",
     "",
     "Or build from a checkout:",
     "",
