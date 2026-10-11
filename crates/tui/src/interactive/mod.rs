@@ -275,7 +275,7 @@ fn extract_attachments(input: &str) -> (String, Vec<String>) {
 }
 
 /// Submit a plain user message (auto-model routing resolved per request).
-async fn submit(state: &mut ReplState, content: String) -> Result<()> {
+pub(crate) async fn submit(state: &mut ReplState, content: String) -> Result<()> {
     submit_with_images(state, content, Vec::new()).await
 }
 

@@ -5,13 +5,15 @@
 //! handler to the ratatui `App`. Handlers print directly to stdout and
 //! mutate state / send engine ops.
 
+pub mod debug_cmds;
+pub mod session_cmds;
+
 use codesmith_config::presets::PresetCatalog;
 use colored::Colorize;
 
 use super::state::ReplState;
 use crate::core::ops::Op;
 use crate::presets;
-use crate::session_manager::SessionManager;
 use crate::tui::app::AppMode;
 
 /// Dispatch one `/command args…` line. Returns `true` when the REPL
@@ -60,26 +62,158 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             false
         }
         "sessions" => {
-            cmd_sessions(&arg_str);
+            session_cmds::sessions(
+                state,
+                if arg_str.is_empty() {
+                    None
+                } else {
+                    Some(&arg_str)
+                },
+            );
             false
         }
-        "agents" => {
-            cmd_agents(state);
+        "resume" => {
+            session_cmds::resume(
+                state,
+                if arg_str.is_empty() {
+                    None
+                } else {
+                    Some(&arg_str)
+                },
+            )
+            .await;
             false
         }
-        "compact" => {
-            if let Ok(engine) = state.engine() {
-                let _ = engine.send(Op::CompactContext).await;
-                println!("{}", "compacting context…".magenta());
-            }
+        "save" => {
+            session_cmds::save(
+                state,
+                if arg_str.is_empty() {
+                    None
+                } else {
+                    Some(&arg_str)
+                },
+            );
+            false
+        }
+        "fork" | "branch" => {
+            session_cmds::fork(state).await;
+            false
+        }
+        "load" => {
+            session_cmds::load(
+                state,
+                if arg_str.is_empty() {
+                    None
+                } else {
+                    Some(&arg_str)
+                },
+            )
+            .await;
+            false
+        }
+        "compact" | "yasuo" => {
+            session_cmds::compact(
+                state,
+                if arg_str.is_empty() {
+                    None
+                } else {
+                    Some(&arg_str)
+                },
+            )
+            .await;
+            false
+        }
+        "purge" | "qingchu" => {
+            session_cmds::purge(state).await;
             false
         }
         "new" => {
-            cmd_new(state).await;
+            session_cmds::new_session(
+                state,
+                if arg_str.is_empty() {
+                    None
+                } else {
+                    Some(&arg_str)
+                },
+            )
+            .await;
+            false
+        }
+        "export" | "daochu" => {
+            session_cmds::export(
+                state,
+                if arg_str.is_empty() {
+                    None
+                } else {
+                    Some(&arg_str)
+                },
+            );
+            false
+        }
+        "rename" | "gaiming" => {
+            session_cmds::rename(
+                state,
+                if arg_str.is_empty() {
+                    None
+                } else {
+                    Some(&arg_str)
+                },
+            );
+            false
+        }
+        "agents" | "subagents" => {
+            cmd_agents(state);
             false
         }
         "logout" => {
             cmd_logout(state);
+            false
+        }
+        "tokens" => {
+            debug_cmds::tokens(state);
+            false
+        }
+        "cost" => {
+            debug_cmds::cost(state);
+            false
+        }
+        "tools" => {
+            debug_cmds::tools(state);
+            false
+        }
+        "system" | "xitong" => {
+            debug_cmds::system_prompt(state);
+            false
+        }
+        "context" | "ctx" => {
+            debug_cmds::context(state);
+            false
+        }
+        "cache" => {
+            debug_cmds::cache(
+                state,
+                if arg_str.is_empty() {
+                    None
+                } else {
+                    Some(&arg_str)
+                },
+            );
+            false
+        }
+        "diff" => {
+            debug_cmds::diff(state);
+            false
+        }
+        "edit" => {
+            debug_cmds::edit(state);
+            false
+        }
+        "undo" => {
+            debug_cmds::undo(state).await;
+            false
+        }
+        "retry" | "chongshi" => {
+            debug_cmds::retry(state).await;
             false
         }
         other => {
@@ -318,36 +452,6 @@ fn cmd_provider(state: &mut ReplState, arg: &str) {
     }
 }
 
-fn cmd_sessions(arg: &str) {
-    let limit = arg.trim().parse::<usize>().unwrap_or(20).clamp(1, 100);
-    let Ok(manager) = SessionManager::default_location() else {
-        println!("{} could not open the session store", "✗".red());
-        return;
-    };
-    let Ok(mut sessions) = manager.list_sessions() else {
-        println!("{} could not list sessions", "✗".red());
-        return;
-    };
-    sessions.truncate(limit);
-    if sessions.is_empty() {
-        println!("no saved sessions");
-        return;
-    }
-    println!("{}", "saved sessions (newest first):".bold());
-    for meta in sessions {
-        println!(
-            "  {}  {}  {}",
-            crate::session_manager::truncate_id(&meta.id),
-            meta.updated_at.format("%Y-%m-%d %H:%M"),
-            if meta.title.is_empty() {
-                "(untitled)"
-            } else {
-                meta.title.as_str()
-            }
-        );
-    }
-}
-
 fn cmd_agents(state: &ReplState) {
     if state.agent_progress.is_empty() {
         println!("no sub-agents running");
@@ -357,28 +461,6 @@ fn cmd_agents(state: &ReplState) {
     for (id, status) in &state.agent_progress {
         println!("  {id}: {status}");
     }
-}
-
-async fn cmd_new(state: &mut ReplState) {
-    state.api_messages.clear();
-    state.system_prompt = None;
-    state.current_session_id = None;
-    state.session = Default::default();
-    state.agent_progress.clear();
-    state.subagent_cache.clear();
-    if let Ok(engine) = state.engine() {
-        let _ = engine
-            .send(Op::SyncSession {
-                session_id: None,
-                messages: Vec::new(),
-                system_prompt: None,
-                system_prompt_override: false,
-                model: state.model.clone(),
-                workspace: state.workspace.clone(),
-            })
-            .await;
-    }
-    println!("{}", "started a fresh session".green());
 }
 
 fn cmd_logout(_state: &mut ReplState) {
