@@ -383,7 +383,10 @@ fn persist_session_turn_boundary(state: &mut ReplState) {
     session.metadata.cost.subagent_cost_cny = state.session.subagent_cost_cny;
     session.metadata.cumulative_turn_secs = state.cumulative_turn_duration.as_secs();
     if let Err(err) = manager.save_session(&session) {
-        println!("{}", format!("warning: could not auto-save session: {err}").yellow());
+        println!(
+            "{}",
+            format!("warning: could not auto-save session: {err}").yellow()
+        );
         return;
     }
     // Adopt the id so subsequent turns update the same session file

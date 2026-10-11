@@ -179,7 +179,8 @@ impl AcpServer {
     async fn run_prompt(&self, prompt: &str, cwd: &PathBuf) -> Result<String> {
         let _cwd_guard = ScopedCurrentDir::new(cwd)?;
         let client = crate::core::engine::resolve_llm_client(&self.config)?;
-        let route = crate::resolve_cli_auto_route(&self.config, &self.model, prompt).await;
+        let route =
+            crate::main_root::resolve_cli_auto_route(&self.config, &self.model, prompt).await;
         let reasoning_effort = route
             .reasoning_effort
             .map(|effort| effort.as_setting().to_string());

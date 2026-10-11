@@ -19,7 +19,7 @@ use crate::dependencies::ExternalTool;
 /// Best-effort terminal restore on crash paths: leave any raw/alt-screen
 /// mode a subprocess may have left enabled (the REPL itself never enters
 /// raw mode; exec_shell's pty wrapper restores its own state).
-fn restore_terminal_best_effort() {
+pub(crate) fn restore_terminal_best_effort() {
     use crossterm::{execute, terminal};
     if terminal::is_raw_mode_enabled().unwrap_or(false)
         && let Ok(()) = terminal::disable_raw_mode()
@@ -33,83 +33,6 @@ const CODESMITH_SKY_RGB: (u8, u8, u8) = (106, 174, 242);
 const CODESMITH_RED_RGB: (u8, u8, u8) = (255, 92, 122);
 const CODESMITH_BLUE_RGB: (u8, u8, u8) = (47, 134, 255);
 
-mod acp_server;
-mod agent_memory;
-mod approval_grants;
-mod artifacts;
-mod audit;
-mod auto_mode;
-pub use codesmith_agent_runtime::auto_reasoning;
-mod app_state;
-mod automation_manager;
-mod background_task;
-mod capabilities;
-mod child_env;
-mod command_safety;
-mod compaction;
-mod config;
-mod core;
-mod cost_status;
-mod cycle_manager;
-mod dependencies;
-mod doctor_llm;
-mod eval;
-mod execpolicy;
-mod extension_state;
-mod features;
-mod handoff;
-mod hooks;
-mod index;
-mod interactive;
-mod knowledge;
-mod llm_client;
-mod localization;
-mod logging;
-mod lsp;
-mod mcp;
-mod mcp_server;
-mod media;
-mod memory;
-mod memory_consolidate;
-mod mod_ops;
-mod mod_state;
-mod models;
-mod network_policy;
-mod notifications;
-mod prefix_cache;
-mod presets;
-mod pricing;
-mod project_context;
-mod prompts;
-mod purge;
-pub mod repl;
-mod retry_status;
-pub mod rlm;
-mod runtime_api;
-mod runtime_threads;
-mod sandbox;
-mod schema_migration;
-mod seam_manager;
-#[allow(dead_code)]
-mod session_failure_classifier;
-mod session_manager;
-mod settings;
-mod shell_dispatcher;
-mod skill_state;
-mod skills;
-mod slop_ledger;
-mod snapshot;
-mod task_manager;
-#[cfg(test)]
-mod test_support;
-mod tool_summary;
-mod tools;
-mod tui;
-mod utils;
-mod vision;
-mod working_set;
-mod workspace_trust;
-
 use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS, effective_home_dir};
 use crate::eval::{EvalHarness, EvalHarnessConfig, ScenarioStepKind};
 use crate::features::{Feature, render_feature_table};
@@ -117,9 +40,13 @@ use crate::mcp::{McpConfig, McpPool, McpServerConfig};
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
 use crate::session_manager::{SessionManager, create_saved_session, truncate_id};
 use crate::tool_summary::{summarize_tool_args, summarize_tool_output};
+use crate::{
+    acp_server, child_env, doctor_llm, execpolicy, logging, mcp_server, memory_consolidate,
+    project_context, runtime_api, session_manager,
+};
 
 #[cfg(windows)]
-fn configure_windows_console_utf8() {
+pub(crate) fn configure_windows_console_utf8() {
     use windows::Win32::System::Console::{SetConsoleCP, SetConsoleOutputCP};
 
     const CP_UTF8: u32 = 65001;
@@ -130,48 +57,48 @@ fn configure_windows_console_utf8() {
 }
 
 #[cfg(not(windows))]
-fn configure_windows_console_utf8() {}
+pub(crate) fn configure_windows_console_utf8() {}
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "codesmith-tui",
-    bin_name = "codesmith-tui",
+    name = "codesmith",
+    bin_name = "codesmith",
     author,
     version = env!("CODESMITH_BUILD_VERSION"),
     about = "codesmith/CLI for open-weight coding models",
     long_about = "Terminal-native TUI and CLI for open-source and open-weight coding models.\n\nRun 'codesmith' to start."
 )]
-struct Cli {
+pub(crate) struct Cli {
     /// Subcommand to run
     #[command(subcommand)]
-    command: Option<Commands>,
+    pub(crate) command: Option<Commands>,
 
     #[command(flatten)]
-    feature_toggles: FeatureToggles,
+    pub(crate) feature_toggles: FeatureToggles,
 
     /// Initial prompt to submit in the interactive TUI. Use `exec` for non-interactive runs.
     #[arg(short, long, value_name = "PROMPT", num_args = 1..)]
-    prompt: Vec<String>,
+    pub(crate) prompt: Vec<String>,
 
     /// YOLO mode: enable agent tools + shell execution
     #[arg(long)]
-    yolo: bool,
+    pub(crate) yolo: bool,
 
     /// Maximum number of concurrent sub-agents (1-20)
     #[arg(long)]
-    max_subagents: Option<usize>,
+    pub(crate) max_subagents: Option<usize>,
 
     /// Path to config file
     #[arg(long)]
-    config: Option<PathBuf>,
+    pub(crate) config: Option<PathBuf>,
 
     /// Enable verbose logging
     #[arg(short, long)]
-    verbose: bool,
+    pub(crate) verbose: bool,
 
     /// Config profile name
     #[arg(long)]
-    profile: Option<String>,
+    pub(crate) profile: Option<String>,
 
     /// Configuration preset tier (simple | middle | all | experiment | plan
     /// | <custom>). Preset values are baselines: explicit config.toml keys
@@ -180,61 +107,125 @@ struct Cli {
     /// .codesmith/presets/; see /preset list. Overrides `preset` (and the
     /// legacy `mode`) in config.toml.
     #[arg(long)]
-    preset: Option<String>,
+    pub(crate) preset: Option<String>,
 
     /// Deprecated alias of --preset (pre-rename name).
     #[arg(long, hide = true)]
-    mode: Option<String>,
+    pub(crate) mode: Option<String>,
 
     /// Workspace directory for file operations
     #[arg(short, long)]
-    workspace: Option<PathBuf>,
+    pub(crate) workspace: Option<PathBuf>,
 
     /// Resume a previous session by ID or prefix
     #[arg(short, long)]
-    resume: Option<String>,
+    pub(crate) resume: Option<String>,
 
     /// Continue the most recent session in this workspace
     #[arg(short = 'c', long = "continue")]
-    continue_session: bool,
+    pub(crate) continue_session: bool,
 
     /// Deprecated compatibility flag; the interactive TUI always owns the
     /// alternate screen so terminal scrollback cannot hijack the viewport.
     #[arg(long = "no-alt-screen", hide = true)]
-    no_alt_screen: bool,
+    pub(crate) no_alt_screen: bool,
 
     /// Enable TUI mouse capture for internal scrolling, transcript selection,
     /// and scrollbar dragging
     /// (default off on Windows)
     #[arg(long = "mouse-capture", conflicts_with = "no_mouse_capture")]
-    mouse_capture: bool,
+    pub(crate) mouse_capture: bool,
 
     /// Disable TUI mouse capture so terminal-native text selection works
     #[arg(long = "no-mouse-capture", conflicts_with = "mouse_capture")]
-    no_mouse_capture: bool,
+    pub(crate) no_mouse_capture: bool,
 
     /// Skip onboarding screens
     #[arg(long)]
-    skip_onboarding: bool,
+    pub(crate) skip_onboarding: bool,
 
     /// Start a fresh session, ignoring any crash-recovery checkpoint
     #[arg(long = "fresh")]
-    fresh: bool,
+    pub(crate) fresh: bool,
 
     /// Skip loading project-level config from $WORKSPACE/.codesmith/config.toml
     #[arg(long = "no-project-config")]
-    no_project_config: bool,
+    pub(crate) no_project_config: bool,
+
+    /// API provider override (deepseek | nvidia-nim | openrouter | ...).
+    #[arg(long)]
+    pub(crate) provider: Option<crate::ProviderArg>,
+    /// Custom OpenAI-compatible gateway provider name.
+    #[arg(long, value_name = "NAME", conflicts_with = "provider")]
+    pub(crate) custom_provider: Option<String>,
+    /// Model override for this run.
+    #[arg(long)]
+    pub(crate) model_flag: Option<String>,
+    /// API key override (prefer `codesmith login` or $Provider_API_KEY).
+    #[arg(long)]
+    pub(crate) api_key: Option<String>,
+    /// Custom API base URL.
+    #[arg(long)]
+    pub(crate) base_url: Option<String>,
+    /// Output verbosity for headless runs.
+    #[arg(long)]
+    pub(crate) output_mode: Option<String>,
+    /// Log level override.
+    #[arg(long)]
+    pub(crate) log_level: Option<String>,
+    /// Enable/disable telemetry for this run.
+    #[arg(long)]
+    pub(crate) telemetry: Option<bool>,
+    /// Tool-approval policy override.
+    #[arg(long)]
+    pub(crate) approval_policy: Option<String>,
+    /// Sandbox mode override.
+    #[arg(long)]
+    pub(crate) sandbox_mode: Option<String>,
+    /// Bare run: no live status-line refreshes (plain output only).
+    #[arg(long)]
+    pub(crate) bare: bool,
 }
 
 #[derive(Subcommand, Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
-enum Commands {
+pub(crate) enum Commands {
     /// Run system diagnostics and check configuration
     Doctor(DoctorArgs),
     /// Inspect and consolidate agent memory (KoD MEMORY.md index)
     Memory(MemoryArgs),
     /// Bootstrap MCP config and/or skills directories
     Setup(SetupArgs),
+    /// Generate shell completions.
+    #[command(after_help = r#"Examples:
+  Bash (current shell only):
+    source <(codesmith completion bash)
+
+  Bash (persistent, Linux/bash-completion):
+    mkdir -p ~/.local/share/bash-completion/completions
+    codesmith completion bash > ~/.local/share/bash-completion/completions/codesmith
+    # Requires bash-completion to be installed and loaded by your shell.
+
+  Zsh:
+    mkdir -p ~/.zfunc
+    codesmith completion zsh > ~/.zfunc/_codesmith
+    # Add to ~/.zshrc if needed:
+    #   fpath=(~/.zfunc $fpath)
+    #   autoload -Uz compinit && compinit
+
+  Fish:
+    mkdir -p ~/.config/fish/completions
+    codesmith completion fish > ~/.config/fish/completions/codesmith.fish
+
+  PowerShell (current shell only):
+    codesmith completion powershell | Out-String | Invoke-Expression
+
+The command prints the completion script to stdout; redirect it to a path your shell loads automatically."#)]
+    Completion {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: Shell,
+    },
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
@@ -329,6 +320,26 @@ enum Commands {
     /// reports a completion summary to the lead's mailbox, and marks the
     /// member inactive.
     TeamTeammate(TeamTeammateArgs),
+    /// Read/set the shared config file
+    Config(crate::ConfigArgs),
+    /// Show or resolve model selections
+    Model(crate::ModelArgs),
+    /// Manage stored credentials
+    Auth(crate::AuthArgs),
+    /// Run the MCP stdio server
+    McpServer,
+    /// Manage durable threads
+    Thread(crate::ThreadArgs),
+    /// Run the local app-server
+    AppServer(crate::AppServerArgs),
+    /// Show collected metrics
+    Metrics(crate::MetricsArgs),
+    /// Docker deployment info
+    Docker,
+    /// Print version
+    Version,
+    /// Self-update to the latest release
+    Update(crate::UpdateArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -341,7 +352,7 @@ Examples:
 Plain `codesmith exec` is a one-shot model response. Use `--auto` for
 non-interactive filesystem/shell tool use.
 ")]
-struct ExecArgs {
+pub(crate) struct ExecArgs {
     /// Prompt to send to the model
     #[arg(
         value_name = "PROMPT",
@@ -389,7 +400,7 @@ struct ExecArgs {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum ExecOutputFormat {
+pub(crate) enum ExecOutputFormat {
     Text,
     #[value(name = "stream-json")]
     StreamJson,
@@ -397,7 +408,7 @@ enum ExecOutputFormat {
 
 /// Arguments for the `team-teammate` subcommand (pane-backed teammate loop).
 #[derive(Args, Debug, Clone)]
-struct TeamTeammateArgs {
+pub(crate) struct TeamTeammateArgs {
     /// Team name the teammate belongs to.
     #[arg(long, required = true)]
     team: String,
@@ -430,13 +441,13 @@ struct TeamTeammateArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-struct SwebenchArgs {
+pub(crate) struct SwebenchArgs {
     #[command(subcommand)]
     command: SwebenchCommand,
 }
 
 #[derive(Subcommand, Debug, Clone)]
-enum SwebenchCommand {
+pub(crate) enum SwebenchCommand {
     /// Run CodeSmith on one SWE-bench instance and export the resulting diff
     Run(SwebenchRunArgs),
     /// Export the current working-tree diff as one SWE-bench prediction row
@@ -444,7 +455,7 @@ enum SwebenchCommand {
 }
 
 #[derive(Args, Debug, Clone)]
-struct SwebenchRunArgs {
+pub(crate) struct SwebenchRunArgs {
     /// SWE-bench instance id, e.g. django__django-12345
     #[arg(long, value_name = "ID")]
     instance_id: String,
@@ -466,7 +477,7 @@ struct SwebenchRunArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-struct SwebenchExportArgs {
+pub(crate) struct SwebenchExportArgs {
     /// SWE-bench instance id, e.g. django__django-12345
     #[arg(long, value_name = "ID")]
     instance_id: String,
@@ -486,7 +497,7 @@ struct SwebenchExportArgs {
 /// trap a frustrated user pressing Ctrl+C repeatedly.
 ///
 /// See the call site in `main` for the rationale (#1583).
-fn spawn_signal_cleanup_task() {
+pub(crate) fn spawn_signal_cleanup_task() {
     tokio::spawn(async {
         let exit_code = wait_for_terminating_signal().await;
         // If we get here a fatal signal arrived. Restore the terminal
@@ -502,7 +513,7 @@ fn spawn_signal_cleanup_task() {
 }
 
 #[cfg(unix)]
-async fn wait_for_terminating_signal() -> i32 {
+pub(crate) async fn wait_for_terminating_signal() -> i32 {
     use tokio::signal::unix::{SignalKind, signal};
     // Failing to install any individual stream is non-fatal: we still
     // want the others to work. The fallback never-resolving future
@@ -518,7 +529,7 @@ async fn wait_for_terminating_signal() -> i32 {
 }
 
 #[cfg(not(unix))]
-async fn wait_for_terminating_signal() -> i32 {
+pub(crate) async fn wait_for_terminating_signal() -> i32 {
     // Windows: tokio::signal::ctrl_c covers both Ctrl+C and Ctrl+Break
     // (CTRL_C_EVENT / CTRL_BREAK_EVENT). Console-close, logoff, and
     // shutdown events are not currently routed through tokio.
@@ -526,15 +537,20 @@ async fn wait_for_terminating_signal() -> i32 {
     130
 }
 
-fn join_prompt_parts(parts: &[String]) -> String {
+pub(crate) fn join_prompt_parts(parts: &[String]) -> String {
     parts.join(" ")
 }
 
-fn top_level_prompt_initial_input(parts: &[String]) -> Option<crate::app_state::InitialInput> {
+pub(crate) fn top_level_prompt_initial_input(
+    parts: &[String],
+) -> Option<crate::app_state::InitialInput> {
     (!parts.is_empty()).then(|| crate::app_state::InitialInput::Submit(join_prompt_parts(parts)))
 }
 
-fn resolve_exec_resume_session_id(args: &ExecArgs, workspace: &Path) -> Result<Option<String>> {
+pub(crate) fn resolve_exec_resume_session_id(
+    args: &ExecArgs,
+    workspace: &Path,
+) -> Result<Option<String>> {
     if let Some(id) = args.resume.as_ref().or(args.session_id.as_ref()) {
         return Ok(Some(id.clone()));
     }
@@ -553,7 +569,7 @@ fn resolve_exec_resume_session_id(args: &ExecArgs, workspace: &Path) -> Result<O
 }
 
 #[derive(Args, Debug, Clone, Default)]
-struct SetupArgs {
+pub(crate) struct SetupArgs {
     /// Initialize MCP configuration at the configured path
     #[arg(long, default_value_t = false)]
     mcp: bool,
@@ -584,20 +600,20 @@ struct SetupArgs {
 }
 
 #[derive(Args, Debug, Clone, Default)]
-struct DoctorArgs {
+pub(crate) struct DoctorArgs {
     /// Emit machine-readable JSON output (skips live API connectivity check)
     #[arg(long, default_value_t = false)]
     json: bool,
 }
 
 #[derive(Args, Debug, Clone)]
-struct MemoryArgs {
+pub(crate) struct MemoryArgs {
     #[command(subcommand)]
     command: MemoryCommand,
 }
 
 #[derive(Subcommand, Debug, Clone)]
-enum MemoryCommand {
+pub(crate) enum MemoryCommand {
     /// Consolidate the KoD memory index (P3-8 sleep learning, offline)
     Consolidate {
         /// Write the consolidated index (backs up MEMORY.md first);
@@ -611,7 +627,7 @@ enum MemoryCommand {
 }
 
 #[derive(Args, Debug, Clone)]
-struct EvalArgs {
+pub(crate) struct EvalArgs {
     /// Intentionally fail a specific step (list, read, search, edit, patch, shell)
     #[arg(long, value_name = "STEP")]
     fail_step: Option<String>,
@@ -634,14 +650,14 @@ struct EvalArgs {
 }
 
 #[derive(Args, Debug, Clone, Default)]
-struct ModelsArgs {
+pub(crate) struct ModelsArgs {
     /// Print models as pretty JSON
     #[arg(long, default_value_t = false)]
     json: bool,
 }
 
 #[derive(Args, Debug, Default, Clone)]
-struct FeatureToggles {
+pub(crate) struct FeatureToggles {
     /// Enable a feature (repeatable). Equivalent to `features.<name>=true`.
     #[arg(long = "enable", value_name = "FEATURE", action = clap::ArgAction::Append, global = true)]
     enable: Vec<String>,
@@ -664,7 +680,7 @@ impl FeatureToggles {
 }
 
 #[derive(Args, Debug, Clone)]
-struct ReviewArgs {
+pub(crate) struct ReviewArgs {
     /// Review staged changes instead of the working tree
     #[arg(long, conflicts_with = "base")]
     staged: bool,
@@ -686,14 +702,14 @@ struct ReviewArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-struct ApplyArgs {
+pub(crate) struct ApplyArgs {
     /// Patch file to apply (defaults to stdin)
     #[arg(value_name = "PATCH_FILE")]
     patch_file: Option<PathBuf>,
 }
 
 #[derive(Args, Debug, Clone)]
-struct ServeArgs {
+pub(crate) struct ServeArgs {
     /// Start MCP server over stdio
     #[arg(long)]
     mcp: bool,
@@ -734,12 +750,12 @@ struct ServeArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ServeBindHost {
+pub(crate) struct ServeBindHost {
     host: String,
     mobile_rebound_to_lan: bool,
 }
 
-fn resolve_serve_bind_host(mobile: bool, host: Option<String>) -> ServeBindHost {
+pub(crate) fn resolve_serve_bind_host(mobile: bool, host: Option<String>) -> ServeBindHost {
     match (mobile, host) {
         (true, None) => ServeBindHost {
             host: "0.0.0.0".to_string(),
@@ -756,7 +772,12 @@ fn resolve_serve_bind_host(mobile: bool, host: Option<String>) -> ServeBindHost 
     }
 }
 
-fn validate_serve_mode_selection(mcp: bool, http: bool, mobile: bool, acp: bool) -> Result<bool> {
+pub(crate) fn validate_serve_mode_selection(
+    mcp: bool,
+    http: bool,
+    mobile: bool,
+    acp: bool,
+) -> Result<bool> {
     if http && mobile {
         bail!("--http and --mobile are mutually exclusive; choose one");
     }
@@ -772,7 +793,7 @@ fn validate_serve_mode_selection(mcp: bool, http: bool, mobile: bool, acp: bool)
 }
 
 #[derive(Subcommand, Debug, Clone)]
-enum McpCommand {
+pub(crate) enum McpCommand {
     /// List configured MCP servers
     List,
     /// Create a template MCP config at the configured path
@@ -855,49 +876,57 @@ enum McpCommand {
 }
 
 #[derive(Args, Debug, Clone)]
-struct ExecpolicyCommand {
+pub(crate) struct ExecpolicyCommand {
     #[command(subcommand)]
     command: ExecpolicySubcommand,
 }
 
 #[derive(Subcommand, Debug, Clone)]
-enum ExecpolicySubcommand {
+pub(crate) enum ExecpolicySubcommand {
     /// Check execpolicy files against a command
     Check(execpolicy::ExecPolicyCheckCommand),
 }
 
 #[derive(Args, Debug, Clone)]
-struct FeaturesCli {
+pub(crate) struct FeaturesCli {
     #[command(subcommand)]
     command: FeaturesSubcommand,
 }
 
 #[derive(Subcommand, Debug, Clone)]
-enum FeaturesSubcommand {
+pub(crate) enum FeaturesSubcommand {
     /// List known feature flags and their state
     List,
 }
 
 #[derive(Args, Debug, Clone)]
-struct PresetCli {
+pub(crate) struct PresetCli {
     #[command(subcommand)]
     command: PresetSubcommand,
 }
 
 #[derive(Subcommand, Debug, Clone)]
-enum PresetSubcommand {
+pub(crate) enum PresetSubcommand {
     /// Show the preset tiers, their governed switches, and the effective preset
     Show,
 }
 
 #[derive(Args, Debug, Clone)]
-struct SandboxArgs {
+pub(crate) struct SandboxArgs {
     #[command(subcommand)]
     command: SandboxCommand,
 }
 
 #[derive(Subcommand, Debug, Clone)]
-enum SandboxCommand {
+pub(crate) enum SandboxCommand {
+    /// Check what the exec-policy engine would decide for a command
+    Check {
+        /// Command to evaluate
+        command: String,
+        /// Approval policy assumption for the check
+        #[arg(long, value_enum, default_value_t = crate::ApprovalModeArg::OnRequest)]
+        ask: crate::ApprovalModeArg,
+    },
     /// Run a command with sandboxing
     Run {
         /// Sandbox policy (danger-full-access, read-only, external-sandbox, workspace-write)
@@ -927,23 +956,8 @@ enum SandboxCommand {
     },
 }
 
-fn main() -> Result<()> {
-    configure_windows_console_utf8();
-
-    // ── Process hardening (#2183) ─────────────────────────────────────────
-    // MUST run before Tokio is booted and before any threads are spawned:
-    // `#[tokio::main]` builds the multi-thread runtime (and its worker
-    // threads) before the async body runs, so hardening from inside the
-    // async fn would be too late. See
-    // crates/agent-runtime/src/sandbox/process_hardening.rs for ordering
-    // rationale.
-    crate::sandbox::process_hardening::apply_process_hardening();
-
-    real_main()
-}
-
 #[tokio::main]
-async fn real_main() -> Result<()> {
+pub(crate) async fn real_main() -> Result<()> {
     // Set up process panic hook before anything else — writes crash dumps
     // to ~/.codesmith/crashes/ even if the panic happens before tokio is up,
     // and restores the terminal so a panicked TUI doesn't leave the user's
@@ -1000,7 +1014,11 @@ async fn real_main() -> Result<()> {
     // suspend path, and SIGTERM / SIGHUP from the OS.
     spawn_signal_cleanup_task();
 
-    let cli = Cli::parse();
+    let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let cli = Cli::parse_from(argv.clone());
+    if let Some(word) = crate::unknown_subcommand_word(&cli, &argv) {
+        crate::unknown_subcommand_error(word).exit();
+    }
     logging::set_verbose(cli.verbose || logging::env_requests_verbose_logging());
 
     // Handle subcommands first
@@ -1040,14 +1058,51 @@ async fn real_main() -> Result<()> {
                 let workspace = resolve_workspace(&cli);
                 run_setup(&config, &workspace, args)
             }
-            Commands::Completions { shell } => {
+            Commands::Completion { shell } | Commands::Completions { shell } => {
                 generate_completions(shell);
                 Ok(())
             }
             Commands::Sessions { limit, search } => list_sessions(limit, search),
             Commands::Init => init_project(),
-            Commands::Login { api_key } => run_login(api_key),
-            Commands::Logout => run_logout(),
+            Commands::Login { api_key } => {
+                let mut store = codesmith_config::ConfigStore::load(cli.config.clone())?;
+                crate::run_login_command(
+                    &mut store,
+                    crate::LoginArgs {
+                        provider: None,
+                        api_key,
+                    },
+                )
+            }
+            Commands::Logout => {
+                let mut store = codesmith_config::ConfigStore::load(cli.config.clone())?;
+                crate::run_logout_command(&mut store)
+            }
+            Commands::Config(args) => {
+                let mut store = codesmith_config::ConfigStore::load(cli.config.clone())?;
+                crate::run_config_command(&mut store, args.command)
+            }
+            Commands::Model(args) => crate::run_model_command(args.command),
+            Commands::Auth(args) => {
+                let mut store = codesmith_config::ConfigStore::load(cli.config.clone())?;
+                crate::run_auth_command(&mut store, args.command)
+            }
+            Commands::McpServer => {
+                let mut store = codesmith_config::ConfigStore::load(cli.config.clone())?;
+                crate::run_mcp_server_command(&mut store)
+            }
+            Commands::Thread(args) => crate::run_thread_command(args.command),
+            Commands::AppServer(args) => crate::run_app_server_command(args),
+            Commands::Metrics(args) => crate::run_metrics_command(args),
+            Commands::Docker => {
+                print!("{}", crate::DOCKER_USAGE);
+                Ok(())
+            }
+            Commands::Version => {
+                print!("{}", Cli::command().render_version());
+                Ok(())
+            }
+            Commands::Update(args) => crate::update::run_update(args.beta, args.check, args.proxy),
             Commands::Models(args) => {
                 let config = load_config_from_cli(&cli)?;
                 run_models(&config, args).await
@@ -1156,7 +1211,10 @@ async fn real_main() -> Result<()> {
                 crate::presets::apply_config_preset(&mut config, &workspace);
                 run_preset_command(&config, command)
             }
-            Commands::Sandbox(args) => run_sandbox_command(args),
+            Commands::Sandbox(args) => match args.command {
+                SandboxCommand::Check { command, ask } => crate::run_sandbox_check(command, ask),
+                run => run_sandbox_command(run),
+            },
             Commands::Serve(args) => {
                 let workspace = cli.workspace.clone().unwrap_or_else(|| {
                     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
@@ -1246,14 +1304,14 @@ async fn real_main() -> Result<()> {
 }
 
 /// Generate shell completions for the given shell
-fn generate_completions(shell: Shell) {
+pub(crate) fn generate_completions(shell: Shell) {
     let mut cmd = Cli::command();
     let name = cmd.get_name().to_string();
     generate(shell, &mut cmd, name, &mut io::stdout());
 }
 
 /// Run the offline evaluation harness (no network/LLM calls).
-fn run_eval(args: EvalArgs) -> Result<()> {
+pub(crate) fn run_eval(args: EvalArgs) -> Result<()> {
     let fail_step = match args.fail_step.as_deref() {
         Some(value) => ScenarioStepKind::parse(value)
             .map(Some)
@@ -1321,7 +1379,7 @@ fn run_eval(args: EvalArgs) -> Result<()> {
     }
 }
 
-async fn run_swebench_command(
+pub(crate) async fn run_swebench_command(
     config: &Config,
     model: &str,
     workspace: PathBuf,
@@ -1393,7 +1451,7 @@ async fn run_swebench_command(
     }
 }
 
-fn swebench_prompt(
+pub(crate) fn swebench_prompt(
     instance_id: &str,
     workspace: &Path,
     issue: &str,
@@ -1419,7 +1477,7 @@ fn swebench_prompt(
     prompt
 }
 
-fn write_swebench_prediction(
+pub(crate) fn write_swebench_prediction(
     workspace: &Path,
     predictions_path: &Path,
     instance_id: &str,
@@ -1445,7 +1503,7 @@ fn write_swebench_prediction(
     Ok(())
 }
 
-fn is_swebench_generated_artifact(path: &str) -> bool {
+pub(crate) fn is_swebench_generated_artifact(path: &str) -> bool {
     let path = path.replace('\\', "/");
     path == ".codesmith"
         || path.starts_with(".codesmith/")
@@ -1465,7 +1523,7 @@ fn is_swebench_generated_artifact(path: &str) -> bool {
         || path.ends_with(".pyo")
 }
 
-fn swebench_diff_excludes(exclude_path: Option<&str>) -> Vec<String> {
+pub(crate) fn swebench_diff_excludes(exclude_path: Option<&str>) -> Vec<String> {
     let mut excludes = vec![
         ":(exclude).codesmith/**".to_string(),
         ":(exclude).pytest_cache/**".to_string(),
@@ -1487,7 +1545,7 @@ fn swebench_diff_excludes(exclude_path: Option<&str>) -> Vec<String> {
     excludes
 }
 
-fn prediction_path_inside_workspace(
+pub(crate) fn prediction_path_inside_workspace(
     workspace: &Path,
     predictions_path: &Path,
 ) -> Result<Option<String>> {
@@ -1515,7 +1573,10 @@ fn prediction_path_inside_workspace(
     }
 }
 
-fn include_untracked_files_in_diff(workspace: &Path, exclude_path: Option<&str>) -> Result<()> {
+pub(crate) fn include_untracked_files_in_diff(
+    workspace: &Path,
+    exclude_path: Option<&str>,
+) -> Result<()> {
     let output = Command::new("git")
         .arg("-C")
         .arg(workspace)
@@ -1554,7 +1615,7 @@ fn include_untracked_files_in_diff(workspace: &Path, exclude_path: Option<&str>)
     Ok(())
 }
 
-fn collect_git_diff(workspace: &Path, exclude_path: Option<&str>) -> Result<String> {
+pub(crate) fn collect_git_diff(workspace: &Path, exclude_path: Option<&str>) -> Result<String> {
     let mut command = Command::new("git");
     command
         .arg("-C")
@@ -1574,7 +1635,7 @@ fn collect_git_diff(workspace: &Path, exclude_path: Option<&str>) -> Result<Stri
     String::from_utf8(output.stdout).context("git diff output was not valid UTF-8")
 }
 
-fn upsert_swebench_jsonl(
+pub(crate) fn upsert_swebench_jsonl(
     predictions_path: &Path,
     instance_id: &str,
     model_name_or_path: &str,
@@ -1619,13 +1680,13 @@ fn upsert_swebench_jsonl(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WriteStatus {
+pub(crate) enum WriteStatus {
     Created,
     Overwritten,
     SkippedExists,
 }
 
-fn ensure_parent_dir(path: &Path) -> Result<()> {
+pub(crate) fn ensure_parent_dir(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
@@ -1635,7 +1696,7 @@ fn ensure_parent_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn write_template_file(path: &Path, contents: &str, force: bool) -> Result<WriteStatus> {
+pub(crate) fn write_template_file(path: &Path, contents: &str, force: bool) -> Result<WriteStatus> {
     ensure_parent_dir(path)?;
 
     if path.exists() && !force {
@@ -1654,7 +1715,7 @@ fn write_template_file(path: &Path, contents: &str, force: bool) -> Result<Write
     Ok(status)
 }
 
-fn mcp_template_json() -> Result<String> {
+pub(crate) fn mcp_template_json() -> Result<String> {
     let mut cfg = McpConfig::default();
     cfg.servers.insert(
         "example".to_string(),
@@ -1680,12 +1741,12 @@ fn mcp_template_json() -> Result<String> {
         .map_err(|e| anyhow!("Failed to render MCP template JSON: {e}"))
 }
 
-fn init_mcp_config(path: &Path, force: bool) -> Result<WriteStatus> {
+pub(crate) fn init_mcp_config(path: &Path, force: bool) -> Result<WriteStatus> {
     let template = mcp_template_json()?;
     write_template_file(path, &template, force)
 }
 
-fn skills_template(name: &str) -> String {
+pub(crate) fn skills_template(name: &str) -> String {
     format!(
         "\
 ---\n\
@@ -1701,7 +1762,7 @@ When this skill is active:\n\
     )
 }
 
-fn init_skills_dir(skills_dir: &Path, force: bool) -> Result<(PathBuf, WriteStatus)> {
+pub(crate) fn init_skills_dir(skills_dir: &Path, force: bool) -> Result<(PathBuf, WriteStatus)> {
     std::fs::create_dir_all(skills_dir)
         .with_context(|| format!("Failed to create skills dir {}", skills_dir.display()))?;
 
@@ -1713,7 +1774,7 @@ fn init_skills_dir(skills_dir: &Path, force: bool) -> Result<(PathBuf, WriteStat
     Ok((skill_path, status))
 }
 
-fn tools_readme_template() -> &'static str {
+pub(crate) fn tools_readme_template() -> &'static str {
     "# Local tools\n\n\
      Drop self-describing scripts here so they can be discovered by\n\
      `codesmith-tui setup --status` and surfaced in `codesmith-tui doctor`.\n\n\
@@ -1733,7 +1794,7 @@ fn tools_readme_template() -> &'static str {
      want them available inside a session.\n"
 }
 
-fn tools_example_script() -> &'static str {
+pub(crate) fn tools_example_script() -> &'static str {
     "#!/usr/bin/env sh\n\
      # name: example\n\
      # description: Print a confirmation that local tool discovery works\n\
@@ -1741,7 +1802,10 @@ fn tools_example_script() -> &'static str {
      printf 'codesmith-tui local tool ok: %s\\n' \"${1:-world}\"\n"
 }
 
-fn init_tools_dir(tools_dir: &Path, force: bool) -> Result<(PathBuf, WriteStatus, WriteStatus)> {
+pub(crate) fn init_tools_dir(
+    tools_dir: &Path,
+    force: bool,
+) -> Result<(PathBuf, WriteStatus, WriteStatus)> {
     std::fs::create_dir_all(tools_dir)
         .with_context(|| format!("Failed to create tools dir {}", tools_dir.display()))?;
 
@@ -1754,7 +1818,7 @@ fn init_tools_dir(tools_dir: &Path, force: bool) -> Result<(PathBuf, WriteStatus
     Ok((tools_dir.to_path_buf(), readme_status, example_status))
 }
 
-fn plugins_readme_template() -> &'static str {
+pub(crate) fn plugins_readme_template() -> &'static str {
     "# Local plugins\n\n\
      Plugins are richer than tools: each one lives in its own subdirectory\n\
      with a `PLUGIN.md` describing what it does and how to enable it. The\n\
@@ -1771,7 +1835,7 @@ fn plugins_readme_template() -> &'static str {
      hooks, or MCP servers when you want them active in a session.\n"
 }
 
-fn plugin_example_template() -> &'static str {
+pub(crate) fn plugin_example_template() -> &'static str {
     "---\n\
      name: example\n\
      description: Placeholder plugin so /skills and doctor have something to show\n\
@@ -1782,7 +1846,7 @@ fn plugin_example_template() -> &'static str {
      from a skill or MCP wrapper if you want it active in a session.\n"
 }
 
-fn init_plugins_dir(
+pub(crate) fn init_plugins_dir(
     plugins_dir: &Path,
     force: bool,
 ) -> Result<(PathBuf, PathBuf, WriteStatus, WriteStatus)> {
@@ -1810,7 +1874,7 @@ fn init_plugins_dir(
 /// (localhost:3000, localhost:1420, tauri://localhost). User entries are
 /// appended on top — empty strings are skipped, and duplicates are deduped
 /// while preserving first-seen order. Whalescale#255 / #561.
-fn resolve_cors_origins(config: &Config, flag_origins: &[String]) -> Vec<String> {
+pub(crate) fn resolve_cors_origins(config: &Config, flag_origins: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut push = |raw: &str| {
         let trimmed = raw.trim();
@@ -1839,24 +1903,24 @@ fn resolve_cors_origins(config: &Config, flag_origins: &[String]) -> Vec<String>
     out
 }
 
-fn codesmith_state_home_dir() -> PathBuf {
+pub(crate) fn codesmith_state_home_dir() -> PathBuf {
     codesmith_config::codesmith_home().unwrap_or_else(|_| {
         dirs::home_dir().map_or_else(|| PathBuf::from(".codesmith"), |h| h.join(".codesmith"))
     })
 }
 
 /// Resolve the default tools directory. Mirrors `default_skills_dir` shape.
-fn default_tools_dir() -> PathBuf {
+pub(crate) fn default_tools_dir() -> PathBuf {
     codesmith_state_home_dir().join("tools")
 }
 
 /// Resolve the default plugins directory.
-fn default_plugins_dir() -> PathBuf {
+pub(crate) fn default_plugins_dir() -> PathBuf {
     codesmith_state_home_dir().join("plugins")
 }
 
 /// Default location for crash/offline-queue checkpoints managed by the TUI.
-fn default_checkpoints_dir() -> PathBuf {
+pub(crate) fn default_checkpoints_dir() -> PathBuf {
     codesmith_state_home_dir()
         .join("sessions")
         .join("checkpoints")
@@ -1865,18 +1929,18 @@ fn default_checkpoints_dir() -> PathBuf {
 /// Resolve the local telemetry jsonl sink path. Returns `None` when the home
 /// directory cannot be resolved — the sink then runs queue-only (no disk
 /// writes), so telemetry never breaks startup on a pathless environment.
-fn telemetry_sink_path() -> Option<PathBuf> {
+pub(crate) fn telemetry_sink_path() -> Option<PathBuf> {
     codesmith_config::codesmith_home()
         .ok()
         .map(|home| home.join("telemetry").join("events.jsonl"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct CleanPlan {
+pub(crate) struct CleanPlan {
     targets: Vec<PathBuf>,
 }
 
-fn collect_clean_targets(checkpoints_dir: &Path) -> CleanPlan {
+pub(crate) fn collect_clean_targets(checkpoints_dir: &Path) -> CleanPlan {
     let candidates = ["latest.json", "offline_queue.json"];
     let targets = candidates
         .iter()
@@ -1886,7 +1950,7 @@ fn collect_clean_targets(checkpoints_dir: &Path) -> CleanPlan {
     CleanPlan { targets }
 }
 
-fn execute_clean_plan(plan: &CleanPlan) -> Result<Vec<PathBuf>> {
+pub(crate) fn execute_clean_plan(plan: &CleanPlan) -> Result<Vec<PathBuf>> {
     let mut removed = Vec::with_capacity(plan.targets.len());
     for path in &plan.targets {
         std::fs::remove_file(path)
@@ -1896,7 +1960,7 @@ fn execute_clean_plan(plan: &CleanPlan) -> Result<Vec<PathBuf>> {
     Ok(removed)
 }
 
-fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> Result<()> {
+pub(crate) fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> Result<()> {
     if args.status {
         return run_setup_status(config, workspace);
     }
@@ -2008,7 +2072,7 @@ fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> Result<()> {
     Ok(())
 }
 
-fn report_write_status(label: &str, path: &Path, status: WriteStatus) {
+pub(crate) fn report_write_status(label: &str, path: &Path, status: WriteStatus) {
     match status {
         WriteStatus::Created => {
             println!("  ✓ Created {label} at {}", path.display());
@@ -2024,14 +2088,14 @@ fn report_write_status(label: &str, path: &Path, status: WriteStatus) {
 
 /// Source of the resolved DeepSeek API key, used in status reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ApiKeySource {
+pub(crate) enum ApiKeySource {
     Env,
     Config,
     Keyring,
     Missing,
 }
 
-fn resolve_api_key_source(config: &Config) -> ApiKeySource {
+pub(crate) fn resolve_api_key_source(config: &Config) -> ApiKeySource {
     // `DEEPSEEK_API_KEY` is the official provider credential name, so it
     // counts as an env-provided key alongside the `CODESMITH_API_KEY` knob.
     let env_api_key_present = codesmith_config::codesmith_env("API_KEY").is_some()
@@ -2061,20 +2125,20 @@ fn resolve_api_key_source(config: &Config) -> ApiKeySource {
     }
 }
 
-fn count_dir_entries(dir: &Path) -> usize {
+pub(crate) fn count_dir_entries(dir: &Path) -> usize {
     std::fs::read_dir(dir)
         .map(|entries| entries.filter_map(std::result::Result::ok).count())
         .unwrap_or(0)
 }
 
-fn skills_count_for(dir: &Path) -> usize {
+pub(crate) fn skills_count_for(dir: &Path) -> usize {
     if !dir.exists() {
         return 0;
     }
     crate::skills::SkillRegistry::discover(dir).len()
 }
 
-fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
+pub(crate) fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
     use colored::Colorize;
 
     let (aqua_r, aqua_g, aqua_b) = CODESMITH_SKY_RGB;
@@ -2266,7 +2330,7 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
     Ok(())
 }
 
-fn dotenv_status_line(workspace: &Path) -> String {
+pub(crate) fn dotenv_status_line(workspace: &Path) -> String {
     let dotenv = workspace.join(".env");
     if dotenv.exists() {
         return format!(".env present at {}", dotenv.display());
@@ -2279,7 +2343,7 @@ fn dotenv_status_line(workspace: &Path) -> String {
     ".env not present in workspace".to_string()
 }
 
-fn run_setup_clean(checkpoints_dir: &Path, force: bool) -> Result<()> {
+pub(crate) fn run_setup_clean(checkpoints_dir: &Path, force: bool) -> Result<()> {
     use colored::Colorize;
 
     if !checkpoints_dir.exists() {
@@ -2319,7 +2383,11 @@ fn run_setup_clean(checkpoints_dir: &Path, force: bool) -> Result<()> {
 }
 
 /// Run system diagnostics
-async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Option<&Path>) {
+pub(crate) async fn run_doctor(
+    config: &Config,
+    workspace: &Path,
+    config_path_override: Option<&Path>,
+) {
     use colored::Colorize;
 
     let (blue_r, blue_g, blue_b) = CODESMITH_BLUE_RGB;
@@ -3343,7 +3411,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
 
 /// Machine-readable counterpart to `run_doctor`. Skips the live API call so it
 /// is safe to run in CI and from non-interactive scripts.
-fn run_doctor_json(
+pub(crate) fn run_doctor_json(
     config: &Config,
     workspace: &Path,
     config_path_override: Option<&Path>,
@@ -3565,7 +3633,7 @@ fn run_doctor_json(
 /// Returns a JSON value with the resolved provider, resolved model, context
 /// window, max output, thinking support, cache telemetry support, and request
 /// payload mode.
-fn provider_capability_report(config: &Config) -> serde_json::Value {
+pub(crate) fn provider_capability_report(config: &Config) -> serde_json::Value {
     use serde_json::json;
 
     let provider = config.api_provider();
@@ -3585,7 +3653,7 @@ fn provider_capability_report(config: &Config) -> serde_json::Value {
     })
 }
 
-fn doctor_search_provider_line(config: &Config) -> String {
+pub(crate) fn doctor_search_provider_line(config: &Config) -> String {
     let search_provider = config.search_provider_resolution();
     let switch_hint = if matches!(
         (search_provider.provider, search_provider.source),
@@ -3607,7 +3675,7 @@ fn doctor_search_provider_line(config: &Config) -> String {
     )
 }
 
-fn doctor_search_provider_json(config: &Config) -> serde_json::Value {
+pub(crate) fn doctor_search_provider_json(config: &Config) -> serde_json::Value {
     use serde_json::json;
 
     let search_provider = config.search_provider_resolution();
@@ -3618,14 +3686,14 @@ fn doctor_search_provider_json(config: &Config) -> serde_json::Value {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct DoctorApiTarget {
+pub(crate) struct DoctorApiTarget {
     provider: &'static str,
     base_url: String,
     model: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct DoctorStrictToolModeStatus {
+pub(crate) struct DoctorStrictToolModeStatus {
     enabled: bool,
     status: &'static str,
     function_strict_sent: bool,
@@ -3633,7 +3701,7 @@ struct DoctorStrictToolModeStatus {
     recommended_base_url: Option<String>,
 }
 
-fn doctor_api_target(config: &Config) -> DoctorApiTarget {
+pub(crate) fn doctor_api_target(config: &Config) -> DoctorApiTarget {
     let provider = config.api_provider();
     DoctorApiTarget {
         provider: provider.as_str(),
@@ -3642,7 +3710,7 @@ fn doctor_api_target(config: &Config) -> DoctorApiTarget {
     }
 }
 
-fn doctor_strict_tool_mode_status(config: &Config) -> DoctorStrictToolModeStatus {
+pub(crate) fn doctor_strict_tool_mode_status(config: &Config) -> DoctorStrictToolModeStatus {
     if !config.strict_tool_mode.unwrap_or(false) {
         return DoctorStrictToolModeStatus {
             enabled: false,
@@ -3685,12 +3753,12 @@ fn doctor_strict_tool_mode_status(config: &Config) -> DoctorStrictToolModeStatus
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DeepSeekBaseUrlKind {
+pub(crate) enum DeepSeekBaseUrlKind {
     Beta,
     NonBeta,
 }
 
-fn known_deepseek_base_url_kind(base_url: &str) -> Option<DeepSeekBaseUrlKind> {
+pub(crate) fn known_deepseek_base_url_kind(base_url: &str) -> Option<DeepSeekBaseUrlKind> {
     match base_url.trim_end_matches('/').to_ascii_lowercase().as_str() {
         "https://api.deepseek.com/beta" | "https://api.deepseeki.com/beta" => {
             Some(DeepSeekBaseUrlKind::Beta)
@@ -3703,11 +3771,11 @@ fn known_deepseek_base_url_kind(base_url: &str) -> Option<DeepSeekBaseUrlKind> {
     }
 }
 
-fn recommended_strict_base_url(_config: &Config, _base_url: &str) -> &'static str {
+pub(crate) fn recommended_strict_base_url(_config: &Config, _base_url: &str) -> &'static str {
     crate::config::DEFAULT_DEEPSEEK_BASE_URL
 }
 
-fn doctor_timeout_recovery_lines(config: &Config) -> Vec<String> {
+pub(crate) fn doctor_timeout_recovery_lines(config: &Config) -> Vec<String> {
     let target = doctor_api_target(config);
     let mut lines = vec![format!(
         "Connection timed out while reaching {}.",
@@ -3745,13 +3813,13 @@ fn doctor_timeout_recovery_lines(config: &Config) -> Vec<String> {
     lines
 }
 
-fn run_execpolicy_command(command: ExecpolicyCommand) -> Result<()> {
+pub(crate) fn run_execpolicy_command(command: ExecpolicyCommand) -> Result<()> {
     match command.command {
         ExecpolicySubcommand::Check(cmd) => cmd.run(),
     }
 }
 
-fn run_features_command(config: &Config, command: FeaturesCli) -> Result<()> {
+pub(crate) fn run_features_command(config: &Config, command: FeaturesCli) -> Result<()> {
     match command.command {
         FeaturesSubcommand::List => {
             print!("{}", render_feature_table(&config.features()));
@@ -3760,7 +3828,7 @@ fn run_features_command(config: &Config, command: FeaturesCli) -> Result<()> {
     }
 }
 
-fn run_preset_command(config: &Config, command: PresetCli) -> Result<()> {
+pub(crate) fn run_preset_command(config: &Config, command: PresetCli) -> Result<()> {
     match command.command {
         PresetSubcommand::Show => {
             println!("effective preset: {}", config.effective_preset());
@@ -3796,7 +3864,7 @@ fn run_preset_command(config: &Config, command: PresetCli) -> Result<()> {
     }
 }
 
-async fn run_models(config: &Config, args: ModelsArgs) -> Result<()> {
+pub(crate) async fn run_models(config: &Config, args: ModelsArgs) -> Result<()> {
     let client = crate::core::engine::resolve_llm_client(config)?;
     let mut models = client.list_models().await?;
     models.sort();
@@ -3823,7 +3891,7 @@ async fn run_models(config: &Config, args: ModelsArgs) -> Result<()> {
 }
 
 /// Test API connectivity by making a minimal request
-async fn test_api_connectivity(config: &Config) -> Result<()> {
+pub(crate) async fn test_api_connectivity(config: &Config) -> Result<()> {
     use crate::models::{ContentBlock, Message, MessageRequest};
 
     let client = crate::core::engine::resolve_llm_client(config)?;
@@ -3860,7 +3928,7 @@ async fn test_api_connectivity(config: &Config) -> Result<()> {
     }
 }
 
-fn rustc_version() -> String {
+pub(crate) fn rustc_version() -> String {
     let Some(mut cmd) = crate::dependencies::RustC::command() else {
         return "unknown".to_string();
     };
@@ -3873,7 +3941,7 @@ fn rustc_version() -> String {
 }
 
 /// List saved sessions
-fn list_sessions(limit: usize, search: Option<String>) -> Result<()> {
+pub(crate) fn list_sessions(limit: usize, search: Option<String>) -> Result<()> {
     use colored::Colorize;
     use session_manager::{SessionManager, format_session_line};
 
@@ -3938,7 +4006,7 @@ fn list_sessions(limit: usize, search: Option<String>) -> Result<()> {
 }
 
 /// Initialize a new project with AGENTS.md
-fn init_project() -> Result<()> {
+pub(crate) fn init_project() -> Result<()> {
     use colored::Colorize;
     use project_context::create_default_agents_md;
 
@@ -3981,20 +4049,20 @@ fn init_project() -> Result<()> {
     Ok(())
 }
 
-fn resolve_workspace(cli: &Cli) -> PathBuf {
+pub(crate) fn resolve_workspace(cli: &Cli) -> PathBuf {
     cli.workspace
         .clone()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct WorkspaceInitBoundary {
+pub(crate) struct WorkspaceInitBoundary {
     workspace_trusted_at_start: bool,
     bypassed_by_explicit_user_choice: bool,
     allow_workspace_initialization: bool,
 }
 
-fn resolve_workspace_init_boundary(
+pub(crate) fn resolve_workspace_init_boundary(
     workspace: &Path,
     skip_onboarding: bool,
     yolo: bool,
@@ -4011,11 +4079,17 @@ fn resolve_workspace_init_boundary(
     }
 }
 
-fn should_load_project_config(no_project_config: bool, boundary: &WorkspaceInitBoundary) -> bool {
+pub(crate) fn should_load_project_config(
+    no_project_config: bool,
+    boundary: &WorkspaceInitBoundary,
+) -> bool {
     !no_project_config && boundary.allow_workspace_initialization
 }
 
-fn load_workspace_dotenv_if_allowed(workspace: &Path, boundary: &WorkspaceInitBoundary) -> bool {
+pub(crate) fn load_workspace_dotenv_if_allowed(
+    workspace: &Path,
+    boundary: &WorkspaceInitBoundary,
+) -> bool {
     if !boundary.allow_workspace_initialization {
         return false;
     }
@@ -4042,17 +4116,20 @@ fn load_workspace_dotenv_if_allowed(workspace: &Path, boundary: &WorkspaceInitBo
 /// jsonl file here (a no-op on an empty queue — no file is created). When the
 /// workspace is untrusted the sink stays detached and keeps queuing, so no
 /// workspace-controlled data reaches disk before the user has consented.
-fn attach_telemetry_if_trusted(sink: &TelemetrySink, boundary: &WorkspaceInitBoundary) {
+pub(crate) fn attach_telemetry_if_trusted(sink: &TelemetrySink, boundary: &WorkspaceInitBoundary) {
     if boundary.allow_workspace_initialization {
         sink.attach();
     }
 }
 
-fn load_config_from_cli(cli: &Cli) -> Result<Config> {
+pub(crate) fn load_config_from_cli(cli: &Cli) -> Result<Config> {
     load_config_from_cli_with_exec_model(cli, None)
 }
 
-fn load_config_from_cli_with_exec_model(cli: &Cli, exec_model: Option<&str>) -> Result<Config> {
+pub(crate) fn load_config_from_cli_with_exec_model(
+    cli: &Cli,
+    exec_model: Option<&str>,
+) -> Result<Config> {
     let profile = cli
         .profile
         .clone()
@@ -4075,7 +4152,7 @@ fn load_config_from_cli_with_exec_model(cli: &Cli, exec_model: Option<&str>) -> 
 /// Install the process-wide exact token counter when
 /// `[context].tokenizer_path` points at a tokenizer.json. Warn and keep the
 /// chars/3 heuristic on any failure so a bad path never blocks startup.
-fn install_token_counter(config: &Config) {
+pub(crate) fn install_token_counter(config: &Config) {
     if let Some(path) = config.context.tokenizer_path.as_deref()
         && let Err(err) = codesmith_agent_runtime::tokenizer::init_from_path(Some(path))
     {
@@ -4083,7 +4160,7 @@ fn install_token_counter(config: &Config) {
     }
 }
 
-fn read_api_key_from_stdin() -> Result<String> {
+pub(crate) fn read_api_key_from_stdin() -> Result<String> {
     let mut stdin = io::stdin();
     if stdin.is_terminal() {
         bail!("No API key provided. Pass --api-key or pipe one via stdin.");
@@ -4097,23 +4174,27 @@ fn read_api_key_from_stdin() -> Result<String> {
     Ok(api_key)
 }
 
-fn run_login(api_key: Option<String>) -> Result<()> {
+pub(crate) fn run_login(api_key: Option<String>) -> Result<()> {
     let api_key = match api_key {
         Some(key) => key,
         None => read_api_key_from_stdin()?,
     };
-    let saved = config::save_api_key(&api_key)?;
+    let saved = crate::config::save_api_key(&api_key)?;
     println!("Saved API key to {}", saved.describe());
     Ok(())
 }
 
-fn run_logout() -> Result<()> {
-    config::clear_api_key()?;
+pub(crate) fn run_logout() -> Result<()> {
+    crate::config::clear_api_key()?;
     println!("Cleared saved API key.");
     Ok(())
 }
 
-fn resolve_session_id(session_id: Option<String>, last: bool, workspace: &Path) -> Result<String> {
+pub(crate) fn resolve_session_id(
+    session_id: Option<String>,
+    last: bool,
+    workspace: &Path,
+) -> Result<String> {
     if last {
         return latest_session_id_for_workspace(workspace)?.ok_or_else(|| {
             anyhow!(
@@ -4128,14 +4209,18 @@ fn resolve_session_id(session_id: Option<String>, last: bool, workspace: &Path) 
     pick_session_id()
 }
 
-fn latest_session_id_for_workspace(workspace: &Path) -> std::io::Result<Option<String>> {
+pub(crate) fn latest_session_id_for_workspace(workspace: &Path) -> std::io::Result<Option<String>> {
     let manager = SessionManager::default_location()?;
     Ok(manager
         .get_latest_session_for_workspace(workspace)?
         .map(|session| session.id))
 }
 
-fn fork_session(session_id: Option<String>, last: bool, workspace: &Path) -> Result<String> {
+pub(crate) fn fork_session(
+    session_id: Option<String>,
+    last: bool,
+    workspace: &Path,
+) -> Result<String> {
     let manager = SessionManager::default_location()?;
     let saved = if last {
         let Some(meta) = manager.get_latest_session_for_workspace(workspace)? else {
@@ -4180,7 +4265,7 @@ fn fork_session(session_id: Option<String>, last: bool, workspace: &Path) -> Res
     Ok(forked.metadata.id)
 }
 
-fn pick_session_id() -> Result<String> {
+pub(crate) fn pick_session_id() -> Result<String> {
     let manager = SessionManager::default_location()?;
     let sessions = manager.list_sessions()?;
     if sessions.is_empty() {
@@ -4209,7 +4294,7 @@ fn pick_session_id() -> Result<String> {
     Ok(session.id.clone())
 }
 
-async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
+pub(crate) async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
     let diff = collect_diff(&args)?;
     if diff.trim().is_empty() {
         bail!("No diff to review.");
@@ -4281,7 +4366,7 @@ Provide findings ordered by severity with file references, then open questions, 
 /// `codesmith pr <N>` (#451) — fetch a GitHub PR via `gh`, format
 /// title + body + diff as the composer's first message, and launch
 /// the interactive TUI. Falls back gracefully if `gh` is missing.
-async fn run_pr(
+pub(crate) async fn run_pr(
     cli: &Cli,
     config: &Config,
     number: u32,
@@ -4337,7 +4422,7 @@ async fn run_pr(
 /// Windows: also checks the `.exe` extension when `name` doesn't have
 /// one, matching the platform's PATHEXT lookup behavior for the common
 /// case.
-fn is_command_available(name: &str) -> bool {
+pub(crate) fn is_command_available(name: &str) -> bool {
     let Some(path) = std::env::var_os("PATH") else {
         return false;
     };
@@ -4360,7 +4445,7 @@ fn is_command_available(name: &str) -> bool {
 }
 
 #[derive(Debug, Clone, Default)]
-struct GhPullRequest {
+pub(crate) struct GhPullRequest {
     title: String,
     body: String,
     base: String,
@@ -4368,7 +4453,7 @@ struct GhPullRequest {
     url: String,
 }
 
-fn run_gh_pr_view(number: u32, repo: Option<&str>) -> Result<GhPullRequest> {
+pub(crate) fn run_gh_pr_view(number: u32, repo: Option<&str>) -> Result<GhPullRequest> {
     let mut cmd = crate::dependencies::Gh::command()
         .ok_or_else(|| anyhow::anyhow!("gh not found on PATH"))?;
     cmd.arg("pr").arg("view").arg(number.to_string());
@@ -4403,7 +4488,7 @@ fn run_gh_pr_view(number: u32, repo: Option<&str>) -> Result<GhPullRequest> {
     })
 }
 
-fn run_gh_pr_diff(number: u32, repo: Option<&str>) -> Result<String> {
+pub(crate) fn run_gh_pr_diff(number: u32, repo: Option<&str>) -> Result<String> {
     let mut cmd = crate::dependencies::Gh::command()
         .ok_or_else(|| anyhow::anyhow!("gh not found on PATH"))?;
     cmd.arg("pr").arg("diff").arg(number.to_string());
@@ -4420,7 +4505,7 @@ fn run_gh_pr_diff(number: u32, repo: Option<&str>) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-fn run_gh_pr_checkout(number: u32, repo: Option<&str>) -> Result<()> {
+pub(crate) fn run_gh_pr_checkout(number: u32, repo: Option<&str>) -> Result<()> {
     let mut cmd = crate::dependencies::Gh::command()
         .ok_or_else(|| anyhow::anyhow!("gh not found on PATH"))?;
     cmd.arg("pr").arg("checkout").arg(number.to_string());
@@ -4441,7 +4526,7 @@ fn run_gh_pr_checkout(number: u32, repo: Option<&str>) -> Result<()> {
 /// diff at 200 KiB so a massive PR doesn't blow the model's context
 /// window before the user even hits Enter — they can always ask the
 /// model to fetch more via `gh pr diff #N` from inside the session.
-fn format_pr_prompt(number: u32, view: &GhPullRequest, diff: &str) -> String {
+pub(crate) fn format_pr_prompt(number: u32, view: &GhPullRequest, diff: &str) -> String {
     const MAX_DIFF_BYTES: usize = 200 * 1024;
     let diff_section = if diff.len() > MAX_DIFF_BYTES {
         let cut = (0..=MAX_DIFF_BYTES)
@@ -4495,7 +4580,7 @@ fn format_pr_prompt(number: u32, view: &GhPullRequest, diff: &str) -> String {
     )
 }
 
-fn collect_diff(args: &ReviewArgs) -> Result<String> {
+pub(crate) fn collect_diff(args: &ReviewArgs) -> Result<String> {
     let mut cmd = crate::dependencies::Git::command()
         .ok_or_else(|| anyhow::anyhow!("git not found on PATH"))?;
     cmd.arg("diff");
@@ -4523,7 +4608,7 @@ fn collect_diff(args: &ReviewArgs) -> Result<String> {
     Ok(diff)
 }
 
-fn run_apply(args: ApplyArgs) -> Result<()> {
+pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
     let patch = if let Some(path) = args.patch_file {
         std::fs::read_to_string(&path)
             .map_err(|e| anyhow::anyhow!("Failed to read patch {}: {}", path.display(), e))?
@@ -4554,7 +4639,7 @@ fn run_apply(args: ApplyArgs) -> Result<()> {
     Ok(())
 }
 
-fn read_patch_from_stdin() -> Result<String> {
+pub(crate) fn read_patch_from_stdin() -> Result<String> {
     let mut stdin = io::stdin();
     if stdin.is_terminal() {
         bail!("No patch file provided and stdin is empty.");
@@ -4564,7 +4649,7 @@ fn read_patch_from_stdin() -> Result<String> {
     Ok(buffer)
 }
 
-async fn run_mcp_command(config: &Config, command: McpCommand) -> Result<()> {
+pub(crate) async fn run_mcp_command(config: &Config, command: McpCommand) -> Result<()> {
     let config_path = config.mcp_config_path();
     match command {
         McpCommand::Init { force } => {
@@ -4832,7 +4917,7 @@ async fn run_mcp_command(config: &Config, command: McpCommand) -> Result<()> {
     }
 }
 
-fn load_mcp_config(path: &Path) -> Result<McpConfig> {
+pub(crate) fn load_mcp_config(path: &Path) -> Result<McpConfig> {
     if !path.exists() {
         return Ok(McpConfig::default());
     }
@@ -4845,14 +4930,14 @@ fn load_mcp_config(path: &Path) -> Result<McpConfig> {
 
 /// Diagnostic status for an MCP server entry.
 #[derive(Debug)]
-enum McpServerDoctorStatus {
+pub(crate) enum McpServerDoctorStatus {
     Ok(String),
     Warning(String),
     Error(String),
 }
 
 /// Check an MCP server config entry for common issues.
-fn doctor_check_mcp_server(server: &McpServerConfig) -> McpServerDoctorStatus {
+pub(crate) fn doctor_check_mcp_server(server: &McpServerConfig) -> McpServerDoctorStatus {
     // No command or URL — incomplete entry.
     if server.command.is_none() && server.url.is_none() {
         return McpServerDoctorStatus::Error("no command or url configured".to_string());
@@ -4907,7 +4992,7 @@ fn doctor_check_mcp_server(server: &McpServerConfig) -> McpServerDoctorStatus {
     }
 }
 
-fn save_mcp_config(path: &Path, cfg: &McpConfig) -> Result<()> {
+pub(crate) fn save_mcp_config(path: &Path, cfg: &McpConfig) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).with_context(|| {
             format!("Failed to create MCP config directory {}", parent.display())
@@ -4920,10 +5005,10 @@ fn save_mcp_config(path: &Path, cfg: &McpConfig) -> Result<()> {
     Ok(())
 }
 
-fn run_sandbox_command(args: SandboxArgs) -> Result<()> {
+pub(crate) fn run_sandbox_command(command: SandboxCommand) -> Result<()> {
     use crate::sandbox::{CommandSpec, SandboxManager};
 
-    let SandboxCommand::Run {
+    let (
         policy,
         network,
         writable_root,
@@ -4932,7 +5017,32 @@ fn run_sandbox_command(args: SandboxArgs) -> Result<()> {
         cwd,
         timeout_ms,
         command,
-    } = args.command;
+    ) = match command {
+        // `Check` normally dispatches in real_main; keep a fallback for
+        // future callers.
+        SandboxCommand::Check { command, ask } => {
+            return crate::run_sandbox_check(command, ask);
+        }
+        SandboxCommand::Run {
+            policy,
+            network,
+            writable_root,
+            exclude_tmpdir,
+            exclude_slash_tmp,
+            cwd,
+            timeout_ms,
+            command,
+        } => (
+            policy,
+            network,
+            writable_root,
+            exclude_tmpdir,
+            exclude_slash_tmp,
+            cwd,
+            timeout_ms,
+            command,
+        ),
+    };
 
     let policy = parse_sandbox_policy(
         &policy,
@@ -5042,7 +5152,7 @@ fn run_sandbox_command(args: SandboxArgs) -> Result<()> {
     Ok(())
 }
 
-fn parse_sandbox_policy(
+pub(crate) fn parse_sandbox_policy(
     policy: &str,
     network: bool,
     writable_root: Vec<PathBuf>,
@@ -5067,11 +5177,11 @@ fn parse_sandbox_policy(
     }
 }
 
-fn should_use_alt_screen(_cli: &Cli, _config: &Config) -> bool {
+pub(crate) fn should_use_alt_screen(_cli: &Cli, _config: &Config) -> bool {
     true
 }
 
-fn should_use_mouse_capture(cli: &Cli, config: &Config, use_alt_screen: bool) -> bool {
+pub(crate) fn should_use_mouse_capture(cli: &Cli, config: &Config, use_alt_screen: bool) -> bool {
     let terminal_emulator = std::env::var("TERMINAL_EMULATOR").ok();
     let wt_session = std::env::var("WT_SESSION").ok().filter(|s| !s.is_empty());
     let conemu_pid = std::env::var("ConEmuPID").ok().filter(|s| !s.is_empty());
@@ -5085,7 +5195,7 @@ fn should_use_mouse_capture(cli: &Cli, config: &Config, use_alt_screen: bool) ->
     )
 }
 
-fn should_use_mouse_capture_with(
+pub(crate) fn should_use_mouse_capture_with(
     cli: &Cli,
     config: &Config,
     use_alt_screen: bool,
@@ -5120,7 +5230,7 @@ fn should_use_mouse_capture_with(
 /// support but forwards the same SGR escape sequences as raw input. The
 /// user can still opt back in with `[tui] mouse_capture = true` in
 /// `~/.codesmith/config.toml` or `--mouse-capture`.
-fn default_mouse_capture_enabled(
+pub(crate) fn default_mouse_capture_enabled(
     terminal_emulator: Option<&str>,
     wt_session: Option<&str>,
     conemu_pid: Option<&str>,
@@ -5135,7 +5245,7 @@ fn default_mouse_capture_enabled(
 }
 
 /// Load a recent crash-recovery checkpoint, pruning stale checkpoints first.
-fn load_recent_checkpoint(
+pub(crate) fn load_recent_checkpoint(
     manager: &session_manager::SessionManager,
 ) -> Option<(session_manager::SavedSession, std::time::Duration)> {
     let session = manager.load_checkpoint().ok().flatten()?;
@@ -5155,7 +5265,7 @@ fn load_recent_checkpoint(
     Some((session, age))
 }
 
-fn checkpoint_age_label(age: std::time::Duration) -> String {
+pub(crate) fn checkpoint_age_label(age: std::time::Duration) -> String {
     if age.as_secs() < 60 {
         format!("{}s ago", age.as_secs())
     } else if age.as_secs() < 3600 {
@@ -5174,7 +5284,7 @@ fn checkpoint_age_label(age: std::time::Duration) -> String {
 /// after canonicalisation.** If the workspace doesn't match, the checkpoint is
 /// persisted as a regular session (so the user can find it via
 /// `codesmith sessions` / `codesmith resume <id>`) and cleared, but not loaded.
-fn recover_interrupted_checkpoint_for_resume(launch_workspace: &Path) -> Option<String> {
+pub(crate) fn recover_interrupted_checkpoint_for_resume(launch_workspace: &Path) -> Option<String> {
     let manager = session_manager::SessionManager::default_location().ok()?;
     let (session, age) = load_recent_checkpoint(&manager)?;
 
@@ -5223,7 +5333,7 @@ fn recover_interrupted_checkpoint_for_resume(launch_workspace: &Path) -> Option<
 /// attaching it to the new TUI instance. This keeps "open another codesmith in
 /// the same folder" from re-entering the previous in-flight session while still
 /// leaving an explicit resume path.
-fn preserve_interrupted_checkpoint_for_explicit_resume(launch_workspace: &Path) {
+pub(crate) fn preserve_interrupted_checkpoint_for_explicit_resume(launch_workspace: &Path) {
     let Some(manager) = session_manager::SessionManager::default_location().ok() else {
         return;
     };
@@ -5256,7 +5366,7 @@ fn preserve_interrupted_checkpoint_for_explicit_resume(launch_workspace: &Path) 
 /// apply its fields as overrides on top of the global config (#485).
 /// Only explicitly set fields in the project file are applied; everything
 /// else falls back to the global value.
-fn merge_project_config(config: &mut Config, workspace: &Path) {
+pub(crate) fn merge_project_config(config: &mut Config, workspace: &Path) {
     // When the workspace is the user's home directory, the project-scope
     // config file is also the global config file. Skip the merge to avoid
     // redundant processing and a misleading "project-scope config key
@@ -5383,7 +5493,7 @@ fn merge_project_config(config: &mut Config, workspace: &Path) {
     }
 }
 
-async fn run_interactive(
+pub(crate) async fn run_interactive(
     cli: &Cli,
     config: &Config,
     resume_session_id: Option<String>,
@@ -5582,13 +5692,17 @@ async fn run_interactive(
     crate::interactive::run_repl(config, options, telemetry_sink).await
 }
 
-struct CliAutoRoute {
-    model: String,
-    reasoning_effort: Option<crate::tui::app::ReasoningEffort>,
-    auto_model: bool,
+pub(crate) struct CliAutoRoute {
+    pub(crate) model: String,
+    pub(crate) reasoning_effort: Option<crate::tui::app::ReasoningEffort>,
+    pub(crate) auto_model: bool,
 }
 
-async fn resolve_cli_auto_route(config: &Config, model: &str, prompt: &str) -> CliAutoRoute {
+pub(crate) async fn resolve_cli_auto_route(
+    config: &Config,
+    model: &str,
+    prompt: &str,
+) -> CliAutoRoute {
     if model.trim().eq_ignore_ascii_case("auto") {
         let selection = crate::interactive::commands::auto_route::resolve_auto_route(
             config, prompt, "", "auto", "auto",
@@ -5616,7 +5730,10 @@ async fn resolve_cli_auto_route(config: &Config, model: &str, prompt: &str) -> C
     }
 }
 
-fn resolve_exec_system_prompt_override(config: &Config, args: &ExecArgs) -> Result<Option<String>> {
+pub(crate) fn resolve_exec_system_prompt_override(
+    config: &Config,
+    args: &ExecArgs,
+) -> Result<Option<String>> {
     if let Some(inline) = args
         .system_prompt
         .as_deref()
@@ -5635,7 +5752,7 @@ fn resolve_exec_system_prompt_override(config: &Config, args: &ExecArgs) -> Resu
     Ok(config.system_prompt_override_text())
 }
 
-fn resolve_exec_append_system_prompts(
+pub(crate) fn resolve_exec_append_system_prompts(
     config: &Config,
     args: &ExecArgs,
 ) -> Vec<crate::prompts::PromptAppendSource> {
@@ -5665,7 +5782,7 @@ fn resolve_exec_append_system_prompts(
     sources
 }
 
-async fn run_one_shot(
+pub(crate) async fn run_one_shot(
     config: &Config,
     model: &str,
     prompt: &str,
@@ -5711,7 +5828,7 @@ async fn run_one_shot(
     Ok(())
 }
 
-async fn run_one_shot_json(
+pub(crate) async fn run_one_shot_json(
     config: &Config,
     model: &str,
     prompt: &str,
@@ -5768,7 +5885,7 @@ async fn run_one_shot_json(
 }
 
 #[derive(serde::Serialize)]
-struct ExecStreamMeta {
+pub(crate) struct ExecStreamMeta {
     model: String,
     input_tokens: u32,
     output_tokens: u32,
@@ -5778,7 +5895,7 @@ struct ExecStreamMeta {
 
 #[derive(serde::Serialize)]
 #[serde(tag = "type")]
-enum ExecStreamEvent {
+pub(crate) enum ExecStreamEvent {
     #[serde(rename = "content")]
     Content { content: String },
     #[serde(rename = "tool_use")]
@@ -5803,12 +5920,12 @@ enum ExecStreamEvent {
     Error { error: String },
 }
 
-fn emit_exec_stream_event(event: &ExecStreamEvent) -> Result<()> {
+pub(crate) fn emit_exec_stream_event(event: &ExecStreamEvent) -> Result<()> {
     println!("{}", serde_json::to_string(event)?);
     Ok(())
 }
 
-fn persist_exec_session(
+pub(crate) fn persist_exec_session(
     messages: &[Message],
     model: &str,
     workspace: &Path,
@@ -5856,7 +5973,7 @@ fn persist_exec_session(
     Ok(id)
 }
 
-async fn run_exec_agent(
+pub(crate) async fn run_exec_agent(
     config: &Config,
     model: &str,
     prompt: &str,
@@ -6384,7 +6501,7 @@ async fn run_exec_agent(
 /// (`run_teammate_loop`). Full swarm participation (idle notifications,
 /// inbox polling, shutdown protocol) unifies with the exec path under
 /// Phase 6's execution-core extraction.
-async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()> {
+pub(crate) async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()> {
     use crate::compaction::CompactionConfig;
     use crate::core::engine::{EngineConfig, spawn_engine};
     use crate::core::events::Event;
@@ -7052,7 +7169,7 @@ mod terminal_mode_tests {
 
     #[test]
     fn companion_binary_reports_its_own_name() {
-        assert_eq!(Cli::command().get_name(), "codesmith-tui");
+        assert_eq!(Cli::command().get_name(), "codesmith");
     }
 
     #[test]
