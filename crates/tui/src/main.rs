@@ -48,6 +48,7 @@ mod features;
 mod handoff;
 mod hooks;
 mod index;
+mod interactive;
 mod knowledge;
 mod llm_client;
 mod localization;
@@ -213,6 +214,11 @@ struct Cli {
     /// Skip loading project-level config from $WORKSPACE/.codesmith/config.toml
     #[arg(long = "no-project-config")]
     no_project_config: bool,
+
+    /// Escape hatch while the line-based REPL is the default frontend:
+    /// start the legacy ratatui TUI instead. Removed with the TUI itself.
+    #[arg(long, hide = true)]
+    tui: bool,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -5583,36 +5589,33 @@ async fn run_interactive(
         }
     }
 
-    tui::run_tui(
-        config,
-        tui::TuiOptions {
-            model,
-            workspace,
-            config_path: cli.config.clone(),
-            config_profile: cli.profile.clone(),
-            allow_shell: yolo || config.allow_shell(),
-            use_alt_screen,
-            use_mouse_capture,
-            use_bracketed_paste,
-            skills_dir,
-            memory_path: config.memory_path(),
-            notes_path: config.notes_path(),
-            mcp_config_path: config.mcp_config_path(),
-            use_memory: config.memory_enabled(),
-            start_in_agent_mode: yolo,
-            skip_onboarding: cli.skip_onboarding,
-            yolo, // YOLO mode auto-approves all tool executions
-            resume_session_id,
-            initial_input,
-            max_subagents,
-        },
-        // Hand the engine a clone of the host-owned sink. `TelemetrySink` is
-        // `Arc`-shared, so the engine's clone and this handle see the same
-        // `enabled`/`attached`/queue state — `set_enabled` flips below still
-        // propagate to the engine (Plan 06 / 6.2).
-        telemetry_sink.clone(),
-    )
-    .await
+    let options = tui::TuiOptions {
+        model,
+        workspace,
+        config_path: cli.config.clone(),
+        config_profile: cli.profile.clone(),
+        allow_shell: yolo || config.allow_shell(),
+        use_alt_screen,
+        use_mouse_capture,
+        use_bracketed_paste,
+        skills_dir,
+        memory_path: config.memory_path(),
+        notes_path: config.notes_path(),
+        mcp_config_path: config.mcp_config_path(),
+        use_memory: config.memory_enabled(),
+        start_in_agent_mode: yolo,
+        skip_onboarding: cli.skip_onboarding,
+        yolo, // YOLO mode auto-approves all tool executions
+        resume_session_id,
+        initial_input,
+        max_subagents,
+    };
+    if cli.tui {
+        tui::run_tui(config, options, telemetry_sink.clone()).await
+    } else {
+        // Default frontend: the line-based REPL.
+        crate::interactive::run_repl(config, options, telemetry_sink.clone()).await
+    }
 }
 
 struct CliAutoRoute {
