@@ -15,8 +15,8 @@ use crate::llm_client::LlmClientHandle;
 use crate::llm_client::mock::{MockLlmClient, canned};
 use crate::tools::spec::ToolContext;
 use crate::tools::subagent::{SubAgentRuntime, new_shared_subagent_manager};
-use crate::tui::approval::ApprovalMode;
 use codesmith_agent_runtime::engine::compact_tool_result_for_context;
+use codesmith_agent_runtime::mode::ApprovalMode;
 use codesmith_agent_runtime::telemetry::TelemetrySink;
 
 use super::*;

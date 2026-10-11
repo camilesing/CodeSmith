@@ -571,7 +571,7 @@ impl ToolRegistryBuilder {
     }
 
     /// Include the `notify` tool — model-callable desktop notification
-    /// (#1322). Routes through the existing `tui::notifications` OSC 9 /
+    /// (#1322). Routes through the existing `crate::notifications` OSC 9 /
     /// BEL pipeline so the user's `[notifications].method` config is
     /// honoured automatically (including `off`). Always safe to register
     /// because the tool has no side effects beyond a single terminal

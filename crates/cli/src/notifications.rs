@@ -1,6 +1,6 @@
 //! Desktop notifications for turn completion.
 //!
-//! Supports five delivery mechanisms:
+//! Supports four delivery mechanisms:
 //! - **OSC 9** — terminal escape sequence (`\x1b]9;…\x07`) for iTerm2,
 //!   Ghostty, WezTerm, and tmux (with DCS passthrough).
 //! - **Kitty** — OSC 99 protocol with ST terminator (no audible beep).
@@ -17,8 +17,6 @@ use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 use windows::Win32::UI::WindowsAndMessaging::MESSAGEBOX_STYLE;
 
 use std::io::{self, Write};
-use std::sync::atomic::AtomicU8;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 /// Notification delivery method.
@@ -40,8 +38,6 @@ pub enum Method {
     /// Ghostty notification protocol (OSC 777).
     /// Uses `ESC ] 777 ; notify ; title ; message BEL`.
     Ghostty,
-    /// Suppress all notifications.
-    Off,
 }
 
 /// Emit a Windows system beep via `MessageBeep(MB_OK)`.
@@ -159,13 +155,13 @@ fn build_escape(method: Method, in_tmux: bool, msg: &str) -> Vec<u8> {
             let seq = format!("\x1b]777;notify;codesmith;{msg}\x07");
             wrap_for_multiplexer(&seq, in_tmux).into_bytes()
         }
-        // Auto and Off and MacOS should not reach build_escape.
-        Method::Auto | Method::Off | Method::MacOS => vec![],
+        // Auto and MacOS should not reach build_escape.
+        Method::Auto | Method::MacOS => vec![],
     }
 }
 
 /// Emit a turn-complete notification to `sink` if the elapsed time meets or
-/// exceeds `threshold`, and `method` is not `Off`.
+/// exceeds `threshold`.
 ///
 /// This variant takes a `W: Write` sink for testability.
 pub fn notify_done_to<W: Write>(
@@ -180,7 +176,6 @@ pub fn notify_done_to<W: Write>(
         return;
     }
     let effective = match method {
-        Method::Off => return,
         Method::Auto => resolve_method(),
         other => other,
     };
@@ -259,178 +254,6 @@ pub fn wrap_notifier() -> std::sync::Arc<dyn codesmith_agent_runtime::host_servi
     std::sync::Arc::new(NotifierHostImpl)
 }
 
-/// Set the terminal taskbar progress state via OSC 9 ; 4.
-///
-/// Windows Terminal supports this to show progress on the taskbar icon:
-/// - `state = 0` — no progress (clear)
-/// - `state = 1` — indeterminate (cycling green)
-/// - `state = 2` — normal (0-100, requires progress param)
-/// - `state = 3` — error (red)
-/// - `state = 4` — paused (yellow)
-///
-/// Other terminals (iTerm2, WezTerm) ignore the sequence silently.
-/// Best-effort — write failures are ignored.
-pub fn set_taskbar_progress(state: u8, progress: Option<u8>) {
-    let seq = if let Some(pct) = progress {
-        format!("\x1b]9;4;{state};{pct}\x07")
-    } else {
-        format!("\x1b]9;4;{state}\x07")
-    };
-    let mut stdout = io::stdout();
-    let _ = stdout.write_all(seq.as_bytes());
-    let _ = stdout.flush();
-}
-
-/// Set taskbar progress to indeterminate (cycling) — call at turn start.
-pub fn set_taskbar_progress_busy() {
-    set_taskbar_progress(1, None);
-}
-
-/// Clear taskbar progress — call at turn end.
-pub fn clear_taskbar_progress() {
-    set_taskbar_progress(0, None);
-}
-
-/// Animation frame characters for the terminal title spinner.
-const TITLE_FRAMES: &[&str] = &["◐", "◓", "◑", "◒"];
-const TITLE_ANIMATION_INTERVAL: Duration = Duration::from_millis(800);
-
-/// Shared flag controlling the title animation loop. Set to `true` by
-/// `start_title_animation()`, cleared by `stop_title_animation()`.
-static TITLE_ANIMATION_RUNNING: AtomicBool = AtomicBool::new(false);
-
-/// Write OSC 0 (set window title) sequence.
-fn set_terminal_title(title: &str) {
-    let seq = format!("\x1b]0;{title}\x07");
-    let mut stdout = io::stdout();
-    let _ = stdout.write_all(seq.as_bytes());
-    let _ = stdout.flush();
-}
-
-/// Tracks whether the ✅ completion marker was set, so
-/// `reset_title_on_interaction()` can skip redundant writes.
-static COMPLETION_MARKER_SHOWN: AtomicBool = AtomicBool::new(false);
-
-/// Start an animated terminal title spinner.
-///
-/// Cycles the terminal title between ◐→◓→◑→◒ every 800ms while
-/// processing, so alt-tabbed users can see activity.
-///
-/// The animation runs in a background tokio task that checks
-/// `TITLE_ANIMATION_RUNNING`. Each call restarts the animation with the
-/// given `original` base title — safe to call on every turn start.
-pub fn start_title_animation(original: &str) {
-    // Signal any existing animation loop to exit, then start fresh.
-    TITLE_ANIMATION_RUNNING.store(true, Ordering::SeqCst);
-    let base = original.to_string();
-    tokio::spawn(async move {
-        let mut frame = 0usize;
-        while TITLE_ANIMATION_RUNNING.load(Ordering::SeqCst) {
-            // Yield once per frame so a racing stop_title_animation()
-            // can observe the cleared flag and apply the completion
-            // marker before the next frame write. Without this yield
-            // the background task could overwrite the ✅ marker with
-            // the next spinner frame.
-            tokio::task::yield_now().await;
-            if !TITLE_ANIMATION_RUNNING.load(Ordering::SeqCst) {
-                break;
-            }
-            let spinner = TITLE_FRAMES[frame % TITLE_FRAMES.len()];
-            set_terminal_title(&format!("{spinner} {base}"));
-            frame += 1;
-            tokio::time::sleep(TITLE_ANIMATION_INTERVAL).await;
-        }
-        // Don't restore title here — stop_title_animation() handles
-        // what to show on completion (e.g. ✅ marker).
-    });
-}
-
-/// Stop the title animation and show a completion marker.
-///
-/// Sets the title to `✅ <base>` so alt-tabbed users see at a glance
-/// that processing finished. The marker is overwritten on the next turn
-/// by [`start_title_animation`].
-pub fn stop_title_animation() {
-    TITLE_ANIMATION_RUNNING.store(false, Ordering::SeqCst);
-    COMPLETION_MARKER_SHOWN.store(false, Ordering::SeqCst);
-    // Show ✅ marker only for beep mode. Bell mode already has its own
-    // terminal-level visual indicator (flash/icon).
-    let mode = COMPLETION_SOUND_MODE.load(Ordering::SeqCst);
-    if mode == 1 {
-        set_terminal_title("✅ CodeSmith");
-    }
-    play_completion_sound();
-}
-
-/// Stop the title animation without playing the completion sound.
-///
-/// Cancellation and failed turns should return the terminal title to rest
-/// without presenting them as completed work.
-pub fn stop_title_animation_quietly() {
-    TITLE_ANIMATION_RUNNING.store(false, Ordering::SeqCst);
-    COMPLETION_MARKER_SHOWN.store(false, Ordering::SeqCst);
-    set_terminal_title("CodeSmith");
-}
-
-/// Clear the ✅ completion marker from the title when the user interacts.
-///
-/// Call this on every user input event (key press, mouse click) so the
-/// marker doesn't persist once the user is back at the terminal.
-pub fn reset_title_on_interaction() {
-    if COMPLETION_MARKER_SHOWN.swap(false, Ordering::SeqCst) {
-        set_terminal_title("CodeSmith");
-    }
-}
-
-/// Completion sound mode (0 = off, 1 = beep, 2 = bell).
-static COMPLETION_SOUND_MODE: AtomicU8 = AtomicU8::new(1);
-
-/// Set the completion sound mode from config.
-/// Call once at startup or on `/settings` change.
-pub fn set_completion_sound_mode(mode: crate::config::CompletionSound) {
-    let val = match mode {
-        crate::config::CompletionSound::Off => 0u8,
-        crate::config::CompletionSound::Beep => 1u8,
-        crate::config::CompletionSound::Bell => 2u8,
-    };
-    COMPLETION_SOUND_MODE.store(val, Ordering::SeqCst);
-}
-
-/// Play the configured completion sound (if not `Off`).
-pub fn play_completion_sound() {
-    match COMPLETION_SOUND_MODE.load(Ordering::SeqCst) {
-        0 => {} // Off
-        1 => {
-            beep_sound();
-        }
-        2 => {
-            bell_sound();
-        }
-        _ => {}
-    }
-}
-
-/// Play a short completion sound via the system beep.
-///
-/// On Windows uses `MessageBeep(MB_OK)` which plays the default system
-/// notification sound. On other platforms writes `BEL` (`\x07`) to stdout.
-#[cfg(target_os = "windows")]
-fn beep_sound() {
-    windows_bell();
-}
-
-/// Non-Windows: write BEL to stdout for the terminal bell.
-#[cfg(not(target_os = "windows"))]
-fn beep_sound() {
-    let _ = io::stdout().write_all(b"\x07");
-}
-
-/// Pure terminal BEL character.
-fn bell_sound() {
-    let _ = io::stdout().write_all(b"\x07");
-}
-
-/// Show a macOS Notification Center alert via `osascript`.
 ///
 /// Runs on a dedicated background thread so the caller is not blocked.
 ///
@@ -530,215 +353,6 @@ fn macos_display_notification(msg: &str) {
         });
 }
 
-/// Return a human-readable duration string, capped at two units so
-/// it stays compact in headers and notifications.
-///
-/// Examples:
-/// * `"45s"`, `"1m"`, `"1m 12s"`
-/// * `"1h"`, `"3h 12m"` (#447 — was previously `"192m"` form)
-/// * `"1d"`, `"2d 5h"` (#447 — multi-day sessions/cycles)
-/// * `"1w"`, `"3w 2d"` (#447 — long-running automations)
-///
-/// The output drops the secondary unit when it's zero, so `"1h"`
-/// rather than `"1h 0m"`. Sub-minute precision is dropped at the
-/// hour mark and above; the goal is "is this a couple of hours or
-/// a couple of days," not stopwatch accuracy.
-#[must_use]
-pub fn humanize_duration(d: Duration) -> String {
-    const MINUTE: u64 = 60;
-    const HOUR: u64 = 60 * MINUTE;
-    const DAY: u64 = 24 * HOUR;
-    const WEEK: u64 = 7 * DAY;
-
-    let total = d.as_secs();
-    if total == 0 {
-        return "0s".to_string();
-    }
-    if total >= WEEK {
-        let w = total / WEEK;
-        let days = (total % WEEK) / DAY;
-        return if days == 0 {
-            format!("{w}w")
-        } else {
-            format!("{w}w {days}d")
-        };
-    }
-    if total >= DAY {
-        let days = total / DAY;
-        let h = (total % DAY) / HOUR;
-        return if h == 0 {
-            format!("{days}d")
-        } else {
-            format!("{days}d {h}h")
-        };
-    }
-    if total >= HOUR {
-        let h = total / HOUR;
-        let m = (total % HOUR) / MINUTE;
-        return if m == 0 {
-            format!("{h}h")
-        } else {
-            format!("{h}h {m}m")
-        };
-    }
-    if total >= MINUTE {
-        let m = total / MINUTE;
-        let s = total % MINUTE;
-        return if s == 0 {
-            format!("{m}m")
-        } else {
-            format!("{m}m {s}s")
-        };
-    }
-    format!("{total}s")
-}
-
-// ── Per-turn notification composition ────────────────────────────────
-//
-// The helpers below decide *whether* to notify on a completed turn and
-// *what message* to put in the body. The low-level dispatcher is
-// `notify_done`; everything in this block sits in front of it.
-
-use crate::models::{ContentBlock, Message};
-
-/// Resolve the effective notification method/threshold/include-summary tuple
-/// for a completed turn, taking the high-level
-/// `[tui].notification_condition` override into account on top of the
-/// lower-level `[notifications]` block.
-///
-/// Returns `None` to mean "do not notify" (either because the user set
-/// `notification_condition = "never"` or because the resolved method is
-/// `Off`).
-pub fn settings(config: &crate::config::Config) -> Option<(Method, Duration, bool)> {
-    let notif = config.notifications_config();
-    // Initialize completion sound mode from config.
-    set_completion_sound_mode(notif.completion_sound);
-    let method = match notif.method {
-        crate::config::NotificationMethod::Auto => Method::Auto,
-        crate::config::NotificationMethod::Osc9 => Method::Osc9,
-        crate::config::NotificationMethod::Bel => Method::Bel,
-        crate::config::NotificationMethod::Kitty => Method::Kitty,
-        crate::config::NotificationMethod::Ghostty => Method::Ghostty,
-        crate::config::NotificationMethod::Off => Method::Off,
-    };
-
-    if let Some(condition) = config
-        .tui
-        .as_ref()
-        .and_then(|tui| tui.notification_condition)
-    {
-        match condition {
-            crate::config::NotificationCondition::Always => {
-                return Some((method, Duration::ZERO, notif.include_summary));
-            }
-            crate::config::NotificationCondition::Never => return None,
-        }
-    }
-
-    Some((
-        method,
-        Duration::from_secs(notif.threshold_secs),
-        notif.include_summary,
-    ))
-}
-
-/// Build the notification body for a completed turn. Prefers the live
-/// streaming text the user just saw; falls back to the latest assistant
-/// message in `api_messages` if streaming text is empty (for example, the
-/// turn finished entirely through tool output). When `include_summary` is
-/// Compose a notification body for a sub-agent completion. Falls back
-/// to a generic "sub-agent X complete" if no human-readable line can
-/// be teased out of the child's transcript.
-pub fn subagent_completion_message(
-    id: &str,
-    result: &str,
-    include_summary: bool,
-    elapsed: Duration,
-) -> String {
-    let result_line = result
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty() && !line.starts_with("<codesmith:subagent.done>"));
-    let mut msg = result_line
-        .and_then(text_summary)
-        .map(|summary| format!("sub-agent {id}: {summary}"))
-        .unwrap_or_else(|| format!("codesmith: sub-agent {id} complete"));
-
-    if include_summary {
-        let human = humanize_duration(elapsed);
-        msg.push('\n');
-        msg.push_str(&format!("codesmith: sub-agent complete ({human})"));
-    }
-
-    msg
-}
-
-/// Find the latest assistant message in `messages` and return a
-/// notification-ready summary of its `Text` content. Thinking blocks,
-/// tool calls, and tool results are skipped — only the user-visible
-/// reply contributes to the body.
-pub fn latest_assistant_text(messages: &[Message]) -> Option<String> {
-    messages
-        .iter()
-        .rev()
-        .find(|message| message.role == "assistant")
-        .and_then(|message| {
-            let text = message
-                .content
-                .iter()
-                .filter_map(|block| match block {
-                    ContentBlock::Text { text, .. } => Some(text.as_str()),
-                    ContentBlock::Thinking { .. }
-                    | ContentBlock::ToolUse { .. }
-                    | ContentBlock::ToolResult { .. }
-                    | ContentBlock::Image { .. }
-                    | ContentBlock::ServerToolUse { .. }
-                    | ContentBlock::ToolSearchToolResult { .. }
-                    | ContentBlock::CodeExecutionToolResult { .. } => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            text_summary(&text)
-        })
-}
-
-/// Keep printable characters and common whitespace; drop control bytes
-/// (moved from the retired ratatui transcript).
-fn sanitize_stream_chunk(chunk: &str) -> String {
-    chunk
-        .chars()
-        .filter(|c| *c == '\n' || *c == '\t' || !c.is_control())
-        .collect()
-}
-
-/// Sanitize + collapse + truncate streaming text into something fit to
-/// hand the OS notification system. Returns `None` when nothing
-/// useful remains after sanitization.
-pub fn text_summary(text: &str) -> Option<String> {
-    const MAX_CHARS: usize = 360;
-
-    let sanitized = sanitize_stream_chunk(text);
-    let collapsed = sanitized
-        .lines()
-        .map(str::trim)
-        .filter(|line: &&str| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let trimmed = collapsed.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    if let Some((idx, _)) = trimmed.char_indices().nth(MAX_CHARS) {
-        let mut s = String::with_capacity(idx + 3);
-        s.push_str(&trimmed[..idx]);
-        s.push_str("...");
-        Some(s)
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::{Mutex, OnceLock};
@@ -783,12 +397,6 @@ mod tests {
     fn bel_emits_exactly_one_byte() {
         let out = capture(Method::Bel, false, "ignored", 0, 1);
         assert_eq!(out, b"\x07");
-    }
-
-    #[test]
-    fn off_mode_emits_nothing() {
-        let out = capture(Method::Off, false, "ignored", 0, 9999);
-        assert!(out.is_empty());
     }
 
     #[test]
@@ -1141,54 +749,5 @@ mod tests {
             }
         }
         assert_eq!(resolved, Method::Bel);
-    }
-
-    #[test]
-    fn humanize_duration_seconds_and_minutes() {
-        assert_eq!(humanize_duration(Duration::from_secs(0)), "0s");
-        assert_eq!(humanize_duration(Duration::from_secs(45)), "45s");
-        assert_eq!(humanize_duration(Duration::from_secs(60)), "1m");
-        assert_eq!(humanize_duration(Duration::from_secs(72)), "1m 12s");
-        // 59m 59s — still under the hour boundary.
-        assert_eq!(humanize_duration(Duration::from_secs(3599)), "59m 59s");
-    }
-
-    #[test]
-    fn humanize_duration_promotes_to_hours_at_one_hour() {
-        // 3661s = 1h 1m 1s — under the new format the seconds fall
-        // off; we keep just the top two units at the hour mark.
-        assert_eq!(humanize_duration(Duration::from_secs(3661)), "1h 1m");
-        assert_eq!(humanize_duration(Duration::from_secs(3600)), "1h");
-        assert_eq!(humanize_duration(Duration::from_secs(7200)), "2h");
-        assert_eq!(humanize_duration(Duration::from_secs(7320)), "2h 2m");
-        // 3h 12m — the previous "192m 30s" case that motivated #447.
-        assert_eq!(humanize_duration(Duration::from_secs(11_550)), "3h 12m");
-    }
-
-    #[test]
-    fn humanize_duration_handles_multi_day_sessions() {
-        // Exactly one day.
-        assert_eq!(humanize_duration(Duration::from_secs(86_400)), "1d");
-        // 1d 1h.
-        assert_eq!(humanize_duration(Duration::from_secs(90_000)), "1d 1h");
-        // 2d 5h — the two-tier rule drops minutes/seconds.
-        assert_eq!(
-            humanize_duration(Duration::from_secs(2 * 86_400 + 5 * 3600 + 17 * 60)),
-            "2d 5h"
-        );
-    }
-
-    #[test]
-    fn humanize_duration_promotes_to_weeks_after_seven_days() {
-        assert_eq!(humanize_duration(Duration::from_secs(604_800)), "1w");
-        assert_eq!(
-            humanize_duration(Duration::from_secs(604_800 + 86_400)),
-            "1w 1d"
-        );
-        // 3w 2d — long-running automation case.
-        assert_eq!(
-            humanize_duration(Duration::from_secs(3 * 604_800 + 2 * 86_400 + 17 * 3600)),
-            "3w 2d"
-        );
     }
 }

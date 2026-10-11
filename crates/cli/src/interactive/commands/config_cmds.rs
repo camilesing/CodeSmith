@@ -6,9 +6,9 @@
 use colored::Colorize;
 
 use super::ReplState;
+use crate::app_state::ReasoningEffort;
 use crate::settings::Settings;
-use crate::tui::app::ReasoningEffort;
-use crate::tui::approval::ApprovalMode;
+use codesmith_agent_runtime::mode::ApprovalMode;
 
 /// `/config` — show the settings summary or the config file path.
 pub fn show_config(state: &ReplState) {

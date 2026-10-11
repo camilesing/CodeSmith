@@ -5,8 +5,8 @@
 use colored::Colorize;
 
 use super::ReplState;
+use crate::app_state::HuntVerdict;
 use crate::config::ApiProvider;
-use crate::tui::app::HuntVerdict;
 
 /// `/init` — write/update AGENTS.md (reuses the legacy generator).
 pub fn init(state: &ReplState) {
@@ -306,7 +306,9 @@ pub async fn task(state: &mut ReplState, args: &str) {
                 mode: Some(state.mode.label().to_string()),
                 allow_shell: Some(state.allow_shell),
                 trust_mode: Some(state.trust_mode),
-                auto_approve: Some(state.approval_mode == crate::tui::approval::ApprovalMode::Auto),
+                auto_approve: Some(
+                    state.approval_mode == codesmith_agent_runtime::mode::ApprovalMode::Auto,
+                ),
             };
             match manager.add_task(request).await {
                 Ok(task) => println!("task queued: {} ({})", task.id, task.prompt),

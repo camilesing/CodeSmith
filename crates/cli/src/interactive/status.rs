@@ -20,9 +20,9 @@
 use colored::Colorize;
 
 use super::state::ReplState;
+use crate::app_state::AppMode;
 use crate::compaction::estimate_input_tokens_conservative;
 use crate::models::context_window_for_model;
-use crate::tui::app::AppMode;
 
 /// Context-warning thresholds (mirrors the retired header widget).
 pub const CONTEXT_WARN_PCT: f64 = 85.0;

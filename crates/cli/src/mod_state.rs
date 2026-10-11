@@ -225,10 +225,12 @@ impl ModStateStore {
         self.persist()
     }
 
+    #[cfg(test)]
     pub fn disabled(&self) -> Vec<String> {
         self.disabled.iter().cloned().collect()
     }
 
+    #[cfg(test)]
     pub fn activated(&self) -> Vec<String> {
         self.activated.iter().cloned().collect()
     }

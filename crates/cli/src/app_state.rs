@@ -4,11 +4,10 @@
 //! data half that outlives every rendering frontend. The REPL
 //! (`interactive/`) and the headless runners construct them directly.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use codesmith_agent_runtime::prompt_inspect::{CacheWarmupKey, PromptInspection};
 use serde::{Deserialize, Serialize};
 
 use crate::models::Tool;
@@ -36,13 +35,6 @@ pub struct TurnCacheRecord {
     /// — in that case the `/cache` formatter infers the miss as
     /// `input_tokens − cache_hit_tokens`.
     pub cache_miss_tokens: Option<u32>,
-    /// Approximate tokens spent re-sending prior `reasoning_content` on
-    /// V4-thinking tool-calling turns (chars/3 heuristic). Helps separate
-    /// cache misses caused by reasoning-replay churn from misses caused by
-    /// real prefix instability.
-    pub reasoning_replay_tokens: Option<u32>,
-    /// Local timestamp the turn telemetry was recorded.
-    pub recorded_at: Instant,
 }
 
 /// Configuration required to bootstrap an interactive frontend session.
@@ -54,25 +46,14 @@ pub struct TuiOptions {
     pub config_path: Option<PathBuf>,
     pub config_profile: Option<String>,
     pub allow_shell: bool,
-    /// Use the alternate screen buffer (fullscreen frontend).
-    pub use_alt_screen: bool,
-    /// Capture mouse input for internal scrolling/selection.
-    pub use_mouse_capture: bool,
-    /// Enable terminal bracketed-paste mode (OSC `?2004h` / `?2004l`). Defaults
-    /// on; settable via `bracketed_paste = false` in `settings.toml` for the
-    /// rare terminal that mishandles it.
-    pub use_bracketed_paste: bool,
     /// Maximum number of concurrent sub-agents.
     pub max_subagents: usize,
     pub skills_dir: PathBuf,
     pub memory_path: PathBuf,
-    pub notes_path: PathBuf,
     pub mcp_config_path: PathBuf,
     pub use_memory: bool,
     /// Start in agent mode (defaults to agent; --yolo starts in YOLO)
     pub start_in_agent_mode: bool,
-    /// Skip onboarding screens
-    pub skip_onboarding: bool,
     /// Auto-approve tool executions (yolo mode)
     pub yolo: bool,
     /// Resume a previous session by ID
@@ -123,7 +104,6 @@ pub struct SessionState {
     pub session_cost_cny: f64,
     pub subagent_cost: f64,
     pub subagent_cost_cny: f64,
-    pub subagent_cost_event_seqs: HashSet<u64>,
     pub displayed_cost_high_water: f64,
     pub displayed_cost_high_water_cny: f64,
     pub last_prompt_tokens: Option<u32>,
@@ -139,8 +119,6 @@ pub struct SessionState {
     pub total_cache_miss_tokens: u32,
     pub total_output_tokens: u32,
     pub turn_cache_history: VecDeque<TurnCacheRecord>,
-    pub last_cache_inspection: Option<PromptInspection>,
-    pub last_warmup_key: Option<CacheWarmupKey>,
     /// Tool catalog from the most recent model request.
     ///
     /// `/cache inspect` uses this to inspect the same tool schema bytes
@@ -157,7 +135,6 @@ impl Default for SessionState {
             session_cost_cny: 0.0,
             subagent_cost: 0.0,
             subagent_cost_cny: 0.0,
-            subagent_cost_event_seqs: HashSet::new(),
             displayed_cost_high_water: 0.0,
             displayed_cost_high_water_cny: 0.0,
             last_prompt_tokens: None,
@@ -172,20 +149,8 @@ impl Default for SessionState {
             total_cache_miss_tokens: 0,
             total_output_tokens: 0,
             turn_cache_history: VecDeque::new(),
-            last_cache_inspection: None,
-            last_warmup_key: None,
             last_tool_catalog: None,
             last_base_url: None,
         }
-    }
-}
-
-impl SessionState {
-    /// Reset the accumulated token breakdown fields to zero.
-    pub fn reset_token_breakdown(&mut self) {
-        self.total_input_tokens = 0;
-        self.total_cache_hit_tokens = 0;
-        self.total_cache_miss_tokens = 0;
-        self.total_output_tokens = 0;
     }
 }

@@ -25,66 +25,6 @@ use codesmith_config::presets::{
 
 use crate::config::Config;
 
-/// Load every preset visible to the current workspace (built-ins + user +
-/// project). Invalid files are skipped; surface the catalog warnings so
-/// Outcome of applying (or clearing) a preset, rendered into the chat.
-#[derive(Debug, Default)]
-pub struct PresetApplySummary {
-    pub preset_name: Option<String>,
-    pub applied: Vec<String>,
-    pub restart_notes: Vec<String>,
-    pub warnings: Vec<String>,
-}
-
-impl PresetApplySummary {
-    fn line(&mut self, text: impl Into<String>) {
-        self.applied.push(text.into());
-    }
-
-    fn restart(&mut self, text: impl Into<String>) {
-        self.restart_notes.push(text.into());
-    }
-
-    pub fn render(&self) -> String {
-        let mut out = String::new();
-        if let Some(name) = &self.preset_name {
-            let _ = writeln!(out, "Preset: {name}");
-        }
-        for line in &self.applied {
-            let _ = writeln!(out, "  · {line}");
-        }
-        if !self.restart_notes.is_empty() {
-            out.push('\n');
-            let _ = writeln!(out, "Applies after restart:");
-            for note in &self.restart_notes {
-                let _ = writeln!(out, "  · {note}");
-            }
-        }
-        if !self.warnings.is_empty() {
-            out.push('\n');
-            for warning in &self.warnings {
-                let _ = writeln!(out, "⚠ {warning}");
-            }
-        }
-        out
-    }
-}
-
-/// Apply a named preset to the live app (override semantics — the user
-/// just asked for it). Dials the preset leaves unset keep their current
-/// Deactivate the preset layer: dials keep their current values, but the
-
-/// Persist the active preset choice so the next launch restores it. Empty
-/// string clears the stored value; failures are non-fatal (the session
-/// still runs, it just won't restore).
-fn persist_active_preset(name: &str) {
-    let mut settings = crate::settings::Settings::load().unwrap_or_default();
-    let _ = settings.set("active_preset", name);
-    if let Err(err) = settings.save() {
-        tracing::warn!(error = %err, preset = name, "failed to persist active preset");
-    }
-}
-
 /// Fill `slot` from the preset's `value` when unset; flag a deviation
 /// when the explicit value disagrees with the preset.
 fn fill_bool(slot: &mut Option<bool>, value: Option<bool>, deviated: &mut bool) {
@@ -321,11 +261,6 @@ fn fold(config: &mut Config, loaded: codesmith_config::presets::LoadedPreset) ->
     }
 }
 
-/// Startup half of [`apply`]: config-backed dials (thinking, sub-agent
-/// cap, memory, approval) were already resolved fill-if-unset into the
-/// loaded config and flowed into the App, so only the dials with no
-/// config representation (app mode, tool surface, the active-name chip)
-/// are applied here. Never persists — the settings value is only written
 /// The preset persisted by the last `/preset <name>` command (if any),
 /// for startup selection when neither the CLI nor config.toml chose one.
 pub fn persisted_selection() -> Option<String> {

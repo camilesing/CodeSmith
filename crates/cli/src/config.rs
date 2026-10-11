@@ -1,7 +1,6 @@
 //! Configuration loading and defaults for codesmith.
 
 use std::collections::HashMap;
-use std::fmt::Write;
 use std::fs;
 #[cfg(unix)]
 use std::io::Write as _;
@@ -62,7 +61,6 @@ pub const DEFAULT_ATLASCLOUD_MODEL: &str = "deepseek-ai/deepseek-v4-flash";
 pub const DEFAULT_ATLASCLOUD_BASE_URL: &str = "https://api.atlascloud.ai/v1";
 pub const DEFAULT_WANJIE_ARK_MODEL: &str = "deepseek-reasoner";
 pub const DEFAULT_VOLCENGINE_MODEL: &str = "DeepSeek-V4-Pro";
-pub const DEFAULT_VOLCENGINE_FLASH_MODEL: &str = "DeepSeek-V4-Flash";
 pub const DEFAULT_VOLCENGINE_BASE_URL: &str = "https://ark.cn-beijing.volces.com/api/coding/v3";
 pub const DEFAULT_WANJIE_ARK_BASE_URL: &str = "https://maas-openapi.wanjiedata.com/api/v1";
 pub const DEFAULT_OPENROUTER_MODEL: &str = "deepseek/deepseek-v4-pro";
@@ -80,20 +78,6 @@ pub const OPENROUTER_QWEN_3_6_27B_MODEL: &str = "qwen/qwen3.6-27b";
 pub const OPENROUTER_TENCENT_HY3_PREVIEW_MODEL: &str = "tencent/hy3-preview";
 pub const OPENROUTER_XIAOMI_MIMO_V2_5_PRO_MODEL: &str = "xiaomi/mimo-v2.5-pro";
 pub const OPENROUTER_XIAOMI_MIMO_V2_5_MODEL: &str = "xiaomi/mimo-v2.5";
-pub const RECENT_OPENROUTER_LARGE_MODELS: &[&str] = &[
-    OPENROUTER_ARCEE_TRINITY_LARGE_THINKING_MODEL,
-    OPENROUTER_QWEN_3_7_MAX_MODEL,
-    OPENROUTER_XIAOMI_MIMO_V2_5_PRO_MODEL,
-    OPENROUTER_XIAOMI_MIMO_V2_5_MODEL,
-    OPENROUTER_QWEN_3_6_35B_A3B_MODEL,
-    OPENROUTER_QWEN_3_6_27B_MODEL,
-    OPENROUTER_KIMI_K2_6_MODEL,
-    OPENROUTER_GLM_5_1_MODEL,
-    OPENROUTER_TENCENT_HY3_PREVIEW_MODEL,
-    OPENROUTER_GEMMA_4_31B_MODEL,
-    OPENROUTER_GEMMA_4_26B_A4B_MODEL,
-    OPENROUTER_NEMOTRON_3_NANO_OMNI_MODEL,
-];
 pub const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 pub const DEFAULT_XIAOMI_MIMO_MODEL: &str = "mimo-v2.5-pro";
 pub const DEFAULT_XIAOMI_MIMO_BASE_URL: &str = "https://api.xiaomimimo.com/v1";
@@ -124,15 +108,6 @@ pub const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
 /// DeepSeek's official API host is the same worldwide. Keep this alias for
 /// old configs, but route it through the normal beta-enabled DeepSeek default.
 const API_KEYRING_SENTINEL: &str = "__KEYRING__";
-pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
-    "deepseek-v4-pro",
-    "deepseek-v4-flash",
-    "deepseek-ai/deepseek-v4-pro",
-    "deepseek-ai/deepseek-v4-flash",
-    "deepseek/deepseek-v4-pro",
-    "deepseek/deepseek-v4-flash",
-];
-pub const OFFICIAL_DEEPSEEK_MODELS: &[&str] = &["deepseek-v4-pro", "deepseek-v4-flash"];
 
 // Provider-capability cluster (`ApiProvider`, `ProviderCapability`,
 // `ModelAliasDeprecation`, `RequestPayloadMode`, `provider_capability`,
@@ -189,34 +164,6 @@ pub fn normalize_model_name(model: &str) -> Option<String> {
     None
 }
 
-#[must_use]
-pub(crate) fn normalize_custom_model_id(model: &str) -> Option<String> {
-    let trimmed = model.trim();
-    if trimmed.is_empty() || trimmed.chars().any(char::is_control) {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
-fn canonical_official_deepseek_model_id(model: &str) -> Option<&'static str> {
-    match model.trim().to_ascii_lowercase().as_str() {
-        "deepseek-v4-pro"
-        | "deepseek-v4pro"
-        | "deepseek-ai/deepseek-v4-pro"
-        | "deepseek-ai/deepseek-v4pro"
-        | "deepseek/deepseek-v4-pro"
-        | "deepseek/deepseek-v4pro" => Some("deepseek-v4-pro"),
-        "deepseek-v4-flash"
-        | "deepseek-v4flash"
-        | "deepseek-ai/deepseek-v4-flash"
-        | "deepseek-ai/deepseek-v4flash"
-        | "deepseek/deepseek-v4-flash"
-        | "deepseek/deepseek-v4flash" => Some("deepseek-v4-flash"),
-        _ => None,
-    }
-}
-
 fn canonical_openrouter_recent_model_id(model: &str) -> Option<&'static str> {
     let normalized = model.trim().to_ascii_lowercase();
     let normalized = normalized.replace(['_', ' '], "-");
@@ -269,79 +216,6 @@ fn canonical_openrouter_recent_model_id(model: &str) -> Option<&'static str> {
         | "xiaomi-mimo-v2.5"
         | "xiaomi-mimo-v2-5" => Some(OPENROUTER_XIAOMI_MIMO_V2_5_MODEL),
         _ => None,
-    }
-}
-
-/// Normalize a model selected through the TUI for the active provider.
-///
-/// Official DeepSeek endpoints require bare model IDs. Provider-prefixed
-/// aliases are valid for some compatible backends, but sending them to
-/// DeepSeek's own API causes a 400. Keep the generic normalizer permissive for
-/// config/back-compat, and canonicalize only when the active provider is known.
-///
-/// Preserves the caller's casing when the model is already a recognised
-/// DeepSeek id (e.g. `DeepSeek-V4-Flash` stays as-is). Only rewrites compact
-/// aliases like `deepseek-v4pro` → `deepseek-v4-pro`.
-#[must_use]
-pub fn normalize_model_name_for_provider(provider: ApiProvider, model: &str) -> Option<String> {
-    if matches!(provider, ApiProvider::Openrouter)
-        && let Some(canonical) = canonical_openrouter_recent_model_id(model)
-    {
-        return Some(canonical.to_string());
-    }
-
-    let normalized = normalize_model_name(model)?;
-    if matches!(provider, ApiProvider::Deepseek)
-        && let Some(canonical) = canonical_official_deepseek_model_id(&normalized)
-    {
-        // When the user's input already matches a known model id
-        // case-insensitively, keep their original casing; only rewrite
-        // compact aliases (e.g. v4pro → v4-pro).
-        if canonical.eq_ignore_ascii_case(&normalized)
-            || normalized.to_ascii_lowercase() == canonical
-        {
-            return Some(normalized);
-        }
-        return Some(canonical.to_string());
-    }
-    if matches!(provider, ApiProvider::Siliconflow) {
-        let provider_model = model_for_provider(provider, normalized.clone());
-        if provider_model != normalized {
-            return Some(provider_model);
-        }
-    }
-    if let Some(canonical) = canonical_official_deepseek_model_id(&normalized) {
-        return Some(model_for_provider(provider, canonical.to_string()));
-    }
-    Some(normalized)
-}
-
-#[must_use]
-pub fn model_completion_names_for_provider(provider: ApiProvider) -> Vec<&'static str> {
-    match provider {
-        ApiProvider::Deepseek => OFFICIAL_DEEPSEEK_MODELS.to_vec(),
-        ApiProvider::NvidiaNim => vec![DEFAULT_NVIDIA_NIM_MODEL, DEFAULT_NVIDIA_NIM_FLASH_MODEL],
-        ApiProvider::Openrouter => {
-            let mut models = vec![DEFAULT_OPENROUTER_MODEL, DEFAULT_OPENROUTER_FLASH_MODEL];
-            models.extend_from_slice(RECENT_OPENROUTER_LARGE_MODELS);
-            models
-        }
-        ApiProvider::XiaomiMimo => vec![DEFAULT_XIAOMI_MIMO_MODEL, "mimo-v2.5"],
-        ApiProvider::Novita => vec![DEFAULT_NOVITA_MODEL, DEFAULT_NOVITA_FLASH_MODEL],
-        ApiProvider::Fireworks => vec![DEFAULT_FIREWORKS_MODEL],
-        ApiProvider::Siliconflow => {
-            vec![DEFAULT_SILICONFLOW_MODEL, DEFAULT_SILICONFLOW_FLASH_MODEL]
-        }
-        ApiProvider::Moonshot => vec![DEFAULT_MOONSHOT_MODEL],
-        ApiProvider::WanjieArk => vec![DEFAULT_WANJIE_ARK_MODEL],
-        ApiProvider::Sglang => vec![DEFAULT_SGLANG_MODEL, DEFAULT_SGLANG_FLASH_MODEL],
-        ApiProvider::Vllm => vec![DEFAULT_VLLM_MODEL, DEFAULT_VLLM_FLASH_MODEL],
-        ApiProvider::Volcengine => vec![DEFAULT_VOLCENGINE_MODEL, DEFAULT_VOLCENGINE_FLASH_MODEL],
-        ApiProvider::Openai | ApiProvider::Atlascloud | ApiProvider::Ollama => {
-            OFFICIAL_DEEPSEEK_MODELS.to_vec()
-        }
-        // Users specify Claude model names via config/env; we don't bundle a list.
-        ApiProvider::Anthropic => vec![DEFAULT_ANTHROPIC_MODEL],
     }
 }
 
@@ -409,143 +283,6 @@ pub struct RetryConfig {
     pub initial_delay: Option<f64>,
     pub max_delay: Option<f64>,
     pub exponential_base: Option<f64>,
-}
-
-/// Deserialize `status_items` tolerantly: skip keys unknown to this build
-/// instead of erroring with "unknown variant".  This lets a dev build write
-/// `"balance"` (or any future item) while the stable build still parses the
-/// config file successfully.
-fn deser_status_items<'de, D>(deserializer: D) -> Result<Option<Vec<StatusItem>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let raw: Option<Vec<String>> = Option::deserialize(deserializer)?;
-    Ok(raw.map(|strings| {
-        strings
-            .into_iter()
-            .filter_map(|s| {
-                StatusItem::from_key(&s).or_else(|| {
-                    tracing::warn!("ignoring unknown status item {s:?} in config");
-                    None
-                })
-            })
-            .collect()
-    }))
-}
-
-/// UI configuration loaded from config files.
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct TuiConfig {
-    pub alternate_screen: Option<String>,
-    pub mouse_capture: Option<bool>,
-    /// Timeout for startup terminal mode/probe calls in milliseconds.
-    /// Defaults to 500ms when omitted.
-    pub terminal_probe_timeout_ms: Option<u64>,
-    /// Ordered list of footer items the user wants visible. `None` (the field
-    /// missing from `config.toml`) means "use the built-in default order"; an
-    /// empty `Some(vec![])` means "show nothing in the footer".
-    ///
-    /// Edited interactively via `/statusline`; persisted to `tui.status_items`
-    /// in `~/.codesmith/config.toml`.
-    #[serde(deserialize_with = "deser_status_items")]
-    pub status_items: Option<Vec<StatusItem>>,
-    /// Emit OSC 8 hyperlink escape sequences around URLs in the transcript so
-    /// supporting terminals (iTerm2, Terminal.app 13+, Ghostty, Kitty,
-    /// WezTerm, Alacritty, recent gnome-terminal/konsole) make them
-    /// Cmd+click-openable. Terminals without OSC 8 support render the plain
-    /// label and ignore the escape. Defaults to `true`; set `false` for
-    /// terminals that misrender the sequence.
-    pub osc8_links: Option<bool>,
-    /// High-level notification trigger condition. When set, overrides the
-    /// `[notifications].threshold_secs` gate from the lower-level
-    /// `[notifications]` block:
-    ///
-    /// - `Always` — fire a turn-completion notification on every successful
-    ///   turn regardless of duration. The configured `[notifications].method`
-    ///   and `include_summary` flag are still respected.
-    /// - `Never` — suppress all turn-completion notifications.
-    /// - Unset (default) — fall back to the `[notifications]` defaults.
-    pub notification_condition: Option<NotificationCondition>,
-    /// When `true`, plain Up/Down on an empty composer scroll the
-    /// transcript instead of recalling input history. Useful for
-    /// terminals that map mouse-wheel gestures to arrow keys. Default:
-    /// `true` only when mouse capture is off; otherwise `false`.
-    #[serde(default)]
-    pub composer_arrows_scroll: Option<bool>,
-}
-
-/// High-level notification trigger override. See
-/// [`TuiConfig::notification_condition`].
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum NotificationCondition {
-    /// Notify on every successful turn (no duration threshold).
-    Always,
-    /// Suppress notifications entirely.
-    Never,
-}
-
-/// Notification delivery method (mirrors `tui::notifications::Method`).
-#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum NotificationMethod {
-    /// Auto-detect: picks the best protocol for the current terminal
-    /// (OSC 9, Kitty OSC 99, Ghostty OSC 777, or Bel).
-    #[default]
-    Auto,
-    /// OSC 9 escape.
-    Osc9,
-    /// Plain BEL character.
-    Bel,
-    /// Kitty notification protocol (OSC 99).
-    Kitty,
-    /// Ghostty notification protocol (OSC 777).
-    Ghostty,
-    /// Disable notifications.
-    Off,
-}
-
-fn default_threshold_secs() -> u64 {
-    30
-}
-
-/// Completion sound options.
-#[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum CompletionSound {
-    /// No sound on turn completion.
-    Off,
-    /// System notification beep (default). On Windows uses `MessageBeep`.
-    #[default]
-    Beep,
-    /// Terminal BEL character (`\x07`).
-    Bell,
-}
-
-/// Desktop-notification configuration (OSC 9 / BEL on turn completion).
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct NotificationsConfig {
-    /// Delivery method: `auto` | `osc9` | `bel` | `off`. Default: `auto`.
-    /// `auto` resolves to OSC 9 for iTerm.app / Ghostty / WezTerm / Cmux
-    /// (detected via `$TERM_PROGRAM` then `$LC_TERMINAL`); on macOS / Linux
-    /// it falls back to BEL, and on Windows it falls back to `Off` so the
-    /// post-turn notification doesn't ring the system error chime (#583).
-    /// Use `method = "osc9"` explicitly when your terminal is OSC-9 capable
-    /// but sets neither env var (e.g. Cmux without `LC_TERMINAL`).
-    #[serde(default)]
-    pub method: NotificationMethod,
-    /// Only notify when the turn took at least this many seconds. Default: 30.
-    #[serde(default = "default_threshold_secs")]
-    pub threshold_secs: u64,
-    /// Include a short summary (elapsed time + cost) in the notification body.
-    /// Default: `false`.
-    #[serde(default)]
-    pub include_summary: bool,
-
-    /// Completion sound: `"off"` | `"beep"` | `"bell"`. Default: `"beep"`.
-    /// Plays a sound when every turn finishes (alongside the ✅ marker).
-    #[serde(default)]
-    pub completion_sound: CompletionSound,
 }
 
 fn default_snapshot_max_age_days() -> u64 {
@@ -699,220 +436,6 @@ pub struct SearchConfig {
     /// Volcengine also falls back to `VOLCENGINE_API_KEY` / `VOLCENGINE_ARK_API_KEY` / `ARK_API_KEY` env vars.
     #[serde(default)]
     pub api_key: Option<String>,
-}
-
-/// One configurable footer item.
-///
-/// Order in the user's `Vec<StatusItem>` is preserved: items in the left
-/// cluster (`Mode`, `Model`, `Cost`, `Status`) render in the order given;
-/// right-cluster chips (`Coherence`, `Agents`, `ReasoningReplay`,
-/// `PrefixStability`, `Cache`, `ContextPercent`, `GitBranch`,
-/// `LastToolElapsed`, `RateLimit`) likewise honour ordering inside their
-/// cluster. The split between left and right is deliberate — left holds steady
-/// identity (mode/model/cost), right holds transient signals — so we route
-/// each variant to the correct side rather than letting users reorder across
-/// the spacer.
-///
-/// Variants without a current data source (`RateLimit`, `LastToolElapsed`)
-/// are intentionally exposed today so the picker is forward-compatible; they
-/// render empty until the supporting fields land. Empty spans don't take
-/// up footer width, so the user sees no visual artifact.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
-#[serde(rename_all = "snake_case")]
-pub enum StatusItem {
-    /// "agent" / "yolo" / "plan" chip.
-    Mode,
-    /// Model identifier (e.g. `deepseek-v4-pro`).
-    Model,
-    /// Session cost in the configured display currency.
-    Cost,
-    /// Activity label: "ready" / "draft" / "working".
-    Status,
-    /// Coherence intervention label: "refreshing context" / "verifying" / "resetting plan".
-    Coherence,
-    /// Sub-agent count chip ("3 agents").
-    Agents,
-    /// Reasoning-replay token count ("rsn 12.3k").
-    ReasoningReplay,
-    /// Prefix stability ("cache prefix 100%").
-    PrefixStability,
-    /// Cache hit rate ("cache 73%").
-    Cache,
-    /// Context-window utilisation percent ("48%").
-    ContextPercent,
-    /// Current git branch name.
-    GitBranch,
-    /// Elapsed time of the most recent tool call (placeholder until wired).
-    LastToolElapsed,
-    /// Remaining rate-limit budget (placeholder until wired).
-    RateLimit,
-    /// Session token usage: input / cache-hit / output.
-    Tokens,
-    /// DeepSeek account balance, refreshed once per turn completion.
-    Balance,
-}
-
-impl StatusItem {
-    /// Default footer composition for the always-on status line. Used when
-    /// `tui.status_items` is missing from `config.toml` so upgraders see a
-    /// concise footer by default; diagnostic chips remain available via
-    /// `/statusline` without crowding the main UI.
-    #[must_use]
-    pub fn default_footer() -> Vec<StatusItem> {
-        vec![
-            StatusItem::Mode,
-            StatusItem::Model,
-            StatusItem::Cost,
-            StatusItem::Status,
-            StatusItem::Coherence,
-            StatusItem::Agents,
-            StatusItem::ReasoningReplay,
-            StatusItem::Cache,
-            StatusItem::GitBranch,
-            StatusItem::Tokens,
-        ]
-    }
-
-    /// Stable canonical name used in TOML and the picker label.
-    #[must_use]
-    pub fn key(self) -> &'static str {
-        match self {
-            StatusItem::Mode => "mode",
-            StatusItem::Model => "model",
-            StatusItem::Cost => "cost",
-            StatusItem::Status => "status",
-            StatusItem::Coherence => "coherence",
-            StatusItem::Agents => "agents",
-            StatusItem::ReasoningReplay => "reasoning_replay",
-            StatusItem::PrefixStability => "prefix_stability",
-            StatusItem::Cache => "cache",
-            StatusItem::ContextPercent => "context_percent",
-            StatusItem::GitBranch => "git_branch",
-            StatusItem::LastToolElapsed => "last_tool_elapsed",
-            StatusItem::RateLimit => "rate_limit",
-            StatusItem::Tokens => "tokens",
-            StatusItem::Balance => "balance",
-        }
-    }
-
-    /// Reverse of [`key`](Self::key): parse a config string back to a variant.
-    /// Returns `None` for unknown keys so the config parser can silently skip
-    /// items added by newer versions rather than crashing with "unknown variant".
-    #[must_use]
-    pub fn from_key(key: &str) -> Option<Self> {
-        match key {
-            "mode" => Some(Self::Mode),
-            "model" => Some(Self::Model),
-            "cost" => Some(Self::Cost),
-            "status" => Some(Self::Status),
-            "coherence" => Some(Self::Coherence),
-            "agents" => Some(Self::Agents),
-            "reasoning_replay" => Some(Self::ReasoningReplay),
-            "prefix_stability" => Some(Self::PrefixStability),
-            "cache" => Some(Self::Cache),
-            "context_percent" => Some(Self::ContextPercent),
-            "git_branch" => Some(Self::GitBranch),
-            "last_tool_elapsed" => Some(Self::LastToolElapsed),
-            "rate_limit" => Some(Self::RateLimit),
-            "tokens" => Some(Self::Tokens),
-            "balance" => Some(Self::Balance),
-            _ => None,
-        }
-    }
-
-    /// Human-readable label for the picker.
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            StatusItem::Mode => "Mode",
-            StatusItem::Model => "Model",
-            StatusItem::Cost => "Session cost",
-            StatusItem::Status => "Activity (ready/draft/working)",
-            StatusItem::Coherence => "Coherence interventions",
-            StatusItem::Agents => "Sub-agents in flight",
-            StatusItem::ReasoningReplay => "Reasoning replay tokens",
-            StatusItem::PrefixStability => "Prefix stability",
-            StatusItem::Cache => "Prompt cache hit rate",
-            StatusItem::ContextPercent => "Context window %",
-            StatusItem::GitBranch => "Git branch",
-            StatusItem::LastToolElapsed => "Last tool elapsed",
-            StatusItem::RateLimit => "Rate-limit remaining",
-            StatusItem::Tokens => "Session tokens",
-            StatusItem::Balance => "Account balance",
-        }
-    }
-
-    /// One-line hint shown beside the label so the user knows what each item
-    /// surfaces without having to toggle it on first.
-    #[must_use]
-    pub fn hint(self) -> &'static str {
-        match self {
-            StatusItem::Mode => "agent · yolo · plan",
-            StatusItem::Model => "the model id you'll send to",
-            StatusItem::Cost => "running total for this session",
-            StatusItem::Status => "what the agent is doing right now",
-            StatusItem::Coherence => "shown only when the engine intervenes",
-            StatusItem::Agents => "agents or RLM work in progress",
-            StatusItem::ReasoningReplay => "thinking tokens replayed each turn",
-            StatusItem::PrefixStability => "whether system/tools stayed cacheable",
-            StatusItem::Cache => "% of prompt served from cache",
-            StatusItem::ContextPercent => "tokens used / model context window",
-            StatusItem::GitBranch => "current workspace branch",
-            StatusItem::LastToolElapsed => "ms of the most recent tool call (placeholder)",
-            StatusItem::RateLimit => "remaining requests in the budget (placeholder)",
-            StatusItem::Tokens => "input / cache-hit / output token totals",
-            StatusItem::Balance => "topped-up + granted balance from DeepSeek",
-        }
-    }
-
-    /// Every variant in display order — used by the picker to enumerate rows.
-    #[must_use]
-    pub fn all() -> &'static [StatusItem] {
-        &[
-            StatusItem::Mode,
-            StatusItem::Model,
-            StatusItem::Cost,
-            StatusItem::Balance,
-            StatusItem::Status,
-            StatusItem::Coherence,
-            StatusItem::Agents,
-            StatusItem::ReasoningReplay,
-            StatusItem::PrefixStability,
-            StatusItem::Cache,
-            StatusItem::ContextPercent,
-            StatusItem::GitBranch,
-            StatusItem::LastToolElapsed,
-            StatusItem::RateLimit,
-            StatusItem::Tokens,
-        ]
-    }
-
-    /// Items that belong in the footer's left cluster (steady identity).
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn is_left_cluster(self) -> bool {
-        matches!(
-            self,
-            StatusItem::Mode
-                | StatusItem::Model
-                | StatusItem::Cost
-                | StatusItem::Status
-                | StatusItem::Balance
-        )
-    }
-
-    /// Whether this item is relevant for `provider`.  Provider-specific
-    /// items return `false` for unsupported providers so the picker doesn't
-    /// offer toggles that can never show useful data.
-    #[must_use]
-    pub fn is_available_for(self, provider: ApiProvider) -> bool {
-        match self {
-            StatusItem::Balance => {
-                matches!(provider, ApiProvider::Deepseek)
-            }
-            _ => true,
-        }
-    }
 }
 
 /// Re-export of the resolved retry policy (canonical home: `codesmith_agent::retry`).
@@ -1115,22 +638,6 @@ pub struct UpdateConfig {
     pub update_uri: Option<String>,
 }
 
-impl UpdateConfig {
-    /// Effective switch: explicit value, else the built-in default.
-    #[must_use]
-    pub fn checks_for_updates(&self) -> bool {
-        self.check_for_updates.unwrap_or(true)
-    }
-
-    #[must_use]
-    pub fn update_uri(&self) -> Option<&str> {
-        self.update_uri
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-    }
-}
-
 /// Resolved CLI configuration, including defaults and environment overrides.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Config {
@@ -1258,7 +765,6 @@ pub struct Config {
     pub features: Option<FeaturesToml>,
 
     /// TUI configuration (alternate screen, etc.)
-    pub tui: Option<TuiConfig>,
 
     /// Lifecycle hooks configuration
     #[serde(default)]
@@ -1267,10 +773,6 @@ pub struct Config {
     /// Provider-specific credentials and defaults shared with the `codesmith` facade.
     #[serde(default)]
     pub providers: Option<ProvidersConfig>,
-
-    /// Desktop notification settings (OSC 9 / BEL on long turn completion).
-    #[serde(default)]
-    pub notifications: Option<NotificationsConfig>,
 
     /// Per-domain network policy (#135). When absent, network tools fall back
     /// to a permissive default, matching the old lenient behavior.
@@ -1526,12 +1028,6 @@ impl Config {
         self.mods.as_ref().and_then(|m| m.enabled).unwrap_or(true)
     }
 
-    /// Script-mod hot-reload watcher enabled? (default `true`).
-    #[must_use]
-    pub fn mods_watch(&self) -> bool {
-        self.mods.as_ref().and_then(|m| m.watch).unwrap_or(true)
-    }
-
     /// Step cap per turn for scheduled automation runs. `None` when unset —
     /// callers apply [`AUTOMATION_DEFAULT_MAX_STEPS`].
     #[must_use]
@@ -1544,7 +1040,6 @@ impl Config {
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 pub struct ModsConfig {
     pub enabled: Option<bool>,
-    pub watch: Option<bool>,
 }
 
 /// Default step cap per turn for scheduled (unattended) automation runs.
@@ -2083,16 +1578,6 @@ impl Config {
                 );
             }
         }
-        if let Some(tui) = &self.tui
-            && let Some(mode) = tui.alternate_screen.as_deref()
-        {
-            let mode = mode.to_ascii_lowercase();
-            if !matches!(mode.as_str(), "auto" | "always" | "never") {
-                anyhow::bail!(
-                    "Invalid tui.alternate_screen '{mode}': expected auto, always, or never."
-                );
-            }
-        }
         if let Some(capacity) = &self.capacity {
             if let Some(v) = capacity.low_risk_max
                 && !(0.0..=1.0).contains(&v)
@@ -2378,71 +1863,6 @@ impl Config {
             ApiProvider::Anthropic => DEFAULT_ANTHROPIC_MODEL,
         }
         .to_string()
-    }
-
-    /// Model to start a newly selected provider on.
-    ///
-    /// Used by first-run onboarding, where the config file predates the
-    /// provider choice: `ensure_config_file_exists` writes the DeepSeek
-    /// `default_text_model`, and [`Config::default_model`] maps that onto only
-    /// some providers — for OpenAI, Anthropic, Ollama, Volcengine, Xiaomi MiMo,
-    /// AtlasCloud, and Wanjie Ark it would pass a DeepSeek id through to an
-    /// endpoint that does not serve it.
-    ///
-    /// Resolution order: an explicit per-provider model from settings, then an
-    /// explicit `[providers.<name>] model`, then a root `default_text_model`
-    /// that is *not* the first-run template value (the user configured that
-    /// route themselves, including pass-through providers that take it
-    /// verbatim), otherwise the provider's default heavy model. DeepSeek keeps
-    /// [`Config::default_model`]'s resolution either way.
-    ///
-    /// `settings` is the caller's already-loaded settings — `None` when the
-    /// file could not be read, in which case the settings branch is skipped.
-    /// Keeping the I/O at the call boundary leaves this helper pure like
-    /// every other model-resolution method on `Config`.
-    #[must_use]
-    pub fn default_model_for_new_provider(
-        &self,
-        settings: Option<&crate::settings::Settings>,
-        provider: ApiProvider,
-    ) -> String {
-        if let Some(model) = settings
-            .and_then(|settings| settings.provider_models.as_ref())
-            .and_then(|models| models.get(provider.as_str()))
-            .map(|model| model.trim())
-            .filter(|model| !model.is_empty())
-        {
-            return model.to_string();
-        }
-        if let Some(model) = self
-            .provider_config_for(provider)
-            .and_then(|entry| entry.model.as_deref())
-            .map(str::trim)
-            .filter(|model| !model.is_empty())
-        {
-            return model.to_string();
-        }
-        let root_model = self
-            .default_text_model
-            .as_deref()
-            .map(str::trim)
-            .filter(|model| !model.is_empty());
-        let root_is_configured_choice =
-            root_model.is_some_and(|model| !model.eq_ignore_ascii_case(DEFAULT_TEXT_MODEL));
-        if matches!(provider, ApiProvider::Deepseek) || root_is_configured_choice {
-            // `default_model` resolves against the *active* provider; the
-            // caller is asking about the provider it just picked, so resolve a
-            // copy with that provider selected instead of mutating `self`
-            // (the switch itself may still fail and needs the original).
-            let mut resolved = self.clone();
-            resolved.provider = Some(provider.as_str().to_string());
-            // `default_model` resolves a `custom_provider` selection before
-            // any built-in provider; the caller asked about the provider it
-            // just picked, so drop the stale custom selection on the copy.
-            resolved.custom_provider = None;
-            return resolved.default_model();
-        }
-        tier_default_model_for_provider(provider, ModelTier::Heavy).to_string()
     }
 
     /// Return the configured API base URL (normalized).
@@ -3217,12 +2637,6 @@ impl Config {
         self.hooks.clone().unwrap_or_default()
     }
 
-    /// Resolve the notifications configuration with defaults applied.
-    #[must_use]
-    pub fn notifications_config(&self) -> NotificationsConfig {
-        self.notifications.clone().unwrap_or_default()
-    }
-
     /// Resolve workspace side-git snapshot settings with defaults applied.
     #[must_use]
     pub fn snapshots_config(&self) -> SnapshotsConfig {
@@ -3233,12 +2647,6 @@ impl Config {
     #[must_use]
     pub fn edit_config(&self) -> EditConfig {
         self.edit.clone().unwrap_or_default()
-    }
-
-    /// Resolve startup update-check settings with defaults applied.
-    #[must_use]
-    pub fn update_config(&self) -> UpdateConfig {
-        self.update.clone().unwrap_or_default()
     }
 
     /// The explicitly selected preset: the `preset` key, falling back to
@@ -4464,11 +3872,9 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
             .stream_idle_retry_increment_secs
             .or(base.stream_idle_retry_increment_secs),
         capacity: override_cfg.capacity.or(base.capacity),
-        tui: override_cfg.tui.or(base.tui),
         hooks: override_cfg.hooks.or(base.hooks),
         providers: merge_providers(base.providers, override_cfg.providers),
         features: merge_features(base.features, override_cfg.features),
-        notifications: override_cfg.notifications.or(base.notifications),
         network: override_cfg.network.or(base.network),
         verification: override_cfg.verification.or(base.verification),
         doctor: override_cfg.doctor.or(base.doctor),
@@ -4661,7 +4067,8 @@ fn merge_features(
     }
 }
 
-pub fn ensure_parent_dir(path: &Path) -> Result<()> {
+#[cfg(test)]
+fn ensure_parent_dir(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
@@ -4737,236 +4144,9 @@ fn write_config_file_secure(path: &Path, content: &str) -> Result<()> {
     Ok(())
 }
 
-/// Where a saved credential ended up. Returned by [`save_api_key`] so
-/// the caller can show a confirmation message without leaking the key.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SavedCredential {
-    /// Stored in **both** the OS keyring and the codesmith config file.
-    /// This is the default outcome on platforms with a working keyring
-    /// backend: writing both layers defeats the
-    /// `keyring → env → config-file` resolution-order shadow that
-    /// would otherwise let a stale OS-keyring entry from a previous
-    /// install hide the freshly-entered key (#593). The `backend`
-    /// label is the value of [`codesmith_secrets::Secrets::backend_name`]
-    /// at write time so the toast text can name the actual backend
-    /// (`"system keyring"`, `"file-based (~/.codesmith/secrets/)"`).
-    KeyringAndConfigFile {
-        /// `Secrets::backend_name()` at write time.
-        backend: String,
-        /// Absolute path to the config file that was also updated.
-        path: PathBuf,
-    },
-    /// Stored in the codesmith config file only. Fallback when no
-    /// keyring backend is reachable, or under `cfg(test)` so unit
-    /// tests don't pollute the host keyring.
-    ConfigFile(PathBuf),
-}
-
-impl SavedCredential {
-    /// Human-readable description for status / log output. Never
-    /// includes the key value.
-    #[must_use]
-    pub fn describe(&self) -> String {
-        match self {
-            Self::KeyringAndConfigFile { backend, path } => {
-                format!("OS keyring ({backend}) and {}", path.display())
-            }
-            Self::ConfigFile(path) => path.display().to_string(),
-        }
-    }
-}
-
-/// Save the active provider's API key.
-///
-/// **Dual-write strategy (#593):** writes to `~/.codesmith/config.toml`
-/// (always) and to the OS keyring via [`codesmith_secrets::Secrets`]
-/// (when a backend is reachable). The runtime resolves credentials in
-/// `keyring → env → config-file` order; writing to the config file
-/// alone — as v0.8.8 through v0.8.10 did — let a stale keyring entry
-/// from a prior install silently shadow the fresh value the user just
-/// typed during in-TUI onboarding, producing the "no response" symptom
-/// reported in #593.
-///
-/// The config file remains the inspectable durable record (works in
-/// npm installs, IDE terminals, and headless boxes alike), and the
-/// keyring acts as the layered override that defeats stale-shadow on
-/// the resolution path. When the keyring write fails (no backend, OS
-/// permission denied, etc.) the config-file write still stands and
-/// the function reports a [`SavedCredential::ConfigFile`] outcome —
-/// callers should not treat that as a failure.
-///
-/// Skipped under `cfg(test)` so the suite never touches the host
-/// keyring. The `secrets` crate has its own test coverage for
-/// keyring set/get.
-pub fn save_api_key(api_key: &str) -> Result<SavedCredential> {
-    let trimmed = api_key.trim();
-    if trimmed.is_empty() {
-        anyhow::bail!("Refusing to save an empty API key.");
-    }
-
-    // Always write the inspectable copy first. The config file is the
-    // durable record everyone — including macOS Keychain-prompted
-    // first-run, headless CI, and IDE terminals — can rely on.
-    let path = save_api_key_to_config_file(trimmed)?;
-
-    // Then mirror to the OS keyring when one is reachable. This
-    // overwrites any stale entry from a prior install so
-    // `Secrets::resolve` (keyring → env → config-file) no longer
-    // shadows the fresh key. Skipped under `cfg(test)` so unit tests
-    // can't pollute the host keyring (macOS Always-Allow prompts,
-    // cross-test contamination).
-    #[cfg(not(test))]
-    {
-        let secrets = codesmith_secrets::Secrets::auto_detect();
-        match secrets.set("deepseek", trimmed) {
-            Ok(()) => {
-                let backend = secrets.backend_name().to_string();
-                log_sensitive_event(
-                    "credential.save",
-                    json!({
-                        "backend": backend.clone(),
-                        "config_path": path.display().to_string(),
-                        "dual_write": true,
-                    }),
-                );
-                return Ok(SavedCredential::KeyringAndConfigFile { backend, path });
-            }
-            Err(err) => {
-                tracing::warn!("OS keyring write failed; key saved to config.toml only: {err}");
-                // Fall through to the ConfigFile-only outcome below.
-            }
-        }
-    }
-
-    Ok(SavedCredential::ConfigFile(path))
-}
-
-/// Write the `api_key` slot directly to `config.toml`.
-fn save_api_key_to_config_file(api_key: &str) -> Result<PathBuf> {
-    fn is_api_key_assignment(line: &str) -> bool {
-        let trimmed = line.trim_start();
-        trimmed
-            .strip_prefix("api_key")
-            .is_some_and(|rest| rest.trim_start().starts_with('='))
-    }
-
-    let config_path = default_config_path()
-        .context("Failed to resolve config path: home directory not found.")?;
-
-    ensure_parent_dir(&config_path)?;
-
-    let key_to_write = api_key.to_string();
-
-    let content = if config_path.exists() {
-        // Read existing config and update the api_key line
-        let existing = fs::read_to_string(&config_path)?;
-        if existing.contains("api_key") {
-            // Replace existing api_key line
-            let mut result = String::new();
-            for line in existing.lines() {
-                if is_api_key_assignment(line) {
-                    let _ = writeln!(result, "api_key = \"{key_to_write}\"");
-                } else {
-                    result.push_str(line);
-                    result.push('\n');
-                }
-            }
-            result
-        } else {
-            // Prepend api_key to existing config
-            format!("api_key = \"{key_to_write}\"\n{existing}")
-        }
-    } else {
-        // Create new minimal config
-        format!(
-            r#"# codesmith Configuration
-# Get your API key from https://platform.deepseek.com
-# Or set DEEPSEEK_API_KEY environment variable
-
-api_key = "{key_to_write}"
-
-# Base URL (default: https://api.deepseek.com/beta)
-# Set https://api.deepseek.com to opt out of beta features.
-# base_url = "https://api.deepseek.com/beta"
-
-# Default model
-default_text_model = "{DEFAULT_TEXT_MODEL}"
-
-# Thinking mode (DeepSeek V4 reasoning effort):
-# "off" | "low" | "medium" | "high" | "max"
-# Shift+Tab in the TUI cycles between off / high / max.
-reasoning_effort = "max"
-"#
-        )
-    };
-
-    write_config_file_secure(&config_path, &content)
-        .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
-    log_sensitive_event(
-        "credential.save",
-        json!({
-            "backend": "config_file",
-            "config_path": config_path.display().to_string(),
-        }),
-    );
-
-    Ok(config_path)
-}
-
-/// Check if the active provider has any API key configured anywhere the
-/// runtime can resolve it.
-///
-/// Platform credential stores are intentionally not queried here.
-/// Startup/onboarding checks must be cheap and prompt-free, so v0.8.8
-/// keeps the default auth path to environment variables and
-/// `~/.codesmith/config.toml`.
-///
-/// Used by [`crate::tui::app::App::new`] to decide whether to gate
-/// the user behind the in-TUI api-key onboarding screen — getting
-/// this wrong made users get prompted for credentials in situations
-/// where normal env/config auth was already available.
 pub fn has_api_key(config: &Config) -> bool {
     has_api_key_for(config, config.api_provider())
 }
-
-#[must_use]
-pub fn active_provider_has_config_api_key(config: &Config) -> bool {
-    let provider = config.api_provider();
-
-    if provider == ApiProvider::Moonshot
-        && config
-            .provider_config_for(provider)
-            .is_some_and(provider_config_uses_kimi_oauth)
-    {
-        return kimi_cli_credentials_present();
-    }
-
-    if config
-        .provider_config_for(provider)
-        .and_then(|entry| entry.api_key.as_ref())
-        .is_some_and(|k| !k.trim().is_empty() && k != API_KEYRING_SENTINEL)
-    {
-        return true;
-    }
-
-    // §B3 slice 52 — legacy `[providers.deepseek_cn]` api_key fallback for
-    // hand-edited configs (the `deepseek_cn` table is a deprecated read sink).
-    if matches!(provider, ApiProvider::Deepseek)
-        && config
-            .legacy_deepseek_cn_api_key()
-            .is_some_and(|k| !k.trim().is_empty() && k != API_KEYRING_SENTINEL)
-    {
-        return true;
-    }
-
-    matches!(provider, ApiProvider::Deepseek)
-        && config
-            .api_key
-            .as_ref()
-            .is_some_and(|k| !k.trim().is_empty() && k != API_KEYRING_SENTINEL)
-}
-
-#[must_use]
 pub fn active_provider_has_env_api_key(config: &Config) -> bool {
     match config.api_provider() {
         ApiProvider::Deepseek => {
@@ -5019,33 +4199,48 @@ pub fn active_provider_has_env_api_key(config: &Config) -> bool {
         }
     }
 }
+pub fn active_provider_has_config_api_key(config: &Config) -> bool {
+    let provider = config.api_provider();
 
-#[must_use]
+    if provider == ApiProvider::Moonshot
+        && config
+            .provider_config_for(provider)
+            .is_some_and(provider_config_uses_kimi_oauth)
+    {
+        return kimi_cli_credentials_present();
+    }
+
+    if config
+        .provider_config_for(provider)
+        .and_then(|entry| entry.api_key.as_ref())
+        .is_some_and(|k| !k.trim().is_empty() && k != API_KEYRING_SENTINEL)
+    {
+        return true;
+    }
+
+    // §B3 slice 52 — legacy `[providers.deepseek_cn]` api_key fallback for
+    // hand-edited configs (the `deepseek_cn` table is a deprecated read sink).
+    if matches!(provider, ApiProvider::Deepseek)
+        && config
+            .legacy_deepseek_cn_api_key()
+            .is_some_and(|k| !k.trim().is_empty() && k != API_KEYRING_SENTINEL)
+    {
+        return true;
+    }
+
+    matches!(provider, ApiProvider::Deepseek)
+        && config
+            .api_key
+            .as_ref()
+            .is_some_and(|k| !k.trim().is_empty() && k != API_KEYRING_SENTINEL)
+}
 pub fn active_provider_uses_env_only_api_key(config: &Config) -> bool {
     active_provider_has_env_api_key(config) && !active_provider_has_config_api_key(config)
 }
-
-/// Providers that are expected to serve requests without authentication —
-/// self-hosted runtimes the user started themselves. The single definition of
-/// that rule: [`has_api_key_for`] reads it.
-#[must_use]
 pub fn provider_is_self_hosted(provider: ApiProvider) -> bool {
     codesmith_config::ProviderKind::parse(provider.as_str())
         .is_some_and(codesmith_config::provider_is_self_hosted)
 }
-
-/// `*_BASE_URL` environment variable that overrides this provider's URL, for
-/// the providers whose endpoint is user-configurable. Names mirror the
-/// load-time reader in `apply_env_overrides`.
-#[must_use]
-pub fn provider_base_url_env_var(provider: ApiProvider) -> Option<&'static str> {
-    match provider {
-        ApiProvider::Openai => Some("OPENAI_BASE_URL"),
-        ApiProvider::Anthropic => Some("ANTHROPIC_BASE_URL"),
-        _ => None,
-    }
-}
-
 /// Check whether the given provider has any usable API key — via env var,
 /// provider/root config. Used by the `/provider` picker to decide whether to
 /// prompt for a key inline.
@@ -5145,107 +4340,6 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
     }
 
     false
-}
-
-/// Save an API key to the appropriate place for the given provider.
-/// DeepSeek goes through [`save_api_key`]. Other providers write
-/// `[providers.<name>] api_key = "..."` to `~/.codesmith/config.toml`.
-/// Returns the config file path.
-pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf> {
-    if matches!(provider, ApiProvider::Deepseek) {
-        return match save_api_key(api_key)? {
-            SavedCredential::KeyringAndConfigFile { path, .. }
-            | SavedCredential::ConfigFile(path) => Ok(path),
-        };
-    }
-
-    write_provider_config_field(provider, "api_key", api_key, "credential.save")
-}
-
-pub fn save_provider_auth_mode_for(provider: ApiProvider, auth_mode: &str) -> Result<PathBuf> {
-    write_provider_config_field(provider, "auth_mode", auth_mode, "credential.auth_mode.set")
-}
-
-/// Write `field = value` into `[providers.<provider>]` of the user config
-/// file, creating the table when missing and leaving every sibling field and
-/// section of the file untouched.
-///
-/// The single writer behind [`save_api_key_for`] and
-/// [`save_provider_auth_mode_for`]. The value is never logged — this path
-/// carries credentials as well as URLs; `event` names the audit event and the
-/// payload records the field name.
-fn write_provider_config_field(
-    provider: ApiProvider,
-    field: &str,
-    value: &str,
-    event: &str,
-) -> Result<PathBuf> {
-    let key_inside = provider_config_key(provider)?;
-    let config_path = default_config_path()
-        .context("Failed to resolve config path: home directory not found.")?;
-    ensure_parent_dir(&config_path)?;
-
-    // Parse existing TOML (or start fresh) so we can edit the right table
-    // without disturbing other sections.
-    let mut doc: toml::Value = if config_path.exists() {
-        let raw = fs::read_to_string(&config_path)?;
-        toml::from_str(&raw)
-            .with_context(|| format!("Failed to parse config at {}", config_path.display()))?
-    } else {
-        toml::Value::Table(toml::value::Table::new())
-    };
-
-    let table = doc
-        .as_table_mut()
-        .context("Config root must be a TOML table.")?;
-    let providers = table
-        .entry("providers".to_string())
-        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()))
-        .as_table_mut()
-        .context("`providers` must be a table.")?;
-    let entry = providers
-        .entry(key_inside.to_string())
-        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()))
-        .as_table_mut()
-        .with_context(|| format!("`providers.{key_inside}` must be a table."))?;
-    entry.insert(field.to_string(), toml::Value::String(value.to_string()));
-
-    let serialized = toml::to_string_pretty(&doc).context("failed to serialize updated config")?;
-    write_config_file_secure(&config_path, &serialized)
-        .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
-    log_sensitive_event(
-        event,
-        json!({
-            "backend": "config_file",
-            "provider": provider.as_str(),
-            "field": field,
-            "config_path": config_path.display().to_string(),
-        }),
-    );
-    Ok(config_path)
-}
-
-fn provider_config_key(provider: ApiProvider) -> Result<&'static str> {
-    match provider {
-        ApiProvider::Deepseek => {
-            anyhow::bail!("DeepSeek stores its credential and base URL at the root config level")
-        }
-        ApiProvider::NvidiaNim => Ok("nvidia_nim"),
-        ApiProvider::Openai => Ok("openai"),
-        ApiProvider::Atlascloud => Ok("atlascloud"),
-        ApiProvider::WanjieArk => Ok("wanjie_ark"),
-        ApiProvider::Volcengine => Ok("volcengine"),
-        ApiProvider::Openrouter => Ok("openrouter"),
-        ApiProvider::XiaomiMimo => Ok("xiaomi_mimo"),
-        ApiProvider::Novita => Ok("novita"),
-        ApiProvider::Fireworks => Ok("fireworks"),
-        ApiProvider::Siliconflow => Ok("siliconflow"),
-        ApiProvider::Moonshot => Ok("moonshot"),
-        ApiProvider::Sglang => Ok("sglang"),
-        ApiProvider::Vllm => Ok("vllm"),
-        ApiProvider::Ollama => Ok("ollama"),
-        ApiProvider::Anthropic => Ok("anthropic"),
-    }
 }
 
 const KIMI_CODE_CLIENT_ID: &str = "17e5f671-d194-4dfb-9706-5516cb48c098";
@@ -5453,7 +4547,6 @@ mod tests {
     use std::env;
     use std::ffi::OsString;
     #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     // GHSA-72w5-pf8h-xfp4 — regression: `allow_shell` must be opt-in.
@@ -5464,34 +4557,6 @@ mod tests {
         assert!(
             !config.allow_shell(),
             "Config::allow_shell() must default to false when no opt-in is recorded"
-        );
-    }
-
-    #[test]
-    fn update_config_defaults_to_enabled_without_uri() {
-        let config = Config::default();
-        assert_eq!(config.update, None);
-        assert_eq!(config.update_config(), UpdateConfig::default());
-        assert!(config.update_config().checks_for_updates());
-        assert_eq!(config.update_config().update_uri(), None);
-    }
-
-    #[test]
-    fn update_config_deserializes_disable_and_custom_uri() {
-        let config: Config = toml::from_str(
-            r#"
-            [update]
-            check_for_updates = false
-            update_uri = "https://mirror.example/releases/latest"
-            "#,
-        )
-        .expect("update config");
-
-        let update = config.update_config();
-        assert!(!update.checks_for_updates());
-        assert_eq!(
-            update.update_uri(),
-            Some("https://mirror.example/releases/latest")
         );
     }
 
@@ -6506,45 +5571,6 @@ mod tests {
     }
 
     #[test]
-    fn save_api_key_writes_config_file_under_cfg_test() -> Result<()> {
-        // `save_api_key` writes to the shared user config file. This
-        // pins the boring v0.8.8 setup path and avoids platform
-        // credential prompts during onboarding.
-        let _lock = lock_test_env();
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-test-{}-{}",
-            std::process::id(),
-            nanos
-        ));
-        fs::create_dir_all(&temp_root)?;
-        let _guard = EnvGuard::new(&temp_root);
-
-        let saved = save_api_key("test-key")?;
-        let expected = temp_root.join(".codesmith").join("config.toml");
-        assert_eq!(saved, SavedCredential::ConfigFile(expected.clone()));
-        assert_eq!(saved.describe(), expected.display().to_string());
-
-        let contents = fs::read_to_string(&expected)?;
-        assert!(contents.contains("api_key = \""));
-
-        #[cfg(unix)]
-        {
-            assert_eq!(fs::metadata(&expected)?.permissions().mode() & 0o777, 0o600);
-            let parent = expected.parent().expect("config has parent dir");
-            assert_eq!(fs::metadata(parent)?.permissions().mode() & 0o077, 0);
-
-            fs::set_permissions(&expected, fs::Permissions::from_mode(0o644))?;
-            save_api_key("second-test-key")?;
-            assert_eq!(fs::metadata(&expected)?.permissions().mode() & 0o777, 0o600);
-        }
-        Ok(())
-    }
-
-    #[test]
     fn ensure_config_file_exists_creates_first_run_template() -> Result<()> {
         let _lock = lock_test_env();
         let nanos = SystemTime::now()
@@ -6592,7 +5618,9 @@ mod tests {
 
         assert_eq!(saved, temp_root.join(".codesmith").join("config.toml"));
         assert!(is_workspace_trusted(&workspace));
-        assert!(!crate::tui::onboarding::needs_trust(&workspace));
+        assert!(!codesmith_agent_runtime::onboarding::needs_trust(
+            &workspace
+        ));
         assert!(
             !workspace.join(".codesmith").exists(),
             "trust persistence must not create a project-local .codesmith directory"
@@ -6635,41 +5663,10 @@ mod tests {
         )?;
 
         assert!(is_workspace_trusted(&workspace));
-        assert!(!crate::tui::onboarding::needs_trust(&workspace));
+        assert!(!codesmith_agent_runtime::onboarding::needs_trust(
+            &workspace
+        ));
         Ok(())
-    }
-
-    #[test]
-    fn save_api_key_rejects_empty_input() {
-        let _lock = lock_test_env();
-        let err = save_api_key("   ").expect_err("empty should bail");
-        assert!(
-            err.to_string().contains("empty"),
-            "expected error to mention empty, got: {err}"
-        );
-    }
-
-    #[test]
-    fn saved_credential_describe_returns_config_file_path() {
-        let cf = SavedCredential::ConfigFile(PathBuf::from("/tmp/x.toml"));
-        assert_eq!(cf.describe(), "/tmp/x.toml");
-    }
-
-    /// #593: the dual-write outcome describes both targets so the
-    /// onboarding toast (`API key saved to {describe}`) tells the user
-    /// the key landed in *both* the keyring and the config file —
-    /// which is the whole point of the fix (defeats stale-keyring
-    /// shadow while keeping the config file inspectable).
-    #[test]
-    fn saved_credential_describe_lists_both_targets_for_keyring_and_config() {
-        let dual = SavedCredential::KeyringAndConfigFile {
-            backend: "system keyring".to_string(),
-            path: PathBuf::from("/tmp/x.toml"),
-        };
-        assert_eq!(
-            dual.describe(),
-            "OS keyring (system keyring) and /tmp/x.toml"
-        );
     }
 
     #[test]
@@ -7167,37 +6164,6 @@ api_key = "old-openrouter-key"
     }
 
     #[test]
-    fn test_save_api_key_doesnt_match_similar_keys() -> Result<()> {
-        let _lock = lock_test_env();
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-api-key-test-{}-{}",
-            std::process::id(),
-            nanos
-        ));
-        fs::create_dir_all(&temp_root)?;
-        let _guard = EnvGuard::new(&temp_root);
-
-        let config_path = temp_root.join(".codesmith").join("config.toml");
-        ensure_parent_dir(&config_path)?;
-        fs::write(
-            &config_path,
-            "api_key_backup = \"old\"\napi_key = \"current\"\n",
-        )?;
-
-        let saved = save_api_key("new-key")?;
-        assert_eq!(saved, SavedCredential::ConfigFile(config_path.clone()));
-
-        let contents = fs::read_to_string(&config_path)?;
-        assert!(contents.contains("api_key_backup = \"old\""));
-        assert!(contents.contains("api_key = \""));
-        Ok(())
-    }
-
-    #[test]
     fn test_empty_api_key_rejected() {
         let config = Config {
             api_key: Some("   ".to_string()),
@@ -7326,114 +6292,6 @@ api_key = "old-openrouter-key"
         assert_eq!(
             normalize_model_for_provider(ApiProvider::NvidiaNim, "DeepSeek-V4-Pro").as_deref(),
             Some(DEFAULT_NVIDIA_NIM_MODEL)
-        );
-    }
-
-    #[test]
-    fn normalize_model_name_for_provider_canonicalizes_deepseek_api_variants() {
-        assert_eq!(
-            normalize_model_name_for_provider(ApiProvider::Deepseek, "deepseek-ai/DeepSeek-V4-Pro")
-                .as_deref(),
-            Some("deepseek-v4-pro")
-        );
-        assert_eq!(
-            normalize_model_name_for_provider(ApiProvider::Deepseek, "deepseek/deepseek-v4-flash")
-                .as_deref(),
-            Some("deepseek-v4-flash")
-        );
-    }
-
-    #[test]
-    fn normalize_model_name_for_provider_keeps_provider_specific_ids() {
-        assert_eq!(
-            normalize_model_name_for_provider(ApiProvider::NvidiaNim, "deepseek-v4-pro").as_deref(),
-            Some(DEFAULT_NVIDIA_NIM_MODEL)
-        );
-        assert_eq!(
-            normalize_model_name_for_provider(ApiProvider::Openrouter, "deepseek-v4-flash")
-                .as_deref(),
-            Some(DEFAULT_OPENROUTER_FLASH_MODEL)
-        );
-        assert_eq!(
-            normalize_model_name_for_provider(ApiProvider::Siliconflow, "deepseek-v4-pro")
-                .as_deref(),
-            Some(DEFAULT_SILICONFLOW_MODEL)
-        );
-        assert_eq!(
-            normalize_model_name_for_provider(ApiProvider::Siliconflow, "deepseek-reasoner")
-                .as_deref(),
-            Some(DEFAULT_SILICONFLOW_MODEL)
-        );
-        assert_eq!(
-            normalize_model_name_for_provider(ApiProvider::Siliconflow, "deepseek-r1").as_deref(),
-            Some(DEFAULT_SILICONFLOW_MODEL)
-        );
-        assert_eq!(
-            normalize_model_name_for_provider(ApiProvider::Siliconflow, "deepseek-chat").as_deref(),
-            Some(DEFAULT_SILICONFLOW_FLASH_MODEL)
-        );
-        assert_eq!(
-            normalize_model_name_for_provider(ApiProvider::Siliconflow, "deepseek-v3").as_deref(),
-            Some(DEFAULT_SILICONFLOW_FLASH_MODEL)
-        );
-        assert_eq!(
-            normalize_model_name_for_provider(ApiProvider::Siliconflow, "deepseek-v3.2").as_deref(),
-            Some("deepseek-v3.2")
-        );
-    }
-
-    #[test]
-    fn normalize_model_name_for_provider_maps_recent_openrouter_aliases() {
-        for (alias, expected) in [
-            (
-                "trinity-large-thinking",
-                OPENROUTER_ARCEE_TRINITY_LARGE_THINKING_MODEL,
-            ),
-            ("qwen3.7", OPENROUTER_QWEN_3_7_MAX_MODEL),
-            ("qwen3.7-max", OPENROUTER_QWEN_3_7_MAX_MODEL),
-            ("qwen3.6-35b-a3b", OPENROUTER_QWEN_3_6_35B_A3B_MODEL),
-            ("mimo-v2.5-pro", OPENROUTER_XIAOMI_MIMO_V2_5_PRO_MODEL),
-            ("kimi-k2.6", OPENROUTER_KIMI_K2_6_MODEL),
-            ("gemma-4-31b-it", OPENROUTER_GEMMA_4_31B_MODEL),
-            ("glm-5.1", OPENROUTER_GLM_5_1_MODEL),
-        ] {
-            assert_eq!(
-                normalize_model_name_for_provider(ApiProvider::Openrouter, alias).as_deref(),
-                Some(expected)
-            );
-        }
-    }
-
-    #[test]
-    fn model_completion_names_for_deepseek_api_are_deduplicated_bare_ids() {
-        assert_eq!(
-            model_completion_names_for_provider(ApiProvider::Deepseek),
-            vec!["deepseek-v4-pro", "deepseek-v4-flash"]
-        );
-    }
-
-    #[test]
-    fn model_completion_names_for_openrouter_include_recent_large_models() {
-        let models = model_completion_names_for_provider(ApiProvider::Openrouter);
-
-        for expected in [
-            DEFAULT_OPENROUTER_MODEL,
-            DEFAULT_OPENROUTER_FLASH_MODEL,
-            OPENROUTER_ARCEE_TRINITY_LARGE_THINKING_MODEL,
-            OPENROUTER_QWEN_3_7_MAX_MODEL,
-            OPENROUTER_XIAOMI_MIMO_V2_5_PRO_MODEL,
-            OPENROUTER_QWEN_3_6_35B_A3B_MODEL,
-            OPENROUTER_GEMMA_4_31B_MODEL,
-        ] {
-            assert!(models.contains(&expected), "missing {expected}");
-        }
-    }
-
-    #[test]
-    fn model_completion_names_for_moonshot_excludes_oauth_only_kimi_code_model() {
-        assert_eq!(
-            model_completion_names_for_provider(ApiProvider::Moonshot),
-            vec![DEFAULT_MOONSHOT_MODEL]
         );
     }
 
@@ -8552,36 +7410,6 @@ model = "glm-5"
     }
 
     #[test]
-    fn siliconflow_provider_uses_canonical_defaults() -> Result<()> {
-        let _lock = lock_test_env();
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-siliconflow-defaults-{}-{}",
-            std::process::id(),
-            nanos
-        ));
-        fs::create_dir_all(&temp_root)?;
-        let _guard = EnvGuard::new(&temp_root);
-
-        let config = Config {
-            provider: Some("siliconflow".to_string()),
-            ..Default::default()
-        };
-        config.validate()?;
-        assert_eq!(config.api_provider(), ApiProvider::Siliconflow);
-        assert_eq!(config.default_model(), DEFAULT_SILICONFLOW_MODEL);
-        assert_eq!(config.provider_base_url(), DEFAULT_SILICONFLOW_BASE_URL);
-        assert_eq!(
-            model_completion_names_for_provider(ApiProvider::Siliconflow),
-            vec![DEFAULT_SILICONFLOW_MODEL, DEFAULT_SILICONFLOW_FLASH_MODEL]
-        );
-        Ok(())
-    }
-
-    #[test]
     fn sglang_provider_works_without_api_key() -> Result<()> {
         let _lock = lock_test_env();
         let nanos = SystemTime::now()
@@ -9412,251 +8240,6 @@ api_key = "moonshot-platform-key"
     }
 
     #[test]
-    fn new_provider_does_not_inherit_the_first_run_deepseek_model() {
-        let _lock = lock_test_env();
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-new-provider-model-{}-{}",
-            std::process::id(),
-            nanos
-        ));
-        fs::create_dir_all(&temp_root).expect("temp root");
-        let _guard = EnvGuard::new(&temp_root);
-
-        // The first-run template writes this DeepSeek id into `config.toml`
-        // before the user picks a provider.
-        let config = Config {
-            default_text_model: Some(DEFAULT_TEXT_MODEL.to_string()),
-            ..Config::default()
-        };
-
-        // Providers that do not serve DeepSeek ids must start on their own
-        // default instead of the template's model.
-        assert_eq!(
-            config.default_model_for_new_provider(None, ApiProvider::Anthropic),
-            DEFAULT_ANTHROPIC_MODEL
-        );
-        assert_eq!(
-            config.default_model_for_new_provider(None, ApiProvider::Openai),
-            DEFAULT_OPENAI_MODEL
-        );
-        assert_eq!(
-            config.default_model_for_new_provider(None, ApiProvider::Ollama),
-            DEFAULT_OLLAMA_MODEL
-        );
-        // Gateways that do serve DeepSeek models keep the mapped id, and the
-        // fallback provider keeps the curated root model.
-        assert_eq!(
-            config.default_model_for_new_provider(None, ApiProvider::Openrouter),
-            DEFAULT_OPENROUTER_MODEL
-        );
-        assert_eq!(
-            config.default_model_for_new_provider(None, ApiProvider::Deepseek),
-            DEFAULT_TEXT_MODEL
-        );
-
-        // An explicit provider-scoped model outranks the provider default.
-        let explicit = Config {
-            default_text_model: Some(DEFAULT_TEXT_MODEL.to_string()),
-            providers: Some(ProvidersConfig {
-                anthropic: ProviderConfig {
-                    model: Some("claude-opus-4-1".to_string()),
-                    ..ProviderConfig::default()
-                },
-                ..ProvidersConfig::default()
-            }),
-            ..Config::default()
-        };
-        assert_eq!(
-            explicit.default_model_for_new_provider(None, ApiProvider::Anthropic),
-            "claude-opus-4-1"
-        );
-
-        // A root model that is not the template value is the user's own route
-        // configuration — pass-through providers take it verbatim today, so
-        // the picker must not overwrite it with a provider default.
-        let hand_configured = Config {
-            default_text_model: Some("MiniMax-M2.7".to_string()),
-            ..Config::default()
-        };
-        assert_eq!(
-            hand_configured.default_model_for_new_provider(None, ApiProvider::Openai),
-            "MiniMax-M2.7"
-        );
-
-        // A settings-pinned model is the top of the resolution order — this
-        // is how a re-run wizard remembers a prior `/model` choice.
-        let pinned = crate::settings::Settings {
-            provider_models: Some(HashMap::from([(
-                "openai".to_string(),
-                "gpt-5-mini".to_string(),
-            )])),
-            ..Default::default()
-        };
-        assert_eq!(
-            config.default_model_for_new_provider(Some(&pinned), ApiProvider::Openai),
-            "gpt-5-mini"
-        );
-
-        // An active `[[providers.custom]]` selection must not answer for the
-        // builtin provider the wizard just picked.
-        let custom_active = Config {
-            custom_provider: Some("acme".to_string()),
-            providers: Some(ProvidersConfig {
-                custom: vec![CustomProviderConfig {
-                    id: "acme".to_string(),
-                    base_url: Some("https://gateway.acme.example/v1".to_string()),
-                    model: Some("acme-flagship".to_string()),
-                    ..CustomProviderConfig::default()
-                }],
-                ..ProvidersConfig::default()
-            }),
-            default_text_model: Some("MiniMax-M2.7".to_string()),
-            ..Config::default()
-        };
-        assert_eq!(
-            custom_active.default_model_for_new_provider(None, ApiProvider::Openai),
-            "MiniMax-M2.7"
-        );
-    }
-
-    #[test]
-    fn save_api_key_for_openrouter_writes_provider_table() -> Result<()> {
-        let _lock = lock_test_env();
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-save-key-or-{}-{}",
-            std::process::id(),
-            nanos
-        ));
-        fs::create_dir_all(&temp_root)?;
-        let _guard = EnvGuard::new(&temp_root);
-        unsafe { std::env::set_var("CODESMITH_SECRET_BACKEND", "local") };
-
-        let path = save_api_key_for(ApiProvider::Openrouter, "or-saved-key")?;
-        let contents = fs::read_to_string(&path)?;
-        let parsed: toml::Value = toml::from_str(&contents)?;
-        assert_eq!(
-            parsed
-                .get("providers")
-                .and_then(|p| p.get("openrouter"))
-                .and_then(|t| t.get("api_key"))
-                .and_then(toml::Value::as_str),
-            Some("or-saved-key")
-        );
-        // Re-saving must not duplicate or wipe sibling tables.
-        save_api_key_for(ApiProvider::Novita, "novita-saved-key")?;
-        let contents = fs::read_to_string(&path)?;
-        let parsed: toml::Value = toml::from_str(&contents)?;
-        assert_eq!(
-            parsed
-                .get("providers")
-                .and_then(|p| p.get("openrouter"))
-                .and_then(|t| t.get("api_key"))
-                .and_then(toml::Value::as_str),
-            Some("or-saved-key")
-        );
-        assert_eq!(
-            parsed
-                .get("providers")
-                .and_then(|p| p.get("novita"))
-                .and_then(|t| t.get("api_key"))
-                .and_then(toml::Value::as_str),
-            Some("novita-saved-key")
-        );
-        save_api_key_for(ApiProvider::Openai, "openai-saved-key")?;
-        save_api_key_for(ApiProvider::WanjieArk, "wanjie-saved-key")?;
-        save_api_key_for(ApiProvider::Fireworks, "fireworks-saved-key")?;
-        save_api_key_for(ApiProvider::XiaomiMimo, "mimo-saved-key")?;
-        save_api_key_for(ApiProvider::Siliconflow, "sf-saved-key")?;
-        save_api_key_for(ApiProvider::Sglang, "sglang-saved-key")?;
-        let contents = fs::read_to_string(&path)?;
-        let parsed: toml::Value = toml::from_str(&contents)?;
-        assert_eq!(
-            parsed
-                .get("providers")
-                .and_then(|p| p.get("openai"))
-                .and_then(|t| t.get("api_key"))
-                .and_then(toml::Value::as_str),
-            Some("openai-saved-key")
-        );
-        assert_eq!(
-            parsed
-                .get("providers")
-                .and_then(|p| p.get("wanjie_ark"))
-                .and_then(|t| t.get("api_key"))
-                .and_then(toml::Value::as_str),
-            Some("wanjie-saved-key")
-        );
-        assert_eq!(
-            parsed
-                .get("providers")
-                .and_then(|p| p.get("fireworks"))
-                .and_then(|t| t.get("api_key"))
-                .and_then(toml::Value::as_str),
-            Some("fireworks-saved-key")
-        );
-        assert_eq!(
-            parsed
-                .get("providers")
-                .and_then(|p| p.get("xiaomi_mimo"))
-                .and_then(|t| t.get("api_key"))
-                .and_then(toml::Value::as_str),
-            Some("mimo-saved-key")
-        );
-        assert_eq!(
-            parsed
-                .get("providers")
-                .and_then(|p| p.get("siliconflow"))
-                .and_then(|t| t.get("api_key"))
-                .and_then(toml::Value::as_str),
-            Some("sf-saved-key")
-        );
-        assert_eq!(
-            parsed
-                .get("providers")
-                .and_then(|p| p.get("sglang"))
-                .and_then(|t| t.get("api_key"))
-                .and_then(toml::Value::as_str),
-            Some("sglang-saved-key")
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn save_api_key_for_deepseek_uses_root_storage() -> Result<()> {
-        let _lock = lock_test_env();
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-save-key-cn-{}-{}",
-            std::process::id(),
-            nanos
-        ));
-        fs::create_dir_all(&temp_root)?;
-        let _guard = EnvGuard::new(&temp_root);
-        unsafe { std::env::set_var("CODESMITH_SECRET_BACKEND", "local") };
-
-        let path = save_api_key_for(ApiProvider::Deepseek, "cn-saved-key")?;
-        let contents = fs::read_to_string(&path)?;
-        let parsed: toml::Value = toml::from_str(&contents)?;
-
-        assert_eq!(
-            parsed.get("api_key").and_then(toml::Value::as_str),
-            Some("cn-saved-key")
-        );
-        Ok(())
-    }
-
-    #[test]
     fn nvidia_nim_reads_facade_provider_table() -> Result<()> {
         let _lock = lock_test_env();
         let nanos = SystemTime::now()
@@ -10177,42 +8760,6 @@ vision = true
             serde_json::to_value(ApiProvider::Deepseek).expect("serialize"),
             serde_json::Value::String("deepseek".to_string())
         );
-    }
-
-    #[test]
-    fn status_item_balance_available_only_for_deepseek_providers() {
-        // Balance item should only be offered for DeepSeek.
-        assert!(StatusItem::Balance.is_available_for(ApiProvider::Deepseek));
-        // Sanity: all other known providers should hide the Balance toggle.
-        assert!(!StatusItem::Balance.is_available_for(ApiProvider::Openrouter));
-        assert!(!StatusItem::Balance.is_available_for(ApiProvider::Novita));
-        assert!(!StatusItem::Balance.is_available_for(ApiProvider::NvidiaNim));
-        assert!(!StatusItem::Balance.is_available_for(ApiProvider::Fireworks));
-        assert!(!StatusItem::Balance.is_available_for(ApiProvider::Sglang));
-        assert!(!StatusItem::Balance.is_available_for(ApiProvider::Vllm));
-        assert!(!StatusItem::Balance.is_available_for(ApiProvider::Ollama));
-        assert!(!StatusItem::Balance.is_available_for(ApiProvider::Openai));
-        assert!(!StatusItem::Balance.is_available_for(ApiProvider::Atlascloud));
-        // Other StatusItem variants should be available everywhere.
-        assert!(StatusItem::Mode.is_available_for(ApiProvider::Ollama));
-    }
-
-    #[test]
-    fn status_items_deser_ignores_unknown_variants() {
-        // Simulate a stable build reading config written by a dev build that
-        // knows about items the stable build doesn't (e.g. "balance" or a
-        // future "cost_saving" chip).
-        let toml_str = r#"
-            alternate_screen = "auto"
-            status_items = ["mode", "model", "unknown_future_item", "cost", "another_unknown", "status"]
-        "#;
-        let tui: TuiConfig = toml::from_str(toml_str).expect("should parse without error");
-        let items = tui.status_items.expect("status_items should be Some");
-        assert_eq!(items.len(), 4, "unknown items should be silently dropped");
-        assert_eq!(items[0], StatusItem::Mode);
-        assert_eq!(items[1], StatusItem::Model);
-        assert_eq!(items[2], StatusItem::Cost);
-        assert_eq!(items[3], StatusItem::Status);
     }
 
     // === memory_enabled cascade (Claude-style isAutoMemoryEnabled) ===

@@ -550,11 +550,6 @@ impl TaskManager {
         self.cancel_token.is_cancelled()
     }
 
-    pub async fn set_default_workspace(&self, workspace: PathBuf) {
-        let mut default_workspace = self.default_workspace.lock().await;
-        *default_workspace = workspace;
-    }
-
     pub async fn default_workspace(&self) -> PathBuf {
         self.default_workspace.lock().await.clone()
     }
@@ -1539,24 +1534,6 @@ mod tests {
         assert_eq!(loaded.status, TaskStatus::Completed);
         assert!(!loaded.timeline.is_empty());
         assert_eq!(loaded.checklist.items[0].content, "read fixture");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn default_workspace_updates_for_future_tasks() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
-        let new_workspace =
-            std::env::temp_dir().join(format!("deepseek-workspace-{}", Uuid::new_v4()));
-        let manager =
-            TaskManager::start_with_executor(test_config(root), Arc::new(MockExecutor)).await?;
-
-        manager.set_default_workspace(new_workspace.clone()).await;
-        let task = manager
-            .add_task(NewTaskRequest::from_prompt("test workspace default"))
-            .await?;
-
-        assert_eq!(manager.default_workspace().await, new_workspace);
-        assert_eq!(task.workspace, new_workspace);
         Ok(())
     }
 

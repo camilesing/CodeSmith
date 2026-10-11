@@ -33,6 +33,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::tool_setup::{build_tool_context_for, build_turn_tool_registry_builder_for};
 use super::{Event, Op, apply_tool_selection, build_model_tool_catalog, configure_plugin_tools};
+use crate::app_state::AppMode;
 use crate::background_task::SharedBackgroundTaskRegistry;
 use crate::cycle_manager::StructuredState;
 use crate::features::Feature;
@@ -44,23 +45,13 @@ use crate::tools::subagent::{
     SubAgentRuntime, SubAgentType, resolve_subagent_assignment_route,
 };
 use crate::tools::team::run_leader_inbox_poller;
-use crate::tui::app::AppMode;
 use crate::utils::spawn_supervised;
 
-/// Zero-sized TUI runtime-UI bridge: delegates to the TUI's notification and
-/// clipboard free functions. Constructed where the engine needs
-/// `Arc<dyn RuntimeUi>`.
+/// Zero-sized runtime-UI bridge: resolves the clipboard-image directory the
+/// sandbox trusts. Constructed where the engine needs `Arc<dyn RuntimeUi>`.
 pub(crate) struct TuiRuntimeUi;
 
 impl RuntimeUi for TuiRuntimeUi {
-    fn notify_busy(&self) {
-        crate::notifications::set_taskbar_progress_busy();
-    }
-
-    fn start_title_animation(&self, label: &str) {
-        crate::notifications::start_title_animation(label);
-    }
-
     fn clipboard_images_dir(&self, workspace: &std::path::Path) -> PathBuf {
         crate::media::clipboard_images_dir(workspace)
     }

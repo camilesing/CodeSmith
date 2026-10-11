@@ -95,6 +95,7 @@ pub use codesmith_agent_runtime::engine::{
     should_transparently_retry_stream,
 };
 
+use crate::app_state::AppMode;
 use crate::config::{ApiProvider, Config};
 use crate::features::Feature;
 use crate::llm_client::LlmClientHandle;
@@ -107,7 +108,6 @@ use crate::tools::spec::RuntimeToolServices;
 use crate::tools::subagent::{SharedSubAgentManager, new_shared_subagent_manager};
 use crate::tools::todo::SharedTodoList;
 use crate::tools::{ToolContext, ToolRegistryBuilder, ToolRegistryPluginExt};
-use crate::tui::app::AppMode;
 use crate::utils::spawn_supervised;
 use codesmith_agent::provider::{ProviderConfig, ProviderId, SharedProviderRegistry};
 

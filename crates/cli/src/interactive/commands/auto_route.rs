@@ -15,46 +15,6 @@ use crate::app_state::ReasoningEffort;
 use crate::config::{effective_home_dir, expand_path};
 use crate::models::{ContentBlock, Message, MessageRequest, MessageResponse, SystemPrompt};
 
-pub fn persist_status_items(items: &[crate::config::StatusItem]) -> anyhow::Result<PathBuf> {
-    use anyhow::Context;
-    use std::fs;
-
-    let path = config_toml_path(None)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create config directory {}", parent.display()))?;
-    }
-
-    let mut doc: toml::Value = if path.exists() {
-        let raw = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read config at {}", path.display()))?;
-        toml::from_str(&raw)
-            .with_context(|| format!("failed to parse config at {}", path.display()))?
-    } else {
-        toml::Value::Table(toml::value::Table::new())
-    };
-
-    let table = doc
-        .as_table_mut()
-        .context("config.toml root must be a table")?;
-    let tui_entry = table
-        .entry("tui".to_string())
-        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
-    let tui_table = tui_entry
-        .as_table_mut()
-        .context("`tui` section in config.toml must be a table")?;
-    let array = items
-        .iter()
-        .map(|item| toml::Value::String(item.key().to_string()))
-        .collect::<Vec<_>>();
-    tui_table.insert("status_items".to_string(), toml::Value::Array(array));
-
-    let body = toml::to_string_pretty(&doc).context("failed to serialize config.toml")?;
-    crate::utils::write_atomic(&path, body.as_bytes())
-        .with_context(|| format!("failed to write config at {}", path.display()))?;
-    Ok(path)
-}
-
 pub fn persist_root_string_key(
     config_path: Option<&Path>,
     key: &str,
@@ -104,11 +64,6 @@ pub(crate) fn config_toml_path(config_path: Option<&Path>) -> anyhow::Result<Pat
     let home =
         effective_home_dir().context("failed to resolve home directory for config.toml path")?;
     Ok(home.join(".codesmith").join("config.toml"))
-}
-
-/// Modify a setting at runtime
-pub fn auto_model_heuristic(config: &crate::config::Config, input: &str) -> String {
-    config.resolve_model_tier(auto_model_heuristic_tier(input, config.auto_cost_saving()))
 }
 
 /// Deterministic tier-level heuristic for callers that resolve the tier
@@ -239,16 +194,6 @@ pub struct AutoRouteRecommendation {
 pub enum AutoRouteSource {
     Router,
     Heuristic,
-}
-
-impl AutoRouteSource {
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            AutoRouteSource::Router => "model-router",
-            AutoRouteSource::Heuristic => "heuristic",
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

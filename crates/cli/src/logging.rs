@@ -90,10 +90,10 @@ mod tests {
         assert!(log_value_enables_verbose("debug"));
         assert!(log_value_enables_verbose("codesmith_cli=debug"));
         assert!(log_value_enables_verbose(
-            "warn,codesmith_tui::client=trace"
+            "warn,codesmith_cli::llm_client=trace"
         ));
         assert!(!log_value_enables_verbose("warn"));
-        assert!(!log_value_enables_verbose("codesmith_tui=off"));
+        assert!(!log_value_enables_verbose("codesmith_cli::off"));
     }
 
     #[test]

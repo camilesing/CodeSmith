@@ -12,6 +12,7 @@ use std::time::Instant;
 
 use codesmith_agent_runtime::telemetry::TelemetrySink;
 
+use crate::app_state::{AppMode, HuntState, ReasoningEffort, SessionState, TuiOptions};
 use crate::approval_grants::{ApprovalGrants, approvals_toml_path};
 use crate::compaction::CompactionConfig;
 use crate::config::{ApiProvider, Config};
@@ -31,8 +32,7 @@ use crate::tools::shell::{SharedShellManager, new_shared_shell_manager, wrap_she
 use crate::tools::spec::RuntimeToolServices;
 use crate::tools::subagent::{DEFAULT_MAX_SPAWN_DEPTH, SubAgentResult};
 use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
-use crate::tui::app::{AppMode, HuntState, ReasoningEffort, SessionState, TuiOptions};
-use crate::tui::approval::ApprovalMode;
+use codesmith_agent_runtime::mode::ApprovalMode;
 use codesmith_config::presets::PresetCatalog;
 
 /// Known limitations of the line-based REPL, recorded beside the behaviour
@@ -152,7 +152,6 @@ impl ReplState {
             mcp_config_path,
             use_memory,
             start_in_agent_mode,
-            skip_onboarding: _,
             yolo,
             ..
         } = options;
@@ -570,7 +569,7 @@ pub fn build_engine_config(state: &ReplState, config: &Config) -> anyhow::Result
         goal_state: crate::tools::goal::new_shared_goal_state_from_host(
             state.hunt.quarry.clone(),
             state.hunt.token_budget,
-            state.hunt.verdict == crate::tui::app::HuntVerdict::Hunted,
+            state.hunt.verdict == crate::app_state::HuntVerdict::Hunted,
         ),
         worktree_state: crate::tools::worktree::new_shared_worktree_session_state(),
         max_spawn_depth: DEFAULT_MAX_SPAWN_DEPTH,

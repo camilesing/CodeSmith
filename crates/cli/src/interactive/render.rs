@@ -16,8 +16,8 @@ use colored::Colorize;
 use super::state::ReplState;
 use crate::core::events::{Event, TurnOutcomeStatus};
 use crate::core::ops::Op;
-use crate::tui::approval::ApprovalMode;
 use codesmith_agent_runtime::error_taxonomy::ErrorEnvelope;
+use codesmith_agent_runtime::mode::ApprovalMode;
 
 /// Interval between live-line refreshes (spinner/elapsed/ctx).
 const LIVE_REFRESH: Duration = Duration::from_millis(250);
@@ -244,8 +244,7 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                 tool_name,
                 command,
                 denial_reason,
-                blocked_network,
-                blocked_write,
+                ..
             } => {
                 handle_elevation(
                     state,
@@ -255,8 +254,6 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                     tool_name,
                     command,
                     denial_reason,
-                    blocked_network,
-                    blocked_write,
                 )
                 .await;
             }
@@ -448,13 +445,11 @@ fn apply_turn_accounting(
     state
         .session
         .turn_cache_history
-        .push_back(crate::tui::app::TurnCacheRecord {
+        .push_back(crate::app_state::TurnCacheRecord {
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
             cache_hit_tokens: usage.prompt_cache_hit_tokens,
             cache_miss_tokens: usage.prompt_cache_miss_tokens,
-            reasoning_replay_tokens: usage.reasoning_replay_tokens,
-            recorded_at: Instant::now(),
         });
 
     let pricing_model = if state.auto_model {
@@ -608,8 +603,6 @@ async fn handle_elevation(
     tool_name: String,
     command: Option<String>,
     denial_reason: String,
-    _blocked_network: bool,
-    _blocked_write: bool,
 ) {
     use crate::core::engine::tool_setup::sandbox_policy_for_mode;
 
@@ -618,7 +611,7 @@ async fn handle_elevation(
         // Mirror the retired auto path: strip catastrophic commands;
         // elevate the rest only with the trust/YOLO opt-in.
         let elevation_target = sandbox_policy_for_mode(state.mode, &state.workspace);
-        let allow_elevation = state.trust_mode || state.mode == crate::tui::app::AppMode::Yolo;
+        let allow_elevation = state.trust_mode || state.mode == crate::app_state::AppMode::Yolo;
         match crate::auto_mode::decide_auto_elevation(
             command.as_deref(),
             allow_elevation,

@@ -169,7 +169,7 @@ pub async fn try_user_command(state: &mut ReplState, command: &str, args: &str) 
         // Reset per-command goal state, mirroring the TUI behavior.
         state.hunt.quarry = None;
         state.hunt.started_at = None;
-        state.hunt.verdict = crate::tui::app::HuntVerdict::Hunting;
+        state.hunt.verdict = crate::app_state::HuntVerdict::Hunting;
         state.hunt.token_budget = None;
         state.active_allowed_tools = None;
         for (key, value) in &metadata {

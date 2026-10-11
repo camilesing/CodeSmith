@@ -33,6 +33,7 @@ use tokio::sync::{Mutex, broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::app_state::AppMode;
 use crate::automation_manager::wrap_automation_manager;
 use crate::compaction::CompactionConfig;
 use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS};
@@ -45,7 +46,6 @@ use crate::task_manager::wrap_task_manager;
 use crate::tools::plan::new_shared_plan_state;
 use crate::tools::subagent::SubAgentStatus;
 use crate::tools::todo::new_shared_todo_list;
-use crate::tui::app::AppMode;
 
 const EVENT_CHANNEL_CAPACITY: usize = 1024;
 const MAX_ACTIVE_THREADS_DEFAULT: usize = 8;
@@ -1706,9 +1706,9 @@ impl RuntimeThreadManager {
                 allowed_tools: None,
                 blocked_tools: Vec::new(),
                 approval_mode: if auto_approve {
-                    crate::tui::approval::ApprovalMode::Auto
+                    codesmith_agent_runtime::mode::ApprovalMode::Auto
                 } else {
-                    crate::tui::approval::ApprovalMode::Suggest
+                    codesmith_agent_runtime::mode::ApprovalMode::Suggest
                 },
             })
             .await
