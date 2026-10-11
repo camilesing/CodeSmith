@@ -1072,7 +1072,7 @@ mod tests {
                 content: vec![ContentBlock::ToolUse {
                     id: "call-big".to_string(),
                     name: "exec_shell".to_string(),
-                    input: serde_json::json!({"command": "cargo test -p codesmith-tui"}),
+                    input: serde_json::json!({"command": "cargo test -p codesmith-cli"}),
                     caller: None,
                 }],
             },

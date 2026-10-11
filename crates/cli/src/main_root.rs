@@ -1763,7 +1763,7 @@ pub(crate) fn init_skills_dir(skills_dir: &Path, force: bool) -> Result<(PathBuf
 pub(crate) fn tools_readme_template() -> &'static str {
     "# Local tools\n\n\
      Drop self-describing scripts here so they can be discovered by\n\
-     `codesmith-tui setup --status` and surfaced in `codesmith-tui doctor`.\n\n\
+     `codesmith setup --status` and surfaced in `codesmith doctor`.\n\n\
      When `[tools.plugin_dir]` is set in config.toml (or when the default\n\
      `~/.codesmith/tools/` directory exists), they are auto-discovered and\n\
      registered as model-visible tools.\n\n\
@@ -2397,7 +2397,7 @@ pub(crate) async fn run_doctor(
 
     // Version info
     println!("{}", "Version Information:".bold());
-    println!("  codesmith-tui: {}", env!("CODESMITH_BUILD_VERSION"));
+    println!("  codesmith: {}", env!("CODESMITH_BUILD_VERSION"));
     println!("  rust: {}", rustc_version());
     println!();
 
@@ -2653,7 +2653,7 @@ pub(crate) async fn run_doctor(
     println!("  · base_url: {}", api_target.base_url);
     println!("  · model: {}", api_target.model);
     println!(
-        "  · preset: {} (see `/preset list`; `codesmith-tui preset show` for the tier matrix)",
+        "  · preset: {} (see `/preset list`; `codesmith preset show` for the tier matrix)",
         config.effective_preset()
     );
     let strict_tool_mode = doctor_strict_tool_mode_status(config);
