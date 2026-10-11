@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use crate::app_state::ReasoningEffort;
 use crate::config::{effective_home_dir, expand_path};
