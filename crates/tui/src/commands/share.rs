@@ -70,7 +70,11 @@ fn do_share(app: &mut App) -> CommandResult {
 ///
 /// This is called from the engine after receiving the `ShareSession` action.
 /// It renders the session as HTML and uploads it via `gh gist create`.
-pub async fn perform_share(history_json: &str, model: &str, mode: &str) -> Result<String, String> {
+pub(crate) async fn perform_share(
+    history_json: &str,
+    model: &str,
+    mode: &str,
+) -> Result<String, String> {
     // Build HTML from the session data
     let html = render_session_html(history_json, model, mode);
 

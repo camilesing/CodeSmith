@@ -38,7 +38,7 @@ pub fn init(app: &mut App) -> CommandResult {
 /// If `workspace` is inside a git repository, ensure `.codesmith/` and
 /// `.codesmith/` is listed in the nearest `.gitignore` so that snapshots,
 /// instructions, and other workspace-local state are not accidentally committed.
-fn ensure_codesmith_gitignored(workspace: &Path) {
+pub(crate) fn ensure_codesmith_gitignored(workspace: &Path) {
     // Only act if this workspace is a git repo.
     if !workspace.join(".git").exists() {
         return;
@@ -92,7 +92,7 @@ fn ensure_codesmith_gitignored(workspace: &Path) {
 }
 
 /// Generate project documentation based on detected project type
-fn generate_project_doc(workspace: &Path) -> String {
+pub(crate) fn generate_project_doc(workspace: &Path) -> String {
     let mut doc = String::new();
 
     // Header

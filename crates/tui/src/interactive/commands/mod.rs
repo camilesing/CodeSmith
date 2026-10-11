@@ -7,7 +7,9 @@
 
 pub mod config_cmds;
 pub mod debug_cmds;
+pub mod misc_cmds;
 pub mod session_cmds;
+pub mod skills_cmds;
 
 use codesmith_config::presets::PresetCatalog;
 use colored::Colorize;
@@ -26,6 +28,14 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
     };
     let command = raw.trim_start_matches('/');
     let arg_str = line[raw.len()..].trim().to_string();
+
+    // User-defined commands override built-ins (mirrors the TUI's layer
+    // order: user > extension > mods > static table).
+    if let Some(handled) = skills_cmds::try_user_command(state, command, &arg_str).await
+        && handled
+    {
+        return false;
+    }
 
     match command {
         "help" | "?" => {
@@ -265,6 +275,230 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
         }
         "statusline" => {
             config_cmds::status_line();
+            false
+        }
+        "init" => {
+            misc_cmds::init(state);
+            false
+        }
+        "hooks" | "hook" | "gouzi" => {
+            misc_cmds::hooks(
+                state,
+                if arg_str.is_empty() {
+                    None
+                } else {
+                    Some(&arg_str)
+                },
+            );
+            false
+        }
+        "mcp" => {
+            misc_cmds::mcp(state, &arg_str).await;
+            false
+        }
+        "network" => {
+            misc_cmds::network(if arg_str.is_empty() {
+                None
+            } else {
+                Some(&arg_str)
+            });
+            false
+        }
+        "goal" | "hunt" | "mubiao" => {
+            misc_cmds::goal(
+                state,
+                if arg_str.is_empty() {
+                    None
+                } else {
+                    Some(&arg_str)
+                },
+            )
+            .await;
+            false
+        }
+        "task" | "tasks" => {
+            misc_cmds::task(state, &arg_str).await;
+            false
+        }
+        "jobs" | "job" | "zuoye" => {
+            misc_cmds::jobs(state);
+            false
+        }
+        "balance" => {
+            misc_cmds::balance(state);
+            false
+        }
+        "verify" => {
+            misc_cmds::verify(if arg_str.is_empty() {
+                None
+            } else {
+                Some(&arg_str)
+            });
+            false
+        }
+        "links" | "dashboard" | "api" | "lianjie" => {
+            misc_cmds::links();
+            false
+        }
+        "home" | "stats" | "overview" | "zhuye" | "shouye" => {
+            misc_cmds::home(state);
+            false
+        }
+        "profile" | "dangan" => {
+            misc_cmds::profile(
+                state,
+                if arg_str.is_empty() {
+                    None
+                } else {
+                    Some(&arg_str)
+                },
+            );
+            false
+        }
+        "workspace" | "cwd" => {
+            misc_cmds::workspace(
+                state,
+                if arg_str.is_empty() {
+                    None
+                } else {
+                    Some(&arg_str)
+                },
+            );
+            false
+        }
+        "translate" | "translation" | "transale" => {
+            misc_cmds::translate(state);
+            false
+        }
+        "anchor" | "maodian" => {
+            misc_cmds::anchor(
+                state,
+                if arg_str.is_empty() {
+                    None
+                } else {
+                    Some(&arg_str)
+                },
+            );
+            false
+        }
+        "note" => {
+            misc_cmds::note(
+                state,
+                if arg_str.is_empty() {
+                    None
+                } else {
+                    Some(&arg_str)
+                },
+            );
+            false
+        }
+        "attach" | "image" | "media" | "fujian" => {
+            misc_cmds::attach(
+                state,
+                if arg_str.is_empty() {
+                    None
+                } else {
+                    Some(&arg_str)
+                },
+            );
+            false
+        }
+        "feedback" => {
+            misc_cmds::feedback(if arg_str.is_empty() {
+                None
+            } else {
+                Some(&arg_str)
+            });
+            false
+        }
+        "share" => {
+            misc_cmds::share(state).await;
+            false
+        }
+        "skills" | "jinengliebiao" => {
+            skills_cmds::list_skills(
+                state,
+                if arg_str.is_empty() {
+                    None
+                } else {
+                    Some(&arg_str)
+                },
+            );
+            false
+        }
+        "skill" | "jineng" => {
+            skills_cmds::run_skill(
+                state,
+                if arg_str.is_empty() {
+                    None
+                } else {
+                    Some(&arg_str)
+                },
+            )
+            .await;
+            false
+        }
+        "review" | "shencha" => {
+            skills_cmds::review(
+                state,
+                if arg_str.is_empty() {
+                    None
+                } else {
+                    Some(&arg_str)
+                },
+            )
+            .await;
+            false
+        }
+        "queue" | "queued" => {
+            misc_cmds::queue();
+            false
+        }
+        "stash" | "park" => {
+            misc_cmds::stash();
+            false
+        }
+        "cycles" | "zhouqi" | "cycle" | "recall" => {
+            misc_cmds::cycles();
+            false
+        }
+        "relay" | "batonpass" => {
+            misc_cmds::relay();
+            false
+        }
+        "restore" => {
+            misc_cmds::restore();
+            false
+        }
+        "change" => {
+            misc_cmds::change();
+            false
+        }
+        "rlm" | "recursive" | "digui" => {
+            misc_cmds::rlm();
+            false
+        }
+        "extension" | "ext" => {
+            misc_cmds::extension();
+            false
+        }
+        "mods" => {
+            misc_cmds::mods();
+            false
+        }
+        "set" => {
+            println!(
+                "{}",
+                "the /set command was retired — use /config to edit settings and /settings to inspect values".dimmed()
+            );
+            false
+        }
+        "deepseek" => {
+            println!(
+                "{}",
+                "the /deepseek command was renamed — use /links (aliases: /dashboard, /api)"
+                    .dimmed()
+            );
             false
         }
         other => {

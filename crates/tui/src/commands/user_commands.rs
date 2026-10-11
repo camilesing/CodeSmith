@@ -82,7 +82,7 @@ fn load_commands_from_dir(dir: &Path) -> Vec<(String, String)> {
 ///
 /// Pass `None` for the workspace to scan only the global directory
 /// (backward-compatible with callers that don't have workspace context).
-pub fn load_user_commands(workspace: Option<&Path>) -> Vec<(String, String)> {
+pub(crate) fn load_user_commands(workspace: Option<&Path>) -> Vec<(String, String)> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut commands: Vec<(String, String)> = Vec::new();
 
@@ -153,7 +153,7 @@ fn strip_matched_quotes(value: &str) -> &str {
     value
 }
 
-fn parse_allowed_tools(value: &str) -> Vec<String> {
+pub(crate) fn parse_allowed_tools(value: &str) -> Vec<String> {
     value
         .split(',')
         .map(|tool| {
@@ -172,7 +172,7 @@ fn parse_allowed_tools(value: &str) -> Vec<String> {
 /// prefix (e.g. `/mycmd` or `/mycmd with args`). Only exact matches
 /// on the command name are considered (no partial/alias matching).
 /// Substitute $1, $2, $ARGUMENTS placeholders in a command template.
-fn apply_template(template: &str, args: &str) -> String {
+pub(crate) fn apply_template(template: &str, args: &str) -> String {
     let positional: Vec<&str> = args.split_whitespace().collect();
     let mut result = template.replace("$ARGUMENTS", args);
     for (i, arg) in positional.iter().enumerate() {

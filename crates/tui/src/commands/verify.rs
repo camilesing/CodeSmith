@@ -22,7 +22,7 @@ pub fn verify(_app: &mut App, arg: Option<&str>) -> CommandResult {
 }
 
 /// Build the stats readout from the default evolution log path.
-fn stats_text() -> String {
+pub(crate) fn stats_text() -> String {
     stats_text_from(codesmith_agent_runtime::evolution_log::verdicts_path().as_deref())
 }
 
