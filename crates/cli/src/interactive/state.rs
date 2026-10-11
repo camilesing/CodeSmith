@@ -43,6 +43,11 @@ use codesmith_config::presets::PresetCatalog;
 /// - No mouse support, no viewport scrolling, no themes beyond ANSI colors.
 /// - Reasoning/thinking deltas are not streamed to the terminal.
 /// - Desktop notifications (OSC 9/BEL) are not emitted on turn completion.
+/// - Tool-call detail is append-only replay (`/expand`, Ctrl+O): the
+///   terminal transcript cannot be rewritten, so expanding reprints detail
+///   instead of un-collapsing lines in place.
+/// - While a turn is active, keystrokes other than Ctrl+O are consumed by
+///   the in-turn key tap and discarded (see `keys.rs`).
 pub struct ReplState {
     pub mode: AppMode,
     /// Session cost/token telemetry (mirrors the retired `App.session`).
@@ -92,6 +97,15 @@ pub struct ReplState {
     pub compact_threshold: usize,
     /// Live sub-agent tracking: agent id → latest status text.
     pub agent_progress: HashMap<String, String>,
+    /// Collapsed one-line tool-call rendering (default) vs the expanded
+    /// two-line form; toggled in-turn with Ctrl+O.
+    pub tool_detail: bool,
+    /// Rolling log of completed tool calls for `/expand` and the Ctrl+O
+    /// replay, capped at [`crate::tool_summary::TOOL_LOG_CAP`].
+    pub tool_log: Vec<crate::tool_summary::ToolCallRecord>,
+    /// Turn index, bumped on each `TurnStarted` so `/expand` can address
+    /// "the last turn" of the log.
+    pub tool_log_turn: usize,
     pub subagent_cache: Vec<SubAgentResult>,
     pub hooks: HookExecutor,
     pub shell_manager: SharedShellManager,
@@ -275,6 +289,9 @@ impl ReplState {
             auto_compact: settings.auto_compact,
             compact_threshold,
             agent_progress: HashMap::new(),
+            tool_detail: false,
+            tool_log: Vec::new(),
+            tool_log_turn: 0,
             subagent_cache: Vec::new(),
             hooks,
             shell_manager: shell_manager.clone(),

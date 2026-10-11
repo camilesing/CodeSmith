@@ -5,7 +5,7 @@
 //! indicator:
 //!
 //! ```text
-//! ● working │ Full │ ctx 42% (72k/171k) │ mode: agent │ agents: 2 │ deepseek-chat │ v0.9.0 (f83c330)
+//! ● working │ Full │ ctx 42% (72k/171k) │ mode: agent │ 🤖: 2 │ deepseek-chat │ v0.9.0 (f83c330)
 //! ```
 //!
 //! - state dot: idle / working / waiting-approval / compacting
@@ -13,7 +13,7 @@
 //! - ctx: session context-window occupancy (estimate-first, see
 //!   [`context_usage`])
 //! - mode: `AppMode`
-//! - agents: running sub-agent count
+//! - 🤖: running sub-agent count
 //! - model: display label
 //! - version: build version
 
@@ -184,8 +184,8 @@ pub fn render_status_line(
     });
     segments.push(format!("mode: {}", mode.label().to_lowercase()));
     segments.push(match agents {
-        0 => "agents: 0".dimmed().to_string(),
-        n => format!("agents: {n}").cyan().to_string(),
+        0 => "🤖: 0".dimmed().to_string(),
+        n => format!("🤖: {n}").cyan().to_string(),
     });
     segments.push(model.to_string());
     segments.push(format!("v{version}").dimmed().to_string());
@@ -240,7 +240,7 @@ pub fn live_line(state: &ReplState, current_tool: Option<&str>) -> String {
     parts.push(format!("{elapsed}s").dimmed().to_string());
     if state.running_agent_count() > 0 {
         parts.push(
-            format!("agents: {}", state.running_agent_count())
+            format!("🤖: {}", state.running_agent_count())
                 .cyan()
                 .to_string(),
         );
@@ -321,7 +321,7 @@ mod tests {
             "Full",
             "ctx 42% (72k/171k)",
             "mode: agent",
-            "agents: 2",
+            "🤖: 2",
             "deepseek-chat",
             "v0.9.0",
         ] {

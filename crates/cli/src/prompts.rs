@@ -167,6 +167,10 @@ mod tests {
             BASE_PROMPT.contains("Tool-use enforcement"),
             "BASE_PROMPT missing the tool-use enforcement clause"
         );
+        assert!(
+            BASE_PROMPT.contains("may be answered directly in prose"),
+            "BASE_PROMPT missing the trivial-arithmetic exception (single-step math like 1+1 must not open a tool)"
+        );
     }
 
     #[test]

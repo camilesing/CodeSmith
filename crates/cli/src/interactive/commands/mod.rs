@@ -50,10 +50,16 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
         "exit" | "quit" | "q" => true,
         "clear" => {
             print!("\x1b[2J\x1b[H");
+            // The screen transcript is gone; so is its replay source.
+            state.tool_log.clear();
             false
         }
         "status" => {
             print_status(state);
+            false
+        }
+        "expand" => {
+            cmd_expand(state, &arg_str);
             false
         }
         "model" => {
@@ -519,11 +525,15 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
 
 fn print_help() {
     println!("{}", "commands:".bold());
-    let rows: [(&str, &str); 13] = [
+    let rows: [(&str, &str); 14] = [
         ("/help", "this list"),
         (
             "/status",
             "session status: tokens, cost, model, mode, preset, agents",
+        ),
+        (
+            "/expand [n|all]",
+            "reprint hidden tool-call detail (Ctrl+O toggles mid-turn)",
         ),
         (
             "/model [name]",
@@ -545,6 +555,65 @@ fn print_help() {
     ];
     for (name, help) in rows {
         println!("  {:<20} {}", name, help.dimmed());
+    }
+}
+
+/// `/expand [n|all]` — reprint the detail hidden by collapsed tool-call
+/// lines. Bare: every call from the most recent turn that logged one;
+/// `n`: that turn's n-th call; `all`: the whole retained log.
+fn cmd_expand(state: &ReplState, arg: &str) {
+    let arg = arg.trim();
+    if state.tool_log.is_empty() {
+        println!("{}", "no tool calls recorded this session".dimmed());
+        return;
+    }
+    let last_turn = state
+        .tool_log
+        .iter()
+        .map(|record| record.turn)
+        .max()
+        .expect("tool_log is non-empty");
+    let records: Vec<crate::tool_summary::ToolCallRecord> = if arg.eq_ignore_ascii_case("all") {
+        state.tool_log.clone()
+    } else if let Some(index) = arg.parse::<usize>().ok().filter(|n| *n > 0) {
+        let turn_records: Vec<_> = state
+            .tool_log
+            .iter()
+            .filter(|record| record.turn == last_turn)
+            .collect();
+        match turn_records.get(index - 1) {
+            Some(record) => vec![(**record).clone()],
+            None => {
+                println!(
+                    "{} no tool call #{index} in the last turn (it logged {})",
+                    "✗".red(),
+                    turn_records.len()
+                );
+                return;
+            }
+        }
+    } else if arg.is_empty() {
+        state
+            .tool_log
+            .iter()
+            .filter(|record| record.turn == last_turn)
+            .cloned()
+            .collect()
+    } else {
+        println!("{}", "usage: /expand [n|all]".dimmed());
+        return;
+    };
+    if records.is_empty() {
+        println!("{}", "no tool calls recorded this session".dimmed());
+        return;
+    }
+    println!("{}", "tool-call detail:".bold());
+    for record in &records {
+        println!(
+            "{}",
+            crate::tool_summary::tool_detail_block(record, crate::tool_summary::DETAIL_MAX_LINES)
+                .dimmed()
+        );
     }
 }
 

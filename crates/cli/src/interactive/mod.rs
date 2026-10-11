@@ -4,11 +4,13 @@
 //! above the prompt shows the session state (preset tier, context-window
 //! occupancy, mode, sub-agent count, model, version).
 //!
-//! Construction mirrors the retired `tui::run_tui` minus every
-//! terminal-mode concern (no raw mode, no alt screen, no mouse). See
+//! Construction mirrors the retired `tui::run_tui` minus most
+//! terminal-mode concerns (no alt screen, no mouse; during a turn stdin
+//! goes non-canonical only for the Ctrl+O key tap — see `keys.rs`). See
 //! `state.rs` for the known-limitations note.
 
 pub mod commands;
+pub mod keys;
 pub mod render;
 pub mod state;
 pub mod status;
@@ -225,7 +227,7 @@ fn print_banner(state: &ReplState) {
     println!(
         "{}",
         format!(
-            "workspace {} · /help for commands · Ctrl+C cancels a turn",
+            "workspace {} · /help for commands · Ctrl+C cancels a turn · Ctrl+O toggles tool detail",
             state.workspace.display()
         )
         .dimmed()

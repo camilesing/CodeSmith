@@ -173,6 +173,9 @@ pub async fn new_session(state: &mut ReplState, arg: Option<&str>) {
     state.session = Default::default();
     state.agent_progress.clear();
     state.subagent_cache.clear();
+    // The on-screen transcript (and thus `/expand` replay) belongs to the
+    // old session; the new session starts with an empty tool log.
+    state.tool_log.clear();
     state.current_session_id = Some(new_id.clone());
     if let Ok(engine) = state.engine() {
         let _ = engine
