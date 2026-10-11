@@ -2229,6 +2229,7 @@ mod tests {
                 message_count: 1,
                 total_tokens: 0,
                 model: "test-model".to_string(),
+                reported_model: None,
                 workspace: PathBuf::from("."),
                 mode: None,
                 cost: Default::default(),
@@ -2954,6 +2955,7 @@ mod tests {
                                 error: None,
                                 tool_catalog: None,
                                 base_url: None,
+                                reported_model: None,
                             })
                             .await;
                     }
@@ -2969,6 +2971,7 @@ mod tests {
                                 error: None,
                                 tool_catalog: None,
                                 base_url: None,
+                                reported_model: None,
                             })
                             .await;
                     }
@@ -3127,6 +3130,7 @@ mod tests {
                     error: None,
                     tool_catalog: None,
                     base_url: None,
+                    reported_model: None,
                 })
                 .await;
         });
@@ -3261,6 +3265,7 @@ mod tests {
                     error: None,
                     tool_catalog: None,
                     base_url: None,
+                    reported_model: None,
                 })
                 .await;
         });
@@ -3482,6 +3487,7 @@ mod tests {
                     error: None,
                     tool_catalog: None,
                     base_url: None,
+                    reported_model: None,
                 })
                 .await;
         });

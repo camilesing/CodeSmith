@@ -556,6 +556,12 @@ impl HostAgentExecutor {
                     // / OpenAI). Mirrors the retired `handle_deepseek_turn`
                     // `usage = message.usage;`.
                     usage = message.usage;
+                    // Record the server-reported model — the real model
+                    // behind gateway aliases — for the end-of-turn handoff
+                    // (`take_reported_model` → `Event::TurnComplete`).
+                    if !message.model.is_empty() {
+                        self.record_reported_model(message.model);
+                    }
                 }
                 StreamEvent::ContentBlockStart {
                     index,
@@ -1586,6 +1592,30 @@ mod tests {
         let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
         registry.register(std::sync::Arc::new(EchoSpec));
         registry.to_framework_tool_set()
+    }
+
+    /// The reducer records the server-reported model from `MessageStart` —
+    /// the end-of-turn handoff behind `Event::TurnComplete.reported_model`
+    /// (the status-bar label shows the real model behind gateway aliases).
+    #[tokio::test]
+    async fn message_start_model_is_recorded_for_turn_complete() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let mock = std::sync::Arc::new(RetryMockLlm::new(vec![MockRound::Events(usage_round(
+            10, 5,
+        ))]));
+        let executor = stream_test_executor(&mock, echo_tool_set());
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("clean round");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(
+            executor.take_reported_model(),
+            Some("mock-v0".to_string()),
+            "MessageStart.model must survive to the end-of-turn drain"
+        );
     }
 
     /// A stream that dies mid-tool-input (after a non-empty `InputJsonDelta`)

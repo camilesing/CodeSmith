@@ -1221,6 +1221,7 @@ impl Engine {
                     error: Some(message),
                     tool_catalog: None,
                     base_url: None,
+                    reported_model: turn.reported_model.clone(),
                 })
                 .await;
             return;
@@ -1547,6 +1548,10 @@ impl Engine {
         // `total_usage.add` below and `Event::TurnComplete.usage`. The
         // executor is constructed fresh each turn, so this starts at zero.
         turn.usage = executor.take_usage();
+        // Same one-shot drain for the server-reported model name (the real
+        // model behind gateway aliases); flows into
+        // `Event::TurnComplete.reported_model`.
+        turn.reported_model = executor.take_reported_model();
         // Slice 25a/25c §E: apply the deferred compaction closure. The
         // executor recorded two post-`run` signals during `run`:
         //   • `summary_prompt` (25a) — from the full-compact arms of
@@ -1748,6 +1753,7 @@ impl Engine {
                 error,
                 tool_catalog: tool_catalog_for_event,
                 base_url: base_url_for_event,
+                reported_model: turn.reported_model,
             })
             .await;
 
@@ -1895,6 +1901,7 @@ impl Engine {
                     error: Some(message),
                     tool_catalog: None,
                     base_url: None,
+                    reported_model: None,
                 })
                 .await;
             return;
@@ -1988,6 +1995,7 @@ impl Engine {
                 error: turn_error,
                 tool_catalog: None,
                 base_url: None,
+                reported_model: None,
             })
             .await;
     }
@@ -2022,6 +2030,7 @@ impl Engine {
                         error: Some(message),
                         tool_catalog: None,
                         base_url: None,
+                        reported_model: None,
                     })
                     .await;
                 return;
@@ -2039,6 +2048,7 @@ impl Engine {
                         error: Some(message),
                         tool_catalog: None,
                         base_url: None,
+                        reported_model: None,
                     })
                     .await;
                 return;
@@ -2062,6 +2072,7 @@ impl Engine {
                     error: Some(message),
                     tool_catalog: None,
                     base_url: None,
+                    reported_model: None,
                 })
                 .await;
             return;
@@ -2085,6 +2096,7 @@ impl Engine {
                     error: Some(message),
                     tool_catalog: None,
                     base_url: None,
+                    reported_model: None,
                 })
                 .await;
             return;
@@ -2118,6 +2130,7 @@ impl Engine {
                 error: None,
                 tool_catalog: None,
                 base_url: None,
+                reported_model: None,
             })
             .await;
     }
@@ -2226,6 +2239,7 @@ impl Engine {
                     error: Some(message),
                     tool_catalog: None,
                     base_url: None,
+                    reported_model: None,
                 })
                 .await;
             return;
@@ -2282,6 +2296,7 @@ impl Engine {
                 error,
                 tool_catalog: None,
                 base_url: None,
+                reported_model: None,
             })
             .await;
     }

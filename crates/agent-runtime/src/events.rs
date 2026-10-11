@@ -196,6 +196,12 @@ pub enum Event {
         tool_catalog: Option<Vec<Tool>>,
         /// API base URL used by this turn's client.
         base_url: Option<String>,
+        /// Server-reported model name from this turn's stream
+        /// `MessageStart` frames — the real model behind gateway aliases
+        /// (e.g. BigModel's Anthropic-compatible endpoint serving a GLM
+        /// model under a `claude-*` alias). `None` when the turn never
+        /// got a response or the provider reported none.
+        reported_model: Option<String>,
     },
 
     /// Context compaction started.

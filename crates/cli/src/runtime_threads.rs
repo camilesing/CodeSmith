@@ -3061,6 +3061,9 @@ impl RuntimeThreadManager {
                     error,
                     tool_catalog,
                     base_url,
+                    // REPL-display data (status-bar model label); the
+                    // runtime turn record does not carry it.
+                    reported_model: _,
                 } => {
                     turn_usage = Some(usage);
                     // Event-sourcing slice 2 — stop dropping the envelope:
@@ -3957,6 +3960,7 @@ mod tests {
                         error: None,
                         tool_catalog: None,
                         base_url: None,
+                        reported_model: None,
                     })
                     .await;
             }
@@ -4251,6 +4255,7 @@ mod tests {
                         error: None,
                         tool_catalog: None,
                         base_url: None,
+                        reported_model: None,
                     })
                     .await;
                 if turn_index >= 2 {
@@ -4490,6 +4495,7 @@ mod tests {
                 error: None,
                 tool_catalog: None,
                 base_url: None,
+                reported_model: None,
             })
             .await?;
 
@@ -4588,6 +4594,7 @@ mod tests {
                 error: None,
                 tool_catalog: None,
                 base_url: None,
+                reported_model: None,
             })
             .await?;
         Ok(())
@@ -4668,6 +4675,7 @@ mod tests {
                 error: None,
                 tool_catalog: None,
                 base_url: None,
+                reported_model: None,
             })
             .await?;
         Ok(())
@@ -4733,6 +4741,7 @@ mod tests {
                 error: None,
                 tool_catalog: None,
                 base_url: None,
+                reported_model: None,
             })
             .await?;
 
@@ -4863,6 +4872,7 @@ mod tests {
                 error: None,
                 tool_catalog: None,
                 base_url: None,
+                reported_model: None,
             })
             .await?;
         Ok(())
@@ -4945,6 +4955,7 @@ mod tests {
                 error: None,
                 tool_catalog: None,
                 base_url: None,
+                reported_model: None,
             })
             .await?;
 
@@ -5008,6 +5019,7 @@ mod tests {
                         error: None,
                         tool_catalog: None,
                         base_url: None,
+                        reported_model: None,
                     })
                     .await;
             }
@@ -5120,6 +5132,7 @@ mod tests {
                                 error: None,
                                 tool_catalog: None,
                                 base_url: None,
+                                reported_model: None,
                             })
                             .await;
                     }
@@ -5152,6 +5165,7 @@ mod tests {
                                 error: None,
                                 tool_catalog: None,
                                 base_url: None,
+                                reported_model: None,
                             })
                             .await;
                     }
