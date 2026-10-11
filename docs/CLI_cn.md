@@ -46,6 +46,19 @@ prompt 的既有形式不变：`codesmith "explain this function"`（单个带�
 没给 `-p` 时，单个 ASCII 词无法与拼错的命令区分，因此会被拒绝并在提示
 中指向 `-p`；非 ASCII 词（`codesmith 总结`）仍按 prompt 处理。
 
+## 首次运行引导
+
+在没有 `~/.codesmith/.onboarded` 标记的机器上，裸 `codesmith` 会在 TUI
+启动前以纯命令行问答完成引导：语言 → 提供商 → 接入地址（仅
+OpenAI/Anthropic 路由）→ API 密钥 → 目录信任。答案写入与原 TUI 向导
+相同的持久化位置（`~/.codesmith/config.toml`、settings 的 locale、
+OS 钥匙串、信任表）。已有凭据——提供商环境变量、已保存的密钥、或
+Ollama 这类自托管运行时——会跳过密钥问题；拒绝信任提示则直接退出，
+不写入任何内容。传 `--skip-onboarding` 可完全跳过问答。
+
+在 TUI 内，两个门控仍可能拦截后续会话：凭据缺失（例如 `/logout` 之后）
+会重新弹出密钥屏；首次进入未信任的目录会重新弹出信任提示。
+
 在 TUI 内，`/provider` 打开 provider 选择器，`/model` 打开本地模型/
 思考选择器。`/provider openrouter` 和 `/model <id>` 直接切换；当当前
 provider 支持模型列举时，`/models` 会显式拉取并列出实时的 API 模型。

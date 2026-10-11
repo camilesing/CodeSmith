@@ -1093,23 +1093,12 @@ fn tier_default_model_for_provider(provider: ApiProvider, tier: ModelTier) -> &'
 }
 
 fn heavy_model_for_provider(provider: ApiProvider) -> &'static str {
-    match provider {
-        ApiProvider::Deepseek => DEFAULT_TEXT_MODEL,
-        ApiProvider::NvidiaNim => DEFAULT_NVIDIA_NIM_MODEL,
-        ApiProvider::Openai => DEFAULT_OPENAI_MODEL,
-        ApiProvider::Atlascloud => DEFAULT_ATLASCLOUD_MODEL,
-        ApiProvider::WanjieArk => DEFAULT_WANJIE_ARK_MODEL,
-        ApiProvider::Volcengine => DEFAULT_VOLCENGINE_MODEL,
-        ApiProvider::Openrouter => DEFAULT_OPENROUTER_MODEL,
-        ApiProvider::XiaomiMimo => DEFAULT_XIAOMI_MIMO_MODEL,
-        ApiProvider::Novita => DEFAULT_NOVITA_MODEL,
-        ApiProvider::Fireworks => DEFAULT_FIREWORKS_MODEL,
-        ApiProvider::Siliconflow => DEFAULT_SILICONFLOW_MODEL,
-        ApiProvider::Moonshot => DEFAULT_MOONSHOT_MODEL,
-        ApiProvider::Sglang => DEFAULT_SGLANG_MODEL,
-        ApiProvider::Vllm => DEFAULT_VLLM_MODEL,
-        ApiProvider::Ollama => DEFAULT_OLLAMA_MODEL,
-        ApiProvider::Anthropic => DEFAULT_ANTHROPIC_MODEL,
+    // Single source of the provider→default-model mapping lives in
+    // `codesmith-config` next to `ProviderKind`; `ApiProvider::as_str`
+    // values all round-trip through `ProviderKind::parse`.
+    match codesmith_config::ProviderKind::parse(provider.as_str()) {
+        Some(kind) => codesmith_config::heavy_model_for_provider(kind),
+        None => DEFAULT_TEXT_MODEL,
     }
 }
 
@@ -2391,22 +2380,6 @@ impl Config {
         .to_string()
     }
 
-    /// URL the first-run endpoint screen shows as `Default:` — whatever is
-    /// already configured for this provider, else its built-in service URL.
-    /// `None` when the wizard does not ask about this provider's endpoint.
-    #[must_use]
-    pub fn onboarding_endpoint_default(&self, provider: ApiProvider) -> Option<String> {
-        let builtin = custom_endpoint_provider_default(provider)?;
-        Some(
-            self.provider_config_for(provider)
-                .and_then(|entry| entry.base_url.as_deref())
-                .map(str::trim)
-                .filter(|url| !url.is_empty())
-                .unwrap_or(builtin)
-                .to_string(),
-        )
-    }
-
     /// Model to start a newly selected provider on.
     ///
     /// Used by first-run onboarding, where the config file predates the
@@ -3343,53 +3316,18 @@ impl Config {
 
 pub(crate) use codesmith_agent_runtime::utils::effective_home_dir;
 // Workspace trust + config-path helpers moved to
-// `codesmith_agent_runtime::workspace_trust`; re-exported here so the rest of
-// config.rs (and `crate::config::is_workspace_trusted` callers) keep resolving.
+// `codesmith_agent_runtime::workspace_trust`; re-exported here so the rest
+// of config.rs (and `crate::config::is_workspace_trusted` callers) keep resolving.
 pub(crate) use codesmith_agent_runtime::workspace_trust::{
     default_config_path, env_config_path, expand_path, expand_pathbuf, home_config_path,
-    is_workspace_trusted, workspace_config_key,
+    is_workspace_trusted, save_workspace_trust,
 };
-// Only the test module below consumes this re-export today; the cfg gate
-// keeps the non-test bin pass from flagging it as an unused import.
+// Only the test module below consumes these re-exports today; the cfg gate
+// keeps the non-test bin pass from flagging them as unused imports.
 #[cfg(test)]
-pub(crate) use codesmith_agent_runtime::workspace_trust::workspace_trust_level_from_doc;
-
-pub(crate) fn save_workspace_trust(workspace: &Path) -> Result<PathBuf> {
-    let config_path = default_config_path()
-        .context("Failed to resolve config path: home directory not found.")?;
-    ensure_parent_dir(&config_path)?;
-
-    let mut doc = if config_path.exists() {
-        let raw = fs::read_to_string(&config_path)?;
-        toml::from_str::<toml::Value>(&raw)
-            .with_context(|| format!("Failed to parse config at {}", config_path.display()))?
-    } else {
-        toml::Value::Table(toml::value::Table::new())
-    };
-
-    let root = doc
-        .as_table_mut()
-        .context("Config root must be a TOML table.")?;
-    let projects = root
-        .entry("projects".to_string())
-        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()))
-        .as_table_mut()
-        .context("`projects` must be a table.")?;
-    let project = projects
-        .entry(workspace_config_key(workspace))
-        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()))
-        .as_table_mut()
-        .context("Project entry must be a table.")?;
-    project.insert(
-        "trust_level".to_string(),
-        toml::Value::String("trusted".to_string()),
-    );
-
-    let serialized = toml::to_string_pretty(&doc).context("failed to serialize updated config")?;
-    write_config_file_secure(&config_path, &serialized)
-        .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
-    Ok(config_path)
-}
+pub(crate) use codesmith_agent_runtime::workspace_trust::{
+    workspace_config_key, workspace_trust_level_from_doc,
+};
 
 fn resolve_load_config_path(path: Option<PathBuf>) -> Option<PathBuf> {
     if let Some(path) = path {
@@ -3415,44 +3353,19 @@ fn resolve_load_config_path(path: Option<PathBuf>) -> Option<PathBuf> {
 
 /// Create an inspectable config file on first interactive launch.
 ///
-/// The file intentionally omits `api_key`; onboarding or `codesmith auth set`
-/// writes that field after the user supplies a key.
+/// The template and secure write live in `codesmith-config`
+/// (`ensure_config_file_at`); this wrapper keeps the TUI's config-path
+/// resolution (explicit path → `$CODESMITH_CONFIG_PATH` → home).
 pub fn ensure_config_file_exists(path: Option<PathBuf>) -> Result<Option<PathBuf>> {
     let config_path = path
         .map(expand_pathbuf)
         .or_else(default_config_path)
         .context("Failed to resolve config path: home directory not found.")?;
-    if config_path.exists() {
-        return Ok(None);
+    if codesmith_config::ensure_config_file_at(&config_path)? {
+        Ok(Some(config_path))
+    } else {
+        Ok(None)
     }
-
-    ensure_parent_dir(&config_path)?;
-    let content = format!(
-        r#"# codesmith Configuration
-# Get your API key from https://platform.deepseek.com
-# Save it with: codesmith auth set --provider deepseek
-
-# Base URL (default: https://api.deepseek.com/beta)
-# Set https://api.deepseek.com to opt out of beta features.
-# base_url = "https://api.deepseek.com/beta"
-
-# Default model
-default_text_model = "{DEFAULT_TEXT_MODEL}"
-
-# Thinking mode (DeepSeek V4 reasoning effort):
-# "auto" | "off" | "low" | "medium" | "high" | "max"
-# Shift+Tab in the TUI cycles between off / high / max.
-reasoning_effort = "auto"
-
-# Startup update check
-[update]
-check_for_updates = true
-# update_uri = "https://internal.mirror.example/codesmith/releases/latest"
-"#
-    );
-    write_config_file_secure(&config_path, &content)
-        .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
-    Ok(Some(config_path))
 }
 
 fn default_managed_config_path() -> Option<PathBuf> {
@@ -5112,40 +5025,15 @@ pub fn active_provider_uses_env_only_api_key(config: &Config) -> bool {
 
 /// Providers that are expected to serve requests without authentication —
 /// self-hosted runtimes the user started themselves. The single definition of
-/// that rule: [`has_api_key_for`] and the onboarding provider list both read it.
+/// that rule: [`has_api_key_for`] reads it.
 #[must_use]
 pub fn provider_is_self_hosted(provider: ApiProvider) -> bool {
-    matches!(
-        provider,
-        ApiProvider::Sglang | ApiProvider::Vllm | ApiProvider::Ollama
-    )
-}
-
-/// Built-in service URL for the two generic routes whose endpoint the
-/// first-run flow lets the user re-point: an OpenAI-compatible gateway/proxy
-/// and an Anthropic-compatible one. `None` for every other provider — their
-/// URL is customer-facing service infrastructure, not a user choice the
-/// wizard should ask about (a hand-edited `[providers.<name>] base_url` or the
-/// matching `*_BASE_URL` env var still works for them).
-#[must_use]
-pub fn custom_endpoint_provider_default(provider: ApiProvider) -> Option<&'static str> {
-    match provider {
-        ApiProvider::Openai => Some(DEFAULT_OPENAI_BASE_URL),
-        ApiProvider::Anthropic => Some(DEFAULT_ANTHROPIC_BASE_URL),
-        _ => None,
-    }
-}
-
-/// Whether onboarding offers a custom endpoint step for this provider. The one
-/// definition of that rule; it is derived from
-/// [`custom_endpoint_provider_default`] so the list cannot drift.
-#[must_use]
-pub fn provider_supports_custom_endpoint(provider: ApiProvider) -> bool {
-    custom_endpoint_provider_default(provider).is_some()
+    codesmith_config::ProviderKind::parse(provider.as_str())
+        .is_some_and(codesmith_config::provider_is_self_hosted)
 }
 
 /// `*_BASE_URL` environment variable that overrides this provider's URL, for
-/// the providers whose endpoint the wizard asks about. Names mirror the
+/// the providers whose endpoint is user-configurable. Names mirror the
 /// load-time reader in `apply_env_overrides`.
 #[must_use]
 pub fn provider_base_url_env_var(provider: ApiProvider) -> Option<&'static str> {
@@ -5272,23 +5160,6 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
     write_provider_config_field(provider, "api_key", api_key, "credential.save")
 }
 
-/// Save a custom endpoint URL for a provider
-/// (`[providers.<name>] base_url = "..."`).
-///
-/// The root `base_url` is the legacy DeepSeek field and is ignored for every
-/// other provider (see [`Config::provider_base_url`]), so a gateway or proxy
-/// URL for the OpenAI-compatible and Anthropic routes has to land in the
-/// provider's own table — which is what the first-run endpoint screen writes.
-pub fn save_provider_base_url_for(provider: ApiProvider, base_url: &str) -> Result<PathBuf> {
-    if matches!(provider, ApiProvider::Deepseek) {
-        anyhow::bail!(
-            "DeepSeek's base URL lives in the root `base_url` field, not in a provider table"
-        );
-    }
-
-    write_provider_config_field(provider, "base_url", base_url, "provider.base_url.set")
-}
-
 pub fn save_provider_auth_mode_for(provider: ApiProvider, auth_mode: &str) -> Result<PathBuf> {
     write_provider_config_field(provider, "auth_mode", auth_mode, "credential.auth_mode.set")
 }
@@ -5297,10 +5168,10 @@ pub fn save_provider_auth_mode_for(provider: ApiProvider, auth_mode: &str) -> Re
 /// file, creating the table when missing and leaving every sibling field and
 /// section of the file untouched.
 ///
-/// The single writer behind [`save_api_key_for`],
-/// [`save_provider_base_url_for`], and [`save_provider_auth_mode_for`]. The
-/// value is never logged — this path carries credentials as well as URLs;
-/// `event` names the audit event and the payload records the field name.
+/// The single writer behind [`save_api_key_for`] and
+/// [`save_provider_auth_mode_for`]. The value is never logged — this path
+/// carries credentials as well as URLs; `event` names the audit event and the
+/// payload records the field name.
 fn write_provider_config_field(
     provider: ApiProvider,
     field: &str,
@@ -9647,73 +9518,6 @@ api_key = "moonshot-platform-key"
         assert_eq!(
             custom_active.default_model_for_new_provider(None, ApiProvider::Openai),
             "MiniMax-M2.7"
-        );
-    }
-
-    #[test]
-    fn save_provider_base_url_writes_provider_table_and_keeps_siblings() -> Result<()> {
-        let _lock = lock_test_env();
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-save-base-url-{}-{}",
-            std::process::id(),
-            nanos
-        ));
-        fs::create_dir_all(&temp_root)?;
-        let _guard = EnvGuard::new(&temp_root);
-        unsafe { std::env::set_var("CODESMITH_SECRET_BACKEND", "local") };
-
-        // A seeded credential proves the writer edits columns, not the table.
-        save_api_key_for(ApiProvider::Openai, "openai-saved-key")?;
-        let path = save_provider_base_url_for(ApiProvider::Openai, "https://proxy.example.com/v1")?;
-        let parsed: toml::Value = toml::from_str(&fs::read_to_string(&path)?)?;
-        assert_eq!(
-            parsed
-                .get("providers")
-                .and_then(|providers| providers.get("openai"))
-                .and_then(|table| table.get("base_url"))
-                .and_then(toml::Value::as_str),
-            Some("https://proxy.example.com/v1")
-        );
-        assert_eq!(
-            parsed
-                .get("providers")
-                .and_then(|providers| providers.get("openai"))
-                .and_then(|table| table.get("api_key"))
-                .and_then(toml::Value::as_str),
-            Some("openai-saved-key"),
-            "writing base_url must not disturb the API key column"
-        );
-
-        // DeepSeek's URL is the root field; the provider-table writer refuses.
-        assert!(save_provider_base_url_for(ApiProvider::Deepseek, "https://x.example").is_err());
-
-        Ok(())
-    }
-
-    #[test]
-    fn custom_endpoint_step_covers_exactly_the_generic_routes() {
-        let gated: Vec<ApiProvider> = ApiProvider::all()
-            .iter()
-            .copied()
-            .filter(|provider| provider_supports_custom_endpoint(*provider))
-            .collect();
-        assert_eq!(
-            gated,
-            vec![ApiProvider::Openai, ApiProvider::Anthropic],
-            "first-run endpoint URL entry is for the OpenAI-compatible and \
-             Anthropic-compatible routes only"
-        );
-        assert_eq!(
-            custom_endpoint_provider_default(ApiProvider::Openai),
-            Some(DEFAULT_OPENAI_BASE_URL)
-        );
-        assert_eq!(
-            custom_endpoint_provider_default(ApiProvider::Anthropic),
-            Some(DEFAULT_ANTHROPIC_BASE_URL)
         );
     }
 

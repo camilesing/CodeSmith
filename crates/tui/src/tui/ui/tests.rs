@@ -4002,7 +4002,7 @@ async fn startup_prompt_waits_for_onboarding_then_dispatches() {
     app.input = "阅读项目 and wait".to_string();
     app.cursor_position = app.input.chars().count();
     app.auto_submit_initial_input = true;
-    app.onboarding = OnboardingState::Welcome;
+    app.onboarding = OnboardingState::ApiKey;
     let config = Config::default();
     let mut engine = crate::core::engine::mock_engine_handle();
 
@@ -4111,38 +4111,21 @@ fn api_key_validation_warns_without_blocking_unusual_formats() {
 }
 
 #[test]
-fn onboarding_after_language_routes_to_the_provider_picker() {
-    let mut app = create_test_app();
-    app.onboarding = OnboardingState::Language;
-    app.onboarding_needs_api_key = true;
-    app.status_message = Some("stale".to_string());
-
-    crate::tui::onboarding::advance_onboarding_after_language(&mut app);
-
-    assert_eq!(
-        app.onboarding,
-        OnboardingState::Provider,
-        "a first run picks the provider before it types a key"
-    );
-    assert_eq!(app.status_message, None);
-}
-
-#[test]
-fn onboarding_after_api_key_save_does_not_repeat_language_step() {
+fn onboarding_after_credentials_clears_the_gate_when_trusted() {
     let mut app = create_test_app();
     app.onboarding = OnboardingState::ApiKey;
     app.onboarding_needs_api_key = false;
     app.trust_mode = true;
     app.status_message = Some("saved".to_string());
 
-    crate::tui::onboarding::advance_onboarding_after_language(&mut app);
+    crate::tui::onboarding::advance_onboarding_after_credentials(&mut app);
 
-    assert_eq!(app.onboarding, OnboardingState::Tips);
+    assert_eq!(app.onboarding, OnboardingState::None);
     assert_eq!(app.status_message, None);
 }
 
 #[test]
-fn onboarding_after_api_key_save_routes_to_trust_when_needed() {
+fn onboarding_after_credentials_routes_to_trust_when_needed() {
     let tmpdir = TempDir::new().expect("tempdir");
     let mut app = create_test_app();
     app.workspace = tmpdir.path().to_path_buf();
@@ -4150,7 +4133,7 @@ fn onboarding_after_api_key_save_routes_to_trust_when_needed() {
     app.onboarding_needs_api_key = false;
     app.trust_mode = false;
 
-    crate::tui::onboarding::advance_onboarding_after_language(&mut app);
+    crate::tui::onboarding::advance_onboarding_after_credentials(&mut app);
 
     assert_eq!(app.onboarding, OnboardingState::TrustDirectory);
 }

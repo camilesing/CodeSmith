@@ -10,6 +10,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use anyhow::{Context, Result};
+
 use crate::utils::effective_home_dir;
 
 /// Canonicalize a path, falling back to the original on failure (e.g. the
@@ -106,4 +108,84 @@ pub fn is_workspace_trusted(workspace: &Path) -> bool {
         return false;
     };
     workspace_trust_level_from_doc(&doc, workspace).is_some_and(is_trusted_level)
+}
+
+/// Write `trust_level = "trusted"` for `workspace` into a parsed config
+/// document. The pure half of [`save_workspace_trust`], so callers already
+/// editing the config file (the CLI first-run wizard) can batch the trust
+/// write into their own single write.
+pub fn apply_workspace_trust(doc: &mut toml::Value, workspace: &Path) -> Result<()> {
+    let root = doc
+        .as_table_mut()
+        .context("Config root must be a TOML table.")?;
+    let projects = root
+        .entry("projects".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()))
+        .as_table_mut()
+        .context("`projects` must be a table.")?;
+    let project = projects
+        .entry(workspace_config_key(workspace))
+        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()))
+        .as_table_mut()
+        .context("Project entry must be a table.")?;
+    project.insert(
+        "trust_level".to_string(),
+        toml::Value::String("trusted".to_string()),
+    );
+    Ok(())
+}
+
+/// Persist workspace trust into the CodeSmith config file via a raw TOML
+/// merge that preserves every unrelated field. Moved from the TUI's
+/// `config.rs` (same behavior byte-for-byte) so the CLI first-run wizard
+/// performs the identical write; the TUI re-exports this path.
+pub fn save_workspace_trust(workspace: &Path) -> Result<PathBuf> {
+    let config_path = default_config_path()
+        .context("Failed to resolve config path: home directory not found.")?;
+    ensure_parent_dir_private(&config_path)?;
+
+    let mut doc = if config_path.exists() {
+        let raw = fs::read_to_string(&config_path)?;
+        toml::from_str::<toml::Value>(&raw)
+            .with_context(|| format!("Failed to parse config at {}", config_path.display()))?
+    } else {
+        toml::Value::Table(toml::value::Table::new())
+    };
+    apply_workspace_trust(&mut doc, workspace)?;
+
+    let serialized = toml::to_string_pretty(&doc).context("failed to serialize updated config")?;
+    codesmith_config::write_config_file_private(&config_path, &serialized)
+        .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
+    Ok(config_path)
+}
+
+/// `create_dir_all` on the parent plus a best-effort Unix tightening of
+/// group/other bits. Mirrors the TUI's `ensure_parent_dir`: filesystems that
+/// reject chmod (Docker bind-mounts of NTFS, network shares — #897) only get
+/// a warning; the directory already exists by then, so the write continues.
+fn ensure_parent_dir_private(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = fs::metadata(parent) {
+                let mode = meta.permissions().mode();
+                if mode & 0o077 != 0 {
+                    let mut perms = meta.permissions();
+                    perms.set_mode(mode & !0o077);
+                    if let Err(err) = fs::set_permissions(parent, perms) {
+                        tracing::warn!(
+                            path = %parent.display(),
+                            error = %err,
+                            "could not tighten parent dir permissions; \
+                             filesystem may not support Unix chmod. Continuing."
+                        );
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }

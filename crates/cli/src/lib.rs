@@ -1,4 +1,5 @@
 mod metrics;
+mod onboarding;
 mod update;
 
 use std::io::{self, Read, Write};
@@ -736,6 +737,9 @@ fn run() -> Result<()> {
         }
         Some(Commands::Update(args)) => update::run_update(args.beta, args.check, args.proxy),
         None => {
+            // First-run onboarding runs as plain CLI questions before the
+            // TUI takes over (the wizard screens no longer exist there).
+            onboarding::maybe_run(&mut store, &cli)?;
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             let forwarded = root_tui_passthrough(&cli)?;
             delegate_to_tui(&cli, &resolved_runtime, forwarded)

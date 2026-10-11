@@ -2828,9 +2828,6 @@ async fn run_event_loop(
                     // Paste into API key input
                     app.insert_api_key_str(text);
                     onboarding::sync_api_key_validation_status(app, false);
-                } else if app.onboarding == OnboardingState::Endpoint {
-                    // Paste into the custom endpoint URL input
-                    app.insert_onboarding_endpoint_str(text);
                 } else if app.is_history_search_active() {
                     app.history_search_insert_str(text);
                 } else if app.view_stack.handle_paste(text) {
@@ -3029,146 +3026,14 @@ async fn run_event_loop(
                 continue;
             }
 
-            // Handle onboarding flow
+            // Handle onboarding gates (credential / workspace trust)
             if app.onboarding != OnboardingState::None {
                 match key.code {
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         let _ = engine_handle.send(Op::Shutdown).await;
                         return Ok(());
                     }
-                    KeyCode::Esc if app.onboarding == OnboardingState::ApiKey => {
-                        // Back one step: the endpoint screen (generic routes
-                        // only) or the provider picker precedes the key screen.
-                        app.onboarding = if crate::config::provider_supports_custom_endpoint(
-                            app.onboarding_provider(),
-                        ) {
-                            OnboardingState::Endpoint
-                        } else {
-                            app.refresh_onboarding_provider_rows(config);
-                            OnboardingState::Provider
-                        };
-                        app.api_key_input.clear();
-                        app.api_key_cursor = 0;
-                        app.status_message = None;
-                    }
-                    KeyCode::Esc if app.onboarding == OnboardingState::Endpoint => {
-                        app.refresh_onboarding_provider_rows(config);
-                        app.onboarding = OnboardingState::Provider;
-                        app.onboarding_endpoint_input.clear();
-                        app.status_message = None;
-                    }
-                    KeyCode::Esc if app.onboarding == OnboardingState::Provider => {
-                        app.onboarding = OnboardingState::Language;
-                        app.status_message = None;
-                    }
-                    KeyCode::Esc if app.onboarding == OnboardingState::Language => {
-                        app.onboarding = OnboardingState::Welcome;
-                        app.status_message = None;
-                    }
-                    // Provider picker navigation. No modal is involved, so the
-                    // wizard owns these keys while its picker is on screen.
-                    KeyCode::Up if app.onboarding == OnboardingState::Provider => {
-                        app.move_onboarding_provider(-1);
-                    }
-                    KeyCode::Down if app.onboarding == OnboardingState::Provider => {
-                        app.move_onboarding_provider(1);
-                    }
-                    KeyCode::Char('k' | 'K')
-                        if app.onboarding == OnboardingState::Provider
-                            && key.modifiers == KeyModifiers::NONE =>
-                    {
-                        app.move_onboarding_provider(-1);
-                    }
-                    KeyCode::Char('j' | 'J')
-                        if app.onboarding == OnboardingState::Provider
-                            && key.modifiers == KeyModifiers::NONE =>
-                    {
-                        app.move_onboarding_provider(1);
-                    }
-                    // Language picker hotkeys select + persist (#566).
-                    //
-                    // Note: this used to be a single match-guard with `&& let`,
-                    // but `if_let_guard` is a nightly-only feature on Rust
-                    // before 1.94. Rewriting as a plain guard + nested `if let`
-                    // keeps `cargo install` working on stable.
-                    KeyCode::Char(c)
-                        if app.onboarding == OnboardingState::Language && c.is_ascii_digit() =>
-                    {
-                        if let Some((_, tag, _, _)) = onboarding::language::LANGUAGE_OPTIONS
-                            .iter()
-                            .find(|(hotkey, _, _, _)| *hotkey == c)
-                        {
-                            match app.set_locale_from_onboarding(tag) {
-                                Ok(()) => {
-                                    app.push_status_toast(
-                                        format!("Language set to {tag}"),
-                                        StatusToastLevel::Info,
-                                        Some(2_500),
-                                    );
-                                    onboarding::advance_onboarding_after_language(app);
-                                }
-                                Err(err) => {
-                                    app.status_message =
-                                        Some(format!("Failed to save locale: {err}"));
-                                }
-                            }
-                        }
-                    }
                     KeyCode::Enter => match app.onboarding {
-                        OnboardingState::Welcome => {
-                            onboarding::advance_onboarding_from_welcome(app);
-                        }
-                        OnboardingState::Language => {
-                            // Enter without a digit pick keeps the existing
-                            // setting (which defaults to "auto").
-                            onboarding::advance_onboarding_after_language(app);
-                        }
-                        OnboardingState::Provider => {
-                            let provider = app.onboarding_provider();
-                            if crate::config::provider_supports_custom_endpoint(provider) {
-                                // The generic routes (OpenAI-compatible
-                                // gateways, Anthropic-compatible proxies) ask
-                                // for their endpoint before any credential.
-                                app.begin_onboarding_endpoint(config, provider);
-                            } else {
-                                continue_onboarding_after_provider(app, &mut engine_handle, config)
-                                    .await;
-                            }
-                        }
-                        OnboardingState::Endpoint => {
-                            let provider = app.onboarding_provider();
-                            let url = app.onboarding_endpoint_input.trim().to_string();
-                            if !url.is_empty() {
-                                match onboarding::validate_endpoint_url_for_onboarding(&url) {
-                                    onboarding::InputValidation::Reject(message) => {
-                                        app.status_message = Some(message);
-                                        continue;
-                                    }
-                                    onboarding::InputValidation::Accept { warning } => {
-                                        match crate::config::save_provider_base_url_for(
-                                            provider, &url,
-                                        ) {
-                                            Ok(path) => {
-                                                mirror_provider_base_url(config, provider, &url);
-                                                app.push_status_toast(
-                                                    format!("Endpoint saved to {}", path.display()),
-                                                    StatusToastLevel::Info,
-                                                    Some(4_000),
-                                                );
-                                                app.status_message = warning;
-                                            }
-                                            Err(err) => {
-                                                app.status_message =
-                                                    Some(format!("Failed to save endpoint: {err}"));
-                                                continue;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            continue_onboarding_after_provider(app, &mut engine_handle, config)
-                                .await;
-                        }
                         OnboardingState::ApiKey => {
                             let provider = app.onboarding_provider();
                             let key = app.api_key_input.trim().to_string();
@@ -3182,11 +3047,10 @@ async fn run_event_loop(
                                 Ok(saved) => {
                                     // Surface where the key landed so the
                                     // user can verify the shared config
-                                    // file path before the welcome
-                                    // screen advances. The toast queue
-                                    // outlives the onboarding state
-                                    // transition, so it stays visible on
-                                    // the next screen too.
+                                    // file path before the gate clears. The
+                                    // toast queue outlives the onboarding
+                                    // state transition, so it stays visible
+                                    // on the next screen too.
                                     app.push_status_toast(
                                         format!("API key saved to {}", saved.describe()),
                                         StatusToastLevel::Info,
@@ -3205,7 +3069,7 @@ async fn run_event_loop(
                                     )
                                     .await
                                     {
-                                        onboarding::advance_onboarding_after_language(app);
+                                        onboarding::advance_onboarding_after_credentials(app);
                                     }
                                 }
                                 Err(e) => {
@@ -3214,9 +3078,6 @@ async fn run_event_loop(
                             }
                         }
                         OnboardingState::TrustDirectory => {}
-                        OnboardingState::Tips => {
-                            app.finish_onboarding();
-                        }
                         OnboardingState::None => {}
                     },
                     KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Char('1')
@@ -3229,12 +3090,8 @@ async fn run_event_loop(
                                     "Workspace trusted. Restart CodeSmith to apply project config and .env."
                                         .to_string(),
                                 );
-                                if app.onboarding_workspace_trust_gate {
-                                    app.onboarding_workspace_trust_gate = false;
-                                    app.onboarding = OnboardingState::None;
-                                } else {
-                                    app.onboarding = OnboardingState::Tips;
-                                }
+                                app.onboarding_workspace_trust_gate = false;
+                                app.onboarding = OnboardingState::None;
                                 // §F5 — `ProjectTrust { FirstLoad }`: the onboarding
                                 // trust-accept is the once-per-session site, distinct
                                 // from the per-turn `Trusted`/`Untrusted` emits in
@@ -3290,28 +3147,6 @@ async fn run_event_loop(
                     {
                         app.insert_api_key_char(c);
                         onboarding::sync_api_key_validation_status(app, false);
-                    }
-                    // Endpoint URL entry: append/backspace only (paste is the
-                    // primary path), so no cursor bookkeeping is needed.
-                    KeyCode::Backspace if app.onboarding == OnboardingState::Endpoint => {
-                        app.delete_onboarding_endpoint_char();
-                    }
-                    KeyCode::Char('h')
-                        if key_shortcuts::is_ctrl_h_backspace(&key)
-                            && app.onboarding == OnboardingState::Endpoint =>
-                    {
-                        app.delete_onboarding_endpoint_char();
-                    }
-                    _ if key_shortcuts::is_paste_shortcut(&key)
-                        && app.onboarding == OnboardingState::Endpoint =>
-                    {
-                        app.paste_onboarding_endpoint_from_clipboard();
-                    }
-                    KeyCode::Char(c)
-                        if app.onboarding == OnboardingState::Endpoint
-                            && key_shortcuts::is_text_input_key(&key) =>
-                    {
-                        app.insert_onboarding_endpoint_char(c);
                     }
                     _ => {}
                 }
@@ -8373,35 +8208,6 @@ fn mirror_provider_base_url(config: &mut Config, provider: ApiProvider, base_url
     }
 }
 
-/// After the provider (and, for the generic routes, its endpoint) is settled:
-/// apply it now when a credential already resolves — an environment or config
-/// key, a self-hosted runtime, or, for a key-less Moonshot, a registered Kimi
-/// CLI OAuth credential — matching the `/provider` picker's list-stage
-/// precedence (an explicit key outranks a linked OAuth credential) — and
-/// otherwise collect the API key first.
-async fn continue_onboarding_after_provider(
-    app: &mut App,
-    engine_handle: &mut EngineHandle,
-    config: &mut Config,
-) {
-    let provider = app.onboarding_provider();
-    let applied = if crate::config::has_api_key_for(config, provider) {
-        apply_onboarding_provider_choice(app, engine_handle, config, provider).await
-    } else if provider == ApiProvider::Moonshot && crate::config::kimi_cli_credentials_present() {
-        apply_onboarding_provider_auth_mode(app, engine_handle, config, provider).await
-    } else {
-        app.api_key_input.clear();
-        app.api_key_cursor = 0;
-        app.status_message = None;
-        app.onboarding = OnboardingState::ApiKey;
-        return;
-    };
-
-    if applied {
-        onboarding::advance_onboarding_after_language(app);
-    }
-}
-
 /// Apply the provider picked in first-run onboarding.
 ///
 /// Starts the provider on the model that belongs to it
@@ -8468,39 +8274,6 @@ async fn apply_onboarding_provider_choice(
         app.status_message = Some(format!(
             "Could not switch to {}. The previous engine is still running; check `codesmith \
              auth status` and the provider's config in ~/.codesmith/config.toml.",
-            provider.as_str()
-        ));
-    }
-    applied
-}
-
-/// Link a registered Kimi CLI OAuth credential and switch, as the onboarding
-/// Moonshot row and the `/provider` picker both do. Same success signal as
-/// [`apply_onboarding_provider_choice`].
-async fn apply_onboarding_provider_auth_mode(
-    app: &mut App,
-    engine_handle: &mut EngineHandle,
-    config: &mut Config,
-    provider: ApiProvider,
-) -> bool {
-    let switched = apply_provider_picker_auth_mode(
-        app,
-        engine_handle,
-        config,
-        provider,
-        "kimi_oauth",
-        "Linked Kimi CLI OAuth",
-    )
-    .await;
-
-    let applied = switched && app.api_provider == provider;
-    if applied {
-        app.onboarding_needs_api_key = false;
-        app.offline_mode = false;
-    } else {
-        app.status_message = Some(format!(
-            "Could not switch to {}. The previous engine is still running; check the \
-             credential file Kimi CLI wrote and try again.",
             provider.as_str()
         ));
     }

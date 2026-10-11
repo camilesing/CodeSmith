@@ -340,23 +340,9 @@ impl Default for Settings {
 impl Settings {
     /// Get the settings file path
     pub fn path() -> Result<PathBuf> {
-        // Allow tests to override the settings directory via the same env var
-        // used for config (CODESMITH_CONFIG_PATH points at config.toml; the
-        // settings file lives as a sibling in the same directory).
-        if let Some(config_path) = codesmith_config::codesmith_env("CONFIG_PATH") {
-            let config_path = config_path.trim();
-            if !config_path.is_empty() {
-                let p = expand_path(config_path);
-                if let Some(parent) = p.parent() {
-                    return Ok(parent.join("settings.toml"));
-                }
-            }
-        }
-
-        let config_dir = dirs::config_dir()
-            .context("Failed to resolve config directory: not found.")?
-            .join("deepseek");
-        Ok(config_dir.join("settings.toml"))
+        // Shared with the CLI first-run wizard (language question) so the
+        // two binaries cannot drift on where settings live.
+        codesmith_agent_runtime::settings_file::settings_file_path()
     }
 
     /// Load settings from disk, or return defaults if not found

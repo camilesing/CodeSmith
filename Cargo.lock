@@ -919,6 +919,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "codesmith-agent",
+ "codesmith-agent-runtime",
  "codesmith-app-server",
  "codesmith-config",
  "codesmith-execpolicy",
@@ -934,6 +935,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "tokio",
+ "toml 0.9.11+spec-1.1.0",
  "tracing",
 ]
 
