@@ -182,7 +182,7 @@ impl VerifiedAnalyticsMetadata {
 impl std::fmt::Display for VerifiedAnalyticsMetadata {
     /// Render the verified value. This does **not** weaken the construction
     /// barrier (there is still no `From<String>`): it only lets display
-    /// consumers (e.g. `format!("{action}")` in the TUI) render a value that
+    /// consumers (e.g. `format!("{action}")` in the REPL) render a value that
     /// was already consciously constructed via [`verified`](Self::verified).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)

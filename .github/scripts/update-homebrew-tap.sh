@@ -34,7 +34,7 @@ sha() {
 
 # --- read checksums ---------------------------------------------------
 
-# Canonical dispatcher and TUI
+# The single codesmith binary
 readonly SHA_COD_MACOS_ARM="$(sha codesmith-macos-arm64)"
 readonly SHA_COD_MACOS_X64="$(sha codesmith-macos-x64)"
 readonly SHA_COD_LINUX_ARM="$(sha codesmith-linux-arm64)"
@@ -69,7 +69,6 @@ class Codesmith < Formula
     
   def install
     bin.install Dir["*"].first => "codesmith"
-    resource("tui").stage {  }
   end
 
   test do

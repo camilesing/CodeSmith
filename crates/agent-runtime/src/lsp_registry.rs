@@ -88,7 +88,7 @@ pub fn detect_language(path: &Path) -> Language {
 }
 
 /// Fixed default for "what executable + args do we run for `lang`?".
-/// Returns `None` when no LSP server is wired for that language. The TUI
+/// Returns `None` when no LSP server is wired for that language. The REPL
 /// config layer can override this dictionary at runtime.
 #[must_use]
 pub fn server_for(lang: Language) -> Option<(&'static str, &'static [&'static str])> {

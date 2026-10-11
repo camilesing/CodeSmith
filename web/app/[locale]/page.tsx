@@ -414,7 +414,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
             chart={
               isZh
                 ? `flowchart TD
-    A["用户输入<br/>(TUI · ratatui)"] -->|Op channel| B["Engine<br/>turn loop + tools"]
+    A["用户输入<br/>(REPL)"] -->|Op channel| B["Engine<br/>turn loop + tools"]
     B -->|HTTPS / SSE| C["DeepSeek API<br/>V4 family"]
     C -->|stream events| B
     B -->|tool call| T["read_file · edit_file · grep<br/>apply_patch · exec_shell<br/>mcp_&lt;server&gt;_&lt;tool&gt;"]
@@ -426,7 +426,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
     class C api;
     class T,P,S accent;`
                 : `flowchart TD
-    A["You type<br/>(TUI · ratatui)"] -->|Op channel| B["Engine<br/>turn loop + tools"]
+    A["You type<br/>(REPL)"] -->|Op channel| B["Engine<br/>turn loop + tools"]
     B -->|HTTPS / SSE| C["DeepSeek API<br/>V4 family"]
     C -->|stream events| B
     B -->|tool call| T["read_file · edit_file · grep<br/>apply_patch · exec_shell<br/>mcp_&lt;server&gt;_&lt;tool&gt;"]

@@ -10,4 +10,4 @@
 
 - [ ] Updated docs or comments as needed
 - [ ] Added or updated tests where relevant
-- [ ] Verified TUI behavior manually if UI changes
+- [ ] Verified REPL/CLI behavior manually if frontend changes

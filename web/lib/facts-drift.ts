@@ -137,11 +137,11 @@ function deriveLicense(licText: string): string | null {
 export async function deriveFactsFromRemote(ghToken?: string): Promise<RepoFacts | null> {
   const [cargo, configRs, sandboxFiles, npmPkg, licText, toolFiles, latestRelease] = await Promise.all([
     fetchText("Cargo.toml", ghToken),
-    fetchText("crates/tui/src/config.rs", ghToken),
-    fetchListing("crates/tui/src/sandbox", ghToken),
+    fetchText("crates/cli/src/config.rs", ghToken),
+    fetchListing("crates/agent-runtime/src/sandbox", ghToken),
     fetchText("npm/codesmith/package.json", ghToken),
     fetchText("LICENSE", ghToken),
-    fetchListing("crates/tui/src/tools", ghToken),
+    fetchListing("crates/cli/src/tools", ghToken),
     fetchLatestRelease(ghToken),
   ]);
 

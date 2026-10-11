@@ -36,7 +36,7 @@ The `codesmith` facade and `codesmith` binary share
 `~/.codesmith/config.toml` for DeepSeek auth and default model settings. Legacy
 `~/.deepseek/` installs are no longer read; migrate the directory to
 `~/.codesmith/`.
-Common TUI commands are available directly through the facade, including
+Common commands are available directly through the facade, including
 `codesmith doctor`, `codesmith models`, `codesmith sessions`, and
 `codesmith resume --last`.
 

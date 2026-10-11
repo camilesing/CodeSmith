@@ -1,4 +1,4 @@
-//! CLI entry point for the `codesmith-tui` binary (interactive TUI + subcommands).
+//! Entry point for the `codesmith` binary (interactive REPL + subcommands).
 #![allow(clippy::field_reassign_with_default)]
 #![allow(clippy::too_many_arguments)]
 
@@ -62,7 +62,7 @@ pub(crate) struct Cli {
     #[command(flatten)]
     pub(crate) feature_toggles: FeatureToggles,
 
-    /// Initial prompt to submit in the interactive TUI. Use `exec` for non-interactive runs.
+    /// Initial prompt to submit in the interactive REPL. Use `exec` for non-interactive runs.
     #[arg(short, long, value_name = "PROMPT", num_args = 1..)]
     pub(crate) prompt: Vec<String>,
 
@@ -230,7 +230,7 @@ The command prints the completion script to stdout; redirect it to a path your s
     Swebench(SwebenchArgs),
     /// Run a code review over a git diff
     Review(ReviewArgs),
-    /// Open the TUI pre-seeded with a GitHub PR's title, body, and diff (#451)
+    /// Open the REPL pre-seeded with a GitHub PR's title, body, and diff (#451)
     Pr {
         /// PR number
         #[arg(value_name = "NUMBER")]
@@ -931,13 +931,13 @@ pub(crate) enum SandboxCommand {
 pub(crate) async fn real_main() -> Result<()> {
     // Set up process panic hook before anything else — writes crash dumps
     // to ~/.codesmith/crashes/ even if the panic happens before tokio is up,
-    // and restores the terminal so a panicked TUI doesn't leave the user's
-    // shell stuck in alt-screen mode.
+    // and restores the terminal so a panicked frontend doesn't leave the user's
+    // shell stuck in a modified terminal mode.
     let orig_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
         // Restore the terminal first so the panic message itself, plus the
         // user's shell after exit, are visible. Best-effort — we may not be
-        // in raw / alt-screen mode if the panic happens pre-TUI. Shared
+        // in a modified terminal mode if the panic happens before startup. Shared
         // with the signal handler installed below so both exit paths leave
         // the terminal in the same well-defined state.
         restore_terminal_best_effort();

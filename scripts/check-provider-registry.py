@@ -6,7 +6,7 @@ the stable identifiers and default strings that are easy for docs to drift from:
 
 - canonical ProviderKind IDs
 - provider TOML tables
-- live TUI ApiProvider IDs
+- live ApiProvider IDs
 - shipped-provider table rows
 - static ModelRegistry provider rows
 - default provider model/base URL constants
@@ -22,8 +22,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_RS = ROOT / "crates" / "config" / "src" / "lib.rs"
 TUI_CONFIG_RS = ROOT / "crates" / "cli" / "src" / "config.rs"
-# The ApiProvider enum/impl moved to agent-runtime during the engine-closure
-# extraction; crates/tui/src/config.rs only re-exports it now.
+# The ApiProvider enum/impl lives in agent-runtime; the CLI's config.rs
+# re-exports it.
 AGENT_RUNTIME_CONFIG_RS = ROOT / "crates" / "agent-runtime" / "src" / "config_types.rs"
 AGENT_RS = ROOT / "crates" / "agent" / "src" / "lib.rs"
 PROVIDERS_MD = ROOT / "docs" / "PROVIDERS.md"
@@ -142,11 +142,11 @@ def model_registry_providers(agent_rs: str, variant_to_id: dict[str, str]) -> se
     return {variant_to_id[variant] for variant in variants}
 
 
-def default_strings(tui_config_rs: str) -> set[str]:
+def default_strings(cli_config_rs: str) -> set[str]:
     defaults = set()
     for name, value in re.findall(
         r'const\s+(DEFAULT_[A-Z0-9_]+(?:MODEL|BASE_URL)):\s*&str\s*=\s*"([^"]+)"',
-        tui_config_rs,
+        cli_config_rs,
     ):
         defaults.add(value)
     if not defaults:
@@ -204,7 +204,7 @@ def report_provider_enum_drift(
 def main() -> int:
     try:
         config_rs = read(CONFIG_RS)
-        tui_config_rs = read(TUI_CONFIG_RS)
+        cli_config_rs = read(TUI_CONFIG_RS)
         agent_runtime_config_rs = read(AGENT_RUNTIME_CONFIG_RS)
         agent_rs = read(AGENT_RS)
         providers_md = read(PROVIDERS_MD)
@@ -233,7 +233,7 @@ def main() -> int:
             static_registry_provider_rows(providers_md),
         )
 
-        missing_defaults = missing_default_strings(providers_md, default_strings(tui_config_rs))
+        missing_defaults = missing_default_strings(providers_md, default_strings(cli_config_rs))
         if missing_defaults:
             errors.append(
                 "docs/PROVIDERS.md does not mention default strings as Markdown code spans: "

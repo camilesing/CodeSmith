@@ -118,7 +118,7 @@ Next:
    sudo -iu ${CODESMITH_USER}
    cd ${WORKSPACE_ROOT}/codesmith
    cargo install --path crates/cli --locked --force
-   cargo install --path crates/tui --locked --force
+   cargo install --path crates/cli --locked --force
 3. Copy integrations/feishu-bridge to ${CODESMITH_ROOT}/bridge and run npm install.
 4. Edit /etc/codesmith/runtime.env and /etc/codesmith/feishu-bridge.env.
 5. Install systemd units with scripts/tencent-lighthouse/install-services.sh.

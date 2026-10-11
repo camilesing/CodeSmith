@@ -24,12 +24,10 @@ tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 cd "$tmpdir"
 curl -fsSL -O ${GITHUB_REPO_URL}/releases/latest/download/codesmith-${platform}
-curl -fsSL -O ${GITHUB_REPO_URL}/releases/latest/download/codesmith-tui-${platform}
 curl -fsSL -O ${GITHUB_REPO_URL}/releases/latest/download/codesmith-artifacts-sha256.txt
-grep -E 'codesmith(-tui)?-${platform}$' codesmith-artifacts-sha256.txt | ${checkCmd} -c -
-chmod +x codesmith-${platform} codesmith-tui-${platform}
-${isMac ? `xattr -d com.apple.quarantine codesmith-${platform} codesmith-tui-${platform} 2>/dev/null || true\n` : ""}sudo mv codesmith-${platform} /usr/local/bin/codesmith
-sudo mv codesmith-tui-${platform} /usr/local/bin/codesmith-tui
+grep -E "codesmith-${platform}$" codesmith-artifacts-sha256.txt | ${checkCmd} -c -
+chmod +x codesmith-${platform}
+${isMac ? `xattr -d com.apple.quarantine codesmith-${platform} 2>/dev/null || true\n` : ""}sudo mv codesmith-${platform} /usr/local/bin/codesmith
 )`;
 
 const SNIPPETS: Record<Arch, string> = {
@@ -50,12 +48,9 @@ Invoke-RestMethod ${GITHUB_REPO_URL}/releases/latest/download/codesmith-artifact
 Invoke-WebRequest \`
   -Uri ${GITHUB_REPO_URL}/releases/latest/download/codesmith-windows-x64.exe \`
   -OutFile "$dest\\codesmith.exe"
-Invoke-WebRequest \`
-  -Uri ${GITHUB_REPO_URL}/releases/latest/download/codesmith-tui-windows-x64.exe \`
-  -OutFile "$dest\\codesmith-tui.exe"
 
-# Verify both binaries against their manifest entries (abort on mismatch)
-foreach ($bin in @(@("codesmith.exe", "codesmith-windows-x64.exe"), @("codesmith-tui.exe", "codesmith-tui-windows-x64.exe"))) {
+# Verify the binary against its manifest entry (abort on mismatch)
+foreach ($bin in @(@("codesmith.exe", "codesmith-windows-x64.exe"))) {
   $actual = (Get-FileHash "$dest\\$($bin[0])" -Algorithm SHA256).Hash.ToLower()
   $line = (Select-String -Path $manifest -Pattern ([regex]::Escape($bin[1]) + '$')).Line
   if (-not $line) { throw "Manifest entry missing for $($bin[1])" }

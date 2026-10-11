@@ -4597,7 +4597,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-utility-model-env-test-{}-{}",
+            "codesmith-cli-utility-model-env-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -5578,7 +5578,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-first-run-config-{}-{}",
+            "codesmith-cli-first-run-config-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -5604,7 +5604,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-workspace-trust-{}-{}",
+            "codesmith-cli-workspace-trust-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -5642,7 +5642,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-existing-project-trust-{}-{}",
+            "codesmith-cli-existing-project-trust-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -5825,7 +5825,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-clear-{}-{}",
+            "codesmith-cli-clear-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -5881,7 +5881,7 @@ api_key = "old-openrouter-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-override-{}-{}",
+            "codesmith-cli-override-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -5907,7 +5907,7 @@ api_key = "old-openrouter-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-config-over-env-{}-{}",
+            "codesmith-cli-config-over-env-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -5932,7 +5932,7 @@ api_key = "old-openrouter-key"
     fn active_provider_detects_env_only_api_key() -> Result<()> {
         let _lock = lock_test_env();
         let temp_root =
-            env::temp_dir().join(format!("codesmith-tui-env-only-key-{}", std::process::id()));
+            env::temp_dir().join(format!("codesmith-cli-env-only-key-{}", std::process::id()));
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
 
@@ -5962,7 +5962,7 @@ api_key = "old-openrouter-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-sentinel-{}-{}",
+            "codesmith-cli-sentinel-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -5990,7 +5990,7 @@ api_key = "old-openrouter-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-fresh-home-test-{}-{}",
+            "codesmith-cli-fresh-home-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6027,7 +6027,7 @@ api_key = "old-openrouter-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-config-env-test-{}-{}",
+            "codesmith-cli-config-env-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6054,7 +6054,7 @@ api_key = "old-openrouter-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-tilde-test-{}-{}",
+            "codesmith-cli-tilde-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6083,7 +6083,7 @@ api_key = "old-openrouter-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-load-tilde-test-{}-{}",
+            "codesmith-cli-load-tilde-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6112,7 +6112,7 @@ api_key = "old-openrouter-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-load-fallback-test-{}-{}",
+            "codesmith-cli-load-fallback-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6187,7 +6187,7 @@ api_key = "old-openrouter-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-empty-key-{}-{}",
+            "codesmith-cli-empty-key-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6220,7 +6220,7 @@ api_key = "old-openrouter-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-env-key-not-config-{}-{}",
+            "codesmith-cli-env-key-not-config-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6493,7 +6493,7 @@ api_key = "old-openrouter-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-model-env-test-{}-{}",
+            "codesmith-cli-model-env-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6522,7 +6522,7 @@ api_key = "old-openrouter-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-http-headers-root-{}-{}",
+            "codesmith-cli-http-headers-root-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6586,7 +6586,7 @@ http_headers = { "X-Model-Provider-Id" = "tongyi" }
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-http-headers-env-{}-{}",
+            "codesmith-cli-http-headers-env-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6643,7 +6643,7 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-nim-model-alias-test-{}-{}",
+            "codesmith-cli-nim-model-alias-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6687,7 +6687,7 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-nim-env-test-{}-{}",
+            "codesmith-cli-nim-env-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6716,7 +6716,7 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-nim-base-url-alias-test-{}-{}",
+            "codesmith-cli-nim-base-url-alias-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6774,7 +6774,7 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-knob-precedence-test-{}-{}",
+            "codesmith-cli-knob-precedence-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6808,7 +6808,7 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-nim-forwarded-base-url-test-{}-{}",
+            "codesmith-cli-nim-forwarded-base-url-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6866,7 +6866,7 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-xiaomi-mimo-env-test-{}-{}",
+            "codesmith-cli-xiaomi-mimo-env-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6914,7 +6914,7 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-atlascloud-env-test-{}-{}",
+            "codesmith-cli-atlascloud-env-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6958,7 +6958,7 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-wanjie-env-test-{}-{}",
+            "codesmith-cli-wanjie-env-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -6988,7 +6988,7 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-wanjie-table-{}-{}",
+            "codesmith-cli-wanjie-table-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7027,7 +7027,7 @@ model = "account-model-id"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-anthropic-base-url-{}-{}",
+            "codesmith-cli-anthropic-base-url-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7062,7 +7062,7 @@ model = "account-model-id"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-openai-table-{}-{}",
+            "codesmith-cli-openai-table-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7106,7 +7106,7 @@ model = "glm-5"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-1714-passthrough-{}-{}",
+            "codesmith-cli-1714-passthrough-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7159,7 +7159,7 @@ model = "glm-5"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-openai-env-test-{}-{}",
+            "codesmith-cli-openai-env-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7197,7 +7197,7 @@ model = "glm-5"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-openai-custom-base-url-test-{}-{}",
+            "codesmith-cli-openai-custom-base-url-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7254,7 +7254,7 @@ model = "glm-5"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-openai-custom-base-url-model-test-{}-{}",
+            "codesmith-cli-openai-custom-base-url-model-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7305,7 +7305,7 @@ model = "glm-5"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-openai-forwarded-base-url-test-{}-{}",
+            "codesmith-cli-openai-forwarded-base-url-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7339,7 +7339,7 @@ model = "glm-5"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-or-defaults-{}-{}",
+            "codesmith-cli-or-defaults-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7365,7 +7365,7 @@ model = "glm-5"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-novita-defaults-{}-{}",
+            "codesmith-cli-novita-defaults-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7391,7 +7391,7 @@ model = "glm-5"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-fireworks-defaults-{}-{}",
+            "codesmith-cli-fireworks-defaults-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7417,7 +7417,7 @@ model = "glm-5"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-sglang-defaults-{}-{}",
+            "codesmith-cli-sglang-defaults-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7445,7 +7445,7 @@ model = "glm-5"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-ollama-defaults-{}-{}",
+            "codesmith-cli-ollama-defaults-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7473,7 +7473,7 @@ model = "glm-5"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-ollama-model-test-{}-{}",
+            "codesmith-cli-ollama-model-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7507,7 +7507,7 @@ model = "qwen2.5-coder:7b"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-self-hosted-base-url-test-{}-{}",
+            "codesmith-cli-self-hosted-base-url-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7542,7 +7542,7 @@ model = "qwen2.5-coder:7b"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-vllm-lan-http-test-{}-{}",
+            "codesmith-cli-vllm-lan-http-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7571,7 +7571,7 @@ model = "qwen2.5-coder:7b"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-ollama-env-test-{}-{}",
+            "codesmith-cli-ollama-env-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7600,7 +7600,7 @@ model = "qwen2.5-coder:7b"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-or-env-key-{}-{}",
+            "codesmith-cli-or-env-key-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7627,7 +7627,7 @@ model = "qwen2.5-coder:7b"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-novita-env-key-{}-{}",
+            "codesmith-cli-novita-env-key-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7654,7 +7654,7 @@ model = "qwen2.5-coder:7b"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-siliconflow-env-test-{}-{}",
+            "codesmith-cli-siliconflow-env-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7685,7 +7685,7 @@ model = "qwen2.5-coder:7b"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-siliconflow-cn-env-test-{}-{}",
+            "codesmith-cli-siliconflow-cn-env-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7716,7 +7716,7 @@ model = "qwen2.5-coder:7b"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-or-base-url-{}-{}",
+            "codesmith-cli-or-base-url-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7743,7 +7743,7 @@ model = "qwen2.5-coder:7b"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-or-table-{}-{}",
+            "codesmith-cli-or-table-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7777,7 +7777,7 @@ base_url = "https://or-table.example/v1"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-siliconflow-table-{}-{}",
+            "codesmith-cli-siliconflow-table-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7812,7 +7812,7 @@ model = "deepseek-v4-flash"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-or-custom-model-{}-{}",
+            "codesmith-cli-or-custom-model-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7848,7 +7848,7 @@ model = "DeepSeek-V4-Pro"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-novita-table-{}-{}",
+            "codesmith-cli-novita-table-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7881,7 +7881,7 @@ api_key = "novita-table-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-kimi-oauth-key-{}-{}",
+            "codesmith-cli-kimi-oauth-key-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7939,7 +7939,7 @@ api_key = "stale-api-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-kimi-code-key-{}-{}",
+            "codesmith-cli-kimi-code-key-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -7978,7 +7978,7 @@ base_url = "https://api.kimi.com/coding/v1"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-kimi-code-env-url-{}-{}",
+            "codesmith-cli-kimi-code-env-url-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -8021,7 +8021,7 @@ api_key = "kimi-code-env-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-kimi-code-root-model-{}-{}",
+            "codesmith-cli-kimi-code-root-model-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -8063,7 +8063,7 @@ base_url = "https://api.kimi.com/coding/v1"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-kimi-code-cw-env-{}-{}",
+            "codesmith-cli-kimi-code-cw-env-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -8105,7 +8105,7 @@ base_url = "https://api.kimi.com/coding/v1"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-moonshot-platform-{}-{}",
+            "codesmith-cli-moonshot-platform-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -8139,7 +8139,7 @@ api_key = "moonshot-platform-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-has-key-{}-{}",
+            "codesmith-cli-has-key-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -8208,7 +8208,7 @@ api_key = "moonshot-platform-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-has-key-cn-{}-{}",
+            "codesmith-cli-has-key-cn-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -8247,7 +8247,7 @@ api_key = "moonshot-platform-key"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-nim-provider-table-test-{}-{}",
+            "codesmith-cli-nim-provider-table-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -8286,7 +8286,7 @@ model = "deepseek-v4-pro"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-nim-root-key-precedence-test-{}-{}",
+            "codesmith-cli-nim-root-key-precedence-test-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -8513,7 +8513,7 @@ model = "deepseek-ai/deepseek-v4-pro"
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codesmith-tui-vision-supported-test-{}-{}",
+            "codesmith-cli-vision-supported-test-{}-{}",
             std::process::id(),
             nanos
         ));

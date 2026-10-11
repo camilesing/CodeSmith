@@ -1,11 +1,11 @@
 //! Background task data types shared across run-forms.
 //!
-//! The unified lifecycle/registry layer stays in the TUI (it bridges
+//! The unified lifecycle/registry layer stays in the CLI (it bridges
 //! `ShellManager` / `SubAgentManager` / `TaskManager`, which are still
-//! TUI-local). These plain data types — `BackgroundTaskType`,
+//! CLI-local). These plain data types — `BackgroundTaskType`,
 //! `BackgroundTaskStatus`, `BackgroundTaskNotification`,
 //! `BackgroundTaskSummary` — plus the notification formatter move here so the
-//! `Event` protocol (and other run-forms) can reference them without a TUI
+//! `Event` protocol (and other run-forms) can reference them without a CLI
 //! dependency.
 
 use chrono::{DateTime, Utc};
@@ -121,7 +121,7 @@ pub struct BackgroundTaskSummary {
 /// Result of a single background-task poll: the status transition + any output
 /// delta produced since the last poll. Plain data so the host poller (and the
 /// engine core once moved) can consume it without depending on the concrete
-/// `BackgroundTaskRegistry`, which stays in the TUI.
+/// `BackgroundTaskRegistry`, which stays in the CLI.
 #[derive(Debug, Clone)]
 pub struct BackgroundTaskPollResult {
     pub task_id: String,

@@ -3,7 +3,7 @@
 //! The engine core (once moved to `codesmith-agent-runtime`) must not depend
 //! on terminal-coupled service types — the TUI's `LspManager` (which drives
 //! LSP server processes), `SharedShellManager`, `SharedSubAgentManager`,
-//! `SharedBackgroundTaskRegistry`, `SeamManager`, etc. These stay in the TUI
+//! `SharedBackgroundTaskRegistry`, `SeamManager`, etc. These stay in the CLI
 //! (or a future app-server host) and are injected behind the traits in this
 //! module.
 //!

@@ -7,12 +7,9 @@
  *
  * Sources of truth:
  *   - <repo>/Cargo.toml                         → version, workspace crates
- *   - <repo>/crates/tui/src/sandbox/*.rs             → sandbox backends
- *   - <repo>/crates/tui/src/main.rs                  → provider list (--provider arms)
+ *   - <repo>/crates/agent-runtime/src/sandbox/*.rs  → sandbox backends
  *   - <repo>/crates/agent-runtime/src/config_types.rs → ApiProvider enum (provider list)
  *   - <repo>/crates/agent-runtime/src/compaction/mod.rs → DEFAULT_TEXT_MODEL
- *      (crates/tui/src/config.rs only re-exports these since the engine-closure
- *      extraction moved them to agent-runtime)
  *   - <repo>/npm/codesmith/package.json         → node engines
  */
 import { readFileSync, readdirSync, writeFileSync, existsSync } from "node:fs";
@@ -44,12 +41,12 @@ function deriveCrates() {
 }
 
 function deriveSandboxBackends() {
-  const dir = join(REPO_ROOT, "crates/tui/src/sandbox");
+  const dir = join(REPO_ROOT, "crates/agent-runtime/src/sandbox");
   if (!existsSync(dir)) return [];
   const files = readdirSync(dir)
     .filter((f) => f.endsWith(".rs"))
     .map((f) => f.replace(/\.rs$/, ""))
-    .filter((f) => !["mod", "policy", "backend", "opensandbox", "windows"].includes(f))
+    .filter((f) => !["mod", "process_hardening", "windows"].includes(f))
     .sort();
   // canonicalize platform names
   const map = { seatbelt: "seatbelt (macOS)", landlock: "landlock (Linux)" };
@@ -57,10 +54,9 @@ function deriveSandboxBackends() {
 }
 
 function deriveProviders() {
-  // Source of truth: the ApiProvider enum in agent-runtime config_types.rs
-  // (crates/tui/src/config.rs only re-exports it since the engine-closure
-  // extraction). DeepseekCN no longer exists as a variant — it was folded
-  // onto Deepseek (§B3 slice 52), so no exclusion is needed.
+  // Source of truth: the ApiProvider enum in agent-runtime config_types.rs.
+  // DeepseekCN no longer exists as a variant — it was folded onto Deepseek
+  // (§B3 slice 52), so no exclusion is needed.
   const cfg = read("crates/agent-runtime/src/config_types.rs");
   if (!cfg) return [];
   const enumBlock = cfg.match(/pub enum ApiProvider \{([\s\S]*?)\}/);
@@ -88,8 +84,8 @@ function deriveProviders() {
 }
 
 function deriveDefaultModel() {
-  // DEFAULT_TEXT_MODEL moved to agent-runtime's compaction module; tui/config.rs
-  // only re-exports it (a loose grep there would capture a neighboring const's value).
+  // DEFAULT_TEXT_MODEL lives in agent-runtime's compaction module (a loose
+  // grep over re-exports elsewhere would capture a neighboring const's value).
   const cfg = read("crates/agent-runtime/src/compaction/mod.rs");
   if (!cfg) return null;
   const m = cfg.match(/pub const DEFAULT_TEXT_MODEL:\s*&str\s*=\s*"([^"]+)"/);
@@ -107,7 +103,7 @@ function deriveNodeEngines() {
 }
 
 function deriveToolCount() {
-  const dir = join(REPO_ROOT, "crates/tui/src/tools");
+  const dir = join(REPO_ROOT, "crates/cli/src/tools");
   if (!existsSync(dir)) return null;
   let count = 0;
   for (const f of readdirSync(dir)) {
