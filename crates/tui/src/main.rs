@@ -5560,6 +5560,29 @@ async fn run_interactive(
     // `CODESMITH_YOLO` (config.yolo) is not a CLI flag. Honour either.
     let yolo = cli.yolo || config.yolo.unwrap_or(false);
 
+    // A marker-less clean start — e.g. a subcommand first-run whose
+    // credential comes from the environment, or a direct `codesmith-tui`
+    // launch, paths that bypass the dispatcher's CLI wizard — records
+    // onboarding here so the wizard does not re-run on the next bare
+    // `codesmith`. Lives in `run_interactive` (not `App::new`) so unit
+    // tests never touch the real home marker. The credential check mirrors
+    // `App::new`: the settings-pinned provider outranks the config file.
+    if !cli.skip_onboarding && !crate::tui::onboarding::is_onboarded() {
+        let mut effective = config.clone();
+        if let Some(provider_str) = crate::settings::Settings::load()
+            .ok()
+            .and_then(|settings| settings.default_provider)
+            && let Some(parsed) = crate::config::ApiProvider::parse(&provider_str)
+        {
+            effective.provider = Some(parsed.as_str().to_string());
+        }
+        let clean = crate::config::has_api_key(&effective)
+            && (yolo || !crate::tui::onboarding::needs_trust(&workspace));
+        if clean && let Err(err) = crate::tui::onboarding::mark_onboarded() {
+            tracing::warn!("failed to mark onboarding on clean start: {err}");
+        }
+    }
+
     tui::run_tui(
         config,
         tui::TuiOptions {

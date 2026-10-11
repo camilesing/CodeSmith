@@ -1880,15 +1880,9 @@ impl App {
             initial_mode != AppMode::Yolo && crate::tui::onboarding::needs_trust(&workspace);
         let onboarding =
             initial_onboarding_state(skip_onboarding, needs_api_key, needs_workspace_trust);
-        // A clean start without the `.onboarded` marker (e.g. a direct
-        // `codesmith-tui` launch with an env-var credential — the dispatcher
-        // normally completes onboarding on the CLI first) marks it here so
-        // the gates do not re-run on every launch.
-        if onboarding == OnboardingState::None && !was_onboarded {
-            if let Err(err) = crate::tui::onboarding::mark_onboarded() {
-                tracing::warn!("failed to mark onboarding on clean start: {err}");
-            }
-        }
+        // A marker-less clean start is recorded by `run_interactive`, not
+        // here: `App::new` runs under unit tests, and the marker lives in
+        // the real home directory with no test override.
         let onboarding_workspace_trust_gate = onboarding_is_workspace_trust_gate(
             skip_onboarding,
             was_onboarded,
