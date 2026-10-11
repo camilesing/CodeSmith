@@ -288,8 +288,7 @@ mod tests {
     /// "HELLO OCR" rendered in Helvetica) and is committed for the
     /// happy-path round-trip below.
     fn ocr_fixture_path() -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../tui/tests/fixtures/ocr_hello.png")
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ocr_hello.png")
     }
 
     #[test]
