@@ -193,6 +193,10 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
   the `~/.codesmith/tui.toml` preferences file. Turn notifications remain
   available through the model-callable `notify` tool. Unknown keys in old
   config files are ignored on load.
+- The `KEYBINDINGS` and `ACCESSIBILITY` guide pairs under `docs/` — the
+  line-based REPL uses the terminal's native editing keys and scrollback,
+  so there is no custom keymap or screen-reader interaction surface to
+  document.
 
 ## [0.1.0] - 2026-08-25
 

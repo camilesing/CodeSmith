@@ -5,7 +5,7 @@ CodeSmith 扩展是编译内置或从安装根以 dylib 加载的模块，它们
 > **脚本 Mod。** 同一 `Extension` 契约也由 Rhai 脚本 **Mod** 实现（`~/.codesmith/mods/<id>/mod.toml` + `mod.rhai`）—— 无需编译 Rust 即可获得钩子、工具、斜杠命令与持久 KV，首次激活门控并支持热重载。它们运行在本文档描述的同一套 runner / 接缝 / 重载机制之上。作者指南：[MODS_cn.md](MODS_cn.md)。
 
 宿主在引擎构建时（`build_extension_runtime()`，位于
-`crates/tui/src/core/engine.rs`）组装扩展运行时，并在每次
+`crates/cli/src/core/engine.rs`）组装扩展运行时，并在每次
 `/extension reload` 时重新组装：发现编译内置注册（`inventory`）+
 dylib 源（安装根）→ 与磁盘上的 `ExtensionStateStore` 对账（跳过
 已禁用的）→ 针对一个 stub api 逐个加载并配置 → `bind_core` 宿主
@@ -48,8 +48,8 @@ dylib 源（安装根）→ 与磁盘上的 `ExtensionStateStore` 对账（跳�
   它由日志重建。
 - **技能（`register_skill`）** —— 会话技能目录中的一个内存技能
   （Rhai 形态：`register_skill(spec)`，字段 `name` / `description` /
-  `body` / 可选 `when_to_use`）：系统提示词 `## Skills` 块、`/skills`、
-  命令面板与按名的 `load_skill` 均可见，来源归因 `mod: <owner>`。
+  `body` / 可选 `when_to_use`）：系统提示词 `## Skills` 块、`/skills`
+  与按名的 `load_skill` 均可见，来源归因 `mod: <owner>`。
   名字与文件系统目录冲突时文件系统获胜；名字已被其他 mod 持有则加载
   失败；≤16 个；reload 清除该 generation 的注册。注册技能不带
   `paths`（不参与条件匹配），子代理不渲染技能目录。
@@ -64,7 +64,7 @@ dylib 源（安装根）→ 与磁盘上的 `ExtensionStateStore` 对账（跳�
 ### 工具目录：`ToolsChange` + 能力清单
 
 回合分发器将编译后的模型可见目录与上一主回合基线做差量（来源分类
-快照见 `tui/src/core/tool_catalog.rs`），发出仅观察的
+快照见 `cli/src/core/tool_catalog.rs`），发出仅观察的
 `ToolsChange { added, removed }`；`/tools` 按来源分组展示当前基线。
 首次构建静默建立基线；子代理工具集走独立路径（`spawn_subagent`），
 不会让基线来回翻转。
@@ -88,11 +88,11 @@ config.toml 的 `[tools].overrides <name> = { type = "disabled" }` 形态
 `build_extension_runtime()` 在引擎构建时调用一次
 `codesmith_extensions::discover_static()`。
 
-## TUI 内管理器
+## REPL 内管理器
 
-`/extension` 命令组是面向用户的界面。它通过
-`extension_commands::try_dispatch` 分发，接入到 `execute()` 中用户
-自定义命令与静态 `match` 之间。
+`/extension` 命令组是面向用户的界面。它从 REPL 命令表
+（`crates/cli/src/interactive/commands/`）分发，接入到 `execute()` 中，
+与静态 `match` 并列。
 
 | 子命令 | 别名 | 效果 |
 |---|---|---|
@@ -301,12 +301,12 @@ async fn configure(api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
 | `AgentSettled` | `engine/mod.rs` 运行后排空（容量应用之后） | observe | — |
 | `SessionBeforeCompact` | `host_executor::run_compaction` 在 `should_compact` 门控之后 | **Cancel** | 跳过压缩（`return`） |
 | `SessionCompact` | `host_executor::run_compaction` 在摘要应用之后 | observe | — |
-| `SessionBeforeSwitch` | `tui/ui.rs` `switch_workspace` 入口 | **Cancel** | 中止工作区切换 |
-| `ProjectTrust` | `HostServices::build_turn_dispatcher`（+ `spawn_subagent`）在 `build_tool_context_for` 之后（每轮 `Trusted`/`Untrusted`）；onboarding 信任接受时 `tui/ui.rs` `TrustDirectory` y/Y/1 分支在 `app.trust_mode = true` 之后（`FirstLoad`） | observe | 来自 `session.trust_mode` 的每轮 `Trusted`/`Untrusted`；`FirstLoad` 在每次 onboarding 信任接受时触发一次（`TrustReason::FirstLoad`）—— 不同于运行时 `trust_mode` 开关（`/trust on`）、YOLO 进入和持久化信任启动，后者在每轮表现为 `Trusted`/`Untrusted`，而不是 `FirstLoad` |
+| `SessionBeforeSwitch` | —（无 emit 位点） | **Cancel** | 能力保留但当前从不发出：进程内工作区切换随 TUI 在 0.9.0 移除（`/workspace` 改为提示重启） |
+| `ProjectTrust` | `HostServices::build_turn_dispatcher`（`crates/cli/src/core/engine/runtime_traits.rs`；+ `spawn_subagent`）在 `build_tool_context_for` 之后（每轮 `Trusted`/`Untrusted`）；`FirstLoad` 当前无 emit 位点 —— onboarding 信任提示的发出随 TUI 在 0.9.0 移除 | observe | 来自 `session.trust_mode` 的每轮 `Trusted`/`Untrusted`；`FirstLoad` 为 onboarding 信任接受（`TrustReason::FirstLoad`）而定义，但已无活跃 emit 位点 —— 运行时 `trust_mode` 开关（`/trust on`）、YOLO 进入和持久化信任启动在每轮表现为 `Trusted`/`Untrusted`，而不是 `FirstLoad` |
 | `ToolsChange { added, removed }` | `HostServices::build_turn_dispatcher` 在所有选择源应用之后 | observe | 最终模型可见目录与上一主回合基线的差量；首次构建静默建立基线；子代理工具集不经过此接缝 |
-| `—`（dylib LOAD，不是事件） | `populate_extension_runtime`（`tui/src/core/engine.rs`）在 `discover_static` 之后 | n/a（加载阶段） | `discover_dylib(&global_roots, &project_roots)` → `apply_trust_gate(discovered, !is_workspace_trusted(workspace))` 丢弃项目本地（`global == false`）→ `state.is_enabled` 对账 → 在 OS 线程加载运行时上执行 `ExtensionRunner::load_dylib`；重载经 `reload_extension_runtime`→`populate` 拾取。`ExtensionRunner.libraries` 持有 `Library` 句柄；在 `/extension reload` 时它们 `drain_libraries_to_pending` 到 `pending_drop`（与各 clear 一并执行）+ 引擎 op-loop 在下一个轮边界对它们执行 `drop_pending`。经 `codesmith_register_extension` 实现 lockstep `*mut dyn Extension`。 |
-| `ResourcesDiscover` | —（无 emit 位点） | observe | 已定义但从不发出：唯一的进程内候选位点（`McpPool` 中 `list_mcp_resources` 伪工具的分发，`agent-runtime/src/mcp.rs`）已被 `ToolCall`/`ToolResult` 包夹 —— 在那里触发会与工具执行混淆，且 `DiscoverReason` 在那里没有干净的映射；没有持有 runner `Arc` 的专用 Startup/Manual/Reload 发现接缝（`tui/mcp_server.rs` 的 stdio 位点是独立进程） |
-| `SessionBeforeFork` | —（无 emit 位点） | **Cancel** | 已定义但从不发出：TUI 内的回退路径（`apply_backtrack`，`tui/ui.rs`）是就地**回退（rewind）**（`truncate_history_to`/`api_messages.truncate`），而不是**分叉（fork）**（创建新线程）—— 接为 `SessionBeforeFork` 属于误标；真正的 fork 原语已死（`fork_at_user_message`，无非测试调用方）或仅限 HTTP（`fork_thread`，runtime-api，无 runner 访问权） |
+| `—`（dylib LOAD，不是事件） | `populate_extension_runtime`（`crates/cli/src/core/engine.rs`）在 `discover_static` 之后 | n/a（加载阶段） | `discover_dylib(&global_roots, &project_roots)` → `apply_trust_gate(discovered, !is_workspace_trusted(workspace))` 丢弃项目本地（`global == false`）→ `state.is_enabled` 对账 → 在 OS 线程加载运行时上执行 `ExtensionRunner::load_dylib`；重载经 `reload_extension_runtime`→`populate` 拾取。`ExtensionRunner.libraries` 持有 `Library` 句柄；在 `/extension reload` 时它们 `drain_libraries_to_pending` 到 `pending_drop`（与各 clear 一并执行）+ 引擎 op-loop 在下一个轮边界对它们执行 `drop_pending`。经 `codesmith_register_extension` 实现 lockstep `*mut dyn Extension`。 |
+| `ResourcesDiscover` | —（无 emit 位点） | observe | 已定义但从不发出：唯一的进程内候选位点（`McpPool` 中 `list_mcp_resources` 伪工具的分发，`agent-runtime/src/mcp.rs`）已被 `ToolCall`/`ToolResult` 包夹 —— 在那里触发会与工具执行混淆，且 `DiscoverReason` 在那里没有干净的映射；没有持有 runner `Arc` 的专用 Startup/Manual/Reload 发现接缝（`crates/cli/src/mcp_server.rs` 的 stdio 位点是独立进程） |
+| `SessionBeforeFork` | —（无 emit 位点） | **Cancel** | 已定义但从不发出：进程内回退路径随 TUI 在 0.9.0 移除，真正的 fork 原语仅限测试（`fork_at_user_message`，`crates/cli/src/runtime_threads.rs`，无非测试调用方）或仅限 HTTP（`fork_thread`，runtime-api，无 runner 访问权）—— 把某个接缝接为 `SessionBeforeFork` 会把回退误标为分叉（创建新线程） |
 | `ToolExecutionUpdate` | —（无 emit 位点） | observe | 已定义但从不发出：`Tool::run` 是一次性的（`agent/src/tools/mod.rs`），因此没有可在执行中途挂钩的进度流。`on_tool_progress` `Callback` 钩子作为前瞻性 API 面存在；emit 位点等待流式 `Tool` 契约 |
 
 > `Transform` 载荷的可执行字段在完整处理器链运行之后才于接缝处应用
@@ -321,8 +321,9 @@ async fn configure(api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
 CodeSmith **不**对扩展做沙箱隔离。扩展与 agent 循环运行在同一进程中，
 拥有完整的宿主访问权 —— **信任其来源**。对于不受信任的扩展，请将
 整个 CodeSmith 进程容器化。项目本地 dylib 安装在首次加载前要求工作区
-受信任（见上文信任门）；`ProjectTrust { FirstLoad }` 事件是用户接受
-工作区信任提示时扩展处理器看到的每会话一次的仅观察信号。
+受信任（见上文信任门）；`ProjectTrust` 的每轮 emit 是扩展处理器看到的
+会话信任状态的仅观察信号（`FirstLoad` 自 0.9.0 移除 TUI 后已无活跃
+emit 位点）。
 
 `/extension install` 期间的 `cargo build` 会运行源码的 `build.rs` ——
 **任意代码执行，已被接受（信任来源）**；对不受信任的来源请容器化。
@@ -368,7 +369,7 @@ CodeSmith **不**对扩展做沙箱隔离。扩展与 agent 循环运行在同�
   `crates/extensions/src/lib.rs` 声明了其模块。`cargo test -p
   codesmith-extensions scratchpad_is_discoverable` 可证明注册已接线。
 - **`/extension status` 显示 "not bound"。** 引擎尚未构建（启动前），
-  或 `app.extension_runner` 没有从句柄复制（`crates/tui/src/tui/ui.rs`
+  或 `state.extension_runner` 没有从句柄复制（`crates/cli/src/interactive/mod.rs`
   中 `spawn_engine` 之后）。
 - **处理器返回 `Continue` 但没有任何变化。** `Continue` 按设计表示
   "无变化"。要取消/阻止/变换，请返回对应的变体 —— 并注意变体特定

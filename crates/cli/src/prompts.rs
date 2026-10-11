@@ -1464,6 +1464,9 @@ mod tests {
 
     #[test]
     fn system_prompt_for_mode_with_context_is_byte_stable_for_unchanged_workspace() {
+        // The prompt builder resolves workspace trust / project context through
+        // the env-dependent config home; serialize against env-mutating tests.
+        let _guard = crate::test_support::lock_test_env();
         // Same workspace, no working_set / skills churn between calls →
         // identical bytes. This pins the most representative production
         // surface (engine.rs builds the system prompt via this fn or
@@ -1490,6 +1493,9 @@ mod tests {
 
     #[test]
     fn system_prompt_ignores_working_set_summary_argument() {
+        // The prompt builder resolves workspace trust / project context through
+        // the env-dependent config home; serialize against env-mutating tests.
+        let _guard = crate::test_support::lock_test_env();
         // Working-set metadata is now injected into the latest user message
         // per turn. The legacy argument remains for call-site compatibility
         // but must not reintroduce volatile bytes into the system prompt.
@@ -1520,6 +1526,9 @@ mod tests {
 
     #[test]
     fn system_prompt_with_handoff_file_is_byte_stable_when_file_is_unchanged() {
+        // The prompt builder resolves workspace trust / project context through
+        // the env-dependent config home; serialize against env-mutating tests.
+        let _guard = crate::test_support::lock_test_env();
         // If `.codesmith/handoff.md` hasn't moved between two builds, the
         // rendered prompt must produce identical bytes. The relay block
         // lands below the static boundary in

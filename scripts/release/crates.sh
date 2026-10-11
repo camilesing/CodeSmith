@@ -15,5 +15,4 @@ release_crates=(
   codesmith-app-server
   
   codesmith-cli
-  codesmith-cli
 )

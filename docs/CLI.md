@@ -4,7 +4,7 @@
 common surface:
 
 ```bash
-codesmith                                         # interactive TUI
+codesmith                                         # interactive REPL
 codesmith "explain this function"                 # one-shot prompt
 codesmith exec --auto --output-format stream-json "fix this bug"  # NDJSON backend stream
 codesmith exec --resume <SESSION_ID> "follow up"  # continue a non-interactive session
@@ -18,6 +18,8 @@ codesmith setup --status                          # read-only setup status
 codesmith setup --tools --plugins                 # scaffold tool/plugin dirs
 codesmith models                                  # list live API models
 codesmith sessions                                # list saved sessions
+codesmith --skip-onboarding                        # bypass first-run onboarding questions
+codesmith --continue                               # continue the most recent session in this workspace
 codesmith resume --last                           # resume the most recent session in this workspace
 codesmith resume <SESSION_ID>                     # resume a specific session by UUID
 codesmith fork <SESSION_ID>                       # fork a saved session into a sibling path
@@ -37,7 +39,7 @@ codesmith docker                                  # print the container quick st
 
 A bare first word is read as a subcommand name: `codesmith docker` and
 `codesmith version` are commands, and an unrecognized word fails with
-`unrecognized subcommand '<word>'` (exit code 2) instead of opening the TUI.
+`unrecognized subcommand '<word>'` (exit code 2) instead of starting the REPL.
 
 Prompts keep their documented forms: `codesmith "explain this function"` (one
 quoted argument), `codesmith hello world` (the whole unquoted tail), and
@@ -52,7 +54,7 @@ so it is rejected with a hint pointing at `-p`. Non-ASCII words
 ## First-run onboarding
 
 A bare `codesmith` on a machine without `~/.codesmith/.onboarded` runs
-onboarding as plain CLI questions before the TUI starts: language → provider
+onboarding as plain CLI questions before the REPL starts: language → provider
 → endpoint URL (OpenAI/Anthropic routes only) → API key → workspace trust.
 Answers land in the same durable state the former TUI wizard wrote
 (`~/.codesmith/config.toml`, the settings locale, the OS keyring, and the
@@ -61,19 +63,14 @@ self-hosted runtime such as Ollama — skip the key question, and declining the
 trust prompt exits without writing anything. Pass `--skip-onboarding` to
 bypass the questions entirely.
 
-Inside the TUI, two gates can still interrupt a later session: a missing
+Inside the REPL, two gates can still interrupt a later session: a missing
 credential (for example after `/logout`) re-opens the key screen, and a first
 visit to an untrusted directory re-opens the trust prompt.
 
-Inside the TUI, `/provider` opens the provider picker and `/model` opens the
+Inside the REPL, `/provider` opens the provider picker and `/model` opens the
 local model/thinking picker. `/provider openrouter` and `/model <id>` switch
 directly, while `/models` explicitly fetches and lists live API models when the
 active provider supports model listing.
-
-Two composer prefixes complement slash commands: `!cmd` runs a shell command
-directly in your shell and submits the captured output to the session, and
-`:name:` expands an emoji shortcode (with a suggestion popup while typing).
-See [KEYBINDINGS.md](KEYBINDINGS.md) for the full composer editing set.
 
 ## Sessions: branching and rollback
 
@@ -83,10 +80,10 @@ id in metadata, and opens that fork so you can explore an alternate direction
 without polluting the original path. The session picker and `codesmith sessions`
 mark forked sessions with their parent id.
 
-Inside the TUI, Esc-Esc backtrack can rewind the active transcript to a prior
-user prompt and put that prompt back in the composer for editing. `/restore`
-and `revert_turn` are separate workspace rollback tools: they restore files
-from side-git snapshots but do not rewrite conversation history.
+Inside the REPL, `/undo` drops the last exchange from the transcript and
+`/retry` drops it and re-sends the same user message. `revert_turn` is a
+separate workspace rollback tool: it restores files
+from side-git snapshots but does not rewrite conversation history.
 
 More detail: [PRESETS.md — Branching and Rollback](PRESETS.md#branching-and-rollback).
 
@@ -108,5 +105,5 @@ docker run --rm -it \
 Pinned tags, local image builds, volume ownership notes, and non-interactive
 pipeline usage: [DOCKER.md](DOCKER.md).
 
-`codesmith docker` prints the same run command without needing the TUI binary,
+`codesmith docker` prints the same run command without starting the REPL,
 so it also works from a bare container or a CI shell.

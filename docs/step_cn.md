@@ -4,33 +4,16 @@
 
 ## 背景
 
-`cargo install --path crates/cli --locked` 只会把 `codesmith`（分发器）等 4 个二进制安装到 `~/.cargo/bin/`。但 `codesmith` 是一个门面（facade）：`run`、`exec`、`doctor`、`init`、`serve` 等几乎所有实际命令，都会在运行时去同目录查找并 spawn 伴生二进制 `codesmith-tui`（见 `crates/cli/src/lib.rs` 的 `locate_sibling_tui_binary()`），找不到会直接报错：
+`cargo install --path crates/cli --locked` 会把单一的 `codesmith` 二进制安装到 `~/.cargo/bin/`。自 0.9.0 起 `codesmith` 就是完整产品：交互 REPL 与 `exec`、`doctor`、`init`、`serve` 等全部子命令都由这一个二进制直接提供，不再有伴生二进制（旧版的 `codesmith-tui` 已在 0.9.0 移除）。
 
-```text
-Companion `codesmith-tui` binary not found
-```
-
-`codesmith-tui` 属于另一个包 `crates/tui`，`cargo install --path crates/cli` 不会安装它。因此源码安装必须执行两条命令（参见 `README.md` 与 `docs/INSTALL.md`："Both binaries are required"）。
-
-## 步骤 1：安装伴生 TUI 二进制（必需）
+## 步骤 1：验证二进制就位
 
 ```bash
-cargo install --path crates/tui --locked
-```
-
-## 步骤 2：验证两个二进制就位
-
-```bash
-which codesmith codesmith-tui
+which codesmith
 codesmith --version
 ```
 
-说明：
-
-- 仅安装 cli 后，本地即可用的命令有 `codesmith --version`、`codesmith auth ...`、`codesmith config ...`、`codesmith model list` 等；交互与 `exec`/`doctor` 等命令需要 `codesmith-tui`。
-- 若 `codesmith-tui` 不在默认位置，也可通过环境变量 `CODESMITH_TUI_BIN` 指向已存在的 `codesmith-tui` 绝对路径。
-
-## 步骤 3：配置 API key（唯一硬性凭据，三选一）
+## 步骤 2：配置 API key（唯一硬性凭据，三选一）
 
 所有 provider 地位平等，可通过 `--provider` / `CODESMITH_PROVIDER` / `provider = "<id>"` 任选；未配置任何 provider 时回退到 DeepSeek（模型 `deepseek-v4-pro`，base URL `https://api.deepseek.com/beta`）。凭据优先级为 CLI `--api-key` → config 文件 → OS keyring → 环境变量。
 
@@ -52,18 +35,18 @@ export DEEPSEEK_API_KEY="sk-..."
 
 注意（openai provider）：`provider = "openai"` 在官方端点（`https://api.openai.com/v1`）的默认模型为 `gpt-5`；若把 `OPENAI_BASE_URL` 指向第三方 OpenAI 兼容网关（例如 `https://open.bigmodel.cn/api/v1`），必须同时显式设置模型——`OPENAI_MODEL`（填网关实际提供的模型，如 `glm-4.6`）、`--model`，或 `~/.codesmith/config.toml` 中 `[providers.openai]` 的 `model`。缺少模型时启动会直接本地报错提示，而不是把默认模型名发给网关、收到 403 `model_access_denied`。
 
-## 步骤 4：验证端到端可用
+## 步骤 3：验证端到端可用
 
 ```bash
 codesmith auth status
-codesmith doctor          # 完整体检（需要 codesmith-tui）
+codesmith doctor          # 完整体检
 codesmith exec "hello"    # 一次真实 LLM 调用
 ```
 
 之后即可进入交互模式：
 
 ```bash
-codesmith                  # 交互 TUI
+codesmith                  # 交互 REPL
 codesmith --model auto     # 自动路由模式（README 推荐）
 ```
 

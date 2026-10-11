@@ -37,7 +37,7 @@ CodeSmith 使用渐进式披露来保持上下文精简：会话提示只列出�
    3. ... (your steps here)
    ```
 
-3. 重启 TUI（或开启新会话）并验证：
+3. 重启 REPL（或开启新会话）并验证：
 
    ```text
    /skills

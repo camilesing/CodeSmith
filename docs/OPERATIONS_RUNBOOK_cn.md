@@ -1,15 +1,15 @@
 # codesmith 运维手册
 
-本手册涵盖本地 CLI/TUI 运行时的实用调试与事件响应。
+本手册涵盖本地 CLI 运行时的实用调试与事件响应。
 
 ## 快速分诊
 
 1. 确认二进制与配置：
-   - `cargo run -p codesmith-tui -- --version`
+   - `cargo run -p codesmith-cli -- --version`
    - `cat ~/.codesmith/config.toml`（或查看已配置的 profile）
 2. 开启详细日志：
-   - `RUST_LOG=codesmith_tui=debug cargo run -p codesmith-tui`（tracing 输出写入 `~/.codesmith/logs/tui-YYYY-MM-DD-<pid>.log`）
-   - 查看提供商 HTTP 重试/重连：`RUST_LOG=codesmith_providers=debug,codesmith_agent=debug cargo run -p codesmith-tui`
+   - `RUST_LOG=codesmith_cli=debug cargo run -p codesmith-cli`（tracing 输出写入 `~/.codesmith/logs/tui-YYYY-MM-DD-<pid>.log`）
+   - 查看提供商 HTTP 重试/重连：`RUST_LOG=codesmith_providers=debug,codesmith_agent=debug cargo run -p codesmith-cli`
 3. 捕获当前状态：
    - `ls ~/.codesmith/sessions`
    - `ls ~/.codesmith/sessions/checkpoints`
@@ -18,7 +18,7 @@
 ## 事件：回合挂起或流式输出停止
 
 症状：
-- TUI 一直处于加载状态
+- REPL 状态行持续显示回合处于运行中
 - 助手输出不完整且没有结束
 
 检查：
@@ -28,11 +28,10 @@
 3. 确认工具输出中不存在本地沙箱/权限死锁
 
 处置：
-1. 如果有前台 shell 命令正在运行，按 `Ctrl+B`，选择将其转入后台或取消当前回合。
+1. 按 `Ctrl+C` 取消当前回合，包括它正在运行的前台 shell 命令。
 2. 如果命令已在后台启动，让助手用 `exec_shell_cancel` 和返回的任务 id 取消它。
-3. 想停止请求本身时，用 `Esc` 或 `Ctrl+C` 中断当前回合。
-4. 重试提示词；如果仍然失败，重启 TUI。
-5. 重启后，确认之前排队中/进行中的运行时回合显示为已中断，而不是停留在运行中状态。
+3. 重试提示词；如果仍然失败，重启 REPL。
+4. 重启后，确认之前排队中/进行中的运行时回合显示为已中断，而不是停留在运行中状态。
 
 ## 事件：网络中断 / 离线行为
 
@@ -41,12 +40,14 @@
 - 队列状态持久化到 `~/.codesmith/sessions/checkpoints/offline_queue.json`
 
 检查：
-1. 在 TUI 中打开队列：`/queue list`
+1. 在 REPL 中运行 `/queue` —— 离线队列是 composer 时代的特性，目前没有
+   行模式等价物；该命令会提示回合期间发送的消息通过 `Ctrl+C` 转向/取消
 2. 确认持久化的队列文件存在且时间戳在更新
 
 处置：
 1. 恢复网络连接
-2. 重新发送队列中的条目（通过 `/queue edit <n>` + Enter，或正常输入流程）
+2. 通过正常输入流程重新发送队列中的条目（`/queue edit <n>` 是 composer
+   命令，没有行模式等价物）
 3. 确保队列为空时队列文件被清除
 
 ## 事件：需要崩溃恢复
@@ -56,7 +57,7 @@
 - 除非提供 `--resume`/`--continue`，否则启动时开始全新会话
 
 处置：
-1. 通过 `codesmith --resume <id>` 或 TUI 中的 `Ctrl+R` 显式恢复之前的工作
+1. 通过 `codesmith --resume <id>`，或在 REPL 中使用 `/resume <id>` 显式恢复之前的工作
 2. 如需检查检查点，查看 `latest.json` 以了解 schema 不匹配等细节
 3. 如果 schema 比二进制支持的更新，升级二进制或删除过期的检查点
 
@@ -82,7 +83,7 @@
 检查：
 1. 校验 `~/.codesmith/mcp.json` 的 schema 与服务器命令路径
 2. 确认服务器进程可以手动启动
-3. 在 TUI 历史/日志中检查沙箱拒绝记录
+3. 在 REPL 会话记录/日志中检查沙箱拒绝记录
 
 处置：
 1. 带上所需审批后重试（或仅在合适时使用 YOLO 模式）

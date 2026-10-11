@@ -16,7 +16,7 @@ contributions against an `ExtensionApi`.
 > [MODS.md](MODS.md).
 
 The host assembles the extension runtime at engine build
-(`build_extension_runtime()`, `crates/tui/src/core/engine.rs`) and again
+(`build_extension_runtime()`, `crates/cli/src/core/engine.rs`) and again
 on every `/extension reload`: discover compiled-in registrations
 (`inventory`) + dylib sources (install roots) → reconcile with the
 on-disk `ExtensionStateStore` (skip disabled) → load + configure each
@@ -73,7 +73,7 @@ Everything an extension can register, and what the host does with it:
 - **Skills (`register_skill`)** — an in-memory skill in the session
   catalogue (Rhai shape: `register_skill(spec)` with `name` /
   `description` / `body` / optional `when_to_use`): system-prompt
-  `## Skills` block, `/skills`, the command palette, and `load_skill`
+  `## Skills` block, `/skills`, and `load_skill`
   by name, attributed `mod: <owner>`. The filesystem catalogue wins on
   a name collision; a name owned by a different mod fails the load;
   ≤16 skills; reload clears the generation's registrations. Registered
@@ -93,7 +93,7 @@ Everything an extension can register, and what the host does with it:
 
 The turn dispatcher diffs the compiled model-visible catalog against the
 previous main-turn baseline (origin-classified snapshot in
-`tui/src/core/tool_catalog.rs`) and emits `ToolsChange { added, removed }`
+`cli/src/core/tool_catalog.rs`) and emits `ToolsChange { added, removed }`
 (observe-only); `/tools` renders the baseline grouped by origin. The
 first build establishes the baseline silently; sub-agent toolsets build
 on a separate path (`spawn_subagent`) and never flap the baseline.
@@ -120,11 +120,11 @@ discovery — no runtime registration call. The host's
 `build_extension_runtime()` calls `codesmith_extensions::discover_static()`
 once at engine build.
 
-## In-TUI Manager
+## In-REPL Manager
 
 The `/extension` command group is the user-facing surface. It dispatches
-via `extension_commands::try_dispatch`, wired into `execute()` between
-user-defined commands and the static `match`.
+from the REPL command table (`crates/cli/src/interactive/commands/`),
+wired into `execute()` alongside the static `match`.
 
 | Subcommand | Aliases | Effect |
 |---|---|---|
@@ -347,12 +347,12 @@ returns the wrong capability for its variant is a no-op, not an error.
 | `AgentSettled` | `engine/mod.rs` post-run drain (after capacity apply) | observe | — |
 | `SessionBeforeCompact` | `host_executor::run_compaction` after `should_compact` gate | **Cancel** | skips compaction (`return`) |
 | `SessionCompact` | `host_executor::run_compaction` after summary applied | observe | — |
-| `SessionBeforeSwitch` | `tui/ui.rs` `switch_workspace` entry | **Cancel** | aborts the workspace switch |
-| `ProjectTrust` | `HostServices::build_turn_dispatcher` (+ `spawn_subagent`) after `build_tool_context_for` (per-turn `Trusted`/`Untrusted`); onboarding trust-accept `tui/ui.rs` `TrustDirectory` y/Y/1 arm after `app.trust_mode = true` (`FirstLoad`) | observe | per-turn `Trusted`/`Untrusted` from `session.trust_mode`; `FirstLoad` once per onboarding trust acceptance (`TrustReason::FirstLoad`) — distinct from the runtime `trust_mode` toggle (`/trust on`), YOLO entry, and persisted-trust startup, which surface per-turn as `Trusted`/`Untrusted`, not `FirstLoad` |
+| `SessionBeforeSwitch` | — (no emit site) | **Cancel** | capability retained but currently never emitted: the in-process workspace switch went with the TUI in 0.9.0 (`/workspace` requires a restart instead) |
+| `ProjectTrust` | `HostServices::build_turn_dispatcher` (`crates/cli/src/core/engine/runtime_traits.rs`; + `spawn_subagent`) after `build_tool_context_for` (per-turn `Trusted`/`Untrusted`); `FirstLoad` currently has no emit site — the onboarding trust-prompt emit went with the TUI in 0.9.0 | observe | per-turn `Trusted`/`Untrusted` from `session.trust_mode`; `FirstLoad` is defined for onboarding trust acceptance (`TrustReason::FirstLoad`) but has no live emit site — the runtime `trust_mode` toggle (`/trust on`), YOLO entry, and persisted-trust startup surface per-turn as `Trusted`/`Untrusted`, not `FirstLoad` |
 | `ToolsChange { added, removed }` | `HostServices::build_turn_dispatcher` after every selection source is applied | observe | diff of the final model-visible catalog vs the previous main-turn baseline; the first build establishes the baseline silently; sub-agent toolsets never reach this seam |
-| `—` (dylib LOAD, not an event) | `populate_extension_runtime` (`tui/src/core/engine.rs`) after `discover_static` | n/a (load phase) | `discover_dylib(&global_roots, &project_roots)` → `apply_trust_gate(discovered, !is_workspace_trusted(workspace))` drops project-local (`global == false`) → `state.is_enabled` reconcile → `ExtensionRunner::load_dylib` on the OS-thread load runtime; reload picks up via `reload_extension_runtime`→`populate`. `ExtensionRunner.libraries` holds `Library` handles; on `/extension reload` they `drain_libraries_to_pending` to `pending_drop` (alongside the clears) + the engine op-loop `drop_pending`s them at the next turn boundary. Lockstep `*mut dyn Extension` via `codesmith_register_extension`. |
-| `ResourcesDiscover` | — (no emit site) | observe | defined but never emitted: the only in-process candidate site (the `list_mcp_resources` pseudo-tool dispatch in `McpPool`, `agent-runtime/src/mcp.rs`) is already bracketed by `ToolCall`/`ToolResult` — firing `ResourcesDiscover` there would conflate with tool execution, and `DiscoverReason` has no clean mapping there; no dedicated Startup/Manual/Reload discover seam holds the runner `Arc` (the `tui/mcp_server.rs` stdio site is a separate process) |
-| `SessionBeforeFork` | — (no emit site) | **Cancel** | defined but never emitted: the in-TUI backtrack path (`apply_backtrack`, `tui/ui.rs`) is an in-place **rewind** (`truncate_history_to`/`api_messages.truncate`), not a **fork** (new-thread creation) — wiring it as `SessionBeforeFork` would mislabel; genuine fork primitives are dead (`fork_at_user_message`, no non-test callers) or HTTP-only (`fork_thread`, runtime-api, no runner access) |
+| `—` (dylib LOAD, not an event) | `populate_extension_runtime` (`crates/cli/src/core/engine.rs`) after `discover_static` | n/a (load phase) | `discover_dylib(&global_roots, &project_roots)` → `apply_trust_gate(discovered, !is_workspace_trusted(workspace))` drops project-local (`global == false`) → `state.is_enabled` reconcile → `ExtensionRunner::load_dylib` on the OS-thread load runtime; reload picks up via `reload_extension_runtime`→`populate`. `ExtensionRunner.libraries` holds `Library` handles; on `/extension reload` they `drain_libraries_to_pending` to `pending_drop` (alongside the clears) + the engine op-loop `drop_pending`s them at the next turn boundary. Lockstep `*mut dyn Extension` via `codesmith_register_extension`. |
+| `ResourcesDiscover` | — (no emit site) | observe | defined but never emitted: the only in-process candidate site (the `list_mcp_resources` pseudo-tool dispatch in `McpPool`, `agent-runtime/src/mcp.rs`) is already bracketed by `ToolCall`/`ToolResult` — firing `ResourcesDiscover` there would conflate with tool execution, and `DiscoverReason` has no clean mapping there; no dedicated Startup/Manual/Reload discover seam holds the runner `Arc` (the `crates/cli/src/mcp_server.rs` stdio site is a separate process) |
+| `SessionBeforeFork` | — (no emit site) | **Cancel** | defined but never emitted: the in-process backtrack path went with the TUI in 0.9.0, and genuine fork primitives are test-only (`fork_at_user_message`, `crates/cli/src/runtime_threads.rs`, no non-test callers) or HTTP-only (`fork_thread`, runtime-api, no runner access) — wiring a seam as `SessionBeforeFork` would mislabel a rewind as a fork (new-thread creation) |
 | `ToolExecutionUpdate` | — (no emit site) | observe | defined but never emitted: `Tool::run` is one-shot (`agent/src/tools/mod.rs`), so there is no mid-execution progress stream to hook. The `on_tool_progress` `Callback` hook exists as forward-looking API surface; the emit site awaits a streaming `Tool` contract |
 
 > The `Transform` payload's actionable field is applied at the seam AFTER
@@ -369,9 +369,10 @@ CodeSmith does **not** sandbox extensions. Extensions run in the same
 process as the agent loop with full host access — **trust the source**.
 For untrusted extensions, containerize the whole CodeSmith process.
 Project-local dylib installs require workspace trust before the first
-load (the trust gate above); the `ProjectTrust { FirstLoad }` event is
-the once-per-session observe-only signal extension handlers see when
-the user accepts the workspace trust prompt.
+load (the trust gate above); the `ProjectTrust` per-turn emits are the
+observe-only signal extension handlers see for the session's trust
+state (`FirstLoad` has no live emit site since the TUI removal in
+0.9.0).
 
 `cargo build` during `/extension install` runs the source's `build.rs` —
 **arbitrary code execution, accepted (trust the source)**; containerize
@@ -427,8 +428,8 @@ so the invariant — not a Miri run — is the proof.
   codesmith-extensions scratchpad_is_discoverable` proves the registration
   is wired.
 - **`/extension status` says "not bound".** The engine hasn't built yet
-  (pre-startup), or `app.extension_runner` wasn't copied from the handle
-  (`crates/tui/src/tui/ui.rs` after `spawn_engine`).
+  (pre-startup), or `state.extension_runner` wasn't copied from the handle
+  (`crates/cli/src/interactive/mod.rs` after `spawn_engine`).
 - **Handler returns `Continue` but nothing changes.** `Continue` means
   "no change" by design. To cancel/block/transform, return the matching
   variant — and note variant-specific semantics (a `Block` at a

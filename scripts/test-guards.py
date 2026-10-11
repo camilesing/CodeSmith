@@ -37,8 +37,7 @@ def write(root: Path, relpath: str, text: str = "") -> None:
 def write_allowlisted(root: Path) -> None:
     # The guard errors on allowlist entries with no matching doc, so every
     # fixture tree must carry the full allowlist (see verify-docs-pairs.py).
-    for name in ("CAPABILITY_GRAPH.md", "CLI.md", "DESIGN_INTERNALS.md", "HARNESS.md"):
-        write(root, f"docs/{name}")
+    write(root, "docs/CAPABILITY_GRAPH.md")
 
 
 class DocsPairsGuard(unittest.TestCase):
@@ -69,32 +68,34 @@ class DocsPairsGuard(unittest.TestCase):
             write_allowlisted(root)
             result = run_guard("verify-docs-pairs.py", root)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("4 allowlisted", result.stdout)
+            self.assertIn("1 allowlisted", result.stdout)
 
     def test_stale_allowlist_entry_fails_and_names_it(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            for name in ("CAPABILITY_GRAPH.md", "DESIGN_INTERNALS.md", "HARNESS.md"):
-                write(root, f"docs/{name}")
+            # Allowlist has CAPABILITY_GRAPH.md; the tree does not.
             write(root, "docs/GUIDE.md")
             write(root, "docs/GUIDE_cn.md")
             result = run_guard("verify-docs-pairs.py", root)
             self.assertEqual(result.returncode, 1)
-            self.assertIn("CLI.md: allowlisted but no such doc", result.stdout)
+            self.assertIn(
+                "CAPABILITY_GRAPH.md: allowlisted but no such doc", result.stdout
+            )
 
     def test_allowlisted_doc_gaining_pair_fails_and_names_it(self) -> None:
         # The docstring promises "landing a _cn pair removes an entry" —
         # the guard must say so instead of passing with dead config.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            write_allowlisted(root)
+            write(root, "docs/CAPABILITY_GRAPH.md")
+            write(root, "docs/CAPABILITY_GRAPH_cn.md")
             write(root, "docs/GUIDE.md")
             write(root, "docs/GUIDE_cn.md")
-            write(root, "docs/CLI_cn.md")
             result = run_guard("verify-docs-pairs.py", root)
             self.assertEqual(result.returncode, 1)
             self.assertIn(
-                "CLI.md: allowlisted but its _cn pair now exists", result.stdout
+                "CAPABILITY_GRAPH.md: allowlisted but its _cn pair now exists",
+                result.stdout,
             )
 
     def test_orphan_cn_fails(self) -> None:

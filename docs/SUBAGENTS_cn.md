@@ -28,7 +28,7 @@
 
 每个角色的完整系统提示词位于
 `crates/agent-runtime/src/subagent.rs`（`SubAgentType::system_prompt()`；
-每个子代理的合成提示词由 `crates/tui/src/tools/subagent/mod.rs` 中的
+每个子代理的合成提示词由 `crates/cli/src/tools/subagent/mod.rs` 中的
 `build_subagent_system_prompt` 构建）。提示词前缀在子代理启动时自动加载；父代理的
 任务分配提示词会成为第一轮的用户消息。
 
@@ -202,7 +202,7 @@ BLOCKERS:   what stopped you; "None." if you finished cleanly
 
 ## 实现说明
 
-- 源码：`crates/tui/src/tools/subagent/mod.rs`。
+- 源码：`crates/cli/src/tools/subagent/mod.rs`。
 - 持久化状态：`<workspace>/.codesmith/state/subagents.v1.json`。Schema
   版本为 `1`（前向兼容——新的可选字段使用
   `#[serde(default)]`）。

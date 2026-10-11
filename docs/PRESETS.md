@@ -2,8 +2,8 @@
 
 codesmith has two related concepts:
 
-- **TUI mode**: what kind of visible interaction you're in (Plan/Agent/YOLO).
-- **Approval mode**: how aggressively the UI asks before executing tools.
+- **App mode**: what kind of visible interaction you're in (Plan/Agent/YOLO).
+- **Approval mode**: how aggressively the runtime asks before executing tools.
 
 On top of both sits the **preset layer**: one key (`preset = "middle"`, one
 command `/preset <name>`) that bundles every dial below — tools, thinking,
@@ -13,8 +13,8 @@ TOML file. Four progressive tiers ship built-in; the factory default is
 `middle`.
 
 Model selection is separate. `--model auto` and `/model auto` route each turn to
-a concrete model and thinking level; they are not TUI modes and are not part of
-the `Tab` cycle.
+a concrete model and thinking level; they are not app modes and are not part of
+the `/mode` cycle.
 
 ## Configuration Presets (`/preset <name>)
 
@@ -32,7 +32,7 @@ codesmith --preset all       # everything stable on
 /preset plan                 # switch mid-session (live dials; restart notes for the rest)
 /preset export my-setup      # snapshot current dials to a shareable file
 /preset off                  # drop the preset layer, keep current dials
-codesmith-tui preset show    # tier matrix + your effective preset
+codesmith preset show         # tier matrix + your effective preset
 ```
 
 Built-in tiers, progressive from lightest to heaviest:
@@ -45,7 +45,7 @@ Built-in tiers, progressive from lightest to heaviest:
 | `experiment` | inherits | full surface | elephant + Knowledge On Demand | 20 | everything on (vision, agent teams, coordinator, context manager, capacity controller, strict tool mode) |
 | `plan` | inherits | read-only + plan tooling | notebook (explicit only) | inherits | inherits |
 
-Governed switch matrix (`codesmith-tui preset show` prints this with your
+Governed switch matrix (`codesmith preset show` prints this with your
 effective values):
 
 | key | simple | middle | all | experiment |
@@ -129,7 +129,7 @@ that sets them prints what will apply after restart.
 
 **Precedence for the active preset:** `--preset name` (CLI, or
 `CODESMITH_PRESET`) > `preset = "name"` in config.toml (the legacy `mode`
-key still works as a deprecated alias) > the last preset picked in the TUI
+key still works as a deprecated alias) > the last preset picked in the REPL
 (persisted in settings.toml) > the factory default `middle`. Unsetting is
 `/preset off`.
 
@@ -137,15 +137,13 @@ key still works as a deprecated alias) > the last preset picked in the TUI
 warning: `minimal` → `simple`, `balanced` → `middle`, `maximal` → `all`;
 `--mode` and `/mode` are aliases of `--preset` / `/preset`.
 
-## TUI Modes
+## App Modes
 
-Press `Tab` to complete composer menus, queue a draft as a next-turn follow-up
-while a turn is running, or cycle through the visible modes when the composer is
-otherwise idle: **Plan → Agent → YOLO → Plan**.
-Press `Shift+Tab` to cycle reasoning effort.
-Run `/preset` to open the mode picker, or switch directly with
-`/preset agent`, `/preset plan`, `/preset yolo`, `/preset 1`, `/preset 2`,
-or `/preset 3`.
+Switch the visible mode with `/mode <name>` — **agent | yolo | plan |
+coordinator** — or the `/yolo` shortcut (`/mode` with no argument prints the
+current mode). Run `/preset` to open the preset view, or switch directly
+with `/preset <name>` (`/preset list` shows every preset visible to this
+workspace).
 
 - **Plan**: design-first prompting. Read-only investigation tools stay available; shell and patch execution stay off. Use this when you want to think out loud and produce a plan to hand to a human (yourself later, or a reviewer).
 - **Agent**: multi-step tool use. Shell execution (`exec_shell`, `task_shell_start`, `task_shell_wait`) requires `allow_shell = true` in config; approval prompts gate each call. File writes are allowed without a prompt.
@@ -160,7 +158,7 @@ behavior. Model routing is the router's job, not Fin's — the router runs on
 the strongest tier (see Auto Model Routing below).
 
 `/goal` sets a session objective with an optional token budget and keeps that
-objective visible as Work context. It does not change the active TUI mode,
+objective visible as Work context. It does not change the active app mode,
 approval mode, or model route. This remains distinct from `--model auto`, which
 only controls model and thinking selection.
 
@@ -184,7 +182,7 @@ Tier answers resolve per provider: on DeepSeek endpoints `light`/`heavy` map to 
 # router_model = "override the classifier brain itself"
 ```
 
-`auto` is local to codesmith. The upstream API never receives `model: "auto"`; it receives the concrete model and thinking setting chosen for that turn. The TUI shows the selected route, and cost tracking is charged against the model that actually ran. If the router call fails or returns an invalid answer, the app falls back to a free local heuristic (which also short-circuits obvious cases so trivial turns never pay for routing). Sub-agent assignment routing uses the same strong-brain classifier and tier vocabulary.
+`auto` is local to codesmith. The upstream API never receives `model: "auto"`; it receives the concrete model and thinking setting chosen for that turn. The REPL shows the selected route, and cost tracking is charged against the model that actually ran. If the router call fails or returns an invalid answer, the app falls back to a free local heuristic (which also short-circuits obvious cases so trivial turns never pay for routing). Sub-agent assignment routing uses the same strong-brain classifier and tier vocabulary.
 
 `[auto] cost_saving = true` flips the whole router to the original cheap-first design: the classifier runs on the configured `[utility_model]` (cheap brain) and ambiguous requests resolve to the light tier. The factory presets ship with cost-saving off (quality-first); users who had explicitly set `auto.cost_saving` keep their value.
 
@@ -194,14 +192,12 @@ Use a fixed model or fixed thinking level when you want repeatable benchmarking,
 
 - Older settings files with `default_mode = "normal"` still load as `agent`; saving rewrites the normalized value.
 
-## Escape Key Behavior
+## Interrupt Behavior
 
-`Esc` is a cancel stack, not a mode switch.
+In the line-based REPL, `Ctrl+C` is the cancel action, not a mode switch.
 
-- Close slash menus or transient UI first.
-- Cancel the active request if a turn is running.
-- Discard a queued draft if the composer is empty.
-- Clear the current input if text is present.
+- Cancel the active request if a turn is running (press `Ctrl+C` again to
+  quit).
 - Otherwise it is a no-op.
 
 ## Approval Mode
@@ -217,13 +213,12 @@ You can override approval behavior at runtime:
 - `auto`: auto-approves all tools (similar to YOLO approval behavior, but without forcing YOLO mode).
 - `never`: blocks any tool that isn't considered safe/read-only.
 
-## Small-Screen Status Behavior
+## Status Line Behavior
 
-When terminal height is constrained, the status area compacts first so header/chat/composer/footer remain visible:
-
-- Loading and queued status rows are budgeted by available height.
-- Queued previews collapse to compact summaries when full previews do not fit.
-- `/queue` workflows remain available; compact status only affects rendering density.
+The REPL status line is one fixed line — running state, preset tier,
+context-window occupancy, mode, sub-agent count, model, and version — so it
+does not adapt to terminal height. `/queue` prints a notice that the offline
+queue is a composer feature with no line-mode equivalent yet.
 
 ## Workspace Boundary and Trust Mode
 
@@ -251,13 +246,12 @@ Run `codesmith --help` for the canonical list. Common flags:
 - `codesmith exec --continue <PROMPT>`: continue the most recent saved session for this workspace non-interactively
 - `codesmith swebench run --instance-id <ID> --issue-file <PATH>`: run the tool-backed agent on one SWE-bench task and write/update a prediction JSONL row
 - `codesmith fork <ID|PREFIX>` / `codesmith fork --last`: copy a saved session into a new sibling session; forked sessions retain additive parent-session metadata and show that lineage in session listings
-- `--model <MODEL>`: when using the `codesmith` facade, forward a model override to the TUI
+- `--model <MODEL>`: model override for the session
 - `--workspace <DIR>`: workspace root for file tools
 - `--yolo`: start in YOLO mode
 - `-r, --resume <ID|PREFIX|latest>`: resume a saved session
 - `-c, --continue`: resume the most recent session in this workspace
 - `--max-subagents <N>`: clamp to `1..=20`
-- `--mouse-capture` / `--no-mouse-capture`: opt in or out of internal mouse scrolling, transcript selection, right-click context actions, and transcript scrollbar dragging. Mouse capture is enabled by default on non-Windows terminals and on Windows Terminal/ConEmu/Cmder so drag selection copies only transcript text, removes visual wrap-column line breaks from paragraphs, and stays scoped to the transcript pane; hold Shift while dragging or use `--no-mouse-capture` for raw terminal selection. It defaults off on legacy Windows console (CMD without `WT_SESSION` / `ConEmuPID`) and inside JetBrains JediTerm — PyCharm/IDEA/CLion/etc. — where the terminal advertises mouse support but forwards SGR mouse events as raw text. Use `--mouse-capture` to opt in anywhere it's defaulted off. Raw terminal selection may cross the right sidebar and include visual wraps because the terminal, not the TUI, owns the selection.
 - `--profile <NAME>`: select config profile
 - `--preset <NAME>`: select a configuration preset (simple | middle | all | experiment | plan | custom); see [Configuration Presets](#configuration-presets-preset-name). The pre-rename `--mode` spelling still works.
 - `--config <PATH>`: config file path
@@ -270,10 +264,10 @@ CodeSmith has three related but intentionally separate recovery paths:
 - `codesmith fork <ID>` creates a new saved session from an existing saved
   conversation and records the source session id. This is the safe way to
   explore a different answer path without overwriting the original session.
-- Esc-Esc backtrack rewinds the live transcript to a previous user prompt and
-  restores that prompt into the composer for editing.
-- `/restore` and the `revert_turn` tool restore workspace files from side-git
-  snapshots. They do not rewrite conversation history.
+- `/undo` drops the last transcript exchange; `/retry` drops it and re-sends
+  the same user message.
+- The `revert_turn` tool restores workspace files from side-git snapshots.
+  It does not rewrite conversation history.
 
 A Pi-style in-file tree browser is a larger UI/data-model project. v0.8.40
 ships the bounded fork/backtrack primitives and explicit lineage metadata.

@@ -12,7 +12,7 @@
 //! Recording-layer role (one of four layers; each owning module states its
 //! role): this store is a **query index** for the app-server and background
 //! surfaces (thread listing, message-history queries). It holds derived,
-//! re-queryable data — it is not the TUI's resume source (that path loads a
+//! re-queryable data — it is not the REPL's resume source (that path loads a
 //! `SavedSession` file and rebuilds projections from the transcript), and
 //! it is not the authoritative record (that is the transcript/event stream
 //! in its owning modules).

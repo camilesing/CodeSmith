@@ -83,7 +83,7 @@ Unknown backend ids fail fast with a message listing the registered ids.
 Backend selection follows the provider-registry pattern: implementations
 register an `Arc<dyn IndexBackendFactory>` into an
 `IndexBackendRegistry` and the TOML `backend = "…"` key selects one. The
-built-ins are `tree-sitter` (feature-gated; the TUI enables it) and `none`
+built-ins are `tree-sitter` (feature-gated; the `codesmith` binary enables it) and `none`
 (a no-op placeholder that fails validation if selected for an enabled
 capability). See `codesmith-index`'s crate docs for a worked example of
 registering a custom backend from a downstream crate.

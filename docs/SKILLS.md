@@ -38,7 +38,7 @@ troubleshooting.
    3. ... (your steps here)
    ```
 
-3. Restart the TUI (or start a new session) and verify:
+3. Restart the REPL (or start a new session) and verify:
 
    ```text
    /skills

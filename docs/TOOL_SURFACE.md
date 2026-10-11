@@ -54,7 +54,7 @@ silently. The tool result tells the model to rerun long work with
 `task_shell_start` or `exec_shell` with `background = true`, then poll with
 `task_shell_wait` or `exec_shell_wait`.
 
-Interactive shell jobs are also visible through `/jobs`. The TUI job center is
+Interactive shell jobs are also visible through `/jobs`. The REPL job center is
 fed by the same shell manager as `exec_shell`/`task_shell_start`, and shows the
 command, cwd, elapsed time, status, output tail, process-local shell id, and
 linked durable task id when available. `/jobs show`, `/jobs poll`, `/jobs wait`,
@@ -70,19 +70,16 @@ ask records are currently a narrow foundation: when one matches under
 `AskForApproval::Never`, the command is rejected because the runtime cannot ask
 the user; existing allow/deny behavior is otherwise unchanged.
 
-### MCP manager and palette discovery
+### MCP manager discovery
 
-MCP server configuration is surfaced in the TUI through `/mcp` and the
+MCP server configuration is surfaced in the REPL through `/mcp` and the
 `mcp_config_path` row in `/config`. `/mcp` shows the resolved config path,
 server enabled/disabled state, transport, command or URL, timeouts, connection
 errors, and discovered tools/resources/prompts. It supports narrow manager
 actions for init, add, enable, disable, remove, validate, and reload/reconnect.
 Config edits are written immediately, but the model-visible MCP tool pool is
-restart-required after edits.
-
-The command palette includes MCP entries grouped by server. Disabled and failed
-servers stay visible, and discovered tools/prompts use the runtime names shown
-to the model, such as `mcp__<server>__<tool>`.
+restart-required after edits. Discovered tools use the runtime names shown to
+the model, such as `mcp__<server>__<tool>`.
 
 ### Git / diagnostics / testing
 
@@ -249,7 +246,7 @@ model-facing surface. Do not use them in active guidance:
 `delegate_to_agent`, `send_input`, and `close_agent`.
 
 `agent_spawn` is the one survivor: it is still registered in the tool
-registry (`AgentSpawnTool`, `crates/tui/src/tools/registry.rs`) as the
+registry (`AgentSpawnTool`, `crates/cli/src/tools/registry.rs`) as the
 background one-shot alias — `agent_open` with `run_in_background = true`
 is equivalent — and sub-agents recurse through it (see
 `docs/SUBAGENTS.md`). New guidance should still prefer
@@ -284,14 +281,13 @@ Version smoke:
 
 ```bash
 codesmith --version
-codesmith-tui --version
 ```
 
 Tool-surface smoke:
 
 ```bash
-rg -n '"handle_read"|"rlm_open"|"rlm_eval"|"rlm_configure"|"rlm_close"|"agent_open"|"agent_eval"|"agent_close"' crates/tui/src
-rg -n 'handle_read|rlm_open|rlm_eval|rlm_configure|rlm_close|agent_open|agent_eval|agent_close' docs crates/agent-runtime/src/prompts crates/tui/src/tools
+rg -n '"handle_read"|"rlm_open"|"rlm_eval"|"rlm_configure"|"rlm_close"|"agent_open"|"agent_eval"|"agent_close"' crates/cli/src
+rg -n 'handle_read|rlm_open|rlm_eval|rlm_configure|rlm_close|agent_open|agent_eval|agent_close' docs crates/agent-runtime/src/prompts crates/cli/src/tools
 ```
 
 The canonical live names are:

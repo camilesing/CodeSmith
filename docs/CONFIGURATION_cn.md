@@ -25,7 +25,7 @@ preset = "experiment"  # 全部开启，含预览特性与侵入式机制
   不可被选择——它是派生状态。
 - 选择优先级：`--preset`（或 `CODESMITH_PRESET`）> config.toml 的
   `preset` 键 > settings.toml 中持久化的上次 `/preset` 选择 > `middle`。
-- 用 `codesmith-tui preset show` 查看治理开关矩阵；完整档位文档
+- 用 `codesmith preset show` 查看治理开关矩阵；完整档位文档
   （含 `plan` 工作流预设与自定义预设文件）见
   [PRESETS_cn.md](PRESETS_cn.md)。改名前的写法（`mode` 键、`--mode`、
   `/mode`、`minimal`/`balanced`/`maximal`）仍作为弃用别名有效。
@@ -56,7 +56,7 @@ preset = "experiment"  # 全部开启，含预览特性与侵入式机制
 
 ### 按项目叠加
 
-当 TUI 在包含 `<workspace>/.codesmith/config.toml` 文件的工作区中启动时，
+当 codesmith 在包含 `<workspace>/.codesmith/config.toml` 文件的工作区中启动时，
 该文件中声明的值会合并到全局配置之上。overlay 只在工作区通过启动
 信任边界**之后**才会读取——与放行工作区 `.env` 文件的是同一道门——
 因此不可信的克隆无法操纵初始化。传入 `--no-project-config` 可在单次
@@ -79,8 +79,8 @@ preset = "experiment"  # 全部开启，含预览特性与侵入式机制
 `approval_policy` 与 `sandbox_mode` 只允许朝收紧方向移动：项目可以把
 `on-request` 收成 `never`、把 `workspace-write` 收成 `read-only`，但绝不
 能放宽用户的设置；`external-sandbox` 仅在用户配置已经使用它时才被接受。
-非收紧方向的值会被忽略并在 stderr 给出警告。`codesmith` 门面对自己的
-文件读取应用同样的规则，并额外接受项目文件中的 `output_mode`、
+非收紧方向的值会被忽略并在 stderr 给出警告。无头（headless）子命令
+对自己的文件读取应用同样的规则，并额外接受项目文件中的 `output_mode`、
 `log_level`、`[tools]` 表以及各 provider 的 `model` 覆盖。
 
 项目作用域中被拒绝的键：`provider`、`api_key`、`base_url` 和
@@ -91,10 +91,10 @@ preset = "experiment"  # 全部开启，含预览特性与侵入式机制
 `[lsp].servers`、`[edit]`、`[snapshots]` 等）保持为用户全局配置。
 如果你的仓库需要更多，请提交一个 issue 描述具体使用场景。
 
-`codesmith` 门面（facade）和 `codesmith-tui` 二进制文件共享同一个配置文件，
+`codesmith` 二进制使用同一个配置文件，
 用于 provider 认证和模型默认值。`codesmith auth set --provider <id>`
 将密钥保存到 `~/.codesmith/config.toml`，而 `codesmith --model <model>`
-会作为 `CODESMITH_MODEL` 转发给 TUI。
+会解析为会话的 `CODESMITH_MODEL`。
 
 凭证查找在任何显式 CLI `--api-key` 之后按 `config -> keyring -> env`
 的顺序进行。运行 `codesmith auth status` 可以查看当前活跃 provider 的
@@ -108,8 +108,8 @@ preset = "experiment"  # 全部开启，含预览特性与侵入式机制
 `"anthropic"`，或者传递 `codesmith --provider <name>`。
 关于逐个 provider 的注册信息（包括认证变量、默认 base URL、模型 ID
 和能力元数据），请参阅 [PROVIDERS.md](PROVIDERS.md)。
-门面会将 provider 凭证保存到共享的用户配置中，并将解析出的密钥、
-base URL、provider 和模型转发给 TUI 进程。使用
+`codesmith auth set` 将 provider 凭证保存到共享的用户配置中；解析出的密钥、
+base URL、provider 和模型会在会话启动时从中读取。使用
 `codesmith auth set --provider nvidia-nim --api-key "YOUR_NVIDIA_API_KEY"` 或
 `codesmith auth set --provider openai --api-key "YOUR_OPENAI_COMPATIBLE_API_KEY"` 或
 `codesmith auth set --provider atlascloud --api-key "YOUR_ATLASCLOUD_API_KEY"` 或
@@ -117,7 +117,7 @@ base URL、provider 和模型转发给 TUI 进程。使用
 `codesmith auth set --provider xiaomi-mimo --api-key "YOUR_XIAOMI_KEY"` 或
 `codesmith auth set --provider fireworks --api-key "YOUR_FIREWORKS_API_KEY"` 或
 `codesmith auth set --provider siliconflow --api-key "YOUR_SILICONFLOW_API_KEY"`
-通过门面保存 provider 密钥。通用 `openai` provider 默认使用
+保存 provider 密钥。通用 `openai` provider 默认使用
 `https://api.openai.com/v1`，接受 `OPENAI_BASE_URL`，默认模型为
 `gpt-5`。将 `OPENAI_BASE_URL` 指向第三方网关时需要显式指定模型
 （`OPENAI_MODEL`、`--model` 或 `[providers.openai].model`）；
@@ -182,7 +182,7 @@ model = "glm-5"
 规则：`id` 必填且唯一；不得与内置 provider 名冲突——内置选择器保持
 权威。每个条目自包含（自己的凭据、端点、模型、请求头），设置
 `custom_provider` 后对该进程覆盖 `provider`。自定义网关在静态视觉
-矩阵中没有条目，因此内联图片需要显式 `vision = true`。门面通过
+矩阵中没有条目，因此内联图片需要显式 `vision = true`。可通过
 `codesmith config set providers.custom.<id>.<field> <value>` 逐字段
 写入；不支持整表重写。
 
@@ -273,17 +273,17 @@ python = false              # e.g. skip python
 这两个工具从会话目录中完全移除。`[index.semantic]` 是为基于嵌入的
 搜索预留的接缝（seam），但尚无内置后端——请保持禁用。
 
-要在解析出的路径上初始化 MCP 和 skills 目录，请运行 `codesmith-tui setup`。
-只搭建 MCP，请运行 `codesmith-tui mcp init`。
+要在解析出的路径上初始化 MCP 和 skills 目录，请运行 `codesmith setup`。
+只搭建 MCP，请运行 `codesmith mcp init`。
 
-注意：setup、doctor、mcp、features、sessions、resume/fork、exec、review 和 eval
-是 `codesmith-tui` 二进制文件的子命令。`codesmith` 调度器提供的是另一组
-命令（`auth`、`config`、`model`、`thread`、`sandbox`、`app-server`、
-`mcp-server`、`completion`），并将纯提示词转发给 `codesmith-tui`。
+注意：setup、doctor、mcp、features、sessions、resume/fork、exec、review、
+eval、auth、config、model、thread、sandbox、app-server、mcp-server 和
+completion 都是同一个 `codesmith` 二进制文件的子命令；不带子命令运行
+`codesmith`（可选地带 `--prompt`）会启动交互式 REPL。
 
 ### 启动更新检查
 
-默认情况下，TUI 会在启动时后台检查最新的稳定版 CodeSmith，并且仅当
+默认情况下，REPL 会在启动时后台检查最新的稳定版 CodeSmith，并且仅当
 有更新的版本可用且官方发布资源完整时，才显示一条简短的 toast 提示。
 
 对于隔离网络（air-gapped）、企业代理或托管桌面环境，可以完全禁用
@@ -308,7 +308,7 @@ update_uri = "https://internal.mirror.example/codesmith/releases/latest"
 当 `update_uri` 未设置时，启动检查会优先使用发布镜像环境变量（如
 `CODESMITH_RELEASE_BASE_URL`），然后才回退到官方 GitHub API 端点。
 如果已配置的 `update_uri` 无法获取或解析，并且设置了发布镜像环境
-变量，TUI 会回退到该镜像而不是启动失败。
+变量，codesmith 会回退到该镜像而不是启动失败。
 
 ## 配置档案（Profiles）
 
@@ -470,7 +470,7 @@ default_text_model = "codesmith-coder:1.3b"
   `~/.codesmith/tasks`）
 - `CODESMITH_HOME`（覆盖基础数据目录；默认为 `~/.codesmith`）
 - `CODESMITH_RELEASE_BASE_URL`（发布资源镜像，供 `codesmith update`
-  以及 `[update].update_uri` 未设置时的 TUI 启动更新检查使用，
+  以及 `[update].update_uri` 未设置时的 REPL 启动更新检查使用，
   或在该配置的 URI 无法获取时作为回退）
 - `CODESMITH_AUTOMATIONS_DIR`（覆盖 automations 存储目录；默认使用
   `~/.codesmith/automations`）
@@ -490,8 +490,7 @@ default_text_model = "codesmith-coder:1.3b"
 - `CODESMITH_CAPACITY_PRIOR_V4_FLASH`
 - `CODESMITH_CAPACITY_PRIOR_FALLBACK`
 - `NO_ANIMATIONS`（`1|true|yes|on` 会在启动时强制 `low_motion = true` 和
-  `fancy_animations = false`，无论已保存的设置如何；参见
-  [`docs/ACCESSIBILITY.md`](./ACCESSIBILITY.md)）。
+  `fancy_animations = false`，无论已保存的设置如何）。
 - `SSL_CERT_FILE` — 企业代理 / TLS 检测 MITM 用户将其指向一个
   PEM 捆绑包（或单个 DER 证书），这些证书会被添加到平台系统信任库
   旁边。失败会记录警告并继续——现有的系统根证书仍然适用。
@@ -550,7 +549,7 @@ append_system_prompt = ["~/.codesmith/extra-prompt.md"]
 覆盖：它们能保持宪法（真实性、验证纪律、工具使用强制要求）、
 工具分类法以及模式/审批层不变。设置 `system_prompt` /
 `system_prompt_file` 会丢弃所有这些，模型因此失去根基——只在你确实
-需要从头构建一个角色时才使用。在 TUI 中运行 `/system`（或
+需要从头构建一个角色时才使用。在 REPL 中运行 `/system`（或
 `/xitong`）可以查看最终装配的提示词并确认你的层已生效。
 
 exec 模式 CLI 也接受一次性等价参数：
@@ -560,7 +559,7 @@ exec 模式 CLI 也接受一次性等价参数：
 
 ### `/hooks` 列表
 
-在 TUI 中运行 `/hooks`（或 `/hooks list`）可以查看每个已配置的
+在 REPL 中运行 `/hooks`（或 `/hooks list`）可以查看每个已配置的
 生命周期钩子（按事件分组），包括每个钩子的名称、命令预览、超时和
 条件。`[hooks].enabled` 标志的状态会显示在顶部，因此当钩子被全局
 禁用时一目了然。钩子在 `[[hooks.hooks]]` 条目下配置——完整的
@@ -605,9 +604,9 @@ continue_on_error = true
 以 `0` 退出但 stdout 为空，或 stdout JSON 中没有 `text`，则保持当前
 文本不变。JSON 的 `text` 字段不得为空；`{"text":""}` 会被视为无效
 stdout 并被忽略。以 `2` 退出会在该轮开始前阻止提交；`reason` 字段、
-stderr 或 stdout 可以提供在 TUI 中显示的状态消息。其他非零退出遵循
+stderr 或 stdout 可以提供在 REPL 中显示的状态消息。其他非零退出遵循
 钩子的 `continue_on_error` 设置。当 `continue_on_error = true` 允许
-提交继续时，超时和启动失败也会作为短暂的 TUI 状态消息显示。
+提交继续时，超时和启动失败也会作为短暂的 REPL 状态消息显示。
 
 多个 `message_submit` 钩子按配置顺序运行，每个钩子接收上一个钩子
 产生的文本。标记为 `background = true` 的钩子仅用于观察，不能转换或
@@ -620,12 +619,12 @@ stderr 或 stdout 可以提供在 TUI 中显示的状态消息。其他非零退
 `CODESMITH_THREAD_ID`，它携带持久线程 id，并且在结构化钩子载荷中也
 以 `thread_id` 字段提供。
 
-### 输入框暂存（`/stash`，Ctrl+S）
+### 输入框暂存（`/stash`）
 
-在输入框中按 **Ctrl+S** 可将当前草稿存入
-`~/.codesmith/composer_stash.jsonl`。`/stash list` 显示已暂存的草稿
-及其单行预览和时间戳；`/stash pop` 恢复最近暂存的草稿（LIFO）；
-`/stash clear` 清空该文件。上限为 200 条；多行草稿可完整往返。
+输入框暂存（Ctrl+S 存入 `~/.codesmith/composer_stash.jsonl`、
+`/stash list`/`pop`/`clear`）是 ratatui 输入框的功能，已随 TUI 在
+v0.9.0 中移除。在基于行的 REPL 中，`/stash` 会打印一条提示，
+说明目前尚无行模式等价物。
 
 ## 设置文件（持久化 UI 偏好）
 
@@ -636,19 +635,23 @@ codesmith 还将用户偏好存储在：
 值得注意的设置包括 `auto_compact`（默认 `false`），它仅在接近当前
 模型上限时才启用替换式摘要。默认的 V4 路径会保留稳定的消息前缀以
 复用缓存；只有在明确想要自动替换压缩时才使用手动 `/compact` 或启用
-`auto_compact`。你可以在 TUI 中使用 `/settings` 和 `/config`
+`auto_compact`。你可以在 REPL 中使用 `/settings` 和 `/config`
 （交互式编辑器）查看或更新这些设置。
 
 常用设置键：
 
+基于行的 REPL 使用终端自身的颜色和固定的状态行渲染；`theme`、
+`background_color`、`sidebar_focus` 等外观键仍会被解析并保存（供
+全屏前端使用）。
+
 - `theme`（`terminal`、`system`、`dark`、`light`、`grayscale`、
   `catppuccin-mocha`、`tokyo-night`、`dracula`、`gruvbox-dark`、`claude`、
   `matrix`、`solarized-light`；默认 `terminal`）：`terminal` 不自行绘制
-  背景——各表面使用终端默认色，强调色使用 ANSI 命名色，因此 TUI 会像
+  背景——各表面使用终端默认色，强调色使用 ANSI 命名色，因此 UI 会像
   CLI 输出一样继承终端正在使用的调色板（Solarized、Nord、自定义配色
   等）。`system` 跟随终端背景检测（`COLORFGBG`，其次 macOS 外观），
   `dark`/`light` 使用内置深色调色板，`grayscale`
-  是极简的黑/白主题，具名社区预设则应用于整个 TUI。接受诸如 `whale`、
+  是极简的黑/白主题，具名社区预设则应用于整个 UI。接受诸如 `whale`、
   `mono`、`black-white`、`tokyonight` 和 `gruvbox` 之类的别名。
 - `auto_compact`（开/关，默认关）
 - `paste_burst_detection`（开/关，默认开）：为不发出括号粘贴
@@ -673,10 +676,10 @@ codesmith 还将用户偏好存储在：
   明确的用户语言仍然优先；即使解析出的语言是英语，中文对话也应当
   产生中文 `reasoning_content` 和中文最终回复。
 - `background_color`（`#RRGGBB`、`RRGGBB` 或 `default`）：可选的
-  主 TUI 背景色，应用于根界面、页眉、会话记录和页脚表面，同时保持
+  主背景色，应用于主要 UI 表面，同时保持
   面板对比度。
-- `cost_currency`（`usd`、`cny`；默认 `usd`）：页脚、上下文面板、
-  `/cost`、`/tokens` 以及长轮次通知摘要使用的货币。别名 `rmb` 和
+- `cost_currency`（`usd`、`cny`；默认 `usd`）：`/cost`、
+  `/tokens` 以及成本显示使用的货币。别名 `rmb` 和
   `yuan` 会归一化为 `cny`。
 - `default_mode`（agent、plan、yolo；接受旧版 `normal` 并归一化为 `agent`）
 - `sidebar_focus`（`auto`、`work`、`tasks`、`agents`、`context`、
@@ -690,34 +693,18 @@ codesmith 还将用户偏好存储在：
 
 ### 附属文件
 
-- `~/.codesmith/tui.toml` — 与代理/项目配置解耦的 TUI 专属偏好，
-  因此切换项目后仍然保留：`theme`（默认 `"dark"`）、
-  `font_size`（`0` = 终端默认，转发给支持的前端）、以及 `[keybinds]`
-  按键覆盖，如 `submit = "ctrl+enter"` / `new_line = "enter"`。文件
-  缺失时回退到 `config.toml` 的 `[tui]` 节，再回退到内置默认值。
-  注意：加载器已定义但尚未接入启动流程——目前编辑该文件
-  不产生效果。
 - `providers.toml` — 内置 provider 清单（每个 provider 一条：id、
   backend、base URL、默认模型），进程内只读一次。可用
   `CODESMITH_PROVIDERS_MANIFEST` 覆盖其路径以测试备用注册表。
 
-UI 中只有 `agent`、`plan` 和 `yolo` 是可见模式。使用 `/preset agent`（或 Tab 循环）在它们
-之间切换。为兼容起见，带有 `default_mode = "normal"` 的旧设置文件仍会
+UI 中只有 `agent`、`plan` 和 `yolo` 是可见模式。使用 `/mode`（或
+`/yolo` 快捷方式）在它们之间切换。为兼容起见，带有
+`default_mode = "normal"` 的旧设置文件仍会
 加载为 `agent`。
 
 本地化范围记录在 [LOCALIZATION.md](LOCALIZATION.md) 中。v0.7.6 核心
-包仅覆盖高可见度的 TUI 界面；provider/工具 schema、个性提示词和完整
+包仅覆盖高可见度的 UI 界面；provider/工具 schema、个性提示词和完整
 文档保持英语，除非以后显式翻译。
-
-可读性语义：
-
-- 选区在会话记录、输入框菜单和模态框中使用统一样式。
-- 页脚提示使用专门的语义角色（`FOOTER_HINT`），使提示文本在各主题下
-  保持可读。
-- 页脚包含一个紧凑的 `coherence` 标签，描述当前会话此刻的稳定性和
-  专注度。可能的状态有 `healthy`、`crowded`、`refreshing`、
-  `verifying` 和 `resetting`；它们派生自容量和压缩事件，不会在普通
-  UI 中暴露内部公式。
 
 ### Token 数量与驱动项
 
@@ -739,7 +726,7 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
 
 ## 配置键参考
 
-### 核心键（供 TUI/引擎使用）
+### 核心键（供 REPL/引擎使用）
 
 - `provider`（字符串，可选）：`deepseek`（默认）、`nvidia-nim`、`openai`、`atlascloud`、`wanjie-ark`、`openrouter`、`xiaomi-mimo`、`novita`、`fireworks`、`siliconflow`、`moonshot`、`sglang`、`vllm`、`ollama`、`volcengine` 或 `anthropic`。`volcengine` 指向 Volcengine Ark 的 OpenAI 兼容端点（环境变量别名 `VOLCENGINE_API_KEY` / `VOLCENGINE_ARK_API_KEY` / `ARK_API_KEY`）；`anthropic` 指向 Anthropic Messages API（环境变量别名 `ANTHROPIC_API_KEY` / `CLAUDE_API_KEY`）。旧版 `deepseek-cn` 配置仍被接受，作为 `deepseek` 的别名；DeepSeek 在全球使用相同的官方主机 [`https://api.deepseek.com`](https://api-docs.deepseek.com/)。`nvidia-nim` 通过 `https://integrate.api.nvidia.com/v1` 指向 NVIDIA NIM 托管的 DeepSeek 端点；`openai` 指向通用 OpenAI 兼容端点，默认为 `https://api.openai.com/v1`；`atlascloud` 指向 AtlasCloud 的 OpenAI 兼容端点 `https://api.atlascloud.ai/v1`；`wanjie-ark` 指向 Wanjie Ark 的 OpenAI 兼容端点 `https://maas-openapi.wanjiedata.com/api/v1`；`openrouter` 指向 `https://openrouter.ai/api/v1`；`xiaomi-mimo` 指向小米 MiMo 的 OpenAI 兼容端点 `https://api.xiaomimimo.com/v1`；`novita` 指向 `https://api.novita.ai/v1`；`fireworks` 指向 `https://api.fireworks.ai/inference/v1`；`siliconflow` 指向 SiliconFlow，默认为 `https://api.siliconflow.com/v1`；`moonshot` 指向 Moonshot/Kimi，默认为 `https://api.moonshot.ai/v1`；`sglang` 指向自托管的 OpenAI 兼容端点，默认为 `http://localhost:30000/v1`；`vllm` 指向自托管的 vLLM OpenAI 兼容端点，默认为 `http://localhost:8000/v1`；`ollama` 指向 Ollama 的 OpenAI 兼容端点，默认为 `http://localhost:11434/v1`。
 - `api_key`（字符串，托管 provider 必填）：对 DeepSeek/托管 provider 必须非空（或设置该 provider 的 API 密钥环境变量）。自托管的 SGLang、vLLM 和 Ollama 可以省略。
@@ -755,12 +742,12 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   `CODESMITH_AUTH_MODE` 可覆盖。
 - `base_url`（字符串，可选）：对 DeepSeek 的 OpenAI 兼容 Chat Completions API 默认为 `https://api.deepseek.com/beta`，包括旧版 `provider = "deepseek-cn"` 配置。其他默认值：`nvidia-nim` 为 `https://integrate.api.nvidia.com/v1`，`openai` 为 `https://api.openai.com/v1`，`atlascloud` 为 `https://api.atlascloud.ai/v1`，`wanjie-ark` 为 `https://maas-openapi.wanjiedata.com/api/v1`，`openrouter` 为 `https://openrouter.ai/api/v1`，`xiaomi-mimo` 为 `https://api.xiaomimimo.com/v1`，`novita` 为 `https://api.novita.ai/v1`，`fireworks` 为 `https://api.fireworks.ai/inference/v1`，`siliconflow` 为 `https://api.siliconflow.com/v1`，`moonshot` 为 `https://api.moonshot.ai/v1`，`sglang` 为 `http://localhost:30000/v1`，`vllm` 为 `http://localhost:8000/v1`，`ollama` 为 `http://localhost:11434/v1`。显式设置 `https://api.deepseek.com` 或 `https://api.deepseek.com/v1` 可退出 DeepSeek beta 功能。
 - `default_text_model`（字符串，可选）：DeepSeek 和通用 OpenAI 兼容端点默认为 `deepseek-v4-pro`，NVIDIA NIM 为 `deepseek-ai/deepseek-v4-pro`，AtlasCloud 为 `deepseek-ai/deepseek-v4-flash`，Wanjie Ark 为 `deepseek-reasoner`，OpenRouter 和 Novita 为 `deepseek/deepseek-v4-pro`，小米 MiMo 为 `mimo-v2.5-pro`，Fireworks 为 `accounts/fireworks/models/deepseek-v4-pro`，SiliconFlow 为 `deepseek-ai/DeepSeek-V4-Pro`，Moonshot 为 `kimi-k2.6`，SGLang/vLLM 为 `deepseek-ai/DeepSeek-V4-Pro`，Ollama 为 `deepseek-coder:1.3b`。当前公开的 DeepSeek ID 是 `deepseek-v4-pro` 和 `deepseek-v4-flash`，两者都具有 1M 上下文窗口、384K 最大输出，并且默认启用思考模式。`deepseek-chat` 和 `deepseek-reasoner` 是 `deepseek-v4-flash` 的兼容别名，但 SiliconFlow 除外：它将 `deepseek-reasoner` 和 `deepseek-r1` 映射到其 Pro 模型，而 `deepseek-chat` 和 `deepseek-v3` 映射到 Flash。Provider 专属映射会在支持的情况下将 `deepseek-v4-pro` / `deepseek-v4-flash` 转换为各 provider 的模型 ID。OpenRouter 还识别较新的大型 ID，如 `arcee-ai/trinity-large-thinking`、`qwen/qwen3.7-max`、`xiaomi/mimo-v2.5-pro`、`qwen/qwen3.6-35b-a3b`、`google/gemma-4-31b-it` 和 `moonshotai/kimi-k2.6`。通用 `openai`、`atlascloud`、`wanjie-ark`、`xiaomi-mimo` 以及 Ollama 的模型 ID 会原样透传。带有自定义 `base_url` 的 OpenRouter 和 SiliconFlow provider 配置也会保留显式模型值，这使得 OpenAI 兼容网关可以接受裸模型 ID。使用 `/models` 或 `codesmith models` 从你配置的端点发现可用 ID。`CODESMITH_MODEL` 可为单个进程覆盖此项。
-- `model`（字符串，可选）：通用模型覆盖槽位，由 `codesmith` 门面和项目
-  overlay 消费；门面会把解析出的模型作为 `CODESMITH_MODEL` 转发给 TUI。
+- `model`（字符串，可选）：通用模型覆盖槽位，由项目
+  overlay 消费；其环境变量等价物是 `CODESMITH_MODEL`。
   手写配置中优先使用明确的 `default_text_model` 或
   `[providers.<name>].model` 槽位。
-- `output_mode` / `log_level`（字符串，可选）：门面级的输出与日志开关，
-  保存在同一文件中；TUI 从环境变量读取（`CODESMITH_OUTPUT_MODE`、
+- `output_mode` / `log_level`（字符串，可选）：输出与日志开关，
+  保存在同一文件中；运行时从环境变量读取（`CODESMITH_OUTPUT_MODE`、
   `CODESMITH_LOG_LEVEL` / `RUST_LOG`）。两者都允许在项目 overlay 中设置。
 - `strict_tool_mode`（布尔，可选）：为 `true` 时发送
   `tool_choice: "required"`，并让兼容的函数 schema 启用 DeepSeek beta
@@ -870,8 +857,8 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   演示文稿、电子表格、PDF 以及飞书/Lark。
 - `mcp_config_path`（字符串，可选）：默认为 `~/.codesmith/mcp.json`，
   当 CodeSmith 路径不存在时回退到旧版 `~/.codesmith/mcp.json`。它显示
-  在 `/config` 中，可以从 TUI 修改。新路径会被 `/mcp` 立即使用，但
-  重建模型可见的 MCP 工具池需要重启 TUI。
+  在 `/config` 中，可以从 REPL 修改。新路径会被 `/mcp` 立即使用，但
+  重建模型可见的 MCP 工具池需要重启会话。
 - `notes_path`（字符串，可选）：默认为 `~/.codesmith/notes.txt`，
   当 CodeSmith 路径不存在时回退到旧版 `~/.codesmith/notes.txt`，
   由模型可见的 `note` 工具使用。
@@ -892,7 +879,7 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   会被读写，输入框的 `# foo` 快速记录开箱即用。生效值按优先级级联
   （从高到低）：`CODESMITH_DISABLE_AUTO_MEMORY` 环境变量、bare/simple
   模式、未设 `CODESMITH_REMOTE_MEMORY_DIR` 的远程模式、该设置（或
-  `CODESMITH_MEMORY=on`）、最后默认开启。启用后，TUI 将用户记忆文件
+  `CODESMITH_MEMORY=on`）、最后默认开启。启用后，运行时会将用户记忆文件
   加载到 `<user_memory>` 提示词块中，在输入框中启用 `# foo` 快速记录，
   显示 `/memory` 斜杠命令，并注册 `remember` 工具。
   - `[memory].kod_enabled`（布尔，默认 `false`）：把记忆从单文件演化
@@ -976,60 +963,10 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   - `[capacity].deepseek_v4_pro_prior`（浮点，默认 `3.5`）
   - `[capacity].deepseek_v4_flash_prior`（浮点，默认 `4.2`）
   - `[capacity].fallback_default_prior`（浮点，默认 `3.8`）
-- `[notifications].method`（字符串，可选）：`auto`、`osc9`、`bel`、
-  `kitty`、`ghostty` 或 `off`。默认为 `auto`。TUI 会在耗时达到
-  `threshold_secs` 的已完成（成功）轮次上触发；失败和取消的轮次保持
-  静默。`auto` 对 `iTerm.app`、`Ghostty`、`WezTerm` 和 `Cmux`
-  （先检测 `$TERM_PROGRAM`，再检测 `$LC_TERMINAL`）解析为 `osc9`。
-  否则回退为 macOS / Linux 上的 `bel` 和 Windows 上的 `off`（在
-  Windows 上 BEL 会映射为系统错误提示音——完整原因请参阅
-  [通知](#通知)小节）。`kitty` 和 `ghostty` 分别显式选择
-  Kitty OSC 99 和 Ghostty OSC 777 通知协议。
-- `[notifications].threshold_secs`（整数，可选）：默认为 `30`。
-  只有耗时达到或超过该值的已完成轮次才会触发通知。
-- `[notifications].include_summary`（布尔，可选）：默认为 `false`。
-  当为 `true` 时，通知正文包含耗时以及按配置显示货币计的该轮成本。
-- `[notifications].completion_sound`（字符串，可选）：`off`、`beep`
-  （默认）或 `bell`——每个轮次结束时伴随 ✅ 标记播放的提示音。`beep`
-  使用系统通知音（Windows 上为 `MessageBeep`）；`bell` 发出 `\x07`
-  字节。
-- `tui.alternate_screen`（字符串，可选）：`auto`、`always` 或 `never`。
-  保留此项是为了配置兼容性，但交互式会话现在始终使用 TUI 拥有的备用
-  屏幕，因此宿主终端的回滚缓冲无法劫持视口。
-- `tui.mouse_capture`（布尔，可选，在非 Windows 终端上以及备用屏幕
-  激活时的 Windows Terminal/ConEmu/Cmder 上默认为 `true`；在旧版
-  Windows 控制台和 JetBrains JediTerm 内——PyCharm/IDEA/CLion 等——
-  默认为 `false`，因为在这些环境中鼠标事件转义序列会以乱码文本的
-  形式泄漏到输入流中）：启用内部鼠标滚动、会话
-  记录选择、右键上下文操作以及会话记录滚动条拖动。TUI 拥有的拖动
-  选择只复制会话记录文本，移除段落中因视觉换行产生的换行符，并使
-  选区限定在会话记录窗格内。将其设为 `false` 或使用
-  `--no-mouse-capture` 运行可获得原生终端选择；设为 `true` 或使用
-  `--mouse-capture` 运行可在任何默认关闭的地方选择开启。在原生终端
-  选择下，尤其是在旧版 Windows 控制台上或禁用鼠标捕获时，选区可能
-  会跨过右侧边栏并包含视觉换行，因为此时选择由终端而非 TUI 拥有。
-- `tui.terminal_probe_timeout_ms`（整数，可选，默认 `500`）：启动时
-  终端模式探测的超时时间，单位毫秒。值被钳制在 `100..=5000`；超时
-  会发出警告并中止启动，而不是无限挂起。
-- `tui.osc8_links`（布尔，可选，默认 `true`）：在会话记录输出中的
-  URL 周围发出 OSC 8 转义序列，使支持它的终端（iTerm2、
-  Terminal.app 13+、Ghostty、Kitty、WezTerm、Alacritty、较新的
-  gnome-terminal/konsole）将其渲染为 Cmd+点击的超链接。不支持
-  OSC 8 的终端渲染纯 URL 并忽略该转义。对错误渲染该序列的终端设为
-  `false`；选择/剪贴板输出总是会剥离这些转义。
-- `tui.status_items`（数组，可选）：有序的页脚条目。缺省使用内置
-  默认页脚；显式 `[]` 表示全部隐藏。可用条目：`mode`、`model`、
-  `cost`、`status`、`coherence`、`agents`、`reasoning_replay`、
-  `prefix_stability`、`cache`、`context_percent`、`git_branch`、
-  `last_tool_elapsed`、`rate_limit`、`tokens`、`balance`。左簇条目
-  （mode/model/cost/status）与右簇芯片在各自一侧保持给定顺序。
-  可用 `/statusline` 交互编辑。
-- `tui.notification_condition`（字符串，可选）：`always`（每个成功
-  轮次都通知，忽略 `[notifications].threshold_secs`）或 `never`
-  （抑制轮次完成通知）。未设置时回退到 `[notifications]` 默认值。
-- `tui.composer_arrows_scroll`（布尔，可选）：空输入框上的普通
-  Up/Down 滚动会话记录而不是召回输入历史——对把滚轮手势映射为
-  方向键的终端有用。仅在鼠标捕获关闭时默认 `true`，否则 `false`。
+- 通知：`[notifications]` 表和所有 `tui.*` 键已随 ratatui TUI 在 v0.9.0
+  中移除。桌面通知现在只通过模型可调用的 `notify` 工具发出，它会自动
+  检测终端协议（OSC 9、Kitty OSC 99、Ghostty OSC 777 或 BEL）；不再
+  存在轮次完成通知配置。
 - `network.*`（可选）：按域名的出站网络策略，管
   `fetch_url`、`web_search` 和 MCP HTTP 调用：
   - `[network].default`（`"allow"` | `"deny"` | `"prompt"`，默认
@@ -1132,39 +1069,15 @@ enabled = true
 
 ### 通知
 
-当一轮**成功完成**且耗时超过阈值时，TUI 可以发出桌面通知（OSC 9
-转义或纯 BEL），这样你可以在长任务运行时切换到其他窗口。失败或
-取消的轮次有意保持静默——该通知是"你的任务已就绪"的提示，而不是
-通用的提醒。配置位于 `[notifications]` 之下：
-
-```toml
-[notifications]
-method          = "auto"  # auto | osc9 | bel | off
-threshold_secs  = 30      # only notify when the turn took >= this many seconds
-include_summary = false   # include elapsed time + cost in the notification body
-```
-
-各方法的语义：
-
-- `auto`（默认）——对 `iTerm.app`、`Ghostty` 和 `WezTerm`（通过
-  `$TERM_PROGRAM` 检测）选择 `osc9`。在 macOS 和 Linux 上回退为
-  `bel`。**在 Windows 上回退为 `off`** 而不是 `bel`，因为 Windows
-  音频栈会把 `\x07` 映射为 `SystemAsterisk` / `MB_OK` 提示音——与
-  应用错误弹窗使用的声音相同，因此成功轮次的通知听起来会像错误
- 。
-- `osc9` —— 发出 `\x1b]9;<msg>\x07`。在 tmux 内该序列会被包装在
-  DCS passthrough 中，以便到达外层终端。
-- `bel` —— 发出单个 `\x07` 字节。在 Windows 上只有当你确实想要恢复
-  提示音时才使用它。
-- `off` —— 完全禁用轮次结束通知。
-
-在已知 OSC-9 终端（例如 Windows 上的 WezTerm）内运行的 Windows 用户
-仍会收到 OSC-9 通知；`off` 回退仅在未检测到可识别的 `TERM_PROGRAM`
-时适用。
+`[notifications]` 表已随 ratatui TUI 在 v0.9.0 中移除。通知现在只通过
+模型可调用的 `notify` 工具发出——模型在认为有必要时（例如长任务完成时）
+发送桌面通知，该工具会自动检测终端协议（OSC 9、Kitty OSC 99、
+Ghostty OSC 777 或 BEL）。没有任何需要配置的内容；如果你的终端没有
+显示通知，那是终端能力问题，而不是配置问题。
 
 ### 已解析但当前未使用（为未来版本保留）
 
-这些键会被配置加载器接受，但目前交互式 TUI 或内置工具并不使用：
+这些键会被配置加载器接受，但目前交互式 REPL 或内置工具并不使用：
 
 - `tools_file`
 
@@ -1250,10 +1163,10 @@ exec_policy = true
 
 你也可以为单次运行覆盖功能开关：
 
-- `codesmith-tui --enable web_search`
-- `codesmith-tui --disable subagents`
+- `codesmith --enable web_search`
+- `codesmith --disable subagents`
 
-使用 `codesmith-tui features list` 查看已知开关及其生效状态。
+使用 `codesmith features list` 查看已知开关及其生效状态。
 
 ## 网页搜索 Provider
 
@@ -1328,18 +1241,18 @@ allowed_sandbox_modes = ["read-only", "workspace-write"]
 
 公式、干预行为和遥测请参阅 `docs/capacity_controller.md`。
 
-## 关于 `codesmith-tui doctor` 的说明
+## 关于 `codesmith doctor` 的说明
 
-`codesmith-tui doctor` 遵循与 TUI 其余部分相同的配置解析规则。也就是
+`codesmith doctor` 遵循与二进制文件其余部分相同的配置解析规则。也就是
 说 `--config`、`CODESMITH_CONFIG_PATH` 和旧版 `CODESMITH_CONFIG_PATH`
 都会被尊重，MCP/skills 检查使用解析后的 `mcp_config_path` /
 `skills_dir`（包括环境变量覆盖）。
 
-要初始化缺失的 MCP/skills 路径，请运行 `codesmith-tui setup --all`。
-也可以运行 `codesmith-tui setup --skills --local` 创建工作区本地的
+要初始化缺失的 MCP/skills 路径，请运行 `codesmith setup --all`。
+也可以运行 `codesmith setup --skills --local` 创建工作区本地的
 `./skills` 目录。
 
-`codesmith-tui doctor --json` 输出机器可读的报告，并跳过实时 API
+`codesmith doctor --json` 输出机器可读的报告，并跳过实时 API
 连通性探测。顶层键有：`version`、`config_path`、`config_present`、
 `workspace`、`api_key.source`、`base_url`、`default_text_model`、
 `mcp`、`skills`、`tools`、`plugins`、`sandbox`、`platform`、
@@ -1358,7 +1271,7 @@ allowed_sandbox_modes = ["read-only", "workspace-write"]
 
 ## setup 的 status、clean 与扩展目录
 
-`codesmith-tui setup` 在现有的 `--mcp`、`--skills`、`--local`、
+`codesmith setup` 在现有的 `--mcp`、`--skills`、`--local`、
 `--all` 和 `--force` 之外还接受几个标志：
 
 - `--status` —— 打印紧凑的一屏状态（api key、base URL、模型、
@@ -1386,7 +1299,7 @@ allowed_sandbox_modes = ["read-only", "workspace-write"]
 ## 引擎为何剥离 XML/`[TOOL_CALL]` 文本
 
 codesmith 仅通过 API 工具通道（结构化的 `tool_use` / `tool_call` 项）
-发送和接收工具调用。`crates/tui/src/core/engine.rs` 中的流式循环会
+发送和接收工具调用。`crates/cli/src/core/engine.rs` 中的流式循环会
 识别一组固定的伪包装器起始标记——`[TOOL_CALL]`、`<codesmith:tool_call`、
 `<tool_call`、`<invoke `、`<function_calls>`——并将它们从可见的助手
 文本中清除，而绝不会把它们变成结构化工具调用。当包装器被剥离时，

@@ -1,6 +1,6 @@
 # CodeSmith Mods — Rhai 脚本 mod 层
 
-Mods 用 [Rhai](https://rhai.rs) 脚本扩展 CodeSmith，不需要编译 Rust：写几行脚本就能给智能体加**事件钩子**（拦截/改写工具调用、输入、请求）、注册**模型可见工具**、注册**斜杠命令**，并用 **KV 存储**跨会话记住状态。写完激活即可在当前会话生效，改完保存自动热加载。
+Mods 用 [Rhai](https://rhai.rs) 脚本扩展 CodeSmith，不需要编译 Rust：写几行脚本就能给智能体加**事件钩子**（拦截/改写工具调用、输入、请求）、注册**模型可见工具**、注册**斜杠命令**，并用 **KV 存储**跨会话记住状态。写完激活即可在当前会话生效，改动保存后重载即生效且同 id 免审批。
 
 最简单的一个 mod 只需要 3 行脚本——下面这个会在执行包含 `rm -rf` 的命令前把它拦下来：
 
@@ -53,7 +53,7 @@ on("tool-call", |e| {
 /mods activate hello
 ```
 
-**预期效果**：这是对该内容的一次性同意（mod 是进程内代码且跨会话持久，首次激活需要你确认）——确认后 mod 立即生效。此后同 id 的重载（含热载）不再需要审批；但若入口文件在你批准后发生了变更（git pull、编辑），该 mod 会回到待激活状态，需要重新 `/mods activate`。之后任何包含 `rm -rf` 的 shell 调用都会被拦截，模型会收到你的 reason 并改道。
+**预期效果**：这是对该内容的一次性同意（mod 是进程内代码且跨会话持久，首次激活需要你确认）——确认后 mod 立即生效。此后同 id 的重载不再需要审批；但若入口文件在你批准后发生了变更（git pull、编辑），该 mod 会回到待激活状态，需要重新 `/mods activate`。之后任何包含 `rm -rf` 的 shell 调用都会被拦截，模型会收到你的 reason 并改道。
 
 ### 第 3 步：注册一个模型可见工具 + KV 状态
 
@@ -75,7 +75,7 @@ register_tool(#{
 
 **预期效果**：下一个 turn 开始，模型的工具目录里出现 `call_count`；模型调用它时会拿到当前计数。`ok(...)` 构造成功结果（字符串原样返回，其他值 JSON 化）。
 
-### 第 4 步：注册斜杠命令，改代码看热载
+### 第 4 步：注册斜杠命令，重载改动
 
 再追加一个斜杠命令（反引号字符串支持 `${...}` 插值）：
 
@@ -88,7 +88,7 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 **预期效果**：
 
 - 敲 `/calls` 显示计数——`message(...)` 展示给用户（想触发智能体则用 `send(...)`）
-- 现在**直接改 `mod.rhai` 并保存**——watcher 监视两个 mods 根（500ms 防抖 + 1s 冷却），安静后自动重载，同 id 免审批。`/mods status` 可确认已加载的 mod 与 runner 代数
+- 现在**改 `mod.rhai`、保存，然后重载**——`/mods reload` 重新执行发现流程，同 id 免审批。`/mods status` 可确认已加载的 mod 与 runner 代数。（自动文件 watcher 及其 `[mods] watch` 开关已在 0.9.0 移除，重载改为显式触发。）
 
 到此你已经用过全部四种注册面：事件钩子、工具、命令、KV。完整 `/mods` 命令：`list` / `status` / `info <id>` / `activate <id>` / `enable|disable <id>` / `remove <id>` / `reload`。
 
@@ -184,7 +184,7 @@ register_skill(#{
 ```
 
 注册技能是内存中的目录条目（磁盘上没有 `SKILL.md`）：会出现在系统提示词的
-`## Skills` 块、`/skills` 与命令面板中，`load_skill` 按名解析——来源归因到
+`## Skills` 块与 `/skills` 中，`load_skill` 按名解析——来源归因到
 mod（`mod: <mod-id>`）而非文件路径。名字与文件系统目录冲突时文件系统获胜
 （该注册被跳过并在 `/skills` 出警告）；名字已被**别的** mod 注册则本 mod
 **加载失败**（错误点名持有者）。限制：≤16 个、名字须匹配
@@ -283,20 +283,22 @@ mod 在发现阶段即被跳过（日志有告警），不会进入激活流程�
 
 ## 生命周期与安全模型
 
-- **首次激活需确认**：新 mod 被发现 → 跳过加载 + TUI 被动提示待激活。激活只有两条路：`/mods activate <id>`，或审批 `manage_mods(action="activate")` 工具调用。激活记录持久化（`~/.codesmith/mods_state.toml`），同 id 重载免审批——**同意与入口文件的内容哈希绑定**：已激活 mod 的 `.rhai` 若随后变更（git pull、被自动批准的编辑），会回到待激活状态并要求重新确认。**为什么**：mod 是进程内代码且跨会话持久——提示注入可以在用户无感时植入常驻钩子，一次批准不能变成该 id 的常驻任意代码执行；首次确认（加内容变更后的重新确认）正是防这一点。
+- **首次激活需确认**：新 mod 被发现 → 跳过加载 + REPL 被动提示待激活。激活只有两条路：`/mods activate <id>`，或审批 `manage_mods(action="activate")` 工具调用。激活记录持久化（`~/.codesmith/mods_state.toml`），同 id 重载免审批——**同意与入口文件的内容哈希绑定**：已激活 mod 的 `.rhai` 若随后变更（git pull、被自动批准的编辑），会回到待激活状态并要求重新确认。**为什么**：mod 是进程内代码且跨会话持久——提示注入可以在用户无感时植入常驻钩子，一次批准不能变成该 id 的常驻任意代码执行；首次确认（加内容变更后的重新确认）正是防这一点。
 - **让智能体代写**：直接说"帮我写一个 mod，拦截 git push"——模型会经 `manage_mods` 工具写文件（`write`）并请求你审批激活（`activate`）。
 - **mod 写入遵循 workspace trust，两个根都管**：未信任工作区不发现项目 mod，`manage_mods` 也拒绝在其中写 mod——项目根与全局 `~/.codesmith/mods` 一视同仁（全局写入会安装加载到所有工作区（包括其它未信任工作区）的代码，信任信号不能被 `global` 标志绕过）。先信任工作区，再写入。
 - **已知边界**：mod 工具与 Rust 扩展工具同为"主 turn 独占"（子代理结构性不可见）；网络安装源（git clone 到 mods 目录）不在 MVP。
 
 ## 配置
 
-`config.toml` 的 `[mods]` 节（两者默认 true）：
+`config.toml` 的 `[mods]` 节（默认 true）：
 
 ```toml
 [mods]
-enabled = true   # 总开关：发现、manage_mods 工具、watcher
-watch = true     # 仅文件 watcher（500ms 防抖 + 1s 冷却）
+enabled = true   # 总开关：发现、manage_mods 工具
 ```
+
+`watch` 热重载文件 watcher 已在 0.9.0 移除；用 `/mods reload`（或
+`manage_mods(action="reload")`）来加载改动。
 
 ## 实现索引
 
@@ -306,11 +308,11 @@ watch = true     # 仅文件 watcher（500ms 防抖 + 1s 冷却）
 | `RhaiMod`（Extension 实现、native 注册、事件映射） | `crates/extensions/src/script/rhai_mod.rs` |
 | `ScriptHandler` / `ScriptToolDefinition` / `ScriptCommandDefinition` | `crates/extensions/src/script/adapters.rs` |
 | `ModKvStore`（每 mod 持久 KV） | `crates/extensions/src/script/kv.rs` |
-| `ModStateStore`（激活/禁用状态） | `crates/tui/src/mod_state.rs` |
-| 共享操作层（/mods 与 manage_mods 单一实现、watcher） | `crates/tui/src/mod_ops.rs` |
-| 装配/门控接入（`populate` 返回 pending 报告） | `crates/tui/src/core/engine.rs` |
-| `ManageModsTool`（模型可见） | `crates/tui/src/tools/mods.rs` |
-| `/mods` 命令 | `crates/tui/src/commands/mod_commands.rs` |
+| `ModStateStore`（激活/禁用状态） | `crates/cli/src/mod_state.rs` |
+| 共享操作层（/mods 与 manage_mods 单一实现） | `crates/cli/src/mod_ops.rs` |
+| 装配/门控接入（`populate` 返回 pending 报告） | `crates/cli/src/core/engine.rs` |
+| `ManageModsTool`（模型可见） | `crates/cli/src/tools/mods.rs` |
+| `/mods` 命令 | `crates/cli/src/interactive/commands/misc_cmds.rs` |
 
 ## 延伸阅读
 

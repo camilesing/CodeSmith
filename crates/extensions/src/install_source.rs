@@ -546,7 +546,7 @@ impl ExtensionSource for PrebuiltDylibSource {
         }
         let dest_file = dest.join(&filename);
         self.http.fetch_to(&self.url, &dest_file)?;
-        // 3. optional checksum verify (warn-absent is tui's job; source errors
+        // 3. optional checksum verify (warn-absent is the frontend's job; source errors
         //    only on supplied+mismatch)
         if let Some(expected) = &self.checksum {
             let bytes = std::fs::read(&dest_file).map_err(|e| {
@@ -621,7 +621,7 @@ impl ExtensionPlacer for Placer {
 
 /// HTTP fetch abstraction (§F5e Q1). Real impl `CurlHttpFetcher` shells out
 /// to `curl`; tests inject `FakeHttpFetcher`. `Send + Sync` so
-/// `Arc<dyn HttpFetcher>` crosses the tui→Installer handoff (install runs on
+/// `Arc<dyn HttpFetcher>` crosses the caller→Installer handoff (install runs on
 /// the UI thread; tests may cross threads).
 pub trait HttpFetcher: Send + Sync {
     /// Fetch `url` bytes into the file at `dest`. TLS verified (curl default).

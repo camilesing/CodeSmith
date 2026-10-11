@@ -5074,7 +5074,9 @@ fn mods_backfill_does_not_clobber_concurrent_state_writes() {
     let final_state = crate::mod_state::ModStateStore::load_default().expect("final store");
     assert!(
         final_state.is_activated("peer"),
-        "concurrent activation must survive the backfill persist"
+        "concurrent activation must survive the backfill persist; HOME={:?} CODESMITH_HOME={:?}",
+        std::env::var_os("HOME"),
+        std::env::var_os("CODESMITH_HOME")
     );
     let actual = crate::mod_ops::entry_file_hash(&mod_dir.join("mod.rhai")).expect("hash");
     assert_eq!(

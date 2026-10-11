@@ -20,18 +20,18 @@ If you just want the short version, see the
 
 ## 1. Supported platforms
 
-CodeSmith ships matched `codesmith` and `codesmith-tui` prebuilt binaries for
-these platform/architecture combinations. Linux ARM64 is available from
+CodeSmith ships a prebuilt `codesmith` binary for these platform/architecture
+combinations. Linux ARM64 is available from
 v0.8.8 onward; Linux RISC-V starts with the first release after v0.8.47.
 
-| Platform     | Architecture | npm install | `cargo install` | GitHub release asset                                  |
-| ------------ | ------------ | :---------: | :-------------: | ----------------------------------------------------- |
-| Linux        | x64 (x86_64) |     ✅      |       ✅        | `codesmith-linux-x64`, `codesmith-tui-linux-x64`        |
-| Linux        | arm64        |     ✅      |       ✅        | `codesmith-linux-arm64`, `codesmith-tui-linux-arm64`    |
-| Linux        | riscv64      |     ✅      |       ✅        | `codesmith-linux-riscv64`, `codesmith-tui-linux-riscv64`|
-| macOS        | x64          |     ✅      |       ✅        | `codesmith-macos-x64`, `codesmith-tui-macos-x64`        |
-| macOS        | arm64 (M-series) | ✅      |       ✅        | `codesmith-macos-arm64`, `codesmith-tui-macos-arm64`    |
-| Windows      | x64          |     ✅      |       ✅        | `codesmith-windows-x64.exe`, `codesmith-tui-windows-x64.exe` |
+| Platform     | Architecture | npm install | `cargo install` | GitHub release asset   |
+| ------------ | ------------ | :---------: | :-------------: | ---------------------- |
+| Linux        | x64 (x86_64) |     ✅      |       ✅        | `codesmith-linux-x64`        |
+| Linux        | arm64        |     ✅      |       ✅        | `codesmith-linux-arm64`     |
+| Linux        | riscv64      |     ✅      |       ✅        | `codesmith-linux-riscv64`   |
+| macOS        | x64          |     ✅      |       ✅        | `codesmith-macos-x64`       |
+| macOS        | arm64 (M-series) | ✅      |       ✅        | `codesmith-macos-arm64`     |
+| Windows      | x64          |     ✅      |       ✅        | `codesmith-windows-x64.exe` |
 | Other Linux (musl, other architectures) | — |   ❌¹    |       ✅²       | build from source                                     |
 | FreeBSD / OpenBSD              | — |   ❌      |       ✅²       | build from source                                     |
 
@@ -48,9 +48,10 @@ systems such as Alpine should use [Build from source](#7-build-from-source).
 > **Linux ARM64 note (v0.8.7 and earlier).** v0.8.7 and earlier do **not**
 > publish a Linux ARM64 prebuilt; users on HarmonyOS thin-and-light, Asahi
 > Linux, Raspberry Pi, AWS Graviton, etc. saw `Unsupported architecture: arm64`
-> from `npm i -g codesmith`. v0.8.8 publishes both `codesmith-linux-arm64`
-> and `codesmith-tui-linux-arm64`, so a plain `npm i -g codesmith` works
-> on any glibc-based ARM64 Linux. If you're stuck on v0.8.7, jump to
+> from `npm i -g codesmith`. v0.8.8 published both `codesmith-linux-arm64`
+> and `codesmith-tui-linux-arm64`, so a plain `npm i -g codesmith` worked
+> on any glibc-based ARM64 Linux from that release on (0.9.0 ships the
+> single `codesmith` binary). If you're stuck on v0.8.7, jump to
 > [Build from source](#7-build-from-source) — `cargo install` works fine.
 
 ---
@@ -96,9 +97,9 @@ npm install -g codesmith
 codesmith
 ```
 
-`postinstall` downloads the right pair of binaries from the matching GitHub
-release, verifies a SHA-256 manifest, and exposes both `codesmith` and
-`codesmith-tui` on your `PATH`.
+`postinstall` downloads the right binary from the matching GitHub
+release, verifies a SHA-256 manifest, and exposes `codesmith` on your
+`PATH`.
 
 Useful environment variables:
 
@@ -125,21 +126,19 @@ Useful environment variables:
 ## 4. Install via Cargo (any Tier-1 Rust target)
 
 If GitHub releases are slow, blocked, or you're on an unsupported architecture,
-install from crates.io directly. Both crates are required — the dispatcher
-delegates to the TUI runtime at runtime.
+install from crates.io directly.
 
 ```bash
 # Requires Rust 1.88+ (https://rustup.rs)
 cargo install codesmith-cli --locked   # provides `codesmith`
-cargo install codesmith-tui     --locked   # provides `codesmith-tui`
 codesmith --version
 ```
 
 ### China / mirror-friendly install
 
 > [!WARNING]
-> **Not ready yet.** The `cargo install codesmith-cli` / `codesmith-tui`
-> commands below pull crates that are not published yet. The mirror setup
+> **Not ready yet.** The `cargo install codesmith-cli` command below pulls a
+> crate that is not published yet. The mirror setup
 > itself still applies to [building from source](#7-build-from-source).
 
 When installing from mainland China, configure mirrors for both **rustup**
@@ -222,7 +221,7 @@ If you already have Nix with flake support, run:
 nix run github:camilesing/CodeSmith
 ```
 
-Nix builds `codesmith-tui` and then starts the `codesmith` dispatcher. Pass
+Nix builds the `codesmith` binary and starts it. Pass
 arguments after `--`, for example:
 
 ```sh
@@ -238,8 +237,8 @@ Add inputs to `flake.nix`:
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
-    codesmith-tui.url = "github:camilesing/CodeSmith";
-    codesmith-tui.inputs.nixpkgs.follows = "nixpkgs";
+    codesmith.url = "github:camilesing/CodeSmith";
+    codesmith.inputs.nixpkgs.follows = "nixpkgs";
   };
 }
 ```
@@ -248,7 +247,7 @@ Install into a NixOS module:
 
 ```nix
 {
-  outputs = { self, nixpkgs, codesmith-tui }:
+  outputs = { self, nixpkgs, codesmith }:
   let
     # replace system "x86_64-linux" with your system
     system = "x86_64-linux";
@@ -260,7 +259,7 @@ Install into a NixOS module:
       modules = [
         # ...
         {
-          environment.systemPackages = [ codesmith-tui.packages.${system}.default ];
+          environment.systemPackages = [ codesmith.packages.${system}.default ];
         }
       ];
     };
@@ -272,26 +271,24 @@ Install into a NixOS module:
 
 ## 6. Manual download from GitHub Releases
 
-Grab the matching pair of binaries for your platform from the
-[Releases page](https://github.com/camilesing/CodeSmith/releases) and drop them
-side by side into a directory on your `PATH` (e.g. `~/.local/bin`):
+Grab the binary for your platform from the
+[Releases page](https://github.com/camilesing/CodeSmith/releases) and drop it
+into a directory on your `PATH` (e.g. `~/.local/bin`):
 
 ```bash
 # Linux ARM64 example
 mkdir -p ~/.local/bin
 curl -L -o ~/.local/bin/codesmith      \
     https://github.com/camilesing/CodeSmith/releases/latest/download/codesmith-linux-arm64
-curl -L -o ~/.local/bin/codesmith-tui  \
-    https://github.com/camilesing/CodeSmith/releases/latest/download/codesmith-tui-linux-arm64
-chmod +x ~/.local/bin/codesmith ~/.local/bin/codesmith-tui
+chmod +x ~/.local/bin/codesmith
 codesmith --version
 ```
 
-> **macOS Gatekeeper note.** If you downloaded the binaries with a browser,
-> macOS may block them with "Apple cannot verify" warnings. Clear the quarantine
-> attribute on both binaries and retry:
+> **macOS Gatekeeper note.** If you downloaded the binary with a browser,
+> macOS may block it with an "Apple cannot verify" warning. Clear the quarantine
+> attribute and retry:
 > ```bash
-> xattr -d com.apple.quarantine ~/.local/bin/codesmith ~/.local/bin/codesmith-tui 2>/dev/null || true
+> xattr -d com.apple.quarantine ~/.local/bin/codesmith 2>/dev/null || true
 > ```
 
 Verify integrity against the per-release SHA-256 manifest:
@@ -343,12 +340,11 @@ git clone https://github.com/camilesing/CodeSmith.git
 cd CodeSmith
 
 cargo install --path crates/cli --locked   # provides `codesmith`
-cargo install --path crates/tui --locked   # provides `codesmith-tui`
 
 codesmith --version
 ```
 
-Both binaries land in `~/.cargo/bin/` by default; make sure that directory is
+The binary lands in `~/.cargo/bin/` by default; make sure that directory is
 on your `PATH`.
 
 ### Cross-compiling from x64 to ARM64 Linux
@@ -365,13 +361,11 @@ cargo install cross --locked
 
 # Per build
 cross build --release --target aarch64-unknown-linux-gnu -p codesmith-cli
-cross build --release --target aarch64-unknown-linux-gnu -p codesmith-tui
 ```
 
-The resulting binaries land in
-`target/aarch64-unknown-linux-gnu/release/codesmith` and
-`target/aarch64-unknown-linux-gnu/release/codesmith-tui`. Copy the matched pair
-to the ARM64 host (e.g. via `scp`) and `chmod +x` them.
+The resulting binary lands in
+`target/aarch64-unknown-linux-gnu/release/codesmith`. Copy it
+to the ARM64 host (e.g. via `scp`) and `chmod +x` it.
 
 If you don't have Docker available, install the cross-linker directly and let
 Cargo do the work:
@@ -386,7 +380,6 @@ linker = "aarch64-linux-gnu-gcc"
 EOF
 
 cargo build --release --target aarch64-unknown-linux-gnu -p codesmith-cli
-cargo build --release --target aarch64-unknown-linux-gnu -p codesmith-tui
 ```
 
 The same recipe works for `aarch64-unknown-linux-musl` if your distro is
@@ -448,8 +441,7 @@ set CARGO_HTTP_CHECK_REVOKE=false   # may be needed behind some Chinese ISPs
 cargo build --release
 ```
 
-Both binaries appear in `target\release\codesmith.exe` and
-`target\release\codesmith-tui.exe`.
+The binary appears in `target\release\codesmith.exe`.
 
 > **Prefer `npm install -g` on Windows unless you need to modify source.**
 > The npm package pulls prebuilt binaries and avoids the C toolchain
@@ -467,13 +459,13 @@ binaries. Either upgrade (`npm i -g codesmith@latest`) or use
 
 ### `MISSING_COMPANION_BINARY` at runtime
 
-The dispatcher (`codesmith`) requires the TUI runtime (`codesmith-tui`) to be on
-the same `PATH`. If you installed only one crate via `cargo install`, install
-both:
+Pre-0.9.0 releases shipped two binaries: the dispatcher (`codesmith`) required
+the TUI runtime (`codesmith-tui`) to be on the same `PATH`. Since 0.9.0 the
+single `codesmith` binary is self-contained and this error can no longer occur.
+If you still see it, you are running a pre-0.9.0 install — upgrade:
 
 ```bash
 cargo install codesmith-cli --locked
-cargo install codesmith-tui     --locked
 ```
 
 ### `codesmith update` reports `no asset found for platform codesmith-linux-aarch64`
@@ -506,7 +498,6 @@ binaries, run `codesmith update --check`):
 
 ```bash
 cargo install codesmith-cli --locked
-cargo install codesmith-tui     --locked
 ```
 
 - Or point `codesmith update` at a mirrored release-asset directory, as
@@ -539,8 +530,8 @@ The package requires the Cargo feature called `edition2024`, but that feature
 is not stabilized in this version of Cargo
 ```
 
-Install current stable Rust through rustup, then rerun the two Cargo install
-commands from [Section 4](#4-install-via-cargo-any-tier-1-rust-target). For
+Install current stable Rust through rustup, then rerun the Cargo install
+command from [Section 4](#4-install-via-cargo-any-tier-1-rust-target). For
 mainland China networks, this rsproxy-based sequence has been verified to work:
 
 ```bash
@@ -551,7 +542,6 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
 rustup default stable
 cargo install codesmith-cli --locked
-cargo install codesmith-tui     --locked
 ```
 
 Afterward, `which cargo` should point to `~/.cargo/bin/cargo`, not
@@ -657,9 +647,9 @@ Use one of these paths:
 3. Install via Cargo, which builds locally and does not download GitHub release
    assets. See [Section 4](#4-install-via-cargo-any-tier-1-rust-target).
 
-4. Download both `codesmith` and `codesmith-tui` manually from the
-   [Releases page](https://github.com/camilesing/CodeSmith/releases), place them
-   in a directory on `PATH`, and make them executable. See
+4. Download the `codesmith` binary manually from the
+   [Releases page](https://github.com/camilesing/CodeSmith/releases), place it
+   in a directory on `PATH`, and make it executable. See
    [Section 6](#6-manual-download-from-github-releases).
 
 ---

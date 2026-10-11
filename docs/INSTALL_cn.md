@@ -11,16 +11,16 @@
 
 ## 1. 支持的平台
 
-CodeSmith 为以下平台/架构组合提供配套的 `codesmith` 和 `codesmith-tui` 预构建二进制。Linux ARM64 从 v0.8.8 起可用；Linux RISC-V 从 v0.8.47 之后的第一个版本开始提供。
+CodeSmith 为以下平台/架构组合提供预构建的 `codesmith` 二进制。Linux ARM64 从 v0.8.8 起可用；Linux RISC-V 从 v0.8.47 之后的第一个版本开始提供。
 
-| 平台     | 架构 | npm install | `cargo install` | GitHub release 资产                                  |
-| ------------ | ------------ | :---------: | :-------------: | ----------------------------------------------------- |
-| Linux        | x64 (x86_64) |     ✅      |       ✅        | `codesmith-linux-x64`, `codesmith-tui-linux-x64`        |
-| Linux        | arm64        |     ✅      |       ✅        | `codesmith-linux-arm64`, `codesmith-tui-linux-arm64`    |
-| Linux        | riscv64      |     ✅      |       ✅        | `codesmith-linux-riscv64`, `codesmith-tui-linux-riscv64`|
-| macOS        | x64          |     ✅      |       ✅        | `codesmith-macos-x64`, `codesmith-tui-macos-x64`        |
-| macOS        | arm64 (M-series) | ✅      |       ✅        | `codesmith-macos-arm64`, `codesmith-tui-macos-arm64`    |
-| Windows      | x64          |     ✅      |       ✅        | `codesmith-windows-x64.exe`, `codesmith-tui-windows-x64.exe` |
+| 平台     | 架构 | npm install | `cargo install` | GitHub release 资产   |
+| ------------ | ------------ | :---------: | :-------------: | ---------------------- |
+| Linux        | x64 (x86_64) |     ✅      |       ✅        | `codesmith-linux-x64`        |
+| Linux        | arm64        |     ✅      |       ✅        | `codesmith-linux-arm64`      |
+| Linux        | riscv64      |     ✅      |       ✅        | `codesmith-linux-riscv64`    |
+| macOS        | x64          |     ✅      |       ✅        | `codesmith-macos-x64`        |
+| macOS        | arm64 (M-series) | ✅      |       ✅        | `codesmith-macos-arm64`      |
+| Windows      | x64          |     ✅      |       ✅        | `codesmith-windows-x64.exe`  |
 | 其他 Linux（musl、其他架构） | — |   ❌¹    |       ✅²       | 从源码构建                                     |
 | FreeBSD / OpenBSD              | — |   ❌      |       ✅²       | 从源码构建                                     |
 
@@ -29,7 +29,7 @@ CodeSmith 为以下平台/架构组合提供配套的 `codesmith` 和 `codesmith
 
 Linux release 资产是 glibc 构建，而不是 musl 构建。它们动态链接常规的 Linux 运行时库，例如 `libdbus-1` 和 `libc`；SQLite 目前通过 `rusqlite` 打包进二进制，因此对于官方 release 资产，用户不需要单独安装 `libsqlite3` 运行时包。基于 musl 的系统（如 Alpine）应使用[从源码构建](#7-从源码构建)。
 
-> **Linux ARM64 说明（v0.8.7 及更早版本）。** v0.8.7 及更早版本**不**发布 Linux ARM64 预构建；使用 HarmonyOS 轻薄本、Asahi Linux、树莓派、AWS Graviton 等的用户在 `npm i -g codesmith` 时会看到 `Unsupported architecture: arm64`。v0.8.8 发布了 `codesmith-linux-arm64` 和 `codesmith-tui-linux-arm64`，因此在任何基于 glibc 的 ARM64 Linux 上直接 `npm i -g codesmith` 即可。如果你停留在 v0.8.7，请跳到[从源码构建](#7-从源码构建) —— `cargo install` 可以正常工作。
+> **Linux ARM64 说明（v0.8.7 及更早版本）。** v0.8.7 及更早版本**不**发布 Linux ARM64 预构建；使用 HarmonyOS 轻薄本、Asahi Linux、树莓派、AWS Graviton 等的用户在 `npm i -g codesmith` 时会看到 `Unsupported architecture: arm64`。v0.8.8 发布了 `codesmith-linux-arm64` 和 `codesmith-tui-linux-arm64`，因此从该版本起在任何基于 glibc 的 ARM64 Linux 上直接 `npm i -g codesmith` 即可（0.9.0 起只发布单一的 `codesmith` 二进制）。如果你停留在 v0.8.7，请跳到[从源码构建](#7-从源码构建) —— `cargo install` 可以正常工作。
 
 ---
 
@@ -66,7 +66,7 @@ npm install -g codesmith
 codesmith
 ```
 
-`postinstall` 会从对应的 GitHub release 下载正确的二进制对，校验 SHA-256 清单，并将 `codesmith` 和 `codesmith-tui` 都暴露到你的 `PATH`。
+`postinstall` 会从对应的 GitHub release 下载正确的二进制，校验 SHA-256 清单，并将 `codesmith` 暴露到你的 `PATH`。
 
 有用的环境变量：
 
@@ -90,19 +90,18 @@ codesmith
 
 ## 4. 通过 Cargo 安装（任意 Tier-1 Rust 目标）
 
-如果 GitHub releases 慢、被屏蔽，或你使用的是不受支持的架构，请直接从 crates.io 安装。两个 crate 都是必需的 —— 调度器在运行时会委托给 TUI 运行时。
+如果 GitHub releases 慢、被屏蔽，或你使用的是不受支持的架构，请直接从 crates.io 安装。
 
 ```bash
 # Requires Rust 1.88+ (https://rustup.rs)
 cargo install codesmith-cli --locked   # provides `codesmith`
-cargo install codesmith-tui     --locked   # provides `codesmith-tui`
 codesmith --version
 ```
 
 ### 中国 / 镜像友好的安装
 
 > [!WARNING]
-> **尚未就绪。** 下面的 `cargo install codesmith-cli` / `codesmith-tui` 命令依赖的 crate 还没有发布。镜像配置本身仍然适用于[从源码构建](#7-从源码构建)。
+> **尚未就绪。** 下面的 `cargo install codesmith-cli` 命令依赖的 crate 还没有发布。镜像配置本身仍然适用于[从源码构建](#7-从源码构建)。
 
 在中国大陆安装时，请为 **rustup**（Rust 工具链安装器）和 **Cargo**（包 registry）都配置镜像，以避免 TLS 超时和下载失败。
 
@@ -171,7 +170,7 @@ CNB 部署模板见 [deploy/tencent-lighthouse/cnb](../deploy/tencent-lighthouse
 nix run github:camilesing/CodeSmith
 ```
 
-Nix 会构建 `codesmith-tui`，然后启动 `codesmith` 调度器。在 `--` 之后传递参数，例如：
+Nix 会构建 `codesmith` 二进制并启动它。在 `--` 之后传递参数，例如：
 
 ```sh
 nix run github:camilesing/CodeSmith -- --help
@@ -186,8 +185,8 @@ nix run github:camilesing/CodeSmith -- --help
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
-    codesmith-tui.url = "github:camilesing/CodeSmith";
-    codesmith-tui.inputs.nixpkgs.follows = "nixpkgs";
+    codesmith.url = "github:camilesing/CodeSmith";
+    codesmith.inputs.nixpkgs.follows = "nixpkgs";
   };
 }
 ```
@@ -196,7 +195,7 @@ nix run github:camilesing/CodeSmith -- --help
 
 ```nix
 {
-  outputs = { self, nixpkgs, codesmith-tui }:
+  outputs = { self, nixpkgs, codesmith }:
   let
     # replace system "x86_64-linux" with your system
     system = "x86_64-linux";
@@ -208,7 +207,7 @@ nix run github:camilesing/CodeSmith -- --help
       modules = [
         # ...
         {
-          environment.systemPackages = [ codesmith-tui.packages.${system}.default ];
+          environment.systemPackages = [ codesmith.packages.${system}.default ];
         }
       ];
     };
@@ -220,22 +219,20 @@ nix run github:camilesing/CodeSmith -- --help
 
 ## 6. 从 GitHub Releases 手动下载
 
-从 [Releases 页面](https://github.com/camilesing/CodeSmith/releases)获取与你的平台匹配的二进制对，并将它们并排放到你 `PATH` 上的某个目录（例如 `~/.local/bin`）：
+从 [Releases 页面](https://github.com/camilesing/CodeSmith/releases)获取与你的平台匹配的二进制，并将它放到你 `PATH` 上的某个目录（例如 `~/.local/bin`）：
 
 ```bash
 # Linux ARM64 example
 mkdir -p ~/.local/bin
 curl -L -o ~/.local/bin/codesmith      \
     https://github.com/camilesing/CodeSmith/releases/latest/download/codesmith-linux-arm64
-curl -L -o ~/.local/bin/codesmith-tui  \
-    https://github.com/camilesing/CodeSmith/releases/latest/download/codesmith-tui-linux-arm64
-chmod +x ~/.local/bin/codesmith ~/.local/bin/codesmith-tui
+chmod +x ~/.local/bin/codesmith
 codesmith --version
 ```
 
-> **macOS Gatekeeper 说明。** 如果你用浏览器下载了这些二进制，macOS 可能会以"Apple 无法验证"警告拦截它们。清除两个二进制上的隔离属性后重试：
+> **macOS Gatekeeper 说明。** 如果你用浏览器下载了二进制，macOS 可能会以"Apple 无法验证"警告拦截它。清除二进制上的隔离属性后重试：
 > ```bash
-> xattr -d com.apple.quarantine ~/.local/bin/codesmith ~/.local/bin/codesmith-tui 2>/dev/null || true
+> xattr -d com.apple.quarantine ~/.local/bin/codesmith 2>/dev/null || true
 > ```
 
 根据每个 release 的 SHA-256 清单校验完整性：
@@ -284,12 +281,11 @@ git clone https://github.com/camilesing/CodeSmith.git
 cd CodeSmith
 
 cargo install --path crates/cli --locked   # provides `codesmith`
-cargo install --path crates/tui --locked   # provides `codesmith-tui`
 
 codesmith --version
 ```
 
-默认情况下两个二进制都会落在 `~/.cargo/bin/`；请确保该目录在你的 `PATH` 上。
+默认情况下二进制会落在 `~/.cargo/bin/`；请确保该目录在你的 `PATH` 上。
 
 ### 从 x64 交叉编译到 ARM64 Linux
 
@@ -302,10 +298,9 @@ cargo install cross --locked
 
 # Per build
 cross build --release --target aarch64-unknown-linux-gnu -p codesmith-cli
-cross build --release --target aarch64-unknown-linux-gnu -p codesmith-tui
 ```
 
-生成的二进制位于 `target/aarch64-unknown-linux-gnu/release/codesmith` 和 `target/aarch64-unknown-linux-gnu/release/codesmith-tui`。将匹配的一对复制到 ARM64 主机（例如通过 `scp`）并对它们执行 `chmod +x`。
+生成的二进制位于 `target/aarch64-unknown-linux-gnu/release/codesmith`。将它复制到 ARM64 主机（例如通过 `scp`）并对其执行 `chmod +x`。
 
 如果你没有 Docker，可以直接安装交叉链接器，让 Cargo 完成其余工作：
 
@@ -319,7 +314,6 @@ linker = "aarch64-linux-gnu-gcc"
 EOF
 
 cargo build --release --target aarch64-unknown-linux-gnu -p codesmith-cli
-cargo build --release --target aarch64-unknown-linux-gnu -p codesmith-tui
 ```
 
 如果你的发行版基于 musl，同样的配方适用于 `aarch64-unknown-linux-musl`。
@@ -367,7 +361,7 @@ set CARGO_HTTP_CHECK_REVOKE=false   # may be needed behind some Chinese ISPs
 cargo build --release
 ```
 
-两个二进制分别出现在 `target\release\codesmith.exe` 和 `target\release\codesmith-tui.exe`。
+二进制出现在 `target\release\codesmith.exe`。
 
 > **在 Windows 上，除非你需要修改源码，否则优先使用 `npm install -g`。** npm 包会拉取预构建二进制，完全避免 C 工具链依赖 —— 见[第 3 节](#3-通过-npm-安装推荐)。
 
@@ -381,11 +375,10 @@ cargo build --release
 
 ### 运行时出现 `MISSING_COMPANION_BINARY`
 
-调度器（`codesmith`）要求 TUI 运行时（`codesmith-tui`）位于同一 `PATH` 上。如果你通过 `cargo install` 只安装了一个 crate，请两个都安装：
+0.9.0 之前的版本交付两个二进制：调度器（`codesmith`）要求 TUI 运行时（`codesmith-tui`）位于同一 `PATH` 上。0.9.0 起单一的 `codesmith` 二进制自包含，该错误不再可能出现。如果你仍然看到它，说明运行的是 0.9.0 之前的安装——请升级：
 
 ```bash
 cargo install codesmith-cli --locked
-cargo install codesmith-tui     --locked
 ```
 
 ### `codesmith update` 报告 `no asset found for platform codesmith-linux-aarch64`
@@ -410,7 +403,6 @@ cargo install codesmith-cli --locked
 
 ```bash
 cargo install codesmith-cli --locked
-cargo install codesmith-tui     --locked
 ```
 
 - 或者让 `codesmith update` 使用镜像的 release 资产目录，方法见下文。
@@ -437,7 +429,7 @@ The package requires the Cargo feature called `edition2024`, but that feature
 is not stabilized in this version of Cargo
 ```
 
-请通过 rustup 安装当前的稳定版 Rust，然后重新运行[第 4 节](#4-通过-cargo-安装任意-tier-1-rust-目标)中的两条 Cargo install 命令。对于中国大陆网络，以下基于 rsproxy 的流程已验证可用：
+请通过 rustup 安装当前的稳定版 Rust，然后重新运行[第 4 节](#4-通过-cargo-安装任意-tier-1-rust-目标)中的 Cargo install 命令。对于中国大陆网络，以下基于 rsproxy 的流程已验证可用：
 
 ```bash
 export RUSTUP_DIST_SERVER=https://rsproxy.cn
@@ -447,7 +439,6 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
 rustup default stable
 cargo install codesmith-cli --locked
-cargo install codesmith-tui     --locked
 ```
 
 之后，`which cargo` 应指向 `~/.cargo/bin/cargo`，而不是 `/usr/bin/cargo`。
@@ -531,7 +522,7 @@ target/debug/build/libsqlite3-sys-*/build-script-build
 
 3. 通过 Cargo 安装，它在本地构建，不会下载 GitHub release 资产。见[第 4 节](#4-通过-cargo-安装任意-tier-1-rust-目标)。
 
-4. 从 [Releases 页面](https://github.com/camilesing/CodeSmith/releases)手动下载 `codesmith` 和 `codesmith-tui`，放到 `PATH` 上的目录中并赋予可执行权限。见[第 6 节](#6-从-github-releases-手动下载)。
+4. 从 [Releases 页面](https://github.com/camilesing/CodeSmith/releases)手动下载 `codesmith`，放到 `PATH` 上的目录中并赋予可执行权限。见[第 6 节](#6-从-github-releases-手动下载)。
 
 ---
 

@@ -22,8 +22,8 @@ docker run --rm -it \
   ghcr.io/camilesing/codesmith:latest
 ```
 
-`codesmith docker` 会在命令行打印同一条 run 命令；它既不需要 TUI 二进制
-也不依赖配置，因此在镜像内部也能直接查到。
+`codesmith docker` 会在命令行打印同一条 run 命令；它不依赖配置，
+因此在镜像内部也能直接查到。
 
 使用固定的发布 tag 以获得可复现的安装：
 
@@ -261,7 +261,7 @@ docker run --rm -it \
 ## 非交互 / 流水线用法
 
 当 stdin 不是 TTY 时，`codesmith` 会进入分发器的一次性模式
-（`codesmith -c "…"`）。通过 stdin 管道传入提示词：
+（`codesmith exec "…"`）。通过 stdin 管道传入提示词：
 
 ```bash
 echo "Explain the Cargo.toml in structured English." | \

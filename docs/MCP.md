@@ -1,48 +1,47 @@
 # MCP (External Tool Servers)
 
-codesmith can load additional tools via MCP (Model Context Protocol). MCP servers are either local stdio child processes that the TUI spawns, or remote servers reached over Streamable HTTP (with legacy SSE fallback), SSE, or WebSocket.
+codesmith can load additional tools via MCP (Model Context Protocol). MCP servers are either local stdio child processes that the REPL spawns, or remote servers reached over Streamable HTTP (with legacy SSE fallback), SSE, or WebSocket.
 
 Browsing note:
 - `web.run` is the canonical built-in browsing tool.
 - `web_search` remains available as a compatibility alias for older prompts and integrations.
 
 Server mode note:
-- `codesmith-tui serve --mcp` runs the MCP stdio server.
-- `codesmith-tui serve --http` runs the runtime HTTP/SSE API (separate mode).
-- The `codesmith` dispatcher exposes `codesmith mcp-server` as an equivalent stdio
-  entrypoint used by the split CLI.
+- `codesmith serve --mcp` runs the MCP stdio server.
+- `codesmith serve --http` runs the runtime HTTP/SSE API (separate mode).
+- `codesmith mcp-server` is an equivalent stdio entrypoint.
 
 ## Bootstrap MCP Config
 
 Create a starter MCP config at your resolved MCP path:
 
 ```bash
-codesmith-tui mcp init
+codesmith mcp init
 ```
 
-`codesmith-tui setup --mcp` performs the same MCP bootstrap alongside skills setup.
+`codesmith setup --mcp` performs the same MCP bootstrap alongside skills setup.
 
 Common management commands:
 
 ```bash
-codesmith-tui mcp list
-codesmith-tui mcp tools [server]
-codesmith-tui mcp add <name> --command "<cmd>" --arg "<arg>"
-codesmith-tui mcp add <name> --url "http://localhost:3000/mcp"
-codesmith-tui mcp enable <name>
-codesmith-tui mcp disable <name>
-codesmith-tui mcp remove <name>
-codesmith-tui mcp validate
+codesmith mcp list
+codesmith mcp tools [server]
+codesmith mcp add <name> --command "<cmd>" --arg "<arg>"
+codesmith mcp add <name> --url "http://localhost:3000/mcp"
+codesmith mcp enable <name>
+codesmith mcp disable <name>
+codesmith mcp remove <name>
+codesmith mcp validate
 ```
 
-## In-TUI Manager
+## In-REPL Manager
 
-Inside the interactive TUI, `/mcp` opens a compact manager for the resolved
+Inside the interactive REPL, `/mcp` opens a compact manager for the resolved
 MCP config path. It shows each configured server, whether it is enabled or
 disabled, its transport, command or URL, timeout values, connection errors,
 and discovered tools/resources/prompts when discovery has been run.
 
-Supported in-TUI actions:
+Supported in-REPL actions:
 
 ```text
 /mcp init
@@ -57,9 +56,9 @@ Supported in-TUI actions:
 ```
 
 `/mcp validate` and `/mcp reload` reconnect for UI discovery and refresh the
-manager snapshot. Config edits made from the TUI are written immediately, but
+manager snapshot. Config edits made from the manager are written immediately, but
 the model-visible MCP tool pool is not hot-reloaded; the manager marks this as
-restart-required until the TUI is restarted.
+restart-required until the REPL is restarted.
 
 ## Config File Location
 
@@ -72,13 +71,13 @@ Overrides:
 - Config: `mcp_config_path = "/path/to/mcp.json"`
 - Env: `CODESMITH_MCP_CONFIG=/path/to/mcp.json`
 
-`codesmith-tui mcp init` (and `codesmith-tui setup --mcp`) writes to this resolved path.
+`codesmith mcp init` (and `codesmith setup --mcp`) writes to this resolved path.
 
 The interactive `/config` editor also exposes `mcp_config_path`. Changing it in
-the TUI updates the path used by `/mcp`, and requires a restart before the
+the REPL updates the path used by `/mcp`, and requires a restart before the
 model-visible MCP tool pool is rebuilt.
 
-After editing the file or changing `mcp_config_path`, restart the TUI.
+After editing the file or changing `mcp_config_path`, restart the REPL.
 
 ## Tool Naming
 
@@ -87,10 +86,6 @@ Discovered MCP tools are exposed to the model as:
 - `mcp__<server>__<tool>`
 
 Example: a server named `git` with a tool named `status` becomes `mcp__git__status`. The older single-underscore form (`mcp_<server>_<tool>`) is still accepted as a call-time alias for backward compatibility, but the double-underscore form is what the model sees in tool listings.
-
-The command palette includes MCP entries grouped by server. It shows disabled
-and failed servers instead of hiding them, and uses the same runtime tool names
-shown to the model.
 
 ## Resource and Prompt Helpers
 
@@ -130,10 +125,10 @@ You can register your local CodeSmith binary as an MCP server so other CodeSmith
 ### Quick Setup
 
 ```bash
-codesmith-tui mcp add-self
+codesmith mcp add-self
 ```
 
-This resolves the current binary path, generates a config entry that runs `codesmith-tui serve --mcp`, and writes it to your MCP config file. The default server name is `codesmith`.
+This resolves the current binary path, generates a config entry that runs `codesmith serve --mcp`, and writes it to your MCP config file. The default server name is `codesmith`.
 
 Options:
 
@@ -156,11 +151,9 @@ Equivalent manual entry in `~/.codesmith/mcp.json`:
 }
 ```
 
-The `codesmith-tui` binary supports `serve --mcp` directly. The `codesmith`
-dispatcher offers the equivalent `codesmith mcp-server` stdio entrypoint. Use
-whichever is on your `PATH` (run `which codesmith` or `which codesmith-tui` to
-find the full path). The `mcp add-self` command automatically resolves the
-correct binary.
+The `codesmith` binary supports `serve --mcp` directly; `codesmith mcp-server`
+is the equivalent dedicated stdio entrypoint. The `mcp add-self` command
+automatically resolves the current binary path.
 
 ### Prerequisites
 
@@ -178,7 +171,7 @@ For example, the `shell` tool becomes `mcp__codesmith__shell`.
 
 ### MCP Server vs HTTP/SSE API vs ACP
 
-| | `codesmith-tui serve --mcp` | `codesmith-tui serve --http` | `codesmith-tui serve --acp` |
+| | `codesmith serve --mcp` | `codesmith serve --http` | `codesmith serve --acp` |
 |---|---|---|---|
 | **Protocol** | MCP stdio | HTTP/SSE JSON-RPC | ACP stdio |
 | **Use case** | Tool server for MCP clients | Runtime API for apps | Editor agent for Zed/custom ACP clients |
@@ -194,8 +187,8 @@ Use `serve --acp` when an editor wants to talk to CodeSmith as an ACP agent.
 After adding, test the connection:
 
 ```bash
-codesmith-tui mcp validate
-codesmith-tui mcp tools codesmith
+codesmith mcp validate
+codesmith mcp tools codesmith
 ```
 
 ## Server Fields
@@ -289,7 +282,7 @@ You should still only configure MCP servers you trust, and treat MCP server conf
 
 ## Troubleshooting
 
-- Run `codesmith-tui doctor` to confirm the MCP config path it resolved and whether it exists.
-- In the TUI, run `/mcp validate` to refresh the visible server/tool snapshot.
-- If the MCP config is missing, run `codesmith-tui mcp init --force` to regenerate it.
+- Run `codesmith doctor` to confirm the MCP config path it resolved and whether it exists.
+- In the REPL, run `/mcp validate` to refresh the visible server/tool snapshot.
+- If the MCP config is missing, run `codesmith mcp init --force` to regenerate it.
 - If tools don’t appear, verify the server command works from your shell and that the server supports MCP `tools/list`.

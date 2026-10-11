@@ -164,7 +164,7 @@ impl ProviderKind {
 }
 
 /// Default heavy-tier model id for a provider — the model first-run
-/// onboarding starts a newly selected provider on. The TUI's
+/// onboarding starts a newly selected provider on. The CLI's
 /// `heavy_model_for_provider(ApiProvider)` delegates here; the two entry
 /// points must stay interchangeable.
 #[must_use]
@@ -204,7 +204,7 @@ pub fn custom_endpoint_provider_default(provider: ProviderKind) -> Option<&'stat
 
 /// Providers expected to serve requests without authentication — self-hosted
 /// runtimes the user started themselves. First-run onboarding skips the API
-/// key question for these. The TUI's `provider_is_self_hosted(ApiProvider)`
+/// key question for these. The CLI's `provider_is_self_hosted(ApiProvider)`
 /// delegates here.
 #[must_use]
 pub fn provider_is_self_hosted(provider: ProviderKind) -> bool {
@@ -465,15 +465,15 @@ pub fn providers_manifest() -> &'static ProvidersManifest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ConfigToml {
-    /// TUI-compatible DeepSeek API key. Kept at the root so both `deepseek`
-    /// and `codesmith-tui` can share a single config file.
+    /// Root-level DeepSeek API key, shared by every binary that reads this
+    /// config file.
     pub api_key: Option<String>,
-    /// TUI-compatible DeepSeek base URL.
+    /// Root-level DeepSeek base URL.
     pub base_url: Option<String>,
     /// Optional extra HTTP headers forwarded to model API requests.
     #[serde(default)]
     pub http_headers: BTreeMap<String, String>,
-    /// TUI-compatible default DeepSeek model.
+    /// Root-level default DeepSeek model.
     pub default_text_model: Option<String>,
     #[serde(default)]
     pub provider: ProviderKind,
@@ -487,14 +487,14 @@ pub struct ConfigToml {
     pub output_mode: Option<String>,
     pub log_level: Option<String>,
     /// Configuration preset tier (simple | middle | all | experiment | plan
-    /// | <custom>). Accepted for schema parity with the TUI config so the
-    /// key is recognized here too; the tier itself is applied by the TUI
+    /// | <custom>). Accepted for schema parity with the CLI config so the
+    /// key is recognized here too; the tier itself is applied by the CLI
     /// at startup.
     pub preset: Option<String>,
     pub telemetry: Option<bool>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
-    /// Structured sandbox controls shared with the TUI runtime.
+    /// Structured sandbox controls shared with the terminal runtime.
     #[serde(default)]
     pub sandbox: Option<SandboxToml>,
     /// Native tool catalog controls shared with `codesmith-tui`.
@@ -507,11 +507,11 @@ pub struct ConfigToml {
     #[serde(default)]
     pub network: Option<NetworkPolicyToml>,
     /// Community skill installer settings (#140). Mirrors
-    /// [`SkillsToml`] from the TUI side; the dispatcher consults
+    /// [`SkillsToml`] from the CLI side; the dispatcher consults
     /// `registry_url` when running `deepseek skill install`.
     #[serde(default)]
     pub skills: Option<SkillsToml>,
-    /// Workspace side-git snapshots (#137). The live TUI defaults this to
+    /// Workspace side-git snapshots (#137). The live CLI defaults this to
     /// enabled with 7-day retention when absent.
     #[serde(default)]
     pub snapshots: Option<SnapshotsToml>,
@@ -523,7 +523,7 @@ pub struct ConfigToml {
     /// applies the defaults documented in [`LspConfigToml`].
     #[serde(default)]
     pub lsp: Option<LspConfigToml>,
-    /// App-server hook sink configuration. Kept separate from the TUI
+    /// App-server hook sink configuration. Kept separate from the CLI
     /// lifecycle `[hooks]` table so config rewrites preserve existing hooks.
     #[serde(default)]
     pub hook_sinks: Option<HookSinksToml>,
@@ -532,7 +532,7 @@ pub struct ConfigToml {
 }
 
 /// On-disk schema for the `[sandbox]` table. This shared crate preserves the
-/// table during config reads/writes; the TUI crate turns it into runtime policy.
+/// table during config reads/writes; the CLI turns it into runtime policy.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SandboxToml {
     #[serde(default)]
@@ -600,11 +600,11 @@ pub struct HookSinksToml {
 /// for documentation.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SkillsToml {
-    /// Curated registry index URL. When unset, the TUI falls back to the
+    /// Curated registry index URL. When unset, the CLI falls back to the
     /// bundled default (community-curated GitHub raw).
     #[serde(default)]
     pub registry_url: Option<String>,
-    /// Per-skill maximum *uncompressed* size in bytes. When unset, the TUI
+    /// Per-skill maximum *uncompressed* size in bytes. When unset, the CLI
     /// uses 5 MiB.
     #[serde(default)]
     pub max_install_size_bytes: Option<u64>,
@@ -713,7 +713,7 @@ impl Default for NetworkPolicyToml {
 }
 
 /// On-disk schema for the `[lsp]` table (#136). See `config.example.toml`
-/// for documentation. All fields are optional so the TUI runtime can fall
+/// for documentation. All fields are optional so the runtime can fall
 /// back to its own defaults when keys are absent.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LspConfigToml {
@@ -2337,7 +2337,7 @@ impl ConfigStore {
 /// Create the inspectable first-run config template at `path` if no config
 /// file exists yet. Returns `true` when the template was written.
 ///
-/// Which path to use stays with the caller — the TUI and the CLI resolve it
+/// Which path to use stays with the caller — the REPL and headless runs resolve it
 /// through their own config-path chains; only the template and the secure
 /// write are shared. The file intentionally omits `api_key`; onboarding or
 /// `codesmith auth set` writes that field after the user supplies a key.
@@ -2363,7 +2363,7 @@ default_text_model = "{DEFAULT_DEEPSEEK_MODEL}"
 
 # Thinking mode (DeepSeek V4 reasoning effort):
 # "auto" | "off" | "low" | "medium" | "high" | "max"
-# Shift+Tab in the TUI cycles between off / high / max.
+# In the REPL: /config reasoning_effort <off|low|medium|high|max>.
 reasoning_effort = "auto"
 
 # Startup update check

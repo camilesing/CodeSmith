@@ -8,7 +8,7 @@ Model Lab 是 CodeSmith 规划中的开放模型工作台。北极星目标很�
 
 - 所有已交付的 provider 都是一等的。未配置 provider 时，CodeSmith 回退到 `deepseek`（`deepseek-v4-pro`、`deepseek-v4-flash`）。流式思考块、Fin 路由、`CODESMITH_*` 环境变量以及 `~/.codesmith` 配置均已实现。
 - OpenRouter、Novita、Fireworks、NVIDIA NIM、AtlasCloud、万界方舟（Wanjie Ark）、通用 OpenAI 兼容端点、SGLang、vLLM 和 Ollama 是受支持的 provider 路径，前提是它们的 ID 出现在 `/provider`、`codesmith --provider` 或 `codesmith models` 中。
-- 模型自动路由会为每个对话轮选择具体的模型和思考级别。它不是 TUI 模式。
+- 模型自动路由会为每个对话轮选择具体的模型和思考级别。它不是交互前端的模式。
 - Fin 是快速的 `deepseek-v4-flash` 关闭思考路径，用于路由、摘要、廉价检查、RLM 子调用、唤醒验证和二进制完成检查。
 - 自托管的 OpenAI 兼容端点可以通过 SGLang、vLLM、Ollama 或通用的 `openai` provider 配置使用。
 

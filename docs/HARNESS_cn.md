@@ -11,8 +11,7 @@ CodeSmith 就是这样一个 harness，围绕 DeepSeek V4 构建，由三个理�
 | **清晰的管辖权** | 一部成文宪法，九级权威层级。用户意图高于过时指令。验证高于自信。 |
 | **递归式改进** | V4 参与撰写了这个 harness。随着 harness 改进，V4 变得更高效 —— 并反过来进一步改进 harness。每个回合的起点都更强。 |
 
-它是开源的、终端原生的，并以配套的 `codesmith` / `codesmith-tui`
-Rust 二进制对的形式发布。
+它是开源的、终端原生的，并以单一 `codesmith` Rust 二进制的形式发布。
 
 ## 管辖权：宪法
 
@@ -102,8 +101,8 @@ vue-language-server）、用于批量分析的 RLM 会话、MCP 协议、HTTP/SS
 
 ## 一段话讲清架构
 
-`codesmith`（调度 CLI）→ `codesmith-tui`（伴生二进制）→ ratatui
-界面 ↔ 异步引擎 ↔ OpenAI 兼容流式客户端。工具调用经由一个类型化
+`codesmith`（单一二进制）→ 基于行的交互 REPL ↔ 异步引擎 ↔ OpenAI 兼容
+流式客户端。工具调用经由一个类型化
 注册表（shell、文件操作、git、web、子代理、MCP、RLM）路由，结果
 流回转录。引擎管理会话状态、回合跟踪、持久任务队列，以及一个 LSP
 子系统 —— 它在下一个推理步骤之前把编辑后诊断喂入模型的上下文。

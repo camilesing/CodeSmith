@@ -1,6 +1,6 @@
 # CodeSmith Mods — the Rhai Script Mod Layer
 
-Mods extend CodeSmith with [Rhai](https://rhai.rs) scripts — no Rust compilation required. A few lines of script add **event hooks** (intercept/rewrite tool calls, input, provider requests), register **model-visible tools**, register **slash commands**, and keep state across sessions in a **KV store**. Activate a mod and it works in the current session; save a change and it hot-reloads.
+Mods extend CodeSmith with [Rhai](https://rhai.rs) scripts — no Rust compilation required. A few lines of script add **event hooks** (intercept/rewrite tool calls, input, provider requests), register **model-visible tools**, register **slash commands**, and keep state across sessions in a **KV store**. Activate a mod and it works in the current session; reload and a saved change takes effect without re-approval.
 
 The smallest possible mod is 3 lines of script — this one blocks any `rm -rf` before it runs:
 
@@ -53,7 +53,7 @@ In CodeSmith, type:
 /mods activate hello
 ```
 
-**What you'll see**: this is the **one-time consent** for this content (a mod is in-process code that persists across sessions — first activation requires your approval). After approval the mod is live immediately; same-id reloads (including hot reloads) never ask again — unless the mod's entry file changed since you approved it (git pull, an edit): a changed mod goes back to pending and asks for a fresh `/mods activate`. Any shell call containing `rm -rf` is now blocked, and the model receives your reason and adapts.
+**What you'll see**: this is the **one-time consent** for this content (a mod is in-process code that persists across sessions — first activation requires your approval). After approval the mod is live immediately; same-id reloads never ask again — unless the mod's entry file changed since you approved it (git pull, an edit): a changed mod goes back to pending and asks for a fresh `/mods activate`. Any shell call containing `rm -rf` is now blocked, and the model receives your reason and adapts.
 
 ### Step 3: Register a model-visible tool + KV state
 
@@ -75,7 +75,7 @@ register_tool(#{
 
 **What you'll see**: from the next turn, `call_count` appears in the model's tool catalog; calling it returns the current count. `ok(...)` builds a successful result (strings verbatim, other values JSON-encoded).
 
-### Step 4: Register a slash command, watch the hot reload
+### Step 4: Register a slash command, reload the change
 
 Add a slash command (backtick strings support `${...}` interpolation):
 
@@ -88,7 +88,7 @@ register_command("calls", "Show the tool-call count", |args, ctx| {
 **What you'll see**:
 
 - Typing `/calls` shows the count — `message(...)` displays to the user (use `send(...)` to feed the agent conversation instead)
-- Now **edit `mod.rhai` and save** — the watcher monitors both mods roots (500ms debounce + 1s cooldown) and hot-reloads after the quiet window, no re-approval for the same id. `/mods status` confirms which mods are loaded and the runner generation
+- Now **edit `mod.rhai`, save, and reload** — `/mods reload` re-runs discovery, no re-approval for the same id. `/mods status` confirms which mods are loaded and the runner generation. (The automatic file watcher and its `[mods] watch` switch were removed in 0.9.0; reloading is explicit.)
 
 You've now touched all four registration surfaces: event hooks, tools, commands, KV. Full `/mods` command set: `list` / `status` / `info <id>` / `activate <id>` / `enable|disable <id>` / `remove <id>` / `reload`.
 
@@ -188,8 +188,8 @@ register_skill(#{
 ```
 
 Registered skills are in-memory catalogue entries (no `SKILL.md` on disk):
-they appear in the system-prompt `## Skills` block, in `/skills` and the
-command palette, and `load_skill` resolves them by name — attributed to
+they appear in the system-prompt `## Skills` block and in `/skills`,
+and `load_skill` resolves them by name — attributed to
 the mod (`mod: <mod-id>`) instead of a file path. The filesystem catalogue
 wins on a name collision (the registration is skipped with a warning in
 `/skills`); a name already registered by a *different* mod fails the
@@ -310,13 +310,15 @@ rejection. A mod whose manifest fails validation is skipped at discovery
 
 ## Configuration
 
-The `[mods]` section of `config.toml` (both default to true):
+The `[mods]` section of `config.toml` (defaults to true):
 
 ```toml
 [mods]
-enabled = true   # master switch: discovery, manage_mods tool, watcher
-watch = true     # file watcher only (500ms debounce + 1s cooldown)
+enabled = true   # master switch: discovery, manage_mods tool
 ```
+
+The `watch` hot-reload file watcher was removed in 0.9.0; use `/mods reload`
+(or `manage_mods(action="reload")`) to pick up edits.
 
 ## Implementation Index
 
@@ -326,11 +328,11 @@ watch = true     # file watcher only (500ms debounce + 1s cooldown)
 | `RhaiMod` (Extension impl, native registration, event mapping) | `crates/extensions/src/script/rhai_mod.rs` |
 | `ScriptHandler` / `ScriptToolDefinition` / `ScriptCommandDefinition` | `crates/extensions/src/script/adapters.rs` |
 | `ModKvStore` (per-mod persistent KV) | `crates/extensions/src/script/kv.rs` |
-| `ModStateStore` (activation/disablement state) | `crates/tui/src/mod_state.rs` |
-| Shared ops layer (single impl behind /mods & manage_mods, watcher) | `crates/tui/src/mod_ops.rs` |
-| Assembly/gating (populate returns the pending report) | `crates/tui/src/core/engine.rs` |
-| `ManageModsTool` (model-visible) | `crates/tui/src/tools/mods.rs` |
-| `/mods` commands | `crates/tui/src/commands/mod_commands.rs` |
+| `ModStateStore` (activation/disablement state) | `crates/cli/src/mod_state.rs` |
+| Shared ops layer (single impl behind /mods & manage_mods) | `crates/cli/src/mod_ops.rs` |
+| Assembly/gating (populate returns the pending report) | `crates/cli/src/core/engine.rs` |
+| `ManageModsTool` (model-visible) | `crates/cli/src/tools/mods.rs` |
+| `/mods` commands | `crates/cli/src/interactive/commands/misc_cmds.rs` |
 
 ## Further Reading
 
