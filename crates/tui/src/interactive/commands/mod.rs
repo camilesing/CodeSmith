@@ -5,6 +5,7 @@
 //! handler to the ratatui `App`. Handlers print directly to stdout and
 //! mutate state / send engine ops.
 
+pub mod config_cmds;
 pub mod debug_cmds;
 pub mod session_cmds;
 
@@ -214,6 +215,56 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
         }
         "retry" | "chongshi" => {
             debug_cmds::retry(state).await;
+            false
+        }
+        "config" => {
+            config_cmds::config_command(state, &arg_str);
+            false
+        }
+        "settings" => {
+            config_cmds::show_settings(state);
+            false
+        }
+        "verbose" => {
+            config_cmds::verbose(
+                state,
+                if arg_str.is_empty() {
+                    None
+                } else {
+                    Some(&arg_str)
+                },
+            );
+            false
+        }
+        "trust" | "xinren" => {
+            config_cmds::trust(
+                state,
+                if arg_str.is_empty() {
+                    None
+                } else {
+                    Some(&arg_str)
+                },
+            );
+            false
+        }
+        "slop" | "canzha" => {
+            config_cmds::slop(if arg_str.is_empty() {
+                None
+            } else {
+                Some(&arg_str)
+            });
+            false
+        }
+        "lsp" => {
+            config_cmds::lsp(state);
+            false
+        }
+        "theme" => {
+            config_cmds::theme();
+            false
+        }
+        "statusline" => {
+            config_cmds::status_line();
             false
         }
         other => {
