@@ -121,15 +121,20 @@ Type `:name:` to insert an emoji — the closing `:` replaces the whole token (`
 | `n` / `N` / `Esc`    | Deny                                                |
 | `e`                  | Edit the approved input before running              |
 
-## Onboarding (first-run flow)
+## Onboarding gates
+
+First-run onboarding itself runs as CLI questions in the `codesmith`
+dispatcher, before the TUI starts. Inside the TUI, two gates can still
+interrupt an already-onboarded session — a missing credential (for example
+after `/logout`) and a first visit to an untrusted directory:
 
 | Chord                | Action                                              |
 |----------------------|-----------------------------------------------------|
-| `Enter`              | Advance to next step (Welcome → Language → API → …) |
-| `Esc`                | Step back one screen                                |
-| `1`–`5`              | Pick a language (Language step)                    |
-| `y` / `Y`            | Trust the workspace (Trust step)                   |
-| `n` / `N`            | Skip the trust prompt                              |
+| (typing)             | Enter the API key on the credential gate            |
+| `Enter`              | Save the API key and continue                       |
+| `y` / `Y`            | Trust the workspace (trust gate)                   |
+| `n` / `N`            | Decline trust and exit                              |
+| `Ctrl-C`             | Exit either gate                                    |
 
 ## Editing notes and known limitations
 

@@ -163,6 +163,57 @@ impl ProviderKind {
     }
 }
 
+/// Default heavy-tier model id for a provider — the model first-run
+/// onboarding starts a newly selected provider on. The TUI's
+/// `heavy_model_for_provider(ApiProvider)` delegates here; the two entry
+/// points must stay interchangeable.
+#[must_use]
+pub fn heavy_model_for_provider(provider: ProviderKind) -> &'static str {
+    match provider {
+        ProviderKind::Deepseek => DEFAULT_DEEPSEEK_MODEL,
+        ProviderKind::NvidiaNim => DEFAULT_NVIDIA_NIM_MODEL,
+        ProviderKind::Openai => DEFAULT_OPENAI_MODEL,
+        ProviderKind::Atlascloud => DEFAULT_ATLASCLOUD_MODEL,
+        ProviderKind::WanjieArk => DEFAULT_WANJIE_ARK_MODEL,
+        ProviderKind::Volcengine => DEFAULT_VOLCENGINE_MODEL,
+        ProviderKind::Openrouter => DEFAULT_OPENROUTER_MODEL,
+        ProviderKind::XiaomiMimo => DEFAULT_XIAOMI_MIMO_MODEL,
+        ProviderKind::Novita => DEFAULT_NOVITA_MODEL,
+        ProviderKind::Fireworks => DEFAULT_FIREWORKS_MODEL,
+        ProviderKind::Siliconflow => DEFAULT_SILICONFLOW_MODEL,
+        ProviderKind::Moonshot => DEFAULT_MOONSHOT_MODEL,
+        ProviderKind::Sglang => DEFAULT_SGLANG_MODEL,
+        ProviderKind::Vllm => DEFAULT_VLLM_MODEL,
+        ProviderKind::Ollama => DEFAULT_OLLAMA_MODEL,
+        ProviderKind::Anthropic => DEFAULT_ANTHROPIC_MODEL,
+    }
+}
+
+/// Built-in service URL for the two generic routes whose endpoint first-run
+/// onboarding lets the user re-point (an OpenAI-compatible gateway and an
+/// Anthropic-compatible one). `None` for every other provider — their
+/// endpoints are not user-configurable through onboarding.
+#[must_use]
+pub fn custom_endpoint_provider_default(provider: ProviderKind) -> Option<&'static str> {
+    match provider {
+        ProviderKind::Openai => Some(DEFAULT_OPENAI_BASE_URL),
+        ProviderKind::Anthropic => Some(DEFAULT_ANTHROPIC_BASE_URL),
+        _ => None,
+    }
+}
+
+/// Providers expected to serve requests without authentication — self-hosted
+/// runtimes the user started themselves. First-run onboarding skips the API
+/// key question for these. The TUI's `provider_is_self_hosted(ApiProvider)`
+/// delegates here.
+#[must_use]
+pub fn provider_is_self_hosted(provider: ProviderKind) -> bool {
+    matches!(
+        provider,
+        ProviderKind::Sglang | ProviderKind::Vllm | ProviderKind::Ollama
+    )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderConfigToml {
     pub api_key: Option<String>,
@@ -2281,6 +2332,84 @@ impl ConfigStore {
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
+
+/// Create the inspectable first-run config template at `path` if no config
+/// file exists yet. Returns `true` when the template was written.
+///
+/// Which path to use stays with the caller — the TUI and the CLI resolve it
+/// through their own config-path chains; only the template and the secure
+/// write are shared. The file intentionally omits `api_key`; onboarding or
+/// `codesmith auth set` writes that field after the user supplies a key.
+pub fn ensure_config_file_at(path: &Path) -> Result<bool> {
+    if path.exists() {
+        return Ok(false);
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create config directory {}", parent.display()))?;
+    }
+    let content = format!(
+        r#"# codesmith Configuration
+# Get your API key from https://platform.deepseek.com
+# Save it with: codesmith auth set --provider deepseek
+
+# Base URL (default: https://api.deepseek.com/beta)
+# Set https://api.deepseek.com to opt out of beta features.
+# base_url = "https://api.deepseek.com/beta"
+
+# Default model
+default_text_model = "{DEFAULT_DEEPSEEK_MODEL}"
+
+# Thinking mode (DeepSeek V4 reasoning effort):
+# "auto" | "off" | "low" | "medium" | "high" | "max"
+# Shift+Tab in the TUI cycles between off / high / max.
+reasoning_effort = "auto"
+
+# Startup update check
+[update]
+check_for_updates = true
+# update_uri = "https://internal.mirror.example/codesmith/releases/latest"
+"#
+    );
+    write_config_file_private(path, &content)?;
+    Ok(true)
+}
+
+/// Write a config file with owner-only permissions (Unix 0o600). Shared by
+/// the config template bootstrap, the agent-runtime trust write, and the CLI
+/// first-run wizard's merged config write. A chmod failure after the
+/// contents are written is a warning, not an error: filesystems that reject
+/// Unix chmod (Docker bind-mounts of NTFS, network shares — #897) still get
+/// the bytes on disk, and the host's native ACL model does the access
+/// control.
+pub fn write_config_file_private(path: &Path, content: &str) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+            .with_context(|| format!("failed to write config at {}", path.display()))?;
+        file.write_all(content.as_bytes())
+            .with_context(|| format!("failed to write config at {}", path.display()))?;
+        if let Err(err) = file.set_permissions(fs::Permissions::from_mode(0o600)) {
+            tracing::warn!(
+                path = %path.display(),
+                error = %err,
+                "could not enforce 0o600 on config file; filesystem may \
+                 not support Unix chmod. File contents written."
+            );
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(path, content)
+            .with_context(|| format!("failed to write config at {}", path.display()))?;
+    }
+    Ok(())
 }
 
 /// Process-wide default [`Secrets`] façade. The first caller wins; the

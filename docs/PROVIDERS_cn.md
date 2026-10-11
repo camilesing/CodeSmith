@@ -35,21 +35,22 @@ Providers 是规划中的附加开源模型路由层；它们在当前检出中�
 
 使用以下任一入口选择提供商：
 
-- 首次运行：TUI onboarding 会先让你选择一次，然后才要求填写密钥
-  （OpenAI 兼容与 Anthropic 兼容这两条路由还会询问接入地址）
+- 首次运行：`codesmith` 分发器的 CLI 引导会先让你选择一次，然后才要求
+  填写密钥（OpenAI 兼容与 Anthropic 兼容这两条路由还会询问接入地址）
 - CLI：`codesmith --provider <id>`
 - TUI：`/provider <id>` 或提供商选择器
 - 环境变量：`CODESMITH_PROVIDER=<id>`
 - 配置：`provider = "<id>"`
 
-首次运行的选择器和 `/provider` 弹窗会把选择记录为
-`~/.codesmith/settings.toml` 中的 `default_provider`；在 TUI 内该设置的
+首次运行引导把 `provider =` 和该提供商的默认模型（`[providers.<name>]`）
+写入 `~/.codesmith/config.toml`；`/provider` 弹窗则把选择记录为
+`~/.codesmith/settings.toml` 中的 `default_provider`，在 TUI 内该设置的
 优先级高于配置文件中的 `provider =`。选中的提供商会以自身默认模型启动，
 而凭据已经可解析的提供商——环境变量、配置文件、或 Ollama 这类自托管运行时
 ——会跳过密钥输入。
 
-在首次运行流程中选择 OpenAI 兼容或 Anthropic 兼容路由会多出一步：自定义
-接入地址。按 Enter 保留服务地址，粘贴的地址会写入
+在首次运行流程中选择 OpenAI 兼容或 Anthropic 兼容路由会多出一个问题：
+自定义接入地址。按 Enter 保留服务地址，输入的地址会写入
 `[providers.<name>] base_url`，同名的 `OPENAI_BASE_URL` /
 `ANTHROPIC_BASE_URL` 环境变量同样生效。其他提供商也可以手动改地址——
 根级 `base_url` 字段仅属于 DeepSeek，对其他提供商会忽略。

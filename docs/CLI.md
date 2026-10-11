@@ -49,6 +49,22 @@ Without `-p`, a lone ASCII word cannot be told apart from a mistyped command,
 so it is rejected with a hint pointing at `-p`. Non-ASCII words
 (`codesmith 总结`) stay prompts, since they cannot name a command.
 
+## First-run onboarding
+
+A bare `codesmith` on a machine without `~/.codesmith/.onboarded` runs
+onboarding as plain CLI questions before the TUI starts: language → provider
+→ endpoint URL (OpenAI/Anthropic routes only) → API key → workspace trust.
+Answers land in the same durable state the former TUI wizard wrote
+(`~/.codesmith/config.toml`, the settings locale, the OS keyring, and the
+trust table). Existing credentials — a provider env var, a saved key, or a
+self-hosted runtime such as Ollama — skip the key question, and declining the
+trust prompt exits without writing anything. Pass `--skip-onboarding` to
+bypass the questions entirely.
+
+Inside the TUI, two gates can still interrupt a later session: a missing
+credential (for example after `/logout`) re-opens the key screen, and a first
+visit to an untrusted directory re-opens the trust prompt.
+
 Inside the TUI, `/provider` opens the provider picker and `/model` opens the
 local model/thinking picker. `/provider openrouter` and `/model <id>` switch
 directly, while `/models` explicitly fetches and lists live API models when the

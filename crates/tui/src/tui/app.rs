@@ -46,28 +46,21 @@ use codesmith_agent_runtime::prompt_inspect::{CacheWarmupKey, PromptInspection};
 
 // === Types ===
 
-/// State machine for onboarding new users.
+/// State machine for the onboarding gates.
+///
+/// The first-run wizard (Welcome/Language/Provider/Endpoint/Tips) moved to
+/// the `codesmith` dispatcher's CLI question flow; what remains here are the
+/// two re-entry gates that intercept an already-onboarded session whose
+/// credentials or workspace trust are missing (e.g. after `/logout`, or a
+/// first visit to an untrusted directory).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnboardingState {
-    Welcome,
-    /// Pick the UI locale before any other config decisions (#566).
-    /// Defaults to auto-detection from `LC_ALL` / `LANG`; explicit picks
-    /// land in `~/.codesmith/settings.toml` via `Settings::set("locale", …)`.
-    Language,
-    /// Pick the model provider for a first run — every shipped provider is
-    /// first-class, not just the DeepSeek fallback. Routed to from
-    /// `Language` when the session still needs credentials; confirming a
-    /// provider whose key is missing lands on `ApiKey`.
-    Provider,
-    /// Optional custom endpoint URL, asked only for the generic routes
-    /// (OpenAI-compatible gateways, Anthropic-compatible proxies) — see
-    /// `crate::config::provider_supports_custom_endpoint`. Enter with an empty
-    /// input keeps whatever the provider is already configured with; a pasted
-    /// URL is written to `[providers.<name>] base_url`.
-    Endpoint,
+    /// The effective provider resolves no credential — collect an API key
+    /// for it.
     ApiKey,
+    /// The workspace lacks a trust decision — ask before loading project
+    /// config and `.env`.
     TrustDirectory,
-    Tips,
     None,
 }
 
@@ -133,20 +126,18 @@ pub struct ShellBangRun {
 
 fn initial_onboarding_state(
     skip_onboarding: bool,
-    was_onboarded: bool,
     needs_api_key: bool,
     needs_workspace_trust: bool,
 ) -> OnboardingState {
-    if skip_onboarding || (was_onboarded && !needs_api_key && !needs_workspace_trust) {
+    if skip_onboarding {
         return OnboardingState::None;
     }
-
-    if was_onboarded && needs_api_key {
+    if needs_api_key {
         OnboardingState::ApiKey
-    } else if was_onboarded && needs_workspace_trust {
+    } else if needs_workspace_trust {
         OnboardingState::TrustDirectory
     } else {
-        OnboardingState::Welcome
+        OnboardingState::None
     }
 }
 
@@ -1273,30 +1264,10 @@ pub struct App {
     pub api_key_env_only: bool,
     pub api_key_input: String,
     pub api_key_cursor: usize,
-    /// Which provider the onboarding credential step is configuring, as an
+    /// Which provider the onboarding credential gate is configuring, as an
     /// index into [`ApiProvider::all`]. Set at startup to the effective
-    /// provider, moved by the `Provider` screen, and re-pointed by
-    /// `/logout` and the auth-rejection re-prompt.
+    /// provider and re-pointed by `/logout` and the auth-rejection re-prompt.
     pub onboarding_provider_idx: usize,
-    /// `(provider, has_usable_key)` snapshot for the `Provider` screen rows,
-    /// in [`ApiProvider::all`] order. A snapshot (rather than a live
-    /// `Config` read) because the onboarding render path has no `Config`;
-    /// it is taken at startup and refreshed by
-    /// [`App::refresh_onboarding_provider_rows`] whenever the wizard
-    /// re-enters the picker mid-session (`/logout` and the auth-rejection
-    /// re-prompt both re-open the wizard at the key screen, one Esc away
-    /// from this list), so a key cleared after startup is not reported as
-    /// configured. A key saved during the wizard is applied to the engine,
-    /// not to these hints.
-    pub onboarding_provider_rows: Vec<(ApiProvider, bool)>,
-    /// Custom endpoint URL typed on the `Endpoint` screen. A plain append-only
-    /// buffer (no cursor), like the `/provider` modal's key field: the URL is
-    /// pasted, and the key screen above already offers the cursor-based editor.
-    pub onboarding_endpoint_input: String,
-    /// `Default:` URL shown on the `Endpoint` screen, filled from the picked
-    /// provider's configured/built-in URL when the step is entered. `None`
-    /// when this provider's endpoint is not asked about.
-    pub onboarding_endpoint_default: Option<String>,
     // Hooks system
     pub hooks: HookExecutor,
     pub session_start_hook_fired: bool,
@@ -1907,12 +1878,17 @@ impl App {
         };
         let needs_workspace_trust =
             initial_mode != AppMode::Yolo && crate::tui::onboarding::needs_trust(&workspace);
-        let onboarding = initial_onboarding_state(
-            skip_onboarding,
-            was_onboarded,
-            needs_api_key,
-            needs_workspace_trust,
-        );
+        let onboarding =
+            initial_onboarding_state(skip_onboarding, needs_api_key, needs_workspace_trust);
+        // A clean start without the `.onboarded` marker (e.g. a direct
+        // `codesmith-tui` launch with an env-var credential — the dispatcher
+        // normally completes onboarding on the CLI first) marks it here so
+        // the gates do not re-run on every launch.
+        if onboarding == OnboardingState::None && !was_onboarded {
+            if let Err(err) = crate::tui::onboarding::mark_onboarded() {
+                tracing::warn!("failed to mark onboarding on clean start: {err}");
+            }
+        }
         let onboarding_workspace_trust_gate = onboarding_is_workspace_trust_gate(
             skip_onboarding,
             was_onboarded,
@@ -2083,17 +2059,6 @@ impl App {
             api_key_input: String::new(),
             api_key_cursor: 0,
             onboarding_provider_idx: provider_index(provider),
-            onboarding_provider_rows: ApiProvider::all()
-                .iter()
-                .map(|p| {
-                    (
-                        *p,
-                        crate::config::has_api_key_for(&effective_auth_config, *p),
-                    )
-                })
-                .collect(),
-            onboarding_endpoint_input: String::new(),
-            onboarding_endpoint_default: None,
             hooks,
             session_start_hook_fired: false,
             yolo: initial_mode == AppMode::Yolo,
@@ -2279,77 +2244,9 @@ impl App {
             .unwrap_or(ApiProvider::Deepseek)
     }
 
-    /// Point the onboarding credential step (and its key save) at `provider`.
+    /// Point the onboarding credential gate (and its key save) at `provider`.
     pub fn set_onboarding_provider(&mut self, provider: ApiProvider) {
         self.onboarding_provider_idx = provider_index(provider);
-        self.needs_redraw = true;
-    }
-
-    /// Recompute the `Provider` screen rows from the live config. Mid-session
-    /// wizard re-entries (`/logout`, the auth-rejection re-prompt) reach the
-    /// picker through the key screen's Esc; without this the rows would still
-    /// be the startup snapshot.
-    pub fn refresh_onboarding_provider_rows(&mut self, config: &Config) {
-        self.onboarding_provider_rows = ApiProvider::all()
-            .iter()
-            .map(|p| (*p, crate::config::has_api_key_for(config, *p)))
-            .collect();
-        self.needs_redraw = true;
-    }
-
-    /// Move the onboarding provider picker one row in the direction of
-    /// `delta` (only its sign is used), wrapping at both ends (the picker
-    /// is a closed list; there is no scrolling off the top).
-    pub fn move_onboarding_provider(&mut self, delta: isize) {
-        let len = self.onboarding_provider_rows.len();
-        if len == 0 {
-            return;
-        }
-        let current = self.onboarding_provider_idx.min(len - 1);
-        self.onboarding_provider_idx = if delta < 0 {
-            current.checked_sub(1).unwrap_or(len - 1)
-        } else {
-            (current + 1) % len
-        };
-        self.needs_redraw = true;
-    }
-
-    /// Append `c` to the onboarding endpoint buffer. Whitespace is dropped:
-    /// URLs never contain it, and a stray space is always a paste artifact.
-    pub fn insert_onboarding_endpoint_char(&mut self, c: char) {
-        if c.is_whitespace() {
-            return;
-        }
-        self.onboarding_endpoint_input.push(c);
-    }
-
-    /// Paste into the onboarding endpoint buffer, whitespace stripped (a copied
-    /// URL often carries a trailing newline).
-    pub fn insert_onboarding_endpoint_str(&mut self, text: &str) {
-        self.onboarding_endpoint_input
-            .extend(text.chars().filter(|c| !c.is_whitespace()));
-    }
-
-    pub fn delete_onboarding_endpoint_char(&mut self) {
-        self.onboarding_endpoint_input.pop();
-    }
-
-    /// Paste from the clipboard into the onboarding endpoint buffer.
-    pub fn paste_onboarding_endpoint_from_clipboard(&mut self) {
-        if let Some(ClipboardContent::Text(text)) = self.clipboard.read(self.workspace.as_path()) {
-            self.insert_onboarding_endpoint_str(&text);
-        }
-    }
-
-    /// Enter the endpoint step for `provider`: points the wizard at it, clears the
-    /// buffer, and snapshots the `Default:` URL the screen renders (the render
-    /// path has no `Config`).
-    pub fn begin_onboarding_endpoint(&mut self, config: &Config, provider: ApiProvider) {
-        self.set_onboarding_provider(provider);
-        self.onboarding_endpoint_input.clear();
-        self.onboarding_endpoint_default = config.onboarding_endpoint_default(provider);
-        self.status_message = None;
-        self.onboarding = OnboardingState::Endpoint;
         self.needs_redraw = true;
     }
 
@@ -2391,39 +2288,6 @@ impl App {
         self.api_key_cursor = 0;
         self.api_key_env_only = false;
         Ok(saved)
-    }
-
-    pub fn finish_onboarding(&mut self) {
-        self.onboarding = OnboardingState::None;
-        if let Err(err) = crate::tui::onboarding::mark_onboarded() {
-            self.status_message = Some(format!("Failed to mark onboarding: {err}"));
-        }
-        self.needs_redraw = true;
-    }
-
-    /// Apply a locale tag selected from the onboarding language picker (#566).
-    /// Persists the value to `~/.codesmith/settings.toml` and immediately
-    /// re-resolves `ui_locale` so the rest of onboarding renders in the new
-    /// language. `App` doesn't keep `Settings` resident — it loads on entry
-    /// and rewrites on exit, mirroring the pattern used by the `/config`
-    /// surface.
-    pub fn set_locale_from_onboarding(&mut self, tag: &str) -> anyhow::Result<()> {
-        let mut settings = Settings::load().unwrap_or_else(|_| Settings::default());
-        settings.set("locale", tag)?;
-        settings.save()?;
-        self.ui_locale = crate::localization::resolve_locale(&settings.locale);
-        self.needs_redraw = true;
-        Ok(())
-    }
-
-    /// Locale tag currently persisted in `~/.codesmith/settings.toml` (or
-    /// `"auto"` when no settings file exists). Used by the onboarding
-    /// language picker to highlight the current selection without `App`
-    /// having to keep `Settings` resident.
-    pub fn current_locale_tag(&self) -> String {
-        Settings::load()
-            .map(|s| s.locale)
-            .unwrap_or_else(|_| "auto".to_string())
     }
 
     pub fn set_mode(&mut self, mode: AppMode) -> bool {
@@ -5613,7 +5477,7 @@ mod tests {
     }
 
     #[test]
-    fn onboarding_provider_list_matches_the_picker_order() {
+    fn onboarding_gate_preselects_the_effective_provider() {
         let _lock = lock_test_env();
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let _config_path =
@@ -5621,30 +5485,13 @@ mod tests {
         let _provider_env = EnvVarGuard::remove("CODESMITH_PROVIDER");
 
         let app = App::new(test_options(false), &Config::default());
-        assert_eq!(app.onboarding_provider_rows.len(), ApiProvider::all().len());
         assert_eq!(
             app.onboarding_provider(),
             ApiProvider::Deepseek,
             "a session with nothing configured preselects the fallback provider"
         );
-    }
 
-    #[test]
-    fn onboarding_provider_navigation_wraps_both_ways() {
-        let _lock = lock_test_env();
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let _config_path =
-            EnvVarGuard::set("CODESMITH_CONFIG_PATH", tmp.path().join("config.toml"));
-        let _provider_env = EnvVarGuard::remove("CODESMITH_PROVIDER");
-
-        let mut app = App::new(test_options(false), &Config::default());
-        let last = ApiProvider::all().len() - 1;
-
-        app.move_onboarding_provider(-1);
-        assert_eq!(app.onboarding_provider_idx, last, "up from the top wraps");
-        app.move_onboarding_provider(1);
-        assert_eq!(app.onboarding_provider_idx, 0, "down from the bottom wraps");
-
+        let mut app = app;
         app.set_onboarding_provider(ApiProvider::Openrouter);
         assert_eq!(app.onboarding_provider(), ApiProvider::Openrouter);
     }
@@ -6043,58 +5890,46 @@ mod tests {
     }
 
     // initial_onboarding_state tests
-    // These pin the logic that decides whether the TUI shows the
-    // onboarding flow (Welcome → Language → ApiKey → …) or goes
-    // straight to the chat view.  Getting this wrong either locks
-    // first-run users out of the API-key prompt or nags returning
-    // users whose key is already configured.
+    // These pin the logic that decides whether the TUI shows an onboarding
+    // gate (ApiKey / TrustDirectory) or goes straight to the chat view. The
+    // first-run wizard itself lives in the `codesmith` dispatcher's CLI
+    // flow; getting these wrong either locks key-less users out of the
+    // prompt or nags returning users whose key is already configured.
 
     #[test]
     fn skip_onboarding_suppresses_all_onboarding_states() {
         assert_eq!(
-            initial_onboarding_state(true, false, true, true),
-            OnboardingState::None
-        );
-        assert_eq!(
-            initial_onboarding_state(true, true, true, true),
+            initial_onboarding_state(true, true, true),
             OnboardingState::None
         );
     }
 
     #[test]
-    fn fully_configured_returning_user_skips_onboarding() {
+    fn fully_configured_start_skips_onboarding() {
         assert_eq!(
-            initial_onboarding_state(false, true, false, false),
+            initial_onboarding_state(false, false, false),
             OnboardingState::None
         );
     }
 
     #[test]
-    fn returning_user_missing_api_key_goes_to_api_key_screen() {
+    fn missing_api_key_goes_to_api_key_gate() {
         assert_eq!(
-            initial_onboarding_state(false, true, true, false),
+            initial_onboarding_state(false, true, false),
             OnboardingState::ApiKey
         );
         // workspace trust doesn't affect the api-key gate
         assert_eq!(
-            initial_onboarding_state(false, true, true, true),
+            initial_onboarding_state(false, true, true),
             OnboardingState::ApiKey
         );
     }
 
     #[test]
-    fn first_run_user_always_starts_at_welcome() {
+    fn untrusted_workspace_gets_trust_prompt_when_keyed() {
         assert_eq!(
-            initial_onboarding_state(false, false, false, false),
-            OnboardingState::Welcome
-        );
-        assert_eq!(
-            initial_onboarding_state(false, false, true, false),
-            OnboardingState::Welcome
-        );
-        assert_eq!(
-            initial_onboarding_state(false, false, false, true),
-            OnboardingState::Welcome
+            initial_onboarding_state(false, false, true),
+            OnboardingState::TrustDirectory
         );
     }
 
@@ -6111,7 +5946,7 @@ mod tests {
     #[test]
     fn onboarded_user_still_gets_workspace_trust_prompt_when_needed() {
         assert_eq!(
-            initial_onboarding_state(false, true, false, true),
+            initial_onboarding_state(false, false, true),
             OnboardingState::TrustDirectory
         );
     }

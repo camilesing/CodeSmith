@@ -57,7 +57,7 @@ The registry covers stable message IDs for high-visibility terminal chrome:
 - composer history search title, placeholder, hints, and no-match state
 - `/config` title, filter placeholder, no-match state, filtered count, and footer hints
 - help overlay title, filter placeholder, no-match state, section labels, and footer hints
-- slash-command descriptions, keybinding labels, onboarding screens, and the context menu
+- slash-command descriptions, keybinding labels, onboarding gate screens, and the context menu
 
 Not translated:
 

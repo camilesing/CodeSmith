@@ -37,26 +37,28 @@ The canonical provider IDs are:
 
 Use any of these surfaces to select a provider:
 
-- First run: the TUI onboarding asks once, before it asks for a key (the
-  OpenAI-compatible and Anthropic-compatible routes also ask for an endpoint URL)
+- First run: the `codesmith` dispatcher's CLI onboarding asks once, before it
+  asks for a key (the OpenAI-compatible and Anthropic-compatible routes also
+  ask for an endpoint URL)
 - CLI: `codesmith --provider <id>`
 - TUI: `/provider <id>` or the provider picker
 - Env: `CODESMITH_PROVIDER=<id>`
 - Config: `provider = "<id>"`
 
-The first-run picker and the `/provider` modal record the choice as
-`default_provider` in `~/.codesmith/settings.toml`; within the TUI that setting
-outranks `provider =` in the config file. A picked provider starts on its own
-default model, and a provider whose credential already resolves — an
-environment variable, the config file, or a self-hosted runtime such as Ollama
-— skips the key prompt.
+First-run onboarding writes `provider =` plus the provider's default model
+in `[providers.<name>]` to `~/.codesmith/config.toml`; the `/provider` modal
+instead records `default_provider` in `~/.codesmith/settings.toml`, which
+within the TUI outranks `provider =` in the config file. A picked provider
+starts on its own default model, and a provider whose credential already
+resolves — an environment variable, the config file, or a self-hosted runtime
+such as Ollama — skips the key prompt.
 
 Selecting the OpenAI-compatible or Anthropic-compatible route in first-run
-onboarding adds one more step: a custom endpoint URL. Enter keeps the service
-URL, a pasted URL is written to `[providers.<name>] base_url`, and the matching
-`OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` environment variable also works. Every
-other provider can be re-pointed the same way by hand — the root `base_url`
-field is DeepSeek-only and is ignored for the rest.
+onboarding adds one more question: a custom endpoint URL. Enter keeps the
+service URL, an entered URL is written to `[providers.<name>] base_url`, and
+the matching `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` environment variable
+also works. Every other provider can be re-pointed the same way by hand — the
+root `base_url` field is DeepSeek-only and is ignored for the rest.
 
 `deepseek-cn`, `deepseek_china`, `deepseekcn`, and `deepseek-china` are accepted
 as legacy aliases for `deepseek`. They do not select a different official host;

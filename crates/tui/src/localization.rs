@@ -331,29 +331,6 @@ pub enum MessageId {
     HomePlanModeTip,
     HomePlanModeChecklistTip,
     HomeGoalModeTip,
-    // Onboarding screens — language picker.
-    OnboardLanguageTitle,
-    OnboardLanguageBlurb,
-    OnboardLanguageFooter,
-    // Onboarding screens — provider picker.
-    OnboardProviderTitle,
-    OnboardProviderBlurb,
-    OnboardProviderFooter,
-    OnboardProviderNeedsKey,
-    OnboardProviderConfigured,
-    OnboardProviderNoKeyRequired,
-    OnboardProviderKimiOAuthReady,
-    // Onboarding screens — custom endpoint URL (OpenAI-compatible and
-    // Anthropic-compatible routes). The env hint is split around the variable
-    // name, like the key screen's.
-    OnboardEndpointTitle,
-    OnboardEndpointBlurb,
-    OnboardEndpointDefaultLabel,
-    OnboardEndpointEnvHintPrefix,
-    OnboardEndpointEnvHintSuffix,
-    OnboardEndpointLabel,
-    OnboardEndpointPlaceholder,
-    OnboardEndpointFooter,
     // Onboarding screens — API key entry. The title is split so the picked
     // provider's display name interpolates between prefix and suffix; step 1
     // has a DeepSeek variant (curated console link) and a generic one.
@@ -378,14 +355,6 @@ pub enum MessageId {
     OnboardTrustFooterPrefix,
     OnboardTrustFooterMiddle,
     OnboardTrustFooterSuffix,
-    // Onboarding screens — final tips screen.
-    OnboardTipsTitle,
-    OnboardTipsLine1,
-    OnboardTipsLine2,
-    OnboardTipsLine3,
-    OnboardTipsLine4,
-    OnboardTipsFooterEnter,
-    OnboardTipsFooterAction,
     // Context menu.
     CtxMenuTitle,
     CtxMenuCopySelection,
@@ -630,24 +599,6 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::HomePlanModeTip,
     MessageId::HomePlanModeChecklistTip,
     MessageId::HomeGoalModeTip,
-    MessageId::OnboardLanguageTitle,
-    MessageId::OnboardLanguageBlurb,
-    MessageId::OnboardLanguageFooter,
-    MessageId::OnboardProviderTitle,
-    MessageId::OnboardProviderBlurb,
-    MessageId::OnboardProviderFooter,
-    MessageId::OnboardProviderNeedsKey,
-    MessageId::OnboardProviderConfigured,
-    MessageId::OnboardProviderNoKeyRequired,
-    MessageId::OnboardProviderKimiOAuthReady,
-    MessageId::OnboardEndpointTitle,
-    MessageId::OnboardEndpointBlurb,
-    MessageId::OnboardEndpointDefaultLabel,
-    MessageId::OnboardEndpointEnvHintPrefix,
-    MessageId::OnboardEndpointEnvHintSuffix,
-    MessageId::OnboardEndpointLabel,
-    MessageId::OnboardEndpointPlaceholder,
-    MessageId::OnboardEndpointFooter,
     MessageId::OnboardApiKeyTitlePrefix,
     MessageId::OnboardApiKeyTitleSuffix,
     MessageId::OnboardApiKeyStep1Deepseek,
@@ -668,13 +619,6 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::OnboardTrustFooterPrefix,
     MessageId::OnboardTrustFooterMiddle,
     MessageId::OnboardTrustFooterSuffix,
-    MessageId::OnboardTipsTitle,
-    MessageId::OnboardTipsLine1,
-    MessageId::OnboardTipsLine2,
-    MessageId::OnboardTipsLine3,
-    MessageId::OnboardTipsLine4,
-    MessageId::OnboardTipsFooterEnter,
-    MessageId::OnboardTipsFooterAction,
     // Context menu.
     MessageId::CtxMenuTitle,
     MessageId::CtxMenuCopySelection,
@@ -1182,35 +1126,6 @@ fn english(id: MessageId) -> &'static str {
         MessageId::HomePlanModeTip => "Plan mode - Design before implementing",
         MessageId::HomePlanModeChecklistTip => "  Use /mode plan to create structured checklists",
         MessageId::HomeGoalModeTip => "Goal tracking - Set /goal <objective> to pursue objectives",
-        // Onboarding — language picker.
-        MessageId::OnboardLanguageTitle => "Choose your language",
-        MessageId::OnboardLanguageBlurb => {
-            "Pick the UI language. You can change it any time with `/settings set locale <tag>`."
-        }
-        MessageId::OnboardLanguageFooter => {
-            "Press 1-6 to choose, or Enter to keep the current setting"
-        }
-        // Onboarding — provider picker.
-        MessageId::OnboardProviderTitle => "Choose your provider",
-        MessageId::OnboardProviderBlurb => {
-            "Hosted, gateway, and self-hosted providers all work here. Switch later with /provider."
-        }
-        MessageId::OnboardProviderFooter => "↑↓ or j/k to move, Enter to continue, Esc to go back",
-        MessageId::OnboardProviderNeedsKey => "needs API key",
-        MessageId::OnboardProviderConfigured => "API key configured",
-        MessageId::OnboardProviderNoKeyRequired => "no API key required",
-        MessageId::OnboardProviderKimiOAuthReady => "Kimi CLI OAuth ready",
-        // Onboarding — custom endpoint URL.
-        MessageId::OnboardEndpointTitle => "Custom endpoint URL",
-        MessageId::OnboardEndpointBlurb => {
-            "Route this provider through your own gateway or proxy. Press Enter to keep the default."
-        }
-        MessageId::OnboardEndpointDefaultLabel => "Default: ",
-        MessageId::OnboardEndpointEnvHintPrefix => "Or set ",
-        MessageId::OnboardEndpointEnvHintSuffix => " in your environment.",
-        MessageId::OnboardEndpointLabel => "URL: ",
-        MessageId::OnboardEndpointPlaceholder => "(paste a URL to override)",
-        MessageId::OnboardEndpointFooter => "Press Enter to continue, Esc to go back.",
         // Onboarding — API key entry.
         MessageId::OnboardApiKeyTitlePrefix => "Connect your ",
         MessageId::OnboardApiKeyTitleSuffix => " API key",
@@ -1246,21 +1161,6 @@ fn english(id: MessageId) -> &'static str {
         MessageId::OnboardTrustFooterMiddle => " to trust and continue, ",
         MessageId::OnboardTrustFooterSuffix => " to quit",
         // Onboarding — final tips.
-        MessageId::OnboardTipsTitle => "Start Simple",
-        MessageId::OnboardTipsLine1 => {
-            "Write the task in plain language. Use /help or Ctrl+K when you want a command."
-        }
-        MessageId::OnboardTipsLine2 => {
-            "The bottom composer is multi-line: Enter sends, Alt+Enter or Ctrl+J adds a new line."
-        }
-        MessageId::OnboardTipsLine3 => {
-            "Switch modes only when the job changes: Plan for review-first work, Agent for execution, YOLO when you want auto-approval."
-        }
-        MessageId::OnboardTipsLine4 => {
-            "Ctrl+R resumes earlier sessions, and Esc backs out of the current draft or overlay."
-        }
-        MessageId::OnboardTipsFooterEnter => "Press Enter",
-        MessageId::OnboardTipsFooterAction => " to open the workspace",
         // Context menu.
         MessageId::CtxMenuTitle => " Right click ",
         MessageId::CtxMenuCopySelection => "Copy selection",
@@ -1592,33 +1492,6 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::HomePlanModeTip => "Plan 模式 - 先设计再实现",
         MessageId::HomePlanModeChecklistTip => "  使用 /mode plan 创建结构化检查清单",
         MessageId::HomeGoalModeTip => "Goal 跟踪 - 设置 /goal <目标> 以跟踪持久目标",
-        // Onboarding — language picker.
-        MessageId::OnboardLanguageTitle => "选择语言",
-        MessageId::OnboardLanguageBlurb => {
-            "选择界面语言。可随时使用 `/settings set locale <tag>` 修改。"
-        }
-        MessageId::OnboardLanguageFooter => "按 1-6 选择，或按 Enter 保留当前设置",
-        // Onboarding — provider picker.
-        MessageId::OnboardProviderTitle => "选择服务商",
-        MessageId::OnboardProviderBlurb => {
-            "托管、网关或自托管服务商均可使用。之后可用 /provider 随时切换。"
-        }
-        MessageId::OnboardProviderFooter => "↑↓ 或 j/k 移动，Enter 继续，Esc 返回",
-        MessageId::OnboardProviderNeedsKey => "需要 API 密钥",
-        MessageId::OnboardProviderConfigured => "已配置 API 密钥",
-        MessageId::OnboardProviderNoKeyRequired => "无需 API 密钥",
-        MessageId::OnboardProviderKimiOAuthReady => "Kimi CLI OAuth 已就绪",
-        // Onboarding — custom endpoint URL.
-        MessageId::OnboardEndpointTitle => "自定义接入地址",
-        MessageId::OnboardEndpointBlurb => {
-            "让该服务商经由你自己的网关或代理。按 Enter 保留默认值。"
-        }
-        MessageId::OnboardEndpointDefaultLabel => "默认：",
-        MessageId::OnboardEndpointEnvHintPrefix => "也可以改为设置环境变量 ",
-        MessageId::OnboardEndpointEnvHintSuffix => "。",
-        MessageId::OnboardEndpointLabel => "地址：",
-        MessageId::OnboardEndpointPlaceholder => "（粘贴自定义地址）",
-        MessageId::OnboardEndpointFooter => "Enter 继续，Esc 返回。",
         // Onboarding — API key entry.
         MessageId::OnboardApiKeyTitlePrefix => "连接你的 ",
         MessageId::OnboardApiKeyTitleSuffix => " API 密钥",
@@ -1648,15 +1521,6 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::OnboardTrustFooterMiddle => " 信任并继续，",
         MessageId::OnboardTrustFooterSuffix => " 退出",
         // Onboarding — final tips.
-        MessageId::OnboardTipsTitle => "从简开始",
-        MessageId::OnboardTipsLine1 => "用自然语言描述任务。需要命令时使用 /help 或 Ctrl+K。",
-        MessageId::OnboardTipsLine2 => "底部输入框支持多行：Enter 发送，Alt+Enter 或 Ctrl+J 换行。",
-        MessageId::OnboardTipsLine3 => {
-            "按需切换模式：Plan 适合先审后行，Agent 用于执行，YOLO 启用自动批准。"
-        }
-        MessageId::OnboardTipsLine4 => "Ctrl+R 恢复历史会话，Esc 退出当前输入或弹层。",
-        MessageId::OnboardTipsFooterEnter => "按 Enter",
-        MessageId::OnboardTipsFooterAction => " 进入工作区",
         // Context menu.
         MessageId::CtxMenuTitle => " 右键菜单 ",
         MessageId::CtxMenuCopySelection => "复制所选",
@@ -1991,35 +1855,6 @@ fn hindi(id: MessageId) -> Option<&'static str> {
         MessageId::HomePlanModeTip => "Plan मोड - लागू करने से पहले डिज़ाइन करें",
         MessageId::HomePlanModeChecklistTip => "  संरचित checklist बनाने के लिए /mode plan उपयोग करें",
         MessageId::HomeGoalModeTip => "लक्ष्य ट्रैकिंग - लक्ष्य सेट करने के लिए /goal <objective>",
-        // Onboarding — language picker.
-        MessageId::OnboardLanguageTitle => "अपनी भाषा चुनें",
-        MessageId::OnboardLanguageBlurb => {
-            "UI भाषा चुनें। आप कभी भी `/settings set locale <tag>` से बदल सकते हैं।"
-        }
-        MessageId::OnboardLanguageFooter => "चुनने के लिए 1-6 दबाएँ, या वर्तमान सेटिंग रखने के लिए Enter",
-        // Onboarding — provider picker.
-        MessageId::OnboardProviderTitle => "अपना provider चुनें",
-        MessageId::OnboardProviderBlurb => {
-            "होस्टेड, गेटवे और सेल्फ-होस्टेड provider सभी काम करते हैं। बाद में /provider से बदलें।"
-        }
-        MessageId::OnboardProviderFooter => {
-            "चलने के लिए ↑↓ या j/k, आगे बढ़ने के लिए Enter, वापस जाने के लिए Esc"
-        }
-        MessageId::OnboardProviderNeedsKey => "API key चाहिए",
-        MessageId::OnboardProviderConfigured => "API key सेट है",
-        MessageId::OnboardProviderNoKeyRequired => "API key की ज़रूरत नहीं",
-        MessageId::OnboardProviderKimiOAuthReady => "Kimi CLI OAuth तैयार",
-        // Onboarding — custom endpoint URL.
-        MessageId::OnboardEndpointTitle => "कस्टम endpoint URL",
-        MessageId::OnboardEndpointBlurb => {
-            "इस provider को अपने gateway या proxy से चलाएँ। डिफ़ॉल्ट रखने के लिए Enter दबाएँ।"
-        }
-        MessageId::OnboardEndpointDefaultLabel => "डिफ़ॉल्ट: ",
-        MessageId::OnboardEndpointEnvHintPrefix => "या फिर environment variable ",
-        MessageId::OnboardEndpointEnvHintSuffix => " सेट करें।",
-        MessageId::OnboardEndpointLabel => "URL: ",
-        MessageId::OnboardEndpointPlaceholder => "(बदलने के लिए URL पेस्ट करें)",
-        MessageId::OnboardEndpointFooter => "आगे बढ़ने के लिए Enter, वापस जाने के लिए Esc।",
         // Onboarding — API key entry.
         MessageId::OnboardApiKeyTitlePrefix => "अपनी ",
         MessageId::OnboardApiKeyTitleSuffix => " API key जोड़ें",
@@ -2055,21 +1890,6 @@ fn hindi(id: MessageId) -> Option<&'static str> {
         MessageId::OnboardTrustFooterMiddle => " भरोसा कर आगे बढ़ने के लिए, ",
         MessageId::OnboardTrustFooterSuffix => " बाहर निकलने के लिए",
         // Onboarding — final tips.
-        MessageId::OnboardTipsTitle => "सरल शुरुआत करें",
-        MessageId::OnboardTipsLine1 => {
-            "काम सादी भाषा में लिखें। कमांड चाहिए तो /help या Ctrl+K उपयोग करें।"
-        }
-        MessageId::OnboardTipsLine2 => {
-            "नीचे का composer multi-line है: Enter भेजता है, Alt+Enter या Ctrl+J नई पंक्ति जोड़ता है।"
-        }
-        MessageId::OnboardTipsLine3 => {
-            "काम बदलने पर ही मोड बदलें: समीक्षा-पहले काम के लिए Plan, निष्पादन के लिए Agent, और auto-approval चाहिए तो YOLO।"
-        }
-        MessageId::OnboardTipsLine4 => {
-            "Ctrl+R पिछले सत्र फिर खोलता है, और Esc मौजूदा ड्राफ़्ट या overlay से बाहर निकलता है।"
-        }
-        MessageId::OnboardTipsFooterEnter => "Enter दबाएँ",
-        MessageId::OnboardTipsFooterAction => " workspace खोलने के लिए",
         // Context menu.
         MessageId::CtxMenuTitle => " राइट क्लिक ",
         MessageId::CtxMenuCopySelection => "चयन कॉपी करें",
@@ -2457,36 +2277,6 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         MessageId::HomeGoalModeTip => {
             "Seguimiento de Goal - Usa /goal <objetivo> para seguir un objetivo persistente"
         }
-        MessageId::OnboardLanguageTitle => "Elige el idioma",
-        MessageId::OnboardLanguageBlurb => {
-            "Elige el idioma de la interfaz. Puedes cambiarlo en cualquier momento con `/settings set locale <etiqueta>`."
-        }
-        MessageId::OnboardLanguageFooter => {
-            "Presiona 1-6 para elegir, o Enter para mantener la configuración actual"
-        }
-        // Onboarding — provider picker.
-        MessageId::OnboardProviderTitle => "Elige tu proveedor",
-        MessageId::OnboardProviderBlurb => {
-            "Funcionan proveedores alojados, de pasarela y locales. Cambia luego con /provider."
-        }
-        MessageId::OnboardProviderFooter => {
-            "↑↓ o j/k para moverte, Enter para continuar, Esc para volver"
-        }
-        MessageId::OnboardProviderNeedsKey => "necesita clave de API",
-        MessageId::OnboardProviderConfigured => "clave de API configurada",
-        MessageId::OnboardProviderNoKeyRequired => "no necesita clave de API",
-        MessageId::OnboardProviderKimiOAuthReady => "OAuth de Kimi CLI listo",
-        // Onboarding — custom endpoint URL.
-        MessageId::OnboardEndpointTitle => "URL de endpoint personalizada",
-        MessageId::OnboardEndpointBlurb => {
-            "Envía este proveedor por tu propia pasarela o proxy. Presiona Enter para mantener la predeterminada."
-        }
-        MessageId::OnboardEndpointDefaultLabel => "Predeterminada: ",
-        MessageId::OnboardEndpointEnvHintPrefix => "O define la variable de entorno ",
-        MessageId::OnboardEndpointEnvHintSuffix => " en su lugar.",
-        MessageId::OnboardEndpointLabel => "URL: ",
-        MessageId::OnboardEndpointPlaceholder => "(pega una URL para cambiarla)",
-        MessageId::OnboardEndpointFooter => "Enter para continuar, Esc para volver.",
         // Onboarding — API key entry.
         MessageId::OnboardApiKeyTitlePrefix => "Conecta tu clave de API de ",
         MessageId::OnboardApiKeyTitleSuffix => ".",
@@ -2520,21 +2310,6 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         MessageId::OnboardTrustFooterPrefix => "Presiona ",
         MessageId::OnboardTrustFooterMiddle => " para confiar y continuar, ",
         MessageId::OnboardTrustFooterSuffix => " para salir",
-        MessageId::OnboardTipsTitle => "Empieza simple",
-        MessageId::OnboardTipsLine1 => {
-            "Escribe la tarea en lenguaje natural. Usa /help o Ctrl+K para comandos."
-        }
-        MessageId::OnboardTipsLine2 => {
-            "El composer inferior es multilínea: Enter envía, Alt+Enter o Ctrl+J agrega una nueva línea."
-        }
-        MessageId::OnboardTipsLine3 => {
-            "Cambia de modo solo cuando el trabajo cambie: Plan para revisar antes, Agent para ejecución, YOLO para auto-aprobación."
-        }
-        MessageId::OnboardTipsLine4 => {
-            "Ctrl+R retoma sesiones anteriores, y Esc cancela el borrador o superposición actual."
-        }
-        MessageId::OnboardTipsFooterEnter => "Presiona Enter",
-        MessageId::OnboardTipsFooterAction => " para abrir el workspace",
         // Context menu.
         MessageId::CtxMenuTitle => " Clic derecho ",
         MessageId::CtxMenuCopySelection => "Copiar selección",
