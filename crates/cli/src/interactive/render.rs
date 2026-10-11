@@ -4,9 +4,12 @@
 //! event loop).
 //!
 //! Rendering protocol: permanent output (assistant text, tool lines) goes
-//! to stdout as whole lines. While the turn runs, a single transient
-//! "live" line is refreshed in place via `ESC[2K CR` — never interleaved
-//! with permanent text (it is cleared before any permanent write).
+//! to stdout as whole lines. Tool calls print one collapsed line on
+//! completion by default (Ctrl+O in-turn, `/expand` after the fact — the
+//! terminal is append-only, so expansion is a replay, never a rewrite).
+//! While the turn runs, a single transient "live" line is refreshed in
+//! place via `ESC[2K CR` — never interleaved with permanent text (it is
+//! cleared before any permanent write).
 
 use std::io::Write;
 use std::time::{Duration, Instant};
@@ -38,6 +41,13 @@ struct TurnView {
     live_active: bool,
     current_tool: Option<String>,
     ends_with_newline: bool,
+    /// Started-but-not-completed tool call (name, arg summary) — the
+    /// collapsed form prints only on completion; the live line carries
+    /// the "running" feedback meanwhile.
+    pending_tool: Option<(String, Option<String>)>,
+    /// The last permanent line was a tool/agent line; the next assistant
+    /// message gets a blank separator so the answer stands out.
+    after_tool_line: bool,
 }
 
 impl TurnView {
@@ -46,6 +56,8 @@ impl TurnView {
             live_active: false,
             current_tool: None,
             ends_with_newline: true,
+            pending_tool: None,
+            after_tool_line: false,
         }
     }
 
@@ -78,6 +90,7 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
     let mut cancelled_once = false;
     let mut live_ticker = tokio::time::interval(LIVE_REFRESH);
     live_ticker.tick().await; // first tick fires immediately; discard
+    let mut keys = super::keys::KeyTap::start();
 
     let engine = match state.engine.as_ref() {
         Some(engine) => engine.clone(),
@@ -90,6 +103,30 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                 let mut rx = engine.rx_event.write().await;
                 rx.recv().await
             } => event,
+            key = keys.recv() => {
+                match key {
+                    Some(super::keys::TurnKey::ToggleDetail) => {
+                        state.tool_detail = !state.tool_detail;
+                        view.clear_live();
+                        if state.tool_detail {
+                            println!(
+                                "{}",
+                                "— tool detail expanded (Ctrl+O to collapse)".dimmed()
+                            );
+                            replay_turn_tool_detail(state);
+                        } else {
+                            println!(
+                                "{}",
+                                "— tool detail collapsed (Ctrl+O to expand)".dimmed()
+                            );
+                        }
+                    }
+                    // None: the tap is gone (non-TTY stdin) — Ctrl+O
+                    // unavailable; `/expand` still works.
+                    None => {}
+                }
+                continue;
+            }
             _ = live_ticker.tick() => {
                 view.clear_live();
                 eprint!("{}", super::status::live_line(state, view.current_tool.as_deref()));
@@ -119,13 +156,20 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
             Event::TurnStarted { .. } => {
                 state.is_loading = true;
                 state.turn_started_at = Some(Instant::now());
+                state.tool_log_turn += 1;
             }
             Event::MessageStarted { .. } => {
                 view.clear_live();
+                if view.after_tool_line {
+                    println!();
+                    view.after_tool_line = false;
+                }
             }
             Event::MessageDelta { content, .. } => {
                 view.clear_live();
-                print!("{content}");
+                // Bold so the answer stands out between the styled tool
+                // lines around it.
+                print!("{}", content.bold());
                 let _ = std::io::stdout().flush();
                 view.ends_with_newline = content.ends_with('\n');
             }
@@ -145,11 +189,19 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
             Event::LlmRequest { .. } => {}
             Event::ToolCallStarted { name, input, .. } => {
                 view.clear_live();
-                let args = crate::tool_summary::summarize_tool_args(&input)
-                    .map(|summary| format!("({summary})"))
-                    .unwrap_or_default();
-                println!("{} {}{}", "⏺".cyan(), name.cyan(), args.dimmed());
-                view.current_tool = Some(name);
+                let args_summary = crate::tool_summary::summarize_tool_args(&input);
+                if state.tool_detail {
+                    // Expanded form keeps the immediate ⏺ line; the
+                    // collapsed form stays silent until completion (the
+                    // live line shows the running tool meanwhile).
+                    let args = args_summary
+                        .as_ref()
+                        .map(|summary| format!("({summary})"))
+                        .unwrap_or_default();
+                    println!("{} {}{}", "⏺".cyan(), name.cyan(), args.dimmed());
+                }
+                view.current_tool = Some(name.clone());
+                view.pending_tool = Some((name, args_summary));
             }
             Event::ToolCallProgress { .. } => {}
             Event::ToolCallComplete { name, result, .. } => {
@@ -157,19 +209,58 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                 if view.current_tool.as_deref() == Some(name.as_str()) {
                     view.current_tool = None;
                 }
+                let args_summary = match view.pending_tool.take() {
+                    Some((pending, args)) if pending == name => args,
+                    _ => None,
+                };
+                let args = args_summary
+                    .as_ref()
+                    .map(|summary| format!("({summary})"))
+                    .unwrap_or_default();
                 match result {
                     Ok(output) => {
                         let summary = crate::tool_summary::summarize_tool_output(&output.content);
-                        if summary.is_empty() {
-                            println!("  {} ok", "⎿".dimmed());
+                        if state.tool_detail {
+                            if summary.is_empty() {
+                                println!("  {} ok", "⎿".dimmed());
+                            } else {
+                                println!("  {} {}", "⎿".dimmed(), summary.dimmed());
+                            }
                         } else {
-                            println!("  {} {}", "⎿".dimmed(), summary.dimmed());
+                            let tail = if summary.is_empty() {
+                                "ok".to_string()
+                            } else {
+                                summary
+                            };
+                            println!(
+                                "{} {}{} {} {}",
+                                "⏺".cyan(),
+                                name.cyan(),
+                                args.dimmed(),
+                                "⎿".dimmed(),
+                                tail.dimmed()
+                            );
                         }
+                        push_tool_record(state, &name, args_summary, Some(output.content), None);
                     }
                     Err(err) => {
-                        println!("  {} {}", "⎿".red(), format!("failed: {err}").red());
+                        let message = err.to_string();
+                        if state.tool_detail {
+                            println!("  {} {}", "⎿".red(), format!("failed: {message}").red());
+                        } else {
+                            println!(
+                                "{} {}{} {} {}",
+                                "⏺".cyan(),
+                                name.cyan(),
+                                args.dimmed(),
+                                "⎿".red(),
+                                format!("failed: {message}").red()
+                            );
+                        }
+                        push_tool_record(state, &name, args_summary, None, Some(message));
                     }
                 }
+                view.after_tool_line = true;
                 // Keep the sub-agent cache fresh after agent-lifecycle
                 // tools (mirrors the retired loop's ListSubAgents nudge).
                 if matches!(
@@ -196,6 +287,7 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                     "◇".cyan(),
                     crate::tool_summary::summarize_tool_output(&prompt).dimmed()
                 );
+                view.after_tool_line = true;
             }
             Event::AgentProgress { id, status } => {
                 state.agent_progress.insert(id, status);
@@ -208,6 +300,7 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                     "◇".dimmed(),
                     crate::tool_summary::summarize_tool_output(&result).dimmed()
                 );
+                view.after_tool_line = true;
             }
             Event::AgentList { agents } => {
                 state.subagent_cache = agents;
@@ -226,6 +319,7 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                     state,
                     &engine,
                     &mut view,
+                    &mut keys,
                     id,
                     tool_name,
                     description,
@@ -237,7 +331,7 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                 .await;
             }
             Event::UserInputRequired { id, request } => {
-                handle_user_input(state, &engine, &mut view, id, request).await;
+                handle_user_input(state, &engine, &mut view, &mut keys, id, request).await;
             }
             Event::ElevationRequired {
                 tool_id,
@@ -250,6 +344,7 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                     state,
                     &engine,
                     &mut view,
+                    &mut keys,
                     tool_id,
                     tool_name,
                     command,
@@ -347,6 +442,53 @@ fn error_envelope_message(envelope: &ErrorEnvelope) -> String {
     // `ErrorEnvelope` renders through its Display in the engine; the REPL
     // only needs the human-readable line.
     envelope.to_string()
+}
+
+/// Record a completed call in the session tool log (`/expand` replay),
+/// dropping the oldest entries past the cap.
+fn push_tool_record(
+    state: &mut ReplState,
+    name: &str,
+    args_summary: Option<String>,
+    output: Option<String>,
+    error: Option<String>,
+) {
+    state.tool_log.push(crate::tool_summary::ToolCallRecord {
+        seq: state.tool_log.len() + 1,
+        turn: state.tool_log_turn,
+        name: name.to_string(),
+        args_summary,
+        output,
+        error,
+        replayed: false,
+    });
+    let overflow = state
+        .tool_log
+        .len()
+        .saturating_sub(crate::tool_summary::TOOL_LOG_CAP);
+    if overflow > 0 {
+        state.tool_log.drain(..overflow);
+    }
+}
+
+/// Reprint detail for the current turn's collapsed tool calls (the Ctrl+O
+/// expand path). Already-replayed calls are skipped so toggling more than
+/// once never duplicates output.
+fn replay_turn_tool_detail(state: &mut ReplState) {
+    let turn = state.tool_log_turn;
+    let mut blocks = Vec::new();
+    for record in state.tool_log.iter_mut() {
+        if record.turn == turn && !record.replayed {
+            blocks.push(crate::tool_summary::tool_detail_block(
+                record,
+                crate::tool_summary::DETAIL_MAX_LINES,
+            ));
+            record.replayed = true;
+        }
+    }
+    for block in blocks {
+        println!("{}", block.dimmed());
+    }
 }
 
 /// Auto-save the session at each turn boundary (the retired TUI's
@@ -479,6 +621,7 @@ async fn handle_approval(
     state: &mut ReplState,
     engine: &crate::core::engine::EngineHandle,
     view: &mut TurnView,
+    keys: &mut super::keys::KeyTap,
     id: String,
     tool_name: String,
     description: String,
@@ -524,9 +667,12 @@ async fn handle_approval(
         println!("{}", format!("  args: {args}").dimmed());
     }
     state.awaiting_approval = true;
+    // The prompt reads stdin line-by-line; the key tap must let go first.
+    keys.suspend();
     let answer =
         read_stdin_line("allow? [y]es / [n]o / [a]lways this session / n[e]ver this session: ")
             .await;
+    keys.resume();
     state.awaiting_approval = false;
     let answer = answer.to_ascii_lowercase();
     match answer.as_str() {
@@ -553,6 +699,7 @@ async fn handle_user_input(
     _state: &mut ReplState,
     engine: &crate::core::engine::EngineHandle,
     view: &mut TurnView,
+    keys: &mut super::keys::KeyTap,
     id: String,
     request: codesmith_agent_runtime::user_input::UserInputRequest,
 ) {
@@ -570,7 +717,9 @@ async fn handle_user_input(
                 format!("— {}", option.description).dimmed()
             );
         }
+        keys.suspend();
         let answer = read_stdin_line("choice: ").await;
+        keys.resume();
         let picked = answer
             .parse::<usize>()
             .ok()
@@ -595,10 +744,12 @@ async fn handle_user_input(
         .await;
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_elevation(
     state: &mut ReplState,
     engine: &crate::core::engine::EngineHandle,
     view: &mut TurnView,
+    keys: &mut super::keys::KeyTap,
     tool_id: String,
     tool_name: String,
     command: Option<String>,
@@ -638,7 +789,9 @@ async fn handle_elevation(
         "⚠".yellow(),
         command.as_deref().unwrap_or(&tool_name)
     );
+    keys.suspend();
     let answer = read_stdin_line("retry with elevated sandbox (mode policy)? [y/N]: ").await;
+    keys.resume();
     if answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes") {
         let policy = sandbox_policy_for_mode(state.mode, &state.workspace);
         let _ = engine.retry_tool_with_policy(tool_id, policy).await;

@@ -128,6 +128,12 @@ NEVER answer these from memory or mental computation — ALWAYS use a tool:
 - Symbol or pattern search across the workspace → `grep_files`
 - Filename search → `file_search`
 
+Exception: single-step arithmetic with small, obvious operands (e.g. `1+1`,
+`3*7`) may be answered directly in prose — do not open a tool or an RLM
+session just to compute it. The mandate still applies to multi-step or
+chained calculations, financial or statistical figures, and any number
+that feeds a later decision or artifact.
+
 For multi-step numeric chains (financial formulas, geometry, statistics):
 compute each step in its own `exec_shell` call, persist the intermediates to
 disk (one JSON per stage), and assert each stage's identity or tolerance

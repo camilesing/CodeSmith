@@ -179,7 +179,9 @@ The interactive REPL is a line-based loop (Claude Code / Codex style): you type
 a line, the engine runs a turn, and output streams to the terminal.
 
 - Status line: one line above the prompt with the running state, preset tier,
-  context-window occupancy, mode, sub-agent count, model, and version.
+  context-window occupancy, the permission mode (`mode:`, see
+  [Modes](#5-modes) below), the running sub-agent count (`🤖: N`),
+  model, and version.
 - Prompt: where you type prompts and slash commands (`/help` lists them).
 - Transcript: the conversation, tool calls, command output summaries, and
   model responses, streamed as they happen.
@@ -187,6 +189,15 @@ a line, the engine runs a turn, and output streams to the terminal.
 The transcript is the audit trail. When CodeSmith reads files, runs commands,
 or edits code, the action appears there. If a command fails, use the visible
 failure output as part of your next instruction instead of starting over.
+
+Tool calls print one collapsed line each (the call, its arguments, and the
+first line of the result). To see the full result of a call that already
+ran, use `/expand` (the last turn's calls), `/expand <n>` (one call), or
+`/expand all`. Press `Ctrl+O` while a turn is streaming to switch between
+collapsed and expanded rendering live. The terminal transcript is
+append-only — expanding reprints the detail below the current output
+rather than rewriting history, and keystrokes other than `Ctrl+O` typed
+while a turn runs are discarded.
 
 The prompt accepts normal prompts and slash commands. Type `/` to discover
 available commands. Use an `@path` mention to attach an image file to the
