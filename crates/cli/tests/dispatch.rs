@@ -34,7 +34,7 @@ fn unknown_bare_word_fails_loud_without_opening_the_tui() {
     for token in [
         "unrecognized subcommand 'docotr'",
         "codesmith -p docotr",
-        "codesmith run <COMMAND>",
+        "run `codesmith --help` to see all commands",
     ] {
         assert!(
             stderr.contains(token),

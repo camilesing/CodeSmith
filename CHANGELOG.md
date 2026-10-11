@@ -173,6 +173,21 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
   tails, `-p`, and non-ASCII words still start the interactive session. See
   `docs/CLI.md` ("Prompts and subcommands").
 
+## [0.9.0]
+
+### Removed
+
+- **The ratatui TUI and the `codesmith-tui` companion binary.** CodeSmith is
+  now a single `codesmith` executable: a Claude Code / Codex style line-based
+  REPL is the interactive frontend, and every headless subcommand
+  (exec/doctor/serve/mcp/…) runs in-process. The status line above the prompt
+  shows the session facts (running state, preset tier, context-window
+  occupancy, mode, running sub-agents, model, version), sessions auto-save at
+  each turn boundary, and the slash-command surface carries over (view-bound
+  commands degrade to explicit notes). Release channels — npm, brew, Docker,
+  nix, GitHub assets, self-update — ship the one binary; installs updating
+  from a two-binary release need a one-time reinstall.
+
 ## [0.1.0] - 2026-08-25
 
 ### Added

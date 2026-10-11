@@ -375,6 +375,30 @@ pipelines: https://github.com/camilesing/CodeSmith/blob/main/docs/DOCKER.md
 /// where that is indistinguishable from a mistyped command name; multi-word
 /// tails, quoted sentences, `-p`, non-ASCII words (which cannot name a
 /// command), and anything after the `--` terminator all stay prompts.
+/// True when argv holds exactly one free (non-option) word — the shape in
+/// which clap reports `InvalidSubcommand` for a mistyped command name.
+pub(crate) fn is_single_bare_word<S: AsRef<std::ffi::OsStr>>(argv: &[S]) -> bool {
+    let mut free = 0usize;
+    for arg in argv.iter().skip(1) {
+        let arg = arg.as_ref();
+        if arg == "--" {
+            // Everything after the terminator is prompt text by intent.
+            return false;
+        }
+        let Some(text) = arg.to_str() else {
+            return false;
+        };
+        if text.starts_with('-') {
+            continue;
+        }
+        free += 1;
+        if free > 1 {
+            return false;
+        }
+    }
+    free == 1
+}
+
 fn unknown_subcommand_word<'a, S: AsRef<std::ffi::OsStr>>(
     cli: &'a Cli,
     argv: &[S],

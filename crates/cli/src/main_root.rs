@@ -1015,7 +1015,22 @@ pub(crate) async fn real_main() -> Result<()> {
     spawn_signal_cleanup_task();
 
     let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
-    let cli = Cli::parse_from(argv.clone());
+    let cli = match Cli::try_parse_from(argv.clone()) {
+        Ok(cli) => cli,
+        Err(err) => {
+            // A bare word that looks like a mistyped subcommand fails clap's
+            // parse before the post-parse typo guard can run; route it
+            // through the same guard so users get the `-p` hint.
+            if err.kind() == clap::error::ErrorKind::InvalidSubcommand
+                && let Some(clap::error::ContextValue::String(word)) =
+                    err.get(clap::error::ContextKind::InvalidSubcommand)
+                && crate::is_single_bare_word(&argv)
+            {
+                crate::unknown_subcommand_error(word).exit();
+            }
+            err.exit();
+        }
+    };
     if let Some(word) = crate::unknown_subcommand_word(&cli, &argv) {
         crate::unknown_subcommand_error(word).exit();
     }
