@@ -12,8 +12,8 @@ CodeSmith is that harness, built around DeepSeek V4 and guided by three ideas:
 | **Clear jurisdiction** | A written Constitution with nine tiers of authority. User intent outranks stale instructions. Verification outranks confidence. |
 | **Recursive improvement** | V4 helped write the harness. As the harness improves, V4 becomes more effective — and helps improve the harness further. Each turn starts stronger. |
 
-It's open source, terminal-native, and packaged as a matched `codesmith` /
-`codesmith-tui` Rust binary pair.
+It's open source, terminal-native, and packaged as a single `codesmith` Rust
+binary.
 
 ## Jurisdiction: the Constitution
 
@@ -115,8 +115,8 @@ SWE-bench export, and live cost tracking with cache hit/miss breakdowns.
 
 ## Architecture in one paragraph
 
-`codesmith` (dispatcher CLI) → `codesmith-tui` (companion binary) → ratatui
-interface ↔ async engine ↔ OpenAI-compatible streaming client. Tool calls
+`codesmith` (single binary) → line-based interactive REPL ↔ async engine ↔
+OpenAI-compatible streaming client. Tool calls
 route through a typed registry (shell, file ops, git, web, sub-agents, MCP,
 RLM) and results stream back into the transcript. The engine manages
 session state, turn tracking, the durable task queue, and an LSP subsystem

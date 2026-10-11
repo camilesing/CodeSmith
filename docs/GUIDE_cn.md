@@ -2,7 +2,7 @@
 
 本指南面向你使用 CodeSmith 的第一个小时。它介绍主要工作流、重要的安全控制，以及当你需要完整参考时下一步该去哪里。
 
-CodeSmith 为安装、配置、Provider、模式、快捷键、工具和运维提供了更深入的参考文档。请将本页面作为引导式入门，然后在需要了解每个选项时跟随"下一步"链接。
+CodeSmith 为安装、配置、Provider、模式、工具和运维提供了更深入的参考文档。请将本页面作为引导式入门，然后在需要了解每个选项时跟随"下一步"链接。
 
 ## 1. 欢迎使用 CodeSmith
 
@@ -35,7 +35,7 @@ before editing files.
 
 ## 2. 首次启动
 
-选择适合你机器的方式安装 CodeSmith。每个受支持的安装路径都会同时提供 `codesmith` 调度器和 `codesmith-tui` 运行时。
+选择适合你机器的方式安装 CodeSmith。每个受支持的安装路径都提供同一个 `codesmith` 二进制文件，它同时承载无头（headless）子命令和基于行的交互式 REPL。
 
 ```bash
 # npm
@@ -43,10 +43,9 @@ npm install -g codesmith
 
 # Cargo
 cargo install codesmith-cli --locked
-cargo install codesmith-tui --locked
 
 # Homebrew
-# The tap/formula name differs from the package name; it installs codesmith and codesmith-tui.
+# The tap/formula name differs from the package name; it installs codesmith.
 brew tap camilesing/codesmith
 brew install codesmith
 ```
@@ -71,7 +70,7 @@ codesmith
 
 首次启动时，CodeSmith 会先让你选择 provider——列表包含全部已交付的 provider，默认选中回退 provider DeepSeek——然后再要求填写该 provider 的 API key。如果选择 OpenAI 兼容或 Anthropic 兼容路由，会先询问接入地址，因此网关或代理只需粘贴一次。凭据已经可用的 provider（环境变量，或 Ollama 这类自托管运行时）会跳过密钥输入。之后可随时用 `/provider` 更改选择。
 
-在 TUI 之外，同样的配置入口是 `--provider`、`CODESMITH_PROVIDER`，或配置文件中的 `provider = "<id>"`。回退 provider 最直接的配置路径是：
+在 REPL 之外，同样的配置入口是 `--provider`、`CODESMITH_PROVIDER`，或配置文件中的 `provider = "<id>"`。回退 provider 最直接的配置路径是：
 
 ```bash
 codesmith auth set --provider deepseek
@@ -151,27 +150,25 @@ files yet. Return the likely cause, evidence, and a proposed patch plan.
 
 ## 4. 理解界面
 
-交互式 TUI 有几个稳定的区域：
+交互式 REPL 是一个基于行的循环（Claude Code / Codex 风格）：你输入一行，
+引擎运行一轮，输出流式打印到终端。
 
-- Header（顶栏）：当前会话、活动模型、模式和高层状态。
-- Transcript（会话记录）：对话、工具调用、命令输出摘要和模型回复。
-- Composer（输入区）：你输入提示词、斜杠命令和文件引用的地方。
-- Sidebar（侧栏）：用于工作状态、任务、代理或相关会话信息的上下文面板。
-- Status 与 footer 区域：实时活动、排队的后续消息和简短的命令提示。
+- 状态行：提示符上方的一行，显示运行状态、预设档位、上下文窗口占用、
+  模式、子代理数量、模型和版本。
+- 提示符：你输入提示词和斜杠命令的地方（`/help` 列出命令）。
+- 会话记录：对话、工具调用、命令输出摘要和模型回复，随发生流式输出。
 
 会话记录就是审计轨迹。当 CodeSmith 读取文件、运行命令或编辑代码时，操作会显示在那里。如果命令失败，把可见的失败输出作为下一条指令的一部分，而不是从头再来。
 
-输入区接受普通提示词和斜杠命令。输入 `/` 可以发现可用命令。当你希望模型专注于特定文件或目录而不是广泛搜索时，请使用文件引用。另外还有两种输入前缀：`!cmd` 直接运行 shell 命令并把捕获的输出提交到会话；`:name:` 输入 emoji 短代码（输入过程中有建议弹窗）。
+提示符接受普通提示词和斜杠命令。输入 `/` 可以发现可用命令。使用 `@path`
+引用为下一条消息附加图像文件，或用 `/attach <path>` 附加本地媒体。
+`Ctrl+C` 取消运行中的一轮；连续按两次退出。
 
-当一轮跨越多个步骤时，侧栏很有用。在会话记录持续增长的同时，它能保持目标、agent 状态和上下文信息可见。
-
-键盘快捷键因上下文、终端和平台而异。本指南有意不复制完整的快捷键目录，以免与 TUI 脱节。
-
-下一步：[KEYBINDINGS.md](KEYBINDINGS.md) 是完整的快捷键参考。
+下一步：[CLI.md](CLI.md) 是命令与子命令参考。
 
 ## 5. 模式
 
-CodeSmith 有三个可见的 TUI 模式：
+CodeSmith 有三个可见模式：
 
 | 模式 | 用途 | 默认姿态 |
 | --- | --- | --- |
@@ -179,19 +176,15 @@ CodeSmith 有三个可见的 TUI 模式：
 | Agent | 常规多步骤编码工作 | 带审批门控的工具使用 |
 | YOLO | 你希望自动执行的受信任仓库 | 自动审批与信任 |
 
-在 TUI 中通过模式选择器切换模式：
+在 REPL 中直接切换模式：
 
 ```text
-/preset
+/mode plan
+/mode agent
+/mode yolo
 ```
 
-或直接切换：
-
-```text
-/preset plan
-/preset agent
-/preset yolo
-```
+（`/yolo` 是 `/mode yolo` 的快捷方式；不带参数的 `/mode` 打印当前模式。）
 
 在不熟悉的仓库中，Plan 模式是最安全的起点。它用于检查和决策，而不是文件编辑。
 
@@ -199,7 +192,7 @@ Agent 模式是大多数贡献工作的默认模式。它允许 CodeSmith 读取
 
 YOLO 模式适用于你有意让模型不停下来等待审批就行动的受信任工作区。不要在你不信任的仓库中使用它。
 
-模式与模型路由是分开的。`Tab` 在输入区空闲时循环切换可见模式，而 `/model auto` 控制每轮的模型和思考级别选择。
+模式与模型路由是分开的。`/mode` 切换可见模式，而 `/model auto` 控制每轮的模型和思考级别选择。
 
 你还可以在 `/config` 中通过编辑审批模式来更改审批行为。只有当你理解它如何改变工具执行时才使用。
 
@@ -207,22 +200,23 @@ YOLO 模式适用于你有意让模型不停下来等待审批就行动的受信
 
 ## 6. 斜杠命令
 
-斜杠命令在输入区中输入。当你想直接更改 CodeSmith 状态而不是用自然语言请求模型时，它们很有用。
+斜杠命令在提示符处输入。当你想直接更改 CodeSmith 状态而不是用自然语言请求模型时，它们很有用。
 
 面向新用户的常用命令：
 
 | 命令 | 用途 |
 | --- | --- |
-| `/preset` | 打开模式选择器、切换配置档（`/preset simple`）或应用模式（`/preset agent`） |
+| `/mode` | 在 agent、plan、yolo、coordinator 模式间切换 |
+| `/preset` | 查看或切换配置档（`/preset simple`、`/preset list`） |
 | `/model` | 选择模型，或使用 `/model auto` |
-| `/models` | 从当前端点获取或列出模型 |
 | `/provider` | 选择当前 API provider |
 | `/config` | 编辑运行时和 provider 设置 |
 | `/settings` | 查看持久化 UI 偏好 |
 | `/compact` | 压缩长上下文以回收 token 预算 |
 | `/review` | 请求结构化审查工作流 |
-| `/memory` | 在启用时查看或管理记忆 |
 | `/mcp` | 配置或查看 MCP server 集成 |
+
+实时模型发现使用 `codesmith models` 子命令。
 
 使用 `/provider` 切换当前 provider。Provider ID、环境变量、模型默认值和能力说明保存在 provider 注册表文档中。
 
@@ -230,7 +224,7 @@ YOLO 模式适用于你有意让模型不停下来等待审批就行动的受信
 
 当会话变长且模型开始携带过多历史时，使用 `/compact`。压缩以原始会话记录的细节换取简洁的工作摘要。
 
-本指南有意不列出每一条命令。命令面的变化比入门流程更频繁，而在会话中时，TUI 命令面板才是事实来源。
+本指南有意不列出每一条命令。命令面的变化比入门流程更频繁，而在会话中时，REPL 内的 `/help` 才是事实来源。
 
 下一步：[CONFIGURATION.md](CONFIGURATION.md) 介绍运行时设置，[MCP.md](MCP.md) 介绍 Model Context Protocol 集成。
 
@@ -281,7 +275,7 @@ failure and stop before broadening the test scope.
 你通常不需要直接调用这些工具。用自然语言请求并行工作：
 
 ```text
-Open one read-only explorer for the config crate and another for the TUI
+Open one read-only explorer for the config crate and another for the CLI
 provider picker. Have both return file references and risks before we plan the
 fix.
 ```
@@ -312,7 +306,7 @@ fix.
 - 遵循团队发布清单。
 - 使用项目专属的记忆或 wiki 工作流。
 
-在 TUI 中，`/skill` 在有可用技能时激活技能，`/skills` 列出已安装的技能。命令面板也可以在普通斜杠命令旁展示技能条目。
+在 REPL 中，`/skill` 在有可用技能时激活技能，`/skills` 列出已安装的技能。
 
 好的技能是聚焦的。它们应告诉模型遵循什么工作流、收集什么证据以及避免什么。它们不应隐藏凭据或取代常规的仓库文档。
 
@@ -422,6 +416,6 @@ CodeSmith 会保存会话。使用会话选择器或 README 与模式指南中�
 
 ### 读完本指南后接下来去哪里？
 
-阅读与你要修改的内容对应的专项参考。对大多数用户来说，接下来的页面是安装、配置、provider、模式、快捷键、工具和子代理。
+阅读与你要修改的内容对应的专项参考。对大多数用户来说，接下来的页面是安装、配置、provider、模式、工具和子代理。
 
 下一步：[INSTALL.md](INSTALL.md)、[CONFIGURATION.md](CONFIGURATION.md)、[PROVIDERS.md](PROVIDERS.md)、[PRESETS.md](PRESETS.md) 和 [TOOL_SURFACE.md](TOOL_SURFACE.md)。

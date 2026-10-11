@@ -46,7 +46,7 @@
 `task_shell_start` 或 `background = true` 的 `exec_shell` 重跑长任务，然后用
 `task_shell_wait` 或 `exec_shell_wait` 轮询。
 
-交互式 shell 任务也可以通过 `/jobs` 查看。TUI 任务中心与
+交互式 shell 任务也可以通过 `/jobs` 查看。REPL 任务中心与
 `exec_shell`/`task_shell_start` 使用同一个 shell 管理器，并显示命令、cwd、
 已运行时间、状态、输出尾部、进程本地 shell id，以及可用时关联的持久任务
 id。`/jobs show`、`/jobs poll`、`/jobs wait`、`/jobs stdin` 和
@@ -60,17 +60,15 @@ Shell 权限策略由 `crates/execpolicy` 评估。Deny 前缀先于 trusted 前
 当其在 `AskForApproval::Never` 下匹配时，命令会被拒绝，因为运行时无法
 询问用户；其余现有的 allow/deny 行为保持不变。
 
-### MCP 管理器与调色板发现
+### MCP 管理器发现
 
-MCP 服务器配置通过 TUI 中的 `/mcp` 和 `/config` 中的 `mcp_config_path`
+MCP 服务器配置通过 REPL 中的 `/mcp` 和 `/config` 中的 `mcp_config_path`
 行呈现。`/mcp` 显示解析后的配置路径、服务器启用/禁用状态、传输方式、
 命令或 URL、超时、连接错误，以及发现的工具/资源/提示。它支持一组狭窄的
 管理器动作：init、add、enable、disable、remove、validate 和
 reload/reconnect。配置编辑会立即写入，但编辑后对模型可见的 MCP 工具池
-需要重启才能生效。
-
-命令调色板包含按服务器分组的 MCP 条目。禁用和失败的服务器保持可见，
-发现的工具/提示使用向模型展示的运行时名称，例如 `mcp__<server>__<tool>`。
+需要重启才能生效。发现的工具使用向模型展示的运行时名称，例如
+`mcp__<server>__<tool>`。
 
 ### Git / 诊断 / 测试
 
@@ -229,7 +227,7 @@ RLM 现在同样是持久化的：
 `close_agent`。
 
 `agent_spawn` 是唯一的幸存者：它仍注册在工具注册表中
-（`AgentSpawnTool`，`crates/tui/src/tools/registry.rs`）作为后台一次性
+（`AgentSpawnTool`，`crates/cli/src/tools/registry.rs`）作为后台一次性
 别名 —— `agent_open` 加 `run_in_background = true` 与之等价 —— 且子代理
 通过它递归派生（见 `docs/SUBAGENTS.md`）。新的指导仍应优先使用
 `agent_open` / `agent_eval`。
@@ -261,14 +259,13 @@ RLM 现在同样是持久化的：
 
 ```bash
 codesmith --version
-codesmith-tui --version
 ```
 
 工具面冒烟测试：
 
 ```bash
-rg -n '"handle_read"|"rlm_open"|"rlm_eval"|"rlm_configure"|"rlm_close"|"agent_open"|"agent_eval"|"agent_close"' crates/tui/src
-rg -n 'handle_read|rlm_open|rlm_eval|rlm_configure|rlm_close|agent_open|agent_eval|agent_close' docs crates/agent-runtime/src/prompts crates/tui/src/tools
+rg -n '"handle_read"|"rlm_open"|"rlm_eval"|"rlm_configure"|"rlm_close"|"agent_open"|"agent_eval"|"agent_close"' crates/cli/src
+rg -n 'handle_read|rlm_open|rlm_eval|rlm_configure|rlm_close|agent_open|agent_eval|agent_close' docs crates/agent-runtime/src/prompts crates/cli/src/tools
 ```
 
 权威的实时名称为：

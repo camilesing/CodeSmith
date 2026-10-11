@@ -63,7 +63,7 @@ backend = "none"
 
 后端选择遵循 provider 注册表模式：实现将 `Arc<dyn IndexBackendFactory>`
 注册到 `IndexBackendRegistry` 中，再由 TOML 的 `backend = "…"` 键选择
-其一。内置后端有 `tree-sitter`（受特性门控；TUI 会启用它）和 `none`
+其一。内置后端有 `tree-sitter`（受特性门控；`codesmith` 二进制会启用它）和 `none`
 （空操作占位符；若为已启用的能力选择它会验证失败）。关于从下游 crate
 注册自定义后端的完整示例，参见 `codesmith-index` 的 crate 文档。
 

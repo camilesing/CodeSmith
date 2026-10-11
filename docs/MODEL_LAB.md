@@ -21,7 +21,7 @@ implemented today.
   paths where their IDs appear in `/provider`, `codesmith --provider`, or
   `codesmith models`.
 - Model auto-routing chooses a concrete model and thinking level per
-  turn. It is not a TUI mode.
+  turn. It is not an interactive-frontend mode.
 - Fin is the fast `deepseek-v4-flash` thinking-off path for routing,
   summaries, cheap checks, RLM child calls, wakeup verification, and
   binary-completion checks.

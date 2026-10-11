@@ -48,7 +48,7 @@ Thank you for your interest in contributing to codesmith! This document provides
 - Ensure all existing tests pass: `cargo test --workspace --all-features`
 - Colocate unit tests beside the code they cover (standard Rust `#[cfg(test)]`
   modules), and add integration tests under the owning crate's `tests/`
-  directory (for example `crates/tui/tests/` or `crates/state/tests/`). The
+  directory (for example `crates/cli/tests/` or `crates/state/tests/`). The
   repository root `tests/` directory is not used
 
 ### Commit Messages
@@ -184,15 +184,15 @@ branding, or global prompts without prior maintainer sign-off.
 
 ## Project Structure
 
-codesmith is a Cargo workspace. The TUI runtime lives in `crates/tui/src/`;
-the agent execution engine (turn loop, compaction, sandbox helpers, prompts)
-lives in `crates/agent-runtime/`. The remaining workspace crates provide
-shared abstractions that were extracted incrementally.
+codesmith is a Cargo workspace. The interactive REPL lives in
+`crates/cli/src/interactive/`; the agent execution engine (turn loop,
+compaction, sandbox helpers, prompts) lives in `crates/agent-runtime/`. The
+remaining workspace crates provide shared abstractions that were extracted
+incrementally.
 
 ```
 crates/
-├── tui/           codesmith-tui binary (interactive TUI + runtime API)
-├── cli/           codesmith binary (dispatcher facade)
+├── cli/           codesmith binary (interactive REPL + headless subcommands)
 ├── agent-runtime/ Agent execution engine (engine, turn loop, prompts, sandbox)
 ├── agent/         Model/provider registry + LlmClient trait (framework core)
 ├── providers/     Pluggable LLM client implementations (rig adapter)
@@ -209,8 +209,7 @@ crates/
 ├── execpolicy/    Approval/sandbox policy engine
 ├── extensions/    Extension runtime (discovery/loading/dispatch) (+ extensions-fixture-dylib test fixture)
 ├── index/         Persistent per-workspace code index
-├── release/       Release discovery / version comparison
-└── tui-core/      Event-driven TUI state machine scaffold
+└── release/       Release discovery / version comparison
 ```
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the live data flow across

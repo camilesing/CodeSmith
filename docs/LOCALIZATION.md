@@ -20,7 +20,7 @@ These locales are supported by `locale` in `settings.toml` and by `LANG` / `LC_A
 | Locale | Display | Script | Direction | Fallback | Review status | Notes |
 |---|---|---|---|---|---|---|
 | `en` | English | Latin | LTR | `en` | Source strings remain canonical. | English is always available. |
-| `zh-Hans` | Chinese Simplified | Hans | LTR | `en` | Native review. | `zh`, `zh-CN`, and `zh-Hans` resolve here. Core TUI chrome plus prompt-side reinforcement bookends. |
+| `zh-Hans` | Chinese Simplified | Hans | LTR | `en` | Native review. | `zh`, `zh-CN`, and `zh-Hans` resolve here. Core terminal chrome plus prompt-side reinforcement bookends. |
 | `zh-Hant` | Chinese Traditional | Hant | LTR | `zh-Hans` | Native review. | `zh-TW`, `zh-HK`, `zh-MO`, and `zh-Hant` resolve here; shares the Simplified table except for divergent strings. |
 | `hi` | Hindi | Deva | LTR | `en` | Automated QA only; native review preferred. | Full UI chrome coverage; narrow-width and truncation tests cover Devanagari. Prompt-side reinforcement bookends included. |
 | `es-419` | Spanish (Latin America) | Latin | LTR | `en` | Automated QA only; native review preferred. | `es` and regional variants resolve here. Prompt-side reinforcement bookends included. |
@@ -51,13 +51,19 @@ Fallback:
 
 ## Message Coverage
 
-The registry covers stable message IDs for high-visibility terminal chrome:
+The registry carries stable message IDs for the historical terminal chrome:
 
 - composer placeholder
 - composer history search title, placeholder, hints, and no-match state
 - `/config` title, filter placeholder, no-match state, filtered count, and footer hints
 - help overlay title, filter placeholder, no-match state, section labels, and footer hints
-- slash-command descriptions, keybinding labels, onboarding gate screens, and the context menu
+- slash-command descriptions, onboarding gate screens, and the context menu
+- keybinding labels for the retired TUI surface
+
+Since the 0.9.0 TUI removal the interactive frontend is a line-based REPL:
+it resolves the locale (`/config locale`, `settings.toml`) and applies it to
+the prompt-side locale signal, but renders only a small subset of the chrome
+IDs above; the keybinding/context-menu strings are no longer displayed.
 
 Not translated:
 
@@ -70,15 +76,16 @@ Not translated:
 
 Keep these technical terms stable unless a later glossary explicitly changes
 them: `Plan`, `Agent`, `YOLO`, `/config`, `/mcp`, `@path`, `/attach`, `DeepSeek`,
-`MCP`, `CLI`, `TUI`, and key chords such as `Enter`, `Esc`, `Tab`, `PgUp`, and
+`MCP`, `CLI`, `REPL`, and key names such as `Enter`, `Esc`, `Tab`, `PgUp`, and
 `PgDn`.
 
 ## QA Checklist
 
 Before shipping a new locale:
 
-1. Add complete message coverage in `crates/tui/src/localization.rs`.
+1. Add complete message coverage in `crates/cli/src/localization.rs`.
 2. Add locale resolution tests and missing-key tests.
-3. Add narrow-width render coverage for at least composer, help, and `/config`.
+3. Add narrow-width render coverage for the surfaces that still render text
+   (at least `/config`).
 4. Verify CJK width, combining marks, and truncation.
 5. Record native/fluent review status, or mark the locale as automated-QA-only.

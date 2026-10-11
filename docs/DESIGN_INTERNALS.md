@@ -48,13 +48,13 @@ For planned work, see [`ROADMAP.md`](../ROADMAP.md).
                │ path dep                                    │
                ▼                                             │
 ┌──────────────────────────────────────────────────────────┐ │
-│ codesmith-tui  (HOST / binary)                            │─┘ (optional)
+│ codesmith-cli  (HOST / binary: `codesmith`)               │─┘ (optional)
 │  • build_engine → resolve_llm_client → registry.build     │
 │  • Config, logging, retry_status (UI globals)             │
 └───────────────────────────────────────────────────────────┘
 ```
 
-The arrow that matters: **`codesmith-tui` depends on `codesmith-providers`
+The arrow that matters: **`codesmith-cli` depends on `codesmith-providers`
 (optional, feature-gated), never the reverse.** Providers depend only on
 `codesmith-agent` and `codesmith-config` (the declarative `providers.toml`
 schema and loader).
@@ -64,7 +64,7 @@ schema and loader).
 A client is built without the host naming a concrete type:
 
 ```text
-  Host (tui)                      codesmith-agent                  codesmith-providers
+  Host (cli REPL)                 codesmith-agent                  codesmith-providers
   ─────────                       ──────────────                   ───────────────────
   Config ──▶ resolve_llm_client
                  │ builds ProviderConfig
@@ -82,7 +82,7 @@ A client is built without the host naming a concrete type:
 - **`ProviderId`** — open union: `Builtin(ProviderKind)` for known providers,
   `Custom(String)` for anything else. Mirrors pi-ai's `KnownProvider | string`.
 - **`ProviderConfig`** — neutral construction input (`api_key`, `base_url`,
-  `default_model`, `retry`, `http_headers`, `on_retry`). No TUI `Config`
+  `default_model`, `retry`, `http_headers`, `on_retry`). No host `Config`
   dependency, so a provider crate stays host-agnostic.
 - **`ProviderFactory`** — `id()` + `build(&cfg) -> LlmClientHandle`. Implement
   in `codesmith-providers` (or your own crate) and register it.
@@ -312,7 +312,7 @@ three-layer split applies:
   sees a normal tool (mirrors `ToolSpecAdapter`); `HostAgentExecutor` holds
   an `Option<Arc<ExtensionRunner>>` + emits at four turn seams (TurnStart /
   ToolCall ×2 / ToolResult ×2 / TurnEnd ×2).
-- **Host wiring** (`codesmith-tui`): `build_extension_runtime()` runs the
+- **Host wiring** (`codesmith-cli`): `build_extension_runtime()` runs the
   discover → reconcile → load → `bind_core` sequence once at engine build
   (shares the engine's `cancel_token` so handlers observe user ESC);
   `ExtensionStateStore` (mirrors `SkillStateStore`) tracks enabled/disabled
@@ -333,7 +333,7 @@ bind_core → emit path. `/extension list` shows it.
               codesmith_agent_runtime (ExtensionToolSpecAdapter + executor seams)
                                         │ wired by
                                         ▼
-              codesmith_tui (build_extension_runtime + StateStore + /extension cmd)
+              codesmith_cli (build_extension_runtime + StateStore + /extension cmd)
 ```
 
 The contract and runtime core carry the full 23-variant `ExtensionEvent` set
@@ -358,7 +358,7 @@ Live reload re-populates the shared runner `Arc` via
 updates both `App.extension_runner` and the Engine's field.
 
 Not implemented yet: `ToolExecutionUpdate` (stream hook), reload sharing the
-engine's `cancel_token`, 3 tui-level seams unreachable from the App runner
+engine's `cancel_token`, 3 host-level seams unreachable from the App runner
 (`ProjectTrust` sync context / `ResourcesDiscover` separate MCP process /
 `SessionBeforeFork` dead-code fork path), the `EventBus` implementation,
 `registerProvider`, `registerShortcut`/`registerFlag`/renderers, dylib
@@ -370,14 +370,14 @@ permanently out; install + reload only.
 | Concern | Where |
 |---|---|
 | Core abstractions (`LlmClient`, `ProviderFactory`, `ProviderRegistry`) | `crates/agent/src/{llm_client,provider}/` |
-| Registry in the engine loop (`resolve_llm_client` seeds from `default_registry()`) | `crates/tui/src/core/engine.rs` |
+| Registry in the engine loop (`resolve_llm_client` seeds from `default_registry()`) | `crates/cli/src/core/engine.rs` |
 | `codesmith-providers` crate: `mock` provider, rig adapter `RigLlmClient<C,S>`, Cargo features | `crates/providers/` |
 | Declarative factory catalog (`openai` / `anthropic` / `deepseek` / `openai-compat` ×13) | `crates/providers/providers.toml` |
 | Parity bridge: reasoning heuristics + `shape_messages` / `shape_max_tokens` | `crates/providers/src/rig_adapter/{reasoning,shaper}.rs` |
 | Provider selection via config, including `custom_provider` + `[[providers.custom]]` + `--custom-provider <id>`; the bare `provider = "<custom-id>"` form is rejected by design | `crates/config`, `crates/cli` |
 | Framework-core agent traits (`Tool`, `ChatHistory`, `Callback`, `AgentExecutor`) | `crates/agent/src/{tools,memory,callback,executor}/` |
 | Host bridges (`ToolSpecAdapter`, `CallbackBridge`, `SessionChatHistory`) and the production `HostAgentExecutor` with its guardrail set | `crates/agent-runtime/src/{tools/framework_adapter,callback_bridge,session_history}.rs`, `crates/agent-runtime/src/engine/host_executor.rs` |
-| Extension system (contract + runtime + adapters + host wiring) | `crates/agent/src/extension.rs`, `crates/extensions/`, `crates/agent-runtime/src/tools/extension.rs`, `crates/tui/src/{extension_state.rs,commands/extension_commands.rs}` |
+| Extension system (contract + runtime + adapters + host wiring) | `crates/agent/src/extension.rs`, `crates/extensions/`, `crates/agent-runtime/src/tools/extension.rs`, `crates/cli/src/extension_state.rs`, `crates/cli/src/interactive/commands/` |
 | Extension system docs | `docs/EXTENSIONS.md` |
 
 ## Registering a provider (developer guide)

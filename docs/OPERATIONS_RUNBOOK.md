@@ -1,15 +1,15 @@
 # codesmith Operations Runbook
 
-This runbook covers practical debugging and incident response for the local CLI/TUI runtime.
+This runbook covers practical debugging and incident response for the local CLI runtime.
 
 ## Quick Triage
 
 1. Confirm binary + config:
-   - `cargo run -p codesmith-tui -- --version`
+   - `cargo run -p codesmith-cli -- --version`
    - `cat ~/.codesmith/config.toml` (or inspect configured profile)
 2. Enable verbose logs:
-   - `RUST_LOG=codesmith_tui=debug cargo run -p codesmith-tui` (tracing output lands in `~/.codesmith/logs/tui-YYYY-MM-DD-<pid>.log`)
-   - For provider HTTP retries/reconnects: `RUST_LOG=codesmith_providers=debug,codesmith_agent=debug cargo run -p codesmith-tui`
+   - `RUST_LOG=codesmith_cli=debug cargo run -p codesmith-cli` (tracing output lands in `~/.codesmith/logs/tui-YYYY-MM-DD-<pid>.log`)
+   - For provider HTTP retries/reconnects: `RUST_LOG=codesmith_providers=debug,codesmith_agent=debug cargo run -p codesmith-cli`
 3. Capture current state:
    - `ls ~/.codesmith/sessions`
    - `ls ~/.codesmith/sessions/checkpoints`
@@ -18,7 +18,7 @@ This runbook covers practical debugging and incident response for the local CLI/
 ## Incident: Turn Hangs or Stream Stops
 
 Symptoms:
-- TUI remains in loading state
+- The REPL status line keeps showing a running turn
 - partial assistant output with no completion
 
 Checks:
@@ -28,11 +28,10 @@ Checks:
 3. Confirm no local sandbox/permission deadlock in tool output
 
 Actions:
-1. If a foreground shell command is running, press `Ctrl+B` and choose whether to background it or cancel the current turn.
+1. Press `Ctrl+C` to cancel the current turn, including any foreground shell command it is running.
 2. If the command was started in the background, ask the assistant to cancel it with `exec_shell_cancel` and the returned task id.
-3. Use `Esc` or `Ctrl+C` to interrupt the current turn when you want to stop the request itself.
-4. Retry prompt; if still failing, restart TUI.
-5. On restart, verify the previous queued/in-flight runtime turn is shown as interrupted rather than left in a running state.
+3. Retry the prompt; if it still fails, restart the REPL.
+4. On restart, verify the previous queued/in-flight runtime turn is shown as interrupted rather than left in a running state.
 
 ## Incident: Network Outage / Offline Behavior
 
@@ -41,12 +40,15 @@ Expected behavior:
 - Queue state persists to `~/.codesmith/sessions/checkpoints/offline_queue.json`
 
 Checks:
-1. Open queue in TUI: `/queue list`
+1. Run `/queue` in the REPL — the offline queue is a composer-era feature with
+   no line-mode equivalent yet; the command reports that messages sent during
+   a turn steer/cancel via `Ctrl+C`
 2. Confirm persisted queue file exists and updates timestamp
 
 Actions:
 1. Restore connectivity
-2. Re-send queued entries (from `/queue edit <n>` + Enter, or normal input flow)
+2. Re-send queued entries through the normal input flow (`/queue edit <n>` was
+   a composer command with no line-mode equivalent)
 3. Ensure queue file clears when queue is empty
 
 ## Incident: Crash Recovery Needed
@@ -56,7 +58,7 @@ Expected behavior:
 - Startup begins a fresh session unless `--resume`/`--continue` is supplied
 
 Actions:
-1. Resume prior work explicitly via `codesmith --resume <id>` or `Ctrl+R` in TUI
+1. Resume prior work explicitly via `codesmith --resume <id>`, or `/resume <id>` in the REPL
 2. If checkpoint inspection is needed, inspect `latest.json` for schema mismatch/details
 3. If schema is newer than binary supports, upgrade binary or remove stale checkpoint
 
@@ -82,7 +84,7 @@ Actions:
 Checks:
 1. Validate `~/.codesmith/mcp.json` schema and server command paths
 2. Confirm server process can start manually
-3. Check sandbox denials in TUI history / logs
+3. Check sandbox denials in the REPL transcript / logs
 
 Actions:
 1. Retry with required approvals (or YOLO only when appropriate)

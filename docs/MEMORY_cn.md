@@ -27,7 +27,7 @@ export CODESMITH_MEMORY=on
 enabled = true
 ```
 
-切换后重启 TUI。禁用方式与之相反。
+切换后重启 REPL。禁用方式与之相反。
 
 记忆文件默认位于 `~/.codesmith/memory.md`；可通过 `config.toml` 中的
 `memory_path` 或环境中的 `CODESMITH_MEMORY_PATH` 覆盖。两者都设置时
@@ -76,7 +76,7 @@ enabled = true
 # remember to use 4-space indentation in this repo
 ```
 
-TUI 会拦截该输入，并向你的记忆文件追加一条带时间戳的条目。**不触发
+REPL 会拦截该输入，并向你的记忆文件追加一条带时间戳的条目。**不触发
 回合**——你的输入被消费，状态行确认写入路径，你可以继续键入真正的
 问题。
 
@@ -230,12 +230,12 @@ export CODESMITH_MEMORY_EXCLUDES=~/work/secret/CLAUDE.md:/etc/sandbox-override.m
   跨会话记忆。
 - **对话片段** — 引用式的笔记属于笔记工具（`note`），不属于记忆。
 - **长指令** — 超过几句话的内容应放在 `AGENTS.md`（项目级）或
-  [技能](../crates/tui/src/skills/mod.rs)（可复用的指令包）中。
+  [技能](../crates/cli/src/skills/mod.rs)（可复用的指令包）中。
 
 ## 隐私与范围
 
 记忆文件完全保存在你机器上的 `~/.codesmith/` 中。它从不会被上传到
-任何云服务——TUI 只是在记忆启用时把它内联进 LLM 提供方收到的系统
+任何云服务——CodeSmith 只是在记忆启用时把它内联进 LLM 提供方收到的系统
 提示中。如果你切换提供方（DeepSeek / NVIDIA NIM / Fireworks 等），
 使用的仍是同一个记忆文件；该文件与提供方无关。
 

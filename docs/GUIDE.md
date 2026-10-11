@@ -5,7 +5,7 @@ workflow, the important safety controls, and where to go next when you need a
 complete reference.
 
 CodeSmith has deeper reference documents for installation, configuration,
-providers, modes, keybindings, tools, and operations. Use this page as a guided
+providers, modes, tools, and operations. Use this page as a guided
 walkthrough, then follow the "Next" links when you need every option.
 
 ## 1. Welcome to CodeSmith
@@ -46,7 +46,8 @@ runtime model.
 ## 2. First Launch
 
 Install CodeSmith with the path that fits your machine. Each supported install
-path provides both the `codesmith` dispatcher and the `codesmith-tui` runtime.
+path provides the single `codesmith` binary, which hosts both the headless
+subcommands and the line-based interactive REPL.
 
 ```bash
 # npm
@@ -54,10 +55,9 @@ npm install -g codesmith
 
 # Cargo
 cargo install codesmith-cli --locked
-cargo install codesmith-tui --locked
 
 # Homebrew
-# The tap/formula name differs from the package name; it installs codesmith and codesmith-tui.
+# The tap/formula name differs from the package name; it installs codesmith.
 brew tap camilesing/codesmith
 brew install codesmith
 ```
@@ -88,7 +88,7 @@ A provider that already has a usable credential (an environment variable, or a
 self-hosted runtime such as Ollama) skips the key screen. The choice can be
 changed later with `/provider`.
 
-The same setup paths work outside the TUI: `--provider`,
+The same setup paths work outside the REPL: `--provider`,
 `CODESMITH_PROVIDER`, or a `provider = "<id>"` line in the config. The most
 direct path for the fallback provider is:
 
@@ -175,40 +175,29 @@ Next: [PRESETS.md](PRESETS.md) explains when to use Plan, Agent, and YOLO.
 
 ## 4. Understanding the Interface
 
-The interactive TUI has a few stable regions:
+The interactive REPL is a line-based loop (Claude Code / Codex style): you type
+a line, the engine runs a turn, and output streams to the terminal.
 
-- Header: current session, active model, mode, and high-level status.
+- Status line: one line above the prompt with the running state, preset tier,
+  context-window occupancy, mode, sub-agent count, model, and version.
+- Prompt: where you type prompts and slash commands (`/help` lists them).
 - Transcript: the conversation, tool calls, command output summaries, and
-  model responses.
-- Composer: where you type prompts, slash commands, and file mentions.
-- Sidebar: contextual panels for work state, tasks, agents, or related
-  session information.
-- Status and footer areas: live activity, queued follow-ups, and short command
-  hints.
+  model responses, streamed as they happen.
 
 The transcript is the audit trail. When CodeSmith reads files, runs commands,
 or edits code, the action appears there. If a command fails, use the visible
 failure output as part of your next instruction instead of starting over.
 
-The composer accepts normal prompts and slash commands. Type `/` to discover
-available commands. Use file mentions when you want the model to focus on a
-specific file or directory instead of searching broadly. Two more input
-prefixes: `!cmd` runs a shell command directly and submits its captured output
-to the session, and `:name:` inserts an emoji shortcode (with a suggestion
-popup while you type).
+The prompt accepts normal prompts and slash commands. Type `/` to discover
+available commands. Use an `@path` mention to attach an image file to the
+next message, or `/attach <path>` for local media. `Ctrl+C` cancels a running
+turn; press it twice in a row to quit.
 
-The sidebar is useful when a turn spans multiple steps. It can keep goals,
-agent state, and contextual information visible while the transcript continues
-to grow.
-
-Keyboard shortcuts vary by context, terminal, and platform. This guide avoids
-duplicating the full shortcut catalog so it does not drift from the TUI.
-
-Next: [KEYBINDINGS.md](KEYBINDINGS.md) is the complete shortcut reference.
+Next: [CLI.md](CLI.md) is the command and subcommand reference.
 
 ## 5. Modes
 
-CodeSmith has three visible TUI modes:
+CodeSmith has three visible modes:
 
 | Mode | Use it for | Default posture |
 | --- | --- | --- |
@@ -216,19 +205,16 @@ CodeSmith has three visible TUI modes:
 | Agent | Normal multi-step coding work | Tool use with approval gates |
 | YOLO | Trusted repos where you want automatic execution | Auto-approval and trust |
 
-Switch modes from the TUI with the mode picker:
+Switch modes in the REPL directly:
 
 ```text
-/preset
+/mode plan
+/mode agent
+/mode yolo
 ```
 
-Or switch directly:
-
-```text
-/preset plan
-/preset agent
-/preset yolo
-```
+(`/yolo` is the shortcut for `/mode yolo`; a bare `/mode` prints the current
+mode.)
 
 Plan mode is the safest place to start in an unfamiliar repository. It is for
 inspection and decision-making, not file edits.
@@ -240,9 +226,8 @@ YOLO mode is for trusted workspaces where you intentionally want the model to
 act without stopping for approvals. Do not use it in a repository you do not
 trust.
 
-Modes are separate from model routing. `Tab` cycles visible modes when the
-composer is idle, while `/model auto` controls model and thinking selection for
-turns.
+Modes are separate from model routing. `/mode` switches the visible mode,
+while `/model auto` controls model and thinking selection for turns.
 
 You can also change approval behavior from `/config` by editing the approval
 mode. Use this only when you understand how it changes tool execution.
@@ -252,7 +237,7 @@ reference.
 
 ## 6. Slash Commands
 
-Slash commands are typed into the composer. They are useful when you want to
+Slash commands are typed at the prompt. They are useful when you want to
 change CodeSmith state directly instead of asking the model in natural
 language.
 
@@ -260,16 +245,17 @@ Common commands for first-time users:
 
 | Command | Use |
 | --- | --- |
-| `/preset` | Open the mode picker, switch tiers (`/preset simple`), or app modes (`/preset agent`) |
+| `/mode` | Switch between agent, plan, yolo, and coordinator modes |
+| `/preset` | Show or switch the preset tier (`/preset simple`, `/preset list`) |
 | `/model` | Select a model or use `/model auto` |
-| `/models` | Fetch or list models from the active endpoint |
 | `/provider` | Pick the active API provider |
 | `/config` | Edit runtime and provider settings |
 | `/settings` | Inspect persistent UI preferences |
 | `/compact` | Summarize long context to recover token budget |
 | `/review` | Ask for a structured review workflow |
-| `/memory` | Inspect or manage memory when enabled |
 | `/mcp` | Configure or inspect MCP server integration |
+
+Live model discovery is the `codesmith models` subcommand.
 
 Use `/provider` to switch the active provider. Provider IDs, environment
 variables, model defaults, and capability notes are
@@ -283,8 +269,8 @@ Use `/compact` when a session gets long and the model starts carrying too much
 history. Compaction trades raw transcript detail for a concise working summary.
 
 This guide intentionally does not list every command. The command surface
-changes more often than the onboarding flow, and the TUI command palette is the
-source of truth while you are inside a session.
+changes more often than the onboarding flow, and `/help` inside the REPL is
+the source of truth while you are in a session.
 
 Next: [CONFIGURATION.md](CONFIGURATION.md) covers runtime settings and
 [MCP.md](MCP.md) covers Model Context Protocol integration.
@@ -349,7 +335,7 @@ You normally do not need to call these tools directly. Ask for parallel work in
 plain language:
 
 ```text
-Open one read-only explorer for the config crate and another for the TUI
+Open one read-only explorer for the config crate and another for the CLI
 provider picker. Have both return file references and risks before we plan the
 fix.
 ```
@@ -385,9 +371,8 @@ Use skills when a task has a repeatable process:
 - Following a team release checklist.
 - Using a project-specific memory or wiki workflow.
 
-Inside the TUI, `/skill` activates a skill when one is available, and `/skills`
-lists installed skills. The command palette can also surface skill entries
-alongside normal slash commands.
+Inside the REPL, `/skill` activates a skill when one is available, and `/skills`
+lists installed skills.
 
 Good skills are narrow. They should tell the model what workflow to follow,
 what evidence to collect, and what to avoid. They should not hide credentials
@@ -531,7 +516,7 @@ repository unless you intentionally need something else.
 ### Where should I go after this guide?
 
 Read the focused reference for the thing you are changing. For most users, the
-next pages are install, configuration, providers, modes, keybindings, tools,
+next pages are install, configuration, providers, modes, tools,
 and sub-agents.
 
 Next: [INSTALL.md](INSTALL.md), [CONFIGURATION.md](CONFIGURATION.md),

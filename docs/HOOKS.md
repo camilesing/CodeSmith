@@ -33,7 +33,7 @@ command = "~/.codesmith/hooks/audit-log.sh"
 condition = { type = "tool_name", name = "exec_shell" }
 ```
 
-Run `/hooks` (or `/hooks list`) inside the TUI to confirm both entries are
+Run `/hooks` (or `/hooks list`) inside the REPL to confirm both entries are
 loaded, and `/hooks events` to list every event name you can target.
 
 ## Configuration schema
@@ -78,7 +78,7 @@ Field notes:
 
 | Event | Alias | Fires when | Mutability |
 |---|---|---|---|
-| `session_start` | — | once when the TUI launches | observer |
+| `session_start` | — | once when the REPL launches | observer |
 | `session_end` | — | once on graceful shutdown | observer |
 | `message_submit` | — | before a submitted message reaches history or the model | **can replace or block text** |
 | `tool_call_before` | `pre_tool_use` | before each tool execution | observer |
@@ -95,7 +95,7 @@ Field notes:
 
 Details per group:
 
-- **Lifecycle.** `session_start` / `session_end` fire once per TUI process.
+- **Lifecycle.** `session_start` / `session_end` fire once per REPL process.
   Good for loading state, setting up logging, or emitting a notification.
 - **`message_submit`** is the only event that can change agent input. See
   [Hook output](#hook-output) for the stdin/stdout JSON contract and the
@@ -117,7 +117,7 @@ Details per group:
   non-background hook's stdout is concatenated (separated by `---` rules)
   and merged into the compaction summary, so material you print survives
   summarization. Failures are non-blocking: compaction always proceeds.
-- **`turn_end`** fires from the TUI's turn-complete handler after app state,
+- **`turn_end`** fires from the REPL's turn-complete handler after app state,
   usage, cost, notifications, and receipt state have been updated. The
   stdin payload carries the turn status (`completed` / `interrupted` /
   `failed`) and usage. Failures are warn-only; the hook cannot alter turn
@@ -280,10 +280,10 @@ ignored.
   text unchanged
 - Exit `0` + malformed stdout JSON → text unchanged, a warning is logged
 - Exit `2` → submission **blocked** before the turn starts; a `reason`
-  field, stderr, or stdout supplies the message shown in the TUI
+  field, stderr, or stdout supplies the message shown in the REPL
 - Any other non-zero exit, timeout, or spawn failure → governed by
   `continue_on_error`: `true` keeps the current text and continues to later
-  hooks (with a TUI status message); `false` blocks the submission
+  hooks (with a status message); `false` blocks the submission
 
 Multiple `message_submit` hooks run in config order and each receives the
 text produced by the previous hook. `background = true` hooks on this event

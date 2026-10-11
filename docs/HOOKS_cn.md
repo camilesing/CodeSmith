@@ -29,7 +29,7 @@ command = "~/.codesmith/hooks/audit-log.sh"
 condition = { type = "tool_name", name = "exec_shell" }
 ```
 
-在 TUI 中运行 `/hooks`（或 `/hooks list`）确认两条条目均已加载，
+在 REPL 中运行 `/hooks`（或 `/hooks list`）确认两条条目均已加载，
 运行 `/hooks events` 列出所有可作为目标的事件名称。
 
 ## 配置模式
@@ -74,7 +74,7 @@ condition = { type = "mode", mode = "agent" }   # 可选；见条件
 
 | 事件 | 别名 | 触发时机 | 可变性 |
 |---|---|---|---|
-| `session_start` | — | TUI 启动时一次 | observer |
+| `session_start` | — | REPL 启动时一次 | observer |
 | `session_end` | — | 优雅关闭时一次 | observer |
 | `message_submit` | — | 在提交的消息进入历史或到达模型之前 | **可替换或阻断文本** |
 | `tool_call_before` | `pre_tool_use` | 每次工具执行之前 | observer |
@@ -91,7 +91,7 @@ condition = { type = "mode", mode = "agent" }   # 可选；见条件
 
 各分组详情：
 
-- **生命周期。** `session_start` / `session_end` 在每个 TUI 进程中
+- **生命周期。** `session_start` / `session_end` 在每个 REPL 进程中
   触发一次。适合加载状态、设置日志或发送通知。
 - **`message_submit`** 是唯一能够更改代理输入的事件。stdin/stdout
   JSON 契约和退出码 2 的阻断语义见[钩子输出](#钩子输出)。它在文件
@@ -109,7 +109,7 @@ condition = { type = "mode", mode = "agent" }   # 可选；见条件
 - **`pre_compact`** 在上下文被摘要之前触发。每个匹配的非后台钩子的
   stdout 会被拼接（以 `---` 分隔线隔开）并合并进压缩摘要，因此你
   打印的材料会在摘要化后存活。失败不会造成阻断：压缩总是照常进行。
-- **`turn_end`** 在 TUI 的回合完成处理器中触发，此时应用状态、用量、
+- **`turn_end`** 在 REPL 的回合完成处理器中触发，此时应用状态、用量、
   成本、通知和回执状态均已更新完毕。stdin 负载携带回合状态
   （`completed` / `interrupted` / `failed`）与用量信息。失败仅告警；
   钩子无法改变回合状态。`stop_hook_active` 目前恒为 `false`。
@@ -267,9 +267,9 @@ condition = { type = "any", conditions = [ ... ] }
   文本不变
 - 退出 `0` + stdout JSON 格式非法 → 文本不变，记录一条警告
 - 退出 `2` → 提交在回合开始前被**阻断**；`reason` 字段、stderr 或
-  stdout 提供显示在 TUI 中的消息
+  stdout 提供显示在 REPL 中的消息
 - 任何其他非零退出、超时或启动失败 → 由 `continue_on_error` 决定：
-  `true` 保留当前文本并继续后续钩子（附带一条 TUI 状态消息）；
+  `true` 保留当前文本并继续后续钩子（附带一条状态消息）；
   `false` 阻断提交
 
 多个 `message_submit` 钩子按配置顺序运行，每个钩子收到上一个钩子产出

@@ -15,14 +15,14 @@ Providers 是规划中的附加开源模型路由层；它们在当前检出中�
 需要保持同步的来源：
 
 - `crates/config/src/lib.rs` - 共享的提供商 ID、默认值、环境变量优先级。
-- `crates/agent-runtime/src/config_types.rs` - 活跃 TUI `ApiProvider` ID。
-- `crates/tui/src/config.rs` - 提供商能力元数据
+- `crates/agent-runtime/src/config_types.rs` - 活跃 `ApiProvider` ID。
+- `crates/cli/src/config.rs` - 提供商能力元数据
   以及提供商特定的环境变量处理。
 - `crates/agent/src/lib.rs` - 供 `codesmith model list` 和
   `codesmith model resolve` 使用的静态 `ModelRegistry`。
 - `config.example.toml` 和 `docs/CONFIGURATION.md` - 面向用户的配置
   示例和环境变量参考。
-- `scripts/check-provider-registry.py` - 针对规范提供商 ID、活跃 TUI
+- `scripts/check-provider-registry.py` - 针对规范提供商 ID、活跃运行时
   提供商 ID、TOML 表名、静态注册表行和已文档化默认值的漂移检查。
 
 ## 提供商选择
@@ -38,13 +38,13 @@ Providers 是规划中的附加开源模型路由层；它们在当前检出中�
 - 首次运行：`codesmith` 分发器的 CLI 引导会先让你选择一次，然后才要求
   填写密钥（OpenAI 兼容与 Anthropic 兼容这两条路由还会询问接入地址）
 - CLI：`codesmith --provider <id>`
-- TUI：`/provider <id>` 或提供商选择器
+- REPL：`/provider <id>`（不带参数的 `/provider` 打印当前提供商）
 - 环境变量：`CODESMITH_PROVIDER=<id>`
 - 配置：`provider = "<id>"`
 
 首次运行引导把 `provider =` 和该提供商的默认模型（`[providers.<name>]`）
-写入 `~/.codesmith/config.toml`；`/provider` 弹窗则把选择记录为
-`~/.codesmith/settings.toml` 中的 `default_provider`，在 TUI 内该设置的
+写入 `~/.codesmith/config.toml`；`/provider` 命令则把选择记录为
+`~/.codesmith/settings.toml` 中的 `default_provider`，在 REPL 内该设置的
 优先级高于配置文件中的 `provider =`。选中的提供商会以自身默认模型启动，
 而凭据已经可解析的提供商——环境变量、配置文件、或 Ollama 这类自托管运行时
 ——会跳过密钥输入。
@@ -126,9 +126,9 @@ model = "your-deepseek-compatible-model"
 | --- | --- | --- | --- | --- | --- |
 | `deepseek` | `[providers.deepseek]` | `DEEPSEEK_API_KEY` | `CODESMITH_BASE_URL`；默认 `https://api.deepseek.com/beta` | `deepseek-v4-pro`、`deepseek-v4-flash`；兼容别名 `deepseek-chat`、`deepseek-reasoner` | 未配置提供商时的回退。Beta URL 启用 strict tool mode、chat prefix completion 和 FIM completion。显式设置 `https://api.deepseek.com` 或 `/v1` 可退出仅限 beta 的功能。 |
 | `anthropic` | `[providers.anthropic]` | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL`；默认 `https://api.anthropic.com/v1` | `claude-sonnet-4-5` | Anthropic 路由，也包括 Anthropic 兼容代理。首次运行 onboarding 会询问接入地址；接受 `claude`、`anthropic-claude` 和 `claude-ai` 作为提供商别名。 |
-| `nvidia-nim` | `[providers.nvidia_nim]` | `NVIDIA_API_KEY`、`NVIDIA_NIM_API_KEY`、回退 `DEEPSEEK_API_KEY` | `NVIDIA_NIM_BASE_URL`、`NIM_BASE_URL`、`NVIDIA_BASE_URL`；默认 `https://integrate.api.nvidia.com/v1` | `deepseek-ai/deepseek-v4-pro`、`deepseek-ai/deepseek-v4-flash` | 通过 NVIDIA NIM 托管的 DeepSeek V4。TUI 配置路径接受 `NVIDIA_NIM_MODEL`。 |
+| `nvidia-nim` | `[providers.nvidia_nim]` | `NVIDIA_API_KEY`、`NVIDIA_NIM_API_KEY`、回退 `DEEPSEEK_API_KEY` | `NVIDIA_NIM_BASE_URL`、`NIM_BASE_URL`、`NVIDIA_BASE_URL`；默认 `https://integrate.api.nvidia.com/v1` | `deepseek-ai/deepseek-v4-pro`、`deepseek-ai/deepseek-v4-flash` | 通过 NVIDIA NIM 托管的 DeepSeek V4。运行时配置路径接受 `NVIDIA_NIM_MODEL`。 |
 | `openai` | `[providers.openai]` | `OPENAI_API_KEY` | `OPENAI_BASE_URL`；默认 `https://api.openai.com/v1` | 注册表条目：`gpt-5`、`deepseek-v4-pro`、`deepseek-v4-flash`；默认配置模型 `gpt-5` | 用于网关和自定义端点的通用 OpenAI 兼容路由，也是除 `anthropic` 外唯一在首次运行 onboarding 中询问接入地址的路由。对显式的第三方 OpenAI 兼容路由请使用它，而不是发明新的提供商 ID。接受 `OPENAI_MODEL`。自定义 `OPENAI_BASE_URL` 若未指定显式模型，会在启动时快速失败。 |
-| `atlascloud` | `[providers.atlascloud]` | `ATLASCLOUD_API_KEY` | `ATLASCLOUD_BASE_URL`；默认 `https://api.atlascloud.ai/v1` | `deepseek-ai/deepseek-v4-flash`、`deepseek-ai/deepseek-v4-pro` | OpenAI 兼容的托管路由。TUI 配置路径接受 `ATLASCLOUD_MODEL`，静态 `ModelRegistry` 中包含用于 CLI 模型解析的 AtlasCloud 回退行。 |
+| `atlascloud` | `[providers.atlascloud]` | `ATLASCLOUD_API_KEY` | `ATLASCLOUD_BASE_URL`；默认 `https://api.atlascloud.ai/v1` | `deepseek-ai/deepseek-v4-flash`、`deepseek-ai/deepseek-v4-pro` | OpenAI 兼容的托管路由。运行时配置路径接受 `ATLASCLOUD_MODEL`，静态 `ModelRegistry` 中包含用于 CLI 模型解析的 AtlasCloud 回退行。 |
 | `wanjie-ark` | `[providers.wanjie_ark]` | `WANJIE_ARK_API_KEY`、`WANJIE_API_KEY`、`WANJIE_MAAS_API_KEY` | `WANJIE_ARK_BASE_URL`、`WANJIE_BASE_URL`、`WANJIE_MAAS_BASE_URL`；默认 `https://maas-openapi.wanjiedata.com/api/v1` | `deepseek-reasoner` | OpenAI 兼容的托管路由。接受 `WANJIE_ARK_MODEL`、`WANJIE_MODEL` 和 `WANJIE_MAAS_MODEL`。 |
 | `volcengine` | `[providers.volcengine]` | `VOLCENGINE_API_KEY`、`VOLCENGINE_ARK_API_KEY`、`ARK_API_KEY` | `VOLCENGINE_BASE_URL`、`VOLCENGINE_ARK_BASE_URL`、`ARK_BASE_URL`；默认 `https://ark.cn-beijing.volces.com/api/coding/v3` | `DeepSeek-V4-Pro`、`DeepSeek-V4-Flash` | Volcengine/火山引擎 Ark OpenAI 兼容编码端点。接受 `VOLCENGINE_MODEL` 和 `VOLCENGINE_ARK_MODEL`。 |
 | `openrouter` | `[providers.openrouter]` | `OPENROUTER_API_KEY` | `OPENROUTER_BASE_URL`；默认 `https://openrouter.ai/api/v1` | `deepseek/deepseek-v4-pro`、`deepseek/deepseek-v4-flash`；近期大型 ID 包括 `arcee-ai/trinity-large-thinking`、`qwen/qwen3.7-max`、`xiaomi/mimo-v2.5-pro`、`qwen/qwen3.6-35b-a3b`、`google/gemma-4-31b-it`、`z-ai/glm-5.1`、`moonshotai/kimi-k2.6` | 面向受支持模型 ID 的开源模型路由层，由用户显式选择。 |
@@ -195,7 +195,7 @@ AtlasCloud 保持与配置层相同的默认模型，并为 Pro 和 Flash 行添
 
 ## 能力元数据
 
-`codesmith-tui doctor --json` 暴露 `capability` 对象。它是静态
+`codesmith doctor --json` 暴露 `capability` 对象。它是静态
 元数据，不是实时 API 探测。当前字段为：
 
 `resolved_provider`、`resolved_model`、`context_window`、`max_output`、
@@ -241,7 +241,7 @@ python3 scripts/check-provider-registry.py
 - 已交付提供商表遗漏或新增了 `[providers.*]` TOML 表。
 - 静态模型注册表表与 `crates/agent/src/lib.rs` 使用的
   提供商发生漂移。
-- `crates/tui/src/config.rs` 中的提供商默认模型或 base URL 常量
+- `crates/cli/src/config.rs` 中的提供商默认模型或 base URL 常量
   未在本文档中被提及。
 
 ## 已规划、尚未交付
@@ -252,7 +252,7 @@ python3 scripts/check-provider-registry.py
 - `codesmith-agent` 中统一的 `Provider` trait，负责环境变量优先级、
   密钥解析、base URL 规范化、认证头构造以及
   提供商元数据。这些职责目前仍分散在
-  `crates/config`、`crates/secrets`、`crates/tui/src/config.rs` 以及
+  `crates/config`、`crates/secrets`、`crates/cli/src/config.rs` 以及
   `crates/providers` 中的提供商客户端。
 - 原生的 Hugging Face 提供商，例如 `[providers.huggingface]`。
 - 原生的 Hugging Face 认证环境变量，例如 `HF_TOKEN` 或 `HUGGINGFACE_API_KEY`。

@@ -4,13 +4,13 @@ This runbook is the source of truth for shipping Rust crates, GitHub release ass
 and the `codesmith` npm wrapper.
 
 Current packaging note:
-- `codesmith-tui` is the live runtime crate shipped to users today.
-- `codesmith-tui-core` is a supporting workspace crate for the extraction/parity effort, not a replacement for the shipping runtime.
+- `codesmith-cli` is the single end-user crate; it ships the one `codesmith`
+  binary (interactive REPL + headless subcommands). The former `codesmith-tui`
+  companion crate was removed in 0.9.0.
 
 ## Canonical Publish Targets
 
 - End-user crates:
-  - `codesmith-tui`
   - `codesmith-cli`
 - Supporting crates published from this workspace (order matches `scripts/release/crates.sh`):
   - `codesmith-secrets`
@@ -24,7 +24,6 @@ Current packaging note:
   - `codesmith-tools`
   - `codesmith-core`
   - `codesmith-app-server`
-  - `codesmith-tui-core`
 - The remaining workspace crates (`codesmith-agent-runtime`, `codesmith-providers`,
   `codesmith-tool-impls`, `codesmith-index`, `codesmith-extensions`,
   `codesmith-release`) are **not** published — they are consumed via path
@@ -51,7 +50,7 @@ cargo fmt --all -- --check
 cargo check --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked
-cargo publish --dry-run --locked --allow-dirty -p codesmith-tui
+cargo publish --dry-run --locked --allow-dirty -p codesmith-cli
 ./scripts/release/publish-crates.sh dry-run
 ```
 
@@ -72,14 +71,13 @@ without unpublished workspace dependencies and a packaging preflight for depende
 workspace crates. That avoids false negatives from crates.io not yet containing the
 new workspace version while still validating package contents before publish.
 
-For npm wrapper verification, build the two shipped binaries and run the
+For npm wrapper verification, build the shipped binary and run the
 cross-platform smoke harness. This packs the npm wrapper, installs it into a
-clean temporary project, serves local release assets over HTTP, and checks both
-the dispatcher-to-TUI path (`codesmith doctor --help`) and the direct TUI
-entrypoint (`codesmith-tui --help`).
+clean temporary project, serves local release assets over HTTP, and checks
+`codesmith doctor --help` and `codesmith --help`.
 
 ```bash
-cargo build --release --locked -p codesmith-cli -p codesmith-tui
+cargo build --release --locked -p codesmith-cli
 node scripts/release/npm-wrapper-smoke.js
 ```
 
@@ -137,9 +135,7 @@ configured.
    - `codesmith-tools`
    - `codesmith-core`
    - `codesmith-app-server`
-   - `codesmith-tui-core`
    - `codesmith-cli`
-   - `codesmith-tui`
 5. Wait for each published crate version to appear on crates.io before publishing dependents.
 
 The publish helper is idempotent for reruns: already-published crate versions are skipped.
@@ -149,13 +145,11 @@ The publish helper is idempotent for reruns: already-published crate versions ar
 `.github/workflows/release.yml` builds these binaries:
 
 - `codesmith-linux-x64`
+- `codesmith-linux-arm64`
+- `codesmith-linux-riscv64`
 - `codesmith-macos-x64`
 - `codesmith-macos-arm64`
 - `codesmith-windows-x64.exe`
-- `codesmith-tui-linux-x64`
-- `codesmith-tui-macos-x64`
-- `codesmith-tui-macos-arm64`
-- `codesmith-tui-windows-x64.exe`
 
 The release job also uploads `codesmith-artifacts-sha256.txt`. The npm installer and
 release verification script both depend on that checksum manifest.
@@ -173,7 +167,7 @@ on a workstation with `npm login` and an authenticator app.
 1. Set the npm package version in [npm/codesmith/package.json](../npm/codesmith/package.json) to match the workspace `Cargo.toml`. CI's version-drift guard will catch mismatches before tag.
 2. Set `codesmithBinaryVersion` to the GitHub release tag that should supply binaries.
 3. Push the version bump to `main`. `auto-tag.yml` creates the matching `vX.Y.Z` tag, and `release.yml` builds the binary matrix and drafts the GitHub Release.
-4. **Wait for the GitHub Release to finalize** with all eight signed binaries plus `codesmith-artifacts-sha256.txt`. The npm `prepublishOnly` hook (`scripts/verify-release-assets.js`) requires every asset to be present.
+4. **Wait for the GitHub Release to finalize** with every signed release asset plus `codesmith-artifacts-sha256.txt`. The npm `prepublishOnly` hook (`scripts/verify-release-assets.js`) requires every asset to be present.
 5. From a developer machine, publish the npm wrapper manually:
 
 ```bash

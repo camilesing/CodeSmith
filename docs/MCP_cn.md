@@ -1,45 +1,44 @@
 # MCP（外部工具服务器）
 
-codesmith 可以通过 MCP（Model Context Protocol，模型上下文协议）加载额外工具。MCP 服务器既可以是由 TUI 启动的本地 stdio 子进程，也可以是通过 Streamable HTTP（含旧版 SSE 回落）、SSE 或 WebSocket 访问的远程服务器。
+codesmith 可以通过 MCP（Model Context Protocol，模型上下文协议）加载额外工具。MCP 服务器既可以是由交互 REPL 启动的本地 stdio 子进程，也可以是通过 Streamable HTTP（含旧版 SSE 回落）、SSE 或 WebSocket 访问的远程服务器。
 
 浏览工具说明：
 - `web.run` 是内置的标准浏览工具。
 - `web_search` 仍作为兼容别名保留，供旧提示词和集成使用。
 
 服务器模式说明：
-- `codesmith-tui serve --mcp` 运行 MCP stdio 服务器。
-- `codesmith-tui serve --http` 运行运行时 HTTP/SSE API（独立模式）。
-- `codesmith` 调度器提供 `codesmith mcp-server`，作为拆分式 CLI 使用的等价
-  stdio 入口。
+- `codesmith serve --mcp` 运行 MCP stdio 服务器。
+- `codesmith serve --http` 运行运行时 HTTP/SSE API（独立模式）。
+- `codesmith mcp-server` 是等价的 stdio 入口。
 
 ## 引导 MCP 配置
 
 在解析出的 MCP 路径创建一个入门 MCP 配置：
 
 ```bash
-codesmith-tui mcp init
+codesmith mcp init
 ```
 
-`codesmith-tui setup --mcp` 在完成 skills 设置的同时执行相同的 MCP 引导。
+`codesmith setup --mcp` 在完成 skills 设置的同时执行相同的 MCP 引导。
 
 常用管理命令：
 
 ```bash
-codesmith-tui mcp list
-codesmith-tui mcp tools [server]
-codesmith-tui mcp add <name> --command "<cmd>" --arg "<arg>"
-codesmith-tui mcp add <name> --url "http://localhost:3000/mcp"
-codesmith-tui mcp enable <name>
-codesmith-tui mcp disable <name>
-codesmith-tui mcp remove <name>
-codesmith-tui mcp validate
+codesmith mcp list
+codesmith mcp tools [server]
+codesmith mcp add <name> --command "<cmd>" --arg "<arg>"
+codesmith mcp add <name> --url "http://localhost:3000/mcp"
+codesmith mcp enable <name>
+codesmith mcp disable <name>
+codesmith mcp remove <name>
+codesmith mcp validate
 ```
 
-## TUI 内管理器
+## REPL 内管理器
 
-在交互式 TUI 内，`/mcp` 会为解析出的 MCP 配置路径打开一个紧凑的管理器。它显示每个已配置的服务器、其启用或禁用状态、传输方式、命令或 URL、超时值、连接错误，以及发现流程运行后得到的工具/资源/提示词。
+在交互 REPL 内，`/mcp` 会为解析出的 MCP 配置路径打开一个紧凑的管理器。它显示每个已配置的服务器、其启用或禁用状态、传输方式、命令或 URL、超时值、连接错误，以及发现流程运行后得到的工具/资源/提示词。
 
-支持的 TUI 内操作：
+支持的 REPL 内操作：
 
 ```text
 /mcp init
@@ -53,7 +52,7 @@ codesmith-tui mcp validate
 /mcp reload
 ```
 
-`/mcp validate` 和 `/mcp reload` 会重新连接以进行 UI 发现，并刷新管理器快照。在 TUI 中所做的配置编辑会立即写入，但模型可见的 MCP 工具池不会热重载；在 TUI 重启之前，管理器会将其标记为需要重启。
+`/mcp validate` 和 `/mcp reload` 会重新连接以进行 UI 发现，并刷新管理器快照。在管理器中所做的配置编辑会立即写入，但模型可见的 MCP 工具池不会热重载；在 REPL 重启之前，管理器会将其标记为需要重启。
 
 ## 配置文件位置
 
@@ -66,11 +65,11 @@ codesmith-tui mcp validate
 - 配置：`mcp_config_path = "/path/to/mcp.json"`
 - 环境变量：`CODESMITH_MCP_CONFIG=/path/to/mcp.json`
 
-`codesmith-tui mcp init`（以及 `codesmith-tui setup --mcp`）会写入这个解析后的路径。
+`codesmith mcp init`（以及 `codesmith setup --mcp`）会写入这个解析后的路径。
 
-交互式 `/config` 编辑器也提供 `mcp_config_path`。在 TUI 中修改它会更新 `/mcp` 使用的路径，但模型可见的 MCP 工具池需要重启后才会重建。
+交互式 `/config` 编辑器也提供 `mcp_config_path`。在 REPL 中修改它会更新 `/mcp` 使用的路径，但模型可见的 MCP 工具池需要重启后才会重建。
 
-编辑该文件或更改 `mcp_config_path` 之后，请重启 TUI。
+编辑该文件或更改 `mcp_config_path` 之后，请重启 REPL。
 
 ## 工具命名
 
@@ -79,8 +78,6 @@ codesmith-tui mcp validate
 - `mcp__<server>__<tool>`
 
 示例：名为 `git` 的服务器上名为 `status` 的工具会变成 `mcp__git__status`。旧的单下划线形式（`mcp_<server>_<tool>`）仍作为调用时别名被接受以保持向后兼容，但模型在工具列表中看到的是双下划线形式。
-
-命令面板包含按服务器分组的 MCP 条目。它会显示已禁用和失败的服务器而不是隐藏它们，并使用与模型所见相同的运行时工具名。
 
 ## 资源与提示词辅助工具
 
@@ -120,10 +117,10 @@ codesmith-tui mcp validate
 ### 快速设置
 
 ```bash
-codesmith-tui mcp add-self
+codesmith mcp add-self
 ```
 
-该命令会解析当前二进制路径，生成一个运行 `codesmith-tui serve --mcp` 的配置条目，并写入你的 MCP 配置文件。默认服务器名为 `codesmith`。
+该命令会解析当前二进制路径，生成一个运行 `codesmith serve --mcp` 的配置条目，并写入你的 MCP 配置文件。默认服务器名为 `codesmith`。
 
 选项：
 
@@ -146,7 +143,7 @@ codesmith-tui mcp add-self
 }
 ```
 
-`codesmith-tui` 二进制直接支持 `serve --mcp`。`codesmith` 调度器提供等价的 `codesmith mcp-server` stdio 入口。使用位于你 `PATH` 中的那一个（运行 `which codesmith` 或 `which codesmith-tui` 查看完整路径）。`mcp add-self` 命令会自动解析正确的二进制。
+`codesmith` 二进制直接支持 `serve --mcp`；`codesmith mcp-server` 是等价的专用 stdio 入口。`mcp add-self` 命令会自动解析当前二进制路径。
 
 ### 前置条件
 
@@ -164,7 +161,7 @@ codesmith-tui mcp add-self
 
 ### MCP 服务器 vs HTTP/SSE API vs ACP
 
-| | `codesmith-tui serve --mcp` | `codesmith-tui serve --http` | `codesmith-tui serve --acp` |
+| | `codesmith serve --mcp` | `codesmith serve --http` | `codesmith serve --acp` |
 |---|---|---|---|
 | **协议** | MCP stdio | HTTP/SSE JSON-RPC | ACP stdio |
 | **用例** | 面向 MCP 客户端的工具服务器 | 面向应用的运行时 API | 面向 Zed/自定义 ACP 客户端的编辑器智能体 |
@@ -180,8 +177,8 @@ codesmith-tui mcp add-self
 添加之后，测试连接：
 
 ```bash
-codesmith-tui mcp validate
-codesmith-tui mcp tools codesmith
+codesmith mcp validate
+codesmith mcp tools codesmith
 ```
 
 ## 服务器字段
@@ -218,7 +215,7 @@ MCP 工具现在与内置工具走同一套工具审批框架。只读 MCP 助�
 
 ## 故障排查
 
-- 运行 `codesmith-tui doctor`，确认它解析出的 MCP 配置路径以及该文件是否存在。
-- 在 TUI 中运行 `/mcp validate`，刷新可见的服务器/工具快照。
-- 如果 MCP 配置缺失，运行 `codesmith-tui mcp init --force` 重新生成。
+- 运行 `codesmith doctor`，确认它解析出的 MCP 配置路径以及该文件是否存在。
+- 在 REPL 中运行 `/mcp validate`，刷新可见的服务器/工具快照。
+- 如果 MCP 配置缺失，运行 `codesmith mcp init --force` 重新生成。
 - 如果工具没有出现，请验证服务器命令能否在你的 shell 中运行，以及服务器是否支持 MCP `tools/list`。

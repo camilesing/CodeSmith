@@ -4,13 +4,13 @@ This document provides an overview of the codesmith architecture for developers 
 For the deep design narrative (provider seam, framework-core agent executor, guardrail
 absorption, extension system), see [DESIGN_INTERNALS.md](DESIGN_INTERNALS.md).
 
-Current boundary note (v0.8.6):
+Current boundary note (v0.9.0):
 - **Framework / implementation layer split.** The workspace is divided into a
   framework group — `protocol`, `tools`, `agent`, `config`, `secrets`,
   `extensions`, `agent-runtime` (the kernel: one turn loop, engine,
   compaction) — and an implementation group: everything else (`providers`,
-  `tool-impls`, `tui`, `cli`, `app-server`, `mcp`, `state`, `execpolicy`,
-  `hooks`, `index`, `core`, `release`, `tui-core`, test fixtures). Framework
+  `tool-impls`, `cli`, `app-server`, `mcp`, `state`, `execpolicy`,
+  `hooks`, `index`, `core`, `release`, test fixtures). Framework
   crates must not depend, in the build graph, on any workspace crate outside
   the group; implementation crates depend freely on the framework. The rule
   is enforced physically by `scripts/check-framework-deps.py` (cargo
@@ -27,10 +27,10 @@ Current boundary note (v0.8.6):
 seam's triple — a new capability lands all three roles in the same
 change, and every `ExtensionEventKind` declares its dispatch mode
 (`dispatch_mode()`, pinned by a contract test).
-- `crates/tui` is still the live end-user runtime for the TUI, runtime API, task manager, and tool registry wiring. The agent execution engine itself (turn loop, compaction, sandbox helpers, prompts) now lives in `crates/agent-runtime`; `crates/tui/src/core/` is a thin re-export + construction bridge (`engine.rs` defines `EngineHost`/`build_engine`).
+- `crates/cli` (package `codesmith-cli`, binary `codesmith`) is the live end-user runtime: it hosts both the headless subcommands and the line-based interactive REPL frontend (`crates/cli/src/interactive/` — the ratatui TUI was removed in v0.9.0), plus the runtime API, task manager, and tool registry wiring. The agent execution engine itself (turn loop, compaction, sandbox helpers, prompts) now lives in `crates/agent-runtime`; `crates/cli/src/core/` is a thin re-export + construction bridge (`engine.rs` defines `EngineHost`/`build_engine`).
 - Other workspace crates are being split out incrementally, but they are not yet the sole runtime source of truth.
 - Startup trust-boundary details are tracked in `docs/STARTUP_TRUST_BOUNDARY_AUDIT.md`; that audit is the current reference for pre-trust versus post-trust initialization follow-ups.
-- The LSP subsystem (`crates/tui/src/lsp/`) is fully wired into the engine's post-tool-execution path
+- The LSP subsystem (`crates/cli/src/lsp/`) is fully wired into the engine's post-tool-execution path
   (`crates/agent-runtime/src/engine/lsp_hooks.rs` + `engine/turn/postprocess.rs`), providing inline diagnostics after every edit_file/apply_patch/write_file.
 - The orchestration surface is persistent sub-agent sessions (`agent_open` / `agent_eval` / `agent_close`) and persistent RLM sessions (`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close`).
   No model-visible swarm tool remains in the active codebase.
@@ -41,7 +41,7 @@ change, and every `ExtensionEventKind` declares its dispatch mode
 ┌─────────────────────────────────────────────────────────────────┐
 │                         User Interface                          │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌────────────────┐  │
-│  │   TUI (ratatui) │  │  One-shot Mode  │  │  Config/CLI    │  │
+│  │ REPL (line mode)│  │  One-shot Mode  │  │  Config/CLI    │  │
 │  └────────┬────────┘  └────────┬────────┘  └────────┬───────┘  │
 └───────────┼─────────────────────┼────────────────────┼──────────┘
             │                     │                    │
@@ -96,16 +96,16 @@ change, and every `ExtensionEventKind` declares its dispatch mode
 
 ### Core Components
 
-- **`crates/agent-runtime/src/engine/`** - The agent execution engine (moved out of the TUI)
+- **`crates/agent-runtime/src/engine/`** - The agent execution engine (moved out of the end-user frontend)
   - `mod.rs` - `Engine` struct + event loop (`Engine::run`, `handle_send_message`), system-prompt refresh, image-block assembly
   - `host_executor.rs` - `HostAgentExecutor`, the production LLM↔tool turn loop with the absorbed guardrails (loop-guard, LSP flush, transparent-retry, steer, approval, compaction, capacity, early-tool-start, subagent, cycle)
   - `turn/` - per-step phase modules split out of `host_executor.rs`: `stream.rs` (stream reduction + transparent retry), `batches.rs` (tool-batch planning/execution), `approval.rs` (per-tool approval gate), `seams.rs` (cancel checkpoints + steer drain), `postprocess.rs` (sub-agent reap gate, thinking-only status, LSP collect/flush)
   - `capacity_flow.rs` - Capacity guardrail checkpoints and interventions
   - `loop_guard.rs` / `dispatch.rs` / `tool_catalog.rs` / `tool_execution.rs` / `lsp_hooks.rs` - loop-guard state, tool-input parsing + batch planning, deferred tool catalog policy, MCP dispatch fanout, post-edit LSP hook
-- **`crates/tui/src/core/`** - Thin re-export + construction bridge onto the engine crate
+- **`crates/cli/src/core/`** - Thin re-export + construction bridge onto the engine crate
   - `engine.rs` - `EngineHost` (concrete `ShellManager`/`LspManager`/`SubAgentManager` host services), `EngineHandle` (UI-side mailbox), `build_engine` assembly
   - `engine/{handle,runtime_traits,tool_setup,tests}.rs` - handle plumbing, host traits, tool registry setup, tests
-  - `session.rs` / `turn.rs` / `events.rs` / `ops.rs` / `tool_parser.rs` / `capacity.rs` / `coherence.rs` - re-export shims for the agent-runtime types
+  - `session.rs` / `turn.rs` / `events.rs` / `ops.rs` / `tool_catalog.rs` / `capacity.rs` / `coherence.rs` - re-export shims for the agent-runtime types
 
 ### Configuration
 
@@ -130,14 +130,13 @@ change, and every `ExtensionEventKind` declares its dispatch mode
 - **`crates/secrets`** - OS keyring integration for API key storage.
 - **`crates/state`** - SQLite thread/session persistence layer.
 - **`crates/tool-impls`** - Concrete model-visible tool implementations.
-- **`crates/tools`** - Shared tool invocation primitives, including tool result/error/capability types used by the TUI runtime.
-- **`crates/tui-core`** - Event-driven TUI state machine scaffold.
+- **`crates/tools`** - Shared tool invocation primitives, including tool result/error/capability types used by the CLI runtime.
 
 ### LLM Integration
 
 - **`crates/agent/src/llm_client/`** - Abstract `LlmClient` trait with retry logic (`LlmClientHandle`, `with_retry`)
 - **`crates/agent/src/models.rs`** - Data structures for API requests/responses (including `ContentBlock` / `ImageSource` wire types)
-- **`crates/providers/`** - Concrete provider clients (openai-compat, anthropic, mock) plus the `rig_adapter` request shaper; the TUI resolves the active client through the provider registry (`default_registry`)
+- **`crates/providers/`** - Concrete provider clients (openai-compat, anthropic, mock) plus the `rig_adapter` request shaper; the CLI resolves the active client through the provider registry (`default_registry`)
 
 #### DeepSeek API Endpoints
 
@@ -153,18 +152,18 @@ drives turns through Chat Completions.
 
 ### Tool System
 
-Tool implementations are split between the TUI (host-coupled tools) and
+Tool implementations are split between the CLI crate (host-coupled tools) and
 `crates/tool-impls` (model-visible tools; e.g. `grep_files`/`file_search`
 live there).
 
-- **`crates/tui/src/tools/`** - Host-coupled built-in tool implementations and the registry
+- **`crates/cli/src/tools/`** - Host-coupled built-in tool implementations and the registry
   - `mod.rs` / `registry.rs` - Tool registry, assembly (`with_subagent_tools`, …), and common types
   - `shell.rs` - Shell command execution (plus `shell_output.rs`, `command_safety.rs` in the crate root)
   - `file.rs` - File read/write operations
   - `tasks.rs` / `task_v2.rs` - Model-visible durable task, gate, background shell, and PR-attempt tools
   - `github.rs` - Read-only GitHub context and guarded comment/closure tools backed by `gh`
   - `automation.rs` - Model-visible scheduling tools over `AutomationManager`
-  - `subagent/` - Persistent sub-agent sessions (`agent_open` / `agent_eval` / `agent_close`) and persistent RLM sessions (`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close` — sandboxed Python REPLs with semantic helper calls and `var_handle` output support; runtime in `crates/tui/src/rlm/`)
+  - `subagent/` - Persistent sub-agent sessions (`agent_open` / `agent_eval` / `agent_close`) and persistent RLM sessions (`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close` — sandboxed Python REPLs with semantic helper calls and `var_handle` output support; runtime in `crates/cli/src/rlm/`)
   - `skill.rs` / `plugin.rs` / `web_search.rs` / `goal.rs` / `js_execution.rs` / `large_output_router.rs` and friends - remaining tool surfaces
 
 ### Extension Systems
@@ -175,16 +174,16 @@ live there).
 
 ### User Interface
 
-- **`tui/`** - Terminal UI components (ratatui-based)
-  - `app.rs` - Application state and message handling
-  - `ui.rs` - Event handling, streaming state, and rendering logic
-  - `approval.rs` - Tool approval dialog
-  - `clipboard.rs` - Clipboard handling
-  - `streaming/` - Streaming text collector (chunking, line buffer, commit tick)
+- **`interactive/`** - Line-based interactive REPL frontend (Claude Code / Codex style loop; replaced the removed ratatui TUI)
+  - `mod.rs` - REPL loop: read a line, run an engine turn, stream output to the terminal
+  - `state.rs` - REPL session state (with its known-limitations note)
+  - `render.rs` - Line input handling, Ctrl+C/`Ctrl+D` semantics, and streaming output rendering
+  - `status.rs` - Status line above the prompt (running-state dot, preset tier, context-window occupancy, mode, sub-agent count, model, version)
+  - `commands/` - Slash-command dispatch (`/resume`, `/config`, `/skills`, `/queue`, …)
 
 ### LSP Integration
 
-- **`lsp/`** - Post-edit diagnostics injection
+- **`crates/cli/src/lsp/`** - Post-edit diagnostics injection
   - `mod.rs` - `LspManager` — lazy per-language transport pool + config
   - `client.rs` - `StdioLspTransport` — JSON-RPC over stdio with `didOpen`/`didChange`/`publishDiagnostics`
   - `diagnostics.rs` - Diagnostic types, severity, and HTML-block renderer
@@ -200,17 +199,17 @@ live there).
   - `walk.rs` — `ignore`-based workspace walk (`.gitignore`-aware) feeding the inventory + freshness diff
   - `store.rs` — per-workspace SQLite under `~/.codesmith/index/<ws-hash>/` (schema-version mismatch → rebuild)
   - `service.rs` — `IndexService` orchestration: lazy incremental refresh (mtime+size diff, budget + `stale_files` reporting) with background completion
-- Wiring: tui builds the service once per workspace (`tui/index.rs`, `[index]` config) into `RuntimeToolServices::index_service` → per-turn `ToolContext`; `symbol_search` / `find_references` live in `codesmith-tool-impls` and registration is gated session-constantly via `EngineConfig::index_enabled` (catalog stability, KV prefix cache)
+- Wiring: the CLI builds the service once per workspace (`crates/cli/src/index.rs`, `[index]` config) into `RuntimeToolServices::index_service` → per-turn `ToolContext`; `symbol_search` / `find_references` live in `codesmith-tool-impls` and registration is gated session-constantly via `EngineConfig::index_enabled` (catalog stability, KV prefix cache)
 
 ### Security
 
-- **`crates/agent-runtime/src/sandbox/`** - Platform sandbox enforcement helpers (re-exported through `crates/tui/src/sandbox/`)
+- **`crates/agent-runtime/src/sandbox/`** - Platform sandbox enforcement helpers (re-exported through `crates/cli/src/sandbox/`)
   - `seatbelt.rs` - macOS Seatbelt profile generation (enforced)
   - `landlock.rs` - Linux Landlock ruleset application (enforced; `landlock_restrict_self` + `PR_SET_NO_NEW_PRIVS`)
   - `seccomp.rs` - Linux seccomp-BPF syscall filter (enforced)
   - `windows.rs` - Windows Job Object process containment (v1)
   - `bwrap.rs` / `process_hardening.rs` - optional bubblewrap passthrough; `PR_SET_DUMPABLE`/core-dump hardening
-- **`crates/tui/src/sandbox/`** - Host-side sandbox policy preparation and denial reporting (`mod.rs`, `policy.rs`, `runtime.rs`, `backend.rs` for external OpenSandbox, `opensandbox.rs`)
+- **`crates/cli/src/sandbox/`** - Host-side sandbox policy preparation and denial reporting (`mod.rs`, `policy.rs`, `runtime.rs`, `backend.rs` for external OpenSandbox, `opensandbox.rs`)
 
 ### Utilities
 
@@ -230,19 +229,19 @@ live there).
 
 ### Interactive Session
 
-1. User input received in TUI
+1. User input received in the REPL
 2. Input processed by the engine (`crates/agent-runtime/src/engine/mod.rs`)
 3. Message sent to LLM via the `LlmClient` trait (`crates/agent/src/llm_client/`, provider client from `crates/providers`)
 4. Response streamed back through the stream reducer (`engine/turn/stream.rs`)
 5. Tool calls extracted and executed via `tools/`
 6. Hooks triggered before/after tool execution
 7. Results aggregated and sent back to LLM
-8. Final response rendered in TUI
+8. Final response rendered in the REPL
 
 ### Crash Recovery + Offline Queue
 
-1. Before sending user input, the TUI writes a checkpoint snapshot to `~/.codesmith/sessions/checkpoints/latest.json`
-2. Startup remains fresh by default; prior sessions are resumed explicitly via `--resume`/`--continue` (or `Ctrl+R` in TUI)
+1. Before sending user input, the REPL writes a checkpoint snapshot to `~/.codesmith/sessions/checkpoints/latest.json`
+2. Startup remains fresh by default; prior sessions are resumed explicitly via `--resume`/`--continue` (or the `/resume` command in the REPL)
 3. While degraded/offline, new prompts are queued in-memory and mirrored to `~/.codesmith/sessions/checkpoints/offline_queue.json`
 4. Queue edits (`/queue ...`) are persisted continuously so drafts and queued prompts survive restarts
 5. Successful turn completion clears the active checkpoint and writes a durable session snapshot
@@ -270,7 +269,7 @@ live there).
 5. `runtime_threads.rs` persists thread/turn/item records + monotonic event sequence
 6. Timeline/tool summaries/artifact references are persisted incrementally
 7. Checklist state, verifier gates, PR attempts, and guarded GitHub events are applied from tool metadata to the active task
-8. Final state (`completed|failed|canceled`) is durable and queryable via TUI/API
+8. Final state (`completed|failed|canceled`) is durable and queryable via the REPL/runtime API
 
 Model-visible durable task tools are a surface over this same manager. They do
 not introduce a parallel work system: `task_create` enqueues normal tasks,
@@ -280,7 +279,7 @@ ordinary durable tasks.
 
 ### Runtime Thread/Turn Timeline
 
-1. API/TUI creates or resumes a thread (`/v1/threads*`)
+1. API/REPL creates or resumes a thread (`/v1/threads*`)
 2. Turn starts on the thread (`/v1/threads/{id}/turns`)
 3. Engine events are mapped to item lifecycle events (`item.started|item.delta|item.completed`)
 4. Interrupt/steer operations apply to the active turn only
@@ -336,7 +335,7 @@ command = "echo 'Running tool: $TOOL_NAME'"
    optional bubblewrap), Windows Job Object v1 (see `docs/SANDBOX.md` for the
    platform matrix).
 5. **Minimal dependencies**: Careful dependency selection for build speed
-6. **Local-first runtime API**: HTTP/SSE endpoints are intended for trusted localhost access and are served by the `crates/tui` runtime today
+6. **Local-first runtime API**: HTTP/SSE endpoints are intended for trusted localhost access and are served by the `crates/cli` runtime today
 7. **Three-zone prompt contract**: every request is divided into a
    `PinnedPrefix` (system prompt + tool catalog, fingerprinted per step by
    `prompt_zones::PinnedPrefix::freeze` and drift-checked by

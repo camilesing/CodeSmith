@@ -14,7 +14,6 @@
 ```bash
 git clone https://github.com/camilesing/CodeSmith.git && cd CodeSmith
 cargo install --path crates/cli --locked   # 提供 `codesmith`
-cargo install --path crates/tui --locked   # 提供 `codesmith-tui`（必需的伴随二进制）
 ```
 
 平台矩阵、国内镜像、校验和：[docs/INSTALL_cn.md](docs/INSTALL_cn.md)。
@@ -30,14 +29,14 @@ cargo install --path crates/tui --locked   # 提供 `codesmith-tui`（必需的�
 ```bash
 codesmith auth set --provider deepseek   # 或 export CODESMITH_API_KEY
 codesmith doctor                         # 验证配置与连接
-codesmith                                # 交互式 TUI
+codesmith                                # 交互式 REPL
 ```
 
 模式：**Plan**（只读）/ **Agent**（默认，带审批门控）/ **YOLO**（自动批准）——[docs/PRESETS_cn.md](docs/PRESETS_cn.md) · 其他提供商：[docs/PROVIDERS_cn.md](docs/PROVIDERS_cn.md)
 
 ## 文档
 
-上手：[用户指南](docs/GUIDE_cn.md) · [预设与审批](docs/PRESETS_cn.md) · [快捷键](docs/KEYBINDINGS_cn.md) · [技能](docs/SKILLS_cn.md) · [记忆](docs/MEMORY_cn.md) · [界面语言](docs/LOCALIZATION_cn.md) · [完整命令手册](docs/CLI.md)
+上手：[用户指南](docs/GUIDE_cn.md) · [预设与审批](docs/PRESETS_cn.md) · [技能](docs/SKILLS_cn.md) · [记忆](docs/MEMORY_cn.md) · [界面语言](docs/LOCALIZATION_cn.md) · [完整命令手册](docs/CLI.md)
 
 配置：[配置参考](docs/CONFIGURATION_cn.md) · [提供商](docs/PROVIDERS_cn.md) · [安装](docs/INSTALL_cn.md) · [Docker](docs/DOCKER_cn.md)
 

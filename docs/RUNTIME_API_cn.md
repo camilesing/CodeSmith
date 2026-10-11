@@ -16,7 +16,7 @@ macOS workbench (or any local supervisor)
         ├─ codesmith serve --http    → HTTP/SSE runtime API
         ├─ codesmith serve --acp     → ACP stdio agent for editors such as Zed
         ├─ codesmith serve --mcp     → MCP stdio server
-        └─ codesmith [args]          → interactive TUI session
+        └─ codesmith [args]          → interactive REPL session
 ```
 
 引擎作为仅本地进程运行。所有 API 默认绑定到 `localhost`。
@@ -107,7 +107,7 @@ codesmith doctor --json
   "version": "0.8.9",
   "config_path": "/Users/you/.codesmith/config.toml",
   "config_present": true,
-  "workspace": "/Users/you/projects/codesmith-tui",
+  "workspace": "/Users/you/projects/codesmith",
   "api_key": {
     "source": "env"
   },

@@ -46,13 +46,13 @@
                │ path dep                                    │
                ▼                                             │
 ┌──────────────────────────────────────────────────────────┐ │
-│ codesmith-tui  (HOST / binary)                            │─┘ (optional)
+│ codesmith-cli  (HOST / binary: `codesmith`)               │─┘ (optional)
 │  • build_engine → resolve_llm_client → registry.build     │
 │  • Config, logging, retry_status (UI globals)             │
 └───────────────────────────────────────────────────────────┘
 ```
 
-真正要紧的箭头：**`codesmith-tui` 依赖 `codesmith-providers`
+真正要紧的箭头：**`codesmith-cli` 依赖 `codesmith-providers`
 （可选、feature 门控），绝不反向依赖。** Provider 只依赖
 `codesmith-agent` 与 `codesmith-config`（声明式 `providers.toml` 的
 schema 与加载器）。
@@ -62,7 +62,7 @@ schema 与加载器）。
 客户端的构建不需要宿主指名任何具体类型：
 
 ```text
-  Host (tui)                      codesmith-agent                  codesmith-providers
+  Host (cli REPL)                 codesmith-agent                  codesmith-providers
   ─────────                       ──────────────                   ───────────────────
   Config ──▶ resolve_llm_client
                  │ builds ProviderConfig
@@ -80,7 +80,7 @@ schema 与加载器）。
 - **`ProviderId`** —— 开放联合类型：已知 provider 用 `Builtin(ProviderKind)`，
   其余任何东西用 `Custom(String)`。镜像 pi-ai 的 `KnownProvider | string`。
 - **`ProviderConfig`** —— 中立的构造输入（`api_key`、`base_url`、
-  `default_model`、`retry`、`http_headers`、`on_retry`）。不依赖 TUI 的
+  `default_model`、`retry`、`http_headers`、`on_retry`）。不依赖宿主的
   `Config`，因此 provider crate 保持宿主无关。
 - **`ProviderFactory`** —— `id()` + `build(&cfg) -> LlmClientHandle`。在
   `codesmith-providers`（或你自己的 crate）中实现并注册它。
@@ -292,7 +292,7 @@ thinking-only / capacity / early-tool-start / subagent）请直接查看模块�
   是一个普通工具（镜像 `ToolSpecAdapter`）；`HostAgentExecutor` 持有
   `Option<Arc<ExtensionRunner>>` 并在四个 turn 接缝上发射事件（TurnStart
   / ToolCall ×2 / ToolResult ×2 / TurnEnd ×2）。
-- **宿主接线**（`codesmith-tui`）：`build_extension_runtime()` 在引擎
+- **宿主接线**（`codesmith-cli`）：`build_extension_runtime()` 在引擎
   构建时运行一次 discover → reconcile → load → `bind_core` 序列（共享
   引擎的 `cancel_token`，使处理器能观察到用户按 ESC）；`ExtensionStateStore`
   （镜像 `SkillStateStore`）逐 id 跟踪启用/禁用；`/extension` 命令组
@@ -312,7 +312,7 @@ thinking-only / capacity / early-tool-start / subagent）请直接查看模块�
               codesmith_agent_runtime (ExtensionToolSpecAdapter + executor seams)
                                         │ wired by
                                         ▼
-              codesmith_tui (build_extension_runtime + StateStore + /extension cmd)
+              codesmith_cli (build_extension_runtime + StateStore + /extension cmd)
 ```
 
 契约与运行时核心携带完整的 23 变体 `ExtensionEvent` 集合 +
@@ -337,7 +337,7 @@ runner `Arc`，因此 `/extension reload` 会同时更新 `App.extension_runner`
 与 Engine 的字段。
 
 尚未实现：`ToolExecutionUpdate`（流钩子）、重载共享引擎的
-`cancel_token`、从 App runner 不可触达的 3 个 tui 层接缝（`ProjectTrust`
+`cancel_token`、从 App runner 不可触达的 3 个宿主层接缝（`ProjectTrust`
 同步上下文 / `ResourcesDiscover` 独立 MCP 进程 / `SessionBeforeFork` 死
 代码 fork 路径）、`EventBus` 实现、`registerProvider`、
 `registerShortcut`/`registerFlag`/渲染器、dylib 加载、install-source 实
@@ -348,14 +348,14 @@ runner `Arc`，因此 `/extension reload` 会同时更新 `App.extension_runner`
 | 关注点 | 位置 |
 |---|---|
 | 核心抽象（`LlmClient`、`ProviderFactory`、`ProviderRegistry`） | `crates/agent/src/{llm_client,provider}/` |
-| 引擎循环中的注册表（`resolve_llm_client` 从 `default_registry()` 播种） | `crates/tui/src/core/engine.rs` |
+| 引擎循环中的注册表（`resolve_llm_client` 从 `default_registry()` 播种） | `crates/cli/src/core/engine.rs` |
 | `codesmith-providers` crate：`mock` provider、rig 适配器 `RigLlmClient<C,S>`、Cargo feature | `crates/providers/` |
 | 声明式工厂目录（`openai` / `anthropic` / `deepseek` / `openai-compat` ×13） | `crates/providers/providers.toml` |
 | 对等桥：reasoning 启发式 + `shape_messages` / `shape_max_tokens` | `crates/providers/src/rig_adapter/{reasoning,shaper}.rs` |
 | 经 config 选择 provider，含 `custom_provider` + `[[providers.custom]]` + `--custom-provider <id>`；裸的 `provider = "<custom-id>"` 形式设计上即拒绝 | `crates/config`、`crates/cli` |
 | 框架核心 agent trait（`Tool`、`ChatHistory`、`Callback`、`AgentExecutor`） | `crates/agent/src/{tools,memory,callback,executor}/` |
 | 宿主桥（`ToolSpecAdapter`、`CallbackBridge`、`SessionChatHistory`）与带护栏集合的生产 `HostAgentExecutor` | `crates/agent-runtime/src/{tools/framework_adapter,callback_bridge,session_history}.rs`、`crates/agent-runtime/src/engine/host_executor.rs` |
-| 扩展系统（契约 + 运行时 + 适配器 + 宿主接线） | `crates/agent/src/extension.rs`、`crates/extensions/`、`crates/agent-runtime/src/tools/extension.rs`、`crates/tui/src/{extension_state.rs,commands/extension_commands.rs}` |
+| 扩展系统（契约 + 运行时 + 适配器 + 宿主接线） | `crates/agent/src/extension.rs`、`crates/extensions/`、`crates/agent-runtime/src/tools/extension.rs`、`crates/cli/src/extension_state.rs`、`crates/cli/src/interactive/commands/` |
 | 扩展系统文档 | `docs/EXTENSIONS.md` |
 
 ## 注册一个 provider（开发者指南）

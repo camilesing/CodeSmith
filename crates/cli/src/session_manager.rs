@@ -1484,7 +1484,7 @@ mod tests {
     fn workspace_scope_matches_subdirectories_in_same_git_checkout() {
         let tmp = tempdir().expect("tempdir");
         let repo = tmp.path().join("repo");
-        let nested = repo.join("crates").join("tui");
+        let nested = repo.join("crates").join("cli");
         fs::create_dir_all(&nested).expect("mkdir nested");
         fs::write(repo.join(".git"), "gitdir: .git/worktrees/repo").expect("write git marker");
 

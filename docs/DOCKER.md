@@ -22,8 +22,8 @@ docker run --rm -it \
   ghcr.io/camilesing/codesmith:latest
 ```
 
-`codesmith docker` prints the same run command from the CLI; it needs neither
-the TUI binary nor a config, so it also answers from inside the image.
+`codesmith docker` prints the same run command from the CLI; it needs no
+config, so it also answers from inside the image.
 
 Use a pinned release tag for reproducible installs:
 
@@ -261,7 +261,7 @@ volume instead.
 ## Non-interactive / pipeline usage
 
 When stdin is not a TTY, `codesmith` drops to the dispatcher's one-shot mode
-(`codesmith -c "…"`). Pipe a prompt on stdin:
+(`codesmith exec "…"`). Pipe a prompt on stdin:
 
 ```bash
 echo "Explain the Cargo.toml in structured English." | \

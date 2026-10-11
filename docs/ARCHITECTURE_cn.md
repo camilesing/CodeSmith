@@ -4,12 +4,12 @@
 深度设计叙述（provider 接缝、框架核心执行器、guardrail 吸收、扩展系统）见
 [DESIGN_INTERNALS_cn.md](DESIGN_INTERNALS_cn.md)。
 
-当前边界说明（v0.8.6）：
+当前边界说明（v0.9.0）：
 - **框架层 / 实现层拆分。** 工作区分为框架群 —— `protocol`、`tools`、`agent`、
   `config`、`secrets`、`extensions`、`agent-runtime`（内核：唯一的 turn 循环、
-  引擎、压缩）—— 与实现群：其余全部（`providers`、`tool-impls`、`tui`、`cli`、
+  引擎、压缩）—— 与实现群：其余全部（`providers`、`tool-impls`、`cli`、
   `app-server`、`mcp`、`state`、`execpolicy`、`hooks`、`index`、`core`、
-  `release`、`tui-core`、测试 fixture）。框架群 crate 在构建图中不得依赖框架群
+  `release`、测试 fixture）。框架群 crate 在构建图中不得依赖框架群
   之外的任何 workspace crate；实现群可以自由依赖框架群。该规则由
   `scripts/check-framework-deps.py`（扫描 cargo metadata，已接入 CI）物理强制；
   dev-dependency 豁免，因为它不会进入框架产物。新能力遵循接缝三件套：定义落在
@@ -23,10 +23,10 @@
   三件套——新能力须在同一变更中落齐三个角色；每个
   `ExtensionEventKind` 声明分发模式（`dispatch_mode()`，由契约测试
   锁定）。
-- `crates/tui` 仍然是 TUI、运行时 API、任务管理器和工具注册表接线的活跃终端用户运行时。Agent 执行引擎本身（turn 循环、压缩、沙箱辅助程序、提示词）现在位于 `crates/agent-runtime`；`crates/tui/src/core/` 是一个薄的重导出 + 构造桥接层（`engine.rs` 定义 `EngineHost`/`build_engine`）。
+- `crates/cli`（包 `codesmith-cli`，二进制 `codesmith`）是活跃的终端用户运行时：既承载无头（headless）子命令，也承载基于行的交互式 REPL 前端（`crates/cli/src/interactive/` —— ratatui TUI 已在 v0.9.0 移除），并负责运行时 API、任务管理器和工具注册表接线。Agent 执行引擎本身（turn 循环、压缩、沙箱辅助程序、提示词）现在位于 `crates/agent-runtime`；`crates/cli/src/core/` 是一个薄的重导出 + 构造桥接层（`engine.rs` 定义 `EngineHost`/`build_engine`）。
 - 其他工作区 crate 正在逐步拆分，但它们尚不是唯一的运行时事实来源。
 - 启动信任边界的细节记录在 `docs/STARTUP_TRUST_BOUNDARY_AUDIT.md` 中；该审计是信任前与信任后初始化跟进事项的当前参考。
-- LSP 子系统（`crates/tui/src/lsp/`）已完全接入引擎的工具执行后路径
+- LSP 子系统（`crates/cli/src/lsp/`）已完全接入引擎的工具执行后路径
   （`crates/agent-runtime/src/engine/lsp_hooks.rs` + `engine/turn/postprocess.rs`），在每次 edit_file/apply_patch/write_file 之后提供内联诊断。
 - 编排面是持久子代理会话（`agent_open` / `agent_eval` / `agent_close`）和持久 RLM 会话（`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close`）。
   活跃代码库中不再保留任何模型可见的 swarm 工具。
@@ -37,7 +37,7 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │                         User Interface                          │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌────────────────┐  │
-│  │   TUI (ratatui) │  │  One-shot Mode  │  │  Config/CLI    │  │
+│  │ REPL (line mode)│  │  One-shot Mode  │  │  Config/CLI    │  │
 │  └────────┬────────┘  └────────┬────────┘  └────────┬───────┘  │
 └───────────┼─────────────────────┼────────────────────┼──────────┘
             │                     │                    │
@@ -92,16 +92,16 @@
 
 ### 核心组件
 
-- **`crates/agent-runtime/src/engine/`** - Agent 执行引擎（已从 TUI 迁出）
+- **`crates/agent-runtime/src/engine/`** - Agent 执行引擎（已从终端用户前端迁出）
   - `mod.rs` - `Engine` 结构体 + 事件循环（`Engine::run`、`handle_send_message`）、系统提示词刷新、图片块组装
   - `host_executor.rs` - `HostAgentExecutor`，生产环境的 LLM↔工具 turn 循环，吸收了全部护栏（loop-guard、LSP flush、透明重试、steer、审批、压缩、容量、early-tool-start、子代理、cycle）
   - `turn/` - 从 `host_executor.rs` 按阶段拆出的每步机制模块：`stream.rs`（流式归约 + 透明重试）、`batches.rs`（工具批次规划/执行）、`approval.rs`（逐工具审批门控）、`seams.rs`（取消检查点 + steer 排空）、`postprocess.rs`（子代理收割门控、thinking-only 状态、LSP 收集/刷新）
   - `capacity_flow.rs` - 容量护栏检查点和干预
   - `loop_guard.rs` / `dispatch.rs` / `tool_catalog.rs` / `tool_execution.rs` / `lsp_hooks.rs` - loop-guard 状态、工具输入解析 + 批次规划、延迟工具目录策略、MCP 分发扇出、编辑后 LSP 钩子
-- **`crates/tui/src/core/`** - 指向引擎 crate 的薄重导出 + 构造桥接层
+- **`crates/cli/src/core/`** - 指向引擎 crate 的薄重导出 + 构造桥接层
   - `engine.rs` - `EngineHost`（具体的 `ShellManager`/`LspManager`/`SubAgentManager` 宿主服务）、`EngineHandle`（UI 侧邮箱）、`build_engine` 组装
   - `engine/{handle,runtime_traits,tool_setup,tests}.rs` - handle 管道、宿主 trait、工具注册表设置、测试
-  - `session.rs` / `turn.rs` / `events.rs` / `ops.rs` / `tool_parser.rs` / `capacity.rs` / `coherence.rs` - agent-runtime 类型的重导出 shim
+  - `session.rs` / `turn.rs` / `events.rs` / `ops.rs` / `tool_catalog.rs` / `capacity.rs` / `coherence.rs` - agent-runtime 类型的重导出 shim
 
 ### 配置
 
@@ -126,14 +126,13 @@
 - **`crates/secrets`** - 用于 API 密钥存储的操作系统密钥环集成。
 - **`crates/state`** - SQLite 线程/会话持久化层。
 - **`crates/tool-impls`** - 具体的模型可见工具实现。
-- **`crates/tools`** - 共享工具调用原语，包括 TUI 运行时使用的工具结果/错误/能力类型。
-- **`crates/tui-core`** - 事件驱动的 TUI 状态机脚手架。
+- **`crates/tools`** - 共享工具调用原语，包括 CLI 运行时使用的工具结果/错误/能力类型。
 
 ### LLM 集成
 
 - **`crates/agent/src/llm_client/`** - 带重试逻辑的抽象 `LlmClient` trait（`LlmClientHandle`、`with_retry`）
 - **`crates/agent/src/models.rs`** - API 请求/响应的数据结构（含 `ContentBlock` / `ImageSource` wire 类型）
-- **`crates/providers/`** - 具体提供商客户端（openai-compat、anthropic、mock）及 `rig_adapter` 请求塑形器；TUI 通过提供商注册表（`default_registry`）解析活跃客户端
+- **`crates/providers/`** - 具体提供商客户端（openai-compat、anthropic、mock）及 `rig_adapter` 请求塑形器；CLI 通过提供商注册表（`default_registry`）解析活跃客户端
 
 #### DeepSeek API 端点
 
@@ -148,18 +147,18 @@ Chat Completions 驱动 turn。
 
 ### 工具系统
 
-工具实现分为两部分：TUI（宿主耦合工具）和 `crates/tool-impls`
+工具实现分为两部分：CLI crate（宿主耦合工具）和 `crates/tool-impls`
 （模型可见工具；例如
 `grep_files`/`file_search` 位于后者）。
 
-- **`crates/tui/src/tools/`** - 宿主耦合的内置工具实现和注册表
+- **`crates/cli/src/tools/`** - 宿主耦合的内置工具实现和注册表
   - `mod.rs` / `registry.rs` - 工具注册表、组装（`with_subagent_tools` 等）和通用类型
   - `shell.rs` - Shell 命令执行（另有 crate 根部的 `shell_output.rs`、`command_safety.rs`）
   - `file.rs` - 文件读写操作
   - `tasks.rs` / `task_v2.rs` - 模型可见的持久任务、gate、后台 shell 和 PR 尝试工具
   - `github.rs` - 只读 GitHub 上下文以及由 `gh` 支撑的受防护评论/关闭工具
   - `automation.rs` - 基于 `AutomationManager` 的模型可见调度工具
-  - `subagent/` - 持久子代理会话（`agent_open` / `agent_eval` / `agent_close`）和持久 RLM 会话（`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close` —— 带语义辅助调用和 `var_handle` 输出支持的沙箱化 Python REPL；运行时位于 `crates/tui/src/rlm/`）
+  - `subagent/` - 持久子代理会话（`agent_open` / `agent_eval` / `agent_close`）和持久 RLM 会话（`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close` —— 带语义辅助调用和 `var_handle` 输出支持的沙箱化 Python REPL；运行时位于 `crates/cli/src/rlm/`）
   - `skill.rs` / `plugin.rs` / `web_search.rs` / `goal.rs` / `js_execution.rs` / `large_output_router.rs` 等 - 其余工具表面
 
 ### 扩展系统
@@ -170,16 +169,16 @@ Chat Completions 驱动 turn。
 
 ### 用户界面
 
-- **`tui/`** - 终端 UI 组件（基于 ratatui）
-  - `app.rs` - 应用状态和消息处理
-  - `ui.rs` - 事件处理、流式状态和渲染逻辑
-  - `approval.rs` - 工具审批对话框
-  - `clipboard.rs` - 剪贴板处理
-  - `streaming/` - 流式文本收集器（chunking、行缓冲、commit tick）
+- **`interactive/`** - 基于行的交互式 REPL 前端（Claude Code / Codex 风格的循环；取代已移除的 ratatui TUI）
+  - `mod.rs` - REPL 循环：读入一行，运行一个引擎 turn，输出流式打印到终端
+  - `state.rs` - REPL 会话状态（含已知限制说明）
+  - `render.rs` - 行输入处理、Ctrl+C/`Ctrl+D` 语义与流式输出渲染
+  - `status.rs` - 提示符上方的状态行（运行状态圆点、preset 档位、上下文窗口占用、模式、子代理数、模型、版本）
+  - `commands/` - 斜杠命令分发（`/resume`、`/config`、`/skills`、`/queue` 等）
 
 ### LSP 集成
 
-- **`lsp/`** - 编辑后诊断注入
+- **`crates/cli/src/lsp/`** - 编辑后诊断注入
   - `mod.rs` - `LspManager` —— 按语言惰性初始化的传输池 + 配置
   - `client.rs` - `StdioLspTransport` —— 基于 stdio 的 JSON-RPC，支持 `didOpen`/`didChange`/`publishDiagnostics`
   - `diagnostics.rs` - 诊断类型、严重级别和 HTML 块渲染器
@@ -195,17 +194,17 @@ Chat Completions 驱动 turn。
   - `walk.rs` - 基于 `ignore` 的工作区遍历（感知 `.gitignore`），为清单 + 新鲜度差异提供输入
   - `store.rs` - `~/.codesmith/index/<ws-hash>/` 下的按工作区 SQLite（schema 版本不匹配 → 重建）
   - `service.rs` - `IndexService` 编排：惰性增量刷新（mtime+size 差异、预算 + `stale_files` 报告）及后台补全
-- 接线：tui 为每个工作区构建一次服务（`tui/index.rs`、`[index]` 配置）并注入 `RuntimeToolServices::index_service` → 每个 turn 的 `ToolContext`；`symbol_search` / `find_references` 位于 `codesmith-tool-impls` 中，注册通过 `EngineConfig::index_enabled` 按会话恒定门控（目录稳定性、KV 前缀缓存）
+- 接线：CLI 为每个工作区构建一次服务（`crates/cli/src/index.rs`、`[index]` 配置）并注入 `RuntimeToolServices::index_service` → 每个 turn 的 `ToolContext`；`symbol_search` / `find_references` 位于 `codesmith-tool-impls` 中，注册通过 `EngineConfig::index_enabled` 按会话恒定门控（目录稳定性、KV 前缀缓存）
 
 ### 安全
 
-- **`crates/agent-runtime/src/sandbox/`** - 平台沙箱强制执行辅助程序（经 `crates/tui/src/sandbox/` 重导出）
+- **`crates/agent-runtime/src/sandbox/`** - 平台沙箱强制执行辅助程序（经 `crates/cli/src/sandbox/` 重导出）
   - `seatbelt.rs` - macOS Seatbelt profile 生成（已启用）
   - `landlock.rs` - Linux Landlock 规则集应用（已启用；`landlock_restrict_self` + `PR_SET_NO_NEW_PRIVS`）
   - `seccomp.rs` - Linux seccomp-BPF 系统调用过滤（已启用）
   - `windows.rs` - Windows Job Object 进程遏制（v1）
   - `bwrap.rs` / `process_hardening.rs` - 可选 bubblewrap 直通；`PR_SET_DUMPABLE`/核心转储加固
-- **`crates/tui/src/sandbox/`** - 宿主侧沙箱策略准备和拒绝报告（`mod.rs`、`policy.rs`、`runtime.rs`、外部 OpenSandbox 的 `backend.rs`、`opensandbox.rs`）
+- **`crates/cli/src/sandbox/`** - 宿主侧沙箱策略准备和拒绝报告（`mod.rs`、`policy.rs`、`runtime.rs`、外部 OpenSandbox 的 `backend.rs`、`opensandbox.rs`）
 
 ### 工具库
 
@@ -225,19 +224,19 @@ Chat Completions 驱动 turn。
 
 ### 交互式会话
 
-1. 在 TUI 中接收用户输入
+1. 在 REPL 中接收用户输入
 2. 输入由引擎（`crates/agent-runtime/src/engine/mod.rs`）处理
 3. 消息通过 `LlmClient` trait（`crates/agent/src/llm_client/`，来自 `crates/providers` 的提供商客户端）发送到 LLM
 4. 响应经流式归约器（`engine/turn/stream.rs`）流式返回
 5. 提取工具调用并通过 `tools/` 执行
 6. 在工具执行前后触发钩子
 7. 结果聚合后回传给 LLM
-8. 最终响应在 TUI 中渲染
+8. 最终响应在 REPL 中渲染
 
 ### 崩溃恢复 + 离线队列
 
-1. 发送用户输入之前，TUI 会将检查点快照写入 `~/.codesmith/sessions/checkpoints/latest.json`
-2. 启动默认保持全新状态；先前的会话通过 `--resume`/`--continue`（或 TUI 中的 `Ctrl+R`）显式恢复
+1. 发送用户输入之前，REPL 会将检查点快照写入 `~/.codesmith/sessions/checkpoints/latest.json`
+2. 启动默认保持全新状态；先前的会话通过 `--resume`/`--continue`（或 REPL 中的 `/resume` 命令）显式恢复
 3. 在降级/离线状态下，新的提示词会在内存中排队并镜像到 `~/.codesmith/sessions/checkpoints/offline_queue.json`
 4. 队列编辑（`/queue ...`）会持续持久化，因此草稿和已排队的提示词可在重启后保留
 5. turn 成功完成后会清除活动检查点并写入持久会话快照
@@ -265,7 +264,7 @@ Chat Completions 驱动 turn。
 5. `runtime_threads.rs` 持久化线程/turn/条目记录 + 单调递增事件序列
 6. 时间线/工具摘要/工件引用会增量持久化
 7. 清单状态、验证器 gate、PR 尝试和受防护的 GitHub 事件从工具元数据应用到活动任务
-8. 最终状态（`completed|failed|canceled`）是持久的，可通过 TUI/API 查询
+8. 最终状态（`completed|failed|canceled`）是持久的，可通过 REPL/运行时 API 查询
 
 模型可见的持久任务工具是同一管理器之上的一个表面。它们不会
 引入并行的作业系统：`task_create` 入队普通任务，
@@ -275,7 +274,7 @@ Chat Completions 驱动 turn。
 
 ### 运行时线程/Turn 时间线
 
-1. API/TUI 创建或恢复线程（`/v1/threads*`）
+1. API/REPL 创建或恢复线程（`/v1/threads*`）
 2. 在线程上启动 turn（`/v1/threads/{id}/turns`）
 3. 引擎事件被映射为条目生命周期事件（`item.started|item.delta|item.completed`）
 4. 中断/转向操作仅作用于活动 turn
@@ -331,7 +330,7 @@ command = "echo 'Running tool: $TOOL_NAME'"
    可选的 bubblewrap）、Windows Job Object v1（平台矩阵见
    `docs/SANDBOX.md`）。
 5. **最小依赖**：精心选择依赖以保证构建速度
-6. **本地优先的运行时 API**：HTTP/SSE 端点面向受信任的 localhost 访问，目前由 `crates/tui` 运行时提供
+6. **本地优先的运行时 API**：HTTP/SSE 端点面向受信任的 localhost 访问，目前由 `crates/cli` 运行时提供
 
 ## 配置文件
 

@@ -4,13 +4,13 @@
 npm 包装器的权威依据。
 
 当前打包说明：
-- `codesmith-tui` 是当前交付给用户的实际运行时 crate。
-- `codesmith-tui-core` 是为拆分/对齐工作服务的工作区支撑 crate，并不是交付运行时的替代品。
+- `codesmith-cli` 是唯一的面向最终用户的 crate；它交付单一的 `codesmith`
+  二进制（交互式 REPL + 无头子命令）。此前的 `codesmith-tui` 伴随 crate
+  已在 0.9.0 中移除。
 
 ## 规范发布目标
 
 - 面向最终用户的 crate：
-  - `codesmith-tui`
   - `codesmith-cli`
 - 从本工作区发布的支撑 crate（顺序与 `scripts/release/crates.sh` 一致）：
   - `codesmith-secrets`
@@ -24,7 +24,6 @@ npm 包装器的权威依据。
   - `codesmith-tools`
   - `codesmith-core`
   - `codesmith-app-server`
-  - `codesmith-tui-core`
 - 其余工作区 crate（`codesmith-agent-runtime`、`codesmith-providers`、
   `codesmith-tool-impls`、`codesmith-index`、`codesmith-extensions`、
   `codesmith-release`）**不**发布——它们以路径依赖的形式被已发布的
@@ -51,7 +50,7 @@ cargo fmt --all -- --check
 cargo check --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked
-cargo publish --dry-run --locked --allow-dirty -p codesmith-tui
+cargo publish --dry-run --locked --allow-dirty -p codesmith-cli
 ./scripts/release/publish-crates.sh dry-run
 ```
 
@@ -71,14 +70,13 @@ GitHub Actions 目前承载漂移/fmt 状态以及 macOS 和 Windows 覆盖。
 预检。这样既避免了 crates.io 尚未包含新工作区版本时产生的误报，
 又能在发布前验证包内容。
 
-对于 npm 包装器的验证，需构建两个交付的二进制文件并运行跨平台
+对于 npm 包装器的验证，需构建交付的二进制文件并运行跨平台
 冒烟测试工具。它会打包 npm 包装器、将其安装到一个干净的临时
-项目中、通过 HTTP 提供本地 release 资产，并检查分发器到 TUI 的
-路径（`codesmith doctor --help`）和直接 TUI 入口
-（`codesmith-tui --help`）。
+项目中、通过 HTTP 提供本地 release 资产，并检查
+`codesmith doctor --help` 和 `codesmith --help`。
 
 ```bash
-cargo build --release --locked -p codesmith-cli -p codesmith-tui
+cargo build --release --locked -p codesmith-cli
 node scripts/release/npm-wrapper-smoke.js
 ```
 
@@ -137,9 +135,7 @@ macOS 和 Windows 的冒烟覆盖。
    - `codesmith-tools`
    - `codesmith-core`
    - `codesmith-app-server`
-   - `codesmith-tui-core`
    - `codesmith-cli`
-   - `codesmith-tui`
 5. 等待每个已发布的 crate 版本出现在 crates.io 上，再发布其依赖者。
 
 发布辅助脚本对重复运行是幂等的：已发布的 crate 版本会被跳过。
@@ -149,13 +145,11 @@ macOS 和 Windows 的冒烟覆盖。
 `.github/workflows/release.yml` 构建以下二进制文件：
 
 - `codesmith-linux-x64`
+- `codesmith-linux-arm64`
+- `codesmith-linux-riscv64`
 - `codesmith-macos-x64`
 - `codesmith-macos-arm64`
 - `codesmith-windows-x64.exe`
-- `codesmith-tui-linux-x64`
-- `codesmith-tui-macos-x64`
-- `codesmith-tui-macos-arm64`
-- `codesmith-tui-windows-x64.exe`
 
 release 作业还会上传 `codesmith-artifacts-sha256.txt`。npm 安装器和
 发布验证脚本都依赖该校验和清单。
@@ -173,7 +167,7 @@ release 作业还会上传 `codesmith-artifacts-sha256.txt`。npm 安装器和
 1. 将 [npm/codesmith/package.json](../npm/codesmith/package.json) 中的 npm 包版本设置为与工作区 `Cargo.toml` 一致。CI 的版本漂移守卫会在打 tag 之前发现不匹配。
 2. 将 `codesmithBinaryVersion` 设置为应提供二进制文件的 GitHub release tag。
 3. 将版本号提升推送到 `main`。`auto-tag.yml` 会创建对应的 `vX.Y.Z` tag，`release.yml` 会构建二进制矩阵并起草 GitHub Release。
-4. **等待 GitHub Release 完成**，包含全部八个签名二进制文件以及 `codesmith-artifacts-sha256.txt`。npm 的 `prepublishOnly` 钩子（`scripts/verify-release-assets.js`）要求每个资产都必须存在。
+4. **等待 GitHub Release 完成**，包含全部签名 release 资产以及 `codesmith-artifacts-sha256.txt`。npm 的 `prepublishOnly` 钩子（`scripts/verify-release-assets.js`）要求每个资产都必须存在。
 5. 在开发者机器上手动发布 npm 包装器：
 
 ```bash

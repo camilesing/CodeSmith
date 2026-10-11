@@ -721,7 +721,7 @@ impl ExtensionRunner {
 
     /// Look up a registered command by name (exact match; `:N` conflict
     /// suffixing is §F2 — slice 1 uses first-wins via HashMap insert). Used
-    /// by the tui `extension_commands::try_dispatch` (Task 8).
+    /// by the CLI `extension_commands::try_dispatch` (Task 8).
     pub async fn try_dispatch_command(&self, name: &str, args: &str) -> Option<CommandOutput> {
         let cmd = self.commands.lock().unwrap().get(name).cloned()?;
         let ctx = self.context.lock().unwrap().clone()?;

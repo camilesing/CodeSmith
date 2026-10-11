@@ -14,7 +14,6 @@
 ```bash
 git clone https://github.com/camilesing/CodeSmith.git && cd CodeSmith
 cargo install --path crates/cli --locked   # provides `codesmith`
-cargo install --path crates/tui --locked   # provides `codesmith-tui` (required companion)
 ```
 
 ## What Is It?
@@ -26,7 +25,7 @@ A model answers a question; an agent finishes a task. CodeSmith is the harness i
 ```bash
 codesmith auth set --provider deepseek   # or export CODESMITH_API_KEY
 codesmith doctor                         # verify setup & connectivity
-codesmith                                # interactive TUI
+codesmith                                # interactive REPL
 ```
 
 Modes — **Plan** (read-only) / **Agent** (default, gated) / **YOLO** (auto-approve): [docs/PRESETS.md](docs/PRESETS.md) · other providers: [docs/PROVIDERS.md](docs/PROVIDERS.md)
@@ -38,14 +37,14 @@ Don't read a hundred config keys to get the tool you want — pick a tier. `pres
 ```bash
 codesmith --preset simple    # Pi-style minimal: 9 tools, no index/LSP/memory
 codesmith --preset all       # everything stable on, 20 sub-agents
-codesmith-tui preset show    # the tier matrix + your effective preset
+codesmith preset show        # the tier matrix + your effective preset
 ```
 
 Four progressive tiers ship built-in — `simple` / `middle` *(factory default)* / `all` / `experiment` — plus the `plan` workflow preset. Yours live in `~/.codesmith/presets/` and per-project `.codesmith/presets/` — commit the project ones, that's the sharing story. Memory is a dial like everything else: `goldfish` (no cross-session memory) / `notebook` (only what you explicitly save) / `elephant` (auto memory with budget + decay). Full schema and semantics: [docs/PRESETS.md](docs/PRESETS.md).
 
 ## Documentation
 
-Get started: [user guide](docs/GUIDE.md) · [presets & approvals](docs/PRESETS.md) · [keybindings](docs/KEYBINDINGS.md) · [skills](docs/SKILLS.md) · [memory](docs/MEMORY.md) · [localization](docs/LOCALIZATION.md) · [full command catalog](docs/CLI.md)
+Get started: [user guide](docs/GUIDE.md) · [presets & approvals](docs/PRESETS.md) · [skills](docs/SKILLS.md) · [memory](docs/MEMORY.md) · [localization](docs/LOCALIZATION.md) · [full command catalog](docs/CLI.md)
 
 Configure: [configuration](docs/CONFIGURATION.md) · [providers](docs/PROVIDERS.md) · [install](docs/INSTALL.md) · [Docker](docs/DOCKER.md)
 

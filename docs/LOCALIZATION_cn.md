@@ -20,7 +20,7 @@ v0.7.6 的对齐（parity）检查使用了实时的 GitHub 源和 `/opt/homebre
 | Locale | 显示名称 | 文字 | 方向 | 回落 | 审校状态 | 备注 |
 |---|---|---|---|---|---|---|
 | `en` | 英语 | Latin | LTR | `en` | 源字符串仍是权威来源。 | 英语始终可用。 |
-| `zh-Hans` | 简体中文 | Hans | LTR | `en` | 已母语审校。 | `zh`、`zh-CN` 和 `zh-Hans` 都解析到这里。核心 TUI 框架文案及提示词侧的强化书挡。 |
+| `zh-Hans` | 简体中文 | Hans | LTR | `en` | 已母语审校。 | `zh`、`zh-CN` 和 `zh-Hans` 都解析到这里。核心终端框架文案及提示词侧的强化书挡。 |
 | `zh-Hant` | 繁体中文 | Hant | LTR | `zh-Hans` | 已母语审校。 | `zh-TW`、`zh-HK`、`zh-MO` 和 `zh-Hant` 都解析到这里；除差异字符串外与简体共享翻译表。 |
 | `hi` | 印地语 | Deva | LTR | `en` | 仅自动化 QA；建议母语审校。 | 界面框架文案全覆盖；窄宽度与截断测试覆盖天城文。含提示词侧强化书挡。 |
 | `es-419` | 西班牙语（拉丁美洲） | Latin | LTR | `en` | 仅自动化 QA；建议母语审校。 | `es` 及区域变体都解析到这里。含提示词侧强化书挡。 |
@@ -49,13 +49,18 @@ locale = "es-419"
 
 ## 消息覆盖
 
-注册表覆盖高可见度终端框架文案的稳定消息 ID：
+注册表承载历史终端框架文案的稳定消息 ID：
 
 - composer 占位符
 - composer 历史搜索的标题、占位符、提示与无结果状态
 - `/config` 的标题、过滤器占位符、无结果状态、过滤结果计数与底部提示
 - 帮助浮层的标题、过滤器占位符、无结果状态、分区标签与底部提示
-- 斜杠命令描述、按键绑定标签、onboarding 门控屏与右键菜单
+- 斜杠命令描述、onboarding 门控屏与右键菜单
+- 已退役 TUI 界面的按键绑定标签
+
+自 0.9.0 移除 TUI 后，交互前端是基于行的 REPL：它会解析 locale
+（`/config locale`、`settings.toml`）并应用到提示词侧的 locale 信号，
+但只渲染上述框架 ID 中的一小部分；按键绑定/右键菜单字符串不再显示。
 
 尚未翻译的部分：
 
@@ -66,14 +71,14 @@ locale = "es-419"
 
 ## 译者备注
 
-除非后续术语表明确变更，以下技术术语保持不变：`Plan`、`Agent`、`YOLO`、`/config`、`/mcp`、`@path`、`/attach`、`DeepSeek`、`MCP`、`CLI`、`TUI`，以及 `Enter`、`Esc`、`Tab`、`PgUp`、`PgDn` 等按键组合。
+除非后续术语表明确变更，以下技术术语保持不变：`Plan`、`Agent`、`YOLO`、`/config`、`/mcp`、`@path`、`/attach`、`DeepSeek`、`MCP`、`CLI`、`REPL`，以及 `Enter`、`Esc`、`Tab`、`PgUp`、`PgDn` 等按键名。
 
 ## QA 检查清单
 
 在发布新 locale 之前：
 
-1. 在 `crates/tui/src/localization.rs` 中补齐完整的消息覆盖。
+1. 在 `crates/cli/src/localization.rs` 中补齐完整的消息覆盖。
 2. 添加 locale 解析测试与缺失键测试。
-3. 至少为 composer、帮助和 `/config` 添加窄宽度渲染覆盖。
+3. 为仍会渲染文本的界面（至少 `/config`）添加窄宽度渲染覆盖。
 4. 验证 CJK 宽度、组合附加符号与截断行为。
 5. 记录母语/流利审校状态，或将该 locale 标记为仅经自动化 QA。

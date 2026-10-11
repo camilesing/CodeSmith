@@ -31,7 +31,7 @@ Accepted truthy values are `1`, `on`, `true`, `yes`, `y`, and
 enabled = true
 ```
 
-Restart the TUI after toggling. Disabling is the same in reverse.
+Restart the REPL after toggling. Disabling is the same in reverse.
 
 The memory file lives at `~/.codesmith/memory.md` by default; override
 with `memory_path` in `config.toml` or `CODESMITH_MEMORY_PATH` in
@@ -87,7 +87,7 @@ the composer:
 # remember to use 4-space indentation in this repo
 ```
 
-The TUI intercepts the input and appends a timestamped bullet to
+The REPL intercepts the input and appends a timestamped bullet to
 your memory file. **No turn fires** — your input is consumed, the
 status line confirms the path it wrote to, and you can keep typing
 your real question.
@@ -259,14 +259,14 @@ Memory is for **durable** signal. Things that should NOT live there:
 - **Conversation snippets** — quote-style notes belong in the notes
   tool (`note`), not memory.
 - **Long instructions** — anything over a few sentences should live
-  in `AGENTS.md` (project-level) or in a [skill](../crates/tui/src/skills/mod.rs)
+  in `AGENTS.md` (project-level) or in a [skill](../crates/cli/src/skills/mod.rs)
   (reusable instruction packs).
 
 ## Privacy and scope
 
 The memory file lives entirely on your machine in `~/.codesmith/`.
-It's never uploaded to any cloud service — the TUI only ever
-includes it inline in the system prompt that the LLM provider
+It's never uploaded to any cloud service — it is only ever
+included inline in the system prompt that the LLM provider
 receives, and only when memory is enabled. If you switch providers
 (DeepSeek / NVIDIA NIM / Fireworks / etc.) the same memory file is
 used; the file is provider-agnostic.

@@ -31,7 +31,7 @@ stance toward the work — not just a different label.
 Each role's full system prompt lives in
 `crates/agent-runtime/src/subagent.rs` (`SubAgentType::system_prompt()`;
 the composed per-child prompt is built by
-`build_subagent_system_prompt` in `crates/tui/src/tools/subagent/mod.rs`).
+`build_subagent_system_prompt` in `crates/cli/src/tools/subagent/mod.rs`).
 The prompt prefix loads automatically when the
 child agent boots; the parent's assignment prompt becomes the first
 turn's user message.
@@ -216,7 +216,7 @@ don't go through the standard write-approval flow.
 
 ## Implementation notes
 
-- Source: `crates/tui/src/tools/subagent/mod.rs`.
+- Source: `crates/cli/src/tools/subagent/mod.rs`.
 - Persisted state: `<workspace>/.codesmith/state/subagents.v1.json`. Schema
   version `1` (forward-compatible — new optional fields use
   `#[serde(default)]`).

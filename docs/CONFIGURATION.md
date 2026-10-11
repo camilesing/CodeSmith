@@ -26,7 +26,7 @@ preset = "experiment"  # everything on, including preview flags and invasive sea
 - Selection precedence: `--preset` (or `CODESMITH_PRESET`) > the `preset`
   key in config.toml > the last `/preset` choice persisted in
   settings.toml > `middle`.
-- See the governed-switch matrix with `codesmith-tui preset show`, and the
+- See the governed-switch matrix with `codesmith preset show`, and the
   full tier documentation (including the `plan` workflow preset and custom
   preset files) in [PRESETS.md](PRESETS.md). The pre-rename spellings
   (`mode` key, `--mode`, `/mode`, `minimal`/`balanced`/`maximal`) still
@@ -58,7 +58,7 @@ Consolidated resolution order (highest first):
 
 ### Per-project overlay
 
-When the TUI starts in a workspace that contains a
+When codesmith starts in a workspace that contains a
 `<workspace>/.codesmith/config.toml` file, the values declared in that
 file are merged on top of the global config. The overlay is only read
 after the workspace passes the startup trust boundary — the same gate
@@ -84,9 +84,9 @@ Supported keys in the project overlay (top-level fields only):
 direction: a project can turn `on-request` into `never`, or
 `workspace-write` into `read-only`, but never loosen the user's setting;
 `external-sandbox` is accepted only when the user config already uses it.
-Non-tightening values are ignored with a stderr warning. The `codesmith`
-facade applies the same rules to its own file reads and additionally
-honours `output_mode`, `log_level`, the `[tools]` table, and per-provider
+Non-tightening values are ignored with a stderr warning. Headless subcommands
+apply the same rules to their own file reads and additionally
+honour `output_mode`, `log_level`, the `[tools]` table, and per-provider
 `model` overrides from the project file.
 
 Denied at project scope: `provider`, `api_key`, `base_url`, and
@@ -99,10 +99,10 @@ telemetry, `[network]`, `[skills]`, `[lsp].servers`, `[edit]`,
 `[snapshots]`, …) stays user-global. If your repo needs more, file an
 issue describing the specific use case.
 
-The `codesmith` facade and `codesmith-tui` binary share the same config file for
+The `codesmith` binary uses the same config file for
 provider auth and model defaults. `codesmith auth set --provider <id>` saves the
-key to `~/.codesmith/config.toml`, and `codesmith --model <model>` is forwarded
-to the TUI as `CODESMITH_MODEL`.
+key to `~/.codesmith/config.toml`, and `codesmith --model <model>` resolves to
+`CODESMITH_MODEL` for the session.
 
 Credential lookup uses `config -> keyring -> env` after any explicit CLI
 `--api-key`. Run `codesmith auth status` to inspect the active provider's config
@@ -117,8 +117,8 @@ For hosted, generic OpenAI-compatible, or self-hosted providers, set
 `"anthropic"`, or pass `codesmith --provider <name>`.
 For the provider-by-provider registry, including auth variables, default base
 URLs, model IDs, and capability metadata, see [PROVIDERS.md](PROVIDERS.md).
-The facade saves provider credentials to the shared user config and forwards
-the resolved key, base URL, provider, and model to the TUI process. Use
+`codesmith auth set` saves provider credentials to the shared user config; the
+resolved key, base URL, provider, and model are read from it at session start. Use
 `codesmith auth set --provider nvidia-nim --api-key "YOUR_NVIDIA_API_KEY"` or
 `codesmith auth set --provider openai --api-key "YOUR_OPENAI_COMPATIBLE_API_KEY"` or
 `codesmith auth set --provider atlascloud --api-key "YOUR_ATLASCLOUD_API_KEY"` or
@@ -126,7 +126,7 @@ the resolved key, base URL, provider, and model to the TUI process. Use
 `codesmith auth set --provider xiaomi-mimo --api-key "YOUR_XIAOMI_KEY"` or
 `codesmith auth set --provider fireworks --api-key "YOUR_FIREWORKS_API_KEY"` or
 `codesmith auth set --provider siliconflow --api-key "YOUR_SILICONFLOW_API_KEY"`
-to save provider keys through the facade. The generic `openai` provider defaults
+to save provider keys. The generic `openai` provider defaults
 to `https://api.openai.com/v1`, accepts `OPENAI_BASE_URL`, and defaults to
 `gpt-5`. Pointing `OPENAI_BASE_URL` at a third-party gateway requires an
 explicit model (`OPENAI_MODEL`, `--model`, or `[providers.openai].model`);
@@ -195,7 +195,7 @@ builtin provider name — the builtin selector stays authoritative. Each
 entry is self-contained (own credentials, endpoint, model, headers), and
 setting `custom_provider` overrides `provider` for that process. Custom
 gateways have no entry in the static vision matrix, so inline images need
-an explicit `vision = true`. The facade writes individual fields with
+an explicit `vision = true`. Individual fields can be written with
 `codesmith config set providers.custom.<id>.<field> <value>`; whole-table
 rewrites are not supported.
 
@@ -291,18 +291,17 @@ the two tools from the session catalog entirely. `[index.semantic]` exists
 as a reserved seam for embedding-based search but has no built-in backend
 yet — leave it disabled.
 
-To bootstrap MCP and skills directories at their resolved paths, run `codesmith-tui setup`.
-To only scaffold MCP, run `codesmith-tui mcp init`.
+To bootstrap MCP and skills directories at their resolved paths, run `codesmith setup`.
+To only scaffold MCP, run `codesmith mcp init`.
 
-Note: setup, doctor, mcp, features, sessions, resume/fork, exec, review, and eval
-are subcommands of the `codesmith-tui` binary. The `codesmith` dispatcher exposes a
-distinct set of commands (`auth`, `config`, `model`, `thread`, `sandbox`,
-`app-server`, `mcp-server`, `completion`) and forwards plain prompts to
-`codesmith-tui`.
+Note: setup, doctor, mcp, features, sessions, resume/fork, exec, review, eval,
+auth, config, model, thread, sandbox, app-server, mcp-server, and completion
+are all subcommands of the single `codesmith` binary; running `codesmith` with
+no subcommand (optionally with `--prompt`) starts the interactive REPL.
 
 ### Startup Update Checks
 
-By default, the TUI starts a background check for the latest stable CodeSmith
+By default, the REPL starts a background check for the latest stable CodeSmith
 release and shows a short toast only when a newer release is available and the
 official release assets are complete.
 
@@ -328,7 +327,7 @@ update_uri = "https://internal.mirror.example/codesmith/releases/latest"
 When `update_uri` is not set, startup checks honor release mirror environment
 variables such as `CODESMITH_RELEASE_BASE_URL` before falling back to the
 official GitHub API endpoint. If a configured `update_uri` cannot be fetched or
-parsed and a release mirror env var is set, the TUI falls back to that mirror
+parsed and a release mirror env var is set, codesmith falls back to that mirror
 instead of failing startup.
 
 ## Profiles
@@ -493,7 +492,7 @@ Remaining app-level variables:
   `~/.codesmith/tasks`)
 - `CODESMITH_HOME` (override the base data directory; defaults to `~/.codesmith`)
 - `CODESMITH_RELEASE_BASE_URL` (release asset mirror used by `codesmith update`
-  and by TUI startup update checks when `[update].update_uri` is not set, or as
+  and by REPL startup update checks when `[update].update_uri` is not set, or as
   a fallback when that configured URI cannot be fetched)
 - `CODESMITH_AUTOMATIONS_DIR` (override the automations storage directory; uses
   `~/.codesmith/automations` by default)
@@ -514,7 +513,7 @@ Remaining app-level variables:
 - `CODESMITH_CAPACITY_PRIOR_FALLBACK`
 - `NO_ANIMATIONS` (`1|true|yes|on` forces `low_motion = true` and
   `fancy_animations = false` at startup, regardless of the saved
-  settings; see [`docs/ACCESSIBILITY.md`](./ACCESSIBILITY.md)).
+  settings).
 - `SSL_CERT_FILE` — corporate-proxy / TLS-inspecting MITM users
   point this at a PEM bundle (or single DER cert) and the cert(s)
   get added alongside the platform's system trust store. Failures
@@ -582,7 +581,7 @@ verification discipline, tool-use mandate), the tool taxonomy,
 and the mode/approval layers intact. Setting `system_prompt` /
 `system_prompt_file` discards all of that, so the model loses
 its grounding — only use it when you truly need a from-scratch
-persona. Run `/system` (or `/xitong`) inside the TUI to inspect
+persona. Run `/system` (or `/xitong`) inside the REPL to inspect
 the final assembled prompt and confirm your layers took
 effect.
 
@@ -593,7 +592,7 @@ inline values win over file values, which win over config.
 
 ### `/hooks` listing
 
-Run `/hooks` (or `/hooks list`) inside the TUI to see every
+Run `/hooks` (or `/hooks list`) inside the REPL to see every
 configured lifecycle hook grouped by event, including each
 hook's name, command preview, timeout, and condition. The
 `[hooks].enabled` flag's state is shown at the top so it's
@@ -642,9 +641,9 @@ Exit `0` with empty stdout, or stdout JSON without `text`, leaves
 the current text unchanged. A JSON `text` field must not be empty;
 `{"text":""}` is treated as invalid stdout and ignored. Exit `2`
 blocks the submission before the turn starts; a `reason` field,
-stderr, or stdout can provide the status message shown in the TUI.
+stderr, or stdout can provide the status message shown in the REPL.
 Other non-zero exits follow the hook's `continue_on_error` setting.
-Timeouts and spawn failures are also surfaced as transient TUI status
+Timeouts and spawn failures are also surfaced as transient REPL status
 messages when `continue_on_error = true` lets submission continue.
 
 Multiple `message_submit` hooks run in config order, and each hook
@@ -661,14 +660,13 @@ start and does not correlate across restarts. For cross-restart correlation
 the persistent thread id and is also provided as a `thread_id` field in
 structured hook payloads.
 
-### Composer stash (`/stash`, Ctrl+S)
+### Composer stash (`/stash`)
 
-Press **Ctrl+S** in the composer to park the current draft to
-`~/.codesmith/composer_stash.jsonl`. `/stash list` shows parked
-drafts with one-line previews and timestamps; `/stash pop`
-restores the most recently parked draft (LIFO); `/stash clear`
-wipes the file. Capped at 200 entries; multiline drafts
-round-trip intact.
+The composer stash (Ctrl+S parking to
+`~/.codesmith/composer_stash.jsonl`, `/stash list`/`pop`/`clear`) was a
+ratatui-composer feature and was removed with the TUI in v0.9.0. In the
+line-based REPL, `/stash` prints a notice that there is no line-mode
+equivalent yet.
 
 ## Settings File (Persistent UI Preferences)
 
@@ -680,21 +678,25 @@ Notable settings include `auto_compact` (default `false`), which opts into
 replacement-style summarization only near the active model limit. The default
 V4 path preserves the stable message prefix for cache reuse; use manual
 `/compact` or enable `auto_compact` only when you explicitly want automatic
-replacement compaction. You can inspect or update these from the TUI with
+replacement compaction. You can inspect or update these from the REPL with
 `/settings` and `/config` (interactive editor).
 
 Common settings keys:
+
+The line-based REPL renders with your terminal's own colors and a fixed
+status line; appearance keys such as `theme`, `background_color`, and
+`sidebar_focus` are still parsed and stored for a fullscreen frontend.
 
 - `theme` (`terminal`, `system`, `dark`, `light`, `grayscale`,
   `catppuccin-mocha`, `tokyo-night`, `dracula`, `gruvbox-dark`, `claude`,
   `matrix`, `solarized-light`; default `terminal`): `terminal` paints no
   background of its own — surfaces use the terminal's default colors and
-  accents are ANSI named colors, so the TUI inherits whatever palette the
+  accents are ANSI named colors, so the UI inherits whatever palette the
   terminal is running (Solarized, Nord, custom schemes, …) just like CLI
   output. `system` follows terminal background detection (`COLORFGBG`, then
   macOS appearance), `dark`/`light` use the built-in
   palettes, `grayscale` is the low-opinion black/white theme, and the named
-  community presets apply across the TUI. Aliases such as `whale`, `mono`,
+  community presets apply across the UI. Aliases such as `whale`, `mono`,
   `black-white`, `tokyonight`, and `gruvbox` are accepted.
 - `auto_compact` (on/off, default off)
 - `paste_burst_detection` (on/off, default on): fallback rapid-key paste
@@ -721,11 +723,10 @@ Common settings keys:
   and replies when the latest user message is ambiguous. Clear user language
   still takes priority; Chinese turns should produce Chinese `reasoning_content`
   and Chinese final replies even when the resolved locale is English.
-- `background_color` (`#RRGGBB`, `RRGGBB`, or `default`): optional main TUI
-  background color applied to the root, header, transcript, and footer
-  surfaces while preserving panel contrast.
-- `cost_currency` (`usd`, `cny`; default `usd`): currency used by the footer,
-  context panel, `/cost`, `/tokens`, and long-turn notification summaries. The
+- `background_color` (`#RRGGBB`, `RRGGBB`, or `default`): optional background
+  color applied to main UI surfaces while preserving panel contrast.
+- `cost_currency` (`usd`, `cny`; default `usd`): currency used by `/cost`,
+  `/tokens`, and cost displays. The
   aliases `rmb` and `yuan` normalize to `cny`.
 - `default_mode` (agent, plan, yolo; legacy `normal` is accepted and normalized to `agent`)
 - `sidebar_focus` (`auto`, `work`, `tasks`, `agents`, `context`, `hidden`; default
@@ -740,36 +741,19 @@ Common settings keys:
 
 ### Companion files
 
-- `~/.codesmith/tui.toml` — TUI-only preferences decoupled from agent and
-  project config so they survive project switches: `theme`
-  (default `"dark"`), `font_size` (`0` = terminal default, forwarded to
-  supporting front-ends), and `[keybinds]` chord overrides such as
-  `submit = "ctrl+enter"` / `new_line = "enter"`. When the file is
-  absent, values fall back to the `[tui]` section of `config.toml` and
-  then to built-in defaults. Note: the loader is defined but not yet
-  wired into startup — editing this file has no effect yet.
 - `providers.toml` — the bundled builtin-provider manifest (one entry per
   provider: id, backend, base URL, default model), read once per
   process. Override its path with `CODESMITH_PROVIDERS_MANIFEST` to test
   an alternate registry.
 
 Only `agent`, `plan`, and `yolo` are visible modes in the UI. Switch between
-them with `/preset agent` (or the Tab cycle). For compatibility, older
+them with `/mode` (or the `/yolo` shortcut). For compatibility, older
 settings files with `default_mode = "normal"` still load as `agent`.
 
 Localization scope is tracked in [LOCALIZATION.md](LOCALIZATION.md). The v0.7.6
-core pack covers high-visibility TUI chrome only; provider/tool schemas,
+core pack covers high-visibility UI chrome only; provider/tool schemas,
 personality prompts, and full documentation remain English unless explicitly
 translated later.
-
-Readability semantics:
-
-- Selection uses a unified style across transcript, composer menus, and modals.
-- Footer hints use a dedicated semantic role (`FOOTER_HINT`) so hint text stays readable across themes.
-- The footer includes a compact `coherence` chip that describes how stable and
-  focused the current session is right now. Possible states are `healthy`,
-  `crowded`, `refreshing`, `verifying`, and `resetting`; these are derived from
-  capacity and compaction events without exposing internal formulas in normal UI.
 
 ### Token Quantities and Drivers
 
@@ -793,7 +777,7 @@ and the capacity controller remains disabled unless configured.
 
 ## Key Reference
 
-### Core keys (used by the TUI/engine)
+### Core keys (used by the REPL/engine)
 
 - `provider` (string, optional): `deepseek` (default), `nvidia-nim`, `openai`, `atlascloud`, `wanjie-ark`, `openrouter`, `xiaomi-mimo`, `novita`, `fireworks`, `siliconflow`, `moonshot`, `sglang`, `vllm`, `ollama`, `volcengine`, or `anthropic`. `volcengine` targets Volcengine Ark's OpenAI-compatible endpoint (env aliases `VOLCENGINE_API_KEY` / `VOLCENGINE_ARK_API_KEY` / `ARK_API_KEY`); `anthropic` targets the Anthropic Messages API (env aliases `ANTHROPIC_API_KEY` / `CLAUDE_API_KEY`). Legacy `deepseek-cn` configs are still accepted as an alias for `deepseek`; DeepSeek uses the same official host [`https://api.deepseek.com`](https://api-docs.deepseek.com/) worldwide. `nvidia-nim` targets NVIDIA's NIM-hosted DeepSeek endpoints through `https://integrate.api.nvidia.com/v1`; `openai` targets a generic OpenAI-compatible endpoint, defaulting to `https://api.openai.com/v1`; `atlascloud` targets AtlasCloud's OpenAI-compatible endpoint at `https://api.atlascloud.ai/v1`; `wanjie-ark` targets Wanjie Ark's OpenAI-compatible endpoint at `https://maas-openapi.wanjiedata.com/api/v1`; `openrouter` targets `https://openrouter.ai/api/v1`; `xiaomi-mimo` targets Xiaomi MiMo's OpenAI-compatible endpoint at `https://api.xiaomimimo.com/v1`; `novita` targets `https://api.novita.ai/v1`; `fireworks` targets `https://api.fireworks.ai/inference/v1`; `siliconflow` targets SiliconFlow, defaulting to `https://api.siliconflow.com/v1`; `moonshot` targets Moonshot/Kimi, defaulting to `https://api.moonshot.ai/v1`; `sglang` targets a self-hosted OpenAI-compatible endpoint, defaulting to `http://localhost:30000/v1`; `vllm` targets a self-hosted vLLM OpenAI-compatible endpoint, defaulting to `http://localhost:8000/v1`; `ollama` targets Ollama's OpenAI-compatible endpoint, defaulting to `http://localhost:11434/v1`.
 - `custom_provider` (string, optional): id of a `[[providers.custom]]`
@@ -812,12 +796,12 @@ and the capacity controller remains disabled unless configured.
 - `base_url` (string, optional): defaults to `https://api.deepseek.com/beta` for DeepSeek's OpenAI-compatible Chat Completions API, including legacy `provider = "deepseek-cn"` configs. Other defaults are `https://integrate.api.nvidia.com/v1` for `nvidia-nim`, `https://api.openai.com/v1` for `openai`, `https://api.atlascloud.ai/v1` for `atlascloud`, `https://maas-openapi.wanjiedata.com/api/v1` for `wanjie-ark`, `https://openrouter.ai/api/v1` for `openrouter`, `https://api.xiaomimimo.com/v1` for `xiaomi-mimo`, `https://api.novita.ai/v1` for `novita`, `https://api.fireworks.ai/inference/v1` for `fireworks`, `https://api.siliconflow.com/v1` for `siliconflow`, `https://api.moonshot.ai/v1` for `moonshot`, `http://localhost:30000/v1` for `sglang`, `http://localhost:8000/v1` for `vllm`, and `http://localhost:11434/v1` for `ollama`. Set `https://api.deepseek.com` or `https://api.deepseek.com/v1` explicitly to opt out of DeepSeek beta features.
 - `default_text_model` (string, optional): defaults to `deepseek-v4-pro` for DeepSeek and generic OpenAI-compatible endpoints, `deepseek-ai/deepseek-v4-pro` for NVIDIA NIM, `deepseek-ai/deepseek-v4-flash` for AtlasCloud, `deepseek-reasoner` for Wanjie Ark, `deepseek/deepseek-v4-pro` for OpenRouter and Novita, `mimo-v2.5-pro` for Xiaomi MiMo, `accounts/fireworks/models/deepseek-v4-pro` for Fireworks, `deepseek-ai/DeepSeek-V4-Pro` for SiliconFlow, `kimi-k2.6` for Moonshot, `deepseek-ai/DeepSeek-V4-Pro` for SGLang/vLLM, and `deepseek-coder:1.3b` for Ollama. Current public DeepSeek IDs are `deepseek-v4-pro` and `deepseek-v4-flash`, both with 1M context windows, 384K max output, and thinking mode enabled by default. `deepseek-chat` and `deepseek-reasoner` are compatibility aliases for `deepseek-v4-flash`; SiliconFlow maps `deepseek-reasoner` and `deepseek-r1` to its Pro model while `deepseek-chat` and `deepseek-v3` map to Flash. Provider-specific mappings translate `deepseek-v4-pro` / `deepseek-v4-flash` to each provider's model ID where supported. OpenRouter also recognizes recent large IDs such as `arcee-ai/trinity-large-thinking`, `qwen/qwen3.7-max`, `xiaomi/mimo-v2.5-pro`, `qwen/qwen3.6-35b-a3b`, `google/gemma-4-31b-it`, and `moonshotai/kimi-k2.6`. Generic `openai`, `atlascloud`, `wanjie-ark`, `xiaomi-mimo`, and Ollama model IDs are passed through unchanged. OpenRouter and SiliconFlow provider configs with a custom `base_url` also preserve explicit model values, which lets OpenAI-compatible gateways accept bare model IDs. Use `/models` or `codesmith models` to discover live IDs from your configured endpoint. `CODESMITH_MODEL` overrides this for a single process.
 - `model` (string, optional): generic model override slot consumed by the
-  `codesmith` facade and the project overlay; the facade forwards the
-  resolved model to the TUI as `CODESMITH_MODEL`. Prefer the explicit
+  project overlay; its environment equivalent is `CODESMITH_MODEL`. Prefer
+  the explicit
   `default_text_model` or `[providers.<name>].model` slots in hand-written
   configs.
-- `output_mode` / `log_level` (string, optional): facade-level output and
-  logging knobs stored in the same file; the TUI reads them from the
+- `output_mode` / `log_level` (string, optional): output and
+  logging knobs stored in the same file; the runtime reads them from the
   environment (`CODESMITH_OUTPUT_MODE`, `CODESMITH_LOG_LEVEL` / `RUST_LOG`).
   Both are project-overlay-safe (a repo may set them).
 - `strict_tool_mode` (bool, optional): when `true`, sends
@@ -950,9 +934,9 @@ and the capacity controller remains disabled unless configured.
   documents, presentations, spreadsheets, PDFs, and Feishu/Lark.
 - `mcp_config_path` (string, optional): defaults to `~/.codesmith/mcp.json`, with
   legacy `~/.codesmith/mcp.json` fallback when the CodeSmith path is absent.
-  It is visible in `/config` and can be changed from the TUI. The new path is
+  It is visible in `/config` and can be changed from the REPL. The new path is
   used immediately by `/mcp`, but rebuilding the model-visible MCP tool pool
-  requires restarting the TUI.
+  requires restarting the session.
 - `notes_path` (string, optional): defaults to `~/.codesmith/notes.txt`, with
   legacy `~/.codesmith/notes.txt` fallback when the CodeSmith path is absent, and
   is used by the model-visible `note` tool.
@@ -975,7 +959,7 @@ and the capacity controller remains disabled unless configured.
   The effective value follows a priority cascade (highest first):
   `CODESMITH_DISABLE_AUTO_MEMORY` env, bare/simple mode, remote mode
   without `CODESMITH_REMOTE_MEMORY_DIR`, this setting (or
-  `CODESMITH_MEMORY=on`), then default on. When enabled, the TUI loads
+  `CODESMITH_MEMORY=on`), then default on. When enabled, the runtime loads
   the user memory file into a `<user_memory>` prompt block, enables
   `# foo` quick-capture in the composer, surfaces the `/memory` slash
   command, and registers the `remember` tool.
@@ -1069,46 +1053,11 @@ and the capacity controller remains disabled unless configured.
   - `[capacity].deepseek_v4_pro_prior` (float, default `3.5`)
   - `[capacity].deepseek_v4_flash_prior` (float, default `4.2`)
   - `[capacity].fallback_default_prior` (float, default `3.8`)
-- `[notifications].method` (string, optional): `auto`, `osc9`, `bel`,
-  `kitty`, `ghostty`, or `off`. Defaults to `auto`. The TUI fires this on
-  completed (successful) turns whose elapsed time meets `threshold_secs`;
-  failed and cancelled turns are silent. `auto` resolves to `osc9` for
-  `iTerm.app`, `Ghostty`, `WezTerm`, and `Cmux` (detected via
-  `$TERM_PROGRAM`, then `$LC_TERMINAL`). Otherwise the fallback is
-  `bel` on macOS / Linux and `off` on Windows (where BEL maps to the
-  system error chime — see the [Notifications](#notifications) section
-  for the full rationale). `kitty` and `ghostty` select the
-  Kitty OSC 99 and Ghostty OSC 777 notification protocols explicitly.
-- `[notifications].threshold_secs` (int, optional): defaults to `30`.
-  Only completed turns whose elapsed time meets or exceeds this fire a
-  notification.
-- `[notifications].include_summary` (bool, optional): defaults to
-  `false`. When `true`, the notification body includes the elapsed
-  duration and the turn's cost in the configured display currency.
-- `[notifications].completion_sound` (string, optional): `off`, `beep`
-  (default), or `bell` — a sound played when every turn finishes,
-  alongside the ✅ marker. `beep` uses the system notification sound
-  (`MessageBeep` on Windows); `bell` emits a `\x07` byte.
-- `tui.alternate_screen` (string, optional): `auto`, `always`, or `never`. This is retained for config compatibility, but interactive sessions now always use the TUI-owned alternate screen so host terminal scrollback cannot hijack the viewport.
-- `tui.mouse_capture` (bool, optional, default `true` on non-Windows terminals and on Windows Terminal/ConEmu/Cmder when the alternate screen is active; `false` on legacy Windows console and inside JetBrains JediTerm — PyCharm/IDEA/CLion/etc. — where mouse-event escapes leak into the input stream as garbled text): enable internal mouse scrolling, transcript selection, right-click context actions, and transcript scrollbar dragging. TUI-owned drag selection copies only transcript text, removes visual wrap-column line breaks from paragraphs, and keeps selection scoped to the transcript pane. Set this to `false` or run with `--no-mouse-capture` for raw terminal selection; set it to `true` or run with `--mouse-capture` to opt in anywhere it's defaulted off. On raw terminal selection, especially on legacy Windows console or when mouse capture is disabled, selection may cross the right sidebar and include visual wraps because the terminal, not the TUI, owns the selection.
-- `tui.terminal_probe_timeout_ms` (int, optional, default `500`): startup terminal-mode probe timeout in milliseconds. Values are clamped to `100..=5000`; timeout emits a warning and aborts startup instead of hanging indefinitely.
-- `tui.osc8_links` (bool, optional, default `true`): emit OSC 8 escape sequences around URLs in transcript output so terminals that support them (iTerm2, Terminal.app 13+, Ghostty, Kitty, WezTerm, Alacritty, recent gnome-terminal/konsole) render them as Cmd+click hyperlinks. Terminals without OSC 8 support render the plain URL and ignore the escape. Set `false` for terminals that misrender the sequence; selection/clipboard output always strips the escapes.
-- `tui.status_items` (array, optional): ordered footer items. Absent means
-  the built-in default footer; an explicit `[]` hides everything. Available
-  items: `mode`, `model`, `cost`, `status`, `coherence`, `agents`,
-  `reasoning_replay`, `prefix_stability`, `cache`, `context_percent`,
-  `git_branch`, `last_tool_elapsed`, `rate_limit`, `tokens`, `balance`.
-  Left-cluster items (mode/model/cost/status) and right-cluster chips keep
-  their given order within their side. Edited interactively with
-  `/statusline`.
-- `tui.notification_condition` (string, optional): `always` (notify on
-  every successful turn, ignoring `[notifications].threshold_secs`) or
-  `never` (suppress turn-completion notifications). Unset falls back to
-  the `[notifications]` defaults.
-- `tui.composer_arrows_scroll` (bool, optional): plain Up/Down on an empty
-  composer scroll the transcript instead of recalling input history —
-  useful for terminals that map mouse-wheel gestures to arrow keys.
-  Defaults to `true` only when mouse capture is off, otherwise `false`.
+- Notifications: the `[notifications]` table and every `tui.*` key were
+  removed in v0.9.0 together with the ratatui TUI. Desktop notifications now
+  happen only via the model-callable `notify` tool, which auto-detects the
+  terminal's protocol (OSC 9, Kitty OSC 99, Ghostty OSC 777, or BEL); there
+  is no turn-completion notification configuration anymore.
 - `network.*` (optional): per-domain outbound network policy
   governing `fetch_url`, `web_search`, and MCP HTTP calls:
   - `[network].default` (`"allow"` | `"deny"` | `"prompt"`, default
@@ -1234,27 +1183,17 @@ Notes:
 
 ### Notifications
 
-The TUI can emit a desktop notification (OSC 9 escape or plain BEL) when a turn **completes successfully** and took longer than a threshold, so you can tab away while a long task runs. Failed or cancelled turns are intentionally silent — the notification is a "your task is ready" cue, not a generic ping. Configuration lives under `[notifications]`:
-
-```toml
-[notifications]
-method          = "auto"  # auto | osc9 | bel | off
-threshold_secs  = 30      # only notify when the turn took >= this many seconds
-include_summary = false   # include elapsed time + cost in the notification body
-```
-
-Method semantics:
-
-- `auto` (default) — picks `osc9` for `iTerm.app`, `Ghostty`, and `WezTerm` (detected via `$TERM_PROGRAM`). On macOS and Linux it falls back to `bel`. **On Windows the fallback is `off`** instead of `bel`, because the Windows audio stack maps `\x07` to the `SystemAsterisk` / `MB_OK` chime — the same sound application error popups use, so a successful-turn notification ends up sounding like an error.
-- `osc9` — emit `\x1b]9;<msg>\x07`. Inside tmux the sequence is wrapped in DCS passthrough so it reaches the outer terminal.
-- `bel` — emit a single `\x07` byte. Use this on Windows only if you actively want the chime back.
-- `off` — disable post-turn notifications entirely.
-
-Windows users who run inside a known OSC-9 terminal (e.g. WezTerm on Windows) keep getting OSC-9 notifications; the `off` fallback only applies when no recognised `TERM_PROGRAM` is detected.
+The `[notifications]` table was removed in v0.9.0 with the ratatui TUI.
+Notifications now happen only via the model-callable `notify` tool — the
+model sends a desktop notification when it decides one is warranted (for
+example when a long task finishes), and the tool auto-detects the
+terminal's protocol (OSC 9, Kitty OSC 99, Ghostty OSC 777, or BEL). There
+is nothing to configure; if your terminal shows no notification, that is a
+terminal capability question, not a config one.
 
 ### Parsed but currently unused (reserved for future versions)
 
-These keys are accepted by the config loader but not currently used by the interactive TUI or built-in tools:
+These keys are accepted by the config loader but not currently used by the interactive REPL or built-in tools:
 
 - `tools_file`
 
@@ -1350,10 +1289,10 @@ not a security control, and applies in every mode including Yolo.
 
 You can also override features for a single run:
 
-- `codesmith-tui --enable web_search`
-- `codesmith-tui --disable subagents`
+- `codesmith --enable web_search`
+- `codesmith --disable subagents`
 
-Use `codesmith-tui features list` to inspect known flags and their effective state.
+Use `codesmith features list` to inspect known flags and their effective state.
 
 ## Web Search Provider
 
@@ -1432,18 +1371,18 @@ If configured values violate requirements, startup fails with a descriptive erro
 
 See `docs/capacity_controller.md` for formulas, intervention behavior, and telemetry.
 
-## Notes On `codesmith-tui doctor`
+## Notes On `codesmith doctor`
 
-`codesmith-tui doctor` follows the same config resolution rules as the rest of the
-TUI. That means `--config`, `CODESMITH_CONFIG_PATH`, and the legacy
+`codesmith doctor` follows the same config resolution rules as the rest of the
+binary. That means `--config`, `CODESMITH_CONFIG_PATH`, and the legacy
 `CODESMITH_CONFIG_PATH` are respected, and MCP/skills
 checks use the resolved `mcp_config_path` / `skills_dir` (including env overrides).
 
-To bootstrap missing MCP/skills paths, run `codesmith-tui setup --all`. You can
-also run `codesmith-tui setup --skills --local` to create a workspace-local
+To bootstrap missing MCP/skills paths, run `codesmith setup --all`. You can
+also run `codesmith setup --skills --local` to create a workspace-local
 `./skills` dir.
 
-`codesmith-tui doctor --json` prints a machine-readable report that skips the
+`codesmith doctor --json` prints a machine-readable report that skips the
 live API connectivity probe. Top-level keys: `version`, `config_path`,
 `config_present`, `workspace`, `api_key.source`, `base_url`,
 `default_text_model`, `mcp`, `skills`, `tools`, `plugins`, `sandbox`,
@@ -1464,7 +1403,7 @@ configure reasoning effort.
 
 ## Setup status, clean, and extension dirs
 
-`codesmith-tui setup` accepts a few flags beyond the existing `--mcp`,
+`codesmith setup` accepts a few flags beyond the existing `--mcp`,
 `--skills`, `--local`, `--all`, and `--force`:
 
 - `--status` — print a compact one-screen status (api key, base URL, model,
@@ -1494,7 +1433,7 @@ configure reasoning effort.
 
 codesmith sends and receives tool calls only over the API tool channel
 (structured `tool_use` / `tool_call` items). The streaming loop in
-`crates/tui/src/core/engine.rs` recognizes a fixed set of fake-wrapper start
+`crates/cli/src/core/engine.rs` recognizes a fixed set of fake-wrapper start
 markers — `[TOOL_CALL]`, `<codesmith:tool_call`, `<tool_call`, `<invoke `,
 `<function_calls>` — and scrubs them from visible assistant text without ever
 turning them into structured tool calls. When a wrapper is stripped, the loop
