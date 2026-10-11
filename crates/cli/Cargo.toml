@@ -8,7 +8,7 @@ keywords = ["agent", "llm", "cli", "terminal", "coding"]
 categories = ["command-line-utilities", "development-tools"]
 license.workspace = true
 repository.workspace = true
-description = "Agentic terminal facade for open-source and open-weight coding models"
+description = "Agentic terminal coding agent for open-weight models"
 
 [[bin]]
 name = "codesmith"
@@ -16,25 +16,82 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+async-stream = "0.3.6"
+async-trait = "0.1"
+base64 = "0.22.1"
+axum.workspace = true
+chrono.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 codesmith-agent = { path = "../agent", version = "0.9.0" }
-codesmith-agent-runtime = { path = "../agent-runtime", version = "0.9.0" }
+codesmith-agent-runtime = { path = "../agent-runtime", version = "0.9.0", features = ["hf-tokenizer", "parse-gate"] }
 codesmith-app-server = { path = "../app-server", version = "0.9.0" }
 codesmith-config = { path = "../config", version = "0.9.0" }
 codesmith-execpolicy = { path = "../execpolicy", version = "0.9.0" }
+codesmith-extensions = { path = "../extensions", version = "0.9.0" }
+codesmith-index = { path = "../index", version = "0.9.0", features = ["tree-sitter"] }
 codesmith-mcp = { path = "../mcp", version = "0.9.0" }
+codesmith-protocol = { path = "../protocol", version = "0.9.0" }
+# Provider implementations (rig-backed). `default-features = false` keeps the
+# no-network `mock` provider out of the binary; the four rig features select
+# every provider the engine routes config to via `default_registry()`.
+codesmith-providers = { path = "../providers", version = "0.9.0", default-features = false, features = ["openai", "anthropic", "deepseek", "openai-compat"] }
 codesmith-release = { path = "../release", version = "0.9.0" }
 codesmith-secrets = { path = "../secrets", version = "0.9.0" }
 codesmith-state = { path = "../state", version = "0.9.0" }
-chrono.workspace = true
+codesmith-tools = { path = "../tools", version = "0.9.0" }
+codesmith-tool-impls = { path = "../tool-impls", version = "0.9.0" }
+colored = "3.0.0"
+crossterm = "0.29"
 dirs.workspace = true
+dotenvy = "0.15.7"
+fd-lock = "4.0.4"
+flate2 = "1.1"
+futures-util = "0.3.31"
+ignore = "0.4"
+multimap = "0.10.0"
+notify.workspace = true
+pdf-extract = "0.7"
+qrcode = "0.14"
+regex = "1.11"
+reqwest = { workspace = true, features = ["blocking", "json", "stream", "multipart", "form", "rustls", "http2", "gzip", "brotli"] }
+rustyline = "14.0.0"
+schemars = { version = "1.2.1", features = ["derive", "preserve_order"] }
+semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-reqwest = { workspace = true, features = ["blocking"] }
-semver.workspace = true
-tokio.workspace = true
 sha2.workspace = true
+shellexpand = "3"
+shlex = "1.3.0"
+similar = "2"
+starlark = "0.13.0"
+tar = "0.4"
 tempfile = "3.16"
+thiserror = "2.0"
+tiny_http = "0.12"
+tokio.workspace = true
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+tokio-util = { version = "0.7.16", features = ["io"] }
 toml.workspace = true
+tower-http = { version = "0.6", features = ["cors"] }
 tracing.workspace = true
+tracing-appender.workspace = true
+tracing-subscriber.workspace = true
+unicode-width = "0.2"
+uuid = { version = "1.11", features = ["v4"] }
+wait-timeout = "0.2"
+zeroize = "1.8.2"
+
+[dev-dependencies]
+pretty_assertions = "1.4"
+wiremock = "0.6"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.3"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSError", "NSObject", "NSString", "NSURL"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.60", features = ["Win32_Foundation", "Win32_System_Console", "Win32_UI_WindowsAndMessaging", "Win32_System_Diagnostics_Debug", "Win32_System_Threading"] }

@@ -30,9 +30,8 @@ use codesmith_config::{
 };
 use codesmith_secrets::Secrets;
 
-use crate::{
-    Cli, PROVIDER_LIST, provider_env_value, provider_slot, write_provider_api_key_to_keyring,
-};
+use crate::main_root::Cli;
+use crate::{PROVIDER_LIST, provider_env_value, provider_slot, write_provider_api_key_to_keyring};
 
 /// Language options for the first question. Mirrors the TUI wizard's
 /// `LANGUAGE_OPTIONS`: `auto` defers to `LC_ALL` / `LANG` and is still the
@@ -393,7 +392,7 @@ fn persist_config(
         .is_some_and(|model| !model.trim().is_empty());
     if !has_model && provider != ProviderKind::Deepseek {
         let model = cli
-            .model
+            .model_flag
             .clone()
             .unwrap_or_else(|| heavy_model_for_provider(provider).to_string());
         table.insert("model".to_string(), toml::Value::String(model));

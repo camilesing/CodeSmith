@@ -2,6 +2,85 @@ mod metrics;
 mod onboarding;
 mod update;
 
+pub(crate) use codesmith_agent_runtime::auto_reasoning;
+
+use main_root::Cli;
+
+mod acp_server;
+mod agent_memory;
+mod app_state;
+mod approval_grants;
+mod artifacts;
+mod audit;
+mod auto_mode;
+mod automation_manager;
+mod background_task;
+mod capabilities;
+mod child_env;
+mod command_safety;
+mod compaction;
+mod config;
+mod core;
+mod cost_status;
+mod cycle_manager;
+mod dependencies;
+mod doctor_llm;
+mod eval;
+mod execpolicy;
+mod extension_state;
+mod features;
+mod handoff;
+mod hooks;
+mod index;
+mod interactive;
+mod knowledge;
+mod llm_client;
+mod localization;
+mod logging;
+mod lsp;
+mod main_root;
+mod mcp;
+mod mcp_server;
+mod media;
+mod memory;
+mod memory_consolidate;
+mod mod_ops;
+mod mod_state;
+mod models;
+mod network_policy;
+mod notifications;
+mod prefix_cache;
+mod presets;
+mod pricing;
+mod project_context;
+mod prompts;
+mod purge;
+pub mod repl;
+mod retry_status;
+pub mod rlm;
+mod runtime_api;
+mod runtime_threads;
+mod sandbox;
+mod schema_migration;
+mod seam_manager;
+mod session_failure_classifier;
+mod session_manager;
+mod settings;
+mod shell_dispatcher;
+mod skill_state;
+mod skills;
+mod slop_ledger;
+mod snapshot;
+mod task_manager;
+mod test_support;
+mod tool_summary;
+mod tools;
+mod tui;
+mod utils;
+mod vision;
+mod working_set;
+mod workspace_trust;
+
 use std::io::{self, Read, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -25,7 +104,7 @@ use codesmith_secrets::Secrets;
 use codesmith_state::{StateStore, ThreadListFilters};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
-enum ProviderArg {
+pub(crate) enum ProviderArg {
     Deepseek,
     NvidiaNim,
     Openai,
@@ -67,223 +146,8 @@ impl From<ProviderArg> for ProviderKind {
     }
 }
 
-#[derive(Debug, Parser)]
-#[command(
-    name = "codesmith",
-    version = env!("CODESMITH_BUILD_VERSION"),
-    bin_name = "codesmith",
-    override_usage = "codesmith [OPTIONS] [PROMPT]\n       codesmith [OPTIONS] <COMMAND> [ARGS]"
-)]
-struct Cli {
-    #[arg(long)]
-    config: Option<PathBuf>,
-    #[arg(long)]
-    profile: Option<String>,
-    /// Configuration preset tier (simple | middle | all | experiment |
-    /// plan | <custom>) — shareable baseline bundles from
-    /// ~/.codesmith/presets/ or .codesmith/presets/. Forwarded to the
-    /// TUI; overrides `preset` in config.toml.
-    #[arg(long, value_name = "NAME")]
-    preset: Option<String>,
-    /// Deprecated alias of --preset (pre-rename name).
-    #[arg(long, value_name = "NAME", hide = true)]
-    mode: Option<String>,
-    #[arg(
-        long,
-        value_enum,
-        help = "Advanced provider selector for non-TUI registry/config commands"
-    )]
-    provider: Option<ProviderArg>,
-    /// Select a `[[providers.custom]]` entry by id (ROADMAP §D2). Overrides the
-    /// config-file `custom_provider` selector for this run. The id must match
-    /// a `[[providers.custom]]` entry declared in config.toml; it must not
-    /// collide with a builtin `--provider` value (use `--provider` for those).
-    /// Mutually exclusive with `--provider`.
-    #[arg(
-        long = "custom-provider",
-        value_name = "ID",
-        conflicts_with = "provider",
-        help = "Select a [[providers.custom]] entry by id (overrides config-file custom_provider)"
-    )]
-    custom_provider: Option<String>,
-    #[arg(long)]
-    model: Option<String>,
-    #[arg(long = "output-mode")]
-    output_mode: Option<String>,
-    #[arg(long = "log-level")]
-    log_level: Option<String>,
-    #[arg(long)]
-    telemetry: Option<bool>,
-    #[arg(long)]
-    approval_policy: Option<String>,
-    #[arg(long)]
-    sandbox_mode: Option<String>,
-    #[arg(long)]
-    api_key: Option<String>,
-    #[arg(long)]
-    base_url: Option<String>,
-    /// Workspace directory for TUI file tools
-    #[arg(short = 'C', long = "workspace", alias = "cd", value_name = "DIR")]
-    workspace: Option<PathBuf>,
-    #[arg(long = "no-alt-screen", hide = true)]
-    no_alt_screen: bool,
-    #[arg(long = "mouse-capture", conflicts_with = "no_mouse_capture")]
-    mouse_capture: bool,
-    #[arg(long = "no-mouse-capture", conflicts_with = "mouse_capture")]
-    no_mouse_capture: bool,
-    #[arg(long = "skip-onboarding")]
-    skip_onboarding: bool,
-    /// YOLO mode: auto-approve all tools
-    #[arg(long)]
-    yolo: bool,
-    /// Bare/simple mode: disable ambient features like auto-memory (mirrors
-    /// Claude Code's `--bare` / `CLAUDE_CODE_SIMPLE`).
-    #[arg(long)]
-    bare: bool,
-    /// Continue the most recent interactive session for this workspace.
-    #[arg(short = 'c', long = "continue")]
-    continue_session: bool,
-    #[arg(short = 'p', long = "prompt", value_name = "PROMPT")]
-    prompt_flag: Option<String>,
-    /// Initial prompt to submit in the interactive TUI. A single bare word
-    /// (ASCII, no spaces) is read as a subcommand name instead — pass
-    /// `-p <PROMPT>` (or put it after `--`) for a one-word prompt.
-    #[arg(
-        value_name = "PROMPT",
-        trailing_var_arg = true,
-        allow_hyphen_values = true
-    )]
-    prompt: Vec<String>,
-    #[command(subcommand)]
-    command: Option<Commands>,
-}
-
-#[derive(Debug, Subcommand)]
-enum Commands {
-    /// Run interactive/non-interactive flows via the TUI binary.
-    Run(RunArgs),
-    /// Run CodeSmith diagnostics.
-    Doctor(TuiPassthroughArgs),
-    /// Inspect and consolidate agent memory via the TUI binary.
-    Memory(TuiPassthroughArgs),
-    /// List live DeepSeek API models via the TUI binary.
-    Models(TuiPassthroughArgs),
-    /// List saved TUI sessions.
-    Sessions(TuiPassthroughArgs),
-    /// Resume a saved TUI session.
-    Resume(TuiPassthroughArgs),
-    /// Fork a saved TUI session.
-    Fork(TuiPassthroughArgs),
-    /// Create a default AGENTS.md in the current directory.
-    Init(TuiPassthroughArgs),
-    /// Bootstrap MCP config and/or skills directories.
-    Setup(TuiPassthroughArgs),
-    /// Run a non-interactive prompt through the TUI runtime.
-    #[command(after_help = "\
-Examples:
-  codesmith exec \"explain this function\"
-  codesmith exec --auto \"list crates/ with ls\"
-  codesmith exec --auto --output-format stream-json \"fix the failing test\"
-
-Common forwarded flags:
-  --auto                           Enable tool-backed agent mode with auto-approvals
-  --json                           Emit summary JSON
-  --resume <SESSION_ID>            Resume a previous session by ID or prefix
-  --session-id <SESSION_ID>        Resume a previous session by ID or prefix
-  --continue                       Continue the most recent session for this workspace
-  --output-format <FORMAT>         Output format: text or stream-json
-
-Plain `codesmith exec` is a one-shot model response. Use `--auto` for
-non-interactive filesystem/shell tool use, matching the supported automation
-path used by stream-json wrappers.
-")]
-    Exec(TuiPassthroughArgs),
-    /// Generate SWE-bench prediction rows from CodeSmith runs.
-    #[command(after_help = "\
-Examples:
-  codesmith swebench run --instance-id django__django-12345 --issue-file issue.md
-  codesmith swebench export --instance-id django__django-12345 --predictions-path all_preds.jsonl
-
-This command forwards to the TUI runtime. `run` invokes tool-backed agent mode
-and writes a SWE-bench-compatible JSONL prediction row from the resulting
-working-tree diff. `export` only writes the current diff.
-")]
-    Swebench(TuiPassthroughArgs),
-    /// Run a CodeSmith-powered code review over a git diff.
-    Review(TuiPassthroughArgs),
-    /// Apply a patch file or stdin to the working tree.
-    Apply(TuiPassthroughArgs),
-    /// Run the offline TUI evaluation harness.
-    Eval(TuiPassthroughArgs),
-    /// Manage TUI MCP servers.
-    Mcp(TuiPassthroughArgs),
-    /// Inspect TUI feature flags.
-    Features(TuiPassthroughArgs),
-    /// Run a local TUI server.
-    Serve(TuiPassthroughArgs),
-    /// Generate shell completions for the TUI binary.
-    Completions(TuiPassthroughArgs),
-    /// Configure provider credentials.
-    Login(LoginArgs),
-    /// Remove saved authentication state.
-    Logout,
-    /// Manage authentication credentials and provider mode.
-    Auth(AuthArgs),
-    /// Run MCP server mode over stdio.
-    McpServer,
-    /// Read/write/list config values.
-    Config(ConfigArgs),
-    /// Resolve or list available models across providers.
-    Model(ModelArgs),
-    /// Manage thread/session metadata and resume/fork flows.
-    Thread(ThreadArgs),
-    /// Evaluate sandbox/approval policy decisions.
-    Sandbox(SandboxArgs),
-    /// Run the app-server transport.
-    AppServer(AppServerArgs),
-    /// Run a teammate turn in this process (used by pane backends).
-    TeamTeammate(TuiPassthroughArgs),
-    /// Generate shell completions.
-    #[command(after_help = r#"Examples:
-  Bash (current shell only):
-    source <(codesmith completion bash)
-
-  Bash (persistent, Linux/bash-completion):
-    mkdir -p ~/.local/share/bash-completion/completions
-    codesmith completion bash > ~/.local/share/bash-completion/completions/codesmith
-    # Requires bash-completion to be installed and loaded by your shell.
-
-  Zsh:
-    mkdir -p ~/.zfunc
-    codesmith completion zsh > ~/.zfunc/_codesmith
-    # Add to ~/.zshrc if needed:
-    #   fpath=(~/.zfunc $fpath)
-    #   autoload -Uz compinit && compinit
-
-  Fish:
-    mkdir -p ~/.config/fish/completions
-    codesmith completion fish > ~/.config/fish/completions/codesmith.fish
-
-  PowerShell (current shell only):
-    codesmith completion powershell | Out-String | Invoke-Expression
-
-The command prints the completion script to stdout; redirect it to a path your shell loads automatically."#)]
-    Completion {
-        #[arg(value_enum)]
-        shell: Shell,
-    },
-    /// Print a usage rollup from the audit log and session store.
-    Metrics(MetricsArgs),
-    /// Print how to run CodeSmith in the published container image.
-    Docker,
-    /// Print the CLI version (same output as `--version`).
-    Version,
-    /// Check for and apply updates to the `codesmith` binary.
-    Update(UpdateArgs),
-}
-
-#[derive(Debug, Args)]
-struct UpdateArgs {
+#[derive(Debug, Clone, Args)]
+pub(crate) struct UpdateArgs {
     /// Update to the latest beta release instead of the latest stable release.
     #[arg(long)]
     beta: bool,
@@ -295,8 +159,8 @@ struct UpdateArgs {
     proxy: Option<String>,
 }
 
-#[derive(Debug, Args)]
-struct MetricsArgs {
+#[derive(Debug, Clone, Args)]
+pub(crate) struct MetricsArgs {
     /// Emit machine-readable JSON.
     #[arg(long)]
     json: bool,
@@ -311,33 +175,23 @@ struct RunArgs {
     args: Vec<String>,
 }
 
-#[derive(Debug, Args, Clone)]
-struct TuiPassthroughArgs {
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    args: Vec<String>,
-}
-
 #[derive(Debug, Args)]
-struct LoginArgs {
+pub(crate) struct LoginArgs {
     #[arg(long, value_enum, hide = true)]
     provider: Option<ProviderArg>,
     #[arg(long)]
     api_key: Option<String>,
 }
 
-#[derive(Debug, Args)]
-struct AuthArgs {
+#[derive(Debug, Clone, Args)]
+pub(crate) struct AuthArgs {
     #[command(subcommand)]
-    command: AuthCommand,
+    pub(crate) command: AuthCommand,
 }
 
-#[derive(Debug, Subcommand)]
-enum AuthCommand {
-    /// Show current provider and credential source state.
+#[derive(Debug, Clone, Subcommand)]
+pub(crate) enum AuthCommand {
     Status,
-    /// Save an API key to the shared user config file. Reads from
-    /// `--api-key`, `--api-key-stdin`, or prompts on stdin when
-    /// neither is given. Does not echo the key.
     Set {
         #[arg(long, value_enum)]
         provider: ProviderArg,
@@ -348,19 +202,14 @@ enum AuthCommand {
         #[arg(long = "api-key-stdin", default_value_t = false)]
         api_key_stdin: bool,
     },
-    /// Report whether a provider has a key configured. Never prints
-    /// the value; just `set` / `not set` plus the source layer.
     Get {
         #[arg(long, value_enum)]
         provider: ProviderArg,
     },
-    /// Delete a provider's key from config and secret-store storage.
     Clear {
         #[arg(long, value_enum)]
         provider: ProviderArg,
     },
-    /// List all known providers with their auth state, without
-    /// revealing keys.
     List,
     /// Advanced: migrate config-file keys into a platform credential store.
     #[command(hide = true)]
@@ -371,14 +220,14 @@ enum AuthCommand {
     },
 }
 
-#[derive(Debug, Args)]
-struct ConfigArgs {
+#[derive(Debug, Clone, Args)]
+pub(crate) struct ConfigArgs {
     #[command(subcommand)]
-    command: ConfigCommand,
+    pub(crate) command: ConfigCommand,
 }
 
-#[derive(Debug, Subcommand)]
-enum ConfigCommand {
+#[derive(Debug, Clone, Subcommand)]
+pub(crate) enum ConfigCommand {
     Get { key: String },
     Set { key: String, value: String },
     Unset { key: String },
@@ -386,14 +235,14 @@ enum ConfigCommand {
     Path,
 }
 
-#[derive(Debug, Args)]
-struct ModelArgs {
+#[derive(Debug, Clone, Args)]
+pub(crate) struct ModelArgs {
     #[command(subcommand)]
-    command: ModelCommand,
+    pub(crate) command: ModelCommand,
 }
 
-#[derive(Debug, Subcommand)]
-enum ModelCommand {
+#[derive(Debug, Clone, Subcommand)]
+pub(crate) enum ModelCommand {
     List {
         #[arg(long, value_enum)]
         provider: Option<ProviderArg>,
@@ -405,14 +254,14 @@ enum ModelCommand {
     },
 }
 
-#[derive(Debug, Args)]
-struct ThreadArgs {
+#[derive(Debug, Clone, Args)]
+pub(crate) struct ThreadArgs {
     #[command(subcommand)]
-    command: ThreadCommand,
+    pub(crate) command: ThreadCommand,
 }
 
-#[derive(Debug, Subcommand)]
-enum ThreadCommand {
+#[derive(Debug, Clone, Subcommand)]
+pub(crate) enum ThreadCommand {
     List {
         #[arg(long, default_value_t = false)]
         all: bool,
@@ -438,8 +287,6 @@ enum ThreadCommand {
         thread_id: String,
         name: String,
     },
-    /// Remove the custom name from a thread, restoring the default
-    /// `(unnamed)` rendering in `thread list`.
     ClearName {
         thread_id: String,
     },
@@ -461,7 +308,7 @@ enum SandboxCommand {
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
-enum ApprovalModeArg {
+pub(crate) enum ApprovalModeArg {
     UnlessTrusted,
     OnFailure,
     OnRequest,
@@ -479,8 +326,8 @@ impl From<ApprovalModeArg> for AskForApproval {
     }
 }
 
-#[derive(Debug, Args)]
-struct AppServerArgs {
+#[derive(Debug, Clone, Args)]
+pub(crate) struct AppServerArgs {
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
     #[arg(long, default_value_t = 8787)]
@@ -532,7 +379,7 @@ fn unknown_subcommand_word<'a, S: AsRef<std::ffi::OsStr>>(
     cli: &'a Cli,
     argv: &[S],
 ) -> Option<&'a str> {
-    if cli.command.is_some() || cli.prompt_flag.is_some() || cli.continue_session {
+    if cli.command.is_some() || !cli.prompt.is_empty() || cli.continue_session {
         return None;
     }
     // `--` marks every following word as a literal value, so `codesmith --
@@ -577,17 +424,17 @@ fn unknown_subcommand_error(word: &str) -> clap::Error {
     err.insert(
         ContextKind::Suggested,
         ContextValue::StyledStrs(vec![
-            StyledStr::from(format!("to send this as a prompt, run: codesmith -p {word}")),
-            StyledStr::from(
-                "run `codesmith --help` to see all commands (`codesmith run <COMMAND>` forwards a TUI subcommand)",
-            ),
+            StyledStr::from(format!(
+                "to send this as a prompt, run: codesmith -p {word}"
+            )),
+            StyledStr::from("run `codesmith --help` to see all commands"),
         ]),
     );
     err
 }
 
 pub fn run_cli() -> std::process::ExitCode {
-    match run() {
+    match main_root::real_main() {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(err) => {
             // Use the full anyhow chain so callers see the underlying
@@ -606,209 +453,7 @@ pub fn run_cli() -> std::process::ExitCode {
     }
 }
 
-fn run() -> Result<()> {
-    let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
-    let mut cli = Cli::parse_from(argv.clone());
-
-    // A mistyped command word fails loud here, before config or secret
-    // resolution: the `[PROMPT]` positional would otherwise hand it to the TUI
-    // as the first chat message and open an interactive session on a typo.
-    if let Some(word) = unknown_subcommand_word(&cli, &argv) {
-        unknown_subcommand_error(word).exit();
-    }
-
-    let mut store = ConfigStore::load(cli.config.clone())?;
-    let runtime_overrides = CliRuntimeOverrides {
-        provider: cli.provider.map(Into::into),
-        model: cli.model.clone(),
-        api_key: cli.api_key.clone(),
-        base_url: cli.base_url.clone(),
-        auth_mode: None,
-        output_mode: cli.output_mode.clone(),
-        log_level: cli.log_level.clone(),
-        telemetry: cli.telemetry,
-        approval_policy: cli.approval_policy.clone(),
-        sandbox_mode: cli.sandbox_mode.clone(),
-        yolo: Some(cli.yolo),
-    };
-    let command = cli.command.take();
-
-    match command {
-        Some(Commands::Run(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, args.args)
-        }
-        Some(Commands::Doctor(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, tui_args("doctor", args))
-        }
-        Some(Commands::Memory(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, tui_args("memory", args))
-        }
-        Some(Commands::Models(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, tui_args("models", args))
-        }
-        Some(Commands::Sessions(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, tui_args("sessions", args))
-        }
-        Some(Commands::Resume(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            run_resume_command(&cli, &resolved_runtime, args)
-        }
-        Some(Commands::Fork(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, tui_args("fork", args))
-        }
-        Some(Commands::Init(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, tui_args("init", args))
-        }
-        Some(Commands::Setup(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, tui_args("setup", args))
-        }
-        Some(Commands::Exec(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, tui_args("exec", args))
-        }
-        Some(Commands::Swebench(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, tui_args("swebench", args))
-        }
-        Some(Commands::Review(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, tui_args("review", args))
-        }
-        Some(Commands::Apply(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, tui_args("apply", args))
-        }
-        Some(Commands::Eval(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, tui_args("eval", args))
-        }
-        Some(Commands::Mcp(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, tui_args("mcp", args))
-        }
-        Some(Commands::Features(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, tui_args("features", args))
-        }
-        Some(Commands::Serve(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, tui_args("serve", args))
-        }
-        Some(Commands::Completions(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, tui_args("completions", args))
-        }
-        Some(Commands::Login(args)) => run_login_command(&mut store, args),
-        Some(Commands::Logout) => run_logout_command(&mut store),
-        Some(Commands::Auth(args)) => run_auth_command(&mut store, args.command),
-        Some(Commands::McpServer) => run_mcp_server_command(&mut store),
-        Some(Commands::Config(args)) => run_config_command(&mut store, args.command),
-        Some(Commands::Model(args)) => run_model_command(args.command),
-        Some(Commands::Thread(args)) => run_thread_command(args.command),
-        Some(Commands::Sandbox(args)) => run_sandbox_command(args.command),
-        Some(Commands::AppServer(args)) => run_app_server_command(args),
-        Some(Commands::TeamTeammate(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, tui_args("team-teammate", args))
-        }
-        Some(Commands::Completion { shell }) => {
-            let mut cmd = Cli::command();
-            generate(shell, &mut cmd, "codesmith", &mut io::stdout());
-            Ok(())
-        }
-        Some(Commands::Metrics(args)) => run_metrics_command(args),
-        Some(Commands::Docker) => {
-            print!("{DOCKER_USAGE}");
-            Ok(())
-        }
-        Some(Commands::Version) => {
-            // `--version` renders from the same attribute, so both surfaces
-            // print byte-identical output; neither needs the TUI binary.
-            print!("{}", Cli::command().render_version());
-            Ok(())
-        }
-        Some(Commands::Update(args)) => update::run_update(args.beta, args.check, args.proxy),
-        None => {
-            // First-run onboarding runs as plain CLI questions before the
-            // TUI takes over (the wizard screens no longer exist there).
-            onboarding::maybe_run(&mut store, &cli)?;
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            let forwarded = root_tui_passthrough(&cli)?;
-            delegate_to_tui(&cli, &resolved_runtime, forwarded)
-        }
-    }
-}
-
-fn root_tui_passthrough(cli: &Cli) -> Result<Vec<String>> {
-    let mut forwarded = Vec::new();
-    if cli.continue_session {
-        forwarded.push("--continue".to_string());
-    }
-
-    let prompt =
-        cli.prompt_flag
-            .iter()
-            .chain(cli.prompt.iter())
-            .fold(String::new(), |mut acc, part| {
-                if !acc.is_empty() {
-                    acc.push(' ');
-                }
-                acc.push_str(part);
-                acc
-            });
-    if !prompt.is_empty() {
-        if cli.continue_session {
-            bail!(
-                "`codesmith --continue` resumes the interactive TUI. Use `codesmith exec --continue <PROMPT>` to continue a session non-interactively."
-            );
-        }
-        forwarded.push("--prompt".to_string());
-        forwarded.push(prompt);
-    }
-
-    Ok(forwarded)
-}
-
-fn resolve_runtime_for_dispatch(
-    store: &mut ConfigStore,
-    runtime_overrides: &CliRuntimeOverrides,
-) -> ResolvedRuntimeOptions {
-    let runtime_secrets = Secrets::auto_detect();
-    resolve_runtime_for_dispatch_with_secrets(store, runtime_overrides, &runtime_secrets)
-}
-
-fn resolve_runtime_for_dispatch_with_secrets(
-    store: &mut ConfigStore,
-    runtime_overrides: &CliRuntimeOverrides,
-    secrets: &Secrets,
-) -> ResolvedRuntimeOptions {
-    // Deliberately no keyring→config "self-heal": persisting a key from the
-    // OS secret store into the plaintext TOML config is a silent downgrade
-    // the user never asked for. Keyring-sourced keys are instead bridged to
-    // the dispatched TUI via CODESMITH_API_KEY (see the env bridge in
-    // `dispatch_tui`), and `codesmith login` remains the explicit way to
-    // write a key into the config file.
-    store
-        .config
-        .resolve_runtime_options_with_secrets(runtime_overrides, secrets)
-}
-
-fn tui_args(command: &str, args: TuiPassthroughArgs) -> Vec<String> {
-    let mut forwarded = Vec::with_capacity(args.args.len() + 1);
-    forwarded.push(command.to_string());
-    forwarded.extend(args.args);
-    forwarded
-}
-
-fn run_login_command(store: &mut ConfigStore, args: LoginArgs) -> Result<()> {
+pub(crate) fn run_login_command(store: &mut ConfigStore, args: LoginArgs) -> Result<()> {
     run_login_command_with_secrets(store, args, &Secrets::auto_detect())
 }
 
@@ -843,7 +488,7 @@ fn run_login_command_with_secrets(
     Ok(())
 }
 
-fn run_logout_command(store: &mut ConfigStore) -> Result<()> {
+pub(crate) fn run_logout_command(store: &mut ConfigStore) -> Result<()> {
     run_logout_command_with_secrets(store, &Secrets::auto_detect())
 }
 
@@ -1093,7 +738,7 @@ fn last4_label(value: &str) -> String {
     format!("...{last4}")
 }
 
-fn run_auth_command(store: &mut ConfigStore, command: AuthCommand) -> Result<()> {
+pub(crate) fn run_auth_command(store: &mut ConfigStore, command: AuthCommand) -> Result<()> {
     run_auth_command_with_secrets(store, command, &Secrets::auto_detect())
 }
 
@@ -1317,7 +962,7 @@ fn run_auth_migrate(store: &mut ConfigStore, secrets: &Secrets, dry_run: bool) -
     Ok(())
 }
 
-fn run_config_command(store: &mut ConfigStore, command: ConfigCommand) -> Result<()> {
+pub(crate) fn run_config_command(store: &mut ConfigStore, command: ConfigCommand) -> Result<()> {
     match command {
         ConfigCommand::Get { key } => {
             if let Some(value) = store.config.get_display_value(&key) {
@@ -1351,7 +996,7 @@ fn run_config_command(store: &mut ConfigStore, command: ConfigCommand) -> Result
     }
 }
 
-fn run_model_command(command: ModelCommand) -> Result<()> {
+pub(crate) fn run_model_command(command: ModelCommand) -> Result<()> {
     let registry = ModelRegistry::default();
     match command {
         ModelCommand::List { provider } => {
@@ -1375,7 +1020,7 @@ fn run_model_command(command: ModelCommand) -> Result<()> {
     }
 }
 
-fn run_thread_command(command: ThreadCommand) -> Result<()> {
+pub(crate) fn run_thread_command(command: ThreadCommand) -> Result<()> {
     let state = StateStore::open(None)?;
     match command {
         ThreadCommand::List { all, limit } => {
@@ -1403,12 +1048,12 @@ fn run_thread_command(command: ThreadCommand) -> Result<()> {
             Ok(())
         }
         ThreadCommand::Resume { thread_id } => {
-            let args = vec!["resume".to_string(), thread_id];
-            delegate_simple_tui(args)
+            println!("resume this thread interactively: codesmith resume {thread_id}");
+            Ok(())
         }
         ThreadCommand::Fork { thread_id } => {
-            let args = vec!["fork".to_string(), thread_id];
-            delegate_simple_tui(args)
+            println!("fork this thread into a new session: codesmith fork {thread_id}");
+            Ok(())
         }
         ThreadCommand::Archive { thread_id } => {
             state.mark_archived(&thread_id)?;
@@ -1443,26 +1088,24 @@ fn run_thread_command(command: ThreadCommand) -> Result<()> {
     }
 }
 
-fn run_sandbox_command(command: SandboxCommand) -> Result<()> {
-    match command {
-        SandboxCommand::Check { command, ask } => {
-            let engine = ExecPolicyEngine::new(Vec::new(), vec!["rm -rf".to_string()]);
-            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            let decision = engine.check(ExecPolicyContext {
-                command: &command,
-                cwd: &cwd.display().to_string(),
-                tool: Some("exec_shell"),
-                path: None,
-                ask_for_approval: ask.into(),
-                sandbox_mode: Some("workspace-write"),
-            })?;
-            println!("{}", serde_json::to_string_pretty(&decision)?);
-            Ok(())
-        }
+pub(crate) fn run_sandbox_check(command: String, ask: ApprovalModeArg) -> Result<()> {
+    {
+        let engine = ExecPolicyEngine::new(Vec::new(), vec!["rm -rf".to_string()]);
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let decision = engine.check(ExecPolicyContext {
+            command: &command,
+            cwd: &cwd.display().to_string(),
+            tool: Some("exec_shell"),
+            path: None,
+            ask_for_approval: ask.into(),
+            sandbox_mode: Some("workspace-write"),
+        })?;
+        println!("{}", serde_json::to_string_pretty(&decision)?);
+        Ok(())
     }
 }
 
-fn run_app_server_command(args: AppServerArgs) -> Result<()> {
+pub(crate) fn run_app_server_command(args: AppServerArgs) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -1491,7 +1134,7 @@ fn app_server_token_from_env() -> Option<String> {
     std::env::var("CODESMITH_APP_SERVER_TOKEN").ok()
 }
 
-fn run_mcp_server_command(store: &mut ConfigStore) -> Result<()> {
+pub(crate) fn run_mcp_server_command(store: &mut ConfigStore) -> Result<()> {
     let persisted = load_mcp_server_definitions(store);
     let updated = run_stdio_server(persisted)?;
     persist_mcp_server_definitions(store, &updated)
@@ -1537,329 +1180,7 @@ fn persist_mcp_server_definitions(
     store.save()
 }
 
-fn delegate_to_tui(
-    cli: &Cli,
-    resolved_runtime: &ResolvedRuntimeOptions,
-    passthrough: Vec<String>,
-) -> Result<()> {
-    let mut cmd = build_tui_command(cli, resolved_runtime, passthrough)?;
-    let tui = PathBuf::from(cmd.get_program());
-    let status = cmd
-        .status()
-        .map_err(|err| anyhow!("{}", tui_spawn_error(&tui, &err)))?;
-    exit_with_tui_status(status)
-}
-
-fn run_resume_command(
-    cli: &Cli,
-    resolved_runtime: &ResolvedRuntimeOptions,
-    args: TuiPassthroughArgs,
-) -> Result<()> {
-    let passthrough = tui_args("resume", args);
-    if should_pick_resume_in_dispatcher(&passthrough, cfg!(windows)) {
-        return run_dispatcher_resume_picker(cli, resolved_runtime);
-    }
-    delegate_to_tui(cli, resolved_runtime, passthrough)
-}
-
-fn run_dispatcher_resume_picker(
-    cli: &Cli,
-    resolved_runtime: &ResolvedRuntimeOptions,
-) -> Result<()> {
-    let mut sessions_cmd = build_tui_command(cli, resolved_runtime, vec!["sessions".to_string()])?;
-    let tui = PathBuf::from(sessions_cmd.get_program());
-    let status = sessions_cmd
-        .status()
-        .map_err(|err| anyhow!("{}", tui_spawn_error(&tui, &err)))?;
-    if !status.success() {
-        return exit_with_tui_status(status);
-    }
-
-    println!();
-    println!("Windows note: enter a session id or prefix from the list above.");
-    println!("You can also run `codesmith resume --last` to skip this prompt.");
-    print!("Session id/prefix (Enter to cancel): ");
-    io::stdout().flush()?;
-
-    let mut input = String::new();
-    io::stdin()
-        .read_line(&mut input)
-        .context("failed to read session selection")?;
-    let session_id = input.trim();
-    if session_id.is_empty() {
-        bail!("No session selected.");
-    }
-
-    delegate_to_tui(
-        cli,
-        resolved_runtime,
-        vec!["resume".to_string(), session_id.to_string()],
-    )
-}
-
-fn should_pick_resume_in_dispatcher(passthrough: &[String], is_windows: bool) -> bool {
-    is_windows && passthrough == ["resume"]
-}
-
-fn build_tui_command(
-    cli: &Cli,
-    resolved_runtime: &ResolvedRuntimeOptions,
-    passthrough: Vec<String>,
-) -> Result<Command> {
-    let tui = locate_sibling_tui_binary()?;
-
-    let mut cmd = Command::new(&tui);
-    if let Some(config) = cli.config.as_ref() {
-        cmd.arg("--config").arg(config);
-    }
-    if let Some(profile) = cli.profile.as_ref() {
-        cmd.arg("--profile").arg(profile);
-    }
-    if let Some(preset) = cli.preset.as_ref().or(cli.mode.as_ref()) {
-        cmd.arg("--preset").arg(preset);
-    }
-    if let Some(workspace) = cli.workspace.as_ref() {
-        cmd.arg("--workspace").arg(workspace);
-    }
-    // Accepted for older scripts, but no longer forwarded: the interactive TUI
-    // always owns the alternate screen to avoid host scrollback hijacking.
-    let _ = cli.no_alt_screen;
-    if cli.mouse_capture {
-        cmd.arg("--mouse-capture");
-    }
-    if cli.no_mouse_capture {
-        cmd.arg("--no-mouse-capture");
-    }
-    if cli.skip_onboarding {
-        cmd.arg("--skip-onboarding");
-    }
-    cmd.args(passthrough);
-
-    if !matches!(
-        resolved_runtime.provider,
-        ProviderKind::Deepseek
-            | ProviderKind::NvidiaNim
-            | ProviderKind::Openai
-            | ProviderKind::Atlascloud
-            | ProviderKind::WanjieArk
-            | ProviderKind::Openrouter
-            | ProviderKind::XiaomiMimo
-            | ProviderKind::Novita
-            | ProviderKind::Fireworks
-            | ProviderKind::Siliconflow
-            | ProviderKind::Moonshot
-            | ProviderKind::Sglang
-            | ProviderKind::Vllm
-            | ProviderKind::Ollama
-            | ProviderKind::Anthropic
-    ) {
-        bail!(
-            "The interactive TUI supports DeepSeek, NVIDIA NIM, OpenAI-compatible, AtlasCloud, Wanjie Ark, OpenRouter, Xiaomi MiMo, Novita, Fireworks, SiliconFlow, Moonshot/Kimi, SGLang, vLLM, Ollama, and Anthropic providers. Remove --provider {} or use `codesmith model ...` for provider registry inspection.",
-            resolved_runtime.provider.as_str()
-        );
-    }
-
-    if let Some(provider) = cli.provider {
-        let provider: ProviderKind = provider.into();
-        cmd.env("CODESMITH_PROVIDER", provider.as_str());
-    }
-    // §D2 slice 46 — `--custom-provider <id>` selects a `[[providers.custom]]`
-    // entry. A builtin name is rejected here (use `--provider` for builtins);
-    // the id is forwarded to the TUI via env so the runtime config layer
-    // resolves it. Entry-existence is validated by the TUI (matching
-    // `--provider`'s deferred validation).
-    if let Some(id) = cli
-        .custom_provider
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        if ProviderKind::parse(id).is_some() {
-            bail!(
-                "--custom-provider '{id}' collides with a builtin provider; \
-                 use `--provider {id}` instead"
-            );
-        }
-        cmd.env("CODESMITH_CUSTOM_PROVIDER", id);
-    }
-    if matches!(
-        resolved_runtime.api_key_source,
-        Some(RuntimeApiKeySource::Keyring)
-    ) && let Some(api_key) = resolved_runtime.api_key.as_ref()
-    {
-        // TUI reloads auth_mode from config/profile, but it does not re-query the
-        // platform keyring on normal startup. Bridge only the recovered secret;
-        // replaying auth_mode here would turn it back into a profile override.
-        cmd.env("CODESMITH_API_KEY", api_key);
-        for var in provider_env_vars(resolved_runtime.provider) {
-            if *var != "DEEPSEEK_API_KEY" {
-                cmd.env(var, api_key);
-            }
-        }
-        cmd.env(
-            "CODESMITH_API_KEY_SOURCE",
-            RuntimeApiKeySource::Keyring.as_env_value(),
-        );
-    }
-
-    if let Some(model) = cli.model.as_ref() {
-        cmd.env("CODESMITH_MODEL", model);
-    }
-    if let Some(output_mode) = cli.output_mode.as_ref() {
-        cmd.env("CODESMITH_OUTPUT_MODE", output_mode);
-    }
-    if let Some(log_level) = cli.log_level.as_ref() {
-        cmd.env("CODESMITH_LOG_LEVEL", log_level);
-    }
-    if let Some(telemetry) = cli.telemetry {
-        cmd.env("CODESMITH_TELEMETRY", telemetry.to_string());
-    }
-    if let Some(policy) = cli.approval_policy.as_ref() {
-        cmd.env("CODESMITH_APPROVAL_POLICY", policy);
-    }
-    if let Some(mode) = cli.sandbox_mode.as_ref() {
-        cmd.env("CODESMITH_SANDBOX_MODE", mode);
-    }
-    if cli.yolo {
-        cmd.env("CODESMITH_YOLO", "true");
-    }
-    if cli.bare {
-        cmd.env("CODESMITH_SIMPLE", "true");
-    }
-    if let Some(api_key) = cli.api_key.as_ref() {
-        cmd.env("CODESMITH_API_KEY", api_key);
-        if resolved_runtime.provider == ProviderKind::Openai {
-            cmd.env("OPENAI_API_KEY", api_key);
-        }
-        if resolved_runtime.provider == ProviderKind::Atlascloud {
-            cmd.env("ATLASCLOUD_API_KEY", api_key);
-        }
-        if resolved_runtime.provider == ProviderKind::WanjieArk {
-            cmd.env("WANJIE_ARK_API_KEY", api_key);
-        }
-        if resolved_runtime.provider == ProviderKind::Volcengine {
-            cmd.env("VOLCENGINE_API_KEY", api_key);
-        }
-        if resolved_runtime.provider == ProviderKind::Siliconflow {
-            cmd.env("SILICONFLOW_API_KEY", api_key);
-        }
-        cmd.env("CODESMITH_API_KEY_SOURCE", "cli");
-    }
-    if let Some(base_url) = cli.base_url.as_ref() {
-        cmd.env("CODESMITH_BASE_URL", base_url);
-        if resolved_runtime.provider == ProviderKind::Anthropic {
-            cmd.env("ANTHROPIC_BASE_URL", base_url);
-        }
-    }
-
-    Ok(cmd)
-}
-
-fn exit_with_tui_status(status: std::process::ExitStatus) -> Result<()> {
-    match status.code() {
-        Some(code) => std::process::exit(code),
-        None => bail!("codesmith-tui terminated by signal"),
-    }
-}
-
-fn delegate_simple_tui(args: Vec<String>) -> Result<()> {
-    let tui = locate_sibling_tui_binary()?;
-    let status = Command::new(&tui)
-        .args(args)
-        .status()
-        .map_err(|err| anyhow!("{}", tui_spawn_error(&tui, &err)))?;
-    match status.code() {
-        Some(code) => std::process::exit(code),
-        None => bail!("codesmith-tui terminated by signal"),
-    }
-}
-
-fn tui_spawn_error(tui: &Path, err: &io::Error) -> String {
-    format!(
-        "failed to spawn companion TUI binary at {}: {err}\n\
-\n\
-The `codesmith` dispatcher found a `codesmith-tui` file, but the OS refused \
-to execute it. Common fixes:\n\
-  - Reinstall with `npm install -g codesmith`, or run `codesmith update`.\n\
-  - On Windows, run `where codesmith` and `where codesmith-tui`; both should \
-come from the same install directory.\n\
-  - If you downloaded release assets manually, keep both `codesmith` and \
-`codesmith-tui` binaries together and make sure the TUI binary is executable.\n\
-  - Set CODESMITH_TUI_BIN to the absolute path of a working `codesmith-tui` \
-binary.",
-        tui.display()
-    )
-}
-
-/// Resolve the sibling `codesmith-tui` executable next to the running
-/// dispatcher. Honours platform executable suffix (`.exe` on Windows) so
-/// the npm-distributed Windows package — which ships
-/// `bin/downloads/codesmith-tui.exe` — is found by `Path::exists` (#247).
-///
-/// `CODESMITH_TUI_BIN` is consulted first
-/// as an explicit override for custom installs and CI test layouts. On
-/// Windows we additionally try the suffix-less name as a fallback for users
-/// who already manually renamed the file before this fix landed.
-fn locate_sibling_tui_binary() -> Result<PathBuf> {
-    let override_path = std::env::var("CODESMITH_TUI_BIN").ok();
-    if let Some(override_path) = override_path {
-        let candidate = PathBuf::from(override_path);
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-        bail!(
-            "CODESMITH_TUI_BIN points at {}, which is not a regular file.",
-            candidate.display()
-        );
-    }
-
-    let current = std::env::current_exe().context("failed to locate current executable path")?;
-    if let Some(found) = sibling_tui_candidate(&current) {
-        return Ok(found);
-    }
-
-    // Build a stable error path so the user sees the platform-correct
-    // expected name, not "codesmith-tui" on Windows.
-    let expected = current.with_file_name(format!("codesmith-tui{}", std::env::consts::EXE_SUFFIX));
-    bail!(
-        "Companion `codesmith-tui` binary not found at {}.\n\
-\n\
-The `codesmith` dispatcher delegates interactive sessions to a sibling \
-`codesmith-tui` binary. To fix this, install one of:\n\
-  • npm:    npm install -g codesmith                (downloads both binaries)\n\
-  • cargo:  cargo install codesmith-cli codesmith-tui --locked\n\
-  • GitHub Releases: download BOTH `codesmith-<platform>` AND \
-`codesmith-tui-<platform>` from https://github.com/camilesing/CodeSmith/releases/latest \
-and place them in the same directory.\n\
-\n\
-Or set CODESMITH_TUI_BIN to the absolute path of an existing `codesmith-tui` binary.",
-        expected.display()
-    );
-}
-
-/// Return the first existing sibling-binary path under any of the names
-/// `codesmith-tui` might use on this platform. Pure function to keep
-/// `locate_sibling_tui_binary` testable.
-fn sibling_tui_candidate(dispatcher: &Path) -> Option<PathBuf> {
-    // Primary: platform-correct name. EXE_SUFFIX is "" on Unix and ".exe"
-    // on Windows.
-    let primary =
-        dispatcher.with_file_name(format!("codesmith-tui{}", std::env::consts::EXE_SUFFIX));
-    if primary.is_file() {
-        return Some(primary);
-    }
-    // Windows fallback: a user who manually renamed `.exe` away (per the
-    // workaround in #247) still launches successfully under the new code.
-    if cfg!(windows) {
-        let suffixless = dispatcher.with_file_name("codesmith-tui");
-        if suffixless.is_file() {
-            return Some(suffixless);
-        }
-    }
-    None
-}
-
-fn run_metrics_command(args: MetricsArgs) -> Result<()> {
+pub(crate) fn run_metrics_command(args: MetricsArgs) -> Result<()> {
     let since = match args.since.as_deref() {
         Some(s) => {
             Some(metrics::parse_since(s).with_context(|| format!("invalid --since value: {s:?}"))?)
@@ -1982,7 +1303,7 @@ mod tests {
         let cli = parse_ok(&["codesmith", "config", "get", "provider"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Config(ConfigArgs {
+            Some(main_root::Commands::Config(crate::ConfigArgs {
                 command: ConfigCommand::Get { ref key }
             })) if key == "provider"
         ));
@@ -1990,7 +1311,7 @@ mod tests {
         let cli = parse_ok(&["codesmith", "config", "set", "model", "deepseek-v4-flash"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Config(ConfigArgs {
+            Some(main_root::Commands::Config(crate::ConfigArgs {
                 command: ConfigCommand::Set { ref key, ref value }
             })) if key == "model" && value == "deepseek-v4-flash"
         ));
@@ -1998,20 +1319,20 @@ mod tests {
         let cli = parse_ok(&["codesmith", "config", "unset", "model"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Config(ConfigArgs {
+            Some(main_root::Commands::Config(crate::ConfigArgs {
                 command: ConfigCommand::Unset { ref key }
             })) if key == "model"
         ));
 
         assert!(matches!(
             parse_ok(&["codesmith", "config", "list"]).command,
-            Some(Commands::Config(ConfigArgs {
+            Some(main_root::Commands::Config(crate::ConfigArgs {
                 command: ConfigCommand::List
             }))
         ));
         assert!(matches!(
             parse_ok(&["codesmith", "config", "path"]).command,
-            Some(Commands::Config(ConfigArgs {
+            Some(main_root::Commands::Config(crate::ConfigArgs {
                 command: ConfigCommand::Path
             }))
         ));
@@ -2022,7 +1343,7 @@ mod tests {
         let cli = parse_ok(&["codesmith", "update"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Update(UpdateArgs {
+            Some(main_root::Commands::Update(UpdateArgs {
                 beta: false,
                 check: false,
                 proxy: None
@@ -2032,7 +1353,7 @@ mod tests {
         let cli = parse_ok(&["codesmith", "update", "--beta"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Update(UpdateArgs {
+            Some(main_root::Commands::Update(UpdateArgs {
                 beta: true,
                 check: false,
                 proxy: None
@@ -2042,7 +1363,7 @@ mod tests {
         let cli = parse_ok(&["codesmith", "update", "--check"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Update(UpdateArgs {
+            Some(main_root::Commands::Update(UpdateArgs {
                 beta: false,
                 check: true,
                 proxy: None
@@ -2050,7 +1371,7 @@ mod tests {
         ));
 
         let cli = parse_ok(&["codesmith", "update", "--proxy", "socks5://127.0.0.1:1080"]);
-        let Some(Commands::Update(args)) = cli.command else {
+        let Some(main_root::Commands::Update(args)) = cli.command else {
             panic!("expected update command");
         };
         assert!(!args.beta);
@@ -2063,7 +1384,7 @@ mod tests {
         let cli = parse_ok(&["codesmith", "model", "list"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Model(ModelArgs {
+            Some(main_root::Commands::Model(ModelArgs {
                 command: ModelCommand::List { provider: None }
             }))
         ));
@@ -2071,7 +1392,7 @@ mod tests {
         let cli = parse_ok(&["codesmith", "model", "list", "--provider", "openai"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Model(ModelArgs {
+            Some(main_root::Commands::Model(ModelArgs {
                 command: ModelCommand::List {
                     provider: Some(ProviderArg::Openai)
                 }
@@ -2081,7 +1402,7 @@ mod tests {
         let cli = parse_ok(&["codesmith", "model", "resolve", "deepseek-v4-flash"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Model(ModelArgs {
+            Some(main_root::Commands::Model(ModelArgs {
                 command: ModelCommand::Resolve {
                     model: Some(ref model),
                     provider: None
@@ -2099,7 +1420,7 @@ mod tests {
         ]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Model(ModelArgs {
+            Some(main_root::Commands::Model(ModelArgs {
                 command: ModelCommand::Resolve {
                     model: Some(ref model),
                     provider: Some(ProviderArg::Deepseek)
@@ -2113,7 +1434,7 @@ mod tests {
         let cli = parse_ok(&["codesmith", "thread", "list", "--all", "--limit", "50"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Thread(ThreadArgs {
+            Some(main_root::Commands::Thread(ThreadArgs {
                 command: ThreadCommand::List {
                     all: true,
                     limit: Some(50)
@@ -2124,7 +1445,7 @@ mod tests {
         let cli = parse_ok(&["codesmith", "thread", "read", "thread-1"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Thread(ThreadArgs {
+            Some(main_root::Commands::Thread(ThreadArgs {
                 command: ThreadCommand::Read { ref thread_id }
             })) if thread_id == "thread-1"
         ));
@@ -2132,7 +1453,7 @@ mod tests {
         let cli = parse_ok(&["codesmith", "thread", "resume", "thread-2"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Thread(ThreadArgs {
+            Some(main_root::Commands::Thread(ThreadArgs {
                 command: ThreadCommand::Resume { ref thread_id }
             })) if thread_id == "thread-2"
         ));
@@ -2140,7 +1461,7 @@ mod tests {
         let cli = parse_ok(&["codesmith", "thread", "fork", "thread-3"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Thread(ThreadArgs {
+            Some(main_root::Commands::Thread(ThreadArgs {
                 command: ThreadCommand::Fork { ref thread_id }
             })) if thread_id == "thread-3"
         ));
@@ -2148,7 +1469,7 @@ mod tests {
         let cli = parse_ok(&["codesmith", "thread", "archive", "thread-4"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Thread(ThreadArgs {
+            Some(main_root::Commands::Thread(ThreadArgs {
                 command: ThreadCommand::Archive { ref thread_id }
             })) if thread_id == "thread-4"
         ));
@@ -2156,7 +1477,7 @@ mod tests {
         let cli = parse_ok(&["codesmith", "thread", "unarchive", "thread-5"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Thread(ThreadArgs {
+            Some(main_root::Commands::Thread(ThreadArgs {
                 command: ThreadCommand::Unarchive { ref thread_id }
             })) if thread_id == "thread-5"
         ));
@@ -2164,7 +1485,7 @@ mod tests {
         let cli = parse_ok(&["codesmith", "thread", "set-name", "thread-6", "My Thread"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Thread(ThreadArgs {
+            Some(main_root::Commands::Thread(ThreadArgs {
                 command: ThreadCommand::SetName {
                     ref thread_id,
                     ref name
@@ -2175,108 +1496,9 @@ mod tests {
         let cli = parse_ok(&["codesmith", "thread", "clear-name", "thread-7"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Thread(ThreadArgs {
+            Some(main_root::Commands::Thread(ThreadArgs {
                 command: ThreadCommand::ClearName { ref thread_id }
             })) if thread_id == "thread-7"
-        ));
-    }
-
-    #[test]
-    fn parses_sandbox_app_server_and_completion_matrix() {
-        let cli = parse_ok(&[
-            "codesmith",
-            "sandbox",
-            "check",
-            "echo hello",
-            "--ask",
-            "on-failure",
-        ]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Sandbox(SandboxArgs {
-                command: SandboxCommand::Check {
-                    ref command,
-                    ask: ApprovalModeArg::OnFailure
-                }
-            })) if command == "echo hello"
-        ));
-
-        let cli = parse_ok(&[
-            "codesmith",
-            "app-server",
-            "--host",
-            "0.0.0.0",
-            "--port",
-            "9999",
-        ]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::AppServer(AppServerArgs {
-                ref host,
-                port: 9999,
-                stdio: false,
-                ..
-            })) if host == "0.0.0.0"
-        ));
-
-        let cli = parse_ok(&["codesmith", "app-server", "--stdio"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::AppServer(AppServerArgs { stdio: true, .. }))
-        ));
-
-        let cli = parse_ok(&["codesmith", "completion", "bash"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Completion { shell: Shell::Bash })
-        ));
-    }
-
-    #[test]
-    fn parses_direct_tui_command_aliases() {
-        let cli = parse_ok(&["codesmith", "doctor"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Doctor(TuiPassthroughArgs { ref args })) if args.is_empty()
-        ));
-
-        let cli = parse_ok(&["codesmith", "models", "--json"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Models(TuiPassthroughArgs { ref args })) if args == &["--json"]
-        ));
-
-        let cli = parse_ok(&["codesmith", "resume", "abc123"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Resume(TuiPassthroughArgs { ref args })) if args == &["abc123"]
-        ));
-
-        let cli = parse_ok(&["codesmith", "setup", "--skills", "--local"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Setup(TuiPassthroughArgs { ref args }))
-                if args == &["--skills", "--local"]
-        ));
-    }
-
-    #[test]
-    fn dispatcher_resume_picker_only_handles_bare_windows_resume() {
-        assert!(should_pick_resume_in_dispatcher(
-            &["resume".to_string()],
-            true
-        ));
-        assert!(!should_pick_resume_in_dispatcher(
-            &["resume".to_string(), "--last".to_string()],
-            true
-        ));
-        assert!(!should_pick_resume_in_dispatcher(
-            &["resume".to_string(), "abc123".to_string()],
-            true
-        ));
-        assert!(!should_pick_resume_in_dispatcher(
-            &["resume".to_string()],
-            false
         ));
     }
 
@@ -2321,7 +1543,7 @@ mod tests {
         let cli = parse_ok(&["codesmith", "auth", "set", "--provider", "deepseek"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Auth(AuthArgs {
+            Some(main_root::Commands::Auth(AuthArgs {
                 command: AuthCommand::Set {
                     provider: ProviderArg::Deepseek,
                     api_key: None,
@@ -2340,7 +1562,7 @@ mod tests {
         ]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Auth(AuthArgs {
+            Some(main_root::Commands::Auth(AuthArgs {
                 command: AuthCommand::Set {
                     provider: ProviderArg::Openrouter,
                     api_key: None,
@@ -2352,7 +1574,7 @@ mod tests {
         let cli = parse_ok(&["codesmith", "auth", "get", "--provider", "novita"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Auth(AuthArgs {
+            Some(main_root::Commands::Auth(AuthArgs {
                 command: AuthCommand::Get {
                     provider: ProviderArg::Novita
                 }
@@ -2362,7 +1584,7 @@ mod tests {
         let cli = parse_ok(&["codesmith", "auth", "clear", "--provider", "nvidia-nim"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Auth(AuthArgs {
+            Some(main_root::Commands::Auth(AuthArgs {
                 command: AuthCommand::Clear {
                     provider: ProviderArg::NvidiaNim
                 }
@@ -2372,7 +1594,7 @@ mod tests {
         let cli = parse_ok(&["codesmith", "auth", "set", "--provider", "fireworks"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Auth(AuthArgs {
+            Some(main_root::Commands::Auth(AuthArgs {
                 command: AuthCommand::Set {
                     provider: ProviderArg::Fireworks,
                     api_key: None,
@@ -2384,7 +1606,7 @@ mod tests {
         let cli = parse_ok(&["codesmith", "auth", "set", "--provider", "siliconflow"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Auth(AuthArgs {
+            Some(main_root::Commands::Auth(AuthArgs {
                 command: AuthCommand::Set {
                     provider: ProviderArg::Siliconflow,
                     api_key: None,
@@ -2396,7 +1618,7 @@ mod tests {
         let cli = parse_ok(&["codesmith", "auth", "set", "--provider", "moonshot"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Auth(AuthArgs {
+            Some(main_root::Commands::Auth(AuthArgs {
                 command: AuthCommand::Set {
                     provider: ProviderArg::Moonshot,
                     api_key: None,
@@ -2408,7 +1630,7 @@ mod tests {
         let cli = parse_ok(&["codesmith", "auth", "set", "--provider", "wanjie-ark"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Auth(AuthArgs {
+            Some(main_root::Commands::Auth(AuthArgs {
                 command: AuthCommand::Set {
                     provider: ProviderArg::WanjieArk,
                     api_key: None,
@@ -2420,7 +1642,7 @@ mod tests {
         let cli = parse_ok(&["codesmith", "auth", "get", "--provider", "sglang"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Auth(AuthArgs {
+            Some(main_root::Commands::Auth(AuthArgs {
                 command: AuthCommand::Get {
                     provider: ProviderArg::Sglang
                 }
@@ -2430,7 +1652,7 @@ mod tests {
         let cli = parse_ok(&["codesmith", "auth", "get", "--provider", "vllm"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Auth(AuthArgs {
+            Some(main_root::Commands::Auth(AuthArgs {
                 command: AuthCommand::Get {
                     provider: ProviderArg::Vllm
                 }
@@ -2440,7 +1662,7 @@ mod tests {
         let cli = parse_ok(&["codesmith", "auth", "set", "--provider", "ollama"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Auth(AuthArgs {
+            Some(main_root::Commands::Auth(AuthArgs {
                 command: AuthCommand::Set {
                     provider: ProviderArg::Ollama,
                     api_key: None,
@@ -2452,7 +1674,7 @@ mod tests {
         let cli = parse_ok(&["codesmith", "auth", "list"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Auth(AuthArgs {
+            Some(main_root::Commands::Auth(AuthArgs {
                 command: AuthCommand::List
             }))
         ));
@@ -2460,7 +1682,7 @@ mod tests {
         let cli = parse_ok(&["codesmith", "auth", "migrate"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Auth(AuthArgs {
+            Some(main_root::Commands::Auth(AuthArgs {
                 command: AuthCommand::Migrate { dry_run: false }
             }))
         ));
@@ -2468,7 +1690,7 @@ mod tests {
         let cli = parse_ok(&["codesmith", "auth", "migrate", "--dry-run"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Auth(AuthArgs {
+            Some(main_root::Commands::Auth(AuthArgs {
                 command: AuthCommand::Migrate { dry_run: true }
             }))
         ));
@@ -2633,83 +1855,6 @@ mod tests {
     }
 
     #[test]
-    fn auth_status_reports_all_active_provider_sources_with_last4() {
-        use codesmith_secrets::{InMemoryKeyringStore, KeyringStore};
-        use std::sync::Arc;
-
-        let _lock = env_lock();
-        let _env = ScopedEnvVar::set("DEEPSEEK_API_KEY", "sk-env-1111");
-
-        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
-        let path = std::env::temp_dir().join(format!(
-            "codesmith-cli-auth-status-table-test-{}-{nanos}.toml",
-            std::process::id()
-        ));
-        let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
-        store.config.provider = ProviderKind::Deepseek;
-        store.config.api_key = Some("sk-config-3333".to_string());
-        store.config.providers.deepseek.api_key = Some("sk-config-3333".to_string());
-
-        let inner = Arc::new(InMemoryKeyringStore::new());
-        inner.set("deepseek", "sk-keyring-2222").unwrap();
-        let secrets = Secrets::new(inner);
-
-        let output = auth_status_lines(&store, &secrets).join("\n");
-
-        assert!(output.contains("provider: deepseek"));
-        assert!(output.contains("active source: config (last4: ...3333)"));
-        assert!(output.contains("lookup order: config -> secret store -> env"));
-        assert!(output.contains("config file: "));
-        assert!(output.contains("set, last4: ...3333"));
-        assert!(output.contains("secret store: in-memory (test) (set, last4: ...2222)"));
-        assert!(output.contains("env var: DEEPSEEK_API_KEY (set, last4: ...1111)"));
-        assert!(!output.contains("sk-config-3333"));
-        assert!(!output.contains("sk-keyring-2222"));
-        assert!(!output.contains("sk-env-1111"));
-
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn dispatch_keyring_key_stays_out_of_config_file() {
-        use codesmith_secrets::{InMemoryKeyringStore, KeyringStore};
-        use std::sync::Arc;
-
-        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
-        let path = std::env::temp_dir().join(format!(
-            "deepseek-cli-dispatch-keyring-heal-test-{}-{nanos}.toml",
-            std::process::id()
-        ));
-        let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
-        let inner = Arc::new(InMemoryKeyringStore::new());
-        inner.set("deepseek", "ring-key").unwrap();
-        let secrets = Secrets::new(inner);
-
-        let resolved = resolve_runtime_for_dispatch_with_secrets(
-            &mut store,
-            &CliRuntimeOverrides::default(),
-            &secrets,
-        );
-
-        // The key resolves from the keyring and must NOT be persisted into
-        // the plaintext config file (no keyring→config self-heal); the
-        // dispatched TUI receives it via the CODESMITH_API_KEY env bridge.
-        assert_eq!(resolved.api_key.as_deref(), Some("ring-key"));
-        assert_eq!(resolved.api_key_source, Some(RuntimeApiKeySource::Keyring));
-        assert_eq!(store.config.api_key, None);
-        assert_eq!(store.config.providers.deepseek.api_key, None);
-
-        assert!(
-            !path.exists()
-                || !std::fs::read_to_string(&path)
-                    .map(|saved| saved.contains("ring-key"))
-                    .unwrap_or(false)
-        );
-
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
     fn logout_removes_plaintext_provider_keys() {
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
         let path = std::env::temp_dir().join(format!(
@@ -2807,196 +1952,7 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    #[test]
-    fn parses_global_override_flags() {
-        let cli = parse_ok(&[
-            "codesmith",
-            "--provider",
-            "openai",
-            "--config",
-            "/tmp/deepseek.toml",
-            "--profile",
-            "work",
-            "--model",
-            "deepseek-v4-pro",
-            "--output-mode",
-            "json",
-            "--log-level",
-            "debug",
-            "--telemetry",
-            "true",
-            "--approval-policy",
-            "on-request",
-            "--sandbox-mode",
-            "workspace-write",
-            "--base-url",
-            "https://openai-compatible.example/v1",
-            "--api-key",
-            "sk-test",
-            "--workspace",
-            "/tmp/workspace",
-            "--no-alt-screen",
-            "--no-mouse-capture",
-            "--skip-onboarding",
-            "model",
-            "resolve",
-            "deepseek-v4-pro",
-        ]);
-
-        assert!(matches!(cli.provider, Some(ProviderArg::Openai)));
-        assert_eq!(cli.config, Some(PathBuf::from("/tmp/deepseek.toml")));
-        assert_eq!(cli.profile.as_deref(), Some("work"));
-        assert_eq!(cli.model.as_deref(), Some("deepseek-v4-pro"));
-        assert_eq!(cli.output_mode.as_deref(), Some("json"));
-        assert_eq!(cli.log_level.as_deref(), Some("debug"));
-        assert_eq!(cli.telemetry, Some(true));
-        assert_eq!(cli.approval_policy.as_deref(), Some("on-request"));
-        assert_eq!(cli.sandbox_mode.as_deref(), Some("workspace-write"));
-        assert_eq!(
-            cli.base_url.as_deref(),
-            Some("https://openai-compatible.example/v1")
-        );
-        assert_eq!(cli.api_key.as_deref(), Some("sk-test"));
-        assert_eq!(cli.workspace, Some(PathBuf::from("/tmp/workspace")));
-        assert!(cli.no_alt_screen);
-        assert!(cli.no_mouse_capture);
-        assert!(!cli.mouse_capture);
-        assert!(cli.skip_onboarding);
-    }
-
-    #[test]
-    fn build_tui_command_allows_openai_and_forwards_provider_key() {
-        let _lock = env_lock();
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let custom = dir
-            .path()
-            .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&custom, b"").unwrap();
-        let custom_str = custom.to_string_lossy().into_owned();
-        let _bin = ScopedEnvVar::set("CODESMITH_TUI_BIN", &custom_str);
-
-        let cli = parse_ok(&[
-            "codesmith",
-            "--provider",
-            "openai",
-            "--workspace",
-            "/tmp/codesmith-workspace",
-        ]);
-        let resolved = ResolvedRuntimeOptions {
-            provider: ProviderKind::Openai,
-            model: "glm-5".to_string(),
-            api_key: Some("resolved-openai-key".to_string()),
-            api_key_source: Some(RuntimeApiKeySource::Keyring),
-            base_url: "https://openai-compatible.example/v4".to_string(),
-            auth_mode: Some("api_key".to_string()),
-            output_mode: None,
-            log_level: None,
-            telemetry: false,
-            approval_policy: None,
-            sandbox_mode: None,
-            yolo: None,
-            http_headers: std::collections::BTreeMap::new(),
-        };
-
-        let cmd = build_tui_command(&cli, &resolved, Vec::new()).expect("command");
-        assert_eq!(
-            command_env(&cmd, "CODESMITH_PROVIDER").as_deref(),
-            Some("openai")
-        );
-        assert_eq!(
-            command_env(&cmd, "CODESMITH_API_KEY").as_deref(),
-            Some("resolved-openai-key")
-        );
-        assert_eq!(
-            command_env(&cmd, "OPENAI_API_KEY").as_deref(),
-            Some("resolved-openai-key")
-        );
-        assert_eq!(
-            command_env(&cmd, "CODESMITH_API_KEY_SOURCE").as_deref(),
-            Some("keyring")
-        );
-        assert_eq!(command_env(&cmd, "CODESMITH_AUTH_MODE"), None);
-        let args: Vec<String> = cmd
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["--workspace", "/tmp/codesmith-workspace"]),
-            "expected workspace forwarding in args: {args:?}"
-        );
-    }
-
     // §D2 slice 46 — `--custom-provider <id>` env forwarding + guards.
-
-    fn tui_bin_fixture() -> (tempfile::TempDir, ScopedEnvVar) {
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let custom = dir
-            .path()
-            .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&custom, b"").unwrap();
-        let scoped = ScopedEnvVar::set("CODESMITH_TUI_BIN", &custom.to_string_lossy());
-        (dir, scoped)
-    }
-
-    #[test]
-    fn build_tui_command_forwards_custom_provider_env() {
-        let _lock = env_lock();
-        let _bin = tui_bin_fixture();
-        let cli = parse_ok(&["codesmith", "--custom-provider", "acme"]);
-        let resolved = ResolvedRuntimeOptions {
-            provider: ProviderKind::Deepseek,
-            model: String::new(),
-            api_key: None,
-            api_key_source: None,
-            base_url: String::new(),
-            auth_mode: None,
-            output_mode: None,
-            log_level: None,
-            telemetry: false,
-            approval_policy: None,
-            sandbox_mode: None,
-            yolo: None,
-            http_headers: std::collections::BTreeMap::new(),
-        };
-
-        let cmd = build_tui_command(&cli, &resolved, Vec::new()).expect("command");
-        assert_eq!(
-            command_env(&cmd, "CODESMITH_CUSTOM_PROVIDER").as_deref(),
-            Some("acme"),
-            "--custom-provider should forward to the TUI via env",
-        );
-        // `--provider` was not given, so the builtin selector env stays unset.
-        assert_eq!(command_env(&cmd, "CODESMITH_PROVIDER"), None);
-    }
-
-    #[test]
-    fn build_tui_command_custom_provider_builtin_collision_bails() {
-        let _lock = env_lock();
-        let _bin = tui_bin_fixture();
-        let cli = parse_ok(&["codesmith", "--custom-provider", "deepseek"]);
-        let resolved = ResolvedRuntimeOptions {
-            provider: ProviderKind::Deepseek,
-            model: String::new(),
-            api_key: None,
-            api_key_source: None,
-            base_url: String::new(),
-            auth_mode: None,
-            output_mode: None,
-            log_level: None,
-            telemetry: false,
-            approval_policy: None,
-            sandbox_mode: None,
-            yolo: None,
-            http_headers: std::collections::BTreeMap::new(),
-        };
-
-        let err = build_tui_command(&cli, &resolved, Vec::new())
-            .expect_err("builtin id must be rejected");
-        let msg = err.to_string();
-        assert!(msg.contains("collides with a builtin"), "unexpected: {msg}");
-        assert!(msg.contains("--provider deepseek"), "unexpected: {msg}");
-    }
 
     #[test]
     fn custom_provider_conflicts_with_provider_flag() {
@@ -3016,429 +1972,11 @@ mod tests {
     }
 
     #[test]
-    fn build_tui_command_does_not_export_default_runtime_overrides_for_profiles() {
-        let _lock = env_lock();
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let custom = dir
-            .path()
-            .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&custom, b"").unwrap();
-        let custom_str = custom.to_string_lossy().into_owned();
-        let _bin = ScopedEnvVar::set("CODESMITH_TUI_BIN", &custom_str);
-
-        let cli = parse_ok(&["codesmith", "--profile", "google"]);
-        let mut resolved_headers = std::collections::BTreeMap::new();
-        resolved_headers.insert("X-From-Base".to_string(), "base".to_string());
-        let resolved = ResolvedRuntimeOptions {
-            provider: ProviderKind::Deepseek,
-            model: "deepseek-v4-pro".to_string(),
-            api_key: Some("config-file-key".to_string()),
-            api_key_source: Some(RuntimeApiKeySource::ConfigFile),
-            base_url: "https://api.deepseek.com/beta".to_string(),
-            auth_mode: Some("api_key".to_string()),
-            output_mode: None,
-            log_level: None,
-            telemetry: false,
-            approval_policy: None,
-            sandbox_mode: None,
-            yolo: None,
-            http_headers: resolved_headers,
-        };
-
-        let cmd = build_tui_command(&cli, &resolved, Vec::new()).expect("command");
-
-        assert_eq!(command_env(&cmd, "CODESMITH_PROVIDER"), None);
-        assert_eq!(command_env(&cmd, "CODESMITH_MODEL"), None);
-        assert_eq!(command_env(&cmd, "CODESMITH_BASE_URL"), None);
-        assert_eq!(command_env(&cmd, "CODESMITH_API_KEY"), None);
-        assert_eq!(command_env(&cmd, "CODESMITH_API_KEY_SOURCE"), None);
-        assert_eq!(command_env(&cmd, "CODESMITH_AUTH_MODE"), None);
-        assert_eq!(command_env(&cmd, "CODESMITH_HTTP_HEADERS"), None);
-        let args: Vec<String> = cmd
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-        assert!(
-            args.windows(2).any(|pair| pair == ["--profile", "google"]),
-            "expected profile forwarding in args: {args:?}"
-        );
-    }
-
-    #[test]
-    fn build_tui_command_allows_moonshot_and_forwards_kimi_key() {
-        let _lock = env_lock();
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let custom = dir
-            .path()
-            .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&custom, b"").unwrap();
-        let custom_str = custom.to_string_lossy().into_owned();
-        let _bin = ScopedEnvVar::set("CODESMITH_TUI_BIN", &custom_str);
-
-        let cli = parse_ok(&[
-            "codesmith",
-            "--provider",
-            "moonshot",
-            "--model",
-            "kimi-k2.6",
-            "--workspace",
-            "/tmp/codesmith-workspace",
-        ]);
-        let resolved = ResolvedRuntimeOptions {
-            provider: ProviderKind::Moonshot,
-            model: "kimi-k2.6".to_string(),
-            api_key: Some("resolved-kimi-key".to_string()),
-            api_key_source: Some(RuntimeApiKeySource::Keyring),
-            base_url: "https://api.moonshot.ai/v1".to_string(),
-            auth_mode: Some("api_key".to_string()),
-            output_mode: None,
-            log_level: None,
-            telemetry: false,
-            approval_policy: None,
-            sandbox_mode: None,
-            yolo: None,
-            http_headers: std::collections::BTreeMap::new(),
-        };
-
-        let cmd = build_tui_command(&cli, &resolved, Vec::new()).expect("command");
-        assert_eq!(
-            command_env(&cmd, "CODESMITH_PROVIDER").as_deref(),
-            Some("moonshot")
-        );
-        assert_eq!(
-            command_env(&cmd, "CODESMITH_MODEL").as_deref(),
-            Some("kimi-k2.6")
-        );
-        assert_eq!(
-            command_env(&cmd, "CODESMITH_API_KEY").as_deref(),
-            Some("resolved-kimi-key")
-        );
-        assert_eq!(
-            command_env(&cmd, "MOONSHOT_API_KEY").as_deref(),
-            Some("resolved-kimi-key")
-        );
-        assert_eq!(
-            command_env(&cmd, "KIMI_API_KEY").as_deref(),
-            Some("resolved-kimi-key")
-        );
-        assert_eq!(
-            command_env(&cmd, "CODESMITH_API_KEY_SOURCE").as_deref(),
-            Some("keyring")
-        );
-        assert_eq!(command_env(&cmd, "CODESMITH_AUTH_MODE"), None);
-    }
-
-    #[test]
-    fn build_tui_command_exports_explicit_provider_model_and_base_url() {
-        let _lock = env_lock();
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let custom = dir
-            .path()
-            .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&custom, b"").unwrap();
-        let custom_str = custom.to_string_lossy().into_owned();
-        let _bin = ScopedEnvVar::set("CODESMITH_TUI_BIN", &custom_str);
-
-        let cli = parse_ok(&[
-            "codesmith",
-            "--profile",
-            "google",
-            "--provider",
-            "openai",
-            "--model",
-            "glm-5",
-            "--base-url",
-            "https://openai-compatible.example/v4",
-        ]);
-        let resolved = ResolvedRuntimeOptions {
-            provider: ProviderKind::Openai,
-            model: "glm-5".to_string(),
-            api_key: None,
-            api_key_source: None,
-            base_url: "https://openai-compatible.example/v4".to_string(),
-            auth_mode: None,
-            output_mode: None,
-            log_level: None,
-            telemetry: false,
-            approval_policy: None,
-            sandbox_mode: None,
-            yolo: None,
-            http_headers: std::collections::BTreeMap::new(),
-        };
-
-        let cmd = build_tui_command(&cli, &resolved, Vec::new()).expect("command");
-
-        assert_eq!(
-            command_env(&cmd, "CODESMITH_PROVIDER").as_deref(),
-            Some("openai")
-        );
-        assert_eq!(
-            command_env(&cmd, "CODESMITH_MODEL").as_deref(),
-            Some("glm-5")
-        );
-        assert_eq!(
-            command_env(&cmd, "CODESMITH_BASE_URL").as_deref(),
-            Some("https://openai-compatible.example/v4")
-        );
-    }
-
-    #[test]
-    fn build_tui_command_exports_anthropic_base_url_alias() {
-        let _lock = env_lock();
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let custom = dir
-            .path()
-            .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&custom, b"").unwrap();
-        let custom_str = custom.to_string_lossy().into_owned();
-        let _bin = ScopedEnvVar::set("CODESMITH_TUI_BIN", &custom_str);
-
-        let cli = parse_ok(&[
-            "codesmith",
-            "--provider",
-            "anthropic",
-            "--model",
-            "glm-5.1",
-            "--base-url",
-            "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
-        ]);
-        let resolved = ResolvedRuntimeOptions {
-            provider: ProviderKind::Anthropic,
-            model: "glm-5.1".to_string(),
-            api_key: None,
-            api_key_source: None,
-            base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic".to_string(),
-            auth_mode: None,
-            output_mode: None,
-            log_level: None,
-            telemetry: false,
-            approval_policy: None,
-            sandbox_mode: None,
-            yolo: None,
-            http_headers: std::collections::BTreeMap::new(),
-        };
-
-        let cmd = build_tui_command(&cli, &resolved, Vec::new()).expect("command");
-
-        assert_eq!(
-            command_env(&cmd, "CODESMITH_BASE_URL").as_deref(),
-            Some("https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic")
-        );
-        assert_eq!(
-            command_env(&cmd, "ANTHROPIC_BASE_URL").as_deref(),
-            Some("https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic")
-        );
-    }
-
-    #[test]
-    fn build_tui_command_forwards_provider_keyring_env_vars_for_all_providers() {
-        let _lock = env_lock();
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let custom = dir
-            .path()
-            .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&custom, b"").unwrap();
-        let custom_str = custom.to_string_lossy().into_owned();
-        let _bin = ScopedEnvVar::set("CODESMITH_TUI_BIN", &custom_str);
-
-        // (provider, cli flag, extra env vars that must be forwarded besides DEEPSEEK_API_KEY)
-        let cases: &[(ProviderKind, &str, &[&str])] = &[
-            (
-                ProviderKind::Openrouter,
-                "openrouter",
-                &["OPENROUTER_API_KEY"],
-            ),
-            (
-                ProviderKind::XiaomiMimo,
-                "xiaomi-mimo",
-                &["XIAOMI_MIMO_API_KEY", "XIAOMI_API_KEY", "MIMO_API_KEY"],
-            ),
-            (ProviderKind::Novita, "novita", &["NOVITA_API_KEY"]),
-            (
-                ProviderKind::NvidiaNim,
-                "nvidia-nim",
-                &["NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY"],
-            ),
-            (ProviderKind::Fireworks, "fireworks", &["FIREWORKS_API_KEY"]),
-            (
-                ProviderKind::Siliconflow,
-                "siliconflow",
-                &["SILICONFLOW_API_KEY"],
-            ),
-            (ProviderKind::Sglang, "sglang", &["SGLANG_API_KEY"]),
-            (ProviderKind::Vllm, "vllm", &["VLLM_API_KEY"]),
-            (ProviderKind::Ollama, "ollama", &["OLLAMA_API_KEY"]),
-            (
-                ProviderKind::Atlascloud,
-                "atlascloud",
-                &["ATLASCLOUD_API_KEY"],
-            ),
-            (
-                ProviderKind::WanjieArk,
-                "wanjie-ark",
-                &[
-                    "WANJIE_ARK_API_KEY",
-                    "WANJIE_API_KEY",
-                    "WANJIE_MAAS_API_KEY",
-                ],
-            ),
-        ];
-
-        for &(provider, flag, expected_vars) in cases {
-            let cli = parse_ok(&[
-                "codesmith",
-                "--provider",
-                flag,
-                "--workspace",
-                "/tmp/codesmith-workspace",
-            ]);
-            let resolved = ResolvedRuntimeOptions {
-                provider,
-                model: "test-model".to_string(),
-                api_key: Some("test-key".to_string()),
-                api_key_source: Some(RuntimeApiKeySource::Keyring),
-                base_url: "http://localhost:8000/v1".to_string(),
-                auth_mode: Some("api_key".to_string()),
-                output_mode: None,
-                log_level: None,
-                telemetry: false,
-                approval_policy: None,
-                sandbox_mode: None,
-                yolo: None,
-                http_headers: std::collections::BTreeMap::new(),
-            };
-
-            let cmd = build_tui_command(&cli, &resolved, Vec::new())
-                .unwrap_or_else(|e| panic!("{flag}: {e}"));
-
-            assert_eq!(
-                command_env(&cmd, "CODESMITH_API_KEY").as_deref(),
-                Some("test-key"),
-                "{flag}: DEEPSEEK_API_KEY not forwarded"
-            );
-            for var in expected_vars {
-                assert_eq!(
-                    command_env(&cmd, var).as_deref(),
-                    Some("test-key"),
-                    "{flag}: {var} not forwarded"
-                );
-            }
-            assert_eq!(
-                command_env(&cmd, "CODESMITH_API_KEY_SOURCE").as_deref(),
-                Some("keyring"),
-                "{flag}: expected keyring source bridge"
-            );
-            assert_eq!(
-                command_env(&cmd, "CODESMITH_AUTH_MODE"),
-                None,
-                "{flag}: auth mode should come from config/profile, not env handoff"
-            );
-        }
-    }
-
-    #[test]
-    fn parses_top_level_prompt_flag_for_interactive_startup_prompt() {
-        let cli = parse_ok(&["codesmith", "-p", "Reply with exactly OK."]);
-
-        assert_eq!(cli.prompt_flag.as_deref(), Some("Reply with exactly OK."));
-        assert!(cli.prompt.is_empty());
-        assert_eq!(
-            root_tui_passthrough(&cli).unwrap(),
-            vec!["--prompt".to_string(), "Reply with exactly OK.".to_string()]
-        );
-    }
-
-    #[test]
-    fn parses_top_level_continue_for_interactive_resume() {
-        let cli = parse_ok(&["codesmith", "--continue"]);
-
-        assert!(cli.continue_session);
-        assert!(cli.prompt_flag.is_none());
-        assert!(cli.prompt.is_empty());
-        assert_eq!(root_tui_passthrough(&cli).unwrap(), vec!["--continue"]);
-    }
-
-    #[test]
-    fn top_level_continue_rejects_startup_prompt() {
-        let cli = parse_ok(&["codesmith", "--continue", "-p", "follow up"]);
-
-        let err = root_tui_passthrough(&cli).expect_err("prompted continue should be rejected");
-        assert!(
-            err.to_string()
-                .contains("codesmith exec --continue <PROMPT>")
-        );
-    }
-
-    #[test]
-    fn parses_split_top_level_prompt_words_for_windows_cmd_shims() {
-        let cli = parse_ok(&["codesmith", "hello", "world"]);
-
-        assert_eq!(cli.prompt, vec!["hello", "world"]);
-        assert!(cli.command.is_none());
-        assert_eq!(
-            root_tui_passthrough(&cli).unwrap(),
-            vec!["--prompt".to_string(), "hello world".to_string()]
-        );
-    }
-
-    #[test]
-    fn prompt_flag_keeps_split_tail_words_for_windows_cmd_shims() {
-        let cli = parse_ok(&["codesmith", "-p", "hello", "world"]);
-
-        assert_eq!(cli.prompt_flag.as_deref(), Some("hello"));
-        assert_eq!(cli.prompt, vec!["world"]);
-        assert_eq!(
-            root_tui_passthrough(&cli).unwrap(),
-            vec!["--prompt".to_string(), "hello world".to_string()]
-        );
-    }
-
-    #[test]
     fn known_subcommands_still_parse_before_prompt_tail() {
         let cli = parse_ok(&["codesmith", "doctor"]);
 
         assert!(cli.prompt.is_empty());
-        assert!(matches!(cli.command, Some(Commands::Doctor(_))));
-    }
-
-    #[test]
-    fn unknown_bare_command_word_is_rejected_before_the_tui() {
-        // Regression: `codesmith docotr` forwarded "docotr" to the TUI as the
-        // first chat message and opened an interactive session on the typo.
-        let argv = ["codesmith", "docotr"];
-        let cli = parse_ok(&argv);
-
-        assert_eq!(unknown_subcommand_word(&cli, &argv), Some("docotr"));
-    }
-
-    #[test]
-    fn bare_command_like_words_that_are_not_commands_stay_prompts() {
-        for argv in [
-            vec!["codesmith", "-p", "docker"],
-            vec!["codesmith", "hello", "world"],
-            vec!["codesmith", "explain this function"],
-            vec!["codesmith", "总结"],
-            vec!["codesmith", "--continue", "docker"],
-            vec!["codesmith", "doctor"],
-            vec!["codesmith", "--", "doctor"],
-            vec!["codesmith", "--", "summarize"],
-        ] {
-            let cli = parse_ok(&argv);
-            assert_eq!(unknown_subcommand_word(&cli, &argv), None, "{argv:?}");
-        }
-    }
-
-    #[test]
-    fn dash_dash_terminated_word_stays_a_prompt() {
-        // `--` ends option and subcommand matching, so the word lands in the
-        // prompt even when it names a real subcommand; the guard must not
-        // second-guess the explicit terminator.
-        let argv = ["codesmith", "--", "doctor"];
-        let cli = parse_ok(&argv);
-
-        assert!(cli.command.is_none());
-        assert_eq!(cli.prompt, vec!["doctor"]);
-        assert_eq!(unknown_subcommand_word(&cli, &argv), None);
+        assert!(matches!(cli.command, Some(main_root::Commands::Doctor(_))));
     }
 
     #[test]
@@ -3450,9 +1988,9 @@ mod tests {
         for token in [
             "error: unrecognized subcommand 'docotr'",
             "tip: to send this as a prompt, run: codesmith -p docotr",
-            "codesmith run <COMMAND>",
+            "tip: run `codesmith --help` to see all commands",
             "Usage:",
-            "[OPTIONS] [PROMPT]",
+            "[OPTIONS] [COMMAND]",
         ] {
             assert!(
                 rendered.contains(token),
@@ -3465,11 +2003,11 @@ mod tests {
     fn version_and_docker_are_subcommands() {
         assert!(matches!(
             parse_ok(&["codesmith", "version"]).command,
-            Some(Commands::Version)
+            Some(main_root::Commands::Version)
         ));
         assert!(matches!(
             parse_ok(&["codesmith", "docker"]).command,
-            Some(Commands::Docker)
+            Some(main_root::Commands::Docker)
         ));
 
         let rendered = Cli::command().render_version();
@@ -3588,123 +2126,5 @@ mod tests {
                 );
             }
         }
-    }
-
-    /// Regression for issue #247: on Windows the dispatcher must find the
-    /// sibling `codesmith-tui.exe`, not bail out looking for an
-    /// extension-less `codesmith-tui`. The candidate resolver also accepts
-    /// the suffix-less name on Windows so users who manually renamed the
-    /// file as a workaround keep working after the upgrade.
-    #[test]
-    fn sibling_tui_candidate_picks_platform_correct_name() {
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let dispatcher = dir
-            .path()
-            .join("codesmith")
-            .with_extension(std::env::consts::EXE_EXTENSION);
-        // Touch the dispatcher so its parent dir is the lookup root.
-        std::fs::write(&dispatcher, b"").unwrap();
-
-        // No sibling yet — resolver returns None.
-        assert!(sibling_tui_candidate(&dispatcher).is_none());
-
-        let target =
-            dispatcher.with_file_name(format!("codesmith-tui{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&target, b"").unwrap();
-
-        let found = sibling_tui_candidate(&dispatcher).expect("must locate sibling");
-        assert_eq!(found, target, "primary platform-correct name wins");
-    }
-
-    #[test]
-    fn dispatcher_spawn_error_names_path_and_recovery_checks() {
-        let err = io::Error::new(io::ErrorKind::PermissionDenied, "access is denied");
-        let message = tui_spawn_error(Path::new("C:/tools/codesmith-tui.exe"), &err);
-
-        assert!(message.contains("C:/tools/codesmith-tui.exe"));
-        assert!(message.contains("access is denied"));
-        assert!(message.contains("where codesmith"));
-        assert!(message.contains("CODESMITH_TUI_BIN"));
-    }
-
-    /// Windows-only fallback: the user from #247 manually renamed the
-    /// file to drop `.exe`. After the fix lands, that workaround must
-    /// still resolve via the suffix-less fallback so they don't have to
-    /// rename it back.
-    #[cfg(windows)]
-    #[test]
-    fn sibling_tui_candidate_windows_falls_back_to_suffixless() {
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let dispatcher = dir.path().join("codesmith.exe");
-        std::fs::write(&dispatcher, b"").unwrap();
-
-        // Only the suffixless name exists — emulates the manual rename.
-        let suffixless = dispatcher.with_file_name("codesmith-tui");
-        std::fs::write(&suffixless, b"").unwrap();
-
-        let found = sibling_tui_candidate(&dispatcher)
-            .expect("Windows fallback must locate suffixless codesmith-tui");
-        assert_eq!(found, suffixless);
-    }
-
-    /// `CODESMITH_TUI_BIN` overrides the
-    /// discovery path. Useful for custom Windows install layouts and CI rigs.
-    #[test]
-    fn locate_sibling_tui_binary_honours_env_override() {
-        let _lock = env_lock();
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let custom = dir
-            .path()
-            .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&custom, b"").unwrap();
-        let custom_str = custom.to_string_lossy().into_owned();
-        let _bin = ScopedEnvVar::set("CODESMITH_TUI_BIN", &custom_str);
-
-        let resolved = locate_sibling_tui_binary().expect("override must resolve");
-        assert_eq!(resolved, custom);
-    }
-
-    /// `team-teammate` is a passthrough subcommand used by the tmux/iTerm pane
-    /// backends to run a teammate turn in-process. The dispatcher must parse it
-    /// and forward every trailing flag verbatim to the TUI binary.
-    #[test]
-    fn team_teammate_passthrough_collects_trailing_flags() {
-        let cli = parse_ok(&[
-            "codesmith",
-            "team-teammate",
-            "--team",
-            "demo",
-            "--name",
-            "worker-1",
-            "--prompt",
-            "hi",
-        ]);
-        let Some(Commands::TeamTeammate(args)) = cli.command else {
-            panic!("expected team-teammate command");
-        };
-
-        assert_eq!(
-            args.args,
-            vec![
-                "--team".to_string(),
-                "demo".to_string(),
-                "--name".to_string(),
-                "worker-1".to_string(),
-                "--prompt".to_string(),
-                "hi".to_string(),
-            ]
-        );
-        assert_eq!(
-            tui_args("team-teammate", args),
-            vec![
-                "team-teammate".to_string(),
-                "--team".to_string(),
-                "demo".to_string(),
-                "--name".to_string(),
-                "worker-1".to_string(),
-                "--prompt".to_string(),
-                "hi".to_string(),
-            ]
-        );
     }
 }

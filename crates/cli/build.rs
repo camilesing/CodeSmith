@@ -7,6 +7,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CODESMITH_BUILD_SHA");
     println!("cargo:rerun-if-env-changed=GITHUB_SHA");
     declare_git_head_rerun();
+    configure_windows_stack();
 
     let package_version = env!("CARGO_PKG_VERSION");
     let build_version = build_sha()
@@ -112,6 +113,22 @@ mod tests {
     }
 }
 
+fn configure_windows_stack() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+
+    match std::env::var("CARGO_CFG_TARGET_ENV").as_deref() {
+        Ok("msvc") => {
+            println!("cargo:rustc-link-arg-bin=codesmith=/STACK:8388608");
+        }
+        Ok("gnu") => {
+            println!("cargo:rustc-link-arg-bin=codesmith=-Wl,--stack,8388608");
+        }
+        _ => {}
+    }
+}
+
 fn build_sha() -> Option<String> {
     env_sha("CODESMITH_BUILD_SHA")
         .or_else(|| env_sha("GITHUB_SHA"))
@@ -134,7 +151,7 @@ fn git_sha() -> Option<String> {
         return None;
     }
     let top_level = PathBuf::from(String::from_utf8_lossy(&top_level_output.stdout).trim());
-    if !top_level.join("Cargo.toml").is_file() || !top_level.join("crates/tui").is_dir() {
+    if !top_level.join("Cargo.toml").is_file() || !top_level.join("crates/cli").is_dir() {
         return None;
     }
 

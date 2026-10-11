@@ -69,7 +69,7 @@ pub fn hooks(state: &ReplState, arg: Option<&str>) {
 
 /// `/mcp …` — delegates to the same implementation as `codesmith mcp`.
 pub async fn mcp(state: &mut ReplState, args: &str) {
-    use crate::McpCommand;
+    use crate::main_root::McpCommand;
 
     let raw = args.trim();
     let command = if raw.is_empty()
@@ -169,7 +169,7 @@ pub async fn mcp(state: &mut ReplState, args: &str) {
             }
         }
     };
-    if let Err(err) = crate::run_mcp_command(&state.config.clone(), command).await {
+    if let Err(err) = crate::main_root::run_mcp_command(&state.config.clone(), command).await {
         println!("{} {err}", "✗".red());
     }
     state.mcp_configured_count = crate::mcp::load_config(&state.mcp_config_path)
