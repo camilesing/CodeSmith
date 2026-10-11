@@ -14,13 +14,13 @@ mod debug;
 mod extension_commands;
 mod feedback;
 mod goal;
-mod hooks;
-mod init;
+pub(crate) mod hooks;
+pub(crate) mod init;
 mod jobs;
 mod mcp;
 mod memory;
 mod mod_commands;
-mod network;
+pub(crate) mod network;
 mod note;
 mod provider;
 mod queue;
@@ -34,7 +34,7 @@ mod stash;
 mod status;
 mod task;
 pub mod user_commands;
-mod verify;
+pub(crate) mod verify;
 
 use std::fmt::Write as _;
 

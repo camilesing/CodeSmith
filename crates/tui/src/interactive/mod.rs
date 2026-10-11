@@ -106,6 +106,7 @@ pub async fn run_repl(
     state.fact_ledger = Some(engine_handle.fact_ledger.clone());
     state.recent_read_files = Some(engine_handle.recent_read_files.clone());
     state.engine = Some(engine_handle);
+    state.task_manager = Some(task_manager.clone());
 
     // Passive first-run notice for discovered-but-unactivated mods (the
     // consent gate), mirroring the retired startup path.
@@ -184,7 +185,13 @@ pub async fn run_repl(
             continue;
         }
 
-        let (content, image_paths) = extract_attachments(trimmed);
+        let (content, mut image_paths) = extract_attachments(trimmed);
+        image_paths.extend(
+            state
+                .pending_attachments
+                .drain(..)
+                .map(|path| path.display().to_string()),
+        );
         submit_with_images(&mut state, content, image_paths).await?;
         match render::pump_turn(&mut state).await? {
             render::PumpExit::UserQuit | render::PumpExit::EngineGone => break,

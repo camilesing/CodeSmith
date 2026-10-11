@@ -17,7 +17,7 @@ pub fn network(_app: &mut App, arg: Option<&str>) -> CommandResult {
     }
 }
 
-fn network_inner(arg: Option<&str>) -> anyhow::Result<String> {
+pub(crate) fn network_inner(arg: Option<&str>) -> anyhow::Result<String> {
     let raw = arg.map(str::trim).unwrap_or("");
     if raw.is_empty() || raw.eq_ignore_ascii_case("list") {
         return list_policy();

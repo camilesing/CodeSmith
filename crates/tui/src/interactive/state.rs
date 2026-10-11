@@ -109,6 +109,10 @@ pub struct ReplState {
     pub approval_session_denied: HashSet<String>,
     pub cycle: CycleConfig,
     pub engine: Option<EngineHandle>,
+    /// Durable task manager (started by `run_repl`).
+    pub task_manager: Option<crate::task_manager::SharedTaskManager>,
+    /// Media paths queued by /attach, consumed by the next submit.
+    pub pending_attachments: Vec<PathBuf>,
     pub turn_started_at: Option<Instant>,
     pub cumulative_turn_duration: std::time::Duration,
     pub mcp_configured_count: usize,
@@ -294,6 +298,8 @@ impl ReplState {
             approval_session_denied: HashSet::new(),
             cycle: CycleConfig::default(),
             engine: None,
+            task_manager: None,
+            pending_attachments: Vec::new(),
             turn_started_at: None,
             cumulative_turn_duration: std::time::Duration::ZERO,
             mcp_configured_count: mcp::load_config(&mcp_config_path)

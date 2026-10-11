@@ -32,7 +32,7 @@ pub fn hooks(app: &App, arg: Option<&str>) -> CommandResult {
     }
 }
 
-fn events() -> CommandResult {
+pub(crate) fn events() -> CommandResult {
     let mut out = String::new();
     out.push_str(
         "Available hook events (use one of these as `event = \"...\"` in your `[[hooks.hooks]]` entry):\n\n",
@@ -98,7 +98,7 @@ fn events() -> CommandResult {
     CommandResult::message(out.trim_end().to_string())
 }
 
-fn list(app: &App) -> CommandResult {
+pub(crate) fn list(app: &App) -> CommandResult {
     let config = app.hooks.config();
     if config.hooks.is_empty() {
         return CommandResult::message(
