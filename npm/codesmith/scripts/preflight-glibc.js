@@ -77,7 +77,7 @@ function buildFromSourceHint() {
     "  git clone https://github.com/camilesing/CodeSmith.git",
     "  cd CodeSmith",
     "  cargo install --path crates/cli --locked",
-    "  cargo install --path crates/tui --locked",
+    "  cargo install --path crates/cli --locked",
     "",
     "See https://github.com/camilesing/CodeSmith/blob/main/docs/INSTALL.md",
   ].join("\n");

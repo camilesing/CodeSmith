@@ -47,7 +47,7 @@ impl WorkspaceTrust {
 
     /// Load the trusted-paths snapshot for `workspace` from disk. Missing or
     /// malformed files yield an empty list rather than an error so a corrupt
-    /// trust file never wedges the TUI; the next mutation rewrites it.
+    /// trust file never wedges the frontend; the next mutation rewrites it.
     #[must_use]
     pub fn load_for(workspace: &Path) -> Self {
         match trust_file_path() {

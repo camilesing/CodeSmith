@@ -36,22 +36,12 @@ async function runCodeSmith() {
   await run("codesmith");
 }
 
-async function runCodeSmithTui() {
-  await run("codesmith");
-}
-
 module.exports = {
   run,
   runCodeSmith,
-  runCodeSmithTui,
   _internal: { isVersionFlag },
 };
 
 if (require.main === module) {
-  const command = process.argv[1] || "";
-  if (command.includes("tui")) {
-    runCodeSmithTui();
-  } else {
-    runCodeSmith();
-  }
+  runCodeSmith();
 }

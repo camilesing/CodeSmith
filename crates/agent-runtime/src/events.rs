@@ -1,6 +1,6 @@
 //! Events emitted by the core engine to the UI.
 //!
-//! These events flow from the engine to the TUI via a channel,
+//! These events flow from the engine to the frontend via a channel,
 //! enabling non-blocking, real-time updates.
 
 use std::{path::PathBuf, sync::Arc};
@@ -365,7 +365,7 @@ pub enum Event {
         tool_name: String,
         description: String,
         /// Tool parameters for approval display. Carried on the event so the
-        /// TUI does not need to reconstruct them from `pending_tool_uses`.
+        /// frontend does not need to reconstruct them from `pending_tool_uses`.
         input: Value,
         /// Exact-argument fingerprint, used to scope *denials* (#1617).
         approval_key: String,
@@ -413,7 +413,7 @@ pub enum Event {
     // === Prefix-Cache Stability Events ===
     /// The prefix (system prompt + tool specs) changed between turns,
     /// which invalidates DeepSeek's KV prefix cache. Carries diagnostics
-    /// for the TUI to surface.
+    /// for the frontend to surface.
     PrefixCacheChange {
         /// Human-readable description of what changed.
         description: String,
@@ -573,7 +573,7 @@ mod tests {
     /// Finding 5a: the safe analytics fields of capacity events are
     /// `VerifiedAnalyticsMetadata` (ids + enum-derived labels + controlled
     /// `reason`), which forces conscious construction and still renders via
-    /// `Display` for the TUI's `format!("{action}")` call sites.
+    /// `Display` for the frontend's `format!("{action}")` call sites.
     #[test]
     fn capacity_decision_safe_fields_render_via_display() {
         let ev = Event::CapacityDecision {

@@ -22,7 +22,6 @@
   "keywords": [
     "codesmith",
     "cli",
-    "tui",
     "rust",
     "binary",
     "terminal"

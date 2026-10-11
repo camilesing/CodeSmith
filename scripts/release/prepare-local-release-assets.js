@@ -27,17 +27,13 @@ async function main() {
   const buildDir = path.resolve(
     process.argv[3] || path.join("target", "release"),
   );
-  const { codesmith, tui } = detectBinaryNames();
+  const { codesmith } = detectBinaryNames();
   const isWindows = process.platform === "win32";
 
   const assets = [
     {
       source: path.join(buildDir, isWindows ? "codesmith.exe" : "codesmith"),
       target: codesmith,
-    },
-    {
-      source: path.join(buildDir, isWindows ? "codesmith.exe" : "codesmith"),
-      target: tui,
     },
   ];
 

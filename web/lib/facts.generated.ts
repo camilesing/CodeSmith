@@ -18,8 +18,8 @@ export interface RepoFacts {
 }
 
 export const FACTS: RepoFacts = {
-  "generatedAt": "2026-10-08T00:12:41.849Z",
-  "version": "0.1.0",
+  "generatedAt": "2026-10-11T11:47:21.637Z",
+  "version": "0.9.0",
   "crates": [
     "agent",
     "agent-runtime",
@@ -39,12 +39,12 @@ export const FACTS: RepoFacts = {
     "secrets",
     "state",
     "tool-impls",
-    "tools",
-    "tui",
-    "tui-core"
+    "tools"
   ],
   "sandboxBackends": [
-    "runtime"
+    "bwrap",
+    "landlock (Linux)",
+    "seatbelt (macOS)"
   ],
   "providers": [
     {

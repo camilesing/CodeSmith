@@ -1,8 +1,8 @@
 //! First-run onboarding marker and workspace-trust gate inputs.
 //!
-//! Shared by the CLI dispatcher's question/answer onboarding and the TUI's
-//! boot-time gates so the two binaries agree on what "already onboarded"
-//! means. Moved from `crates/tui/src/tui/onboarding/mod.rs`; the TUI
+//! Shared by the CLI dispatcher's question/answer onboarding and the
+//! boot-time gates so both entry points agree on what "already onboarded"
+//! means. Moved from `crates/tui/src/tui/onboarding/mod.rs`; the CLI
 //! re-exports these at the historical paths.
 //!
 //! Known limitation: this module only answers "has onboarding happened";

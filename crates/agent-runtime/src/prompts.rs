@@ -433,7 +433,7 @@ pub fn effective_authority_recap() -> &'static str {
 /// context, the symptom reported in #1118 and visible in the WeChat
 /// screenshot that prompted this change.
 ///
-/// The list is intentionally short (only locales the TUI ships UI
+/// The list is intentionally short (only locales the REPL ships UI
 /// strings for: `zh-Hans`, `hi`, `es-419`). Other locales fall through
 /// to `None` and get the English-only directive, which is the same
 /// behavior as before this change.

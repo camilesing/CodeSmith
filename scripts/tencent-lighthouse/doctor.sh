@@ -100,18 +100,18 @@ check_binaries() {
   section "CodeSmith binaries"
   local cargo_bin="/home/${CODESMITH_USER}/.cargo/bin"
   local codesmith="${cargo_bin}/codesmith"
-  local tui="${cargo_bin}/codesmith"
+  local codesmith_bin="${cargo_bin}/codesmith"
   if [[ -x "${codesmith}" ]]; then
     pass "${codesmith} is executable"
     "${codesmith}" --version 2>/dev/null | sed 's/^/[info] codesmith version: /' || warn "codesmith --version failed"
   else
     fail "${codesmith} is missing or not executable"
   fi
-  if [[ -x "${tui}" ]]; then
-    pass "${tui} is executable"
-    "${tui}" --version 2>/dev/null | sed 's/^/[info] codesmith version: /' || warn "codesmith --version failed"
+  if [[ -x "${codesmith_bin}" ]]; then
+    pass "${codesmith_bin} is executable"
+    "${codesmith_bin}" --version 2>/dev/null | sed 's/^/[info] codesmith version: /' || warn "codesmith --version failed"
   else
-    fail "${tui} is missing or not executable"
+    fail "${codesmith_bin} is missing or not executable"
   fi
 }
 

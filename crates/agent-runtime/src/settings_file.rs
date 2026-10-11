@@ -1,8 +1,8 @@
-//! TUI settings-file location and a single-key locale writer.
+//! Settings-file location and a single-key locale writer.
 //!
-//! The full `Settings` struct stays in the TUI; only the path contract and a
+//! The full `Settings` struct stays in the CLI; only the path contract and a
 //! key-preserving write live here so the CLI first-run wizard's language
-//! question and the TUI cannot drift on where settings live. The TUI's
+//! question and the runtime cannot drift on where settings live. The CLI's
 //! `Settings::path` delegates to [`settings_file_path`].
 
 use std::fs;

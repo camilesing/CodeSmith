@@ -25,7 +25,6 @@ test("openharmony x64 resolves to linux x64 binaries", () => {
     const { detectBinaryNames } = require(ARTIFACTS_PATH);
     const result = detectBinaryNames();
     assert.equal(result.codesmith, "codesmith-linux-x64");
-    assert.equal(result.tui, "codesmith-linux-x64");
   });
 });
 

@@ -10,13 +10,12 @@ export async function generateMetadata({ params }: { params: Promise<{ locale: s
   return {
     title: isZh ? "安装 · CodeSmith" : "Install · CodeSmith",
     description: isZh
-      ? "安装 CodeSmith 的 codesmith / codesmith-tui 二进制对。其他方式：npm、Homebrew、预编译二进制、Docker、国内镜像。"
-      : "Install the matched codesmith / codesmith-tui binary pair. Other ways: npm, Homebrew, prebuilt binary, Docker, source.",
+      ? "安装 CodeSmith 的 codesmith 单二进制。其他方式：npm、Homebrew、预编译二进制、Docker、国内镜像。"
+      : "Install the single codesmith binary. Other ways: npm, Homebrew, prebuilt binary, Docker, source.",
   };
 }
 
-const CARGO_INSTALL = `cargo install codesmith-cli --locked
-cargo install codesmith-tui --locked`;
+const CARGO_INSTALL = `cargo install codesmith-cli --locked`;
 const FIRST_RUN = `codesmith`;
 const VERIFY = `codesmith --version
 codesmith doctor`;
@@ -34,8 +33,7 @@ replace-with = "tuna"
 
 [source.tuna]
 registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"`;
-const TUNA_INSTALL = `cargo install codesmith-cli --locked
-cargo install codesmith-tui --locked`;
+const TUNA_INSTALL = `cargo install codesmith-cli --locked`;
 const NPMMIRROR = `npm config set registry https://registry.npmmirror.com
 npm install -g codesmith`;
 
@@ -53,9 +51,8 @@ const FROM_SOURCE = `git clone ${GITHUB_REPO_URL}
 cd codesmith
 cargo build --release --locked
 
-# Install both binaries from the local checkout
-cargo install --path crates/cli --locked   # codesmith
-cargo install --path crates/tui --locked   # codesmith-tui`;
+# Install the binary from the local checkout
+cargo install --path crates/cli --locked   # codesmith`;
 
 const CONFIG_TREE = `~/.codesmith/
 ├── config.toml      api keys, model, hooks, profiles
@@ -108,15 +105,14 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
         <p className="mt-4 text-sm text-ink-soft leading-relaxed max-w-2xl">
           {isZh ? (
             <>
-              编译并安装 <code className="inline">codesmith</code> 和 <code className="inline">codesmith-tui</code> 到 <code className="inline">~/.cargo/bin</code>。
+              编译并安装 <code className="inline">codesmith</code> 到 <code className="inline">~/.cargo/bin</code>。
               需要 Rust 1.88+——如未安装可访问{" "}
               <a href="https://rustup.rs" className="body-link">rustup.rs</a>。
               下方「其他安装方式」列出了不用 Rust 工具链、国内镜像、Homebrew、预编译二进制等替代选项。
             </>
           ) : (
             <>
-              Compiles and installs <code className="inline">codesmith</code> and{" "}
-              <code className="inline">codesmith-tui</code> to{" "}
+              Compiles and installs <code className="inline">codesmith</code> to{" "}
               <code className="inline">~/.cargo/bin</code>. Requires Rust 1.88+ — install via{" "}
               <a href="https://rustup.rs" className="body-link">rustup.rs</a> if you don&apos;t have it.
               See <a href="#other-ways" className="body-link">Other ways to install</a> below for
@@ -265,8 +261,8 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
           </h2>
           <p className="text-sm text-ink-soft max-w-2xl mb-10">
             {isZh
-              ? "如果上面的 Cargo 路径不适合你，从下面找到匹配你情况的一条。每条都安装同一组 codesmith / codesmith-tui 二进制。"
-              : "If the Cargo path above doesn't fit your setup, pick the row that matches your situation. Every path installs the same codesmith / codesmith-tui binary pair."}
+              ? "如果上面的 Cargo 路径不适合你，从下面找到匹配你情况的一条。每条都安装同一个 codesmith 单二进制。"
+              : "If the Cargo path above doesn't fit your setup, pick the row that matches your situation. Every path installs the same single codesmith binary."}
           </p>
 
           <div className="space-y-10">
@@ -280,14 +276,13 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
                 {isZh ? (
                   <>
                     npm 包装器会从 GitHub Releases 下载对应平台的预编译二进制。需要 Node 18+。
-                    安装后会同时提供 <code className="inline">codesmith</code> 和{" "}
-                    <code className="inline">codesmith-tui</code> 两个命令。
+                    安装后提供 <code className="inline">codesmith</code> 命令。
                   </>
                 ) : (
                   <>
                     The npm wrapper downloads the prebuilt binary from GitHub Releases for your
-                    platform. Requires Node 18+. Installs both <code className="inline">codesmith</code>{" "}
-                    and <code className="inline">codesmith-tui</code> on PATH.
+                    platform. Requires Node 18+. Installs <code className="inline">codesmith</code>{" "}
+                    on PATH.
                   </>
                 )}
               </p>

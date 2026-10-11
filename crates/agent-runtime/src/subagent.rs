@@ -1,11 +1,11 @@
 //! Sub-agent type identity, status, and assignment data types.
 //!
 //! [`SubAgentType`], [`SubAgentStatus`], and [`SubAgentAssignment`] are shared
-//! between the engine and the TUI's sub-agent runtime, so they live here in the
+//! between the engine and the CLI's sub-agent runtime, so they live here in the
 //! terminal-agnostic runtime. The TUI re-exports them at the historical
 //! `crate::tools::subagent` path for backwards compatibility. The sub-agent
 //! *implementation* (spawn orchestration, context forking, result aggregation)
-//! still lives in the TUI for now.
+//! still lives in the CLI for now.
 
 use std::fmt;
 use std::path::PathBuf;
@@ -465,7 +465,7 @@ fn is_false(b: &bool) -> bool {
 /// expects in the transcript per `prompts/base.md`.
 ///
 /// Lives in the runtime crate because the engine's turn loop (which drains
-/// the paired receiver) is terminal-agnostic; the TUI re-exports it at the
+/// the paired receiver) is terminal-agnostic; the CLI re-exports it at the
 /// historical `crate::tools::subagent` path.
 #[derive(Debug, Clone)]
 pub struct SubAgentCompletion {

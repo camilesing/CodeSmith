@@ -63,7 +63,7 @@ pub fn probe_executable(spec: &str) -> bool {
 
     // Silence the subprocess's stdout/stderr — `--version` would
     // otherwise print to our terminal during startup, which is
-    // confusing on the TUI's first frame.
+    // confusing on the frontend's first frame.
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::null());
 

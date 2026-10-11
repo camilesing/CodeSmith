@@ -2,12 +2,12 @@
 //!
 //! The engine core holds a `Box<dyn ToolDispatcher>` per turn and invokes
 //! tool execution, metadata queries, approval checks, and catalog generation
-//! through this trait — without depending on the TUI's concrete
+//! through this trait — without depending on the CLI's concrete
 //! `ToolRegistry` or the fat `ToolContext` (which carries terminal-coupled
 //! services like `shell_manager` and `lsp_manager` that cannot live in the
 //! runtime crate).
 //!
-//! The TUI implements `ToolDispatcher` for `ToolRegistry`, delegating to its
+//! The CLI implements `ToolDispatcher` for `ToolRegistry`, delegating to its
 //! inherent methods and passing its internal `ToolContext` to tools.
 
 use std::sync::Arc;
@@ -46,7 +46,7 @@ pub struct ToolMetadata {
 
 /// Per-turn tool dispatch surface.
 ///
-/// Implemented by the TUI's `ToolRegistry`. The engine holds
+/// Implemented by the CLI's `ToolRegistry`. The engine holds
 /// `Option<Box<dyn ToolDispatcher>>` and routes all tool calls, metadata
 /// queries, and catalog generation through this trait, keeping the
 /// `ToolContext` and `ToolSpec` trait on the host side.

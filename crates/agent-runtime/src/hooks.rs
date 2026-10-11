@@ -2,8 +2,8 @@
 //!
 //! The hook *value types* (`HookEvent`, `HookContext`, `HookResult`,
 //! `MessageSubmitOutcome`) and the [`HookHost`] abstraction were relocated
-//! here from the TUI's `hooks` module so the runtime can invoke lifecycle
-//! hooks without depending on the TUI's concrete `HookExecutor` (which spawns
+//! here from the terminal binary's `hooks` module so the runtime can invoke lifecycle
+//! hooks without depending on the CLI's concrete `HookExecutor` (which spawns
 //! processes and reads the host `Config`). The TUI keeps its `HookExecutor`
 //! and implements [`HookHost`] for it; the runtime holds `Arc<dyn HookHost>`.
 
@@ -371,7 +371,7 @@ impl MessageSubmitOutcome {
 
 /// Host-supplied hook execution surface.
 ///
-/// Implemented by the TUI's `HookExecutor` (synchronous, process-spawning).
+/// Implemented by the CLI's `HookExecutor` (synchronous, process-spawning).
 /// The runtime holds `Arc<dyn HookHost>` and invokes lifecycle hooks through
 /// it, keeping process-spawning and `Config` reading on the host side.
 pub trait HookHost: Send + Sync {

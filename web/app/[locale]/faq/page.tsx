@@ -40,7 +40,6 @@ npm install -g codesmith
 
 # Cargo (needs Rust 1.88+)
 cargo install codesmith-cli --locked
-cargo install codesmith-tui --locked
 
 # Homebrew (macOS)
 brew tap camilesing/codesmith && brew install codesmith
@@ -57,16 +56,17 @@ brew tap camilesing/codesmith && brew install codesmith
     sources: ["README.md", "#1860", "#1914"],
   },
   {
-    q: "What's the difference between codesmith and codesmith-tui?",
+    q: "Is there a separate TUI binary?",
     a: (
       <>
-        <code className="inline">codesmith</code> is the dispatcher CLI — it manages config, auth, updates, and launches the TUI.
-        <code className="inline">codesmith-tui</code> is the terminal UI binary that runs the agent loop.
-        When you type <code className="inline">codesmith</code>, the dispatcher spawns <code className="inline">codesmith-tui</code> for you.
-        Both are installed together; you rarely need to think about the split.
+        No — since 0.9.0 CodeSmith ships as a single <code className="inline">codesmith</code> binary.
+        Typing <code className="inline">codesmith</code> starts a line-based REPL (a Claude Code / Codex style
+        interactive loop), and every headless subcommand (exec, doctor, serve, mcp, …) runs in-process.
+        The old two-binary split (<code className="inline">codesmith</code> dispatcher +
+        <code className="inline">codesmith-tui</code>) is gone; updating from it needs a one-time reinstall.
       </>
     ),
-    sources: ["README.md"],
+    sources: ["CHANGELOG.md"],
   },
   {
     q: "Is CodeSmith the same as DeepSeek TUI? What about the rename?",
@@ -353,7 +353,6 @@ npm install -g codesmith
 
 # Cargo（需要 Rust 1.88+）
 cargo install codesmith-cli --locked
-cargo install codesmith-tui --locked
 
 # Homebrew（macOS）
 brew tap camilesing/codesmith && brew install codesmith
@@ -370,16 +369,17 @@ brew tap camilesing/codesmith && brew install codesmith
     sources: ["README.md", "#1860", "#1914"],
   },
   {
-    q: "codesmith 和 codesmith-tui 有什么区别？",
+    q: "还有单独的 TUI 二进制吗？",
     a: (
       <>
-        <code className="inline">codesmith</code> 是调度 CLI——管理配置、认证、更新，并启动 TUI。
-        <code className="inline">codesmith-tui</code> 是运行智能体循环的终端 UI 二进制文件。
-        当你输入 <code className="inline">codesmith</code> 时，调度器会自动为你启动 <code className="inline">codesmith-tui</code>。
-        两者同时安装；通常你不需要关心这个区别。
+        没有——自 0.9.0 起 CodeSmith 是单一的 <code className="inline">codesmith</code> 二进制。
+        输入 <code className="inline">codesmith</code> 启动基于行的 REPL（Claude Code / Codex 风格的交互循环），
+        所有无头子命令（exec、doctor、serve、mcp 等）都在进程内运行。
+        旧的双二进制组合（<code className="inline">codesmith</code> 调度器 +
+        <code className="inline">codesmith-tui</code>）已移除；从中升级需要一次性重装。
       </>
     ),
-    sources: ["README.md"],
+    sources: ["CHANGELOG.md"],
   },
   {
     q: "CodeSmith 和 DeepSeek TUI 是什么关系？改名是怎么回事？",

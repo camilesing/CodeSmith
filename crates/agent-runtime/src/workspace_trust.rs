@@ -138,7 +138,7 @@ pub fn apply_workspace_trust(doc: &mut toml::Value, workspace: &Path) -> Result<
 /// Persist workspace trust into the CodeSmith config file via a raw TOML
 /// merge that preserves every unrelated field. Moved from the TUI's
 /// `config.rs` (same behavior byte-for-byte) so the CLI first-run wizard
-/// performs the identical write; the TUI re-exports this path.
+/// performs the identical write; the CLI re-exports this path.
 pub fn save_workspace_trust(workspace: &Path) -> Result<PathBuf> {
     let config_path = default_config_path()
         .context("Failed to resolve config path: home directory not found.")?;
@@ -160,7 +160,7 @@ pub fn save_workspace_trust(workspace: &Path) -> Result<PathBuf> {
 }
 
 /// `create_dir_all` on the parent plus a best-effort Unix tightening of
-/// group/other bits. Mirrors the TUI's `ensure_parent_dir`: filesystems that
+/// group/other bits. Mirrors the CLI's `ensure_parent_dir`: filesystems that
 /// reject chmod (Docker bind-mounts of NTFS, network shares — #897) only get
 /// a warning; the directory already exists by then, so the write continues.
 fn ensure_parent_dir_private(path: &Path) -> Result<()> {
