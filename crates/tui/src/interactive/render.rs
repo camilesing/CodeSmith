@@ -323,6 +323,7 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                 }
                 state.is_loading = false;
                 state.turn_started_at = None;
+                persist_session_turn_boundary(state);
                 return Ok(PumpExit::TurnDone);
             }
             Event::PauseEvents { .. }
@@ -349,6 +350,45 @@ fn error_envelope_message(envelope: &ErrorEnvelope) -> String {
     // `ErrorEnvelope` renders through its Display in the engine; the REPL
     // only needs the human-readable line.
     envelope.to_string()
+}
+
+/// Auto-save the session at each turn boundary (the retired TUI's
+/// persistence-actor contract, reduced to the turn boundary). Failures are
+/// silent-by-print: a save miss never interrupts the conversation.
+fn persist_session_turn_boundary(state: &mut ReplState) {
+    use crate::session_manager::create_saved_session_with_id_and_mode;
+
+    if state.api_messages.is_empty() {
+        return;
+    }
+    let Ok(manager) = crate::session_manager::SessionManager::default_location() else {
+        return;
+    };
+    let session_id = state
+        .current_session_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let mut session = create_saved_session_with_id_and_mode(
+        session_id,
+        &state.api_messages,
+        &state.model,
+        &state.workspace,
+        u64::from(state.session.total_tokens),
+        state.system_prompt.as_ref(),
+        Some(state.mode.label()),
+    );
+    session.metadata.cost.session_cost_usd = state.session.session_cost;
+    session.metadata.cost.session_cost_cny = state.session.session_cost_cny;
+    session.metadata.cost.subagent_cost_usd = state.session.subagent_cost;
+    session.metadata.cost.subagent_cost_cny = state.session.subagent_cost_cny;
+    session.metadata.cumulative_turn_secs = state.cumulative_turn_duration.as_secs();
+    if let Err(err) = manager.save_session(&session) {
+        println!("{}", format!("warning: could not auto-save session: {err}").yellow());
+        return;
+    }
+    // Adopt the id so subsequent turns update the same session file
+    // instead of minting a new one per turn.
+    state.current_session_id = Some(session.metadata.id.clone());
 }
 
 /// Mirror of the retired TurnComplete accounting (ui.rs): token totals,
