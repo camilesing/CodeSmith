@@ -179,9 +179,13 @@ The interactive REPL is a line-based loop (Claude Code / Codex style): you type
 a line, the engine runs a turn, and output streams to the terminal.
 
 - Status line: one line above the prompt with the running state, preset tier,
-  context-window occupancy, the permission mode (`mode:`, see
+  context-window occupancy (`🧭`), the permission mode (`🚥:`, see
   [Modes](#5-modes) below), the running sub-agent count (`🤖: N`),
-  model, and version.
+  model, and version. The model label shows the server-reported name once a
+  response arrives, so an alias gateway (an Anthropic-compatible endpoint
+  serving a different model) displays the model that actually served the
+  turn; the configured id shows before that. The in-turn live line carries
+  the mode, sub-agent count, and context percent too.
 - Prompt: where you type prompts and slash commands (`/help` lists them).
 - Transcript: the conversation, tool calls, command output summaries, and
   model responses, streamed as they happen.

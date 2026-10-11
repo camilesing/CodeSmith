@@ -119,6 +119,13 @@ pub struct SessionMetadata {
     pub total_tokens: u64,
     /// Model used for the session
     pub model: String,
+    /// Server-reported model name from the last turn's stream — the real
+    /// model behind gateway aliases (e.g. BigModel's Anthropic-compatible
+    /// endpoint serving a GLM model under a `claude-*` alias). Kept in
+    /// agreement with the REPL status-bar label. Absent when no response
+    /// has been saved yet or the provider reports nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_model: Option<String>,
     /// Workspace directory
     pub workspace: PathBuf,
     /// Optional mode label (agent/plan/etc.)
@@ -675,6 +682,7 @@ pub fn create_saved_session_with_id_and_mode(
             message_count: messages.len(),
             total_tokens,
             model: model.to_string(),
+            reported_model: None,
             workspace: workspace.to_path_buf(),
             mode: mode.map(str::to_string),
             cost: SessionCostSnapshot::default(),
@@ -985,6 +993,7 @@ mod tests {
                 message_count: 1,
                 total_tokens: 0,
                 model: "deepseek-v4-flash".to_string(),
+                reported_model: None,
                 workspace: workspace.to_path_buf(),
                 mode: None,
                 cost: SessionCostSnapshot::default(),
@@ -1019,6 +1028,7 @@ mod tests {
                 message_count: 0,
                 total_tokens: 0,
                 model: "deepseek-v4-pro".to_string(),
+                reported_model: None,
                 workspace: workspace.to_path_buf(),
                 mode: Some("yolo".to_string()),
                 cost: SessionCostSnapshot::default(),

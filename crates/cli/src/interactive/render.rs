@@ -407,9 +407,18 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                 error,
                 tool_catalog,
                 base_url,
+                reported_model,
             } => {
                 view.clear_live();
-                apply_turn_accounting(state, usage, status, error, tool_catalog, base_url);
+                apply_turn_accounting(
+                    state,
+                    usage,
+                    status,
+                    error,
+                    tool_catalog,
+                    base_url,
+                    reported_model,
+                );
                 if status != TurnOutcomeStatus::Completed {
                     let _ = engine.send(Op::ListSubAgents).await;
                 }
@@ -521,6 +530,9 @@ fn persist_session_turn_boundary(state: &mut ReplState) {
     session.metadata.cost.subagent_cost_usd = state.session.subagent_cost;
     session.metadata.cost.subagent_cost_cny = state.session.subagent_cost_cny;
     session.metadata.cumulative_turn_secs = state.cumulative_turn_duration.as_secs();
+    // Keep the persisted record in agreement with the status-bar label:
+    // the server-reported model alongside the requested id.
+    session.metadata.reported_model = state.reported_model.clone();
     if let Err(err) = manager.save_session(&session) {
         println!(
             "{}",
@@ -542,9 +554,17 @@ fn apply_turn_accounting(
     error: Option<String>,
     tool_catalog: Option<Vec<crate::models::Tool>>,
     base_url: Option<String>,
+    reported_model: Option<String>,
 ) {
     state.session.last_tool_catalog = tool_catalog;
     state.session.last_base_url = base_url;
+    // The server-reported model feeds the status-bar label (and the saved
+    // session metadata below) — the real model behind gateway aliases.
+    if let Some(reported) = reported_model.as_deref()
+        && !reported.is_empty()
+    {
+        state.reported_model = Some(reported.to_string());
+    }
 
     let turn_elapsed = state
         .turn_started_at

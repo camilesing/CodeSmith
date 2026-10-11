@@ -43,6 +43,12 @@ pub struct TurnContext {
 
     /// Usage for this turn
     pub usage: Usage,
+
+    /// Server-reported model name from this turn's stream `MessageStart`
+    /// frames — the real model behind gateway aliases. `None` until the
+    /// first response arrives or when the provider reports nothing. Set
+    /// from the executor's one-shot drain alongside `usage`.
+    pub reported_model: Option<String>,
 }
 
 /// Record of a tool call within a turn.
@@ -71,6 +77,7 @@ impl TurnContext {
                 output_tokens: 0,
                 ..Usage::default()
             },
+            reported_model: None,
         }
     }
 

@@ -71,6 +71,18 @@ pub struct ReplState {
     pub model: String,
     pub auto_model: bool,
     pub last_effective_model: Option<String>,
+    /// Server-reported model name from the last turn's stream
+    /// `MessageStart` frames — the real model behind gateway aliases
+    /// (e.g. BigModel's Anthropic-compatible endpoint serving a GLM model
+    /// under a `claude-*` alias). `model_display_label` prefers it so the
+    /// status bar shows the model that actually served the turn.
+    ///
+    /// Known limitations: the startup banner still shows the configured
+    /// alias (no response has arrived yet); after `/resume` it falls back
+    /// to the configured id until the next turn completes; and the
+    /// context-window budget (`effective_model_for_budget`) intentionally
+    /// stays keyed on the requested id.
+    pub reported_model: Option<String>,
     pub api_provider: ApiProvider,
     pub model_ids_passthrough: bool,
     pub reasoning_effort: ReasoningEffort,
@@ -264,6 +276,7 @@ impl ReplState {
             model,
             auto_model,
             last_effective_model: None,
+            reported_model: None,
             api_provider: provider,
             model_ids_passthrough,
             reasoning_effort,
@@ -376,6 +389,9 @@ impl ReplState {
         self.auto_model = auto_model;
         self.last_effective_model = None;
         self.last_effective_reasoning_effort = None;
+        // The previous model's server report no longer describes this
+        // selection — drop it until the next response reports again.
+        self.reported_model = None;
         if auto_model {
             self.reasoning_effort = ReasoningEffort::Auto;
         }
@@ -407,15 +423,22 @@ impl ReplState {
     }
 
     pub fn model_display_label(&self) -> String {
+        // The server-reported name (the real model behind gateway aliases)
+        // wins over both the routed id and the configured id.
+        let reported = self
+            .reported_model
+            .as_deref()
+            .filter(|model| !model.is_empty());
         if self.auto_model {
-            if let Some(effective) = self.last_effective_model.as_deref()
-                && effective != "auto"
+            if let Some(effective) = reported
+                .or(self.last_effective_model.as_deref())
+                .filter(|model| *model != "auto")
             {
                 return format!("auto: {effective}");
             }
             return "auto".to_string();
         }
-        self.model.clone()
+        reported.unwrap_or(&self.model).to_string()
     }
 
     pub fn reasoning_effort_display_label(&self) -> String {

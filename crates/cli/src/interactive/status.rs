@@ -5,14 +5,14 @@
 //! indicator:
 //!
 //! ```text
-//! ● working │ Full │ ctx 42% (72k/171k) │ mode: agent │ 🤖: 2 │ deepseek-chat │ v0.9.0 (f83c330)
+//! ● working │ Full │ 🧭 42% (72k/171k) │ 🚥: agent │ 🤖: 2 │ deepseek-chat │ v0.9.0 (f83c330)
 //! ```
 //!
 //! - state dot: idle / working / waiting-approval / compacting
 //! - preset: the active runtime profile tier (simple | middle | all | ...)
-//! - ctx: session context-window occupancy (estimate-first, see
+//! - 🧭: session context-window occupancy (estimate-first, see
 //!   [`context_usage`])
-//! - mode: `AppMode`
+//! - 🚥: `AppMode`
 //! - 🤖: running sub-agent count
 //! - model: display label
 //! - version: build version
@@ -133,7 +133,7 @@ fn state_segment(run: RunState) -> String {
 }
 
 fn ctx_percent_text(percent: f64) -> String {
-    format!("ctx {:.0}%", percent)
+    format!("🧭 {:.0}%", percent)
 }
 
 fn ctx_percent_segment(percent: f64) -> String {
@@ -159,6 +159,20 @@ fn ctx_segment(used: i64, max: u32, percent: f64) -> String {
     }
 }
 
+/// The mode segment, shared by the idle status line and the live line.
+fn mode_segment(mode: AppMode) -> String {
+    format!("🚥: {}", mode.label().to_lowercase())
+}
+
+/// The sub-agent count segment (dimmed at zero, cyan when running), shared
+/// by the idle status line and the live line.
+fn agents_segment(agents: usize) -> String {
+    match agents {
+        0 => "🤖: 0".dimmed().to_string(),
+        n => format!("🤖: {n}").cyan().to_string(),
+    }
+}
+
 /// Compose the full status line for a state snapshot. Kept as one `String`
 /// (ANSI included) so callers print it verbatim above the prompt.
 pub fn render_status_line(
@@ -180,13 +194,10 @@ pub fn render_status_line(
     );
     segments.push(match ctx {
         Some((used, max, percent)) => ctx_segment(used, max, percent),
-        None => "ctx —".dimmed().to_string(),
+        None => "🧭 —".dimmed().to_string(),
     });
-    segments.push(format!("mode: {}", mode.label().to_lowercase()));
-    segments.push(match agents {
-        0 => "🤖: 0".dimmed().to_string(),
-        n => format!("🤖: {n}").cyan().to_string(),
-    });
+    segments.push(mode_segment(mode));
+    segments.push(agents_segment(agents));
     segments.push(model.to_string());
     segments.push(format!("v{version}").dimmed().to_string());
     segments.join(&separator)
@@ -238,13 +249,8 @@ pub fn live_line(state: &ReplState, current_tool: Option<&str>) -> String {
         parts.push(tool.to_string());
     }
     parts.push(format!("{elapsed}s").dimmed().to_string());
-    if state.running_agent_count() > 0 {
-        parts.push(
-            format!("🤖: {}", state.running_agent_count())
-                .cyan()
-                .to_string(),
-        );
-    }
+    parts.push(mode_segment(state.mode));
+    parts.push(agents_segment(state.running_agent_count()));
     if let Some((_, _, percent)) = ctx {
         parts.push(ctx_percent_segment(percent));
     }
@@ -319,8 +325,8 @@ mod tests {
         for fragment in [
             "working",
             "Full",
-            "ctx 42% (72k/171k)",
-            "mode: agent",
+            "🧭 42% (72k/171k)",
+            "🚥: agent",
             "🤖: 2",
             "deepseek-chat",
             "v0.9.0",
@@ -335,7 +341,17 @@ mod tests {
     #[test]
     fn unknown_model_hides_ctx() {
         let line = render_status_line(RunState::Idle, None, None, AppMode::Yolo, 0, "m", "0.9.0");
-        assert!(strip_ansi(&line).contains("ctx —"));
+        assert!(strip_ansi(&line).contains("🧭 —"));
+    }
+
+    #[test]
+    fn live_line_segments_show_mode_agents_and_ctx() {
+        // The segments `live_line` composes with (a full `ReplState` is not
+        // constructible here without loading real user settings): the mode
+        // segment, the always-on zero-agent segment, and the 🧭 percent text.
+        assert_eq!(strip_ansi(&mode_segment(AppMode::Agent)), "🚥: agent");
+        assert_eq!(strip_ansi(&agents_segment(0)), "🤖: 0");
+        assert_eq!(strip_ansi(&ctx_percent_segment(42.0)), "🧭 42%");
     }
 
     fn strip_ansi(text: &str) -> String {

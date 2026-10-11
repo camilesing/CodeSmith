@@ -159,6 +159,21 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
 
 ### Changed
 
+- **REPL status line: `🚥` mode / `🧭` context segments, a fuller in-turn
+  live line, and the server-reported model name**. The permission-mode
+  segment is now `🚥: agent` (was `mode: agent`) and the context segment
+  `🧭 42% (72k/171k)` (was `ctx …`). The transient in-turn live line now
+  carries the same mode and sub-agent count segments (the count always
+  shows, `🤖: 0` included) alongside the context percent, instead of
+  ctx-percent only. The model label now prefers the model name the
+  provider reports in each stream's `message_start` frame — so an
+  alias gateway (e.g. BigModel's Anthropic-compatible endpoint serving a
+  GLM model under a `claude-*` alias) displays the model that actually
+  served the turn; the configured id shows until the first response (and
+  on the startup banner), and a `/model` switch clears the stale report.
+  The reported name is carried on `Event::TurnComplete.reported_model`
+  and persisted in the saved session's metadata beside `model`.
+
 - **A mistyped top-level command fails loud instead of opening the TUI**:
   `codesmith docker` and `codesmith version` used to reach the interactive TUI
   as an initial prompt, because the top-level `[PROMPT]` positional accepts
