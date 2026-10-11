@@ -160,12 +160,12 @@ fn expand_skill_variables(skill: &Skill, body: &str, args: &str) -> String {
 pub async fn try_user_command(state: &mut ReplState, command: &str, args: &str) -> Option<bool> {
     let parts: Vec<&str> = command.trim().splitn(2, ' ').collect();
     let name = parts[0].trim_start_matches('/').to_lowercase();
-    let user_commands = crate::commands::user_commands::load_user_commands(Some(&state.workspace));
+    let user_commands = super::user_cmd_store::load_user_commands(Some(&state.workspace));
     for (user_name, content) in &user_commands {
         if user_name != &name {
             continue;
         }
-        let (metadata, body) = crate::commands::user_commands::parse_frontmatter(content);
+        let (metadata, body) = super::user_cmd_store::parse_frontmatter(content);
         // Reset per-command goal state, mirroring the TUI behavior.
         state.hunt.quarry = None;
         state.hunt.started_at = None;
@@ -180,12 +180,12 @@ pub async fn try_user_command(state: &mut ReplState, command: &str, args: &str) 
                 }
                 "allowed-tools" => {
                     state.active_allowed_tools =
-                        Some(crate::commands::user_commands::parse_allowed_tools(value));
+                        Some(super::user_cmd_store::parse_allowed_tools(value));
                 }
                 _ => {}
             }
         }
-        let message = crate::commands::user_commands::apply_template(body, args);
+        let message = super::user_cmd_store::apply_template(body, args);
         let _ = super::super::submit(state, message).await;
         return Some(true);
     }

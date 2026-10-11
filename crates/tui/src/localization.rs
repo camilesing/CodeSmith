@@ -2342,11 +2342,6 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::{
-        buffer::Buffer,
-        layout::Rect,
-        widgets::{Paragraph, Widget, Wrap},
-    };
 
     #[test]
     fn locale_setting_normalizes_supported_tags() {
@@ -2462,39 +2457,5 @@ mod tests {
                 "{tag} sample overflowed: {truncated:?}"
             );
         }
-    }
-
-    #[test]
-    fn shipped_script_samples_render_in_narrow_terminal_buffer() {
-        let samples = [
-            ("CJK", "输入以筛选配置"),
-            ("Indic", "सेटिंग खोजें"),
-            ("Latin", "configuraciones filtradas"),
-        ];
-
-        for (label, sample) in samples {
-            let area = Rect::new(0, 0, 18, 4);
-            let mut buf = Buffer::empty(area);
-            Paragraph::new(sample)
-                .wrap(Wrap { trim: false })
-                .render(area, &mut buf);
-            let dump = buffer_text(&buf, area);
-
-            assert!(
-                dump.chars().any(|ch| !ch.is_whitespace()),
-                "{label} sample produced an empty render"
-            );
-        }
-    }
-
-    fn buffer_text(buf: &Buffer, area: Rect) -> String {
-        let mut out = String::new();
-        for y in area.top()..area.bottom() {
-            for x in area.left()..area.right() {
-                out.push_str(buf[(x, y)].symbol());
-            }
-            out.push('\n');
-        }
-        out
     }
 }

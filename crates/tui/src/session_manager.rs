@@ -18,7 +18,7 @@
 
 use crate::artifacts::ArtifactRecord;
 use crate::models::{ContentBlock, Message, SystemPrompt};
-use crate::tui::file_mention::ContextReference;
+
 use crate::utils::write_atomic;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -96,6 +96,42 @@ impl Default for OfflineQueueState {
             draft: None,
         }
     }
+}
+
+/// An `@`-mention or attachment reference captured with a session
+/// (moved from the retired ratatui file-mention module).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextReference {
+    pub kind: ContextReferenceKind,
+    pub source: ContextReferenceSource,
+    /// Short badge for terminal display, e.g. `file`, `dir`, `image`.
+    pub badge: String,
+    /// Compact display label from the transcript, without the leading `@`.
+    pub label: String,
+    /// Resolved target path or URI-equivalent string.
+    pub target: String,
+    pub included: bool,
+    pub expanded: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextReferenceKind {
+    File,
+    Directory,
+    Missing,
+    Unsupported,
+    MediaMention,
+    MediaAttachment,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextReferenceSource {
+    AtMention,
+    Attachment,
 }
 
 /// Durable context-reference metadata attached to a user message.
@@ -1731,8 +1767,8 @@ mod tests {
         session.context_references.push(SessionContextReference {
             message_index: 0,
             reference: ContextReference {
-                kind: crate::tui::file_mention::ContextReferenceKind::File,
-                source: crate::tui::file_mention::ContextReferenceSource::AtMention,
+                kind: ContextReferenceKind::File,
+                source: ContextReferenceSource::AtMention,
                 badge: "file".to_string(),
                 label: "src/main.rs".to_string(),
                 target: tmp.path().join("src/main.rs").display().to_string(),

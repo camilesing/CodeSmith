@@ -38,8 +38,7 @@ use codesmith_agent_runtime::host_services::HostServices;
 // module (see C7-2).
 pub use codesmith_agent_runtime::engine::{
     ApprovalDecision, CancelReason, Engine, EngineConfig, UserInputDecision, apply_tool_selection,
-    build_model_tool_catalog, compact_tool_result_for_context, goal_objective_for_prompt,
-    system_prompt_hash,
+    build_model_tool_catalog, goal_objective_for_prompt, system_prompt_hash,
 };
 
 // Test-only surface — referenced exclusively from `#[cfg(test)]` modules

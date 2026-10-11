@@ -5,11 +5,16 @@
 //! handler to the ratatui `App`. Handlers print directly to stdout and
 //! mutate state / send engine ops.
 
+pub mod auto_route;
 pub mod config_cmds;
 pub mod debug_cmds;
 pub mod misc_cmds;
+pub mod network_store;
+pub mod project_doc;
 pub mod session_cmds;
+pub mod share;
 pub mod skills_cmds;
+pub mod user_cmd_store;
 
 use codesmith_config::presets::PresetCatalog;
 use colored::Colorize;

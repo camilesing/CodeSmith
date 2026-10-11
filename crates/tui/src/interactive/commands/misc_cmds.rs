@@ -5,17 +5,16 @@
 use colored::Colorize;
 
 use super::ReplState;
-use crate::commands::{self as legacy};
 use crate::config::ApiProvider;
 use crate::tui::app::HuntVerdict;
 
 /// `/init` — write/update AGENTS.md (reuses the legacy generator).
 pub fn init(state: &ReplState) {
     let workspace = &state.workspace;
-    legacy::init::ensure_codesmith_gitignored(workspace);
+    super::project_doc::ensure_codesmith_gitignored(workspace);
     let agents_path = workspace.join("AGENTS.md");
     let already_exists = agents_path.exists();
-    let content = legacy::init::generate_project_doc(workspace);
+    let content = super::project_doc::generate_project_doc(workspace);
     match std::fs::write(&agents_path, content) {
         Ok(()) => {
             let verb = if already_exists { "Updated" } else { "Created" };
@@ -56,7 +55,10 @@ pub fn hooks(state: &ReplState, arg: Option<&str>) {
             }
         }
         "events" | "event" | "list-events" => {
-            println!("{}", legacy::hooks::events().message.unwrap_or_default());
+            println!(
+                "{}",
+                "hook events: session_start, session_end, message_submit, tool_call_before, tool_call_after, mode_change, on_error, shell_env, task_created, task_completed, pre_compact".dimmed()
+            );
         }
         other => println!(
             "{} unknown subcommand `{other}` — try /hooks list or /hooks events",
@@ -177,7 +179,7 @@ pub async fn mcp(state: &mut ReplState, args: &str) {
 
 /// `/network [list|allow|host>|deny <host>|remove <host>|default <policy>]`
 pub fn network(arg: Option<&str>) {
-    match legacy::network::network_inner(arg) {
+    match super::network_store::network_inner(arg) {
         Ok(message) => println!("{message}"),
         Err(err) => println!("{} {err}", "✗".red()),
     }
@@ -387,7 +389,7 @@ pub fn balance(state: &ReplState) {
 pub fn verify(arg: Option<&str>) {
     let arg = arg.map(str::trim).filter(|s| !s.is_empty());
     match arg {
-        None | Some("stats") => println!("{}", legacy::verify::stats_text()),
+        None | Some("stats") => println!("{}", verify_stats_text()),
         Some(other) => println!(
             "{} unknown subcommand '{other}' — usage: /verify [stats]",
             "✗".red()
@@ -700,6 +702,32 @@ pub fn attach(state: &mut ReplState, arg: Option<&str>) {
     println!("attached: {} (sent with your next message)", path.display());
 }
 
+/// Claim-check stats (moved from the retired `commands/verify.rs`).
+fn verify_stats_text() -> String {
+    let verdicts = codesmith_agent_runtime::evolution_log::verdicts_path();
+    let Some(path) = verdicts.as_deref() else {
+        return "claim-check log unavailable (home directory not resolvable)".to_string();
+    };
+    if !path.exists() {
+        return "No claim-check verdicts recorded yet — they appear when a completed \
+turn's final message claims \"tests pass / build succeeds\" and the verifier \
+checks it (see [verification] result_claims in config.example.toml)."
+            .to_string();
+    }
+    let records = codesmith_agent_runtime::evolution_log::load_verdicts(path);
+    if records.is_empty() {
+        return format!(
+            "claim-check log at {} contains no readable records",
+            crate::utils::display_path(path)
+        );
+    }
+    format!(
+        "{}\nlog: {}",
+        codesmith_agent_runtime::evolution_log::summarize(&records).render(),
+        crate::utils::display_path(path)
+    )
+}
+
 /// `/feedback [bug|feature|security|…]` — prints the issue URLs.
 pub fn feedback(arg: Option<&str>) {
     let raw = arg.map(str::trim).unwrap_or("");
@@ -717,7 +745,7 @@ pub fn feedback(arg: Option<&str>) {
 /// `/share` — upload conversation to a paste service.
 pub async fn share(state: &mut ReplState) {
     let history_json = serde_json::to_string(&state.api_messages).unwrap_or_default();
-    match legacy::share::perform_share(&history_json, &state.model, state.mode.label()).await {
+    match super::share::perform_share(&history_json, &state.model, state.mode.label()).await {
         Ok(url) => println!("shared: {url}"),
         Err(err) => println!("{} share failed: {err}", "✗".red()),
     }
