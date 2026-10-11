@@ -12,7 +12,38 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{expand_path, normalize_model_name};
 use crate::localization::normalize_configured_locale;
-use crate::palette::{normalize_hex_rgb_color, normalize_theme_name};
+/// Normalize a theme name to its canonical form (moved from the retired
+/// ratatui palette; settings validation is the surviving consumer).
+pub(crate) fn normalize_theme_name(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" | "auto" | "system" | "default" => Some("system"),
+        "terminal" | "term" | "transparent" | "follow-terminal" | "inherit" => Some("terminal"),
+        "dark" => Some("dark"),
+        "light" => Some("light"),
+        "grayscale" | "greyscale" | "gray" | "grey" | "mono" | "monochrome" | "black-white"
+        | "black_and_white" | "blackwhite" | "bw" | "b&w" => Some("grayscale"),
+        "catppuccin-mocha" | "catppuccin" | "mocha" => Some("catppuccin-mocha"),
+        "tokyo-night" | "tokyonight" | "tokyo" => Some("tokyo-night"),
+        "dracula" => Some("dracula"),
+        "gruvbox-dark" | "gruvbox" => Some("gruvbox-dark"),
+        "claude" => Some("claude"),
+        "matrix" | "hacker" => Some("matrix"),
+        "solarized-light" | "solarized" => Some("solarized-light"),
+        _ => None,
+    }
+}
+
+/// Validate/normalize a `#rrggbb` color (moved from the retired palette,
+/// which round-tripped through RGB and reformatted lowercased).
+pub(crate) fn normalize_hex_rgb_color(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    let hex = trimmed.strip_prefix('#').unwrap_or(trimmed);
+    if hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        Some(format!("#{}", hex.to_ascii_lowercase()))
+    } else {
+        None
+    }
+}
 
 // ============================================================================
 // TuiPrefs — ~/.codesmith/tui.toml
@@ -526,21 +557,13 @@ impl Settings {
                 };
                 self.locale = locale.to_string();
             }
-            "theme" => {
-                let Some(id) = crate::palette::ThemeId::from_name(value) else {
+            "theme" | "ui_theme" => {
+                let Some(name) = normalize_theme_name(value) else {
                     anyhow::bail!(
-                        "Failed to update setting: invalid theme '{value}'. Expected: system, dark, light, grayscale, catppuccin-mocha, tokyo-night, dracula, gruvbox-dark, solarized-light."
+                        "Failed to update setting: invalid theme '{value}'. Expected: system, terminal, dark, light, grayscale, catppuccin-mocha, tokyo-night, dracula, gruvbox-dark, solarized-light."
                     );
                 };
-                self.theme = id.name().to_string();
-            }
-            "ui_theme" => {
-                let Some(id) = crate::palette::ThemeId::from_name(value) else {
-                    anyhow::bail!(
-                        "Failed to update setting: invalid theme '{value}'. Expected: system, dark, light, grayscale, catppuccin-mocha, tokyo-night, dracula, gruvbox-dark, solarized-light."
-                    );
-                };
-                self.theme = id.name().to_string();
+                self.theme = name.to_string();
             }
             "background_color" | "background" | "bg" => {
                 self.background_color = normalize_background_color_setting(value)?;

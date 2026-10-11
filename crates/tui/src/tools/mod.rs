@@ -10,7 +10,6 @@
 
 pub mod agent_memory;
 pub use codesmith_tool_impls::tools::apply_patch;
-pub mod approval_cache;
 pub mod arg_repair;
 pub mod automation;
 pub use codesmith_tool_impls::tools::diagnostics;
@@ -68,6 +67,4 @@ pub mod web_search;
 pub use codesmith_tool_impls::tools::worktree;
 
 pub use registry::{ToolRegistry, ToolRegistryBuilder, ToolRegistryPluginExt};
-pub use review::ReviewOutput;
 pub use spec::ToolContext;
-pub use user_input::UserInputResponse;

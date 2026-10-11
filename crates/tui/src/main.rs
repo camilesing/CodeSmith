@@ -16,6 +16,23 @@ use wait_timeout::ChildExt;
 
 use crate::dependencies::ExternalTool;
 
+/// Best-effort terminal restore on crash paths: leave any raw/alt-screen
+/// mode a subprocess may have left enabled (the REPL itself never enters
+/// raw mode; exec_shell's pty wrapper restores its own state).
+fn restore_terminal_best_effort() {
+    use crossterm::{execute, terminal};
+    if terminal::is_raw_mode_enabled().unwrap_or(false)
+        && let Ok(()) = terminal::disable_raw_mode()
+    {
+        let _ = execute!(std::io::stdout(), terminal::LeaveAlternateScreen);
+    }
+}
+
+/// Brand colors (moved from the retired ratatui palette).
+const CODESMITH_SKY_RGB: (u8, u8, u8) = (106, 174, 242);
+const CODESMITH_RED_RGB: (u8, u8, u8) = (255, 92, 122);
+const CODESMITH_BLUE_RGB: (u8, u8, u8) = (47, 134, 255);
+
 mod acp_server;
 mod agent_memory;
 mod approval_grants;
@@ -23,24 +40,19 @@ mod artifacts;
 mod audit;
 mod auto_mode;
 pub use codesmith_agent_runtime::auto_reasoning;
+mod app_state;
 mod automation_manager;
 mod background_task;
-mod brand_theme;
 mod capabilities;
 mod child_env;
 mod command_safety;
-mod commands;
 mod compaction;
-mod composer_history;
-mod composer_stash;
 mod config;
-mod config_ui;
 mod core;
 mod cost_status;
 mod cycle_manager;
 mod dependencies;
 mod doctor_llm;
-mod error_taxonomy;
 mod eval;
 mod execpolicy;
 mod extension_state;
@@ -56,13 +68,14 @@ mod logging;
 mod lsp;
 mod mcp;
 mod mcp_server;
+mod media;
 mod memory;
 mod memory_consolidate;
 mod mod_ops;
 mod mod_state;
 mod models;
 mod network_policy;
-mod palette;
+mod notifications;
 mod prefix_cache;
 mod presets;
 mod pricing;
@@ -73,7 +86,6 @@ pub mod repl;
 mod retry_status;
 pub mod rlm;
 mod runtime_api;
-mod runtime_log;
 mod runtime_threads;
 mod sandbox;
 mod schema_migration;
@@ -90,14 +102,12 @@ mod snapshot;
 mod task_manager;
 #[cfg(test)]
 mod test_support;
-mod theme_qa_audit;
-mod tool_output_receipts;
+mod tool_summary;
 mod tools;
 mod tui;
 mod utils;
 mod vision;
 mod working_set;
-mod workspace_discovery;
 mod workspace_trust;
 
 use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS, effective_home_dir};
@@ -106,7 +116,7 @@ use crate::features::{Feature, render_feature_table};
 use crate::mcp::{McpConfig, McpPool, McpServerConfig};
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
 use crate::session_manager::{SessionManager, create_saved_session, truncate_id};
-use crate::tui::history::{summarize_tool_args, summarize_tool_output};
+use crate::tool_summary::{summarize_tool_args, summarize_tool_output};
 
 #[cfg(windows)]
 fn configure_windows_console_utf8() {
@@ -214,11 +224,6 @@ struct Cli {
     /// Skip loading project-level config from $WORKSPACE/.codesmith/config.toml
     #[arg(long = "no-project-config")]
     no_project_config: bool,
-
-    /// Escape hatch while the line-based REPL is the default frontend:
-    /// start the legacy ratatui TUI instead. Removed with the TUI itself.
-    #[arg(long, hide = true)]
-    tui: bool,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -490,7 +495,7 @@ fn spawn_signal_cleanup_task() {
         static CLEANED_UP: std::sync::atomic::AtomicBool =
             std::sync::atomic::AtomicBool::new(false);
         if !CLEANED_UP.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            crate::tui::ui::emergency_restore_terminal();
+            restore_terminal_best_effort();
         }
         std::process::exit(exit_code);
     });
@@ -525,8 +530,8 @@ fn join_prompt_parts(parts: &[String]) -> String {
     parts.join(" ")
 }
 
-fn top_level_prompt_initial_input(parts: &[String]) -> Option<tui::InitialInput> {
-    (!parts.is_empty()).then(|| tui::InitialInput::Submit(join_prompt_parts(parts)))
+fn top_level_prompt_initial_input(parts: &[String]) -> Option<crate::app_state::InitialInput> {
+    (!parts.is_empty()).then(|| crate::app_state::InitialInput::Submit(join_prompt_parts(parts)))
 }
 
 fn resolve_exec_resume_session_id(args: &ExecArgs, workspace: &Path) -> Result<Option<String>> {
@@ -950,7 +955,7 @@ async fn real_main() -> Result<()> {
         // in raw / alt-screen mode if the panic happens pre-TUI. Shared
         // with the signal handler installed below so both exit paths leave
         // the terminal in the same well-defined state.
-        crate::tui::ui::emergency_restore_terminal();
+        restore_terminal_best_effort();
 
         let msg = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
             s.to_string()
@@ -1899,11 +1904,10 @@ fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> Result<()> {
         return run_setup_clean(&default_checkpoints_dir(), args.force);
     }
 
-    use crate::palette;
     use colored::Colorize;
 
-    let (aqua_r, aqua_g, aqua_b) = palette::CODESMITH_SKY_RGB;
-    let (sky_r, sky_g, sky_b) = palette::CODESMITH_SKY_RGB;
+    let (aqua_r, aqua_g, aqua_b) = CODESMITH_SKY_RGB;
+    let (sky_r, sky_g, sky_b) = CODESMITH_SKY_RGB;
 
     let any_explicit = args.mcp || args.skills || args.tools || args.plugins;
     let run_mcp = args.mcp || args.all || !any_explicit;
@@ -2071,12 +2075,11 @@ fn skills_count_for(dir: &Path) -> usize {
 }
 
 fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
-    use crate::palette;
     use colored::Colorize;
 
-    let (aqua_r, aqua_g, aqua_b) = palette::CODESMITH_SKY_RGB;
-    let (sky_r, sky_g, sky_b) = palette::CODESMITH_SKY_RGB;
-    let (red_r, red_g, red_b) = palette::CODESMITH_RED_RGB;
+    let (aqua_r, aqua_g, aqua_b) = CODESMITH_SKY_RGB;
+    let (sky_r, sky_g, sky_b) = CODESMITH_SKY_RGB;
+    let (red_r, red_g, red_b) = CODESMITH_RED_RGB;
 
     println!(
         "{}",
@@ -2317,13 +2320,12 @@ fn run_setup_clean(checkpoints_dir: &Path, force: bool) -> Result<()> {
 
 /// Run system diagnostics
 async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Option<&Path>) {
-    use crate::palette;
     use colored::Colorize;
 
-    let (blue_r, blue_g, blue_b) = palette::CODESMITH_BLUE_RGB;
-    let (sky_r, sky_g, sky_b) = palette::CODESMITH_SKY_RGB;
-    let (aqua_r, aqua_g, aqua_b) = palette::CODESMITH_SKY_RGB;
-    let (red_r, red_g, red_b) = palette::CODESMITH_RED_RGB;
+    let (blue_r, blue_g, blue_b) = CODESMITH_BLUE_RGB;
+    let (sky_r, sky_g, sky_b) = CODESMITH_SKY_RGB;
+    let (aqua_r, aqua_g, aqua_b) = CODESMITH_SKY_RGB;
+    let (red_r, red_g, red_b) = CODESMITH_RED_RGB;
 
     // P3-8 step 2: collect the warning/error branches below as structured
     // findings for the LLM fallback layer (`doctor_llm`). Recording never
@@ -2986,26 +2988,6 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             );
         }
     }
-    let stash_path = codesmith_config::codesmith_home()
-        .ok()
-        .map(|h| h.join("composer_stash.jsonl"));
-    if let Some(stash_path) = stash_path {
-        let stash_count = crate::composer_stash::load_stash().len();
-        if stash_path.exists() {
-            println!(
-                "  {} composer stash at {} ({} parked draft{})",
-                "✓".truecolor(aqua_r, aqua_g, aqua_b),
-                crate::utils::display_path(&stash_path),
-                stash_count,
-                if stash_count == 1 { "" } else { "s" }
-            );
-        } else {
-            println!(
-                "  {} composer stash empty (Ctrl+S in the composer to park a draft)",
-                "·".dimmed()
-            );
-        }
-    }
 
     // Tool dependencies — probe external binaries that individual
     // tools rely on (Python for code_execution, pdftotext for PDF
@@ -3558,17 +3540,6 @@ fn run_doctor_json(
                     .map(|p| count_dir_entries(&p))
                     .unwrap_or(0),
             },
-            "stash": {
-                "path": codesmith_config::codesmith_home()
-                    .ok()
-                    .map(|h| h.join("composer_stash.jsonl").display().to_string())
-                    .unwrap_or_default(),
-                "present": codesmith_config::codesmith_home()
-                    .ok()
-                    .map(|h| h.join("composer_stash.jsonl"))
-                    .is_some_and(|p| p.exists()),
-                "count": crate::composer_stash::load_stash().len(),
-            },
         },
         "sandbox": match crate::sandbox::get_platform_sandbox() {
             Some(kind) => json!({"available": true, "kind": kind.to_string()}),
@@ -3903,13 +3874,12 @@ fn rustc_version() -> String {
 
 /// List saved sessions
 fn list_sessions(limit: usize, search: Option<String>) -> Result<()> {
-    use crate::palette;
     use colored::Colorize;
     use session_manager::{SessionManager, format_session_line};
 
-    let (blue_r, blue_g, blue_b) = palette::CODESMITH_BLUE_RGB;
-    let (sky_r, sky_g, sky_b) = palette::CODESMITH_SKY_RGB;
-    let (aqua_r, aqua_g, aqua_b) = palette::CODESMITH_SKY_RGB;
+    let (blue_r, blue_g, blue_b) = CODESMITH_BLUE_RGB;
+    let (sky_r, sky_g, sky_b) = CODESMITH_SKY_RGB;
+    let (aqua_r, aqua_g, aqua_b) = CODESMITH_SKY_RGB;
 
     let manager = SessionManager::default_location()?;
 
@@ -3969,13 +3939,12 @@ fn list_sessions(limit: usize, search: Option<String>) -> Result<()> {
 
 /// Initialize a new project with AGENTS.md
 fn init_project() -> Result<()> {
-    use crate::palette;
     use colored::Colorize;
     use project_context::create_default_agents_md;
 
-    let (sky_r, sky_g, sky_b) = palette::CODESMITH_SKY_RGB;
-    let (aqua_r, aqua_g, aqua_b) = palette::CODESMITH_SKY_RGB;
-    let (red_r, red_g, red_b) = palette::CODESMITH_RED_RGB;
+    let (sky_r, sky_g, sky_b) = CODESMITH_SKY_RGB;
+    let (aqua_r, aqua_g, aqua_b) = CODESMITH_SKY_RGB;
+    let (red_r, red_g, red_b) = CODESMITH_RED_RGB;
 
     let workspace = std::env::current_dir()?;
     let agents_path = workspace.join("AGENTS.md");
@@ -4350,7 +4319,7 @@ async fn run_pr(
         cli,
         config,
         resume_session_id,
-        Some(tui::InitialInput::Prefill(prompt)),
+        Some(crate::app_state::InitialInput::Prefill(prompt)),
     )
     .await
 }
@@ -5418,7 +5387,7 @@ async fn run_interactive(
     cli: &Cli,
     config: &Config,
     resume_session_id: Option<String>,
-    initial_input: Option<tui::InitialInput>,
+    initial_input: Option<crate::app_state::InitialInput>,
 ) -> Result<()> {
     let workspace = cli
         .workspace
@@ -5589,7 +5558,7 @@ async fn run_interactive(
         }
     }
 
-    let options = tui::TuiOptions {
+    let options = crate::app_state::TuiOptions {
         model,
         workspace,
         config_path: cli.config.clone(),
@@ -5610,12 +5579,7 @@ async fn run_interactive(
         initial_input,
         max_subagents,
     };
-    if cli.tui {
-        tui::run_tui(config, options, telemetry_sink.clone()).await
-    } else {
-        // Default frontend: the line-based REPL.
-        crate::interactive::run_repl(config, options, telemetry_sink.clone()).await
-    }
+    crate::interactive::run_repl(config, options, telemetry_sink).await
 }
 
 struct CliAutoRoute {
@@ -5626,7 +5590,10 @@ struct CliAutoRoute {
 
 async fn resolve_cli_auto_route(config: &Config, model: &str, prompt: &str) -> CliAutoRoute {
     if model.trim().eq_ignore_ascii_case("auto") {
-        let selection = commands::resolve_auto_route(config, prompt, "", "auto", "auto").await;
+        let selection = crate::interactive::commands::auto_route::resolve_auto_route(
+            config, prompt, "", "auto", "auto",
+        )
+        .await;
         CliAutoRoute {
             model: selection.model,
             reasoning_effort: selection.reasoning_effort,
@@ -7077,7 +7044,9 @@ mod terminal_mode_tests {
 
         assert_eq!(
             top_level_prompt_initial_input(&cli.prompt),
-            Some(tui::InitialInput::Submit("read the project".to_string()))
+            Some(crate::app_state::InitialInput::Submit(
+                "read the project".to_string()
+            ))
         );
     }
 

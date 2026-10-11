@@ -4,7 +4,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use colored::Colorize;
 
-use crate::palette;
+/// Brand sky color (moved from the retired ratatui palette).
+const CODESMITH_SKY_RGB: (u8, u8, u8) = (106, 174, 242);
+
 static VERBOSE: AtomicBool = AtomicBool::new(false);
 #[cfg(windows)]
 static VERBOSE_SNAPSHOT: AtomicBool = AtomicBool::new(false);
@@ -62,7 +64,7 @@ pub fn is_verbose() -> bool {
 /// Emit a verbose info message (no-op when verbosity is disabled).
 pub fn info(message: impl AsRef<str>) {
     if is_verbose() {
-        let (r, g, b) = palette::CODESMITH_SKY_RGB;
+        let (r, g, b) = CODESMITH_SKY_RGB;
         eprintln!("{} {}", "info".truecolor(r, g, b).bold(), message.as_ref());
     }
 }
@@ -70,7 +72,7 @@ pub fn info(message: impl AsRef<str>) {
 /// Emit a verbose warning message (no-op when verbosity is disabled).
 pub fn warn(message: impl AsRef<str>) {
     if is_verbose() {
-        let (r, g, b) = palette::CODESMITH_SKY_RGB;
+        let (r, g, b) = CODESMITH_SKY_RGB;
         eprintln!("{} {}", "warn".truecolor(r, g, b).bold(), message.as_ref());
     }
 }

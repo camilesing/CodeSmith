@@ -148,7 +148,7 @@ pub fn set_config_value(state: &mut ReplState, key: &str, value: &str, persist: 
             }
             state.mcp_config_path = std::path::PathBuf::from(expand_tilde(value));
             if persist {
-                match crate::commands::persist_root_string_key(
+                match crate::interactive::commands::auto_route::persist_root_string_key(
                     state.config_path.as_deref(),
                     "mcp_config_path",
                     value,
@@ -172,7 +172,7 @@ pub fn set_config_value(state: &mut ReplState, key: &str, value: &str, persist: 
                 println!("{} base_url cannot be empty", "✗".red());
                 return;
             }
-            match crate::commands::persist_root_string_key(
+            match crate::interactive::commands::auto_route::persist_root_string_key(
                 state.config_path.as_deref(),
                 "base_url",
                 value,
@@ -203,7 +203,7 @@ pub fn set_config_value(state: &mut ReplState, key: &str, value: &str, persist: 
         _ => {
             // Appearance and unknown keys: persist verbatim when asked.
             if persist {
-                match crate::commands::persist_root_string_key(
+                match crate::interactive::commands::auto_route::persist_root_string_key(
                     state.config_path.as_deref(),
                     &key,
                     value,

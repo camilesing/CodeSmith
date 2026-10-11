@@ -86,7 +86,7 @@ pub async fn run_repl(
         permission_request_registry: None,
         background_task_registry: state.runtime_services.background_task_registry.clone(),
         team_sender: Some(crate::tools::team::team_lead_name().to_string()),
-        notifier: Some(crate::tui::notifications::wrap_notifier()),
+        notifier: Some(crate::notifications::wrap_notifier()),
         index_service: state.index_service.clone(),
     };
 
@@ -296,8 +296,14 @@ async fn submit_with_images(
     // Auto-model routing per request (mirror of the retired dispatch path
     // / `resolve_cli_auto_route` in exec).
     let (effective_model, effective_reasoning_effort) = if state.auto_model {
-        let selection =
-            crate::commands::resolve_auto_route(&state.config, &content, "", "auto", "auto").await;
+        let selection = crate::interactive::commands::auto_route::resolve_auto_route(
+            &state.config,
+            &content,
+            "",
+            "auto",
+            "auto",
+        )
+        .await;
         state.last_effective_model = Some(selection.model.clone());
         if let Some(effort) = selection.reasoning_effort {
             state.last_effective_reasoning_effort = Some(effort);

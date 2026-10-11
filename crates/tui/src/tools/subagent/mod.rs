@@ -5960,8 +5960,10 @@ fn fallback_subagent_assignment_route(
     let model = if let Some(model) = configured_model {
         model
     } else if runtime.auto_model {
-        let tier =
-            crate::commands::auto_model_heuristic_tier(prompt, runtime.auto_route.cost_saving);
+        let tier = crate::interactive::commands::auto_route::auto_model_heuristic_tier(
+            prompt,
+            runtime.auto_route.cost_saving,
+        );
         runtime
             .auto_route
             .tier_models
@@ -5993,7 +5995,7 @@ fn fallback_subagent_assignment_route(
 async fn subagent_model_router(
     runtime: &SubAgentRuntime,
     prompt: &str,
-) -> Result<Option<crate::commands::AutoRouteRecommendation>> {
+) -> Result<Option<crate::interactive::commands::auto_route::AutoRouteRecommendation>> {
     if cfg!(test) {
         return Ok(None);
     }
@@ -6050,9 +6052,11 @@ async fn subagent_model_router(
 
     let response =
         tokio::time::timeout(Duration::from_secs(4), client.create_message(request)).await??;
-    Ok(crate::commands::parse_auto_route_recommendation(
-        &message_response_text(&response.content),
-    ))
+    Ok(
+        crate::interactive::commands::auto_route::parse_auto_route_recommendation(
+            &message_response_text(&response.content),
+        ),
+    )
 }
 
 const SUBAGENT_ROUTER_SYSTEM_PROMPT: &str = "\
@@ -6073,7 +6077,9 @@ multi-step, uncertain, or tool-heavy work.";
 fn subagent_router_system_prompt(runtime: &SubAgentRuntime) -> String {
     let mut system = SUBAGENT_ROUTER_SYSTEM_PROMPT.to_string();
     if runtime.auto_route.cost_saving {
-        system.push_str(crate::commands::AUTO_MODEL_ROUTER_COST_SAVING_ADDENDUM);
+        system.push_str(
+            crate::interactive::commands::auto_route::AUTO_MODEL_ROUTER_COST_SAVING_ADDENDUM,
+        );
     }
     system
 }

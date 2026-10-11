@@ -1663,9 +1663,14 @@ impl RuntimeThreadManager {
         let requested_model = req.model.unwrap_or_else(|| thread.model.clone());
         let auto_model = requested_model.trim().eq_ignore_ascii_case("auto");
         let (model, reasoning_effort) = if auto_model {
-            let selection =
-                crate::commands::resolve_auto_route(&self.config, &prompt, "", "auto", "auto")
-                    .await;
+            let selection = crate::interactive::commands::auto_route::resolve_auto_route(
+                &self.config,
+                &prompt,
+                "",
+                "auto",
+                "auto",
+            )
+            .await;
             (
                 selection.model,
                 selection
@@ -2032,7 +2037,7 @@ impl RuntimeThreadManager {
             permission_request_registry: None,
             background_task_registry: None,
             team_sender: None,
-            notifier: Some(crate::tui::notifications::wrap_notifier()),
+            notifier: Some(crate::notifications::wrap_notifier()),
             // Background threads build their own engine context; the code
             // index service attaches per-workspace in the main session
             // (IndexManager wiring).

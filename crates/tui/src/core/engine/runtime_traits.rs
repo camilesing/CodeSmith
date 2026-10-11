@@ -54,15 +54,15 @@ pub(crate) struct TuiRuntimeUi;
 
 impl RuntimeUi for TuiRuntimeUi {
     fn notify_busy(&self) {
-        crate::tui::notifications::set_taskbar_progress_busy();
+        crate::notifications::set_taskbar_progress_busy();
     }
 
     fn start_title_animation(&self, label: &str) {
-        crate::tui::notifications::start_title_animation(label);
+        crate::notifications::start_title_animation(label);
     }
 
     fn clipboard_images_dir(&self, workspace: &std::path::Path) -> PathBuf {
-        crate::tui::clipboard::clipboard_images_dir(workspace)
+        crate::media::clipboard_images_dir(workspace)
     }
 }
 

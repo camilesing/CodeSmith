@@ -3318,9 +3318,11 @@ pub(crate) use codesmith_agent_runtime::utils::effective_home_dir;
 // Workspace trust + config-path helpers moved to
 // `codesmith_agent_runtime::workspace_trust`; re-exported here so the rest
 // of config.rs (and `crate::config::is_workspace_trusted` callers) keep resolving.
+#[cfg(test)]
+pub(crate) use codesmith_agent_runtime::workspace_trust::save_workspace_trust;
 pub(crate) use codesmith_agent_runtime::workspace_trust::{
     default_config_path, env_config_path, expand_path, expand_pathbuf, home_config_path,
-    is_workspace_trusted, save_workspace_trust,
+    is_workspace_trusted,
 };
 // Only the test module below consumes these re-exports today; the cfg gate
 // keeps the non-test bin pass from flagging them as unused imports.

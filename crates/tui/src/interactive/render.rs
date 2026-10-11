@@ -145,7 +145,7 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
             Event::LlmRequest { .. } => {}
             Event::ToolCallStarted { name, input, .. } => {
                 view.clear_live();
-                let args = crate::tui::history::summarize_tool_args(&input)
+                let args = crate::tool_summary::summarize_tool_args(&input)
                     .map(|summary| format!("({summary})"))
                     .unwrap_or_default();
                 println!("{} {}{}", "⏺".cyan(), name.cyan(), args.dimmed());
@@ -159,7 +159,7 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                 }
                 match result {
                     Ok(output) => {
-                        let summary = crate::tui::history::summarize_tool_output(&output.content);
+                        let summary = crate::tool_summary::summarize_tool_output(&output.content);
                         if summary.is_empty() {
                             println!("  {} ok", "⎿".dimmed());
                         } else {
@@ -194,7 +194,7 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                 println!(
                     "{} spawned {id}: {}",
                     "◇".cyan(),
-                    crate::tui::history::summarize_tool_output(&prompt).dimmed()
+                    crate::tool_summary::summarize_tool_output(&prompt).dimmed()
                 );
             }
             Event::AgentProgress { id, status } => {
@@ -206,7 +206,7 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                 println!(
                     "{} agent {id} done: {}",
                     "◇".dimmed(),
-                    crate::tui::history::summarize_tool_output(&result).dimmed()
+                    crate::tool_summary::summarize_tool_output(&result).dimmed()
                 );
             }
             Event::AgentList { agents } => {
@@ -482,7 +482,7 @@ async fn handle_approval(
     {
         println!("{}", format!("  intent: {intent}").dimmed());
     }
-    if let Some(args) = crate::tui::history::summarize_tool_args(&input) {
+    if let Some(args) = crate::tool_summary::summarize_tool_args(&input) {
         println!("{}", format!("  args: {args}").dimmed());
     }
     state.awaiting_approval = true;

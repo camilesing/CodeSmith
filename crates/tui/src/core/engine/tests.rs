@@ -16,6 +16,7 @@ use crate::llm_client::mock::{MockLlmClient, canned};
 use crate::tools::spec::ToolContext;
 use crate::tools::subagent::{SubAgentRuntime, new_shared_subagent_manager};
 use crate::tui::approval::ApprovalMode;
+use codesmith_agent_runtime::engine::compact_tool_result_for_context;
 use codesmith_agent_runtime::telemetry::TelemetrySink;
 
 use super::*;
@@ -3709,8 +3710,8 @@ fn stream_retry_threshold_relaxed_to_five() {
 /// string.
 #[test]
 fn tool_failure_audit_payload_carries_category_and_severity() {
-    use crate::error_taxonomy::ErrorEnvelope;
     use crate::tools::spec::ToolError;
+    use codesmith_agent_runtime::error_taxonomy::ErrorEnvelope;
 
     let error = ToolError::Timeout { seconds: 30 };
     let envelope: ErrorEnvelope = error.clone().into();
@@ -3735,7 +3736,7 @@ fn tool_failure_audit_payload_carries_category_and_severity() {
 /// "context length" — categories give us a typed contract instead.
 #[test]
 fn capacity_escalation_treats_invalid_input_as_overflow_signal() {
-    use crate::error_taxonomy::ErrorCategory;
+    use codesmith_agent_runtime::error_taxonomy::ErrorCategory;
 
     // Replays the categorization branches inside
     // `run_capacity_error_escalation_checkpoint`. Keeping the assertions on
@@ -3760,7 +3761,7 @@ fn capacity_escalation_treats_invalid_input_as_overflow_signal() {
 /// trigger a capacity-driven replan.
 #[test]
 fn capacity_escalation_skips_pure_transient_categories() {
-    use crate::error_taxonomy::ErrorCategory;
+    use codesmith_agent_runtime::error_taxonomy::ErrorCategory;
 
     let categories: &[ErrorCategory] = &[
         ErrorCategory::Network,
