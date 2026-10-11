@@ -184,6 +184,7 @@ pub enum UiLocale {
 #[serde(rename_all = "kebab-case")]
 pub enum UiThemeValue {
     System,
+    Terminal,
     Dark,
     Light,
     Grayscale,
@@ -191,7 +192,9 @@ pub enum UiThemeValue {
     TokyoNight,
     Dracula,
     GruvboxDark,
+    Claude,
     Matrix,
+    SolarizedLight,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -733,6 +736,7 @@ impl UiThemeValue {
     fn as_setting(self) -> &'static str {
         match self {
             Self::System => "system",
+            Self::Terminal => "terminal",
             Self::Dark => "dark",
             Self::Light => "light",
             Self::Grayscale => "grayscale",
@@ -740,13 +744,16 @@ impl UiThemeValue {
             Self::TokyoNight => "tokyo-night",
             Self::Dracula => "dracula",
             Self::GruvboxDark => "gruvbox-dark",
+            Self::Claude => "claude",
             Self::Matrix => "matrix",
+            Self::SolarizedLight => "solarized-light",
         }
     }
 
     fn from_setting(value: &str) -> Result<Self> {
         match crate::palette::normalize_theme_name(value) {
             Some("system") => Ok(Self::System),
+            Some("terminal") => Ok(Self::Terminal),
             Some("dark") => Ok(Self::Dark),
             Some("light") => Ok(Self::Light),
             Some("grayscale") => Ok(Self::Grayscale),
@@ -754,7 +761,9 @@ impl UiThemeValue {
             Some("tokyo-night") => Ok(Self::TokyoNight),
             Some("dracula") => Ok(Self::Dracula),
             Some("gruvbox-dark") => Ok(Self::GruvboxDark),
+            Some("claude") => Ok(Self::Claude),
             Some("matrix") => Ok(Self::Matrix),
+            Some("solarized-light") => Ok(Self::SolarizedLight),
             Some(other) => bail!("unsupported theme '{other}'"),
             None => bail!("invalid theme '{value}'"),
         }
@@ -1181,6 +1190,7 @@ background_color = "#1A1B26"
             theme,
             &serde_json::json!([
                 "system",
+                "terminal",
                 "dark",
                 "light",
                 "grayscale",
@@ -1188,7 +1198,9 @@ background_color = "#1A1B26"
                 "tokyo-night",
                 "dracula",
                 "gruvbox-dark",
-                "matrix"
+                "claude",
+                "matrix",
+                "solarized-light"
             ])
         );
     }

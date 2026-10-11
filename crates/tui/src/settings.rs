@@ -206,11 +206,13 @@ pub struct Settings {
     pub show_tool_details: bool,
     /// UI locale: auto, en, zh-Hans, zh-Hant, hi, es-419
     pub locale: String,
-    /// Named UI theme. Accepts `"system"` (follow terminal background),
-    /// `"dark"`, `"light"`, `"grayscale"`, or one of the community
-    /// presets: `"catppuccin-mocha"`, `"tokyo-night"`, `"dracula"`,
-    /// `"gruvbox-dark"`. The `background_color` setting still overrides the
-    /// surface color on top of the resolved theme.
+    /// Named UI theme. Defaults to `"terminal"`, which inherits the host
+    /// terminal's colors (transparent surfaces, ANSI accents) the same way
+    /// CLI output does. Also accepts `"system"` (COLORFGBG / macOS
+    /// appearance detection), `"dark"`, `"light"`, `"grayscale"`, or one of
+    /// the community presets: `"catppuccin-mocha"`, `"tokyo-night"`,
+    /// `"dracula"`, `"gruvbox-dark"`. The `background_color` setting still
+    /// overrides the surface color on top of the resolved theme.
     pub theme: String,
     /// Optional main TUI background color as a 6-digit hex RGB value.
     pub background_color: Option<String>,
@@ -311,7 +313,7 @@ impl Default for Settings {
             is_simple: false,
             show_tool_details: true,
             locale: "auto".to_string(),
-            theme: "system".to_string(),
+            theme: "terminal".to_string(),
             background_color: None,
             composer_density: "comfortable".to_string(),
             composer_border: true,
@@ -821,7 +823,7 @@ impl Settings {
             ),
             (
                 "theme",
-                "UI theme: system, dark, light, grayscale, catppuccin-mocha, tokyo-night, dracula, gruvbox-dark, solarized-light",
+                "UI theme: terminal, system, dark, light, grayscale, catppuccin-mocha, tokyo-night, dracula, gruvbox-dark, solarized-light",
             ),
             (
                 "background_color",
@@ -1215,7 +1217,7 @@ mod tests {
     #[test]
     fn theme_normalizes_supported_values_and_rejects_unknowns() {
         let mut settings = Settings::default();
-        assert_eq!(settings.theme, "system");
+        assert_eq!(settings.theme, "terminal");
 
         settings.set("theme", "grayscale").expect("set grayscale");
         assert_eq!(settings.theme, "grayscale");
