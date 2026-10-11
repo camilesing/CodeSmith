@@ -3070,6 +3070,7 @@ async fn run_event_loop(
                                     .await
                                     {
                                         onboarding::advance_onboarding_after_credentials(app);
+                                        onboarding::mark_onboarded_if_cleared(app);
                                     }
                                 }
                                 Err(e) => {
@@ -3092,6 +3093,7 @@ async fn run_event_loop(
                                 );
                                 app.onboarding_workspace_trust_gate = false;
                                 app.onboarding = OnboardingState::None;
+                                onboarding::mark_onboarded_if_cleared(app);
                                 // §F5 — `ProjectTrust { FirstLoad }`: the onboarding
                                 // trust-accept is the once-per-session site, distinct
                                 // from the per-turn `Trusted`/`Untrusted` emits in

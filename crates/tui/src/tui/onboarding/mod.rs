@@ -129,18 +129,27 @@ pub fn validate_api_key_for_onboarding(api_key: &str) -> InputValidation {
 }
 
 /// Advance past the credential gate: to the trust gate when the workspace
-/// still needs a decision, otherwise out of onboarding entirely — writing
-/// the first-run marker on the way out (idempotent for already-onboarded
-/// sessions; the CLI wizard normally owns it).
+/// still needs a decision, otherwise out of onboarding entirely. A pure
+/// state transition — recording first-run completion is
+/// [`mark_onboarded_if_cleared`], which stays behind the production key
+/// handlers so unit tests calling this never touch the real home marker.
 pub fn advance_onboarding_after_credentials(app: &mut App) {
     app.status_message = None;
     if !app.trust_mode && needs_trust(&app.workspace) {
         app.onboarding = OnboardingState::TrustDirectory;
     } else {
         app.onboarding = OnboardingState::None;
-        if let Err(err) = mark_onboarded() {
-            app.status_message = Some(format!("Failed to mark onboarding: {err}"));
-        }
+    }
+}
+
+/// Record first-run completion when the last gate has just cleared to
+/// `None`. Idempotent for already-onboarded sessions (the CLI wizard
+/// normally owns the marker); the failure lands in the status bar.
+pub fn mark_onboarded_if_cleared(app: &mut App) {
+    if app.onboarding == OnboardingState::None
+        && let Err(err) = mark_onboarded()
+    {
+        app.status_message = Some(format!("Failed to mark onboarding: {err}"));
     }
 }
 
