@@ -187,6 +187,12 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
   commands degrade to explicit notes). Release channels — npm, brew, Docker,
   nix, GitHub assets, self-update — ship the one binary; installs updating
   from a two-binary release need a one-time reinstall.
+- The terminal-chrome flags `--no-alt-screen`, `--mouse-capture`, and
+  `--no-mouse-capture` (alt screen, mouse capture, and bracketed-paste are
+  gone with the TUI), the `[tui]` and `[notifications]` config tables, and
+  the `~/.codesmith/tui.toml` preferences file. Turn notifications remain
+  available through the model-callable `notify` tool. Unknown keys in old
+  config files are ignored on load.
 
 ## [0.1.0] - 2026-08-25
 

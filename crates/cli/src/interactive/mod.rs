@@ -19,10 +19,10 @@ use std::path::PathBuf;
 use anyhow::{Context as _, Result};
 use colored::Colorize;
 
+use crate::app_state::{InitialInput, TuiOptions};
 use crate::config::Config;
 use crate::core::engine::{EngineHost, spawn_engine};
 use crate::core::ops::Op;
-use crate::tui::app::{InitialInput, TuiOptions};
 use state::ReplState;
 
 /// Image extensions accepted for `@path` attachments in the composer.
@@ -335,7 +335,7 @@ async fn submit_with_images(
             auto_model: state.auto_model,
             allow_shell: state.allow_shell,
             trust_mode: state.trust_mode,
-            auto_approve: state.approval_mode == crate::tui::approval::ApprovalMode::Auto,
+            auto_approve: state.approval_mode == codesmith_agent_runtime::mode::ApprovalMode::Auto,
             translation_enabled: state.translation_enabled,
             show_thinking: state.show_thinking,
             is_simple: state.is_simple,

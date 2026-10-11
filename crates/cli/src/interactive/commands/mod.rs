@@ -20,9 +20,9 @@ use codesmith_config::presets::PresetCatalog;
 use colored::Colorize;
 
 use super::state::ReplState;
+use crate::app_state::AppMode;
 use crate::core::ops::Op;
 use crate::presets;
-use crate::tui::app::AppMode;
 
 /// Dispatch one `/command args…` line. Returns `true` when the REPL
 /// should exit.

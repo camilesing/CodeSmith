@@ -50,16 +50,6 @@ impl Locale {
         }
     }
 
-    pub fn translation_target_name(self) -> &'static str {
-        match self {
-            Self::En => "English",
-            Self::ZhHans => "Simplified Chinese (简体中文)",
-            Self::ZhHant => "Traditional Chinese (繁體中文)",
-            Self::Hi => "Hindi (हिन्दी)",
-            Self::Es419 => "Latin American Spanish (Español latinoamericano)",
-        }
-    }
-
     #[allow(dead_code)]
     pub fn spec(self) -> LocaleSpec {
         match self {
@@ -167,7 +157,6 @@ pub enum MessageId {
     CmdHomeDescription,
     CmdHooksDescription,
     CmdAgentDescription,
-    CmdGoalDescription,
     CmdInitDescription,
     CmdJobsDescription,
     CmdLinksDescription,
@@ -180,7 +169,6 @@ pub enum MessageId {
     CmdModelsDescription,
     CmdNetworkDescription,
     CmdNoteDescription,
-    CmdThemeDescription,
     CmdProviderDescription,
     CmdQueueDescription,
     CmdRecallDescription,
@@ -191,7 +179,6 @@ pub enum MessageId {
     CmdReviewDescription,
     CmdRlmDescription,
     CmdSaveDescription,
-    CmdForkDescription,
     CmdNewDescription,
     CmdSessionsDescription,
     CmdSettingsDescription,
@@ -651,56 +638,6 @@ pub fn tr(locale: Locale, id: MessageId) -> &'static str {
     fallback_translation(translation(locale, id), id)
 }
 
-pub fn thinking_translation_placeholder(locale: Locale) -> &'static str {
-    match locale {
-        Locale::En => "Thinking; translating when complete...",
-        Locale::ZhHans => "正在思考，完成后翻译为简体中文...",
-        Locale::ZhHant => "正在思考，完成後翻譯為繁體中文...",
-        Locale::Hi => "सोच रहा है; पूरा होने पर अनुवाद किया जाएगा...",
-        Locale::Es419 => "Pensando; traduciendo al finalizar...",
-    }
-}
-
-pub fn thinking_translation_in_progress(locale: Locale) -> &'static str {
-    match locale {
-        Locale::En => "Translating thinking content...",
-        Locale::ZhHans => "正在翻译思考内容...",
-        Locale::ZhHant => "正在翻譯思考內容...",
-        Locale::Hi => "thinking सामग्री का अनुवाद हो रहा है...",
-        Locale::Es419 => "Traduciendo el contenido de razonamiento...",
-    }
-}
-
-pub fn thinking_translation_complete(locale: Locale) -> &'static str {
-    match locale {
-        Locale::En => "Thinking translation complete",
-        Locale::ZhHans => "思考内容翻译完成",
-        Locale::ZhHant => "思考內容翻譯完成",
-        Locale::Hi => "thinking का अनुवाद पूर्ण हुआ",
-        Locale::Es419 => "Traducción del razonamiento completada",
-    }
-}
-
-pub fn thinking_translation_failed(locale: Locale) -> &'static str {
-    match locale {
-        Locale::En => "Thinking translation failed",
-        Locale::ZhHans => "思考内容翻译失败",
-        Locale::ZhHant => "思考內容翻譯失敗",
-        Locale::Hi => "thinking का अनुवाद विफल हुआ",
-        Locale::Es419 => "Falló la traducción del razonamiento",
-    }
-}
-
-pub fn hidden_translation_failed(locale: Locale) -> &'static str {
-    match locale {
-        Locale::En => "Translation failed; original text is hidden.",
-        Locale::ZhHans => "翻译失败，原文已隐藏。",
-        Locale::ZhHant => "翻譯失敗，原文已隱藏。",
-        Locale::Hi => "अनुवाद विफल; मूल पाठ छिपा हुआ है।",
-        Locale::Es419 => "La traducción falló; el texto original está oculto.",
-    }
-}
-
 #[allow(dead_code)]
 pub fn missing_message_ids(locale: Locale) -> Vec<MessageId> {
     ALL_MESSAGE_IDS
@@ -890,7 +827,6 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdAgentDescription => {
             "Open a persistent sub-agent session: /agent [0-3] <task>"
         }
-        MessageId::CmdGoalDescription => "Set a session goal with optional token budget",
         MessageId::CmdInitDescription => "Generate AGENTS.md for project",
         MessageId::CmdLspDescription => "Toggle LSP diagnostics on or off",
         MessageId::CmdShareDescription => "Export current session as a shareable web URL",
@@ -907,7 +843,6 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdModelsDescription => "List available models from API",
         MessageId::CmdNetworkDescription => "Manage network allow and deny rules",
         MessageId::CmdNoteDescription => "Add, list, edit, or remove workspace notes",
-        MessageId::CmdThemeDescription => "Switch theme or open the theme picker",
         MessageId::CmdProviderDescription => {
             "Switch or view the active LLM backend (deepseek | nvidia-nim | ollama)"
         }
@@ -922,7 +857,6 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdReviewDescription => "Run a structured code review on a file, diff, or PR",
         MessageId::CmdRlmDescription => "Open a persistent RLM context: /rlm [0-3] <file_or_text>",
         MessageId::CmdSaveDescription => "Save session to file",
-        MessageId::CmdForkDescription => "Fork the active conversation into a sibling session",
         MessageId::CmdNewDescription => "Start a fresh saved session",
         MessageId::CmdSessionsDescription => "Open session history picker",
         MessageId::CmdSettingsDescription => "Show persistent settings",
@@ -1281,7 +1215,6 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdHomeDescription => "显示主页面板，含统计与快捷操作",
         MessageId::CmdHooksDescription => "列出已配置的生命周期钩子（只读）",
         MessageId::CmdAgentDescription => "打开持久子代理会话：/agent [0-3] <task>",
-        MessageId::CmdGoalDescription => "设置带有可选令牌预算的会话目标",
         MessageId::CmdInitDescription => "为项目生成 AGENTS.md",
         MessageId::CmdLspDescription => "切换 LSP 诊断的开启或关闭",
         MessageId::CmdShareDescription => "将当前会话导出为可共享的 Web URL",
@@ -1298,7 +1231,6 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdModelsDescription => "列出 API 中可用的模型",
         MessageId::CmdNetworkDescription => "管理网络允许和拒绝规则",
         MessageId::CmdNoteDescription => "添加、列出、编辑或删除工作区笔记",
-        MessageId::CmdThemeDescription => "切换主题：深色、浅色、灰度或系统",
         MessageId::CmdProviderDescription => {
             "切换或查看当前 LLM 后端（deepseek | nvidia-nim | ollama）"
         }
@@ -1313,7 +1245,6 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdReviewDescription => "对文件、diff 或 PR 进行结构化代码审查",
         MessageId::CmdRlmDescription => "打开持久 RLM 上下文：/rlm [0-3] <file_or_text>",
         MessageId::CmdSaveDescription => "将会话保存到文件",
-        MessageId::CmdForkDescription => "将当前对话分叉为兄弟会话",
         MessageId::CmdNewDescription => "开始一个新的已保存会话",
         MessageId::CmdSessionsDescription => "打开会话历史选择器",
         MessageId::CmdSettingsDescription => "显示持久化设置",
@@ -1623,7 +1554,6 @@ fn hindi(id: MessageId) -> Option<&'static str> {
         MessageId::CmdHomeDescription => "आँकड़ों और त्वरित क्रियाओं सहित होम डैशबोर्ड दिखाएँ",
         MessageId::CmdHooksDescription => "कॉन्फ़िगर किए गए lifecycle hooks दिखाएँ (केवल-पठनीय)",
         MessageId::CmdAgentDescription => "स्थायी sub-agent सत्र खोलें: /agent [0-3] <task>",
-        MessageId::CmdGoalDescription => "वैकल्पिक token बजट के साथ सत्र लक्ष्य सेट करें",
         MessageId::CmdInitDescription => "प्रोजेक्ट के लिए AGENTS.md बनाएँ",
         MessageId::CmdLspDescription => "LSP डायग्नोस्टिक्स चालू या बंद करें",
         MessageId::CmdShareDescription => "वर्तमान सत्र को साझा करने योग्य web URL के रूप में निर्यात करें",
@@ -1640,7 +1570,6 @@ fn hindi(id: MessageId) -> Option<&'static str> {
         MessageId::CmdModelsDescription => "API से उपलब्ध मॉडल दिखाएँ",
         MessageId::CmdNetworkDescription => "नेटवर्क allow और deny नियम प्रबंधित करें",
         MessageId::CmdNoteDescription => "workspace नोट्स जोड़ें, देखें, संपादित करें या हटाएँ",
-        MessageId::CmdThemeDescription => "थीम बदलें या theme picker खोलें",
         MessageId::CmdProviderDescription => {
             "सक्रिय LLM बैकएंड बदलें या देखें (deepseek | nvidia-nim | ollama)"
         }
@@ -1655,7 +1584,6 @@ fn hindi(id: MessageId) -> Option<&'static str> {
         MessageId::CmdReviewDescription => "फ़ाइल, diff या PR पर संरचित code review चलाएँ",
         MessageId::CmdRlmDescription => "स्थायी RLM context खोलें: /rlm [0-3] <file_or_text>",
         MessageId::CmdSaveDescription => "सत्र फ़ाइल में सहेजें",
-        MessageId::CmdForkDescription => "सक्रिय बातचीत को सिबलिंग सत्र में fork करें",
         MessageId::CmdNewDescription => "नया सहेजा गया सत्र प्रारंभ करें",
         MessageId::CmdSessionsDescription => "सत्र इतिहास पिकर खोलें",
         MessageId::CmdSettingsDescription => "स्थायी सेटिंग दिखाएँ",
@@ -2006,9 +1934,6 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         MessageId::CmdAgentDescription => {
             "Abrir una sesión persistente de sub-agente: /agent [0-3] <tarea>"
         }
-        MessageId::CmdGoalDescription => {
-            "Definir una meta de sesión con presupuesto de tokens opcional"
-        }
         MessageId::CmdInitDescription => "Generar AGENTS.md para el proyecto",
         MessageId::CmdLspDescription => "Alternar diagnóstico LSP encendido o apagado",
         MessageId::CmdShareDescription => "Exportar la sesión actual como una URL web compartible",
@@ -2031,7 +1956,6 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         MessageId::CmdNoteDescription => {
             "Agregar nota al archivo persistente (.codesmith/notes.md)"
         }
-        MessageId::CmdThemeDescription => "Alternar entre tema claro y oscuro",
         MessageId::CmdProviderDescription => {
             "Cambiar o mostrar el backend LLM activo (deepseek | nvidia-nim | ollama)"
         }
@@ -2052,7 +1976,6 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
             "Turno del Recursive Language Model (RLM) — guarda el prompt en un REPL Python y deja que el modelo escriba el código que lo procesa; usa `llm_query()` / `sub_rlm()` para llamadas a sub-LLMs."
         }
         MessageId::CmdSaveDescription => "Guardar la sesión en archivo",
-        MessageId::CmdForkDescription => "Bifurcar la conversación activa a una sesión hermana",
         MessageId::CmdNewDescription => "Iniciar una nueva sesión guardada",
         MessageId::CmdSessionsDescription => "Abrir el selector de sesiones",
         MessageId::CmdSettingsDescription => "Mostrar las configuraciones persistidas",

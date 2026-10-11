@@ -50,7 +50,6 @@ flate2 = "1.1"
 futures-util = "0.3.31"
 ignore = "0.4"
 multimap = "0.10.0"
-notify.workspace = true
 pdf-extract = "0.7"
 qrcode = "0.14"
 regex = "1.11"

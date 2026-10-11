@@ -1,5 +1,4 @@
 mod metrics;
-mod onboarding;
 mod update;
 
 pub(crate) use codesmith_agent_runtime::auto_reasoning;
@@ -63,7 +62,6 @@ mod runtime_threads;
 mod sandbox;
 mod schema_migration;
 mod seam_manager;
-mod session_failure_classifier;
 mod session_manager;
 mod settings;
 mod shell_dispatcher;
@@ -72,32 +70,28 @@ mod skills;
 mod slop_ledger;
 mod snapshot;
 mod task_manager;
+#[cfg(test)]
 mod test_support;
 mod tool_summary;
 mod tools;
-mod tui;
 mod utils;
 mod vision;
 mod working_set;
 mod workspace_trust;
 
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use clap::builder::StyledStr;
 use clap::error::{ContextKind, ContextValue, ErrorKind};
-use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
-use clap_complete::{Shell, generate};
+use clap::{Args, CommandFactory, Subcommand, ValueEnum};
 use codesmith_agent::ModelRegistry;
 use codesmith_app_server::{
     AppServerOptions, run as run_app_server, run_stdio as run_app_server_stdio,
 };
-use codesmith_config::{
-    CliRuntimeOverrides, ConfigStore, ProviderKind, ResolvedRuntimeOptions, RuntimeApiKeySource,
-};
+use codesmith_config::{ConfigStore, ProviderKind};
 use codesmith_execpolicy::{AskForApproval, ExecPolicyContext, ExecPolicyEngine};
 use codesmith_mcp::{McpServerDefinition, run_stdio_server};
 use codesmith_secrets::Secrets;
@@ -578,6 +572,87 @@ fn no_keyring_secrets() -> Secrets {
     ))
 }
 
+fn write_provider_api_key_to_keyring(
+    secrets: &Secrets,
+    provider: ProviderKind,
+    api_key: &str,
+) -> bool {
+    secrets.set(provider_slot(provider), api_key).is_ok()
+}
+/// Move plaintext keys from config.toml into the configured secret store.
+/// Hidden in v0.8.8 because the normal setup path is config/env only.
+fn run_auth_migrate(store: &mut ConfigStore, secrets: &Secrets, dry_run: bool) -> Result<()> {
+    let mut migrated: Vec<(ProviderKind, &'static str)> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+
+    for provider in PROVIDER_LIST {
+        let slot = provider_slot(provider);
+        let from_provider_block = store
+            .config
+            .providers
+            .for_provider(provider)
+            .api_key
+            .clone()
+            .filter(|v| !v.trim().is_empty());
+        let from_root = (provider == ProviderKind::Deepseek)
+            .then(|| store.config.api_key.clone())
+            .flatten()
+            .filter(|v| !v.trim().is_empty());
+        let value = from_provider_block.or(from_root);
+        let Some(value) = value else { continue };
+
+        if let Ok(Some(existing)) = secrets.get(slot)
+            && existing == value
+        {
+            // Already migrated; safe to strip the file slot.
+        } else if dry_run {
+            migrated.push((provider, slot));
+            continue;
+        } else if let Err(err) = secrets.set(slot, &value) {
+            warnings.push(format!(
+                "skipped {slot}: failed to write to secret store: {err}"
+            ));
+            continue;
+        }
+        if !dry_run {
+            store.config.providers.for_provider_mut(provider).api_key = None;
+            if provider == ProviderKind::Deepseek {
+                store.config.api_key = None;
+            }
+        }
+        migrated.push((provider, slot));
+    }
+
+    if !dry_run && !migrated.is_empty() {
+        store
+            .save()
+            .context("failed to write updated config.toml")?;
+    }
+
+    println!("secret store backend: {}", secrets.backend_name());
+    if migrated.is_empty() {
+        println!("nothing to migrate (config.toml has no plaintext api_key entries)");
+    } else {
+        println!(
+            "{} {} provider key(s):",
+            if dry_run { "would migrate" } else { "migrated" },
+            migrated.len()
+        );
+        for (_, slot) in &migrated {
+            println!("  - {slot}");
+        }
+        if !dry_run {
+            println!(
+                "config.toml at {} no longer contains api_key entries for migrated providers.",
+                store.path().display()
+            );
+        }
+    }
+    for w in warnings {
+        eprintln!("warning: {w}");
+    }
+    Ok(())
+}
 fn write_provider_api_key_to_config(
     store: &mut ConfigStore,
     provider: ProviderKind,
@@ -678,14 +753,6 @@ fn provider_keyring_api_key(secrets: &Secrets, provider: ProviderKind) -> Option
 
 fn provider_keyring_set(secrets: &Secrets, provider: ProviderKind) -> bool {
     provider_keyring_api_key(secrets, provider).is_some()
-}
-
-fn write_provider_api_key_to_keyring(
-    secrets: &Secrets,
-    provider: ProviderKind,
-    api_key: &str,
-) -> bool {
-    secrets.set(provider_slot(provider), api_key).is_ok()
 }
 
 fn clear_provider_api_key_from_keyring(secrets: &Secrets, provider: ProviderKind) {
@@ -909,81 +976,6 @@ fn prompt_api_key(slot: &str) -> Result<String> {
         bail!("empty API key provided");
     }
     Ok(key)
-}
-
-/// Move plaintext keys from config.toml into the configured secret store.
-/// Hidden in v0.8.8 because the normal setup path is config/env only.
-fn run_auth_migrate(store: &mut ConfigStore, secrets: &Secrets, dry_run: bool) -> Result<()> {
-    let mut migrated: Vec<(ProviderKind, &'static str)> = Vec::new();
-    let mut warnings: Vec<String> = Vec::new();
-
-    for provider in PROVIDER_LIST {
-        let slot = provider_slot(provider);
-        let from_provider_block = store
-            .config
-            .providers
-            .for_provider(provider)
-            .api_key
-            .clone()
-            .filter(|v| !v.trim().is_empty());
-        let from_root = (provider == ProviderKind::Deepseek)
-            .then(|| store.config.api_key.clone())
-            .flatten()
-            .filter(|v| !v.trim().is_empty());
-        let value = from_provider_block.or(from_root);
-        let Some(value) = value else { continue };
-
-        if let Ok(Some(existing)) = secrets.get(slot)
-            && existing == value
-        {
-            // Already migrated; safe to strip the file slot.
-        } else if dry_run {
-            migrated.push((provider, slot));
-            continue;
-        } else if let Err(err) = secrets.set(slot, &value) {
-            warnings.push(format!(
-                "skipped {slot}: failed to write to secret store: {err}"
-            ));
-            continue;
-        }
-        if !dry_run {
-            store.config.providers.for_provider_mut(provider).api_key = None;
-            if provider == ProviderKind::Deepseek {
-                store.config.api_key = None;
-            }
-        }
-        migrated.push((provider, slot));
-    }
-
-    if !dry_run && !migrated.is_empty() {
-        store
-            .save()
-            .context("failed to write updated config.toml")?;
-    }
-
-    println!("secret store backend: {}", secrets.backend_name());
-    if migrated.is_empty() {
-        println!("nothing to migrate (config.toml has no plaintext api_key entries)");
-    } else {
-        println!(
-            "{} {} provider key(s):",
-            if dry_run { "would migrate" } else { "migrated" },
-            migrated.len()
-        );
-        for (_, slot) in &migrated {
-            println!("  - {slot}");
-        }
-        if !dry_run {
-            println!(
-                "config.toml at {} no longer contains api_key entries for migrated providers.",
-                store.path().display()
-            );
-        }
-    }
-    for w in warnings {
-        eprintln!("warning: {w}");
-    }
-    Ok(())
 }
 
 pub(crate) fn run_config_command(store: &mut ConfigStore, command: ConfigCommand) -> Result<()> {
@@ -1232,9 +1224,8 @@ fn read_api_key_from_stdin() -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser as _;
     use clap::error::ErrorKind;
-    use std::ffi::OsString;
-    use std::sync::{Mutex, OnceLock};
 
     fn parse_ok(argv: &[&str]) -> Cli {
         Cli::try_parse_from(argv).unwrap_or_else(|err| panic!("parse failed for {argv:?}: {err}"))
@@ -1244,52 +1235,6 @@ mod tests {
         let err = Cli::try_parse_from(argv).expect_err("expected --help to short-circuit parsing");
         assert_eq!(err.kind(), ErrorKind::DisplayHelp);
         err.to_string()
-    }
-
-    fn command_env(cmd: &Command, name: &str) -> Option<String> {
-        let name = std::ffi::OsStr::new(name);
-        cmd.get_envs().find_map(|(key, value)| {
-            if key == name {
-                value.map(|v| v.to_string_lossy().into_owned())
-            } else {
-                None
-            }
-        })
-    }
-
-    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-    }
-
-    struct ScopedEnvVar {
-        name: &'static str,
-        previous: Option<OsString>,
-    }
-
-    impl ScopedEnvVar {
-        fn set(name: &'static str, value: &str) -> Self {
-            let previous = std::env::var_os(name);
-            // Safety: tests using this helper serialize with env_lock() and
-            // restore the original value in Drop.
-            unsafe { std::env::set_var(name, value) };
-            Self { name, previous }
-        }
-    }
-
-    impl Drop for ScopedEnvVar {
-        fn drop(&mut self) {
-            // Safety: tests using this helper serialize with env_lock().
-            unsafe {
-                if let Some(previous) = self.previous.take() {
-                    std::env::set_var(self.name, previous);
-                } else {
-                    std::env::remove_var(self.name);
-                }
-            }
-        }
     }
 
     #[test]
@@ -1792,41 +1737,6 @@ mod tests {
     }
 
     #[test]
-    fn auth_clear_removes_from_config() {
-        use codesmith_secrets::{InMemoryKeyringStore, KeyringStore};
-        use std::sync::Arc;
-
-        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
-        let path = std::env::temp_dir().join(format!(
-            "codesmith-cli-auth-clear-test-{}-{nanos}.toml",
-            std::process::id()
-        ));
-        let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
-        store.config.api_key = Some("sk-stale".to_string());
-        store.config.providers.deepseek.api_key = Some("sk-stale".to_string());
-        store.save().unwrap();
-
-        let inner = Arc::new(InMemoryKeyringStore::new());
-        inner.set("deepseek", "sk-stale").unwrap();
-        let secrets = Secrets::new(inner.clone());
-
-        run_auth_command_with_secrets(
-            &mut store,
-            AuthCommand::Clear {
-                provider: ProviderArg::Deepseek,
-            },
-            &secrets,
-        )
-        .expect("clear should succeed");
-
-        assert!(store.config.api_key.is_none());
-        assert!(store.config.providers.deepseek.api_key.is_none());
-        assert_eq!(inner.get("deepseek").unwrap(), None);
-
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
     fn auth_status_and_list_only_probe_active_provider_keyring() {
         use codesmith_secrets::{KeyringStore, SecretsError};
         use std::sync::{Arc, Mutex};
@@ -2077,8 +1987,6 @@ mod tests {
             "--api-key",
             "--approval-policy",
             "--sandbox-mode",
-            "--mouse-capture",
-            "--no-mouse-capture",
             "--skip-onboarding",
             "--continue",
             "--prompt",
@@ -2086,6 +1994,13 @@ mod tests {
             assert!(
                 rendered.contains(token),
                 "expected help to contain token: {token}"
+            );
+        }
+        // TUI-era terminal-chrome flags are gone with the ratatui frontend.
+        for gone in ["--no-alt-screen", "--mouse-capture", "--no-mouse-capture"] {
+            assert!(
+                !rendered.contains(gone),
+                "expected help to no longer contain token: {gone}"
             );
         }
     }

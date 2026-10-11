@@ -14,7 +14,6 @@
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
-use std::time::{Duration, Instant};
 
 use tokio_util::sync::CancellationToken;
 
@@ -188,77 +187,6 @@ pub fn list_mods(workspace: &Path, state: &ModStateStore) -> String {
     }
     out.push_str("\nActivation is one-time per id (/mods activate <id> or approve manage_mods action=activate).");
     out
-}
-
-/// `/mods status` — runner generation + activated/pending/disabled split.
-pub fn mod_status(workspace: &Path, state: &ModStateStore) -> String {
-    let mods = discover_workspace_mods(workspace);
-    let mut loaded: Vec<String> = Vec::new();
-    let mut pending: Vec<String> = Vec::new();
-    for m in &mods {
-        match classify_mod(state, m) {
-            ModListStatus::Loaded => loaded.push(m.id.clone()),
-            ModListStatus::PendingActivation => pending.push(m.id.clone()),
-            ModListStatus::PendingReconsent { reason } => {
-                pending.push(format!("{} ({reason})", m.id));
-            }
-            ModListStatus::Disabled => {}
-        }
-    }
-    let disabled = state.disabled();
-    let activated_ids = state.activated();
-    // Joined into named bindings first: `format!` args that borrow the
-    // temporary from `.join(", ")` inside an `if` arm do not compile (E0716 —
-    // the temporary dies before the args are consumed).
-    let loaded_summary = join_ids_or_none(&loaded);
-    let pending_summary = join_ids_or_none(&pending);
-    let disabled_summary = join_ids_or_none(&disabled);
-    let activated_summary = join_ids_or_none(&activated_ids);
-    format!(
-        "Mod state: {} discovered, {} loaded, {} pending, {} disabled.\nloaded: {}\npending: {}\ndisabled: {}\nactivated ids on record: {}",
-        mods.len(),
-        loaded.len(),
-        pending.len(),
-        disabled.len(),
-        loaded_summary,
-        pending_summary,
-        disabled_summary,
-        activated_summary,
-    )
-}
-
-/// `"(none)"` for an empty id list, otherwise the ids joined for display.
-fn join_ids_or_none(ids: &[String]) -> String {
-    if ids.is_empty() {
-        "(none)".to_string()
-    } else {
-        ids.join(", ")
-    }
-}
-
-/// `/mods info <id>` — manifest detail for one mod.
-pub fn mod_info(workspace: &Path, state: &ModStateStore, id: &str) -> Option<String> {
-    let mods = discover_workspace_mods(workspace);
-    let m = mods.into_iter().find(|m| m.id == id)?;
-    let status = match classify_mod(state, &m) {
-        ModListStatus::Disabled => "disabled".to_string(),
-        ModListStatus::PendingActivation => "pending activation".to_string(),
-        ModListStatus::Loaded => "activated".to_string(),
-        ModListStatus::PendingReconsent { reason } => {
-            format!("pending re-activation ({reason})")
-        }
-    };
-    Some(format!(
-        "id: {}\nname: {}\nversion: {}\nsource: {}\ndir: {}\nentry: {}\ndescription: {}\nstate: {}",
-        m.id,
-        m.name,
-        m.version,
-        if m.global { "global" } else { "project" },
-        m.dir.display(),
-        m.entry_path.display(),
-        m.description.as_deref().unwrap_or("(none)"),
-        status,
-    ))
 }
 
 // === Mutating operations ====================================================
@@ -549,130 +477,6 @@ pub fn reload_mods(
     msg
 }
 
-// === Watcher (Phase B7) =====================================================
-
-/// Debounce window after the last relevant file event before reloading.
-const WATCH_DEBOUNCE: Duration = Duration::from_millis(500);
-/// Minimum spacing between two reloads (races with a manual reload resolve
-/// as two idempotent reloads).
-const WATCH_COOLDOWN: Duration = Duration::from_secs(1);
-
-fn event_is_relevant(ev: &notify::Event) -> bool {
-    ev.paths.iter().any(|p| {
-        matches!(
-            p.extension().and_then(|e| e.to_str()),
-            Some("rhai") | Some("toml")
-        )
-    })
-}
-
-/// Watch both mods roots (`.rhai`/`.toml`, recursive) and reload the
-/// extension layer on changes — debounce 500ms + cooldown 1s. Runs until
-/// the process exits; a failing watcher logs once and disables itself
-/// (hot-reload is best-effort, never fatal).
-///
-/// Must be called from a tokio runtime context (spawns the watch task).
-/// `mods_enabled` is captured at spawn (the same flag that gates the
-/// watcher itself) so a reload can never resurrect the mod layer against
-/// the user's `[mods] enabled = false`.
-pub fn spawn_mods_watcher(
-    runner: Arc<ExtensionRunner>,
-    workspace: PathBuf,
-    shared_cancel_token: Arc<StdMutex<CancellationToken>>,
-    mods_enabled: bool,
-) {
-    let paths = mod_paths(&workspace);
-    let roots: Vec<PathBuf> = paths
-        .global_root
-        .into_iter()
-        .chain([paths.project_root])
-        .collect();
-
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<notify::Result<notify::Event>>(256);
-    let watcher = match notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        if res.is_ok() {
-            let _ = tx.blocking_send(res);
-        }
-    }) {
-        Ok(w) => w,
-        Err(e) => {
-            tracing::warn!(target: "codesmith_mods", "mods watcher unavailable: {e}");
-            return;
-        }
-    };
-    use notify::Watcher as _;
-    let mut watcher = watcher;
-    let mut watched_any = false;
-    for root in &roots {
-        // Create the root so `watch` succeeds for first-run machines; a
-        // missing parent (no home dir) just skips that root.
-        let _ = std::fs::create_dir_all(root);
-        match watcher.watch(root, notify::RecursiveMode::Recursive) {
-            Ok(()) => watched_any = true,
-            Err(e) => {
-                tracing::warn!(target: "codesmith_mods", "mods watcher skip {}: {e}", root.display())
-            }
-        }
-    }
-    if !watched_any {
-        return;
-    }
-
-    tokio::spawn(async move {
-        // Keep the watcher alive for the task's lifetime.
-        let _watcher = watcher;
-        let mut last_fire = Instant::now()
-            .checked_sub(WATCH_COOLDOWN)
-            .unwrap_or_else(Instant::now);
-        while let Some(ev) = rx.recv().await {
-            let Ok(ev) = ev else { continue };
-            if !event_is_relevant(&ev) {
-                continue;
-            }
-            // Debounce: wait for a quiet window — every relevant event
-            // pushes the deadline forward, so a burst longer than one
-            // window does not fire a reload mid-write.
-            let mut deadline = tokio::time::Instant::now() + WATCH_DEBOUNCE;
-            loop {
-                tokio::select! {
-                    _ = tokio::time::sleep_until(deadline) => break,
-                    ev2 = rx.recv() => {
-                        match ev2 {
-                            Some(Ok(e2)) if event_is_relevant(&e2) => {
-                                deadline = tokio::time::Instant::now() + WATCH_DEBOUNCE;
-                            }
-                            Some(_) => {}
-                            None => return,
-                        }
-                    }
-                }
-            }
-            // Cooldown vs the last watcher-initiated fire only (manual /
-            // tool reloads don't share this clock; overlapping reloads are
-            // idempotent clear→populate cycles).
-            let elapsed = last_fire.elapsed();
-            if elapsed < WATCH_COOLDOWN {
-                tokio::time::sleep(WATCH_COOLDOWN - elapsed).await;
-            }
-            last_fire = Instant::now();
-            // reload_mods is synchronous disk work (recursive scans, TOML
-            // parsing, Rhai compilation on the load thread) — keep it off
-            // the tokio worker so a reload doesn't stall other tasks.
-            let msg = {
-                let runner = Arc::clone(&runner);
-                let workspace = workspace.clone();
-                let token = shared_cancel_token.clone();
-                tokio::task::spawn_blocking(move || {
-                    reload_mods(&runner, &workspace, token, mods_enabled)
-                })
-                .await
-                .unwrap_or_else(|e| format!("mods watcher reload failed: {e}"))
-            };
-            tracing::info!(target: "codesmith_mods", "watcher reload: {msg}");
-        }
-    });
-}
-
 /// Load one discovered mod — used by `populate_extension_runtime` and tests.
 /// `kv_dir` is the mods-state directory (from [`ModStateStore::kv_dir`]);
 /// `hub` is the runner's message-projection hub (baked into the mod's
@@ -772,20 +576,6 @@ trust_level = "trusted"
         let ws = dir.path().join("ws");
         std::fs::create_dir_all(ws.join(".codesmith").join("mods")).unwrap();
         ws
-    }
-
-    #[test]
-    fn watcher_event_relevance_filters_extensions() {
-        let mk = |paths: Vec<&str>| notify::Event {
-            kind: notify::EventKind::Modify(notify::event::ModifyKind::Any),
-            paths: paths.iter().map(PathBuf::from).collect(),
-            attrs: Default::default(),
-        };
-        assert!(event_is_relevant(&mk(vec!["/m/mod.rhai"])));
-        assert!(event_is_relevant(&mk(vec!["/m/mod.toml"])));
-        assert!(event_is_relevant(&mk(vec!["/m/other.txt", "/m/x.rhai"])));
-        assert!(!event_is_relevant(&mk(vec!["/m/README.md"])));
-        assert!(!event_is_relevant(&mk(vec![])));
     }
 
     #[test]
@@ -958,62 +748,6 @@ trust_level = "trusted"
                 .join("project-bye.json")
                 .exists()
         );
-    }
-
-    #[test]
-    fn list_and_status_reflect_activation() {
-        let _env = crate::test_support::lock_test_env();
-        let dir = TempDir::new().unwrap();
-        let _home = ScopedHome::set_trusted(&dir, &dir.path().join("ws"));
-        let ws = workspace_in(&dir);
-        write_fixture_mod(&ws.join(".codesmith").join("mods"), "listed");
-        let mut state = store_in(&dir);
-        let listing = list_mods(&ws, &state);
-        assert!(listing.contains("listed"), "{listing}");
-        assert!(listing.contains("pending activation"), "{listing}");
-        let status = mod_status(&ws, &state);
-        assert!(status.contains("pending: listed"), "{status}");
-        // Activate against the REAL entry hash — a stale hash is the
-        // hash-drift case covered by `status_and_list_reflect_hash_drift`.
-        let entry = discover_workspace_mods(&ws)
-            .into_iter()
-            .find(|m| m.id == "listed")
-            .unwrap()
-            .entry_path;
-        let hash = entry_file_hash(&entry).unwrap();
-        state.activate("listed", &hash).unwrap();
-        let listing = list_mods(&ws, &state);
-        assert!(listing.contains("activated"), "{listing}");
-        let info = mod_info(&ws, &state, "listed").unwrap();
-        assert!(info.contains("test mod"), "{info}");
-    }
-
-    #[test]
-    fn status_and_list_reflect_hash_drift() {
-        // The engine's populate gate pends an activated mod whose entry
-        // content changed since consent — the listings must agree instead
-        // of reporting it loaded exactly when re-consent is needed.
-        let _env = crate::test_support::lock_test_env();
-        let dir = TempDir::new().unwrap();
-        let _home = ScopedHome::set_trusted(&dir, &dir.path().join("ws"));
-        let ws = workspace_in(&dir);
-        write_fixture_mod(&ws.join(".codesmith").join("mods"), "drifted");
-        let mut state = store_in(&dir);
-        // Recorded consent hash ≠ actual content → Changed.
-        state.activate("drifted", "stale-hash").unwrap();
-        let status = mod_status(&ws, &state);
-        assert!(
-            status.contains("pending: drifted (entry file changed since activation)"),
-            "{status}"
-        );
-        assert!(!status.contains("loaded: drifted"), "{status}");
-        let listing = list_mods(&ws, &state);
-        assert!(
-            listing.contains("pending re-activation (entry file changed since activation)"),
-            "{listing}"
-        );
-        let info = mod_info(&ws, &state, "drifted").unwrap();
-        assert!(info.contains("pending re-activation"), "{info}");
     }
 
     #[test]

@@ -70,7 +70,6 @@ sha2 = "0.10"
 ignore = "0.4"
 # notify: file watching for the Mods script-layer hot reload (§F script mod
 # layer Phase B7). Watch-only; events are debounced + cooldown-gated.
-notify = "8"
 # ripgrep engine crates: `grep_files` walks with `ignore` and matches with
 # `grep-regex`/`grep-matcher` so tool search gets ripgrep semantics
 # (gitignore-aware walking, multi-line mode) without shelling out to `rg`.

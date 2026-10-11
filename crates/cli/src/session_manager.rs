@@ -29,14 +29,9 @@ use uuid::Uuid;
 /// Maximum number of sessions to retain
 const MAX_SESSIONS: usize = 50;
 const CURRENT_SESSION_SCHEMA_VERSION: u32 = 1;
-const CURRENT_QUEUE_SCHEMA_VERSION: u32 = 1;
 
 const fn default_session_schema_version() -> u32 {
     CURRENT_SESSION_SCHEMA_VERSION
-}
-
-const fn default_queue_schema_version() -> u32 {
-    CURRENT_QUEUE_SCHEMA_VERSION
 }
 
 fn normalize_managed_dir(path: PathBuf) -> std::io::Result<PathBuf> {
@@ -62,40 +57,6 @@ fn normalize_managed_dir(path: PathBuf) -> std::io::Result<PathBuf> {
         return Ok(path);
     }
     std::env::current_dir().map(|cwd| cwd.join(path))
-}
-
-/// Persisted queued message for offline/degraded mode.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QueuedSessionMessage {
-    pub display: String,
-    #[serde(default)]
-    pub skill_instruction: Option<String>,
-}
-
-/// Persisted queue state for recovery after restart/crash.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OfflineQueueState {
-    #[serde(default = "default_queue_schema_version")]
-    pub schema_version: u32,
-    /// Session ID this queue belongs to. Queue is only restored when
-    /// resuming the same session to prevent stale messages leaking into new chats.
-    #[serde(default)]
-    pub session_id: Option<String>,
-    #[serde(default)]
-    pub messages: Vec<QueuedSessionMessage>,
-    #[serde(default)]
-    pub draft: Option<QueuedSessionMessage>,
-}
-
-impl Default for OfflineQueueState {
-    fn default() -> Self {
-        Self {
-            schema_version: CURRENT_QUEUE_SCHEMA_VERSION,
-            session_id: None,
-            messages: Vec::new(),
-            draft: None,
-        }
-    }
 }
 
 /// An `@`-mention or attachment reference captured with a session
@@ -202,18 +163,6 @@ pub struct SessionCostSnapshot {
     /// Max-ever displayed session+subagent cost in CNY.
     #[serde(default)]
     pub displayed_cost_high_water_cny: f64,
-}
-
-impl SessionCostSnapshot {
-    /// Session + subagent cost in USD.
-    pub fn total_usd(&self) -> f64 {
-        self.session_cost_usd + self.subagent_cost_usd
-    }
-
-    /// Session + subagent cost in CNY.
-    pub fn total_cny(&self) -> f64 {
-        self.session_cost_cny + self.subagent_cost_cny
-    }
 }
 
 impl SessionMetadata {
@@ -328,6 +277,7 @@ impl SessionManager {
     }
 
     /// Save a crash-recovery checkpoint for in-flight turns.
+    #[cfg(test)]
     pub fn save_checkpoint(&self, session: &SavedSession) -> std::io::Result<PathBuf> {
         let checkpoints = self.sessions_dir.join("checkpoints");
         fs::create_dir_all(&checkpoints)?;
@@ -363,59 +313,6 @@ impl SessionManager {
     /// Clear any crash-recovery checkpoint.
     pub fn clear_checkpoint(&self) -> std::io::Result<()> {
         let path = self.sessions_dir.join("checkpoints").join("latest.json");
-        if path.exists() {
-            fs::remove_file(path)?;
-        }
-        Ok(())
-    }
-
-    /// Save offline queue state (queued + draft messages).
-    pub fn save_offline_queue_state(
-        &self,
-        state: &OfflineQueueState,
-        session_id: Option<&str>,
-    ) -> std::io::Result<PathBuf> {
-        let checkpoints = self.sessions_dir.join("checkpoints");
-        fs::create_dir_all(&checkpoints)?;
-        let path = checkpoints.join("offline_queue.json");
-        let mut state_with_id = state.clone();
-        state_with_id.session_id = session_id.map(|s| s.to_string());
-        let content = serde_json::to_string_pretty(&state_with_id)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        write_atomic(&path, content.as_bytes())?;
-        Ok(path)
-    }
-
-    /// Load offline queue state if present.
-    pub fn load_offline_queue_state(&self) -> std::io::Result<Option<OfflineQueueState>> {
-        let path = self
-            .sessions_dir
-            .join("checkpoints")
-            .join("offline_queue.json");
-        if !path.exists() {
-            return Ok(None);
-        }
-        let content = fs::read_to_string(&path)?;
-        let state: OfflineQueueState = serde_json::from_str(&content)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        if state.schema_version > CURRENT_QUEUE_SCHEMA_VERSION {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "Offline queue schema v{} is newer than supported v{}",
-                    state.schema_version, CURRENT_QUEUE_SCHEMA_VERSION
-                ),
-            ));
-        }
-        Ok(Some(state))
-    }
-
-    /// Remove persisted offline queue state.
-    pub fn clear_offline_queue_state(&self) -> std::io::Result<()> {
-        let path = self
-            .sessions_dir
-            .join("checkpoints")
-            .join("offline_queue.json");
         if path.exists() {
             fs::remove_file(path)?;
         }
@@ -976,29 +873,6 @@ pub(crate) fn extract_title(raw: &str) -> &str {
     if title.is_empty() { "Session" } else { title }
 }
 
-/// Strip common inline thinking/reasoning XML sections from saved assistant
-/// text before it is shown in session previews.
-pub(crate) fn strip_thinking_tags(text: &str) -> String {
-    if !text.contains("<think") && !text.contains("<thinking") && !text.contains("<reasoning") {
-        return text.to_string();
-    }
-
-    let tags = ["think", "thinking", "reasoning"];
-    let mut result = text.to_string();
-    for tag in tags {
-        let open = format!("<{tag}>");
-        let close = format!("</{tag}>");
-        while let Some(start) = result.find(&open) {
-            let Some(end) = result[start..].find(&close) else {
-                break;
-            };
-            let end_abs = start + end + close.len();
-            result.replace_range(start..end_abs, "");
-        }
-    }
-    result
-}
-
 /// Truncate a string to create a title (character-safe for UTF-8)
 fn truncate_title(s: &str, max_len: usize) -> String {
     let s = s.trim();
@@ -1547,14 +1421,6 @@ mod tests {
     }
 
     #[test]
-    fn strip_thinking_tags_removes_common_inline_blocks() {
-        let text = "Before <think>private</think> middle <reasoning>hidden</reasoning> after";
-        let cleaned = strip_thinking_tags(text);
-        assert_eq!(cleaned, "Before  middle  after");
-        assert_eq!(strip_thinking_tags("plain answer"), "plain answer");
-    }
-
-    #[test]
     fn test_format_age() {
         let now = Utc::now();
         assert_eq!(format_age(&now), "just now");
@@ -1615,29 +1481,6 @@ mod tests {
     }
 
     #[test]
-    fn test_checkpoint_round_trip_and_clear() {
-        let tmp = tempdir().expect("tempdir");
-        let manager = SessionManager::new(tmp.path().join("sessions")).expect("new");
-        let messages = vec![make_test_message("user", "checkpoint me")];
-        let session = create_saved_session(&messages, "test-model", tmp.path(), 12, None);
-
-        manager.save_checkpoint(&session).expect("save checkpoint");
-        let loaded = manager
-            .load_checkpoint()
-            .expect("load checkpoint")
-            .expect("checkpoint exists");
-        assert_eq!(loaded.metadata.id, session.metadata.id);
-
-        manager.clear_checkpoint().expect("clear checkpoint");
-        assert!(
-            manager
-                .load_checkpoint()
-                .expect("load checkpoint")
-                .is_none()
-        );
-    }
-
-    #[test]
     fn workspace_scope_matches_subdirectories_in_same_git_checkout() {
         let tmp = tempdir().expect("tempdir");
         let repo = tmp.path().join("repo");
@@ -1659,98 +1502,6 @@ mod tests {
         fs::write(second.join(".git"), "gitdir: .git/worktrees/b").expect("write second marker");
 
         assert!(!workspace_scope_matches(&first, &second));
-    }
-
-    #[test]
-    fn test_offline_queue_round_trip_and_clear() {
-        let tmp = tempdir().expect("tempdir");
-        let manager = SessionManager::new(tmp.path().join("sessions")).expect("new");
-
-        let state = OfflineQueueState {
-            messages: vec![QueuedSessionMessage {
-                display: "queued message".to_string(),
-                skill_instruction: Some("Use skill".to_string()),
-            }],
-            draft: Some(QueuedSessionMessage {
-                display: "draft message".to_string(),
-                skill_instruction: None,
-            }),
-            ..OfflineQueueState::default()
-        };
-
-        manager
-            .save_offline_queue_state(&state, Some("test-session"))
-            .expect("save queue state");
-        let loaded = manager
-            .load_offline_queue_state()
-            .expect("load queue state")
-            .expect("queue state exists");
-        assert_eq!(loaded.messages.len(), 1);
-        assert_eq!(loaded.messages[0].display, "queued message");
-        assert!(loaded.draft.is_some());
-
-        manager
-            .clear_offline_queue_state()
-            .expect("clear queue state");
-        assert!(
-            manager
-                .load_offline_queue_state()
-                .expect("load queue state")
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn test_offline_queue_stamps_session_id_on_save() {
-        // #487: save_offline_queue_state must stamp the supplied
-        // session id so the load path's mismatch check has something
-        // to compare against. A queue persisted without a session id
-        // is the legacy unscoped form which the load path treats as
-        // stale-risky and refuses to restore.
-        let tmp = tempdir().expect("tempdir");
-        let manager = SessionManager::new(tmp.path().join("sessions")).expect("new");
-
-        let state = OfflineQueueState {
-            messages: vec![QueuedSessionMessage {
-                display: "first parked".to_string(),
-                skill_instruction: None,
-            }],
-            ..OfflineQueueState::default()
-        };
-
-        manager
-            .save_offline_queue_state(&state, Some("session-A"))
-            .expect("save with session id");
-        let loaded = manager
-            .load_offline_queue_state()
-            .expect("ok")
-            .expect("present");
-        assert_eq!(loaded.session_id.as_deref(), Some("session-A"));
-
-        // Re-saving with a different session id replaces the stamp.
-        manager
-            .save_offline_queue_state(&state, Some("session-B"))
-            .expect("re-save");
-        let reloaded = manager
-            .load_offline_queue_state()
-            .expect("ok")
-            .expect("present");
-        assert_eq!(reloaded.session_id.as_deref(), Some("session-B"));
-
-        // Saving without a session id explicitly (None) clears the
-        // stamp — UI's load path treats that as legacy-unscoped and
-        // fails closed.
-        manager
-            .save_offline_queue_state(&state, None)
-            .expect("save without session id");
-        let unscoped = manager
-            .load_offline_queue_state()
-            .expect("ok")
-            .expect("present");
-        assert!(
-            unscoped.session_id.is_none(),
-            "save with None must persist a missing session_id"
-        );
     }
 
     #[test]
@@ -2110,33 +1861,6 @@ mod tests {
         assert!(
             checkpoint_file.exists(),
             "checkpoint file should be untouched"
-        );
-    }
-
-    #[test]
-    fn test_load_offline_queue_rejects_newer_schema() {
-        let tmp = tempdir().expect("tempdir");
-        let sessions_dir = tmp.path().join("sessions");
-        let manager = SessionManager::new(sessions_dir.clone()).expect("new");
-        let checkpoints = sessions_dir.join("checkpoints");
-        fs::create_dir_all(&checkpoints).expect("create checkpoints dir");
-        let path = checkpoints.join("offline_queue.json");
-        fs::write(
-            &path,
-            r#"{
-                "schema_version": 999,
-                "messages": [],
-                "draft": null
-            }"#,
-        )
-        .expect("write queue");
-
-        let err = manager
-            .load_offline_queue_state()
-            .expect_err("should reject schema");
-        assert!(
-            err.to_string().contains("newer than supported"),
-            "unexpected error: {err}"
         );
     }
 }

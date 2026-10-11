@@ -594,8 +594,10 @@ mod tests {
     }
 
     fn context_with_sender(sender: Option<String>) -> ToolContext {
-        let mut runtime = RuntimeToolServices::default();
-        runtime.team_sender = sender;
+        let runtime = RuntimeToolServices {
+            team_sender: sender,
+            ..RuntimeToolServices::default()
+        };
         let mut ctx = ToolContext::new("/tmp");
         ctx.runtime = runtime;
         ctx.features.enable(Feature::AgentTeams);

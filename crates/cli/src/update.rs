@@ -179,11 +179,6 @@ pub(crate) fn release_arch_for_rust_arch(arch: &str) -> &str {
     }
 }
 
-
-
-
-
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct UpdateTarget {
     path: PathBuf,
@@ -221,12 +216,6 @@ fn release_asset_name_for_prefix(prefix: &str, os: &str, rust_arch: &str) -> Str
     } else {
         stem
     }
-}
-
-#[cfg(test)]
-fn release_asset_stem_for(current_exe: &Path, os: &str, rust_arch: &str) -> String {
-    let prefix = binary_prefix_for_exe(current_exe);
-    release_asset_stem_for_prefix(prefix, os, rust_arch)
 }
 
 pub(crate) fn asset_matches_platform(asset_name: &str, binary_name: &str) -> bool {
@@ -578,8 +567,6 @@ mod tests {
 
     /// Verify binary prefix detection for dispatcher vs TUI binary.
 
-
-
     #[test]
     fn update_targets_skip_missing_sibling() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -594,7 +581,6 @@ mod tests {
         assert_eq!(targets[0].path, dispatcher);
         assert!(targets[0].asset_stem.starts_with("codesmith-"));
     }
-
 
     #[test]
     fn test_sha256_hex_known_value() {
@@ -680,43 +666,6 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codesmith-win
         assert_eq!(content, "fresh binary");
     }
 
-    /// Mocked GitHub release payload covering the single `codesmith`
-    /// binary across our published platform/arch matrix, plus a checksum
-    /// sibling that must never be picked as the primary binary.
-    fn mocked_release() -> Release {
-        let json = r#"{
-          "tag_name": "v0.8.8",
-          "assets": [
-            { "name": "codesmith-linux-x64",          "browser_download_url": "https://example.invalid/codesmith-linux-x64" },
-            { "name": "codesmith-macos-x64",          "browser_download_url": "https://example.invalid/codesmith-macos-x64" },
-            { "name": "codesmith-macos-arm64",        "browser_download_url": "https://example.invalid/codesmith-macos-arm64" },
-            { "name": "codesmith-windows-x64.exe",    "browser_download_url": "https://example.invalid/codesmith-windows-x64.exe" },
-            { "name": "codesmith-windows-x64.exe.sha256", "browser_download_url": "https://example.invalid/codesmith-windows-x64.exe.sha256" }
-          ]
-        }"#;
-        serde_json::from_str(json).expect("mock release JSON")
-    }
-
-    fn mocked_release_selects_dispatcher_asset_for_supported_platforms() {
-        let release = mocked_release();
-        let cases = [
-            ("macos", "aarch64", "codesmith-macos-arm64"),
-            ("macos", "x86_64", "codesmith-macos-x64"),
-            ("linux", "x86_64", "codesmith-linux-x64"),
-            ("windows", "x86_64", "codesmith-windows-x64.exe"),
-        ];
-
-        for (os, arch, expected) in cases {
-            let stem = release_asset_stem_for(Path::new("/usr/local/bin/codesmith"), os, arch);
-            let asset = select_platform_asset(&release, &stem)
-                .unwrap_or_else(|| panic!("no asset for {os}/{arch} (stem {stem})"));
-            assert_eq!(asset.name, expected, "{os}/{arch}");
-        }
-    }
-
-
-
-
     #[test]
     fn cnb_release_base_url_includes_tag_directory() {
         assert_eq!(
@@ -784,7 +733,6 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codesmith-win
         assert!(is_beta_tag(&beta_tag.tag_name));
         assert!(!is_beta_tag(&stable.tag_name));
     }
-
 
     fn serve_http_once(
         status: &'static str,

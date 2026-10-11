@@ -5976,8 +5976,8 @@ fn fallback_subagent_assignment_route(
 
     let reasoning_effort = if runtime.reasoning_effort_auto {
         let effort = match crate::auto_reasoning::select(false, prompt) {
-            crate::tui::app::ReasoningEffort::Low | crate::tui::app::ReasoningEffort::Medium => {
-                crate::tui::app::ReasoningEffort::High
+            crate::app_state::ReasoningEffort::Low | crate::app_state::ReasoningEffort::Medium => {
+                crate::app_state::ReasoningEffort::High
             }
             other => other,
         };

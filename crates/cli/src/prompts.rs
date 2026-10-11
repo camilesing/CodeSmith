@@ -11,10 +11,10 @@
 pub use codesmith_agent_runtime::prompt_sources::{InstructionSource, PromptAppendSource};
 pub use codesmith_agent_runtime::prompts::*;
 
+use crate::app_state::AppMode;
 use crate::models::SystemPrompt;
-use crate::tui::app::AppMode;
 #[cfg(test)]
-use crate::tui::approval::ApprovalMode;
+use codesmith_agent_runtime::mode::ApprovalMode;
 use std::path::Path;
 
 /// Get the system prompt for a specific mode with project context.
@@ -1110,8 +1110,10 @@ mod tests {
     #[test]
     fn session_context_personality_flows_into_bundle() {
         let tmp = tempdir().expect("tempdir");
-        let mut session = PromptSessionContext::default();
-        session.personality = Personality::Playful;
+        let session = PromptSessionContext {
+            personality: Personality::Playful,
+            ..PromptSessionContext::default()
+        };
         let prompt = match system_prompt_for_mode_with_context_skills_session_and_approval(
             AppMode::Agent,
             tmp.path(),

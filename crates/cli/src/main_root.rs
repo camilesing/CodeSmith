@@ -45,20 +45,6 @@ use crate::{
     project_context, runtime_api, session_manager,
 };
 
-#[cfg(windows)]
-pub(crate) fn configure_windows_console_utf8() {
-    use windows::Win32::System::Console::{SetConsoleCP, SetConsoleOutputCP};
-
-    const CP_UTF8: u32 = 65001;
-    unsafe {
-        let _ = SetConsoleCP(CP_UTF8);
-        let _ = SetConsoleOutputCP(CP_UTF8);
-    }
-}
-
-#[cfg(not(windows))]
-pub(crate) fn configure_windows_console_utf8() {}
-
 #[derive(Parser, Debug)]
 #[command(
     name = "codesmith",
@@ -66,7 +52,7 @@ pub(crate) fn configure_windows_console_utf8() {}
     author,
     version = env!("CODESMITH_BUILD_VERSION"),
     about = "codesmith/CLI for open-weight coding models",
-    long_about = "Terminal-native TUI and CLI for open-source and open-weight coding models.\n\nRun 'codesmith' to start."
+    long_about = "Terminal-native REPL and CLI for open-source and open-weight coding models.\n\nRun 'codesmith' to start."
 )]
 pub(crate) struct Cli {
     /// Subcommand to run
@@ -124,21 +110,6 @@ pub(crate) struct Cli {
     /// Continue the most recent session in this workspace
     #[arg(short = 'c', long = "continue")]
     pub(crate) continue_session: bool,
-
-    /// Deprecated compatibility flag; the interactive TUI always owns the
-    /// alternate screen so terminal scrollback cannot hijack the viewport.
-    #[arg(long = "no-alt-screen", hide = true)]
-    pub(crate) no_alt_screen: bool,
-
-    /// Enable TUI mouse capture for internal scrolling, transcript selection,
-    /// and scrollbar dragging
-    /// (default off on Windows)
-    #[arg(long = "mouse-capture", conflicts_with = "no_mouse_capture")]
-    pub(crate) mouse_capture: bool,
-
-    /// Disable TUI mouse capture so terminal-native text selection works
-    #[arg(long = "no-mouse-capture", conflicts_with = "mouse_capture")]
-    pub(crate) no_mouse_capture: bool,
 
     /// Skip onboarding screens
     #[arg(long)]
@@ -4082,7 +4053,7 @@ pub(crate) fn resolve_workspace_init_boundary(
     skip_onboarding: bool,
     yolo: bool,
 ) -> WorkspaceInitBoundary {
-    let workspace_trusted_at_start = !crate::tui::onboarding::needs_trust(workspace);
+    let workspace_trusted_at_start = !codesmith_agent_runtime::onboarding::needs_trust(workspace);
     let bypassed_by_explicit_user_choice = skip_onboarding || yolo;
     let allow_workspace_initialization =
         workspace_trusted_at_start || bypassed_by_explicit_user_choice;
@@ -4173,36 +4144,6 @@ pub(crate) fn install_token_counter(config: &Config) {
     {
         tracing::warn!("tokenizer_path ignored: {err}");
     }
-}
-
-pub(crate) fn read_api_key_from_stdin() -> Result<String> {
-    let mut stdin = io::stdin();
-    if stdin.is_terminal() {
-        bail!("No API key provided. Pass --api-key or pipe one via stdin.");
-    }
-    let mut buffer = String::new();
-    stdin.read_to_string(&mut buffer)?;
-    let api_key = buffer.trim().to_string();
-    if api_key.is_empty() {
-        bail!("No API key provided via stdin.");
-    }
-    Ok(api_key)
-}
-
-pub(crate) fn run_login(api_key: Option<String>) -> Result<()> {
-    let api_key = match api_key {
-        Some(key) => key,
-        None => read_api_key_from_stdin()?,
-    };
-    let saved = crate::config::save_api_key(&api_key)?;
-    println!("Saved API key to {}", saved.describe());
-    Ok(())
-}
-
-pub(crate) fn run_logout() -> Result<()> {
-    crate::config::clear_api_key()?;
-    println!("Cleared saved API key.");
-    Ok(())
 }
 
 pub(crate) fn resolve_session_id(
@@ -5192,73 +5133,6 @@ pub(crate) fn parse_sandbox_policy(
     }
 }
 
-pub(crate) fn should_use_alt_screen(_cli: &Cli, _config: &Config) -> bool {
-    true
-}
-
-pub(crate) fn should_use_mouse_capture(cli: &Cli, config: &Config, use_alt_screen: bool) -> bool {
-    let terminal_emulator = std::env::var("TERMINAL_EMULATOR").ok();
-    let wt_session = std::env::var("WT_SESSION").ok().filter(|s| !s.is_empty());
-    let conemu_pid = std::env::var("ConEmuPID").ok().filter(|s| !s.is_empty());
-    should_use_mouse_capture_with(
-        cli,
-        config,
-        use_alt_screen,
-        terminal_emulator.as_deref(),
-        wt_session.as_deref(),
-        conemu_pid.as_deref(),
-    )
-}
-
-pub(crate) fn should_use_mouse_capture_with(
-    cli: &Cli,
-    config: &Config,
-    use_alt_screen: bool,
-    terminal_emulator: Option<&str>,
-    wt_session: Option<&str>,
-    conemu_pid: Option<&str>,
-) -> bool {
-    if !use_alt_screen || cli.no_mouse_capture {
-        return false;
-    }
-    if cli.mouse_capture {
-        return true;
-    }
-    config
-        .tui
-        .as_ref()
-        .and_then(|tui| tui.mouse_capture)
-        .unwrap_or_else(|| default_mouse_capture_enabled(terminal_emulator, wt_session, conemu_pid))
-}
-
-/// Whether to enable terminal mouse capture by default for this platform/host.
-///
-/// On Windows the default depends on the host: Windows Terminal (which sets
-/// `WT_SESSION`) and ConEmu/Cmder (which set `ConEmuPID`) handle mouse-mode
-/// reporting cleanly, so default-on there gives users in-app text selection
-/// and keeps the application's selection clamped to the transcript area
-/// (#1169). Legacy conhost (CMD without either env var) stays default-off
-/// because its mouse-mode reporting can leak SGR escape sequences as raw
-/// text into the composer (#878 / #898).
-///
-/// Off elsewhere only for JetBrains' JediTerm, which advertises mouse
-/// support but forwards the same SGR escape sequences as raw input. The
-/// user can still opt back in with `[tui] mouse_capture = true` in
-/// `~/.codesmith/config.toml` or `--mouse-capture`.
-pub(crate) fn default_mouse_capture_enabled(
-    terminal_emulator: Option<&str>,
-    wt_session: Option<&str>,
-    conemu_pid: Option<&str>,
-) -> bool {
-    if cfg!(windows) {
-        return wt_session.is_some() || conemu_pid.is_some();
-    }
-    if matches!(terminal_emulator, Some(t) if t.eq_ignore_ascii_case("JetBrains-JediTerm")) {
-        return false;
-    }
-    true
-}
-
 /// Load a recent crash-recovery checkpoint, pruning stale checkpoints first.
 pub(crate) fn load_recent_checkpoint(
     manager: &session_manager::SessionManager,
@@ -5612,12 +5486,6 @@ pub(crate) async fn run_interactive(
     {
         model = mode_model.clone();
     }
-    let use_alt_screen = should_use_alt_screen(cli, config);
-    let use_mouse_capture = should_use_mouse_capture(cli, config, use_alt_screen);
-    let use_bracketed_paste = crate::settings::Settings::load()
-        .map(|s| s.bracketed_paste)
-        .unwrap_or(true);
-
     // Auto-install bundled system skills (e.g. skill-creator) on first launch.
     // Errors are non-fatal: log a warning and continue.
     let skills_dir = config.skills_dir();
@@ -5627,7 +5495,7 @@ pub(crate) async fn run_interactive(
 
     // Prune stale workspace snapshots from prior sessions (7-day default).
     // Non-fatal: a flaky disk, missing `git`, or read-only home should
-    // never block the TUI from starting.
+    // never block the REPL from starting.
     let snapshots = config.snapshots_config();
     if snapshots.is_enabled() {
         session_manager::prune_workspace_snapshots(&workspace, snapshots.max_age());
@@ -5661,13 +5529,13 @@ pub(crate) async fn run_interactive(
     let yolo = cli.yolo || config.yolo.unwrap_or(false);
 
     // A marker-less clean start — e.g. a subcommand first-run whose
-    // credential comes from the environment, or a direct `codesmith-tui`
-    // launch, paths that bypass the dispatcher's CLI wizard — records
+    // credential comes from the environment, or a headless runner,
+    // paths that bypass the dispatcher's CLI wizard — records
     // onboarding here so the wizard does not re-run on the next bare
     // `codesmith`. Lives in `run_interactive` (not `App::new`) so unit
     // tests never touch the real home marker. The credential check mirrors
     // `App::new`: the settings-pinned provider outranks the config file.
-    if !cli.skip_onboarding && !crate::tui::onboarding::is_onboarded() {
+    if !cli.skip_onboarding && !codesmith_agent_runtime::onboarding::is_onboarded() {
         let mut effective = config.clone();
         if let Some(provider_str) = crate::settings::Settings::load()
             .ok()
@@ -5677,8 +5545,8 @@ pub(crate) async fn run_interactive(
             effective.provider = Some(parsed.as_str().to_string());
         }
         let clean = crate::config::has_api_key(&effective)
-            && (yolo || !crate::tui::onboarding::needs_trust(&workspace));
-        if clean && let Err(err) = crate::tui::onboarding::mark_onboarded() {
+            && (yolo || !codesmith_agent_runtime::onboarding::needs_trust(&workspace));
+        if clean && let Err(err) = codesmith_agent_runtime::onboarding::mark_onboarded() {
             tracing::warn!("failed to mark onboarding on clean start: {err}");
         }
     }
@@ -5689,16 +5557,11 @@ pub(crate) async fn run_interactive(
         config_path: cli.config.clone(),
         config_profile: cli.profile.clone(),
         allow_shell: yolo || config.allow_shell(),
-        use_alt_screen,
-        use_mouse_capture,
-        use_bracketed_paste,
         skills_dir,
         memory_path: config.memory_path(),
-        notes_path: config.notes_path(),
         mcp_config_path: config.mcp_config_path(),
         use_memory: config.memory_enabled(),
         start_in_agent_mode: yolo,
-        skip_onboarding: cli.skip_onboarding,
         yolo, // YOLO mode auto-approves all tool executions
         resume_session_id,
         initial_input,
@@ -5709,7 +5572,7 @@ pub(crate) async fn run_interactive(
 
 pub(crate) struct CliAutoRoute {
     pub(crate) model: String,
-    pub(crate) reasoning_effort: Option<crate::tui::app::ReasoningEffort>,
+    pub(crate) reasoning_effort: Option<crate::app_state::ReasoningEffort>,
     pub(crate) auto_model: bool,
 }
 
@@ -5739,7 +5602,7 @@ pub(crate) async fn resolve_cli_auto_route(
             model: model.to_string(),
             reasoning_effort: config
                 .reasoning_effort()
-                .map(crate::tui::app::ReasoningEffort::from_setting),
+                .map(crate::app_state::ReasoningEffort::from_setting),
             auto_model: false,
         }
     }
@@ -6003,6 +5866,7 @@ pub(crate) async fn run_exec_agent(
     append_system_prompts: Vec<crate::prompts::PromptAppendSource>,
     prompt_cache_breaker: Option<String>,
 ) -> Result<()> {
+    use crate::app_state::AppMode;
     use crate::compaction::CompactionConfig;
     use crate::core::engine::{EngineConfig, spawn_engine};
     use crate::core::events::Event;
@@ -6010,7 +5874,6 @@ pub(crate) async fn run_exec_agent(
     use crate::models::compaction_threshold_for_model;
     use crate::tools::plan::new_shared_plan_state;
     use crate::tools::todo::new_shared_todo_list;
-    use crate::tui::app::AppMode;
 
     let route = resolve_cli_auto_route(config, model, prompt).await;
     let auto_model = route.auto_model;
@@ -6185,12 +6048,12 @@ pub(crate) async fn run_exec_agent(
             show_thinking: settings.show_thinking,
             is_simple: settings.is_simple,
             approval_mode: if auto_approve {
-                crate::tui::approval::ApprovalMode::Auto
+                codesmith_agent_runtime::mode::ApprovalMode::Auto
             } else {
                 config
                     .approval_policy
                     .as_deref()
-                    .and_then(crate::tui::approval::ApprovalMode::from_config_value)
+                    .and_then(codesmith_agent_runtime::mode::ApprovalMode::from_config_value)
                     .unwrap_or_default()
             },
         })
@@ -6517,6 +6380,7 @@ pub(crate) async fn run_exec_agent(
 /// inbox polling, shutdown protocol) unifies with the exec path under
 /// Phase 6's execution-core extraction.
 pub(crate) async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()> {
+    use crate::app_state::AppMode;
     use crate::compaction::CompactionConfig;
     use crate::core::engine::{EngineConfig, spawn_engine};
     use crate::core::events::Event;
@@ -6530,7 +6394,6 @@ pub(crate) async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -
         write_to_mailbox,
     };
     use crate::tools::todo::new_shared_todo_list;
-    use crate::tui::app::AppMode;
 
     // 1. Load team + member registration from disk.
     let team_file = read_team_config(&args.team)
@@ -6739,12 +6602,12 @@ pub(crate) async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -
             show_thinking: settings.show_thinking,
             is_simple: settings.is_simple,
             approval_mode: if auto_approve {
-                crate::tui::approval::ApprovalMode::Auto
+                codesmith_agent_runtime::mode::ApprovalMode::Auto
             } else {
                 config
                     .approval_policy
                     .as_deref()
-                    .and_then(crate::tui::approval::ApprovalMode::from_config_value)
+                    .and_then(codesmith_agent_runtime::mode::ApprovalMode::from_config_value)
                     .unwrap_or_default()
             },
         })
@@ -7463,257 +7326,6 @@ mod terminal_mode_tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid json");
         assert_eq!(parsed["type"], "tool_result");
     }
-
-    #[test]
-    fn alternate_screen_defaults_on_in_auto_mode() {
-        let cli = parse_cli(&["codesmith"]);
-        let config = Config::default();
-
-        assert!(should_use_alt_screen(&cli, &config));
-    }
-
-    #[test]
-    fn no_alt_screen_flag_is_accepted_but_keeps_alternate_screen() {
-        let cli = parse_cli(&["codesmith", "--no-alt-screen"]);
-        let config = Config::default();
-
-        assert!(should_use_alt_screen(&cli, &config));
-    }
-
-    #[test]
-    fn config_never_is_accepted_but_keeps_alternate_screen() {
-        let cli = parse_cli(&["codesmith"]);
-        let config = Config {
-            tui: Some(crate::config::TuiConfig {
-                alternate_screen: Some("never".to_string()),
-                mouse_capture: None,
-                terminal_probe_timeout_ms: None,
-                status_items: None,
-                osc8_links: None,
-                composer_arrows_scroll: None,
-                notification_condition: None,
-            }),
-            ..Config::default()
-        };
-
-        assert!(should_use_alt_screen(&cli, &config));
-    }
-
-    #[test]
-    #[cfg(not(windows))]
-    fn mouse_capture_defaults_on_when_alternate_screen_is_active() {
-        let cli = parse_cli(&["codesmith"]);
-        let config = Config::default();
-
-        assert!(should_use_mouse_capture_with(
-            &cli, &config, true, None, None, None
-        ));
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn mouse_capture_defaults_off_on_legacy_windows_console() {
-        // Legacy conhost (no `WT_SESSION` and no `ConEmuPID`) keeps the
-        // v0.8.x default-off behavior: mouse-mode reporting on legacy console
-        // can leak SGR escapes into the composer.
-        let cli = parse_cli(&["codesmith"]);
-        let config = Config::default();
-
-        assert!(!should_use_mouse_capture_with(
-            &cli, &config, true, None, None, None
-        ));
-    }
-
-    // #1169: Windows Terminal sets `WT_SESSION` and handles mouse-mode
-    // reporting cleanly, so default-on there gives users in-app text
-    // selection (and the side-effect of clamping selection to the
-    // transcript region instead of the terminal painting across the
-    // sidebar via native selection).
-    #[test]
-    #[cfg(windows)]
-    fn mouse_capture_defaults_on_in_windows_terminal() {
-        let cli = parse_cli(&["codesmith"]);
-        let config = Config::default();
-
-        assert!(should_use_mouse_capture_with(
-            &cli,
-            &config,
-            true,
-            None,
-            Some("{a3a3b3a8-aa00-0000-0000-000000000000}"),
-            None,
-        ));
-    }
-
-    // ConEmu/Cmder sets `ConEmuPID` and handles VT mouse-mode reporting
-    // cleanly; default mouse capture on there so users get in-app scrolling.
-    #[test]
-    #[cfg(windows)]
-    fn mouse_capture_defaults_on_in_conemu() {
-        let cli = parse_cli(&["codesmith"]);
-        let config = Config::default();
-
-        assert!(should_use_mouse_capture_with(
-            &cli,
-            &config,
-            true,
-            None,
-            None,
-            Some("12345"),
-        ));
-    }
-
-    #[test]
-    fn no_mouse_capture_flag_disables_mouse_capture() {
-        let cli = parse_cli(&["codesmith", "--no-mouse-capture"]);
-        let config = Config::default();
-
-        assert!(!should_use_mouse_capture_with(
-            &cli, &config, true, None, None, None
-        ));
-    }
-
-    #[test]
-    fn config_can_disable_default_mouse_capture() {
-        let cli = parse_cli(&["codesmith"]);
-        let config = Config {
-            tui: Some(crate::config::TuiConfig {
-                alternate_screen: None,
-                mouse_capture: Some(false),
-                terminal_probe_timeout_ms: None,
-                status_items: None,
-                osc8_links: None,
-                composer_arrows_scroll: None,
-                notification_condition: None,
-            }),
-            ..Config::default()
-        };
-
-        assert!(!should_use_mouse_capture_with(
-            &cli, &config, true, None, None, None
-        ));
-    }
-
-    #[test]
-    fn mouse_capture_flag_enables_mouse_capture() {
-        let cli = parse_cli(&["codesmith", "--mouse-capture"]);
-        let config = Config::default();
-
-        assert!(should_use_mouse_capture_with(
-            &cli, &config, true, None, None, None
-        ));
-    }
-
-    #[test]
-    fn config_can_enable_mouse_capture() {
-        let cli = parse_cli(&["codesmith"]);
-        let config = Config {
-            tui: Some(crate::config::TuiConfig {
-                alternate_screen: None,
-                mouse_capture: Some(true),
-                terminal_probe_timeout_ms: None,
-                status_items: None,
-                osc8_links: None,
-                composer_arrows_scroll: None,
-                notification_condition: None,
-            }),
-            ..Config::default()
-        };
-
-        assert!(should_use_mouse_capture_with(
-            &cli, &config, true, None, None, None
-        ));
-    }
-
-    #[test]
-    fn mouse_capture_is_off_without_alternate_screen() {
-        let cli = parse_cli(&["codesmith", "--mouse-capture"]);
-        let config = Config::default();
-
-        assert!(!should_use_mouse_capture_with(
-            &cli, &config, false, None, None, None
-        ));
-    }
-
-    // Issue #878 / #898: JetBrains JediTerm advertises mouse support but
-    // forwards SGR mouse-event escapes as raw input characters, producing
-    // the "input box auto-fills with garbled characters when I move the
-    // mouse" failure mode in PyCharm/IDEA terminals. Default the capture
-    // off when we see TERMINAL_EMULATOR=JetBrains-JediTerm; explicit
-    // config / --mouse-capture still wins.
-
-    #[test]
-    fn mouse_capture_defaults_off_in_jetbrains_jediterm() {
-        let cli = parse_cli(&["codesmith"]);
-        let config = Config::default();
-
-        assert!(!should_use_mouse_capture_with(
-            &cli,
-            &config,
-            true,
-            Some("JetBrains-JediTerm"),
-            None,
-            None,
-        ));
-    }
-
-    #[test]
-    fn jetbrains_default_off_is_case_insensitive() {
-        let cli = parse_cli(&["codesmith"]);
-        let config = Config::default();
-
-        // JetBrains has occasionally varied the casing across releases;
-        // a case-insensitive match keeps the protection in place.
-        assert!(!should_use_mouse_capture_with(
-            &cli,
-            &config,
-            true,
-            Some("jetbrains-jediterm"),
-            None,
-            None,
-        ));
-    }
-
-    #[test]
-    fn mouse_capture_flag_overrides_jetbrains_default() {
-        let cli = parse_cli(&["codesmith", "--mouse-capture"]);
-        let config = Config::default();
-
-        assert!(should_use_mouse_capture_with(
-            &cli,
-            &config,
-            true,
-            Some("JetBrains-JediTerm"),
-            None,
-            None,
-        ));
-    }
-
-    #[test]
-    fn config_mouse_capture_true_overrides_jetbrains_default() {
-        let cli = parse_cli(&["codesmith"]);
-        let config = Config {
-            tui: Some(crate::config::TuiConfig {
-                alternate_screen: None,
-                mouse_capture: Some(true),
-                terminal_probe_timeout_ms: None,
-                status_items: None,
-                osc8_links: None,
-                composer_arrows_scroll: None,
-                notification_condition: None,
-            }),
-            ..Config::default()
-        };
-
-        assert!(should_use_mouse_capture_with(
-            &cli,
-            &config,
-            true,
-            Some("JetBrains-JediTerm"),
-            None,
-            None,
-        ));
-    }
 }
 
 #[cfg(test)]
@@ -8301,6 +7913,75 @@ mod doctor_mcp_tests {
 
 #[cfg(test)]
 mod setup_helper_tests {
+    #[test]
+    fn plain_launch_preserves_checkpoint_but_starts_fresh() {
+        let _guard = crate::test_support::lock_test_env();
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        with_home(tmp.path(), || {
+            let manager = SessionManager::default_location().expect("manager");
+            let messages = vec![Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "in flight".to_string(),
+                    cache_control: None,
+                }],
+            }];
+            let session = create_saved_session(&messages, "test-model", &workspace, 0, None);
+            let session_id = session.metadata.id.clone();
+            manager.save_checkpoint(&session).expect("save checkpoint");
+
+            preserve_interrupted_checkpoint_for_explicit_resume(&workspace);
+
+            assert!(
+                manager
+                    .load_checkpoint()
+                    .expect("load checkpoint")
+                    .is_none(),
+                "normal launch should clear latest checkpoint after preserving it"
+            );
+            assert!(
+                manager.load_session(&session_id).is_ok(),
+                "normal launch should keep an explicit resume target"
+            );
+        });
+    }
+    #[test]
+    fn continue_recovers_same_workspace_checkpoint() {
+        let _guard = crate::test_support::lock_test_env();
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        with_home(tmp.path(), || {
+            let manager = SessionManager::default_location().expect("manager");
+            let messages = vec![Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "continue me".to_string(),
+                    cache_control: None,
+                }],
+            }];
+            let session = create_saved_session(&messages, "test-model", &workspace, 0, None);
+            let session_id = session.metadata.id.clone();
+            manager.save_checkpoint(&session).expect("save checkpoint");
+
+            let recovered = recover_interrupted_checkpoint_for_resume(&workspace);
+
+            assert_eq!(recovered.as_deref(), Some(session_id.as_str()));
+            assert!(
+                manager
+                    .load_checkpoint()
+                    .expect("load checkpoint")
+                    .is_none(),
+                "--continue should consume the checkpoint"
+            );
+            assert!(manager.load_session(&session_id).is_ok());
+        });
+    }
+
     use super::*;
     use std::collections::BTreeSet;
     use tempfile::TempDir;
@@ -8455,76 +8136,6 @@ mod setup_helper_tests {
             }
         }
         result
-    }
-
-    #[test]
-    fn plain_launch_preserves_checkpoint_but_starts_fresh() {
-        let _guard = crate::test_support::lock_test_env();
-        let tmp = TempDir::new().unwrap();
-        let workspace = tmp.path().join("workspace");
-        std::fs::create_dir_all(&workspace).unwrap();
-
-        with_home(tmp.path(), || {
-            let manager = SessionManager::default_location().expect("manager");
-            let messages = vec![Message {
-                role: "user".to_string(),
-                content: vec![ContentBlock::Text {
-                    text: "in flight".to_string(),
-                    cache_control: None,
-                }],
-            }];
-            let session = create_saved_session(&messages, "test-model", &workspace, 0, None);
-            let session_id = session.metadata.id.clone();
-            manager.save_checkpoint(&session).expect("save checkpoint");
-
-            preserve_interrupted_checkpoint_for_explicit_resume(&workspace);
-
-            assert!(
-                manager
-                    .load_checkpoint()
-                    .expect("load checkpoint")
-                    .is_none(),
-                "normal launch should clear latest checkpoint after preserving it"
-            );
-            assert!(
-                manager.load_session(&session_id).is_ok(),
-                "normal launch should keep an explicit resume target"
-            );
-        });
-    }
-
-    #[test]
-    fn continue_recovers_same_workspace_checkpoint() {
-        let _guard = crate::test_support::lock_test_env();
-        let tmp = TempDir::new().unwrap();
-        let workspace = tmp.path().join("workspace");
-        std::fs::create_dir_all(&workspace).unwrap();
-
-        with_home(tmp.path(), || {
-            let manager = SessionManager::default_location().expect("manager");
-            let messages = vec![Message {
-                role: "user".to_string(),
-                content: vec![ContentBlock::Text {
-                    text: "continue me".to_string(),
-                    cache_control: None,
-                }],
-            }];
-            let session = create_saved_session(&messages, "test-model", &workspace, 0, None);
-            let session_id = session.metadata.id.clone();
-            manager.save_checkpoint(&session).expect("save checkpoint");
-
-            let recovered = recover_interrupted_checkpoint_for_resume(&workspace);
-
-            assert_eq!(recovered.as_deref(), Some(session_id.as_str()));
-            assert!(
-                manager
-                    .load_checkpoint()
-                    .expect("load checkpoint")
-                    .is_none(),
-                "--continue should consume the checkpoint"
-            );
-            assert!(manager.load_session(&session_id).is_ok());
-        });
     }
 
     #[test]
