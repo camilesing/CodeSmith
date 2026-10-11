@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # CodeSmith Unix installer
-# Copies codesmith and codesmith-tui to ~/.local/bin (or $PREFIX/bin)
+# Copies codesmith to ~/.local/bin (or $PREFIX/bin)
 
 PREFIX="${PREFIX:-$HOME/.local}"
 BIN_DIR="${PREFIX}/bin"
@@ -11,7 +11,7 @@ mkdir -p "$BIN_DIR"
 
 echo "Installing codesmith to $BIN_DIR ..."
 
-for bin in codesmith codesmith-tui; do
+for bin in codesmith; do
     src="$SCRIPT_DIR/$bin"
     dst="$BIN_DIR/$bin"
     if [[ ! -f "$src" ]]; then

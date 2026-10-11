@@ -170,7 +170,7 @@ async function main() {
       cwd: installDir,
       env,
     });
-    await runCommand("npx", ["--no-install", "codesmith-tui", "--help"], {
+    await runCommand("npx", ["--no-install", "codesmith", "--help"], {
       cwd: installDir,
       env,
     });

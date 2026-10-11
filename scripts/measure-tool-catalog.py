@@ -21,7 +21,7 @@ def main() -> int:
         "cargo",
         "test",
         "-p",
-        "codesmith-tui",
+        "codesmith-cli",
         "print_agent_tool_catalog_metrics",
         "--",
         "--ignored",

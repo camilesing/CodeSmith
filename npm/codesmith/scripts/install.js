@@ -134,16 +134,12 @@ function maxAttempts(context = "runtime", env = process.env) {
 }
 
 function binaryPaths() {
-  const { codesmith, tui } = detectBinaryNames();
+  const { codesmith } = detectBinaryNames();
   const releaseDir = releaseBinaryDirectory();
   return {
     codesmith: {
       asset: codesmith,
       target: path.join(releaseDir, process.platform === "win32" ? "codesmith.exe" : "codesmith"),
-    },
-    tui: {
-      asset: tui,
-      target: path.join(releaseDir, process.platform === "win32" ? "codesmith-tui.exe" : "codesmith-tui"),
     },
   };
 }
@@ -194,7 +190,7 @@ function installFailureHint(error) {
       "codesmith install hint:",
       `  CODESMITH_RELEASE_BASE_URL is set to ${releaseBase}`,
       "  Verify that this directory contains codesmith-artifacts-sha256.txt",
-      "  plus the codesmith/codesmith-tui binary assets for your platform.",
+      "  plus the codesmith binary asset for your platform.",
     ].join("\n");
   }
 
@@ -1116,10 +1112,7 @@ async function run(options = {}) {
     return checksumsPromise;
   };
 
-  await Promise.all([
-    ensureBinary(paths.codesmith.target, paths.codesmith.asset, version, repo, getChecksums, { context }),
-    ensureBinary(paths.tui.target, paths.tui.asset, version, repo, getChecksums, { context }),
-  ]);
+  await ensureBinary(paths.codesmith.target, paths.codesmith.asset, version, repo, getChecksums, { context });
 }
 
 async function getBinaryPath(name) {
@@ -1127,9 +1120,6 @@ async function getBinaryPath(name) {
   const paths = binaryPaths();
   if (name === "codesmith") {
     return paths.codesmith.target;
-  }
-  if (name === "codesmith-tui") {
-    return paths.tui.target;
   }
   throw new Error(`Unknown binary: ${name}`);
 }

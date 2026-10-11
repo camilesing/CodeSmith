@@ -5,16 +5,16 @@ const CHECKSUM_MANIFEST = "codesmith-artifacts-sha256.txt";
 
 const ASSET_MATRIX = {
   linux: {
-    x64: ["codesmith-linux-x64", "codesmith-tui-linux-x64"],
-    arm64: ["codesmith-linux-arm64", "codesmith-tui-linux-arm64"],
-    riscv64: ["codesmith-linux-riscv64", "codesmith-tui-linux-riscv64"],
+    x64: ["codesmith-linux-x64"],
+    arm64: ["codesmith-linux-arm64"],
+    riscv64: ["codesmith-linux-riscv64"],
   },
   darwin: {
-    x64: ["codesmith-macos-x64", "codesmith-tui-macos-x64"],
-    arm64: ["codesmith-macos-arm64", "codesmith-tui-macos-arm64"],
+    x64: ["codesmith-macos-x64"],
+    arm64: ["codesmith-macos-arm64"],
   },
   win32: {
-    x64: ["codesmith-windows-x64.exe", "codesmith-tui-windows-x64.exe", "codesmith.bat"],
+    x64: ["codesmith-windows-x64.exe", "codesmith.bat"],
   },
 };
 
@@ -49,7 +49,6 @@ function detectBinaryNames() {
     platform,
     arch,
     codesmith: pair[0],
-    tui: pair[1],
   };
 }
 
@@ -60,7 +59,7 @@ function unsupportedBuildHint() {
     "",
     "  # Requires Rust 1.88+ (https://rustup.rs)",
     "  cargo install codesmith-cli --locked   # provides `codesmith`",
-    "  cargo install codesmith-tui --locked   # provides `codesmith-tui`",
+    "  cargo install codesmith-cli --locked   # provides `codesmith`",
     "",
     "Or build from a checkout:",
     "",

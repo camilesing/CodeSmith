@@ -20,7 +20,7 @@ npx codesmith --help
 ```
 
 `postinstall` tries to download platform binaries into `bin/downloads/` and
-exposes `codesmith` and `codesmith-tui` commands. If GitHub release assets are
+exposes `codesmith` and `codesmith` commands. If GitHub release assets are
 temporarily unreachable, install continues and the wrapper retries the download
 on first run.
 
@@ -32,7 +32,7 @@ codesmith doctor
 codesmith
 ```
 
-The `codesmith` facade and `codesmith-tui` binary share
+The `codesmith` facade and `codesmith` binary share
 `~/.codesmith/config.toml` for DeepSeek auth and default model settings. Legacy
 `~/.deepseek/` installs are no longer read; migrate the directory to
 `~/.codesmith/`.
@@ -70,7 +70,7 @@ Prebuilt binaries for the GitHub release are downloaded automatically:
 Other platform/architecture combinations (musl, riscv64, FreeBSD, …) aren't
 shipped as prebuilts. Unsupported platforms, checksum failures, and glibc
 compatibility problems still fail with a clear error pointing you at
-`cargo install codesmith-cli codesmith-tui --locked` and the full
+`cargo install codesmith-cli codesmith --locked` and the full
 [docs/INSTALL.md](https://github.com/camilesing/CodeSmith/blob/main/docs/INSTALL.md)
 build-from-source guide.
 

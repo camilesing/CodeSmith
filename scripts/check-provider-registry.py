@@ -21,7 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_RS = ROOT / "crates" / "config" / "src" / "lib.rs"
-TUI_CONFIG_RS = ROOT / "crates" / "tui" / "src" / "config.rs"
+TUI_CONFIG_RS = ROOT / "crates" / "cli" / "src" / "config.rs"
 # The ApiProvider enum/impl moved to agent-runtime during the engine-closure
 # extraction; crates/tui/src/config.rs only re-exports it now.
 AGENT_RUNTIME_CONFIG_RS = ROOT / "crates" / "agent-runtime" / "src" / "config_types.rs"

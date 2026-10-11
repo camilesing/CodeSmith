@@ -36,7 +36,7 @@ async function main() {
       target: codesmith,
     },
     {
-      source: path.join(buildDir, isWindows ? "codesmith-tui.exe" : "codesmith-tui"),
+      source: path.join(buildDir, isWindows ? "codesmith.exe" : "codesmith"),
       target: tui,
     },
   ];
@@ -50,8 +50,8 @@ async function main() {
         continue;
       }
       assets.push({
-        source: assetName.startsWith("codesmith-tui")
-          ? path.join(buildDir, isWindows ? "codesmith-tui.exe" : "codesmith-tui")
+        source: assetName.startsWith("codesmith")
+          ? path.join(buildDir, isWindows ? "codesmith.exe" : "codesmith")
           : path.join(buildDir, isWindows ? "codesmith.exe" : "codesmith"),
         target: assetName,
       });

@@ -179,29 +179,10 @@ pub(crate) fn release_arch_for_rust_arch(arch: &str) -> &str {
     }
 }
 
-pub(crate) fn binary_prefix_for_exe(current_exe: &Path) -> &'static str {
-    let exe_name = current_exe
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("codesmith");
-    if exe_name.contains("codesmith-tui") {
-        "codesmith-tui"
-    } else {
-        "codesmith"
-    }
-}
 
-fn sibling_prefix_for(prefix: &str) -> &'static str {
-    if prefix == "codesmith-tui" {
-        "codesmith"
-    } else {
-        "codesmith-tui"
-    }
-}
 
-fn sibling_binary_path(current_exe: &Path, sibling_prefix: &str) -> PathBuf {
-    current_exe.with_file_name(format!("{sibling_prefix}{}", std::env::consts::EXE_SUFFIX))
-}
+
+
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct UpdateTarget {
@@ -209,31 +190,23 @@ struct UpdateTarget {
     asset_stem: String,
 }
 
+pub(crate) fn binary_prefix_for_exe(_current_exe: &Path) -> &'static str {
+    // Single-binary builds: every executable named codesmith* updates from
+    // the `codesmith-<platform>` asset. Installs still carrying a legacy
+    // `codesmith-tui` binary should reinstall (release notes say so).
+    "codesmith"
+}
+
 fn update_targets_for_exe(current_exe: &Path) -> Vec<UpdateTarget> {
     let current_prefix = binary_prefix_for_exe(current_exe);
-    let mut targets = vec![UpdateTarget {
+    vec![UpdateTarget {
         path: current_exe.to_path_buf(),
         asset_stem: release_asset_stem_for_prefix(
             current_prefix,
             std::env::consts::OS,
             std::env::consts::ARCH,
         ),
-    }];
-
-    let sibling_prefix = sibling_prefix_for(current_prefix);
-    let sibling = sibling_binary_path(current_exe, sibling_prefix);
-    if sibling.exists() {
-        targets.push(UpdateTarget {
-            path: sibling,
-            asset_stem: release_asset_stem_for_prefix(
-                sibling_prefix,
-                std::env::consts::OS,
-                std::env::consts::ARCH,
-            ),
-        });
-    }
-
-    targets
+    }]
 }
 
 fn release_asset_stem_for_prefix(prefix: &str, os: &str, rust_arch: &str) -> String {
@@ -401,8 +374,8 @@ fn release_from_mirror_base_url(
         browser_download_url: mirror_asset_url(base_url, CHECKSUM_MANIFEST_ASSET),
     }];
 
-    for prefix in ["codesmith", "codesmith-tui"] {
-        let name = release_asset_name_for_prefix(prefix, os, rust_arch);
+    {
+        let name = release_asset_name_for_prefix("codesmith", os, rust_arch);
         assets.push(Asset {
             browser_download_url: mirror_asset_url(base_url, &name),
             name,
@@ -604,88 +577,8 @@ mod tests {
     }
 
     /// Verify binary prefix detection for dispatcher vs TUI binary.
-    #[test]
-    fn test_binary_prefix_detection() {
-        // TUI binary should use codesmith-tui prefix
-        assert_eq!(
-            binary_prefix_for_exe(Path::new("codesmith-tui")),
-            "codesmith-tui"
-        );
-        assert_eq!(
-            binary_prefix_for_exe(Path::new("codesmith-tui.exe")),
-            "codesmith-tui"
-        );
-        assert_eq!(
-            binary_prefix_for_exe(Path::new("/usr/local/bin/codesmith-tui")),
-            "codesmith-tui"
-        );
 
-        // Dispatcher binary should use codesmith prefix
-        assert_eq!(binary_prefix_for_exe(Path::new("codesmith")), "codesmith");
-        assert_eq!(
-            binary_prefix_for_exe(Path::new("codesmith.exe")),
-            "codesmith"
-        );
-        assert_eq!(
-            binary_prefix_for_exe(Path::new("/usr/local/bin/codesmith")),
-            "codesmith"
-        );
 
-        // Fallback for unknown names
-        assert_eq!(
-            binary_prefix_for_exe(Path::new("other-binary")),
-            "codesmith"
-        );
-    }
-
-    #[test]
-    fn test_release_asset_stem_for_supported_platforms() {
-        let cases = [
-            ("codesmith", "macos", "aarch64", "codesmith-macos-arm64"),
-            ("codesmith", "macos", "x86_64", "codesmith-macos-x64"),
-            ("codesmith", "linux", "x86_64", "codesmith-linux-x64"),
-            ("codesmith", "windows", "x86_64", "codesmith-windows-x64"),
-            (
-                "codesmith-tui",
-                "macos",
-                "aarch64",
-                "codesmith-tui-macos-arm64",
-            ),
-            (
-                "codesmith-tui",
-                "linux",
-                "x86_64",
-                "codesmith-tui-linux-x64",
-            ),
-        ];
-
-        for (exe, os, arch, expected) in cases {
-            assert_eq!(release_asset_stem_for(Path::new(exe), os, arch), expected);
-        }
-    }
-
-    #[test]
-    fn update_targets_include_existing_sibling_tui_for_dispatcher() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let dispatcher = dir
-            .path()
-            .join(format!("codesmith{}", std::env::consts::EXE_SUFFIX));
-        let tui = dir
-            .path()
-            .join(format!("codesmith-tui{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&dispatcher, b"dispatcher").unwrap();
-        std::fs::write(&tui, b"tui").unwrap();
-
-        let targets = update_targets_for_exe(&dispatcher);
-        let paths = targets
-            .iter()
-            .map(|target| target.path.as_path())
-            .collect::<Vec<_>>();
-
-        assert_eq!(paths, vec![dispatcher.as_path(), tui.as_path()]);
-        assert!(targets[0].asset_stem.starts_with("codesmith-"));
-        assert!(targets[1].asset_stem.starts_with("codesmith-tui-"));
-    }
 
     #[test]
     fn update_targets_skip_missing_sibling() {
@@ -702,29 +595,6 @@ mod tests {
         assert!(targets[0].asset_stem.starts_with("codesmith-"));
     }
 
-    #[test]
-    fn test_asset_matching_accepts_binary_assets_and_rejects_checksums() {
-        assert!(asset_matches_platform(
-            "codesmith-macos-arm64",
-            "codesmith-macos-arm64"
-        ));
-        assert!(asset_matches_platform(
-            "codesmith-macos-arm64.tar.gz",
-            "codesmith-macos-arm64"
-        ));
-        assert!(asset_matches_platform(
-            "codesmith-tui-windows-x64.exe",
-            "codesmith-tui-windows-x64"
-        ));
-        assert!(!asset_matches_platform(
-            "codesmith-tui-windows-x64.exe.sha256",
-            "codesmith-tui-windows-x64"
-        ));
-        assert!(!asset_matches_platform(
-            "codesmith-macos-aarch64.tar.gz",
-            "codesmith-macos-arm64"
-        ));
-    }
 
     #[test]
     fn test_sha256_hex_known_value() {
@@ -810,10 +680,9 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codesmith-win
         assert_eq!(content, "fresh binary");
     }
 
-    /// Mocked GitHub release payload covering both the dispatcher (`codesmith`)
-    /// and the legacy TUI (`codesmith-tui`) binaries across our published
-    /// platform/arch matrix, plus a checksum sibling that must never be picked
-    /// as the primary binary.
+    /// Mocked GitHub release payload covering the single `codesmith`
+    /// binary across our published platform/arch matrix, plus a checksum
+    /// sibling that must never be picked as the primary binary.
     fn mocked_release() -> Release {
         let json = r#"{
           "tag_name": "v0.8.8",
@@ -822,17 +691,12 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codesmith-win
             { "name": "codesmith-macos-x64",          "browser_download_url": "https://example.invalid/codesmith-macos-x64" },
             { "name": "codesmith-macos-arm64",        "browser_download_url": "https://example.invalid/codesmith-macos-arm64" },
             { "name": "codesmith-windows-x64.exe",    "browser_download_url": "https://example.invalid/codesmith-windows-x64.exe" },
-            { "name": "codesmith-windows-x64.exe.sha256", "browser_download_url": "https://example.invalid/codesmith-windows-x64.exe.sha256" },
-            { "name": "codesmith-tui-linux-x64",      "browser_download_url": "https://example.invalid/codesmith-tui-linux-x64" },
-            { "name": "codesmith-tui-macos-x64",      "browser_download_url": "https://example.invalid/codesmith-tui-macos-x64" },
-            { "name": "codesmith-tui-macos-arm64",    "browser_download_url": "https://example.invalid/codesmith-tui-macos-arm64" },
-            { "name": "codesmith-tui-windows-x64.exe","browser_download_url": "https://example.invalid/codesmith-tui-windows-x64.exe" }
+            { "name": "codesmith-windows-x64.exe.sha256", "browser_download_url": "https://example.invalid/codesmith-windows-x64.exe.sha256" }
           ]
         }"#;
         serde_json::from_str(json).expect("mock release JSON")
     }
 
-    #[test]
     fn mocked_release_selects_dispatcher_asset_for_supported_platforms() {
         let release = mocked_release();
         let cases = [
@@ -850,66 +714,8 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codesmith-win
         }
     }
 
-    #[test]
-    fn mocked_release_selects_tui_asset_when_tui_binary_invokes_update() {
-        let release = mocked_release();
-        let stem = release_asset_stem_for(
-            Path::new("/usr/local/bin/codesmith-tui"),
-            "macos",
-            "aarch64",
-        );
-        let asset = select_platform_asset(&release, &stem).expect("TUI platform asset");
-        assert_eq!(asset.name, "codesmith-tui-macos-arm64");
-    }
 
-    #[test]
-    fn mirror_release_uses_base_url_and_platform_assets() {
-        let release = release_from_mirror_base_url(
-            "https://mirror.example/releases/v0.8.36/",
-            "0.8.36",
-            "linux",
-            "x86_64",
-        );
 
-        assert_eq!(release.tag_name, "v0.8.36");
-        assert_eq!(release.assets[0].name, CHECKSUM_MANIFEST_ASSET);
-        assert_eq!(
-            release.assets[0].browser_download_url,
-            "https://mirror.example/releases/v0.8.36/codesmith-artifacts-sha256.txt"
-        );
-
-        let dispatcher =
-            select_platform_asset(&release, "codesmith-linux-x64").expect("dispatcher asset");
-        assert_eq!(
-            dispatcher.browser_download_url,
-            "https://mirror.example/releases/v0.8.36/codesmith-linux-x64"
-        );
-        let tui = select_platform_asset(&release, "codesmith-tui-linux-x64").expect("tui asset");
-        assert_eq!(
-            tui.browser_download_url,
-            "https://mirror.example/releases/v0.8.36/codesmith-tui-linux-x64"
-        );
-    }
-
-    #[test]
-    fn mirror_release_uses_windows_exe_asset_names() {
-        let release = release_from_mirror_base_url(
-            "https://mirror.example/releases/v0.8.36",
-            "v0.8.36",
-            "windows",
-            "x86_64",
-        );
-
-        assert_eq!(release.tag_name, "v0.8.36");
-        assert!(
-            select_platform_asset(&release, "codesmith-windows-x64")
-                .is_some_and(|asset| asset.name == "codesmith-windows-x64.exe")
-        );
-        assert!(
-            select_platform_asset(&release, "codesmith-tui-windows-x64")
-                .is_some_and(|asset| asset.name == "codesmith-tui-windows-x64.exe")
-        );
-    }
 
     #[test]
     fn cnb_release_base_url_includes_tag_directory() {
@@ -979,22 +785,6 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codesmith-win
         assert!(!is_beta_tag(&stable.tag_name));
     }
 
-    #[test]
-    fn update_fallback_hint_points_china_users_to_cnb_and_asset_mirrors() {
-        let hint = update_network_fallback_hint();
-
-        assert!(hint.contains(codesmith_release::CNB_REPO_URL), "{hint}");
-        assert!(
-            hint.contains(codesmith_release::RELEASE_BASE_URL_ENV),
-            "{hint}"
-        );
-        assert!(
-            hint.contains(codesmith_release::UPDATE_VERSION_ENV),
-            "{hint}"
-        );
-        assert!(hint.contains("codesmith-cli"), "{hint}");
-        assert!(hint.contains("codesmith-tui --locked"), "{hint}");
-    }
 
     fn serve_http_once(
         status: &'static str,

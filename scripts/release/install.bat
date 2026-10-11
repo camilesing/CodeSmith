@@ -1,7 +1,7 @@
 @echo off
 setlocal enabledelayedexpansion
 :: CodeSmith Windows installer
-:: Copies codesmith.exe and codesmith-tui.exe to %USERPROFILE%\bin
+:: Copies codesmith.exe to %USERPROFILE%\bin
 
 set "BIN_DIR=%USERPROFILE%\bin"
 set "SCRIPT_DIR=%~dp0"
@@ -16,9 +16,7 @@ if %ERRORLEVEL% neq 0 (
     exit /b 1
 )
 
-copy /Y "%SCRIPT_DIR%codesmith-tui.exe" "%BIN_DIR%\codesmith-tui.exe" >nul
 if %ERRORLEVEL% neq 0 (
-    echo ERROR: Failed to copy codesmith-tui.exe
     exit /b 1
 )
 

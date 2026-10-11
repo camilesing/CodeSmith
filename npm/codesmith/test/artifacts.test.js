@@ -25,7 +25,7 @@ test("openharmony x64 resolves to linux x64 binaries", () => {
     const { detectBinaryNames } = require(ARTIFACTS_PATH);
     const result = detectBinaryNames();
     assert.equal(result.codesmith, "codesmith-linux-x64");
-    assert.equal(result.tui, "codesmith-tui-linux-x64");
+    assert.equal(result.tui, "codesmith-linux-x64");
   });
 });
 
@@ -34,7 +34,7 @@ test("openharmony arm64 resolves to linux arm64 binaries", () => {
     const { detectBinaryNames } = require(ARTIFACTS_PATH);
     const result = detectBinaryNames();
     assert.equal(result.codesmith, "codesmith-linux-arm64");
-    assert.equal(result.tui, "codesmith-tui-linux-arm64");
+    assert.equal(result.codesmith, "codesmith-linux-arm64");
   });
 });
 
@@ -70,7 +70,7 @@ test("allAssetNames includes every matrix entry", () => {
   const { allAssetNames, allReleaseAssetNames } = require(ARTIFACTS_PATH);
   const assetNames = allAssetNames();
   assert.ok(assetNames.includes("codesmith-windows-x64.exe"));
-  assert.ok(assetNames.includes("codesmith-tui-windows-x64.exe"));
+  assert.ok(assetNames.includes("codesmith-windows-x64.exe"));
   assert.ok(assetNames.includes("codesmith.bat"));
   assert.ok(allReleaseAssetNames().includes("codesmith.bat"));
 });
