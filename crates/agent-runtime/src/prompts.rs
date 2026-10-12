@@ -6,6 +6,33 @@
 //!
 //! This keeps each concern in its own file and makes prompt tuning
 //! a single-file operation.
+//!
+//! ## Known limitations (base.md trim)
+//!
+//! `base.md` was cut from ~30k to ~20k chars to shrink the per-request
+//! payload — a measured 78KB system prompt plus 102 tool schemas is ~39.6k
+//! tokens on every turn. What that deliberately removed, so the next reader
+//! doesn't assume it is still there:
+//!
+//! - **`## Toolbox (fast reference)`** — the tool schemas are now the sole
+//!   authoritative catalog. `## Tool Selection Guide` keeps only the
+//!   non-obvious routings (`apply_patch` vs `edit_file` vs `write_file`,
+//!   `exec_shell` vs `task_shell_*`, `agent_*`, `rlm_*`).
+//! - **Model-specific prose** — `## Your V4 Characteristics`, `## Thinking
+//!   Budget`, and the hard-coded "1M-token context window" / DeepSeek
+//!   cache-granularity / per-model price claims, which were wrong for every
+//!   non-DeepSeek model (a `claude-sonnet-4-5` session has a 200k window).
+//!   `reasoning_effort` is decided at runtime by config and
+//!   [`crate::auto_reasoning`], never by prose.
+//! - **`base.md`'s own `## Context Management`** — [`context_management_prompt`]
+//!   (Agent/Yolo only) is the single copy, so Plan and Coordinator modes no
+//!   longer carry `/compact` advice.
+//!
+//! Kept verbatim: the XML execution-discipline block, the `## Language`
+//! section, every article heading, and every phrase a test pins. No section
+//! id, title, `stability`, or `cache` attribute changed — only bodies got
+//! shorter, so the prefix fingerprint and `prompt_inspect` semantics are
+//! untouched.
 
 use crate::mode::AppMode;
 use crate::mode::ApprovalMode;
@@ -857,10 +884,9 @@ pub const AUTHORITY_RECAP: &str = "\
 
 The Constitution of CodeSmith (Articles I-VII) governs your behavior.
 Tier 1 rules — truthfulness, user agency, tool-use mandate, verification
-duty — are non-negotiable. The user's next message is the highest
-directive within Constitutional bounds. Personality, memory, and handoff
-context are subordinate to the Constitution, the Statutes, and the user's
-current request. When in doubt, consult Article VII: The Hierarchy of Law.";
+duty — are non-negotiable, and the user's next message is the highest
+directive within those bounds. When in doubt, consult Article VII: The
+Hierarchy of Law.";
 
 pub fn compose_prompt(mode: AppMode, personality: Personality) -> String {
     compose_prompt_with_approval(mode, personality, default_approval_mode_for_mode(mode))
@@ -973,19 +999,13 @@ pub fn append_section(
 
 pub fn context_management_prompt() -> &'static str {
     "## Context Management\n\n\
-     When the conversation gets long (you'll see a context usage indicator), you can:\n\
-     1. Use `/compact` to summarize earlier context and free up space\n\
-     2. The system will preserve important information (files you're working on, recent messages, tool results)\n\
-     3. After compaction, you'll see a summary of what was discussed and can continue seamlessly\n\n\
-     If you notice context is getting long (>60% during sustained work), proactively suggest using `/compact` to the user.\n\n\
+     When the conversation gets long (the context usage indicator shows it), suggest `/compact` — it summarizes earlier turns so you can keep working without losing thread, and the system preserves what matters: files you're working on, recent messages, tool results. Proactively suggest it past ~60% during sustained work.\n\n\
      ### Prompt-cache awareness\n\n\
-     DeepSeek caches the longest *byte-stable prefix* of every request and charges roughly 100× less for cache-hit tokens than miss tokens. The system prompt above is layered most-static-first specifically so the prefix stays stable turn-over-turn. To keep cache hits high:\n\
-     - **Working set location:** the current repo working set is stored on new user messages inside a `<turn_meta>` block. Treat it as high-priority turn metadata, not as a stable system-prompt section.\n\
-     - **Append, don't reorder.** New context goes at the end (latest user / tool messages). Reshuffling earlier messages or rewriting their content invalidates the cache for everything after the change.\n\
+     The provider caches the longest *byte-stable prefix* of every request and bills cache-hit tokens far below miss tokens. The system prompt above is layered most-static-first so that prefix stays stable turn-over-turn. To keep cache hits high:\n\
+     - **Working set location:** the repo working set arrives on new user messages inside a `<turn_meta>` block. Treat it as high-priority turn metadata, not as a stable system-prompt section.\n\
+     - **Append, don't reorder.** New context goes at the end (latest user / tool messages). Reshuffling or rewriting earlier messages invalidates the cache for everything after the change.\n\
      - **Don't paraphrase quoted content.** If you've already read a file, refer to it by path or line range instead of re-quoting it with different formatting.\n\
-     - **Use `/compact` as a hard reset, not a tweak.** Compaction is meant for when the cache is already losing — it intentionally rewrites the prefix to a shorter summary. Don't trigger it for small wins.\n\
-     - **Read once, refer back.** Re-reading the same file produces a different tool-result envelope than the prior read; it's cheaper to scroll back than to re-fetch.\n\
-     - **Footer chip:** the `cache hit %` chip turns red below 40% and yellow below 80%. If it's been red for several turns, that's a signal to consolidate."
+     - **Read once, refer back.** Re-reading the same file produces a different tool-result envelope; scrolling back is cheaper. Treat `/compact` as a hard reset, not a tweak — it intentionally rewrites the prefix to a shorter summary."
 }
 
 pub fn render_append_system_prompt_block(sources: &[PromptAppendSource]) -> Option<String> {
