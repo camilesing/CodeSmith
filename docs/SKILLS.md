@@ -45,9 +45,10 @@ troubleshooting.
    ```
 
    Your skill now appears in the model-visible skills catalog and in
-   `/skills`, and can be invoked with `/skill release-checklist`. (The
-   line REPL has no `/` completion menu, and bare `/release-checklist`
-   is not a command — activation is `/skill <name>` only.)
+   `/skills`, and can be invoked with `/skill release-checklist`. (Tab
+   completes command names, not skill names, and bare
+   `/release-checklist` is not a command — activation is
+   `/skill <name>` only.)
 
 ## Discovery directories and precedence
 
@@ -168,7 +169,8 @@ without further setup.
 3. **Manual invocation.** `/skill <name>` activates a skill on your next
    message. This is the only user-facing invocation path: bare
    `/<skill-name>` is not a command (it hits the REPL's unknown-command
-   arm), and the line REPL has no `/` completion menu. An activated
+   arm), and Tab completes only registered command names, not skill
+   names. An activated
    skill's rendered body is prepended to your next message as the turn's
    instruction.
 4. **HTTP runtime API.** `GET /v1/skills` lists skills and

@@ -10,6 +10,7 @@
 //! `state.rs` for the known-limitations note.
 
 pub mod commands;
+pub mod completion;
 pub mod keys;
 pub mod render;
 pub mod state;
@@ -26,6 +27,7 @@ use crate::config::Config;
 use crate::core::engine::{EngineHost, spawn_engine};
 use crate::core::ops::Op;
 use crate::hooks::{HookEvent, MessageSubmitOutcome};
+use completion::ReplHelper;
 use state::ReplState;
 
 /// Image extensions accepted for `@path` attachments in the composer.
@@ -136,7 +138,7 @@ pub async fn run_repl(
         state::resume_session(&mut state, resume_id).await?;
     }
 
-    let (mut editor, history_path) = build_editor()?;
+    let (mut editor, history_path) = build_editor(&state.workspace)?;
 
     // session_start hooks run before the first prompt (awaited — a hook
     // that loads state or sets up logging has finished by the time the
@@ -260,15 +262,31 @@ fn print_banner(state: &ReplState) {
     println!(
         "{}",
         format!(
-            "workspace {} · /help for commands · Ctrl+C cancels a turn · Ctrl+O toggles tool detail",
+            "workspace {} · /help lists commands (Tab completes) · Ctrl+C cancels a turn · Ctrl+O toggles tool detail",
             state.workspace.display()
         )
         .dimmed()
     );
 }
 
-fn build_editor() -> Result<(rustyline::DefaultEditor, Option<std::path::PathBuf>)> {
-    let mut editor = rustyline::DefaultEditor::new()?;
+/// The REPL's editor: rustyline with the slash-command helper attached.
+/// rustyline runs completion only when a helper is present, which is why
+/// typing `/` and pressing Tab used to do nothing at all.
+type ReplEditor = rustyline::Editor<ReplHelper, rustyline::history::DefaultHistory>;
+
+fn build_editor(workspace: &std::path::Path) -> Result<(ReplEditor, Option<std::path::PathBuf>)> {
+    // List mode, not in-place cycling: one Tab completes to the longest
+    // common prefix, a second Tab prints every match in columns. The prompt
+    // limit is raised past the registry size (77 names today) so a growing
+    // command set never turns Tab into a "display all N?" question.
+    let config = rustyline::Config::builder()
+        .completion_type(rustyline::CompletionType::List)
+        .completion_prompt_limit(200)
+        .build();
+    let mut editor = ReplEditor::with_config(config)?;
+    editor.set_helper(Some(ReplHelper::new(
+        commands::user_cmd_store::user_command_names(Some(workspace)),
+    )));
     let history = history_path();
     if let Some(history) = history.as_ref() {
         if let Some(parent) = history.parent() {
@@ -285,10 +303,7 @@ fn history_path() -> Option<std::path::PathBuf> {
     crate::config::effective_home_dir().map(|home| home.join("history"))
 }
 
-fn save_history(
-    editor: &mut rustyline::DefaultEditor,
-    history: Option<&std::path::Path>,
-) -> Result<()> {
+fn save_history(editor: &mut ReplEditor, history: Option<&std::path::Path>) -> Result<()> {
     if let Some(history) = history {
         editor
             .save_history(history)

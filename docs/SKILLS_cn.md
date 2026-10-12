@@ -44,7 +44,7 @@ CodeSmith 使用渐进式披露来保持上下文精简：会话提示只列出�
    ```
 
 你的技能现在出现在模型可见的技能目录和 `/skills` 中，可以用
-`/skill release-checklist` 调用。（行式 REPL 没有 `/` 补全菜单，
+`/skill release-checklist` 调用。（`Tab` 补全的是命令名而不是技能名，
 `/release-checklist` 也不是命令——激活只有 `/skill <name>` 这一条路。）
 
 ## 发现目录与优先级
@@ -154,7 +154,7 @@ Instructions for the agent go here.
    匹配时自动注入（见上文）。
 3. **手动调用。** `/skill <name>` 在你的下一条消息上激活技能。这是
    唯一的用户调用路径：`/<skill-name>` 不是命令（会落入 REPL 的未知
-   命令分支），行式 REPL 也没有 `/` 补全菜单。被激活技能的渲染正文
+   命令分支）；`Tab` 只补全已登记的命令名，不补全技能名。被激活技能的渲染正文
    会作为该轮指令前置于你的下一条消息。
 4. **HTTP 运行时 API。** `GET /v1/skills` 列出技能，
    `POST /v1/skills/{name}` 启用或禁用一个（持久化到

@@ -178,11 +178,12 @@ a line, the engine runs a turn, and output streams to the terminal.
 - Status line: one line above the prompt with the running state, preset tier,
   context-window occupancy (`🧭`), the permission mode (`🚥:`, see
   [Modes](#5-modes) below), the running sub-agent count (`🤖: N`),
-  model, and version. The model label shows the server-reported name once a
-  response arrives, so an alias gateway (an Anthropic-compatible endpoint
-  serving a different model) displays the model that actually served the
-  turn; the configured id shows before that. The in-turn live line carries
-  the mode, sub-agent count, and context percent too.
+  model, and version. The model label prints `[providers.<id>] display_model`
+  when you set one — the useful case is an alias gateway whose real backend is
+  a different model — and otherwise the model id. The `🧭` denominator likewise
+  honours the provider's `context_window` override before falling back to the
+  static model table. The in-turn live line carries the mode, sub-agent count,
+  and context percent too.
 - Prompt: where you type prompts and slash commands (`/help` lists them).
 - Transcript: the conversation, tool calls, command output summaries, and
   model responses, streamed as they happen.
@@ -200,10 +201,14 @@ append-only — expanding reprints the detail below the current output
 rather than rewriting history, and keystrokes other than `Ctrl+O` typed
 while a turn runs are discarded.
 
-The prompt accepts normal prompts and slash commands; `/help` lists the
-available commands. Use an `@path` mention to attach an image file to the
-next message, or `/attach <path>` for local media. `Ctrl+C` cancels a running
-turn; press it twice in a row to quit.
+The prompt accepts normal prompts and slash commands; `/help` lists every
+registered command. Typing `/` shows how many commands there are, `Tab`
+completes the name (press it twice to list the candidates when several
+match), and the dim text after the cursor previews the match with a one-line
+description.
+Use an `@path` mention to attach an image file to the next message, or
+`/attach <path>` for local media. `Ctrl+C` cancels a running turn; press it
+twice in a row to quit.
 
 Next: [CLI.md](CLI.md) is the command and subcommand reference.
 
@@ -225,8 +230,8 @@ Switch modes in the REPL directly:
 /mode yolo
 ```
 
-(`/yolo` is the shortcut for `/mode yolo`; a bare `/mode` prints the current
-mode.)
+(`/plan`, `/agent`, and `/yolo` are shortcuts for the matching `/mode`
+value; a bare `/mode` prints the current mode.)
 
 Plan mode is the safest place to start in an unfamiliar repository. It is for
 inspection and decision-making, not file edits.
@@ -257,7 +262,7 @@ Common commands for first-time users:
 
 | Command | Use |
 | --- | --- |
-| `/mode` | Switch between agent, plan, yolo, and coordinator modes |
+| `/mode` | Switch between agent, plan, yolo, and coordinator modes (`/plan`, `/agent`, `/yolo` are shortcuts) |
 | `/preset` | Show, switch, export, or drop the preset tier (`/preset simple`, `/preset list`, `/preset export <name>`, `/preset off`) |
 | `/model` | Select a model or use `/model auto` |
 | `/models` | List live models from the active endpoint |
