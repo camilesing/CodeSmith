@@ -7,9 +7,9 @@
 1. 确认二进制与配置：
    - `cargo run -p codesmith-cli -- --version`
    - `cat ~/.codesmith/config.toml`（或查看已配置的 profile）
-2. 开启详细日志：
-   - `RUST_LOG=codesmith_cli=debug cargo run -p codesmith-cli`（tracing 输出写入 `~/.codesmith/logs/tui-YYYY-MM-DD-<pid>.log`）
-   - 查看提供商 HTTP 重试/重连：`RUST_LOG=codesmith_providers=debug,codesmith_agent=debug cargo run -p codesmith-cli`
+2. 开启详细日志（仅输出到控制台；没有文件日志）：
+   - `CODESMITH_LOG_LEVEL=debug cargo run -p codesmith-cli`（或传 `--verbose`；`info`/`trace` 同样生效）
+   - `RUST_LOG` 不会被 CLI 自身读取——它只会传递给派生的子进程
 3. 捕获当前状态：
    - `ls ~/.codesmith/sessions`
    - `ls ~/.codesmith/sessions/checkpoints`
@@ -22,7 +22,7 @@
 - 助手输出不完整且没有结束
 
 检查：
-1. 检查重试/健康日志（`~/.codesmith/logs/` 中的 `codesmith_providers` / `codesmith_agent` target）
+1. 以 `CODESMITH_LOG_LEVEL=debug`（或 `--verbose`）重跑，在控制台观察重试/健康消息
 2. 验证端点连通性：
    - `curl -sS https://api.deepseek.com/beta/models -H "Authorization: Bearer $DEEPSEEK_API_KEY"`
 3. 确认工具输出中不存在本地沙箱/权限死锁

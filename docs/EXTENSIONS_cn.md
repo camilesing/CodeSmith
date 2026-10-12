@@ -5,18 +5,20 @@ CodeSmith 扩展是编译内置或从安装根以 dylib 加载的模块，它们
 > **脚本 Mod。** 同一 `Extension` 契约也由 Rhai 脚本 **Mod** 实现（`~/.codesmith/mods/<id>/mod.toml` + `mod.rhai`）—— 无需编译 Rust 即可获得钩子、工具、斜杠命令与持久 KV，首次激活门控并支持热重载。它们运行在本文档描述的同一套 runner / 接缝 / 重载机制之上。作者指南：[MODS_cn.md](MODS_cn.md)。
 
 宿主在引擎构建时（`build_extension_runtime()`，位于
-`crates/cli/src/core/engine.rs`）组装扩展运行时，并在每次
-`/extension reload` 时重新组装：发现编译内置注册（`inventory`）+
+`crates/cli/src/core/engine.rs`）组装扩展运行时，并在每次运行时重载
+（`manage_mods` 工具的 `action="reload"`）时重新组装：发现编译内置注册（`inventory`）+
 dylib 源（安装根）→ 与磁盘上的 `ExtensionStateStore` 对账（跳过
 已禁用的）→ 针对一个 stub api 逐个加载并配置 → `bind_core` 宿主
 上下文 —— 之后 runner 将生命周期事件分发给已注册的处理器。
 
-扩展工具 + 斜杠命令按轮实时接入宿主：工具通过
+扩展工具按轮实时接入宿主：通过
 `EngineHost::build_turn_dispatcher` 中的 `register_extension_tools`
-注册到每轮的 `ToolRegistry`，斜杠命令通过 `commands::execute` 中的
-`try_dispatch_extension_command` 分发 —— 因此 agent 循环将扩展
-工具视为普通的 `ToolSpec`（仅限主轮；不会被子代理继承 —— 见
-[沙箱立场](#沙箱立场)）。
+注册到每轮的 `ToolRegistry`，agent 循环将其视为普通的
+`ToolSpec`（仅限主轮；不会被子代理继承 —— 见
+[沙箱立场](#沙箱立场)）。扩展/mod 的**斜杠命令不会在 REPL 中分发**：
+`ExtensionRunner::try_dispatch_command`
+（`crates/extensions/src/runner.rs`）没有生产调用方 —— 在提示符处
+输入已注册的命令会落入行式 REPL 的未知命令分支。
 
 每次 populate/reload 还会为每个发现的扩展/mod 收集一条结构化审计条目 —— `Loaded` / `Failed { 原始错误 }` / `PendingConsent` / `Disabled` / `TrustGated` —— 以启动被动通知、reload 消息与 `tracing` 汇总（有失败时）三个面呈现。mod.toml 校验为 schema 聚合式（错误带字段路径）。
 
@@ -90,20 +92,31 @@ config.toml 的 `[tools].overrides <name> = { type = "disabled" }` 形态
 
 ## REPL 内管理器
 
-`/extension` 命令组是面向用户的界面。它从 REPL 命令表
-（`crates/cli/src/interactive/commands/`）分发，接入到 `execute()` 中，
-与静态 `match` 并列。
+目前没有 REPL 扩展命令：`/extension` 是一个桩，打印
+"extension management (/extension list|reload|status) is not wired in
+the REPL yet — extension commands arrive with the §F port"
+（`crates/cli/src/interactive/commands/misc_cmds.rs`）。
 
-| 子命令 | 别名 | 效果 |
-|---|---|---|
-| `/extension list` | `ls` | 列出编译内置 + 已安装的扩展（id + 版本）。 |
-| `/extension info <id>` | | 显示单个扩展的元数据。 |
-| `/extension enable <id>` | | 在 `extensions_state.toml` 中将扩展标记为启用；在下一次 `/extension reload` 时生效。 |
-| `/extension disable <id>` | | 将扩展标记为禁用；同样的重载注意事项。 |
-| `/extension status` | | 报告已绑定 runner 的 generation + 已绑定的命令/工具计数。 |
-| `/extension reload` | | 重新填充**共享的 runner `Arc`**：`clear_handlers` → `clear_tools` → `clear_commands` → `clear_providers`（丢弃注册 guard）→ `clear_prompt_sections` → `clear_skills` → `clear_message_projections` → `drain_libraries_to_pending` → `invalidate`（递增 generation）→ 发现（静态 + dylib）→ 与状态对账 → 逐个 `load` → `bind_core`（全新的 `HostExtensionContext`）。`App.extension_runner` 和 Engine 的字段都会实时更新（没有 `Arc` 交换 —— 它们共享引擎构建的那一个）。被排空的 `Library` 会在引擎 op-loop 的下一次顶部（轮边界）被 `drop_pending`。重载前绑定的处理器之后不再观察（被清除，而不是重复）；新安装的扩展会在下一次重载时被拾取。 |
-| `/extension install <source> [--global]` | | 拉取（`git:`/`path:`/`crate:`/`prebuilt:`）→ 构建（`cargo build`）→ 放置到 `<root>/<id>/` + 写入 `extension.toml` + 记录 `installed[]` 来源 + 写入 sha256 边车（`<dylib>.sha256`，加载器会校验 —— 安装后被替换过的 dylib 在加载时会被拒绝）；`--global` 为可选（默认为项目级）。`crate:` 从 crates.io 拉取（sparse-index → 版本 → sha256 校验的 `.crate` → `tar` 解压 → 构建）；`prebuilt:<https-url>` 拉取预构建 cdylib（仅限 HTTPS，重定向不可降级到明文 HTTP，可选 `--checksum <sha256>`）；两者在项目级且未受信任时都会警告；用 `/extension reload` 加载。 |
-| `/extension uninstall <id>` | | 移除 `<root>/<id>/` + 清除 `installed[]` 来源记录。活跃的工具/命令绑定在下一次 `/extension reload` 时清除；dylib 在下一个轮边界安全卸载（两阶段 `Library` drop）。 |
+扩展管理是引擎级的：
+
+- **运行时重载** —— 让智能体运行 `manage_mods` 工具并指定
+  `action="reload"`（`crates/cli/src/mod_ops.rs` →
+  `reload_extension_runtime`，`crates/cli/src/core/engine.rs`）。它会
+  重新填充**共享的 runner `Arc`**：`clear_handlers` → `clear_tools` →
+  `clear_commands` → `clear_providers`（丢弃注册 guard）→
+  `clear_prompt_sections` → `clear_skills` →
+  `clear_message_projections` → `drain_libraries_to_pending` →
+  `invalidate`（递增 generation）→ 发现（静态 + dylib）→ 与状态对账 →
+  逐个 `load` → `bind_core`（全新的 `HostExtensionContext`）。
+  `App.extension_runner` 和 Engine 的字段都会实时更新（没有 `Arc`
+  交换 —— 它们共享引擎构建的那一个）。被排空的 `Library` 会在引擎
+  op-loop 的下一次顶部（轮边界）被 `drop_pending`。重载前绑定的
+  处理器之后不再观察（被清除，而不是重复）；新安装的扩展会在下一
+  次重载时被拾取。
+- **安装根 + 信任门** —— 不变：dylib 安装位于
+  [发现](#发现)一节所记载的安装根之下，项目本地 dylib 仍受工作区
+  信任门控（`apply_trust_gate`）。安装器/卸载器库本身（拉取 → 构建 →
+  sha256 边车）尚无用户界面。
 
 ## 发现
 
@@ -165,8 +178,9 @@ inventory::submit! {
 }
 ```
 
-`/extension list` 会报告 `scratchpad`；`/extension info scratchpad`
-显示其元数据。完整的工具/命令/处理器主体见该文件。
+`cargo test -p codesmith-extensions scratchpad_is_discoverable` 可证明
+发现能拾取它（没有 REPL 列表命令 —— 见
+[REPL 内管理器](#repl-内管理器)）。完整的工具/命令/处理器主体见该文件。
 
 ## 扩展字段（trait 契约）
 
@@ -217,8 +231,9 @@ inventory::submit! {
   接收一个 `ExtensionContext`（而不是宿主的 `ToolContext`）—— 使
   扩展与 `ToolContext` 的约 30 个宿主耦合字段解耦。
 - **`CommandDefinition`** —— 扩展侧斜杠命令契约：
-  `name / description / async run(ctx, args) -> CommandOutput`。由宿主
-  的 `extension_commands::try_dispatch` 分发。
+  `name / description / async run(ctx, args) -> CommandOutput`。运行时
+  查找是 `ExtensionRunner::try_dispatch_command`；它没有生产调用方，
+  因此已注册的命令在当前构建中不进入任何分发路径。
 - **`ExtensionError`** —— `StaleContext`（防护信号）+ `Config` /
   `Tool` / `Command` / `Conflict` / `Install` / `Load` / `Unimplemented`。
 
@@ -304,7 +319,7 @@ async fn configure(api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
 | `SessionBeforeSwitch` | —（无 emit 位点） | **Cancel** | 能力保留但当前从不发出：进程内工作区切换随 TUI 在 0.9.0 移除（`/workspace` 改为提示重启） |
 | `ProjectTrust` | `HostServices::build_turn_dispatcher`（`crates/cli/src/core/engine/runtime_traits.rs`；+ `spawn_subagent`）在 `build_tool_context_for` 之后（每轮 `Trusted`/`Untrusted`）；`FirstLoad` 当前无 emit 位点 —— onboarding 信任提示的发出随 TUI 在 0.9.0 移除 | observe | 来自 `session.trust_mode` 的每轮 `Trusted`/`Untrusted`；`FirstLoad` 为 onboarding 信任接受（`TrustReason::FirstLoad`）而定义，但已无活跃 emit 位点 —— 运行时 `trust_mode` 开关（`/trust on`）、YOLO 进入和持久化信任启动在每轮表现为 `Trusted`/`Untrusted`，而不是 `FirstLoad` |
 | `ToolsChange { added, removed }` | `HostServices::build_turn_dispatcher` 在所有选择源应用之后 | observe | 最终模型可见目录与上一主回合基线的差量；首次构建静默建立基线；子代理工具集不经过此接缝 |
-| `—`（dylib LOAD，不是事件） | `populate_extension_runtime`（`crates/cli/src/core/engine.rs`）在 `discover_static` 之后 | n/a（加载阶段） | `discover_dylib(&global_roots, &project_roots)` → `apply_trust_gate(discovered, !is_workspace_trusted(workspace))` 丢弃项目本地（`global == false`）→ `state.is_enabled` 对账 → 在 OS 线程加载运行时上执行 `ExtensionRunner::load_dylib`；重载经 `reload_extension_runtime`→`populate` 拾取。`ExtensionRunner.libraries` 持有 `Library` 句柄；在 `/extension reload` 时它们 `drain_libraries_to_pending` 到 `pending_drop`（与各 clear 一并执行）+ 引擎 op-loop 在下一个轮边界对它们执行 `drop_pending`。经 `codesmith_register_extension` 实现 lockstep `*mut dyn Extension`。 |
+| `—`（dylib LOAD，不是事件） | `populate_extension_runtime`（`crates/cli/src/core/engine.rs`）在 `discover_static` 之后 | n/a（加载阶段） | `discover_dylib(&global_roots, &project_roots)` → `apply_trust_gate(discovered, !is_workspace_trusted(workspace))` 丢弃项目本地（`global == false`）→ `state.is_enabled` 对账 → 在 OS 线程加载运行时上执行 `ExtensionRunner::load_dylib`；重载经 `reload_extension_runtime`→`populate` 拾取。`ExtensionRunner.libraries` 持有 `Library` 句柄；运行时重载时它们 `drain_libraries_to_pending` 到 `pending_drop`（与各 clear 一并执行）+ 引擎 op-loop 在下一个轮边界对它们执行 `drop_pending`。经 `codesmith_register_extension` 实现 lockstep `*mut dyn Extension`。 |
 | `ResourcesDiscover` | —（无 emit 位点） | observe | 已定义但从不发出：唯一的进程内候选位点（`McpPool` 中 `list_mcp_resources` 伪工具的分发，`agent-runtime/src/mcp.rs`）已被 `ToolCall`/`ToolResult` 包夹 —— 在那里触发会与工具执行混淆，且 `DiscoverReason` 在那里没有干净的映射；没有持有 runner `Arc` 的专用 Startup/Manual/Reload 发现接缝（`crates/cli/src/mcp_server.rs` 的 stdio 位点是独立进程） |
 | `SessionBeforeFork` | —（无 emit 位点） | **Cancel** | 已定义但从不发出：进程内回退路径随 TUI 在 0.9.0 移除，真正的 fork 原语仅限测试（`fork_at_user_message`，`crates/cli/src/runtime_threads.rs`，无非测试调用方）或仅限 HTTP（`fork_thread`，runtime-api，无 runner 访问权）—— 把某个接缝接为 `SessionBeforeFork` 会把回退误标为分叉（创建新线程） |
 | `ToolExecutionUpdate` | —（无 emit 位点） | observe | 已定义但从不发出：`Tool::run` 是一次性的（`agent/src/tools/mod.rs`），因此没有可在执行中途挂钩的进度流。`on_tool_progress` `Callback` 钩子作为前瞻性 API 面存在；emit 位点等待流式 `Tool` 契约 |
@@ -325,7 +340,7 @@ CodeSmith **不**对扩展做沙箱隔离。扩展与 agent 循环运行在同�
 会话信任状态的仅观察信号（`FirstLoad` 自 0.9.0 移除 TUI 后已无活跃
 emit 位点）。
 
-`/extension install` 期间的 `cargo build` 会运行源码的 `build.rs` ——
+扩展安装期间的 `cargo build` 会运行源码的 `build.rs` ——
 **任意代码执行，已被接受（信任来源）**；对不受信任的来源请容器化。
 安装本身与信任无关（它只*读取*信任以发出警告：项目本地安装在工作区
 受信任之前不会加载）。已加载的 dylib 在进程内运行并拥有完整的宿主
@@ -343,7 +358,7 @@ emit 位点）。
 移动到 `pending_drop`（`drain_libraries_to_pending`）；引擎 op-loop
 顶部在主线程 `HostAgentExecutor`（唯一持有在飞 dylib `Arc` 的角色）
 已在轮间被 drop 的那一刻将其 DROP（`drop_pending`）。这使得
-`/extension reload` + 卸载可以与在飞的轮安全并发。其安全性由该
+运行时重载 + 卸载可以与在飞的轮安全并发。其安全性由该
 不变量 + 单调用点纪律证明；dylib+Miri 不可靠（libloading 的
 `Library::drop` 会运行 `dlclose`/`FreeLibrary`，而 Miri 不对其建模），
 因此证明来自不变量 —— 而不是一次 Miri 运行。
@@ -360,17 +375,23 @@ emit 位点）。
 - `ExtensionApi` 没有渲染器、快捷方式或标志注册面。
 - `AssistantStream` 只携带文本增量 —— thinking 增量保持仅 UI。
 - 能力清单每进程读取一次；修改需要重启。
-- 热加载永久排除 —— 仅限安装 + `/extension reload`。
+- 热加载永久排除 —— 仅限安装 + 运行时重载
+  （`manage_mods(action="reload")`）；安装器库尚无 REPL 界面。
 
 ## 故障排查
 
-- **`/extension list` 什么都不显示。** 没有 `inventory::submit!` 到达
+- **编译内置扩展没有加载。** 没有 `inventory::submit!` 到达
   链接 —— 确认扩展的 crate 是 workspace 成员，且
   `crates/extensions/src/lib.rs` 声明了其模块。`cargo test -p
   codesmith-extensions scratchpad_is_discoverable` 可证明注册已接线。
-- **`/extension status` 显示 "not bound"。** 引擎尚未构建（启动前），
+  没有 REPL 列表命令（`/extension` 是桩）；加载失败会体现在
+  `tracing` 汇总（target `codesmith_extensions`）中，dylib 安装可以直接
+  查看 `~/.codesmith/extensions` / `<workspace>/.codesmith/extensions`。
+- **Runner 读起来是 "not bound"。** 引擎尚未构建（启动前），
   或 `state.extension_runner` 没有从句柄复制（`crates/cli/src/interactive/mod.rs`
   中 `spawn_engine` 之后）。
+- **改动后 mod 层没有反应。** 运行时重载是引擎级的 —— 让智能体运行
+  `manage_mods(action="reload")`（见 [MODS_cn.md](MODS_cn.md)）。
 - **处理器返回 `Continue` 但没有任何变化。** `Continue` 按设计表示
   "无变化"。要取消/阻止/变换，请返回对应的变体 —— 并注意变体特定
   语义（非 `ToolCall` 接缝处的 `Block` 会被忽略；见上文的宿主接缝
@@ -378,8 +399,8 @@ emit 位点）。
   的处理器会通过 `tracing` 记录日志并被跳过 —— 它不会让 agent 循环
   崩溃 —— 处理器返回 `Err` 同样会被记录 + 链继续。
 - **`configure` 捕获的 `Arc<dyn ExtensionApi>` 现在返回
-  `StaleContext`。** runner 已被 `invalidate()`（通过
-  `/extension reload` 或未来的 reload/fork/switch）；请捕获新的 api，
+  `StaleContext`。** runner 已被 `invalidate()`（通过运行时重载
+  或未来的 reload/fork/switch）；请捕获新的 api，
   或在使用前对照活跃 runner 检查 `generation()`。
 - **测试在 `tokio runtime blocking/shutdown.rs` 处 panic。** 在运行时
   worker 线程内创建并 drop 了一个嵌套的 tokio 运行时。

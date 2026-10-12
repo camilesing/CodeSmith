@@ -25,8 +25,6 @@ codesmith --preset simple    # Pi 式极简：9 个工具，无索引/LSP/记忆
 codesmith --preset all       # 稳定功能全开
 /preset list                 # 查看当前工作区可见的所有预设
 /preset plan                 # 会话中热切换（现场旋钮即时生效，其余给出重启提示）
-/preset export my-setup      # 把当前旋钮快照为可分享的文件
-/preset off                  # 退出预设层，旋钮保持当前值
 codesmith preset show         # 档位矩阵 + 你的生效预设
 ```
 
@@ -118,10 +116,12 @@ web_search = false
 feature 开关和记忆注入在引擎启动时读取——切换到包含这些字段的预设时，会明确
 提示哪些将在重启后生效。
 
-**活动预设的优先级：** `--preset name`（CLI，或 `CODESMITH_PRESET`）>
+**活动预设的优先级：** `--preset name`（CLI；弃用的 `--mode` 写法仍有效）>
 config.toml 里的 `preset = "name"`（旧版 `mode` 键仍作为弃用别名有效）>
 REPL 中最近一次选择的预设（持久化在 settings.toml）> 出厂默认 `middle`。
-取消预设层用 `/preset off`。
+取消预设：不再传递 `--preset`、删除 config.toml 中的 `preset`，并清除
+settings.toml 中持久化的 REPL 选择（`active_preset`）——任何位置都没有
+选择时，`middle` 生效。
 
 **弃用名称。** 改名前的写法仍有效并映射（带警告）：`minimal` → `simple`、
 `balanced` → `middle`、`maximal` → `all`；`--mode` 与 `/mode` 是

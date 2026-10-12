@@ -223,7 +223,7 @@ registry.
 |-----------------------|----------|--------------------------------------------------|
 | `CODESMITH_API_KEY`   | yes      | Provider API key (DeepSeek by default)                                 |
 | `CODESMITH_BASE_URL`   | no       | Custom API base URL (e.g. `https://api.deepseek.com`) |
-| `NO_COLOR`            | no       | Set to `1` to disable terminal colour output     |
+| `NO_COLOR`            | no       | Set to `1` to disable terminal colour output (honored natively and propagated to spawned child processes) |
 
 ## Volumes
 
@@ -260,12 +260,15 @@ volume instead.
 
 ## Non-interactive / pipeline usage
 
-When stdin is not a TTY, `codesmith` drops to the dispatcher's one-shot mode
-(`codesmith exec "…"`). Pipe a prompt on stdin:
+There is no automatic one-shot dispatch: piping stdin into `docker run -i …`
+feeds the interactive REPL's line reader. Non-interactive pipelines must
+invoke `codesmith exec` explicitly, with the prompt as its argument (stdin is
+only consumed by the REPL, the `auth set` key prompt, and `apply` when no
+patch file is given):
 
 ```bash
-echo "Explain the Cargo.toml in structured English." | \
-  docker run --rm -i -e CODESMITH_API_KEY ghcr.io/camilesing/codesmith:latest
+docker run --rm -e CODESMITH_API_KEY ghcr.io/camilesing/codesmith:latest \
+  exec "Explain the Cargo.toml in structured English."
 ```
 
 ## Building locally

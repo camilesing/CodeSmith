@@ -44,9 +44,10 @@ troubleshooting.
    /skills
    ```
 
-   Your skill now appears in the model-visible skills catalog, in the `/`
-   completion menu, and can be invoked with `/skill release-checklist` or
-   simply `/release-checklist`.
+   Your skill now appears in the model-visible skills catalog and in
+   `/skills`, and can be invoked with `/skill release-checklist`. (The
+   line REPL has no `/` completion menu, and bare `/release-checklist`
+   is not a command — activation is `/skill <name>` only.)
 
 ## Discovery directories and precedence
 
@@ -78,7 +79,7 @@ Notes on how directories are walked:
   of 8. Hidden subdirectories (`.git`, caches) are skipped; symlinked
   directories are followed.
 - **Custom install directory.** The top-level `skills_dir` config key
-  (default `~/.codesmith/skills`) is where `/skill install` places new
+  (default `~/.codesmith/skills`) is where skill installs place new
   skills. If you point it somewhere outside the standard set, it is appended
   to the discovery list. See [CONFIGURATION.md](CONFIGURATION.md).
 
@@ -113,7 +114,7 @@ Instructions for the agent go here.
 | `allowed-tools` | no | Comma-separated or YAML-list tool names the skill expects to use. Both `allowed-tools` and `allowed_tools` spellings are accepted. |
 | `model` | no | Preferred model for runs using this skill. |
 | `effort` | no | Preferred thinking-effort level. |
-| `user-invocable` | no | `false` hides the skill from `/skills`, the `/` menu, and direct invocation — it stays model-selectable only. Default `true`. |
+| `user-invocable` | no | `false` hides the skill from `/skills` and `/skill <name>` — it stays model-selectable only. Default `true`. |
 | `paths` | no | Path globs that conditionally activate the skill (see below). |
 | `version` | no | Version string; used by the bundled-skill upgrader and community installs. |
 | `context` | no | Context hint for execution. |
@@ -165,11 +166,11 @@ without further setup.
 2. **Conditional path matching.** Skills with a `paths:` frontmatter are
    injected automatically when working-set files match (see above).
 3. **Manual invocation.** `/skill <name>` activates a skill on your next
-   message; any user-invocable skill is also directly callable as
-   `/<skill-name>` — skills join the slash-command namespace after native
-   and user-defined commands — and all of them appear in the `/` completion
-   menu. An activated skill's rendered body is prepended to your next
-   message as the turn's instruction.
+   message. This is the only user-facing invocation path: bare
+   `/<skill-name>` is not a command (it hits the REPL's unknown-command
+   arm), and the line REPL has no `/` completion menu. An activated
+   skill's rendered body is prepended to your next message as the turn's
+   instruction.
 4. **HTTP runtime API.** `GET /v1/skills` lists skills and
    `POST /v1/skills/{name}` enables or disables one (persisted to
    `~/.codesmith/skills_state.toml`). See [RUNTIME_API.md](RUNTIME_API.md).
@@ -178,20 +179,24 @@ without further setup.
 
 | Command | Effect |
 |---|---|
-| `/skills` | List locally discovered skills (with parse warnings, if any). |
+| `/skills` | List locally discovered skills (names + descriptions; parse warnings are not shown). |
 | `/skills <prefix>` | Filter the local list by name prefix. |
-| `/skills --remote` | Browse the curated community registry instead of local skills. |
-| `/skills sync` | Pull the registry index and download every curated skill to the local cache. |
+| `/skills --remote` | Not wired in the REPL — prints a notice; registry browsing has no surface yet. |
+| `/skills sync` | Not wired in the REPL — prints a notice. |
 | `/skill <name>` | Activate a skill for your next message. |
 | `/skill new` | Start the bundled `skill-creator` skill to scaffold a new one. |
-| `/skill install <source>` | Install a community skill (see below). |
-| `/skill update <name>` | Refresh an installed skill from its source. |
-| `/skill uninstall <name>` | Remove an installed skill. |
-| `/skill trust <name>` | Mark a skill trusted, unlocking its shell snippets. |
+
+There are no `/skill install` / `update` / `uninstall` / `trust`
+commands — skills are managed as plain files under `~/.codesmith/skills`
+(install/update/uninstall are file operations). The community-install
+library those commands would drive (default registry URL, 5 MiB cap,
+`.installed-from` / `.trusted` markers, cache dir — see below) exists,
+but no user surface reaches it yet.
 
 ## Installing community skills
 
-`/skill install <source>` accepts three source forms:
+The install/registry library (not reachable from the REPL today — see
+the command reference) accepts three source forms:
 
 | Source form | Resolves to |
 |---|---|
@@ -213,8 +218,7 @@ Installs are network-gated by the `[network]` policy (`github.com` and
 `raw.githubusercontent.com` must be reachable; the default `prompt` mode
 asks once and can persist). Downloaded archives land in
 `~/.codesmith/cache/skills/` and are unpacked into your skills directory,
-with a `.installed-from` marker recording the source for later
-`/skill update`.
+with a `.installed-from` marker recording the source for later updates.
 
 ### Trust and shell snippets
 
@@ -222,8 +226,9 @@ A skill's body may embed shell snippets in two forms: fenced blocks opening
 with <code>```!</code> and inline <code>!`command`</code> backtick spans.
 For an **untrusted** skill these are replaced at load time with a disabled
 placeholder — the model sees that the snippet exists but cannot run it.
-Running `/skill trust <name>` drops a `.trusted` marker file next to the
-`SKILL.md`; trusted snippets are then passed through with instructions to
+A `.trusted` marker file next to the `SKILL.md` marks the skill trusted
+(there is no `/skill trust` command — create the empty marker yourself);
+trusted snippets are then passed through with instructions to
 execute via the `exec_shell` tool, so normal approval and sandbox policy
 still apply. Trust is per-skill and deliberate: review what a community
 skill wants to run before trusting it. MCP-prompt skills (see below) never
@@ -261,20 +266,20 @@ skills (marked as MCP-sourced); see [MCP.md](MCP.md).
 
 - **Skill doesn't appear in `/skills`.** Check the directory is one of the
   discovery locations above (and exists), and that the `SKILL.md` filename
-  is exact. `/skills` prints parse warnings — a missing `name` in
-  frontmatter (with no `# Heading` fallback) is the most common cause.
+  is exact. A missing `name` in frontmatter (with no `# Heading` fallback)
+  is the most common cause — `/skills` does not print parse warnings, so
+  verify the frontmatter yourself.
 - **Wrong skill wins a name conflict.** Discovery is first-match-wins in the
   table order — a workspace `.agents/skills` skill shadows a global
   `~/.codesmith/skills` skill with the same `name`. Rename one of them, or
   disable the other via `POST /v1/skills/{name}`.
-- **Shell snippets show "disabled until trusted".** Run
-  `/skill trust <name>` after reviewing the skill.
+- **Shell snippets show "disabled until trusted".** Review the skill, then
+  drop an empty `.trusted` marker file next to its `SKILL.md`.
 - **A skill activates too eagerly.** Sharpen the `description` (this is what
   the model selects on) or gate it with `paths:` so it only appears for
   matching files.
-- **Skill visible to the model but not in the `/` menu.** It is marked
-  `user-invocable: false`, disabled in `~/.codesmith/skills_state.toml`, or
-  MCP-sourced.
+- **Skill visible to the model but not in `/skills`.** It is marked
+  `user-invocable: false` — the list shows user-invocable skills only.
 
 For the `[skills]` / `skills_dir` config surface see
 [CONFIGURATION.md](CONFIGURATION.md); for skill internals see

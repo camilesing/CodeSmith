@@ -303,17 +303,11 @@ curl -L -o /tmp/codesmith-artifacts-sha256.txt \
 
 ### Windows Scoop
 
-The `codesmith` package is listed in Scoop's main bucket:
-
-```powershell
-scoop update
-scoop install codesmith
-codesmith --version
-```
-
-Scoop manifests are maintained outside this repository's release workflow and
-can lag GitHub/npm/Cargo releases. Use npm or manual GitHub release downloads
-when you need the newest version immediately.
+The `codesmith` package is not yet listed in Scoop's main bucket — see the
+warning at the top of this page. Until it is listed, download the GitHub
+release binary manually (see above) or build from source. A hand-written
+Scoop manifest pointing at the release archive also works if you prefer to
+keep the install under Scoop's management.
 
 ---
 

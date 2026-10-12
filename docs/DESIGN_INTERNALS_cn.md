@@ -138,7 +138,8 @@ agent 框架，用四个宿主无关的 trait 分别镜像 LangChain 的 `BaseTo
   `CallbackSet` 扇出到多个观察者；`NoopCallback` 是默认值。桥接到宿主
   `Event` UI 通道 + `HookHost` shell 钩子的是 `CallbackBridge`（位于
   `codesmith-agent-runtime::callback_bridge`）：它把工具生命周期
-  钩子转发到两条路径上；LLM/step/complete 钩子是已文档化的空操作
+  钩子转发到两条路径上，`on_llm_start` 会清空桥的块公告去重集；
+  LLM-end/step/complete 钩子是已文档化的空操作
   （那些归生产调用方与流归约代码所有）。
 - **`AgentExecutor`**（`executor::AgentExecutor`）—— 驱动循环；
   `DefaultAgentExecutor` 是参考实现（核心内）。宿主侧的
@@ -196,8 +197,8 @@ edit 的诊断会在下一个 turn 的首次 flush 时浮现，turn 之间排队
 `circuit_breaker: Arc<std::sync::Mutex<CompactionCircuitBreaker>>`（没有锁
 跨越 `await` —— 消息在异步 `compact_messages_safe` 调用之前被克隆出
 去），跨 `run` 调用持久存在，因此 turn N 上一次失败的压缩在 turn N+1 上
-仍会触发熔断器（与 `Engine.micro_compact_state` /
-`.compaction_circuit_breaker` 一致）。
+仍会触发熔断器（与 `Session.micro_compact_state` /
+`Session.circuit_breaker` 一致）。
 
 **会话事实账本。** 压缩与容量探针还携带会话事实账本（`Session::fact_ledger`，
 `compaction/fact_ledger.rs`）：每次压缩的丢弃集都会喂给它经规则抽取的绝
@@ -228,11 +229,11 @@ Invariants"（被推翻的假设与不变量）小节 —— 模型从自身失�
 前任何地方都没有 turn_meta —— 横切的宿主侧关注点，已推迟）；推送没有
 `emit_session_updated`（与执行器其他消息推送一致；UI 呈现已推迟）。
 
-**transparent-retry 的已知取舍（设计如此）：** `accumulate_stream` 遇到
-第一个出错的流条目即放弃并丢弃部分块，因此即使引擎本会交付部分内容的
-场合，重试也会触发（它内联追踪 `any_content_received`）—— 既然部分内
-容已经丢失，重试是唯一的恢复路径；规划中的内联流归约（取代
-`accumulate_stream`）会补上这个缺口。
+**transparent-retry 的已知取舍（设计如此）：** 生产内联流归约器
+（`HostAgentExecutor::reduce_stream`）在流于内容到达之后死亡时会交付
+部分内容（`Partial`），仅在毫无提交时（`Empty`）重试；CORE 参考执行器的
+`accumulate_stream`（位于 `codesmith-agent`）仍会在第一个出错的流条目处
+放弃并丢弃部分块 —— 这是框架嵌入方的缺口，而非生产缺口。
 
 流前连接错误（`create_message_stream` 的 `Err`）不重试（它们属于上下文
 恢复 / 硬失败，一个独立的护栏）；cancel-token 短路
@@ -240,8 +241,8 @@ Invariants"（被推翻的假设与不变量）小节 —— 模型从自身失�
 `host_executor.rs` 模块文档）；有界预算（`MAX_STREAM_RETRIES = 3`）不会
 永远循环。
 
-流式增量（`MessageDelta`/`ThinkingDelta`）直接经 `Event` 通道流动（没有
-对应的 `Callback` 方法）；规划中的内联流归约器保持该路径。
+流式增量（`MessageDelta`/`ThinkingDelta`）经 `Callback::on_stream_delta`
+流动 —— 桥把每个增量实时映射到宿主的 `Event` 通道。
 
 provider 目录是声明式的：`providers.toml` 清单（schema 与加载器位于
 `codesmith-config`）驱动带 `OnceLock` 缓存的 `default_registry()`，其
@@ -295,12 +296,12 @@ thinking-only / capacity / early-tool-start / subagent）请直接查看模块�
 - **宿主接线**（`codesmith-cli`）：`build_extension_runtime()` 在引擎
   构建时运行一次 discover → reconcile → load → `bind_core` 序列（共享
   引擎的 `cancel_token`，使处理器能观察到用户按 ESC）；`ExtensionStateStore`
-  （镜像 `SkillStateStore`）逐 id 跟踪启用/禁用；`/extension` 命令组
-  （list/info/enable/disable/status/reload；install/uninstall 是桩）。
+  （镜像 `SkillStateStore`）逐 id 跟踪启用/禁用；REPL 的 `/extension`
+  打印一条未接线提示，运行时重载经 `manage_mods` 工具
+  （`action="reload"` → `reload_extension_runtime`）进行。
 
 仓库内扩展 `sample_scratchpad` 练习了全部三个贡献点（工具 + 命令 +
 处理器）以及完整的 discover → load → configure → bind_core → emit 路径。
-`/extension list` 可以看到它。
 
 ```
    extension author ──impls──▶ codesmith_agent::extension (contract)
@@ -312,10 +313,10 @@ thinking-only / capacity / early-tool-start / subagent）请直接查看模块�
               codesmith_agent_runtime (ExtensionToolSpecAdapter + executor seams)
                                         │ wired by
                                         ▼
-              codesmith_cli (build_extension_runtime + StateStore + /extension cmd)
+              codesmith_cli (build_extension_runtime + StateStore + manage_mods reload)
 ```
 
-契约与运行时核心携带完整的 23 变体 `ExtensionEvent` 集合 +
+契约与运行时核心携带完整的 25 变体 `ExtensionEvent` 集合 +
 `ExtensionEventKind`/`kind()`、`HandlerOutcome`
 （`Continue`/`Cancel`/`Block`/`Transform`）跨处理器链（`Handler::handle`
 返回 `Result<HandlerOutcome, _>`）、逐变体的 `ExtensionApi::on_variant`
@@ -327,21 +328,24 @@ thinking-only / capacity / early-tool-start / subagent）请直接查看模块�
 `SessionBefore*` 处遵守 `Cancel`（跳过压缩/切换）；在
 `Input`/`BeforeAgentStart`/`BeforeProviderRequest`/`ToolResult` 处遵守
 `Transform`（改写可操作字段；`ToolResult` 把 emit→`on_tool_end`→传播到
-`outcomes[idx]` 的顺序重新安排）；错位的结果映射为 `Continue`。23 个事件
-中发射 22 个；`ToolExecutionUpdate` 需要一个 `Callback::on_tool_progress`
-流钩子。
+`outcomes[idx]` 的顺序重新安排）；错位的结果映射为 `Continue`。25 个事件
+中 20 个从生产接缝发射；未发射的五个是 `ToolExecutionUpdate`
+（`Callback::on_tool_progress` 接缝已存在，但宿主还没有其背后的流式
+`Tool` 契约）、`ProjectTrust`（仅由测试演练分发）、`ResourcesDiscover`、
+`SessionBeforeSwitch` 与 `SessionBeforeFork`（无运行时发射点）。
 
 热重载经 `ExtensionRunner::clear_handlers` + `reload_extension_runtime`
 （clear→invalidate→discover→reconcile→load→bind_core）重新填充共享的
-runner `Arc`，因此 `/extension reload` 会同时更新 `App.extension_runner`
-与 Engine 的字段。
+runner `Arc`；由 `manage_mods` 工具的 reload 动作触发，且由于 runner
+`Arc` 是共享的，REPL 的 `state.extension_runner` 与 Engine 的字段都会
+看到更新。
 
-尚未实现：`ToolExecutionUpdate`（流钩子）、重载共享引擎的
-`cancel_token`、从 App runner 不可触达的 3 个宿主层接缝（`ProjectTrust`
-同步上下文 / `ResourcesDiscover` 独立 MCP 进程 / `SessionBeforeFork` 死
-代码 fork 路径）、`EventBus` 实现、`registerProvider`、
-`registerShortcut`/`registerFlag`/渲染器、dylib 加载、install-source 实
-现与 embed API。热加载永久排除；只有 install + reload。
+尚未实现：`ToolExecutionUpdate`（尚无流式 `Tool` 契约）、无运行时
+发射点的 3 个宿主层接缝（`ProjectTrust` 同步上下文，仅由测试演练分发 /
+`ResourcesDiscover` 独立 MCP 进程 / `SessionBeforeFork` 死代码 fork 路
+径）、`EventBus` 实现、`registerProvider`、
+`registerShortcut`/`registerFlag`/渲染器、install-source 实现与 embed
+API。热加载永久排除；只有 install + reload。
 
 ## 当前已接线的内容
 

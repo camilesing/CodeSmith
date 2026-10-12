@@ -47,13 +47,12 @@ on("tool-call", |e| {
 
 ### 第 2 步：激活
 
-在 CodeSmith 里敲：
+`/mods` 在当前 REPL 中是桩（"mods management (/mods list|status|activate)
+is not wired in the REPL yet — mod commands arrive with the §F port"），
+因此激活走模型侧工具：让智能体去激活——"激活 hello 这个 mod"——
+然后审批它发出的 `manage_mods(action="activate", id="hello")` 工具调用。
 
-```
-/mods activate hello
-```
-
-**预期效果**：这是对该内容的一次性同意（mod 是进程内代码且跨会话持久，首次激活需要你确认）——确认后 mod 立即生效。此后同 id 的重载不再需要审批；但若入口文件在你批准后发生了变更（git pull、编辑），该 mod 会回到待激活状态，需要重新 `/mods activate`。之后任何包含 `rm -rf` 的 shell 调用都会被拦截，模型会收到你的 reason 并改道。
+**预期效果**：这是对该内容的一次性同意（mod 是进程内代码且跨会话持久，首次激活需要你确认）——确认后 mod 立即生效。此后同 id 的重载不再需要审批；但若入口文件在你批准后发生了变更（git pull、编辑），该 mod 会回到待激活状态，需要重新激活。之后任何包含 `rm -rf` 的 shell 调用都会被拦截，模型会收到你的 reason 并改道。
 
 ### 第 3 步：注册一个模型可见工具 + KV 状态
 
@@ -87,10 +86,10 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 
 **预期效果**：
 
-- 敲 `/calls` 显示计数——`message(...)` 展示给用户（想触发智能体则用 `send(...)`）
-- 现在**改 `mod.rhai`、保存，然后重载**——`/mods reload` 重新执行发现流程，同 id 免审批。`/mods status` 可确认已加载的 mod 与 runner 代数。（自动文件 watcher 及其 `[mods] watch` 开关已在 0.9.0 移除，重载改为显式触发。）
+- `/calls` 命令会完成注册，但 mod 注册的斜杠命令在当前构建中不会进入任何分发路径（见 [EXTENSIONS_cn.md](EXTENSIONS_cn.md)）——在 REPL 里敲 `/calls` 会落入未知命令分支。`message(...)` / `send(...)` 要等命令分发落地后才会被触发；眼下可行的验证方式是让模型调用 `call_count` 工具。
+- 现在**改 `mod.rhai`、保存，然后重载**——让智能体运行 `manage_mods(action="reload")`，它会重新执行发现流程，同 id 免审批。`manage_mods(action="list")` 可确认发现了哪些 mod 及其状态（启动提示也会列出已发现但未激活的 mod）。（自动文件 watcher 及其 `[mods] watch` 开关已在 0.9.0 移除，重载改为显式触发。）
 
-到此你已经用过全部四种注册面：事件钩子、工具、命令、KV。完整 `/mods` 命令：`list` / `status` / `info <id>` / `activate <id>` / `enable|disable <id>` / `remove <id>` / `reload`。
+到此你已经用过全部四种注册面：事件钩子、工具、命令、KV。`/mods` 本身是 REPL 桩；可用的操作面是 `manage_mods` 工具，动作为 `list` / `write` / `activate` / `disable` / `enable` / `remove` / `reload`（没有 `info`、`status` 动作）。
 
 ## 速查
 
@@ -252,8 +251,11 @@ register_provider(#{
 ```
 
 校验在 mod **加载**时即失败：`id` 遮蔽内置名称、`kind` 不是内置
-provider、或 header 值不是字符串 —— 坏的 spec 到不了客户端。刻意不
-接受 `api_key`：秘密只存在于配置中，绝不进入脚本。
+provider、header 值不是字符串、或 `base_url` 既非 `https://` 也非
+回环 `http://` 端点（别名工厂会把用户的 api_key 和完整提示词发往
+该 URL —— 明文 HTTP 远端被拒绝；Ollama、vLLM、LM Studio 等本地
+网关仍被允许）—— 坏的 spec 到不了客户端。刻意不接受
+`api_key`：秘密只存在于配置中，绝不进入脚本。
 
 选用别名：在 config.toml 声明一个同 `id` 的 `[[providers.custom]]`
 条目（承载 API key），并以 `custom_provider = "acme-gw"` 选中。别名的
@@ -283,7 +285,7 @@ mod 在发现阶段即被跳过（日志有告警），不会进入激活流程�
 
 ## 生命周期与安全模型
 
-- **首次激活需确认**：新 mod 被发现 → 跳过加载 + REPL 被动提示待激活。激活只有两条路：`/mods activate <id>`，或审批 `manage_mods(action="activate")` 工具调用。激活记录持久化（`~/.codesmith/mods_state.toml`），同 id 重载免审批——**同意与入口文件的内容哈希绑定**：已激活 mod 的 `.rhai` 若随后变更（git pull、被自动批准的编辑），会回到待激活状态并要求重新确认。**为什么**：mod 是进程内代码且跨会话持久——提示注入可以在用户无感时植入常驻钩子，一次批准不能变成该 id 的常驻任意代码执行；首次确认（加内容变更后的重新确认）正是防这一点。
+- **首次激活需确认**：新 mod 被发现 → 跳过加载 + REPL 被动提示待激活。当前激活只有一条路：审批 `manage_mods(action="activate")` 工具调用（`/mods activate` 命令随 REPL 移植到位）。激活记录持久化（`~/.codesmith/mods_state.toml`），同 id 重载免审批——**同意与入口文件的内容哈希绑定**：已激活 mod 的 `.rhai` 若随后变更（git pull、被自动批准的编辑），会回到待激活状态并要求重新确认。**为什么**：mod 是进程内代码且跨会话持久——提示注入可以在用户无感时植入常驻钩子，一次批准不能变成该 id 的常驻任意代码执行；首次确认（加内容变更后的重新确认）正是防这一点。
 - **让智能体代写**：直接说"帮我写一个 mod，拦截 git push"——模型会经 `manage_mods` 工具写文件（`write`）并请求你审批激活（`activate`）。
 - **mod 写入遵循 workspace trust，两个根都管**：未信任工作区不发现项目 mod，`manage_mods` 也拒绝在其中写 mod——项目根与全局 `~/.codesmith/mods` 一视同仁（全局写入会安装加载到所有工作区（包括其它未信任工作区）的代码，信任信号不能被 `global` 标志绕过）。先信任工作区，再写入。
 - **已知边界**：mod 工具与 Rust 扩展工具同为"主 turn 独占"（子代理结构性不可见）；网络安装源（git clone 到 mods 目录）不在 MVP。
@@ -297,8 +299,8 @@ mod 在发现阶段即被跳过（日志有告警），不会进入激活流程�
 enabled = true   # 总开关：发现、manage_mods 工具
 ```
 
-`watch` 热重载文件 watcher 已在 0.9.0 移除；用 `/mods reload`（或
-`manage_mods(action="reload")`）来加载改动。
+`watch` 热重载文件 watcher 已在 0.9.0 移除；用
+`manage_mods(action="reload")` 来加载改动。
 
 ## 实现索引
 
@@ -309,10 +311,10 @@ enabled = true   # 总开关：发现、manage_mods 工具
 | `ScriptHandler` / `ScriptToolDefinition` / `ScriptCommandDefinition` | `crates/extensions/src/script/adapters.rs` |
 | `ModKvStore`（每 mod 持久 KV） | `crates/extensions/src/script/kv.rs` |
 | `ModStateStore`（激活/禁用状态） | `crates/cli/src/mod_state.rs` |
-| 共享操作层（/mods 与 manage_mods 单一实现） | `crates/cli/src/mod_ops.rs` |
+| 共享操作层（manage_mods 工具背后的单一实现） | `crates/cli/src/mod_ops.rs` |
 | 装配/门控接入（`populate` 返回 pending 报告） | `crates/cli/src/core/engine.rs` |
 | `ManageModsTool`（模型可见） | `crates/cli/src/tools/mods.rs` |
-| `/mods` 命令 | `crates/cli/src/interactive/commands/misc_cmds.rs` |
+| `/mods` REPL 命令（桩 —— 尚未在 REPL 接线） | `crates/cli/src/interactive/commands/misc_cmds.rs` |
 
 ## 延伸阅读
 

@@ -823,9 +823,9 @@ fn cmd_agents(state: &ReplState) {
 }
 
 fn cmd_logout(_state: &mut ReplState) {
-    // Port of the retired /logout (commands/config.rs): wipe the stored
-    // key. Re-entry happens on the next start — the first-run CLI wizard
-    // re-runs once the onboarding marker is also removed.
+    // Wipe the stored key and the onboarding marker so the next start is a
+    // clean first run. Signing back in is explicit — there is no startup
+    // key prompt; use `codesmith auth set` or `codesmith login`.
     match crate::config::clear_api_key() {
         Ok(()) => {
             if let Some(marker) = codesmith_agent_runtime::onboarding::default_marker_path()
@@ -839,7 +839,7 @@ fn cmd_logout(_state: &mut ReplState) {
             }
             println!(
                 "{}",
-                "logged out: API key removed; the first-run wizard will run on next start".green()
+                "logged out: API key removed; sign back in with `codesmith auth set` or `codesmith login`".green()
             );
         }
         Err(err) => println!("{} logout failed: {err}", "✗".red()),

@@ -9,8 +9,10 @@ parent wait/eval path, but it does not kill already-opened child sessions. Use
 `agent_close` to cancel a running child explicitly.
 
 This doc covers the role taxonomy. The active orchestration surface is
-`agent_open`, `agent_eval`, and `agent_close`; see `prompts/base.md`
-"Sub-Agent Strategy" and the in-line tool descriptions.
+`agent_open`, `agent_eval`, and `agent_close`; the registry also
+registers `tool_agent` and `agent_run` alongside them. See
+`prompts/base.md` "Sub-Agent Strategy" and the in-line tool
+descriptions.
 
 ## Role taxonomy
 
@@ -26,6 +28,9 @@ stance toward the work — not just a different label.
 | `review`      | read-and-grade with severity scores    | no      | read-only     | "audit this PR for bugs"                     |
 | `implementer` | land a specific change with min edit   | yes     | yes           | "rewrite `bar.rs::Foo::bar` to do X"         |
 | `verifier`    | run tests / validation, report outcome | no      | test-focused  | "run cargo test --workspace, report"         |
+| `tool_agent`  | fast-lane execution on the light tier, thinking off | yes | yes  | simple tool-bound work: OCR, file/search lookups, fetches, command probes |
+| `team`        | shares a task list; communicates via file-based mailbox | yes | yes | agent-teams teammates |
+| `coordinator_worker` | execute the assigned task independently; full tools minus team management | yes | yes | workers spawned by a coordinator |
 | `custom`      | explicit narrow tool allowlist         | depends | depends       | locked-down dispatch with hand-picked tools  |
 
 Each role's full system prompt lives in
@@ -92,6 +97,9 @@ The model can spell each role multiple ways:
 | `review`      | `reviewer`, `code-review`                                        |
 | `implementer` | `implement`, `implementation`, `builder`                         |
 | `verifier`    | `verify`, `verification`, `validator`, `tester`                  |
+| `tool_agent`  | `tool-agent`, `toolagent`, `executor`, `execution`, `fin`        |
+| `team`        | `teammate`, `swarm`                                              |
+| `coordinator_worker` | `coordinator-worker`, `coord_worker`                      |
 | `custom`      | (none; explicit `allowed_tools` array required)                  |
 
 All matching is case-insensitive. Unknown values produce a typed
@@ -161,10 +169,10 @@ Values are clamped to `1..=1800`. `0` and `unset` keep the legacy
 
 ## Lifecycle
 
-Each opened session produces a record that progresses through:
+Each opened session produces a record whose status is one of:
 
 ```
-Pending → Running → (Completed | Failed(reason) | Cancelled | Interrupted(reason))
+Running → (Completed | Failed(reason) | Cancelled | Interrupted(reason))
 ```
 
 `Interrupted` fires when the manager detects a `Running` agent whose task
@@ -188,31 +196,33 @@ manager can't match them to the current boot.
 
 ## Output contract
 
-Every sub-agent produces a final result string with five sections,
-in order:
+Every sub-agent's final assistant message ends with five sections, in
+order, using the exact section headings as Markdown H3s:
 
 ```
-SUMMARY:    one paragraph; what you did and what happened
-CHANGES:    files modified, with one-line descriptions; "None." if read-only
-EVIDENCE:   path:line-range citations and key findings; one bullet each
-RISKS:      what could go wrong / what the parent should double-check
-BLOCKERS:   what stopped you; "None." if you finished cleanly
+### SUMMARY    one paragraph; what you did and the headline conclusion
+### EVIDENCE   path:line-range citations, commands + exit codes, key findings; one bullet each
+### CHANGES    files written or edited, with one-line descriptions; "None." if read-only
+### RISKS      what could go wrong / what the parent should double-check
+### BLOCKERS   what stopped you; "None." if you finished cleanly
 ```
 
 The exact format lives in `crates/agent-runtime/src/prompts/subagent_output_format.md`.
 The parent reads `EVIDENCE` as a working set for the next turn, so
 explorers and reviewers should be precise here.
 
-## Memory and the `remember` tool
+## Scoped agent memory
 
-Sub-agents inherit the parent's memory file when memory is enabled
-(`[memory] enabled = true` or `CODESMITH_MEMORY=on`). They can
-append durable notes via the `remember` tool — handy for an
-explorer that discovers a project convention worth carrying across
-sessions, or a verifier that learns "this test is flaky".
-
-Memory writes are scoped to the user's own `memory.md` file; they
-don't go through the standard write-approval flow.
+Sub-agents do not inherit the parent's memory file and do not get the
+`remember` tool — it is registered only on the parent's registry.
+Instead, a child gets its own opt-in scoped Agent Memory: pass the
+`memory` parameter on `agent_open` (`user`, `project`, or `local`
+scope, or `{"scope": ..., "snapshot": "none" | "initialize" |
+"prompt-update"}`). The child can then maintain a `MEMORY.md` index
+and topic files through the `agent_memory_read` / `agent_memory_write`
+/ `agent_memory_edit` tools, which are constrained to that sub-agent's
+memory directory — no general workspace write privileges, and no
+standard write-approval flow.
 
 ## Implementation notes
 

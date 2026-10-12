@@ -158,7 +158,7 @@ live there).
 
 - **`crates/cli/src/tools/`** - Host-coupled built-in tool implementations and the registry
   - `mod.rs` / `registry.rs` - Tool registry, assembly (`with_subagent_tools`, …), and common types
-  - `shell.rs` - Shell command execution (plus `shell_output.rs`, `command_safety.rs` in the crate root)
+  - `shell.rs` - Shell command execution (plus `shell_output.rs` alongside it; `command_safety.rs` in the crate root)
   - `file.rs` - File read/write operations
   - `tasks.rs` / `task_v2.rs` - Model-visible durable task, gate, background shell, and PR-attempt tools
   - `github.rs` - Read-only GitHub context and guarded comment/closure tools backed by `gh`
@@ -205,9 +205,8 @@ live there).
 
 - **`crates/agent-runtime/src/sandbox/`** - Platform sandbox enforcement helpers (re-exported through `crates/cli/src/sandbox/`)
   - `seatbelt.rs` - macOS Seatbelt profile generation (enforced)
-  - `landlock.rs` - Linux Landlock ruleset application (enforced; `landlock_restrict_self` + `PR_SET_NO_NEW_PRIVS`)
-  - `seccomp.rs` - Linux seccomp-BPF syscall filter (enforced)
-  - `windows.rs` - Windows Job Object process containment (v1)
+  - `landlock.rs` - Linux Landlock ruleset application (ruleset code present but not wired for child-process enforcement: `prepare_landlock` is a passthrough and `enforces_isolation()` reports `false`)
+  - `windows.rs` - Windows sandbox helper contract stub (no in-process Windows sandbox is advertised)
   - `bwrap.rs` / `process_hardening.rs` - optional bubblewrap passthrough; `PR_SET_DUMPABLE`/core-dump hardening
 - **`crates/cli/src/sandbox/`** - Host-side sandbox policy preparation and denial reporting (`mod.rs`, `policy.rs`, `runtime.rs`, `backend.rs` for external OpenSandbox, `opensandbox.rs`)
 
@@ -331,9 +330,10 @@ command = "echo 'Running tool: $TOOL_NAME'"
 2. **Tool safety**: Non-YOLO mode requires approval for destructive operations, including side-effectful MCP tools
 3. **Extensibility**: MCP, skills, and hooks allow customization without code changes
 4. **Cross-platform**: Core works on Linux/macOS/Windows. OS-level sandboxing
-   is enforced per platform — macOS Seatbelt, Linux Landlock + seccomp (plus
-   optional bubblewrap), Windows Job Object v1 (see `docs/SANDBOX.md` for the
-   platform matrix).
+   is enforced on macOS (Seatbelt) and on Linux via bubblewrap when
+   installed; the Landlock ruleset code is not wired for child-process
+   enforcement, no seccomp filter exists, and no Windows sandbox is
+   advertised (see `docs/SANDBOX.md` for the platform matrix).
 5. **Minimal dependencies**: Careful dependency selection for build speed
 6. **Local-first runtime API**: HTTP/SSE endpoints are intended for trusted localhost access and are served by the `crates/cli` runtime today
 7. **Three-zone prompt contract**: every request is divided into a

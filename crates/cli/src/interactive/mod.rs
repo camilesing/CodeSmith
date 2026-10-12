@@ -123,7 +123,7 @@ pub async fn run_repl(
         println!(
             "{}",
             format!(
-                "mods discovered but not activated: {} — /mods list to review",
+                "mods discovered but not activated: {} — review via the manage_mods tool (/mods is not wired in the REPL yet)",
                 ids.join(", ")
             )
             .yellow()

@@ -80,7 +80,7 @@ codesmith doctor --json
 | `api_key.source` | string | `env`, `config`, or `missing` |
 | `base_url` | string | API base URL |
 | `default_text_model` | string | Default model |
-| `memory.enabled` | bool | Whether the memory feature is on |
+| `memory.enabled` | bool | Whether the `CODESMITH_MEMORY` env override is set to a truthy value. Reflects the env var only — a default install reports `false` while the memory feature itself defaults on |
 | `memory.path` | string | Path to memory file |
 | `memory.file_present` | bool | Whether memory file exists |
 | `mcp.config_path` | string | MCP config file path |
@@ -98,7 +98,6 @@ codesmith doctor --json
 | `sandbox.available` | bool | Whether sandbox is supported on this OS |
 | `sandbox.kind` | string or null | Sandbox kind (e.g. `"macos_seatbelt"`) |
 | `storage.spillover.path` / `.present` / `.count` | — | Tool output spillover dir |
-| `storage.stash.path` / `.present` / `.count` | — | Composer stash |
 
 ### Example
 
@@ -231,6 +230,13 @@ accept an empty string to clear a previously-set value:
 - `POST /v1/approvals/{approval_id}` with body
   `{ "decision": "allow" | "deny", "remember": false }`
 
+**User input**
+- `POST /v1/user-input/{thread_id}/{input_id}` — resolve a pending
+  `request_user_input` prompt. Body:
+  `{ "answers": [{ "id": "...", "label": "...", "value": "..." }] }`.
+  Response: `{ "ok": true, "input_id": "...", "delivered": true }`.
+  An unknown thread or input id surfaces as an API error.
+
 **Events** (SSE replay + live stream)
 - `GET /v1/threads/{id}/events?since_seq=<u64>`
 
@@ -257,6 +263,9 @@ accept an empty string to clear a previously-set value:
 **Introspection**
 - `GET /v1/workspace/status`
 - `GET /v1/skills`
+- `POST /v1/skills/{name}` — enable or disable a skill. Body:
+  `{ "enabled": true }`. Response: `{ "name": "...", "enabled": true }`.
+  Returns 404 when the skill is not found in the searched directories.
 - `GET /v1/apps/mcp/servers`
 - `GET /v1/apps/mcp/tools?server=<optional>`
 

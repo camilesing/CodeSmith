@@ -6,8 +6,8 @@ pytest 而不是 unittest"、"这个代码库使用 4 空格缩进"、"提交前
 `cargo fmt`"——无需在每次对话中重复它们。
 
 记忆**默认开启**（与 Claude Code 的自动记忆保持一致）。启用时，
-记忆文件会被加载、`# ` 快速添加会追加到该文件、`remember` 工具会
-呈现给模型。bare/simple 会话和无持久存储的远程会话会自动禁用该功能；
+记忆文件会被加载，`remember` 工具会呈现给模型——捕获由模型通过
+该工具驱动。bare/simple 会话和无持久存储的远程会话会自动禁用该功能；
 通过 `enabled = false` 或 `CODESMITH_DISABLE_AUTO_MEMORY=1` 可完全退出。
 
 ## 启用记忆
@@ -35,17 +35,10 @@ enabled = true
 
 ## 快速示例
 
-```text
-# remember that this repo prefers cargo fmt before commits
-/memory
-/memory path
-/memory edit
-/memory help
-```
-
-- 在输入框中键入 `# remember that this repo prefers cargo fmt before commits`，即可追加一条带时间戳的条目，而不触发回合。
-- 运行 `/memory` 确认该功能正在写入哪里以及当前存了什么。
-- 想在编辑器中手动整理文件时，运行 `/memory edit`。
+- 让模型记住某件事（"记住这个仓库提交前要先跑 `cargo fmt`"）；
+  记忆启用时，模型可以调用 `remember` 工具保存这条笔记。
+- 记忆文件（默认 `~/.codesmith/memory.md`）是纯 Markdown——用任意
+  外部编辑器打开它，即可查看或整理已存储的内容。
 
 ## 注入的内容
 
@@ -60,75 +53,54 @@ enabled = true
 ```
 
 该块位于提示组装中易变内容的边界之上，因此逐轮保持在 DeepSeek 的前缀
-缓存之内。文件在每次构建提示时都会读取——通过 `/memory` 或外部编辑器
-的修改会在下一轮生效，无需重启。
+缓存之内。该块在会话引擎构建时仅组合一次，并被固化进运行时提示
+上下文——外部编辑器中的修改要在重启后的下一个会话才会生效。
+
+启用 Knowledge On Demand（`kod_enabled = true`）时，来自记忆目录
+`MEMORY.md` 入口的 KoD 知识块会取代 `<user_memory>` 块；若入口缺失
+或为空，则按原样使用旧版 `<user_memory>` 块。
 
 超过 100 KiB 的文件会被加载但截断，并附加一个标记，以便你看到切割
 位置。
 
-## 添加记忆的三种方式
+## 添加记忆：`remember` 工具
 
-### 1. `# ` 输入框前缀
-
-在输入框中键入一行以 `#` 开头（但不是 `##` 或 `#!`）的内容：
-
-```
-# remember to use 4-space indentation in this repo
-```
-
-REPL 会拦截该输入，并向你的记忆文件追加一条带时间戳的条目。**不触发
-回合**——你的输入被消费，状态行确认写入路径，你可以继续键入真正的
-问题。
-
-多个 `#` 的前缀会特意放行为正常的回合提交，这样你可以放心粘贴
-Markdown 标题。
-
-### 2. `/memory` 斜杠命令
-
-查看、清空文件或获取编辑提示：
-
-| 子命令             | 效果                                                  |
-|--------------------|--------------------------------------------------------|
-| `/memory`          | 内联显示解析后的路径和当前内容                         |
-| `/memory show`     | 无参数形式的别名                                       |
-| `/memory path`     | 只打印解析后的路径                                     |
-| `/memory clear`    | 将文件替换为空标记                                     |
-| `/memory edit`     | 打印 `${VISUAL:-${EDITOR:-vi}} <path>` 这条 shell 命令 |
-| `/memory help`     | 显示命令专属帮助和当前路径                             |
-
-`/memory edit` 形式刻意只打印命令而不在进程内启动编辑器——这使斜杠
-命令处理程序保持简单且一致，无论你使用哪种编辑器。
-
-你也可以从常规帮助入口发现该功能：
-
-- `/help memory` 显示斜杠命令摘要和用法行。
-- `/memory help` 打印记忆专属子命令以及解析后的路径。
-
-### 3. `remember` 工具（自动更新）
-
-当记忆启用时，模型会获得一个形状如下的 `remember` 工具：
+捕获由模型驱动。记忆启用时，模型会获得一个形状如下的 `remember`
+工具：
 
 ```json
 {
   "name": "remember",
-  "description": "Append a durable note to the user memory file...",
+  "description": "Save a durable note to memory so it surfaces in future sessions. When Knowledge On Demand is enabled, this creates a typed memory file in the memory directory. Use 'memory_type' to categorize: 'user' (profile/preferences), 'feedback' (behavioral guidance), 'project' (ongoing work/goals), or 'reference' (external pointers). Keep notes terse. Don't store secrets or transient tasks.",
   "input_schema": {
     "type": "object",
     "properties": {
-      "note": { "type": "string", ... }
+      "note": { "type": "string" },
+      "name": { "type": "string" },
+      "description": { "type": "string" },
+      "memory_type": { "type": "string", "enum": ["user", "feedback", "project", "reference"] }
     },
     "required": ["note"]
   }
 }
 ```
 
+`note` 是唯一必填参数；`memory_type` 默认为 `feedback`。该工具以两种
+模式之一写入：
+
+- **KoD 模式**（启用 Knowledge On Demand）：向记忆目录写入一个带
+  frontmatter（`name` / `description` / `type`）的 `.md` 文件，并向
+  `MEMORY.md` 入口追加一条指针行。完全重复的指针行会被跳过。
+- **旧版模式**（未启用 KoD）：无条件地向 `memory.md` 追加一条带
+  时间戳的条目。
+
 模型在注意到值得跨会话留存的持久偏好、约定或事实时使用它。该工具自动
-获批，因为写入范围仅限于用户自己的记忆文件——若将其置于标准写入审批
+获批，因为写入范围仅限于用户自己的记忆位置——若将其置于标准写入审批
 流程之后，将有悖于自动记忆捕获的意义。
 
 如果模型将 `remember` 用于临时任务状态（"我正在编辑 foo.rs"），结果
 无害但浪费上下文。工具描述明确告诉模型**不要**这样做——只要持久、
-单句的笔记。
+简洁的笔记。
 
 ## 文件格式
 
@@ -148,8 +120,8 @@ Markdown 标题。
 
 有两种不同的东西会进入系统提示的指令块，**用户记忆**只是其中之一：
 
-- **用户记忆**（`~/.codesmith/memory.md`，即本功能）——你通过 `#`
-  前缀行、`/memory` 或 `remember` 工具逐步积累的唯一持久笔记文件。
+- **用户记忆**（`~/.codesmith/memory.md`，即本功能）——你通过
+  `remember` 工具或手动编辑文件逐步积累的唯一持久笔记文件。
 - **指令层级（Instruction tiers）**——从四个信任层级收集并合并进
   同一个块的 `AGENTS.md` / `CLAUDE.md` 文件。
 
@@ -257,6 +229,8 @@ export CODESMITH_MEMORY_EXCLUDES=~/work/secret/CLAUDE.md:/etc/sandbox-override.m
 # ~/.codesmith/config.toml
 [memory]
 enabled = true                    # 默认 true（开启）；也可用 CODESMITH_MEMORY=on
+kod_enabled = false               # Knowledge On Demand：类型化记忆目录 + MEMORY.md 入口
+directory = "~/.codesmith/memory" # KoD 记忆目录（默认：memory_path 父目录 + /memory/）
 excludes = ["~/work/secret/CLAUDE.md"]  # skip these paths in the tier merge
 # Path is configured at the top-level (next to skills_dir, notes_path):
 memory_path = "~/.codesmith/memory.md"
@@ -266,13 +240,16 @@ memory_path = "~/.codesmith/memory.md"
 |---------------|-------------------------------|----------------------------------------------------|
 | 启用记忆      | `true`                        | `[memory] enabled = false` 或 `CODESMITH_DISABLE_AUTO_MEMORY=1` |
 | 记忆文件路径  | `~/.codesmith/memory.md`      | `memory_path = "..."` 或 `CODESMITH_MEMORY_PATH=`  |
+| 启用 KoD      | `false`                       | `[memory] kod_enabled = true`（要求 `enabled = true` 且开启 `knowledge_on_demand` 特性开关） |
+| 记忆目录      | `memory_path` 父目录 + `/memory/` | `[memory] directory = "..."`                  |
 | 记忆排除项    | （无）                        | `[memory] excludes = ["..."]` 或 `CODESMITH_MEMORY_EXCLUDES=`（冒号分隔） |
 | 文件大小上限  | 100 KiB                       | （目前无；截断标记会显示切割位置）                 |
 
 ## 记忆整理（`codesmith memory consolidate`）
 
-在线循环对记忆只会**追加**（`remember` 做精确行去重，但没有任何
-修剪）。`codesmith memory consolidate` 是离线的对应面——持续进化
+在线循环对记忆只会**追加**（KoD 模式下 `remember` 会跳过完全重复的
+`MEMORY.md` 指针行；旧版模式的追加不去重；也没有任何修剪）。
+`codesmith memory consolidate` 是离线的对应面——持续进化
 计划（P3-8）的"睡眠学习"一步——并且只改写 Knowledge On Demand 的
 `MEMORY.md` 索引，绝不改动主题文件内容：
 
@@ -299,6 +276,8 @@ codesmith memory consolidate --deterministic-only # 完全不调 LLM
 
 ## 相关
 
-- `docs/SUBAGENTS.md` — 子代理会继承记忆，也可以使用 `remember`
-  工具。
+- `docs/SUBAGENTS.md` — 子代理不继承该文件，也没有 `remember`
+  工具；它们获得可选启用的作用域代理记忆（`agent_open` 的 `memory`
+  参数，以及 `agent_memory_read` / `agent_memory_write` /
+  `agent_memory_edit` 工具）。
 - `docs/CONFIGURATION.md` — 完整配置参考。

@@ -74,10 +74,10 @@ When enabled, the engine evaluates controller policy at:
 
 ## Interventions
 
-Interventions are not part of the default v0.7.5 V4 path. The default path is:
-append messages, preserve prefix-cache reuse, suggest manual `/compact` near
-real model pressure, and use overflow recovery only if the request would exceed
-the model input budget.
+Interventions are not part of the default V4 path. The default path is:
+append messages, preserve prefix-cache reuse, auto-compact when the
+configured compaction thresholds pass (`should_compact`), and use overflow
+recovery only if the request would exceed the model input budget.
 
 ### `TargetedContextRefresh`
 
@@ -153,4 +153,4 @@ Loader utility supports fetching last `K` snapshots for rehydration.
 - `deepseek_v4_flash_prior` (default `4.2`)
 - `fallback_default_prior` (default `3.8`)
 
-Equivalent environment overrides are available with `DEEPSEEK_CAPACITY_*`.
+Equivalent environment overrides are available with `CODESMITH_CAPACITY_*`.

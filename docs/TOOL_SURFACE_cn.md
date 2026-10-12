@@ -14,11 +14,12 @@
 
 | 工具 | 定位 |
 |---|---|
-| `read_file` | 读取 UTF-8 文件。可用时通过 `pdftotext`（poppler）自动提取 PDF 内容；`pages: "1-5"` 可切分大文档。 |
+| `read_file` | 读取 UTF-8 文件。PDF 默认通过内置的纯 Rust `pdf-extract` 读取器自动提取（无需安装 Poppler）；对分栏较多的 PDF，可在 `~/.config/deepseek/settings.toml` 中设置 `prefer_external_pdftotext = true` 改走外部 `pdftotext -layout` 路线。`pages: "1-5"` 可切分大文档。 |
 | `list_dir` | 结构化、感知 gitignore 的目录列表。优先于 `exec_shell("ls")`。 |
 | `write_file` | 创建或覆写文件。`.rs`/`.toml`/`.json` 写入前先做 parse 检查：把原本能正常 parse 的文件改坏会被拒绝并给出错误位置。 |
 | `edit_file` | 在单个文件内进行搜索替换。比完整重写更省。与 `write_file` 同样的写前 parse 门；rustfmt-clean 的 Rust 文件编辑后会重新规范化。 |
 | `apply_patch` | 应用 unified diff。多块（multi-hunk）编辑的正确选择。整个批次在落盘前统一过 parse 门（要么全写要么全不写）。 |
+| `fim_edit` | 使用 Fill-in-the-Middle 补全编辑文件：`prefix_anchor` 与 `suffix_anchor` 框定要替换的区域，DeepSeek 的 FIM 端点生成新内容，并应用与 `edit_file` 相同的写前 parse 门。 |
 | `retrieve_tool_result` | 读取此前溢出到 `~/.codesmith/tool_outputs/` 的大型工具输出的摘要或切片；使用 `summary`、`head`、`tail`、`lines` 或 `query`，而不是重放整个结果。 |
 | `handle_read` | 从活跃工具环境持有的 `var_handle` 载荷中读取有界投影。这是 RLM 会话、子代理转录及其他大型符号载荷的基础。 |
 
@@ -28,8 +29,12 @@
 |---|---|
 | `grep_files` | 用正则在工作区内搜索文件内容；返回结构化匹配结果 + 上下文行。纯 Rust 实现（`regex` crate），不外部调用 `rg`/`grep`。 |
 | `file_search` | 对文件名（而非内容）做模糊匹配。当你大致知道名字时使用。 |
+| `symbol_search` | 按名称子串搜索持久的工作区符号索引（函数、结构体、trait、类等）。有索引，对"X 定义在哪"这类问题比 `grep_files` 更快更精确。仅在会话启用代码索引时注册。 |
+| `find_references` | 借助同一持久代码索引，返回精确符号名的定义位置及全部词法出现处。比在大仓库上反复 `grep_files` 更快。 |
 | `web_search` | 默认 DuckDuckGo，Bing 兜底；可在配置中选择 Bing、Tavily、Bocha、Metaso 和 Baidu。返回排序后的摘要片段 + 用于引用的 `ref_id`。 |
 | `fetch_url` | 对已知 URL 直接发起 HTTP GET。当链接已知时比 `web_search` 更快。默认将 HTML 剥离为纯文本。 |
+| `web.run` | 浏览网页（search/open/click/find/screenshot/image_query），返回带 `ref_id`（用于引用）的结构化结果。 |
+| `finance` | 通过 Yahoo Finance 风格的公共端点获取股票、ETF 或加密货币的实时行情。 |
 
 ### Shell
 
@@ -41,18 +46,17 @@
 | `exec_shell_cancel` | 按 id 取消一个运行中的后台 shell 任务，或在被明确要求时取消全部运行中的后台 shell 任务。 |
 | `task_shell_start` | 在后台启动一个长时间运行的命令并立即返回。对于可能运行数分钟的诊断、测试、搜索和服务器，优先于前台 shell 使用。 |
 | `task_shell_wait` | 轮询后台命令。如果在完成后提供了 `gate`，则在活跃的持久任务上记录结构化的门控（gate）证据。 |
+| `exec_wait` / `exec_interact` | `exec_shell_wait` / `exec_shell_interact` 的旧版别名，为兼容旧提示而保留注册。 |
 
 当前台 shell 命令超时时，进程不会被静默延续。工具结果会告知模型用
 `task_shell_start` 或 `background = true` 的 `exec_shell` 重跑长任务，然后用
 `task_shell_wait` 或 `exec_shell_wait` 轮询。
 
-交互式 shell 任务也可以通过 `/jobs` 查看。REPL 任务中心与
-`exec_shell`/`task_shell_start` 使用同一个 shell 管理器，并显示命令、cwd、
-已运行时间、状态、输出尾部、进程本地 shell id，以及可用时关联的持久任务
-id。`/jobs show`、`/jobs poll`、`/jobs wait`、`/jobs stdin` 和
-`/jobs cancel` 为活跃任务提供查看、轮询、stdin 和取消控制。任务是进程
-本地的；重启后不会重新挂接活跃进程状态，任何被记住的分离条目必须标记为
-陈旧，而不是当作活跃进程呈现。
+交互式 shell 任务也可以通过 `/jobs` 查看：它与
+`exec_shell`/`task_shell_start` 使用同一个 shell 管理器，以简单列表
+显示每个运行中任务的 id、已运行时间和命令。它没有子命令——查看、
+stdin 和取消都通过 shell 工具（`exec_shell_wait`、
+`exec_shell_interact`、`exec_shell_cancel`）完成。
 
 Shell 权限策略由 `crates/execpolicy` 评估。Deny 前缀先于 trusted 前缀
 检查，并且无论处于哪一层都会阻断匹配的命令。Trusted 前缀只在允许信任
@@ -76,6 +80,9 @@ reload/reconnect。配置编辑会立即写入，但编辑后对模型可见的 
 |---|---|
 | `git_status` | 无需运行 shell 即可查看仓库状态。 |
 | `git_diff` | 查看工作树或暂存区 diff。 |
+| `git_log` | 运行 `git log`，支持可选的路径与作者/日期过滤。 |
+| `git_show` | 对特定修订运行 `git show`，可选补丁与统计。 |
+| `git_blame` | 对文件运行 `git blame`，可选修订与行范围控制。 |
 | `diagnostics` | 一次调用获取工作区、git、沙箱和工具链信息。 |
 | `run_tests` | 带可选参数的 `cargo test`。 |
 
@@ -88,10 +95,20 @@ reload/reconnect。配置编辑会立即写入，但编辑后对模型可见的 
 | `task_list` | 列出持久任务及其状态和关联的运行时 id。 |
 | `task_read` | 读取持久任务详情：线程/回合关联、时间线、清单、门控、产物、PR 尝试、GitHub 事件。 |
 | `task_cancel` | 取消排队中或运行中的持久任务。需要审批。 |
+| `task_stop` | 面向后台任务、工作者、队友、shell 作业和持久任务的统一停止工具——接受统一后台任务 id、代理 id/会话名、队友名、shell 任务 id 和持久任务 id。需要审批。 |
 | `checklist_write` | 在活跃线程/任务下的细粒度进度。清单状态从属于持久任务。 |
 | `checklist_add` / `checklist_update` / `checklist_list` | 单条清单项操作。 |
 | `todo_write` / `todo_add` / `todo_update` / `todo_list` | 清单工具的兼容别名。现有会话可继续工作，但新提示应使用 `checklist_*`。 |
 | `note` | 记录一条供以后使用的重要事实。 |
+
+### 会话运行时状态
+
+| 工具 | 定位 |
+|---|---|
+| `task_create_v2` / `task_update_v2` / `task_get_v2` / `task_list_v2` | 结构化的 Task V2 记录，带主题、描述、依赖和状态（`pending` → `in_progress` → `completed`）；跨回合持久。 |
+| `create_goal` / `get_goal` / `update_goal` | 运行时目标生命周期：创建或替换持久目标、查看其状态（目标、状态、token 预算、证据、阻塞项），以及更新目标——`update_goal` 是 LLM-as-judge 完成门控。 |
+| `enter_plan_mode` / `exit_plan_mode` / `write_plan_file` | 计划模式生命周期：进入只读的调研/设计模式、写入计划文件（计划模式下唯一可写的文件）、经用户批准后退出。 |
+| `enter_worktree` / `exit_worktree` | 创建隔离的 git worktree 并把会话切换进去；退出时恢复原目录（保留或删除 worktree）。需要审批。 |
 
 ### 验证门控与产物
 
@@ -131,22 +148,75 @@ reload/reconnect。配置编辑会立即写入，但编辑后对模型可见的 
 | `automation_pause` / `automation_resume` / `automation_delete` | 生命周期控制。需要审批。 |
 | `automation_run` | 立即运行一个自动化；该运行会入队为一个普通持久任务。需要审批。 |
 
+### 代理团队
+
+仅在启用 `agent_teams` 特性开关时注册。
+
+| 工具 | 定位 |
+|---|---|
+| `team_create` | 创建一个用于协调多个代理的团队：团队配置文件、共享任务目录，当前会话注册为队长。每个队长会话仅一个团队。 |
+| `team_delete` | 移除当前团队及其任务目录；删除前校验没有活跃队友残留。 |
+| `send_message` | 通过基于文件的邮箱向队友发消息——纯文本、广播（`to: "*"`）或结构化协议消息（关机、计划审批、权限请求）。 |
+
+### 代码审查与召回
+
+| 工具 | 定位 |
+|---|---|
+| `review` | 对文件、git diff 或 GitHub pull request 运行结构化代码审查。 |
+| `recall_archive` | 在先前的上下文周期中搜索当前简报里没有的内容。请节制使用——频繁召回说明简报太稀疏。 |
+| `knowledge_recall` | 按关键字搜索 Knowledge On Demand 记忆文件。仅在启用 KoD 时注册。 |
+
+### 文档与媒体
+
+| 工具 | 定位 |
+|---|---|
+| `pandoc_convert` | 通过本地 `pandoc` 二进制在格式之间转换文档；仅在 `pandoc` 存在时注册。精选的格式白名单、结构化错误——无需 shell-out。 |
+| `image_ocr` | 通过本地 OCR（macOS 为 Vision 框架，其他平台为 tesseract）从图像（PNG/JPEG/TIFF）提取文本。仅在存在 OCR 后端时注册。 |
+| `image_analyze` | 使用配置的 `[vision_model]` 分析图像（PNG、JPEG、GIF、WebP、BMP）。仅在配置了视觉模型时注册。 |
+
+### 工作区实用工具
+
+| 工具 | 定位 |
+|---|---|
+| `project_map` | 高层级项目结构图：关键文件加树状视图。 |
+| `validate_data` | 校验来自内联输入或工作区文件的 JSON 或 TOML。 |
+| `load_skill` | 将技能的 SKILL.md 正文加伴随文件列表载入下一回合上下文——一次调用即可，无需对系统提示 `## Skills` 一节中的路径做 `read_file` + `list_dir`。 |
+| `manage_mods` | 列出、编写并激活 CodeSmith 脚本 mod（Rhai）。仅在 mod 层可用时注册；激活与文件写入按动作审批。 |
+| `request_user_input` | 向用户提出 1–3 个简短问题并返回其选择。 |
+| `revert_turn` | 把工作树回滚到某个较早回合之前的快照（`turn_offset` 从 1 起计，最多 50）；不改动对话历史。需要审批。 |
+| `notify` | 通过 `[notifications]` 配置管线发送单条桌面通知（OSC 9 / 终端响铃）。请节制使用。 |
+
+### 残次账本（Slop ledger）
+
+对未解决的架构残留（兼容垫片、未迁移调用方、重复概念、陈旧文档/测试、疑似死代码）的持久跟踪。首次 append 时自动创建账本 JSON 文件。
+
+| 工具 | 定位 |
+|---|---|
+| `slop_ledger_append` | 向账本追加一条或多条条目。 |
+| `slop_ledger_query` | 按桶、严重性、状态或文本搜索过滤条目。 |
+| `slop_ledger_update` | 更新条目状态（已解决、已接受、进行中）。 |
+| `slop_ledger_export` | 将账本导出为 Markdown 报告，用于交接或 GitHub issue。 |
+
 ### 子代理
 
 v0.8.33 开始将大型工具输出迁移到符号句柄：工具返回小型 `var_handle`
 对象，`handle_read` 从底层环境中获取有界切片、计数或 JSON 投影。这样既
 保持父转录紧凑，又保留了通向完整载荷的恢复路径。
 
-当前面向模型的子代理工具面是持久化的，并且刻意保持很小：
+当前面向模型的子代理工具面是持久化的：
 
 | 工具 | 定位 |
 |---|---|
 | `agent_open` | 打开一个命名子代理会话以进行独立工作。立即返回一个会话投影，父代理可继续协调。 |
 | `agent_eval` | 发送后续输入、阻塞等待完成，或获取现有会话的当前投影/转录句柄。 |
 | `agent_close` | 按名称或 id 取消或释放一个子代理会话。 |
+| `tool_agent` | 打开实验性的快速通道执行代理（Fin）：当前提供方的轻量级、强制关闭思考，用于简单的工具型工作——OCR、文件/搜索查找、抓取、命令探测——让父代理保持规划上下文干净。 |
+| `agent_run` | 内联运行一个子代理并等待结果（前台），或在后台派生——前台形式适用于需要立即得到答案的紧凑反馈回路。 |
+| `agent_memory_read` / `agent_memory_write` / `agent_memory_edit` | 在子代理的作用域代理记忆目录内读取、创建/覆写和搜索替换文件（通过 `agent_open` 的 `memory` 参数可选启用）。仅对启用了记忆作用域的子代理生效。 |
 
 委派协议见 `agent.txt`，角色分类（`general` / `explore` / `plan` /
-`review` / `implementer` / `verifier` / `custom`）见
+`review` / `implementer` / `verifier` / `tool_agent` / `team` /
+`coordinator_worker` / `custom`）见
 [`SUBAGENTS.md`](SUBAGENTS.md)。
 
 `agent_open` 默认开启一个全新的子会话。对于延续式工作或需要继承父级
@@ -176,15 +246,16 @@ RLM 现在同样是持久化的：
 大型 RLM 输出应以 `var_handle` 形式返回。使用 `handle_read` 获取有界
 文本切片、行范围、计数或 JSONPath 投影，而不是将完整值重放进父转录。
 
-在 `rlm_eval` 内部，被加载的源可通过 `_context` 访问；`_ctx` 和
-`content` 也作为兼容别名绑定，因为代理在做 Python 分析时会自然地使用
-它们。较短的 `context` 和 `ctx` 名称则刻意不绑定，以便用户变量可以
+在 `rlm_eval` 内部，被加载的源可通过 `_context` 访问；`content`
+也作为兼容别名绑定，因为代理在做 Python 分析时会自然地使用它。
+较短的 `context` 和 `ctx` 名称则刻意不绑定，以便用户变量可以
 使用它们而不会与引导程序（bootstrap）冲突。
 
-子调用超时属于会话策略：在运行大规模扇出之前，使用 `rlm_configure`
-设置 `sub_query_timeout_secs`。辅助函数 `sub_query`、
-`sub_query_batch`、`sub_query_map` 和 `sub_rlm` 出于对常见代理猜测的
-兼容而接受 `timeout_secs` 关键字，但有效超时仍在 RLM 会话级别配置。
+子调用在 RLM 桥中被包装在固定的 120 秒超时内。`rlm_configure` 的
+`sub_query_timeout_secs` 设置会被存储（钳制到 1..=600），但目前
+并未被桥消费；辅助函数 `sub_query`、`sub_query_batch`、
+`sub_query_map` 和 `sub_rlm` 出于对常见代理猜测的兼容而接受
+`timeout_secs` 关键字——它同样被忽略。
 
 `finalize(value, confidence=...)` 保留可 JSON 序列化的值。字符串变为
 文本句柄；dict、list、数字、布尔和 null 变为 JSON 句柄，`handle_read`
@@ -196,7 +267,7 @@ RLM 现在同样是持久化的：
 `# Session relay` 产物，交给下一个线程。文件名出于与现有提示加载和旧
 会话的兼容而保留；可见的心智模型是 relay / 接力。
 
-别名：`/batonpass`、`/接力`。
+别名：`/batonpass`。
 
 在长假、压缩（compaction）之前，或将工作转移到新会话之前使用它。接力
 应保留目标、当前 Work 清单项、已更改的文件、决策、验证状态，以及一个
@@ -241,9 +312,9 @@ RLM 现在同样是持久化的：
 {
   "_deprecation": {
     "this_tool": "spawn_agent",
-    "use_instead": "agent_open",
-    "removed_in": "0.8.33",
-    "message": "Tool 'spawn_agent' is deprecated; switch to 'agent_open'."
+    "use_instead": "agent_spawn",
+    "removed_in": "0.8.0",
+    "message": "Tool 'spawn_agent' is deprecated; switch to 'agent_spawn' before v0.8.0."
   }
 }
 ```

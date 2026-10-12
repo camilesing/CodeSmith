@@ -75,8 +75,8 @@
 
 ## 干预
 
-干预并不属于默认的 v0.7.5 V4 路径。默认路径是：追加消息、保持前缀缓存
-复用、在接近真实模型压力时建议手动执行 `/compact`，并且只有在请求会超出
+干预并不属于默认的 V4 路径。默认路径是：追加消息、保持前缀缓存
+复用、在压缩阈值（`should_compact`）通过时自动压缩，并且只有在请求会超出
 模型输入预算时才使用溢出恢复。
 
 ### `TargetedContextRefresh`
@@ -152,4 +152,4 @@
 - `deepseek_v4_flash_prior`（默认 `4.2`）
 - `fallback_default_prior`（默认 `3.8`）
 
-同样提供 `DEEPSEEK_CAPACITY_*` 系列等价的环境变量覆盖。
+同样提供 `CODESMITH_CAPACITY_*` 系列等价的环境变量覆盖。

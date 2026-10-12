@@ -8,10 +8,11 @@ sessions — "I prefer pytest over unittest", "this codebase uses
 without having to repeat them in every conversation.
 
 Memory is **on by default** (mirrors Claude Code's auto-memory). When
-enabled, the memory file is loaded, `# ` quick-adds append to it, and
-the `remember` tool is surfaced to the model. Bare/simple sessions and
-storage-less remote sessions disable it automatically; opt out
-entirely with `enabled = false` or `CODESMITH_DISABLE_AUTO_MEMORY=1`.
+enabled, the memory file is loaded and the `remember` tool is surfaced
+to the model — capture is model-driven through that tool. Bare/simple
+sessions and storage-less remote sessions disable it automatically;
+opt out entirely with `enabled = false` or
+`CODESMITH_DISABLE_AUTO_MEMORY=1`.
 
 ## Enabling memory
 
@@ -40,20 +41,12 @@ both are set.
 
 ## Quick examples
 
-```text
-# remember that this repo prefers cargo fmt before commits
-/memory
-/memory path
-/memory edit
-/memory help
-```
-
-- Type `# remember that this repo prefers cargo fmt before commits` in
-  the composer to append a timestamped bullet without firing a turn.
-- Run `/memory` to confirm where the feature is writing and what is
-  currently stored.
-- Run `/memory edit` when you want to groom the file manually in your
-  editor.
+- Ask the model to remember something ("remember that this repo prefers
+  `cargo fmt` before commits"); when memory is enabled it can call the
+  `remember` tool to save the note.
+- The memory file (`~/.codesmith/memory.md` by default) is plain
+  Markdown — open it in any external editor to review or groom what is
+  stored.
 
 ## What gets injected
 
@@ -70,83 +63,60 @@ prompt carries an extra block:
 
 The block sits above the volatile-content boundary in the prompt
 assembly so it stays inside DeepSeek's prefix cache turn-over-turn.
-The file is read at every prompt-build call — edits via `/memory`
-or external editors land on the next turn, no restart needed.
+The block is composed once, when the session's engine is built, and
+baked into the runtime prompt context — edits made in an external
+editor land on the next session, after a restart.
+
+When Knowledge On Demand is enabled (`kod_enabled = true`), the KoD
+knowledge block from the memory directory's `MEMORY.md` entrypoint
+replaces the `<user_memory>` block; if the entrypoint is missing or
+empty, the legacy `<user_memory>` block is used as-is.
 
 Files larger than 100 KiB are loaded but truncated, with a marker
 appended so you can see the cut.
 
-## Three ways to add to memory
+## Adding to memory: the `remember` tool
 
-### 1. The `# ` composer prefix
-
-Type a single line that starts with `#` (but not `##` or `#!`) in
-the composer:
-
-```
-# remember to use 4-space indentation in this repo
-```
-
-The REPL intercepts the input and appends a timestamped bullet to
-your memory file. **No turn fires** — your input is consumed, the
-status line confirms the path it wrote to, and you can keep typing
-your real question.
-
-Multi-`#` prefixes deliberately fall through to normal turn
-submission so you can paste Markdown headings without surprise.
-
-### 2. The `/memory` slash command
-
-Inspect, clear, or get hints about editing the file:
-
-| Subcommand          | Effect                                                 |
-|---------------------|--------------------------------------------------------|
-| `/memory`           | Show the resolved path and current contents inline    |
-| `/memory show`      | Alias for the no-arg form                              |
-| `/memory path`      | Print just the resolved path                          |
-| `/memory clear`     | Replace the file with an empty marker                 |
-| `/memory edit`      | Print the `${VISUAL:-${EDITOR:-vi}} <path>` shell line |
-| `/memory help`      | Show command-specific help and the current path       |
-
-The `/memory edit` form intentionally just prints the command rather
-than spawning the editor in-process — that keeps the slash-command
-handler simple and consistent regardless of which editor you use.
-
-You can also discover the feature from the general help surfaces:
-
-- `/help memory` shows the slash-command summary and usage line.
-- `/memory help` prints the memory-specific subcommands plus the
-  resolved path.
-
-### 3. The `remember` tool (auto-update)
-
-When memory is enabled the model gets a `remember` tool with this
-shape:
+Capture is model-driven. When memory is enabled the model gets a
+`remember` tool with this shape:
 
 ```json
 {
   "name": "remember",
-  "description": "Append a durable note to the user memory file...",
+  "description": "Save a durable note to memory so it surfaces in future sessions. When Knowledge On Demand is enabled, this creates a typed memory file in the memory directory. Use 'memory_type' to categorize: 'user' (profile/preferences), 'feedback' (behavioral guidance), 'project' (ongoing work/goals), or 'reference' (external pointers). Keep notes terse. Don't store secrets or transient tasks.",
   "input_schema": {
     "type": "object",
     "properties": {
-      "note": { "type": "string", ... }
+      "note": { "type": "string" },
+      "name": { "type": "string" },
+      "description": { "type": "string" },
+      "memory_type": { "type": "string", "enum": ["user", "feedback", "project", "reference"] }
     },
     "required": ["note"]
   }
 }
 ```
 
+`note` is the only required parameter; `memory_type` defaults to
+`feedback`. The tool writes in one of two modes:
+
+- **KoD mode** (Knowledge On Demand enabled): writes a
+  frontmatter-bearing `.md` file (`name` / `description` / `type`)
+  into the memory directory and appends a pointer line to the
+  `MEMORY.md` entrypoint. Exact-duplicate pointer lines are skipped.
+- **Legacy mode** (KoD disabled): appends a timestamped bullet to
+  `memory.md` unconditionally.
+
 The model uses this when it notices a durable preference, convention,
 or fact worth keeping across sessions. The tool is auto-approved
-because writes are scoped to the user's own memory file — gating
+because writes are scoped to the user's own memory location — gating
 them behind the standard write-approval flow would defeat the point
 of automatic memory capture.
 
 If the model uses `remember` for transient task state ("I'm
 currently editing foo.rs") the result is harmless but wastes
 context. The tool's description explicitly tells the model **not**
-to do that — durable, single-sentence notes only.
+to do that — durable, terse notes only.
 
 ## File format
 
@@ -169,8 +139,8 @@ Two distinct things feed the system-prompt instruction block, and
 **user memory** is only one of them:
 
 - **User memory** (`~/.codesmith/memory.md`, this feature) — the single
-  durable note file you grow with `#`-prefixed lines, `/memory`, or the
-  `remember` tool.
+  durable note file you grow via the `remember` tool or by hand-editing
+  the file in any editor.
 - **Instruction tiers** — `AGENTS.md` / `CLAUDE.md` files
   collected from four trust tiers and merged into the same block.
 
@@ -291,6 +261,8 @@ loaded by `project_context` and live in the repo (or wherever you commit them).
 # ~/.codesmith/config.toml
 [memory]
 enabled = true                    # default true (on); or set CODESMITH_MEMORY=on
+kod_enabled = false               # Knowledge On Demand: typed memory dir + MEMORY.md entrypoint
+directory = "~/.codesmith/memory" # KoD memory directory (default: memory_path parent + /memory/)
 excludes = ["~/work/secret/CLAUDE.md"]  # skip these paths in the tier merge
 # Path is configured at the top-level (next to skills_dir, notes_path):
 memory_path = "~/.codesmith/memory.md"
@@ -300,13 +272,16 @@ memory_path = "~/.codesmith/memory.md"
 |-----------------------|-------------------------------|---------------------------------------|
 | Memory enabled        | `true`                        | `[memory] enabled = false` or `CODESMITH_DISABLE_AUTO_MEMORY=1` |
 | Memory file path      | `~/.codesmith/memory.md`       | `memory_path = "..."` or `CODESMITH_MEMORY_PATH=`  |
+| KoD enabled           | `false`                       | `[memory] kod_enabled = true` (requires `enabled = true` and the `knowledge_on_demand` feature flag) |
+| Memory directory      | parent of `memory_path` + `/memory/` | `[memory] directory = "..."`  |
 | Memory excludes       | (none)                        | `[memory] excludes = ["..."]` or `CODESMITH_MEMORY_EXCLUDES=` (colon-separated) |
 | Max file size         | 100 KiB                       | (none today; truncation marker shows the cut)     |
 
 ## Consolidation (`codesmith memory consolidate`)
 
-The online loop only ever *appends* to memory (`remember` dedupes exact
-lines; nothing prunes). `codesmith memory consolidate` is the offline
+The online loop only ever *appends* to memory (in KoD mode `remember`
+skips exact-duplicate `MEMORY.md` pointer lines; legacy-mode appends
+are not deduped; nothing prunes). `codesmith memory consolidate` is the offline
 counterpart — the "sleep learning" step of the continuous-evolution plan
 (P3-8) — and it only ever rewrites the Knowledge On Demand `MEMORY.md`
 index, never topic file contents:
@@ -338,6 +313,8 @@ codesmith memory consolidate --deterministic-only # no LLM call at all
 
 ## Related
 
-- `docs/SUBAGENTS.md` — sub-agents inherit memory and can use the
-  `remember` tool too.
+- `docs/SUBAGENTS.md` — sub-agents do not inherit this file or the
+  `remember` tool; they get opt-in scoped agent memory (the `memory`
+  parameter on `agent_open` plus the `agent_memory_read` /
+  `agent_memory_write` / `agent_memory_edit` tools).
 - `docs/CONFIGURATION.md` — full config reference.

@@ -46,9 +46,12 @@ Use any of these surfaces to select a provider:
 - Config: `provider = "<id>"`
 
 First-run onboarding writes `provider =` plus the provider's default model
-in `[providers.<name>]` to `~/.codesmith/config.toml`; the `/provider` command
-instead records `default_provider` in `~/.codesmith/settings.toml`, which
-in the REPL outranks `provider =` in the config file. A picked provider
+in `[providers.<name>]` to `~/.codesmith/config.toml`; `/provider <id>`
+switches the provider in memory for the current session and prints a
+restart hint — it persists nothing. To persist a default provider across
+sessions, set `default_provider = "<id>"` yourself in
+`~/.codesmith/settings.toml`; that key outranks `provider =` in the config
+file. A picked provider
 starts on its own default model, and a provider whose credential already
 resolves — an environment variable, the config file, or a self-hosted runtime
 such as Ollama — skips the key prompt.
@@ -78,9 +81,9 @@ For base URL and model selection, prefer:
 - `CODESMITH_BASE_URL` / `CODESMITH_MODEL` for the active provider.
 - Provider-specific base URL/model env vars when listed below.
 
-Non-local `http://` base URLs are rejected unless
-`CODESMITH_ALLOW_INSECURE_HTTP=1` is set. Loopback HTTP URLs are allowed for
-self-hosted runtimes.
+Both loopback and non-local `http://` base URLs are accepted (self-hosted
+and LAN runtimes); there is no opt-in gate for plain HTTP. Prefer `https://`
+endpoints for anything reachable over the internet.
 
 ## Custom DeepSeek-Compatible Endpoints
 
@@ -139,8 +142,8 @@ endpoint.
 | `volcengine` | `[providers.volcengine]` | `VOLCENGINE_API_KEY`, `VOLCENGINE_ARK_API_KEY`, `ARK_API_KEY` | `VOLCENGINE_BASE_URL`, `VOLCENGINE_ARK_BASE_URL`, `ARK_BASE_URL`; default `https://ark.cn-beijing.volces.com/api/coding/v3` | `DeepSeek-V4-Pro`, `DeepSeek-V4-Flash` | Volcengine/Volcano Engine Ark OpenAI-compatible coding endpoint. `VOLCENGINE_MODEL` and `VOLCENGINE_ARK_MODEL` are accepted. |
 | `openrouter` | `[providers.openrouter]` | `OPENROUTER_API_KEY` | `OPENROUTER_BASE_URL`; default `https://openrouter.ai/api/v1` | `deepseek/deepseek-v4-pro`, `deepseek/deepseek-v4-flash`; recent large IDs include `arcee-ai/trinity-large-thinking`, `qwen/qwen3.7-max`, `xiaomi/mimo-v2.5-pro`, `qwen/qwen3.6-35b-a3b`, `google/gemma-4-31b-it`, `z-ai/glm-5.1`, `moonshotai/kimi-k2.6` | Open-model routing layer for supported model IDs, selected explicitly by the user. |
 | `xiaomi-mimo` | `[providers.xiaomi_mimo]` | `XIAOMI_MIMO_API_KEY`, `XIAOMI_API_KEY`, `MIMO_API_KEY` | `XIAOMI_MIMO_BASE_URL`, `MIMO_BASE_URL`; default `https://api.xiaomimimo.com/v1` | `mimo-v2.5-pro`, `mimo-v2.5` | Xiaomi MiMo OpenAI-compatible chat completions route. It sends `max_completion_tokens` and uses MiMo's `thinking` field for reasoning control. |
-| `novita` | `[providers.novita]` | `NOVITA_API_KEY` | `NOVITA_BASE_URL`; default `https://api.novita.ai/v1` | `deepseek/deepseek-v4-pro`, `deepseek/deepseek-v4-flash` | OpenAI-compatible hosted route for DeepSeek model IDs. Use config or `CODESMITH_MODEL` / `CODESMITH_MODEL` for model overrides. |
-| `fireworks` | `[providers.fireworks]` | `FIREWORKS_API_KEY` | `FIREWORKS_BASE_URL`; default `https://api.fireworks.ai/inference/v1` | `accounts/fireworks/models/deepseek-v4-pro` | OpenAI-compatible hosted route. Use config or `CODESMITH_MODEL` / `CODESMITH_MODEL` for model overrides. |
+| `novita` | `[providers.novita]` | `NOVITA_API_KEY` | `NOVITA_BASE_URL`; default `https://api.novita.ai/v1` | `deepseek/deepseek-v4-pro`, `deepseek/deepseek-v4-flash` | OpenAI-compatible hosted route for DeepSeek model IDs. Use config or `CODESMITH_MODEL` for model overrides. |
+| `fireworks` | `[providers.fireworks]` | `FIREWORKS_API_KEY` | `FIREWORKS_BASE_URL`; default `https://api.fireworks.ai/inference/v1` | `accounts/fireworks/models/deepseek-v4-pro` | OpenAI-compatible hosted route. Use config or `CODESMITH_MODEL` for model overrides. |
 | `siliconflow` | `[providers.siliconflow]` | `SILICONFLOW_API_KEY` | `SILICONFLOW_BASE_URL`; default `https://api.siliconflow.com/v1` | `deepseek-ai/DeepSeek-V4-Pro`, `deepseek-ai/DeepSeek-V4-Flash` | OpenAI-compatible hosted route. Official docs use the `.com` endpoint; users who need the regional endpoint can set `https://api.siliconflow.cn/v1` explicitly. `SILICONFLOW_MODEL` is accepted. Reasoning aliases `deepseek-reasoner` and `deepseek-r1` map to Pro; `deepseek-chat` and `deepseek-v3` map to Flash. |
 | `moonshot` | `[providers.moonshot]` | `MOONSHOT_API_KEY`, `KIMI_API_KEY` | `MOONSHOT_BASE_URL`, `KIMI_BASE_URL`; default `https://api.moonshot.ai/v1` | `kimi-k2.6`; Kimi Code path uses `kimi-for-coding` at `https://api.kimi.com/coding/v1` | Moonshot/Kimi route. `MOONSHOT_MODEL`, `KIMI_MODEL_NAME`, and `KIMI_MODEL` are accepted. `[providers.moonshot] auth_mode = "kimi_oauth"` reads Kimi CLI OAuth credentials when present. |
 | `sglang` | `[providers.sglang]` | Optional `SGLANG_API_KEY` | `SGLANG_BASE_URL`; default `http://localhost:30000/v1` | `deepseek-ai/DeepSeek-V4-Pro`, `deepseek-ai/DeepSeek-V4-Flash` | Self-hosted OpenAI-compatible route. Localhost deployments commonly omit auth. `SGLANG_MODEL` is accepted. |
@@ -171,8 +174,8 @@ but it is treated as a hosted Qwen model rather than documented as open-weight.
 ## Static Model Registry
 
 `codesmith model list` and `codesmith model resolve` use the static registry in
-`crates/agent/src/lib.rs`. This is not the same as live `/models` discovery.
-Use `/models` or `codesmith models` to fetch model IDs from the active API
+`crates/agent/src/lib.rs`. This is not the same as live model listing.
+Use `codesmith models` to fetch model IDs from the active API
 endpoint when the endpoint supports model listing.
 
 | Provider | Static registry entries | Tool calls | Registry reasoning flag |
@@ -204,14 +207,17 @@ listing when available.
 metadata, not a live API probe. Current fields are:
 
 `resolved_provider`, `resolved_model`, `context_window`, `max_output`,
-`thinking_supported`, `cache_telemetry_supported`, and `request_payload_mode`.
+`thinking_supported`, `cache_telemetry_supported`, `request_payload_mode`,
+and `alias_deprecation`.
 
-All shipped providers use the Chat Completions request payload mode today.
+All shipped providers use the Chat Completions request payload mode except
+`anthropic`, which uses the Messages request payload mode.
 
 | Provider/model class | Context window | Max output metadata | Thinking support | Cache telemetry | FIM endpoint |
 | --- | --- | --- | --- | --- | --- |
 | DeepSeek V4 (`deepseek-v4-pro`, `deepseek-v4-flash`) | 1,000,000 | 384,000 | yes | yes | DeepSeek beta only |
 | DeepSeek compatibility aliases (`deepseek-chat`, `deepseek-reasoner`) | 1,000,000 | 384,000 | yes | yes | DeepSeek beta only |
+| Anthropic (`claude-*` models) | 200,000 | 8,192 | yes (Claude 3.7 and 4-series names only) | yes | not documented in code |
 | NVIDIA NIM V4 registry models | 1,000,000 | 384,000 | yes | yes | not documented in code |
 | Volcengine Ark V4 model IDs | 1,000,000 | 384,000 | yes | yes | not documented in code |
 | OpenRouter, Novita, Fireworks, SiliconFlow, SGLang, and vLLM V4 model IDs | 1,000,000 | 384,000 | yes | no | not documented in code |

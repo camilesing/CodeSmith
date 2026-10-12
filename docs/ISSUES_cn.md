@@ -18,13 +18,18 @@
 
 后续在代码 / 文档中新增 issue 引用时，请记录到本文件，不要指向
 GitHub tracker。上游 CodeWhale 仓库（`Hmbown/CodeSmith`）已无法访问
-（404），其 issue 编号无法验证；指名上游工作的编号只出现在
-`docs/legacy/`（冻结历史）与下文引用中。`docs/REVIEW_PIPELINE.md` 与
+（404），其 issue 编号无法验证；指名上游工作的编号出现在
+`docs/legacy/`（冻结历史）、下文引用中，并且自单二进制合并起，
+也出现在迁移后的 `crates/cli` runtime-API 注释里（`#561`–`#564`
+四件套，见第 3 节）。`docs/REVIEW_PIPELINE.md` 与
 `docs/RLM_BRANCHING_ROADMAP.md` 位于 `docs/legacy/` 之下。
 
 ## 1. 内部 `CX#N` 编号
 
-TUI 注释中出现四个内部设计问题编号。代码树中不存在 `CX#1`–`CX#4` 的引用。
+TUI 注释中曾出现四个内部设计问题编号。**代码树中已不存在任何
+`CX#` 引用**：承载它们的 ratatui TUI 已于 2026-10-11 移除
+（`crates/cli` 中的行式 REPL 是唯一前端），本节所有引用均为已失效
+路径。以下记录作为历史保留；`CX#1`–`CX#4` 的引用从未存在。
 
 ### CX#5 — 跨 delta 拆分的代码围栏起始符的流式门控
 
@@ -74,12 +79,12 @@ Tag 块）。设计参考：
 <https://embracethered.com/blog/posts/2024/hiding-and-finding-text-with-unicode-tags/>
 
 - `crates/agent-runtime/src/sanitization.rs:6`
-- `crates/agent-runtime/src/sanitization.rs:143`（U+E0001 向量）
-- `crates/agent-runtime/src/engine/context.rs:308`
-- `crates/agent-runtime/src/engine/host_executor.rs:373`
-- `crates/agent-runtime/src/engine/host_executor.rs:1569`
-- `crates/agent-runtime/src/engine/host_executor.rs:8204`
-- `crates/agent-runtime/src/mcp.rs:3010`
+- `crates/agent-runtime/src/sanitization.rs:192`（U+E0001 向量）
+- `crates/agent-runtime/src/engine/context.rs:322`
+- `crates/agent-runtime/src/engine/host_executor.rs:372`
+- `crates/agent-runtime/src/engine/host_executor.rs:1949`
+- `crates/agent-runtime/src/engine/host_executor.rs:9791`
+- `crates/agent-runtime/src/mcp.rs:3155`
 - `docs/rfcs/extra-findings-01-unicode-sanitization.md:12`（文件已删除；
   记录在此保留）
 - `docs/legacy/CHANGELOG-upstream.md:64`（Unreleased 清理条目）
@@ -91,19 +96,22 @@ Tag 块）。设计参考：
 契约：`allow_shell` / shell 访问必须显式 opt-in，省略可选字段不得静默开启
 shell。
 
-- `crates/tui/src/config.rs:2526`
-- `crates/tui/src/config.rs:5023`（回归测试）
-- `crates/tui/src/task_manager.rs:582`
-- `crates/tui/src/task_manager.rs:1615`（回归测试）
+- `crates/cli/src/config.rs:2372`
+- `crates/cli/src/config.rs:4552`（回归测试）
+- `crates/cli/src/task_manager.rs:577`
+- `crates/cli/src/task_manager.rs:1595`（回归测试）
 - `docs/legacy/CHANGELOG-upstream.md:2690`
+
+（这些守卫随单二进制合并并入 `crates/cli`；原引用指向已移除的
+`crates/tui/src/config.rs` / `crates/tui/src/task_manager.rs`。）
 
 ### GHSA-88gh-2526-gfrr — `fetch_url` 网络目标校验
 
 加固 `fetch_url` 工具的网络目标校验（v0.8.26 修复）。回归覆盖钉住方括号
 IPv6 字面量的解析。
 
-- `crates/tool-impls/src/tools/fetch_url.rs:338`
-- `crates/tool-impls/src/tools/fetch_url.rs:687`（回归测试）
+- `crates/tool-impls/src/tools/fetch_url.rs:369`
+- `crates/tool-impls/src/tools/fetch_url.rs:720`（回归测试）
 - `docs/legacy/CHANGELOG-upstream.md:2688`
 
 ### 依赖侧通告（为完整起见记录）
@@ -116,9 +124,12 @@ Changelog 中记录的第三方依赖升级，非本代码库缺陷：
 
 ## 3. 跨仓库 `Whalescale#N` 引用
 
-Whalescale 桌面项目在它自己的 issue 编号里跟踪集成需求；runtime API 与
-TUI 在实现处引用这些编号。（Whalescale 编号与 CodeSmith tracker 编号成对
-出现时，按收录规则只保留 Whalescale 编号。）
+Whalescale 桌面项目在它自己的 issue 编号里跟踪集成需求；runtime API
+（TUI 移除后现位于 `crates/cli/src/runtime_api.rs` /
+`runtime_threads.rs`）在实现处引用这些编号。（Whalescale 编号与
+CodeSmith tracker 编号成对出现时，条目正文按收录规则只保留
+Whalescale 编号；与之成对的上游 tracker 编号 `#561`–`#564` 现存于
+迁移后的 `crates/cli` 注释中，在本节末尾单独记录。）
 
 ### Whalescale#420 — MCP 优雅关停
 
@@ -126,11 +137,11 @@ TUI 在实现处引用这些编号。（Whalescale 编号与 CodeSmith tracker �
 窗口，之后 tokio 的 `kill_on_drop` 才发 SIGKILL；drop 兜底覆盖从未显式
 shutdown 的连接池与没有子进程的 transport。
 
-- `crates/agent-runtime/src/mcp.rs:677`
-- `crates/agent-runtime/src/mcp.rs:818`（以 `#420` 引用）
-- `crates/agent-runtime/src/mcp.rs:3149`
-- `crates/agent-runtime/src/mcp.rs:5008`（以 `#420` 引用）
-- `crates/agent-runtime/src/engine/mod.rs:911`（以 `#420` 引用）
+- `crates/agent-runtime/src/mcp.rs:739`
+- `crates/agent-runtime/src/mcp.rs:880`（以 `#420` 引用）
+- `crates/agent-runtime/src/mcp.rs:3294`
+- `crates/agent-runtime/src/mcp.rs:5227`（以 `#420` 引用）
+- `crates/agent-runtime/src/engine/mod.rs:962`（以 `#420` 引用）
 
 ### Whalescale#439 — toast 栈队列一致性
 
@@ -138,50 +149,89 @@ shutdown 的连接池与没有子进程的 transport。
 避免一串事件被折叠为单条可见消息（`TOAST_STACK_MAX_VISIBLE = 3`；footer
 行保持最新一条）。
 
-- `crates/tui/src/tui/app.rs:3097`
-- `crates/tui/src/tui/ui.rs:6540`（以 `#439` 引用）
-- `crates/tui/src/tui/ui.rs:7779`（以 `#439` 引用）
+已不再适用，由 TUI 移除解决（2026-10-11）：toast 栈是 ratatui TUI 的
+渲染状态，所引文件已不存在，`crates/` 中也不再有任何 `#439` 引用。
+记录在此保留；幸存的 `#439` 引用仅剩冻结的 changelog 条目。
+
+- `crates/tui/src/tui/app.rs:3097`（已失效路径；文件于 2026-10-11 移除）
+- `crates/tui/src/tui/ui.rs:6540`（以 `#439` 引用；已失效路径）
+- `crates/tui/src/tui/ui.rs:7779`（以 `#439` 引用；已失效路径）
+- `docs/legacy/CHANGELOG-upstream.md:3755`（"Stacked toast overlay" 条目）
 
 ### whalescale#255 — runtime API CORS 白名单
 
 runtime API 为 Whalescale 桌面桥接增加可配置的 CORS 来源：`config.toml`
 的 `[runtime_api] cors_origins` 加 `CODESMITH_CORS_ORIGINS` 环境变量，
-在内置 dev origin 之上扩展，并保持首次出现的顺序。
+在内置 dev origin 之上扩展，并保持首次出现的顺序。（注释将其与上游
+tracker `#561` 并记。）
 
-- `crates/tui/src/runtime_api.rs:78`
-- `crates/tui/src/runtime_api.rs:2044`
-- `crates/tui/src/runtime_api.rs:3684`
-- `crates/tui/src/config.rs:1187`
-- `crates/tui/src/config.rs:1218`
-- `crates/tui/src/main.rs:668`
-- `crates/tui/src/main.rs:1699`
+- `crates/cli/src/runtime_api.rs:78`（与 `#561` 成对）
+- `crates/cli/src/runtime_api.rs:2054`
+- `crates/cli/src/runtime_api.rs:3705`（与 `#561` 成对）
+- `crates/cli/src/config.rs:850`（与 `#561` 成对）
+- `crates/cli/src/config.rs:881`（与 `#561` 成对）
+- `crates/cli/src/main_root.rs:711`
+- `crates/cli/src/main_root.rs:1859`（与 `#561` 成对）
 - `docs/legacy/CHANGELOG-upstream.md:3766`（runtime API 四件套条目）
 
 ### whalescale#260 — `archived_only` 线程过滤
 
 线程列表接受 `archived` / `status` / `archived_only` 查询参数，桌面 UI
-可请求"仅已归档"视图。
+可请求"仅已归档"视图。（注释将其与上游 tracker `#563` 并记。）
 
-- `crates/tui/src/runtime_api.rs:216`
-- `crates/tui/src/runtime_api.rs:226`
-- `crates/tui/src/runtime_api.rs:3857`
-- `crates/tui/src/runtime_threads.rs:553`
+- `crates/cli/src/runtime_api.rs:216`（与 `#563` 成对）
+- `crates/cli/src/runtime_api.rs:226`（与 `#563` 成对）
+- `crates/cli/src/runtime_api.rs:3878`（与 `#563` 成对）
+- `crates/cli/src/runtime_threads.rs:600`（与 `#563` 成对）
 
 ### whalescale#256 — `PATCH /v1/threads/{id}`
 
 runtime API 提供 PATCH 端点，UI 可翻转持久线程状态（标题、归档标志）而
-无需整体重写，并伴随 `schema_version` 升版。
+无需整体重写，并伴随 `schema_version` 升版。（注释将其与上游 tracker
+`#562` 并记。）
 
-- `crates/tui/src/runtime_api.rs:3770`
-- `crates/tui/src/runtime_threads.rs:584`
+- `crates/cli/src/runtime_api.rs:3791`（与 `#562` 成对）
+- `crates/cli/src/runtime_threads.rs:631`（与 `#562` 成对）
 
 ### whalescale#261 — `GET /v1/usage` 聚合
 
-usage 端点按天/模型聚合计费回合的 token 与成本，供桌面 UI 使用。
+usage 端点按天/模型聚合计费回合的 token 与成本，供桌面 UI 使用。（注释
+将其与上游 tracker `#564` 并记。）
 
-- `crates/tui/src/runtime_api.rs:3968`
-- `crates/tui/src/runtime_threads.rs:629`
-- `crates/tui/src/runtime_threads.rs:993`
+- `crates/cli/src/runtime_api.rs:3989`（与 `#564` 成对）
+- `crates/cli/src/runtime_threads.rs:676`（与 `#564` 成对）
+- `crates/cli/src/runtime_threads.rs:1040`（与 `#564` 成对）
+
+### 上游 tracker `#561`–`#564` — runtime API 四件套
+
+fork 前 changelog 的 "Runtime API quartet for whalescale-desktop
+integration"（`docs/legacy/CHANGELOG-upstream.md:3762`–`3778`，还点名
+`#567`）为每个 Whalescale 特性分配了一个上游 tracker 编号；TUI crate
+移除时，这些编号随 runtime API 一并并入 `crates/cli`。按收录规则，
+上文条目正文只保留 Whalescale 编号；上游编号因现存于活代码注释中而
+记录于此：
+
+- **#561**（= whalescale#255，CORS 白名单）— 解析优先级为 `--cors-origin`
+  flag > `CODESMITH_CORS_ORIGINS` 环境变量 > `[runtime_api]
+  cors_origins`（`crates/cli/src/config.rs:881`）；额外 origin 叠加在内置
+  dev 默认值之上，非法 origin 被跳过、不中断 layer 构建
+  （`crates/cli/src/runtime_api.rs:3777`，回归测试见 `:3705` 与
+  `:3777`）。
+- **#562**（= whalescale#256，`PATCH /v1/threads/{id}`）— PATCH 接受扩展
+  字段集（`allow_shell`、`trust_mode`、`auto_approve`、`model`、
+  `mode`、`title`、`system_prompt`），各字段独立可选，空字符串将
+  `title` / `system_prompt` 清回 None
+  （`crates/cli/src/runtime_api.rs:3791`）；线程记录上新增的 `title`
+  字段自 v0.8.10 起存在、未升 schema 版本
+  （`crates/cli/src/runtime_threads.rs:146`）。
+- **#563**（= whalescale#260，`archived_only`）— `archived_only=true`
+  只返回已归档线程，区别于返回两者的 `include_archived=true`
+  （`crates/cli/src/runtime_api.rs:3878`），由 `ThreadListFilter` 枚举
+  支撑（`crates/cli/src/runtime_threads.rs:600`）。
+- **#564**（= whalescale#261，`GET /v1/usage`）— 按天/模型聚合每回合
+  token + 成本；空区间产生空 buckets，绝不返回 404
+  （`crates/cli/src/runtime_api.rs:3989`、
+  `crates/cli/src/runtime_threads.rs:676`、`:1040`）。
 
 ## 4. 源码中无编号的已知问题与待办
 
@@ -202,7 +252,11 @@ ESC 字节但把包装的其余字节逐个画进缓冲单元格，导致列漂�
 OSC 8 改为在缓冲管线之外发出之前，所有平台默认关闭；经
 `[ui] osc8_links = true` 重新开启。从未创建跟踪 issue。
 
-- `crates/tui/src/tui/ui.rs:287`–`303`
+已不再适用，由 TUI 移除解决（2026-10-11）：ratatui 缓冲管线与
+`osc8_links` 开关都位于已移除的 `crates/tui` 渲染树中；`crates/` 中
+已无任何 `osc8` 引用。记录在此保留。
+
+- `crates/tui/src/tui/ui.rs:287`–`303`（已失效路径；文件于 2026-10-11 移除）
 
 ### 超长 token 的折行溢出（已修复，测试钉住）
 
@@ -211,15 +265,21 @@ OSC 8 改为在缓冲管线之外发出之前，所有平台默认关闭；经
 哈希、无空格 CJK 连排都会命中。修复对超长词硬折断；回归套件在宽度 40 与
 80 钉住。
 
-- `crates/tui/src/tui/markdown_render.rs:1761`（缺陷描述）
-- `crates/tui/src/tui/markdown_render.rs:1866`（代码块折行钉住）
+已不再适用，由 TUI 移除解决（2026-10-11）：markdown 渲染器及其折行钉住
+测试位于已移除的 `crates/tui` 渲染树中。记录在此保留。
+
+- `crates/tui/src/tui/markdown_render.rs:1761`（缺陷描述；已失效路径）
+- `crates/tui/src/tui/markdown_render.rs:1866`（代码块折行钉住；已失效路径）
 
 ### 粘贴绝不自动提交（QA 守卫）
 
 自动提交会把 composer 替换为 "working / thinking" 状态芯片并清空
 composer 文本；PTY dump 中出现任一信号即说明 bug 触发。
 
-- `crates/tui/tests/qa_pty.rs:241`
+已不再适用，由 TUI 移除解决（2026-10-11）：PTY QA 测试链路针对的是已
+移除的 ratatui composer。记录在此保留。
+
+- `crates/tui/tests/qa_pty.rs:241`（已失效路径；文件于 2026-10-11 移除）
 
 ### 技能发现忽略 vendor 嵌套子目录（已修复，测试钉住）
 
@@ -227,14 +287,19 @@ composer 文本；PTY dump 中出现任一信号即说明 bug 触发。
 被单层 `read_dir` 扫描静默丢弃——它只会发现 `<root>/<skill>/SKILL.md`，
 忽略 `<root>/<vendor>/<skill>/SKILL.md`。
 
-- `crates/agent-runtime/src/skills/mod.rs:1524`（回归测试）
+- `crates/agent-runtime/src/skills/mod.rs:1776`（缺陷描述）
+- `crates/agent-runtime/src/skills/mod.rs:1782`（回归测试）
 
 ### 待输入预览中超长 token 的行溢出
 
 比折行预算更长的 token 会被冲出为独自一行、允许溢出——刻意为之，以避免
 长 URL 扇出成 N 行垃圾省略号行（此处规避的 codex TUI 已知行为）。
 
-- `crates/tui/src/tui/widgets/pending_input_preview.rs:278`
+已不再适用，由 TUI 移除解决（2026-10-11）：待输入预览 widget 位于已移除
+的 `crates/tui` 渲染树中。记录在此保留。
+
+- `crates/tui/src/tui/widgets/pending_input_preview.rs:278`（已失效路径；
+  文件于 2026-10-11 移除）
 
 ## 5. 文档中的已知问题、限制与延期项
 
@@ -269,7 +334,9 @@ composer 文本；PTY dump 中出现任一信号即说明 bug 触发。
 
 ### docs/SANDBOX.md — 沙箱不防护面
 
-- `docs/SANDBOX.md:277` — 网络攻击（Linux 与 Windows v1 保持网络开放）、
+- `docs/SANDBOX.md` — "What the sandbox does NOT protect against" 一节
+  （该文件正被并行编辑；请按标题引用，不要按行号）—
+  网络攻击（Linux 与 Windows v1 保持网络开放）、
   git hook / fsmonitor 执行、内存攻击、时序侧信道、资源耗尽（不限制 CPU、
   文件描述符、磁盘 I/O）、内核漏洞、供应链。平台差异缺口：Linux seccomp
   白名单可能需要为新 syscall 更新；macOS 运行时生成的 Seatbelt profile
@@ -277,14 +344,19 @@ composer 文本；PTY dump 中出现任一信号即说明 bug 触发。
 
 ### docs/KEYBINDINGS.md — 可配置键位延期
 
-- `docs/KEYBINDINGS.md:155` — 可配置键位映射与 `tui.toml` 仍然延期：
-  `TuiPrefs` 结构体与加载器已存在于 `settings.rs`，但未在启动时接线；
-  让 `~/.codesmith/tui.toml` 覆盖单个条目的命名绑定注册表仍在待办中。
-  （中文镜像：`docs/KEYBINDINGS_cn.md:155`。）
+已不再适用：KEYBINDINGS 双语对已删除（commit 531536dd），且 2026-10-11
+其编目的 ratatui TUI 键位体系随 TUI 一并移除——行式 REPL 没有
+`tui.toml` 键位面，`TuiPrefs` 亦不复存在。记录在此保留。
+
+- `docs/KEYBINDINGS.md:155`（已失效路径；文件在 TUI 移除前即已删除）—
+  可配置键位映射与 `tui.toml` 仍然延期：`TuiPrefs` 结构体与加载器已存在
+  于 `settings.rs`，但未在启动时接线；让 `~/.codesmith/tui.toml` 覆盖
+  单个条目的命名绑定注册表仍在待办中。（中文镜像：
+  `docs/KEYBINDINGS_cn.md:155`，亦已删除。）
 
 ### docs/EXTENSIONS.md — 禁用在 reload 时生效
 
-- `docs/EXTENSIONS.md:78` — `/extension disable <id>` 会标记扩展为禁用，
+- `docs/EXTENSIONS.md:134` — `/extension disable <id>` 会标记扩展为禁用，
   但效果在下一次 `/extension reload` 才落地（同一 reload 注意事项）。
 
 ### 扩展系统交接（源自已删除的 `docs/superpowers/todo.md`）
@@ -295,19 +367,21 @@ composer 文本；PTY dump 中出现任一信号即说明 bug 触发。
   目前返回 `ExtensionError::Unimplemented`）、**registerProvider**、
   **Renderers**、**Shortcut + Flag**、**Embedding API**。
   热加载永久移除。该文件记录的 flaky 测试基线：
-  `streamable_http`（agent-runtime）与 `runtime_api`（tui）——均为既有
+  `streamable_http`（agent-runtime）与 `runtime_api`（cli）——均为既有
   状态，触发时隔离重跑。
 
 ### 清理待办（源自已删除的 `docs/plans/codebase-health.md`）
 
 - 把 `crates/agent-runtime/src/engine/`
   中的 `allow(dead_code)` 归零（或每个幸存者附 migration-issue 链接）；
-  清理指向已删代码的注释；确认纯 re-export 后合并/删除 TUI 镜像模块
-  （`tui/src/compaction/`、`tui/src/prompts.rs`、`tui/src/mcp.rs`、
-  `tui/src/sandbox/`、`tui/src/execpolicy/`）。
+  清理指向已删代码的注释。TUI 镜像模块一项已由 TUI 移除解决
+  （2026-10-11）：`tui/src/compaction/`、`tui/src/prompts.rs`、
+  `tui/src/mcp.rs`、`tui/src/sandbox/`、`tui/src/execpolicy/` 已不复
+  存在——整个 `crates/tui` crate 被移除而非合并。
 - 约 12 个已废弃的子代理
   工具（`agent_spawn`、`agent_result`、`agent_wait`、`delegate_to_agent`
-  等）仍注册在目录中，占用工具面与提示词预算。
+  等）仍注册在目录中，占用工具面与提示词预算。已验证仍然存活：
+  `crates/cli/src/tools/subagent/mod.rs:2191` 注册 `agent_spawn`。
 
 ### docs/legacy/ROADMAP-upstream.md — 已知缺口与延期 re-wire
 
@@ -317,7 +391,7 @@ composer 文本；PTY dump 中出现任一信号即说明 bug 触发。
   `"(reasoning omitted)"` 占位 Thinking 块未被执行器注入（DeepSeek
   thinking-mode 要求 tool-call assistant 消息携带 `reasoning_content`）。
   该处列为最后一项 "still to come" 的 seam-3 parallel dispatch 缺口
-  已闭合（`crates/agent-runtime/src/engine/host_executor.rs:251`）。
+  已闭合（`crates/agent-runtime/src/engine/host_executor.rs:250`）。
 - **compaction 收尾**（`docs/legacy/ROADMAP-upstream.md:1536`–`1565`）—
   summary-prompt 合并与附件重注入已接线；`post_compact_cleanup` 仍延期
   （merge 与 cleanup 互斥 + 分离的 `CompactionProbe` 槽位）；read-file

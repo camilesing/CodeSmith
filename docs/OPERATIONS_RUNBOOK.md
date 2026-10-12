@@ -7,9 +7,9 @@ This runbook covers practical debugging and incident response for the local CLI 
 1. Confirm binary + config:
    - `cargo run -p codesmith-cli -- --version`
    - `cat ~/.codesmith/config.toml` (or inspect configured profile)
-2. Enable verbose logs:
-   - `RUST_LOG=codesmith_cli=debug cargo run -p codesmith-cli` (tracing output lands in `~/.codesmith/logs/tui-YYYY-MM-DD-<pid>.log`)
-   - For provider HTTP retries/reconnects: `RUST_LOG=codesmith_providers=debug,codesmith_agent=debug cargo run -p codesmith-cli`
+2. Enable verbose logs (console-only; there is no file logging):
+   - `CODESMITH_LOG_LEVEL=debug cargo run -p codesmith-cli` (or pass `--verbose`; `info`/`trace` also enable it)
+   - `RUST_LOG` is not read by the CLI itself — it only reaches spawned child processes
 3. Capture current state:
    - `ls ~/.codesmith/sessions`
    - `ls ~/.codesmith/sessions/checkpoints`
@@ -22,7 +22,7 @@ Symptoms:
 - partial assistant output with no completion
 
 Checks:
-1. Inspect retry/health logs (`codesmith_providers` / `codesmith_agent` targets in `~/.codesmith/logs/`)
+1. Re-run with `CODESMITH_LOG_LEVEL=debug` (or `--verbose`) and watch the console for retry/health messages
 2. Verify endpoint connectivity:
    - `curl -sS https://api.deepseek.com/beta/models -H "Authorization: Bearer $DEEPSEEK_API_KEY"`
 3. Confirm no local sandbox/permission deadlock in tool output

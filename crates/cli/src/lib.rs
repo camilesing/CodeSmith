@@ -360,17 +360,12 @@ Pinned tags, local image builds, volume ownership, and non-interactive
 pipelines: https://github.com/camilesing/CodeSmith/blob/main/docs/DOCKER.md
 ";
 
-/// The single bare command-shaped word that must be read as a mistyped
-/// subcommand instead of being forwarded to the TUI as a prompt.
-///
-/// The top-level `[PROMPT]` positional accepts anything, so `codesmith docker`
-/// and `codesmith version` used to launch the interactive TUI with that word as
-/// the first chat message. A one-word ASCII prompt is the only input shape
-/// where that is indistinguishable from a mistyped command name; multi-word
-/// tails, quoted sentences, `-p`, non-ASCII words (which cannot name a
-/// command), and anything after the `--` terminator all stay prompts.
 /// True when argv holds exactly one free (non-option) word — the shape in
-/// which clap reports `InvalidSubcommand` for a mistyped command name.
+/// which clap reports `InvalidSubcommand` for a mistyped subcommand name.
+/// Free words cannot reach the model: the prompt is delivered only through
+/// the `-p`/`--prompt` flag, so a lone bare word can only be a typo, and
+/// routing it through `unknown_subcommand_error` gives the user the `-p`
+/// hint instead of clap's raw usage error.
 pub(crate) fn is_single_bare_word<S: AsRef<std::ffi::OsStr>>(argv: &[S]) -> bool {
     let mut free = 0usize;
     for arg in argv.iter().skip(1) {
@@ -391,37 +386,6 @@ pub(crate) fn is_single_bare_word<S: AsRef<std::ffi::OsStr>>(argv: &[S]) -> bool
         }
     }
     free == 1
-}
-
-fn unknown_subcommand_word<'a, S: AsRef<std::ffi::OsStr>>(
-    cli: &'a Cli,
-    argv: &[S],
-) -> Option<&'a str> {
-    if cli.command.is_some() || !cli.prompt.is_empty() || cli.continue_session {
-        return None;
-    }
-    // `--` marks every following word as a literal value, so `codesmith --
-    // doctor` stays an explicitly marked prompt even though `doctor` names a
-    // real subcommand. Within this guard's firing shape (no subcommand, no
-    // `-p`, exactly one prompt word) a bare `--` in argv implies the word came
-    // after it: anything before the terminator either matched a subcommand or
-    // would have added a second prompt word, and both shapes return above.
-    if argv
-        .iter()
-        .any(|arg| arg.as_ref() == std::ffi::OsStr::new("--"))
-    {
-        return None;
-    }
-    let [word] = cli.prompt.as_slice() else {
-        return None;
-    };
-    let mut chars = word.chars();
-    if !chars.next()?.is_ascii_alphabetic() {
-        return None;
-    }
-    chars
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-        .then_some(word)
 }
 
 /// clap's own `unrecognized subcommand` usage error (exit code 2) carrying the

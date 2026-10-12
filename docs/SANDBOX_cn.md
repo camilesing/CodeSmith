@@ -9,20 +9,21 @@ CodeSmith 执行由 AI 推理派生的 shell 命令。沙箱模块限制这些�
 | 机制 | 平台 | 类型 | 状态 |
 |---|---|---|---|
 | Seatbelt | macOS | 强制访问控制 | 已强制执行 |
-| Landlock | Linux | 文件系统访问控制 | 已强制执行 |
-| seccomp BPF | Linux | 系统调用过滤 | 已强制执行 |
-| 进程加固 | Linux | 内核 prctl / rlimit | 已强制执行 |
-| Bubblewrap (bwrap) | Linux | 命名空间隔离 | 可选 |
-| Windows Job Object | Windows | 进程树遏制 | v1 |
+| Landlock | Linux | 文件系统访问控制 | 未强制执行（仅检测） |
+| seccomp BPF | Linux | 系统调用过滤 | 已移除 |
+| 进程加固 | Linux | 内核 prctl / rlimit | 存在但未被调用 |
+| Bubblewrap (bwrap) | Linux | 命名空间隔离 | 安装即强制执行 |
+| Windows 沙箱 | Windows | — | 未实现（存根） |
 
 ## 威胁模型：每一层针对什么
 
 ### 1. 进程加固（仅 Linux）
 
-**何时运行：** 在派生任何线程之前、Tokio 启动之前、任何数据载入内存
-之前。
+**状态：** 已在 `process_hardening.rs` 中实现，但未接入启动流程——
+`apply_process_hardening()` 没有任何调用点，以下加固从不会作用于
+运行中的进程。
 
-**做什么：**
+**该模块做什么（被调用时）：**
 
 - `PR_SET_DUMPABLE=0` — 阻止 ptrace，使 `/proc/<pid>/` 归 root 所有
 - `PR_SET_NO_NEW_PRIVS=1` — 不可逆；任何子进程都无法再获得特权
@@ -40,11 +41,12 @@ CodeSmith 执行由 AI 推理派生的 shell 命令。沙箱模块限制这些�
 
 ### 2. Landlock（Linux，内核 5.13+）
 
-**何时运行：** 在派生时通过辅助脚本或 `landlock_restrict_self` 应用
-于每个子进程。只能由进程自身施加限制——父进程无法强制子进程进入
-Landlock。
+**状态：** 未强制执行。规则集应用代码存在，但未接入子进程强制执行
+路径：`prepare_landlock` 是有文档记录的透传，返回 `SandboxType::None`；
+`LinuxLandlock.enforces_isolation()` 返回 false；`decide_sandbox` 会把
+Landlock 选择报告为不可用。只有下面的拒绝检测模式是实际生效的。
 
-**做什么：**
+**规则集代码限制什么：**
 - 将文件系统访问限制在一个路径白名单内
 - 处理：`EXECUTE`、`READ_FILE`、`READ_DIR`、`WRITE_FILE`、
   `REMOVE_DIR`、`REMOVE_FILE`、`MAKE_DIR`、`MAKE_REG`、`MAKE_SYM`、
@@ -57,41 +59,18 @@ Landlock。
 
 **不防御什么：**
 - 网络访问（Landlock 只管文件系统）
-- 进程检查（这件事用 seccomp）
+- 进程检查
 - 读取已被映射的文件（Landlock 在 `open()` 时生效）
 
 **检测：** `detect_denial()` 检查 stderr 中的 `Permission denied`、
 `Operation not permitted`、`EACCES`、`EPERM`。
 
-### 3. seccomp BPF（仅 Linux）
+### 3. seccomp BPF（仅 Linux）——已移除
 
-**何时运行：** 通过 `prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER)`
-安装在子进程上。
-
-**做什么：**
-- 约 100 个安全系统调用的白名单（文件 I/O、内存、进程、IPC、同步、
-  信号、时间）
-- **明确拒绝：** `ptrace`、`mount`、`umount2`、`kexec_load`、
-  `kexec_file_load`、`init_module`、`finit_module`、`delete_module`、
-  `bpf`、`reboot`、`swapon`、`swapoff`、`pivot_root`、
-  `setuid`/`setgid`/`setreuid`/`setregid`/`setresuid`/`setresgid`、
-  `personality`
-- 任何不在白名单上的系统调用 → `SECCOMP_RET_KILL_PROCESS`（SIGSYS）
-
-**防御什么：**
-- 通过 ptrace 劫持进程
-- 挂载文件系统（绕过 Landlock 只读限制）
-- 加载内核模块
-- 加载 BPF 程序（否则会绕过 seccomp 本身！）
-- 重启系统
-- 通过 setuid/setgid 的特权变更
-
-**不防御什么：**
-- 将允许的系统调用用于恶意目的的合法使用
-- 通过允许的系统调用进行侧信道攻击（例如时序）
-
-**检测：** `detect_denial()` 检查退出码 31（SIGSYS）或 stderr 中的
-`Bad system call`、`bad system call`、`SIGSYS`、`seccomp`。
+手写的 seccomp BPF 过滤器模块已从代码库删除：删除时它没有任何
+调用点（Landlock + bwrap 才是 Linux 上真正的防线），其手工维护的
+系统调用白名单也仅覆盖 x86_64。仅存的部分是 `landlock.rs` 中
+`detect_denial()` 里的 SIGSYS / 退出码 31 检测启发式（见第 2 节）。
 
 ### 4. Bubblewrap / bwrap（Linux，可选）
 
@@ -109,13 +88,14 @@ Linux 后端选择，因为 Landlock 路径当前不做任何强制（`prepare_l
 - 用 `--chdir` 切换到工作区
 
 **防御什么：**
-- 工作区之外的任何文件系统写入（比单独的 Landlock 更强，因为它在
-  命名空间级别强制执行，而不仅是文件系统访问）
+- 工作区之外的任何文件系统写入（在命名空间级别强制执行，
+  而不仅是文件系统访问）
 - 意外修改系统文件
 
 **不防御什么：**
-- 网络访问（bwrap 在 `--unshare-all` 下默认不创建网络命名空间；
-  子进程仍有完整的网络访问）
+- 策略授予网络时的网络访问——`--unshare-all` 隐含 `--unshare-net`，
+  只有当策略授予网络时才显式追加 `--share-net`，因此 bwrap 下的
+  网络由策略把关
 - 进程检查
 - 内存攻击
 
@@ -126,8 +106,9 @@ Linux 后端选择，因为 Landlock 路径当前不做任何强制（`prepare_l
 
 CodeSmith 不会内置（vendor）bwrap。
 
-**回退：** 若未安装 bwrap，CodeSmith 回退到宽松模式下的 Landlock。
-设置 `[sandbox] fail_if_unavailable = true`（或
+**回退：** 若未安装 bwrap，Landlock 后端会被报告为不可用——命令将
+不加沙箱运行，因为 Landlock 当前不做任何强制。设置
+`[sandbox] fail_if_unavailable = true`（或
 `CODESMITH_SANDBOX_FAIL_IF_UNAVAILABLE=true`）可在请求的沙箱后端
 不可用时选择失败关闭（fail closed），而不是不加沙箱继续运行。
 
@@ -148,49 +129,33 @@ CodeSmith 不会内置（vendor）bwrap。
 - 进程检查（Seatbelt 不阻止 ptrace）
 - 系统调用级攻击
 
-**检测：** 检查 stderr 中的 `file-write` 和 `network` 拒绝模式。
+**检测：** `detect_denial()` 检查 stderr 中的 `Operation not
+permitted`、`sandbox-exec`、`deny(` 和 `Sandbox: `。（`file-write` 和
+`network` 只出现在人类可读的拒绝消息中，不用于检测。）
 
-### 6. Windows Job Object(v1)
+### 6. Windows——未实现
 
-**何时运行：** 在进程派生时通过 `PROC_THREAD_ATTRIBUTE_JOB_LIST`
-和受限令牌（restricted token）分配应用。
-
-**做什么（v1）：**
-- 带有 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 Job Object——父进程
-  退出时所有子进程终止
-- 内存上限：每进程 1 GB，每作业 2 GB
-- 活跃进程上限：64
-- UI 限制：禁止访问桌面句柄
-- 受限令牌：丢弃 Administrators 组 SID，设置为 medium-low 完整性
-  级别
-
-**推迟到 v2 的内容：**
-- WFP（Windows Filtering Platform）防火墙规则——v1 中网络是开放的
-- 派生时的文件系统 ACL 集成（存根已就位）
-- AppContainer 隔离
-- 注册表键隔离
-
-**检测：** 检查 stderr 中的 `Access is denied`、`STATUS_ACCESS_DENIED`、
-`ERROR_ACCESS_DENIED`、`ERROR_PRIVILEGE_NOT_HELD`、
-`ERROR_ACCESS_DISABLED_BY_POLICY`，以及完整性/AppContainer 模式。
+CodeSmith 不提供进程内 Windows 沙箱。`windows.rs` 是一个存根：
+`is_available()` 返回 false，`prepare_windows` 直接放行为无沙箱执行。
+不存在任何 Job Object、内存上限或受限令牌代码。未来的 Windows 支持
+必须通过专用辅助进程提供带 Job Object 和
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的进程树遏制，并且在文件系统、
+网络、注册表或 AppContainer 隔离真正实现并单独测试之前，不得宣称
+这些保证。
 
 ## 纵深防御
 
-Linux 沙箱按顺序应用各层：
+在 Linux 上，bwrap 的命名空间隔离是当前唯一的强制执行层，且仅在
+bwrap 已安装时生效。prctl/rlimit 进程加固模块和 Landlock 规则集代码
+存在于代码库中但未接入强制执行路径，seccomp 过滤器已移除：
 
 ```
-Process hardening (prctl)    ← before threads
-    ↓
-Landlock (filesystem)        ← at child spawn
-    ↓
-seccomp BPF (syscalls)       ← at child spawn
-    ↓
-bwrap (namespace isolation)  ← optional outer wrapper
+bwrap (namespace isolation)  ← Linux 唯一的强制执行层（已安装时）
 ```
 
-每一层针对不同的威胁面。seccomp 无法保护文件系统（那是 Landlock 的
-职责）。Landlock 无法阻止 ptrace（那是 seccomp + PR_SET_DUMPABLE 的
-职责）。bwrap 增加了 Landlock 和 seccomp 都无法提供的命名空间级隔离。
+Linux 上未安装 bwrap 时，本地没有任何强制执行后端：`decide_sandbox`
+报告不可用，命令将不加沙箱运行，除非 `[sandbox] fail_if_unavailable
+= true` 使其失败关闭。在 macOS 上，强制执行层是 Seatbelt。
 
 ## 配置
 
@@ -261,9 +226,9 @@ sandbox_api_key = "YOUR_API_KEY"
 
 | 平台 | 拒绝机制 | 退出码 | Stderr 模式 |
 |---|---|---|---|
-| macOS Seatbelt | sandbox-exec 违规 | 非零 | `file-write`、`network` |
-| Linux Landlock | EACCES / EPERM | 非零 | `Permission denied`、`Operation not permitted` |
-| Linux seccomp | SIGSYS (31) | 31 或 159 | `Bad system call`、`SIGSYS` |
+| macOS Seatbelt | sandbox-exec 违规 | 非零 | `Operation not permitted`、`sandbox-exec`、`deny(`、`Sandbox: ` |
+| Linux Landlock | EACCES / EPERM | 非零 | `Permission denied`、`Operation not permitted`、`EACCES`、`EPERM` |
+| Linux SIGSYS 启发式 | seccomp 时代遗留的检测（Linux 共用路径） | 31 | `Bad system call`、`bad system call`、`SIGSYS`、`seccomp` |
 | Linux bwrap | 挂载/命名空间失败 | 非零 | 不定 |
 | Windows | 拒绝访问 / 特权 | 非零 | `Access is denied`、`ERROR_PRIVILEGE_NOT_HELD` |
 
@@ -274,19 +239,19 @@ sandbox_api_key = "YOUR_API_KEY"
 
 ### 沙箱不防御什么
 
-- **网络攻击** — 只有 macOS Seatbelt 能在本地阻断网络。除非加入
-  实现网络策略的后端，Linux 和 Windows v1 都保持网络开放。因此
-  `[sandbox.network].allow_managed_domains_only = true` 在本地 OS
-  沙箱下按拒绝网络处理，并在外部沙箱请求中透传，交由后端强制执行。
+- **网络攻击** — macOS Seatbelt 可以在本地阻断网络，Linux bwrap 按策略
+  把关网络（策略未授予网络即 `--unshare-net`）。Windows 上没有任何
+  强制执行。因此 `[sandbox.network].allow_managed_domains_only = true`
+  在本地 OS 沙箱下按拒绝网络处理，并在外部沙箱请求中透传，交由后端
+  强制执行。
 - **Git hook/fsmonitor 执行** — 当没有提供显式索引的 `GIT_CONFIG_*`
   环境时，CodeSmith 会向 shell git 配置注入空的 `core.fsmonitor` 和
   `core.hooksPath` 值，防止工作区 git 配置在沙箱化工具调用期间启动
   宿主侧辅助程序。
 - **内存攻击** — 没有任何平台能阻止子进程读取自己的内存或利用内存
   破坏漏洞
-- **时序侧信道** — Linux 上允许的系统调用可用于基于时序的信息泄露
-- **资源耗尽** — Linux 的作业对象限制内存和进程数，但不限制 CPU、
-  文件描述符或磁盘 I/O
+- **时序侧信道** — 没有任何本地沙箱层能防御基于时序的信息泄露
+- **资源耗尽** — 没有任何本地后端限制 CPU、内存、文件描述符或磁盘 I/O
 - **内核漏洞** — 若内核本身存在漏洞，沙箱无法阻止利用（这适用于
   所有平台）
 - **供应链** — 若子进程下载并执行不可信代码，沙箱限制该代码能做的
@@ -294,13 +259,12 @@ sandbox_api_key = "YOUR_API_KEY"
 
 ### 平台特定缺口
 
-- **Linux：** Landlock 保护文件系统访问，bubblewrap 在可用/被偏好时
-  可提供命名空间视图。seccomp 增加系统调用过滤，但使用白名单，新
-  系统调用可能需要更新。主机允许列表网络策略不在本地强制执行。
+- **Linux：** bubblewrap 在已安装时提供命名空间视图；未安装时本地
+  没有任何强制执行后端，除非配置失败关闭，否则命令不加沙箱运行。
+  主机允许列表网络策略不在本地强制执行。
 - **macOS：** Seatbelt 配置文件在运行时生成。配置不当的配置文件
   可能过于宽松。
-- **Windows v1：** 派生时没有文件系统 ACL 强制执行。网络完全开放。
-  Job Object 仅覆盖进程树。
+- **Windows：** 未实现任何沙箱；命令不加沙箱运行。
 
 ## 相关
 

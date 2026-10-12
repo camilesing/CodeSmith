@@ -59,11 +59,13 @@ cargo publish --dry-run --locked --allow-dirty -p codesmith-cli
 `Cargo.toml`、各 crate 清单、`npm/codesmith/package.json` 和
 `Cargo.lock` 之间的漂移会在发布之前而不是发布之时被发现。
 
-Linux 门禁目前**没有任何 CI 承载方**。GitHub 的 test 作业跳过了它的
-Linux clippy/test 步骤（它们面向一条并不运行的 CNB 镜像车道
-——见下文"CNB Cool 镜像"一节），因此在依赖 Linux 测试覆盖
-之前，需要先在 `.github/workflows/ci.yml` 中重新启用这些步骤。
-GitHub Actions 目前承载漂移/fmt 状态以及 macOS 和 Windows 覆盖。
+Linux 工作区测试和 Linux npm 包装器冒烟目前**没有 CI 承载方**：它们
+的步骤在 Linux 上被跳过（`if: runner.os != 'Linux'`，指向一条并不
+运行的 CNB 镜像车道——见下文"CNB Cool 镜像"一节），因此在依赖
+Linux 测试覆盖之前，需要先在 `.github/workflows/ci.yml` 中重新启用
+这些步骤。Linux 的 clippy 和 fmt 有 GitHub 承载方——`lint` 作业在
+`ubuntu-latest` 上运行——漂移/fmt 状态以及 macOS 和 Windows 覆盖
+也由 GitHub Actions 承载。
 
 `publish-crates.sh dry-run` 会对没有未发布工作区依赖的 crate 执行
 完整的 `cargo publish --dry-run`，并对依赖工作区的 crate 执行打包
@@ -95,9 +97,8 @@ CODESMITH_VERSION=X.Y.Z CODESMITH_RELEASE_BASE_URL=http://127.0.0.1:8123/ npm ru
 将该次本地运行中 `CODESMITH_VERSION` 设置为你要验证的 npm
 包版本。
 
-Linux tarball 安装 + 委托入口点冒烟测试同样没有 CI 承载方
-（本应运行它的 CNB 车道并不运行）；GitHub Actions 保留
-macOS 和 Windows 的冒烟覆盖。
+npm 包装器冒烟的 Linux 腿同样没有 CI 承载方（本应运行它的 CNB
+车道并不运行）；GitHub Actions 保留 macOS 和 Windows 的冒烟覆盖。
 
 发布之后，证明 release 在两个 registry 中均可见：
 
