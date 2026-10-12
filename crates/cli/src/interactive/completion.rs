@@ -12,6 +12,10 @@
 //! - No popup menu while typing. Feedback is the dim inline hint; one Tab
 //!   completes to the longest common prefix, and a second Tab lists the
 //!   candidates in columns (rustyline's own display).
+//! - `Shift+Tab` no longer walks the candidates backwards: the REPL binds
+//!   BackTab to its run-mode cycler, shadowing rustyline's default
+//!   `Cmd::CompleteBackward` for it. `Tab`'s forward completion and the
+//!   candidate list are unchanged.
 //! - Argument completion covers only closed, static vocabularies
 //!   (`/mode`, `/provider`, `/verbose`). Model names, sessions, skills,
 //!   presets, and task ids are not completed — those need a network call or

@@ -355,6 +355,18 @@ impl ReplState {
             .ok_or_else(|| anyhow::anyhow!("engine not running"))
     }
 
+    /// Advance the Shift+Tab ring by one mode ([`AppMode::cycle_next`]).
+    /// Coordinator joins the ring only while its experimental feature is
+    /// enabled — the same gate the startup path above applies.
+    pub fn cycle_mode(&mut self) {
+        let include_coordinator = self
+            .config
+            .features()
+            .enabled(crate::features::Feature::CoordinatorMode);
+        let next = self.mode.cycle_next(include_coordinator);
+        self.set_mode(next);
+    }
+
     pub fn set_mode(&mut self, mode: AppMode) {
         if self.mode == mode {
             return;
@@ -384,6 +396,10 @@ impl ReplState {
             self.trust_mode = false;
             self.approval_mode = ApprovalMode::Suggest;
         }
+
+        // `/status` prints this field, so it tracks the mode rather than the
+        // startup flag it was seeded from.
+        self.yolo = mode == AppMode::Yolo;
 
         // mode_change hooks (observer-only) on every effective transition —
         // `/mode`, `/yolo`, preset startup, and resume all funnel through

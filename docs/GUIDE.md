@@ -207,7 +207,7 @@ The prompt accepts normal prompts and slash commands; `/help` lists every
 registered command. Typing `/` shows how many commands there are, `Tab`
 completes the name (press it twice to list the candidates when several
 match), and the dim text after the cursor previews the match with a one-line
-description.
+description. `Shift+Tab` cycles the run mode (section 5).
 Use an `@path` mention to attach an image file to the next message, or
 `/attach <path>` for local media. `Ctrl+C` cancels a running turn; press it
 twice in a row to quit.
@@ -233,7 +233,11 @@ Switch modes in the REPL directly:
 ```
 
 (`/plan`, `/agent`, and `/yolo` are shortcuts for the matching `/mode`
-value; a bare `/mode` prints the current mode.)
+value; a bare `/mode` prints the current mode.) `Shift+Tab` at the prompt
+cycles the same modes without typing a command — `agent → plan → yolo`, with
+`coordinator` as a fourth stop while the experimental `coordinator_mode`
+feature is enabled. The switch applies to the next message you send, and the
+`🚥` segment of the status line above the prompt shows where you landed.
 
 Plan mode is the safest place to start in an unfamiliar repository. It is for
 inspection and decision-making, not file edits.

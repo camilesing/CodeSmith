@@ -8,6 +8,19 @@
 //! terminal-mode concerns (no alt screen, no mouse; during a turn stdin
 //! goes non-canonical only for the Ctrl+O key tap — see `keys.rs`). See
 //! `state.rs` for the known-limitations note.
+//!
+//! `Shift+Tab` at the prompt cycles the run mode
+//! (`AppMode::cycle_next`, bound in [`build_editor`]). Known limitations
+//! of that binding, recorded beside the behaviour it owns: the swap is
+//! applied once `readline` returns, so it surfaces as a confirmation line
+//! plus the `🚥` status segment at the *next* prompt rather than
+//! mid-line — rustyline owns the terminal while reading and offers no
+//! repaint hook; it lands on the next submitted turn, since the mode
+//! rides `Op::SendMessage`; and it is unavailable mid-turn, where the tap
+//! reports Ctrl+O only. Terminals that encode Shift+Tab as `CSI 1;2Z`
+//! (the kitty keyboard protocol and friends) are not decoded by rustyline
+//! 14, so the binding never fires there — Terminal.app, iTerm2, and tmux
+//! defaults send `ESC [ Z`.
 
 pub mod commands;
 pub mod completion;
@@ -18,6 +31,8 @@ pub mod status;
 
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context as _, Result};
 use colored::Colorize;
@@ -138,7 +153,10 @@ pub async fn run_repl(
         state::resume_session(&mut state, resume_id).await?;
     }
 
-    let (mut editor, history_path) = build_editor(&state.workspace)?;
+    // Shift+Tab presses recorded by the editor's BackTab binding; drained
+    // after each `readline` returns (see `apply_mode_cycles`).
+    let mode_cycles: ModeCycles = Arc::new(AtomicUsize::new(0));
+    let (mut editor, history_path) = build_editor(&state.workspace, mode_cycles.clone())?;
 
     // session_start hooks run before the first prompt (awaited — a hook
     // that loads state or sets up logging has finished by the time the
@@ -174,7 +192,11 @@ pub async fn run_repl(
         println!("{}", status::status_line(&state));
         let _ = std::io::stdout().flush();
         let prompt = prompt_str();
-        let line = match editor.readline(&prompt) {
+        let read = editor.readline(&prompt);
+        // Drained before `read` is matched so a Ctrl+C or Ctrl+D cannot
+        // strand a Shift+Tab the user already pressed.
+        apply_mode_cycles(&mut state, &mode_cycles);
+        let line = match read {
             Ok(line) => line,
             Err(rustyline::error::ReadlineError::Interrupted) => {
                 consecutive_interrupts += 1;
@@ -262,7 +284,7 @@ fn print_banner(state: &ReplState) {
     println!(
         "{}",
         format!(
-            "workspace {} · /help lists commands (Tab completes) · Ctrl+C cancels a turn · Ctrl+O toggles tool detail",
+            "workspace {} · /help lists commands (Tab completes, Shift+Tab cycles the mode) · Ctrl+C cancels a turn · Ctrl+O toggles tool detail",
             state.workspace.display()
         )
         .dimmed()
@@ -274,7 +296,54 @@ fn print_banner(state: &ReplState) {
 /// typing `/` and pressing Tab used to do nothing at all.
 type ReplEditor = rustyline::Editor<ReplHelper, rustyline::history::DefaultHistory>;
 
-fn build_editor(workspace: &std::path::Path) -> Result<(ReplEditor, Option<std::path::PathBuf>)> {
+/// Shift+Tab presses recorded while a prompt was open.
+type ModeCycles = Arc<AtomicUsize>;
+
+/// The Shift+Tab binding. A rustyline key handler gets only the input
+/// state and returns a built-in `Cmd` — never application state — so this
+/// counts the press and the main loop applies it once `readline` returns.
+///
+/// Registering it also takes BackTab away from rustyline's default
+/// `Cmd::CompleteBackward`: custom bindings are looked up before the
+/// default keymap, so completion loses only its reverse candidate walk
+/// (`Tab` still completes forward and lists the candidates).
+struct ShiftTabCycler {
+    cycles: ModeCycles,
+}
+
+impl rustyline::ConditionalEventHandler for ShiftTabCycler {
+    fn handle(
+        &self,
+        _evt: &rustyline::Event,
+        _n: rustyline::RepeatCount,
+        _positive: bool,
+        _ctx: &rustyline::EventContext,
+    ) -> Option<rustyline::Cmd> {
+        self.cycles.fetch_add(1, Ordering::SeqCst);
+        Some(rustyline::Cmd::Noop)
+    }
+}
+
+/// Walk the mode ring once per recorded Shift+Tab and report where it
+/// landed. No-op when the prompt returned without one.
+fn apply_mode_cycles(state: &mut ReplState, cycles: &ModeCycles) {
+    let presses = cycles.swap(0, Ordering::SeqCst);
+    if presses == 0 {
+        return;
+    }
+    for _ in 0..presses {
+        state.cycle_mode();
+    }
+    println!(
+        "{}",
+        format!("switched to {} mode (Shift+Tab cycles)", state.mode.label()).cyan()
+    );
+}
+
+fn build_editor(
+    workspace: &std::path::Path,
+    mode_cycles: ModeCycles,
+) -> Result<(ReplEditor, Option<std::path::PathBuf>)> {
     // List mode, not in-place cycling: one Tab completes to the longest
     // common prefix, a second Tab prints every match in columns. The prompt
     // limit is raised past the registry size (77 names today) so a growing
@@ -284,6 +353,14 @@ fn build_editor(workspace: &std::path::Path) -> Result<(ReplEditor, Option<std::
         .completion_prompt_limit(200)
         .build();
     let mut editor = ReplEditor::with_config(config)?;
+    // The returned handler is rustyline's default `Cmd::CompleteBackward`
+    // for BackTab — the binding this replaces.
+    let _ = editor.bind_sequence(
+        rustyline::KeyEvent(rustyline::KeyCode::BackTab, rustyline::Modifiers::NONE),
+        rustyline::EventHandler::Conditional(Box::new(ShiftTabCycler {
+            cycles: mode_cycles,
+        })),
+    );
     editor.set_helper(Some(ReplHelper::new(
         commands::user_cmd_store::user_command_names(Some(workspace)),
     )));

@@ -50,7 +50,7 @@ prompt 的入口有两个：
 
 在 REPL 内，`/help` 是斜杠命令的实时清单——输入 `/` 会显示命令数量，
 `Tab` 补全命令名（多个匹配时连按两次列出候选），光标后的暗色文字预览匹配命令
-的作用。`/plan`、`/agent`、`/yolo` 分别是对应 `/mode` 取值的快捷方式。
+的作用。`/plan`、`/agent`、`/yolo` 分别是对应 `/mode` 取值的快捷方式，也可以在提示符下按 `Shift+Tab` 循环这些模式（`agent → plan → yolo`，实验性 `coordinator_mode` 功能开启时再加 `coordinator`）。
 
 ## 模型选择
 

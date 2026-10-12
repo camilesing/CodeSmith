@@ -170,7 +170,8 @@ files yet. Return the likely cause, evidence, and a proposed patch plan.
 
 提示符接受普通提示词和斜杠命令；`/help` 列出全部已登记命令。输入 `/`
 会显示命令数量，`Tab` 补全命令名（多个匹配时连按两次列出候选），光标后的暗色
-文字预览匹配到的命令及其一行说明。使用 `@path` 引用为下一条消息附加
+文字预览匹配到的命令及其一行说明。`Shift+Tab` 循环运行模式（见第 5 节）。
+使用 `@path` 引用为下一条消息附加
 图像文件，或用 `/attach <path>` 附加本地媒体。`Ctrl+C` 取消运行中的
 一轮；连续按两次退出。
 
@@ -194,7 +195,7 @@ CodeSmith 有三个可见模式：
 /mode yolo
 ```
 
-（`/plan`、`/agent`、`/yolo` 分别是对应 `/mode` 取值的快捷方式；不带参数的 `/mode` 打印当前模式。）
+（`/plan`、`/agent`、`/yolo` 分别是对应 `/mode` 取值的快捷方式；不带参数的 `/mode` 打印当前模式。）在提示符下按 `Shift+Tab` 不必输入命令即可循环同样的模式——依次经过 `agent → plan → yolo`，实验性 `coordinator_mode` 功能开启时 `coordinator` 是第四站。切换对下一条发送的消息生效，提示符上方状态行的 `🚥` 段显示当前所在模式。
 
 在不熟悉的仓库中，Plan 模式是最安全的起点。它用于检查和决策，而不是文件编辑。
 

@@ -29,6 +29,17 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
   kept `/plan`, `/agent`, and `/yolo` as compatibility shortcuts; the port to
   the line REPL carried over only `/yolo`, so `/plan` answered
   `unknown command`.
+- **`Shift+Tab` cycles the run mode in the REPL**: pressing it at the prompt
+  walks `agent → plan → yolo` and prints where it landed, with `coordinator`
+  as a fourth stop only while the experimental `coordinator_mode` feature is
+  on — the gate the startup path already applies, so an unopted user cannot
+  fall into the orchestrator-only toolset by pressing a key once too often
+  (`/mode coordinator` remains the ungated door). The binding replaces
+  rustyline's default `Cmd::CompleteBackward` for BackTab, so Tab completion
+  keeps its forward behaviour and loses only the reverse candidate walk. The
+  mode rides `Op::SendMessage`, so the switch applies to the next submitted
+  turn, and it is unavailable mid-turn, where the key tap reports `Ctrl+O`
+  only. `docs/GUIDE.md` and `docs/CLI.md` document the binding.
 
 - **`codesmith version` and `codesmith docker`**: the two commands users type
   expecting output now exist. `version` prints byte-identical output to
