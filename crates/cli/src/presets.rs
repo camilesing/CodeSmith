@@ -20,7 +20,7 @@
 use std::fmt::Write as _;
 
 use codesmith_config::presets::{
-    MemoryLevel, PresetCatalog, PresetDefinitionToml, canonicalize_preset_name,
+    MemoryLevel, PresetCatalog, PresetDefinitionToml, PresetToolsToml, canonicalize_preset_name,
 };
 
 use crate::config::Config;
@@ -271,6 +271,27 @@ pub fn persisted_selection() -> Option<String> {
         .filter(|name| !name.is_empty())
 }
 
+/// Build a preset-definition snapshot for `/preset export <name>`: start
+/// from the active definition (keeping its config-bound dials), overlay
+/// the live dials the REPL tracks (mode + tool lists), and rename. This is
+/// a snapshot of preset-owned state, not a full config dump.
+pub fn export_definition(
+    base: Option<&PresetDefinitionToml>,
+    app_mode: &str,
+    allowed_tools: Option<&[String]>,
+    blocked_tools: Option<&[String]>,
+    name: &str,
+) -> PresetDefinitionToml {
+    let mut definition = base.cloned().unwrap_or_default();
+    definition.name = Some(name.to_string());
+    definition.app_mode = Some(app_mode.to_string());
+    definition.tools = Some(PresetToolsToml {
+        include: allowed_tools.map(<[String]>::to_vec),
+        exclude: blocked_tools.map(<[String]>::to_vec),
+    });
+    definition
+}
+
 /// Render the `/preset` listing: every preset with its source,
 /// description, and active marker.
 pub fn describe(catalog: &PresetCatalog, active: Option<&str>) -> String {
@@ -311,4 +332,60 @@ pub fn describe(catalog: &PresetCatalog, active: Option<&str>) -> String {
         "Share a preset by committing its .toml file; /preset export writes one."
     );
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn export_definition_overlays_live_dials_on_the_active_base() {
+        let mut base = PresetDefinitionToml {
+            name: Some("all".to_string()),
+            app_mode: Some("agent".to_string()),
+            max_subagents: Some(4),
+            ..PresetDefinitionToml::default()
+        };
+        base.memory_level = Some("elephant".to_string());
+        let allowed = vec!["exec_shell".to_string(), "read_file".to_string()];
+
+        let exported = export_definition(Some(&base), "yolo", Some(&allowed), None, "my-setup");
+
+        // Live dials win.
+        assert_eq!(exported.name.as_deref(), Some("my-setup"));
+        assert_eq!(exported.app_mode.as_deref(), Some("yolo"));
+        assert_eq!(
+            exported.tools.as_ref().and_then(|t| t.include.clone()),
+            Some(allowed)
+        );
+        assert_eq!(
+            exported.tools.as_ref().and_then(|t| t.exclude.clone()),
+            None
+        );
+        // Config-bound dials carry over from the active definition.
+        assert_eq!(exported.max_subagents, Some(4));
+        assert_eq!(exported.memory_level.as_deref(), Some("elephant"));
+    }
+
+    #[test]
+    fn export_definition_without_base_snapshots_mode_and_tools() {
+        let exported = export_definition(
+            None,
+            "plan",
+            None,
+            Some(&["web_search".to_string()]),
+            "solo",
+        );
+        assert_eq!(exported.name.as_deref(), Some("solo"));
+        assert_eq!(exported.app_mode.as_deref(), Some("plan"));
+        assert_eq!(
+            exported.tools.as_ref().and_then(|t| t.exclude.clone()),
+            Some(vec!["web_search".to_string()])
+        );
+        assert!(exported.tools.as_ref().is_some_and(|t| t.include.is_none()));
+        // Round-trips through the preset parser.
+        let body = toml::to_string_pretty(&exported).expect("serialize");
+        let parsed = PresetDefinitionToml::parse_toml(&body, "fallback").expect("parse back");
+        assert_eq!(parsed.app_mode.as_deref(), Some("plan"));
+    }
 }

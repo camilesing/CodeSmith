@@ -181,22 +181,22 @@ without further setup.
 |---|---|
 | `/skills` | List locally discovered skills (names + descriptions; parse warnings are not shown). |
 | `/skills <prefix>` | Filter the local list by name prefix. |
-| `/skills --remote` | Not wired in the REPL — prints a notice; registry browsing has no surface yet. |
-| `/skills sync` | Not wired in the REPL — prints a notice. |
+| `/skills --remote` | Browse the curated community registry instead of local skills. |
+| `/skills sync` | Pull the registry index and download every curated skill to the local cache (`~/.codesmith/cache/skills/`, ETag-fresh). |
 | `/skill <name>` | Activate a skill for your next message. |
 | `/skill new` | Start the bundled `skill-creator` skill to scaffold a new one. |
+| `/skill install <source>` | Install a community skill (source forms below). |
+| `/skill update <name>` | Refresh an installed skill from its recorded source. |
+| `/skill uninstall <name>` | Remove an installed skill (refuses skills without an install marker). |
+| `/skill trust <name>` | Drop the `.trusted` marker, unlocking the skill's shell snippets. |
 
-There are no `/skill install` / `update` / `uninstall` / `trust`
-commands — skills are managed as plain files under `~/.codesmith/skills`
-(install/update/uninstall are file operations). The community-install
-library those commands would drive (default registry URL, 5 MiB cap,
-`.installed-from` / `.trusted` markers, cache dir — see below) exists,
-but no user surface reaches it yet.
+`install` / `update` / `uninstall` / `trust` are reserved subcommand names
+of `/skill` — a local skill with one of those names cannot be activated by
+that single word.
 
 ## Installing community skills
 
-The install/registry library (not reachable from the REPL today — see
-the command reference) accepts three source forms:
+`/skill install` accepts three source forms:
 
 | Source form | Resolves to |
 |---|---|
@@ -215,10 +215,12 @@ max_install_size_bytes = 5_242_880   # 5 MiB default
 ```
 
 Installs are network-gated by the `[network]` policy (`github.com` and
-`raw.githubusercontent.com` must be reachable; the default `prompt` mode
-asks once and can persist). Downloaded archives land in
-`~/.codesmith/cache/skills/` and are unpacked into your skills directory,
-with a `.installed-from` marker recording the source for later updates.
+`raw.githubusercontent.com` must be reachable; hosts on the deny list are
+refused, and the default `prompt` mode counts the user typing the
+`/skill install` / `/skills sync` command as consent). Downloaded archives
+land in `~/.codesmith/cache/skills/` and are unpacked into your skills
+directory, with a `.installed-from` marker recording the source for later
+updates.
 
 ### Trust and shell snippets
 
@@ -227,7 +229,7 @@ with <code>```!</code> and inline <code>!`command`</code> backtick spans.
 For an **untrusted** skill these are replaced at load time with a disabled
 placeholder — the model sees that the snippet exists but cannot run it.
 A `.trusted` marker file next to the `SKILL.md` marks the skill trusted
-(there is no `/skill trust` command — create the empty marker yourself);
+(`/skill trust <name>` writes it; delete the file to revoke);
 trusted snippets are then passed through with instructions to
 execute via the `exec_shell` tool, so normal approval and sandbox policy
 still apply. Trust is per-skill and deliberate: review what a community
@@ -274,7 +276,8 @@ skills (marked as MCP-sourced); see [MCP.md](MCP.md).
   `~/.codesmith/skills` skill with the same `name`. Rename one of them, or
   disable the other via `POST /v1/skills/{name}`.
 - **Shell snippets show "disabled until trusted".** Review the skill, then
-  drop an empty `.trusted` marker file next to its `SKILL.md`.
+  run `/skill trust <name>` (or drop an empty `.trusted` marker file next
+  to its `SKILL.md`).
 - **A skill activates too eagerly.** Sharpen the `description` (this is what
   the model selects on) or gate it with `paths:` so it only appears for
   matching files.

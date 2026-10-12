@@ -8,7 +8,9 @@
 pub mod auto_route;
 pub mod config_cmds;
 pub mod debug_cmds;
+pub mod extension_cmds;
 pub mod misc_cmds;
+pub mod mods_cmds;
 pub mod network_store;
 pub mod project_doc;
 pub mod session_cmds;
@@ -434,7 +436,8 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
                 } else {
                     Some(&arg_str)
                 },
-            );
+            )
+            .await;
             false
         }
         "skill" | "jineng" => {
@@ -490,11 +493,32 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             false
         }
         "extension" | "ext" => {
-            misc_cmds::extension();
+            extension_cmds::extension_command(state, &arg_str).await;
             false
         }
         "mods" => {
-            misc_cmds::mods();
+            mods_cmds::mods_command(state, &arg_str).await;
+            false
+        }
+        "models" => {
+            let json = arg_str.split_whitespace().any(|flag| flag == "--json");
+            if let Err(err) =
+                crate::main_root::run_models(&state.config, crate::main_root::ModelsArgs { json })
+                    .await
+            {
+                println!("{} {err}", "✗".red());
+            }
+            false
+        }
+        "memory" => {
+            misc_cmds::memory(
+                state,
+                if arg_str.is_empty() {
+                    None
+                } else {
+                    Some(&arg_str)
+                },
+            );
             false
         }
         "set" => {
@@ -525,7 +549,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
 
 fn print_help() {
     println!("{}", "commands:".bold());
-    let rows: [(&str, &str); 14] = [
+    let rows: [(&str, &str); 20] = [
         ("/help", "this list"),
         (
             "/status",
@@ -539,13 +563,37 @@ fn print_help() {
             "/model [name]",
             "show or switch the model (`auto` re-enables routing)",
         ),
+        (
+            "/models [--json]",
+            "list live models from the active endpoint",
+        ),
         ("/mode <name>", "agent | yolo | plan | coordinator"),
         ("/yolo", "shortcut for /mode yolo"),
         (
-            "/preset [name|list]",
-            "show or switch the runtime profile tier",
+            "/preset [name|list|export|off]",
+            "show, switch, export, or drop the runtime profile tier",
         ),
         ("/provider [name]", "show or switch the API provider"),
+        (
+            "/skills [prefix|--remote|sync]",
+            "list local skills, browse the registry, refresh the cache",
+        ),
+        (
+            "/skill <name>|install|update|uninstall|trust",
+            "activate a skill or manage installed ones",
+        ),
+        (
+            "/memory [show|path|clear|edit]",
+            "inspect the memory file (`# text` quick-appends)",
+        ),
+        (
+            "/extension <sub>",
+            "list|info|enable|disable|status|reload|install|uninstall",
+        ),
+        (
+            "/mods <sub>",
+            "list|status|info|activate|enable|disable|remove|reload",
+        ),
         ("/sessions [n]", "list saved sessions"),
         ("/agents", "list running sub-agents"),
         ("/compact", "compact the context now"),
@@ -744,6 +792,14 @@ fn cmd_mode(state: &mut ReplState, arg: &str) {
 
 fn cmd_preset(state: &mut ReplState, arg: &str) {
     let arg = arg.trim();
+    if let Some(name) = arg.strip_prefix("export").map(str::trim) {
+        export_preset(state, name);
+        return;
+    }
+    if arg == "off" {
+        preset_off(state);
+        return;
+    }
     if arg.is_empty() || arg == "list" {
         let catalog = PresetCatalog::load(Some(&state.workspace));
         print!(
@@ -787,6 +843,92 @@ fn cmd_preset(state: &mut ReplState, arg: &str) {
             "✗".red()
         ),
     }
+}
+
+/// `/preset export <name>` — snapshot the current dials as a user-layer
+/// preset file (`~/.codesmith/presets/<name>.toml`): the active definition
+/// as the base, overlaid with the live dials the REPL tracks (mode + tool
+/// lists).
+fn export_preset(state: &mut ReplState, name: &str) {
+    if name.is_empty() {
+        println!(
+            "{}",
+            "usage: /preset export <name> — snapshots the current dials as a shareable preset"
+                .dimmed()
+        );
+        return;
+    }
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        println!("{} invalid preset name {name:?}", "✗".red());
+        return;
+    }
+    let catalog = PresetCatalog::load(Some(&state.workspace));
+    let base = state
+        .active_preset
+        .as_deref()
+        .and_then(|active| catalog.get_ci(active))
+        .map(|loaded| loaded.definition.clone());
+    let definition = presets::export_definition(
+        base.as_ref(),
+        state.mode.as_setting(),
+        state.active_allowed_tools.as_deref(),
+        state.active_blocked_tools.as_deref(),
+        name,
+    );
+    let Ok(home) = codesmith_config::codesmith_home() else {
+        println!("{} cannot resolve the CodeSmith home directory", "✗".red());
+        return;
+    };
+    let dir = home.join("presets");
+    if let Err(err) = std::fs::create_dir_all(&dir) {
+        println!("{} create {}: {err}", "✗".red(), dir.display());
+        return;
+    }
+    let body = match toml::to_string_pretty(&definition) {
+        Ok(body) => body,
+        Err(err) => {
+            println!("{} serialize preset: {err}", "✗".red());
+            return;
+        }
+    };
+    let path = dir.join(format!("{name}.toml"));
+    if let Err(err) = std::fs::write(&path, body) {
+        println!("{} write {}: {err}", "✗".red(), path.display());
+        return;
+    }
+    println!(
+        "exported preset {name} → {} (user layer; /preset {name} applies it)",
+        path.display()
+    );
+}
+
+/// `/preset off` — drop the preset layer, keep the current dials: clears
+/// the session's preset state and the persisted selection. The next start
+/// uses the default tier (`middle`) unless config.toml / `--preset` picks
+/// one.
+fn preset_off(state: &mut ReplState) {
+    state.active_preset = None;
+    state.active_allowed_tools = None;
+    state.active_blocked_tools = None;
+    match crate::settings::Settings::load() {
+        Ok(mut settings) => {
+            settings.active_preset = None;
+            if let Err(err) = settings.save() {
+                println!(
+                    "{}",
+                    format!("warning: could not persist preset selection: {err}").yellow()
+                );
+            }
+        }
+        Err(err) => println!(
+            "{}",
+            format!("warning: could not load settings to clear preset: {err}").yellow()
+        ),
+    }
+    println!(
+        "{}",
+        "preset layer off — current dials kept; next start uses the default tier (middle) unless config.toml picks one".dimmed()
+    );
 }
 
 fn cmd_provider(state: &mut ReplState, arg: &str) {

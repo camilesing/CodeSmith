@@ -624,7 +624,7 @@ pub(crate) struct EvalArgs {
 pub(crate) struct ModelsArgs {
     /// Print models as pretty JSON
     #[arg(long, default_value_t = false)]
-    json: bool,
+    pub(crate) json: bool,
 }
 
 #[derive(Args, Debug, Default, Clone)]

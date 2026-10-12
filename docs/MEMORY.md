@@ -41,12 +41,15 @@ both are set.
 
 ## Quick examples
 
+- Type a `#`-prefixed line to quick-append a note yourself:
+  `# this repo prefers cargo fmt before commits` — no turn fires.
 - Ask the model to remember something ("remember that this repo prefers
   `cargo fmt` before commits"); when memory is enabled it can call the
   `remember` tool to save the note.
 - The memory file (`~/.codesmith/memory.md` by default) is plain
-  Markdown — open it in any external editor to review or groom what is
-  stored.
+  Markdown — `/memory show` prints it, `/memory edit` prints the editor
+  command for it, and any external editor works to review or groom what
+  is stored.
 
 ## What gets injected
 
@@ -117,6 +120,33 @@ If the model uses `remember` for transient task state ("I'm
 currently editing foo.rs") the result is harmless but wastes
 context. The tool's description explicitly tells the model **not**
 to do that — durable, terse notes only.
+
+## Adding to memory yourself: `#` and `/memory`
+
+The REPL has a direct capture path that does not involve the model:
+
+- **`# <text>`** — type a single line that starts with exactly one `#`
+  (but not `##` or `#!`, so Markdown headings and shebangs fall through
+  to a normal turn). The REPL intercepts the input and appends a
+  timestamped bullet to your memory file — the same format `remember`
+  writes. **No turn fires**: the input is consumed and a confirmation
+  line shows the path it wrote to. In KoD mode the append lands in the
+  memory directory's `MEMORY.md` entrypoint (so the knowledge block sees
+  it); otherwise it lands in the flat memory file.
+- **`/memory [show|path|clear|edit]`** — inspect and manage the file:
+
+| Subcommand | Effect |
+|---|---|
+| `/memory` / `/memory show` | Print the resolved path and the current contents inline |
+| `/memory path` | Print just the resolved path |
+| `/memory clear` | Replace the file with an empty one |
+| `/memory edit` | Print the `${VISUAL:-${EDITOR:-vi}} <path>` shell line (it intentionally does not spawn the editor in-process) |
+| `/memory help` | Command-specific help plus the current path |
+
+The prompt's memory block is composed when the session's engine is
+built (see above), so `#` appends and `/memory` edits land in the model
+view after a restart — or immediately for you, since the file is plain
+Markdown you can read at any time.
 
 ## File format
 

@@ -213,16 +213,20 @@ YOLO 模式适用于你有意让模型不停下来等待审批就行动的受信
 | 命令 | 用途 |
 | --- | --- |
 | `/mode` | 在 agent、plan、yolo、coordinator 模式间切换 |
-| `/preset` | 查看或切换配置档（`/preset simple`、`/preset list`） |
+| `/preset` | 查看、切换、导出或去掉配置档（`/preset simple`、`/preset list`、`/preset export <name>`、`/preset off`） |
 | `/model` | 选择模型，或使用 `/model auto` |
+| `/models` | 列出活动端点的实时模型 |
 | `/provider` | 选择当前 API provider |
 | `/config` | 编辑运行时和 provider 设置 |
 | `/settings` | 查看持久化 UI 偏好 |
+| `/skills` | 列出技能（`--remote` 浏览社区注册表；`/skill install <source>` 安装） |
+| `/memory` | 查看记忆文件（提示符处 `# 文本` 快速追加笔记） |
+| `/extension` / `/mods` | 管理扩展与脚本 mod（list、install、activate、reload） |
 | `/compact` | 压缩长上下文以回收 token 预算 |
 | `/review` | 请求结构化审查工作流 |
 | `/mcp` | 配置或查看 MCP server 集成 |
 
-实时模型发现使用 `codesmith models` 子命令。
+实时模型发现也可以用 `codesmith models` 子命令。
 
 使用 `/provider` 切换当前 provider。Provider ID、环境变量、模型默认值和能力说明保存在 provider 注册表文档中。
 

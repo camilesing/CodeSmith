@@ -124,7 +124,7 @@ pub async fn run_repl(
         println!(
             "{}",
             format!(
-                "mods discovered but not activated: {} — review via the manage_mods tool (/mods is not wired in the REPL yet)",
+                "mods discovered but not activated: {} — review with /mods list or the manage_mods tool",
                 ids.join(", ")
             )
             .yellow()
@@ -197,6 +197,13 @@ pub async fn run_repl(
             if commands::dispatch(&mut state, trimmed).await {
                 break;
             }
+            continue;
+        }
+
+        // `# text` quick-appends to memory — no turn fires. `##` and `#!`
+        // fall through to normal submission (Markdown headings, shebangs).
+        if let Some(entry) = commands::misc_cmds::quick_memory_entry(trimmed) {
+            append_memory_entry(&state, entry).await;
             continue;
         }
 
@@ -307,6 +314,24 @@ fn extract_attachments(input: &str) -> (String, Vec<String>) {
         }
     }
     (words.join(" "), image_paths)
+}
+
+/// Append one `#`-prefixed line to the session's memory file (KoD
+/// entrypoint or flat memory file) and confirm — the input is consumed,
+/// no turn starts.
+async fn append_memory_entry(state: &ReplState, entry: &str) {
+    let path = commands::misc_cmds::memory_file(state);
+    let target = path.clone();
+    let entry = entry.to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        codesmith_agent_runtime::memory::append_entry(&target, &entry)
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => println!("{}", format!("✎ remembered → {}", path.display()).dimmed()),
+        Ok(Err(err)) => println!("{} {err}", "✗".red()),
+        Err(err) => println!("{} memory worker failed: {err}", "✗".red()),
+    }
 }
 
 /// Submit a plain user message (auto-model routing resolved per request).

@@ -119,9 +119,14 @@ feature 开关和记忆注入在引擎启动时读取——切换到包含这些
 **活动预设的优先级：** `--preset name`（CLI；弃用的 `--mode` 写法仍有效）>
 config.toml 里的 `preset = "name"`（旧版 `mode` 键仍作为弃用别名有效）>
 REPL 中最近一次选择的预设（持久化在 settings.toml）> 出厂默认 `middle`。
-取消预设：不再传递 `--preset`、删除 config.toml 中的 `preset`，并清除
-settings.toml 中持久化的 REPL 选择（`active_preset`）——任何位置都没有
-选择时，`middle` 生效。
+取消预设：不再传递 `--preset`、删除 config.toml 中的 `preset`，并运行
+`/preset off`（清除持久化的 `active_preset` 选择、保留当前旋钮）——任何
+位置都没有选择时，`middle` 生效。
+
+**分享：** `/preset export <name>` 把当前旋钮快照为用户层预设文件
+（`~/.codesmith/presets/<name>.toml`）——以活动定义为基础，叠加当前的
+模式与工具清单——随后它会出现在 `/preset list` 中，可以提交或拷贝。
+`/preset <name>` 像其他预设一样应用它。
 
 **弃用名称。** 改名前的写法仍有效并映射（带警告）：`minimal` → `simple`、
 `balanced` → `middle`、`maximal` → `all`；`--mode` 与 `/mode` 是
@@ -132,7 +137,8 @@ settings.toml 中持久化的 REPL 选择（`active_preset`）——任何位置
 使用 `/mode <name>` 切换可见模式——**agent | yolo | plan | coordinator**——
 或使用 `/yolo` 快捷方式（不带参数的 `/mode` 打印当前模式）。运行
 `/preset` 打开预设视图，或使用 `/preset <name>` 直接切换（`/preset list`
-查看当前工作区可见的所有预设）。
+查看当前工作区可见的所有预设；`/preset export <name>` 把当前旋钮快照为
+可分享的文件；`/preset off` 去掉预设层、保留当前旋钮）。
 
 - **Plan**：设计优先的提示模式。只读调查工具保持可用；shell 与补丁执行保持关闭。当你想边思考边表达、产出一份交给真人（未来的自己或评审者）的计划时使用它。
 - **Agent**：多步工具使用。Shell 执行（`exec_shell`、`task_shell_start`、`task_shell_wait`）要求配置中 `allow_shell = true`；每次调用都由审批提示把关。文件写入无需提示即可进行。

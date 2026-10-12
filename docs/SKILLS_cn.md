@@ -166,21 +166,21 @@ Instructions for the agent go here.
 |---|---|
 | `/skills` | 列出本地发现的技能（名称 + 描述；不显示解析警告）。 |
 | `/skills <prefix>` | 按名称前缀过滤本地列表。 |
-| `/skills --remote` | 未在 REPL 接线——只打印一条提示；注册表浏览暂无界面。 |
-| `/skills sync` | 未在 REPL 接线——只打印一条提示。 |
+| `/skills --remote` | 浏览精选社区注册表（而非本地技能）。 |
+| `/skills sync` | 拉取注册表索引并把每个精选技能下载到本地缓存（`~/.codesmith/cache/skills/`，ETag 判新鲜）。 |
 | `/skill <name>` | 为你的下一条消息激活一个技能。 |
 | `/skill new` | 启动内置的 `skill-creator` 技能来搭建新技能。 |
+| `/skill install <source>` | 安装一个社区技能（来源形式见下文）。 |
+| `/skill update <name>` | 从记录的来源刷新一个已安装技能。 |
+| `/skill uninstall <name>` | 移除一个已安装技能（拒绝没有安装标记的技能）。 |
+| `/skill trust <name>` | 写入 `.trusted` 标记，解锁该技能的 shell 片段。 |
 
-没有 `/skill install` / `update` / `uninstall` / `trust` 命令——技能以
-`~/.codesmith/skills` 下的普通文件方式管理（install/update/uninstall
-都是文件操作）。这些命令本应驱动的社区安装库（默认注册表 URL、5 MiB
-上限、`.installed-from` / `.trusted` 标记、缓存目录——见下文）已经
-存在，但尚无任何用户界面到达它。
+`install` / `update` / `uninstall` / `trust` 是 `/skill` 的保留子命令
+名——本地技能若恰好叫这些名字，无法用该单词直接激活。
 
 ## 安装社区技能
 
-安装/注册表库（目前无法从 REPL 到达——见命令参考）接受三种来源
-形式：
+`/skill install` 接受三种来源形式：
 
 | 来源形式 | 解析为 |
 |---|---|
@@ -198,9 +198,10 @@ max_install_size_bytes = 5_242_880   # 5 MiB default
 ```
 
 安装受 `[network]` 策略的网络门控（`github.com` 和
-`raw.githubusercontent.com` 必须可达；默认的 `prompt` 模式询问一次并
-可持久化）。下载的归档落在 `~/.codesmith/cache/skills/` 并解包到你的
-技能目录，同时以 `.installed-from` 标记记录来源，供日后的
+`raw.githubusercontent.com` 必须可达；deny 列表中的主机会被拒绝，
+默认的 `prompt` 模式把用户敲下 `/skill install` / `/skills sync`
+命令本身视为同意）。下载的归档落在 `~/.codesmith/cache/skills/` 并
+解包到你的技能目录，同时以 `.installed-from` 标记记录来源，供日后的
 更新使用。
 
 ### 信任与 shell 片段
@@ -209,7 +210,7 @@ max_install_size_bytes = 5_242_880   # 5 MiB default
 围栏块和内联的 <code>!`command`</code> 反引号片段。对于**不受信任**
 的技能，这些在加载时被替换为一个禁用的占位符——模型能看到片段存在
 但无法运行。在 `SKILL.md` 旁放置一个 `.trusted` 标记文件即表示该技能
-受信任（没有 `/skill trust` 命令——请自行创建该空标记文件）；
+受信任（`/skill trust <name>` 会写入它；删除该文件即撤销）；
 受信任的片段随后被透传，并附带通过
 `exec_shell` 工具执行的指令，因此常规审批和沙箱策略仍然适用。信任
 是按技能划分且需要刻意为之的：在信任一个社区技能之前，先审查它想
@@ -252,8 +253,9 @@ my-skill/
   工作区 `.agents/skills` 中的技能会遮蔽具有相同 `name` 的全局
   `~/.codesmith/skills` 技能。重命名其中一个，或通过
   `POST /v1/skills/{name}` 禁用另一个。
-- **Shell 片段显示 "disabled until trusted"。** 审查技能后，在其
-  `SKILL.md` 旁放置一个空的 `.trusted` 标记文件。
+- **Shell 片段显示 "disabled until trusted"。** 审查技能后，运行
+  `/skill trust <name>`（或在其 `SKILL.md` 旁放置一个空的 `.trusted`
+  标记文件）。
 - **技能激活得过于频繁。** 锐化 `description`（模型依据它进行选择），
   或用 `paths:` 加门，使其只在匹配文件时出现。
 - **技能对模型可见但不在 `/skills` 中。** 它被标记为

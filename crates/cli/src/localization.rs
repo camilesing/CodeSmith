@@ -151,6 +151,7 @@ pub enum MessageId {
     CmdEditDescription,
     CmdExitDescription,
     CmdExportDescription,
+    CmdExtensionDescription,
     CmdFeedbackDescription,
     CmdHelpDescription,
     CmdHomeDescription,
@@ -166,8 +167,10 @@ pub enum MessageId {
     CmdModeDescription,
     CmdModelDescription,
     CmdModelsDescription,
+    CmdModsDescription,
     CmdNetworkDescription,
     CmdNoteDescription,
+    CmdPresetDescription,
     CmdProviderDescription,
     CmdQueueDescription,
     CmdRecallDescription,
@@ -388,6 +391,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdEditDescription,
     MessageId::CmdExitDescription,
     MessageId::CmdExportDescription,
+    MessageId::CmdExtensionDescription,
     MessageId::CmdFeedbackDescription,
     MessageId::CmdHelpDescription,
     MessageId::CmdHomeDescription,
@@ -403,8 +407,10 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdModeDescription,
     MessageId::CmdModelDescription,
     MessageId::CmdModelsDescription,
+    MessageId::CmdModsDescription,
     MessageId::CmdNetworkDescription,
     MessageId::CmdNoteDescription,
+    MessageId::CmdPresetDescription,
     MessageId::CmdProviderDescription,
     MessageId::CmdQueueDescription,
     MessageId::CmdRecallDescription,
@@ -788,6 +794,9 @@ fn english(id: MessageId) -> &'static str {
         }
         MessageId::CmdModelDescription => "Switch or view current model",
         MessageId::CmdModelsDescription => "List available models from API",
+        MessageId::CmdModsDescription => "Manage script mods (list, activate, reload)",
+        MessageId::CmdExtensionDescription => "Manage extensions (list, install, reload)",
+        MessageId::CmdPresetDescription => "Show or switch the preset tier (export, off)",
         MessageId::CmdNetworkDescription => "Manage network allow and deny rules",
         MessageId::CmdNoteDescription => "Add, list, edit, or remove workspace notes",
         MessageId::CmdProviderDescription => {
@@ -1058,6 +1067,9 @@ fn translation(locale: Locale, id: MessageId) -> Option<&'static str> {
 
 fn traditional_chinese(id: MessageId) -> Option<&'static str> {
     Some(match id {
+        MessageId::CmdModsDescription => "管理腳本 mod（list、activate、reload）",
+        MessageId::CmdExtensionDescription => "管理擴充套件（list、install、reload）",
+        MessageId::CmdPresetDescription => "顯示或切換預設檔位（export、off）",
         MessageId::CmdRelayDescription => "為新執行緒建立會話接力摘要",
         MessageId::CmdTranslateDescription => "切換輸出翻譯為目前系統語言的開關狀態",
         MessageId::CmdTranslateOff => "輸出翻譯已關閉（顯示原始模型輸出）",
@@ -1150,6 +1162,9 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdModelDescription => "切换或查看当前模型",
         MessageId::CmdModelsDescription => "列出 API 中可用的模型",
+        MessageId::CmdModsDescription => "管理脚本 mod（list、activate、reload）",
+        MessageId::CmdExtensionDescription => "管理扩展（list、install、reload）",
+        MessageId::CmdPresetDescription => "显示或切换预设档位（export、off）",
         MessageId::CmdNetworkDescription => "管理网络允许和拒绝规则",
         MessageId::CmdNoteDescription => "添加、列出、编辑或删除工作区笔记",
         MessageId::CmdProviderDescription => {
@@ -1463,6 +1478,9 @@ fn hindi(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdModelDescription => "वर्तमान मॉडल बदलें या देखें",
         MessageId::CmdModelsDescription => "API से उपलब्ध मॉडल दिखाएँ",
+        MessageId::CmdModsDescription => "स्क्रिप्ट mod प्रबंधित करें (list, activate, reload)",
+        MessageId::CmdExtensionDescription => "एक्सटेंशन प्रबंधित करें (list, install, reload)",
+        MessageId::CmdPresetDescription => "प्रीसेट टियर दिखाएँ या बदलें (export, off)",
         MessageId::CmdNetworkDescription => "नेटवर्क allow और deny नियम प्रबंधित करें",
         MessageId::CmdNoteDescription => "workspace नोट्स जोड़ें, देखें, संपादित करें या हटाएँ",
         MessageId::CmdProviderDescription => {
@@ -1821,6 +1839,9 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdModelDescription => "Cambiar o mostrar el modelo actual",
         MessageId::CmdModelsDescription => "Listar los modelos disponibles por la API",
+        MessageId::CmdModsDescription => "Gestionar mods de script (list, activate, reload)",
+        MessageId::CmdExtensionDescription => "Gestionar extensiones (list, install, reload)",
+        MessageId::CmdPresetDescription => "Mostrar o cambiar el nivel de preset (export, off)",
         MessageId::CmdNetworkDescription => "Gestionar reglas de red permitidas y bloqueadas",
         MessageId::CmdNoteDescription => {
             "Agregar nota al archivo persistente (.codesmith/notes.md)"

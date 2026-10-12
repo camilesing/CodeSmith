@@ -126,17 +126,28 @@ once at engine build.
 
 ## In-REPL Manager
 
-There are no REPL extension commands today: `/extension` is a stub
-printing "extension management (/extension list|reload|status) is not
-wired in the REPL yet — extension commands arrive with the §F port"
-(`crates/cli/src/interactive/commands/misc_cmds.rs`).
+The `/extension` command group (`crates/cli/src/interactive/commands/extension_cmds.rs`)
+is the user-facing surface:
 
-Extension management is engine-level:
+| Subcommand | Effect |
+|---|---|
+| `/extension list` | Lists compiled-in + installed extensions (id, version, scope, enabled, install provenance). |
+| `/extension info <id>` | Shows metadata for one extension (version, source, dylib path, config, provenance, enabled). |
+| `/extension enable <id>` | Marks it enabled in `extensions_state.toml`; takes effect on the next `/extension reload`. |
+| `/extension disable <id>` | Marks it disabled; same reload caveat. |
+| `/extension status` | Reports the bound runner's generation + bound tool/command counts (plus failed loads from the startup audit). |
+| `/extension reload` | Re-populates the shared runner `Arc` — the same chokepoint the `manage_mods` tool uses (see below). |
+| `/extension install <source> [--global]` | Fetches (`git:` / `path:` / `crate:` / `prebuilt:`) → builds (`cargo build` for source kinds) → places under `<root>/<id>/`, writes `extension.toml` + the sha256 sidecar the loader verifies, and records `installed[]` provenance. Default scope is the project root; `--global` opts into `~/.codesmith/extensions`. A project-scope install into an **untrusted** workspace prints a warning (the discovery-side gate still refuses to load it — `/trust add <path>` to trust the workspace). `/extension reload` loads it. |
+| `/extension uninstall <id>` | Removes `<root>/<id>/` and clears the provenance record; bindings clear on the next reload, the dylib unloads at the next turn boundary. |
 
-- **Runtime reload** — ask the agent to run the `manage_mods` tool with
-  `action="reload"` (`crates/cli/src/mod_ops.rs` →
-  `reload_extension_runtime`, `crates/cli/src/core/engine.rs`). It
-  re-populates the **shared runner `Arc`**: `clear_handlers` →
+`prebuilt:<https-url>` is HTTPS-only and accepts an optional
+`--checksum <sha256>` (a mismatch refuses the install).
+
+Runtime reload mechanics (shared by `/extension reload`, `/mods reload`,
+and the `manage_mods` tool — `crates/cli/src/mod_ops.rs` →
+`reload_extension_runtime`, `crates/cli/src/core/engine.rs`):
+
+- It re-populates the **shared runner `Arc`**: `clear_handlers` →
   `clear_tools` → `clear_commands` → `clear_providers` (drops
   registration guards) → `clear_prompt_sections` → `clear_skills` →
   `clear_message_projections` → `drain_libraries_to_pending` →
@@ -150,9 +161,8 @@ Extension management is engine-level:
   newly-installed extension is picked up on the next reload.
 - **Install roots + trust gate** — unchanged: dylib installs live under
   the roots documented in [Discovery](#discovery), and project-local
-  dylibs stay gated on workspace trust (`apply_trust_gate`). The
-  installer/uninstaller library itself (fetch → build → sha256 sidecar)
-  has no user surface yet.
+  dylibs stay gated on workspace trust (`apply_trust_gate`) at load
+  time — install is trust-agnostic by design.
 
 ## Discovery
 
@@ -220,7 +230,7 @@ inventory::submit! {
 ```
 
 `cargo test -p codesmith-extensions scratchpad_is_discoverable` proves
-discovery picks it up (there is no REPL listing command — see
+discovery picks it up (`/extension list` shows it in the REPL — see
 [In-REPL Manager](#in-repl-manager)). See the file for the full
 tool/command/handler bodies.
 
@@ -439,9 +449,8 @@ so the invariant — not a Miri run — is the proof.
   UI-only.
 - The capability manifest is read once per process; edits require a
   restart.
-- Hot-load is permanently out — install + runtime reload only
-  (`manage_mods(action="reload")`); the installer library has no REPL
-  surface yet.
+- Hot-load is permanently out — install (`/extension install`) + runtime
+  reload only (`/extension reload` or `manage_mods(action="reload")`).
 
 ## Troubleshooting
 
@@ -449,15 +458,15 @@ so the invariant — not a Miri run — is the proof.
   the link — confirm the extension's crate is a workspace member + that
   `crates/extensions/src/lib.rs` declares its module. `cargo test -p
   codesmith-extensions scratchpad_is_discoverable` proves the registration
-  is wired. There is no REPL listing command (`/extension` is a stub);
-  failed loads surface in the `tracing` summary (target
+  is wired. `/extension list` / `/extension status` show what the host
+  sees; failed loads surface in the `tracing` summary (target
   `codesmith_extensions`) and dylib installs can be inspected directly
   under `~/.codesmith/extensions` / `<workspace>/.codesmith/extensions`.
 - **Runner reads as "not bound".** The engine hasn't built yet
   (pre-startup), or `state.extension_runner` wasn't copied from the handle
   (`crates/cli/src/interactive/mod.rs` after `spawn_engine`).
 - **Mod layer unresponsive after edits.** Runtime reload is
-  engine-level — ask the agent to run `manage_mods(action="reload")`
+  engine-level — run `/extension reload` (or `/mods reload`)
   (see [MODS.md](MODS.md)).
 - **Handler returns `Continue` but nothing changes.** `Continue` means
   "no change" by design. To cancel/block/transform, return the matching
