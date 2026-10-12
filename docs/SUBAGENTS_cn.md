@@ -36,6 +36,34 @@
 `build_subagent_system_prompt` 构建）。提示词前缀在子代理启动时自动加载；父代理的
 任务分配提示词会成为第一轮的用户消息。
 
+## 只读角色与 Plan 模式
+
+`explore` 是**强制**只读，而不只是提示词那样写：子代理的工具列表会与其自身注册表中
+声明 `ToolCapability::ReadOnly` 的工具名求交，因此无论以何种方式打开，该类型都无法写文件、
+打补丁或执行 shell。在 `allowed_tools` 里要求写工具会让 spawn 直接失败并列出被拒的工具名，
+而不是悄悄收窄后继续运行。求交同时会去掉 spawn 家族（`agent_open` 等），所以 explore
+子代理是叶子节点——请并行开 2–3 个，而不是嵌套。
+
+Plan 模式注册同一套子代理工具（该模式的提示词本身就要求做只读调查），并把**每个**子代理
+都标记为只读，不论类型：该模式既不能写也不能执行，它派出的调查者同理。Plan 模式的子代理
+同样因此成为叶子节点。
+
+### 跨仓库协作
+
+`agent_open` 的 `cwd` 可以位于父代理工作区内，**或者**位于你用 `/trust add <path>` 授权过
+的目录下。子代理的工作区根即该目录，它自己的路径校验也以此为准。要同时勘探两个仓库，
+先授权第二个仓库，然后在一条消息里各开一个 explore 子代理：
+
+```text
+/trust add ../other-repo
+agent_open {name: "repo-a", cwd: "/abs/repo-a",     agent_type: "Explore", prompt: "…"}
+agent_open {name: "repo-b", cwd: "/abs/other-repo", agent_type: "Explore", prompt: "…"}
+```
+
+工作区之外且未授权的 cwd 会被拒绝，并在错误里给出需要执行的 `/trust add <path>` 命令，
+因此写错的路径不会变成对无关目录的静默读取。两次 spawn 依次经过审批；每次都立即返回，
+所以两个子代理随后并发运行。
+
 ## 上下文分叉
 
 `agent_open` 默认全新启动：子代理获得其角色提示词加上你传入的

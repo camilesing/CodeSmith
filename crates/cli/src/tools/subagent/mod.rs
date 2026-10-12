@@ -616,6 +616,14 @@ pub struct SubAgentRuntime {
     /// construction and propagated to children via `child_runtime()` /
     /// `background_runtime()`.
     pub inherit_full_registry: bool,
+    /// Every child of this runtime is read-only regardless of its type: the
+    /// registry narrows the child's tools to the read-only names of its own
+    /// surface (the `explore` rule, applied to all types). Plan mode sets this
+    /// — the mode can neither write nor execute, so its investigators must not
+    /// be able to either. Propagated to children so a grandchild cannot regain
+    /// a write tool; in practice the narrowing already drops the spawn family,
+    /// keeping read-only children leaves.
+    pub children_read_only: bool,
     /// The tool-name set that THIS agent's children must be a subset of.
     /// `None` → unrestricted (this agent exposes the full agent surface, so
     /// its children may too); `Some(set)` → a child's requested/effective
@@ -671,6 +679,7 @@ impl SubAgentRuntime {
             mcp_pool: None,
             step_api_timeout: DEFAULT_STEP_API_TIMEOUT,
             inherit_full_registry: false,
+            children_read_only: false,
             child_subset_basis: None,
             capability_disabled_tools: std::collections::HashSet::new(),
         }
@@ -703,6 +712,16 @@ impl SubAgentRuntime {
     #[must_use]
     pub fn with_inherit_full_registry(mut self, inherit: bool) -> Self {
         self.inherit_full_registry = inherit;
+        self
+    }
+
+    /// Make every child of this runtime read-only whatever its type (Plan
+    /// mode's contract). Enforced against each child's own registry, so the
+    /// child still gets the read-only tools *it* has rather than a list of
+    /// names borrowed from the parent's differently-shaped surface.
+    #[must_use]
+    pub fn with_children_read_only(mut self, read_only: bool) -> Self {
+        self.children_read_only = read_only;
         self
     }
 
@@ -852,6 +871,7 @@ impl SubAgentRuntime {
             mcp_pool: self.mcp_pool.clone(),
             step_api_timeout: self.step_api_timeout,
             inherit_full_registry: self.inherit_full_registry,
+            children_read_only: self.children_read_only,
             // Propagate the parent's subset basis so the child's
             // `build_allowed_tools` (run at spawn entry) can intersect the
             // child's requested tools with the parent's effective set. Each
@@ -2329,7 +2349,7 @@ impl ToolSpec for AgentSpawnTool {
         ApprovalRequirement::Required
     }
 
-    async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let spawn_request = parse_spawn_request_with_workspace(&input, &self.runtime.context.cwd)?;
 
         // Depth cap: reject before locking the manager so we don't introduce
@@ -2344,7 +2364,11 @@ impl ToolSpec for AgentSpawnTool {
         }
 
         // Validate cwd if supplied: must canonicalize inside the parent
-        // workspace. Catches accidents like `cwd: "/etc"`.
+        // workspace, or inside a directory the user trusted with
+        // `/trust add <path>` — that is how a second repository becomes
+        // explorable (the child's workspace root becomes that directory, so
+        // its own path checks are bounded there). Catches accidents like
+        // `cwd: "/etc"`.
         let validated_cwd = if let Some(requested_cwd) = spawn_request.cwd.as_ref() {
             let parent_workspace = &self.runtime.context.workspace;
             let resolved = if requested_cwd.is_absolute() {
@@ -2361,11 +2385,16 @@ impl ToolSpec for AgentSpawnTool {
             let workspace_canonical = parent_workspace
                 .canonicalize()
                 .unwrap_or_else(|_| parent_workspace.clone());
-            if !canonical.starts_with(&workspace_canonical) {
+            if !canonical.starts_with(&workspace_canonical)
+                && !context.is_trusted_external_path(&canonical)
+                && !context.is_trusted_external_path(&resolved)
+            {
                 return Err(ToolError::invalid_input(format!(
-                    "cwd must be inside the parent workspace: {} is not under {}",
+                    "cwd must be inside the parent workspace or a trusted external path: {} is \
+                     not under {}. Run `/trust add {}` to allow it.",
                     canonical.display(),
-                    workspace_canonical.display()
+                    workspace_canonical.display(),
+                    canonical.display()
                 )));
             }
             Some(canonical)
@@ -3053,10 +3082,13 @@ impl SubagentRunTool {
         Self { manager, runtime }
     }
 
-    /// Validate cwd: must canonicalize inside the parent workspace.
+    /// Validate cwd: must canonicalize inside the parent workspace, or inside a
+    /// directory the user trusted with `/trust add <path>` (same rule as
+    /// `agent_open`'s own check).
     fn validate_cwd(
         requested_cwd: &PathBuf,
         parent_workspace: &Path,
+        context: &ToolContext,
     ) -> Result<PathBuf, ToolError> {
         let resolved = if requested_cwd.is_absolute() {
             requested_cwd.clone()
@@ -3072,11 +3104,16 @@ impl SubagentRunTool {
         let workspace_canonical = parent_workspace
             .canonicalize()
             .unwrap_or_else(|_| parent_workspace.to_path_buf());
-        if !canonical.starts_with(&workspace_canonical) {
+        if !canonical.starts_with(&workspace_canonical)
+            && !context.is_trusted_external_path(&canonical)
+            && !context.is_trusted_external_path(&resolved)
+        {
             return Err(ToolError::invalid_input(format!(
-                "cwd must be inside the parent workspace: {} is not under {}",
+                "cwd must be inside the parent workspace or a trusted external path: {} is not \
+                 under {}. Run `/trust add {}` to allow it.",
                 canonical.display(),
-                workspace_canonical.display()
+                workspace_canonical.display(),
+                canonical.display()
             )));
         }
         Ok(canonical)
@@ -3088,12 +3125,13 @@ impl SubagentRunTool {
     async fn execute_sync(
         &self,
         request: AgentRunRequest,
-        _context: &ToolContext,
+        context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
         let validated_cwd = if let Some(ref requested_cwd) = request.cwd {
             Some(Self::validate_cwd(
                 requested_cwd,
                 &self.runtime.context.workspace,
+                context,
             )?)
         } else {
             None
@@ -4755,6 +4793,14 @@ async fn run_subagent(
             described.join(", ")
         ));
     }
+    let refused = tool_registry.refused_non_read_only_tools();
+    if !refused.is_empty() {
+        return Err(anyhow!(
+            "Sub-agent type 'explore' is read-only and cannot use: {}. Drop them from \
+             allowed_tools, or spawn a write-capable type instead (general, implementer, custom).",
+            refused.join(", ")
+        ));
+    }
     let tools = tool_registry.tools_for_model(&agent_type);
     if let Some(mb) = runtime.mailbox.as_ref() {
         let _ = mb.send(MailboxMessage::started(&agent_id, agent_type.clone()));
@@ -6289,6 +6335,14 @@ struct SubAgentToolRegistry {
     /// only to attribute them in the unavailable-tools spawn error (the
     /// enforcement itself is the registry removal in `new`).
     capability_disabled: std::collections::HashSet<String>,
+    /// Names an `explore` spawn requested that read-only enforcement refuses.
+    /// Non-empty fails the spawn (`refused_non_read_only_tools`).
+    refused_non_read_only: Vec<String>,
+}
+
+/// Whether `name` is in the read-only set read off the child registry.
+fn is_read_only_name(read_only: &[String], name: &str) -> bool {
+    read_only.iter().any(|allowed| allowed == name)
 }
 
 impl SubAgentToolRegistry {
@@ -6320,6 +6374,9 @@ impl SubAgentToolRegistry {
         // plus per-child fresh todo/plan state.
         let context = runtime.context.clone();
         let mut explicit_allowed_tools = explicit_allowed_tools;
+        // The caller's own request, before the memory/mailbox names appended
+        // below: only a *requested* non-read-only tool is a loud refusal.
+        let requested_tools = explicit_allowed_tools.clone();
         if context.agent_memory_dir.is_some()
             && let Some(list) = explicit_allowed_tools.as_mut()
         {
@@ -6397,12 +6454,67 @@ impl SubAgentToolRegistry {
             }
         }
 
+        // The `explore` type is the read-only investigator the prompts point
+        // at for parallel sweeps — "fast exploration - read-only tools for
+        // codebase search" (`agent_runtime::subagent`, `docs/SUBAGENTS.md`).
+        // A runtime marked `children_read_only` (Plan mode) extends the same
+        // rule to every type. Either way the set is read off the child's own
+        // registry capabilities instead of trusting the caller: a new read-only
+        // tool joins automatically, a new write tool cannot. The narrowing also
+        // drops `agent_open` (`ExecutesCode`), so a read-only child stays a
+        // leaf — nothing downstream can re-expand its surface.
+        let mut refused_non_read_only: Vec<String> = Vec::new();
+        if matches!(agent_type, SubAgentType::Explore) || runtime.children_read_only {
+            let read_only: Vec<String> = registry
+                .names()
+                .into_iter()
+                .filter(|name| {
+                    registry
+                        .get(name)
+                        .is_some_and(|tool| tool.capabilities().contains(&ToolCapability::ReadOnly))
+                })
+                .map(str::to_string)
+                .collect();
+            // A *requested* tool that exists but is not read-only is a caller
+            // error: recorded here, reported at spawn entry so the spawn fails
+            // instead of quietly dropping it. A name that does not exist at all
+            // stays out of this list — `unavailable_allowed_tools` already
+            // reports it, and a typo should keep saying "unavailable".
+            if let Some(requested) = requested_tools.as_ref() {
+                refused_non_read_only = requested
+                    .iter()
+                    .filter(|name| {
+                        registry.contains(name) && !is_read_only_name(&read_only, name)
+                    })
+                    .cloned()
+                    .collect();
+            }
+            // Names this constructor appended for its own features
+            // (agent-memory writes, send_message) are dropped in silence —
+            // an explore child is not a memory writer, and there is no caller
+            // to correct.
+            explicit_allowed_tools = Some(match explicit_allowed_tools.take() {
+                Some(list) => list
+                    .into_iter()
+                    .filter(|name| {
+                        // Unregistered names survive so the spawn reports them
+                        // as unavailable rather than as refused write tools.
+                        !registry.contains(name) || is_read_only_name(&read_only, name)
+                    })
+                    .collect(),
+                // `None` meant "no filter = full surface"; for explore that
+                // becomes the read-only surface.
+                None => read_only.clone(),
+            });
+        }
+
         Self {
             allowed_tools: explicit_allowed_tools,
             auto_approve: runtime.context.auto_approve,
             agent_type,
             registry,
             capability_disabled,
+            refused_non_read_only,
         }
     }
 
@@ -6411,6 +6523,13 @@ impl SubAgentToolRegistry {
     /// what needs fixing).
     fn is_capability_disabled(&self, name: &str) -> bool {
         self.capability_disabled.contains(name)
+    }
+
+    /// Names this spawn asked for that the `explore` type cannot have. Empty
+    /// for every other type. Reported at spawn entry so an unenforceable
+    /// request fails loudly instead of running with a narrowed toolset.
+    fn refused_non_read_only_tools(&self) -> &[String] {
+        &self.refused_non_read_only
     }
 
     /// Whether this role is allowed to use `Suggest`-level tools (write_file,

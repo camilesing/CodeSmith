@@ -13,6 +13,22 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
 
 ### Added
 
+- **Plan mode can open read-only sub-agents, including one per repository**:
+  `prompts/modes/plan.md` has always told the model to "spawn read-only
+  sub-agents for parallel investigation", but the Plan tool registry never
+  carried `agent_open`/`agent_eval`/`agent_close`, so the model literally could
+  not — it read the codebase serially while the prompt promised fan-out. Plan
+  mode now registers the family with **every** child narrowed to the read-only
+  tools of its own registry (a child cannot write, patch, or shell out,
+  whatever type it was opened with), and an `agent_open` `cwd` may now point
+  into a directory trusted with `/trust add <path>`, which is what makes
+  "one explorer per repository" work — the child's workspace root becomes that
+  directory. Untrusted paths are refused with the exact `/trust add` line to
+  run. `agent_open` remains approval-gated: two spawns in one message prompt
+  once (`[a]` covers the same call shape) and then run concurrently, each
+  returning immediately. See `docs/SUBAGENTS.md` ("Read-only roles and Plan
+  mode", "Working across repositories").
+
 - **REPL slash-command completion**: typing `/` in the line REPL is no longer
   silent. A dim hint after the cursor previews the matching command (its
   remaining characters plus a one-line description) or reports how many
@@ -193,6 +209,19 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
 
 ### Changed
 
+- **The approval prompt now says what it is asking, and what each answer
+  covers**: the header used to print the tool's *static description* as the
+  action label — a paragraph for shell-like tools, which buried the question —
+  and the legend left the scope of `[a]` to guesswork. The header is now the
+  tool plus its argument summary (`⚠ approval needed: write_file — path:
+  notes.txt`), and the legend states the scope the engine actually applies via
+  the shared `grouping_key_kind` classifier: `[a] always allow this command
+  family for this session` for shell tools, `patches to the same paths` for
+  patches, `requests to the same host` for fetches, and — for every other
+  tool, where the grouping key is an input hash — `this exact call`, which is
+  no broader than what `[e]` denies. `[y]`/`[n]`/`[a]`/`[e]` keep their keys
+  and meanings.
+
 - **REPL status line: `🚥` mode / `🧭` context segments, a fuller in-turn
   live line, and the server-reported model name**. The permission-mode
   segment is now `🚥agent` (was `mode: agent`; the `: ` separator was dropped
@@ -222,6 +251,34 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
   quoting. Other prompt forms are unchanged: quoted sentences, multi-word
   tails, `-p`, and non-ASCII words still start the interactive session. See
   `docs/CLI.md` ("Prompts and subcommands").
+
+### Fixed
+
+- **The REPL's live status line no longer shares a row with permanent text**:
+  the transient in-turn line is drawn on stderr with no leading `\r` and no
+  erase of its own, relying on an earlier `ESC[2K CR` that only happens when
+  the line is marked active. Two writers then styled the same row: a frame
+  drawn into an open row glued itself to streamed assistant text, and the next
+  frame's `ESC[2K` erased that text with it — a pty capture of the old build
+  reduced four streamed lines to `first.` before the approval prompt. A live
+  frame is now a whole-row write (close any open permanent row, then `CR`
+  + erase-to-end-of-line + the frame), and the approval/choice prompts
+  terminate their own row when stdin is not a terminal (or the answer ended in
+  EOF), where no echo newline arrives.
+- **Collapsed tool lines pair each completion with its own arguments**: the
+  pending tool call was a single `(name, args)` slot matched by name, so one
+  message carrying two calls of the same tool — two `agent_open` calls, one per
+  repository — printed the *last* call's arguments on the *first* completion
+  line (and vice versa). Pending calls are now keyed by tool-call id.
+- **`explore` is read-only in fact, not only in prose**: the type is documented
+  as read-only (`agent-runtime::subagent`, `docs/SUBAGENTS.md`) and the prompts
+  point at it for parallel sweeps, but it received the full Agent tool surface
+  unless a caller narrowed it. The registry now intersects the type's tools
+  with the read-only names of its own registry, so `write_file`, `edit_file`,
+  and `exec_shell` are neither visible nor callable; asking for a write tool in
+  `allowed_tools` fails the spawn with the refused names instead of silently
+  dropping them. The narrowing also drops the spawn family — an explorer is a
+  leaf.
 
 ## [0.9.0]
 

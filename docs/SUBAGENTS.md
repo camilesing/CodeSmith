@@ -41,6 +41,40 @@ The prompt prefix loads automatically when the
 child agent boots; the parent's assignment prompt becomes the first
 turn's user message.
 
+## Read-only roles and Plan mode
+
+`explore` is enforced read-only, not merely prompted that way: the child's tool
+list is intersected with the read-only names of its own registry (a tool is
+read-only when it declares `ToolCapability::ReadOnly`), so the type cannot
+write, patch, or run a shell however it was opened. Asking for a write tool in
+`allowed_tools` fails the spawn with the refused names rather than running with
+a silently narrowed set. The narrowing also drops the spawn family, so an
+explorer is a leaf — open 2–3 in parallel instead of nesting them.
+
+Plan mode registers the same sub-agent family (its mode prompt asks for
+read-only investigation) and marks **every** child read-only whatever its type:
+the mode can neither write nor execute, so its investigators cannot either.
+Plan-mode children are leaves for the same reason.
+
+### Working across repositories
+
+An `agent_open` `cwd` may be inside the parent workspace **or** under a
+directory you trusted with `/trust add <path>`. The child's workspace root
+becomes that directory, so its own path checks are scoped there. To sweep two
+repositories at once, trust the second one and open one explorer per repository
+in a single message:
+
+```text
+/trust add ../other-repo
+agent_open {name: "repo-a", cwd: "/abs/repo-a",     agent_type: "Explore", prompt: "…"}
+agent_open {name: "repo-b", cwd: "/abs/other-repo", agent_type: "Explore", prompt: "…"}
+```
+
+A cwd outside the workspace that was never trusted is refused with the exact
+`/trust add <path>` line to run, so a mistyped path cannot become a silent read
+of an unrelated tree. The two spawns are approval-gated one at a time; each
+returns immediately, so both children then run concurrently.
+
 ## Context forking
 
 `agent_open` starts fresh by default: the child gets its role prompt plus the

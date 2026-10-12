@@ -11,7 +11,8 @@
 //! place via `ESC[2K CR` — never interleaved with permanent text (it is
 //! cleared before any permanent write).
 
-use std::io::Write;
+use std::collections::HashMap;
+use std::io::{IsTerminal, Write};
 use std::time::{Duration, Instant};
 
 use colored::Colorize;
@@ -42,10 +43,12 @@ struct TurnView {
     live_active: bool,
     current_tool: Option<String>,
     ends_with_newline: bool,
-    /// Started-but-not-completed tool call (name, arg summary) — the
-    /// collapsed form prints only on completion; the live line carries
-    /// the "running" feedback meanwhile.
-    pending_tool: Option<(String, Option<String>)>,
+    /// Started-but-not-completed tool calls, keyed by tool-call id — the
+    /// collapsed form prints only on completion. Keyed, not a single slot:
+    /// one message can carry several calls of the same tool (two `agent_open`
+    /// calls, one per repository), and a by-name slot pairs a completion with
+    /// whichever call was announced last, mislabeling both lines.
+    pending_tools: HashMap<String, (String, Option<String>)>,
     /// The last permanent line was a tool/agent line; the next assistant
     /// message gets a blank separator so the answer stands out.
     after_tool_line: bool,
@@ -57,7 +60,7 @@ impl TurnView {
             live_active: false,
             current_tool: None,
             ends_with_newline: true,
-            pending_tool: None,
+            pending_tools: HashMap::new(),
             after_tool_line: false,
         }
     }
@@ -68,21 +71,117 @@ impl TurnView {
             self.live_active = false;
         }
     }
+
+    /// Claim the cursor's row for one live frame.
+    ///
+    /// A live frame is a whole-row write, so it closes an open permanent row
+    /// first (a streamed delta mid-flight, or a prompt whose answer arrived
+    /// without an echoed newline) and then erases whatever the row held before
+    /// redrawing from column 0. Without both halves the frame shares a row
+    /// with permanent text: it was appended to the open row, and the next
+    /// frame's `ESC[2K` erased that row's real content with it.
+    fn draw_live(&mut self, frame: &str) {
+        self.clear_live();
+        if !self.ends_with_newline {
+            println!();
+            self.ends_with_newline = true;
+        }
+        eprint!("\r\x1b[K{frame}");
+        let _ = std::io::stderr().flush();
+        self.live_active = true;
+    }
 }
 
 /// Read one line from stdin without holding the async worker hostage.
+///
+/// The prompt is written without a trailing newline so the answer echoes on the
+/// prompt's own row. A terminal echoes the Enter that ends the answer, which
+/// terminates that row; a pipe, or Ctrl+D, does not — and an open row is what
+/// let a later live frame glue itself to the prompt text.
 async fn read_stdin_line(prompt: &str) -> String {
     print!("{prompt}");
     let _ = std::io::stdout().flush();
+    let echo_terminates_row = std::io::stdin().is_terminal();
     let prompt_owned = prompt.to_string();
-    tokio::task::spawn_blocking(move || {
+    let (line, hit_eof) = tokio::task::spawn_blocking(move || {
         let mut line = String::new();
-        let _ = std::io::stdin().read_line(&mut line);
+        let read = std::io::stdin().read_line(&mut line);
         let _ = prompt_owned;
-        line.trim().to_string()
+        (line.trim().to_string(), matches!(read, Ok(0) | Err(_)))
     })
     .await
-    .unwrap_or_default()
+    .unwrap_or_default();
+    if hit_eof || !echo_terminates_row {
+        println!();
+    }
+    line
+}
+
+/// One-line action label for an approval prompt: the call's argument summary
+/// when it has one, else the first sentence of the tool's static description.
+///
+/// The description is the wrong label for the question — a paragraph for
+/// shell-like tools, it buried the actual call under prose and read as if the
+/// whole paragraph were the thing being approved.
+fn approval_action(description: &str, args_summary: Option<&str>) -> String {
+    if let Some(args) = args_summary.filter(|args| !args.trim().is_empty()) {
+        return args.to_string();
+    }
+    let first_line = description.lines().next().unwrap_or(description);
+    let first_sentence = first_line
+        .split_once(". ")
+        .map_or(first_line, |(head, _)| head);
+    let mut label: String = first_sentence.chars().take(APPROVAL_LABEL_MAX).collect();
+    if first_sentence.chars().count() > APPROVAL_LABEL_MAX {
+        label.push('…');
+    }
+    label
+}
+
+/// Cap on the fallback action label, so the header stays one row.
+const APPROVAL_LABEL_MAX: usize = 100;
+
+/// What `[a]` actually covers for this tool, in the user's words.
+///
+/// The scope is decided engine-side by `build_approval_grouping_key`; its
+/// `grouping_key_kind` classifier is the shared source of truth for which shape
+/// a tool produces, so the prompt can say what "always" will cover instead of
+/// implying a per-tool grant. For most tools the grouping key is the *input
+/// hash* — "always" then covers this exact call, no more than `[e]` denies.
+fn approval_always_scope(tool_name: &str) -> &'static str {
+    use codesmith_agent_runtime::tools::approval_cache::{GroupingKeyKind, grouping_key_kind};
+    match grouping_key_kind(tool_name) {
+        GroupingKeyKind::ShellPrefix => "this command family",
+        GroupingKeyKind::PatchPaths => "patches to the same paths",
+        GroupingKeyKind::NetHost => "requests to the same host",
+        GroupingKeyKind::InputHash => "this exact call",
+    }
+}
+
+/// The approval question, whole: what is being asked, why, and what each answer
+/// scopes to. Ends at the unterminated prompt — the answer echoes on that row,
+/// and [`read_stdin_line`] decides whether the row still needs terminating.
+fn approval_frame(
+    tool_name: &str,
+    description: &str,
+    args_summary: Option<&str>,
+    intent_summary: Option<&str>,
+) -> String {
+    let mut frame = format!(
+        "{} approval needed: {} — {}\n",
+        "⚠".yellow(),
+        tool_name.bold(),
+        approval_action(description, args_summary)
+    );
+    if let Some(intent) = intent_summary.map(str::trim).filter(|i| !i.is_empty()) {
+        frame.push_str(&format!("{}\n", format!("  intent: {intent}").dimmed()));
+    }
+    frame.push_str(&format!(
+        "allow? [y] run it once · [n] skip · [a] always allow {scope} for this session \
+         · [e] never this exact call: ",
+        scope = approval_always_scope(tool_name)
+    ));
+    frame
 }
 
 /// Pump engine events until the current turn finishes.
@@ -129,10 +228,8 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                 continue;
             }
             _ = live_ticker.tick() => {
-                view.clear_live();
-                eprint!("{}", super::status::live_line(state, view.current_tool.as_deref()));
-                let _ = std::io::stderr().flush();
-                view.live_active = true;
+                let frame = super::status::live_line(state, view.current_tool.as_deref());
+                view.draw_live(&frame);
                 continue;
             }
             _ = tokio::signal::ctrl_c() => {
@@ -188,7 +285,7 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                 // the REPL (see module notes in state.rs).
             }
             Event::LlmRequest { .. } => {}
-            Event::ToolCallStarted { name, input, .. } => {
+            Event::ToolCallStarted { id, name, input } => {
                 view.clear_live();
                 let args_summary = crate::tool_summary::summarize_tool_args(&input);
                 if state.tool_detail {
@@ -202,18 +299,15 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                     println!("{} {}{}", "⏺".cyan(), name.cyan(), args.dimmed());
                 }
                 view.current_tool = Some(name.clone());
-                view.pending_tool = Some((name, args_summary));
+                view.pending_tools.insert(id, (name, args_summary));
             }
             Event::ToolCallProgress { .. } => {}
-            Event::ToolCallComplete { name, result, .. } => {
+            Event::ToolCallComplete { id, name, result } => {
                 view.clear_live();
                 if view.current_tool.as_deref() == Some(name.as_str()) {
                     view.current_tool = None;
                 }
-                let args_summary = match view.pending_tool.take() {
-                    Some((pending, args)) if pending == name => args,
-                    _ => None,
-                };
+                let args_summary = view.pending_tools.remove(&id).and_then(|(_, args)| args);
                 let args = args_summary
                     .as_ref()
                     .map(|summary| format!("({summary})"))
@@ -549,8 +643,8 @@ fn persist_session_turn_boundary(state: &mut ReplState) {
     session.metadata.cost.subagent_cost_usd = state.session.subagent_cost;
     session.metadata.cost.subagent_cost_cny = state.session.subagent_cost_cny;
     session.metadata.cumulative_turn_secs = state.cumulative_turn_duration.as_secs();
-    // Keep the persisted record in agreement with the status-bar label:
-    // the server-reported model alongside the requested id.
+    // Keep the persisted record in agreement with state: the `MessageStart`
+    // model name alongside the requested id.
     session.metadata.reported_model = state.reported_model.clone();
     if let Err(err) = manager.save_session(&session) {
         println!(
@@ -622,8 +716,8 @@ fn apply_turn_accounting(
 ) {
     state.session.last_tool_catalog = tool_catalog;
     state.session.last_base_url = base_url;
-    // The server-reported model feeds the status-bar label (and the saved
-    // session metadata below) — the real model behind gateway aliases.
+    // The `MessageStart` model name feeds the status-bar label (and the saved
+    // session metadata below); a configured `display_model` overrides it.
     if let Some(reported) = reported_model.as_deref()
         && !reported.is_empty()
     {
@@ -736,26 +830,21 @@ async fn handle_approval(
         return;
     }
 
-    println!(
-        "{} approval required: {} — {}",
-        "⚠".yellow(),
-        tool_name.bold(),
-        description
-    );
-    if let Some(intent) = intent_summary.as_deref()
-        && !intent.trim().is_empty()
-    {
-        println!("{}", format!("  intent: {intent}").dimmed());
-    }
-    if let Some(args) = crate::tool_summary::summarize_tool_args(&input) {
-        println!("{}", format!("  args: {args}").dimmed());
-    }
+    let args_summary = crate::tool_summary::summarize_tool_args(&input);
     state.awaiting_approval = true;
     // The prompt reads stdin line-by-line; the key tap must let go first.
     keys.suspend();
-    let answer =
-        read_stdin_line("allow? [y]es / [n]o / [a]lways this session / n[e]ver this session: ")
-            .await;
+    print!(
+        "{}",
+        approval_frame(
+            &tool_name,
+            &description,
+            args_summary.as_deref(),
+            intent_summary.as_deref(),
+        )
+    );
+    let _ = std::io::stdout().flush();
+    let answer = read_stdin_line("").await;
     keys.resume();
     state.awaiting_approval = false;
     let answer = answer.to_ascii_lowercase();
@@ -881,5 +970,101 @@ async fn handle_elevation(
         let _ = engine.retry_tool_with_policy(tool_id, policy).await;
     } else {
         let _ = engine.deny_tool_call(tool_id).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A stand-in for the paragraph-length static descriptions that tools like
+    /// `exec_shell` carry (the real one is ~1 KB).
+    const LONG_DESCRIPTION: &str = "Write content to a UTF-8 file in the workspace. Use this \
+         instead of heredocs (`cat <<EOF > file`) or `echo > file` in `exec_shell` — diffs \
+         render inline and approval is handled cleanly. Creates or overwrites; parent \
+         directories are auto-created.";
+
+    #[test]
+    fn approval_frame_header_names_the_tool_and_the_action() {
+        let frame = approval_frame(
+            "write_file",
+            LONG_DESCRIPTION,
+            Some("path: notes.txt"),
+            Some("recording the state"),
+        );
+        let header = frame.lines().next().expect("header line");
+        assert!(header.contains("approval needed"), "{header}");
+        assert!(header.contains("write_file"), "{header}");
+        assert!(header.contains("path: notes.txt"), "{header}");
+        assert!(
+            !header.contains("heredocs"),
+            "the static description must not stand in for the action: {header}"
+        );
+        assert!(frame.contains("intent: recording the state"), "{frame}");
+    }
+
+    #[test]
+    fn approval_frame_falls_back_to_one_sentence_of_the_description() {
+        let frame = approval_frame("diagnostics", LONG_DESCRIPTION, None, None);
+        let header = frame.lines().next().expect("header line");
+        assert!(
+            header.contains("Write content to a UTF-8 file in the workspace"),
+            "{header}"
+        );
+        assert!(
+            !header.contains("heredocs"),
+            "only the first sentence may reach the header: {header}"
+        );
+        assert!(
+            header.chars().count() <= 140,
+            "header must stay one row: {header}"
+        );
+    }
+
+    #[test]
+    fn approval_frame_prompt_is_unterminated_and_scopes_every_answer() {
+        let frame = approval_frame("exec_shell", "Run a shell command.", None, None);
+        assert!(
+            !frame.ends_with('\n'),
+            "the answer echoes on the prompt row, so the frame must not end it"
+        );
+        assert!(frame.ends_with(": "), "{frame}");
+        for scoped in [
+            "[y] run it once",
+            "[n] skip",
+            "[a] always allow this command family for this session",
+            "[e] never this exact call",
+        ] {
+            assert!(frame.contains(scoped), "missing {scoped:?} in {frame:?}");
+        }
+    }
+
+    #[test]
+    fn approval_frame_always_scope_follows_the_grouping_key() {
+        // Most tools group by input hash: "always" covers this exact call and
+        // nothing else, and the legend must not promise more than that.
+        let frame = approval_frame("write_file", "Write a file.", Some("path: a.txt"), None);
+        assert!(
+            frame.contains("[a] always allow this exact call for this session"),
+            "{frame}"
+        );
+        let fetch = approval_frame("fetch_url", "Fetch a URL.", Some("url: https://x/y"), None);
+        assert!(
+            fetch.contains("[a] always allow requests to the same host for this session"),
+            "{fetch}"
+        );
+    }
+
+    #[test]
+    fn live_frame_closes_an_open_permanent_row_first() {
+        let mut view = TurnView::new();
+        view.ends_with_newline = false;
+        view.draw_live("◉ working");
+        assert!(
+            view.ends_with_newline,
+            "an open permanent row (mid-stream delta, unterminated prompt) must be closed \
+             before the frame takes the row"
+        );
+        assert!(view.live_active, "the frame owns the row until it is cleared");
     }
 }
