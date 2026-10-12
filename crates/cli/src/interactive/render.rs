@@ -19,6 +19,7 @@ use colored::Colorize;
 use super::state::ReplState;
 use crate::core::events::{Event, TurnOutcomeStatus};
 use crate::core::ops::Op;
+use crate::hooks::HookEvent;
 use codesmith_agent_runtime::error_taxonomy::ErrorEnvelope;
 use codesmith_agent_runtime::mode::ApprovalMode;
 
@@ -410,6 +411,16 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                 reported_model,
             } => {
                 view.clear_live();
+                // Snapshot the per-turn figures before the accounting pass
+                // consumes them — the turn_end hook payload reports them
+                // after state, usage, and cost have settled (contract).
+                let (turn_input_tokens, turn_output_tokens) =
+                    (usage.input_tokens, usage.output_tokens);
+                let turn_duration_secs = state
+                    .turn_started_at
+                    .map(|started| started.elapsed().as_secs_f64())
+                    .unwrap_or_default();
+                let turn_error = error.clone();
                 apply_turn_accounting(
                     state,
                     usage,
@@ -425,6 +436,14 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                 state.is_loading = false;
                 state.turn_started_at = None;
                 persist_session_turn_boundary(state);
+                emit_turn_end_hooks(
+                    state,
+                    status,
+                    turn_error.as_deref(),
+                    turn_input_tokens,
+                    turn_output_tokens,
+                    turn_duration_secs,
+                );
                 return Ok(PumpExit::TurnDone);
             }
             Event::PauseEvents { .. }
@@ -543,6 +562,51 @@ fn persist_session_turn_boundary(state: &mut ReplState) {
     // Adopt the id so subsequent turns update the same session file
     // instead of minting a new one per turn.
     state.current_session_id = Some(session.metadata.id.clone());
+}
+
+/// Fire the observer `turn_end` hook (every outcome) and `on_error` (failed
+/// turns) after turn accounting and persistence have settled. Detached —
+/// the REPL does not wait on hook processes between turns.
+fn emit_turn_end_hooks(
+    state: &ReplState,
+    status: TurnOutcomeStatus,
+    error: Option<&str>,
+    input_tokens: u32,
+    output_tokens: u32,
+    duration_secs: f64,
+) {
+    if state.hooks.has_hooks_for_event(HookEvent::TurnEnd) {
+        let context = state
+            .hook_context()
+            .with_turn_status(turn_status_str(status))
+            .with_input_tokens(input_tokens)
+            .with_output_tokens(output_tokens)
+            .with_duration_secs(duration_secs);
+        crate::hooks::emit_detached(
+            std::sync::Arc::new(state.hooks.clone()),
+            HookEvent::TurnEnd,
+            context,
+        );
+    }
+    if let Some(error) = error
+        && status != TurnOutcomeStatus::Completed
+        && state.hooks.has_hooks_for_event(HookEvent::OnError)
+    {
+        let context = state.hook_context().with_error(error);
+        crate::hooks::emit_detached(
+            std::sync::Arc::new(state.hooks.clone()),
+            HookEvent::OnError,
+            context,
+        );
+    }
+}
+
+fn turn_status_str(status: TurnOutcomeStatus) -> &'static str {
+    match status {
+        TurnOutcomeStatus::Completed => "completed",
+        TurnOutcomeStatus::Interrupted => "interrupted",
+        TurnOutcomeStatus::Failed => "failed",
+    }
 }
 
 /// Mirror of the retired TurnComplete accounting (ui.rs): token totals,

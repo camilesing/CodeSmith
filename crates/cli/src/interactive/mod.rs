@@ -25,6 +25,7 @@ use crate::app_state::{InitialInput, TuiOptions};
 use crate::config::Config;
 use crate::core::engine::{EngineHost, spawn_engine};
 use crate::core::ops::Op;
+use crate::hooks::{HookEvent, MessageSubmitOutcome};
 use state::ReplState;
 
 /// Image extensions accepted for `@path` attachments in the composer.
@@ -137,6 +138,18 @@ pub async fn run_repl(
 
     let (mut editor, history_path) = build_editor()?;
 
+    // session_start hooks run before the first prompt (awaited — a hook
+    // that loads state or sets up logging has finished by the time the
+    // user types).
+    if state.hooks.has_hooks_for_event(HookEvent::SessionStart) {
+        let executor = state.hooks.clone();
+        let context = state.hook_context();
+        let _ = tokio::task::spawn_blocking(move || {
+            executor.execute(HookEvent::SessionStart, &context);
+        })
+        .await;
+    }
+
     print_banner(&state);
 
     // Top-level prompt mode (`codesmith -p …` / `codesmith pr <N>`):
@@ -207,6 +220,19 @@ pub async fn run_repl(
         let _ = engine.send(Op::Shutdown).await;
     }
     let _ = save_history(&mut editor, history_path.as_deref());
+
+    // session_end hooks run before the process exits (awaited so a hook
+    // that flushes state finishes first). Only graceful exits reach here —
+    // the early `?` returns above skip it.
+    if state.hooks.has_hooks_for_event(HookEvent::SessionEnd) {
+        let executor = state.hooks.clone();
+        let context = state.hook_context();
+        let _ = tokio::task::spawn_blocking(move || {
+            executor.execute(HookEvent::SessionEnd, &context);
+        })
+        .await;
+    }
+
     println!("{}", "bye.".dimmed());
     Ok(())
 }
@@ -290,9 +316,43 @@ pub(crate) async fn submit(state: &mut ReplState, content: String) -> Result<()>
 
 async fn submit_with_images(
     state: &mut ReplState,
-    content: String,
+    mut content: String,
     image_paths: Vec<String>,
 ) -> Result<()> {
+    // message_submit hooks transform or block the submitted text before it
+    // reaches routing, session history, or the model — the transformed text
+    // is what the model sees. Runs on `spawn_blocking`: the executor spawns
+    // hook processes and waits on them (up to their timeout).
+    if state.hooks.has_hooks_for_event(HookEvent::MessageSubmit) {
+        let executor = state.hooks.clone();
+        let context = state.hook_context();
+        let original = content.clone();
+        let outcome = tokio::task::spawn_blocking(move || {
+            executor.execute_message_submit_transform(&context, &original)
+        })
+        .await;
+        match outcome {
+            Ok(MessageSubmitOutcome::Blocked { reason }) => {
+                println!("{} submission blocked: {reason}", "✗".red());
+                return Ok(());
+            }
+            Ok(outcome) => {
+                if let MessageSubmitOutcome::Replaced { text, .. } = &outcome {
+                    content = text.clone();
+                }
+                if let Some(warning) = outcome.warning() {
+                    println!("{}", warning.dimmed());
+                }
+            }
+            Err(join_err) => {
+                println!(
+                    "{} message_submit hook worker failed ({join_err}); submitting original text",
+                    "✗".red()
+                );
+            }
+        }
+    }
+
     let engine = state.engine()?.clone();
 
     // Auto-model routing per request (mirror of the retired dispatch path

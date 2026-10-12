@@ -57,7 +57,7 @@ pub fn hooks(state: &ReplState, arg: Option<&str>) {
         "events" | "event" | "list-events" => {
             println!(
                 "{}",
-                "hook events: session_start, session_end, message_submit, tool_call_before, tool_call_after, mode_change, on_error, shell_env, task_created, task_completed, pre_compact".dimmed()
+                "hook events: session_start, session_end, message_submit, tool_call_before, tool_call_after, mode_change, on_error, shell_env, task_created, task_completed, pre_compact, turn_end, subagent_spawn, subagent_complete".dimmed()
             );
         }
         other => println!(
