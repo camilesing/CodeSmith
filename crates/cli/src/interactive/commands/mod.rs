@@ -565,7 +565,10 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
 /// hardcoded 20-row subset of the 75 dispatchable names) and so it names
 /// exactly what Tab completes.
 fn print_help(state: &ReplState) {
-    println!("{}", "commands (Tab completes these names):".bold());
+    println!(
+        "{}",
+        "commands (Tab completes these names; Shift+Tab cycles the run mode):".bold()
+    );
     for info in registry::Command::ALL {
         let name = if info.usage.is_empty() {
             format!("/{}", info.name)
@@ -753,7 +756,7 @@ async fn cmd_model(state: &mut ReplState, arg: &str) {
 
 fn cmd_mode(state: &mut ReplState, arg: &str) {
     let Some(name) = arg.split_whitespace().next() else {
-        println!("mode: {}", state.mode.label());
+        println!("mode: {} (Shift+Tab cycles)", state.mode.label());
         return;
     };
     let mode = match name.to_ascii_lowercase().as_str() {

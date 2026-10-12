@@ -53,7 +53,9 @@ The prompt entry points are:
 Inside the REPL, `/help` is the live list of slash commands — typing `/`
 reports how many exist, `Tab` completes the name (press it twice to list the
 matches), and the dim text after the cursor previews what the match does. `/plan`,
-`/agent`, and `/yolo` are shortcuts for the matching `/mode` value.
+`/agent`, and `/yolo` are shortcuts for the matching `/mode` value — or cycle
+them with `Shift+Tab` at the prompt (`agent → plan → yolo`, plus `coordinator`
+while the experimental `coordinator_mode` feature is enabled).
 
 ## Model selection
 

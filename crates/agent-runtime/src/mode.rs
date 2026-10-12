@@ -64,6 +64,21 @@ impl AppMode {
             }
         }
     }
+
+    /// The line REPL's Shift+Tab ring: `Agent → Plan → Yolo → Agent`, with
+    /// `Coordinator` as the fourth stop only while its experimental feature
+    /// is enabled — the gate the startup path applies, so an unopted user
+    /// cannot land in the orchestrator-only toolset by pressing a key once
+    /// too often. `/mode coordinator` remains the ungated door.
+    #[must_use]
+    pub fn cycle_next(self, include_coordinator: bool) -> Self {
+        match self {
+            Self::Agent => Self::Plan,
+            Self::Plan => Self::Yolo,
+            Self::Yolo if include_coordinator => Self::Coordinator,
+            Self::Yolo | Self::Coordinator => Self::Agent,
+        }
+    }
 }
 
 /// Determines when tool executions require user approval.
@@ -174,5 +189,23 @@ impl ReasoningEffort {
             Self::Low | Self::Medium | Self::High => Self::Max,
             Self::Max => Self::Off,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppMode;
+
+    #[test]
+    fn cycle_next_walks_the_repl_ring() {
+        // Default: three stops, the experimental coordinator skipped.
+        assert_eq!(AppMode::Agent.cycle_next(false), AppMode::Plan);
+        assert_eq!(AppMode::Plan.cycle_next(false), AppMode::Yolo);
+        assert_eq!(AppMode::Yolo.cycle_next(false), AppMode::Agent);
+        // Feature enabled: coordinator is the fourth stop.
+        assert_eq!(AppMode::Yolo.cycle_next(true), AppMode::Coordinator);
+        assert_eq!(AppMode::Coordinator.cycle_next(true), AppMode::Agent);
+        // Sitting in coordinator with the feature off still exits the ring.
+        assert_eq!(AppMode::Coordinator.cycle_next(false), AppMode::Agent);
     }
 }
