@@ -173,7 +173,7 @@ Chat Completions 驱动 turn。
   - `mod.rs` - REPL 循环：读入一行，运行一个引擎 turn，输出流式打印到终端
   - `state.rs` - REPL 会话状态（含已知限制说明）
   - `render.rs` - 行输入处理、Ctrl+C/`Ctrl+D` 语义与流式输出渲染
-  - `status.rs` - 提示符上方的状态行（运行状态圆点、preset 档位、上下文窗口占用、模式、子代理数、模型、版本）
+  - `status.rs` - 提示符上方的状态行（运行状态圆点、preset 档位、上下文窗口占用、模式、子代理数、模型、思考档位、版本）
   - `completion.rs` - Tab 补全与行内提示（rustyline helper：注册表命令名与用户命令；仅补全封闭参数词表）
   - `commands/` - 斜杠命令分发（`/resume`、`/config`、`/skills`、`/queue` 等）；`commands/registry.rs` 是分发、`/help` 与 Tab 补全共读的命令名/别名/帮助表
 

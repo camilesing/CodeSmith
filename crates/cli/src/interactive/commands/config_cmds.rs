@@ -406,11 +406,11 @@ pub fn theme() {
     );
 }
 
-/// `/statusline` — the REPL status line is a fixed six-item layout.
+/// `/statusline` — the REPL status line is a fixed seven-item layout.
 pub fn status_line() {
     println!(
         "{}",
-        "the REPL status line is fixed: state · preset · ctx% · mode · agents · model · version"
+        "the REPL status line is fixed: state · preset · ctx% · mode · agents · model · 🧠 effort · version"
             .dimmed()
     );
 }
