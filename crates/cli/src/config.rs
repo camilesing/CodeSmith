@@ -1609,15 +1609,53 @@ impl Config {
         Ok(())
     }
 
+    /// Fold an explicit model choice into the right slot: the legacy root
+    /// `default_text_model` for DeepSeek (a DeepSeek-only slot — the
+    /// validator rejects non-DeepSeek IDs there), the provider-scoped slot
+    /// for every other provider so the verbatim-passthrough path honors it
+    /// rather than falling back to a DeepSeek/provider default (issue
+    /// #1714). Used by the `CODESMITH_MODEL` env handoff and the top-level
+    /// `--model` flag.
+    pub(crate) fn set_explicit_model_override(&mut self, value: String) {
+        let provider = self.api_provider();
+        if matches!(provider, ApiProvider::Deepseek) {
+            self.default_text_model = Some(value);
+            return;
+        }
+        let providers = self.providers.get_or_insert_with(ProvidersConfig::default);
+        let entry = match provider {
+            ApiProvider::Deepseek => {
+                unreachable!("DeepSeek providers are handled in the if branch above (issue #1714)")
+            }
+            ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
+            ApiProvider::Openai => &mut providers.openai,
+            ApiProvider::Atlascloud => &mut providers.atlascloud,
+            ApiProvider::WanjieArk => &mut providers.wanjie_ark,
+            ApiProvider::Openrouter => &mut providers.openrouter,
+            ApiProvider::XiaomiMimo => &mut providers.xiaomi_mimo,
+            ApiProvider::Novita => &mut providers.novita,
+            ApiProvider::Fireworks => &mut providers.fireworks,
+            ApiProvider::Siliconflow => &mut providers.siliconflow,
+            ApiProvider::Moonshot => &mut providers.moonshot,
+            ApiProvider::Sglang => &mut providers.sglang,
+            ApiProvider::Vllm => &mut providers.vllm,
+            ApiProvider::Ollama => &mut providers.ollama,
+            ApiProvider::Volcengine => &mut providers.volcengine,
+            ApiProvider::Anthropic => &mut providers.anthropic,
+        };
+        entry.model = Some(value);
+    }
+
     /// Fail fast when the generic `openai` provider points at a custom
     /// gateway without any explicit model. Third-party gateways do not serve
     /// the provider default, and their 403 (`model_access_denied`) gives the
     /// user nothing actionable. `exec_model` carries `codesmith exec --model`,
-    /// which reaches this binary as a passthrough arg (only the top-level
-    /// `--model` is forwarded as `CODESMITH_MODEL` by the facade), so it must
-    /// satisfy this check separately. Env sources (`OPENAI_MODEL`,
-    /// `CODESMITH_MODEL`) are already folded into the provider slot by
-    /// `apply_env_overrides` before this runs.
+    /// which reaches this binary as a passthrough arg (the top-level
+    /// `--model` is folded in by `load_config_from_cli_with_exec_model` and
+    /// via the facade's `CODESMITH_MODEL` handoff), so it must satisfy this
+    /// check separately. Env sources (`OPENAI_MODEL`, `CODESMITH_MODEL`) are
+    /// already folded into the provider slot by `apply_env_overrides` before
+    /// this runs.
     pub fn require_explicit_model_on_custom_gateway(&self, exec_model: Option<&str>) -> Result<()> {
         if self.custom_provider().is_some()
             || self.api_provider() != ApiProvider::Openai
@@ -3260,42 +3298,9 @@ fn apply_env_overrides(config: &mut Config) {
     }
     if let Ok(value) = codesmith_env_var("CODESMITH_MODEL") {
         // The CLI `--model` handoff always sets CODESMITH_MODEL, never the
-        // provider-specific *_MODEL var. The legacy root `default_text_model`
-        // is a DeepSeek-only slot (the validator rejects non-DeepSeek IDs
-        // there). For a non-DeepSeek provider the explicit model must land in
-        // the provider-scoped slot instead so the verbatim-passthrough path
-        // honors it rather than falling back to a DeepSeek/provider default
-        // (issue #1714). Mirror the OPENAI_MODEL branch above for every
-        // non-DeepSeek provider.
-        let provider = config.api_provider();
-        if matches!(provider, ApiProvider::Deepseek) {
-            config.default_text_model = Some(value);
-        } else {
-            let providers = config
-                .providers
-                .get_or_insert_with(ProvidersConfig::default);
-            let entry = match provider {
-                ApiProvider::Deepseek => unreachable!(
-                    "DeepSeek providers are handled in the if branch above (issue #1714)"
-                ),
-                ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
-                ApiProvider::Openai => &mut providers.openai,
-                ApiProvider::Atlascloud => &mut providers.atlascloud,
-                ApiProvider::WanjieArk => &mut providers.wanjie_ark,
-                ApiProvider::Openrouter => &mut providers.openrouter,
-                ApiProvider::XiaomiMimo => &mut providers.xiaomi_mimo,
-                ApiProvider::Novita => &mut providers.novita,
-                ApiProvider::Fireworks => &mut providers.fireworks,
-                ApiProvider::Siliconflow => &mut providers.siliconflow,
-                ApiProvider::Moonshot => &mut providers.moonshot,
-                ApiProvider::Sglang => &mut providers.sglang,
-                ApiProvider::Vllm => &mut providers.vllm,
-                ApiProvider::Ollama => &mut providers.ollama,
-                ApiProvider::Volcengine => &mut providers.volcengine,
-                ApiProvider::Anthropic => &mut providers.anthropic,
-            };
-            entry.model = Some(value);
-        }
+        // provider-specific *_MODEL var. Slot selection lives in
+        // [`Config::set_explicit_model_override`].
+        config.set_explicit_model_override(value);
     }
     if matches!(config.api_provider(), ApiProvider::NvidiaNim)
         && let Ok(value) = std::env::var("NVIDIA_NIM_MODEL")
@@ -7147,6 +7152,34 @@ model = "glm-5"
         }
 
         Ok(())
+    }
+
+    #[test]
+    fn set_explicit_model_override_targets_provider_slot() {
+        // DeepSeek: the legacy root slot (a DeepSeek-only slot).
+        let mut deepseek = Config::default();
+        deepseek.set_explicit_model_override("deepseek-v4-flash".to_string());
+        assert_eq!(
+            deepseek.default_text_model.as_deref(),
+            Some("deepseek-v4-flash")
+        );
+
+        // Non-DeepSeek: the provider-scoped slot so verbatim passthrough
+        // honors it (issue #1714) — the root slot stays untouched.
+        let mut openai = Config {
+            provider: Some("openai".to_string()),
+            ..Config::default()
+        };
+        openai.set_explicit_model_override("glm-4.6".to_string());
+        assert_eq!(openai.default_text_model, None);
+        assert_eq!(
+            openai
+                .providers
+                .as_ref()
+                .and_then(|providers| providers.openai.model.as_deref()),
+            Some("glm-4.6")
+        );
+        assert_eq!(openai.default_model(), "glm-4.6");
     }
 
     #[test]

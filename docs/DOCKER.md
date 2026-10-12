@@ -261,10 +261,13 @@ volume instead.
 ## Non-interactive / pipeline usage
 
 There is no automatic one-shot dispatch: piping stdin into `docker run -i …`
-feeds the interactive REPL's line reader. Non-interactive pipelines must
-invoke `codesmith exec` explicitly, with the prompt as its argument (stdin is
-only consumed by the REPL, the `auth set` key prompt, and `apply` when no
-patch file is given):
+feeds the interactive REPL's line reader. When stdin is not a terminal the
+REPL prints a one-line notice on stderr (pointing at `codesmith exec` and
+`docker run -it`) and then starts unchanged — piped input is still read
+until EOF, so existing pipelines keep working. Non-interactive pipelines
+must invoke `codesmith exec` explicitly, with the prompt as its argument
+(stdin is only consumed by the REPL, the `auth set` key prompt, and `apply`
+when no patch file is given):
 
 ```bash
 docker run --rm -e CODESMITH_API_KEY ghcr.io/camilesing/codesmith:latest \

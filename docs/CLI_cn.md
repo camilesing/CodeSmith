@@ -50,7 +50,10 @@ prompt 的入口有两个：
 
 ## 模型选择
 
-顶层没有 `--model` 旗标。选择模型的方式：
+顶层 `--model <id>` 旗标为该次运行覆盖模型——它与 `CODESMITH_MODEL`
+环境变量走同一槽位（DeepSeek 落根级 `model` 槽，其他 provider 落
+provider 作用域槽），因此优先于 config.toml，并满足自定义网关的
+显式模型检查。其他选择模型的方式：
 
 - `~/.codesmith/config.toml` 中 `[providers.<id>]` 下的 `model = <id>`
 - `CODESMITH_MODEL` 环境变量

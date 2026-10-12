@@ -52,7 +52,11 @@ The prompt entry points are:
 
 ## Model selection
 
-There is no top-level `--model` flag. Select a model via:
+The top-level `--model <id>` flag overrides the model for that run — it
+folds into the same slot as the `CODESMITH_MODEL` env handoff (the root
+`model` slot for DeepSeek, the provider-scoped slot for other providers),
+so it wins over config.toml and satisfies the custom-gateway explicit-model
+check. Other ways to select a model:
 
 - `model = <id>` under `[providers.<id>]` in `~/.codesmith/config.toml`
 - the `CODESMITH_MODEL` environment variable
