@@ -1,11 +1,11 @@
 //! Status line for the REPL.
 //!
 //! Printed above the input prompt (and refreshed as a transient line
-//! during turns). One line, six data items plus a leading running-state
+//! during turns). One line, seven data items plus a leading running-state
 //! indicator:
 //!
 //! ```text
-//! ● working │ Full │ 🧭 42% (72k/171k) │ 🚥: agent │ 🤖: 2 │ deepseek-chat │ v0.9.0 (f83c330)
+//! ● working │ Full │ 🧭 42% (72k/171k) │ 🚥agent │ 🤖2 │ deepseek-chat │ 🧠max │ v0.9.0 (f83c330)
 //! ```
 //!
 //! - state dot: idle / working / waiting-approval / compacting
@@ -15,12 +15,13 @@
 //! - 🚥: `AppMode`
 //! - 🤖: running sub-agent count
 //! - model: display label
+//! - 🧠: reasoning-effort tier (off | low | med | high | max | auto)
 //! - version: build version
 
 use colored::Colorize;
 
 use super::state::ReplState;
-use crate::app_state::AppMode;
+use crate::app_state::{AppMode, ReasoningEffort};
 use crate::compaction::estimate_input_tokens_conservative;
 use crate::models::context_window_for_model;
 
@@ -161,20 +162,29 @@ fn ctx_segment(used: i64, max: u32, percent: f64) -> String {
 
 /// The mode segment, shared by the idle status line and the live line.
 fn mode_segment(mode: AppMode) -> String {
-    format!("🚥: {}", mode.label().to_lowercase())
+    format!("🚥{}", mode.label().to_lowercase())
 }
 
 /// The sub-agent count segment (dimmed at zero, cyan when running), shared
 /// by the idle status line and the live line.
 fn agents_segment(agents: usize) -> String {
     match agents {
-        0 => "🤖: 0".dimmed().to_string(),
-        n => format!("🤖: {n}").cyan().to_string(),
+        0 => "🤖0".dimmed().to_string(),
+        n => format!("🤖{n}").cyan().to_string(),
     }
+}
+
+/// The reasoning-effort segment: the tier `/config reasoning_effort` writes
+/// and the engine receives, one of `🧠off` / `🧠low` / `🧠med` / `🧠high` /
+/// `🧠max` / `🧠auto`. Under `auto` routing the segment stays `🧠auto` instead
+/// of tracking the per-turn pick; `/status` prints the resolved tier.
+fn effort_segment(effort: ReasoningEffort) -> String {
+    format!("🧠{}", effort.short_label())
 }
 
 /// Compose the full status line for a state snapshot. Kept as one `String`
 /// (ANSI included) so callers print it verbatim above the prompt.
+#[allow(clippy::too_many_arguments)]
 pub fn render_status_line(
     state: RunState,
     preset: Option<&str>,
@@ -182,10 +192,11 @@ pub fn render_status_line(
     mode: AppMode,
     agents: usize,
     model: &str,
+    effort: ReasoningEffort,
     version: &str,
 ) -> String {
     let separator = " │ ".dimmed().to_string();
-    let mut segments = Vec::with_capacity(7);
+    let mut segments = Vec::with_capacity(8);
     segments.push(state_segment(state));
     segments.push(
         preset
@@ -199,6 +210,7 @@ pub fn render_status_line(
     segments.push(mode_segment(mode));
     segments.push(agents_segment(agents));
     segments.push(model.to_string());
+    segments.push(effort_segment(effort));
     segments.push(format!("v{version}").dimmed().to_string());
     segments.join(&separator)
 }
@@ -227,6 +239,7 @@ pub fn status_line(state: &ReplState) -> String {
         state.mode,
         state.running_agent_count(),
         &state.model_display_label(),
+        state.reasoning_effort,
         env!("CODESMITH_BUILD_VERSION"),
     )
 }
@@ -310,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn status_line_contains_all_six_items() {
+    fn status_line_contains_all_seven_items() {
         let line = render_status_line(
             RunState::Working,
             Some("Full"),
@@ -318,30 +331,43 @@ mod tests {
             AppMode::Agent,
             2,
             "deepseek-chat",
+            ReasoningEffort::High,
             "0.9.0",
         );
-        // Strip ANSI for assertions.
-        let plain = strip_ansi(&line);
-        for fragment in [
-            "working",
-            "Full",
-            "🧭 42% (72k/171k)",
-            "🚥: agent",
-            "🤖: 2",
-            "deepseek-chat",
-            "v0.9.0",
-        ] {
-            assert!(
-                plain.contains(fragment),
-                "missing {fragment:?} in {plain:?}"
-            );
-        }
+        // Strip ANSI for assertions; the exact string pins the segment order.
+        assert_eq!(
+            strip_ansi(&line),
+            "◉ working │ Full │ 🧭 42% (72k/171k) │ 🚥agent │ 🤖2 │ deepseek-chat │ 🧠high │ v0.9.0"
+        );
     }
 
     #[test]
     fn unknown_model_hides_ctx() {
-        let line = render_status_line(RunState::Idle, None, None, AppMode::Yolo, 0, "m", "0.9.0");
+        let line = render_status_line(
+            RunState::Idle,
+            None,
+            None,
+            AppMode::Yolo,
+            0,
+            "m",
+            ReasoningEffort::Max,
+            "0.9.0",
+        );
         assert!(strip_ansi(&line).contains("🧭 —"));
+    }
+
+    #[test]
+    fn effort_segment_covers_all_six_tiers() {
+        for (effort, expected) in [
+            (ReasoningEffort::Off, "🧠off"),
+            (ReasoningEffort::Low, "🧠low"),
+            (ReasoningEffort::Medium, "🧠med"),
+            (ReasoningEffort::High, "🧠high"),
+            (ReasoningEffort::Max, "🧠max"),
+            (ReasoningEffort::Auto, "🧠auto"),
+        ] {
+            assert_eq!(strip_ansi(&effort_segment(effort)), expected);
+        }
     }
 
     #[test]
@@ -349,8 +375,8 @@ mod tests {
         // The segments `live_line` composes with (a full `ReplState` is not
         // constructible here without loading real user settings): the mode
         // segment, the always-on zero-agent segment, and the 🧭 percent text.
-        assert_eq!(strip_ansi(&mode_segment(AppMode::Agent)), "🚥: agent");
-        assert_eq!(strip_ansi(&agents_segment(0)), "🤖: 0");
+        assert_eq!(strip_ansi(&mode_segment(AppMode::Agent)), "🚥agent");
+        assert_eq!(strip_ansi(&agents_segment(0)), "🤖0");
         assert_eq!(strip_ansi(&ctx_percent_segment(42.0)), "🧭 42%");
     }
 

@@ -223,8 +223,8 @@ You can override approval behavior at runtime:
 ## Status Line Behavior
 
 The REPL status line is one fixed line — running state, preset tier,
-context-window occupancy, mode, sub-agent count, model, and version — so it
-does not adapt to terminal height. `/queue` prints a notice that the offline
+context-window occupancy, mode, sub-agent count, model, reasoning-effort tier
+(`reasoning_effort`), and version — so it does not adapt to terminal height. `/queue` prints a notice that the offline
 queue is a composer feature with no line-mode equivalent yet.
 
 ## Workspace Boundary and Trust Mode

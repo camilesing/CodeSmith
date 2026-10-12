@@ -173,15 +173,22 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
   countdown, reason — rendered in the TUI footer). All four rig-backed
   provider factories inject a reqwest backend that falls back to HTTP/1.1
   after the first HTTP/2 protocol failure (sticky, one replay).
+- **Reasoning-effort tier in the status line**: the REPL line now carries the
+  thinking tier after the model label — `🧠off` / `🧠low` / `🧠med` /
+  `🧠high` / `🧠max` / `🧠auto`, mirroring the `reasoning_effort` setting that
+  `/config reasoning_effort` writes and every turn sends. Under `auto` routing
+  the segment reads `🧠auto` rather than tracking the per-turn router pick;
+  `/status` still prints the resolved tier.
 
 ### Changed
 
 - **REPL status line: `🚥` mode / `🧭` context segments, a fuller in-turn
   live line, and the server-reported model name**. The permission-mode
-  segment is now `🚥: agent` (was `mode: agent`) and the context segment
+  segment is now `🚥agent` (was `mode: agent`; the `: ` separator was dropped
+  for a tighter line) and the context segment
   `🧭 42% (72k/171k)` (was `ctx …`). The transient in-turn live line now
   carries the same mode and sub-agent count segments (the count always
-  shows, `🤖: 0` included) alongside the context percent, instead of
+  shows, `🤖0` included) alongside the context percent, instead of
   ctx-percent only. The model label now prefers the model name the
   provider reports in each stream's `message_start` frame — so an
   alias gateway (e.g. BigModel's Anthropic-compatible endpoint serving a

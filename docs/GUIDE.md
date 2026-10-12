@@ -176,9 +176,11 @@ The interactive REPL is a line-based loop (Claude Code / Codex style): you type
 a line, the engine runs a turn, and output streams to the terminal.
 
 - Status line: one line above the prompt with the running state, preset tier,
-  context-window occupancy (`🧭`), the permission mode (`🚥:`, see
-  [Modes](#5-modes) below), the running sub-agent count (`🤖: N`),
-  model, and version. The model label prints `[providers.<id>] display_model`
+  context-window occupancy (`🧭`), the permission mode (`🚥`, see
+  [Modes](#5-modes) below), the running sub-agent count (`🤖`), model,
+  reasoning-effort tier (`🧠` — the `reasoning_effort` setting as `off` /
+  `low` / `med` / `high` / `max`, or `auto`), and version. The model label
+  prints `[providers.<id>] display_model`
   when you set one — the useful case is an alias gateway whose real backend is
   a different model — and otherwise the model id. The `🧭` denominator likewise
   honours the provider's `context_window` override before falling back to the
