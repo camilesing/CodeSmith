@@ -1258,6 +1258,12 @@ pub(crate) async fn real_main() -> Result<()> {
         };
     }
 
+    // First-run onboarding runs as plain CLI questions on the bare
+    // invocation, before anything reads config.toml; subcommands and
+    // non-terminal stdin fall through to their own credential/trust gates.
+    let mut store = codesmith_config::ConfigStore::load(cli.config.clone())?;
+    crate::onboarding::maybe_run(&mut store, &cli)?;
+
     // Top-level prompt mode: submit the initial prompt, then keep the TUI alive
     // for follow-up messages. Use `codesmith exec` for explicit non-interactive
     // one-shot behavior (#2370).

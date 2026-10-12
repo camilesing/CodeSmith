@@ -65,17 +65,20 @@ provider 作用域槽），因此优先于 config.toml，并满足自定义网�
 
 ## 首次运行引导
 
-不存在引导向导。已有凭据——提供商环境变量、已保存的密钥、或 Ollama
-这类自托管运行时——的启动会直接进入 REPL，并静默写入
-`~/.codesmith/.onboarded` 标记。凭据需要显式配置：`codesmith auth set
---provider <id>`（会提示输入密钥）、`codesmith login`、环境变量，或
-`config.toml`。凭据缺失不会在启动时弹出提示：第一轮对话会以提供商
-认证错误失败。`--skip-onboarding` 仍然存在，用于跳过标记写入。
+在没有 `~/.codesmith/.onboarded` 标记的机器上，裸运行 `codesmith` 会在
+stdin 上依次询问——语言、提供商、自定义端点（网关类提供商）、API 密钥、
+目录信任——然后把答案写入 `config.toml`、OS 钥匙串和语言设置，记录标记
+并启动 REPL。已有凭据——提供商环境变量、已保存的密钥、或 Ollama 这类
+自托管运行时——的启动会跳过密钥一问；裸运行时其余问题仍会询问。非终端
+stdin 不会触发询问（此时已有凭据的启动会静默写入标记），子命令同样
+不会询问：凭据缺失时第一轮对话以提供商认证错误失败。密钥以明文回显；
+引导流程不提供 Moonshot Kimi OAuth——请用 `codesmith login`。
+`--skip-onboarding` 跳过询问。
 
-`/logout` 会移除 API 密钥和引导标记，并打印可用 `codesmith auth set`
-或 `codesmith login` 重新登录；不会再弹出密钥屏。未信任的目录同样
-不会弹出提示——信任只决定是否加载项目级 config 和 `.env` 文件，由
-`/trust` 管理。
+`/logout` 会移除 API 密钥和引导标记，下一次裸运行 `codesmith` 会重新
+询问；`codesmith auth set --provider <id>`（提示输入密钥）和
+`codesmith login` 可不经引导流程配置密钥。首启之后，信任只决定是否加载
+项目级 config 和 `.env` 文件，由 `/trust` 管理。
 
 在 REPL 内，裸 `/provider` 打印当前 provider，`/provider <id>` 切换
 （仅当前会话生效；会打印重启提示，因为完整重配置需要新会话）。裸

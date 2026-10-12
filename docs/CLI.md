@@ -69,20 +69,26 @@ registry and the resolved selection.
 
 ## First-run onboarding
 
-There is no onboarding wizard. A start that already has a credential — a
-provider env var, a saved key, or a self-hosted runtime such as Ollama — goes
-straight into the REPL and silently writes the `~/.codesmith/.onboarded`
-marker. Configure credentials explicitly with `codesmith auth set --provider
-<id>` (prompts for the key), `codesmith login`, an env var, or `config.toml`.
-A missing credential never prompts at startup: the first turn fails with a
-provider auth error. `--skip-onboarding` still exists and suppresses the
-marker write.
+A bare `codesmith` on a machine without the `~/.codesmith/.onboarded`
+marker asks plain CLI questions on stdin — language, provider, custom
+endpoint (for gateway providers), API key, and directory trust — then
+writes the answers to `config.toml`, the OS keyring, and the language
+setting, records the marker, and starts the REPL. A start that already
+has a credential — a provider env var, a saved key, or a self-hosted
+runtime such as Ollama — skips the key question; the other questions are
+still asked on the bare invocation. Non-terminal stdin never triggers
+the questions (a credentialed non-terminal start silently writes the
+marker instead), and subcommands never ask: a missing credential there
+fails the first turn with a provider auth error. The API key is echoed
+in cleartext, and Moonshot Kimi OAuth is not offered in the flow — use
+`codesmith login` for it. `--skip-onboarding` bypasses the questions.
 
-`/logout` removes the API key and the onboarding marker, then prints that you
-can sign back in with `codesmith auth set` or `codesmith login`; nothing
-re-opens a key screen. Untrusted directories never prompt either — trust only
-gates whether project-level config and `.env` files are loaded, and `/trust`
-manages it.
+`/logout` removes the API key and the onboarding marker, so the next
+bare `codesmith` re-runs the questions; `codesmith auth set --provider
+<id>` (prompts for the key) and `codesmith login` configure a key
+without the flow. After the first run, trust only gates whether
+project-level config and `.env` files are loaded, and `/trust` manages
+it.
 
 Inside the REPL, a bare `/provider` prints the current provider and
 `/provider <id>` switches (session-scoped; a restart hint is printed, since a

@@ -48,6 +48,7 @@ mod mod_state;
 mod models;
 mod network_policy;
 mod notifications;
+mod onboarding;
 mod prefix_cache;
 mod presets;
 mod pricing;
