@@ -261,9 +261,11 @@ docker run --rm -it \
 ## 非交互 / 流水线用法
 
 不存在自动的一次性分发：向 `docker run -i …` 管道传入 stdin，喂的是
-交互式 REPL 的行读取器。非交互流水线必须显式调用 `codesmith exec`，
-并把提示词作为参数传入（stdin 只被 REPL、`auth set` 的密钥提示，以及
-未指定补丁文件时的 `apply` 读取）：
+交互式 REPL 的行读取器。stdin 不是终端时，REPL 会在 stderr 打印一行
+提示（指向 `codesmith exec` 与 `docker run -it`），随后照常启动——
+管道输入仍被读取到 EOF，既有流水线不受影响。非交互流水线必须显式
+调用 `codesmith exec`，并把提示词作为参数传入（stdin 只被 REPL、
+`auth set` 的密钥提示，以及未指定补丁文件时的 `apply` 读取）：
 
 ```bash
 docker run --rm -e CODESMITH_API_KEY ghcr.io/camilesing/codesmith:latest \

@@ -251,11 +251,11 @@ RLM 现在同样是持久化的：
 较短的 `context` 和 `ctx` 名称则刻意不绑定，以便用户变量可以
 使用它们而不会与引导程序（bootstrap）冲突。
 
-子调用在 RLM 桥中被包装在固定的 120 秒超时内。`rlm_configure` 的
-`sub_query_timeout_secs` 设置会被存储（钳制到 1..=600），但目前
-并未被桥消费；辅助函数 `sub_query`、`sub_query_batch`、
-`sub_query_map` 和 `sub_rlm` 出于对常见代理猜测的兼容而接受
-`timeout_secs` 关键字——它同样被忽略。
+子调用被包装在 RLM 桥的每子调用超时内——默认 120 秒，可按上下文经
+`rlm_configure` 的 `sub_query_timeout_secs` 覆盖（钳制到 1..=600）。
+辅助函数 `sub_query`、`sub_query_batch`、`sub_query_map` 和
+`sub_rlm` 出于对常见代理猜测的兼容仍接受 `timeout_secs` 关键字——
+它依旧被忽略（按上下文的设置才是旋钮）。
 
 `finalize(value, confidence=...)` 保留可 JSON 序列化的值。字符串变为
 文本句柄；dict、list、数字、布尔和 null 变为 JSON 句柄，`handle_read`

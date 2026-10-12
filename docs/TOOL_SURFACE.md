@@ -265,12 +265,12 @@ during Python analysis. The shorter `context` and `ctx` names
 are intentionally not bound so user variables can use them without colliding
 with the bootstrap.
 
-Child calls are wrapped in a fixed 120-second timeout in the RLM bridge.
-`rlm_configure`'s `sub_query_timeout_secs` setting is stored (clamped to
-1..=600) but is not currently consumed by the bridge, and the helpers
-`sub_query`, `sub_query_batch`, `sub_query_map`, and `sub_rlm` accept a
-`timeout_secs` keyword only for compatibility with common agent guesses —
-it is likewise ignored.
+Child calls are wrapped in the RLM bridge's per-child timeout — 120
+seconds by default, overridable per context via `rlm_configure`'s
+`sub_query_timeout_secs` (clamped to 1..=600). The helpers `sub_query`,
+`sub_query_batch`, `sub_query_map`, and `sub_rlm` still accept a
+`timeout_secs` keyword for compatibility with common agent guesses — it
+remains ignored (the per-context setting is the knob).
 
 `finalize(value, confidence=...)` preserves JSON-serializable values. Strings
 become text handles; dicts, lists, numbers, booleans, and null become JSON

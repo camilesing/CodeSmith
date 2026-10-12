@@ -27,7 +27,9 @@ use crate::models::MessageResponse;
 #[cfg(test)]
 use anyhow::Result;
 
-/// Per-child completion timeout — same as the previous sidecar default.
+/// Default per-child completion timeout — same as the previous sidecar
+/// default. Overridden per RLM context via `rlm_configure`'s
+/// `sub_query_timeout_secs` (clamped 1..=600 at the tool).
 const CHILD_TIMEOUT_SECS: u64 = 120;
 /// Default `max_tokens` for one-shot child completions.
 const DEFAULT_CHILD_MAX_TOKENS: u32 = 4096;
@@ -41,6 +43,8 @@ pub struct RlmBridge {
     /// Recursion budget remaining for `Rlm` / `RlmBatch` requests. When
     /// zero, those requests fall back to plain `Llm` completions.
     depth_remaining: u32,
+    /// Per-child completion timeout (defaults to [`CHILD_TIMEOUT_SECS`]).
+    child_timeout: Duration,
     usage: Arc<Mutex<Usage>>,
 }
 
@@ -54,8 +58,17 @@ impl RlmBridge {
             client,
             child_model,
             depth_remaining,
+            child_timeout: Duration::from_secs(CHILD_TIMEOUT_SECS),
             usage: Arc::new(Mutex::new(Usage::default())),
         }
+    }
+
+    /// Override the per-child completion timeout. `rlm_configure`'s
+    /// `sub_query_timeout_secs` (clamped 1..=600 at the tool) lands here.
+    #[must_use]
+    pub fn with_child_timeout_secs(mut self, secs: u64) -> Self {
+        self.child_timeout = Duration::from_secs(secs);
+        self
     }
 
     pub fn usage_handle(&self) -> Arc<Mutex<Usage>> {
@@ -95,22 +108,24 @@ impl RlmBridge {
         };
 
         let fut = self.client.create_message(request);
-        let response =
-            match tokio::time::timeout(Duration::from_secs(CHILD_TIMEOUT_SECS), fut).await {
-                Ok(Ok(r)) => r,
-                Ok(Err(e)) => {
-                    return SingleResp {
-                        text: String::new(),
-                        error: Some(format!("llm_query failed: {e}")),
-                    };
-                }
-                Err(_) => {
-                    return SingleResp {
-                        text: String::new(),
-                        error: Some(format!("llm_query timed out after {CHILD_TIMEOUT_SECS}s")),
-                    };
-                }
-            };
+        let response = match tokio::time::timeout(self.child_timeout, fut).await {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => {
+                return SingleResp {
+                    text: String::new(),
+                    error: Some(format!("llm_query failed: {e}")),
+                };
+            }
+            Err(_) => {
+                return SingleResp {
+                    text: String::new(),
+                    error: Some(format!(
+                        "llm_query timed out after {}s",
+                        self.child_timeout.as_secs()
+                    )),
+                };
+            }
+        };
 
         let text = response
             .content
@@ -497,6 +512,65 @@ mod tests {
         let usage = bridge.usage.lock().await;
         assert_eq!(usage.input_tokens, 7);
         assert_eq!(usage.output_tokens, 11);
+    }
+
+    #[tokio::test]
+    async fn llm_dispatch_honors_configured_child_timeout() {
+        /// A client whose completions never arrive in time — proves the
+        /// bridge's configurable timeout, not the 120 s default, bounds the
+        /// RPC.
+        struct HangingLlmClient;
+
+        impl LlmClient for HangingLlmClient {
+            fn provider_name(&self) -> &'static str {
+                "mock"
+            }
+
+            fn model(&self) -> &str {
+                "mock-model"
+            }
+
+            fn create_message(
+                &self,
+                _request: MessageRequest,
+            ) -> Pin<Box<dyn Future<Output = Result<MessageResponse>> + Send + '_>> {
+                Box::pin(async {
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    unreachable!("test client never completes before the bridge timeout")
+                })
+            }
+
+            fn create_message_stream(
+                &self,
+                _request: MessageRequest,
+            ) -> Pin<Box<dyn Future<Output = Result<StreamEventBox>> + Send + '_>> {
+                unreachable!("the bridge timeout test never streams")
+            }
+        }
+
+        let client: Arc<dyn LlmClient> = Arc::new(HangingLlmClient);
+        let bridge =
+            RlmBridge::new(client, "child-model".to_string(), 1).with_child_timeout_secs(1);
+
+        let response = bridge
+            .dispatch(RpcRequest::Llm {
+                prompt: "child prompt".to_string(),
+                model: None,
+                max_tokens: None,
+                system: None,
+            })
+            .await;
+
+        match response {
+            RpcResponse::Single(single) => assert!(
+                single
+                    .error
+                    .as_deref()
+                    .is_some_and(|err| err.contains("timed out after 1s")),
+                "expected the configured timeout to fire, got {single:?}"
+            ),
+            other => panic!("expected single response, got {other:?}"),
+        }
     }
 
     #[tokio::test]

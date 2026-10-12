@@ -129,8 +129,9 @@ pub(crate) struct Cli {
     /// Custom OpenAI-compatible gateway provider name.
     #[arg(long, value_name = "NAME", conflicts_with = "provider")]
     pub(crate) custom_provider: Option<String>,
-    /// Model override for this run.
-    #[arg(long)]
+    /// Model override for this run (same resolution as `model = "…"` in
+    /// config.toml / the `CODESMITH_MODEL` env handoff).
+    #[arg(long = "model")]
     pub(crate) model_flag: Option<String>,
     /// API key override (prefer `codesmith login` or $Provider_API_KEY).
     #[arg(long)]
@@ -4118,6 +4119,16 @@ pub(crate) fn load_config_from_cli_with_exec_model(
         .clone()
         .or_else(|| codesmith_config::codesmith_env("PROFILE"));
     let mut config = Config::load(cli.config.clone(), profile.as_deref())?;
+    // Top-level `--model <id>`: the same slot fold as the facade's
+    // `CODESMITH_MODEL` handoff — wins over config.toml and satisfies the
+    // custom-gateway explicit-model check below.
+    if let Some(model) = cli
+        .model_flag
+        .clone()
+        .filter(|model| !model.trim().is_empty())
+    {
+        config.set_explicit_model_override(model);
+    }
     config.require_explicit_model_on_custom_gateway(exec_model)?;
     cli.feature_toggles.apply(&mut config)?;
     // Fold the CLI preset selection in so every subcommand (doctor,
@@ -5385,6 +5396,17 @@ pub(crate) async fn run_interactive(
     resume_session_id: Option<String>,
     initial_input: Option<crate::app_state::InitialInput>,
 ) -> Result<()> {
+    // Docker/CI without a TTY: the line REPL still reads piped stdin until
+    // EOF, but interactive use needs a terminal — say so once instead of
+    // leaving the user staring at a silent prompt. Notice only; behavior is
+    // unchanged (`codesmith exec` remains the one-shot path).
+    if !std::io::stdin().is_terminal() {
+        use colored::Colorize;
+        eprintln!(
+            "{}",
+            "stdin is not a terminal — starting the interactive REPL anyway (piped input is read until EOF); use `codesmith exec` for one-shot runs, or `docker run -it` for an interactive terminal".dimmed()
+        );
+    }
     let workspace = cli
         .workspace
         .clone()
