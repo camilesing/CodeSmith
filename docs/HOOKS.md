@@ -1,12 +1,12 @@
 # Hooks (Lifecycle Shell Commands)
 
 CodeSmith can run your shell commands at well-defined points in the agent
-lifecycle: before/after each tool execution, around task creation and
-completion, immediately before each `exec_shell` invocation, and around
-context compaction. Use hooks for audit logging, notifications, and
-ephemeral credential injection. Not every accepted event fires in the
-current build — see [Events](#events) for which are emitted and which are
-configured-but-silent.
+lifecycle: REPL session start and shutdown, message submission, mode
+switches, turn completion and failure, before/after each tool execution,
+sub-agent start and finish, around task creation and completion,
+immediately before each `exec_shell` invocation, and around context
+compaction. Use hooks for audit logging, notifications, and ephemeral
+credential injection.
 
 Hooks are configured under the `[hooks]` table in `~/.codesmith/config.toml`.
 A project-level
@@ -37,7 +37,7 @@ condition = { type = "tool_name", name = "exec_shell" }
 
 Run `/hooks` (or `/hooks list`) inside the REPL to confirm both entries are
 loaded, and `/hooks events` to print the event names the REPL recognizes
-(eleven of them — see [Inspecting hooks](#inspecting-hooks)).
+(all fourteen — see [Inspecting hooks](#inspecting-hooks)).
 
 ## Configuration schema
 
@@ -85,43 +85,55 @@ Field notes:
 
 | Event | Alias | Fires when | Mutability |
 |---|---|---|---|
-| `session_start` | — | defined but **not emitted** in the current build | observer |
-| `session_end` | — | defined but **not emitted** in the current build | observer |
-| `message_submit` | — | executor implemented but **not wired** — the REPL submit path never invokes it (see below) | **can replace or block text** (contract) |
+| `session_start` | — | once when the REPL launches, before the first prompt | observer |
+| `session_end` | — | once on graceful shutdown, before the process exits | observer |
+| `message_submit` | — | before a submitted message reaches routing, history, or the model | **can replace or block text** |
 | `tool_call_before` | `pre_tool_use` | before each tool execution | observer |
 | `tool_call_after` | `post_tool_use` | after each tool execution completes | observer |
-| `mode_change` | — | defined but **not emitted** in the current build | observer |
-| `on_error` | — | defined but **not emitted** in the current build | observer |
+| `mode_change` | — | on every effective mode transition (`/mode`, `/yolo`, preset startup, resume) | observer |
+| `on_error` | — | when a turn fails (transport / capacity / tool errors surfaced as a failed turn) | observer |
 | `shell_env` | — | immediately before each `exec_shell` invocation | **stdout becomes env vars** |
 | `task_created` | — | when the task manager creates a task | observer |
 | `task_completed` | — | when a tracked task completes | observer |
 | `pre_compact` | — | before context compaction (manual, auto, or emergency) | **stdout is preserved context** |
-| `turn_end` | — | defined but **not emitted** in the current build | observer |
-| `subagent_spawn` | — | defined but **not emitted** in the current build | observer |
-| `subagent_complete` | — | defined but **not emitted** in the current build | observer |
+| `turn_end` | — | after a turn completes (completed / interrupted / failed), once state and usage are updated | observer |
+| `subagent_spawn` | — | when a background sub-agent starts | observer |
+| `subagent_complete` | — | when a background sub-agent finishes (terminal state recorded) | observer |
 
-The events with production emit sites in the shipped build:
-`tool_call_before` / `tool_call_after` (the runtime callback bridge),
-`task_created` / `task_completed` (the task tool), `pre_compact` (the
-compaction pass), and `shell_env` (the shell tool). The seven marked
-**not emitted** have enum variants and config parsing but no production
-emit site — a hook configured for them parses and shows up in `/hooks
-list` yet never runs.
+Every accepted event has a production emit site. REPL-owned events
+(`session_start`, `session_end`, `message_submit`, `mode_change`,
+`turn_end`, `on_error`) fire from the line REPL's startup, shutdown, submit,
+mode-switch, and turn-complete paths; engine/tool-owned events
+(`tool_call_before` / `tool_call_after` via the callback bridge,
+`task_created` / `task_completed` via the task tool, `pre_compact` via the
+compaction pass, `shell_env` via the shell tool) fire from the runtime;
+`subagent_spawn` / `subagent_complete` fire from the sub-agent lifecycle
+(background spawn and task epilogue). See [Known limitations](#known-limitations)
+for the paths that do not emit.
 
 Details per group:
 
-- **Lifecycle.** `session_start` / `session_end` are defined for
-  once-per-REPL-process use (loading state, setting up logging, emitting a
-  notification) but are **not emitted in the current build** — hooks
-  configured for them never run.
-- **`message_submit`** is the only event that can change agent input, and
-  its executor is fully implemented, but it is **not wired**: the REPL
-  submit path never invokes it, so a configured `message_submit` hook will
-  not run. See [Hook output](#hook-output) for the stdin/stdout JSON
-  contract and the exit-code-2 block semantics (retained as the contract).
-  When wired it will run *before* file-mention expansion,
-  skill wrapping, auto routing, and history append — the transformed text
-  is what the model sees.
+- **Lifecycle.** `session_start` / `session_end` fire once per REPL process.
+  Good for loading state, setting up logging, or emitting a notification.
+  Both are awaited: start hooks finish before the first prompt, end hooks
+  finish before the process exits (only graceful exits reach the shutdown
+  path — a crash or input error skips `session_end`).
+- **`message_submit`** is the only event that can change agent input. It
+  runs at the top of the REPL submit funnel — after `@path` attachment
+  extraction, but *before* auto routing and the session-history append —
+  and it covers every submission path (typed input, `codesmith -p` initial
+  submit, `/retry`, `/goal`, `/skill`, and user-defined commands). The
+  transformed text is what the model sees and what the session log records.
+  See [Hook output](#hook-output) for the stdin/stdout JSON contract and
+  the exit-code-2 block semantics.
+- **Mode.** `mode_change` fires on every effective transition through the
+  single mode chokepoint (`/mode`, `/yolo`, preset startup, session resume);
+  re-selecting the current mode fires nothing. `CODESMITH_MODE` carries the
+  new mode, `CODESMITH_PREVIOUS_MODE` the old one.
+- **Errors.** `on_error` fires when a turn completes with a failure status
+  and an error message (`CODESMITH_ERROR`); the failure line is still
+  printed in the REPL. Mid-turn stream errors that don't fail the turn do
+  not fire it.
 - **Tool calls.** `tool_call_before` / `tool_call_after` are read-only
   observers: they cannot veto a tool call or mutate its arguments. Gating is
   the job of the approval flow, sandbox, and execpolicy rules
@@ -137,16 +149,15 @@ Details per group:
   non-background hook's stdout is concatenated (separated by `---` rules)
   and merged into the compaction summary, so material you print survives
   summarization. Failures are non-blocking: compaction always proceeds.
-- **`turn_end`** is defined but **not emitted in the current build**. The
-  intended contract: it fires after a turn completes (`completed` /
-  `interrupted` / `failed`) with the status and usage on stdin; failures
-  are warn-only and the hook cannot alter turn state (`stop_hook_active`
-  always `false`). The stdin envelope below documents that contract.
-- **Sub-agents.** `subagent_spawn` / `subagent_complete` are defined but
-  **not emitted in the current build**. The intended contract: they fire
-  when a sub-agent starts or finishes, with `agent_id` and a bounded
-  `summary` on stdin — never the full prompt/result; failures are
-  warn-only and never affect the sub-agent lifecycle.
+- **`turn_end`** fires from the REPL's turn-complete handler after app
+  state, usage, cost, and persistence have been updated. The stdin payload
+  carries the turn status (`completed` / `interrupted` / `failed`) and
+  usage. Failures are warn-only; the hook cannot alter turn state.
+  `stop_hook_active` is always `false` today.
+- **Sub-agents.** `subagent_spawn` / `subagent_complete` fire when a
+  background sub-agent starts or finishes, with `agent_id` and a bounded
+  `summary` on stdin — never the full prompt/result. Failures are warn-only
+  and never affect the sub-agent lifecycle.
 
 ## Conditions
 
@@ -221,11 +232,8 @@ the event context. Unset fields are simply absent from the environment.
 
 Only structured-stdin events (`message_submit`, `pre_compact`, `turn_end`,
 `subagent_spawn`, `subagent_complete`) receive JSON on stdin; all other
-events run with no stdin. Of these only `pre_compact` fires in the
-shipped build — `message_submit` is implemented but not wired, and
-`turn_end` / `subagent_spawn` / `subagent_complete` are not emitted — so
-the envelopes below are those events' contracts, not payloads any current
-code constructs.
+events run with no stdin. Fields the emitting context does not carry are
+`null` — the envelopes below show the full shape.
 
 `message_submit` receives:
 
@@ -299,9 +307,9 @@ ignored.
 
 ### `message_submit` (transform or block)
 
-The executor behind this contract is fully implemented but **not wired**:
-the REPL submit path never invokes it, so a configured `message_submit`
-hook will not run in the current build. The contract:
+The hooks run at the top of the REPL submit funnel, before routing and the
+session-history append; a blocked submission prints the reason and never
+starts the turn. The contract:
 
 - Exit `0` + stdout JSON with a non-empty string `text` field → that value
   **replaces** the submitted text: `{"text": "replacement user text"}`
@@ -343,6 +351,11 @@ the facts you want to survive summarization.
 - **Working directory:** `[hooks].working_dir` if set, otherwise the
   current workspace.
 - **Ordering:** serial, in config order, per event.
+- **Detachment:** the REPL does not wait on observer events — `turn_end`,
+  `on_error`, `mode_change`, `subagent_spawn`, and `subagent_complete` hook
+  processes run detached. `session_start`, `session_end`, and
+  `message_submit` are awaited: they gate the first prompt, process exit,
+  and the submission respectively.
 - **Timeout:** per-hook `timeout_secs` (default 30) unless the table-level
   `default_timeout_secs` is set, which wins. Timed-out hooks are killed and
   count as failed.
@@ -358,10 +371,35 @@ the facts you want to survive summarization.
   header, then one line per hook with its event (Debug-formatted) and
   command. Names, timeouts, and conditions are not rendered, and there is
   no grouping.
-- `/hooks events` — a single line listing the eleven event names the REPL
-  knows (`session_start` … `pre_compact`); it omits `turn_end` /
-  `subagent_spawn` / `subagent_complete` (none of which are emitted in the
-  current build) and carries no per-event descriptions.
+- `/hooks events` — a single line listing all fourteen event names the REPL
+  knows (`session_start` … `subagent_complete`); it carries no per-event
+  descriptions.
+
+## Known limitations
+
+Paths that do **not** emit, recorded beside the behaviour the shipped
+implementation owns:
+
+- **Sub-agent coverage.** `subagent_spawn` / `subagent_complete` fire only
+  on the background lifecycle (`agent_open` / `agent_spawn` /
+  `subagent_run` with `run_in_background`, engine-spawned children, resumed
+  agents). The synchronous `subagent_run` path, team-pane teammates, and
+  cancelled/aborted agents (no epilogue) fire nothing. Sub-agent payloads
+  carry `null` for `session_id` / `thread_id` / `mode` — tool contexts do
+  not carry them.
+- **`on_error` scope.** Only failed *turns* fire it; recoverable mid-turn
+  stream errors do not.
+- **`session_end` scope.** Only graceful REPL exits fire it (Ctrl+C twice,
+  Ctrl+D, `/exit`); a crash or an input error returns early without
+  emitting.
+- **`message_submit` ordering.** The transform runs after `@path` image
+  attachment extraction (attachments are split out of the line before the
+  submit funnel) but before routing and the session-history append. The
+  rustyline input history still stores the raw typed line, independent of
+  the transform.
+- **Detached observers.** A slow observer hook never delays the REPL, but
+  also is not guaranteed to finish before the process exits (a race only
+  at shutdown; `session_end` is awaited and normally runs last).
 
 ## Security notes
 
@@ -459,8 +497,7 @@ command = "cat .codesmith/DECISIONS.md 2>/dev/null"
 - **`message_submit` stdout ignored.** The contract is strict: a single JSON
   object with a non-empty `text` field on exit `0`. `{"text": ""}` and
   non-JSON output are ignored with a warning. Background hooks never
-  transform. (And note: `message_submit` is not wired in the current
-  build — the hook does not run at all.)
+  transform.
 - **Timeout kills long-running hooks.** Either raise `timeout_secs` or set
   `background = true` (accepting that stdout is then ignored).
 - **Condition never matches.** `tool_name` is an exact match;

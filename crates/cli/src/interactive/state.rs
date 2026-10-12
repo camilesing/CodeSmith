@@ -18,7 +18,7 @@ use crate::compaction::CompactionConfig;
 use crate::config::{ApiProvider, Config};
 use crate::core::engine::{EngineConfig, EngineHandle};
 use crate::cycle_manager::CycleConfig;
-use crate::hooks::HookExecutor;
+use crate::hooks::{HookContext, HookEvent, HookExecutor};
 use crate::localization::{Locale, resolve_locale};
 use crate::mcp;
 use crate::models::{
@@ -353,6 +353,7 @@ impl ReplState {
         if self.mode == mode {
             return;
         }
+        let previous_mode = self.mode;
         let entering_yolo = mode == AppMode::Yolo && self.mode != AppMode::Yolo;
         let leaving_yolo = self.mode == AppMode::Yolo && mode != AppMode::Yolo;
         let entering_coordinator =
@@ -377,6 +378,38 @@ impl ReplState {
             self.trust_mode = false;
             self.approval_mode = ApprovalMode::Suggest;
         }
+
+        // mode_change hooks (observer-only) on every effective transition —
+        // `/mode`, `/yolo`, preset startup, and resume all funnel through
+        // here. Detached so a hook process never blocks the mode switch.
+        if self.hooks.has_hooks_for_event(HookEvent::ModeChange) {
+            let context = self
+                .hook_context()
+                .with_previous_mode(previous_mode.as_setting());
+            crate::hooks::emit_detached(
+                Arc::new(self.hooks.clone()),
+                HookEvent::ModeChange,
+                context,
+            );
+        }
+    }
+
+    /// Base [`HookContext`] for REPL-emitted hook events — the mirror of the
+    /// engine's turn-loop template (`CallbackBridge`): ephemeral hook session
+    /// id, durable thread id, workspace, model, lowercase mode, and the
+    /// session-cumulative token/cost totals.
+    pub fn hook_context(&self) -> HookContext {
+        let mut context = HookContext::new()
+            .with_session_id(self.hooks.session_id())
+            .with_workspace(self.workspace.clone())
+            .with_model(&self.model)
+            .with_mode(self.mode.as_setting())
+            .with_tokens(self.session.total_tokens)
+            .with_cost(self.session.session_cost);
+        if let Some(thread_id) = self.current_session_id.as_deref() {
+            context = context.with_thread_id(thread_id);
+        }
+        context
     }
 
     pub fn set_model_selection(&mut self, model: String) {

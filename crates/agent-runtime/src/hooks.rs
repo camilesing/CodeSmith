@@ -121,6 +121,21 @@ pub struct HookContext {
     pub task_subject: Option<String>,
     /// Task status (for TaskCreated/TaskCompleted).
     pub task_status: Option<String>,
+    /// Turn outcome (`completed` / `interrupted` / `failed`) for `TurnEnd`.
+    /// Stdin-payload only — no env var is derived from it.
+    pub turn_status: Option<String>,
+    /// Per-turn input token count for `TurnEnd`. Stdin-payload only.
+    pub input_tokens: Option<u32>,
+    /// Per-turn output token count for `TurnEnd`. Stdin-payload only.
+    pub output_tokens: Option<u32>,
+    /// Turn duration in fractional seconds for `TurnEnd`. Stdin-payload only.
+    pub duration_secs: Option<f64>,
+    /// Sub-agent id for `SubagentSpawn` / `SubagentComplete`.
+    /// Stdin-payload only.
+    pub agent_id: Option<String>,
+    /// Bounded sub-agent summary for `SubagentSpawn` / `SubagentComplete`.
+    /// Stdin-payload only.
+    pub summary: Option<String>,
 }
 
 impl HookContext {
@@ -218,6 +233,36 @@ impl HookContext {
     #[allow(dead_code)]
     pub fn with_task_status(mut self, status: &str) -> Self {
         self.task_status = Some(status.to_string());
+        self
+    }
+
+    pub fn with_turn_status(mut self, status: &str) -> Self {
+        self.turn_status = Some(status.to_string());
+        self
+    }
+
+    pub fn with_input_tokens(mut self, tokens: u32) -> Self {
+        self.input_tokens = Some(tokens);
+        self
+    }
+
+    pub fn with_output_tokens(mut self, tokens: u32) -> Self {
+        self.output_tokens = Some(tokens);
+        self
+    }
+
+    pub fn with_duration_secs(mut self, secs: f64) -> Self {
+        self.duration_secs = Some(secs);
+        self
+    }
+
+    pub fn with_agent_id(mut self, id: &str) -> Self {
+        self.agent_id = Some(id.to_string());
+        self
+    }
+
+    pub fn with_summary(mut self, summary: &str) -> Self {
+        self.summary = Some(summary.to_string());
         self
     }
 

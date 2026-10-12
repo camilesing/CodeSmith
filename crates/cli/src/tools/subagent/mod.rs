@@ -53,6 +53,7 @@ use crate::agent_memory::{
 };
 use crate::config::MAX_SUBAGENTS;
 use crate::core::events::Event;
+use crate::hooks::{HookContext, HookEvent, emit_detached};
 use crate::llm_client::LlmClientHandle;
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Tool};
 use crate::tools::handle::VarHandle;
@@ -1341,6 +1342,20 @@ impl SubAgentManager {
                 id: agent_id.clone(),
                 prompt: prompt.clone(),
             });
+        }
+
+        // subagent_spawn hooks (observer-only). Detached so a hook process
+        // never runs while the caller holds the manager write lock. The
+        // summary is the prompt's first line — bounded, never the full
+        // prompt (the payload builder truncates as a second guard).
+        if let Some(host) = runtime.context.runtime.hook_executor.clone() {
+            let summary = prompt.lines().next().unwrap_or("").to_string();
+            let context = HookContext::new()
+                .with_agent_id(&agent_id)
+                .with_summary(&summary)
+                .with_model(&runtime.model)
+                .with_workspace(runtime.context.workspace.clone());
+            emit_detached(host, HookEvent::SubagentSpawn, context);
         }
 
         let task = SubAgentTask {
@@ -4571,6 +4586,18 @@ async fn run_subagent_task(task: SubAgentTask) {
             id: agent_id.clone(),
             result: payload,
         });
+    }
+
+    // subagent_complete hooks (observer-only), fired after the manager has
+    // recorded the terminal state. Cancelled/aborted agents never reach
+    // this epilogue and fire nothing.
+    if let Some(host) = task.runtime.context.runtime.hook_executor.clone() {
+        let context = HookContext::new()
+            .with_agent_id(&agent_id)
+            .with_summary(&summary)
+            .with_model(&task.runtime.model)
+            .with_workspace(task.runtime.context.workspace.clone());
+        emit_detached(host, HookEvent::SubagentComplete, context);
     }
 }
 

@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use wait_timeout::ChildExt;
@@ -542,7 +543,11 @@ impl HookExecutor {
         merged
     }
 
-    /// Execute all hooks for an event
+    /// Execute all hooks for an event.
+    ///
+    /// The structured-stdin events (`turn_end`, `subagent_spawn`,
+    /// `subagent_complete`) receive their JSON envelope on stdin; every
+    /// other event runs with no stdin.
     pub fn execute(&self, event: HookEvent, context: &HookContext) -> Vec<HookResult> {
         if !self.config.enabled {
             return Vec::new();
@@ -558,6 +563,13 @@ impl HookExecutor {
             return Vec::new();
         }
         let env_vars = context.to_env_vars();
+        let stdin_payload = match event {
+            HookEvent::TurnEnd => Some(turn_end_payload(context)),
+            HookEvent::SubagentSpawn | HookEvent::SubagentComplete => {
+                Some(subagent_payload(event, context))
+            }
+            _ => None,
+        };
         let mut results = Vec::new();
 
         for hook in hooks {
@@ -567,6 +579,8 @@ impl HookExecutor {
 
             let result = if hook.background {
                 self.execute_background(hook, &env_vars)
+            } else if let Some(payload) = stdin_payload.as_ref() {
+                self.execute_sync_with_stdin(hook, &env_vars, payload)
             } else {
                 self.execute_sync(hook, &env_vars)
             };
@@ -651,8 +665,10 @@ impl HookExecutor {
 
     /// Execute a hook synchronously with a structured JSON stdin payload.
     ///
-    /// Used by mutable `message_submit` hooks. Existing observer hooks keep the
-    /// stdin-less [`Self::execute_sync`] path so their behavior is unchanged.
+    /// Used by mutable `message_submit` hooks and the structured-stdin
+    /// observer events (`turn_end`, `subagent_spawn`, `subagent_complete`).
+    /// Every other observer hook keeps the stdin-less [`Self::execute_sync`]
+    /// path so its behavior is unchanged.
     fn execute_sync_with_stdin(
         &self,
         hook: &Hook,
@@ -914,6 +930,64 @@ fn message_submit_payload(context: &HookContext, text: &str) -> serde_json::Valu
         "model": context.model.as_deref(),
         "total_tokens": context.total_tokens,
     })
+}
+
+/// Stdin envelope for `turn_end`. Observer-only — the hook's stdout is
+/// ignored and `stop_hook_active` is always `false` today.
+fn turn_end_payload(context: &HookContext) -> serde_json::Value {
+    json!({
+        "hook_event_name": HookEvent::TurnEnd.as_str(),
+        "session_id": context.session_id.as_deref(),
+        "thread_id": context.thread_id.as_deref(),
+        "workspace": context.workspace.as_ref().map(|path| path.display().to_string()),
+        "mode": context.mode.as_deref(),
+        "model": context.model.as_deref(),
+        "status": context.turn_status.as_deref(),
+        "input_tokens": context.input_tokens,
+        "output_tokens": context.output_tokens,
+        "total_tokens": context.total_tokens,
+        "session_cost": context.session_cost,
+        "duration_secs": context.duration_secs,
+        "stop_hook_active": false,
+    })
+}
+
+/// Stdin envelope for `subagent_spawn` / `subagent_complete`. Observer-only.
+/// The summary is bounded — truncated, never the full prompt/result.
+fn subagent_payload(event: HookEvent, context: &HookContext) -> serde_json::Value {
+    json!({
+        "hook_event_name": event.as_str(),
+        "session_id": context.session_id.as_deref(),
+        "thread_id": context.thread_id.as_deref(),
+        "workspace": context.workspace.as_ref().map(|path| path.display().to_string()),
+        "mode": context.mode.as_deref(),
+        "model": context.model.as_deref(),
+        "agent_id": context.agent_id.as_deref(),
+        "summary": context.summary.as_deref().map(truncate_hook_message),
+    })
+}
+
+/// Fire an observer hook event without blocking the caller.
+///
+/// Used from the REPL and the sub-agent lifecycle, including sync call sites
+/// (mode switches, spawn-under-manager-lock). When a Tokio runtime is
+/// available the hook processes run on `spawn_blocking`, detached — the
+/// caller does not wait; without a runtime (unit tests) they run inline.
+/// Ordering-critical events (`session_start`, `session_end`,
+/// `message_submit`) await the executor at their call sites instead.
+pub(crate) fn emit_detached(host: Arc<dyn HookHost>, event: HookEvent, context: HookContext) {
+    if !host.has_hooks_for_event(event) {
+        return;
+    }
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            // Drop the JoinHandle: the hook runs detached by design.
+            std::mem::drop(handle.spawn_blocking(move || host.execute(event, &context)));
+        }
+        Err(_) => {
+            host.execute(event, &context);
+        }
+    }
 }
 
 fn parse_message_submit_stdout(stdout: &str) -> MessageSubmitStdout {
@@ -1821,5 +1895,85 @@ exit 7
         assert!(!executor.has_hooks_for_event(HookEvent::ToolCallAfter));
         assert!(!executor.has_hooks_for_event(HookEvent::OnError));
         assert!(!executor.has_hooks_for_event(HookEvent::ModeChange));
+    }
+
+    #[test]
+    fn subagent_payload_shape_and_summary_bound() {
+        let long_summary = "x".repeat(500);
+        let context = HookContext::new()
+            .with_agent_id("agent_7")
+            .with_summary(&long_summary)
+            .with_model("deepseek-chat")
+            .with_workspace(PathBuf::from("/tmp/ws"));
+        let payload = subagent_payload(HookEvent::SubagentSpawn, &context);
+        assert_eq!(payload["hook_event_name"], "subagent_spawn");
+        assert_eq!(payload["agent_id"], "agent_7");
+        assert_eq!(payload["model"], "deepseek-chat");
+        assert_eq!(payload["workspace"], "/tmp/ws");
+        // Bounded summary — never the full prompt/result.
+        let summary = payload["summary"].as_str().expect("summary string");
+        assert!(summary.chars().count() <= 241, "summary must be bounded");
+        assert!(summary.ends_with('…'));
+        // Fields the sub-agent tool context does not carry stay null.
+        assert_eq!(payload["session_id"], serde_json::Value::Null);
+        assert_eq!(payload["thread_id"], serde_json::Value::Null);
+        assert_eq!(payload["mode"], serde_json::Value::Null);
+
+        let complete = subagent_payload(HookEvent::SubagentComplete, &context);
+        assert_eq!(complete["hook_event_name"], "subagent_complete");
+        assert_eq!(complete["agent_id"], "agent_7");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn turn_end_delivers_stdin_payload_to_hook() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let captured = dir.path().join("stdin.json");
+        let capture_arg = captured.display().to_string();
+        let command = write_hook_script(
+            &dir,
+            "capture_turn_end.sh",
+            &format!(
+                r#"#!/bin/sh
+cat > '{capture_arg}'
+"#
+            ),
+        );
+        let config = HooksConfig {
+            enabled: true,
+            hooks: vec![Hook::new(HookEvent::TurnEnd, &command)],
+            working_dir: Some(dir.path().to_path_buf()),
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(config, dir.path().to_path_buf());
+
+        let context = HookContext::new()
+            .with_session_id("sess_test1234")
+            .with_thread_id("thread-abc")
+            .with_workspace(dir.path().to_path_buf())
+            .with_mode("agent")
+            .with_model("deepseek-chat")
+            .with_turn_status("completed")
+            .with_input_tokens(120)
+            .with_output_tokens(80)
+            .with_tokens(1234)
+            .with_duration_secs(14.5);
+        let results = executor.execute(HookEvent::TurnEnd, &context);
+        assert_eq!(results.len(), 1, "one matching hook must run");
+        assert!(results[0].success, "hook must succeed");
+
+        let payload: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&captured).expect("hook stdin captured"))
+                .expect("stdin payload is valid JSON");
+        assert_eq!(payload["hook_event_name"], "turn_end");
+        assert_eq!(payload["session_id"], "sess_test1234");
+        assert_eq!(payload["thread_id"], "thread-abc");
+        assert_eq!(payload["mode"], "agent");
+        assert_eq!(payload["status"], "completed");
+        assert_eq!(payload["input_tokens"], 120);
+        assert_eq!(payload["output_tokens"], 80);
+        assert_eq!(payload["total_tokens"], 1234);
+        assert_eq!(payload["duration_secs"], 14.5);
+        assert_eq!(payload["stop_hook_active"], false);
     }
 }
