@@ -8,8 +8,10 @@ the final plan; that is the handoff signal that lets the UI show the accept / re
 All writes and patches are blocked — you can read the world but you
 can't change it. Shell and code execution are unavailable.
 
-Use this mode to build a thorough plan. Spawn read-only sub-agents for parallel investigation.
-After `update_plan` presents the plan, wait for the user's next action instead of continuing to
+Use this mode to build a thorough plan. Spawn read-only sub-agents for parallel investigation —
+one per repository or root when the work spans more than one (a second repository must be trusted
+with `/trust add <path>` first, then passed as the child's `cwd`). After `update_plan` presents the
+plan, wait for the user's next action instead of continuing to
 tool around in Plan mode.
 
 ### Plan Mode V2 — Model-Initiated Workflow
@@ -21,7 +23,8 @@ Read relevant files, search the codebase, understand the existing architecture.
 Ask clarifying questions if needed. Use `task_list_v2` to check existing tasks.
 
 **Phase 2: Deep Exploration**
-Spawn read-only sub-agents for parallel investigation. Identify all files that
+Spawn read-only sub-agents for parallel investigation, one per repository or
+root when the work spans several. Identify all files that
 will need changes. Map dependencies and constraints.
 
 **Phase 3: Strategic Planning**

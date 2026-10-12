@@ -240,7 +240,11 @@ feature is enabled. The switch applies to the next message you send, and the
 `🚥` segment of the status line above the prompt shows where you landed.
 
 Plan mode is the safest place to start in an unfamiliar repository. It is for
-inspection and decision-making, not file edits.
+inspection and decision-making, not file edits. It can open read-only
+sub-agents to investigate several areas — or several repositories — in
+parallel; each child is bounded to read-only tools, and a directory outside the
+workspace has to be trusted with `/trust add <path>` first (`docs/SUBAGENTS.md`,
+"Working across repositories").
 
 Agent mode is the default for most contribution work. It lets CodeSmith read,
 run checks, and edit files while keeping risky actions behind approval gates.

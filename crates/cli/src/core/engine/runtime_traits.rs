@@ -331,14 +331,16 @@ impl HostServices for super::EngineHost {
         let mcp_pool = req.mcp_pool;
 
         let mut tool_registry = match mode {
-            AppMode::Agent | AppMode::Yolo => {
+            AppMode::Agent | AppMode::Yolo | AppMode::Plan => {
                 if config.features.enabled(Feature::Subagents) {
                     let runtime = if let Some(client) = req.llm_client.clone() {
                         let mut rt = SubAgentRuntime::new(
                             client,
                             session.model.clone(),
                             tool_context.clone(),
-                            session.allow_shell,
+                            // Plan mode has no shell at all; its children must
+                            // not regain one through the sub-agent surface.
+                            session.allow_shell && mode != AppMode::Plan,
                             Some(req.tx_event.clone()),
                             Arc::clone(&self.subagent_manager),
                         )
@@ -363,18 +365,39 @@ impl HostServices for super::EngineHost {
                                 .with_mailbox(mailbox.clone())
                                 .with_cancel_token(cancel_token.clone());
                         }
+                        // Plan mode is read-only by contract, and
+                        // `prompts/modes/plan.md` tells the model to open
+                        // read-only sub-agents for parallel investigation —
+                        // register them, with every child narrowed to the
+                        // read-only tools of its own surface so it can neither
+                        // write nor shell out.
+                        if children_are_read_only_in(mode) {
+                            rt = rt.with_children_read_only(true);
+                        }
                         Some(rt)
                     } else {
+                        // Sub-agents are on but no LLM client is bound (provider
+                        // unavailable): run the turn without the family rather
+                        // than panicking. The parent's own request fails loudly
+                        // on the same missing client.
+                        tracing::warn!(
+                            target: "codesmith_subagents",
+                            "sub-agents enabled but no LLM client is bound — this turn runs \
+                             without agent_open/agent_eval/agent_close"
+                        );
                         None
                     };
-                    Some(
-                        builder
-                            .with_subagent_tools(
-                                self.subagent_manager.clone(),
-                                runtime.expect("sub-agent runtime should exist with active client"),
-                            )
-                            .build(tool_context),
-                    )
+                    match runtime {
+                        Some(runtime) => Some(
+                            builder
+                                .with_subagent_tools(
+                                    self.subagent_manager.clone(),
+                                    runtime,
+                                )
+                                .build(tool_context),
+                        ),
+                        None => Some(builder.build(tool_context)),
+                    }
                 } else {
                     Some(builder.build(tool_context))
                 }
@@ -426,7 +449,6 @@ impl HostServices for super::EngineHost {
                 builder = builder.with_task_stop_tool();
                 Some(builder.build(tool_context))
             }
-            _ => Some(builder.build(tool_context)),
         };
 
         // Load plugin tools from the user's tools directory and apply any
@@ -577,6 +599,18 @@ impl HostServices for super::EngineHost {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+}
+
+/// Modes whose sub-agent children are read-only whatever their type.
+///
+/// Plan mode cannot write or execute, so the investigators it spawns must not
+/// be able to either — and `prompts/modes/plan.md` asks for exactly those
+/// spawns. The narrowing happens against each child's own registry (see
+/// `SubAgentToolRegistry::new`), so a child keeps the read-only tools it has
+/// instead of a name list borrowed from the parent's differently-shaped
+/// surface.
+pub(super) fn children_are_read_only_in(mode: AppMode) -> bool {
+    matches!(mode, AppMode::Plan)
 }
 
 /// Bridge the TUI's concrete [`SeamManager`] onto the engine-core trait

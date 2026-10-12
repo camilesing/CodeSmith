@@ -35,6 +35,29 @@ fn estimate_tool_description_tokens_conservative(text: &str) -> usize {
     text.chars().count().div_ceil(3)
 }
 
+/// A registry over the shared stub runtime, for `SubAgentToolRegistry`
+/// construction tests (the stub never runs a turn).
+fn make_test_registry(
+    agent_type: SubAgentType,
+    allowed_tools: Option<Vec<String>>,
+) -> SubAgentToolRegistry {
+    make_test_registry_with(agent_type, allowed_tools, false)
+}
+
+fn make_test_registry_with(
+    agent_type: SubAgentType,
+    allowed_tools: Option<Vec<String>>,
+    children_read_only: bool,
+) -> SubAgentToolRegistry {
+    SubAgentToolRegistry::new(
+        stub_runtime().with_children_read_only(children_read_only),
+        agent_type,
+        allowed_tools,
+        Arc::new(Mutex::new(TodoList::new())),
+        Arc::new(Mutex::new(PlanState::default())),
+    )
+}
+
 #[test]
 fn test_agent_type_from_str() {
     assert_eq!(
@@ -1492,8 +1515,9 @@ fn build_allowed_tools_general_returns_none_for_full_inheritance() {
 
 #[test]
 fn build_allowed_tools_explore_returns_none_for_full_inheritance() {
-    // Per-type allowlists are now advisory — Explore also gets the full
-    // surface unless an explicit list is passed.
+    // This helper is advisory for every type — Explore's read-only surface is
+    // enforced downstream, in `SubAgentToolRegistry::new`
+    // (`explore_registry_narrows_to_read_only_tools` locks it).
     let result = build_allowed_tools(&SubAgentType::Explore, None, true, None, false).unwrap();
     assert!(
         result.is_none(),
@@ -2016,9 +2040,12 @@ async fn explore_role_still_blocks_suggest_writes_without_parent_auto_approve() 
         .await
         .expect_err("explore agents must not write");
     let msg = err.to_string();
+    // The type's read-only surface is the first gate now (the write tool is not
+    // in the allowlist at all), so the refusal names the tool rather than the
+    // delegation rule.
     assert!(
-        msg.contains("not delegated to explore sub-agents"),
-        "explore writes should be rejected with a role-aware message: {msg}"
+        msg.contains("write_file") && msg.contains("not allowed"),
+        "explore writes must be rejected by the read-only allowlist: {msg}"
     );
     assert!(
         !tmp.path().join("should_not_appear.txt").exists(),
@@ -2322,6 +2349,7 @@ fn stub_runtime() -> SubAgentRuntime {
         mcp_pool: None,
         step_api_timeout: DEFAULT_STEP_API_TIMEOUT,
         inherit_full_registry: false,
+        children_read_only: false,
         child_subset_basis: None,
         capability_disabled_tools: std::collections::HashSet::new(),
     }
@@ -2769,5 +2797,144 @@ fn subagent_completion_payload_carries_existing_sentinel_format() {
     assert!(
         !second.contains("Found three errors."),
         "sentinel should not duplicate the human summary line"
+    );
+}
+
+// === Explore read-only enforcement (docs/SUBAGENTS.md: "explore — read-only") ===
+
+#[test]
+fn explore_registry_narrows_to_read_only_tools() {
+    let registry = make_test_registry(SubAgentType::Explore, None);
+
+    let allowed = registry
+        .allowed_tools
+        .as_ref()
+        .expect("explore must carry an explicit read-only allowlist");
+    assert!(allowed.iter().any(|name| name == "read_file"), "{allowed:?}");
+    assert!(!allowed.iter().any(|name| name == "write_file"), "{allowed:?}");
+    assert!(!allowed.iter().any(|name| name == "exec_shell"), "{allowed:?}");
+    assert!(
+        !allowed.iter().any(|name| name == "agent_open"),
+        "an explore child is a leaf — it cannot spawn children: {allowed:?}"
+    );
+    // Every kept name is read-only per the registry's own declarations.
+    for name in allowed {
+        let caps = registry
+            .registry
+            .get(name)
+            .expect("a kept name is registered")
+            .capabilities();
+        assert!(
+            caps.contains(&ToolCapability::ReadOnly),
+            "'{name}' is not read-only: {caps:?}"
+        );
+    }
+    assert!(registry.refused_non_read_only_tools().is_empty());
+}
+
+#[test]
+fn explore_spawn_refuses_requested_write_tools() {
+    let registry = make_test_registry(
+        SubAgentType::Explore,
+        Some(vec!["read_file".to_string(), "write_file".to_string()]),
+    );
+
+    assert_eq!(
+        registry.refused_non_read_only_tools(),
+        ["write_file".to_string()],
+        "a requested write tool is reported, not silently dropped"
+    );
+    assert_eq!(
+        registry.allowed_tools.as_ref().expect("narrowed"),
+        &vec!["read_file".to_string()]
+    );
+}
+
+#[test]
+fn general_registry_keeps_the_full_surface() {
+    let registry = make_test_registry(SubAgentType::General, None);
+
+    assert!(
+        registry.allowed_tools.is_none(),
+        "the read-only narrowing belongs to explore, not to every type"
+    );
+    assert!(registry.refused_non_read_only_tools().is_empty());
+}
+
+// === child cwd outside the workspace (`/trust add <path>`) ===
+
+#[test]
+fn child_cwd_needs_the_workspace_or_a_trusted_root() {
+    let dir = tempdir().expect("tempdir");
+    let workspace = dir.path().join("workspace");
+    let other_repo = dir.path().join("other-repo");
+    std::fs::create_dir_all(&workspace).expect("workspace dir");
+    std::fs::create_dir_all(&other_repo).expect("second repo dir");
+    let other_repo = other_repo.canonicalize().expect("canonical second repo");
+    let workspace = workspace.canonicalize().expect("canonical workspace");
+
+    let untrusted = ToolContext::new(workspace.clone());
+    let err = SubagentRunTool::validate_cwd(&other_repo, &workspace, &untrusted)
+        .expect_err("an untrusted external cwd is refused");
+    assert!(
+        format!("{err}").contains("/trust add"),
+        "the refusal must name the fix: {err}"
+    );
+
+    let trusted = ToolContext::new(workspace.clone())
+        .with_trusted_external_paths(vec![other_repo.clone()]);
+    let resolved = SubagentRunTool::validate_cwd(&other_repo, &workspace, &trusted)
+        .expect("a trusted external cwd is allowed");
+    assert_eq!(resolved, other_repo);
+
+    // Inside the workspace stays allowed without any trust entry.
+    let inner = ToolContext::new(workspace.clone());
+    assert!(SubagentRunTool::validate_cwd(&workspace, &workspace, &inner).is_ok());
+}
+
+#[test]
+fn plan_mode_runtime_narrows_every_child_type_to_read_only() {
+    // Plan mode sets `children_read_only`: a *general* child (write-capable by
+    // type) still gets only the read-only tools of its own registry — the mode
+    // cannot write or execute, so its investigators must not either.
+    let registry = make_test_registry_with(SubAgentType::General, None, true);
+
+    let allowed = registry
+        .allowed_tools
+        .as_ref()
+        .expect("a read-only child carries an explicit allowlist");
+    assert!(allowed.iter().any(|name| name == "read_file"), "{allowed:?}");
+    assert!(!allowed.iter().any(|name| name == "write_file"), "{allowed:?}");
+    assert!(!allowed.iter().any(|name| name == "edit_file"), "{allowed:?}");
+    assert!(!allowed.iter().any(|name| name == "exec_shell"), "{allowed:?}");
+    assert!(
+        !allowed.iter().any(|name| name == "agent_open"),
+        "a read-only child is a leaf: {allowed:?}"
+    );
+    for name in allowed {
+        let caps = registry
+            .registry
+            .get(name)
+            .expect("a kept name is registered")
+            .capabilities();
+        assert!(
+            caps.contains(&ToolCapability::ReadOnly),
+            "'{name}' is not read-only: {caps:?}"
+        );
+    }
+}
+
+#[test]
+fn plan_mode_child_asking_for_a_write_tool_fails_loudly() {
+    let registry = make_test_registry_with(
+        SubAgentType::General,
+        Some(vec!["read_file".to_string(), "edit_file".to_string()]),
+        true,
+    );
+
+    assert_eq!(
+        registry.refused_non_read_only_tools(),
+        ["edit_file".to_string()],
+        "a read-only mode must refuse a requested write tool, not run with it dropped"
     );
 }

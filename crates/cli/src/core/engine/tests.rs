@@ -25,6 +25,7 @@ use super::{
     TURN_MAX_OUTPUT_TOKENS, context_input_budget, context_input_budget_for_provider,
     effective_max_output_tokens,
 };
+use super::runtime_traits::children_are_read_only_in;
 use crate::config::{ApiProvider, DEFAULT_TEXT_MODEL, UtilityModelConfig};
 use crate::models::{ContentBlock, Message, SystemBlock, SystemPrompt, Tool, ToolCaller};
 use crate::test_support::lock_test_env;
@@ -1440,6 +1441,20 @@ fn turn_tool_registry_builder_keeps_plan_mode_read_only_for_files() {
         write_or_exec_tools.is_empty(),
         "Plan mode must not register file-writing or code-execution tools: {write_or_exec_tools:?}"
     );
+}
+
+/// Plan mode registers the sub-agent family (its own prompt asks for those
+/// spawns) and marks every child read-only. The mode policy is what the Plan
+/// arm reads; `subagent::tests` locks the enforcement itself.
+#[test]
+fn plan_mode_children_are_read_only_and_agent_mode_children_are_not() {
+    assert!(children_are_read_only_in(AppMode::Plan));
+    for mode in [AppMode::Agent, AppMode::Yolo, AppMode::Coordinator] {
+        assert!(
+            !children_are_read_only_in(mode),
+            "{mode:?} children keep their type's surface"
+        );
+    }
 }
 
 #[test]
