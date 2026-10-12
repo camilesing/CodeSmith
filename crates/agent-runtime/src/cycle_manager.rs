@@ -31,14 +31,28 @@
 //!
 //! - Token threshold: **768K** active input by default (~75% of the 1M window).
 //!   This is a rare overflow safety net. The trigger is based on the next
-//!   request's live input estimate, not lifetime summed API usage, with
-//!   assistant-output and safety headroom considered against the model window.
+//!   request's live input estimate, not lifetime summed API usage, compared
+//!   against the smaller of the configured threshold and the caller's input
+//!   budget for the model — the same figure the preflight and emergency
+//!   recovery use, so the reservation scales with the window instead of being
+//!   a flat 262K that a smaller window underflows to zero.
 //!   Optional soft seams at 192K/384K/576K are controlled by the opt-in layered
 //!   context manager (#159).
 //! - Phase guard: callers only invoke `should_advance_cycle` at clean turn
 //!   boundaries (no in-flight tool, no streaming, no approval modal).
 //! - Per-model defaults: `CycleConfig` can carry model-specific thresholds
 //!   for `deepseek-v4-pro` and `deepseek-v4-flash`.
+//!
+//! ## Known limitations
+//!
+//! - On a window below 500K the trigger floor equals the emergency-preflight
+//!   input budget, so the two mechanisms reach "context is at the wall" at the
+//!   same estimate; whichever runs first resets the context and the other finds
+//!   nothing left to do. That is deliberate — one shared definition of the
+//!   wall — not two independent thresholds.
+//! - Aborting a briefing request (user cancel) drops the in-flight call. An
+//!   upstream provider may still bill the aborted request; no usage is
+//!   recorded for it locally.
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -50,9 +64,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::llm_client::LlmClient;
-use crate::models::{
-    ContentBlock, Message, MessageRequest, SystemBlock, SystemPrompt, context_window_for_model,
-};
+use crate::models::{ContentBlock, Message, MessageRequest, SystemBlock, SystemPrompt};
 
 /// JSONL header record emitted as the first line of an archived cycle file.
 const CYCLE_ARCHIVE_SCHEMA_VERSION: u32 = 1;
@@ -153,10 +165,17 @@ pub struct CycleBriefing {
 ///
 /// `active_input_tokens` is the estimated token count of the next request's
 /// current input, including previous assistant/tool output that is now part of
-/// the transcript. `reserved_response_headroom_tokens` is the max output budget
-/// plus any provider safety headroom reserved for that next request. Lifetime
-/// API usage is intentionally not used here because it repeatedly counts the
-/// same stable prefix across requests.
+/// the transcript. `input_budget_tokens` is the caller's input budget for the
+/// model — the same figure the preflight and emergency-recovery paths compare
+/// against (`context_input_budget_for_provider`: the window minus that window's
+/// reserved output and safety headroom), or `None` when the window is unknown.
+/// Lifetime API usage is intentionally not used here because it repeatedly
+/// counts the same stable prefix across requests.
+///
+/// The floor is the smaller of the configured threshold and that budget. The
+/// budget term must come from the model's own window: a flat reservation larger
+/// than the window underflows to a zero floor, and `active_input_tokens >= 0`
+/// fires on every turn.
 ///
 /// `in_flight` is true when a tool is mid-execution, stream is open, or an
 /// approval modal is pending — in those cases the caller must wait until the
@@ -164,7 +183,7 @@ pub struct CycleBriefing {
 #[must_use]
 pub fn should_advance_cycle(
     active_input_tokens: u64,
-    reserved_response_headroom_tokens: u64,
+    input_budget_tokens: Option<u64>,
     model: &str,
     cfg: &CycleConfig,
     in_flight: bool,
@@ -172,14 +191,27 @@ pub fn should_advance_cycle(
     if !cfg.enabled || in_flight {
         return false;
     }
-    let threshold = cfg.threshold_for(model) as u64;
-    if threshold == 0 {
+    // A zero threshold is the explicit "never fire" setting.
+    if cfg.threshold_for(model) == 0 {
         return false;
     }
-    let trigger_floor = context_window_for_model(model)
-        .map(|window| u64::from(window).saturating_sub(reserved_response_headroom_tokens))
-        .map_or(threshold, |window_floor| threshold.min(window_floor));
-    active_input_tokens >= trigger_floor
+    active_input_tokens >= cycle_trigger_floor(input_budget_tokens, model, cfg)
+}
+
+/// The active-input estimate at which a cycle boundary fires: the smaller of
+/// the configured threshold and the caller's input budget for the model
+/// (the threshold alone when the window is unknown).
+///
+/// Exposed so the caller can report the crossed limit in its status line
+/// without re-deriving the comparison.
+#[must_use]
+pub fn cycle_trigger_floor(
+    input_budget_tokens: Option<u64>,
+    model: &str,
+    cfg: &CycleConfig,
+) -> u64 {
+    let threshold = cfg.threshold_for(model) as u64;
+    input_budget_tokens.map_or(threshold, |budget| threshold.min(budget))
 }
 
 /// Build the prompt the model uses to produce its `<carry_forward>` briefing.
@@ -663,12 +695,17 @@ mod tests {
         assert_eq!(cfg.briefing_max_for("deepseek-v4-pro"), 2_000);
     }
 
+    /// Input budget the engine passes for a model with a 1M window
+    /// (`1_000_000 - 262_144 - 1_024`), i.e. what
+    /// `context_input_budget_for_provider` returns for a V4-class model.
+    const V4_INPUT_BUDGET: u64 = 736_832;
+
     #[test]
     fn should_advance_below_threshold_returns_false() {
         let cfg = CycleConfig::default();
         assert!(!should_advance_cycle(
             50_000,
-            0,
+            Some(V4_INPUT_BUDGET),
             "deepseek-v4-pro",
             &cfg,
             false
@@ -680,7 +717,7 @@ mod tests {
         let cfg = CycleConfig::default();
         assert!(should_advance_cycle(
             DEFAULT_CYCLE_THRESHOLD_TOKENS as u64,
-            0,
+            Some(V4_INPUT_BUDGET),
             "deepseek-v4-pro",
             &cfg,
             false
@@ -688,14 +725,20 @@ mod tests {
     }
 
     #[test]
-    fn should_advance_considers_output_plus_safety_headroom() {
+    fn should_advance_when_active_input_reaches_the_input_budget() {
         let cfg = CycleConfig::default();
-        // Below the 768K active-input threshold, but too close to the 1M
-        // model window once the next assistant response and safety headroom are
-        // included.
+        // Below the 768K configured threshold, but at the model's own input
+        // budget — the next request plus its response would not fit.
+        assert!(!should_advance_cycle(
+            736_831,
+            Some(V4_INPUT_BUDGET),
+            "deepseek-v4-pro",
+            &cfg,
+            false
+        ));
         assert!(should_advance_cycle(
-            737_000,
-            263_168,
+            736_832,
+            Some(V4_INPUT_BUDGET),
             "deepseek-v4-pro",
             &cfg,
             false
@@ -707,7 +750,7 @@ mod tests {
         let cfg = CycleConfig::default();
         assert!(!should_advance_cycle(
             120_000,
-            64_000,
+            Some(V4_INPUT_BUDGET),
             "deepseek-v4-pro",
             &cfg,
             false
@@ -715,34 +758,87 @@ mod tests {
     }
 
     #[test]
-    fn should_advance_v4_calibrates_threshold_against_output_reserve() {
+    fn should_advance_v4_calibrates_threshold_against_input_budget() {
         let cfg = CycleConfig::default();
-        let reserve = 263_168;
         assert!(!should_advance_cycle(
             700_000,
-            reserve,
+            Some(V4_INPUT_BUDGET),
             "deepseek-v4-pro",
             &cfg,
             false
         ));
         assert!(should_advance_cycle(
             738_000,
-            reserve,
+            Some(V4_INPUT_BUDGET),
             "deepseek-v4-pro",
             &cfg,
             false
         ));
         assert!(should_advance_cycle(
             768_000,
-            reserve,
+            Some(V4_INPUT_BUDGET),
             "deepseek-v4-pro",
             &cfg,
             false
         ));
         assert!(should_advance_cycle(
             900_000,
-            reserve,
+            Some(V4_INPUT_BUDGET),
             "deepseek-v4-pro",
+            &cfg,
+            false
+        ));
+    }
+
+    /// Regression: the trigger used to subtract a flat 263,168-token reserve
+    /// (`TURN_MAX_OUTPUT_TOKENS` + safety headroom) from the model window. A
+    /// window below that reserve — every Claude model at 200K, most 128K
+    /// gateway models — collapsed the floor to zero, so `48 >= 0` fired a
+    /// checkpoint-restart handoff after *every* turn: an extra briefing call, a
+    /// cycle archive write, a transcript rebuild, and a cold prefix cache.
+    #[test]
+    fn should_not_advance_a_narrow_window_model_on_a_near_empty_context() {
+        let cfg = CycleConfig::default();
+        // claude-sonnet-4-5 via the Anthropic provider: 200K window,
+        // 8,192 reserved output, 1,024 safety headroom -> 190,784.
+        let budget = Some(190_784);
+        assert!(!should_advance_cycle(
+            48,
+            budget,
+            "claude-sonnet-4-5",
+            &cfg,
+            false
+        ));
+        assert!(!should_advance_cycle(
+            190_783,
+            budget,
+            "claude-sonnet-4-5",
+            &cfg,
+            false
+        ));
+        assert!(should_advance_cycle(
+            190_784,
+            budget,
+            "claude-sonnet-4-5",
+            &cfg,
+            false
+        ));
+    }
+
+    #[test]
+    fn unknown_window_without_a_budget_falls_back_to_the_threshold() {
+        let cfg = CycleConfig::default();
+        assert!(!should_advance_cycle(
+            700_000,
+            None,
+            "self-hosted-endpoint-model",
+            &cfg,
+            false
+        ));
+        assert!(should_advance_cycle(
+            768_000,
+            None,
+            "self-hosted-endpoint-model",
             &cfg,
             false
         ));
@@ -753,7 +849,7 @@ mod tests {
         let cfg = CycleConfig::default();
         assert!(!should_advance_cycle(
             DEFAULT_CYCLE_THRESHOLD_TOKENS as u64 * 2,
-            0,
+            Some(V4_INPUT_BUDGET),
             "deepseek-v4-pro",
             &cfg,
             true,
@@ -768,7 +864,7 @@ mod tests {
         };
         assert!(!should_advance_cycle(
             DEFAULT_CYCLE_THRESHOLD_TOKENS as u64 * 2,
-            0,
+            Some(V4_INPUT_BUDGET),
             "deepseek-v4-pro",
             &cfg,
             false,

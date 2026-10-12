@@ -468,10 +468,6 @@ pub fn context_input_budget_for_provider(provider: ApiProvider, model: &str) -> 
     input_budget_from_window_and_output(capability.context_window, reserved_output)
 }
 
-pub fn turn_response_headroom_tokens() -> u64 {
-    u64::from(TURN_MAX_OUTPUT_TOKENS).saturating_add(CONTEXT_HEADROOM_TOKENS as u64)
-}
-
 pub fn is_context_length_error_message(message: &str) -> bool {
     crate::error_taxonomy::classify_error_message(message) == ErrorCategory::InvalidInput
 }
@@ -507,12 +503,6 @@ mod tests {
     fn context_input_budget_returns_none_for_unknown_model() {
         let budget = context_input_budget("totally-unknown-model-xyz");
         assert!(budget.is_none());
-    }
-
-    #[test]
-    fn turn_response_headroom_tokens_greater_than_output_tokens() {
-        let headroom = turn_response_headroom_tokens();
-        assert!(headroom > u64::from(TURN_MAX_OUTPUT_TOKENS));
     }
 
     #[test]

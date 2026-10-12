@@ -762,15 +762,20 @@ separate:
 | Quantity | Meaning | Allowed to drive |
 |---|---|---|
 | Active request input estimate | Conservative estimate of the next request's live system prompt and transcript payload. | Header/footer context percent, hard-cycle trigger, opt-in Flash seam trigger, and emergency overflow preflight. |
-| Reserved response headroom | The internal turn budget plus safety headroom. v0.8.16 keeps normal turns at `262144` reserved output tokens and adds `1024` safety tokens for context-window checks, even though V4 capability metadata reports the official `384000` max output. | Hard-cycle and emergency overflow budget checks only. |
+| Reserved response headroom | The internal turn budget plus safety headroom. v0.8.16 keeps normal turns at `262144` reserved output tokens and adds `1024` safety tokens for context-window checks, even though V4 capability metadata reports the official `384000` max output. | Hard-cycle and emergency overflow budget checks only, as one term of the per-model input budget described below. |
 | Cumulative API usage | Provider-reported input plus output tokens summed across completed API calls; multi-tool turns may count the same stable prefix more than once. | Session usage and approximate cost telemetry only. |
 | Prompt cache hit/miss | Provider cache telemetry for the most recent call when available. | Cache-hit display and cost estimation only; never compaction, seam, or cycle triggers. |
 | Context percent | Active request input estimate divided by the model context window. | Display only; it mirrors the active-input basis used by context safeguards. |
 | Cost estimate | Approximate spend from provider usage and configured DeepSeek rates. | Display only. |
 
 For the default V4 path, hard cycles fire when active input reaches the smaller
-of the configured cycle threshold (`768000`) and the model window minus reserved
-response headroom. Replacement compaction is on by default (`auto_compact = true`,
+of the configured cycle threshold (`768000`) and the model's input budget. That
+budget — `context_input_budget_for_provider`, shared with the emergency overflow
+preflight — is the context window minus the response reserve: the full `262144`
+plus `1024` headroom on windows at or above 500K, and the model's effective
+output cap plus headroom on smaller windows, where reserving the full V4-class
+budget would leave nothing (or a zero floor that fires every turn). Replacement
+compaction is on by default (`auto_compact = true`,
 provider-neutral), the Flash seam manager remains opt-in (`[context].enabled = false`),
 and the capacity controller remains disabled unless configured.
 
