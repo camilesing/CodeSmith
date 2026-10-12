@@ -4169,6 +4169,69 @@ async fn engine_injects_mock_client_and_completes_text_turn() {
     assert_eq!(mock_arc.call_count(), 1);
 }
 
+// === Cycle-trigger regression: window smaller than the flat reserve ========
+
+/// A model whose context window is smaller than the flat turn-response
+/// reservation (`263,168` = `TURN_MAX_OUTPUT_TOKENS` + safety headroom) used to
+/// collapse the cycle trigger floor to `window.saturating_sub(reserve) == 0`.
+/// Every turn then "crossed" the threshold — including a one-line answer on a
+/// nearly empty session — so each turn paid for a briefing request, a cycle
+/// archive write, a transcript rebuild, and a cold prefix cache.
+///
+/// The trigger compares against the same provider-aware input budget the
+/// preflight uses, so a 200K-window model hands off only near its own wall.
+#[tokio::test]
+async fn narrow_window_model_answer_does_not_advance_a_cycle() {
+    const MODEL: &str = "claude-sonnet-4-5";
+    let _guard = lock_test_env();
+    let tmp = tempdir().expect("tempdir");
+
+    let mock = MockLlmClient::new(vec![canned::simple_text_turn("2")]).with_model(MODEL);
+    let config = test_engine_config(tmp.path());
+    let (handle, mock_arc) = spawn_engine_with_mock(config, mock);
+
+    let mut op = make_send_op("1+1=?");
+    if let Op::SendMessage { model, .. } = &mut op {
+        *model = MODEL.to_string();
+    }
+    handle.send(op).await.expect("send op");
+    let events = collect_until_turn_complete(&handle).await;
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            Event::TurnComplete {
+                status: TurnOutcomeStatus::Completed,
+                ..
+            }
+        )),
+        "the turn itself must still complete"
+    );
+
+    let cycle_statuses: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Status { message } if message.contains("cycle") => Some(message.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        cycle_statuses.is_empty(),
+        "a 200K-window model must not attempt a cycle handoff here; saw {cycle_statuses:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, Event::CycleAdvanced { .. })),
+        "no cycle boundary should be crossed"
+    );
+    assert_eq!(
+        mock_arc.call_count(),
+        1,
+        "the answer must not be followed by a second model call for a briefing"
+    );
+}
+
 // === context-engineering §3 acceptance: 128K-window model ==================
 
 /// Acceptance test for capacity adaptivity (docs/plans/context-engineering.md

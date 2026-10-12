@@ -29,8 +29,8 @@ use crate::compaction::{
 };
 use crate::config_types::ApiProvider;
 use crate::cycle_manager::{
-    CycleBriefing, archive_cycle, build_seed_messages, estimate_briefing_tokens, produce_briefing,
-    should_advance_cycle,
+    CycleBriefing, archive_cycle, build_seed_messages, cycle_trigger_floor,
+    estimate_briefing_tokens, produce_briefing, should_advance_cycle,
 };
 use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope};
 use crate::features::Feature;
@@ -2704,6 +2704,8 @@ impl Engine {
             )))
             .await;
     }
+
+    /// Advance the session's context cycle when the active input crosses
     /// its token threshold (issue #124). No-op in the common case.
     ///
     /// Caller must invoke this only at a clean turn boundary (no in-flight
@@ -2716,9 +2718,18 @@ impl Engine {
     /// are captured in the structured-state block so the next cycle can see
     /// they're still running.
     async fn maybe_advance_cycle(&mut self, mode: AppMode) {
+        let estimated_input_tokens = self.estimated_input_tokens() as u64;
+        // The trigger compares the live input estimate against the same
+        // provider-aware budget the preflight and emergency recovery use. A
+        // flat response-headroom reservation cannot be used here: any window
+        // below it (every 200K Claude, most 128K gateway models) underflows to
+        // a zero floor, and `input >= 0` fires a handoff after every turn.
+        let input_budget =
+            context_input_budget_for_provider(self.api_provider, &self.session.model)
+                .map(|budget| budget as u64);
         if !should_advance_cycle(
-            self.estimated_input_tokens() as u64,
-            turn_response_headroom_tokens(),
+            estimated_input_tokens,
+            input_budget,
             &self.session.model,
             &self.config.cycle,
             false,
@@ -2735,93 +2746,42 @@ impl Engine {
         let to = from.saturating_add(1);
         let archive_started = self.session.current_cycle_started;
         let max_briefing_tokens = self.config.cycle.briefing_max_for(&self.session.model);
+        let trigger_floor_k =
+            cycle_trigger_floor(input_budget, &self.session.model, &self.config.cycle) / 1_000;
 
         let _ = self
             .tx_event
             .send(Event::status(format!(
-                "↻ context refreshing (cycle {from} → {to}, generating briefing…)"
+                "↻ context refreshing (cycle {from} → {to}, input {}K/{trigger_floor_k}K, generating briefing…)",
+                estimated_input_tokens / 1_000
             )))
             .await;
 
         // 1. Generate the model-curated briefing. Prefer the Flash seam
         //    manager (#159) for cost and speed; fall back to the main model
         //    (legacy produce_briefing) when the seam manager isn't available.
-        let briefing_text = if let Some(seam_mgr) = self.host.seam() {
-            let seams = seam_mgr.collect_seam_texts(&self.session.messages).await;
-            let state_text = {
-                // Snapshot the working set out of the lock —
-                // `capture_structured_state` is async and a `std::sync::Mutex`
-                // guard isn't `Send`, so it can't cross the `.await`. The clone
-                // is a correct point-in-time snapshot (this is the cycle-restart
-                // path, rare).
-                let ws_snapshot = self
-                    .session
-                    .working_set
-                    .lock()
-                    .expect("working_set poisoned")
-                    .clone();
-                self.host
-                    .capture_structured_state(StructuredStateRequest {
-                        mode_label: mode.label(),
-                        workspace: self.config.workspace.clone(),
-                        cwd: std::env::current_dir().ok(),
-                        working_set: &ws_snapshot,
-                        todos: &self.config.todos,
-                        plan_state: &self.config.plan_state,
-                    })
-                    .await
-            };
-            match seam_mgr
-                .produce_flash_briefing(&seams, state_text.as_deref())
-                .await
-            {
-                Ok(text) => text,
-                Err(err) => {
-                    tracing::warn!("Flash briefing failed, falling back to main model: {err}");
-                    match produce_briefing(
-                        client.as_ref(),
-                        &self.session.model,
-                        &self.session.messages,
-                        max_briefing_tokens,
-                    )
-                    .await
-                    {
-                        Ok(text) => text,
-                        Err(err2) => {
-                            tracing::warn!(
-                                "Cycle briefing turn failed; skipping cycle advance: {err2}"
-                            );
-                            let _ = self
-                                .tx_event
-                                .send(Event::status(format!(
-                                    "↻ cycle handoff failed (continuing in cycle {from}): {err2}"
-                                )))
-                                .await;
-                            return;
-                        }
-                    }
-                }
-            }
-        } else {
-            match produce_briefing(
-                client.as_ref(),
-                &self.session.model,
-                &self.session.messages,
-                max_briefing_tokens,
-            )
-            .await
-            {
-                Ok(text) => text,
-                Err(err) => {
-                    tracing::warn!("Cycle briefing turn failed; skipping cycle advance: {err}");
-                    let _ = self
-                        .tx_event
-                        .send(Event::status(format!(
-                            "↻ cycle handoff failed (continuing in cycle {from}): {err}"
-                        )))
-                        .await;
-                    return;
-                }
+        //    Raced against the turn's cancel token: the first Ctrl+C drops the
+        //    in-flight request and leaves the session in the current cycle.
+        let briefing_result = tokio::select! {
+            biased;
+            () = self.cancel_token.cancelled() => None,
+            result = self.produce_cycle_briefing(&client, mode, max_briefing_tokens) => Some(result),
+        };
+        let Some(briefing_result) = briefing_result else {
+            self.report_cycle_refresh_cancelled(from).await;
+            return;
+        };
+        let briefing_text = match briefing_result {
+            Ok(text) => text,
+            Err(err) => {
+                tracing::warn!("Cycle briefing turn failed; skipping cycle advance: {err}");
+                let _ = self
+                    .tx_event
+                    .send(Event::status(format!(
+                        "↻ cycle handoff failed (continuing in cycle {from}): {err}"
+                    )))
+                    .await;
+                return;
             }
         };
 
@@ -2895,7 +2855,13 @@ impl Engine {
             fact_ledger_section.as_deref(),
         );
 
-        // 5. Atomic swap.
+        // 5. Atomic swap. Point of no return: a cancel that arrived while the
+        //    archive and structured-state capture ran must not replace the
+        //    transcript — the session stays in the current cycle instead.
+        if self.cancel_token.is_cancelled() {
+            self.report_cycle_refresh_cancelled(from).await;
+            return;
+        }
         self.rebuild_transcript(RebuildReason::CycleReset, seed_messages);
         self.session.cycle_count = to;
         self.session.current_cycle_started = now;
@@ -2922,6 +2888,72 @@ impl Engine {
             .tx_event
             .send(Event::status(format!(
                 "↻ context refreshed (cycle {from} → {to}, briefing: {briefing_tokens} tokens carried)"
+            )))
+            .await;
+    }
+
+    /// Produce the model-curated `<carry_forward>` briefing for a cycle
+    /// handoff. Prefers the Flash seam manager (#159) for cost and speed; falls
+    /// back to the main model (legacy [`produce_briefing`]) when the seam
+    /// manager isn't available or its call fails.
+    async fn produce_cycle_briefing(
+        &self,
+        client: &LlmClientHandle,
+        mode: AppMode,
+        max_briefing_tokens: usize,
+    ) -> Result<String> {
+        if let Some(seam_mgr) = self.host.seam() {
+            let seams = seam_mgr.collect_seam_texts(&self.session.messages).await;
+            let state_text = {
+                // Snapshot the working set out of the lock —
+                // `capture_structured_state` is async and a `std::sync::Mutex`
+                // guard isn't `Send`, so it can't cross the `.await`. The clone
+                // is a correct point-in-time snapshot (this is the cycle-restart
+                // path, rare).
+                let ws_snapshot = self
+                    .session
+                    .working_set
+                    .lock()
+                    .expect("working_set poisoned")
+                    .clone();
+                self.host
+                    .capture_structured_state(StructuredStateRequest {
+                        mode_label: mode.label(),
+                        workspace: self.config.workspace.clone(),
+                        cwd: std::env::current_dir().ok(),
+                        working_set: &ws_snapshot,
+                        todos: &self.config.todos,
+                        plan_state: &self.config.plan_state,
+                    })
+                    .await
+            };
+            match seam_mgr
+                .produce_flash_briefing(&seams, state_text.as_deref())
+                .await
+            {
+                Ok(text) => return Ok(text),
+                Err(err) => {
+                    tracing::warn!("Flash briefing failed, falling back to main model: {err}");
+                }
+            }
+        }
+        produce_briefing(
+            client.as_ref(),
+            &self.session.model,
+            &self.session.messages,
+            max_briefing_tokens,
+        )
+        .await
+    }
+
+    /// Emit the "refresh was cancelled, no cycle advanced" status. Both
+    /// cancellation points in `maybe_advance_cycle` report through here so the
+    /// user-visible copy has one source.
+    async fn report_cycle_refresh_cancelled(&self, from: u32) {
+        let _ = self
+            .tx_event
+            .send(Event::status(format!(
+                "↻ context refresh cancelled (continuing in cycle {from})"
             )))
             .await;
     }
@@ -3344,10 +3376,7 @@ pub use context::{
 // bridge lists every item it depends on explicitly; anything not on that list
 // is kept private here. Private `use` bindings remain visible to this
 // module's descendants, so sibling submodules still resolve them via `super::`.
-use context::{
-    MIN_RECENT_MESSAGES_TO_KEEP, estimate_input_tokens_conservative, summarize_text,
-    turn_response_headroom_tokens,
-};
+use context::{MIN_RECENT_MESSAGES_TO_KEEP, estimate_input_tokens_conservative, summarize_text};
 /// Build the deliverables watchdog probe from the task instruction text,
 /// or `None` when no deliverable paths parse out (interactive chats, tasks
 /// without disk outputs).
