@@ -50,6 +50,11 @@ The prompt entry points are:
   turn. It is not one-shot; the session stays open for follow-ups.
 - `codesmith exec "<prompt>"` — the non-interactive one-shot form.
 
+Inside the REPL, `/help` is the live list of slash commands — typing `/`
+reports how many exist, `Tab` completes the name (press it twice to list the
+matches), and the dim text after the cursor previews what the match does. `/plan`,
+`/agent`, and `/yolo` are shortcuts for the matching `/mode` value.
+
 ## Model selection
 
 The top-level `--model <id>` flag overrides the model for that run — it

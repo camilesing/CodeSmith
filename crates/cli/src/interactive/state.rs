@@ -40,6 +40,12 @@ use codesmith_config::presets::PresetCatalog;
 /// built (repo rule: write down what a design does not do):
 ///
 /// - Single-line input: no multiline composer, no paste-burst editor.
+/// - Completion (Tab) covers registered command names, user command names,
+///   and three closed argument vocabularies. Live model names, sessions,
+///   skills, presets, and `@file` paths are not completed (they need IO or
+///   the network, which cannot run in the completion callback), and there
+///   is no popup menu while typing — feedback is the dim inline hint
+///   (see `completion.rs`).
 /// - No mouse support, no viewport scrolling, no themes beyond ANSI colors.
 /// - Reasoning/thinking deltas are not streamed to the terminal.
 /// - Desktop notifications (OSC 9/BEL) are not emitted on turn completion.

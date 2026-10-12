@@ -13,6 +13,23 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
 
 ### Added
 
+- **REPL slash-command completion**: typing `/` in the line REPL is no longer
+  silent. A dim hint after the cursor previews the matching command (its
+  remaining characters plus a one-line description) or reports how many
+  commands match; one `Tab` completes to the longest common prefix and a
+  second lists the candidates. Names come from a new
+  command registry that also drives `/help`, which had fallen behind the
+  dispatcher (20 of the 75 dispatchable names). Commands from
+  `.codesmith/commands/*.md` load at REPL start, are completed too, and are
+  listed by `/help`. Aliases dispatch but are not offered, and only closed
+  argument vocabularies (`/mode`, `/provider`, `/verbose`) are completed —
+  live model names, sessions, skills, presets, and `@file` paths need IO or
+  the network and are not.
+- **`/plan` and `/agent`**: restored as `/mode` shorthands. Upstream #1247
+  kept `/plan`, `/agent`, and `/yolo` as compatibility shortcuts; the port to
+  the line REPL carried over only `/yolo`, so `/plan` answered
+  `unknown command`.
+
 - **`codesmith version` and `codesmith docker`**: the two commands users type
   expecting output now exist. `version` prints byte-identical output to
   `--version` (same `CODESMITH_BUILD_VERSION`), and `docker` prints the

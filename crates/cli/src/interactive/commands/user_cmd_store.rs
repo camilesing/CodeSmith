@@ -27,6 +27,15 @@ pub(crate) fn load_user_commands(workspace: Option<&Path>) -> Vec<(String, Strin
     commands
 }
 
+/// Just the command names, for `/help` and Tab completion (the loader above
+/// is the single scanner for these directories).
+pub(crate) fn user_command_names(workspace: Option<&Path>) -> Vec<String> {
+    load_user_commands(workspace)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect()
+}
+
 /// Return all candidate commands directories in precedence order.
 fn commands_dirs(workspace: Option<&Path>) -> Vec<PathBuf> {
     let mut dirs = Vec::new();

@@ -174,7 +174,8 @@ Chat Completions 驱动 turn。
   - `state.rs` - REPL 会话状态（含已知限制说明）
   - `render.rs` - 行输入处理、Ctrl+C/`Ctrl+D` 语义与流式输出渲染
   - `status.rs` - 提示符上方的状态行（运行状态圆点、preset 档位、上下文窗口占用、模式、子代理数、模型、版本）
-  - `commands/` - 斜杠命令分发（`/resume`、`/config`、`/skills`、`/queue` 等）
+  - `completion.rs` - Tab 补全与行内提示（rustyline helper：注册表命令名与用户命令；仅补全封闭参数词表）
+  - `commands/` - 斜杠命令分发（`/resume`、`/config`、`/skills`、`/queue` 等）；`commands/registry.rs` 是分发、`/help` 与 Tab 补全共读的命令名/别名/帮助表
 
 ### LSP 集成
 

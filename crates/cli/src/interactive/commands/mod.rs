@@ -13,6 +13,7 @@ pub mod misc_cmds;
 pub mod mods_cmds;
 pub mod network_store;
 pub mod project_doc;
+pub mod registry;
 pub mod session_cmds;
 pub mod share;
 pub mod skills_cmds;
@@ -21,6 +22,7 @@ pub mod user_cmd_store;
 use codesmith_config::presets::PresetCatalog;
 use colored::Colorize;
 
+use self::registry::Command;
 use super::state::ReplState;
 use crate::app_state::AppMode;
 use crate::core::ops::Op;
@@ -44,48 +46,65 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
         return false;
     }
 
-    match command {
-        "help" | "?" => {
-            print_help();
+    // Built-ins resolve through the registry: every name `/help` prints and
+    // Tab completes is dispatchable, and a registered name with no arm below
+    // is a compile error because this match is exhaustive over `Command`.
+    let Some(info) = Command::resolve(command) else {
+        println!(
+            "{} unknown command /{command} — {}",
+            "✗".red(),
+            "/help lists what exists".dimmed()
+        );
+        return false;
+    };
+    match info.command {
+        Command::Help => {
+            print_help(state);
             false
         }
-        "exit" | "quit" | "q" => true,
-        "clear" => {
+        Command::Exit => true,
+        Command::Clear => {
             print!("\x1b[2J\x1b[H");
             // The screen transcript is gone; so is its replay source.
             state.tool_log.clear();
             false
         }
-        "status" => {
+        Command::Status => {
             print_status(state);
             false
         }
-        "expand" => {
+        Command::Expand => {
             cmd_expand(state, &arg_str);
             false
         }
-        "model" => {
+        Command::Model => {
             cmd_model(state, &arg_str).await;
             false
         }
-        "mode" => {
+        Command::Mode => {
             cmd_mode(state, &arg_str);
             false
         }
-        "yolo" => {
+        // Upstream #1247 kept /plan and /agent as compatibility shorthands
+        // for /mode; the line-REPL port had dropped the first two.
+        Command::Plan | Command::Agent => {
+            cmd_mode(state, info.name);
+            false
+        }
+        Command::Yolo => {
             state.set_mode(AppMode::Yolo);
             println!("{}", "YOLO mode: shell + trust + auto-approve ON".yellow());
             false
         }
-        "preset" => {
+        Command::Preset => {
             cmd_preset(state, &arg_str);
             false
         }
-        "provider" => {
+        Command::Provider => {
             cmd_provider(state, &arg_str);
             false
         }
-        "sessions" => {
+        Command::Sessions => {
             session_cmds::sessions(
                 state,
                 if arg_str.is_empty() {
@@ -96,7 +115,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             );
             false
         }
-        "resume" => {
+        Command::Resume => {
             session_cmds::resume(
                 state,
                 if arg_str.is_empty() {
@@ -108,7 +127,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             .await;
             false
         }
-        "save" => {
+        Command::Save => {
             session_cmds::save(
                 state,
                 if arg_str.is_empty() {
@@ -119,11 +138,11 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             );
             false
         }
-        "fork" | "branch" => {
+        Command::Fork => {
             session_cmds::fork(state).await;
             false
         }
-        "load" => {
+        Command::Load => {
             session_cmds::load(
                 state,
                 if arg_str.is_empty() {
@@ -135,7 +154,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             .await;
             false
         }
-        "compact" | "yasuo" => {
+        Command::Compact => {
             session_cmds::compact(
                 state,
                 if arg_str.is_empty() {
@@ -147,11 +166,11 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             .await;
             false
         }
-        "purge" | "qingchu" => {
+        Command::Purge => {
             session_cmds::purge(state).await;
             false
         }
-        "new" => {
+        Command::New => {
             session_cmds::new_session(
                 state,
                 if arg_str.is_empty() {
@@ -163,7 +182,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             .await;
             false
         }
-        "export" | "daochu" => {
+        Command::Export => {
             session_cmds::export(
                 state,
                 if arg_str.is_empty() {
@@ -174,7 +193,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             );
             false
         }
-        "rename" | "gaiming" => {
+        Command::Rename => {
             session_cmds::rename(
                 state,
                 if arg_str.is_empty() {
@@ -185,35 +204,35 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             );
             false
         }
-        "agents" | "subagents" => {
+        Command::Agents => {
             cmd_agents(state);
             false
         }
-        "logout" => {
+        Command::Logout => {
             cmd_logout(state);
             false
         }
-        "tokens" => {
+        Command::Tokens => {
             debug_cmds::tokens(state);
             false
         }
-        "cost" => {
+        Command::Cost => {
             debug_cmds::cost(state);
             false
         }
-        "tools" => {
+        Command::Tools => {
             debug_cmds::tools(state);
             false
         }
-        "system" | "xitong" => {
+        Command::System => {
             debug_cmds::system_prompt(state);
             false
         }
-        "context" | "ctx" => {
+        Command::Context => {
             debug_cmds::context(state);
             false
         }
-        "cache" => {
+        Command::Cache => {
             debug_cmds::cache(
                 state,
                 if arg_str.is_empty() {
@@ -224,31 +243,31 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             );
             false
         }
-        "diff" => {
+        Command::Diff => {
             debug_cmds::diff(state);
             false
         }
-        "edit" => {
+        Command::Edit => {
             debug_cmds::edit(state);
             false
         }
-        "undo" => {
+        Command::Undo => {
             debug_cmds::undo(state).await;
             false
         }
-        "retry" | "chongshi" => {
+        Command::Retry => {
             debug_cmds::retry(state).await;
             false
         }
-        "config" => {
+        Command::Config => {
             config_cmds::config_command(state, &arg_str);
             false
         }
-        "settings" => {
+        Command::Settings => {
             config_cmds::show_settings(state);
             false
         }
-        "verbose" => {
+        Command::Verbose => {
             config_cmds::verbose(
                 state,
                 if arg_str.is_empty() {
@@ -259,7 +278,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             );
             false
         }
-        "trust" | "xinren" => {
+        Command::Trust => {
             config_cmds::trust(
                 state,
                 if arg_str.is_empty() {
@@ -270,7 +289,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             );
             false
         }
-        "slop" | "canzha" => {
+        Command::Slop => {
             config_cmds::slop(if arg_str.is_empty() {
                 None
             } else {
@@ -278,23 +297,23 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             });
             false
         }
-        "lsp" => {
+        Command::Lsp => {
             config_cmds::lsp(state);
             false
         }
-        "theme" => {
+        Command::Theme => {
             config_cmds::theme();
             false
         }
-        "statusline" => {
+        Command::Statusline => {
             config_cmds::status_line();
             false
         }
-        "init" => {
+        Command::Init => {
             misc_cmds::init(state);
             false
         }
-        "hooks" | "hook" | "gouzi" => {
+        Command::Hooks => {
             misc_cmds::hooks(
                 state,
                 if arg_str.is_empty() {
@@ -305,11 +324,11 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             );
             false
         }
-        "mcp" => {
+        Command::Mcp => {
             misc_cmds::mcp(state, &arg_str).await;
             false
         }
-        "network" => {
+        Command::Network => {
             misc_cmds::network(if arg_str.is_empty() {
                 None
             } else {
@@ -317,7 +336,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             });
             false
         }
-        "goal" | "hunt" | "mubiao" => {
+        Command::Goal => {
             misc_cmds::goal(
                 state,
                 if arg_str.is_empty() {
@@ -329,19 +348,19 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             .await;
             false
         }
-        "task" | "tasks" => {
+        Command::Task => {
             misc_cmds::task(state, &arg_str).await;
             false
         }
-        "jobs" | "job" | "zuoye" => {
+        Command::Jobs => {
             misc_cmds::jobs(state);
             false
         }
-        "balance" => {
+        Command::Balance => {
             misc_cmds::balance(state);
             false
         }
-        "verify" => {
+        Command::Verify => {
             misc_cmds::verify(if arg_str.is_empty() {
                 None
             } else {
@@ -349,15 +368,15 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             });
             false
         }
-        "links" | "dashboard" | "api" | "lianjie" => {
+        Command::Links => {
             misc_cmds::links();
             false
         }
-        "home" | "stats" | "overview" | "zhuye" | "shouye" => {
+        Command::Home => {
             misc_cmds::home(state);
             false
         }
-        "profile" | "dangan" => {
+        Command::Profile => {
             misc_cmds::profile(
                 state,
                 if arg_str.is_empty() {
@@ -368,7 +387,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             );
             false
         }
-        "workspace" | "cwd" => {
+        Command::Workspace => {
             misc_cmds::workspace(
                 state,
                 if arg_str.is_empty() {
@@ -379,11 +398,11 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             );
             false
         }
-        "translate" | "translation" | "transale" => {
+        Command::Translate => {
             misc_cmds::translate(state);
             false
         }
-        "anchor" | "maodian" => {
+        Command::Anchor => {
             misc_cmds::anchor(
                 state,
                 if arg_str.is_empty() {
@@ -394,7 +413,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             );
             false
         }
-        "note" => {
+        Command::Note => {
             misc_cmds::note(
                 state,
                 if arg_str.is_empty() {
@@ -405,7 +424,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             );
             false
         }
-        "attach" | "image" | "media" | "fujian" => {
+        Command::Attach => {
             misc_cmds::attach(
                 state,
                 if arg_str.is_empty() {
@@ -416,7 +435,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             );
             false
         }
-        "feedback" => {
+        Command::Feedback => {
             misc_cmds::feedback(if arg_str.is_empty() {
                 None
             } else {
@@ -424,11 +443,11 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             });
             false
         }
-        "share" => {
+        Command::Share => {
             misc_cmds::share(state).await;
             false
         }
-        "skills" | "jinengliebiao" => {
+        Command::Skills => {
             skills_cmds::list_skills(
                 state,
                 if arg_str.is_empty() {
@@ -440,7 +459,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             .await;
             false
         }
-        "skill" | "jineng" => {
+        Command::Skill => {
             skills_cmds::run_skill(
                 state,
                 if arg_str.is_empty() {
@@ -452,7 +471,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             .await;
             false
         }
-        "review" | "shencha" => {
+        Command::Review => {
             skills_cmds::review(
                 state,
                 if arg_str.is_empty() {
@@ -464,43 +483,43 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             .await;
             false
         }
-        "queue" | "queued" => {
+        Command::Queue => {
             misc_cmds::queue();
             false
         }
-        "stash" | "park" => {
+        Command::Stash => {
             misc_cmds::stash();
             false
         }
-        "cycles" | "zhouqi" | "cycle" | "recall" => {
+        Command::Cycles => {
             misc_cmds::cycles();
             false
         }
-        "relay" | "batonpass" => {
+        Command::Relay => {
             misc_cmds::relay();
             false
         }
-        "restore" => {
+        Command::Restore => {
             misc_cmds::restore();
             false
         }
-        "change" => {
+        Command::Change => {
             misc_cmds::change();
             false
         }
-        "rlm" | "recursive" | "digui" => {
+        Command::Rlm => {
             misc_cmds::rlm();
             false
         }
-        "extension" | "ext" => {
+        Command::Extension => {
             extension_cmds::extension_command(state, &arg_str).await;
             false
         }
-        "mods" => {
+        Command::Mods => {
             mods_cmds::mods_command(state, &arg_str).await;
             false
         }
-        "models" => {
+        Command::Models => {
             let json = arg_str.split_whitespace().any(|flag| flag == "--json");
             if let Err(err) =
                 crate::main_root::run_models(&state.config, crate::main_root::ModelsArgs { json })
@@ -510,7 +529,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             }
             false
         }
-        "memory" => {
+        Command::Memory => {
             misc_cmds::memory(
                 state,
                 if arg_str.is_empty() {
@@ -521,14 +540,14 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             );
             false
         }
-        "set" => {
+        Command::Set => {
             println!(
                 "{}",
                 "the /set command was retired — use /config to edit settings and /settings to inspect values".dimmed()
             );
             false
         }
-        "deepseek" => {
+        Command::Deepseek => {
             println!(
                 "{}",
                 "the /deepseek command was renamed — use /links (aliases: /dashboard, /api)"
@@ -536,73 +555,37 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             );
             false
         }
-        other => {
-            println!(
-                "{} unknown command /{other} — {}",
-                "✗".red(),
-                "/help lists what exists".dimmed()
-            );
-            false
-        }
     }
 }
 
-fn print_help() {
-    println!("{}", "commands:".bold());
-    let rows: [(&str, &str); 20] = [
-        ("/help", "this list"),
-        (
-            "/status",
-            "session status: tokens, cost, model, mode, preset, agents",
-        ),
-        (
-            "/expand [n|all]",
-            "reprint hidden tool-call detail (Ctrl+O toggles mid-turn)",
-        ),
-        (
-            "/model [name]",
-            "show or switch the model (`auto` re-enables routing)",
-        ),
-        (
-            "/models [--json]",
-            "list live models from the active endpoint",
-        ),
-        ("/mode <name>", "agent | yolo | plan | coordinator"),
-        ("/yolo", "shortcut for /mode yolo"),
-        (
-            "/preset [name|list|export|off]",
-            "show, switch, export, or drop the runtime profile tier",
-        ),
-        ("/provider [name]", "show or switch the API provider"),
-        (
-            "/skills [prefix|--remote|sync]",
-            "list local skills, browse the registry, refresh the cache",
-        ),
-        (
-            "/skill <name>|install|update|uninstall|trust",
-            "activate a skill or manage installed ones",
-        ),
-        (
-            "/memory [show|path|clear|edit]",
-            "inspect the memory file (`# text` quick-appends)",
-        ),
-        (
-            "/extension <sub>",
-            "list|info|enable|disable|status|reload|install|uninstall",
-        ),
-        (
-            "/mods <sub>",
-            "list|status|info|activate|enable|disable|remove|reload",
-        ),
-        ("/sessions [n]", "list saved sessions"),
-        ("/agents", "list running sub-agents"),
-        ("/compact", "compact the context now"),
-        ("/new", "start a fresh session"),
-        ("/logout", "remove the saved API key"),
-        ("/exit", "quit (also Ctrl+D; Ctrl+C twice mid-turn)"),
-    ];
-    for (name, help) in rows {
-        println!("  {:<20} {}", name, help.dimmed());
+/// `/help` — every registered command, straight from
+/// [`registry::Command::ALL`].
+///
+/// Table-driven so it cannot fall behind the dispatcher (it was a
+/// hardcoded 20-row subset of the 75 dispatchable names) and so it names
+/// exactly what Tab completes.
+fn print_help(state: &ReplState) {
+    println!("{}", "commands (Tab completes these names):".bold());
+    for info in registry::Command::ALL {
+        let name = if info.usage.is_empty() {
+            format!("/{}", info.name)
+        } else {
+            format!("/{} {}", info.name, info.usage)
+        };
+        if name.len() <= 32 {
+            println!("  {name:<32} {}", info.help.dimmed());
+        } else {
+            println!("  {name}");
+            println!("    {}", info.help.dimmed());
+        }
+    }
+    let user = user_cmd_store::user_command_names(Some(&state.workspace));
+    if !user.is_empty() {
+        println!();
+        println!("{}", "user commands (these shadow built-ins):".bold());
+        for name in user {
+            println!("  /{name}");
+        }
     }
 }
 

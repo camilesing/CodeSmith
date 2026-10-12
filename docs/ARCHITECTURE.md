@@ -179,7 +179,8 @@ live there).
   - `state.rs` - REPL session state (with its known-limitations note)
   - `render.rs` - Line input handling, Ctrl+C/`Ctrl+D` semantics, and streaming output rendering
   - `status.rs` - Status line above the prompt (running-state dot, preset tier, context-window occupancy, mode, sub-agent count, model, version)
-  - `commands/` - Slash-command dispatch (`/resume`, `/config`, `/skills`, `/queue`, …)
+  - `completion.rs` - Tab completion and the inline hint (rustyline helper: registry names and user commands; closed argument vocabularies only)
+  - `commands/` - Slash-command dispatch (`/resume`, `/config`, `/skills`, `/queue`, …); `commands/registry.rs` is the name/alias/help table that dispatch, `/help`, and Tab completion all read
 
 ### LSP Integration
 
