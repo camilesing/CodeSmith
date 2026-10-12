@@ -899,7 +899,6 @@ pub struct SkillsConfig {
 impl SkillsConfig {
     /// Resolve the registry URL with the bundled default.
     #[must_use]
-    #[allow(dead_code)]
     pub fn registry_url(&self) -> String {
         self.registry_url
             .clone()
@@ -908,7 +907,6 @@ impl SkillsConfig {
 
     /// Resolve the max install size with the bundled default.
     #[must_use]
-    #[allow(dead_code)]
     pub fn max_install_size_bytes(&self) -> u64 {
         self.max_install_size_bytes
             .unwrap_or(crate::skills::install::DEFAULT_MAX_SIZE_BYTES)

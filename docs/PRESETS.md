@@ -129,9 +129,15 @@ that sets them prints what will apply after restart.
 `--mode` spelling still works) > `preset = "name"` in config.toml (the legacy
 `mode` key still works as a deprecated alias) > the last preset picked in the REPL
 (persisted in settings.toml) > the factory default `middle`. To unset, stop
-passing `--preset`, remove `preset` from config.toml, and clear the persisted
-REPL selection (`active_preset` in settings.toml) — with no selection anywhere,
-`middle` applies.
+passing `--preset`, remove `preset` from config.toml, and run `/preset off`
+(clears the persisted `active_preset` selection; current dials are kept) —
+with no selection anywhere, `middle` applies.
+
+**Sharing:** `/preset export <name>` snapshots the current dials as a
+user-layer preset file (`~/.codesmith/presets/<name>.toml`) — the active
+definition as the base, overlaid with the live mode and tool lists — so it
+shows up in `/preset list` and can be committed or copied. `/preset <name>`
+then applies it like any other preset.
 
 **Deprecated names.** The pre-rename spellings still work and map with a
 warning: `minimal` → `simple`, `balanced` → `middle`, `maximal` → `all`;
@@ -143,7 +149,8 @@ Switch the visible mode with `/mode <name>` — **agent | yolo | plan |
 coordinator** — or the `/yolo` shortcut (`/mode` with no argument prints the
 current mode). Run `/preset` to open the preset view, or switch directly
 with `/preset <name>` (`/preset list` shows every preset visible to this
-workspace).
+workspace, `/preset export <name>` snapshots current dials to a shareable
+file, `/preset off` drops the preset layer and keeps the current dials).
 
 - **Plan**: design-first prompting. Read-only investigation tools stay available; shell and patch execution stay off. Use this when you want to think out loud and produce a plan to hand to a human (yourself later, or a reviewer).
 - **Agent**: multi-step tool use. Shell execution (`exec_shell`, `task_shell_start`, `task_shell_wait`) requires `allow_shell = true` in config; approval prompts gate each call. File writes are allowed without a prompt.

@@ -76,8 +76,10 @@ prompt 的入口有两个：
 
 在 REPL 内，裸 `/provider` 打印当前 provider，`/provider <id>` 切换
 （仅当前会话生效；会打印重启提示，因为完整重配置需要新会话）。裸
-`/model` 打印当前模型，`/model <id>` 切换并持久化。不存在 `/models`
-REPL 命令——实时模型列举只有 `codesmith models` 子命令。
+`/model` 打印当前模型，`/model <id>` 切换并持久化。`/models` 从活动
+端点拉取并列出实时模型（`--json` 输出 pretty JSON；不支持 `/models`
+目录的 provider 会报告空列表）——与 `codesmith models` 子命令同一
+取数路径。
 
 ## 会话：分支与回滚
 

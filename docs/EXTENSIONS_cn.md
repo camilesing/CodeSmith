@@ -92,17 +92,28 @@ config.toml 的 `[tools].overrides <name> = { type = "disabled" }` 形态
 
 ## REPL 内管理器
 
-目前没有 REPL 扩展命令：`/extension` 是一个桩，打印
-"extension management (/extension list|reload|status) is not wired in
-the REPL yet — extension commands arrive with the §F port"
-（`crates/cli/src/interactive/commands/misc_cmds.rs`）。
+`/extension` 命令组（`crates/cli/src/interactive/commands/extension_cmds.rs`）
+是用户操作面：
 
-扩展管理是引擎级的：
+| 子命令 | 效果 |
+|---|---|
+| `/extension list` | 列出编译内置 + 已安装扩展（id、版本、范围、启用状态、安装来源）。 |
+| `/extension info <id>` | 显示单个扩展的元数据（版本、来源、dylib 路径、配置、来源记录、启用状态）。 |
+| `/extension enable <id>` | 在 `extensions_state.toml` 中标记启用；在下次 `/extension reload` 生效。 |
+| `/extension disable <id>` | 标记禁用；同样等重载生效。 |
+| `/extension status` | 报告绑定的 runner 代数 + 已绑定工具/命令数（外加启动审计中的失败加载）。 |
+| `/extension reload` | 重新填充共享 runner `Arc` —— 与 `manage_mods` 工具同一 chokepoint（见下文）。 |
+| `/extension install <source> [--global]` | 拉取（`git:` / `path:` / `crate:` / `prebuilt:`）→ 构建（源码类走 `cargo build`）→ 放置到 `<root>/<id>/`，写 `extension.toml` 与加载器校验的 sha256 边车，并记录 `installed[]` 来源。默认装到项目根；`--global` 选择 `~/.codesmith/extensions`。向**未受信任**工作区做项目安装会打印警告（发现侧信任门仍会拒载——用 `/trust add <path>` 信任该工作区）。`/extension reload` 加载它。 |
+| `/extension uninstall <id>` | 移除 `<root>/<id>/` 并清除来源记录；绑定在下次重载清除，dylib 在下一个轮边界卸载。 |
 
-- **运行时重载** —— 让智能体运行 `manage_mods` 工具并指定
-  `action="reload"`（`crates/cli/src/mod_ops.rs` →
-  `reload_extension_runtime`，`crates/cli/src/core/engine.rs`）。它会
-  重新填充**共享的 runner `Arc`**：`clear_handlers` → `clear_tools` →
+`prebuilt:<https-url>` 仅限 HTTPS，可选 `--checksum <sha256>`（不匹配
+则拒绝安装）。
+
+运行时重载机制（`/extension reload`、`/mods reload` 与 `manage_mods`
+工具共用 —— `crates/cli/src/mod_ops.rs` →
+`reload_extension_runtime`，`crates/cli/src/core/engine.rs`）：
+
+- 它会重新填充**共享的 runner `Arc`**：`clear_handlers` → `clear_tools` →
   `clear_commands` → `clear_providers`（丢弃注册 guard）→
   `clear_prompt_sections` → `clear_skills` →
   `clear_message_projections` → `drain_libraries_to_pending` →
@@ -114,9 +125,8 @@ the REPL yet — extension commands arrive with the §F port"
   处理器之后不再观察（被清除，而不是重复）；新安装的扩展会在下一
   次重载时被拾取。
 - **安装根 + 信任门** —— 不变：dylib 安装位于
-  [发现](#发现)一节所记载的安装根之下，项目本地 dylib 仍受工作区
-  信任门控（`apply_trust_gate`）。安装器/卸载器库本身（拉取 → 构建 →
-  sha256 边车）尚无用户界面。
+  [发现](#发现)一节所记载的安装根之下，项目本地 dylib 在加载时仍受
+  工作区信任门控（`apply_trust_gate`）—— 安装本身在设计上与信任无关。
 
 ## 发现
 
@@ -179,7 +189,7 @@ inventory::submit! {
 ```
 
 `cargo test -p codesmith-extensions scratchpad_is_discoverable` 可证明
-发现能拾取它（没有 REPL 列表命令 —— 见
+发现能拾取它（REPL 里 `/extension list` 可见 —— 见
 [REPL 内管理器](#repl-内管理器)）。完整的工具/命令/处理器主体见该文件。
 
 ## 扩展字段（trait 契约）
@@ -375,8 +385,8 @@ emit 位点）。
 - `ExtensionApi` 没有渲染器、快捷方式或标志注册面。
 - `AssistantStream` 只携带文本增量 —— thinking 增量保持仅 UI。
 - 能力清单每进程读取一次；修改需要重启。
-- 热加载永久排除 —— 仅限安装 + 运行时重载
-  （`manage_mods(action="reload")`）；安装器库尚无 REPL 界面。
+- 热加载永久排除 —— 仅限安装（`/extension install`）+ 运行时重载
+  （`/extension reload` 或 `manage_mods(action="reload")`）。
 
 ## 故障排查
 
@@ -384,14 +394,15 @@ emit 位点）。
   链接 —— 确认扩展的 crate 是 workspace 成员，且
   `crates/extensions/src/lib.rs` 声明了其模块。`cargo test -p
   codesmith-extensions scratchpad_is_discoverable` 可证明注册已接线。
-  没有 REPL 列表命令（`/extension` 是桩）；加载失败会体现在
+  `/extension list` / `/extension status` 显示宿主看到的视图；加载
+  失败会体现在
   `tracing` 汇总（target `codesmith_extensions`）中，dylib 安装可以直接
   查看 `~/.codesmith/extensions` / `<workspace>/.codesmith/extensions`。
 - **Runner 读起来是 "not bound"。** 引擎尚未构建（启动前），
   或 `state.extension_runner` 没有从句柄复制（`crates/cli/src/interactive/mod.rs`
   中 `spawn_engine` 之后）。
-- **改动后 mod 层没有反应。** 运行时重载是引擎级的 —— 让智能体运行
-  `manage_mods(action="reload")`（见 [MODS_cn.md](MODS_cn.md)）。
+- **改动后 mod 层没有反应。** 运行时重载是引擎级的 —— 运行
+  `/extension reload`（或 `/mods reload`）（见 [MODS_cn.md](MODS_cn.md)）。
 - **处理器返回 `Continue` 但没有任何变化。** `Continue` 按设计表示
   "无变化"。要取消/阻止/变换，请返回对应的变体 —— 并注意变体特定
   语义（非 `ToolCall` 接缝处的 `Block` 会被忽略；见上文的宿主接缝

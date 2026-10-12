@@ -258,16 +258,20 @@ Common commands for first-time users:
 | Command | Use |
 | --- | --- |
 | `/mode` | Switch between agent, plan, yolo, and coordinator modes |
-| `/preset` | Show or switch the preset tier (`/preset simple`, `/preset list`) |
+| `/preset` | Show, switch, export, or drop the preset tier (`/preset simple`, `/preset list`, `/preset export <name>`, `/preset off`) |
 | `/model` | Select a model or use `/model auto` |
+| `/models` | List live models from the active endpoint |
 | `/provider` | Pick the active API provider |
 | `/config` | Edit runtime and provider settings |
 | `/settings` | Inspect persistent UI preferences |
+| `/skills` | List skills (`--remote` browses the community registry; `/skill install <source>` installs one) |
+| `/memory` | Inspect the memory file (`# text` at the prompt quick-appends a note) |
+| `/extension` / `/mods` | Manage extensions and script mods (list, install, activate, reload) |
 | `/compact` | Summarize long context to recover token budget |
 | `/review` | Ask for a structured review workflow |
 | `/mcp` | Configure or inspect MCP server integration |
 
-Live model discovery is the `codesmith models` subcommand.
+Live model discovery also works as the `codesmith models` subcommand.
 
 Use `/provider` to switch the active provider. Provider IDs, environment
 variables, model defaults, and capability notes are

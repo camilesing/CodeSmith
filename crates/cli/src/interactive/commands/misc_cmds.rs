@@ -806,16 +806,102 @@ pub fn rlm() {
     );
 }
 
-pub fn extension() {
-    println!(
-        "{}",
-        "extension management (/extension list|reload|status) is not wired in the REPL yet — extension commands arrive with the §F port".dimmed()
-    );
+/// The memory file this session reads: the KoD entrypoint (`MEMORY.md`
+/// inside the memory dir) when Knowledge on Demand is enabled, the flat
+/// memory file otherwise — mirrors the `remember` tool's branch.
+pub(crate) fn memory_file(state: &ReplState) -> std::path::PathBuf {
+    if state.kod_enabled {
+        codesmith_agent_runtime::knowledge::paths::resolve_memory_entrypoint(&state.memory_dir)
+    } else {
+        state.memory_path.clone()
+    }
 }
 
-pub fn mods() {
-    println!(
-        "{}",
-        "mods management (/mods list|status|activate) is not wired in the REPL yet — mod commands arrive with the §F port".dimmed()
-    );
+/// `/memory [show|path|clear|edit|help]` — inspect, clear, or open the
+/// memory file. `edit` deliberately just prints the editor command rather
+/// than spawning an editor in-process.
+pub fn memory(state: &ReplState, arg: Option<&str>) {
+    let sub = arg.map(str::trim).unwrap_or("show").to_ascii_lowercase();
+    let path = memory_file(state);
+    match sub.as_str() {
+        "" | "show" => {
+            println!("memory file: {}", path.display());
+            match std::fs::read_to_string(&path) {
+                Ok(content) if content.trim().is_empty() => {
+                    println!("{}", "(empty)".dimmed());
+                }
+                Ok(content) => println!("{content}"),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    println!("{}", "(empty — nothing remembered yet)".dimmed());
+                }
+                Err(err) => println!("{} read {}: {err}", "✗".red(), path.display()),
+            }
+        }
+        "path" => println!("{}", path.display()),
+        "clear" => {
+            if let Some(parent) = path.parent()
+                && let Err(err) = std::fs::create_dir_all(parent)
+            {
+                println!("{} clear failed: {err}", "✗".red());
+                return;
+            }
+            match std::fs::write(&path, "") {
+                Ok(()) => println!("cleared {}", path.display()),
+                Err(err) => println!("{} clear failed: {err}", "✗".red()),
+            }
+        }
+        "edit" => {
+            let editor = std::env::var("VISUAL")
+                .or_else(|_| std::env::var("EDITOR"))
+                .unwrap_or_else(|_| "vi".to_string());
+            println!("{editor} {}", path.display());
+        }
+        "help" => {
+            println!(
+                "{}",
+                "usage: /memory [show|path|clear|edit] — the file is re-read at every prompt build, so edits land on the next turn".dimmed()
+            );
+            println!("memory file: {}", path.display());
+        }
+        other => println!(
+            "{} unknown subcommand `{other}` — show | path | clear | edit | help",
+            "✗".red()
+        ),
+    }
+}
+
+/// `#`-prefix quick memory: a line starting with exactly one `#` (but not
+/// `##` or `#!`, so Markdown headings and shebangs fall through to a
+/// normal turn) is a memory append — no turn fires.
+pub(crate) fn quick_memory_entry(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix('#')?;
+    if rest.starts_with('#') || line.starts_with("#!") {
+        return None;
+    }
+    Some(rest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::quick_memory_entry;
+
+    #[test]
+    fn quick_memory_entry_intercepts_single_hash_only() {
+        assert_eq!(
+            quick_memory_entry("# remember this"),
+            Some(" remember this")
+        );
+        assert_eq!(quick_memory_entry("#no-space"), Some("no-space"));
+        // Bare `#` is an (empty) entry — append_entry rejects it downstream.
+        assert_eq!(quick_memory_entry("#"), Some(""));
+    }
+
+    #[test]
+    fn quick_memory_entry_falls_through_headings_and_shebangs() {
+        assert_eq!(quick_memory_entry("## heading"), None);
+        assert_eq!(quick_memory_entry("### deep heading"), None);
+        assert_eq!(quick_memory_entry("#!/bin/sh"), None);
+        assert_eq!(quick_memory_entry("plain text"), None);
+        assert_eq!(quick_memory_entry(""), None);
+    }
 }

@@ -83,8 +83,10 @@ manages it.
 Inside the REPL, a bare `/provider` prints the current provider and
 `/provider <id>` switches (session-scoped; a restart hint is printed, since a
 full re-config needs a new session). A bare `/model` prints the current model
-and `/model <id>` switches and persists it. There is no `/models` REPL
-command — live model listing is the `codesmith models` subcommand.
+and `/model <id>` switches and persists it. `/models` fetches and lists the
+live models from the active endpoint (`--json` for pretty JSON; providers
+without a `/models` catalog report an empty list) — the same listing as the
+`codesmith models` subcommand.
 
 ## Sessions: branching and rollback
 
