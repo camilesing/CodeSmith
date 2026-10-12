@@ -966,8 +966,9 @@ fn cmd_agents(state: &ReplState) {
 
 fn cmd_logout(_state: &mut ReplState) {
     // Wipe the stored key and the onboarding marker so the next start is a
-    // clean first run. Signing back in is explicit — there is no startup
-    // key prompt; use `codesmith auth set` or `codesmith login`.
+    // clean first run: the next bare `codesmith` re-asks the setup
+    // questions. Signing back in is explicit — `codesmith auth set` or
+    // `codesmith login` skips the flow.
     match crate::config::clear_api_key() {
         Ok(()) => {
             if let Some(marker) = codesmith_agent_runtime::onboarding::default_marker_path()
