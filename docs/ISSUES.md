@@ -23,14 +23,19 @@ in the codebase and its documentation.
 Record new issue references here instead of pointing at the GitHub
 tracker. The upstream CodeWhale repository (`Hmbown/CodeSmith`) is
 unresolvable (404), so its issue numbers are unverifiable; numbers naming
-upstream work appear only in `docs/legacy/` (frozen history) and in the
-citations below. `docs/REVIEW_PIPELINE.md` and
-`docs/RLM_BRANCHING_ROADMAP.md` live under `docs/legacy/`.
+upstream work appear in `docs/legacy/` (frozen history), in the citations
+below, and — since the single-binary graft — in the migrated runtime-API
+comments in `crates/cli` (the `#561`–`#564` quartet, section 3).
+`docs/REVIEW_PIPELINE.md` and `docs/RLM_BRANCHING_ROADMAP.md` live under
+`docs/legacy/`.
 
 ## 1. Internal `CX#N` references
 
-Four internal design-issue numbers appear in TUI comments. No `CX#1`–`CX#4`
-references exist in the tree.
+Four internal design-issue numbers appeared in TUI comments. **No `CX#`
+reference remains in the tree**: the ratatui TUI that carried them was
+removed on 2026-10-11 (the line-REPL in `crates/cli` is the only
+frontend), so every citation in this section is a dead path. The records
+below are preserved as history; no `CX#1`–`CX#4` reference ever existed.
 
 ### CX#5 — streaming gate for fenced code blocks split across deltas
 
@@ -85,12 +90,12 @@ Design reference:
 <https://embracethered.com/blog/posts/2024/hiding-and-finding-text-with-unicode-tags/>
 
 - `crates/agent-runtime/src/sanitization.rs:6`
-- `crates/agent-runtime/src/sanitization.rs:143` (U+E0001 vector)
-- `crates/agent-runtime/src/engine/context.rs:308`
-- `crates/agent-runtime/src/engine/host_executor.rs:373`
-- `crates/agent-runtime/src/engine/host_executor.rs:1569`
-- `crates/agent-runtime/src/engine/host_executor.rs:8204`
-- `crates/agent-runtime/src/mcp.rs:3010`
+- `crates/agent-runtime/src/sanitization.rs:192` (U+E0001 vector)
+- `crates/agent-runtime/src/engine/context.rs:322`
+- `crates/agent-runtime/src/engine/host_executor.rs:372`
+- `crates/agent-runtime/src/engine/host_executor.rs:1949`
+- `crates/agent-runtime/src/engine/host_executor.rs:9791`
+- `crates/agent-runtime/src/mcp.rs:3155`
 - `docs/rfcs/extra-findings-01-unicode-sanitization.md:12` (file
   removed; record preserved here)
 - `docs/legacy/CHANGELOG-upstream.md:64` (Unreleased sanitization entry)
@@ -103,19 +108,23 @@ Tightened the default privileges of sub-agents created through
 `allow_shell` / shell access must be opted into explicitly, and omitted
 optional fields must not silently enable shell.
 
-- `crates/tui/src/config.rs:2526`
-- `crates/tui/src/config.rs:5023` (regression test)
-- `crates/tui/src/task_manager.rs:582`
-- `crates/tui/src/task_manager.rs:1615` (regression test)
+- `crates/cli/src/config.rs:2372`
+- `crates/cli/src/config.rs:4552` (regression test)
+- `crates/cli/src/task_manager.rs:577`
+- `crates/cli/src/task_manager.rs:1595` (regression test)
 - `docs/legacy/CHANGELOG-upstream.md:2690`
+
+(The guards were grafted into `crates/cli` with the single-binary
+consolidation; the citations previously pointed at the removed
+`crates/tui/src/config.rs` / `crates/tui/src/task_manager.rs`.)
 
 ### GHSA-88gh-2526-gfrr — `fetch_url` network-target validation
 
 Hardened the `fetch_url` tool's network-target validation (patched in
 v0.8.26). Regression coverage pins parsing of bracketed IPv6 literals.
 
-- `crates/tool-impls/src/tools/fetch_url.rs:338`
-- `crates/tool-impls/src/tools/fetch_url.rs:687` (regression test)
+- `crates/tool-impls/src/tools/fetch_url.rs:369`
+- `crates/tool-impls/src/tools/fetch_url.rs:720` (regression test)
 - `docs/legacy/CHANGELOG-upstream.md:2688`
 
 ### Dependency-side advisories (for completeness)
@@ -130,9 +139,13 @@ codebase:
 ## 3. Cross-repo `Whalescale#N` references
 
 The Whalescale desktop project tracks its integration needs in its own
-issue numbers; the runtime API and TUI cite them at the implementation
-sites. (Where a Whalescale number appeared paired with a CodeSmith
-tracker number, only the Whalescale number is kept, per policy.)
+issue numbers; the runtime API (now in `crates/cli/src/runtime_api.rs` /
+`runtime_threads.rs` after the TUI removal) cites them at the
+implementation sites. (Where a Whalescale number appeared paired with a
+CodeSmith tracker number, the entry prose keeps only the Whalescale
+number, per policy; the paired upstream tracker numbers `#561`–`#564`
+now live in the migrated `crates/cli` comments and are recorded
+separately at the end of this section.)
 
 ### Whalescale#420 — graceful MCP shutdown
 
@@ -141,11 +154,11 @@ grace window before tokio's `kill_on_drop` fires SIGKILL; a drop fallback
 covers pools that were never shut down explicitly and transports that
 have no child process.
 
-- `crates/agent-runtime/src/mcp.rs:677`
-- `crates/agent-runtime/src/mcp.rs:818` (cited as `#420`)
-- `crates/agent-runtime/src/mcp.rs:3149`
-- `crates/agent-runtime/src/mcp.rs:5008` (cited as `#420`)
-- `crates/agent-runtime/src/engine/mod.rs:911` (cited as `#420`)
+- `crates/agent-runtime/src/mcp.rs:739`
+- `crates/agent-runtime/src/mcp.rs:880` (cited as `#420`)
+- `crates/agent-runtime/src/mcp.rs:3294`
+- `crates/agent-runtime/src/mcp.rs:5227` (cited as `#420`)
+- `crates/agent-runtime/src/engine/mod.rs:962` (cited as `#420`)
 
 ### Whalescale#439 — toast-stack queue consistency
 
@@ -154,53 +167,94 @@ line strip above the footer so a burst of events is not collapsed to a
 single visible message (`TOAST_STACK_MAX_VISIBLE = 3`; the footer line
 stays the most-recent).
 
-- `crates/tui/src/tui/app.rs:3097`
-- `crates/tui/src/tui/ui.rs:6540` (cited as `#439`)
-- `crates/tui/src/tui/ui.rs:7779` (cited as `#439`)
+No-longer-applicable, resolved by the TUI removal (2026-10-11): the toast
+stack was ratatui-TUI rendering state, the cited files no longer exist,
+and no `#439` reference remains in `crates/`. Record preserved here; the
+only surviving `#439` reference is the frozen changelog entry.
+
+- `crates/tui/src/tui/app.rs:3097` (dead path; file removed 2026-10-11)
+- `crates/tui/src/tui/ui.rs:6540` (cited as `#439`; dead path)
+- `crates/tui/src/tui/ui.rs:7779` (cited as `#439`; dead path)
+- `docs/legacy/CHANGELOG-upstream.md:3755` ("Stacked toast overlay" entry)
 
 ### whalescale#255 — runtime API CORS allow-list
 
 The runtime API gains configurable CORS origins for the Whalescale
 desktop bridge: `[runtime_api] cors_origins` in `config.toml` plus the
 `CODESMITH_CORS_ORIGINS` env var, extending the built-in dev origins
-while preserving first-seen order.
+while preserving first-seen order. (Comments pair this with upstream
+tracker `#561`.)
 
-- `crates/tui/src/runtime_api.rs:78`
-- `crates/tui/src/runtime_api.rs:2044`
-- `crates/tui/src/runtime_api.rs:3684`
-- `crates/tui/src/config.rs:1187`
-- `crates/tui/src/config.rs:1218`
-- `crates/tui/src/main.rs:668`
-- `crates/tui/src/main.rs:1699`
+- `crates/cli/src/runtime_api.rs:78` (paired with `#561`)
+- `crates/cli/src/runtime_api.rs:2054`
+- `crates/cli/src/runtime_api.rs:3705` (paired with `#561`)
+- `crates/cli/src/config.rs:850` (paired with `#561`)
+- `crates/cli/src/config.rs:881` (paired with `#561`)
+- `crates/cli/src/main_root.rs:711`
+- `crates/cli/src/main_root.rs:1859` (paired with `#561`)
 - `docs/legacy/CHANGELOG-upstream.md:3766` (runtime API quartet entry)
 
 ### whalescale#260 — `archived_only` thread filtering
 
 Thread listing accepts `archived` / `status` / `archived_only` query
-params so the desktop UI can request archived-only views.
+params so the desktop UI can request archived-only views. (Comments pair
+this with upstream tracker `#563`.)
 
-- `crates/tui/src/runtime_api.rs:216`
-- `crates/tui/src/runtime_api.rs:226`
-- `crates/tui/src/runtime_api.rs:3857`
-- `crates/tui/src/runtime_threads.rs:553`
+- `crates/cli/src/runtime_api.rs:216` (paired with `#563`)
+- `crates/cli/src/runtime_api.rs:226` (paired with `#563`)
+- `crates/cli/src/runtime_api.rs:3878` (paired with `#563`)
+- `crates/cli/src/runtime_threads.rs:600` (paired with `#563`)
 
 ### whalescale#256 — `PATCH /v1/threads/{id}`
 
 The runtime API accepts a PATCH endpoint so the UI can flip persistent
 thread state (title, archived flag) without a full rewrite, with a
-`schema_version` bump.
+`schema_version` bump. (Comments pair this with upstream tracker
+`#562`.)
 
-- `crates/tui/src/runtime_api.rs:3770`
-- `crates/tui/src/runtime_threads.rs:584`
+- `crates/cli/src/runtime_api.rs:3791` (paired with `#562`)
+- `crates/cli/src/runtime_threads.rs:631` (paired with `#562`)
 
 ### whalescale#261 — `GET /v1/usage` aggregation
 
 Usage endpoint aggregates per-turn token and cost totals by day/model for
-the desktop UI.
+the desktop UI. (Comments pair this with upstream tracker `#564`.)
 
-- `crates/tui/src/runtime_api.rs:3968`
-- `crates/tui/src/runtime_threads.rs:629`
-- `crates/tui/src/runtime_threads.rs:993`
+- `crates/cli/src/runtime_api.rs:3989` (paired with `#564`)
+- `crates/cli/src/runtime_threads.rs:676` (paired with `#564`)
+- `crates/cli/src/runtime_threads.rs:1040` (paired with `#564`)
+
+### Upstream tracker `#561`–`#564` — runtime API quartet
+
+The pre-fork changelog's "Runtime API quartet for whalescale-desktop
+integration" (`docs/legacy/CHANGELOG-upstream.md:3762`–`3778`, also naming
+`#567`) assigned one upstream tracker number per Whalescale feature, and
+those numbers were grafted into `crates/cli` with the runtime API when the
+TUI crate was removed. Per policy the entry prose above keeps only the
+Whalescale numbers; the upstream numbers are recorded here because they
+now appear in live code comments:
+
+- **#561** (= whalescale#255, CORS allow-list) — resolution order
+  `--cors-origin` flag > `CODESMITH_CORS_ORIGINS` env > `[runtime_api]
+  cors_origins` (`crates/cli/src/config.rs:881`); extra origins stack on
+  the built-in dev defaults, and invalid origins are skipped without
+  aborting the layer build (`crates/cli/src/runtime_api.rs:3777`,
+  regression tests at `:3705` and `:3777`).
+- **#562** (= whalescale#256, `PATCH /v1/threads/{id}`) — PATCH accepts
+  the extended field set (`allow_shell`, `trust_mode`, `auto_approve`,
+  `model`, `mode`, `title`, `system_prompt`), each independently
+  optional, empty string clears `title` / `system_prompt`
+  (`crates/cli/src/runtime_api.rs:3791`); the additive `title` field on
+  thread records dates to v0.8.10 without a schema bump
+  (`crates/cli/src/runtime_threads.rs:146`).
+- **#563** (= whalescale#260, `archived_only`) — `archived_only=true`
+  returns archived-only threads, distinct from `include_archived=true`
+  which returns both (`crates/cli/src/runtime_api.rs:3878`), backed by
+  the `ThreadListFilter` enum (`crates/cli/src/runtime_threads.rs:600`).
+- **#564** (= whalescale#261, `GET /v1/usage`) — aggregates per-turn
+  token + cost by day/model; empty ranges yield empty buckets, never a
+  404 (`crates/cli/src/runtime_api.rs:3989`,
+  `crates/cli/src/runtime_threads.rs:676`, `:1040`).
 
 ## 4. Un-numbered known issues and TODOs in source
 
@@ -225,7 +279,12 @@ drifting columns. Mitigation: OSC 8 links are default-off on every
 platform until emitted out-of-band of the buffer pipeline; opt back in
 via `[ui] osc8_links = true`. No tracking issue was ever created.
 
-- `crates/tui/src/tui/ui.rs:287`–`303`
+No-longer-applicable, resolved by the TUI removal (2026-10-11): the
+ratatui buffer pipeline and the `osc8_links` knob lived in the removed
+`crates/tui` rendering tree; no `osc8` reference remains in `crates/`.
+Record preserved here.
+
+- `crates/tui/src/tui/ui.rs:287`–`303` (dead path; file removed 2026-10-11)
 
 ### Word-wrap overflow for overlong tokens (fixed, pinned by tests)
 
@@ -236,8 +295,12 @@ long URLs, paths, hashes, and no-whitespace CJK runs all hit this. The
 fix hard-breaks overlong words; the regression suite pins it at widths 40
 and 80.
 
-- `crates/tui/src/tui/markdown_render.rs:1761` (bug description)
-- `crates/tui/src/tui/markdown_render.rs:1866` (code-block wrap pin)
+No-longer-applicable, resolved by the TUI removal (2026-10-11): the
+markdown renderer and its wrap pins lived in the removed `crates/tui`
+rendering tree. Record preserved here.
+
+- `crates/tui/src/tui/markdown_render.rs:1761` (bug description; dead path)
+- `crates/tui/src/tui/markdown_render.rs:1866` (code-block wrap pin; dead path)
 
 ### Paste must never auto-submit (QA guard)
 
@@ -245,7 +308,11 @@ Auto-submit would replace the composer with a "working / thinking"
 status chip and clear the composer text; either signal in the PTY dump
 means the bug fired.
 
-- `crates/tui/tests/qa_pty.rs:241`
+No-longer-applicable, resolved by the TUI removal (2026-10-11): the PTY
+QA harness exercised the removed ratatui composer. Record preserved
+here.
+
+- `crates/tui/tests/qa_pty.rs:241` (dead path; file removed 2026-10-11)
 
 ### Skill discovery ignored vendor-nested subdirectories (fixed, pinned)
 
@@ -254,7 +321,8 @@ skill repos bundling several skills) were silently dropped by a
 single-level `read_dir` sweep, which only ever surfaced
 `<root>/<skill>/SKILL.md` and ignored `<root>/<vendor>/<skill>/SKILL.md`.
 
-- `crates/agent-runtime/src/skills/mod.rs:1524` (regression test)
+- `crates/agent-runtime/src/skills/mod.rs:1776` (bug description)
+- `crates/agent-runtime/src/skills/mod.rs:1782` (regression test)
 
 ### Long-token row overflow in the pending-input preview
 
@@ -262,7 +330,12 @@ A token longer than the wrap budget is flushed as its own overflowing row
 — deliberately, to avoid a long URL fanning out into N junk-ellipsis
 rows (the known codex-TUI behavior this avoids).
 
-- `crates/tui/src/tui/widgets/pending_input_preview.rs:278`
+No-longer-applicable, resolved by the TUI removal (2026-10-11): the
+pending-input preview widget lived in the removed `crates/tui` rendering
+tree. Record preserved here.
+
+- `crates/tui/src/tui/widgets/pending_input_preview.rs:278` (dead path;
+  file removed 2026-10-11)
 
 ## 5. Known issues, limitations, and deferred work in documents
 
@@ -305,7 +378,9 @@ policy; descriptions and version context are kept.
 
 ### docs/SANDBOX.md — what the sandbox does NOT protect against
 
-- `docs/SANDBOX.md:277` — network attacks (Linux and Windows v1 leave
+- `docs/SANDBOX.md` — section "What the sandbox does NOT protect against"
+  (the file is under active edit; cite the heading, not the line number) —
+  network attacks (Linux and Windows v1 leave
   network open), git hook / fsmonitor execution, memory attacks, timing
   side channels, resource exhaustion (no CPU, fd, or disk-I/O limits),
   kernel vulnerabilities, and supply chain. Platform-specific gaps:
@@ -315,15 +390,21 @@ policy; descriptions and version context are kept.
 
 ### docs/KEYBINDINGS.md — configurable keymap deferred
 
-- `docs/KEYBINDINGS.md:155` — configurable keymap and `tui.toml` remain
-  deferred: the `TuiPrefs` struct and loader exist in `settings.rs` but
-  are not wired at startup; the named-binding registry that would let
-  `~/.codesmith/tui.toml` override individual entries is still pending.
-  (Chinese mirror: `docs/KEYBINDINGS_cn.md:155`.)
+No-longer-applicable: the KEYBINDINGS bilingual pair was deleted (commit
+531536dd), and on 2026-10-11 the ratatui TUI whose keymap it catalogued
+was removed — the line-REPL has no `tui.toml` keymap surface, and
+`TuiPrefs` no longer exists. Record preserved here.
+
+- `docs/KEYBINDINGS.md:155` (dead path; file deleted before the TUI
+  removal) — configurable keymap and `tui.toml` remained deferred: the
+  `TuiPrefs` struct and loader existed in `settings.rs` but were not
+  wired at startup; the named-binding registry that would let
+  `~/.codesmith/tui.toml` override individual entries was still pending.
+  (Chinese mirror: `docs/KEYBINDINGS_cn.md:155`, also deleted.)
 
 ### docs/EXTENSIONS.md — disable takes effect on reload
 
-- `docs/EXTENSIONS.md:78` — `/extension disable <id>` marks the extension
+- `docs/EXTENSIONS.md:134` — `/extension disable <id>` marks the extension
   disabled, but the effect lands on the next `/extension reload` (same
   reload caveat).
 
@@ -336,21 +417,23 @@ policy; descriptions and version context are kept.
   `ExtensionError::Unimplemented`), **registerProvider**,
   **Renderers**, **Shortcut + Flag**, and the **Embedding API**. Hot-load is
   permanently out. Flaky-test baselines recorded
-  there: `streamable_http` (agent-runtime) and `runtime_api` (tui) —
+  there: `streamable_http` (agent-runtime) and `runtime_api` (cli) —
   pre-existing, isolate-rerun if they fire.
 
 ### Cleanup backlog (from the removed `docs/plans/codebase-health.md`)
 
 - Drive `allow(dead_code)` in
   `crates/agent-runtime/src/engine/` to zero (or attach a migration-issue
-  link to each survivor); retire comments pointing at deleted code;
-  merge/delete the TUI mirror modules (`tui/src/compaction/`,
-  `tui/src/prompts.rs`, `tui/src/mcp.rs`, `tui/src/sandbox/`,
-  `tui/src/execpolicy/`) once confirmed pure re-exports.
+  link to each survivor); retire comments pointing at deleted code.
+  Resolved by the TUI removal (2026-10-11): the TUI mirror modules
+  (`tui/src/compaction/`, `tui/src/prompts.rs`, `tui/src/mcp.rs`,
+  `tui/src/sandbox/`, `tui/src/execpolicy/`) no longer exist — the whole
+  `crates/tui` crate was removed rather than merged.
 - About 12 deprecated sub-agent tools
   (`agent_spawn`, `agent_result`, `agent_wait`,
   `delegate_to_agent`, …) are still registered in the catalog, costing
-  tool-surface and prompt budget.
+  tool-surface and prompt budget. Verified still live:
+  `crates/cli/src/tools/subagent/mod.rs:2191` registers `agent_spawn`.
 
 ### docs/legacy/ROADMAP-upstream.md — known gaps and deferred re-wires
 
@@ -361,7 +444,7 @@ policy; descriptions and version context are kept.
   is not injected by the executor (DeepSeek thinking-mode requires
   `reasoning_content` on tool-call assistant messages). The seam-3
   parallel-dispatch gap named there as the last "still to come" item is
-  closed (`crates/agent-runtime/src/engine/host_executor.rs:251`).
+  closed (`crates/agent-runtime/src/engine/host_executor.rs:250`).
 - **Compaction closure** (`docs/legacy/ROADMAP-upstream.md:1536`–`1565`) —
   summary-prompt merge and attachment reinject are wired;
   `post_compact_cleanup` is still deferred (merge-XOR-cleanup mutual

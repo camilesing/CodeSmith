@@ -990,8 +990,8 @@ pub(crate) async fn real_main() -> Result<()> {
         Ok(cli) => cli,
         Err(err) => {
             // A bare word that looks like a mistyped subcommand fails clap's
-            // parse before the post-parse typo guard can run; route it
-            // through the same guard so users get the `-p` hint.
+            // parse; route it through the typo guard so users get the `-p`
+            // hint instead of clap's raw usage error.
             if err.kind() == clap::error::ErrorKind::InvalidSubcommand
                 && let Some(clap::error::ContextValue::String(word)) =
                     err.get(clap::error::ContextKind::InvalidSubcommand)
@@ -1002,9 +1002,6 @@ pub(crate) async fn real_main() -> Result<()> {
             err.exit();
         }
     };
-    if let Some(word) = crate::unknown_subcommand_word(&cli, &argv) {
-        crate::unknown_subcommand_error(word).exit();
-    }
     logging::set_verbose(cli.verbose || logging::env_requests_verbose_logging());
 
     // Handle subcommands first

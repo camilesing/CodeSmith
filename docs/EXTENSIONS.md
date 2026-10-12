@@ -17,18 +17,22 @@ contributions against an `ExtensionApi`.
 
 The host assembles the extension runtime at engine build
 (`build_extension_runtime()`, `crates/cli/src/core/engine.rs`) and again
-on every `/extension reload`: discover compiled-in registrations
+on every runtime reload (`manage_mods` tool action `"reload"`):
+discover compiled-in registrations
 (`inventory`) + dylib sources (install roots) → reconcile with the
 on-disk `ExtensionStateStore` (skip disabled) → load + configure each
 against a stub api → `bind_core` the host context — after which the
 runner fans lifecycle events to registered handlers.
 
-Extension tools + slash commands are wired live into the host per turn:
-tools register into the per-turn `ToolRegistry` via `register_extension_tools` in
-`EngineHost::build_turn_dispatcher`, and slash commands dispatch via
-`try_dispatch_extension_command` in `commands::execute` — so the agent
-loop sees extension tools as normal `ToolSpec`s (main-turn only; not
-inherited by sub-agents — see [Sandbox stance](#sandbox-stance)).
+Extension tools are wired live into the host per turn: they register
+into the per-turn `ToolRegistry` via `register_extension_tools` in
+`EngineHost::build_turn_dispatcher`, so the agent loop sees them as
+normal `ToolSpec`s (main-turn only; not inherited by sub-agents — see
+[Sandbox stance](#sandbox-stance)). Extension/mod **slash commands do
+not dispatch in the REPL**: `ExtensionRunner::try_dispatch_command`
+(`crates/extensions/src/runner.rs`) has no production caller — a
+registered command typed at the prompt falls through to the
+unknown-command arm of the line REPL.
 
 Every populate/reload pass also collects one structured audit entry per
 discovered extension/mod — `Loaded` / `Failed { original error }` /
@@ -122,20 +126,33 @@ once at engine build.
 
 ## In-REPL Manager
 
-The `/extension` command group is the user-facing surface. It dispatches
-from the REPL command table (`crates/cli/src/interactive/commands/`),
-wired into `execute()` alongside the static `match`.
+There are no REPL extension commands today: `/extension` is a stub
+printing "extension management (/extension list|reload|status) is not
+wired in the REPL yet — extension commands arrive with the §F port"
+(`crates/cli/src/interactive/commands/misc_cmds.rs`).
 
-| Subcommand | Aliases | Effect |
-|---|---|---|
-| `/extension list` | `ls` | Lists compiled-in + installed extensions (id + version). |
-| `/extension info <id>` | | Shows metadata for one extension. |
-| `/extension enable <id>` | | Marks the extension enabled in `extensions_state.toml`; takes effect on the next `/extension reload`. |
-| `/extension disable <id>` | | Marks the extension disabled; same reload caveat. |
-| `/extension status` | | Reports the bound runner's generation + bound command/tool counts. |
-| `/extension reload` | | Re-populates the **shared runner `Arc`**: `clear_handlers` → `clear_tools` → `clear_commands` → `clear_providers` (drops registration guards) → `clear_prompt_sections` → `clear_skills` → `clear_message_projections` → `drain_libraries_to_pending` → `invalidate` (bump generation) → discover (static + dylib) → reconcile against state → `load` each → `bind_core` (fresh `HostExtensionContext`). Both `App.extension_runner` and the engine's field update live (no `Arc` swap — they share the one the engine built). The drained `Library`s are dropped (`drop_pending`) at the next engine op-loop top (turn boundary). A handler bound before reload stops observing after (cleared, not duplicated); a newly-installed extension is picked up on the next reload. |
-| `/extension install <source> [--global]` | | Fetches (`git:`/`path:`/`crate:`/`prebuilt:`) → builds (`cargo build`) → places to `<root>/<id>/` + writes `extension.toml` + records `installed[]` provenance + writes a sha256 sidecar (`<dylib>.sha256`) that the loader verifies — a dylib swapped on disk after install is refused at load; `--global` opt-in (default project). `crate:` fetches from crates.io (sparse-index → version → sha256-verified `.crate` → `tar` extract → build); `prebuilt:<https-url>` fetches a prebuilt cdylib (HTTPS-only, redirects cannot downgrade to plain HTTP, optional `--checksum <sha256>`); both warn if project + untrusted; `/extension reload` to load. |
-| `/extension uninstall <id>` | | Removes `<root>/<id>/` + clears `installed[]` provenance. Live tool/command bindings clear on next `/extension reload`; the dylib unloads safely at the next turn boundary (two-phase `Library` drop). |
+Extension management is engine-level:
+
+- **Runtime reload** — ask the agent to run the `manage_mods` tool with
+  `action="reload"` (`crates/cli/src/mod_ops.rs` →
+  `reload_extension_runtime`, `crates/cli/src/core/engine.rs`). It
+  re-populates the **shared runner `Arc`**: `clear_handlers` →
+  `clear_tools` → `clear_commands` → `clear_providers` (drops
+  registration guards) → `clear_prompt_sections` → `clear_skills` →
+  `clear_message_projections` → `drain_libraries_to_pending` →
+  `invalidate` (bump generation) → discover (static + dylib) → reconcile
+  against state → `load` each → `bind_core` (fresh
+  `HostExtensionContext`). Both `App.extension_runner` and the engine's
+  field update live (no `Arc` swap — they share the one the engine
+  built). The drained `Library`s are dropped (`drop_pending`) at the
+  next engine op-loop top (turn boundary). A handler bound before
+  reload stops observing after (cleared, not duplicated); a
+  newly-installed extension is picked up on the next reload.
+- **Install roots + trust gate** — unchanged: dylib installs live under
+  the roots documented in [Discovery](#discovery), and project-local
+  dylibs stay gated on workspace trust (`apply_trust_gate`). The
+  installer/uninstaller library itself (fetch → build → sha256 sidecar)
+  has no user surface yet.
 
 ## Discovery
 
@@ -202,8 +219,10 @@ inventory::submit! {
 }
 ```
 
-`/extension list` reports `scratchpad`; `/extension info scratchpad` shows
-its metadata. See the file for the full tool/command/handler bodies.
+`cargo test -p codesmith-extensions scratchpad_is_discoverable` proves
+discovery picks it up (there is no REPL listing command — see
+[In-REPL Manager](#in-repl-manager)). See the file for the full
+tool/command/handler bodies.
 
 ## Extension Fields (trait contracts)
 
@@ -258,8 +277,10 @@ so a single crate gives them both the traits and the runtime helpers.
   receives an `ExtensionContext` (NOT the host's `ToolContext`) — keeping
   extensions decoupled from `ToolContext`'s ~30 host-coupled fields.
 - **`CommandDefinition`** — extension-side slash-command contract:
-  `name / description / async run(ctx, args) -> CommandOutput`. Dispatched
-  by the host's `extension_commands::try_dispatch`.
+  `name / description / async run(ctx, args) -> CommandOutput`. The
+  runtime lookup is `ExtensionRunner::try_dispatch_command`; it has no
+  production caller, so a registered command does not dispatch anywhere
+  in the current build.
 - **`ExtensionError`** — `StaleContext` (the guard signal) + `Config` /
   `Tool` / `Command` / `Conflict` / `Install` / `Load` / `Unimplemented`.
 
@@ -350,7 +371,7 @@ returns the wrong capability for its variant is a no-op, not an error.
 | `SessionBeforeSwitch` | — (no emit site) | **Cancel** | capability retained but currently never emitted: the in-process workspace switch went with the TUI in 0.9.0 (`/workspace` requires a restart instead) |
 | `ProjectTrust` | `HostServices::build_turn_dispatcher` (`crates/cli/src/core/engine/runtime_traits.rs`; + `spawn_subagent`) after `build_tool_context_for` (per-turn `Trusted`/`Untrusted`); `FirstLoad` currently has no emit site — the onboarding trust-prompt emit went with the TUI in 0.9.0 | observe | per-turn `Trusted`/`Untrusted` from `session.trust_mode`; `FirstLoad` is defined for onboarding trust acceptance (`TrustReason::FirstLoad`) but has no live emit site — the runtime `trust_mode` toggle (`/trust on`), YOLO entry, and persisted-trust startup surface per-turn as `Trusted`/`Untrusted`, not `FirstLoad` |
 | `ToolsChange { added, removed }` | `HostServices::build_turn_dispatcher` after every selection source is applied | observe | diff of the final model-visible catalog vs the previous main-turn baseline; the first build establishes the baseline silently; sub-agent toolsets never reach this seam |
-| `—` (dylib LOAD, not an event) | `populate_extension_runtime` (`crates/cli/src/core/engine.rs`) after `discover_static` | n/a (load phase) | `discover_dylib(&global_roots, &project_roots)` → `apply_trust_gate(discovered, !is_workspace_trusted(workspace))` drops project-local (`global == false`) → `state.is_enabled` reconcile → `ExtensionRunner::load_dylib` on the OS-thread load runtime; reload picks up via `reload_extension_runtime`→`populate`. `ExtensionRunner.libraries` holds `Library` handles; on `/extension reload` they `drain_libraries_to_pending` to `pending_drop` (alongside the clears) + the engine op-loop `drop_pending`s them at the next turn boundary. Lockstep `*mut dyn Extension` via `codesmith_register_extension`. |
+| `—` (dylib LOAD, not an event) | `populate_extension_runtime` (`crates/cli/src/core/engine.rs`) after `discover_static` | n/a (load phase) | `discover_dylib(&global_roots, &project_roots)` → `apply_trust_gate(discovered, !is_workspace_trusted(workspace))` drops project-local (`global == false`) → `state.is_enabled` reconcile → `ExtensionRunner::load_dylib` on the OS-thread load runtime; reload picks up via `reload_extension_runtime`→`populate`. `ExtensionRunner.libraries` holds `Library` handles; on a runtime reload they `drain_libraries_to_pending` to `pending_drop` (alongside the clears) + the engine op-loop `drop_pending`s them at the next turn boundary. Lockstep `*mut dyn Extension` via `codesmith_register_extension`. |
 | `ResourcesDiscover` | — (no emit site) | observe | defined but never emitted: the only in-process candidate site (the `list_mcp_resources` pseudo-tool dispatch in `McpPool`, `agent-runtime/src/mcp.rs`) is already bracketed by `ToolCall`/`ToolResult` — firing `ResourcesDiscover` there would conflate with tool execution, and `DiscoverReason` has no clean mapping there; no dedicated Startup/Manual/Reload discover seam holds the runner `Arc` (the `crates/cli/src/mcp_server.rs` stdio site is a separate process) |
 | `SessionBeforeFork` | — (no emit site) | **Cancel** | defined but never emitted: the in-process backtrack path went with the TUI in 0.9.0, and genuine fork primitives are test-only (`fork_at_user_message`, `crates/cli/src/runtime_threads.rs`, no non-test callers) or HTTP-only (`fork_thread`, runtime-api, no runner access) — wiring a seam as `SessionBeforeFork` would mislabel a rewind as a fork (new-thread creation) |
 | `ToolExecutionUpdate` | — (no emit site) | observe | defined but never emitted: `Tool::run` is one-shot (`agent/src/tools/mod.rs`), so there is no mid-execution progress stream to hook. The `on_tool_progress` `Callback` hook exists as forward-looking API surface; the emit site awaits a streaming `Tool` contract |
@@ -374,7 +395,7 @@ observe-only signal extension handlers see for the session's trust
 state (`FirstLoad` has no live emit site since the TUI removal in
 0.9.0).
 
-`cargo build` during `/extension install` runs the source's `build.rs` —
+`cargo build` during an extension install runs the source's `build.rs` —
 **arbitrary code execution, accepted (trust the source)**; containerize
 for untrusted sources. Install itself is trust-agnostic (it only *reads*
 trust to warn: a project-local install won't load until the workspace
@@ -396,7 +417,7 @@ thread MOVES orphaned `Library`s to `pending_drop`
 (`drain_libraries_to_pending`); the engine op-loop top DROPs them
 (`drop_pending`) at the one moment the main-thread `HostAgentExecutor`
 (the only in-flight dylib `Arc` holder) is already dropped between
-turns. This makes `/extension reload` + uninstall safe concurrent with
+turns. This makes runtime reload + uninstall safe concurrent with
 in-flight turns. The safety is proven by that invariant + the
 single-call-site discipline; dylib+Miri is unreliable (libloading's
 `Library::drop` runs `dlclose`/`FreeLibrary`, which Miri doesn't model),
@@ -418,18 +439,26 @@ so the invariant — not a Miri run — is the proof.
   UI-only.
 - The capability manifest is read once per process; edits require a
   restart.
-- Hot-load is permanently out — install + `/extension reload` only.
+- Hot-load is permanently out — install + runtime reload only
+  (`manage_mods(action="reload")`); the installer library has no REPL
+  surface yet.
 
 ## Troubleshooting
 
-- **`/extension list` shows nothing.** No `inventory::submit!` reached the
-  link — confirm the extension's crate is a workspace member + that
+- **Compiled-in extension doesn't load.** No `inventory::submit!` reached
+  the link — confirm the extension's crate is a workspace member + that
   `crates/extensions/src/lib.rs` declares its module. `cargo test -p
   codesmith-extensions scratchpad_is_discoverable` proves the registration
-  is wired.
-- **`/extension status` says "not bound".** The engine hasn't built yet
+  is wired. There is no REPL listing command (`/extension` is a stub);
+  failed loads surface in the `tracing` summary (target
+  `codesmith_extensions`) and dylib installs can be inspected directly
+  under `~/.codesmith/extensions` / `<workspace>/.codesmith/extensions`.
+- **Runner reads as "not bound".** The engine hasn't built yet
   (pre-startup), or `state.extension_runner` wasn't copied from the handle
   (`crates/cli/src/interactive/mod.rs` after `spawn_engine`).
+- **Mod layer unresponsive after edits.** Runtime reload is
+  engine-level — ask the agent to run `manage_mods(action="reload")`
+  (see [MODS.md](MODS.md)).
 - **Handler returns `Continue` but nothing changes.** `Continue` means
   "no change" by design. To cancel/block/transform, return the matching
   variant — and note variant-specific semantics (a `Block` at a
@@ -439,8 +468,8 @@ so the invariant — not a Miri run — is the proof.
   agent loop — and a handler `Err` is likewise logged + the chain
   continues.
 - **`configure` captured an `Arc<dyn ExtensionApi>` that now returns
-  `StaleContext`.** The runner was `invalidate()`d (via `/extension
-  reload` or a future reload/fork/switch); capture a fresh api or check
+  `StaleContext`.** The runner was `invalidate()`d (via a runtime reload
+  or a future reload/fork/switch); capture a fresh api or check
   `generation()` against the live runner's before use.
 - **Tests panic at `tokio runtime blocking/shutdown.rs`.** A nested tokio
   runtime was created + dropped from within a runtime worker thread.

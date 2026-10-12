@@ -29,14 +29,11 @@ pub fn restore_verbose_state() {
     set_verbose(VERBOSE_SNAPSHOT.load(Ordering::SeqCst));
 }
 
-/// Return true when `CODESMITH_LOG_LEVEL` (or its legacy `DEEPSEEK_LOG_LEVEL`
-/// alias) requests verbose output.
+/// Return true when `CODESMITH_LOG_LEVEL` requests verbose output.
 ///
-/// Note: `RUST_LOG` is intentionally NOT checked here — it controls the
-/// `tracing` subscriber filter in `runtime_log.rs` (file logging) and
-/// should not gate CLI verbose output. On Windows, where stderr is not
-/// redirected to the log file, coupling the two causes tracing log
-/// messages to leak into the TUI alt-screen.
+/// Note: `RUST_LOG` is intentionally NOT checked here — the CLI has no
+/// `tracing` subscriber; `RUST_LOG` only passes through to spawned child
+/// processes and should not gate CLI verbose output.
 #[must_use]
 pub fn env_requests_verbose_logging() -> bool {
     codesmith_config::codesmith_env("LOG_LEVEL")

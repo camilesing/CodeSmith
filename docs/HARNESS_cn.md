@@ -25,7 +25,7 @@ CodeSmith 用一部**宪法**（`prompts/base.md`）来回答这个问题。它�
 假设。验证高于自信。模型每个回合都继承一条清晰的权威链，从不需要
 猜测该遵循哪条指令。
 
-七条条文位于该层级之上，定义了模型的身份、职责与能动性：一条验证义务
+六条条文（Article I-VI）位于该层级之上，定义了模型的身份、职责与能动性：一条验证义务
 （Article V —— 每个动作都留下证据，绝不凭信念宣布成功）、一份协作遗产
 （Article VI —— 让工作区对下一个智能保持可读），以及一条真实性至上
 条款（Article II —— 任何更低层级的规则都不得凌驾于它）。
@@ -75,10 +75,10 @@ provider 的 `[utility_model]` 客户端单独构建，不会被录制。对于�
 ## 模式与沙箱
 
 三种模式控制动作空间。Plan 只读。Agent 把破坏性操作挡在审批之后。
-YOLO 在受信任工作区中自动批准。操作系统级沙箱按平台强制执行：macOS
-Seatbelt、Linux Landlock + seccomp（外加可选的 bubblewrap），以及
-Windows Job Object v1。参见 [PRESETS.md](PRESETS.md) 和
-[SANDBOX.md](SANDBOX.md)。
+YOLO 在受信任工作区中自动批准。操作系统级沙箱在 macOS（Seatbelt）
+强制执行，在 Linux 上经 bubblewrap（已安装时）强制执行；Landlock
+规则集代码未接入子进程强制执行，Windows 无沙箱。参见
+[PRESETS.md](PRESETS.md) 和 [SANDBOX.md](SANDBOX.md)。
 
 模型自动路由（`--model auto`，默认值）是每个回合运行一次的分类器，
 跑在 provider 的最强档上 —— 一次极小的关闭思考调用，为本回合选定

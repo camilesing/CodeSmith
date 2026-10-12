@@ -5,11 +5,10 @@ common surface:
 
 ```bash
 codesmith                                         # interactive REPL
-codesmith "explain this function"                 # one-shot prompt
+codesmith -p "explain this function"              # open the REPL with this prompt submitted
+codesmith exec "explain this function"            # one-shot, non-interactive prompt
 codesmith exec --auto --output-format stream-json "fix this bug"  # NDJSON backend stream
 codesmith exec --resume <SESSION_ID> "follow up"  # continue a non-interactive session
-codesmith --model deepseek-v4-flash "summarize"   # model override
-codesmith --model auto "fix this bug"             # auto-select model + thinking
 codesmith --yolo                                  # auto-approve tools
 codesmith auth set --provider deepseek            # save API key
 codesmith doctor                                  # check setup & connectivity
@@ -26,7 +25,7 @@ codesmith fork <SESSION_ID>                       # fork a saved session into a 
 codesmith serve --http                            # HTTP/SSE API server
 codesmith serve --mobile                          # LAN mobile control page; token-gated by default
 codesmith serve --acp                             # ACP stdio adapter for Zed/custom agents
-codesmith run pr <N>                              # fetch PR and pre-seed review prompt
+codesmith pr <N>                                  # fetch PR and pre-seed review prompt
 codesmith mcp list                                # list configured MCP servers
 codesmith mcp validate                            # validate MCP config/connectivity
 codesmith mcp-server                              # run dispatcher MCP stdio server
@@ -39,38 +38,53 @@ codesmith docker                                  # print the container quick st
 
 A bare first word is read as a subcommand name: `codesmith docker` and
 `codesmith version` are commands, and an unrecognized word fails with
-`unrecognized subcommand '<word>'` (exit code 2) instead of starting the REPL.
+`unrecognized subcommand '<word>'` (exit code 2) and a tip pointing at `-p`.
+There is no top-level positional prompt: quoting (`codesmith "explain this
+function"`), an unquoted tail, a `--` terminator, and non-ASCII bare words
+(`codesmith 总结`) all fail the same way.
 
-Prompts keep their documented forms: `codesmith "explain this function"` (one
-quoted argument), `codesmith hello world` (the whole unquoted tail), and
-`codesmith -p <PROMPT>` for a single-word prompt such as `codesmith -p docker`.
-A `--` terminator ends subcommand matching too, so `codesmith -- docker` also
-sends `docker` as the prompt.
+The prompt entry points are:
 
-Without `-p`, a lone ASCII word cannot be told apart from a mistyped command,
-so it is rejected with a hint pointing at `-p`. Non-ASCII words
-(`codesmith 总结`) stay prompts, since they cannot name a command.
+- `codesmith -p <PROMPT>` — takes one or more values (joined into the initial
+  prompt), starts the interactive REPL, and submits the prompt as the first
+  turn. It is not one-shot; the session stays open for follow-ups.
+- `codesmith exec "<prompt>"` — the non-interactive one-shot form.
+
+## Model selection
+
+There is no top-level `--model` flag. Select a model via:
+
+- `model = <id>` under `[providers.<id>]` in `~/.codesmith/config.toml`
+- the `CODESMITH_MODEL` environment variable
+- `/model <id>` in the REPL (persisted per provider across restarts)
+- `codesmith exec --model <id>` for a single non-interactive run
+
+`codesmith models` lists live models from the configured endpoint, while
+`codesmith model list` and `codesmith model resolve` inspect the built-in
+registry and the resolved selection.
 
 ## First-run onboarding
 
-A bare `codesmith` on a machine without `~/.codesmith/.onboarded` runs
-onboarding as plain CLI questions before the REPL starts: language → provider
-→ endpoint URL (OpenAI/Anthropic routes only) → API key → workspace trust.
-Answers land in the same durable state the former TUI wizard wrote
-(`~/.codesmith/config.toml`, the settings locale, the OS keyring, and the
-trust table). Existing credentials — a provider env var, a saved key, or a
-self-hosted runtime such as Ollama — skip the key question, and declining the
-trust prompt exits without writing anything. Pass `--skip-onboarding` to
-bypass the questions entirely.
+There is no onboarding wizard. A start that already has a credential — a
+provider env var, a saved key, or a self-hosted runtime such as Ollama — goes
+straight into the REPL and silently writes the `~/.codesmith/.onboarded`
+marker. Configure credentials explicitly with `codesmith auth set --provider
+<id>` (prompts for the key), `codesmith login`, an env var, or `config.toml`.
+A missing credential never prompts at startup: the first turn fails with a
+provider auth error. `--skip-onboarding` still exists and suppresses the
+marker write.
 
-Inside the REPL, two gates can still interrupt a later session: a missing
-credential (for example after `/logout`) re-opens the key screen, and a first
-visit to an untrusted directory re-opens the trust prompt.
+`/logout` removes the API key and the onboarding marker, then prints that you
+can sign back in with `codesmith auth set` or `codesmith login`; nothing
+re-opens a key screen. Untrusted directories never prompt either — trust only
+gates whether project-level config and `.env` files are loaded, and `/trust`
+manages it.
 
-Inside the REPL, `/provider` opens the provider picker and `/model` opens the
-local model/thinking picker. `/provider openrouter` and `/model <id>` switch
-directly, while `/models` explicitly fetches and lists live API models when the
-active provider supports model listing.
+Inside the REPL, a bare `/provider` prints the current provider and
+`/provider <id>` switches (session-scoped; a restart hint is printed, since a
+full re-config needs a new session). A bare `/model` prints the current model
+and `/model <id>` switches and persists it. There is no `/models` REPL
+command — live model listing is the `codesmith models` subcommand.
 
 ## Sessions: branching and rollback
 

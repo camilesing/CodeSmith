@@ -200,12 +200,10 @@ an explicit `vision = true`. Individual fields can be written with
 rewrites are not supported.
 
 Local HTTP endpoints such as Ollama, SGLang, and vLLM are allowed by default
-when they use localhost or loopback addresses. For a non-local `http://`
-gateway, launch with `CODESMITH_ALLOW_INSECURE_HTTP=1` only on a trusted network:
-
-```bash
-CODESMITH_ALLOW_INSECURE_HTTP=1 codesmith
-```
+when they use localhost or loopback addresses. Non-local `http://` base URLs
+are also accepted as-is for self-hosted or LAN runtimes (for example a vLLM
+box at `http://192.168.0.110:8000/v1`) — there is no opt-in env var for
+insecure HTTP. Use `https://` for internet-facing gateways.
 
 Third-party OpenAI-compatible gateways that need extra request headers can set
 `http_headers = { "X-Model-Provider-Id" = "your-model-provider" }` at the top
@@ -412,14 +410,14 @@ Remaining app-level variables:
 
 - `CODESMITH_API_KEY`
 - `CODESMITH_CUSTOM_PROVIDER` (selects a `[[providers.custom]]` entry by id; overrides `CODESMITH_PROVIDER`)
-- `CODESMITH_AUTH_MODE` (`api_key` | `bearer` | `none` | `off` | `kimi_oauth`; mirrors the `auth_mode` config key)
+- `CODESMITH_AUTH_MODE` (`api_key` | `bearer` | `none` | `off` | `kimi_oauth`; mirrors the `auth_mode` config key, including its alternate spellings)
 - `CODESMITH_PROFILE` (selects a `[profiles.<name>]` entry)
 - `CODESMITH_PRESET` (selects a configuration preset tier; same values as the `preset` key)
 - `CODESMITH_OUTPUT_MODE`
 - `CODESMITH_TELEMETRY` (`1`/`true` enables local-only telemetry)
 - `CODESMITH_YOLO` (`1`/`true` auto-approves every tool call)
 - `CODESMITH_HTTP_HEADERS` (custom model request headers, comma-separated `name=value` pairs)
-- `NVIDIA_API_KEY` or `NVIDIA_NIM_API_KEY` (preferred when provider is `nvidia-nim`; falls back to `CODESMITH_API_KEY` / `DEEPSEEK_API_KEY`)
+- `NVIDIA_API_KEY` or `NVIDIA_NIM_API_KEY` (preferred when provider is `nvidia-nim`; falls back to `CODESMITH_API_KEY`. `DEEPSEEK_API_KEY` is deliberately not reused — a DeepSeek-issued credential must not be sent to NVIDIA endpoints)
 - `NVIDIA_NIM_BASE_URL`, `NIM_BASE_URL`, or `NVIDIA_BASE_URL`
 - `NVIDIA_NIM_MODEL`
 - `OPENAI_API_KEY`
@@ -460,7 +458,7 @@ Remaining app-level variables:
 - `OLLAMA_API_KEY` (optional; many localhost Ollama servers do not require auth)
 - `ANTHROPIC_API_KEY` (alias `CLAUDE_API_KEY`)
 - `ANTHROPIC_BASE_URL`
-- `CODESMITH_LOG_LEVEL` or `RUST_LOG` (`info`/`debug`/`trace` enables lightweight verbose logs)
+- `CODESMITH_LOG_LEVEL` (`info`/`debug`/`trace` enables lightweight verbose logs; `RUST_LOG` is not consulted by the CLI)
 - `CODESMITH_SKILLS_DIR`
 - `CODESMITH_MCP_CONFIG`
 - `CODESMITH_NOTES_PATH`
@@ -470,7 +468,7 @@ Remaining app-level variables:
 - `CODESMITH_SIMPLE` (`1`/`true` bare/simple mode — trims features and closes memory)
 - `CODESMITH_REMOTE` / `CODESMITH_REMOTE_MEMORY_DIR` (remote mode; memory stays on only when an explicit memory dir is set)
 - `CODESMITH_ALLOW_SHELL` (`1`/`true` enables)
-- `CODESMITH_APPROVAL_POLICY` (`on-request|untrusted|never`)
+- `CODESMITH_APPROVAL_POLICY` (`on-request|untrusted|never|auto|suggest`)
 - `CODESMITH_SANDBOX_MODE` (`read-only|workspace-write|danger-full-access|external-sandbox`)
 - `CODESMITH_SANDBOX_BACKEND` / `CODESMITH_SANDBOX_URL` / `CODESMITH_SANDBOX_API_KEY`
   (external sandbox backend: `none` | `opensandbox`; URL defaults to
@@ -674,11 +672,11 @@ codesmith also stores user preferences in:
 
 - `~/.config/deepseek/settings.toml`
 
-Notable settings include `auto_compact` (default `false`), which opts into
-replacement-style summarization only near the active model limit. The default
-V4 path preserves the stable message prefix for cache reuse; use manual
-`/compact` or enable `auto_compact` only when you explicitly want automatic
-replacement compaction. You can inspect or update these from the REPL with
+Notable settings include `auto_compact` (default `true`, provider-neutral):
+near the active model limit the transcript is replacement-compacted
+automatically. Set `auto_compact = off` for cache-first workflows that need
+the stable message prefix preserved; manual `/compact` always remains
+available. You can inspect or update these from the REPL with
 `/settings` and `/config` (interactive editor).
 
 Common settings keys:
@@ -696,9 +694,9 @@ status line; appearance keys such as `theme`, `background_color`, and
   output. `system` follows terminal background detection (`COLORFGBG`, then
   macOS appearance), `dark`/`light` use the built-in
   palettes, `grayscale` is the low-opinion black/white theme, and the named
-  community presets apply across the UI. Aliases such as `whale`, `mono`,
+  community presets apply across the UI. Aliases such as `mono`,
   `black-white`, `tokyonight`, and `gruvbox` are accepted.
-- `auto_compact` (on/off, default off)
+- `auto_compact` (on/off, default on)
 - `paste_burst_detection` (on/off, default on): fallback rapid-key paste
   detection for terminals that do not emit bracketed-paste events. This is
   independent of terminal bracketed-paste mode.
@@ -735,7 +733,8 @@ status line; appearance keys such as `theme`, `background_color`, and
   `hidden` disables the right sidebar entirely so raw terminal selection cannot
   cross from the transcript into sidebar borders. Legacy `plan` and `todos`
   values are accepted and normalized to `work`.
-- `max_history` (number of submitted input history entries; cleared drafts are
+- `max_input_history` (number of submitted input history entries to save,
+  default `100`; displayed as `max_history` in `/config`; cleared drafts are
   also kept locally for composer history search)
 - `default_model` (model name override)
 
@@ -771,8 +770,8 @@ separate:
 
 For the default V4 path, hard cycles fire when active input reaches the smaller
 of the configured cycle threshold (`768000`) and the model window minus reserved
-response headroom. Replacement compaction remains opt-in (`auto_compact = false`
-by default), the Flash seam manager remains opt-in (`[context].enabled = false`),
+response headroom. Replacement compaction is on by default (`auto_compact = true`,
+provider-neutral), the Flash seam manager remains opt-in (`[context].enabled = false`),
 and the capacity controller remains disabled unless configured.
 
 ## Key Reference
@@ -786,15 +785,16 @@ and the capacity controller remains disabled unless configured.
   [Custom provider registry](#custom-provider-registry-providerscustom).
 - `api_key` (string, required for hosted providers): must be non-empty for DeepSeek/hosted providers (or set the provider API key env var). Self-hosted SGLang, vLLM, and Ollama can omit it.
 - `auth_mode` (string, optional): authentication style for the active
-  provider. `api_key` (or `bearer`) forces key-bearing auth even for
-  loopback endpoints; `none` / `off` / `anonymous` disables it; `kimi` /
-  `kimi_oauth` switches Moonshot/Kimi to OAuth instead of a static key.
+  provider. `api_key` / `api-key` / `apikey` / `bearer` / `bearer-token`
+  forces key-bearing auth even for loopback endpoints; `none` / `off` /
+  `disabled` / `no_auth` / `anonymous` disables it; `kimi` / `kimi_oauth` /
+  `kimi_cli` / `oauth` switches Moonshot/Kimi to OAuth instead of a static key.
   Unset keeps the provider default — self-hosted and loopback endpoints
   skip the secret store unless a key is explicitly requested. Per-provider
   tables (`[providers.<name>].auth_mode`) accept the same values, and
   `CODESMITH_AUTH_MODE` overrides from the environment.
 - `base_url` (string, optional): defaults to `https://api.deepseek.com/beta` for DeepSeek's OpenAI-compatible Chat Completions API, including legacy `provider = "deepseek-cn"` configs. Other defaults are `https://integrate.api.nvidia.com/v1` for `nvidia-nim`, `https://api.openai.com/v1` for `openai`, `https://api.atlascloud.ai/v1` for `atlascloud`, `https://maas-openapi.wanjiedata.com/api/v1` for `wanjie-ark`, `https://openrouter.ai/api/v1` for `openrouter`, `https://api.xiaomimimo.com/v1` for `xiaomi-mimo`, `https://api.novita.ai/v1` for `novita`, `https://api.fireworks.ai/inference/v1` for `fireworks`, `https://api.siliconflow.com/v1` for `siliconflow`, `https://api.moonshot.ai/v1` for `moonshot`, `http://localhost:30000/v1` for `sglang`, `http://localhost:8000/v1` for `vllm`, and `http://localhost:11434/v1` for `ollama`. Set `https://api.deepseek.com` or `https://api.deepseek.com/v1` explicitly to opt out of DeepSeek beta features.
-- `default_text_model` (string, optional): defaults to `deepseek-v4-pro` for DeepSeek and generic OpenAI-compatible endpoints, `deepseek-ai/deepseek-v4-pro` for NVIDIA NIM, `deepseek-ai/deepseek-v4-flash` for AtlasCloud, `deepseek-reasoner` for Wanjie Ark, `deepseek/deepseek-v4-pro` for OpenRouter and Novita, `mimo-v2.5-pro` for Xiaomi MiMo, `accounts/fireworks/models/deepseek-v4-pro` for Fireworks, `deepseek-ai/DeepSeek-V4-Pro` for SiliconFlow, `kimi-k2.6` for Moonshot, `deepseek-ai/DeepSeek-V4-Pro` for SGLang/vLLM, and `deepseek-coder:1.3b` for Ollama. Current public DeepSeek IDs are `deepseek-v4-pro` and `deepseek-v4-flash`, both with 1M context windows, 384K max output, and thinking mode enabled by default. `deepseek-chat` and `deepseek-reasoner` are compatibility aliases for `deepseek-v4-flash`; SiliconFlow maps `deepseek-reasoner` and `deepseek-r1` to its Pro model while `deepseek-chat` and `deepseek-v3` map to Flash. Provider-specific mappings translate `deepseek-v4-pro` / `deepseek-v4-flash` to each provider's model ID where supported. OpenRouter also recognizes recent large IDs such as `arcee-ai/trinity-large-thinking`, `qwen/qwen3.7-max`, `xiaomi/mimo-v2.5-pro`, `qwen/qwen3.6-35b-a3b`, `google/gemma-4-31b-it`, and `moonshotai/kimi-k2.6`. Generic `openai`, `atlascloud`, `wanjie-ark`, `xiaomi-mimo`, and Ollama model IDs are passed through unchanged. OpenRouter and SiliconFlow provider configs with a custom `base_url` also preserve explicit model values, which lets OpenAI-compatible gateways accept bare model IDs. Use `/models` or `codesmith models` to discover live IDs from your configured endpoint. `CODESMITH_MODEL` overrides this for a single process.
+- `default_text_model` (string, optional): defaults to `deepseek-v4-pro` for DeepSeek, `gpt-5` for `openai`, and `deepseek-v4-pro` as the generic fallback for `[[providers.custom]]` entries (an `openai` provider with a custom `base_url` and no explicit model fails startup instead), `deepseek-ai/deepseek-v4-pro` for NVIDIA NIM, `deepseek-ai/deepseek-v4-flash` for AtlasCloud, `deepseek-reasoner` for Wanjie Ark, `deepseek/deepseek-v4-pro` for OpenRouter and Novita, `mimo-v2.5-pro` for Xiaomi MiMo, `accounts/fireworks/models/deepseek-v4-pro` for Fireworks, `deepseek-ai/DeepSeek-V4-Pro` for SiliconFlow, `kimi-k2.6` for Moonshot, `deepseek-ai/DeepSeek-V4-Pro` for SGLang/vLLM, and `deepseek-coder:1.3b` for Ollama. Current public DeepSeek IDs are `deepseek-v4-pro` and `deepseek-v4-flash`, both with 1M context windows, 384K max output, and thinking mode enabled by default. `deepseek-chat` and `deepseek-reasoner` are compatibility aliases for `deepseek-v4-flash`; SiliconFlow maps `deepseek-reasoner` and `deepseek-r1` to its Pro model while `deepseek-chat` and `deepseek-v3` map to Flash. Provider-specific mappings translate `deepseek-v4-pro` / `deepseek-v4-flash` to each provider's model ID where supported. OpenRouter also recognizes recent large IDs such as `arcee-ai/trinity-large-thinking`, `qwen/qwen3.7-max`, `xiaomi/mimo-v2.5-pro`, `qwen/qwen3.6-35b-a3b`, `google/gemma-4-31b-it`, and `moonshotai/kimi-k2.6`. Generic `openai`, `atlascloud`, `wanjie-ark`, `xiaomi-mimo`, and Ollama model IDs are passed through unchanged. OpenRouter and SiliconFlow provider configs with a custom `base_url` also preserve explicit model values, which lets OpenAI-compatible gateways accept bare model IDs. Use `/models` or `codesmith models` to discover live IDs from your configured endpoint. `CODESMITH_MODEL` overrides this for a single process.
 - `model` (string, optional): generic model override slot consumed by the
   project overlay; its environment equivalent is `CODESMITH_MODEL`. Prefer
   the explicit
@@ -802,16 +802,17 @@ and the capacity controller remains disabled unless configured.
   configs.
 - `output_mode` / `log_level` (string, optional): output and
   logging knobs stored in the same file; the runtime reads them from the
-  environment (`CODESMITH_OUTPUT_MODE`, `CODESMITH_LOG_LEVEL` / `RUST_LOG`).
+  environment (`CODESMITH_OUTPUT_MODE`, `CODESMITH_LOG_LEVEL`).
   Both are project-overlay-safe (a repo may set them).
 - `strict_tool_mode` (bool, optional): when `true`, sends
   `tool_choice: "required"` and opts compatible function schemas into the
   DeepSeek beta strict mode. Schemas with root alternatives stay
   non-strict so optional/one-of tool semantics are unchanged.
-- `reasoning_effort` (string, optional): `off`, `low`, `medium`, `high`, or `max`; defaults to the configured UI tier. DeepSeek Platform receives top-level `thinking` / `reasoning_effort` fields. NVIDIA NIM receives equivalent settings through `chat_template_kwargs`.
-- `allow_shell` (bool, optional): defaults to `true` (sandboxed).
+- `reasoning_effort` (string, optional): `off`, `low`, `medium`, `high`, `max`, or `auto`; defaults to the configured UI tier. DeepSeek Platform receives top-level `thinking` / `reasoning_effort` fields. NVIDIA NIM receives equivalent settings through `chat_template_kwargs`.
+- `allow_shell` (bool, optional): defaults to `false` — shell execution must
+  be opted into explicitly.
 - `telemetry` (bool, optional, default `false`): opt-in **local-only** telemetry. When `true`, capacity-decision analytics events are written to `~/.codesmith/telemetry/events.jsonl` after the workspace trust boundary passes. Never networked; the sink queues in-memory pre-trust and attaches (writes) only post-trust, so no workspace-controlled data reaches disk before consent. Events carry an ephemeral per-session id, not the durable thread id.
-- `approval_policy` (string, optional): `on-request`, `untrusted`, or `never`. Runtime `approval_mode` editing in `/config` also accepts `on-request` and `untrusted` aliases.
+- `approval_policy` (string, optional): `on-request`, `untrusted`, `never`, `auto`, or `suggest`. Runtime `approval_mode` editing in `/config` also accepts `on-request` and `untrusted` aliases.
 - `yolo` (bool, optional, default `false`): YOLO mode — auto-approve every
   tool call for the session. Equivalent to `--yolo` on the CLI or
   `CODESMITH_YOLO=1` in the environment.
@@ -932,13 +933,11 @@ and the capacity controller remains disabled unless configured.
   `~/.claude/skills`. First launch installs versioned bundled skills for common
   workflows including skill creation, delegation, MCP/plugin scaffolding,
   documents, presentations, spreadsheets, PDFs, and Feishu/Lark.
-- `mcp_config_path` (string, optional): defaults to `~/.codesmith/mcp.json`, with
-  legacy `~/.codesmith/mcp.json` fallback when the CodeSmith path is absent.
+- `mcp_config_path` (string, optional): defaults to `~/.codesmith/mcp.json`.
   It is visible in `/config` and can be changed from the REPL. The new path is
   used immediately by `/mcp`, but rebuilding the model-visible MCP tool pool
   requires restarting the session.
-- `notes_path` (string, optional): defaults to `~/.codesmith/notes.txt`, with
-  legacy `~/.codesmith/notes.txt` fallback when the CodeSmith path is absent, and
+- `notes_path` (string, optional): defaults to `~/.codesmith/notes.txt`, and
   is used by the model-visible `note` tool.
 - `personality` (string, optional): `calm` (default) or `playful` — the
   voice-and-tone overlay in the system prompt. Case-insensitive; anything else
@@ -975,8 +974,7 @@ and the capacity controller remains disabled unless configured.
     canonicalized; the list is resolved into the
     `CODESMITH_MEMORY_EXCLUDES` env var at engine startup so every load
     site honours it.
-- `memory_path` (string, optional): defaults to `~/.codesmith/memory.md`, with
-  legacy `~/.codesmith/memory.md` fallback when the CodeSmith path is absent.
+- `memory_path` (string, optional): defaults to `~/.codesmith/memory.md`.
   Used by the user-memory feature when enabled — see
   [`MEMORY.md`](MEMORY.md) for the full feature surface (`# foo`
   composer prefix, `/memory` slash command, `remember` tool, opt-in
@@ -1014,6 +1012,8 @@ and the capacity controller remains disabled unless configured.
   Thresholds use the active request input estimate, not lifetime summed API
   usage:
   - `[context].enabled` (bool, default `false`)
+  - `[context].project_pack` (bool, default `true`): include the deterministic
+    project context pack in the stable prompt prefix
   - `[context].verbatim_window_turns` (int, default `16`)
   - `[context].l1_threshold` (int, default `192000`)
   - `[context].l2_threshold` (int, default `384000`)
@@ -1104,6 +1104,10 @@ and the capacity controller remains disabled unless configured.
   - `[auto].router_model` (string, optional) — override the routing
     classifier itself. Default: the heavy tier under quality-first
     routing, the `[utility_model]` under cost saving.
+- `mods.*` (optional): script-mod (Rhai) layer controls — see
+  [MODS.md](MODS.md):
+  - `[mods].enabled` (bool, default `true`): gates the whole script-mod layer
+    (discovery, the `manage_mods` tool)
 - `automations.*` (optional): bounds for scheduled automation runs
   (`/automations`). Scheduled runs are unattended — nobody is watching to
   interrupt a runaway loop — so they are capped below the interactive
@@ -1135,7 +1139,7 @@ and the capacity controller remains disabled unless configured.
 ### Workspace notes
 
 `/note` manages a simple notes file in the current workspace at
-`.deepseek/notes.md`. Existing `/note <text>` usage still appends a note.
+`.codesmith/notes.md`. Existing `/note <text>` usage still appends a note.
 The management forms are:
 
 | Command | Action |
@@ -1374,9 +1378,9 @@ See `docs/capacity_controller.md` for formulas, intervention behavior, and telem
 ## Notes On `codesmith doctor`
 
 `codesmith doctor` follows the same config resolution rules as the rest of the
-binary. That means `--config`, `CODESMITH_CONFIG_PATH`, and the legacy
-`CODESMITH_CONFIG_PATH` are respected, and MCP/skills
-checks use the resolved `mcp_config_path` / `skills_dir` (including env overrides).
+binary. That means `--config` and `CODESMITH_CONFIG_PATH` are respected, and
+MCP/skills checks use the resolved `mcp_config_path` / `skills_dir`
+(including env overrides).
 
 To bootstrap missing MCP/skills paths, run `codesmith setup --all`. You can
 also run `codesmith setup --skills --local` to create a workspace-local

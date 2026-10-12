@@ -67,7 +67,7 @@ Docker is also available when you want an isolated runtime:
 ```bash
 docker volume create codesmith-home
 docker run --rm -it \
-  -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+  -e CODESMITH_API_KEY="$CODESMITH_API_KEY" \
   -v codesmith-home:/home/codesmith/.codesmith \
   -v "$PWD:/workspace" \
   -w /workspace \
@@ -80,13 +80,10 @@ Launch CodeSmith from the repository or directory you want it to work in:
 codesmith
 ```
 
-On first launch, CodeSmith asks which provider to use — every shipped provider
-is in the list, with DeepSeek preselected as the fallback — and then asks for
-that provider's API key. Picking the OpenAI-compatible or Anthropic-compatible
-route first asks for an endpoint URL, so a gateway or proxy is one paste away.
-A provider that already has a usable credential (an environment variable, or a
-self-hosted runtime such as Ollama) skips the key screen. The choice can be
-changed later with `/provider`.
+On first launch there is no wizard — CodeSmith goes straight into the REPL.
+Set the provider and its API key first: DeepSeek is the default provider
+fallback when nothing is configured, and without a key the first turn simply
+fails with a provider auth error.
 
 The same setup paths work outside the REPL: `--provider`,
 `CODESMITH_PROVIDER`, or a `provider = "<id>"` line in the config. The most
@@ -203,7 +200,7 @@ append-only — expanding reprints the detail below the current output
 rather than rewriting history, and keystrokes other than `Ctrl+O` typed
 while a turn runs are discarded.
 
-The prompt accepts normal prompts and slash commands. Type `/` to discover
+The prompt accepts normal prompts and slash commands; `/help` lists the
 available commands. Use an `@path` mention to attach an image file to the
 next message, or `/attach <path>` for local media. `Ctrl+C` cancels a running
 turn; press it twice in a row to quit.

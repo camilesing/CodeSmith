@@ -7,7 +7,8 @@
 已经打开的子会话。使用 `agent_close` 可以显式取消一个正在运行的子代理。
 
 本文档介绍角色分类体系。当前的活动编排接口是
-`agent_open`、`agent_eval` 和 `agent_close`；参见 `prompts/base.md`
+`agent_open`、`agent_eval` 和 `agent_close`；注册表还在它们旁边
+注册了 `tool_agent` 和 `agent_run`。参见 `prompts/base.md`
 的"Sub-Agent Strategy"以及内联的工具描述。
 
 ## 角色分类体系
@@ -24,6 +25,9 @@
 | `review`      | 阅读并评分，附带严重性打分             | 否      | 只读          | "审计这个 PR 的 bug"                          |
 | `implementer` | 以最小改动落地一个具体变更             | 是      | 是            | "重写 `bar.rs::Foo::bar` 以实现 X"            |
 | `verifier`    | 运行测试 / 验证，报告结果              | 否      | 以测试为主    | "运行 cargo test --workspace 并报告"          |
+| `tool_agent`  | 在轻量级模型上快速执行，关闭思考        | 是      | 是            | 简单的工具型工作：OCR、文件/搜索查找、抓取、命令探测 |
+| `team`        | 共享任务清单；通过基于文件的邮箱通信   | 是      | 是            | agent-teams 队友                              |
+| `coordinator_worker` | 独立执行被分配的任务；完整工具减去团队管理 | 是 | 是        | 由协调者派发的工作者                          |
 | `custom`      | 显式的窄工具白名单                     | 视情况  | 视情况        | 使用精选工具的受控派发                        |
 
 每个角色的完整系统提示词位于
@@ -82,6 +86,9 @@ todo 或计划状态时，使用分叉会话。
 | `review`      | `reviewer`, `code-review`                                        |
 | `implementer` | `implement`, `implementation`, `builder`                         |
 | `verifier`    | `verify`, `verification`, `validator`, `tester`                  |
+| `tool_agent`  | `tool-agent`, `toolagent`, `executor`, `execution`, `fin`        |
+| `team`        | `teammate`, `swarm`                                              |
+| `coordinator_worker` | `coordinator-worker`, `coord_worker`                      |
 | `custom`      | （无；需要显式的 `allowed_tools` 数组）                          |
 
 所有匹配均不区分大小写。未知值会产生一个列出可接受集合的
@@ -147,10 +154,10 @@ api_timeout_secs = 900  # 15 minutes; clamped to 1..=1800
 
 ## 生命周期
 
-每个打开的会话都会产生一条按如下路径推进的记录：
+每个打开的会话都会产生一条记录，其状态为以下之一：
 
 ```
-Pending → Running → (Completed | Failed(reason) | Cancelled | Interrupted(reason))
+Running → (Completed | Failed(reason) | Cancelled | Interrupted(reason))
 ```
 
 当管理器检测到一个 `Running` 代理的任务句柄已丢失时，会触发
@@ -174,31 +181,32 @@ Pending → Running → (Completed | Failed(reason) | Cancelled | Interrupted(re
 
 ## 输出契约
 
-每个子代理都会产出一个包含五个部分的最终结果字符串，
-顺序如下：
+每个子代理的最终助手消息都以五个部分收尾，顺序固定，并使用
+精确的章节标题作为 Markdown 三级标题（H3）：
 
 ```
-SUMMARY:    one paragraph; what you did and what happened
-CHANGES:    files modified, with one-line descriptions; "None." if read-only
-EVIDENCE:   path:line-range citations and key findings; one bullet each
-RISKS:      what could go wrong / what the parent should double-check
-BLOCKERS:   what stopped you; "None." if you finished cleanly
+### SUMMARY    一段话；你做了什么以及核心结论
+### EVIDENCE   path:line-range 引用、命令 + 退出码、关键发现；每条一行
+### CHANGES    写入或编辑的文件，各附一行说明；只读时写 "None."
+### RISKS      可能出问题 / 父代理应复核的地方
+### BLOCKERS   阻止你完成的因素；干净收尾时写 "None."
 ```
 
 确切的格式位于 `crates/agent-runtime/src/prompts/subagent_output_format.md`。
 父代理会把 `EVIDENCE` 当作下一轮的工作集，因此探索者和审查者
 应在这一部分保持精确。
 
-## 记忆与 `remember` 工具
+## 作用域代理记忆
 
-当启用记忆功能（`[memory] enabled = true` 或
-`CODESMITH_MEMORY=on`）时，子代理继承父代理的记忆文件。它们可以
-通过 `remember` 工具追加持久化笔记——这对于发现了值得跨会话
-传承的项目约定的探索者，或者学到"这个测试不稳定"的验证者来说
-非常方便。
-
-记忆写入仅作用于用户自己的 `memory.md` 文件；它们不经过标准的
-写入审批流程。
+子代理不继承父代理的记忆文件，也没有 `remember` 工具——该工具
+只注册在父代理的注册表上。取而代之，子代理获得可选启用的作用域
+代理记忆（scoped Agent Memory）：在 `agent_open` 上传入 `memory`
+参数（`user`、`project` 或 `local` 作用域，或
+`{"scope": ..., "snapshot": "none" | "initialize" | "prompt-update"}`）。
+之后子代理可以通过 `agent_memory_read` / `agent_memory_write` /
+`agent_memory_edit` 工具维护自己的 `MEMORY.md` 索引和主题文件，
+这些工具被限制在该子代理的记忆目录内——没有通用的工作区写入
+权限，也不经过标准的写入审批流程。
 
 ## 实现说明
 

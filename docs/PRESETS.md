@@ -30,8 +30,6 @@ codesmith --preset simple    # Pi-style minimal: 9 tools, no index/LSP/memory
 codesmith --preset all       # everything stable on
 /preset list                 # see every preset visible to this workspace
 /preset plan                 # switch mid-session (live dials; restart notes for the rest)
-/preset export my-setup      # snapshot current dials to a shareable file
-/preset off                  # drop the preset layer, keep current dials
 codesmith preset show         # tier matrix + your effective preset
 ```
 
@@ -127,11 +125,13 @@ sub-agent cap, and model switch on the next turn. The resource switches
 and memory injection are read at engine startup — switching to a preset
 that sets them prints what will apply after restart.
 
-**Precedence for the active preset:** `--preset name` (CLI, or
-`CODESMITH_PRESET`) > `preset = "name"` in config.toml (the legacy `mode`
-key still works as a deprecated alias) > the last preset picked in the REPL
-(persisted in settings.toml) > the factory default `middle`. Unsetting is
-`/preset off`.
+**Precedence for the active preset:** `--preset name` (CLI; the deprecated
+`--mode` spelling still works) > `preset = "name"` in config.toml (the legacy
+`mode` key still works as a deprecated alias) > the last preset picked in the REPL
+(persisted in settings.toml) > the factory default `middle`. To unset, stop
+passing `--preset`, remove `preset` from config.toml, and clear the persisted
+REPL selection (`active_preset` in settings.toml) — with no selection anywhere,
+`middle` applies.
 
 **Deprecated names.** The pre-rename spellings still work and map with a
 warning: `minimal` → `simple`, `balanced` → `middle`, `maximal` → `all`;

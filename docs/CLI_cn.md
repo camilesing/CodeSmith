@@ -4,11 +4,10 @@
 
 ```bash
 codesmith                                         # interactive REPL
-codesmith "explain this function"                 # one-shot prompt
+codesmith -p "explain this function"              # open the REPL with this prompt submitted
+codesmith exec "explain this function"            # one-shot, non-interactive prompt
 codesmith exec --auto --output-format stream-json "fix this bug"  # NDJSON backend stream
 codesmith exec --resume <SESSION_ID> "follow up"  # continue a non-interactive session
-codesmith --model deepseek-v4-flash "summarize"   # model override
-codesmith --model auto "fix this bug"             # auto-select model + thinking
 codesmith --yolo                                  # auto-approve tools
 codesmith auth set --provider deepseek            # save API key
 codesmith doctor                                  # check setup & connectivity
@@ -25,7 +24,7 @@ codesmith fork <SESSION_ID>                       # fork a saved session into a 
 codesmith serve --http                            # HTTP/SSE API server
 codesmith serve --mobile                          # LAN mobile control page; token-gated by default
 codesmith serve --acp                             # ACP stdio adapter for Zed/custom agents
-codesmith run pr <N>                              # fetch PR and pre-seed review prompt
+codesmith pr <N>                                  # fetch PR and pre-seed review prompt
 codesmith mcp list                                # list configured MCP servers
 codesmith mcp validate                            # validate MCP config/connectivity
 codesmith mcp-server                              # run dispatcher MCP stdio server
@@ -37,33 +36,48 @@ codesmith docker                                  # print the container quick st
 ## Prompt 与子命令
 
 顶层第一个裸词按子命令名解析：`codesmith docker`、`codesmith version` 都是
-命令；无法识别的词会以 `unrecognized subcommand '<word>'`（退出码 2）报错，
-而不是启动 REPL。
+命令；无法识别的词会以 `unrecognized subcommand '<word>'`（退出码 2）
+报错，并提示改用 `-p`。顶层不存在位置参数形式的 prompt：加引号
+（`codesmith "explain this function"`）、未加引号的尾串、`--` 终结符、
+非 ASCII 裸词（`codesmith 总结`）都会以同样的方式报错。
 
-prompt 的既有形式不变：`codesmith "explain this function"`（单个带引号的
-参数）、`codesmith hello world`（未加引号的整个尾串），单词 prompt 则要走
-`codesmith -p <PROMPT>`，例如 `codesmith -p docker`。`--` 终结符同样结束
-子命令匹配，`codesmith -- docker` 也会把 `docker` 作为 prompt 发送。
+prompt 的入口有两个：
 
-没给 `-p` 时，单个 ASCII 词无法与拼错的命令区分，因此会被拒绝并在提示
-中指向 `-p`；非 ASCII 词（`codesmith 总结`）仍按 prompt 处理。
+- `codesmith -p <PROMPT>` —— 接受一个或多个值（拼接为初始 prompt），
+  启动交互式 REPL 并把该 prompt 作为第一轮提交。它不是一次性的，
+  会话会保持打开以便继续对话。
+- `codesmith exec "<prompt>"` —— 非交互的一次性形式。
+
+## 模型选择
+
+顶层没有 `--model` 旗标。选择模型的方式：
+
+- `~/.codesmith/config.toml` 中 `[providers.<id>]` 下的 `model = <id>`
+- `CODESMITH_MODEL` 环境变量
+- REPL 内的 `/model <id>`（按 provider 持久化，重启后仍生效）
+- 单次非交互运行用 `codesmith exec --model <id>`
+
+`codesmith models` 列出当前接入点的实时模型；`codesmith model list` 和
+`codesmith model resolve` 查看内置注册表与解析结果。
 
 ## 首次运行引导
 
-在没有 `~/.codesmith/.onboarded` 标记的机器上，裸 `codesmith` 会在 REPL
-启动前以纯命令行问答完成引导：语言 → 提供商 → 接入地址（仅
-OpenAI/Anthropic 路由）→ API 密钥 → 目录信任。答案写入与原 TUI 向导
-相同的持久化位置（`~/.codesmith/config.toml`、settings 的 locale、
-OS 钥匙串、信任表）。已有凭据——提供商环境变量、已保存的密钥、或
-Ollama 这类自托管运行时——会跳过密钥问题；拒绝信任提示则直接退出，
-不写入任何内容。传 `--skip-onboarding` 可完全跳过问答。
+不存在引导向导。已有凭据——提供商环境变量、已保存的密钥、或 Ollama
+这类自托管运行时——的启动会直接进入 REPL，并静默写入
+`~/.codesmith/.onboarded` 标记。凭据需要显式配置：`codesmith auth set
+--provider <id>`（会提示输入密钥）、`codesmith login`、环境变量，或
+`config.toml`。凭据缺失不会在启动时弹出提示：第一轮对话会以提供商
+认证错误失败。`--skip-onboarding` 仍然存在，用于跳过标记写入。
 
-在 REPL 内，两个门控仍可能拦截后续会话：凭据缺失（例如 `/logout` 之后）
-会重新弹出密钥屏；首次进入未信任的目录会重新弹出信任提示。
+`/logout` 会移除 API 密钥和引导标记，并打印可用 `codesmith auth set`
+或 `codesmith login` 重新登录；不会再弹出密钥屏。未信任的目录同样
+不会弹出提示——信任只决定是否加载项目级 config 和 `.env` 文件，由
+`/trust` 管理。
 
-在 REPL 内，`/provider` 打开 provider 选择器，`/model` 打开本地模型/
-思考选择器。`/provider openrouter` 和 `/model <id>` 直接切换；当当前
-provider 支持模型列举时，`/models` 会显式拉取并列出实时的 API 模型。
+在 REPL 内，裸 `/provider` 打印当前 provider，`/provider <id>` 切换
+（仅当前会话生效；会打印重启提示，因为完整重配置需要新会话）。裸
+`/model` 打印当前模型，`/model <id>` 切换并持久化。不存在 `/models`
+REPL 命令——实时模型列举只有 `codesmith models` 子命令。
 
 ## 会话：分支与回滚
 

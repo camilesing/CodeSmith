@@ -1,9 +1,10 @@
 # 钩子（生命周期 Shell 命令）
 
-CodeSmith 可以在代理生命周期的明确定义节点上运行你的 shell 命令：会话
-开始与结束、每次工具执行之前/之后、模式切换时、出错时、任务创建前后，
-以及上下文压缩（compaction）前后。钩子可用于审计日志、通知、临时凭据
-注入和提交前文本转换。
+CodeSmith 可以在代理生命周期的明确定义节点上运行你的 shell 命令：每次
+工具执行之前/之后、任务创建与完成时、每次 `exec_shell` 调用之前，以及
+上下文压缩（compaction）前后。钩子可用于审计日志、通知和临时凭据注入。
+并非所有可配置事件都会在当前构建中触发——哪些会发、哪些配了也不响，见
+[事件](#事件)。
 
 钩子配置在 `~/.codesmith/config.toml` 的 `[hooks]` 表下。项目级
 `<workspace>/.codesmith/config.toml` 可以携带自己的 `[hooks]` 表——
@@ -19,8 +20,8 @@ CodeSmith 可以在代理生命周期的明确定义节点上运行你的 shell 
 
 ```toml
 [[hooks.hooks]]
-event = "session_start"
-command = "echo 'CodeSmith session started'"
+event = "tool_call_before"
+command = "echo 'CodeSmith tool call starting'"
 
 [[hooks.hooks]]
 name = "audit-shell"
@@ -30,7 +31,8 @@ condition = { type = "tool_name", name = "exec_shell" }
 ```
 
 在 REPL 中运行 `/hooks`（或 `/hooks list`）确认两条条目均已加载，
-运行 `/hooks events` 列出所有可作为目标的事件名称。
+运行 `/hooks events` 打印 REPL 认识的事件名（共十一个——见
+[查看钩子](#查看钩子)）。
 
 ## 配置模式
 
@@ -46,10 +48,11 @@ working_dir = "/some/dir"     # 钩子 cwd；默认为工作区
 [[hooks.hooks]]
 event = "message_submit"      # 下文列出的事件之一（必填）
 command = "my-script.sh"      # shell 命令（必填）
-name = "inject-context"       # 可选；显示在 /hooks 和日志中
+name = "inject-context"       # 可选；显示在钩子日志中
 timeout_secs = 2              # 单钩子超时；设置了
                               # default_timeout_secs 时被忽略
-background = false            # 即发即忘；stdout 契约失效
+background = false            # 即发即忘；stdout 捕获丢失
+                              # （仍受超时约束）
 continue_on_error = true      # 钩子失败时的处理方式
 condition = { type = "mode", mode = "agent" }   # 可选；见条件
 ```
@@ -67,34 +70,45 @@ condition = { type = "mode", mode = "agent" }   # 可选；见条件
   `tracing::warn!`。
 - 钩子按配置顺序串行运行。一个 `continue_on_error = false` 的失败钩子
   会停止该事件的其余钩子。
-- `background = true` 在一个分离线程上启动命令并立即返回：没有超时、
-  没有 stdout 捕获，处处仅为观察者。
+- `background = true` 在一个分离线程上启动命令并立即返回：stdout
+  捕获丢失（处处仅为观察者），但进程仍受超时约束——设置了
+  `default_timeout_secs` 时用它，否则用该钩子自己的 `timeout_secs`，
+  到期会被杀死，而不是永久泄漏。
 
 ## 事件
 
 | 事件 | 别名 | 触发时机 | 可变性 |
 |---|---|---|---|
-| `session_start` | — | REPL 启动时一次 | observer |
-| `session_end` | — | 优雅关闭时一次 | observer |
-| `message_submit` | — | 在提交的消息进入历史或到达模型之前 | **可替换或阻断文本** |
+| `session_start` | — | 已定义但当前构建**不发出** | observer |
+| `session_end` | — | 已定义但当前构建**不发出** | observer |
+| `message_submit` | — | 执行器已实现但**未接线**——REPL 提交路径从不调用它（见下文） | **可替换或阻断文本**（契约） |
 | `tool_call_before` | `pre_tool_use` | 每次工具执行之前 | observer |
 | `tool_call_after` | `post_tool_use` | 每次工具执行完成之后 | observer |
-| `mode_change` | — | Plan / Agent / YOLO 模式切换时 | observer |
-| `on_error` | — | 传输 / 容量 / 工具出错时 | observer |
+| `mode_change` | — | 已定义但当前构建**不发出** | observer |
+| `on_error` | — | 已定义但当前构建**不发出** | observer |
 | `shell_env` | — | 每次调用 `exec_shell` 之前立即 | **stdout 成为环境变量** |
 | `task_created` | — | 任务管理器创建任务时 | observer |
 | `task_completed` | — | 被跟踪的任务完成时 | observer |
 | `pre_compact` | — | 上下文压缩之前（手动、自动或紧急） | **stdout 是被保留的上下文** |
-| `turn_end` | — | 回合完成之后（completed / interrupted / failed） | observer |
-| `subagent_spawn` | — | 子代理启动时 | observer |
-| `subagent_complete` | — | 子代理结束时 | observer |
+| `turn_end` | — | 已定义但当前构建**不发出** | observer |
+| `subagent_spawn` | — | 已定义但当前构建**不发出** | observer |
+| `subagent_complete` | — | 已定义但当前构建**不发出** | observer |
+
+在当前构建中拥有生产 emit 位点的事件：`tool_call_before` /
+`tool_call_after`（运行时回调桥）、`task_created` / `task_completed`
+（任务工具）、`pre_compact`（压缩流程）与 `shell_env`（shell 工具）。
+标为**不发出**的七个事件有枚举变体和配置解析，但没有生产 emit
+位点——为其配置的钩子能解析并出现在 `/hooks list` 中，却从不运行。
 
 各分组详情：
 
-- **生命周期。** `session_start` / `session_end` 在每个 REPL 进程中
-  触发一次。适合加载状态、设置日志或发送通知。
-- **`message_submit`** 是唯一能够更改代理输入的事件。stdin/stdout
-  JSON 契约和退出码 2 的阻断语义见[钩子输出](#钩子输出)。它在文件
+- **生命周期。** `session_start` / `session_end` 为每个 REPL 进程
+  一次的用途而定义（加载状态、设置日志、发送通知），但当前构建
+  **不发出**——为其配置的钩子从不运行。
+- **`message_submit`** 是唯一能够更改代理输入的事件，其执行器已完整
+  实现，但**未接线**：REPL 提交路径从不调用它，因此配置的
+  `message_submit` 钩子不会运行。stdin/stdout JSON 契约和退出码 2 的
+  阻断语义见[钩子输出](#钩子输出)（作为契约保留）。接线后它将在文件
   提及展开、技能包装、自动路由和历史追加*之前*运行——转换后的文本
   才是模型看到的。
 - **工具调用。** `tool_call_before` / `tool_call_after` 是只读观察者：
@@ -109,13 +123,14 @@ condition = { type = "mode", mode = "agent" }   # 可选；见条件
 - **`pre_compact`** 在上下文被摘要之前触发。每个匹配的非后台钩子的
   stdout 会被拼接（以 `---` 分隔线隔开）并合并进压缩摘要，因此你
   打印的材料会在摘要化后存活。失败不会造成阻断：压缩总是照常进行。
-- **`turn_end`** 在 REPL 的回合完成处理器中触发，此时应用状态、用量、
-  成本、通知和回执状态均已更新完毕。stdin 负载携带回合状态
-  （`completed` / `interrupted` / `failed`）与用量信息。失败仅告警；
-  钩子无法改变回合状态。`stop_hook_active` 目前恒为 `false`。
-- **子代理。** `subagent_spawn` / `subagent_complete` 在子代理启动或
-  结束时触发。负载携带 `agent_id` 和截断过的 `summary`——绝不包含
-  完整的提示词/结果。失败仅告警，绝不影响子代理生命周期。
+- **`turn_end`** 已定义但当前构建**不发出**。预期契约：回合完成
+  （`completed` / `interrupted` / `failed`）后触发，stdin 携带状态与
+  用量；失败仅告警，钩子无法改变回合状态（`stop_hook_active` 恒为
+  `false`）。下文的 stdin 信封记录的是该契约。
+- **子代理。** `subagent_spawn` / `subagent_complete` 已定义但当前
+  构建**不发出**。预期契约：子代理启动或结束时触发，stdin 携带
+  `agent_id` 和截断过的 `summary`——绝不包含完整的提示词/结果；失败
+  仅告警，绝不影响子代理生命周期。
 
 ## 条件
 
@@ -165,14 +180,14 @@ condition = { type = "any", conditions = [ ... ] }
 |---|---|---|
 | `CODESMITH_TOOL_NAME` | 工具事件、`shell_env` | 工具名，例如 `exec_shell` |
 | `CODESMITH_TOOL_ARGS` | 工具事件 | 以 JSON 字符串表示的工具参数 |
-| `CODESMITH_TOOL_RESULT` | `tool_call_after` | 工具输出，截断至 10 KiB |
+| `CODESMITH_TOOL_RESULT` | `tool_call_after` | 工具输出，截断至 10,000 字节 |
 | `CODESMITH_TOOL_EXIT_CODE` | `tool_call_after` | 适用时的退出码 |
 | `CODESMITH_TOOL_SUCCESS` | `tool_call_after` | `true` / `false` |
 | `CODESMITH_MODE` | 多数事件 | 当前模式（`plan` / `agent` / `yolo`） |
 | `CODESMITH_PREVIOUS_MODE` | `mode_change` | 切换前的模式 |
 | `CODESMITH_SESSION_ID` | 多数事件 | **临时**遥测 id，见下文 |
 | `CODESMITH_THREAD_ID` | 多数事件 | 持久线程 id，见下文 |
-| `CODESMITH_MESSAGE` | `message_submit` | 当前（可能已被转换的）文本，截断至 5 KiB |
+| `CODESMITH_MESSAGE` | `message_submit` | 当前（可能已被转换的）文本，截断至 5,000 字节 |
 | `CODESMITH_ERROR` | `on_error` | 错误消息 |
 | `CODESMITH_WORKSPACE` | 多数事件 | 工作区路径 |
 | `CODESMITH_MODEL` | 多数事件 | 当前模型名 |
@@ -188,7 +203,10 @@ condition = { type = "any", conditions = [ ... ] }
 
 只有结构化 stdin 事件（`message_submit`、`pre_compact`、`turn_end`、
 `subagent_spawn`、`subagent_complete`）会在 stdin 上收到 JSON；所有其他
-事件在没有 stdin 的情况下运行。
+事件在没有 stdin 的情况下运行。其中当前构建里只有 `pre_compact` 真正
+触发——`message_submit` 已实现但未接线，`turn_end` /
+`subagent_spawn` / `subagent_complete` 不发出——因此下文的信封是这些
+事件的契约，而不是任何现存代码会构造的负载。
 
 `message_submit` 收到：
 
@@ -261,6 +279,9 @@ condition = { type = "any", conditions = [ ... ] }
 
 ### `message_submit`（转换或阻断）
 
+该契约背后的执行器已完整实现但**未接线**：REPL 提交路径从不调用
+它，因此配置的 `message_submit` 钩子在当前构建中不会运行。契约如下：
+
 - 退出 `0` + stdout JSON 带有非空字符串 `text` 字段 → 该值**替换**
   提交的文本：`{"text": "replacement user text"}`
 - 退出 `0` + stdout 为空，或 JSON 无 `text`，或 `{"text": ""}` →
@@ -310,10 +331,13 @@ stdout 上每行一个 `KEY=VALUE`；接受可选的 `export ` 前缀。变量�
 
 ## 查看钩子
 
-- `/hooks` 或 `/hooks list` — 按事件分组的全部已配置钩子，含名称、
-  命令预览、超时和条件；并显示全局启用标志是否抑制了它们。
-- `/hooks events` — 所有可用于 `event = "..."` 的事件名称，各附一行
-  触发时机说明。
+- `/hooks` 或 `/hooks list` — 一个计数和启用/全局禁用的头部，随后
+  每个钩子一行，仅含事件（Debug 格式）与命令。名称、超时和条件
+  不渲染，也没有分组。
+- `/hooks events` — 单行列出 REPL 认识的十一个事件名
+  （`session_start` … `pre_compact`）；省略 `turn_end` /
+  `subagent_spawn` / `subagent_complete`（当前构建均不发出），也
+  没有逐事件的触发说明。
 
 ## 安全说明
 
@@ -406,9 +430,10 @@ command = "cat .codesmith/DECISIONS.md 2>/dev/null"
   和耗时。
 - **`message_submit` 的 stdout 被忽略。** 契约很严格：退出 `0` 时
   单个带非空 `text` 字段的 JSON 对象。`{"text": ""}` 和非 JSON 输出
-  会被忽略并附警告。后台钩子从不转换。
+  会被忽略并附警告。后台钩子从不转换。（另注：`message_submit` 在
+  当前构建中未接线——钩子根本不会运行。）
 - **超时杀死长时间运行的钩子。** 要么调大 `timeout_secs`，要么设置
   `background = true`（接受 stdout 因此被忽略）。
 - **条件从不匹配。** `tool_name` 是精确匹配；`tool_category` 只认识
-  `shell`、`file_write`、`safe` 和 `other`。`/hooks list` 会在每个
-  钩子旁渲染其条件。
+  `shell`、`file_write`、`safe` 和 `other`。`/hooks list` 不渲染
+  条件——请检查 `config.toml`。

@@ -43,9 +43,10 @@ Providers 是规划中的附加开源模型路由层；它们在当前检出中�
 - 配置：`provider = "<id>"`
 
 首次运行引导把 `provider =` 和该提供商的默认模型（`[providers.<name>]`）
-写入 `~/.codesmith/config.toml`；`/provider` 命令则把选择记录为
-`~/.codesmith/settings.toml` 中的 `default_provider`，在 REPL 内该设置的
-优先级高于配置文件中的 `provider =`。选中的提供商会以自身默认模型启动，
+写入 `~/.codesmith/config.toml`；`/provider <id>` 只在内存中切换当前会话的
+提供商并打印重启提示——它不持久化任何内容。要让默认提供商跨会话生效，
+请自行在 `~/.codesmith/settings.toml` 中设置 `default_provider = "<id>"`；
+该键的优先级高于配置文件中的 `provider =`。选中的提供商会以自身默认模型启动，
 而凭据已经可解析的提供商——环境变量、配置文件、或 Ollama 这类自托管运行时
 ——会跳过密钥输入。
 
@@ -72,9 +73,8 @@ API 密钥。API 密钥环境变量是排在已保存配置和密钥环凭据之
 - `CODESMITH_BASE_URL` / `CODESMITH_MODEL`，作用于当前活跃提供商。
 - 下文列出的提供商特定 base URL/模型环境变量。
 
-非本地的 `http://` base URL 会被拒绝，除非设置了
-`CODESMITH_ALLOW_INSECURE_HTTP=1`。环回 HTTP URL 被允许用于
-自托管运行时。
+环回和非本地的 `http://` base URL 均被接受（自托管与局域网运行时）；
+普通 HTTP 没有额外的开关门槛。对可从互联网访问的端点，请使用 `https://`。
 
 ## 自定义 DeepSeek 兼容端点
 
@@ -133,8 +133,8 @@ model = "your-deepseek-compatible-model"
 | `volcengine` | `[providers.volcengine]` | `VOLCENGINE_API_KEY`、`VOLCENGINE_ARK_API_KEY`、`ARK_API_KEY` | `VOLCENGINE_BASE_URL`、`VOLCENGINE_ARK_BASE_URL`、`ARK_BASE_URL`；默认 `https://ark.cn-beijing.volces.com/api/coding/v3` | `DeepSeek-V4-Pro`、`DeepSeek-V4-Flash` | Volcengine/火山引擎 Ark OpenAI 兼容编码端点。接受 `VOLCENGINE_MODEL` 和 `VOLCENGINE_ARK_MODEL`。 |
 | `openrouter` | `[providers.openrouter]` | `OPENROUTER_API_KEY` | `OPENROUTER_BASE_URL`；默认 `https://openrouter.ai/api/v1` | `deepseek/deepseek-v4-pro`、`deepseek/deepseek-v4-flash`；近期大型 ID 包括 `arcee-ai/trinity-large-thinking`、`qwen/qwen3.7-max`、`xiaomi/mimo-v2.5-pro`、`qwen/qwen3.6-35b-a3b`、`google/gemma-4-31b-it`、`z-ai/glm-5.1`、`moonshotai/kimi-k2.6` | 面向受支持模型 ID 的开源模型路由层，由用户显式选择。 |
 | `xiaomi-mimo` | `[providers.xiaomi_mimo]` | `XIAOMI_MIMO_API_KEY`、`XIAOMI_API_KEY`、`MIMO_API_KEY` | `XIAOMI_MIMO_BASE_URL`、`MIMO_BASE_URL`；默认 `https://api.xiaomimimo.com/v1` | `mimo-v2.5-pro`、`mimo-v2.5` | 小米 MiMo OpenAI 兼容 chat completions 路由。它发送 `max_completion_tokens` 并使用 MiMo 的 `thinking` 字段进行推理控制。 |
-| `novita` | `[providers.novita]` | `NOVITA_API_KEY` | `NOVITA_BASE_URL`；默认 `https://api.novita.ai/v1` | `deepseek/deepseek-v4-pro`、`deepseek/deepseek-v4-flash` | 用于 DeepSeek 模型 ID 的 OpenAI 兼容托管路由。使用配置或 `CODESMITH_MODEL` / `CODESMITH_MODEL` 进行模型覆盖。 |
-| `fireworks` | `[providers.fireworks]` | `FIREWORKS_API_KEY` | `FIREWORKS_BASE_URL`；默认 `https://api.fireworks.ai/inference/v1` | `accounts/fireworks/models/deepseek-v4-pro` | OpenAI 兼容的托管路由。使用配置或 `CODESMITH_MODEL` / `CODESMITH_MODEL` 进行模型覆盖。 |
+| `novita` | `[providers.novita]` | `NOVITA_API_KEY` | `NOVITA_BASE_URL`；默认 `https://api.novita.ai/v1` | `deepseek/deepseek-v4-pro`、`deepseek/deepseek-v4-flash` | 用于 DeepSeek 模型 ID 的 OpenAI 兼容托管路由。使用配置或 `CODESMITH_MODEL` 进行模型覆盖。 |
+| `fireworks` | `[providers.fireworks]` | `FIREWORKS_API_KEY` | `FIREWORKS_BASE_URL`；默认 `https://api.fireworks.ai/inference/v1` | `accounts/fireworks/models/deepseek-v4-pro` | OpenAI 兼容的托管路由。使用配置或 `CODESMITH_MODEL` 进行模型覆盖。 |
 | `siliconflow` | `[providers.siliconflow]` | `SILICONFLOW_API_KEY` | `SILICONFLOW_BASE_URL`；默认 `https://api.siliconflow.com/v1` | `deepseek-ai/DeepSeek-V4-Pro`、`deepseek-ai/DeepSeek-V4-Flash` | OpenAI 兼容的托管路由。官方文档使用 `.com` 端点；需要区域端点的用户可显式设置 `https://api.siliconflow.cn/v1`。接受 `SILICONFLOW_MODEL`。推理别名 `deepseek-reasoner` 和 `deepseek-r1` 映射到 Pro；`deepseek-chat` 和 `deepseek-v3` 映射到 Flash。 |
 | `moonshot` | `[providers.moonshot]` | `MOONSHOT_API_KEY`、`KIMI_API_KEY` | `MOONSHOT_BASE_URL`、`KIMI_BASE_URL`；默认 `https://api.moonshot.ai/v1` | `kimi-k2.6`；Kimi Code 路径在 `https://api.kimi.com/coding/v1` 使用 `kimi-for-coding` | Moonshot/Kimi 路由。接受 `MOONSHOT_MODEL`、`KIMI_MODEL_NAME` 和 `KIMI_MODEL`。`[providers.moonshot] auth_mode = "kimi_oauth"` 会在存在时读取 Kimi CLI OAuth 凭据。 |
 | `sglang` | `[providers.sglang]` | 可选 `SGLANG_API_KEY` | `SGLANG_BASE_URL`；默认 `http://localhost:30000/v1` | `deepseek-ai/DeepSeek-V4-Pro`、`deepseek-ai/DeepSeek-V4-Flash` | 自托管 OpenAI 兼容路由。localhost 部署通常省略认证。接受 `SGLANG_MODEL`。 |
@@ -166,8 +166,8 @@ OpenRouter completions 和静态注册表行包含 2026 年 4 月及以后
 ## 静态模型注册表
 
 `codesmith model list` 和 `codesmith model resolve` 使用
-`crates/agent/src/lib.rs` 中的静态注册表。这与实时的 `/models` 发现不同。
-当端点支持模型列表时，使用 `/models` 或 `codesmith models` 从当前活跃的
+`crates/agent/src/lib.rs` 中的静态注册表。这与实时模型列表不同。
+当端点支持模型列表时，使用 `codesmith models` 从当前活跃的
 API 端点获取模型 ID。
 
 | 提供商 | 静态注册表条目 | 工具调用 | 注册表推理标志 |
@@ -199,14 +199,17 @@ AtlasCloud 保持与配置层相同的默认模型，并为 Pro 和 Flash 行添
 元数据，不是实时 API 探测。当前字段为：
 
 `resolved_provider`、`resolved_model`、`context_window`、`max_output`、
-`thinking_supported`、`cache_telemetry_supported` 和 `request_payload_mode`。
+`thinking_supported`、`cache_telemetry_supported`、`request_payload_mode`
+和 `alias_deprecation`。
 
-目前所有已交付的提供商都使用 Chat Completions 请求载荷模式。
+除 `anthropic` 使用 Messages 请求载荷模式外，其余已交付的提供商都使用
+Chat Completions 请求载荷模式。
 
 | 提供商/模型类别 | 上下文窗口 | 最大输出元数据 | 推理支持 | 缓存遥测 | FIM 端点 |
 | --- | --- | --- | --- | --- | --- |
 | DeepSeek V4（`deepseek-v4-pro`、`deepseek-v4-flash`） | 1,000,000 | 384,000 | 是 | 是 | 仅 DeepSeek beta |
 | DeepSeek 兼容别名（`deepseek-chat`、`deepseek-reasoner`） | 1,000,000 | 384,000 | 是 | 是 | 仅 DeepSeek beta |
+| Anthropic（`claude-*` 模型） | 200,000 | 8,192 | 是（仅 Claude 3.7 与 4 系列名称） | 是 | 代码中未记录 |
 | NVIDIA NIM V4 注册表模型 | 1,000,000 | 384,000 | 是 | 是 | 代码中未记录 |
 | Volcengine Ark V4 模型 ID | 1,000,000 | 384,000 | 是 | 是 | 代码中未记录 |
 | OpenRouter、Novita、Fireworks、SiliconFlow、SGLang 和 vLLM 的 V4 模型 ID | 1,000,000 | 384,000 | 是 | 否 | 代码中未记录 |

@@ -43,8 +43,9 @@ CodeSmith 使用渐进式披露来保持上下文精简：会话提示只列出�
    /skills
    ```
 
-你的技能现在出现在模型可见的技能目录中、`/` 补全菜单中，并且可以用
-`/skill release-checklist` 或简写的 `/release-checklist` 调用。
+你的技能现在出现在模型可见的技能目录和 `/skills` 中，可以用
+`/skill release-checklist` 调用。（行式 REPL 没有 `/` 补全菜单，
+`/release-checklist` 也不是命令——激活只有 `/skill <name>` 这一条路。）
 
 ## 发现目录与优先级
 
@@ -73,7 +74,7 @@ CodeSmith 按顺序扫描以下目录，并合并找到的一切。只扫描实�
   `<root>/<vendor>/<skill>/SKILL.md`——最大深度为 8。隐藏子目录
   （`.git`、缓存）会被跳过；符号链接目录会被跟随。
 - **自定义安装目录。** 顶层 `skills_dir` 配置键（默认
-  `~/.codesmith/skills`）是 `/skill install` 放置新技能的位置。如果
+  `~/.codesmith/skills`）是技能安装放置新技能的位置。如果
   你把它指到标准集合之外，它会被追加到发现列表。参见
   [CONFIGURATION.md](CONFIGURATION.md)。
 
@@ -108,7 +109,7 @@ Instructions for the agent go here.
 | `allowed-tools` | 否 | 技能预期使用的工具名，逗号分隔或 YAML 列表。`allowed-tools` 和 `allowed_tools` 两种拼法都接受。 |
 | `model` | 否 | 使用此技能的运行的首选模型。 |
 | `effort` | 否 | 首选思考强度级别。 |
-| `user-invocable` | 否 | `false` 会将技能从 `/skills`、`/` 菜单和直接调用中隐藏——它只保持模型可选。默认 `true`。 |
+| `user-invocable` | 否 | `false` 会将技能从 `/skills` 与 `/skill <name>` 中隐藏——它只保持模型可选。默认 `true`。 |
 | `paths` | 否 | 条件激活技能的路径 glob（见下文）。 |
 | `version` | 否 | 版本字符串；供内置技能升级器和社区安装使用。 |
 | `context` | 否 | 执行的上下文提示。 |
@@ -151,11 +152,10 @@ Instructions for the agent go here.
    读取完整正文，并在本轮余下时间遵循它。
 2. **条件路径匹配。** 带有 `paths:` frontmatter 的技能在工作集文件
    匹配时自动注入（见上文）。
-3. **手动调用。** `/skill <name>` 在你的下一条消息上激活技能；任何
-   用户可调用的技能也可直接作为 `/<skill-name>` 调用——技能在原生命
-   令和用户自定义命令之后加入斜杠命令命名空间——并且全部出现在 `/`
-   补全菜单中。被激活技能的渲染正文会作为该轮指令前置于你的下一条
-   消息。
+3. **手动调用。** `/skill <name>` 在你的下一条消息上激活技能。这是
+   唯一的用户调用路径：`/<skill-name>` 不是命令（会落入 REPL 的未知
+   命令分支），行式 REPL 也没有 `/` 补全菜单。被激活技能的渲染正文
+   会作为该轮指令前置于你的下一条消息。
 4. **HTTP 运行时 API。** `GET /v1/skills` 列出技能，
    `POST /v1/skills/{name}` 启用或禁用一个（持久化到
    `~/.codesmith/skills_state.toml`）。参见 [RUNTIME_API.md](RUNTIME_API.md)。
@@ -164,20 +164,23 @@ Instructions for the agent go here.
 
 | 命令 | 效果 |
 |---|---|
-| `/skills` | 列出本地发现的技能（如有解析警告，一并显示）。 |
+| `/skills` | 列出本地发现的技能（名称 + 描述；不显示解析警告）。 |
 | `/skills <prefix>` | 按名称前缀过滤本地列表。 |
-| `/skills --remote` | 浏览精选社区注册表而非本地技能。 |
-| `/skills sync` | 拉取注册表索引并把每个精选技能下载到本地缓存。 |
+| `/skills --remote` | 未在 REPL 接线——只打印一条提示；注册表浏览暂无界面。 |
+| `/skills sync` | 未在 REPL 接线——只打印一条提示。 |
 | `/skill <name>` | 为你的下一条消息激活一个技能。 |
 | `/skill new` | 启动内置的 `skill-creator` 技能来搭建新技能。 |
-| `/skill install <source>` | 安装一个社区技能（见下文）。 |
-| `/skill update <name>` | 从其来源刷新一个已安装的技能。 |
-| `/skill uninstall <name>` | 移除一个已安装的技能。 |
-| `/skill trust <name>` | 将技能标记为受信任，解锁其 shell 片段。 |
+
+没有 `/skill install` / `update` / `uninstall` / `trust` 命令——技能以
+`~/.codesmith/skills` 下的普通文件方式管理（install/update/uninstall
+都是文件操作）。这些命令本应驱动的社区安装库（默认注册表 URL、5 MiB
+上限、`.installed-from` / `.trusted` 标记、缓存目录——见下文）已经
+存在，但尚无任何用户界面到达它。
 
 ## 安装社区技能
 
-`/skill install <source>` 接受三种来源形式：
+安装/注册表库（目前无法从 REPL 到达——见命令参考）接受三种来源
+形式：
 
 | 来源形式 | 解析为 |
 |---|---|
@@ -198,15 +201,16 @@ max_install_size_bytes = 5_242_880   # 5 MiB default
 `raw.githubusercontent.com` 必须可达；默认的 `prompt` 模式询问一次并
 可持久化）。下载的归档落在 `~/.codesmith/cache/skills/` 并解包到你的
 技能目录，同时以 `.installed-from` 标记记录来源，供日后的
-`/skill update` 使用。
+更新使用。
 
 ### 信任与 shell 片段
 
 技能正文可以以两种形式嵌入 shell 片段：以 <code>```!</code> 开头的
 围栏块和内联的 <code>!`command`</code> 反引号片段。对于**不受信任**
 的技能，这些在加载时被替换为一个禁用的占位符——模型能看到片段存在
-但无法运行。运行 `/skill trust <name>` 会在 `SKILL.md` 旁放置一个
-`.trusted` 标记文件；受信任的片段随后被透传，并附带通过
+但无法运行。在 `SKILL.md` 旁放置一个 `.trusted` 标记文件即表示该技能
+受信任（没有 `/skill trust` 命令——请自行创建该空标记文件）；
+受信任的片段随后被透传，并附带通过
 `exec_shell` 工具执行的指令，因此常规审批和沙箱策略仍然适用。信任
 是按技能划分且需要刻意为之的：在信任一个社区技能之前，先审查它想
 运行什么。MCP 提示技能（见下文）从不会启用 shell 片段。
@@ -241,20 +245,19 @@ my-skill/
 ## 故障排查
 
 - **技能不出现在 `/skills`。** 检查目录是否是上述发现位置之一（且
-  存在），以及 `SKILL.md` 文件名是否精确。`/skills` 会打印解析
-  警告——frontmatter 中缺少 `name`（又没有 `# Heading` 回退）是
-  最常见的原因。
+  存在），以及 `SKILL.md` 文件名是否精确。frontmatter 中缺少
+  `name`（又没有 `# Heading` 回退）是最常见的原因——`/skills`
+  不打印解析警告，请自行检查 frontmatter。
 - **错误的技能在名称冲突中胜出。** 发现按表中顺序先命中者胜——
   工作区 `.agents/skills` 中的技能会遮蔽具有相同 `name` 的全局
   `~/.codesmith/skills` 技能。重命名其中一个，或通过
   `POST /v1/skills/{name}` 禁用另一个。
-- **Shell 片段显示 "disabled until trusted"。** 审查技能后运行
-  `/skill trust <name>`。
+- **Shell 片段显示 "disabled until trusted"。** 审查技能后，在其
+  `SKILL.md` 旁放置一个空的 `.trusted` 标记文件。
 - **技能激活得过于频繁。** 锐化 `description`（模型依据它进行选择），
   或用 `paths:` 加门，使其只在匹配文件时出现。
-- **技能对模型可见但不在 `/` 菜单中。** 它被标记为
-  `user-invocable: false`、在 `~/.codesmith/skills_state.toml` 中被
-  禁用，或来自 MCP。
+- **技能对模型可见但不在 `/skills` 中。** 它被标记为
+  `user-invocable: false`——该列表只显示用户可调用的技能。
 
 关于 `[skills]` / `skills_dir` 配置面参见 [CONFIGURATION.md](CONFIGURATION.md)；
 技能内部机制参见 [ARCHITECTURE.md](ARCHITECTURE.md)。编译型 Rust

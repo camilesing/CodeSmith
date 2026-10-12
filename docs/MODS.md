@@ -47,13 +47,13 @@ on("tool-call", |e| {
 
 ### Step 2: Activate
 
-In CodeSmith, type:
+`/mods` is a stub in the current REPL ("mods management (/mods
+list|status|activate) is not wired in the REPL yet — mod commands
+arrive with the §F port"), so activation goes through the model-facing
+tool. Ask the agent — "activate the mod hello" — and approve the
+`manage_mods(action="activate", id="hello")` tool call it issues.
 
-```
-/mods activate hello
-```
-
-**What you'll see**: this is the **one-time consent** for this content (a mod is in-process code that persists across sessions — first activation requires your approval). After approval the mod is live immediately; same-id reloads never ask again — unless the mod's entry file changed since you approved it (git pull, an edit): a changed mod goes back to pending and asks for a fresh `/mods activate`. Any shell call containing `rm -rf` is now blocked, and the model receives your reason and adapts.
+**What you'll see**: this is the **one-time consent** for this content (a mod is in-process code that persists across sessions — first activation requires your approval). After approval the mod is live immediately; same-id reloads never ask again — unless the mod's entry file changed since you approved it (git pull, an edit): a changed mod goes back to pending and asks for a fresh activation. Any shell call containing `rm -rf` is now blocked, and the model receives your reason and adapts.
 
 ### Step 3: Register a model-visible tool + KV state
 
@@ -87,10 +87,10 @@ register_command("calls", "Show the tool-call count", |args, ctx| {
 
 **What you'll see**:
 
-- Typing `/calls` shows the count — `message(...)` displays to the user (use `send(...)` to feed the agent conversation instead)
-- Now **edit `mod.rhai`, save, and reload** — `/mods reload` re-runs discovery, no re-approval for the same id. `/mods status` confirms which mods are loaded and the runner generation. (The automatic file watcher and its `[mods] watch` switch were removed in 0.9.0; reloading is explicit.)
+- The `/calls` command registers, but slash commands registered by mods do not dispatch anywhere in the current build (see [EXTENSIONS.md](EXTENSIONS.md)) — typing `/calls` in the REPL falls through to the unknown-command arm. `message(...)` / `send(...)` become reachable when command dispatch lands; today the working readout is the model calling the `call_count` tool.
+- Now **edit `mod.rhai`, save, and reload** — ask the agent to run `manage_mods(action="reload")`; it re-runs discovery, no re-approval for the same id. `manage_mods(action="list")` confirms which mods are discovered and their status (the startup notice also lists discovered-but-not-activated mods). (The automatic file watcher and its `[mods] watch` switch were removed in 0.9.0; reloading is explicit.)
 
-You've now touched all four registration surfaces: event hooks, tools, commands, KV. Full `/mods` command set: `list` / `status` / `info <id>` / `activate <id>` / `enable|disable <id>` / `remove <id>` / `reload`.
+You've now touched all four registration surfaces: event hooks, tools, commands, KV. `/mods` itself is a REPL stub; the working surface is the `manage_mods` tool, whose actions are `list` / `write` / `activate` / `disable` / `enable` / `remove` / `reload` (there are no `info` or `status` actions).
 
 ## Quick Reference
 
@@ -267,9 +267,13 @@ register_provider(#{
 ```
 
 Validation fails the mod's **load** when the `id` shadows a builtin, the
-`kind` is not a builtin, or a header value is not a string — a broken
-spec never reaches the client. `api_key` is deliberately not accepted:
-secrets live in config, never in scripts.
+`kind` is not a builtin, a header value is not a string, or the
+`base_url` is neither `https://` nor a loopback `http://` endpoint (the
+alias factory sends the user's api_key and full prompts to this URL —
+plain-HTTP remotes are refused; local gateways such as Ollama, vLLM, or
+LM Studio stay allowed) — a broken spec never reaches the client.
+`api_key` is deliberately not accepted: secrets live in config, never
+in scripts.
 
 To use the alias, declare a matching `[[providers.custom]]` entry (same
 `id`; it carries the API key) and select it with
@@ -303,7 +307,7 @@ rejection. A mod whose manifest fails validation is skipped at discovery
 
 ## Lifecycle & Security Model
 
-- **First activation requires consent**: a newly discovered mod is skipped + passively announced as pending. Activation has exactly two paths: `/mods activate <id>`, or approving a `manage_mods(action="activate")` tool call. The activation record persists (`~/.codesmith/mods_state.toml`); same-id reloads need no re-approval — **the consent is bound to the entry file's content hash**, so an activated mod whose `.rhai` later changes (git pull, an auto-approved edit) goes back to pending and asks for a fresh consent. **Why**: mods are in-process code that persists across sessions — a prompt injection could plant a resident hook unnoticed, and one approval must not become standing code-execution for that id; first-activation consent (plus re-consent on content change) is exactly the guard against that.
+- **First activation requires consent**: a newly discovered mod is skipped + passively announced as pending. Activation has exactly one path today: approving a `manage_mods(action="activate")` tool call (a `/mods activate` command arrives with the REPL port). The activation record persists (`~/.codesmith/mods_state.toml`); same-id reloads need no re-approval — **the consent is bound to the entry file's content hash**, so an activated mod whose `.rhai` later changes (git pull, an auto-approved edit) goes back to pending and asks for a fresh consent. **Why**: mods are in-process code that persists across sessions — a prompt injection could plant a resident hook unnoticed, and one approval must not become standing code-execution for that id; first-activation consent (plus re-consent on content change) is exactly the guard against that.
 - **Let the agent write mods for you**: just ask ("write me a mod that blocks git push") — the model writes files via the `manage_mods` tool (`write`) and requests your approval to activate (`activate`).
 - **Mod writes follow workspace trust, both roots**: an untrusted workspace discovers no project mods, and `manage_mods` refuses to write mods into it — project root *and* the global `~/.codesmith/mods` (a global write would install code that loads in every workspace, including other untrusted ones, so the trust signal must not be bypassable via the `global` flag). Trust the workspace first, then write.
 - **Known boundaries**: mod tools, like Rust-extension tools, are main-turn only (sub-agents structurally never see them); network install sources (git clone into the mods dir) are out of MVP scope.
@@ -317,8 +321,8 @@ The `[mods]` section of `config.toml` (defaults to true):
 enabled = true   # master switch: discovery, manage_mods tool
 ```
 
-The `watch` hot-reload file watcher was removed in 0.9.0; use `/mods reload`
-(or `manage_mods(action="reload")`) to pick up edits.
+The `watch` hot-reload file watcher was removed in 0.9.0; use
+`manage_mods(action="reload")` to pick up edits.
 
 ## Implementation Index
 
@@ -329,10 +333,10 @@ The `watch` hot-reload file watcher was removed in 0.9.0; use `/mods reload`
 | `ScriptHandler` / `ScriptToolDefinition` / `ScriptCommandDefinition` | `crates/extensions/src/script/adapters.rs` |
 | `ModKvStore` (per-mod persistent KV) | `crates/extensions/src/script/kv.rs` |
 | `ModStateStore` (activation/disablement state) | `crates/cli/src/mod_state.rs` |
-| Shared ops layer (single impl behind /mods & manage_mods) | `crates/cli/src/mod_ops.rs` |
+| Shared ops layer (single impl behind the manage_mods tool) | `crates/cli/src/mod_ops.rs` |
 | Assembly/gating (populate returns the pending report) | `crates/cli/src/core/engine.rs` |
 | `ManageModsTool` (model-visible) | `crates/cli/src/tools/mods.rs` |
-| `/mods` commands | `crates/cli/src/interactive/commands/misc_cmds.rs` |
+| `/mods` REPL command (stub — not wired in the REPL yet) | `crates/cli/src/interactive/commands/misc_cmds.rs` |
 
 ## Further Reading
 

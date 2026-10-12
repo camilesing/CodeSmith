@@ -55,7 +55,7 @@ brew install codesmith
 ```bash
 docker volume create codesmith-home
 docker run --rm -it \
-  -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+  -e CODESMITH_API_KEY="$CODESMITH_API_KEY" \
   -v codesmith-home:/home/codesmith/.codesmith \
   -v "$PWD:/workspace" \
   -w /workspace \
@@ -68,7 +68,7 @@ docker run --rm -it \
 codesmith
 ```
 
-首次启动时，CodeSmith 会先让你选择 provider——列表包含全部已交付的 provider，默认选中回退 provider DeepSeek——然后再要求填写该 provider 的 API key。如果选择 OpenAI 兼容或 Anthropic 兼容路由，会先询问接入地址，因此网关或代理只需粘贴一次。凭据已经可用的 provider（环境变量，或 Ollama 这类自托管运行时）会跳过密钥输入。之后可随时用 `/provider` 更改选择。
+首次启动没有向导——CodeSmith 会直接进入 REPL。请先设置 provider 及其 API key：未做任何配置时，DeepSeek 是默认的回退 provider；缺少 key 时，第一轮对话会直接以提供商认证错误失败。
 
 在 REPL 之外，同样的配置入口是 `--provider`、`CODESMITH_PROVIDER`，或配置文件中的 `provider = "<id>"`。回退 provider 最直接的配置路径是：
 
@@ -166,7 +166,7 @@ files yet. Return the likely cause, evidence, and a proposed patch plan.
 
 工具调用默认每条只占一行折叠显示（调用名、参数和结果首行）。想查看已运行的某个调用的完整结果，用 `/expand`（上一轮的全部调用）、`/expand <n>`（第 n 条）或 `/expand all`（保留的全部记录）。一轮进行中按 `Ctrl+O` 可在折叠/展开渲染之间实时切换。终端会话记录是只增不删的——展开是在当前输出下方补印细节，而不是改写历史；另外一轮运行期间除 `Ctrl+O` 外的按键会被丢弃。
 
-提示符接受普通提示词和斜杠命令。输入 `/` 可以发现可用命令。使用 `@path`
+提示符接受普通提示词和斜杠命令；`/help` 列出可用命令。使用 `@path`
 引用为下一条消息附加图像文件，或用 `/attach <path>` 附加本地媒体。
 `Ctrl+C` 取消运行中的一轮；连续按两次退出。
 

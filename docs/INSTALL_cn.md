@@ -247,15 +247,7 @@ curl -L -o /tmp/codesmith-artifacts-sha256.txt \
 
 ### Windows Scoop
 
-`codesmith` 包已列入 Scoop 的 main bucket：
-
-```powershell
-scoop update
-scoop install codesmith
-codesmith --version
-```
-
-Scoop 清单在本仓库的发布流程之外维护，可能落后于 GitHub/npm/Cargo 发布。当你需要立即获得最新版本时，请使用 npm 或手动下载 GitHub release。
+`codesmith` 包尚未列入 Scoop 的 main bucket——见本页顶部的警告。在正式列入之前，请手动下载 GitHub release 的二进制文件（见上文）或从源码构建。如果你希望继续用 Scoop 管理安装，也可以手写一个指向 release 压缩包的 Scoop 清单。
 
 ---
 

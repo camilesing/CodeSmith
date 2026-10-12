@@ -10,20 +10,21 @@ what is best-effort, and what is explicitly out of scope.
 | Mechanism | Platform | Type | Status |
 |---|---|---|---|
 | Seatbelt | macOS | Mandatory access control | Enforced |
-| Landlock | Linux | Filesystem access control | Enforced |
-| seccomp BPF | Linux | Syscall filter | Enforced |
-| Process hardening | Linux | Kernel prctl / rlimit | Enforced |
-| Bubblewrap (bwrap) | Linux | Namespace isolation | Optional |
-| Windows Job Object | Windows | Process-tree containment | v1 |
+| Landlock | Linux | Filesystem access control | Not enforced (detection only) |
+| seccomp BPF | Linux | Syscall filter | Removed |
+| Process hardening | Linux | Kernel prctl / rlimit | Present, not invoked |
+| Bubblewrap (bwrap) | Linux | Namespace isolation | Enforced when installed |
+| Windows sandbox | Windows | — | Not implemented (stub) |
 
 ## Threat model: what each layer addresses
 
 ### 1. Process hardening (Linux only)
 
-**When it runs:** Before any threads are spawned, before Tokio boots,
-before any data is loaded into memory.
+**Status:** Implemented in `process_hardening.rs` but not wired into
+startup — `apply_process_hardening()` has no call site, so the hardening
+below is never applied to running processes.
 
-**What it does:**
+**What the module does (when invoked):**
 
 - `PR_SET_DUMPABLE=0` — prevents ptrace, makes `/proc/<pid>/` root-owned
 - `PR_SET_NO_NEW_PRIVS=1` — irreversible; no child can ever gain privileges
@@ -41,11 +42,14 @@ before any data is loaded into memory.
 
 ### 2. Landlock (Linux, kernel 5.13+)
 
-**When it runs:** Applied to each child process at spawn time via a
-helper script or `landlock_restrict_self`. Only restrictable by the
-process itself — parent cannot force Landlock on a child.
+**Status:** Not enforced. The ruleset-application code exists, but it is
+not wired for child-process enforcement: `prepare_landlock` is a documented
+passthrough that returns `SandboxType::None`, `enforces_isolation()`
+returns false for `LinuxLandlock`, and `decide_sandbox` reports a
+Landlock selection as unavailable. Only the denial-detection patterns
+below are live.
 
-**What it does:**
+**What the ruleset code restricts:**
 - Restricts filesystem access to a whitelist of paths
 - Handles: `EXECUTE`, `READ_FILE`, `READ_DIR`, `WRITE_FILE`, `REMOVE_DIR`,
   `REMOVE_FILE`, `MAKE_DIR`, `MAKE_REG`, `MAKE_SYM`, `TRUNCATE`
@@ -57,41 +61,19 @@ process itself — parent cannot force Landlock on a child.
 
 **What it does NOT protect against:**
 - Network access (Landlock is filesystem-only)
-- Process inspection (use seccomp for this)
+- Process inspection
 - Reading files that are already mapped (Landlock applies at `open()` time)
 
 **Detection:** `detect_denial()` checks stderr for `Permission denied`,
 `Operation not permitted`, `EACCES`, `EPERM`.
 
-### 3. seccomp BPF (Linux only)
+### 3. seccomp BPF (Linux only) — removed
 
-**When it runs:** Installed via `prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER)`
-on the child process.
-
-**What it does:**
-- Whitelist of ~100 safe syscalls (file I/O, memory, process, IPC,
-  synchronization, signals, time)
-- **Explicitly denied:** `ptrace`, `mount`, `umount2`, `kexec_load`,
-  `kexec_file_load`, `init_module`, `finit_module`, `delete_module`,
-  `bpf`, `reboot`, `swapon`, `swapoff`, `pivot_root`,
-  `setuid`/`setgid`/`setreuid`/`setregid`/`setresuid`/`setresgid`,
-  `personality`
-- Any syscall not on the whitelist → `SECCOMP_RET_KILL_PROCESS` (SIGSYS)
-
-**What it protects against:**
-- Process hijacking via ptrace
-- Mounting filesystems (bypassing Landlock read-only restrictions)
-- Loading kernel modules
-- Loading BPF programs (would bypass seccomp itself!)
-- Rebooting the system
-- Privilege changes via setuid/setgid
-
-**What it does NOT protect against:**
-- Legitimate use of allowed syscalls for malicious purposes
-- Side-channel attacks via allowed syscalls (e.g., timing)
-
-**Detection:** `detect_denial()` checks exit code 31 (SIGSYS) or stderr
-for `Bad system call`, `bad system call`, `SIGSYS`, `seccomp`.
+The hand-rolled seccomp BPF filter module was deleted from the codebase:
+it had zero call sites when removed (Landlock + bwrap are the actual Linux
+defenses), and its hand-maintained syscall whitelist was x86_64-only. The
+only surviving pieces are the SIGSYS / exit-code-31 detection heuristics
+inside `landlock.rs`'s `detect_denial()` (see section 2).
 
 ### 4. Bubblewrap / bwrap (Linux, optional)
 
@@ -110,13 +92,14 @@ command.
 - Changes into the workspace with `--chdir`
 
 **What it protects against:**
-- Any filesystem write outside the workspace (stronger than Landlock alone
-  because it's enforced at the namespace level, not just filesystem access)
+- Any filesystem write outside the workspace (enforced at the namespace
+  level, not just filesystem access)
 - Accidental modification of system files
 
 **What it does NOT protect against:**
-- Network access (bwrap does not create a network namespace by default with
-  `--unshare-all`; the child still has full network access)
+- Network access when the policy grants it — `--unshare-all` implies
+  `--unshare-net`, and `--share-net` is appended explicitly only when the
+  policy grants network, so network under bwrap is policy-gated
 - Process inspection
 - Memory attacks
 
@@ -127,8 +110,9 @@ command.
 
 CodeSmith does NOT vendor bwrap.
 
-**Fallback:** If bwrap is not installed, CodeSmith falls back to Landlock in
-permissive mode. Set `[sandbox] fail_if_unavailable = true` (or
+**Fallback:** If bwrap is not installed, the Landlock backend is reported
+as unavailable — the command runs unsandboxed, because Landlock enforces
+nothing today. Set `[sandbox] fail_if_unavailable = true` (or
 `CODESMITH_SANDBOX_FAIL_IF_UNAVAILABLE=true`) to fail closed instead of running
 without the requested sandbox backend.
 
@@ -149,50 +133,37 @@ seatbelt profile is generated dynamically based on the `SandboxPolicy`.
 - Process inspection (Seatbelt does not block ptrace)
 - Syscall-level attacks
 
-**Detection:** Checks stderr for `file-write` and `network` denial patterns.
+**Detection:** `detect_denial()` checks stderr for `Operation not
+permitted`, `sandbox-exec`, `deny(`, and `Sandbox: `. (`file-write` and
+`network` appear only in the human-readable denial message, not in
+detection.)
 
-### 6. Windows Job Object (v1)
+### 6. Windows — not implemented
 
-**When it runs:** Applied at process spawn time via
-`PROC_THREAD_ATTRIBUTE_JOB_LIST` and restricted token assignment.
-
-**What it does (v1):**
-- Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` — all child
-  processes terminate when the parent exits
-- Memory cap: 1 GB per process, 2 GB per job
-- Active process limit: 64
-- UI restrictions: no desktop handle access
-- Restricted token: drops Administrators group SID, sets medium-low
-  integrity level
-
-**What is deferred (v2):**
-- WFP (Windows Filtering Platform) firewall rules — network is open in v1
-- Filesystem ACL integration at spawn time (stub exists)
-- AppContainer isolation
-- Registry key isolation
-
-**Detection:** Checks stderr for `Access is denied`, `STATUS_ACCESS_DENIED`,
-`ERROR_ACCESS_DENIED`, `ERROR_PRIVILEGE_NOT_HELD`,
-`ERROR_ACCESS_DISABLED_BY_POLICY`, and integrity/AppContainer patterns.
+CodeSmith does not advertise an in-process Windows sandbox. `windows.rs`
+is a stub: `is_available()` returns false, and `prepare_windows` falls
+through unsandboxed. No Job Object, memory-cap, or restricted-token code
+exists. Future Windows support must run commands through a dedicated
+helper that provides process-tree containment with a Job Object and
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and must not claim filesystem,
+network, registry, or AppContainer isolation until those guarantees are
+implemented and tested separately.
 
 ## Defense in depth
 
-The Linux sandbox applies layers in order:
+On Linux, bwrap's namespace isolation is the only enforcing layer today,
+and only when bwrap is installed. The prctl/rlimit process-hardening
+module and the Landlock ruleset code exist in the codebase but are not
+wired into enforcement, and the seccomp filter was removed:
 
 ```
-Process hardening (prctl)    ← before threads
-    ↓
-Landlock (filesystem)        ← at child spawn
-    ↓
-seccomp BPF (syscalls)       ← at child spawn
-    ↓
-bwrap (namespace isolation)  ← optional outer wrapper
+bwrap (namespace isolation)  ← the only enforcing Linux layer, when installed
 ```
 
-Each layer addresses a different threat surface. seccomp cannot protect the
-filesystem (that's Landlock's job). Landlock cannot stop ptrace (that's
-seccomp + PR_SET_DUMPABLE). bwrap adds namespace-level isolation that
-neither Landlock nor seccomp can provide.
+With bwrap absent on Linux, there is no enforcing local backend:
+`decide_sandbox` reports unavailable and the command runs unsandboxed
+unless `[sandbox] fail_if_unavailable = true` fails it closed. On macOS,
+Seatbelt is the enforcing layer.
 
 ## Configuration
 
@@ -263,9 +234,9 @@ actually effective (`sandbox_requested`, `sandbox_effective`,
 
 | Platform | Denial mechanism | Exit code | Stderr patterns |
 |---|---|---|---|
-| macOS Seatbelt | sandbox-exec violation | non-zero | `file-write`, `network` |
-| Linux Landlock | EACCES / EPERM | non-zero | `Permission denied`, `Operation not permitted` |
-| Linux seccomp | SIGSYS (31) | 31 or 159 | `Bad system call`, `SIGSYS` |
+| macOS Seatbelt | sandbox-exec violation | non-zero | `Operation not permitted`, `sandbox-exec`, `deny(`, `Sandbox: ` |
+| Linux Landlock | EACCES / EPERM | non-zero | `Permission denied`, `Operation not permitted`, `EACCES`, `EPERM` |
+| Linux SIGSYS heuristics | leftover seccomp-era detection (shared Linux path) | 31 | `Bad system call`, `bad system call`, `SIGSYS`, `seccomp` |
 | Linux bwrap | Mount/namespace failure | non-zero | varies |
 | Windows | Access denied / privilege | non-zero | `Access is denied`, `ERROR_PRIVILEGE_NOT_HELD` |
 
@@ -276,21 +247,22 @@ checks. The `denial_message()` method returns a human-readable explanation.
 
 ### What the sandbox does NOT protect against
 
-- **Network attacks** — only macOS Seatbelt can block network locally. Linux
-  and Windows v1 leave network open unless a backend is added that implements
-  network policy. `[sandbox.network].allow_managed_domains_only = true` is
-  therefore treated as deny-network for local OS sandboxes and is passed through
-  to external sandbox requests for backend-side enforcement.
+- **Network attacks** — macOS Seatbelt can block network locally, and Linux
+  bwrap gates network on policy (`--unshare-net` unless the policy grants
+  network); on Windows nothing is enforced.
+  `[sandbox.network].allow_managed_domains_only = true` is therefore
+  treated as deny-network for local OS sandboxes and is passed through to
+  external sandbox requests for backend-side enforcement.
 - **Git hook/fsmonitor execution** — CodeSmith injects empty `core.fsmonitor`
   and `core.hooksPath` values into shell git config when no explicit indexed
   `GIT_CONFIG_*` environment is already provided, preventing workspace git
   configuration from launching host-side helpers during sandboxed tool calls.
 - **Memory attacks** — no platform prevents a child process from reading
   its own memory or exploiting memory corruption bugs
-- **Timing side channels** — allowed syscalls on Linux can be used for
+- **Timing side channels** — no local sandbox layer defends against
   timing-based information leaks
-- **Resource exhaustion** — the Linux job object limits memory and process
-  count, but does not limit CPU, file descriptors, or disk I/O
+- **Resource exhaustion** — no local backend limits CPU, memory, file
+  descriptors, or disk I/O
 - **Kernel vulnerabilities** — if the kernel itself has a vulnerability,
   the sandbox cannot prevent exploitation (this applies to all platforms)
 - **Supply chain** — if the child process downloads and executes untrusted
@@ -299,14 +271,13 @@ checks. The `denial_message()` method returns a human-readable explanation.
 
 ### Platform-specific gaps
 
-- **Linux:** Landlock protects filesystem access and bubblewrap can provide a
-  namespace view when available/preferred. seccomp adds syscall filtering but
-  uses a whitelist that may need updates for new syscalls. Host allow-list
-  network policy is not enforced locally.
+- **Linux:** bubblewrap provides the namespace view when installed; without
+  it there is no enforcing local backend, and commands run unsandboxed
+  unless fail-closed is configured. Host allow-list network policy is not
+  enforced locally.
 - **macOS:** Seatbelt profiles are generated at runtime. A misconfigured
   profile could be too permissive.
-- **Windows v1:** No filesystem ACL enforcement at spawn time. Network is
-  fully open. Job Object is process-tree only.
+- **Windows:** No sandbox is implemented; commands run unsandboxed.
 
 ## Related
 

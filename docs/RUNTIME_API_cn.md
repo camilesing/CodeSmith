@@ -80,7 +80,7 @@ codesmith doctor --json
 | `api_key.source` | string | `env`、`config` 或 `missing` |
 | `base_url` | string | API base URL |
 | `default_text_model` | string | 默认模型 |
-| `memory.enabled` | bool | 记忆功能是否开启 |
+| `memory.enabled` | bool | `CODESMITH_MEMORY` 环境变量覆盖是否被设为真值。仅反映该环境变量——默认安装会报告 `false`，而记忆功能本身默认开启 |
 | `memory.path` | string | 记忆文件路径 |
 | `memory.file_present` | bool | 记忆文件是否存在 |
 | `mcp.config_path` | string | MCP 配置文件路径 |
@@ -98,7 +98,6 @@ codesmith doctor --json
 | `sandbox.available` | bool | 该操作系统是否支持沙箱 |
 | `sandbox.kind` | string 或 null | 沙箱类型（例如 `"macos_seatbelt"`） |
 | `storage.spillover.path` / `.present` / `.count` | — | 工具输出溢出目录 |
-| `storage.stash.path` / `.present` / `.count` | — | Composer 暂存 |
 
 ### 示例
 
@@ -234,6 +233,13 @@ URL。传入 `--host 127.0.0.1` 可将移动页限制为仅环回访问。如果
 - `POST /v1/approvals/{approval_id}`，请求体为
   `{ "decision": "allow" | "deny", "remember": false }`
 
+**用户输入**
+- `POST /v1/user-input/{thread_id}/{input_id}` —— 解答一个挂起的
+  `request_user_input` 提示。请求体：
+  `{ "answers": [{ "id": "...", "label": "...", "value": "..." }] }`。
+  响应：`{ "ok": true, "input_id": "...", "delivered": true }`。
+  未知的线程或输入 id 会以 API 错误形式返回。
+
 **事件**（SSE 重放 + 实时流）
 - `GET /v1/threads/{id}/events?since_seq=<u64>`
 
@@ -260,6 +266,9 @@ URL。传入 `--host 127.0.0.1` 可将移动页限制为仅环回访问。如果
 **内省**
 - `GET /v1/workspace/status`
 - `GET /v1/skills`
+- `POST /v1/skills/{name}` —— 启用或禁用一个技能。请求体：
+  `{ "enabled": true }`。响应：`{ "name": "...", "enabled": true }`。
+  在搜索目录中找不到该技能时返回 404。
 - `GET /v1/apps/mcp/servers`
 - `GET /v1/apps/mcp/tools?server=<optional>`
 

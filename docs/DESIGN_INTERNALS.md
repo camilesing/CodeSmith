@@ -140,8 +140,10 @@ depending on `codesmith-agent-runtime`'s production `Engine`.
   fans out to several observers; `NoopCallback` is the default. The bridge onto
   the host's `Event` UI channel + `HookHost` shell hooks is `CallbackBridge`
   (in `codesmith-agent-runtime::callback_bridge`): it forwards the
-  tool-lifecycle hooks onto both paths; the LLM/step/complete hooks are
-  documented no-ops (the production caller and stream-reduction code own those).
+  tool-lifecycle hooks onto both paths, and `on_llm_start` clears the
+  bridge's block-announcement dedup set; the LLM-end/step/complete hooks
+  are documented no-ops (the production caller and stream-reduction code
+  own those).
 - **`AgentExecutor`** (`executor::AgentExecutor`) — drives the loop;
   `DefaultAgentExecutor` is the reference impl (core). The host-side
   `HostAgentExecutor` (in `codesmith-agent-runtime::engine::host_executor`)
@@ -204,8 +206,8 @@ Arc<std::sync::Mutex<MicroCompactState>>` and `circuit_breaker:
 Arc<std::sync::Mutex<CompactionCircuitBreaker>>` (no lock crosses an `await`
 — messages are cloned out before the async `compact_messages_safe` call). It
 persists across `run` calls so a failed compaction on turn N still trips the
-breaker on turn N+1 (matching `Engine.micro_compact_state` /
-`.compaction_circuit_breaker`).
+breaker on turn N+1 (matching `Session.micro_compact_state` /
+`Session.circuit_breaker`).
 
 **Session fact ledger.** Both the compaction and capacity probes also carry
 the session fact ledger (`Session::fact_ledger`, `compaction/fact_ledger.rs`):
@@ -243,21 +245,22 @@ anywhere yet — cross-cutting host-side concern, deferred to its own slice);
 no `emit_session_updated` for the push (consistent with the executor's other
 message pushes; UI surfacing deferred to the wire-in step).
 
-**Known tradeoffs in transparent-retry (by design):** `accumulate_stream`
-bails on the first erroring stream item and drops partial blocks, so the
-retry fires even when the engine would otherwise ship partial content (it
-tracks `any_content_received` inline) — since the partial content is lost,
-retrying is the only recovery path; the planned inline stream reduction that
-replaces `accumulate_stream` closes the gap. Pre-stream connection errors
-(`create_message_stream` `Err`) are not retried (those are context-recovery /
-hard-fail, a separate guardrail). The cancel-token short-circuit
+**Known tradeoffs in transparent-retry (by design):** the production inline
+stream reducer (`HostAgentExecutor::reduce_stream`) surfaces partial content
+when the stream dies after content was received (`Partial`) and retries only
+when nothing committed (`Empty`); the CORE reference executor's
+`accumulate_stream` (in `codesmith-agent`) still bails on the first erroring
+stream item and drops partial blocks — a framework-embedder gap, not a
+production one. Pre-stream connection errors (`create_message_stream`
+`Err`) are not retried (those are context-recovery / hard-fail, a separate
+guardrail). The cancel-token short-circuit
 (`should_transparently_retry_stream` checks `!cancelled`) is wired (see the
 `host_executor.rs` module doc); the bounded budget (`MAX_STREAM_RETRIES = 3`)
 can't loop forever.
 
-Streaming deltas (`MessageDelta`/`ThinkingDelta`) flow over the `Event`
-channel directly (no `Callback` method); the planned inline stream reducer
-keeps that path.
+Streaming deltas (`MessageDelta`/`ThinkingDelta`) flow through
+`Callback::on_stream_delta` — the bridge maps each delta onto the host's
+`Event` channel in real time.
 
 The provider catalog is declarative: the `providers.toml` manifest (schema and
 loader in `codesmith-config`) drives `default_registry()` behind a `OnceLock`
@@ -316,12 +319,13 @@ three-layer split applies:
   discover → reconcile → load → `bind_core` sequence once at engine build
   (shares the engine's `cancel_token` so handlers observe user ESC);
   `ExtensionStateStore` (mirrors `SkillStateStore`) tracks enabled/disabled
-  per id; `/extension` command group (list/info/enable/disable/status/
-  reload; install/uninstall are stubs).
+  per id; the REPL's `/extension` prints a not-wired notice, and runtime
+  reload goes through the `manage_mods` tool (`action="reload"` →
+  `reload_extension_runtime`).
 
 The `sample_scratchpad` in-tree extension exercises all three contribution
 points (tool + command + handler) + the full discover → load → configure →
-bind_core → emit path. `/extension list` shows it.
+bind_core → emit path.
 
 ```
    extension author ──impls──▶ codesmith_agent::extension (contract)
@@ -333,10 +337,10 @@ bind_core → emit path. `/extension list` shows it.
               codesmith_agent_runtime (ExtensionToolSpecAdapter + executor seams)
                                         │ wired by
                                         ▼
-              codesmith_cli (build_extension_runtime + StateStore + /extension cmd)
+              codesmith_cli (build_extension_runtime + StateStore + manage_mods reload)
 ```
 
-The contract and runtime core carry the full 23-variant `ExtensionEvent` set
+The contract and runtime core carry the full 25-variant `ExtensionEvent` set
 plus `ExtensionEventKind`/`kind()`, the `HandlerOutcome`
 (`Continue`/`Cancel`/`Block`/`Transform`) cross-handler chain
 (`Handler::handle` returns `Result<HandlerOutcome, _>`), per-variant
@@ -348,21 +352,26 @@ At the host seams, `EmitOutcome` is `#[must_use]` (forcing seam inspection):
 `SessionBefore*` skips compaction/switch, and `Transform` at
 `Input`/`BeforeAgentStart`/`BeforeProviderRequest`/`ToolResult` rewrites the
 actionable field (`ToolResult` reorders emit→`on_tool_end`→propagate to
-`outcomes[idx]`); out-of-place outcomes map to `Continue`. 22 of the 23
-events are emitted; `ToolExecutionUpdate` needs a
-`Callback::on_tool_progress` stream hook.
+`outcomes[idx]`); out-of-place outcomes map to `Continue`. 20 of the 25
+events are emitted from production seams; the un-emitted five are
+`ToolExecutionUpdate` (the `Callback::on_tool_progress` seam exists, but
+the host has no streaming `Tool` contract behind it yet), `ProjectTrust`
+(dispatch exercised from tests only), `ResourcesDiscover`,
+`SessionBeforeSwitch`, and `SessionBeforeFork` (no runtime emitter).
 
 Live reload re-populates the shared runner `Arc` via
 `ExtensionRunner::clear_handlers` + `reload_extension_runtime`
-(clear→invalidate→discover→reconcile→load→bind_core), so `/extension reload`
-updates both `App.extension_runner` and the Engine's field.
+(clear→invalidate→discover→reconcile→load→bind_core); the `manage_mods`
+tool's reload action triggers it, and because the runner `Arc` is shared,
+both the REPL's `state.extension_runner` and the Engine's field see the
+update.
 
-Not implemented yet: `ToolExecutionUpdate` (stream hook), reload sharing the
-engine's `cancel_token`, 3 host-level seams unreachable from the App runner
-(`ProjectTrust` sync context / `ResourcesDiscover` separate MCP process /
-`SessionBeforeFork` dead-code fork path), the `EventBus` implementation,
-`registerProvider`, `registerShortcut`/`registerFlag`/renderers, dylib
-loading, install-source implementations, and the embed API. Hot-load is
+Not implemented yet: `ToolExecutionUpdate` (no streaming `Tool` contract
+yet), 3 host-level seams with no runtime emitter (`ProjectTrust` sync
+context, dispatch exercised from tests only / `ResourcesDiscover` separate
+MCP process / `SessionBeforeFork` dead-code fork path), the `EventBus`
+implementation, `registerProvider`, `registerShortcut`/`registerFlag`/
+renderers, install-source implementations, and the embed API. Hot-load is
 permanently out; install + reload only.
 
 ## What is wired today

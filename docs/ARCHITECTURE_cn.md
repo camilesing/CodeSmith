@@ -153,7 +153,7 @@ Chat Completions 驱动 turn。
 
 - **`crates/cli/src/tools/`** - 宿主耦合的内置工具实现和注册表
   - `mod.rs` / `registry.rs` - 工具注册表、组装（`with_subagent_tools` 等）和通用类型
-  - `shell.rs` - Shell 命令执行（另有 crate 根部的 `shell_output.rs`、`command_safety.rs`）
+  - `shell.rs` - Shell 命令执行（`shell_output.rs` 与其同目录；`command_safety.rs` 在 crate 根部）
   - `file.rs` - 文件读写操作
   - `tasks.rs` / `task_v2.rs` - 模型可见的持久任务、gate、后台 shell 和 PR 尝试工具
   - `github.rs` - 只读 GitHub 上下文以及由 `gh` 支撑的受防护评论/关闭工具
@@ -200,9 +200,8 @@ Chat Completions 驱动 turn。
 
 - **`crates/agent-runtime/src/sandbox/`** - 平台沙箱强制执行辅助程序（经 `crates/cli/src/sandbox/` 重导出）
   - `seatbelt.rs` - macOS Seatbelt profile 生成（已启用）
-  - `landlock.rs` - Linux Landlock 规则集应用（已启用；`landlock_restrict_self` + `PR_SET_NO_NEW_PRIVS`）
-  - `seccomp.rs` - Linux seccomp-BPF 系统调用过滤（已启用）
-  - `windows.rs` - Windows Job Object 进程遏制（v1）
+  - `landlock.rs` - Linux Landlock 规则集应用（规则集代码存在，但未接入子进程强制执行：`prepare_landlock` 为直通路径，`enforces_isolation()` 返回 `false`）
+  - `windows.rs` - Windows 沙箱辅助程序契约桩（不宣传任何进程内 Windows 沙箱）
   - `bwrap.rs` / `process_hardening.rs` - 可选 bubblewrap 直通；`PR_SET_DUMPABLE`/核心转储加固
 - **`crates/cli/src/sandbox/`** - 宿主侧沙箱策略准备和拒绝报告（`mod.rs`、`policy.rs`、`runtime.rs`、外部 OpenSandbox 的 `backend.rs`、`opensandbox.rs`）
 
@@ -325,10 +324,10 @@ command = "echo 'Running tool: $TOOL_NAME'"
 1. **流式优先**：所有 LLM 响应以流式传输以保证响应速度
 2. **工具安全**：非 YOLO 模式要求对破坏性操作进行审批，包括有副作用的 MCP 工具
 3. **可扩展性**：MCP、技能和钩子允许在不修改代码的情况下进行定制
-4. **跨平台**：核心在 Linux/macOS/Windows 上工作。操作系统级沙箱
-   按平台强制执行 —— macOS Seatbelt、Linux Landlock + seccomp（外加
-   可选的 bubblewrap）、Windows Job Object v1（平台矩阵见
-   `docs/SANDBOX.md`）。
+4. **跨平台**：核心在 Linux/macOS/Windows 上工作。操作系统级沙箱在
+   macOS（Seatbelt）强制执行，在 Linux 上经 bubblewrap（已安装时）强制执行；
+   Landlock 规则集代码未接入子进程强制执行，不存在 seccomp 过滤器，
+   Windows 不提供沙箱（平台矩阵见 `docs/SANDBOX.md`）。
 5. **最小依赖**：精心选择依赖以保证构建速度
 6. **本地优先的运行时 API**：HTTP/SSE 端点面向受信任的 localhost 访问，目前由 `crates/cli` 运行时提供
 

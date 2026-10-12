@@ -30,7 +30,7 @@ outranks assumptions. Verification outranks confidence. The model inherits
 a clear chain of authority every turn and never has to guess which
 directive to follow.
 
-Seven articles sit above the hierarchy, defining the model's identity,
+Six articles (I-VI) sit above the hierarchy, defining the model's identity,
 duties, and agency: a verification mandate (Article V — every action leaves
 evidence, never declare success on faith), a coordination legacy (Article
 VI — leave the workspace legible for the next intelligence), and a
@@ -89,9 +89,10 @@ full model I/O — never commit ones with secrets.
 
 Three modes control the action space. Plan is read-only. Agent gates
 destructive operations behind approval. YOLO auto-approves in trusted
-workspaces. OS-level sandboxing is enforced per platform: macOS Seatbelt,
-Linux Landlock + seccomp (plus optional bubblewrap), and a Windows Job
-Object v1. See [PRESETS.md](PRESETS.md) and [SANDBOX.md](SANDBOX.md).
+workspaces. OS-level sandboxing is enforced on macOS (Seatbelt) and on
+Linux via bubblewrap when installed; the Landlock ruleset code is not
+wired for child-process enforcement, and no Windows sandbox exists. See
+[PRESETS.md](PRESETS.md) and [SANDBOX.md](SANDBOX.md).
 
 Model auto-routing (`--model auto`, the default) is a per-turn classifier that
 runs on the provider's strongest tier — a tiny thinking-off call picking the

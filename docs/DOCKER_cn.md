@@ -224,7 +224,7 @@ Docker Hub 发布未配置；GHCR 是受支持的预构建镜像
 |----------------------|----------|--------------------------------------------------|
 | `CODESMITH_API_KEY`   | 是      | Provider API 密钥（默认 DeepSeek）                                |
 | `CODESMITH_BASE_URL`   | 否      | 自定义 API base URL（例如 `https://api.deepseek.com`） |
-| `NO_COLOR`            | 否      | 设置为 `1` 以禁用终端彩色输出                    |
+| `NO_COLOR`            | 否      | 设置为 `1` 以禁用终端彩色输出（原生支持，并会传递给派生的子进程） |
 
 ## 卷
 
@@ -260,12 +260,14 @@ docker run --rm -it \
 
 ## 非交互 / 流水线用法
 
-当 stdin 不是 TTY 时，`codesmith` 会进入分发器的一次性模式
-（`codesmith exec "…"`）。通过 stdin 管道传入提示词：
+不存在自动的一次性分发：向 `docker run -i …` 管道传入 stdin，喂的是
+交互式 REPL 的行读取器。非交互流水线必须显式调用 `codesmith exec`，
+并把提示词作为参数传入（stdin 只被 REPL、`auth set` 的密钥提示，以及
+未指定补丁文件时的 `apply` 读取）：
 
 ```bash
-echo "Explain the Cargo.toml in structured English." | \
-  docker run --rm -i -e CODESMITH_API_KEY ghcr.io/camilesing/codesmith:latest
+docker run --rm -e CODESMITH_API_KEY ghcr.io/camilesing/codesmith:latest \
+  exec "Explain the Cargo.toml in structured English."
 ```
 
 ## 本地构建
