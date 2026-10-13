@@ -97,7 +97,7 @@ impl ToolSpec for DiagnosticsTool {
         let cgroup_version = probe_cgroup_version();
 
         let trusted_external_paths = context
-            .trusted_external_paths
+            .trusted_external_paths_snapshot()
             .iter()
             .map(|p| p.display().to_string())
             .collect();

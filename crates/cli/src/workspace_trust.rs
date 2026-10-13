@@ -6,6 +6,11 @@
 //! paths the user has explicitly trusted from that workspace. Trust granted
 //! in workspace A does not apply when running from workspace B.
 //!
+//! Two writers: the REPL commands `/trust add` / `/trust remove`, and the
+//! path-access prompt a file tool raises when it targets an untrusted path
+//! (an `[a]` answer stores the path the user just allowed; `[y]` grants it for
+//! the turn only, in the engine's live list, and leaves this file untouched).
+//!
 //! Threat model: this is a deliberate user opt-in to a path the workspace
 //! sandbox would otherwise refuse. The only access the trust list grants is
 //! through CodeSmith's own file tools (`read_file`, `write_file`, etc.) —

@@ -42,12 +42,23 @@ use crate::tools::spec::ApprovalRequirement;
 /// capability gate. Phase 1 plans on it, and the parallel arm re-runs it
 /// after an extension rewrites an input — the batch's approval-free
 /// classification only holds for the exact input it was computed from.
+///
+/// An out-of-workspace path counts as requiring approval even when the
+/// dispatcher answers `Auto`: this is the decision that keeps the call out of
+/// a parallel (ungated) batch, so a dispatcher whose two answers disagree
+/// cannot run an untrusted path unasked.
 fn input_requires_approval(
     dispatcher: Option<&Arc<dyn ToolDispatcher>>,
     name: &str,
     input: &serde_json::Value,
     caps: &[ToolCapability],
 ) -> bool {
+    if dispatcher
+        .and_then(|d| d.escaped_path_for(name, input))
+        .is_some()
+    {
+        return true;
+    }
     match dispatcher.and_then(|d| d.approval_requirement_for(name, input)) {
         Some(req) => req != ApprovalRequirement::Auto,
         None => requires_approval(caps),

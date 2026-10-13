@@ -120,10 +120,11 @@ pub fn format_tool_error(err: &ToolError, tool_name: &str) -> String {
         ToolError::MissingField { field } => {
             format!("Tool '{tool_name}' is missing required field '{field}'")
         }
-        ToolError::PathEscape { path } => format!(
-            "Path escapes workspace: {}. Use a workspace-relative path or enable trust mode.",
-            path.display()
-        ),
+        // `PathEscape` delegates to its `Display` on purpose: that string is
+        // the one place carrying the remedy (`/trust add <path>`), and every
+        // live channel already prints it verbatim. Restating the advice here
+        // is how the two renderings drift apart.
+        ToolError::PathEscape { .. } => err.to_string(),
         ToolError::ExecutionFailed { message } => message.clone(),
         ToolError::Timeout { seconds } => format!(
             "Tool '{tool_name}' timed out after {seconds}s. Try a narrower scope or a longer timeout."

@@ -12,6 +12,7 @@
 //! the MCP adapter) live in `codesmith-tui`'s shim module.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use serde_json::Value;
@@ -684,7 +685,25 @@ impl ToolDispatcher for ToolRegistry {
 
     fn approval_requirement_for(&self, name: &str, input: &Value) -> Option<ApprovalRequirement> {
         let spec = self.get(name)?;
+        // An out-of-workspace path is an approval requirement by
+        // construction: the host asks the user about that path (and its
+        // answer is `workspace_trust`'s record) instead of letting
+        // `resolve_path` refuse the call. Merged here so a path-taking tool
+        // implements only `escaped_path_for_input` — the requirement ladder
+        // itself stays in one place.
+        if spec.escaped_path_for_input(input, self.context()).is_some() {
+            return Some(ApprovalRequirement::Required);
+        }
         Some(spec.approval_requirement_for_input(input, self.context()))
+    }
+
+    fn escaped_path_for(&self, name: &str, input: &Value) -> Option<PathBuf> {
+        self.get(name)?
+            .escaped_path_for_input(input, self.context())
+    }
+
+    fn grant_external_path(&self, path: PathBuf) {
+        self.context().grant_external_path(path);
     }
 
     fn validate_input(&self, name: &str, input: &Value) -> Result<(), ToolError> {

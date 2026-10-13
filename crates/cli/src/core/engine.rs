@@ -37,8 +37,8 @@ use codesmith_agent_runtime::host_services::HostServices;
 // `runtime_traits`, `ui`, …). These items MUST stay `pub` in AR's engine
 // module (see C7-2).
 pub use codesmith_agent_runtime::engine::{
-    ApprovalDecision, CancelReason, Engine, EngineConfig, UserInputDecision, apply_tool_selection,
-    build_model_tool_catalog, goal_objective_for_prompt, system_prompt_hash,
+    ApprovalDecision, ApprovalRouter, CancelReason, Engine, EngineConfig, UserInputDecision,
+    apply_tool_selection, build_model_tool_catalog, goal_objective_for_prompt, system_prompt_hash,
 };
 
 // Test-only surface — referenced exclusively from `#[cfg(test)]` modules
@@ -231,6 +231,12 @@ pub struct EngineHost {
     /// fresh catalog against it to emit `tools-change`; `/tools` renders it.
     /// Shared with `EngineHandle` (the `extension_runner` precedent).
     pub tool_catalog: crate::core::tool_catalog::SharedToolCatalog,
+    /// Approval-decision router, set by `build_engine`. Sub-agents spawned
+    /// from this host wait on the same channel, so a path-access question a
+    /// child hits reaches the same UI the parent turn prompts on. `None` for
+    /// hosts built outside `build_engine` (embeds/tests) — their children
+    /// then have no approval channel and simply refuse, as before.
+    pub approval_router: Option<std::sync::Arc<ApprovalRouter>>,
 }
 
 impl Default for EngineHost {
@@ -255,6 +261,7 @@ impl Default for EngineHost {
             extension_runner: None,
             mod_reload: None,
             tool_catalog: Default::default(),
+            approval_router: None,
         }
     }
 }
@@ -1087,6 +1094,10 @@ pub fn build_engine(
     let (tx_op, rx_op) = mpsc::channel(32);
     let (tx_event, rx_event) = mpsc::channel(256);
     let (tx_approval, rx_approval) = mpsc::channel(64);
+    // The host keeps an `Arc` handle so sub-agents it spawns wait on the same
+    // channel: a child's path-access question is answered by the same UI,
+    // through the same router (concurrent waiters, answers routed by id).
+    let approval_router = Arc::new(ApprovalRouter::new(rx_approval));
     let (tx_user_input, rx_user_input) = mpsc::channel(32);
     let (tx_steer, rx_steer) = mpsc::channel(64);
     let (tx_subagent_completion, rx_subagent_completion) = mpsc::unbounded_channel();
@@ -1329,7 +1340,9 @@ pub fn build_engine(
     host.sandbox_backend = sandbox_backend;
 
     let api_provider = api_config.api_provider();
-    // Wrap the wired host behind the `HostServices` trait object.
+    // Wrap the wired host behind the `HostServices` trait object. The router
+    // rides the host so `spawn_subagent` can hand it to children.
+    host.approval_router = Some(Arc::clone(&approval_router));
     let host_concrete: Arc<EngineHost> = Arc::new(host);
     let host: Arc<dyn HostServices> = host_concrete.clone();
 
@@ -1342,7 +1355,7 @@ pub fn build_engine(
         session,
         api_provider,
         rx_op,
-        rx_approval,
+        approval_router,
         rx_user_input,
         rx_steer,
         tx_event,

@@ -52,7 +52,19 @@ pub enum ToolError {
     InvalidInput { message: String },
     #[error("Failed to validate input: missing required field '{field}'")]
     MissingField { field: String },
-    #[error("Failed to resolve path '{}': path escapes workspace", path.display())]
+    // This `Display` is the one rendering of the refusal: the model-visible
+    // transcript (`engine/turn/batches.rs`), the REPL line
+    // (`interactive/render.rs`), and the logs all print it verbatim. It is
+    // therefore also the one place carrying the remedy — a reader who only
+    // learns "path escapes workspace" has no way to continue
+    // (`/trust add <path>` is a REPL command the model cannot run itself).
+    #[error(
+        "Failed to resolve path '{}': path escapes workspace. File tools stay inside the \
+         workspace tree; the user can allow it with `/trust add {}` in the REPL (or use a \
+         workspace-relative path).",
+        path.display(),
+        path.display()
+    )]
     PathEscape { path: PathBuf },
     #[error("Failed to execute tool: {message}")]
     ExecutionFailed { message: String },
@@ -645,6 +657,25 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "Failed to validate input: missing required field 'path'"
+        );
+    }
+
+    /// A workspace-escape refusal must name the way out. The `Display` is
+    /// what the model transcript and the REPL line both render, and the only
+    /// exit is a REPL command the model cannot run — a message that stops at
+    /// "path escapes workspace" leaves both parties stuck (reported from a
+    /// cross-repository session: the model gave up instead of asking for
+    /// `/trust add`).
+    #[test]
+    fn path_escape_display_names_the_trust_opt_in() {
+        let err = ToolError::PathEscape {
+            path: PathBuf::from("/Users/dev/other-repo"),
+        };
+        let message = err.to_string();
+        assert!(message.contains("path escapes workspace"), "{message}");
+        assert!(
+            message.contains("`/trust add /Users/dev/other-repo`"),
+            "{message}"
         );
     }
 }

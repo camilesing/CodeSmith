@@ -6246,6 +6246,17 @@ pub(crate) async fn run_exec_agent(
                     let _ = engine_handle.deny_tool_call(id).await;
                 }
             }
+            // Headless run: no human to ask about the path, so the answer
+            // mirrors `ApprovalRequired` — `--auto` allows it, otherwise the
+            // call stays refused. Skipping this arm would hang the turn: the
+            // engine waits for a decision only this loop can deliver.
+            Event::PathAccessRequired { id, .. } => {
+                if auto_approve {
+                    let _ = engine_handle.approve_tool_call(id).await;
+                } else {
+                    let _ = engine_handle.deny_tool_call(id).await;
+                }
+            }
             Event::ElevationRequired {
                 tool_id,
                 tool_name,
@@ -6662,6 +6673,15 @@ pub(crate) async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -
                 } else {
                     // Headless teammate cannot prompt a human; deny so the
                     // model gets a tool error it can react to.
+                    let _ = engine_handle.deny_tool_call(id).await;
+                }
+            }
+            // Same rule for a path outside the workspace: no human in the loop
+            // to grant it.
+            Event::PathAccessRequired { id, .. } => {
+                if auto_approve {
+                    let _ = engine_handle.approve_tool_call(id).await;
+                } else {
                     let _ = engine_handle.deny_tool_call(id).await;
                 }
             }

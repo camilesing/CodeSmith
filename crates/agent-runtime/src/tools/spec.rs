@@ -149,6 +149,14 @@ pub enum SandboxPolicy {
     None,
 }
 
+/// Shared live list behind [`ToolContext::trusted_external_paths`].
+///
+/// A path granted mid-turn (the user approved an out-of-workspace access)
+/// must be visible to every clone of the context — the tool about to run,
+/// sibling calls in the same batch, running sub-agents — so the list is one
+/// shared object rather than a per-context snapshot.
+pub type TrustedExternalPaths = Arc<std::sync::RwLock<Vec<PathBuf>>>;
+
 /// Context passed to tools during execution.
 #[derive(Clone)]
 pub struct ToolContext {
@@ -199,9 +207,16 @@ pub struct ToolContext {
     pub state_namespace: String,
     /// User-trusted external paths the agent may read/write even when they
     /// fall outside `workspace`. Loaded from `~/.codesmith/workspace-trust.json`
-    /// and refreshed when the user runs `/trust add <path>`. Distinct from
-    /// `trust_mode`, which is the all-or-nothing legacy switch (#29).
-    pub trusted_external_paths: Vec<PathBuf>,
+    /// at context build (`/trust add <path>` writes that file).
+    ///
+    /// Interior-mutable and shared across clones — the same sharing
+    /// [`Self::session_cwd`] uses. A path the user approves for the call that
+    /// hit it is appended live by [`Self::grant_external_path`], so the tool
+    /// about to run (and any running sub-agent sharing the list) resolves it
+    /// immediately instead of waiting for the next turn's context rebuild.
+    /// Distinct from `trust_mode`, which is the all-or-nothing legacy switch
+    /// (#29).
+    pub trusted_external_paths: TrustedExternalPaths,
     /// Per-domain network policy (#135). When `None`, network tools fall back
     /// to a permissive default that mirrors pre-v0.7.0 behavior so tests and
     /// other contexts that don't construct a real policy keep working.
@@ -309,7 +324,7 @@ impl ToolContext {
             features: Features::with_defaults(),
             parse_gate: true,
             state_namespace: "workspace".to_string(),
-            trusted_external_paths: Vec::new(),
+            trusted_external_paths: TrustedExternalPaths::default(),
             network_policy: None,
             runtime: RuntimeToolServices::default(),
             session_objects: None,
@@ -358,7 +373,7 @@ impl ToolContext {
             features: Features::with_defaults(),
             parse_gate: true,
             state_namespace: "workspace".to_string(),
-            trusted_external_paths: Vec::new(),
+            trusted_external_paths: TrustedExternalPaths::default(),
             network_policy: None,
             runtime: RuntimeToolServices::default(),
             session_objects: None,
@@ -407,7 +422,7 @@ impl ToolContext {
             features: Features::with_defaults(),
             parse_gate: true,
             state_namespace: "workspace".to_string(),
-            trusted_external_paths: Vec::new(),
+            trusted_external_paths: TrustedExternalPaths::default(),
             network_policy: None,
             runtime: RuntimeToolServices::default(),
             session_objects: None,
@@ -492,11 +507,52 @@ impl ToolContext {
 
     /// Set the user's trusted external paths (loaded from
     /// `~/.codesmith/workspace-trust.json`). See [`Self::resolve_path`] for
-    /// how the list is consulted.
+    /// how the list is consulted; the context stores it behind a shared lock
+    /// so a mid-turn grant ([`Self::grant_external_path`]) reaches every
+    /// clone.
     #[must_use]
     pub fn with_trusted_external_paths(mut self, paths: Vec<PathBuf>) -> Self {
-        self.trusted_external_paths = paths;
+        self.trusted_external_paths = Arc::new(std::sync::RwLock::new(paths));
         self
+    }
+
+    /// Snapshot of the trusted external paths (display/report only — path
+    /// checking goes through [`Self::is_trusted_external_path`]).
+    #[must_use]
+    pub fn trusted_external_paths_snapshot(&self) -> Vec<PathBuf> {
+        self.trusted_external_paths
+            .read()
+            .map(|paths| paths.clone())
+            .unwrap_or_default()
+    }
+
+    /// Record `path` as trusted for the rest of this process, so the call
+    /// that triggered an approval proceeds. The durable record is the
+    /// caller's: the host persists the path (via
+    /// `crate::workspace_trust::add`, the same store `/trust add` writes)
+    /// only when the user asked to remember it.
+    pub fn grant_external_path(&self, path: PathBuf) {
+        let Ok(mut paths) = self.trusted_external_paths.write() else {
+            // Poisoned lock: a writer panicked. Drop the grant rather than
+            // panic here — the next turn rebuilds the list from disk.
+            return;
+        };
+        if !paths.iter().any(|trusted| trusted == &path) {
+            paths.push(path);
+        }
+    }
+
+    /// Canonical path this input names but may not touch: `Some(path)` when
+    /// [`Self::resolve_path`] would refuse it (outside the workspace and
+    /// untrusted), `None` otherwise. Single source of "which path is this
+    /// refusal about" — the tool hooks and the engine ask both read it here
+    /// instead of re-deriving path semantics.
+    #[must_use]
+    pub fn escaped_path(&self, raw: &str) -> Option<PathBuf> {
+        match self.resolve_path(raw) {
+            Err(ToolError::PathEscape { path }) => Some(path),
+            _ => None,
+        }
     }
 
     /// Attach an LSP manager so that edit tools can auto-inject diagnostics
@@ -636,11 +692,15 @@ impl ToolContext {
     /// caller should pass an already-canonicalized (or normalized) path.
     /// Public so sibling crates can reuse the boundary posture (P2-6 cwd
     /// write-back applies the same rule as the `cwd` param).
+    ///
+    /// A poisoned lock answers `false`: the check fails closed, so a panic
+    /// elsewhere can never turn into an access grant.
     #[must_use]
     pub fn is_trusted_external_path(&self, path: &Path) -> bool {
         self.trusted_external_paths
-            .iter()
-            .any(|trusted| path.starts_with(trusted))
+            .read()
+            .map(|paths| paths.iter().any(|trusted| path.starts_with(trusted)))
+            .unwrap_or(false)
     }
 
     /// Set the trust mode.
@@ -926,6 +986,18 @@ pub trait ToolSpec: Send + Sync {
         self.approval_requirement()
     }
 
+    /// Out-of-workspace path this input names and the user has not trusted,
+    /// as `resolve_path` would see it (`ToolContext::escaped_path`). Tools
+    /// whose input names a path implement it; the registry turns `Some` into
+    /// an approval requirement (`Required`) and the engine turns that into a
+    /// path-access question instead of a refusal.
+    ///
+    /// Default `None`: an engine gate that asks about paths must never
+    /// invent one for a tool that doesn't target a filesystem path.
+    fn escaped_path_for_input(&self, _input: &Value, _context: &ToolContext) -> Option<PathBuf> {
+        None
+    }
+
     /// Returns whether this tool can be executed in parallel with others.
     fn supports_parallel(&self) -> bool {
         false
@@ -1069,6 +1141,65 @@ mod tests {
         assert_eq!(required_str(&input, "name").unwrap(), "test");
         assert!(required_str(&input, "missing").is_err());
         assert!(required_str(&input, "count").is_err()); // not a string
+    }
+
+    /// `escaped_path` is the one judgement behind the path-access question:
+    /// `Some(canonical)` exactly when `resolve_path` would refuse. It must
+    /// name an in-workspace path as fine, a trusted external path as fine,
+    /// and an untrusted external path as escaped.
+    #[test]
+    fn escaped_path_reports_exactly_the_refused_path() {
+        let workspace = tempdir().expect("workspace tempdir");
+        let trusted_root = tempdir().expect("trusted tempdir");
+        let untrusted_root = tempdir().expect("untrusted tempdir");
+        let outside = untrusted_root.path().join("other-repo");
+        std::fs::create_dir_all(&outside).unwrap();
+
+        let ctx =
+            ToolContext::new(workspace.path().to_path_buf()).with_trusted_external_paths(vec![
+                trusted_root
+                    .path()
+                    .canonicalize()
+                    .expect("canonical trusted root"),
+            ]);
+
+        assert!(
+            ctx.escaped_path("README.md").is_none(),
+            "a workspace-relative path is not an escape"
+        );
+        assert!(
+            ctx.escaped_path(trusted_root.path().to_str().unwrap())
+                .is_none(),
+            "a trusted external path is not an escape"
+        );
+        let escaped = ctx
+            .escaped_path(outside.to_str().unwrap())
+            .expect("an untrusted external path escapes");
+        assert_eq!(escaped, outside.canonicalize().unwrap());
+    }
+
+    /// The grant a user approval produces must be visible through a clone of
+    /// the context — that sharing is what lets the call that triggered the
+    /// question proceed, and what makes the grant reach running sub-agents
+    /// (they hold cloned contexts).
+    #[test]
+    fn grant_external_path_reaches_clones() {
+        let workspace = tempdir().expect("workspace tempdir");
+        let other = tempdir().expect("external tempdir");
+        let file = other.path().join("notes.md");
+        std::fs::write(&file, "shared notes").unwrap();
+
+        let ctx = ToolContext::new(workspace.path().to_path_buf());
+        let tool_clone = ctx.clone();
+        assert!(ctx.escaped_path(file.to_str().unwrap()).is_some());
+
+        ctx.grant_external_path(other.path().canonicalize().unwrap());
+
+        assert!(
+            tool_clone.resolve_path(file.to_str().unwrap()).is_ok(),
+            "a tool holding a cloned context must see the grant in the same turn"
+        );
+        assert!(tool_clone.is_trusted_external_path(&file.canonicalize().unwrap()));
     }
 
     #[test]

@@ -10,11 +10,10 @@
 //! other ids are dropped — mirroring `handle_deepseek_turn`'s per-tool
 //! approval flow. A denied call never runs the tool and feeds back a
 //! `permission_denied` error so the model can react (the turn continues). The
-//! receiver is
-//! `Option<Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>>` — the
-//! first guardrail to use a `tokio::sync::Mutex` (rather than
-//! `std::sync::Mutex` like steer / LSP), because the guard must cross the
-//! blocking `recv().await` (a std mutex guard isn't `Send`).
+//! receiver is an [`ApprovalRouter`] (`Option<Arc<ApprovalRouter>>`) — a
+//! `tokio::sync::Mutex` around the receiver plus a parked-decision buffer, so
+//! the parent turn's gate and every running sub-agent can wait on one channel
+//! at the same time without consuming each other's answers.
 //!
 //! Approval requirement is derived statically from [`Tool::capabilities`]
 //! ([`requires_approval`]; `ExecutesCode` / `WritesFiles` /
@@ -28,6 +27,14 @@
 //!
 //! ## Known gaps in approval (by design)
 //!
+//! - **path grants live for the process, not the session** — approving an
+//!   out-of-workspace path (`Event::PathAccessRequired`) calls
+//!   `ToolDispatcher::grant_external_path`, which appends to the shared live
+//!   trust list (`ToolContext::trusted_external_paths`). That covers the
+//!   rest of this run, including sub-agents sharing the context. Writing it
+//!   to `~/.codesmith/workspace-trust.json` is the host's decision (only the
+//!   host knows whether the user answered "remember"), and a dispatch path
+//!   with no approval channel never asks — it keeps the plain refusal.
 //! - **cancel-token race** ✅ — production's `await_tool_approval` selects over
 //!   `cancel_token.cancelled()` so a cancelled turn breaks out of the approval
 //!   wait. This executor now mirrors it: `request_approval`'s `recv().await`
@@ -50,12 +57,13 @@
 //!   The executor therefore runs the tool with the unchanged context on a
 //!   `RetryWithPolicy` decision; the elevation threads in at the wire-in step.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use codesmith_agent::models::ContentBlock;
 use codesmith_agent::tools::{Tool, ToolCapability};
 
-use crate::engine::approval::ApprovalDecision;
+use crate::engine::approval::{ApprovalDecision, ApprovalWaitError};
 use crate::engine::host_executor::HostAgentExecutor;
 use crate::events::Event;
 use crate::tools::approval_cache::{build_approval_grouping_key, build_approval_key};
@@ -127,13 +135,15 @@ impl HostAgentExecutor {
     /// (mirrors `handle_deepseek_turn`'s per-tool approval flow,
     /// `handle_deepseek_turn`).
     ///
-    /// The approval requirement is derived statically from [`Tool::capabilities`]
-    /// (see [`requires_approval`]); the dynamic per-input override is a by-design
-    /// gap. The executor emits `Event::ApprovalRequired` (carrying the two
-    /// fingerprint keys the host uses for approve-for-session / deny-exact
-    /// dedup, plus the model's intent summary for write tools) and then blocks
-    /// on the decision channel, matching by wire tool id — stale decisions for
-    /// other ids are dropped (mirrors production's `_ => continue`).
+    /// The requirement is the per-input answer from the attached dispatcher
+    /// (falling back to the static [`Tool::capabilities`] gate when it has no
+    /// opinion), except that an out-of-workspace path is always required —
+    /// see the `escaped` branch below. In an interactive host an escaped path
+    /// is asked about as itself (`Event::PathAccessRequired`) rather than as
+    /// an opaque tool call; otherwise the tool is refused by its own
+    /// `resolve_path`. Either way the executor blocks on the decision
+    /// channel, matching by wire tool id — stale decisions for other ids are
+    /// dropped (mirrors production's `_ => continue`).
     pub(crate) async fn request_approval(
         &self,
         tool_id: &str,
@@ -142,89 +152,127 @@ impl HostAgentExecutor {
         tool: &Arc<dyn Tool>,
         intent_summary: &Option<String>,
     ) -> Result<(), String> {
-        let Some(rx) = &self.approval else {
+        let Some(router) = &self.approval else {
             return Ok(()); // no approval channel ⇒ gating disabled
         };
+        // Path-access question (the user trusts, or refuses, an
+        // out-of-workspace directory) instead of a bare refusal. The registry
+        // merges this into `Required`; asking is kept unconditional here so a
+        // dispatcher that reports the path but answers `Auto` still prompts.
+        let escaped = self
+            .tool_dispatcher
+            .as_ref()
+            .and_then(|d| d.escaped_path_for(name, input));
         // Per-input approval override (slice 20 §E): when a host dispatcher is
         // attached, consult its `approval_requirement_for` first — a `Some`
         // answer downgrades/upgrades the gate per input (mirrors production's
         // `registry.approval_requirement_for(..)` at handle_deepseek_turn). `None`
         // (no dispatcher, or dispatcher has no opinion) falls back to the
         // static capability gate.
-        let approval_required = match self
-            .tool_dispatcher
-            .as_ref()
-            .and_then(|d| d.approval_requirement_for(name, input))
-        {
-            Some(req) => req != ApprovalRequirement::Auto,
-            None => requires_approval(&tool.capabilities()),
+        let approval_required = if escaped.is_some() {
+            true
+        } else {
+            match self
+                .tool_dispatcher
+                .as_ref()
+                .and_then(|d| d.approval_requirement_for(name, input))
+            {
+                Some(req) => req != ApprovalRequirement::Auto,
+                None => requires_approval(&tool.capabilities()),
+            }
         };
         if !approval_required {
             return Ok(()); // dispatcher said Auto, or static gate says no
         }
         let is_read_only = tool.capabilities().contains(&ToolCapability::ReadOnly);
-        // Emit the approval request so a host UI can prompt and resolve. The
+        // Emit the request so a host UI can prompt and resolve. The
         // fingerprints are built here (not inside the await) and carried on the
         // event — the runtime emits them, the host owns the dedup sets (same
-        // split as production).
+        // split as production). A path question carries the path instead: the
+        // answer is about that directory, and the host persists it (or not)
+        // through `workspace_trust` rather than through an approval
+        // fingerprint.
         if let Some(tx) = &self.event_tx {
-            let approval_key = build_approval_key(name, input).0;
-            let approval_grouping_key = build_approval_grouping_key(name, input).0;
-            let _ = tx
-                .send(Event::ApprovalRequired {
-                    id: tool_id.to_string(),
-                    tool_name: name.to_string(),
-                    description: tool.description().to_string(),
-                    input: input.clone(),
-                    approval_key,
-                    approval_grouping_key,
-                    intent_summary: if is_read_only {
-                        None
-                    } else {
-                        intent_summary.clone()
-                    },
-                })
-                .await;
+            if let Some(path) = escaped.as_ref() {
+                let _ = tx
+                    .send(Event::PathAccessRequired {
+                        id: tool_id.to_string(),
+                        tool_name: name.to_string(),
+                        path: path.clone(),
+                    })
+                    .await;
+            } else {
+                let approval_key = build_approval_key(name, input).0;
+                let approval_grouping_key = build_approval_grouping_key(name, input).0;
+                let _ = tx
+                    .send(Event::ApprovalRequired {
+                        id: tool_id.to_string(),
+                        tool_name: name.to_string(),
+                        description: tool.description().to_string(),
+                        input: input.clone(),
+                        approval_key,
+                        approval_grouping_key,
+                        intent_summary: if is_read_only {
+                            None
+                        } else {
+                            intent_summary.clone()
+                        },
+                    })
+                    .await;
+            }
         }
-        // Block on the decision channel, matching by tool id. `tokio::sync::Mutex`
-        // (not `std::sync::Mutex`) so the guard may cross the blocking
-        // `recv().await`. Single consumer ⇒ holding the guard across the await
-        // cannot deadlock. The cancel race (mirrors production's
+        // Block on the decision for this tool-call id. `ApprovalRouter` parks
+        // answers addressed to other waiters (a sub-agent asking at the same
+        // time) instead of dropping them; with a single waiter it is the raw
+        // mutex+receiver this replaced. The cancel race (mirrors production's
         // `await_tool_approval` select over `cancel_token.cancelled()` at
         // `approval.rs:76-82`) lets a cancelled turn break out of the wait:
         // cancel wins ⇒ `Err("Request cancelled while awaiting approval")`
         // (fed back as a tool error; Checkpoint G in `run_inner` then surfaces
         // `StopReason::Interrupted`).
-        let cancel_token = self.cancel_token.clone();
-        let mut guard = rx.lock().await;
-        loop {
-            let cancelled = async {
-                match &cancel_token {
-                    Some(token) => token.cancelled().await,
-                    None => std::future::pending::<()>().await,
+        let decision = router
+            .wait(tool_id, self.cancel_token.as_ref())
+            .await
+            .map_err(|err| match err {
+                ApprovalWaitError::Cancelled => {
+                    "Request cancelled while awaiting approval".to_string()
                 }
-            };
-            tokio::select! {
-                biased;
-                _ = cancelled => {
-                    return Err("Request cancelled while awaiting approval".to_string());
-                }
-                decision = guard.recv() => match decision {
-                    Some(ApprovalDecision::Approved { id }) if id == tool_id => return Ok(()),
-                    Some(ApprovalDecision::Denied { id }) if id == tool_id => {
-                        return Err(format!("Tool '{name}' denied by user"));
-                    }
-                    // Sandbox elevation needs `ToolDispatcher::execute` with a
-                    // `sandbox_override`, which the framework `Tool::run` path
-                    // doesn't carry; treat as approved (run with the fixed context).
-                    // By-design gap — threads in at the wire-in step.
-                    Some(ApprovalDecision::RetryWithPolicy { id, .. }) if id == tool_id => {
-                        return Ok(());
-                    }
-                    Some(_) => continue, // stale id for a different call — ignore
-                    None => return Err("Approval channel closed".to_string()),
-                }
+                ApprovalWaitError::Closed => "Approval channel closed".to_string(),
+            })?;
+        match decision {
+            ApprovalDecision::Approved { .. } => {
+                self.grant_escaped_path(escaped.as_ref());
+                Ok(())
             }
+            ApprovalDecision::Denied { .. } => Err(match escaped.as_ref() {
+                // The refusal is about one directory, and the model must not
+                // answer it by pointing the user at `/trust add` again — that
+                // is what was just declined.
+                Some(path) => format!(
+                    "The user declined access to '{}' (outside the workspace, not trusted). \
+                     Do not retry this call or ask for that path again.",
+                    path.display()
+                ),
+                None => format!("Tool '{name}' denied by user"),
+            }),
+            // Sandbox elevation needs `ToolDispatcher::execute` with a
+            // `sandbox_override`, which the framework `Tool::run` path doesn't
+            // carry; treat as approved (run with the fixed context). By-design
+            // gap — threads in at the wire-in step.
+            ApprovalDecision::RetryWithPolicy { .. } => {
+                self.grant_escaped_path(escaped.as_ref());
+                Ok(())
+            }
+        }
+    }
+
+    /// Trust a path the user just approved for the rest of this process, so
+    /// the call that triggered the question passes its own `resolve_path`.
+    /// No-op when the call wasn't about an out-of-workspace path, or when no
+    /// dispatcher (and therefore no trust list) is attached.
+    fn grant_escaped_path(&self, escaped: Option<&PathBuf>) {
+        if let (Some(dispatcher), Some(path)) = (self.tool_dispatcher.as_ref(), escaped) {
+            dispatcher.grant_external_path(path.clone());
         }
     }
 }
