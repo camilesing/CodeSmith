@@ -1134,6 +1134,58 @@ pub fn memory(state: &ReplState, arg: Option<&str>) {
     let sub = arg.map(str::trim).unwrap_or("show").to_ascii_lowercase();
     let path = memory_file(state);
     match sub.as_str() {
+        // Claude Code's "auto memory": whether the agent records memories at
+        // all. The effective value comes from `Config::memory_enabled`, whose
+        // cascade is env-first — so the report names the env variable that
+        // is deciding when one is set, rather than showing a config toggle
+        // that is being overridden.
+        "auto" | "auto status" => {
+            let enabled = state.config.memory_enabled();
+            println!(
+                "auto memory: {}",
+                if enabled { "on".green() } else { "off".red() }
+            );
+            println!("  store:   {}", path.display());
+            let decider = [
+                "CODESMITH_DISABLE_AUTO_MEMORY",
+                "CODESMITH_SIMPLE",
+                "CODESMITH_REMOTE",
+                "CODESMITH_MEMORY",
+            ]
+            .into_iter()
+            .find(|name| std::env::var_os(name).is_some());
+            match decider {
+                Some(name) => {
+                    println!("  decided by: {name} (the environment wins over [memory] enabled)")
+                }
+                None => {
+                    println!("  decided by: [memory] enabled in config.toml, else the default (on)")
+                }
+            }
+        }
+        "auto on" | "auto off" => {
+            let value = sub == "auto on";
+            match super::config_cmds::persist_section_bool(
+                state.config_path.as_deref(),
+                "memory",
+                "enabled",
+                value,
+            ) {
+                Ok(written) => {
+                    println!(
+                        "auto memory = {} — saved to {}; it applies from the next session",
+                        if value { "on" } else { "off" },
+                        written.display()
+                    );
+                    println!(
+                        "{}",
+                        "an environment variable (CODESMITH_DISABLE_AUTO_MEMORY, CODESMITH_SIMPLE, CODESMITH_REMOTE) still wins over this"
+                            .dimmed()
+                    );
+                }
+                Err(err) => println!("{} could not write config.toml: {err}", "✗".red()),
+            }
+        }
         "" | "show" => {
             println!("memory file: {}", path.display());
             match std::fs::read_to_string(&path) {

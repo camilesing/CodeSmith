@@ -72,6 +72,9 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
   grants in `~/.codesmith/approvals.toml`, trusted paths, and the config
   rules — while `/permissions allow|deny|remove` edits it. The grant store
   had readers and no writer; it has one now.
+- `/memory auto [on|off]` reports the effective auto-memory state and names
+  the level deciding it (environment first, then `[memory] enabled`), and
+  writes that key when asked to change it.
 - Shell-mode completion: inside a `!` line, `Tab` completes workspace paths
   for a word with a separator and the project's own `!` history otherwise.
 - `/import [claude|cursor|codex|gemini] [--yes]` copies another agent CLI's
