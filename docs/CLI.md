@@ -79,6 +79,22 @@ this fork's users asked for. The ones worth knowing:
 - **`/code-review`, `/security-review`, `/simplify`, `/run`, `/verify`** are
   bundled skills (prompt workflows), listed by `/skills` and overridable by a
   skill of the same name on disk.
+- **`/branch [name]`** branches the conversation here: the session is saved,
+  a copy becomes the live one, and the original stays for `/resume`. It is
+  Claude Code's name for what `/fork` already did; Claude Code's `/fork`
+  (running the copy as a detached background *session*) is in the list below.
+- **`/subtask <task>`** hands a self-contained task to a background
+  sub-agent: it runs in this workspace with this session's tools and approval
+  routing, `/agents` lists it, and its result prints when it finishes. The
+  child does **not** inherit the conversation — Claude Code's `/subtask`
+  forks the transcript, and conversation inheritance here belongs to the
+  model's `agent_open` (`fork_context: true`), so the task has to stand on its
+  own.
+- **`/batch <instruction>`** is the bundled skill that plans a large change as
+  5–30 independent units, waits for approval, then opens one background
+  sub-agent per unit (`agent_open`, with `git worktree add` for units that
+  would touch the same files) and reports each unit with the command that
+  verified it.
 - **`/pr <number|url>`** fetches a GitHub pull request through `gh` — title,
   body, branches, and a truncated diff — into the prompt as an editable
   draft, so it reviews in the session and workspace you already have.
@@ -150,8 +166,10 @@ offers something that cannot work: `/desktop` `/mobile` `/teleport`
 `/install-slack-app` `/autofix-pr` `/ultrareview` `/heapdump` `/radio`
 `/stickers` `/powerup` `/team-onboarding` `/fast` `/scroll-speed`
 `/tui` `/focus` `/keybindings-file` `/list-agents` `/peers` `/schedule`
-`/batch` `/subtask` `/branch` `/simplify` variants beyond the
-bundled skill, and the `/plugin` authoring surface.
+`/simplify` variants beyond the bundled skill, and the `/plugin` authoring
+surface. `/fork` keeps its CodeSmith meaning — the same branch-and-switch
+`/branch` performs — because Claude Code's `/fork` is one of these: a
+detached background session.
 
 Also out of scope, with the reason: a keybindings configuration file (the
 bindings are compiled in; `/keybindings` is read-only), emoji shortcodes and

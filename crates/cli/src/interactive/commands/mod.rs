@@ -25,6 +25,7 @@ pub mod rewind_cmds;
 pub mod session_cmds;
 pub mod share;
 pub mod skills_cmds;
+pub mod subtask_cmds;
 pub mod user_cmd_store;
 
 use codesmith_config::presets::PresetCatalog;
@@ -148,6 +149,18 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
         }
         Command::Fork => {
             session_cmds::fork(state).await;
+            false
+        }
+        Command::Branch => {
+            session_cmds::branch(state, Some(arg_str.as_str())).await;
+            false
+        }
+        Command::Subtask => {
+            subtask_cmds::run(state, &arg_str).await;
+            false
+        }
+        Command::Batch => {
+            skills_cmds::batch(state, &arg_str).await;
             false
         }
         Command::Load => {

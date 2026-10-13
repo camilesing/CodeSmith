@@ -223,6 +223,17 @@ pub async fn simplify(state: &mut ReplState, target: &str) {
     activate(state, "simplify", target).await;
 }
 
+/// `/batch <instruction>`
+///
+/// Claude Code's `/batch` is a bundled skill too, and its shape here matches:
+/// the workflow is a prompt, and the parallelism is the model's own
+/// `agent_open`/`agent_eval` surface rather than a second scheduler. The
+/// skill body stops at the plan until the user approves it, exactly as the
+/// reference describes.
+pub async fn batch(state: &mut ReplState, instruction: &str) {
+    activate(state, "batch", instruction).await;
+}
+
 /// `/security-review [target]`
 pub async fn security_review(state: &mut ReplState, target: &str) {
     activate(state, "security-review", target).await;

@@ -84,6 +84,38 @@ pub fn save(state: &mut ReplState, path: Option<&str>) {
 
 /// `/fork` — save the current conversation and fork it into a new sibling.
 pub async fn fork(state: &mut ReplState) {
+    branch(state, None).await;
+}
+
+/// `/branch [name]` — branch the conversation here and switch to the copy.
+///
+/// Claude Code's `/branch`: the session as it stands is saved, a copy is made
+/// and becomes the live session, and the original stays on disk for
+/// `/resume`. `/fork` is the same operation under the name this REPL had
+/// first; Claude Code's `/fork` — running the copy as a *detached background
+/// session* — needs a session-IPC substrate this REPL does not have.
+///
+/// A name is applied to the copy before it is saved, so `/resume <name>`
+/// finds the branch rather than the branch point.
+///
+/// Known limitations (recorded beside the behaviour it owns):
+///
+/// - The copy is a conversation branch, not a `git` branch: nothing in the
+///   working tree is copied, stashed, or checked out.
+/// - The branch point is the whole conversation, not a message index: there
+///   is no "branch from that earlier message" (use `/rewind`'s snapshot list
+///   for the file side, or `/sessions` to resume the original).
+pub async fn branch(state: &mut ReplState, name: Option<&str>) {
+    let name = name.map(str::trim).filter(|s| !s.is_empty());
+    if let Some(name) = name
+        && name.chars().count() > MAX_TITLE_LEN
+    {
+        println!(
+            "{} branch name too long (max {MAX_TITLE_LEN} characters)",
+            "✗".red()
+        );
+        return;
+    }
     if state.api_messages.is_empty() {
         println!(
             "{} nothing to fork — send or load a message first",
@@ -99,14 +131,31 @@ pub async fn fork(state: &mut ReplState) {
         .current_session_id
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let mut parent = create_saved_session_with_id_and_mode(
-        parent_id,
-        &state.api_messages,
-        &state.model,
-        &state.workspace,
-        u64::from(state.session.total_tokens),
-        state.system_prompt.as_ref(),
-        Some(state.mode.label()),
+    // The branch point keeps whatever the stored session already holds — its
+    // title (from `/rename` or an earlier `/branch <name>`), its `created_at`,
+    // and its own `parent_session_id`. Rebuilding the metadata from state
+    // instead wrote those fields out: branching twice in a row silently
+    // unnamed the first branch.
+    let mut parent = manager.load_session(&parent_id).map_or_else(
+        |_| {
+            create_saved_session_with_id_and_mode(
+                parent_id,
+                &state.api_messages,
+                &state.model,
+                &state.workspace,
+                u64::from(state.session.total_tokens),
+                state.system_prompt.as_ref(),
+                Some(state.mode.label()),
+            )
+        },
+        |existing| {
+            update_session(
+                existing,
+                &state.api_messages,
+                u64::from(state.session.total_tokens),
+                state.system_prompt.as_ref(),
+            )
+        },
     );
     sync_cost_to_metadata(state, &mut parent.metadata);
     if let Err(err) = manager.save_session(&parent) {
@@ -116,17 +165,26 @@ pub async fn fork(state: &mut ReplState) {
     let mut forked = build_saved_session(state);
     forked.metadata.copy_cost_from(&parent.metadata);
     forked.metadata.mark_forked_from(&parent.metadata);
+    if let Some(name) = name {
+        forked.metadata.title = name.to_string();
+    }
     if let Err(err) = manager.save_session(&forked) {
         println!("{} failed to save forked session: {err}", "✗".red());
         return;
     }
     state.current_session_id = Some(forked.metadata.id.clone());
     let fork_id = forked.metadata.id.clone();
-    println!(
-        "forked session {} -> {}",
-        truncate_id(&parent.metadata.id),
-        truncate_id(&fork_id)
-    );
+    match name {
+        Some(name) => println!(
+            "branched session {} -> {fork_id} ({name}) — the original stays for /resume",
+            truncate_id(&parent.metadata.id),
+        ),
+        None => println!(
+            "forked session {} -> {} — the original stays for /resume",
+            truncate_id(&parent.metadata.id),
+            truncate_id(&fork_id)
+        ),
+    }
     if let Ok(engine) = state.engine() {
         let _ = engine
             .send(Op::SyncSession {

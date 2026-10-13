@@ -68,6 +68,16 @@ prompt 的入口有两个：
   仅文件：`/undo` 与 `/retry` 是对话那一半。
 - **`/code-review`、`/security-review`、`/simplify`、`/run`、`/verify`** 是内置技能
   （提示词工作流），由 `/skills` 列出，磁盘上同名技能可覆盖它们。
+- **`/branch [name]`** 在此处给对话开分支：当前会话被保存，副本成为活动会话，
+  原会话留给 `/resume`。这是 Claude Code 对 `/fork` 早就做过的事情所用的名字；
+  Claude Code 的 `/fork`（把副本当作游离的后台*会话*运行）在下表的排除清单里。
+- **`/subtask <task>`** 把一件自足的任务交给后台子代理：它在当前工作区、用本会话的
+  工具与审批路由运行，`/agents` 会列出它，完成后结果打印到本对话。子代理**不继承**
+  对话 —— Claude Code 的 `/subtask` 会 fork 对话记录，而这里的对话继承属于模型的
+  `agent_open`（`fork_context: true`），因此任务本身必须自足。
+- **`/batch <instruction>`** 是内置技能：把大改动规划成 5–30 个独立单元，等待批准后
+  为每个单元开一个后台子代理（`agent_open`，对会碰到同一批文件的单元用
+  `git worktree add` 隔离），并逐单元汇报连同验证命令。
 - **`/pr <number|url>`** 通过 `gh` 把 GitHub PR —— 标题、正文、分支与截断后的
   diff —— 取回成提示行里的可编辑草稿，于是在你已有的会话与工作区里审阅。
   `--checkout` 会先执行 `gh pr checkout`；`--repo owner/name` 读别的仓库。
@@ -126,8 +136,9 @@ prompt 的入口有两个：
 `/install-slack-app` `/autofix-pr` `/ultrareview` `/heapdump` `/radio`
 `/stickers` `/powerup` `/team-onboarding` `/fast` `/scroll-speed`
 `/tui` `/focus` `/keybindings-file` `/list-agents` `/peers` `/schedule`
-`/batch` `/subtask` `/branch`、内置技能之外的 `/simplify` 变体，
-以及 `/plugin` 编写面。
+内置技能之外的 `/simplify` 变体，以及 `/plugin` 编写面。`/fork` 保留 CodeSmith
+的语义 —— 与 `/branch` 相同的"开分支并切过去" —— 因为 Claude Code 的 `/fork` 正是
+上述排除项之一：游离的后台会话。
 
 同样在范围之外并写明原因的：键位配置文件（绑定编译在程序内，`/keybindings` 只读）、
 emoji 短代码与拼写检查（二者都需要本 REPL 未随附的数据表）、全屏渲染器的

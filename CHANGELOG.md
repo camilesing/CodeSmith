@@ -58,6 +58,17 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
   the background view (`/task` keeps its subcommands). `/undo` is unchanged
   and is the conversation half of the pair `/rewind` completes for files.
 
+- **`/branch`, `/subtask`, and `/batch`** are the last three of that surface.
+  `/branch [name]` saves the session, continues in a copy, and leaves the
+  original for `/resume` — Claude Code's name for what `/fork` already did,
+  with the name applied to the copy. `/subtask <task>` spawns a background
+  sub-agent on a self-contained task in this workspace, through the engine's
+  own spawn path (the model's `agent_open` and `/subtask` now share it), and
+  `/batch <instruction>` is a sixth bundled skill that plans a large change
+  as 5–30 independent units, waits for approval, then runs one sub-agent per
+  unit. Two documented gaps belong to these: a `/subtask` child does not
+  inherit the conversation (that is `agent_open`'s `fork_context`), and a
+  `/branch` is a conversation branch, not a `git` one.
 - **`/insights`, `/pr`, and `/loop`** close the command surface the port was
   aiming at. `/insights [7d|30d|all]` renders what `codesmith metrics` reads
   as a short transcript digest plus a self-contained HTML report under
