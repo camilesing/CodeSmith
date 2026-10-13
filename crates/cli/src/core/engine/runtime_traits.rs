@@ -394,10 +394,7 @@ impl HostServices for super::EngineHost {
                     match runtime {
                         Some(runtime) => Some(
                             builder
-                                .with_subagent_tools(
-                                    self.subagent_manager.clone(),
-                                    runtime,
-                                )
+                                .with_subagent_tools(self.subagent_manager.clone(), runtime)
                                 .build(tool_context),
                         ),
                         None => Some(builder.build(tool_context)),

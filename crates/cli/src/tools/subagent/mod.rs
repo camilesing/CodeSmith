@@ -6533,9 +6533,7 @@ impl SubAgentToolRegistry {
             if let Some(requested) = requested_tools.as_ref() {
                 refused_non_read_only = requested
                     .iter()
-                    .filter(|name| {
-                        registry.contains(name) && !is_read_only_name(&read_only, name)
-                    })
+                    .filter(|name| registry.contains(name) && !is_read_only_name(&read_only, name))
                     .cloned()
                     .collect();
             }

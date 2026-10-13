@@ -21,11 +21,11 @@ use codesmith_agent_runtime::telemetry::TelemetrySink;
 
 use super::*;
 
+use super::runtime_traits::children_are_read_only_in;
 use super::{
     TURN_MAX_OUTPUT_TOKENS, context_input_budget, context_input_budget_for_provider,
     effective_max_output_tokens,
 };
-use super::runtime_traits::children_are_read_only_in;
 use crate::config::{ApiProvider, DEFAULT_TEXT_MODEL, UtilityModelConfig};
 use crate::models::{ContentBlock, Message, SystemBlock, SystemPrompt, Tool, ToolCaller};
 use crate::test_support::lock_test_env;
