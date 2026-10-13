@@ -148,6 +148,10 @@ pub struct ReplState {
     /// takes it as the next prompt's text, so a turn that ends first never
     /// swallows half-typed input.
     pub turn_end_draft: Option<String>,
+    /// Text a slash command handed back for the next prompt: `/pr` puts the
+    /// fetched pull request here. The REPL loop takes it before reading, so
+    /// the user sees an editable draft rather than a message already sent.
+    pub next_input: Option<String>,
     /// Skill names as first discovered this session, so `/reload-skills` can
     /// say what appeared or disappeared since startup.
     pub skill_baseline: Option<Vec<String>>,
@@ -348,6 +352,7 @@ impl ReplState {
             show_tasks: false,
             queued_messages: Vec::new(),
             turn_end_draft: None,
+            next_input: None,
             skill_baseline: None,
             statusline_text: None,
             tool_log: Vec::new(),

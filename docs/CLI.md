@@ -79,6 +79,25 @@ this fork's users asked for. The ones worth knowing:
 - **`/code-review`, `/security-review`, `/simplify`, `/run`, `/verify`** are
   bundled skills (prompt workflows), listed by `/skills` and overridable by a
   skill of the same name on disk.
+- **`/pr <number|url>`** fetches a GitHub pull request through `gh` — title,
+  body, branches, and a truncated diff — into the prompt as an editable
+  draft, so it reviews in the session and workspace you already have.
+  `--checkout` runs `gh pr checkout` first; `--repo owner/name` reads another
+  repository. `codesmith pr <N>` is the same fetch from the command line,
+  starting a new session with it.
+- **`/insights [7d|30d|all]`** prints what the local stores say about how you
+  work — sessions, tokens, projects, models, tool calls with their approval
+  and success counts, compactions, sub-agent spawns — and writes a
+  self-contained HTML report to `~/.codesmith/insights/`. It reads the same
+  three sources `codesmith metrics` reads, and uploads nothing.
+- **`/loop <interval> <prompt>`** (alias `/proactive`) stores a recurring run
+  of that prompt as an automation, which the session's scheduler fires as a
+  background task — its own runtime thread, so **iterations do not appear in
+  this conversation**. `/loop list` shows each loop's next and last run,
+  `/loop run|pause|resume|stop <id>` manages one, and `/loop <interval>` with
+  no prompt uses `loop.md` from the workspace or the built-in maintenance
+  prompt. The floor is one hour (the scheduler's RRULEs are hourly/weekly), so
+  `/loop 5m` is refused by name rather than rounded up.
 - **`/effort`, `/autocompact`, `/usage`, `/tasks`, `/plugins`,
   `/reload-skills`, `/reload-plugins`, `/theme`, `/color`, `/statusline`,
   `/copy`, `/doctor`, `/debug`, `/release-notes`, `/terminal-setup`,
@@ -129,19 +148,20 @@ offers something that cannot work: `/desktop` `/mobile` `/teleport`
 `/chrome` `/claude-in-chrome` `/ide` `/upgrade` `/passes` `/usage-credits`
 `/rate-limit-options` `/privacy-settings` `/web-setup` `/install-github-app`
 `/install-slack-app` `/autofix-pr` `/ultrareview` `/heapdump` `/radio`
-`/stickers` `/powerup` `/team-onboarding` `/insights` `/fast` `/scroll-speed`
+`/stickers` `/powerup` `/team-onboarding` `/fast` `/scroll-speed`
 `/tui` `/focus` `/keybindings-file` `/list-agents` `/peers` `/schedule`
-`/loop` `/batch` `/subtask` `/branch` `/pr` `/simplify` variants beyond the
+`/batch` `/subtask` `/branch` `/simplify` variants beyond the
 bundled skill, and the `/plugin` authoring surface.
 
 Also out of scope, with the reason: a keybindings configuration file (the
 bindings are compiled in; `/keybindings` is read-only), emoji shortcodes and
-spell checking (both need data tables this REPL does not ship), and the
-fullscreen renderer's transcript-viewer keys.
+spell checking (both need data tables this REPL does not ship), the
+fullscreen renderer's transcript-viewer keys, and `/pr-comments` (Claude Code
+removed it in v2.1.91 with the advice to ask the model to read the comments —
+which is what `/pr` prepares the session to do).
 
-`codesmith pr <N>` is the PR-review door from the CLI; the REPL does not
-carry a `/pr` because the command needs the parsed CLI handle the REPL does
-not hold.
+`/pr` and `codesmith pr <N>` both go through `gh`: without it installed (and
+`gh auth login` run) `/pr` says so and fetches nothing.
 
 ## Model selection
 

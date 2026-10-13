@@ -12,10 +12,13 @@ pub mod debug_cmds;
 pub mod dir_cmds;
 pub mod extension_cmds;
 pub mod import_cmds;
+pub mod insights_cmds;
+pub mod loop_cmds;
 pub mod misc_cmds;
 pub mod mods_cmds;
 pub mod network_store;
 pub mod permission_cmds;
+pub mod pr_cmds;
 pub mod project_doc;
 pub mod registry;
 pub mod rewind_cmds;
@@ -371,6 +374,18 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
         }
         Command::Recap => {
             misc_cmds::recap(state).await;
+            false
+        }
+        Command::Insights => {
+            insights_cmds::run(&arg_str).await;
+            false
+        }
+        Command::Pr => {
+            pr_cmds::run(state, &arg_str).await;
+            false
+        }
+        Command::Loop => {
+            loop_cmds::run(state, &arg_str).await;
             false
         }
         Command::OutputStyle => {
