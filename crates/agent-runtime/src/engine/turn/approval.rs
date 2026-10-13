@@ -66,6 +66,7 @@ use codesmith_agent::tools::{Tool, ToolCapability};
 use crate::engine::approval::{ApprovalDecision, ApprovalWaitError};
 use crate::engine::host_executor::HostAgentExecutor;
 use crate::events::Event;
+use crate::tool_dispatch::ToolDispatcher;
 use crate::tools::approval_cache::{build_approval_grouping_key, build_approval_key};
 use crate::tools::spec::ApprovalRequirement;
 
@@ -92,6 +93,34 @@ pub(crate) fn requires_approval(caps: &[ToolCapability]) -> bool {
                 | ToolCapability::WritesFiles
         )
     })
+}
+
+/// Whether a call needs the user's approval before it may run: a host
+/// dispatcher's per-input answer wins, and an out-of-workspace path counts as
+/// requiring approval even when the dispatcher answers `Auto` — the path
+/// question replaces the generic one (`request_approval`).
+///
+/// The single source of this decision, read by three call sites that must
+/// agree: `request_approval` (which asks), `turn::batches` phase-1 planning
+/// (which keeps the call out of an approval-free parallel batch) and
+/// `turn::stream`'s speculative dispatch (which must not run a gated call
+/// before the answer).
+pub(crate) fn input_requires_approval(
+    dispatcher: Option<&Arc<dyn ToolDispatcher>>,
+    name: &str,
+    input: &serde_json::Value,
+    caps: &[ToolCapability],
+) -> bool {
+    if dispatcher
+        .and_then(|d| d.escaped_path_for(name, input))
+        .is_some()
+    {
+        return true;
+    }
+    match dispatcher.and_then(|d| d.approval_requirement_for(name, input)) {
+        Some(req) => req != ApprovalRequirement::Auto,
+        None => requires_approval(caps),
+    }
 }
 
 /// Cap on the approval intent-summary length. (Relocated from the retired
@@ -163,24 +192,17 @@ impl HostAgentExecutor {
             .tool_dispatcher
             .as_ref()
             .and_then(|d| d.escaped_path_for(name, input));
-        // Per-input approval override (slice 20 §E): when a host dispatcher is
-        // attached, consult its `approval_requirement_for` first — a `Some`
-        // answer downgrades/upgrades the gate per input (mirrors production's
-        // `registry.approval_requirement_for(..)` at handle_deepseek_turn). `None`
-        // (no dispatcher, or dispatcher has no opinion) falls back to the
-        // static capability gate.
-        let approval_required = if escaped.is_some() {
-            true
-        } else {
-            match self
-                .tool_dispatcher
-                .as_ref()
-                .and_then(|d| d.approval_requirement_for(name, input))
-            {
-                Some(req) => req != ApprovalRequirement::Auto,
-                None => requires_approval(&tool.capabilities()),
-            }
-        };
+        // The gate itself is the shared predicate — the same one planning and
+        // speculative dispatch read — so the answer that asks, the answer that
+        // classifies, and the answer that decides whether to start early cannot
+        // drift apart. `escaped` is computed here as well because the question
+        // and the grant need the path itself, not just the boolean.
+        let approval_required = input_requires_approval(
+            self.tool_dispatcher.as_ref(),
+            name,
+            input,
+            &tool.capabilities(),
+        );
         if !approval_required {
             return Ok(()); // dispatcher said Auto, or static gate says no
         }

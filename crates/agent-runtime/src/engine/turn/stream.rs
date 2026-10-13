@@ -75,14 +75,19 @@
 //!   loop-guard blocks is popped + `Drop`-aborted in the tool loop (the
 //!   `AttemptDecision::Block` arm). So the wasted work is a spawned task that's
 //!   immediately aborted — cheap for a read-only tool.
-//! - **no per-input approval / interactive checks** — `early_start_safe`
-//!   statically excludes `RequiresApproval`-tagged tools, but a tool that's
-//!   `Auto`-by-default yet `Required` for a specific input (e.g. `exec_shell rm`)
-//!   isn't visible from `capabilities()`. Such a tool would be speculatively
-//!   started and, if the execute-time approval comes back `Required`, the task
-//!   is popped + `Drop`-aborted (the approval `Err(denial)` arm). Again wasted
-//!   work, not a correctness bug. Threads in with the per-input approval
-//!   surface at the wire-in step.
+//! - **per-input approval is consulted; per-input validation is not** —
+//!   `early_start_safe` statically excludes `RequiresApproval`-tagged tools,
+//!   and [`input_requires_approval`](super::approval::input_requires_approval)
+//!   additionally honors the dispatcher's per-input answer (`exec_shell rm` ⇒
+//!   `Required` vs `exec_shell ls` ⇒ `Auto`) and an out-of-workspace path, so a
+//!   call the execute-time planner will gate behind approval is never
+//!   speculatively started: it would run the tool before the user was asked and
+//!   then reuse that pre-approval result (for an approved path, always the
+//!   `PathEscape` refusal). Still invisible here: the *interactive* flag and
+//!   the tool-catalog allowlist — host-side metadata the framework `Tool` trait
+//!   does not carry. A speculatively-started call whose per-input *validation*
+//!   rejects the args remains wasted work, not a correctness bug: the rejected
+//!   result is discarded at execute time.
 //! - **cancel-token short-circuit** — by design (N/A): production's
 //!   `early_tool_start_safe` doesn't check cancel at spawn time either; a
 //!   cancelled turn still spawns speculative tasks for tool blocks that close
@@ -107,7 +112,7 @@ use codesmith_agent::models::{
 };
 use codesmith_agent::tools::{ToolCapability, ToolError, ToolResult};
 
-use super::approval::requires_approval;
+use super::approval::{input_requires_approval, requires_approval};
 use crate::engine::context::{
     MAX_CONTEXT_RECOVERY_ATTEMPTS, context_input_budget_for_provider,
     is_context_length_error_message,
@@ -401,7 +406,9 @@ impl HostAgentExecutor {
     ///
     /// **Early speculative dispatch (early-tool-start):** when a tool block
     /// reaches `ContentBlockStop`, its input is finalized and — if the tool is
-    /// [`early_start_safe`] — a [`tokio::spawn`] runs it immediately so its
+    /// [`early_start_safe`] and the call needs no approval
+    /// ([`input_requires_approval`](super::approval::input_requires_approval)) —
+    /// a [`tokio::spawn`] runs it immediately so its
     /// result is ready by the time the executor reaches the tool loop. The
     /// `JoinHandle` is stored in `early_tasks` keyed by the wire tool id; the
     /// tool loop pops it by id, re-verifies name + input, and awaits it to
@@ -742,10 +749,26 @@ impl HostAgentExecutor {
                                 // immediately (non-blocking); the stream keeps
                                 // consuming. `Drop` on `EarlyToolTask` aborts
                                 // an unreused task so nothing leaks.
-                                if let Some(tool) = self.tools.get(name)
-                                    && early_start_safe(&tool.capabilities())
-                                {
-                                    {
+                                //
+                                // Approval-gated inputs are excluded, by the
+                                // same predicate phase-1 planning uses
+                                // (`approval::input_requires_approval`) so the
+                                // two answers cannot disagree. A gated call that
+                                // started here would run before the user was
+                                // asked, and the serial batch would then reuse
+                                // that pre-approval result — for an
+                                // out-of-workspace path always the `PathEscape`
+                                // refusal, so approving the path would look
+                                // like it had done nothing.
+                                if let Some(tool) = self.tools.get(name) {
+                                    let caps = tool.capabilities();
+                                    let approval_gated = input_requires_approval(
+                                        self.tool_dispatcher.as_ref(),
+                                        name,
+                                        &finalized_input,
+                                        &caps,
+                                    );
+                                    if early_start_safe(&caps) && !approval_gated {
                                         let tool = Arc::clone(tool);
                                         let input = finalized_input.clone();
                                         let handle =
@@ -1356,6 +1379,170 @@ mod tests {
         assert!(
             !early_start_safe(&[ToolCapability::ReadOnly, ToolCapability::Network]),
             "network tools must not start speculatively"
+        );
+    }
+
+    // === Early dispatch vs approval-gated inputs ==========================
+
+    /// A read-only spec shaped like `cli::tools::file`'s `read_file`: the
+    /// engine asks it which path an input escapes (`escaped_path_for_input`)
+    /// and the tool validates with the context's own `resolve_path`, so a
+    /// speculative run on an untrusted path fails with the real `PathEscape`
+    /// refusal instead of a stand-in.
+    struct PathCheckingSpec;
+
+    #[async_trait::async_trait]
+    impl ToolSpec for PathCheckingSpec {
+        fn name(&self) -> &'static str {
+            "read_file"
+        }
+
+        fn description(&self) -> &'static str {
+            "Reads `path`; refuses paths outside the workspace."
+        }
+
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"]
+            })
+        }
+
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+
+        fn approval_requirement(&self) -> ApprovalRequirement {
+            ApprovalRequirement::Auto
+        }
+
+        fn escaped_path_for_input(
+            &self,
+            input: &serde_json::Value,
+            context: &ToolContext,
+        ) -> Option<std::path::PathBuf> {
+            input
+                .get("path")
+                .and_then(|value| value.as_str())
+                .and_then(|path| context.escaped_path(path))
+        }
+
+        async fn execute(
+            &self,
+            input: serde_json::Value,
+            context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            let raw = input
+                .get("path")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            let resolved = context.resolve_path(raw)?;
+            Ok(ToolResult {
+                canonical: None,
+                content: resolved.display().to_string(),
+                success: true,
+                metadata: None,
+            })
+        }
+    }
+
+    /// A [`PathCheckingSpec`] registry wired the production way: the registry
+    /// is the executor's dispatcher (so `escaped_path_for` reads the context
+    /// and `grant_external_path` writes it) and its context is the one the
+    /// tools run with.
+    fn path_checking_executor(workspace: &std::path::Path) -> HostAgentExecutor {
+        let mut registry = ToolRegistry::new(ToolContext::new(workspace.to_path_buf()));
+        registry.register(std::sync::Arc::new(PathCheckingSpec));
+        let tools = registry.to_framework_tool_set();
+        let mock = std::sync::Arc::new(RetryMockLlm::new(Vec::new()));
+        stream_test_executor(&mock, tools).with_tool_dispatcher(Some(std::sync::Arc::new(registry)))
+    }
+
+    /// One stream round holding a single `read_file(path)` tool block that
+    /// stops for tool use.
+    fn read_file_round(path: &str) -> StreamEventBox {
+        let partial_json = serde_json::json!({"path": path}).to_string();
+        let events: Vec<anyhow::Result<StreamEvent>> = vec![
+            Ok(message_start_with_usage(10)),
+            Ok(StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlockStart::ToolUse {
+                    id: "call_1".to_string(),
+                    name: "read_file".to_string(),
+                    input: serde_json::Value::Null,
+                    caller: None,
+                },
+            }),
+            Ok(StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: Delta::InputJsonDelta { partial_json },
+            }),
+            Ok(StreamEvent::ContentBlockStop { index: 0 }),
+            Ok(StreamEvent::MessageDelta {
+                delta: MessageDelta {
+                    stop_reason: Some("tool_use".to_string()),
+                    stop_sequence: None,
+                },
+                usage: None,
+            }),
+            Ok(StreamEvent::MessageStop),
+        ];
+        Box::pin(futures_util::stream::iter(events)) as StreamEventBox
+    }
+
+    /// An out-of-workspace path is an approval question, so the call must not
+    /// have run before the user answers: the serial batch reuses a
+    /// speculative result as-is, and for an untrusted path that result is
+    /// always the `PathEscape` refusal — answering `[a]` at the prompt (or
+    /// `[y]`) would then look like it had done nothing.
+    #[tokio::test]
+    async fn escaped_path_call_is_not_speculatively_dispatched() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sibling = tempfile::tempdir().expect("sibling");
+        let executor = path_checking_executor(workspace.path());
+
+        let mut early_tasks = std::collections::HashMap::new();
+        let mut steers = Vec::new();
+        let _ = executor
+            .reduce_stream(
+                read_file_round(&sibling.path().to_string_lossy()),
+                None,
+                &mut early_tasks,
+                &mut steers,
+            )
+            .await;
+
+        assert!(
+            early_tasks.is_empty(),
+            "a call that needs approval must not start speculatively: {:?}",
+            early_tasks.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// The gate is the approval predicate, not "never dispatch early": a
+    /// read-only call on a workspace path still starts speculatively. Without
+    /// this, the test above would pass for the wrong reason.
+    #[tokio::test]
+    async fn workspace_call_is_speculatively_dispatched() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let executor = path_checking_executor(workspace.path());
+
+        let mut early_tasks = std::collections::HashMap::new();
+        let mut steers = Vec::new();
+        let _ = executor
+            .reduce_stream(
+                read_file_round("notes.md"),
+                None,
+                &mut early_tasks,
+                &mut steers,
+            )
+            .await;
+
+        assert_eq!(
+            early_tasks.len(),
+            1,
+            "a read-only call with a workspace-relative path still speculates"
         );
     }
 
