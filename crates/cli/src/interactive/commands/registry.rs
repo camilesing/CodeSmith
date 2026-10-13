@@ -85,6 +85,7 @@ command_table! {
     Rewind,
     Recap,
     OutputStyle,
+    Permissions,
     ReloadSkills,
     ReloadPlugins,
     Plugins,
@@ -712,6 +713,15 @@ impl Command {
             aliases: &[],
             group: Group::Config,
             help: "the answer style (is_simple)",
+        },
+        CommandInfo {
+            command: Command::Permissions,
+            name: "permissions",
+            usage: "[list|allow <prefix>|deny <command>|remove <prefix>]",
+            args: &["list", "allow", "deny", "remove"],
+            aliases: &["allowed-tools"],
+            group: Group::Config,
+            help: "what runs without asking, and who decided it",
         },
         CommandInfo {
             command: Command::Keybindings,

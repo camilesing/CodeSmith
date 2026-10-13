@@ -717,6 +717,13 @@ status line; appearance keys such as `theme`, `background_color`, and
   palettes, `grayscale` is the low-opinion black/white theme, and the named
   community presets apply across the UI. Aliases such as `mono`,
   `black-white`, `tokyonight`, and `gruvbox` are accepted.
+- `[sandbox] auto_allow` (array of shell command prefixes, default empty):
+  commands that never prompt for approval. Read at startup and applied as
+  approval grants for the session, so editing the list takes effect on the
+  next start; `/permissions` shows what is in force and `/permissions allow`
+  writes a grant into `~/.codesmith/approvals.toml` instead. Entries match
+  by the arity dictionary (`"git status"` covers `git status -s`, not
+  `git push`).
 - `auto_compact` (on/off, default on)
 - `paste_burst_detection` (on/off, default on): fallback rapid-key paste
   detection for terminals that do not emit bracketed-paste events. This is

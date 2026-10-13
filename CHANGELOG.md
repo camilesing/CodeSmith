@@ -65,6 +65,13 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
 
 ### Changed
 
+- `[sandbox] auto_allow` is read: the key was documented with matching
+  semantics (and a prefix dictionary with tests) but no parser, so a rule in
+  the file did nothing. Its entries now become approval grants at startup,
+  and `/permissions` shows the whole picture — session grants, persisted
+  grants in `~/.codesmith/approvals.toml`, trusted paths, and the config
+  rules — while `/permissions allow|deny|remove` edits it. The grant store
+  had readers and no writer; it has one now.
 - Input history is per workspace (`~/.codesmith/history/<workspace>`) and its
   default cap is 500 entries; the pre-upgrade single file is read once for a
   workspace that has none of its own and left in place.

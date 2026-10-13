@@ -156,6 +156,11 @@ pub async fn run_repl(
         state::resume_session(&mut state, resume_id).await?;
     }
 
+    // `[sandbox] auto_allow` is the user's standing decision: merge it into
+    // the grant set the approval path reads (in memory, so removing a rule
+    // leaves no stale grant behind).
+    commands::permission_cmds::apply_config_rules(&mut state);
+
     // Prompt-time keys record what they want here; the loop applies it once
     // `readline` returns (see `bindings` for why the handler cannot act
     // directly).
