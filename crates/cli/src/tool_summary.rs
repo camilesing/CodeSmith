@@ -4,6 +4,10 @@
 //! the REPL event pump only need plain single-line summaries, which is what
 //! lives here. The arg-summarizer's key priority (path, command, query,
 //! prompt, text, pattern) mirrors the retired `tui/history.rs` behavior.
+//!
+//! Every cap here is a terminal-column budget (CJK counts as two columns),
+//! not a character count: a 200-character CJK summary would otherwise occupy
+//! 400 columns and defeat the one-line contract these summaries exist for.
 
 use serde_json::Value;
 
@@ -31,12 +35,12 @@ pub fn summarize_tool_args(input: &Value) -> Option<String> {
     Some(parts.join(", "))
 }
 
-fn summarize_inline_value(value: &Value, max_chars: usize) -> String {
+fn summarize_inline_value(value: &Value, max_columns: usize) -> String {
     let text = match value {
         Value::String(s) => s.clone(),
         other => other.to_string(),
     };
-    truncate_chars(&text, max_chars)
+    truncate_columns(&text, max_columns)
 }
 
 /// Summarize a tool output for one line: the first informative line,
@@ -49,7 +53,7 @@ pub fn summarize_tool_output(output: &str) -> String {
     let mut lines = trimmed.lines().filter(|l| !l.trim().is_empty());
     let first = lines.next().unwrap_or("").to_string();
     let remaining = lines.count();
-    let mut summary = truncate_chars(&first, 200);
+    let mut summary = truncate_columns(&first, 200);
     if remaining > 0 {
         summary.push_str(&format!(
             " (+{remaining} line{s})",
@@ -59,12 +63,10 @@ pub fn summarize_tool_output(output: &str) -> String {
     summary
 }
 
-fn truncate_chars(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        return text.replace('\n', " ⏎ ");
-    }
-    let truncated: String = text.chars().take(max_chars).collect();
-    format!("{truncated}…")
+/// Cap a summary in terminal columns, collapsing newlines first so the result
+/// stays on one row.
+fn truncate_columns(text: &str, max_columns: usize) -> String {
+    crate::localization::truncate_to_width(&text.replace('\n', " ⏎ "), max_columns)
 }
 
 /// How many completed tool calls the REPL keeps for `/expand` replay.
@@ -132,6 +134,7 @@ pub fn tool_detail_block(record: &ToolCallRecord, max_lines: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use unicode_width::UnicodeWidthStr;
 
     fn record(output: Option<&str>, error: Option<&str>) -> ToolCallRecord {
         ToolCallRecord {
@@ -164,6 +167,18 @@ mod tests {
         assert!(tool_detail_block(&empty, 10).contains("(no output)"));
         let bare = record(None, None);
         assert!(tool_detail_block(&bare, 10).contains("(no output)"));
+    }
+
+    #[test]
+    fn cjk_output_preview_is_capped_by_columns() {
+        // 150 CJK characters are 300 terminal columns. The one-line cap is a
+        // column budget, so the preview must not reach twice its width.
+        let summary = summarize_tool_output(&"中".repeat(150));
+        assert!(
+            summary.width() <= 200,
+            "one-line summary ran to {} columns: {summary:?}",
+            summary.width()
+        );
     }
 
     #[test]

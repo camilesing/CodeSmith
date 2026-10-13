@@ -633,7 +633,9 @@ where
     Locale::En
 }
 
-#[allow(dead_code)]
+/// Truncate to a terminal-column budget, appending `…` when it cuts. Wide
+/// characters count as the two columns they occupy, so callers that promise
+/// "one row" keep that promise for CJK text too.
 pub fn truncate_to_width(text: &str, max_width: usize) -> String {
     if max_width == 0 {
         return String::new();
