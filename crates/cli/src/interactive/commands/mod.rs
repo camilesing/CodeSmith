@@ -404,12 +404,33 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             misc_cmds::balance(state);
             false
         }
-        Command::Verify => {
+        Command::Verify | Command::RunApp => {
+            let target = arg_str.as_str();
+            if matches!(info.command, Command::Verify) {
+                skills_cmds::activate(state, "verify-app", target).await;
+            } else {
+                skills_cmds::run_app(state, target).await;
+            }
+            false
+        }
+        Command::ClaimCheck => {
             misc_cmds::verify(if arg_str.is_empty() {
                 None
             } else {
                 Some(&arg_str)
             });
+            false
+        }
+        Command::CodeReview => {
+            skills_cmds::code_review(state, &arg_str).await;
+            false
+        }
+        Command::SecurityReview => {
+            skills_cmds::security_review(state, &arg_str).await;
+            false
+        }
+        Command::Simplify => {
+            skills_cmds::simplify(state, &arg_str).await;
             false
         }
         Command::Links => {
