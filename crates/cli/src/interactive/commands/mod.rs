@@ -9,6 +9,7 @@ pub mod auto_route;
 pub mod btw_cmds;
 pub mod config_cmds;
 pub mod debug_cmds;
+pub mod dir_cmds;
 pub mod extension_cmds;
 pub mod misc_cmds;
 pub mod mods_cmds;
@@ -326,6 +327,18 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
         }
         Command::Copy => {
             crate::interactive::copy_command(state, &arg_str);
+            false
+        }
+        Command::Cd => {
+            if let Err(err) = dir_cmds::cd(state, &arg_str).await {
+                println!("{} /cd failed: {err}", "✗".red());
+            }
+            false
+        }
+        Command::AddDir => {
+            if let Err(err) = dir_cmds::add_dir(state, &arg_str) {
+                println!("{} /add-dir failed: {err}", "✗".red());
+            }
             false
         }
         Command::Permissions => {

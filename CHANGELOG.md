@@ -72,6 +72,9 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
   grants in `~/.codesmith/approvals.toml`, trusted paths, and the config
   rules — while `/permissions allow|deny|remove` edits it. The grant store
   had readers and no writer; it has one now.
+- `/cd` and `/add-dir`: the session can move its working directory (only into
+  the workspace's own subtree or a path the trust record covers — the exact
+  `/trust add` line is printed otherwise) and add one to that record.
 - Input history is per workspace (`~/.codesmith/history/<workspace>`) and its
   default cap is 500 entries; the pre-upgrade single file is read once for a
   workspace that has none of its own and left in place.
