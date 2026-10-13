@@ -327,6 +327,14 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             crate::interactive::copy_command(state, &arg_str);
             false
         }
+        Command::Recap => {
+            misc_cmds::recap(state).await;
+            false
+        }
+        Command::OutputStyle => {
+            misc_cmds::output_style(state, &arg_str);
+            false
+        }
         Command::Btw => {
             if let Err(err) = btw_cmds::ask(state, &arg_str).await {
                 println!("{} /btw failed: {err}", "✗".red());

@@ -763,6 +763,118 @@ pub async fn share(state: &mut ReplState) {
 /// most.
 const CHANGELOG: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../CHANGELOG.md"));
 
+/// `/recap` — a one-line summary of the session so far, on demand.
+///
+/// Claude Code also shows a recap automatically when you come back to the
+/// terminal after a few minutes; that needs an idle timer and a background
+/// model call per idle period, and is not wired here — this is the on-demand
+/// half, which is the half a user asks for.
+///
+/// The summary is capped at [`RECAP_MAX_CHARS`], as Claude Code caps it: a
+/// recap that needs scrolling is a compaction, and `/compact` is that.
+pub async fn recap(state: &ReplState) {
+    if state.api_messages.len() < 2 {
+        println!(
+            "{}",
+            "nothing to recap yet — the session needs at least one exchange".dimmed()
+        );
+        return;
+    }
+    let digest = recent_digest(state, RECAP_SOURCE_MESSAGES);
+    let prompt = format!(
+        "Summarize this coding session in at most {RECAP_MAX_CHARS} characters, one or two \
+         sentences, for the person who was away: what was worked on, what state it is in now, \
+         and the next step if one is pending. No preamble, no bullet points.\n\n{digest}"
+    );
+    let messages = vec![crate::models::Message {
+        role: "user".to_string(),
+        content: vec![crate::models::ContentBlock::Text {
+            text: prompt,
+            cache_control: None,
+        }],
+    }];
+    match crate::main_root::one_shot_messages(&state.config, &state.model, messages, None).await {
+        Ok(answer) => {
+            let mut text = answer.trim().to_string();
+            if text.chars().count() > RECAP_MAX_CHARS {
+                text = text.chars().take(RECAP_MAX_CHARS).collect::<String>() + "…";
+            }
+            println!("{}", text);
+        }
+        Err(err) => println!("{} recap failed: {err}", "✗".red()),
+    }
+}
+
+/// Cap on the recap, matching Claude Code's own.
+pub const RECAP_MAX_CHARS: usize = 400;
+
+/// How many recent messages the recap reads.
+const RECAP_SOURCE_MESSAGES: usize = 12;
+
+/// A compact rendering of the newest messages, for the recap prompt.
+fn recent_digest(state: &ReplState, count: usize) -> String {
+    let start = state.api_messages.len().saturating_sub(count);
+    let mut digest = String::new();
+    for message in &state.api_messages[start..] {
+        let text: String = message
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                crate::models::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                crate::models::ContentBlock::ToolUse { name, .. } => {
+                    Some(if name.is_empty() { "a tool" } else { name })
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        let text: String = text.chars().take(600).collect();
+        digest.push_str(&format!("{}: {text}\n", message.role));
+    }
+    digest
+}
+
+/// `/output-style [default|concise|status]` — the answer style.
+///
+/// CodeSmith has one style knob rather than Claude Code's named styles:
+/// `is_simple`, the compression style the engine already refreshes the system
+/// prompt for. `concise` turns it on, `default` turns it off, and the other
+/// Claude Code style names say what they would need instead of silently
+/// mapping onto the wrong one.
+pub fn output_style(state: &mut ReplState, arg: &str) {
+    let value = arg.trim().to_ascii_lowercase();
+    match value.as_str() {
+        "" | "status" => println!(
+            "output style: {} (is_simple)",
+            if state.is_simple {
+                "concise"
+            } else {
+                "default"
+            }
+        ),
+        "default" | "normal" => {
+            state.is_simple = false;
+            println!("output style: default (applies from the next turn)");
+        }
+        "concise" | "simple" => {
+            state.is_simple = true;
+            println!("output style: concise — is_simple (applies from the next turn)");
+        }
+        "explanatory" | "learning" | "explanatory-learning" => println!(
+            "{}",
+            format!(
+                "{value} is not a style this build has — the one it does is `concise` (is_simple); \
+                 for a teaching tone, ask for it in the prompt"
+            )
+            .dimmed()
+        ),
+        other => println!(
+            "{} unknown style {other:?} — usage: /output-style [default|concise|status]",
+            "✗".red()
+        ),
+    }
+}
+
 /// `/release-notes [n|version|latest]` — the changelog, one section at a
 /// time (Claude Code's version picker, in the REPL's numbered style).
 pub fn release_notes(state: &ReplState, arg: Option<&str>) {
