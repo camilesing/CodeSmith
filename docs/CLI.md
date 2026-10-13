@@ -79,6 +79,25 @@ this fork's users asked for. The ones worth knowing:
 - **`/code-review`, `/security-review`, `/simplify`, `/run`, `/verify`** are
   bundled skills (prompt workflows), listed by `/skills` and overridable by a
   skill of the same name on disk.
+- **`/fewer-permission-prompts [--yes]`** reads your saved sessions, counts the
+  read-only commands you run most (the same `command_safety` verdict the
+  approval prompt uses), and proposes one approval rule each — writing them
+  only with `--yes`, in exactly the form `/permissions allow` writes. That is
+  the local form of Claude Code's `/auto-mode-setup` too: both end in the same
+  allowlist.
+- **`/stop`** stops all background work — shell jobs, background sub-agents,
+  durable tasks — leaving the foreground turn alone (`Ctrl+C` is that key).
+  Claude Code's `/stop` targets an attached background *session*, which is one
+  of the excluded items below.
+- **`/skill-doctor`** reports what each skill costs in context (body size and
+  a rough token estimate) and how often it has actually run, counted from the
+  `# Skill: <name>` marker activation writes into the session log; never-used
+  disk skills are the ones worth removing.
+- **`/run-skill-generator`, `/update-config`, `/deep-research <question>`,
+  `/plugin-authoring`** are the remaining bundled skills: teach `/run` and
+  `/verify` how this project really builds and starts, turn a plain-language
+  settings request into the right config edit, research a question across
+  sources with citations, and write a mod against `docs/MODS.md`.
 - **`/branch [name]`** branches the conversation here: the session is saved,
   a copy becomes the live one, and the original stays for `/resume`. It is
   Claude Code's name for what `/fork` already did; Claude Code's `/fork`
@@ -180,6 +199,21 @@ which is what `/pr` prepares the session to do).
 
 `/pr` and `codesmith pr <N>` both go through `gh`: without it installed (and
 `gh auth login` run) `/pr` says so and fetches nothing.
+
+The rest, with the reason each has none here: `/artifact-capabilities` and
+`/artifact-diagramming` (Anthropic-hosted artifacts, excluded above),
+`/advisor [model|off]` (a second-model consultation wired into Claude's turn
+loop; the local second-model surface is `[subagents] model_overrides` plus
+`agent_open`), `/claude-api` (the Anthropic API reference), `/dataviz` (a
+skill package with palette-validation scripts this build does not ship),
+`/setup-bedrock` and `/setup-vertex` (provider auth for Anthropic's own
+Bedrock/Vertex paths — CodeSmith configures providers with `/provider` and
+`codesmith login`), `/workflows` and `/workflow-authoring` (CodeSmith has no
+dynamic-workflow engine; `/tasks`, `/loop`, and `/subtask` are its background
+work), `/auto-mode-setup` (same allowlist work as
+`/fewer-permission-prompts`), and `/ultraplan` (removed in Claude Code;
+plan mode is `/plan` here too).
+
 
 ## Model selection
 

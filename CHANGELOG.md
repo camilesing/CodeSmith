@@ -58,6 +58,19 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
   the background view (`/task` keeps its subcommands). `/undo` is unchanged
   and is the conversation half of the pair `/rewind` completes for files.
 
+- **The last ten commands of the reference surface.** `/fewer-permission-prompts
+  [--yes]` reads your saved sessions, keeps the read-only commands you run most
+  (the same `command_safety` verdict the approval prompt uses) and proposes one
+  approval rule each, written only with `--yes`; `/skill-doctor` reports each
+  skill's context cost and how often it has really run (counted from the
+  `# Skill: <name>` marker activation writes into the log); `/stop` cancels all
+  background work. Four more bundled skills arrive with them:
+  `/run-skill-generator`, `/update-config`, `/deep-research`, and
+  `/plugin-authoring`. Ten commands with no local equivalent are documented
+  with reasons rather than faked (`/advisor`, `/claude-api`, `/dataviz`,
+  `/workflows`, `/workflow-authoring`, `/setup-bedrock`, `/setup-vertex`,
+  `/auto-mode-setup`, the two artifact skills, and `/ultraplan`, which Claude
+  Code removed).
 - **`/branch`, `/subtask`, and `/batch`** are the last three of that surface.
   `/branch [name]` saves the session, continues in a copy, and leaves the
   original for `/resume` — Claude Code's name for what `/fork` already did,
