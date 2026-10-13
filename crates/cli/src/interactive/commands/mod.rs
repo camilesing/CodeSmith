@@ -11,6 +11,7 @@ pub mod config_cmds;
 pub mod debug_cmds;
 pub mod dir_cmds;
 pub mod extension_cmds;
+pub mod import_cmds;
 pub mod misc_cmds;
 pub mod mods_cmds;
 pub mod network_store;
@@ -327,6 +328,13 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
         }
         Command::Copy => {
             crate::interactive::copy_command(state, &arg_str);
+            false
+        }
+        Command::Import => {
+            let yes = arg_str
+                .split_whitespace()
+                .any(|word| word == "--yes" || word == "-y");
+            import_cmds::run(state, &arg_str, yes);
             false
         }
         Command::Cd => {

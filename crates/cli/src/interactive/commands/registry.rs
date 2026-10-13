@@ -88,6 +88,7 @@ command_table! {
     Permissions,
     Cd,
     AddDir,
+    Import,
     ReloadSkills,
     ReloadPlugins,
     Plugins,
@@ -742,6 +743,15 @@ impl Command {
             aliases: &[],
             group: Group::Config,
             help: "trust a directory for this workspace",
+        },
+        CommandInfo {
+            command: Command::Import,
+            name: "import",
+            usage: "[claude|cursor|codex|gemini] [--dry-run|--yes]",
+            args: &["claude", "cursor", "codex", "gemini", "--dry-run", "--yes"],
+            aliases: &[],
+            group: Group::Extensions,
+            help: "bring MCP servers over from another agent CLI (writes only with --yes)",
         },
         CommandInfo {
             command: Command::Keybindings,
