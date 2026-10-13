@@ -1,6 +1,6 @@
 //! Bundled skills — the review and verification workflows Claude Code ships
 //! as built-in skills (`/code-review`, `/security-review`, `/simplify`,
-//! `/run`, `/verify`).
+//! `/run`, `/verify`) plus its `/batch` parallel-changes workflow.
 //!
 //! They are skills, not commands with logic: each one is a prompt the model
 //! follows, so they live beside the discovered skills and merge into the same
@@ -120,6 +120,33 @@ the program rather than by re-reading the code.
   here — and for the last two, exactly what blocked it. Do not report a
   partial observation as a verification."#;
 
+const BATCH: &str = r#"Carry out a large, mechanical change across this codebase as parallel units
+of work.
+
+1. **Reconnaissance.** Establish the size and shape of the change before
+   proposing anything: how many call sites, which directories, what the
+   variant patterns are, whether a codemod or a scripted edit would do the
+   whole thing (if it would, say so and skip the parallel path entirely).
+2. **Plan.** Decompose the work into independent units — between 5 and 30,
+   never more than the work supports. Each unit must name the files it owns
+   and must not need another unit's edits to compile. Present the plan as a
+   numbered list: unit, files, what changes, how it will be checked. Stop
+   here and wait for approval.
+3. **Execute.** After approval, open one background sub-agent per unit with
+   `agent_open` (they run while this conversation continues), and give each
+   a self-contained prompt: the unit's files, the exact change, the command
+   that verifies it, and the instruction to run that command and report its
+   output. Isolate units that touch overlapping files — `git worktree add`
+   for a scratch tree, or run those units one at a time instead.
+4. **Land and report.** Collect each unit's result (`agent_eval`), apply or
+   keep its changes, run the project's real check on the merged tree, and
+   report per unit: done, changed files, verification output, and anything
+   that failed or was skipped.
+
+Do not start a unit before the plan is approved, do not let two units edit
+the same file at once, and do not report a unit as done without quoting the
+command that verified it."#;
+
 /// The bundled skills, in `/skills` order.
 #[must_use]
 pub fn registered() -> Vec<Skill> {
@@ -149,6 +176,11 @@ pub fn registered() -> Vec<Skill> {
             "Verify a claim about the code by running the program and observing it",
             VERIFY_APP,
         ),
+        (
+            "batch",
+            "Plan a large change as parallel units and run one sub-agent per unit",
+            BATCH,
+        ),
     ]
     .into_iter()
     .map(|(name, description, body)| {
@@ -167,7 +199,7 @@ mod tests {
     #[test]
     fn bundled_skills_are_named_and_non_empty() {
         let skills = registered();
-        assert_eq!(skills.len(), 5);
+        assert_eq!(skills.len(), 6);
         for skill in &skills {
             assert!(!skill.name.is_empty());
             assert!(
@@ -186,5 +218,6 @@ mod tests {
         let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"code-review"));
         assert!(names.contains(&"verify-app"));
+        assert!(names.contains(&"batch"));
     }
 }
