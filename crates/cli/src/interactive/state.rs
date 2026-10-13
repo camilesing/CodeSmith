@@ -36,14 +36,27 @@ use codesmith_config::presets::PresetCatalog;
 /// it owns so the next reader does not assume a capability that was never
 /// built (repo rule: write down what a design does not do):
 ///
-/// - Single-line input: no multiline composer, no paste-burst editor.
-/// - Completion (Tab) covers registered command names, user command names,
-///   and three closed argument vocabularies. Live model names, sessions,
-///   skills, presets, and `@file` paths are not completed (they need IO or
-///   the network, which cannot run in the completion callback), and there
-///   is no popup menu while typing — feedback is the dim inline hint
-///   (see `completion.rs`).
+/// - Multiline input is `\`-continuation and `Ctrl+J` everywhere; the
+///   modifier forms (`Shift+Enter`, `Alt+Enter`) only fire in terminals
+///   that report the modifier with CR. There is no paste-burst editor.
+/// - Completion (Tab) covers registered command names (at the start of the
+///   prompt and mid-prompt), user command names, the registry's closed
+///   argument vocabularies, and `@path` mentions from a cached workspace
+///   index. Session ids, skills, presets, and live model names are not
+///   completed (they need a network call or an uncached walk), and there is
+///   no popup menu while typing — feedback is the dim inline hint (see
+///   `completion.rs`).
 /// - No mouse support, no viewport scrolling, no themes beyond ANSI colors.
+/// - A key that acts (`Ctrl+O`, `Ctrl+T`, `Alt+P`, `Shift+Tab`, `?`) ends
+///   the prompt so the REPL can print, then re-prompts with the draft: the
+///   transcript cannot be rewritten, so the panel appears above a fresh
+///   prompt line and the cursor returns to the end of the draft rather than
+///   where it was. The `Ctrl+T` checklist therefore also prints above the
+///   prompt instead of replacing a row.
+/// - `jj` → Escape (`vimInsertModeRemaps`) is not implemented: rustyline 14
+///   exposes no `Cmd` a handler could use to leave vi insert mode.
+/// - Option/Alt keys (`Alt+P`, `Alt+T`) need the terminal to send Option as
+///   Meta; see `/terminal-setup`.
 /// - Reasoning/thinking deltas are not streamed to the terminal.
 /// - Desktop notifications (OSC 9/BEL) are not emitted on turn completion.
 /// - Tool-call detail is append-only replay (`/expand`, Ctrl+O): the
@@ -117,6 +130,9 @@ pub struct ReplState {
     /// Collapsed one-line tool-call rendering (default) vs the expanded
     /// two-line form; toggled in-turn with Ctrl+O.
     pub tool_detail: bool,
+    /// Whether the `Ctrl+T` checklist panel prints above each prompt. The
+    /// session's todo list itself lives in `todos`, shared with the engine.
+    pub show_tasks: bool,
     /// Rolling log of completed tool calls for `/expand` and the Ctrl+O
     /// replay, capped at [`crate::tool_summary::TOOL_LOG_CAP`].
     pub tool_log: Vec<crate::tool_summary::ToolCallRecord>,
@@ -308,6 +324,7 @@ impl ReplState {
             compact_threshold,
             agent_progress: HashMap::new(),
             tool_detail: false,
+            show_tasks: false,
             tool_log: Vec::new(),
             tool_log_turn: 0,
             subagent_cache: Vec::new(),

@@ -6,22 +6,22 @@
 //!
 //! Construction mirrors the retired `tui::run_tui` minus most
 //! terminal-mode concerns (no alt screen, no mouse; during a turn stdin
-//! goes non-canonical only for the Ctrl+O key tap — see `keys.rs`). See
-//! `state.rs` for the known-limitations note.
+//! goes non-canonical only for the key tap — see `keys.rs`). See `state.rs`
+//! for the known-limitations note.
 //!
-//! `Shift+Tab` at the prompt cycles the run mode
-//! (`AppMode::cycle_next`, bound in [`build_editor`]). Known limitations
-//! of that binding, recorded beside the behaviour it owns: the swap is
-//! applied once `readline` returns, so it surfaces as a confirmation line
-//! plus the `🚥` status segment at the *next* prompt rather than
-//! mid-line — rustyline owns the terminal while reading and offers no
-//! repaint hook; it lands on the next submitted turn, since the mode
-//! rides `Op::SendMessage`; and it is unavailable mid-turn, where the tap
-//! reports Ctrl+O only. Terminals that encode Shift+Tab as `CSI 1;2Z`
-//! (the kitty keyboard protocol and friends) are not decoded by rustyline
-//! 14, so the binding never fires there — Terminal.app, iTerm2, and tmux
-//! defaults send `ESC [ Z`.
+//! Prompt-time keys live in [`bindings`]. A key handler cannot print or
+//! reach `ReplState`, so it records what to do in a shared cell and the loop
+//! applies it when `readline` returns; the drafted line comes back as the
+//! next prompt's initial text, so no action key costs the user their
+//! typing. Known limitations of that arrangement, recorded beside the
+//! behaviour it owns: each action key re-renders the prompt (the transcript
+//! cannot be rewritten), and the restored cursor sits at the end of the
+//! draft rather than where it was. Terminals that encode `Shift+Tab` as
+//! `CSI 1;2Z` (the kitty keyboard protocol and friends) are not decoded by
+//! rustyline 14, so that binding never fires there — Terminal.app, iTerm2,
+//! and tmux defaults send `ESC [ Z`.
 
+pub mod bindings;
 pub mod commands;
 pub mod completion;
 pub mod keys;
@@ -32,17 +32,16 @@ pub mod status;
 
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context as _, Result};
 use colored::Colorize;
 
-use crate::app_state::{InitialInput, TuiOptions};
+use crate::app_state::{InitialInput, ReasoningEffort, TuiOptions};
 use crate::config::Config;
 use crate::core::engine::{EngineHost, spawn_engine};
 use crate::core::ops::Op;
 use crate::hooks::{HookEvent, MessageSubmitOutcome};
+use bindings::{Action, Bind, Bindings, KeyHandler, Shared as SharedBindings};
 use completion::ReplHelper;
 use state::ReplState;
 
@@ -154,10 +153,11 @@ pub async fn run_repl(
         state::resume_session(&mut state, resume_id).await?;
     }
 
-    // Shift+Tab presses recorded by the editor's BackTab binding; drained
-    // after each `readline` returns (see `apply_mode_cycles`).
-    let mode_cycles: ModeCycles = Arc::new(AtomicUsize::new(0));
-    let (mut editor, history_path) = build_editor(&state, mode_cycles.clone())?;
+    // Prompt-time keys record what they want here; the loop applies it once
+    // `readline` returns (see `bindings` for why the handler cannot act
+    // directly).
+    let bindings = Bindings::shared();
+    let (mut editor, mut history_path) = build_editor(&state, bindings.clone())?;
 
     // session_start hooks run before the first prompt (awaited — a hook
     // that loads state or sets up logging has finished by the time the
@@ -181,6 +181,11 @@ pub async fn run_repl(
     };
 
     let mut consecutive_interrupts = 0u32;
+    // The prompt text a key press or the external editor handed back.
+    let mut prefill: Option<String> = None;
+    // The edit mode the prompt was built with, so a `/config editor_mode`
+    // change can be applied by rebuilding it.
+    let mut editor_mode = state.settings.composer_vim_mode.clone();
     loop {
         if let Some(text) = pending_submit.take() {
             submit(&mut state, text).await?;
@@ -190,27 +195,86 @@ pub async fn run_repl(
             }
         }
 
+        if state.show_tasks {
+            print_task_list(&state).await;
+        }
+        // `/config editor_mode` changes the keymap rustyline was built with
+        // and the editor has no runtime setter, so the prompt is rebuilt
+        // here. History is re-read from its file, which every submitted line
+        // has already updated.
+        if state.settings.composer_vim_mode != editor_mode {
+            let _ = save_history(&mut editor, history_path.as_deref());
+            editor_mode = state.settings.composer_vim_mode.clone();
+            match build_editor(&state, bindings.clone()) {
+                Ok((rebuilt, rebuilt_history)) => {
+                    editor = rebuilt;
+                    history_path = rebuilt_history;
+                    println!("{}", format!("— editor mode: {editor_mode}").dimmed());
+                }
+                Err(err) => println!(
+                    "{}",
+                    format!("warning: could not rebuild the prompt: {err}").yellow()
+                ),
+            }
+        }
         println!("{}", status::status_line(&state));
         let _ = std::io::stdout().flush();
+        // The hint reports these without holding `ReplState`.
+        Bindings::lock(&bindings).set_display(state.tool_detail, state.show_tasks);
         let prompt = prompt_str();
-        let read = editor.readline(&prompt);
-        // Drained before `read` is matched so a Ctrl+C or Ctrl+D cannot
-        // strand a Shift+Tab the user already pressed.
-        apply_mode_cycles(&mut state, &mode_cycles);
+        let read = match prefill.take() {
+            Some(text) => editor.readline_with_initial(&prompt, ("", text.as_str())),
+            None => editor.readline(&prompt),
+        };
+        // Drained before `read` is matched, so a Ctrl+C or Ctrl+D cannot
+        // strand a key the user already pressed.
+        let actions = Bindings::lock(&bindings).drain();
+        let had_actions = !actions.is_empty();
+        let mut from_editor: Option<String> = None;
+        for action in actions {
+            if action == Action::EditInEditor {
+                let draft = Bindings::lock(&bindings).snapshot().to_string();
+                from_editor = Some(open_in_editor(&draft)?);
+                continue;
+            }
+            apply_action(&mut state, action).await?;
+        }
+        if let Some(text) = from_editor {
+            prefill = (!text.is_empty()).then_some(text);
+            continue;
+        }
         let line = match read {
             Ok(line) => line,
+            Err(rustyline::error::ReadlineError::Interrupted) if had_actions => {
+                // An action key ended the prompt on purpose: the draft it
+                // interrupted comes back untouched.
+                let draft = Bindings::lock(&bindings).snapshot().to_string();
+                prefill = (!draft.is_empty()).then_some(draft);
+                continue;
+            }
             Err(rustyline::error::ReadlineError::Interrupted) => {
+                // Ctrl+C clears the prompt; the draft is kept so `Up` can
+                // recall it (Claude Code's behaviour) and a second press
+                // ends the session.
+                let draft = Bindings::lock(&bindings).snapshot().to_string();
+                Bindings::lock(&bindings).keep_draft(draft);
                 consecutive_interrupts += 1;
                 if consecutive_interrupts >= 2 {
                     break;
                 }
-                println!("{}", "^C (press Ctrl+C again to quit)".dimmed());
+                println!(
+                    "{}",
+                    "^C (press Ctrl+C again to quit · Up recalls the draft)".dimmed()
+                );
                 continue;
             }
             Err(rustyline::error::ReadlineError::Eof) => break,
             Err(err) => return Err(anyhow::anyhow!("input error: {err}")),
         };
         consecutive_interrupts = 0;
+        // A `\` at the end of a line continued the prompt; it is a marker,
+        // not content.
+        let line = completion::strip_line_continuations(&line);
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -273,6 +337,197 @@ fn prompt_str() -> String {
     "❯ ".cyan().to_string()
 }
 
+/// Carry out one key press. Everything a handler could not do itself lands
+/// here: printing, engine traffic, and the settings a switch persists.
+async fn apply_action(state: &mut ReplState, action: Action) -> Result<()> {
+    match action {
+        Action::CycleMode => {
+            state.cycle_mode();
+            println!(
+                "{}",
+                format!("switched to {} mode (Shift+Tab cycles)", state.mode.label()).dimmed()
+            );
+        }
+        Action::ToggleDetail => {
+            state.tool_detail = !state.tool_detail;
+            if state.tool_detail {
+                println!("{}", "— tool detail expanded (Ctrl+O to collapse)".dimmed());
+                render::replay_turn_tool_detail(state);
+            } else {
+                println!("{}", "— tool detail collapsed (Ctrl+O to expand)".dimmed());
+            }
+        }
+        Action::ToggleTaskList => {
+            state.show_tasks = !state.show_tasks;
+            if state.show_tasks {
+                print_task_list(state).await;
+            } else {
+                println!("{}", "— task list hidden (Ctrl+T)".dimmed());
+            }
+        }
+        Action::Stashed => println!(
+            "{}",
+            "— draft stashed (Ctrl+S on an empty prompt brings it back)".dimmed()
+        ),
+        Action::StashHint => println!("{}", "— nothing stashed yet".dimmed()),
+        Action::DraftCleared => println!("{}", "— draft cleared (Up recalls it)".dimmed()),
+        Action::ExitHint => println!(
+            "{}",
+            "— press Ctrl+D again within a second to quit".dimmed()
+        ),
+        Action::StopAllHint => println!(
+            "{}",
+            "— press Ctrl+X Ctrl+K again within 3 seconds to stop all background work".dimmed()
+        ),
+        Action::StopBackground => match state.engine.as_ref() {
+            Some(engine) => {
+                let _ = engine.send(Op::CancelAllBackgroundTasks).await;
+            }
+            None => println!("{}", "— no engine attached".dimmed()),
+        },
+        Action::CycleModel => cycle_model(state).await,
+        Action::ToggleThinking => toggle_thinking(state),
+        Action::Help => {
+            println!("{}", "keyboard shortcuts:".bold());
+            println!("{}", bindings::help_panel().dimmed());
+        }
+        // Handled by the caller, which has the prompt to restore.
+        Action::EditInEditor => {}
+    }
+    Ok(())
+}
+
+/// `Alt+P`: switch between the session's model and the configured default.
+///
+/// Claude Code opens a model picker here. The line REPL has no picker, and
+/// the provider's model list is only knowable by asking the endpoint (which
+/// `/models` does) — so this toggles between the two ids the session already
+/// knows and points at `/model` when there is nothing to toggle to.
+async fn cycle_model(state: &mut ReplState) {
+    let current = state.model_selection_for_persistence();
+    let configured = state
+        .config
+        .default_text_model
+        .clone()
+        .filter(|name| !name.trim().is_empty() && *name != current);
+    match configured {
+        Some(next) => {
+            state.set_model_selection(next.clone());
+            if let Ok(engine) = state.engine() {
+                let _ = engine
+                    .send(Op::SetModel {
+                        model: next.clone(),
+                    })
+                    .await;
+            }
+            println!(
+                "{}",
+                format!("model → {next} (Alt+P toggles · /model picks any id)").dimmed()
+            );
+        }
+        None => println!(
+            "{}",
+            format!(
+                "model {} — only one id configured; /model <id> switches",
+                state.model_display_label()
+            )
+            .dimmed()
+        ),
+    }
+}
+
+/// `Alt+T`: extended thinking on or off. `Off` and `High` are the two
+/// behaviourally distinct stops the effort ring is built around; the finer
+/// tiers stay on `/effort` and `/config reasoning_effort`.
+fn toggle_thinking(state: &mut ReplState) {
+    let next = if state.reasoning_effort == ReasoningEffort::Off {
+        ReasoningEffort::High
+    } else {
+        ReasoningEffort::Off
+    };
+    state.reasoning_effort = next;
+    state.update_model_compaction_budget();
+    println!(
+        "{}",
+        format!("extended thinking {} (Alt+T)", next.short_label()).dimmed()
+    );
+}
+
+/// The `Ctrl+T` panel: the model's own checklist, which otherwise only
+/// surfaces as collapsed tool lines.
+async fn print_task_list(state: &ReplState) {
+    let snapshot = state.todos.lock().await.snapshot();
+    if snapshot.items.is_empty() {
+        println!(
+            "{}",
+            "— no tasks yet; the model fills this with its checklist tools".dimmed()
+        );
+        return;
+    }
+    println!(
+        "{}",
+        format!(
+            "tasks · {} item(s) · {}% done — Ctrl+T hides",
+            snapshot.items.len(),
+            snapshot.completion_pct
+        )
+        .bold()
+    );
+    for item in &snapshot.items {
+        let marker = match item.status {
+            codesmith_agent_runtime::tool_state::todo::TodoStatus::Completed => "✓".green(),
+            codesmith_agent_runtime::tool_state::todo::TodoStatus::InProgress => "▸".cyan(),
+            codesmith_agent_runtime::tool_state::todo::TodoStatus::Pending => "·".dimmed(),
+        };
+        println!("  {marker} {}", item.content);
+    }
+}
+
+/// `Ctrl+G` / `Ctrl+X Ctrl+E`: hand the draft to `$VISUAL`/`$EDITOR`.
+///
+/// The editor runs with the terminal restored: rustyline is between prompts
+/// here, so nothing is holding raw mode. A missing editor binary is a
+/// printed notice, not a lost draft — the caller puts the original text
+/// back.
+fn open_in_editor(draft: &str) -> Result<String> {
+    use std::io::Write as _;
+
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| {
+            if cfg!(windows) {
+                "notepad".to_string()
+            } else {
+                "vi".to_string()
+            }
+        });
+    let mut file = tempfile::Builder::new()
+        .prefix("codesmith-prompt-")
+        .suffix(".md")
+        .tempfile()
+        .context("creating the editor buffer")?;
+    file.write_all(draft.as_bytes())
+        .context("writing the editor buffer")?;
+    file.flush().context("flushing the editor buffer")?;
+    let path = file.path().to_path_buf();
+
+    let status = std::process::Command::new(&editor)
+        .arg(&path)
+        .status()
+        .with_context(|| format!("running {editor}"))
+        .map_err(|err| anyhow::anyhow!("{err} (set $VISUAL or $EDITOR)"))?;
+    if !status.success() {
+        println!(
+            "{}",
+            format!("— {editor} exited with {status}; draft unchanged").yellow()
+        );
+        return Ok(draft.to_string());
+    }
+    let edited = std::fs::read_to_string(&path).context("reading the editor buffer back")?;
+    println!("{}", format!("— returned from {editor}").dimmed());
+    Ok(edited)
+}
+
 fn print_banner(state: &ReplState) {
     println!(
         "{} {} — {} · {} mode · preset {}",
@@ -285,7 +540,7 @@ fn print_banner(state: &ReplState) {
     println!(
         "{}",
         format!(
-            "workspace {} · /help lists commands (Tab completes, Shift+Tab cycles the mode) · Ctrl+C cancels a turn · Ctrl+O toggles tool detail",
+            "workspace {} · /help lists commands (Tab completes, Shift+Tab cycles the mode) · ? shows the keyboard shortcuts · Ctrl+C cancels a turn",
             state.workspace.display()
         )
         .dimmed()
@@ -297,75 +552,91 @@ fn print_banner(state: &ReplState) {
 /// typing `/` and pressing Tab used to do nothing at all.
 type ReplEditor = rustyline::Editor<ReplHelper, rustyline::history::DefaultHistory>;
 
-/// Shift+Tab presses recorded while a prompt was open.
-type ModeCycles = Arc<AtomicUsize>;
-
-/// The Shift+Tab binding. A rustyline key handler gets only the input
-/// state and returns a built-in `Cmd` — never application state — so this
-/// counts the press and the main loop applies it once `readline` returns.
+/// Every prompt-time binding, as `(key sequence, action)`. The decision
+/// table itself lives in [`bindings::decide`]; this is only the key map.
 ///
-/// Registering it also takes BackTab away from rustyline's default
-/// `Cmd::CompleteBackward`: custom bindings are looked up before the
-/// default keymap, so completion loses only its reverse candidate walk
-/// (`Tab` still completes forward and lists the candidates).
-struct ShiftTabCycler {
-    cycles: ModeCycles,
-}
+/// Registering `Shift+Tab` also takes BackTab away from rustyline's default
+/// `Cmd::CompleteBackward`: custom bindings are looked up before the default
+/// keymap, so completion loses only its reverse candidate walk (`Tab` still
+/// completes forward and lists the candidates).
+fn key_bindings() -> Vec<(rustyline::Event, Bind)> {
+    use rustyline::{Event, KeyCode, KeyEvent, Modifiers};
 
-impl rustyline::ConditionalEventHandler for ShiftTabCycler {
-    fn handle(
-        &self,
-        _evt: &rustyline::Event,
-        _n: rustyline::RepeatCount,
-        _positive: bool,
-        _ctx: &rustyline::EventContext,
-    ) -> Option<rustyline::Cmd> {
-        self.cycles.fetch_add(1, Ordering::SeqCst);
-        Some(rustyline::Cmd::Noop)
+    fn one(code: KeyCode, modifiers: Modifiers) -> Event {
+        Event::KeySeq(vec![KeyEvent(code, modifiers)])
     }
-}
+    fn ctrl(c: char) -> Event {
+        one(KeyCode::Char(c), Modifiers::CTRL)
+    }
+    fn alt(c: char) -> Event {
+        one(KeyCode::Char(c), Modifiers::ALT)
+    }
+    fn ctrl_pair(first: char, second: char) -> Event {
+        Event::KeySeq(vec![
+            KeyEvent(KeyCode::Char(first), Modifiers::CTRL),
+            KeyEvent(KeyCode::Char(second), Modifiers::CTRL),
+        ])
+    }
 
-/// Walk the mode ring once per recorded Shift+Tab and report where it
-/// landed. No-op when the prompt returned without one.
-///
-/// The notice is dimmed rather than highlighted: the `🚥` status segment
-/// above the prompt is the indicator, this line only says which way the
-/// key just moved it.
-fn apply_mode_cycles(state: &mut ReplState, cycles: &ModeCycles) {
-    let presses = cycles.swap(0, Ordering::SeqCst);
-    if presses == 0 {
-        return;
-    }
-    for _ in 0..presses {
-        state.cycle_mode();
-    }
-    println!(
-        "{}",
-        format!("switched to {} mode (Shift+Tab cycles)", state.mode.label()).dimmed()
-    );
+    vec![
+        (one(KeyCode::BackTab, Modifiers::NONE), Bind::ShiftTab),
+        (one(KeyCode::Esc, Modifiers::NONE), Bind::Esc),
+        (ctrl('d'), Bind::CtrlD),
+        (ctrl('s'), Bind::CtrlS),
+        (ctrl('o'), Bind::CtrlO),
+        (ctrl('t'), Bind::CtrlT),
+        (ctrl('g'), Bind::CtrlG),
+        (ctrl_pair('x', 'k'), Bind::StopAll),
+        (alt('p'), Bind::AltP),
+        (alt('t'), Bind::AltT),
+        // Newline: Ctrl+J reaches every terminal; the modifier forms only
+        // fire where the terminal reports the modifier (see bindings.rs).
+        (ctrl('j'), Bind::Newline),
+        (one(KeyCode::Enter, Modifiers::ALT), Bind::Newline),
+        (one(KeyCode::Enter, Modifiers::SHIFT), Bind::Newline),
+        (one(KeyCode::Up, Modifiers::NONE), Bind::RecallDraft),
+        (one(KeyCode::Char('?'), Modifiers::NONE), Bind::Question),
+    ]
 }
 
 fn build_editor(
     state: &ReplState,
-    mode_cycles: ModeCycles,
+    bindings: SharedBindings,
 ) -> Result<(ReplEditor, Option<std::path::PathBuf>)> {
     // List mode, not in-place cycling: one Tab completes to the longest
     // common prefix, a second Tab prints every match in columns. The prompt
     // limit is raised past the registry size (77 names today) so a growing
     // command set never turns Tab into a "display all N?" question.
-    let config = rustyline::Config::builder()
+    let mut builder = rustyline::Config::builder()
         .completion_type(rustyline::CompletionType::List)
         .completion_prompt_limit(200)
-        .build();
+        // `editor_mode = "vim"` in settings.toml (or `/config editor_mode`)
+        // selects rustyline's vi keymap — motions, operators, text objects.
+        .edit_mode(
+            if state.settings.composer_vim_mode.eq_ignore_ascii_case("vim") {
+                rustyline::EditMode::Vi
+            } else {
+                rustyline::EditMode::Emacs
+            },
+        )
+        // The setting existed (documented as the input-history cap) but was
+        // never read: rustyline's default of 100 silently won. Zero would
+        // disable history outright, so the floor is one entry.
+        .bracketed_paste(state.settings.bracketed_paste);
+    if let Ok(with_history) = builder
+        .clone()
+        .max_history_size(state.settings.max_input_history.max(1))
+    {
+        builder = with_history;
+    }
+    let config = builder.build();
     let mut editor = ReplEditor::with_config(config)?;
-    // The returned handler is rustyline's default `Cmd::CompleteBackward`
-    // for BackTab — the binding this replaces.
-    let _ = editor.bind_sequence(
-        rustyline::KeyEvent(rustyline::KeyCode::BackTab, rustyline::Modifiers::NONE),
-        rustyline::EventHandler::Conditional(Box::new(ShiftTabCycler {
-            cycles: mode_cycles,
-        })),
-    );
+    for (key, bind) in key_bindings() {
+        let _ = editor.bind_sequence(
+            key,
+            rustyline::EventHandler::Conditional(Box::new(KeyHandler::new(bind, bindings.clone()))),
+        );
+    }
     // `@path` completion walks the workspace at most once per
     // `path_index::TTL`, bounded by the two mention settings (which were
     // written but never read until this wiring).
@@ -377,20 +648,39 @@ fn build_editor(
     editor.set_helper(Some(ReplHelper::new(
         commands::user_cmd_store::user_command_names(Some(&state.workspace)),
         paths,
+        bindings,
+        Some(state.todos.clone()),
     )));
-    let history = history_path();
+    let history = history_path(&state.workspace);
     if let Some(history) = history.as_ref() {
         if let Some(parent) = history.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if editor.load_history(history).is_err() {
-            // First run — no history yet.
+        if editor.load_history(history).is_err()
+            && let Some(legacy) = legacy_history_path()
+        {
+            // Pre-upgrade history lived in one file for every workspace;
+            // read it once so the first project after the upgrade keeps its
+            // recall. The old file is left alone.
+            let _ = editor.load_history(&legacy);
         }
     }
     Ok((editor, history))
 }
 
-fn history_path() -> Option<std::path::PathBuf> {
+/// Per-workspace history file. Claude Code keeps input history per working
+/// directory; a single shared file mixed unrelated projects' prompts into
+/// every session's Up-arrow recall.
+fn history_path(workspace: &std::path::Path) -> Option<std::path::PathBuf> {
+    let home = crate::config::effective_home_dir()?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(&workspace.to_string_lossy().as_ref(), &mut hasher);
+    let key = std::hash::Hasher::finish(&hasher);
+    Some(home.join("history").join(format!("{key:016x}")))
+}
+
+/// The pre-per-project history file, read once when a workspace has none.
+fn legacy_history_path() -> Option<std::path::PathBuf> {
     crate::config::effective_home_dir().map(|home| home.join("history"))
 }
 

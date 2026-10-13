@@ -68,6 +68,7 @@ fn show_single_setting(state: &ReplState, key: &str) {
         "reasoning_effort" | "effort" => Some(state.reasoning_effort_display_label()),
         "show_thinking" | "thinking" => Some(state.show_thinking.to_string()),
         "is_simple" | "simple" => Some(state.is_simple.to_string()),
+        "editor_mode" | "composer_vim_mode" => Some(state.settings.composer_vim_mode.clone()),
         "preset" | "mode" => Some(
             state
                 .active_preset
@@ -189,6 +190,31 @@ pub fn set_config_value(state: &mut ReplState, key: &str, value: &str, persist: 
             println!(
                 "{} use /preset {value} — the dedicated command handles tiers",
                 "→".cyan()
+            );
+        }
+        "editor_mode" | "composer_vim_mode" => {
+            let mode = match value.trim().to_ascii_lowercase().as_str() {
+                "vim" | "vi" => "vim",
+                "emacs" | "normal" | "default" => "normal",
+                other => {
+                    println!(
+                        "{} unknown editor mode {other:?} — usage: /config editor_mode vim|normal",
+                        "✗".red()
+                    );
+                    return;
+                }
+            };
+            state.settings.composer_vim_mode = mode.to_string();
+            if persist {
+                persist_setting_string("composer_vim_mode", mode);
+            }
+            println!(
+                "editor mode = {mode} (the prompt is rebuilt at the next line{}).",
+                if persist {
+                    ""
+                } else {
+                    "; add --save to keep it"
+                }
             );
         }
         "reasoning_effort" | "effort" => {
@@ -415,6 +441,14 @@ pub fn status_line() {
     );
 }
 
+/// `/keybindings` — the prompt-time key table. Read-only: the bindings are
+/// compiled in (see `interactive::bindings` for what is and is not
+/// rebindable).
+pub fn keybindings() {
+    println!("{}", "keyboard shortcuts:".bold());
+    println!("{}", crate::interactive::bindings::help_panel().dimmed());
+}
+
 fn parse_bool(value: &str) -> Option<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
         "true" | "on" | "1" | "yes" => Some(true),
@@ -431,6 +465,7 @@ fn persist_setting_string(key: &str, value: &str) {
                 "is_simple" => settings.is_simple = value == "true",
                 "locale" => settings.locale = value.to_string(),
                 "reasoning_effort" => settings.reasoning_effort = Some(value.to_string()),
+                "composer_vim_mode" => settings.composer_vim_mode = value.to_string(),
                 _ => {}
             }
             if let Err(err) = settings.save() {
