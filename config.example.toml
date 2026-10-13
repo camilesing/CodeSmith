@@ -766,9 +766,18 @@ exponential_base = 2.0
 # ─────────────────────────────────────────────────────────────────────────────────
 # Context Compaction
 # ─────────────────────────────────────────────────────────────────────────────────
-# Auto-compaction is a saved UI setting edited with `/config` (`auto_compact`).
-# There is no config-file `[compaction]` table yet; detailed thresholds are
-# chosen by the TUI from the active model/context budget.
+# Auto-compaction is a saved UI setting edited with `/config` (`auto_compact`)
+# or `/autocompact [auto|<tokens>]`, which also pins the token window for the
+# session. There is no config-file `[compaction]` table yet; the default
+# threshold comes from the active model's context budget.
+#
+# Other saved UI settings the REPL reads live in
+# `~/.config/deepseek/settings.toml` (documented in docs/CONFIGURATION.md):
+# `composer_vim_mode` (`/config editor_mode vim`), `max_input_history`
+# (per-workspace history cap), `bracketed_paste`, `mention_walk_depth` /
+# `mention_menu_limit` (`@`-completion), `respond_to_shell_commands`
+# (shell mode), `prompt_color` (`/color`) and `statusline_command`
+# (`/statusline`).
 
 # Append-only Flash seams are experimental and opt-in while the v0.7.5
 # context/cache audit validates prefix-cache behavior.

@@ -704,7 +704,21 @@ codesmith 还将用户偏好存储在：
   Work、Tasks、Agents，然后是可选的 Context，并将 Work 用作唯一的
   安静空状态。`hidden` 完全禁用右侧边栏，使原生终端选区无法从会话
   记录跨入边栏边框。接受旧版 `plan` 和 `todos` 值并归一化为 `work`。
-- `max_input_history`（保存的已提交输入历史条目数，默认 `100`；在
+- `respond_to_shell_commands`（on/off，默认 on）：`!命令`（shell 模式）
+  是否启动一轮、让模型基于命令输出作答。`off` 只把这次运行记进对话，不询问模型。
+- `prompt_color`（`red`、`blue`、`green`、`yellow`、`purple`、`orange`、
+  `pink`、`cyan` 之一；默认未设置）：提示符颜色，覆盖主题强调色。用
+  `/color <name>` 设置，`/color default` 清除。
+- `statusline_command`（shell 命令，默认未设置）：其 stdout 首行会追加到状态行，
+  最多每 5 秒刷新一次，1.5 秒后终止。它**不经沙箱、不做询问**地运行，因为那是
+  你自己的命令 —— 与 shell 模式同一条规则。用 `/statusline <命令>` 设置，
+  `/statusline off` 清除。
+- `composer_vim_mode`（`normal`、`vim`；默认 `normal`）：`vim` 把提示符切换到
+  vi 键位。用 `/config editor_mode vim` 设置；切换在下一个提示符生效
+  （提示符会重建）。
+- `max_input_history`（保存的已提交输入历史条目数，默认 `500`）。历史按
+  **工作区**保存（`~/.codesmith/history/<workspace>`）；升级前那份单一文件
+  `~/.codesmith/history` 会在某工作区还没有自己的历史时读取一次，之后留在原地。
   `/config` 中显示为 `max_history`；被清除的草稿也会在本地保留，
   用于输入框历史搜索）
 - `default_model`（模型名称覆盖）
