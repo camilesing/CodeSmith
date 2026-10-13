@@ -426,22 +426,6 @@ pub fn lsp(state: &ReplState) {
 }
 
 /// `/theme` — theming is a TUI concept; the REPL inherits terminal colors.
-pub fn theme() {
-    println!(
-        "{}",
-        "themes were a TUI feature — the REPL uses your terminal's own colors. Set theme = \"…\" in ~/.codesmith/settings.toml if you return to a fullscreen frontend.".dimmed()
-    );
-}
-
-/// `/statusline` — the REPL status line is a fixed seven-item layout.
-pub fn status_line() {
-    println!(
-        "{}",
-        "the REPL status line is fixed: state · preset · ctx% · mode · agents · model · 🧠 effort · version"
-            .dimmed()
-    );
-}
-
 /// `/keybindings` — the prompt-time key table. Read-only: the bindings are
 /// compiled in (see `interactive::bindings` for what is and is not
 /// rebindable).
@@ -622,7 +606,28 @@ fn parse_bool(value: &str) -> Option<bool> {
     }
 }
 
-fn persist_setting_string(key: &str, value: &str) {
+/// Persist an `Option<String>` settings key; `None` clears it.
+///
+/// A companion to [`persist_setting_string`] for the keys whose absent state
+/// is meaningful (`prompt_color` follows the theme, `statusline_command` is
+/// off), where writing an empty string would be a different value.
+pub(crate) fn persist_setting(key: &str, value: Option<&str>) {
+    match Settings::load() {
+        Ok(mut settings) => {
+            match key {
+                "prompt_color" => settings.prompt_color = value.map(str::to_string),
+                "statusline_command" => settings.statusline_command = value.map(str::to_string),
+                _ => {}
+            }
+            if let Err(err) = settings.save() {
+                println!("{} could not persist {key}: {err}", "✗".red());
+            }
+        }
+        Err(err) => println!("{} could not load settings: {err}", "✗".red()),
+    }
+}
+
+pub(crate) fn persist_setting_string(key: &str, value: &str) {
     match Settings::load() {
         Ok(mut settings) => {
             match key {
@@ -632,6 +637,7 @@ fn persist_setting_string(key: &str, value: &str) {
                 "reasoning_effort" => settings.reasoning_effort = Some(value.to_string()),
                 "composer_vim_mode" => settings.composer_vim_mode = value.to_string(),
                 "auto_compact" => settings.auto_compact = value == "true",
+                "theme" => settings.theme = value.to_string(),
                 _ => {}
             }
             if let Err(err) = settings.save() {

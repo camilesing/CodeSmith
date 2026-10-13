@@ -29,6 +29,8 @@ pub mod path_index;
 pub mod render;
 pub mod state;
 pub mod status;
+pub mod statusline;
+pub mod theme;
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -211,6 +213,7 @@ pub async fn run_repl(
         if state.show_tasks {
             print_task_list(&state).await;
         }
+        refresh_statusline(&mut state).await;
         // `/config editor_mode` changes the keymap rustyline was built with
         // and the editor has no runtime setter, so the prompt is rebuilt
         // here. History is re-read from its file, which every submitted line
@@ -242,7 +245,7 @@ pub async fn run_repl(
         if let Some(draft) = state.turn_end_draft.take() {
             prefill = Some(draft);
         }
-        let prompt = prompt_str();
+        let prompt = prompt_str(&state);
         let read = match prefill.take() {
             Some(text) => editor.readline_with_initial(&prompt, ("", text.as_str())),
             None => editor.readline(&prompt),
@@ -365,8 +368,262 @@ pub async fn run_repl(
     Ok(())
 }
 
-fn prompt_str() -> String {
-    "❯ ".cyan().to_string()
+/// The prompt marker. The accent comes from the theme (and `/color`), so the
+/// prompt is the one place a line REPL can show a theme at all.
+/// `/doctor [json]` — the same setup checks the CLI runs, inside the REPL.
+///
+/// Reuses `main_root::run_doctor` rather than reimplementing the checks: the
+/// doctor's whole value is that there is one of it.
+pub(crate) async fn doctor_command(state: &ReplState, arg: &str) {
+    if arg.trim().eq_ignore_ascii_case("json") {
+        if let Err(err) = crate::main_root::run_doctor_json(
+            &state.config,
+            &state.workspace,
+            state.config_path.as_deref(),
+        ) {
+            println!("{} doctor --json failed: {err}", "✗".red());
+        }
+        return;
+    }
+    crate::main_root::run_doctor(
+        &state.config,
+        &state.workspace,
+        state.config_path.as_deref(),
+    )
+    .await;
+}
+
+/// `/debug [on|off|status]` — verbose diagnostics for this session.
+///
+/// The flag is the one `logging::set_verbose` already exposed (the retired
+/// TUI's verbose toggle); the session transcript is the log a `/debug`
+/// investigation reads, so its path is printed with the status.
+pub(crate) fn debug_command(state: &ReplState, arg: &str) {
+    match arg.trim().to_ascii_lowercase().as_str() {
+        "on" => {
+            crate::logging::set_verbose(true);
+            println!("{}", "verbose diagnostics on (this session)".green());
+        }
+        "off" => {
+            crate::logging::set_verbose(false);
+            println!("{}", "verbose diagnostics off".dimmed());
+        }
+        "" | "status" => {}
+        other => {
+            println!(
+                "{} unknown argument {other:?} — usage: /debug [on|off|status]",
+                "✗".red()
+            );
+            return;
+        }
+    }
+    println!(
+        "verbose: {}",
+        if crate::logging::is_verbose() {
+            "on"
+        } else {
+            "off"
+        }
+    );
+    match state.current_session_id.as_deref() {
+        Some(id) => println!("session log: {id} — /export writes the transcript to a file"),
+        None => println!("session log: not started yet"),
+    }
+    println!(
+        "{}",
+        "level logging comes from --debug / CODESMITH_LOG, which are startup flags; /doctor checks the setup this session is running with"
+            .dimmed()
+    );
+}
+
+/// `/copy [N]` — put the Nth-from-last assistant reply on the clipboard.
+///
+/// Claude Code shows a block picker when the reply has code blocks; the
+/// clipboard here takes the whole reply (the picker needs a fullscreen
+/// renderer). `w`-to-file, one of its options, has no equivalent — `/export`
+/// writes the transcript instead.
+pub(crate) fn copy_command(state: &ReplState, arg: &str) {
+    let index: usize = match arg.trim() {
+        "" => 1,
+        other => match other.parse() {
+            Ok(n) if n > 0 => n,
+            _ => {
+                println!("{} usage: /copy [N]", "✗".red());
+                return;
+            }
+        },
+    };
+    let replies: Vec<String> = state
+        .api_messages
+        .iter()
+        .filter(|message| message.role == "assistant")
+        .filter_map(|message| {
+            let text: String = message
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    crate::models::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            (!text.trim().is_empty()).then_some(text)
+        })
+        .collect();
+    let Some(text) = replies.iter().rev().nth(index - 1) else {
+        println!(
+            "{} no reply #{index} in this session ({} assistant repl(ies) so far)",
+            "✗".red(),
+            replies.len()
+        );
+        return;
+    };
+    match crate::clipboard::copy_text(text) {
+        Ok(()) => println!(
+            "{}",
+            format!("copied answer #{index} ({} chars)", text.chars().count()).dimmed()
+        ),
+        Err(err) => println!("{} {err}", "✗".red()),
+    }
+}
+
+/// `/theme [name|list]` — the accent the prompt and status dot use.
+pub(crate) fn theme_command(state: &mut ReplState, arg: &str, persist: bool) {
+    let value = arg.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("list") {
+        println!("theme: {}", state.settings.theme);
+        println!("  {}", theme::THEME_NAMES.join(" · "));
+        println!(
+            "{}",
+            "a theme picks the prompt accent; status segments keep their semantic colors".dimmed()
+        );
+        return;
+    }
+    if !theme::THEME_NAMES.contains(&value.to_ascii_lowercase().as_str()) {
+        println!(
+            "{} unknown theme {value:?} — one of: {}",
+            "✗".red(),
+            theme::THEME_NAMES.join("|")
+        );
+        return;
+    }
+    state.settings.theme = value.to_ascii_lowercase();
+    if persist {
+        commands::config_cmds::persist_setting_string("theme", value);
+    }
+    println!(
+        "theme = {value}{}",
+        if persist { "" } else { " (this session)" }
+    );
+}
+
+/// `/color [name|default]` — the prompt bar's color alone.
+pub(crate) fn color_command(state: &mut ReplState, arg: &str, persist: bool) {
+    let value = arg.trim();
+    if value.is_empty() {
+        println!(
+            "prompt color: {}",
+            state.settings.prompt_color.as_deref().unwrap_or("(theme)")
+        );
+        println!("  {}", theme::COLOR_NAMES.join(" · "));
+        return;
+    }
+    if value.eq_ignore_ascii_case("default") {
+        state.settings.prompt_color = None;
+        if persist {
+            commands::config_cmds::persist_setting("prompt_color", None);
+        }
+        println!("prompt color reset to the theme's accent");
+        return;
+    }
+    if theme::parse_color(value).is_none() {
+        println!(
+            "{} unknown color {value:?} — one of: {}",
+            "✗".red(),
+            theme::COLOR_NAMES.join("|")
+        );
+        return;
+    }
+    state.settings.prompt_color = Some(value.to_ascii_lowercase());
+    if persist {
+        commands::config_cmds::persist_setting("prompt_color", Some(value));
+    }
+    println!(
+        "prompt color = {value}{}",
+        if persist { "" } else { " (this session)" }
+    );
+}
+
+/// `/statusline [command|off]` — a shell command whose output joins the
+/// status line.
+pub(crate) fn statusline_command(state: &mut ReplState, arg: &str) {
+    let value = arg.trim();
+    if value.is_empty() {
+        match state.settings.statusline_command.as_deref() {
+            Some(command) => println!("statusline command: {command}"),
+            None => println!(
+                "{}",
+                "no statusline command — /statusline <command> appends its stdout to the status line"
+                    .dimmed()
+            ),
+        }
+        return;
+    }
+    if value.eq_ignore_ascii_case("off") {
+        state.settings.statusline_command = None;
+        state.statusline_text = None;
+        commands::config_cmds::persist_setting("statusline_command", None);
+        println!("statusline command cleared");
+        return;
+    }
+    state.settings.statusline_command = Some(value.to_string());
+    commands::config_cmds::persist_setting("statusline_command", Some(value));
+    println!("statusline command set — its stdout appears on the next status line");
+}
+
+/// Refresh the statusline segment when its command is due.
+///
+/// Runs under `spawn_blocking` with a hard timeout: a status command that
+/// hangs must not hang the prompt, and the cached text is what the renderer
+/// prints in the meantime.
+async fn refresh_statusline(state: &mut ReplState) {
+    let Some(command) = state.settings.statusline_command.clone() else {
+        state.statusline_text = None;
+        return;
+    };
+    if !crate::interactive::statusline::is_due() {
+        return;
+    }
+    let output = tokio::time::timeout(
+        STATUSLINE_TIMEOUT,
+        tokio::task::spawn_blocking(move || crate::interactive::statusline::run(&command)),
+    )
+    .await;
+    match output {
+        Ok(Ok(Ok(text))) => {
+            state.statusline_text = Some(text);
+        }
+        Ok(Ok(Err(err))) => {
+            state.statusline_text = Some(format!("✗ {err}"));
+        }
+        Ok(Err(join)) => {
+            state.statusline_text = Some(format!("✗ statusline task failed: {join}"));
+        }
+        Err(_) => {
+            state.statusline_text = Some("✗ statusline command timed out".to_string());
+        }
+    }
+}
+
+/// How long a statusline command may run before its output is abandoned.
+const STATUSLINE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+fn prompt_str(state: &ReplState) -> String {
+    let accent = theme::accent(
+        &state.settings.theme,
+        state.settings.prompt_color.as_deref(),
+    );
+    "❯ ".color(accent.prompt).to_string()
 }
 
 /// Carry out one key press. Everything a handler could not do itself lands

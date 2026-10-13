@@ -150,6 +150,9 @@ pub struct ReplState {
     /// Skill names as first discovered this session, so `/reload-skills` can
     /// say what appeared or disappeared since startup.
     pub skill_baseline: Option<Vec<String>>,
+    /// Output of `settings.statusline_command`, refreshed by the REPL loop
+    /// (the renderer stays synchronous and just prints what is here).
+    pub statusline_text: Option<String>,
     /// Rolling log of completed tool calls for `/expand` and the Ctrl+O
     /// replay, capped at [`crate::tool_summary::TOOL_LOG_CAP`].
     pub tool_log: Vec<crate::tool_summary::ToolCallRecord>,
@@ -345,6 +348,7 @@ impl ReplState {
             queued_messages: Vec::new(),
             turn_end_draft: None,
             skill_baseline: None,
+            statusline_text: None,
             tool_log: Vec::new(),
             tool_log_turn: 0,
             subagent_cache: Vec::new(),

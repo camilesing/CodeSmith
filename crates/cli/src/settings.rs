@@ -100,6 +100,12 @@ pub struct Settings {
     pub theme: String,
     /// Optional main TUI background color as a 6-digit hex RGB value.
     pub background_color: Option<String>,
+    /// Prompt-bar color (`/color`), one of the eight names Claude Code
+    /// accepts. `None` follows the theme's accent.
+    pub prompt_color: Option<String>,
+    /// A shell command whose stdout is appended to the status line
+    /// (`/statusline`), refreshed at most every [`STATUSLINE_TTL`] seconds.
+    pub statusline_command: Option<String>,
     /// Composer layout density: compact, comfortable, spacious
     pub composer_density: String,
     /// Show a border around the composer input area
@@ -199,6 +205,8 @@ impl Default for Settings {
             locale: "auto".to_string(),
             theme: "terminal".to_string(),
             background_color: None,
+            prompt_color: None,
+            statusline_command: None,
             composer_density: "comfortable".to_string(),
             composer_border: true,
             composer_vim_mode: "normal".to_string(),

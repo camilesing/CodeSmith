@@ -302,11 +302,27 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             false
         }
         Command::Theme => {
-            config_cmds::theme();
+            crate::interactive::theme_command(state, &arg_str, has_save_flag(&arg_str));
             false
         }
         Command::Statusline => {
-            config_cmds::status_line();
+            crate::interactive::statusline_command(state, &arg_str);
+            false
+        }
+        Command::Color => {
+            crate::interactive::color_command(state, &arg_str, has_save_flag(&arg_str));
+            false
+        }
+        Command::Doctor => {
+            crate::interactive::doctor_command(state, &arg_str).await;
+            false
+        }
+        Command::Debug => {
+            crate::interactive::debug_command(state, &arg_str);
+            false
+        }
+        Command::Copy => {
+            crate::interactive::copy_command(state, &arg_str);
             false
         }
         Command::Keybindings => {
@@ -621,6 +637,12 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             false
         }
     }
+}
+
+/// Whether an argument string asks to persist (`--save` / `-s`).
+fn has_save_flag(arg: &str) -> bool {
+    arg.split_whitespace()
+        .any(|part| part == "--save" || part == "-s")
 }
 
 /// Split a trailing `--save` / `-s` off an argument string.
