@@ -25,6 +25,7 @@
 pub mod commands;
 pub mod completion;
 pub mod keys;
+pub mod path_index;
 pub mod render;
 pub mod state;
 pub mod status;
@@ -156,7 +157,7 @@ pub async fn run_repl(
     // Shift+Tab presses recorded by the editor's BackTab binding; drained
     // after each `readline` returns (see `apply_mode_cycles`).
     let mode_cycles: ModeCycles = Arc::new(AtomicUsize::new(0));
-    let (mut editor, history_path) = build_editor(&state.workspace, mode_cycles.clone())?;
+    let (mut editor, history_path) = build_editor(&state, mode_cycles.clone())?;
 
     // session_start hooks run before the first prompt (awaited — a hook
     // that loads state or sets up logging has finished by the time the
@@ -345,7 +346,7 @@ fn apply_mode_cycles(state: &mut ReplState, cycles: &ModeCycles) {
 }
 
 fn build_editor(
-    workspace: &std::path::Path,
+    state: &ReplState,
     mode_cycles: ModeCycles,
 ) -> Result<(ReplEditor, Option<std::path::PathBuf>)> {
     // List mode, not in-place cycling: one Tab completes to the longest
@@ -365,8 +366,17 @@ fn build_editor(
             cycles: mode_cycles,
         })),
     );
+    // `@path` completion walks the workspace at most once per
+    // `path_index::TTL`, bounded by the two mention settings (which were
+    // written but never read until this wiring).
+    let paths = path_index::PathIndex::new(
+        state.workspace.clone(),
+        state.settings.mention_walk_depth,
+        state.settings.mention_menu_limit,
+    );
     editor.set_helper(Some(ReplHelper::new(
-        commands::user_cmd_store::user_command_names(Some(workspace)),
+        commands::user_cmd_store::user_command_names(Some(&state.workspace)),
+        paths,
     )));
     let history = history_path();
     if let Some(history) = history.as_ref() {
