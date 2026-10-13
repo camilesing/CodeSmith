@@ -5691,6 +5691,51 @@ pub(crate) fn resolve_exec_append_system_prompts(
     sources
 }
 
+/// One-shot completion over an explicit message list, returning the text.
+///
+/// The companion to [`run_one_shot`] for callers that already have the
+/// conversation (`/btw` uses the session's own messages) and that need the
+/// answer back rather than printed: no tools, no streaming, no history.
+pub(crate) async fn one_shot_messages(
+    config: &Config,
+    model: &str,
+    messages: Vec<crate::models::Message>,
+    system: Option<crate::models::SystemPrompt>,
+) -> Result<String> {
+    use crate::models::{ContentBlock, MessageRequest};
+
+    let client = crate::core::engine::resolve_llm_client(config)?;
+    let route = resolve_cli_auto_route(config, model, "").await;
+    let reasoning_effort = route
+        .reasoning_effort
+        .map(|effort| effort.as_setting().to_string());
+    let request = MessageRequest {
+        model: route.model,
+        messages,
+        max_tokens: 4096,
+        system,
+        tools: None,
+        tool_choice: None,
+        metadata: None,
+        thinking: None,
+        reasoning_effort,
+        stream: Some(false),
+        temperature: None,
+        top_p: None,
+    };
+    let response = client.create_message(request).await?;
+    let mut answer = String::new();
+    for block in response.content {
+        if let ContentBlock::Text { text, .. } = block {
+            if !answer.is_empty() {
+                answer.push('\n');
+            }
+            answer.push_str(&text);
+        }
+    }
+    Ok(answer)
+}
+
 pub(crate) async fn run_one_shot(
     config: &Config,
     model: &str,

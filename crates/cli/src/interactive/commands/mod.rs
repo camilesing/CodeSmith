@@ -6,6 +6,7 @@
 //! mutate state / send engine ops.
 
 pub mod auto_route;
+pub mod btw_cmds;
 pub mod config_cmds;
 pub mod debug_cmds;
 pub mod extension_cmds;
@@ -14,6 +15,7 @@ pub mod mods_cmds;
 pub mod network_store;
 pub mod project_doc;
 pub mod registry;
+pub mod rewind_cmds;
 pub mod session_cmds;
 pub mod share;
 pub mod skills_cmds;
@@ -323,6 +325,16 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
         }
         Command::Copy => {
             crate::interactive::copy_command(state, &arg_str);
+            false
+        }
+        Command::Btw => {
+            if let Err(err) = btw_cmds::ask(state, &arg_str).await {
+                println!("{} /btw failed: {err}", "✗".red());
+            }
+            false
+        }
+        Command::Rewind => {
+            rewind(state, &arg_str).await;
             false
         }
         Command::Keybindings => {
@@ -657,6 +669,74 @@ fn split_save_flag(arg: &str) -> (Option<&str>, bool) {
         }
     }
     (Some(trimmed).filter(|value| !value.is_empty()), false)
+}
+
+/// `/rewind [n|list]` — list or restore this session's file snapshots.
+///
+/// Files only, by design: the conversation half is `/undo` and `/retry` (see
+/// `rewind_cmds` for why the two are not fused).
+async fn rewind(state: &mut ReplState, arg: &str) {
+    let rows = match rewind_cmds::list(&state.workspace).await {
+        Ok(rows) => rows,
+        Err(err) => {
+            println!("{} {err}", "✗".red());
+            return;
+        }
+    };
+    if rows.is_empty() {
+        println!(
+            "{}",
+            "no snapshots to rewind to — they are written around file-mutating turns (see [snapshots] in config.toml)"
+                .dimmed()
+        );
+        return;
+    }
+    let value = arg.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("list") {
+        println!("{}", "file snapshots (newest first):".bold());
+        for (index, row) in rows.iter().enumerate() {
+            println!(
+                "  {}. {}  {}  {}",
+                index + 1,
+                row.short_id().dimmed(),
+                row.when(),
+                row.label
+            );
+        }
+        println!(
+            "{}",
+            "  /rewind <n> restores the workspace to that snapshot — files only; /undo drops the last exchange"
+                .dimmed()
+        );
+        return;
+    }
+    let picked = if let Ok(index) = value.parse::<usize>() {
+        index.checked_sub(1).filter(|i| *i < rows.len())
+    } else {
+        rows.iter()
+            .position(|row| row.id.starts_with(value) || row.short_id() == value)
+    };
+    let Some(index) = picked else {
+        println!(
+            "{} no snapshot matches {value:?} — /rewind lists them",
+            "✗".red()
+        );
+        return;
+    };
+    let row = &rows[index];
+    println!(
+        "restoring the workspace to {} ({})",
+        row.short_id(),
+        row.label
+    );
+    match rewind_cmds::restore(&state.workspace, row.id.clone()).await {
+        Ok(()) => println!(
+            "{}",
+            "workspace restored — the conversation was not rewound; /undo drops the last exchange"
+                .green()
+        ),
+        Err(err) => println!("{} {err}", "✗".red()),
+    }
 }
 
 /// `/help` — every registered command, straight from
