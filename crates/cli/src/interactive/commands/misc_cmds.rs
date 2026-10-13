@@ -755,6 +755,105 @@ pub async fn share(state: &mut ReplState) {
 
 // === Degraded commands (composer-bound features) ===
 
+/// The changelog as of this build.
+///
+/// Embedded rather than read from disk: an installed binary does not ship
+/// the repository, and release notes that only work from a source checkout
+/// would be a command that silently does nothing for the people who need it
+/// most.
+const CHANGELOG: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../CHANGELOG.md"));
+
+/// `/release-notes [n|version|latest]` — the changelog, one section at a
+/// time (Claude Code's version picker, in the REPL's numbered style).
+pub fn release_notes(state: &ReplState, arg: Option<&str>) {
+    let sections = changelog_sections(CHANGELOG);
+    if sections.is_empty() {
+        println!("{}", "no release notes in this build".dimmed());
+        return;
+    }
+    let Some(value) = arg.map(str::trim).filter(|v| !v.is_empty()) else {
+        println!("{}", "release notes:".bold());
+        for (index, (title, _)) in sections.iter().enumerate() {
+            println!("  {}. {title}", index + 1);
+        }
+        println!(
+            "{}",
+            "  /release-notes <n|version|latest> prints one — the changelog file in this workspace is the full record"
+                .dimmed()
+        );
+        return;
+    };
+    let picked = if value.eq_ignore_ascii_case("latest") {
+        Some(0)
+    } else if let Ok(index) = value.parse::<usize>() {
+        index.checked_sub(1).filter(|i| *i < sections.len())
+    } else {
+        sections.iter().position(|(title, _)| {
+            title
+                .to_ascii_lowercase()
+                .contains(&value.to_ascii_lowercase())
+        })
+    };
+    match picked {
+        Some(index) => {
+            let (title, body) = &sections[index];
+            println!("{}", title.bold());
+            println!("{}", body.trim_end());
+        }
+        None => println!(
+            "{} no release notes match {value:?} — /release-notes lists what this build carries",
+            "✗".red()
+        ),
+    }
+    let _ = state;
+}
+
+/// Split a Keep-a-Changelog file into `(title, body)` per `##` section.
+fn changelog_sections(text: &str) -> Vec<(String, String)> {
+    let mut sections: Vec<(String, String)> = Vec::new();
+    for line in text.lines() {
+        if let Some(title) = line.strip_prefix("## ") {
+            sections.push((title.trim().to_string(), String::new()));
+            continue;
+        }
+        if let Some((_, body)) = sections.last_mut() {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    sections
+}
+
+/// `/terminal-setup` — what to change in the terminal itself.
+///
+/// Printed rather than applied: editing a terminal's own config is the
+/// user's call, and the per-terminal instructions are what Claude Code's
+/// `/terminal-setup` documents too (the same terminals send the same
+/// bytes).
+pub fn terminal_setup() {
+    println!("{}", "terminal setup".bold());
+    println!("  Shift+Enter for a newline (native in these terminals):");
+    println!("    iTerm2 · WezTerm · Ghostty · Kitty · Warp · Apple Terminal · Windows Terminal");
+    println!("    VS Code / Cursor / Zed / Alacritty: enable the terminal's Shift+Enter binding");
+    println!("  Everywhere else:");
+    println!("    Ctrl+J inserts a newline, and a line ending in `\\` continues the prompt");
+    println!("  Option/Alt as Meta (needed for Alt+P model, Alt+T thinking, Alt+B/F word moves):");
+    println!("    macOS: iTerm2 → Profiles → Keys → Left/Right Option key as Esc+");
+    println!("           Terminal.app → Profiles → Keyboard → Use Option as Meta key");
+    println!("    Windows/Linux: most terminals send Alt as Meta already");
+    println!("  Apple Terminal: disable the audible bell (Settings → Profiles → Advanced)");
+}
+
+/// `/tasks` (alias `/bashes`) — everything running in the background in one
+/// place: shell jobs, sub-agents, and durable tasks. Claude Code's `/tasks`
+/// is this view; the three sources keep their own commands.
+pub async fn tasks(state: &mut ReplState) {
+    println!("{}", "background work".bold());
+    jobs(state);
+    super::cmd_agents(state);
+    task(state, "list").await;
+}
+
 /// `/queue` — messages typed while a turn was running.
 ///
 /// The queue is the mid-turn composer's: whatever the turn did not pick up
@@ -904,7 +1003,7 @@ pub(crate) fn quick_memory_entry(line: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::quick_memory_entry;
+    use super::{changelog_sections, quick_memory_entry};
 
     #[test]
     fn quick_memory_entry_intercepts_single_hash_only() {
@@ -924,5 +1023,25 @@ mod tests {
         assert_eq!(quick_memory_entry("#!/bin/sh"), None);
         assert_eq!(quick_memory_entry("plain text"), None);
         assert_eq!(quick_memory_entry(""), None);
+    }
+
+    #[test]
+    fn changelog_sections_split_on_level_two_headings() {
+        let text = "# Changelog\n\nintro\n\n## [Unreleased]\n\n- one\n- two\n\n## [0.9.0] - 2026-01-01\n\n- three\n";
+        let sections = changelog_sections(text);
+        assert_eq!(sections.len(), 2);
+        assert_eq!(sections[0].0, "[Unreleased]");
+        assert!(sections[0].1.contains("- one"));
+        assert!(sections[0].1.contains("- two"));
+        assert!(
+            !sections[0].1.contains("three"),
+            "a section stops at the next heading"
+        );
+        assert_eq!(sections[1].0, "[0.9.0] - 2026-01-01");
+        assert!(sections[1].1.contains("- three"));
+        assert!(
+            !sections[0].1.contains("intro"),
+            "prose before the first heading belongs to no section"
+        );
     }
 }

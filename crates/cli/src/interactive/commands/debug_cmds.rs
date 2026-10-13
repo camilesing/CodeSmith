@@ -48,6 +48,14 @@ pub fn tokens(state: &ReplState) {
     }
 }
 
+/// `/usage` (aliases `/cost`, `/stats`) — what the session spent and
+/// consumed. Claude Code's `/usage` is the cost view and `/tokens` is the
+/// token view, so this prints both rather than inventing a third report.
+pub fn usage(state: &ReplState) {
+    cost(state);
+    tokens(state);
+}
+
 /// `/cost` — session cost breakdown (USD + CNY, parent + sub-agents).
 pub fn cost(state: &ReplState) {
     println!("{}", "cost report".bold());
@@ -120,7 +128,10 @@ pub fn system_prompt(state: &ReplState) {
 
 /// `/context` / `/ctx` — line-mode context snapshot (the TUI opened an
 /// inspector view; the data is the same).
-pub fn context(state: &ReplState) {
+pub fn context(state: &ReplState, arg: Option<&str>) {
+    if arg.is_some_and(|value| value.eq_ignore_ascii_case("all")) {
+        context_breakdown(state);
+    }
     match super::super::status::context_usage(
         &state.api_messages,
         state.system_prompt.as_ref(),
@@ -137,6 +148,65 @@ pub fn context(state: &ReplState) {
             "context: no window known for the current model — set [providers.<id>] context_window, or run a turn first"
                 .dimmed()
         ),
+    }
+}
+
+/// `/context all` — the per-message breakdown behind the usage figure.
+///
+/// Token counts here are estimated from character counts (four characters
+/// per token), not reported by the provider: the wire reports one prompt
+/// total, so a per-message split can only ever be an estimate. That is why
+/// the detail is behind `all` and why the numbers are labelled.
+fn context_breakdown(state: &ReplState) {
+    println!("{}", "context detail (estimated tokens)".bold());
+    let system = state
+        .system_prompt
+        .as_ref()
+        .map(prompt_text_len)
+        .unwrap_or(0);
+    println!("  system prompt:      ~{}", system.div_ceil(4));
+    let mut rows: Vec<(usize, String)> = state
+        .api_messages
+        .iter()
+        .enumerate()
+        .map(|(index, message)| {
+            let chars: usize = message.content.iter().map(content_chars).sum();
+            (
+                chars.div_ceil(4),
+                format!("#{} {}", index + 1, message.role),
+            )
+        })
+        .collect();
+    let total: usize = rows.iter().map(|(tokens, _)| *tokens).sum();
+    rows.sort_by_key(|(tokens, _)| std::cmp::Reverse(*tokens));
+    for (tokens, label) in rows.iter().take(10) {
+        println!("  {label:<12} ~{tokens}");
+    }
+    if rows.len() > 10 {
+        println!("  … {} more message(s)", rows.len() - 10);
+    }
+    println!(
+        "  messages total:     ~{total} across {} message(s)",
+        rows.len()
+    );
+}
+
+fn prompt_text_len(prompt: &crate::models::SystemPrompt) -> usize {
+    match prompt {
+        crate::models::SystemPrompt::Text(text) => text.len(),
+        crate::models::SystemPrompt::Blocks(blocks) => {
+            blocks.iter().map(|block| block.text.len()).sum()
+        }
+    }
+}
+
+fn content_chars(block: &crate::models::ContentBlock) -> usize {
+    match block {
+        crate::models::ContentBlock::Text { text, .. } => text.len(),
+        crate::models::ContentBlock::ToolUse { input, .. } => input.to_string().len(),
+        crate::models::ContentBlock::ToolResult { content, .. } => content.to_string().len(),
+        crate::models::ContentBlock::Image { .. } => 1024, // one image ≈ 1k tokens
+        other => format!("{other:?}").len(),
     }
 }
 
