@@ -1044,6 +1044,36 @@ pub async fn tasks(state: &mut ReplState) {
     task(state, "list").await;
 }
 
+/// `/stop` — stop every piece of background work this session started.
+///
+/// Claude Code's `/stop` stops the background *session* you attached to;
+/// background sessions are not implemented here (see `docs/CLI.md`), so the
+/// name stops what this REPL actually runs in the background: shell jobs,
+/// background sub-agents, and the durable tasks the task manager is running.
+/// The foreground turn is untouched — `Ctrl+C` (or `Esc` mid-turn) is the key
+/// for that.
+pub async fn stop(state: &mut ReplState) {
+    let engine = match state.engine.as_ref() {
+        Some(engine) => engine.clone(),
+        None => {
+            println!("{}", "✗ no engine in this session".red());
+            return;
+        }
+    };
+    match engine
+        .send(crate::core::ops::Op::CancelAllBackgroundTasks)
+        .await
+    {
+        Ok(()) => println!(
+            "{}",
+            "stopping background work — shell jobs, background sub-agents, durable tasks \
+             (/tasks shows what is left)"
+                .dimmed()
+        ),
+        Err(err) => println!("{} could not reach the engine: {err}", "✗".red()),
+    }
+}
+
 /// `/queue` — messages typed while a turn was running.
 ///
 /// The queue is the mid-turn composer's: whatever the turn did not pick up

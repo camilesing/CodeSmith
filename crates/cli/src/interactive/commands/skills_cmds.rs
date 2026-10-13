@@ -39,6 +39,12 @@ fn discover(state: &ReplState) -> SkillRegistry {
     registry
 }
 
+/// How many saved sessions `/skill-doctor` reads for usage.
+const SESSION_LIMIT: usize = 200;
+
+/// How many never-activated skills `/skill-doctor` names with their paths.
+const UNUSED_LIMIT: usize = 10;
+
 /// `/skills [prefix]` — local list; `--remote` browses the community
 /// registry; `sync` refreshes the local registry cache.
 pub async fn list_skills(state: &ReplState, arg: Option<&str>) {
@@ -221,6 +227,123 @@ pub async fn code_review(state: &mut ReplState, args: &str) {
 /// `/simplify [target]`
 pub async fn simplify(state: &mut ReplState, target: &str) {
     activate(state, "simplify", target).await;
+}
+
+/// `/skill-doctor` — what each skill costs in context, and how often it runs.
+///
+/// Claude Code's `/skill-doctor` answers "which skills should I turn off" with
+/// context cost and usage. Both numbers exist locally: a skill's body is what
+/// it costs (the whole body is what activation puts in the conversation), and
+/// its use is countable from the saved sessions — activation writes
+/// `# Skill: <name>` into the instruction, so the record of a skill's use is
+/// the session log itself.
+///
+/// Known limitations (recorded beside the behaviour it owns):
+///
+/// - The cost is the activation body, measured in characters with a rough
+///   four-characters-per-token estimate: this is a size report, not a
+///   tokenizer. A skill the *model* can see in its system prompt is not
+///   counted either — that list is built from the workspace and user skill
+///   directories, and per-skill bytes there are the same bodies.
+/// - Usage counts sessions saved on this machine and nothing else; a skill
+///   used in a session saved with `/save <path>` reads as unused.
+pub fn skill_doctor(state: &ReplState) {
+    let registry = discover(state);
+    let skills = registry.list();
+    if skills.is_empty() {
+        println!("{}", "no skills discovered".dimmed());
+        return;
+    }
+
+    let mut activations: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let files = super::usage_scan::session_files(SESSION_LIMIT);
+    for file in &files {
+        for name in super::usage_scan::skill_activations(file) {
+            *activations.entry(name).or_insert(0) += 1;
+        }
+    }
+
+    let mut rows: Vec<(usize, usize, String, u32, String)> = skills
+        .iter()
+        .map(|skill| {
+            let chars = skill.body.chars().count();
+            (
+                chars,
+                chars / 4,
+                skill.name.clone(),
+                activations.get(&skill.name).copied().unwrap_or(0),
+                // Where the definition lives, which is what makes a skill
+                // removable: the source enum alone cannot say it, because the
+                // definitions installed with the app are `Bundled` *and*
+                // `FileSystem` depending on who wrote them. A shipped skill
+                // has no file to point at.
+                match skill.loaded_from.label(&skill.path) {
+                    label if label.is_empty() => "shipped with this build".to_string(),
+                    label => label,
+                },
+            )
+        })
+        .collect();
+    rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.cmp(&b.2)));
+
+    let total_chars: usize = rows.iter().map(|row| row.0).sum();
+    println!(
+        "{}",
+        format!(
+            "{} skill(s) · {} characters of instructions (~{} tokens if every one were activated) · \
+             usage from {} saved session(s)",
+            rows.len(),
+            total_chars,
+            total_chars / 4,
+            files.len()
+        )
+        .bold()
+    );
+    for (chars, tokens, name, used, _) in &rows {
+        let usage = if *used == 0 {
+            "never activated".to_string()
+        } else {
+            format!("{used} activation(s)")
+        };
+        println!("  {name:<26} {chars:>7} chars  ~{tokens:>6} tok  {usage}");
+    }
+
+    let unused: Vec<&(usize, usize, String, u32, String)> =
+        rows.iter().filter(|row| row.3 == 0).collect();
+    if unused.is_empty() {
+        println!(
+            "{}",
+            "  every discovered skill has been activated at least once".dimmed()
+        );
+        return;
+    }
+    println!(
+        "{}",
+        format!("  never activated ({}):", unused.len()).dimmed()
+    );
+    for row in unused.iter().take(UNUSED_LIMIT) {
+        println!("    {} — {}", row.2, row.4.dimmed());
+    }
+    if unused.len() > UNUSED_LIMIT {
+        println!("    … and {} more", unused.len() - UNUSED_LIMIT);
+    }
+    println!(
+        "{}",
+        "  delete or move a SKILL.md to take its instructions out of reach; definitions \
+         installed with the app come back on the next start"
+            .dimmed()
+    );
+}
+
+/// `/run-skill-generator`, `/update-config`, `/deep-research`,
+/// `/plugin-authoring`.
+///
+/// The remaining bundled skills are the same kind of thing as `/batch`: a
+/// prompt workflow a user invokes by name, with the model's own tools doing
+/// the work. No argument is required by two of them, and an empty target is
+/// handled by `activate`.
+pub async fn bundled(state: &mut ReplState, name: &str, target: &str) {
+    activate(state, name, target).await;
 }
 
 /// `/batch <instruction>`

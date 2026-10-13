@@ -68,6 +68,20 @@ prompt 的入口有两个：
   仅文件：`/undo` 与 `/retry` 是对话那一半。
 - **`/code-review`、`/security-review`、`/simplify`、`/run`、`/verify`** 是内置技能
   （提示词工作流），由 `/skills` 列出，磁盘上同名技能可覆盖它们。
+- **`/fewer-permission-prompts [--yes]`** 读取你保存的会话，统计你跑得最多的只读命令
+  （用的是审批提示同一套 `command_safety` 判定），并为每条提出一条审批规则 —— 只有
+  加 `--yes` 才写入，写法与 `/permissions allow` 完全相同。Claude Code 的
+  `/auto-mode-setup` 在本地也是这件事：两者最终都落到同一份 allowlist。
+- **`/stop`** 停掉全部后台工作 —— shell 作业、后台子代理、持久任务 —— 前台回合不受
+  影响（那是 `Ctrl+C` 的活）。Claude Code 的 `/stop` 针对已 attach 的后台*会话*，
+  属于下表排除项。
+- **`/skill-doctor`** 报告每个技能在上下文里的开销（正文大小与粗略 token 估算）以及
+  它实际跑过多少次 —— 次数数的是激活写进会话日志的 `# Skill: <name>` 标记；从未用过
+  的磁盘技能就是可以删掉的那些。
+- **`/run-skill-generator`、`/update-config`、`/deep-research <question>`、
+  `/plugin-authoring`** 是其余内置技能：教会 `/run` 与 `/verify` 本项目真正的构建与
+  启动方式、把口语化的设置请求变成正确的配置文件改动、跨来源检索并带引用地回答问题、
+  以及照 `docs/MODS.md` 写一个 mod。
 - **`/branch [name]`** 在此处给对话开分支：当前会话被保存，副本成为活动会话，
   原会话留给 `/resume`。这是 Claude Code 对 `/fork` 早就做过的事情所用的名字；
   Claude Code 的 `/fork`（把副本当作游离的后台*会话*运行）在下表的排除清单里。
@@ -147,6 +161,19 @@ transcript viewer 按键，以及 `/pr-comments`（Claude Code 在 v2.1.91 删�
 
 `/pr` 与 `codesmith pr <N>` 都走 `gh`：没有安装（或没跑过 `gh auth login`）时
 `/pr` 会明说，并且什么都不取回。
+
+其余若干条及其"本地没有"的原因：`/artifact-capabilities` 与
+`/artifact-diagramming`（Anthropic 托管的 artifact，已在上表排除）、
+`/advisor [model|off]`（第二模型咨询是接在 Claude 回合循环里的；本地对应的第二模型面是
+`[subagents] model_overrides` 加 `agent_open`）、`/claude-api`（Anthropic API 参考）、
+`/dataviz`（附带给颜色校验脚本的技能包，本构建没有这些脚本）、
+`/setup-bedrock` 与 `/setup-vertex`（Anthropic 自家 Bedrock/Vertex 路径的鉴权向导；
+CodeSmith 用 `/provider` 与 `codesmith login` 配置 provider）、
+`/workflows` 与 `/workflow-authoring`（CodeSmith 没有动态 workflow 引擎；它的后台工作
+是 `/tasks`、`/loop`、`/subtask`）、`/auto-mode-setup`（与
+`/fewer-permission-prompts` 同一份 allowlist 工作）、以及 `/ultraplan`
+（Claude Code 已删除；计划模式在这里同样是 `/plan`）。
+
 
 ## 模型选择
 

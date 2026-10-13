@@ -11,6 +11,7 @@ pub mod config_cmds;
 pub mod debug_cmds;
 pub mod dir_cmds;
 pub mod extension_cmds;
+pub mod fewer_prompts_cmds;
 pub mod import_cmds;
 pub mod insights_cmds;
 pub mod loop_cmds;
@@ -26,6 +27,7 @@ pub mod session_cmds;
 pub mod share;
 pub mod skills_cmds;
 pub mod subtask_cmds;
+pub mod usage_scan;
 pub mod user_cmd_store;
 
 use codesmith_config::presets::PresetCatalog;
@@ -161,6 +163,43 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
         }
         Command::Batch => {
             skills_cmds::batch(state, &arg_str).await;
+            false
+        }
+        Command::FewerPermissionPrompts => {
+            fewer_prompts_cmds::run(state, &arg_str).await;
+            false
+        }
+        Command::Stop => {
+            misc_cmds::stop(state).await;
+            false
+        }
+        Command::SkillDoctor => {
+            skills_cmds::skill_doctor(state);
+            false
+        }
+        Command::RunSkillGenerator => {
+            skills_cmds::bundled(state, "run-skill-generator", &arg_str).await;
+            false
+        }
+        Command::UpdateConfig => {
+            skills_cmds::bundled(state, "update-config", &arg_str).await;
+            false
+        }
+        Command::DeepResearch => {
+            if arg_str.trim().is_empty() {
+                println!(
+                    "{}",
+                    "usage: /deep-research <question> — searches, cross-checks the sources, and \
+                     writes a cited answer"
+                        .dimmed()
+                );
+            } else {
+                skills_cmds::bundled(state, "deep-research", &arg_str).await;
+            }
+            false
+        }
+        Command::PluginAuthoring => {
+            skills_cmds::bundled(state, "plugin-authoring", &arg_str).await;
             false
         }
         Command::Load => {

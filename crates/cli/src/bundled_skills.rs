@@ -1,6 +1,7 @@
 //! Bundled skills — the review and verification workflows Claude Code ships
 //! as built-in skills (`/code-review`, `/security-review`, `/simplify`,
-//! `/run`, `/verify`) plus its `/batch` parallel-changes workflow.
+//! `/run`, `/verify`), its `/batch` parallel-changes workflow, and the
+//! authoring/teaching pair `/run-skill-generator` and `/update-config`.
 //!
 //! They are skills, not commands with logic: each one is a prompt the model
 //! follows, so they live beside the discovered skills and merge into the same
@@ -147,6 +148,82 @@ Do not start a unit before the plan is approved, do not let two units edit
 the same file at once, and do not report a unit as done without quoting the
 command that verified it."#;
 
+const RUN_SKILL_GENERATOR: &str = r#"Teach the `/run` and `/verify` workflows how this project
+actually builds and starts, by writing the project skills they should read.
+
+1. Find out for real: the build system, the entry point, the launch command,
+   the port or device it uses, the migration/seed step, how to invoke it
+   non-interactively, and how the project's own tests are run. Read the
+   README, Makefile, package manifest, compose file, CI workflow, and any
+   script directory — do not guess from the language.
+2. Prove each step by running it, in a clean state where that is cheap
+   (`cargo build`, `npm ci`, `docker compose up --build`). Quote the commands
+   that worked and the output that shows they worked.
+3. Write two skills next to this project's skills: `run` and `verify`. Each is
+   a `SKILL.md` with frontmatter (`name`, `description`) and a body that lists
+   the exact commands, the environment they need, how to observe the running
+   program, and the failure each step is likely to hit. Write them where the
+   project keeps skills so the next session finds them, and say where you
+   wrote them.
+4. Report what you could not establish — a service that needs credentials, a
+   device that is not attached — instead of inventing a step for it."#;
+
+const UPDATE_CONFIG: &str = r#"Turn a plain-language settings request into the right file edit and apply it.
+
+1. Locate the configuration that owns the setting. In CodeSmith that is
+   `config.toml` (`~/.codesmith/config.toml` for the user, `.codesmith/` in a
+   project) for settings, `~/.codesmith/mcp.json` for MCP servers,
+   `.codesmith/skills/` for skills, and the hooks table for shell hooks.
+   `docs/CONFIGURATION.md` in this repository names every key and its default;
+   read it before writing a key you are not certain of.
+2. Say which file and which key you are about to change, and what the value
+   will be, before changing it.
+3. Make the smallest edit that satisfies the request: set or change the key
+   rather than restructuring the file, and preserve comments and unrelated
+   settings exactly.
+4. Validate: re-read the file and confirm it still parses as TOML, and name
+   the running command that shows the change taking effect (`/config <key>`,
+   `/permissions list`, `/mcp`, `/hooks`). A setting only the next session
+   reads is worth saying out loud.
+5. If the request needs something that is not a setting — a new provider, a
+   credential, a feature flag — say so and name the command that does it
+   instead of writing a key that does nothing."#;
+
+const DEEP_RESEARCH: &str = r#"Answer a research question from sources, with the evidence attached.
+
+1. Restate the question as the specific claims that need support, and name
+   what would count as an answer.
+2. Search widely first: several independent queries, including the terms a
+   practitioner would use and the terms an opponent would use. Run the
+   searches in parallel where the interface allows it.
+3. Read the promising sources rather than their snippets, and follow the
+   citations that carry the actual numbers.
+4. Cross-check every load-bearing claim against at least two independent
+   sources, and say so when only one exists. Prefer primary sources (specs,
+   papers, filings, official documentation) over summaries of them.
+5. Write the answer with inline citations (URL or file plus the exact passage
+   you relied on), separate what is established from what is disputed, state
+   your confidence and what would change it, and list what you could not
+   find. If the question cannot be answered from available sources, say that
+   plainly instead of padding."#;
+
+const PLUGIN_AUTHORING: &str = r#"Write a mod for this project (CodeSmith's extension format), following the
+project's own reference rather than inventing an API.
+
+1. Read `docs/MODS.md` in the CodeSmith repository — that is the authority for
+   the mod format, the Rhai API surface, the manifest fields, and the
+   example mods. If this project is not CodeSmith, say so and stop: mods are a
+   CodeSmith extension format.
+2. Read the mod it should resemble (there is a template and at least one
+   worked example next to the docs) and the host-side registration path that
+   loads it, so the mod you write matches what the loader expects.
+3. Write the mod: manifest fields first, then the smallest script that does
+   what was asked. Prefer the documented host functions over shelling out.
+4. Say what it needs from the user: mods load only after explicit consent, so
+   name the command that activates it.
+5. Verify it: the project's own tests for mods, or a manual run through the
+   documented activation path, and quote the output."#;
+
 /// The bundled skills, in `/skills` order.
 #[must_use]
 pub fn registered() -> Vec<Skill> {
@@ -181,6 +258,26 @@ pub fn registered() -> Vec<Skill> {
             "Plan a large change as parallel units and run one sub-agent per unit",
             BATCH,
         ),
+        (
+            "run-skill-generator",
+            "Teach /run and /verify how this project builds, starts, and is observed",
+            RUN_SKILL_GENERATOR,
+        ),
+        (
+            "update-config",
+            "Turn a settings request into the right config edit and apply it",
+            UPDATE_CONFIG,
+        ),
+        (
+            "deep-research",
+            "Answer a research question from cross-checked sources, with citations",
+            DEEP_RESEARCH,
+        ),
+        (
+            "plugin-authoring",
+            "Write a mod for CodeSmith, following docs/MODS.md",
+            PLUGIN_AUTHORING,
+        ),
     ]
     .into_iter()
     .map(|(name, description, body)| {
@@ -199,7 +296,7 @@ mod tests {
     #[test]
     fn bundled_skills_are_named_and_non_empty() {
         let skills = registered();
-        assert_eq!(skills.len(), 6);
+        assert_eq!(skills.len(), 10);
         for skill in &skills {
             assert!(!skill.name.is_empty());
             assert!(
@@ -219,5 +316,7 @@ mod tests {
         assert!(names.contains(&"code-review"));
         assert!(names.contains(&"verify-app"));
         assert!(names.contains(&"batch"));
+        assert!(names.contains(&"update-config"));
+        assert!(names.contains(&"deep-research"));
     }
 }
