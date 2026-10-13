@@ -3622,7 +3622,10 @@ pub(crate) fn run_doctor_json(
 ///
 /// Returns a JSON value with the resolved provider, resolved model, context
 /// window, max output, thinking support, cache telemetry support, and request
-/// payload mode.
+/// payload mode. An explicit `context_window` override (a gateway whose
+/// backend window the static matrix cannot see) replaces the matrix value;
+/// without one the matrix stands, so deprecated-alias mappings (DeepSeek
+/// `deepseek-chat` → V4) keep reporting their routed window.
 pub(crate) fn provider_capability_report(config: &Config) -> serde_json::Value {
     use serde_json::json;
 
@@ -3630,11 +3633,14 @@ pub(crate) fn provider_capability_report(config: &Config) -> serde_json::Value {
     let model = config.default_model();
 
     let cap = crate::config::provider_capability(provider, &model);
+    let context_window = config
+        .context_window_override()
+        .unwrap_or(cap.context_window);
 
     json!({
         "resolved_provider": provider.as_str(),
         "resolved_model": cap.resolved_model,
-        "context_window": cap.context_window,
+        "context_window": context_window,
         "max_output": cap.max_output,
         "thinking_supported": cap.thinking_supported,
         "cache_telemetry_supported": cap.cache_telemetry_supported,
@@ -5896,7 +5902,6 @@ pub(crate) async fn run_exec_agent(
     use crate::core::engine::{EngineConfig, spawn_engine};
     use crate::core::events::Event;
     use crate::core::ops::Op;
-    use crate::models::compaction_threshold_for_model;
     use crate::tools::plan::new_shared_plan_state;
     use crate::tools::todo::new_shared_todo_list;
 
@@ -5913,7 +5918,7 @@ pub(crate) async fn run_exec_agent(
     let compaction = CompactionConfig {
         enabled: true,
         model: effective_model.clone(),
-        token_threshold: compaction_threshold_for_model(&effective_model),
+        token_threshold: config.compaction_threshold(&effective_model),
         ..Default::default()
     };
 
@@ -6421,7 +6426,6 @@ pub(crate) async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -
     use crate::core::engine::{EngineConfig, spawn_engine};
     use crate::core::events::Event;
     use crate::core::ops::Op;
-    use crate::models::compaction_threshold_for_model;
     use crate::tools::plan::new_shared_plan_state;
     use crate::tools::task_v2::new_shared_task_v2_manager;
     use crate::tools::team::{
@@ -6508,7 +6512,7 @@ pub(crate) async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -
     let compaction = CompactionConfig {
         enabled: true,
         model: effective_model.clone(),
-        token_threshold: compaction_threshold_for_model(&effective_model),
+        token_threshold: config.compaction_threshold(&effective_model),
         ..Default::default()
     };
     let network_policy = Some(config.network_policy_decider());

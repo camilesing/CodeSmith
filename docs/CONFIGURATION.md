@@ -171,6 +171,25 @@ OpenAI-compatible provider receives it.
 provider tables in one config, `[providers.openai].model` can be used as the
 OpenAI-provider-specific override.
 
+Two optional keys describe a gateway whose backend differs from what the model
+name suggests — an alias the static tables cannot see through:
+
+```toml
+[providers.openai]
+display_model = "GLM-4.6 (BigModel)"   # the name the REPL prints verbatim
+context_window = 131072                # tokens the backend really accepts
+```
+
+`display_model` is presentation only: the banner, status line, `/status`, and
+`/model` print that string, while the request payload, session metadata, and
+logs keep the real model id. `context_window` drives the `🧭` denominator,
+`/context`, `/tokens`, `doctor --json`'s `capability.context_window`, and the
+auto-compaction trigger; without it those fall back to the static model-name
+table (any `claude-*` id, for instance, resolves to 200,000). Both keys belong
+to the provider, so a `/model` switch to another id on it keeps them. Engine-
+internal capacity math (`cycle_manager`, the capacity preflight) still reads
+the static table.
+
 #### Custom provider registry (`[[providers.custom]]`)
 
 When a gateway needs its own provider identity rather than borrowing
@@ -188,6 +207,8 @@ model = "glm-5"
 # auth_mode = "bearer"                    # optional
 # http_headers = { "X-Gateway-Route" = "dev" }
 # vision = true                           # optional; default false
+# display_model = "GLM-4.6 (BigModel)"    # optional; printed verbatim by the REPL
+# context_window = 131072                 # optional; tokens the backend really accepts
 ```
 
 Rules: `id` is required and must be unique; it must not collide with a
@@ -1403,7 +1424,10 @@ The `capability` key contains per-provider capability info derived from
 static knowledge (release docs, API guides) rather than live API probes.
 Top-level sub-keys: `resolved_provider`, `resolved_model`, `context_window`,
 `max_output`, `thinking_supported`, `cache_telemetry_supported`,
-and `request_payload_mode`.
+and `request_payload_mode`. An explicit `[providers.<id>] context_window`
+(or `[[providers.custom]]`) override replaces `context_window`; without one
+the static value stands, including the deprecated-alias mappings (DeepSeek
+`deepseek-chat` → V4's window).
 
 Use `capability.context_window` and `capability.max_output` for model-limit
 checks in CI scripts; do not treat `capability.max_output` as the per-turn

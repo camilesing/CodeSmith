@@ -196,11 +196,10 @@ pub enum Event {
         tool_catalog: Option<Vec<Tool>>,
         /// API base URL used by this turn's client.
         base_url: Option<String>,
-        /// Server-reported model name from this turn's stream
-        /// `MessageStart` frames — the real model behind gateway aliases
-        /// (e.g. BigModel's Anthropic-compatible endpoint serving a GLM
-        /// model under a `claude-*` alias). `None` when the turn never
-        /// got a response or the provider reported none.
+        /// Model name carried by this turn's stream `MessageStart` frame.
+        /// `None` when the turn never got a response or the frame carries
+        /// none. In practice it repeats the requested id; a gateway alias is
+        /// labelled through `[providers.<id>] display_model`.
         reported_model: Option<String>,
     },
 

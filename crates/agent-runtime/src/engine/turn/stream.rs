@@ -556,9 +556,10 @@ impl HostAgentExecutor {
                     // / OpenAI). Mirrors the retired `handle_deepseek_turn`
                     // `usage = message.usage;`.
                     usage = message.usage;
-                    // Record the server-reported model — the real model
-                    // behind gateway aliases — for the end-of-turn handoff
-                    // (`take_reported_model` → `Event::TurnComplete`).
+                    // Record the `MessageStart` frame's model name for the
+                    // end-of-turn handoff (`take_reported_model` →
+                    // `Event::TurnComplete`). Providers currently stamp the
+                    // requested id into that frame.
                     if !message.model.is_empty() {
                         self.record_reported_model(message.model);
                     }
@@ -1594,9 +1595,10 @@ mod tests {
         registry.to_framework_tool_set()
     }
 
-    /// The reducer records the server-reported model from `MessageStart` —
-    /// the end-of-turn handoff behind `Event::TurnComplete.reported_model`
-    /// (the status-bar label shows the real model behind gateway aliases).
+    /// The reducer records the `MessageStart` model name — the end-of-turn
+    /// handoff behind `Event::TurnComplete.reported_model` (in practice it
+    /// repeats the requested id; the status-bar label for a gateway alias comes
+    /// from the user's `display_model`).
     #[tokio::test]
     async fn message_start_model_is_recorded_for_turn_complete() {
         let mut sess = fresh_session();

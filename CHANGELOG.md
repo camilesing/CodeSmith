@@ -55,6 +55,23 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
   returning immediately. See `docs/SUBAGENTS.md` ("Read-only roles and Plan
   mode", "Working across repositories").
 
+- **Provider `display_model` and `context_window` overrides**: `[providers.<id>]`
+  tables and `[[providers.custom]]` entries accept `display_model = "..."`,
+  printed verbatim by the REPL banner, status line, `/status`, `/model`,
+  `/tokens`, and `/home`, and `context_window = N`, which drives the `🧭`
+  denominator, `/context`, `/tokens`, `doctor --json`'s
+  `capability.context_window`, and the auto-compaction trigger. Both exist for
+  gateway deployments whose backend model and window the static model-name
+  tables cannot see; without them behaviour is unchanged. `display_model` is
+  presentation only — requests, session metadata, and logs keep the real model
+  id.
+- **Honest model provenance in the status line**: the label no longer claims a
+  server-reported name it never had. Every provider synthesizes the
+  `MessageStart` frame locally from the request id
+  (`crates/providers/src/rig_adapter/stream.rs`), so the field the label and the
+  session metadata carried was repeating the requested id; the field comments,
+  `docs/GUIDE.md`, and the session-metadata doc now say so, and `display_model`
+  is the supported way to label a gateway alias.
 - **REPL slash-command completion**: typing `/` in the line REPL is no longer
   silent. A dim hint after the cursor previews the matching command (its
   remaining characters plus a one-line description) or reports how many
