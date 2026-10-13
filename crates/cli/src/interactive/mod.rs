@@ -251,6 +251,11 @@ pub async fn run_repl(
         if let Some(draft) = state.turn_end_draft.take() {
             prefill = Some(draft);
         }
+        // Text a command prepared for the prompt (`/pr` fetches into a draft).
+        // It wins over the mid-turn draft: the command ran later.
+        if let Some(prepared) = state.next_input.take() {
+            prefill = Some(prepared);
+        }
         let prompt = prompt_str(&state);
         let read = match prefill.take() {
             Some(text) => editor.readline_with_initial(&prompt, ("", text.as_str())),

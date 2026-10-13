@@ -4422,11 +4422,11 @@ pub(crate) fn is_command_available(name: &str) -> bool {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct GhPullRequest {
-    title: String,
-    body: String,
-    base: String,
-    head: String,
-    url: String,
+    pub(crate) title: String,
+    pub(crate) body: String,
+    pub(crate) base: String,
+    pub(crate) head: String,
+    pub(crate) url: String,
 }
 
 pub(crate) fn run_gh_pr_view(number: u32, repo: Option<&str>) -> Result<GhPullRequest> {

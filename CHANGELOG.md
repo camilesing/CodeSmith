@@ -58,6 +58,18 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
   the background view (`/task` keeps its subcommands). `/undo` is unchanged
   and is the conversation half of the pair `/rewind` completes for files.
 
+- **`/insights`, `/pr`, and `/loop`** close the command surface the port was
+  aiming at. `/insights [7d|30d|all]` renders what `codesmith metrics` reads
+  as a short transcript digest plus a self-contained HTML report under
+  `~/.codesmith/insights/`; `/pr <number|url> [--repo owner/name]
+  [--checkout]` fetches a GitHub pull request through `gh` into the prompt as
+  an editable draft; `/loop <interval> <prompt>` (alias `/proactive`) stores a
+  recurring prompt as an automation the session's already-running scheduler
+  fires as a background task, with `loop.md` supplying the prompt when none is
+  typed. The scheduler's floor is one hour, so `/loop 5m` is refused by name
+  instead of rounded up, and loop iterations run in their own runtime thread —
+  they do not appear in the conversation.
+
   Deliberately absent: the commands that only exist inside Anthropic's cloud
   or account surface have no local equivalent and are not registered, so
   `/help` never offers something that cannot work — the list, with reasons, is

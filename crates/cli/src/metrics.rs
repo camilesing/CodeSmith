@@ -26,18 +26,27 @@ pub struct MetricsArgs {
     pub since: Option<DateTime<Utc>>,
 }
 
-pub fn run(args: MetricsArgs) -> Result<()> {
+/// Read every source and return the rollup, without printing anything.
+///
+/// Split out of [`run`] so the REPL's `/insights` can render the same numbers
+/// in its own (and HTML) shape instead of re-reading the stores.
+pub fn collect(since: Option<DateTime<Utc>>) -> Rollup {
     let base = app_home();
 
     // Collect data from every source; treat missing files as empty.
     let mut rollup = Rollup::default();
-    read_audit_log(&base.join("audit.log"), args.since, &mut rollup);
-    read_session_files(&base.join("sessions"), args.since, &mut rollup);
+    read_audit_log(&base.join("audit.log"), since, &mut rollup);
+    read_session_files(&base.join("sessions"), since, &mut rollup);
     read_runtime_events(
         &base.join("tasks").join("runtime").join("events"),
-        args.since,
+        since,
         &mut rollup,
     );
+    rollup
+}
+
+pub fn run(args: MetricsArgs) -> Result<()> {
+    let rollup = collect(args.since);
 
     if args.json {
         print_json(&rollup)?;
@@ -128,7 +137,7 @@ pub struct ToolStats {
 }
 
 impl ToolStats {
-    fn success_rate_pct(&self) -> Option<f64> {
+    pub(crate) fn success_rate_pct(&self) -> Option<f64> {
         let judged = self.successes + self.failures;
         if judged == 0 {
             None
@@ -152,7 +161,7 @@ pub struct CompactionStats {
 }
 
 impl CompactionStats {
-    fn avg_reduction_pct(&self) -> Option<f64> {
+    pub(crate) fn avg_reduction_pct(&self) -> Option<f64> {
         if self.ratio_samples == 0 {
             None
         } else {
@@ -170,7 +179,7 @@ pub struct AgentStats {
 }
 
 impl AgentStats {
-    fn success_rate_pct(&self) -> Option<f64> {
+    pub(crate) fn success_rate_pct(&self) -> Option<f64> {
         let judged = self.successes + self.failures;
         if judged == 0 {
             None
@@ -201,6 +210,16 @@ pub struct Rollup {
     pub earliest_ts: Option<DateTime<Utc>>,
     /// UTC timestamp of the latest event we've seen.
     pub latest_ts: Option<DateTime<Utc>>,
+    /// Session files read within the window.
+    pub sessions: u64,
+    /// Messages across those sessions.
+    pub messages: u64,
+    /// Tokens those sessions billed.
+    pub tokens: u64,
+    /// Sessions per workspace — "which projects did I work in".
+    pub projects: HashMap<String, u64>,
+    /// Sessions per model id.
+    pub models: HashMap<String, u64>,
     /// Per-tool stats keyed by tool name.
     pub tools: HashMap<String, ToolStats>,
     pub compaction: CompactionStats,
@@ -231,7 +250,7 @@ impl Rollup {
         self.tools.entry(name.to_string()).or_default()
     }
 
-    fn total_tool_calls(&self) -> u64 {
+    pub(crate) fn total_tool_calls(&self) -> u64 {
         self.tools.values().map(|t| t.calls).sum()
     }
 }
@@ -460,6 +479,29 @@ fn read_session_file(path: &Path, since: Option<DateTime<Utc>>, rollup: &mut Rol
 
     if let Some(ts) = session_ts {
         rollup.touch_ts(&ts);
+    }
+
+    // Session-level counters and the "which project / which model" tallies.
+    // A session with no readable metadata still counts as a session; only the
+    // per-key tallies need the field.
+    rollup.sessions += 1;
+    rollup.messages += v
+        .pointer("/metadata/message_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    rollup.tokens += v
+        .pointer("/metadata/total_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if let Some(workspace) = v.pointer("/metadata/workspace").and_then(Value::as_str)
+        && !workspace.is_empty()
+    {
+        *rollup.projects.entry(workspace.to_string()).or_insert(0) += 1;
+    }
+    if let Some(model) = v.pointer("/metadata/model").and_then(Value::as_str)
+        && !model.is_empty()
+    {
+        *rollup.models.entry(model.to_string()).or_insert(0) += 1;
     }
 
     // Walk messages looking for tool_use calls with associated results.
@@ -837,7 +879,7 @@ fn parse_ts_field(v: &Value, field: &str) -> Option<DateTime<Utc>> {
 }
 
 /// Format a number with thousands separators.
-fn fmt_num(n: u64) -> String {
+pub(crate) fn fmt_num(n: u64) -> String {
     let s = n.to_string();
     let mut result = String::with_capacity(s.len() + s.len() / 3);
     for (i, ch) in s.chars().rev().enumerate() {
@@ -1018,5 +1060,54 @@ mod tests {
         rollup.tool_mut("read_file").calls = 4_012;
         rollup.tool_mut("exec_shell").calls = 1_118;
         assert_eq!(rollup.total_tool_calls(), 5_130);
+    }
+
+    /// Session files carry the workspace and model the digest tallies, so a
+    /// wrong JSON pointer here would surface as an empty project list rather
+    /// than as an error — this pins the pointers against a real file shape.
+    #[test]
+    fn session_files_are_tallied_by_workspace_and_model() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session = serde_json::json!({
+            "metadata": {
+                "created_at": "2026-04-01T10:00:00Z",
+                "updated_at": "2026-04-01T11:00:00Z",
+                "message_count": 12,
+                "total_tokens": 4_200,
+                "workspace": "/Users/dev/one",
+                "model": "deepseek-chat"
+            },
+            "messages": []
+        });
+        std::fs::write(
+            dir.path().join("a.json"),
+            serde_json::to_string(&session).unwrap(),
+        )
+        .unwrap();
+
+        let mut rollup = Rollup::default();
+        read_session_files(dir.path(), None, &mut rollup);
+
+        assert_eq!(rollup.sessions, 1);
+        assert_eq!(rollup.messages, 12);
+        assert_eq!(rollup.tokens, 4_200);
+        assert_eq!(rollup.projects["/Users/dev/one"], 1);
+        assert_eq!(rollup.models["deepseek-chat"], 1);
+
+        // A session whose metadata carries no workspace still counts.
+        let anonymous = serde_json::json!({ "metadata": {}, "messages": [] });
+        std::fs::write(
+            dir.path().join("b.json"),
+            serde_json::to_string(&anonymous).unwrap(),
+        )
+        .unwrap();
+        let mut rollup = Rollup::default();
+        read_session_files(dir.path(), None, &mut rollup);
+        assert_eq!(rollup.sessions, 2);
+        // Both files are read again; the anonymous one adds a session but no
+        // project, no model, and no tokens.
+        assert_eq!(rollup.projects.len(), 1);
+        assert_eq!(rollup.models.len(), 1);
+        assert_eq!(rollup.tokens, 4_200, "an anonymous session adds no tokens");
     }
 }

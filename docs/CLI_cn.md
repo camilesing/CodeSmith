@@ -68,6 +68,20 @@ prompt 的入口有两个：
   仅文件：`/undo` 与 `/retry` 是对话那一半。
 - **`/code-review`、`/security-review`、`/simplify`、`/run`、`/verify`** 是内置技能
   （提示词工作流），由 `/skills` 列出，磁盘上同名技能可覆盖它们。
+- **`/pr <number|url>`** 通过 `gh` 把 GitHub PR —— 标题、正文、分支与截断后的
+  diff —— 取回成提示行里的可编辑草稿，于是在你已有的会话与工作区里审阅。
+  `--checkout` 会先执行 `gh pr checkout`；`--repo owner/name` 读别的仓库。
+  命令行入口 `codesmith pr <N>` 是同一份取回，只是用它开一个新会话。
+- **`/insights [7d|30d|all]`** 打印本地存储对"你是怎么工作的"的记录 —— 会话、
+  token、项目、模型、工具调用及其审批/成功计数、压缩、子代理启动 —— 并把一份
+  自包含的 HTML 报告写到 `~/.codesmith/insights/`。它读的是 `codesmith metrics`
+  读的同样三个来源，不上传任何内容。
+- **`/loop <interval> <prompt>`**（别名 `/proactive`）把这条提示的周期运行存成一条
+  automation，由会话的调度器作为后台任务触发 —— 它有自己的 runtime thread，
+  所以**迭代不会出现在本对话里**。`/loop list` 显示每个循环的下次与上次运行，
+  `/loop run|pause|resume|stop <id>` 管理单个循环；不带提示的 `/loop <interval>`
+  使用工作区的 `loop.md` 或内置维护提示。下限是一小时（调度器的 RRULE 只有
+  小时/周粒度），因此 `/loop 5m` 会被点名拒绝，而不是四舍五入。
 - **`/effort`、`/autocompact`、`/usage`、`/tasks`、`/plugins`、`/reload-skills`、
   `/reload-plugins`、`/theme`、`/color`、`/statusline`、`/copy`、`/doctor`、
   `/debug`、`/release-notes`、`/terminal-setup`、`/keybindings`** 覆盖模型档位、
@@ -110,17 +124,18 @@ prompt 的入口有两个：
 `/claude-in-chrome` `/ide` `/upgrade` `/passes` `/usage-credits`
 `/rate-limit-options` `/privacy-settings` `/web-setup` `/install-github-app`
 `/install-slack-app` `/autofix-pr` `/ultrareview` `/heapdump` `/radio`
-`/stickers` `/powerup` `/team-onboarding` `/insights` `/fast` `/scroll-speed`
+`/stickers` `/powerup` `/team-onboarding` `/fast` `/scroll-speed`
 `/tui` `/focus` `/keybindings-file` `/list-agents` `/peers` `/schedule`
-`/loop` `/batch` `/subtask` `/branch` `/pr`、内置技能之外的 `/simplify` 变体，
+`/batch` `/subtask` `/branch`、内置技能之外的 `/simplify` 变体，
 以及 `/plugin` 编写面。
 
 同样在范围之外并写明原因的：键位配置文件（绑定编译在程序内，`/keybindings` 只读）、
-emoji 短代码与拼写检查（二者都需要本 REPL 未随附的数据表）、以及全屏渲染器的
-transcript viewer 按键。
+emoji 短代码与拼写检查（二者都需要本 REPL 未随附的数据表）、全屏渲染器的
+transcript viewer 按键，以及 `/pr-comments`（Claude Code 在 v2.1.91 删除它并建议
+直接让模型读评论 —— `/pr` 准备的正是让会话这么做的上下文）。
 
-CLI 侧的 PR 审阅入口是 `codesmith pr <N>`；REPL 不带 `/pr`，因为该命令需要
-REPL 并不持有的已解析 `Cli` 句柄。
+`/pr` 与 `codesmith pr <N>` 都走 `gh`：没有安装（或没跑过 `gh auth login`）时
+`/pr` 会明说，并且什么都不取回。
 
 ## 模型选择
 
