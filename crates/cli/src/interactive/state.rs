@@ -151,6 +151,10 @@ pub struct ReplState {
     /// Effective merged config (user + project + preset layer). Slash
     /// commands mutate this copy; engine rebuilds read it.
     pub config: Config,
+    /// Persisted UI settings, loaded once at startup. Kept so the editor
+    /// configuration (history cap, edit mode, `@`-completion bounds) and
+    /// `/config` read the same snapshot the session started with.
+    pub settings: Settings,
     /// Bound extension runner surfaced from the engine spawn.
     pub extension_runner: Option<Arc<codesmith_extensions::ExtensionRunner>>,
     /// Tool-catalog baseline shared from the engine (the `/tools` readout).
@@ -337,6 +341,7 @@ impl ReplState {
                 .unwrap_or(0),
             lsp_enabled: config.lsp.as_ref().and_then(|l| l.enabled).unwrap_or(true),
             config: config.clone(),
+            settings,
             extension_runner: None,
             tool_catalog: None,
             fact_ledger: None,

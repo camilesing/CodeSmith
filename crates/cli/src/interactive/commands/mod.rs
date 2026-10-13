@@ -559,7 +559,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
 }
 
 /// `/help` — every registered command, straight from
-/// [`registry::Command::ALL`].
+/// [`registry::Command::ALL`], grouped by [`registry::Group`].
 ///
 /// Table-driven so it cannot fall behind the dispatcher (it was a
 /// hardcoded 20-row subset of the 75 dispatchable names) and so it names
@@ -569,17 +569,28 @@ fn print_help(state: &ReplState) {
         "{}",
         "commands (Tab completes these names; Shift+Tab cycles the run mode):".bold()
     );
-    for info in registry::Command::ALL {
-        let name = if info.usage.is_empty() {
-            format!("/{}", info.name)
-        } else {
-            format!("/{} {}", info.name, info.usage)
-        };
-        if name.len() <= 32 {
-            println!("  {name:<32} {}", info.help.dimmed());
-        } else {
-            println!("  {name}");
-            println!("    {}", info.help.dimmed());
+    for group in registry::Group::ALL {
+        let rows: Vec<&registry::CommandInfo> = registry::Command::ALL
+            .iter()
+            .filter(|info| info.group == *group)
+            .collect();
+        if rows.is_empty() {
+            continue;
+        }
+        println!();
+        println!("{}", format!("{}:", group.label()).bold());
+        for info in rows {
+            let name = if info.usage.is_empty() {
+                format!("/{}", info.name)
+            } else {
+                format!("/{} {}", info.name, info.usage)
+            };
+            if name.len() <= 32 {
+                println!("  {name:<32} {}", info.help.dimmed());
+            } else {
+                println!("  {name}");
+                println!("    {}", info.help.dimmed());
+            }
         }
     }
     let user = user_cmd_store::user_command_names(Some(&state.workspace));
