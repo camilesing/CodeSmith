@@ -235,7 +235,7 @@ pub fn status_line(state: &ReplState) -> String {
         state.session.last_prompt_tokens,
         state.context_window(),
     );
-    render_status_line(
+    let mut line = render_status_line(
         run_state,
         state.active_preset.as_deref(),
         ctx,
@@ -244,7 +244,14 @@ pub fn status_line(state: &ReplState) -> String {
         &state.model_display_label(),
         state.reasoning_effort,
         env!("CODESMITH_BUILD_VERSION"),
-    )
+    );
+    // `/statusline <command>`: the user's own segment, refreshed by the REPL
+    // loop (this renderer stays synchronous and never spawns anything).
+    if let Some(text) = state.statusline_text.as_deref() {
+        line.push_str(&" │ ".dimmed().to_string());
+        line.push_str(text);
+    }
+    line
 }
 
 /// The transient in-turn live line: a shorter variant without the
