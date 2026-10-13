@@ -1112,6 +1112,16 @@ pub struct ProviderConfig {
     /// fronting a vision model the matrix cannot see, `false` to force the
     /// text-reference fallback on a vision-capable model.
     pub vision: Option<bool>,
+    /// Display-only model name. The REPL prints this string verbatim (banner,
+    /// status line, `/status`, `/model`, …) so a gateway alias can be labelled
+    /// with what actually serves it. Presentation only: the request payload,
+    /// session metadata and logs keep the real `model` id.
+    pub display_model: Option<String>,
+    /// Context-window override in tokens for gateway deployments whose backend
+    /// window the static `context_window_for_model` table cannot see. Drives
+    /// the status-line 🧭 denominator, `/context` / `/tokens`, and the
+    /// auto-compaction threshold. `None` defers to that table.
+    pub context_window: Option<u32>,
 }
 
 /// Runtime view of a single `[[providers.custom]]` entry (ROADMAP §D2).
@@ -1135,6 +1145,10 @@ pub struct CustomProviderConfig {
     /// Custom gateways have no static matrix entry, so the effective default
     /// is `false` (text-reference fallback) unless this is set.
     pub vision: Option<bool>,
+    /// Display-only model name; see [`ProviderConfig::display_model`].
+    pub display_model: Option<String>,
+    /// Context-window override in tokens; see [`ProviderConfig::context_window`].
+    pub context_window: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -1769,6 +1783,71 @@ impl Config {
             return vision;
         }
         provider_capability(self.api_provider(), model).vision_supported
+    }
+
+    /// Display-only model label for the active provider, if configured.
+    /// Resolution order: the `[[providers.custom]]` entry's `display_model`,
+    /// then `[providers.<id>] display_model`. Like the window override it
+    /// belongs to the provider, so it keeps applying after a `/model` switch to
+    /// another id on the same provider. `None` means "show the model id" (see
+    /// `ReplState::model_display_label`). Presentation only — the request
+    /// payload and session metadata keep the real `model` id.
+    #[must_use]
+    pub fn model_display_name(&self) -> Option<&str> {
+        let configured = if let Some(entry) = self.custom_provider_entry() {
+            entry.display_model.as_deref()
+        } else {
+            self.provider_config()
+                .and_then(|config| config.display_model.as_deref())
+        };
+        configured.filter(|name| !name.trim().is_empty())
+    }
+
+    /// The configured `context_window` override only — the
+    /// `[[providers.custom]]` entry's value, else `[providers.<id>]`'s. `None`
+    /// when the user declared none, even if the static table knows the model:
+    /// callers that already resolve a richer capability (the doctor report's
+    /// provider matrix, which maps deprecated DeepSeek aliases to V4's window)
+    /// use this to substitute only an explicit declaration.
+    #[must_use]
+    pub fn context_window_override(&self) -> Option<u32> {
+        if let Some(entry) = self.custom_provider_entry() {
+            entry.context_window
+        } else {
+            self.provider_config()
+                .and_then(|config| config.context_window)
+        }
+    }
+
+    /// Effective context window (tokens) for the active provider and `model`.
+    ///
+    /// Resolution order: [`Self::context_window_override`], then the static
+    /// `context_window_for_model` table. A custom entry that sets none still
+    /// falls through to the static table (its backend may be a model the table
+    /// knows). The override belongs to the provider, not to one model id, so it
+    /// keeps applying after a `/model` switch to another id on the same
+    /// provider — it states what the endpoint's backend really accepts.
+    ///
+    /// Known limitation: only the CLI-side consumers honour it (status line,
+    /// `/context`, `/tokens`, auto-compaction thresholds). Engine-internal
+    /// capacity math (`cycle_manager`, `engine/context.rs`,
+    /// `engine/capacity_flow.rs`, `compaction/compact.rs`) still resolves the
+    /// window from the static table.
+    #[must_use]
+    pub fn effective_context_window(&self, model: &str) -> Option<u32> {
+        self.context_window_override()
+            .or_else(|| crate::models::context_window_for_model(model))
+    }
+
+    /// Auto-compaction trigger for `model`, honouring
+    /// [`Self::effective_context_window`]. The window→threshold formula stays
+    /// in the agent crate; this only picks the window.
+    #[must_use]
+    pub fn compaction_threshold(&self, model: &str) -> usize {
+        match self.effective_context_window(model) {
+            Some(window) => crate::models::compaction_threshold_for_window(window, model),
+            None => crate::models::compaction_threshold_for_model(model),
+        }
     }
 
     /// §B3 slice 52 — read-side fallback for hand-edited `[providers.deepseek_cn]`
@@ -3936,6 +4015,8 @@ fn merge_provider_config(base: ProviderConfig, override_cfg: ProviderConfig) -> 
         auth_mode: override_cfg.auth_mode.or(base.auth_mode),
         http_headers: override_cfg.http_headers.or(base.http_headers),
         vision: override_cfg.vision.or(base.vision),
+        display_model: override_cfg.display_model.or(base.display_model),
+        context_window: override_cfg.context_window.or(base.context_window),
     }
 }
 
@@ -8617,6 +8698,114 @@ vision = true
         )?;
         let config = Config::load(None, None)?;
         assert!(config.vision_supported());
+        Ok(())
+    }
+
+    #[test]
+    fn gateway_overrides_resolve_for_window_and_display_name() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "codesmith-cli-gateway-override-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+        let config_path = temp_root.join(".codesmith").join("config.toml");
+        ensure_parent_dir(&config_path)?;
+
+        // A `claude-*` alias on a gateway: the static table guesses Claude's
+        // 200k window and there is no display override.
+        fs::write(
+            &config_path,
+            r#"api_key = "codesmith-test-key"
+provider = "anthropic"
+
+[providers.anthropic]
+base_url = "https://open.bigmodel.cn/api/anthropic"
+model = "claude-sonnet-4-5"
+"#,
+        )?;
+        let config = Config::load(None, None)?;
+        assert_eq!(
+            config.effective_context_window("claude-sonnet-4-5"),
+            Some(200_000)
+        );
+        assert_eq!(config.model_display_name(), None);
+
+        // The gateway declares both: the window it really accepts and the name
+        // to show for the alias.
+        fs::write(
+            &config_path,
+            r#"api_key = "codesmith-test-key"
+provider = "anthropic"
+
+[providers.anthropic]
+base_url = "https://open.bigmodel.cn/api/anthropic"
+model = "claude-sonnet-4-5"
+context_window = 131072
+display_model = "GLM-4.6 (BigModel)"
+"#,
+        )?;
+        let config = Config::load(None, None)?;
+        assert_eq!(
+            config.effective_context_window("claude-sonnet-4-5"),
+            Some(131_072)
+        );
+        // The override belongs to the provider, so it holds for any model id
+        // selected on it (e.g. after a `/model` switch).
+        assert_eq!(
+            config.effective_context_window("claude-haiku-4-5"),
+            Some(131_072)
+        );
+        assert_eq!(config.model_display_name(), Some("GLM-4.6 (BigModel)"));
+
+        // A profile layer merges field-wise with the base file: the profile's
+        // `display_model` applies while the base `context_window` survives.
+        fs::write(
+            &config_path,
+            r#"api_key = "codesmith-test-key"
+provider = "anthropic"
+
+[providers.anthropic]
+model = "claude-sonnet-4-5"
+context_window = 131072
+
+[profiles.small.providers.anthropic]
+display_model = "profile label"
+"#,
+        )?;
+        let config = Config::load(None, Some("small"))?;
+        assert_eq!(
+            config.effective_context_window("claude-sonnet-4-5"),
+            Some(131_072)
+        );
+        assert_eq!(config.model_display_name(), Some("profile label"));
+
+        // A custom entry's own override applies without the builtin table.
+        fs::write(
+            &config_path,
+            r#"api_key = "codesmith-test-key"
+custom_provider = "my-gateway"
+
+[[providers.custom]]
+id = "my-gateway"
+base_url = "https://gw.example.com/v1"
+model = "claude-sonnet-4-5"
+context_window = 65536
+display_model = "behind-the-gateway"
+"#,
+        )?;
+        let config = Config::load(None, None)?;
+        assert_eq!(
+            config.effective_context_window("claude-sonnet-4-5"),
+            Some(65_536)
+        );
+        assert_eq!(config.model_display_name(), Some("behind-the-gateway"));
         Ok(())
     }
 

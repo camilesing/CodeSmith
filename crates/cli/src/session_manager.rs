@@ -119,11 +119,11 @@ pub struct SessionMetadata {
     pub total_tokens: u64,
     /// Model used for the session
     pub model: String,
-    /// Server-reported model name from the last turn's stream — the real
-    /// model behind gateway aliases (e.g. BigModel's Anthropic-compatible
-    /// endpoint serving a GLM model under a `claude-*` alias). Kept in
-    /// agreement with the REPL status-bar label. Absent when no response
-    /// has been saved yet or the provider reports nothing.
+    /// Model name carried by the last turn's stream — in practice the requested
+    /// id (`ReplState::reported_model` records why). Kept in agreement with the
+    /// REPL status-bar label, which a configured `[providers.<id>]
+    /// display_model` overrides. Absent when no response has been saved yet or
+    /// the frame carries none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reported_model: Option<String>,
     /// Workspace directory

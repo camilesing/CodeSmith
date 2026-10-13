@@ -1226,13 +1226,13 @@ pub struct HostAgentExecutor {
     /// an `await` (matches the `LspProbe` / `CompactionProbe` precedent).
     usage: std::sync::Mutex<Usage>,
 
-    /// Server-reported model name from this turn's stream `MessageStart`
-    /// frames (the provider's `message.model` — the real model behind
-    /// gateway aliases such as BigModel's Anthropic-compatible endpoint).
-    /// Recorded by [`Self::reduce_stream`]; the host reads it back via
-    /// [`HostAgentExecutor::take_reported_model`] after `run` returns and
-    /// surfaces it on [`Event::TurnComplete`] so the status bar can show
-    /// the model that actually served the turn. Last report wins across a
+    /// Model name carried by this turn's stream `MessageStart` frames (the
+    /// frame's `message.model`). Recorded by [`Self::reduce_stream`]; the host
+    /// reads it back via [`HostAgentExecutor::take_reported_model`] after `run`
+    /// returns and surfaces it on [`Event::TurnComplete`]. Providers currently
+    /// synthesize that frame from the request id, so in practice this repeats
+    /// the requested model — a gateway alias is labelled by the user-facing
+    /// `[providers.<id>] display_model` instead. Last report wins across a
     /// turn's stream rounds. `std::sync::Mutex` for the same reason as
     /// [`Self::usage`]: a synchronous assignment, never held across an
     /// `await`.
@@ -1646,11 +1646,11 @@ impl HostAgentExecutor {
         self.usage.lock().expect("usage mutex poisoned").clone()
     }
 
-    /// Read back the server-reported model name recorded by the inline
-    /// stream reducer's `MessageStart` arm. The host calls this after `run`
-    /// returns to populate `turn.reported_model` → `Event::TurnComplete`.
-    /// The executor is constructed fresh each turn, so no cross-turn
-    /// leakage. Mirrors the [`take_usage`] read-back pattern.
+    /// Read back the model name recorded by the inline stream reducer's
+    /// `MessageStart` arm. The host calls this after `run` returns to populate
+    /// `turn.reported_model` → `Event::TurnComplete`. The executor is
+    /// constructed fresh each turn, so no cross-turn leakage. Mirrors the
+    /// [`take_usage`] read-back pattern.
     ///
     /// [`take_usage`]: HostAgentExecutor::take_usage
     #[must_use]
@@ -1661,7 +1661,7 @@ impl HostAgentExecutor {
             .clone()
     }
 
-    /// Record a server-reported model name. Called from
+    /// Record the `MessageStart` frame's model name. Called from
     /// [`reduce_stream`](Self::reduce_stream)'s `MessageStart` arm (the
     /// `turn/stream` submodule, hence `pub(crate)`); last report wins.
     pub(crate) fn record_reported_model(&self, model: String) {

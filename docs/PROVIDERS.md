@@ -213,6 +213,23 @@ and `alias_deprecation`.
 All shipped providers use the Chat Completions request payload mode except
 `anthropic`, which uses the Messages request payload mode.
 
+The windows below are what the static model-name heuristics resolve — they
+cannot see through a gateway alias. A provider table (or
+`[[providers.custom]]` entry) can declare the truth instead:
+
+```toml
+[providers.anthropic]
+context_window = 131072                # replaces the 200,000 row for claude-*
+display_model = "GLM-4.6 (BigModel)"   # what the REPL prints for this provider
+```
+
+`context_window` replaces the window in `doctor --json`, the REPL status line,
+`/context`, `/tokens`, and the auto-compaction trigger, and it applies to any
+model id selected on that provider. `display_model` is presentation only —
+requests, session metadata, and logs keep the real model id. Known limit:
+engine-internal capacity math (`cycle_manager`, the capacity preflight) still
+reads this table.
+
 | Provider/model class | Context window | Max output metadata | Thinking support | Cache telemetry | FIM endpoint |
 | --- | --- | --- | --- | --- | --- |
 | DeepSeek V4 (`deepseek-v4-pro`, `deepseek-v4-flash`) | 1,000,000 | 384,000 | yes | yes | DeepSeek beta only |

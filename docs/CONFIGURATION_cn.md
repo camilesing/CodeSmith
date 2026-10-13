@@ -161,6 +161,23 @@ provider 才能收到它。
 多个 provider 表，可以使用 `[providers.openai].model` 作为 OpenAI
 provider 专属的覆盖值。
 
+当网关背后的模型与模型名所暗示的不一致时（静态表看不穿的别名），
+有两个可选键可以如实描述它：
+
+```toml
+[providers.openai]
+display_model = "GLM-4.6 (BigModel)"   # REPL 原样打印的名称
+context_window = 131072                # 后端真正接受的 token 数
+```
+
+`display_model` 只影响呈现：banner、状态行、`/status`、`/model` 打印该
+字符串，而请求载荷、会话元数据和日志仍保留真实模型 id。`context_window`
+驱动 `🧭` 分母、`/context`、`/tokens`、`doctor --json` 的
+`capability.context_window` 以及自动压缩阈值；未设置时这些都回退到静态
+模型名表（例如任何 `claude-*` id 都会解析为 200,000）。两个键都属于
+provider，因此在该 provider 上 `/model` 切换到别的 id 后依然生效。
+引擎内部的容量计算（`cycle_manager`、容量预检）仍读静态表。
+
 #### 自定义 provider 注册表（`[[providers.custom]]`）
 
 当网关需要自己的 provider 身份而不是借用 `openai` 时，可以在
@@ -177,6 +194,8 @@ model = "glm-5"
 # auth_mode = "bearer"                    # 可选
 # http_headers = { "X-Gateway-Route" = "dev" }
 # vision = true                           # 可选；默认 false
+# display_model = "GLM-4.6 (BigModel)"    # 可选；REPL 原样打印
+# context_window = 131072                 # 可选；后端真正接受的 token 数
 ```
 
 规则：`id` 必填且唯一；不得与内置 provider 名冲突——内置选择器保持
@@ -1271,7 +1290,9 @@ allowed_sandbox_modes = ["read-only", "workspace-write"]
 （发布文档、API 指南）而不是实时 API 探测。顶层子键有：
 `resolved_provider`、`resolved_model`、`context_window`、`max_output`、
 `thinking_supported`、`cache_telemetry_supported` 和
-`request_payload_mode`。
+`request_payload_mode`。显式设置的 `[providers.<id>] context_window`
+（或 `[[providers.custom]]`）会替换 `context_window`；未设置时保持静态
+值，包括已废弃别名的映射（DeepSeek `deepseek-chat` → V4 的窗口）。
 
 在 CI 脚本中使用 `capability.context_window` 和 `capability.max_output`
 进行模型上限检查；不要把 `capability.max_output` 当作每轮请求预算。

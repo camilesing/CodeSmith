@@ -23,7 +23,6 @@ use colored::Colorize;
 use super::state::ReplState;
 use crate::app_state::{AppMode, ReasoningEffort};
 use crate::compaction::estimate_input_tokens_conservative;
-use crate::models::context_window_for_model;
 
 /// Context-warning thresholds (mirrors the retired header widget).
 pub const CONTEXT_WARN_PCT: f64 = 85.0;
@@ -61,13 +60,17 @@ impl RunState {
 /// over the live API messages wins; the reported `last_prompt_tokens`
 /// (which sums input across every round of a multi-round turn) is a
 /// fallback only. Values clamp to the window.
+///
+/// `window` is caller-resolved — `ReplState::context_window` applies the
+/// provider's `context_window` override and otherwise falls back to the static
+/// model table. `None` means "no known window": the caller renders `🧭 —`.
 pub fn context_usage(
     api_messages: &[crate::models::Message],
     system_prompt: Option<&crate::models::SystemPrompt>,
     last_prompt_tokens: Option<u32>,
-    effective_model: &str,
+    window: Option<u32>,
 ) -> Option<(i64, u32, f64)> {
-    let max = context_window_for_model(effective_model)?;
+    let max = window?;
     let max_i64 = i64::from(max);
     let reported = last_prompt_tokens
         .map(i64::from)
@@ -230,7 +233,7 @@ pub fn status_line(state: &ReplState) -> String {
         &state.api_messages,
         state.system_prompt.as_ref(),
         state.session.last_prompt_tokens,
-        state.effective_model_for_budget(),
+        state.context_window(),
     );
     render_status_line(
         run_state,
@@ -255,7 +258,7 @@ pub fn live_line(state: &ReplState, current_tool: Option<&str>) -> String {
         &state.api_messages,
         state.system_prompt.as_ref(),
         state.session.last_prompt_tokens,
-        state.effective_model_for_budget(),
+        state.context_window(),
     );
     let mut parts = vec![state_segment(RunState::Working)];
     if let Some(tool) = current_tool {
@@ -290,7 +293,7 @@ mod tests {
     fn context_percent_clamps_to_window() {
         // an estimate far above the window clamps to the window
         let (used, max, pct) =
-            context_usage(&[huge_user_message()], None, None, "deepseek-chat").unwrap();
+            context_usage(&[huge_user_message()], None, None, Some(128_000)).unwrap();
         assert_eq!(used, i64::from(max));
         assert!((pct - 100.0).abs() < f64::EPSILON);
     }
@@ -300,7 +303,7 @@ mod tests {
         // a small conversation with an inflated reported value keeps the
         // (smaller) estimate — the #115 anti-bounce rule
         let (used, _, _) =
-            context_usage(&[huge_user_message()], None, Some(0), "deepseek-chat").unwrap();
+            context_usage(&[huge_user_message()], None, Some(0), Some(128_000)).unwrap();
         // the huge estimate still clamps to the window; reported 0 never wins
         assert!(used > 0);
     }

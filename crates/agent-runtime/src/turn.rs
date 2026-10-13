@@ -44,10 +44,11 @@ pub struct TurnContext {
     /// Usage for this turn
     pub usage: Usage,
 
-    /// Server-reported model name from this turn's stream `MessageStart`
-    /// frames — the real model behind gateway aliases. `None` until the
-    /// first response arrives or when the provider reports nothing. Set
-    /// from the executor's one-shot drain alongside `usage`.
+    /// Model name carried by this turn's stream `MessageStart` frame. `None`
+    /// until the first response arrives or when the frame carries none. Set
+    /// from the executor's one-shot drain alongside `usage`. In practice it
+    /// repeats the requested id — see `ReplState::reported_model` for why, and
+    /// `[providers.<id>] display_model` for labelling a gateway alias.
     pub reported_model: Option<String>,
 }
 

@@ -1549,8 +1549,8 @@ impl Engine {
         // `total_usage.add` below and `Event::TurnComplete.usage`. The
         // executor is constructed fresh each turn, so this starts at zero.
         turn.usage = executor.take_usage();
-        // Same one-shot drain for the server-reported model name (the real
-        // model behind gateway aliases); flows into
+        // Same one-shot drain for the `MessageStart` model name (in practice the
+        // requested id — see `ReplState::reported_model`); flows into
         // `Event::TurnComplete.reported_model`.
         turn.reported_model = executor.take_reported_model();
         // Slice 25a/25c §E: apply the deferred compaction closure. The

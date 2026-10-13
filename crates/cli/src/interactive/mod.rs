@@ -326,6 +326,10 @@ impl rustyline::ConditionalEventHandler for ShiftTabCycler {
 
 /// Walk the mode ring once per recorded Shift+Tab and report where it
 /// landed. No-op when the prompt returned without one.
+///
+/// The notice is dimmed rather than highlighted: the `🚥` status segment
+/// above the prompt is the indicator, this line only says which way the
+/// key just moved it.
 fn apply_mode_cycles(state: &mut ReplState, cycles: &ModeCycles) {
     let presses = cycles.swap(0, Ordering::SeqCst);
     if presses == 0 {
@@ -336,7 +340,7 @@ fn apply_mode_cycles(state: &mut ReplState, cycles: &ModeCycles) {
     }
     println!(
         "{}",
-        format!("switched to {} mode (Shift+Tab cycles)", state.mode.label()).cyan()
+        format!("switched to {} mode (Shift+Tab cycles)", state.mode.label()).dimmed()
     );
 }
 

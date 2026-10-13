@@ -205,6 +205,20 @@ AtlasCloud 保持与配置层相同的默认模型，并为 Pro 和 Flash 行添
 除 `anthropic` 使用 Messages 请求载荷模式外，其余已交付的提供商都使用
 Chat Completions 请求载荷模式。
 
+下表中的窗口是静态模型名启发式解析出的值——它们看不穿网关别名。provider
+表（或 `[[providers.custom]]` 条目）可以直接声明真实情况：
+
+```toml
+[providers.anthropic]
+context_window = 131072                # 替换 claude-* 行的 200,000
+display_model = "GLM-4.6 (BigModel)"   # REPL 为该 provider 打印的名称
+```
+
+`context_window` 会替换 `doctor --json`、REPL 状态行、`/context`、`/tokens`
+以及自动压缩阈值所用的窗口，且对在该 provider 上选中的任何模型 id 生效。
+`display_model` 只影响呈现——请求、会话元数据和日志仍保留真实模型 id。
+已知边界：引擎内部的容量计算（`cycle_manager`、容量预检）仍读本表。
+
 | 提供商/模型类别 | 上下文窗口 | 最大输出元数据 | 推理支持 | 缓存遥测 | FIM 端点 |
 | --- | --- | --- | --- | --- | --- |
 | DeepSeek V4（`deepseek-v4-pro`、`deepseek-v4-flash`） | 1,000,000 | 384,000 | 是 | 是 | 仅 DeepSeek beta |

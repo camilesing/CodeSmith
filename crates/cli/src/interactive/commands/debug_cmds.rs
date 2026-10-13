@@ -39,7 +39,7 @@ pub fn tokens(state: &ReplState) {
         &state.api_messages,
         state.system_prompt.as_ref(),
         state.session.last_prompt_tokens,
-        state.effective_model_for_budget(),
+        state.context_window(),
     ) {
         println!(
             "  context:            {used}/{max} ({percent:.0}%) — compact threshold {}",
@@ -125,7 +125,7 @@ pub fn context(state: &ReplState) {
         &state.api_messages,
         state.system_prompt.as_ref(),
         state.session.last_prompt_tokens,
-        state.effective_model_for_budget(),
+        state.context_window(),
     ) {
         Some((used, max, percent)) => println!(
             "context: {used}/{max} tokens ({percent:.0}% of window) — {} messages, compaction threshold {}",
@@ -134,7 +134,8 @@ pub fn context(state: &ReplState) {
         ),
         None => println!(
             "{}",
-            "context: unknown window for the current model — run a turn first".dimmed()
+            "context: no window known for the current model — set [providers.<id>] context_window, or run a turn first"
+                .dimmed()
         ),
     }
 }

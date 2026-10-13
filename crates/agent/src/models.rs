@@ -433,6 +433,17 @@ pub fn compaction_threshold_for_model(model: &str) -> usize {
     let Some(window) = context_window_for_model(model) else {
         return DEFAULT_COMPACTION_TOKEN_THRESHOLD;
     };
+    compaction_threshold_for_window(window, model)
+}
+
+/// The same trigger for a caller-supplied window.
+///
+/// For deployments that know the endpoint's real window — a gateway alias
+/// whose backend model the name heuristics cannot see — so the override drives
+/// the trigger instead of [`context_window_for_model`]'s guess. `model` still
+/// feeds [`max_output_tokens_for_model`] (the summary reserve) and nothing else.
+#[must_use]
+pub fn compaction_threshold_for_window(window: u32, model: &str) -> usize {
     let effective_window = auto_compact_effective_window(window, model);
     let base = usize::try_from(effective_window.saturating_sub(AUTO_COMPACT_BUFFER_TOKENS))
         .unwrap_or(DEFAULT_COMPACTION_TOKEN_THRESHOLD);
@@ -658,6 +669,34 @@ mod tests {
         // 8K window underflows the 20K summary reserve — same zero trigger as
         // before the small-window branch existed.
         assert_eq!(compaction_threshold_for_model("tiny-8k"), 0);
+    }
+
+    #[test]
+    fn window_supplied_threshold_matches_the_model_lookup() {
+        // A caller that supplies the window (a gateway's `context_window`
+        // override) must get the same formula as the table lookup — one
+        // implementation, two entry points.
+        for model in [
+            "deepseek-v4-pro",
+            "claude-sonnet-4-20250514",
+            "z-ai/glm-5.1",
+            "deepseek-v3.2-128k",
+            "tiny-8k",
+        ] {
+            let window = context_window_for_model(model).expect(model);
+            assert_eq!(
+                compaction_threshold_for_window(window, model),
+                compaction_threshold_for_model(model),
+                "threshold diverged for {model}"
+            );
+        }
+        // An overridden window really moves the trigger: 64K on a claude id that
+        // would otherwise resolve to 200K (64_000 − 20_000 reserve − 13_000
+        // buffer, then the small-window 2/3 tightening).
+        assert_eq!(
+            compaction_threshold_for_window(64_000, "claude-sonnet-4-5"),
+            20_666
+        );
     }
 
     #[test]

@@ -21,10 +21,7 @@ use crate::cycle_manager::CycleConfig;
 use crate::hooks::{HookContext, HookEvent, HookExecutor};
 use crate::localization::{Locale, resolve_locale};
 use crate::mcp;
-use crate::models::{
-    Message, SystemPrompt, compaction_threshold_for_model,
-    compaction_threshold_for_model_and_effort,
-};
+use crate::models::{Message, SystemPrompt};
 use crate::session_manager::SessionManager;
 use crate::settings::Settings;
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
@@ -77,17 +74,19 @@ pub struct ReplState {
     pub model: String,
     pub auto_model: bool,
     pub last_effective_model: Option<String>,
-    /// Server-reported model name from the last turn's stream
-    /// `MessageStart` frames — the real model behind gateway aliases
-    /// (e.g. BigModel's Anthropic-compatible endpoint serving a GLM model
-    /// under a `claude-*` alias). `model_display_label` prefers it so the
-    /// status bar shows the model that actually served the turn.
+    /// Model name carried by the last turn's stream `MessageStart` frame.
     ///
-    /// Known limitations: the startup banner still shows the configured
-    /// alias (no response has arrived yet); after `/resume` it falls back
-    /// to the configured id until the next turn completes; and the
-    /// context-window budget (`effective_model_for_budget`) intentionally
-    /// stays keyed on the requested id.
+    /// It is not a window onto a gateway's backend: every production provider
+    /// synthesizes that frame locally from the request id
+    /// (`crates/providers/src/rig_adapter/stream.rs`), so in practice this
+    /// equals the configured id. It stays as the rung behind the user's
+    /// `[providers.<id>] display_model` override; to label what an alias really
+    /// serves, set that key.
+    ///
+    /// Known limitations: the startup banner has no response yet; after
+    /// `/resume` it falls back to the configured id until the next turn
+    /// completes; and the context-window budget
+    /// (`effective_model_for_budget`) stays keyed on the requested id.
     pub reported_model: Option<String>,
     pub api_provider: ApiProvider,
     pub model_ids_passthrough: bool,
@@ -225,11 +224,7 @@ impl ReplState {
         } else {
             model.as_str()
         };
-        let compact_threshold = auto_compact_threshold(
-            threshold_model,
-            configured_reasoning_effort,
-            settings.auto_compact,
-        );
+        let compact_threshold = config.compaction_threshold(threshold_model);
         let reasoning_effort = if auto_model {
             ReasoningEffort::Auto
         } else {
@@ -477,9 +472,22 @@ impl ReplState {
         }
     }
 
+    /// The session's context-window denominator in tokens: the active
+    /// provider's `context_window` override when configured, else the static
+    /// table for the effective (routed) model. `None` renders as `🧭 —`.
+    pub fn context_window(&self) -> Option<u32> {
+        self.config
+            .effective_context_window(self.effective_model_for_budget())
+    }
+
     pub fn model_display_label(&self) -> String {
-        // The server-reported name (the real model behind gateway aliases)
-        // wins over both the routed id and the configured id.
+        // A configured display name wins verbatim: the user declared what the
+        // endpoint serves, and presentation should not second-guess it.
+        if let Some(configured) = self.config.model_display_name() {
+            return configured.to_string();
+        }
+        // Otherwise the `MessageStart` name (in practice the requested id —
+        // see `reported_model`) wins over the routed and configured ids.
         let reported = self
             .reported_model
             .as_deref()
@@ -508,8 +516,7 @@ impl ReplState {
 
     pub fn update_model_compaction_budget(&mut self) {
         let model = self.effective_model_for_budget().to_string();
-        self.compact_threshold =
-            compaction_threshold_for_model_and_effort(&model, self.reasoning_effort.api_value());
+        self.compact_threshold = self.config.compaction_threshold(&model);
     }
 
     pub fn compaction_config(&self) -> CompactionConfig {
@@ -575,21 +582,6 @@ impl ReplState {
         self.system_prompt = system_prompt.map(SystemPrompt::Text);
         self.set_model_selection(model);
         self.current_session_id = Some(session_id.to_string());
-    }
-}
-
-/// Threshold for the auto-compaction dial, honouring the settings toggle.
-fn auto_compact_threshold(
-    model: &str,
-    reasoning_effort: Option<&str>,
-    auto_compact_enabled: bool,
-) -> usize {
-    if auto_compact_enabled {
-        compaction_threshold_for_model_and_effort(model, reasoning_effort)
-    } else {
-        // Auto-compaction off: fall back to the model's hard window as the
-        // (unused) threshold so compaction never fires early.
-        compaction_threshold_for_model(model)
     }
 }
 
