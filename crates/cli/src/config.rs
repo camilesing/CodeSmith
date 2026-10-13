@@ -235,6 +235,13 @@ pub struct SandboxConfigToml {
     pub excluded_commands: Option<Vec<String>>,
     #[serde(default)]
     pub auto_allow_bash_if_sandboxed: Option<bool>,
+    /// Shell command prefixes that never prompt for approval. Matched by the
+    /// same arity dictionary the approval prompt uses
+    /// (`command_safety::classify_command`), so `"git status"` covers
+    /// `git status -s` and not `git push`. Read at startup; `/permissions`
+    /// shows what is in force and `/permissions allow` persists a grant.
+    #[serde(default)]
+    pub auto_allow: Option<Vec<String>>,
     #[serde(default)]
     pub prefer_bwrap: Option<bool>,
     #[serde(default)]

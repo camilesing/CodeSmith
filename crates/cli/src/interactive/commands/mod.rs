@@ -13,6 +13,7 @@ pub mod extension_cmds;
 pub mod misc_cmds;
 pub mod mods_cmds;
 pub mod network_store;
+pub mod permission_cmds;
 pub mod project_doc;
 pub mod registry;
 pub mod rewind_cmds;
@@ -325,6 +326,26 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
         }
         Command::Copy => {
             crate::interactive::copy_command(state, &arg_str);
+            false
+        }
+        Command::Permissions => {
+            let mut parts = arg_str.split_whitespace();
+            match parts.next().unwrap_or("list").to_ascii_lowercase().as_str() {
+                "list" | "" | "show" => permission_cmds::list(state),
+                "allow" => {
+                    permission_cmds::allow(state, parts.collect::<Vec<_>>().join(" ").as_str())
+                }
+                "deny" => {
+                    permission_cmds::deny(state, parts.collect::<Vec<_>>().join(" ").as_str())
+                }
+                "remove" | "revoke" => {
+                    permission_cmds::remove(state, parts.collect::<Vec<_>>().join(" ").as_str())
+                }
+                other => println!(
+                    "{} unknown subcommand {other:?} — usage: /permissions [list|allow <prefix>|deny <command>|remove <prefix>]",
+                    "✗".red()
+                ),
+            }
             false
         }
         Command::Recap => {

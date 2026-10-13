@@ -71,7 +71,10 @@ prompt 的入口有两个：
 - **`/effort`、`/autocompact`、`/usage`、`/tasks`、`/plugins`、`/reload-skills`、
   `/reload-plugins`、`/theme`、`/color`、`/statusline`、`/copy`、`/doctor`、
   `/debug`、`/release-notes`、`/terminal-setup`、`/keybindings`** 覆盖模型档位、
-  后台视图、扩展面，以及外观与诊断杂项。`/recap` 按需打印一句话总结，
+  后台视图、扩展面，以及外观与诊断杂项。`/permissions` 展示哪些操作不必询问
+  —— 会话授权、持久授权、受信任路径，以及 `[sandbox] auto_allow` 规则 ——
+  并写入持久授权存储（`/permissions allow "git status"` 覆盖 `git status -s`
+  而不覆盖 `git push`，用的是审批提示同一套 arity 词典）。`/recap` 按需打印一句话总结，
   `/output-style` 切换 CodeSmith 具有的压缩风格（`is_simple`），`/resume`
   接受会话*名字*，无参数的 `/rename` 会用首条消息给会话命名。
 
@@ -98,8 +101,8 @@ prompt 的入口有两个：
 `/install-slack-app` `/autofix-pr` `/ultrareview` `/heapdump` `/radio`
 `/stickers` `/powerup` `/team-onboarding` `/insights` `/fast` `/scroll-speed`
 `/tui` `/focus` `/keybindings-file` `/list-agents` `/peers` `/schedule`
-`/loop` `/batch` `/subtask` `/branch` `/import` `/permissions` `/add-dir`
-`/cd` `/pr`、内置技能之外的 `/simplify` 变体，以及 `/plugin` 编写面。
+`/loop` `/batch` `/subtask` `/branch` `/import` `/add-dir` `/cd` `/pr`、
+内置技能之外的 `/simplify` 变体，以及 `/plugin` 编写面。
 
 同样在范围之外并写明原因的：键位配置文件（绑定编译在程序内，`/keybindings` 只读）、
 emoji 短代码与拼写检查（二者都需要本 REPL 未随附的数据表）、以及全屏渲染器的

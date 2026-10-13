@@ -101,6 +101,68 @@ impl ApprovalGrants {
             .map(|grants| grants.iter().cloned().collect())
             .unwrap_or_default()
     }
+
+    /// Remember a grant for `workspace_key`. Takes effect for the running
+    /// session immediately (the approval path reads the caller's in-memory
+    /// copy) and for later sessions once [`Self::save`] runs.
+    pub fn grant(&mut self, workspace_key: &str, grouping_key: &str) {
+        self.projects
+            .entry(workspace_key.to_string())
+            .or_default()
+            .insert(grouping_key.to_string());
+        // A re-granted key must not stay in the removed set, or the union
+        // merge in `save` would drop it again.
+        if let Some(removed) = self.removed.get_mut(workspace_key) {
+            removed.remove(grouping_key);
+        }
+    }
+
+    /// Forget a grant, recording the removal so [`Self::save`] cannot
+    /// resurrect it from disk.
+    pub fn revoke(&mut self, workspace_key: &str, grouping_key: &str) -> bool {
+        let had = self
+            .projects
+            .get_mut(workspace_key)
+            .is_some_and(|grants| grants.remove(grouping_key));
+        self.removed
+            .entry(workspace_key.to_string())
+            .or_default()
+            .insert(grouping_key.to_string());
+        had
+    }
+
+    /// Write the store back, union-merging with what is on disk minus
+    /// anything [`Self::revoke`] removed this session — so a second
+    /// codesmith running in the same workspace cannot lose its grants to
+    /// this process's snapshot.
+    pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        let mut doc = load_doc(path);
+        for (key, grants) in &self.projects {
+            let project = doc.projects.entry(key.clone()).or_default();
+            for grant in grants {
+                project.grants.insert(grant.clone());
+            }
+        }
+        for (key, removed) in &self.removed {
+            if let Some(project) = doc.projects.get_mut(key) {
+                for grant in removed {
+                    project.grants.remove(grant);
+                }
+            }
+        }
+        doc.projects.retain(|_, project| !project.grants.is_empty());
+        for (key, project) in doc.projects.iter_mut() {
+            if self.projects.contains_key(key) {
+                project.updated_at = Some(chrono::Utc::now().to_rfc3339());
+            }
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let encoded = toml::to_string_pretty(&doc)
+            .map_err(|err| std::io::Error::other(format!("encode grants: {err}")))?;
+        std::fs::write(path, encoded)
+    }
 }
 
 /// Read the raw on-disk document. Missing or corrupt file → empty doc,

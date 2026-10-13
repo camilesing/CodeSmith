@@ -670,6 +670,11 @@ codesmith 还将用户偏好存储在：
   `dark`/`light` 使用内置深色调色板，`grayscale`
   是极简的黑/白主题，具名社区预设则应用于整个 UI。接受诸如
   `mono`、`black-white`、`tokyonight` 和 `gruvbox` 之类的别名。
+- `[sandbox] auto_allow`（shell 命令前缀数组，默认空）：永不弹出审批的命令。
+  在启动时读取并按会话授权应用，因此改列表在下次启动生效；`/permissions`
+  展示当前生效项，`/permissions allow` 则把授权写进
+  `~/.codesmith/approvals.toml`。条目按 arity 词典匹配
+  （`"git status"` 覆盖 `git status -s`，不覆盖 `git push`）。
 - `auto_compact`（开/关，默认开）
 - `paste_burst_detection`（开/关，默认开）：为不发出括号粘贴
   （bracketed-paste）事件的终端提供回退的快速按键粘贴检测。这与

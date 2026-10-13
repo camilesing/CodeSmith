@@ -260,6 +260,9 @@ sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-acc
 #   auto_allow = ["cargo check", "npm run"]
 #
 # auto_allow = []
+#
+# Read at startup and applied as approval grants; `/permissions` shows the
+# rules in force and `/permissions allow <prefix>` persists a grant instead.
 max_subagents = 10 # optional (1-20)
 
 # Optional sub-agent tuning. max_concurrent overrides top-level max_subagents.
