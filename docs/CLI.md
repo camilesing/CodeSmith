@@ -97,7 +97,11 @@ this fork's users asked for. The ones worth knowing:
   surfaces it does not need to import because CodeSmith already reads them —
   `CLAUDE.md`/`.claude/instructions.md` as memory, `.claude/commands` and
   `.cursor/commands` as user commands, `~/.claude/skills` in the skill
-  registry — and the ones with no equivalent (`.claude/agents/*.md`). `/recap` prints a
+  registry — and the ones with no equivalent (`.claude/agents/*.md`).
+  `/memory auto [on|off]` reports whether the agent records memories and
+  **which level decided it** — the environment can override the config, and
+  the report names the variable when it does — and writes
+  `[memory] enabled` when asked to change it. `/recap` prints a
   one-line summary on demand, `/output-style` switches the compression style
   CodeSmith has (`is_simple`), `/resume` accepts a session *name*, and
   `/rename` with no argument names the session from its first message.

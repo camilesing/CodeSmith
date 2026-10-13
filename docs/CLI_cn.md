@@ -82,7 +82,10 @@ prompt 的入口有两个：
   （不加 `--yes` 不写任何东西）；它同时报告哪些面无需导入——因为 CodeSmith
   已经原生读取 `CLAUDE.md`/`.claude/instructions.md`（作为记忆）、
   `.claude/commands` 与 `.cursor/commands`（作为用户命令）、`~/.claude/skills`
-  （技能注册表）——以及哪些没有对应物（`.claude/agents/*.md`）。`/recap` 按需打印一句话总结，
+  （技能注册表）——以及哪些没有对应物（`.claude/agents/*.md`）。
+  `/memory auto [on|off]` 报告 agent 是否记录记忆，以及**是哪一层在做决定** ——
+  环境变量可以压过配置，此时报告会点名那个变量 —— 并在要求修改时写入
+  `[memory] enabled`。`/recap` 按需打印一句话总结，
   `/output-style` 切换 CodeSmith 具有的压缩风格（`is_simple`），`/resume`
   接受会话*名字*，无参数的 `/rename` 会用首条消息给会话命名。
 

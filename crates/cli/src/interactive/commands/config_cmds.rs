@@ -606,6 +606,45 @@ fn parse_bool(value: &str) -> Option<bool> {
     }
 }
 
+/// Persist `[<section>] <key> = <bool>` in config.toml.
+///
+/// Same shape as [`super::auto_route::persist_root_string_key`] — parse,
+/// set, serialize — which means the same trade-off: comments in the file are
+/// not preserved by this class of edit. That is pre-existing behaviour for
+/// config writes from the REPL, not a new loss introduced here.
+pub(crate) fn persist_section_bool(
+    config_path: Option<&std::path::Path>,
+    section: &str,
+    key: &str,
+    value: bool,
+) -> anyhow::Result<std::path::PathBuf> {
+    use anyhow::Context;
+
+    let path = super::auto_route::config_toml_path(config_path)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut doc: toml::Value = if path.exists() {
+        toml::from_str(&std::fs::read_to_string(&path)?)
+            .with_context(|| format!("failed to parse config at {}", path.display()))?
+    } else {
+        toml::Value::Table(toml::value::Table::new())
+    };
+    let root = doc
+        .as_table_mut()
+        .context("config.toml root must be a table")?;
+    let table = root
+        .entry(section.to_string())
+        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()))
+        .as_table_mut()
+        .with_context(|| format!("[{section}] in config.toml must be a table"))?;
+    table.insert(key.to_string(), toml::Value::Boolean(value));
+    let body = toml::to_string_pretty(&doc).context("failed to serialize config.toml")?;
+    crate::utils::write_atomic(&path, body.as_bytes())
+        .with_context(|| format!("failed to write config at {}", path.display()))?;
+    Ok(path)
+}
+
 /// Persist an `Option<String>` settings key; `None` clears it.
 ///
 /// A companion to [`persist_setting_string`] for the keys whose absent state
