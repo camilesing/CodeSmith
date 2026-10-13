@@ -26,44 +26,13 @@ use codesmith_agent::memory::ChatHistory;
 use codesmith_agent::models::{ContentBlock, Message};
 use codesmith_agent::tools::{Tool, ToolCapability, ToolError, ToolResult, ToolSet};
 
-use super::approval::requires_approval;
+use super::approval::input_requires_approval;
 use super::stream::{EarlyToolTask, early_start_safe};
 use super::truncation::stop_reason_indicates_output_truncation;
 use crate::engine::dispatch::{ToolExecutionBatch, ToolExecutionPlan, plan_tool_execution_batches};
 use crate::engine::host_executor::HostAgentExecutor;
 use crate::engine::loop_guard::{AttemptDecision, LoopGuard, OutcomeDecision};
 use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope};
-use crate::tool_dispatch::ToolDispatcher;
-use crate::tools::spec::ApprovalRequirement;
-
-/// Classify whether `name`+`input` requires approval, mirroring
-/// `request_approval`'s merge (turn::approval): a host dispatcher's
-/// per-input override wins; `Auto` or `None` falls back to the static
-/// capability gate. Phase 1 plans on it, and the parallel arm re-runs it
-/// after an extension rewrites an input — the batch's approval-free
-/// classification only holds for the exact input it was computed from.
-///
-/// An out-of-workspace path counts as requiring approval even when the
-/// dispatcher answers `Auto`: this is the decision that keeps the call out of
-/// a parallel (ungated) batch, so a dispatcher whose two answers disagree
-/// cannot run an untrusted path unasked.
-fn input_requires_approval(
-    dispatcher: Option<&Arc<dyn ToolDispatcher>>,
-    name: &str,
-    input: &serde_json::Value,
-    caps: &[ToolCapability],
-) -> bool {
-    if dispatcher
-        .and_then(|d| d.escaped_path_for(name, input))
-        .is_some()
-    {
-        return true;
-    }
-    match dispatcher.and_then(|d| d.approval_requirement_for(name, input)) {
-        Some(req) => req != ApprovalRequirement::Auto,
-        None => requires_approval(caps),
-    }
-}
 
 /// The `ToolResult` fed back when the loop-guard blocks an identical repeat
 /// call (mirrors `handle_deepseek_turn`'s `loop_guard_block_tool_result`). Duplicated here
@@ -573,9 +542,17 @@ impl HostAgentExecutor {
                                     Ok(()) => {
                                         // Early-tool-start reuse (same shape
                                         // as the parallel arm, but sequential).
+                                        // A call that needed approval never
+                                        // reuses the speculative result: it was
+                                        // produced before the user's answer —
+                                        // for an approved path, before the
+                                        // grant existed, so it could only fail.
+                                        // Aborting it (Drop) and running fresh
+                                        // is the point of the approval.
                                         match early_for_plan[idx].take() {
                                             Some(mut early)
-                                                if early.name == plan.name
+                                                if !plan.approval_required
+                                                    && early.name == plan.name
                                                     && early.input == run_input =>
                                             {
                                                 let handle = early

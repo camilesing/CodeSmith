@@ -415,6 +415,21 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
   `allowed_tools` fails the spawn with the refused names instead of silently
   dropping them. The narrowing also drops the spawn family — an explorer is a
   leaf.
+- **Approving an out-of-workspace path now runs the call that asked**: a
+  read-only tool (`read_file`, `list_dir`, `grep_files`) pointed outside the
+  workspace was speculatively started while the model was still streaming — the
+  early-tool-start path gates on static capabilities only — so it had already
+  failed with `path escapes workspace` before the `⚠ path outside the
+  workspace` question was shown. Answering `[y]`/`[a]` granted the path and
+  persisted it, but the serial batch then reused that pre-approval failure
+  instead of re-running the call, and the transcript reported the refusal the
+  user had just allowed. Speculative dispatch now reads the same approval
+  predicate as the execution planner (`turn::approval::input_requires_approval`,
+  the single definition both sites share), so a gated call — an escaped path, or
+  a dispatcher answering `Required`/`Suggest` for this input — never runs before
+  the answer, and a gated call never reuses a speculative result. The grant
+  itself was never wrong: `workspace-trust.json` and the in-process live list
+  were being written correctly all along.
 
 ## [0.9.0]
 
