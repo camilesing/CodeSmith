@@ -132,6 +132,12 @@ pub enum Op {
     #[allow(dead_code)]
     CancelBackgroundTask { id: String },
 
+    /// Stop every tracked background task (shell jobs and sub-agents alike),
+    /// reporting the count on the status channel. Backs the REPL's
+    /// Ctrl+X Ctrl+K, which Claude Code documents as "stop all running
+    /// background subagents".
+    CancelAllBackgroundTasks,
+
     /// List all background tasks across all subsystems.
     #[allow(dead_code)]
     ListBackgroundTasks,

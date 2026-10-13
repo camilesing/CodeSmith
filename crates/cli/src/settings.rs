@@ -209,7 +209,7 @@ impl Default for Settings {
             sidebar_focus: "auto".to_string(),
             context_panel: false,
             cost_currency: "usd".to_string(),
-            max_input_history: 100,
+            max_input_history: 500,
             default_provider: None,
             default_model: None,
             reasoning_effort: None,

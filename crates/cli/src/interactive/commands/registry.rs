@@ -65,6 +65,7 @@ command_table! {
     Jobs, Balance, Verify, Links, Home, Profile, Workspace, Translate,
     Anchor, Note, Attach, Feedback, Share, Skills, Skill, Review,
     Queue, Stash, Cycles, Relay, Restore, Change, Rlm, Extension,
+    Keybindings,
     Mods, Models, Memory, Set, Deepseek,
 }
 
@@ -482,6 +483,15 @@ impl Command {
             aliases: &["xinren"],
             group: Group::Config,
             help: "manage workspace trust",
+        },
+        CommandInfo {
+            command: Command::Keybindings,
+            name: "keybindings",
+            usage: "",
+            args: &[],
+            aliases: &[],
+            group: Group::Diagnostics,
+            help: "print the keyboard shortcut table (also `?` on an empty prompt)",
         },
         CommandInfo {
             command: Command::Slop,

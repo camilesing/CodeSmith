@@ -309,6 +309,10 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             config_cmds::status_line();
             false
         }
+        Command::Keybindings => {
+            config_cmds::keybindings();
+            false
+        }
         Command::Init => {
             misc_cmds::init(state);
             false

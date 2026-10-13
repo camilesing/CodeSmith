@@ -36,14 +36,20 @@ use rustyline::Helper;
 use rustyline::completion::{Completer, Pair};
 use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
-use rustyline::validate::Validator;
+use rustyline::validate::{ValidationContext, ValidationResult, Validator};
 
 use crate::config::ApiProvider;
 
+use super::bindings::{self, Bindings};
 use super::commands::registry::{Command, CommandInfo};
 use super::path_index::PathIndex;
 
 /// The helper attached to the REPL's rustyline editor.
+///
+/// Besides completion it carries the shared [`Bindings`] cell — which it
+/// keeps fed with the line text, so a key that discards the buffer can still
+/// be recalled — and the session's todo list, so `Ctrl+T` can report a live
+/// summary in the hint.
 pub struct ReplHelper {
     /// Names from `.codesmith/commands/*.md` (workspace, then user-global),
     /// loaded once when the REPL starts.
@@ -52,13 +58,22 @@ pub struct ReplHelper {
     /// and the index rebuilds lazily; the lock is only ever held for one
     /// bounded lookup.
     paths: Mutex<PathIndex>,
+    bindings: bindings::Shared,
+    todos: Option<codesmith_agent_runtime::tool_state::todo::SharedTodoList>,
 }
 
 impl ReplHelper {
-    pub fn new(user_commands: Vec<String>, paths: PathIndex) -> Self {
+    pub fn new(
+        user_commands: Vec<String>,
+        paths: PathIndex,
+        bindings: bindings::Shared,
+        todos: Option<codesmith_agent_runtime::tool_state::todo::SharedTodoList>,
+    ) -> Self {
         Self {
             user_commands,
             paths: Mutex::new(paths),
+            bindings,
+            todos,
         }
     }
 
@@ -129,14 +144,88 @@ impl Hinter for ReplHelper {
     type Hint = String;
 
     fn hint(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> Option<String> {
-        hint_at(line, pos, &self.user_commands).or_else(|| self.mention_hint(line, pos))
+        // Every keystroke passes through here before the line is redrawn:
+        // this is where the shared cell keeps its copy of the buffer.
+        Bindings::lock(&self.bindings).note_line(line);
+        hint_at(line, pos, &self.user_commands)
+            .or_else(|| self.mention_hint(line, pos))
+            .or_else(|| self.status_hint(line))
     }
 }
 
-// The helper exists for completion and the hint; the line is not
-// re-highlighted and there is no multiline validation.
+impl ReplHelper {
+    /// State the prompt can act on that has no other visible affordance
+    /// (a stashed draft, a cleared draft, the task list).
+    fn status_hint(&self, line: &str) -> Option<String> {
+        let summary = self.todos.as_ref().and_then(todo_summary);
+        Bindings::lock(&self.bindings).status_hint(line, summary.as_deref())
+    }
+}
+
+/// `tasks 3/7 done · 1 in progress`, or `None` when there is no list.
+///
+/// Best-effort by construction: the hint callback runs synchronously on the
+/// render thread and the list is guarded by an async mutex, so a busy lock
+/// simply yields no summary for that keystroke.
+fn todo_summary(
+    todos: &codesmith_agent_runtime::tool_state::todo::SharedTodoList,
+) -> Option<String> {
+    use codesmith_agent_runtime::tool_state::todo::TodoStatus;
+    let list = todos.try_lock().ok()?;
+    let snapshot = list.snapshot();
+    if snapshot.items.is_empty() {
+        return None;
+    }
+    let done = snapshot
+        .items
+        .iter()
+        .filter(|item| item.status == TodoStatus::Completed)
+        .count();
+    let running = snapshot
+        .items
+        .iter()
+        .filter(|item| item.status == TodoStatus::InProgress)
+        .count();
+    let total = snapshot.items.len();
+    let mut summary = format!("tasks {done}/{total} done");
+    if running > 0 {
+        summary.push_str(&format!(" · {running} in progress"));
+    }
+    Some(summary)
+}
+
+/// Multiline input rule: a line ending in `\` continues on the next line
+/// (Claude Code's quick escape — it works in every terminal, unlike
+/// Shift+Enter). Enter then inserts a newline instead of submitting.
+///
+/// The `\` is a marker, not content: [`strip_line_continuations`] removes it
+/// before the message is sent.
+#[must_use]
+pub(crate) fn validate_input(input: &str) -> ValidationResult {
+    if input.ends_with('\\') {
+        ValidationResult::Incomplete
+    } else {
+        ValidationResult::Valid(None)
+    }
+}
+
+/// Drop the `\` that [`validate_input`] used as a continuation marker.
+/// A backslash kept for its own sake survives when it is not at the end of a
+/// line, so `C:\path\` mid-message is untouched.
+#[must_use]
+pub(crate) fn strip_line_continuations(input: &str) -> String {
+    input.replace("\\\n", "\n")
+}
+
+impl Validator for ReplHelper {
+    fn validate(&self, ctx: &mut ValidationContext) -> rustyline::Result<ValidationResult> {
+        Ok(validate_input(ctx.input()))
+    }
+}
+
+// The helper exists for completion, the hint, and multiline validation; the
+// line is not re-highlighted.
 impl Highlighter for ReplHelper {}
-impl Validator for ReplHelper {}
 // rustyline 14 has no blanket impl, so the alias trait is spelled out.
 impl Helper for ReplHelper {}
 
@@ -284,7 +373,12 @@ mod tests {
     }
 
     fn helper(user_commands: Vec<String>) -> ReplHelper {
-        ReplHelper::new(user_commands, PathIndex::new(std::env::temp_dir(), 6, 128))
+        ReplHelper::new(
+            user_commands,
+            PathIndex::new(std::env::temp_dir(), 6, 128),
+            Bindings::shared(),
+            None,
+        )
     }
 
     #[test]
@@ -377,7 +471,12 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp workspace");
         std::fs::create_dir_all(dir.path().join("src/nested")).unwrap();
         std::fs::write(dir.path().join("src/main.rs"), "").unwrap();
-        let helper = ReplHelper::new(Vec::new(), PathIndex::new(dir.path().to_path_buf(), 6, 128));
+        let helper = ReplHelper::new(
+            Vec::new(),
+            PathIndex::new(dir.path().to_path_buf(), 6, 128),
+            Bindings::shared(),
+            None,
+        );
 
         let line = "read @src/ma";
         let (start, pairs) = helper.complete_mention(line, line.len()).expect("mention");
@@ -410,5 +509,37 @@ mod tests {
 
         let (_, pairs) = helper.complete("plain text", 10, &ctx).expect("none");
         assert!(pairs.is_empty());
+    }
+
+    #[test]
+    fn a_trailing_backslash_continues_the_prompt() {
+        assert!(matches!(
+            validate_input("explain this:\\"),
+            ValidationResult::Incomplete
+        ));
+        assert!(matches!(
+            validate_input("explain this"),
+            ValidationResult::Valid(None)
+        ));
+        // Only the end of the whole input continues; an inner backslash is
+        // content.
+        assert!(matches!(
+            validate_input("a\\b"),
+            ValidationResult::Valid(None)
+        ));
+    }
+
+    #[test]
+    fn continuation_markers_are_stripped_before_sending() {
+        assert_eq!(
+            strip_line_continuations("first line\\\nsecond line"),
+            "first line\nsecond line"
+        );
+        assert_eq!(
+            strip_line_continuations("C:\\path\\file"),
+            "C:\\path\\file",
+            "backslashes inside a line are content"
+        );
+        assert_eq!(strip_line_continuations("no markers"), "no markers");
     }
 }

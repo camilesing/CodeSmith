@@ -603,7 +603,7 @@ fn push_tool_record(
 /// Reprint detail for the current turn's collapsed tool calls (the Ctrl+O
 /// expand path). Already-replayed calls are skipped so toggling more than
 /// once never duplicates output.
-fn replay_turn_tool_detail(state: &mut ReplState) {
+pub(super) fn replay_turn_tool_detail(state: &mut ReplState) {
     let turn = state.tool_log_turn;
     let mut blocks = Vec::new();
     for record in state.tool_log.iter_mut() {

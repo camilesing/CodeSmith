@@ -896,6 +896,21 @@ impl Engine {
                         .send(Event::BackgroundTaskList { tasks })
                         .await;
                 }
+                Op::CancelAllBackgroundTasks => {
+                    let tasks = self.host.bg_registry().list_tasks().await;
+                    let mut stopped = 0usize;
+                    for task in &tasks {
+                        if self.host.bg_registry().cancel_task(&task.id).await.is_ok() {
+                            stopped += 1;
+                        }
+                    }
+                    let message = if tasks.is_empty() {
+                        "No background tasks to stop".to_string()
+                    } else {
+                        format!("Stopped {stopped} of {} background task(s)", tasks.len())
+                    };
+                    let _ = self.tx_event.send(Event::status(message)).await;
+                }
                 #[allow(dead_code)]
                 Op::PollBackgroundTask { id } => {
                     let delta = self.host.bg_registry().read_output_delta(&id).await;
