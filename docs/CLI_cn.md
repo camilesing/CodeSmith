@@ -77,7 +77,12 @@ prompt 的入口有两个：
   而不覆盖 `git push`，用的是审批提示同一套 arity 词典）。`/cd <path>` 把会话移到
   另一个工作目录 —— 只能移进当前工作区子树或已受信任路径，因此移动永远不能成为
   访问未受信任目录树的手段 —— `/add-dir <path>` 则新增那条信任记录（即
-  `/trust add` 写入的同一份记录）。`/recap` 按需打印一句话总结，
+  `/trust add` 写入的同一份记录）。`/import [claude|cursor|codex|gemini]` 读取
+  其他 agent CLI 的配置，把其中的 MCP 服务器复制进 `~/.codesmith/mcp.json`
+  （不加 `--yes` 不写任何东西）；它同时报告哪些面无需导入——因为 CodeSmith
+  已经原生读取 `CLAUDE.md`/`.claude/instructions.md`（作为记忆）、
+  `.claude/commands` 与 `.cursor/commands`（作为用户命令）、`~/.claude/skills`
+  （技能注册表）——以及哪些没有对应物（`.claude/agents/*.md`）。`/recap` 按需打印一句话总结，
   `/output-style` 切换 CodeSmith 具有的压缩风格（`is_simple`），`/resume`
   接受会话*名字*，无参数的 `/rename` 会用首条消息给会话命名。
 
@@ -104,8 +109,8 @@ prompt 的入口有两个：
 `/install-slack-app` `/autofix-pr` `/ultrareview` `/heapdump` `/radio`
 `/stickers` `/powerup` `/team-onboarding` `/insights` `/fast` `/scroll-speed`
 `/tui` `/focus` `/keybindings-file` `/list-agents` `/peers` `/schedule`
-`/loop` `/batch` `/subtask` `/branch` `/import` `/pr`、内置技能之外的
-`/simplify` 变体，以及 `/plugin` 编写面。
+`/loop` `/batch` `/subtask` `/branch` `/pr`、内置技能之外的 `/simplify` 变体，
+以及 `/plugin` 编写面。
 
 同样在范围之外并写明原因的：键位配置文件（绑定编译在程序内，`/keybindings` 只读）、
 emoji 短代码与拼写检查（二者都需要本 REPL 未随附的数据表）、以及全屏渲染器的
