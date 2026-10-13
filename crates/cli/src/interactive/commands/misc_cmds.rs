@@ -1053,6 +1053,28 @@ pub async fn tasks(state: &mut ReplState) {
 /// The foreground turn is untouched — `Ctrl+C` (or `Esc` mid-turn) is the key
 /// for that.
 pub async fn stop(state: &mut ReplState) {
+    // Two stores hold background work: the engine's background-task registry
+    // (shell jobs and background sub-agents) and the task manager (durable
+    // tasks). `/tasks` prints both, so `/stop` has to reach both.
+    let mut stopped_tasks = 0usize;
+    let mut failed_tasks = 0usize;
+    if let Some(manager) = state.task_manager.clone() {
+        for task in manager.list_tasks(None).await {
+            if matches!(
+                task.status,
+                crate::task_manager::TaskStatus::Completed
+                    | crate::task_manager::TaskStatus::Failed
+                    | crate::task_manager::TaskStatus::Canceled
+            ) {
+                continue;
+            }
+            match manager.cancel_task(&task.id).await {
+                Ok(_) => stopped_tasks += 1,
+                Err(_) => failed_tasks += 1,
+            }
+        }
+    }
+
     let engine = match state.engine.as_ref() {
         Some(engine) => engine.clone(),
         None => {
@@ -1064,12 +1086,22 @@ pub async fn stop(state: &mut ReplState) {
         .send(crate::core::ops::Op::CancelAllBackgroundTasks)
         .await
     {
-        Ok(()) => println!(
-            "{}",
-            "stopping background work — shell jobs, background sub-agents, durable tasks \
-             (/tasks shows what is left)"
+        Ok(()) => {
+            println!(
+                "{}",
+                format!(
+                    "stopping background work — {stopped_tasks} durable task(s) cancelled{}; shell \
+                     jobs and background sub-agents are stopping too (the engine reports the count \
+                     as this turn's events render)",
+                    if failed_tasks > 0 {
+                        format!(" ({failed_tasks} could not be cancelled)")
+                    } else {
+                        String::new()
+                    }
+                )
                 .dimmed()
-        ),
+            );
+        }
         Err(err) => println!("{} could not reach the engine: {err}", "✗".red()),
     }
 }
