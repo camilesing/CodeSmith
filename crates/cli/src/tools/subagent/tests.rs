@@ -2811,9 +2811,18 @@ fn explore_registry_narrows_to_read_only_tools() {
         .allowed_tools
         .as_ref()
         .expect("explore must carry an explicit read-only allowlist");
-    assert!(allowed.iter().any(|name| name == "read_file"), "{allowed:?}");
-    assert!(!allowed.iter().any(|name| name == "write_file"), "{allowed:?}");
-    assert!(!allowed.iter().any(|name| name == "exec_shell"), "{allowed:?}");
+    assert!(
+        allowed.iter().any(|name| name == "read_file"),
+        "{allowed:?}"
+    );
+    assert!(
+        !allowed.iter().any(|name| name == "write_file"),
+        "{allowed:?}"
+    );
+    assert!(
+        !allowed.iter().any(|name| name == "exec_shell"),
+        "{allowed:?}"
+    );
     assert!(
         !allowed.iter().any(|name| name == "agent_open"),
         "an explore child is a leaf — it cannot spawn children: {allowed:?}"
@@ -2882,8 +2891,8 @@ fn child_cwd_needs_the_workspace_or_a_trusted_root() {
         "the refusal must name the fix: {err}"
     );
 
-    let trusted = ToolContext::new(workspace.clone())
-        .with_trusted_external_paths(vec![other_repo.clone()]);
+    let trusted =
+        ToolContext::new(workspace.clone()).with_trusted_external_paths(vec![other_repo.clone()]);
     let resolved = SubagentRunTool::validate_cwd(&other_repo, &workspace, &trusted)
         .expect("a trusted external cwd is allowed");
     assert_eq!(resolved, other_repo);
@@ -3042,10 +3051,22 @@ fn plan_mode_runtime_narrows_every_child_type_to_read_only() {
         .allowed_tools
         .as_ref()
         .expect("a read-only child carries an explicit allowlist");
-    assert!(allowed.iter().any(|name| name == "read_file"), "{allowed:?}");
-    assert!(!allowed.iter().any(|name| name == "write_file"), "{allowed:?}");
-    assert!(!allowed.iter().any(|name| name == "edit_file"), "{allowed:?}");
-    assert!(!allowed.iter().any(|name| name == "exec_shell"), "{allowed:?}");
+    assert!(
+        allowed.iter().any(|name| name == "read_file"),
+        "{allowed:?}"
+    );
+    assert!(
+        !allowed.iter().any(|name| name == "write_file"),
+        "{allowed:?}"
+    );
+    assert!(
+        !allowed.iter().any(|name| name == "edit_file"),
+        "{allowed:?}"
+    );
+    assert!(
+        !allowed.iter().any(|name| name == "exec_shell"),
+        "{allowed:?}"
+    );
     assert!(
         !allowed.iter().any(|name| name == "agent_open"),
         "a read-only child is a leaf: {allowed:?}"
