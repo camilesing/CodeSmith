@@ -108,7 +108,7 @@ that has no file of its own, and is left in place.
 | `Tab` on `/` | Command names (at the start of the prompt **and** mid-prompt, after a space) |
 | `Tab` on `@` | Workspace paths, from a cached index (`.gitignore` respected, hidden files skipped, refreshed at most every 10 s, bounded by `mention_walk_depth` and `mention_menu_limit`) |
 | `Tab` on an argument | The closed vocabulary the command declares (`/mode agent…`, `/effort high…`, `/mcp list…`) |
-| `Tab` with `!` lines | Not yet: shell-mode history completion is still to come |
+| `Tab` on a `!` line | A word containing `/` completes workspace paths; otherwise the project's own `!` history (newest first, duplicates collapsed) |
 
 ### `!` shell mode
 

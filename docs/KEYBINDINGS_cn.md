@@ -104,7 +104,7 @@ Option 作为 Meta 发送；macOS 上这是终端设置 —— 见 `/terminal-se
 | `Tab` 于 `/` | 命令名（提示符开头**以及**句中空格之后） |
 | `Tab` 于 `@` | 工作区路径，来自缓存索引（尊重 `.gitignore`、跳过隐藏文件、最多每 10 秒重建一次、受 `mention_walk_depth` 与 `mention_menu_limit` 限制） |
 | `Tab` 于参数 | 命令声明的封闭词表（`/mode agent…`、`/effort high…`、`/mcp list…`） |
-| `Tab` 于 `!` 行 | 还没有：shell 模式的历史补全待做 |
+| `Tab` 于 `!` 行 | 含 `/` 的词补全工作区路径；否则补全本项目自己的 `!` 历史（最新优先、去重） |
 
 ### `!` shell 模式
 

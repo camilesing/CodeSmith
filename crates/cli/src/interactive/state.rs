@@ -41,11 +41,12 @@ use codesmith_config::presets::PresetCatalog;
 ///   that report the modifier with CR. There is no paste-burst editor.
 /// - Completion (Tab) covers registered command names (at the start of the
 ///   prompt and mid-prompt), user command names, the registry's closed
-///   argument vocabularies, and `@path` mentions from a cached workspace
-///   index. Session ids, skills, presets, and live model names are not
-///   completed (they need a network call or an uncached walk), and there is
-///   no popup menu while typing — feedback is the dim inline hint (see
-///   `completion.rs`).
+///   argument vocabularies, `@path` mentions from a cached workspace index,
+///   and `!` shell lines (workspace paths for a word with a separator, the
+///   project's own `!` history otherwise). Session ids, skills, presets, and
+///   live model names are not completed (they need a network call or an
+///   uncached walk), and there is no popup menu while typing — feedback is
+///   the dim inline hint (see `completion.rs`).
 /// - No mouse support, no viewport scrolling, no themes beyond ANSI colors.
 /// - A key that acts (`Ctrl+O`, `Ctrl+T`, `Alt+P`, `Shift+Tab`, `?`) ends
 ///   the prompt so the REPL can print, then re-prompts with the draft: the

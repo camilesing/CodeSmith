@@ -72,6 +72,8 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
   grants in `~/.codesmith/approvals.toml`, trusted paths, and the config
   rules — while `/permissions allow|deny|remove` edits it. The grant store
   had readers and no writer; it has one now.
+- Shell-mode completion: inside a `!` line, `Tab` completes workspace paths
+  for a word with a separator and the project's own `!` history otherwise.
 - `/import [claude|cursor|codex|gemini] [--yes]` copies another agent CLI's
   MCP servers (stdio and URL alike, headers included) into
   `~/.codesmith/mcp.json`, and reports the surfaces it does not need to touch
