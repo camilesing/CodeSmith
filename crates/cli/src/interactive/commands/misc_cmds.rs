@@ -755,17 +755,38 @@ pub async fn share(state: &mut ReplState) {
 
 // === Degraded commands (composer-bound features) ===
 
-pub fn queue() {
+/// `/queue` — messages typed while a turn was running.
+///
+/// The queue is the mid-turn composer's: whatever the turn did not pick up
+/// is sent as the next turn, and `Up` on an empty prompt takes it back for
+/// editing instead.
+pub fn queue(state: &ReplState) {
+    if state.queued_messages.is_empty() {
+        println!(
+            "{}",
+            "nothing queued — type while a turn runs and press Enter to queue a message".dimmed()
+        );
+        return;
+    }
     println!(
         "{}",
-        "the offline queue is a composer feature with no line-mode equivalent yet — messages sent during a turn steer/cancel via Ctrl+C".dimmed()
+        format!(
+            "{} queued message(s) — Up takes them back:",
+            state.queued_messages.len()
+        )
+        .bold()
     );
+    for (index, text) in state.queued_messages.iter().enumerate() {
+        let first = text.lines().next().unwrap_or(text);
+        println!("  {}. {}", index + 1, first);
+    }
 }
 
+/// `/stash` — the draft stash is a prompt key, not a command.
 pub fn stash() {
     println!(
         "{}",
-        "draft stash is a composer feature with no line-mode equivalent yet".dimmed()
+        "Ctrl+S stashes the draft; Ctrl+S again on an empty prompt restores it".dimmed()
     );
 }
 

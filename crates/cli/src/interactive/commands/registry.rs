@@ -737,7 +737,7 @@ impl Command {
             args: &[],
             aliases: &["queued"],
             group: Group::Context,
-            help: "note: the offline queue has no line-mode equivalent yet",
+            help: "messages queued while a turn was running (Up takes them back)",
         },
         CommandInfo {
             command: Command::Stash,
@@ -746,7 +746,7 @@ impl Command {
             args: &[],
             aliases: &["park"],
             group: Group::Context,
-            help: "note: draft stash has no line-mode equivalent yet",
+            help: "the draft stash is Ctrl+S, at the prompt",
         },
         CommandInfo {
             command: Command::Cycles,

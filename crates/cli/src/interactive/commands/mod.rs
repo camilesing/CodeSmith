@@ -488,7 +488,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             false
         }
         Command::Queue => {
-            misc_cmds::queue();
+            misc_cmds::queue(state);
             false
         }
         Command::Stash => {

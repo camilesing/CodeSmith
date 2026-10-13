@@ -62,8 +62,13 @@ use codesmith_config::presets::PresetCatalog;
 /// - Tool-call detail is append-only replay (`/expand`, Ctrl+O): the
 ///   terminal transcript cannot be rewritten, so expanding reprints detail
 ///   instead of un-collapsing lines in place.
-/// - While a turn is active, keystrokes other than Ctrl+O are consumed by
-///   the in-turn key tap and discarded (see `keys.rs`).
+/// - While a turn is active the composer has no history (`Up`/`Down` reach
+///   the queue, not past inputs) and no completion: Tab is `complete` only
+///   at the prompt. A message typed mid-turn reaches the model when the tool
+///   call it waited on finishes, or as the next turn if the turn ends first.
+/// - The composer's cursor sits on one terminal row: a message long enough to
+///   wrap is edited blind past the first row, and the mid-turn kill keys have
+///   no kill ring (no Ctrl+Y mid-turn).
 pub struct ReplState {
     pub mode: AppMode,
     /// Session cost/token telemetry (mirrors the retired `App.session`).
@@ -133,6 +138,15 @@ pub struct ReplState {
     /// Whether the `Ctrl+T` checklist panel prints above each prompt. The
     /// session's todo list itself lives in `todos`, shared with the engine.
     pub show_tasks: bool,
+    /// Messages typed while a turn was running and not yet delivered
+    /// (Claude Code's queue). The pump steers them into the running turn as
+    /// tool calls finish; whatever is left when the turn ends is sent by the
+    /// REPL loop as the next turn, in the order typed.
+    pub queued_messages: Vec<String>,
+    /// What was in the mid-turn composer when the turn ended. The REPL loop
+    /// takes it as the next prompt's text, so a turn that ends first never
+    /// swallows half-typed input.
+    pub turn_end_draft: Option<String>,
     /// Rolling log of completed tool calls for `/expand` and the Ctrl+O
     /// replay, capped at [`crate::tool_summary::TOOL_LOG_CAP`].
     pub tool_log: Vec<crate::tool_summary::ToolCallRecord>,
@@ -325,6 +339,8 @@ impl ReplState {
             agent_progress: HashMap::new(),
             tool_detail: false,
             show_tasks: false,
+            queued_messages: Vec::new(),
+            turn_end_draft: None,
             tool_log: Vec::new(),
             tool_log_turn: 0,
             subagent_cache: Vec::new(),
