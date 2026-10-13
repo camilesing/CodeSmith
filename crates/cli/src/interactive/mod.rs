@@ -195,6 +195,19 @@ pub async fn run_repl(
             }
         }
 
+        // A message queued mid-turn that the turn never picked up goes out
+        // now, in the order it was typed (the pump steers what it can into
+        // the running turn; these are the leftovers).
+        if !state.queued_messages.is_empty() {
+            let text = state.queued_messages.remove(0);
+            println!("{}", "▶ sending the queued message".dimmed());
+            submit(&mut state, text).await?;
+            match render::pump_turn(&mut state).await? {
+                render::PumpExit::UserQuit | render::PumpExit::EngineGone => break,
+                render::PumpExit::TurnDone => continue,
+            }
+        }
+
         if state.show_tasks {
             print_task_list(&state).await;
         }
@@ -220,7 +233,15 @@ pub async fn run_repl(
         println!("{}", status::status_line(&state));
         let _ = std::io::stdout().flush();
         // The hint reports these without holding `ReplState`.
-        Bindings::lock(&bindings).set_display(state.tool_detail, state.show_tasks);
+        Bindings::lock(&bindings).set_display(
+            state.tool_detail,
+            state.show_tasks,
+            state.queued_messages.len(),
+        );
+        // Whatever was typed mid-turn comes back as this prompt's text.
+        if let Some(draft) = state.turn_end_draft.take() {
+            prefill = Some(draft);
+        }
         let prompt = prompt_str();
         let read = match prefill.take() {
             Some(text) => editor.readline_with_initial(&prompt, ("", text.as_str())),
@@ -230,16 +251,27 @@ pub async fn run_repl(
         // strand a key the user already pressed.
         let actions = Bindings::lock(&bindings).drain();
         let had_actions = !actions.is_empty();
-        let mut from_editor: Option<String> = None;
+        let mut next_prompt: Option<String> = None;
         for action in actions {
+            if action == Action::TakeBackQueue {
+                let queued: Vec<String> = state.queued_messages.drain(..).collect();
+                if !queued.is_empty() {
+                    next_prompt = Some(queued.join("\n"));
+                    println!(
+                        "{}",
+                        format!("↑ took back {} queued message(s)", queued.len()).dimmed()
+                    );
+                }
+                continue;
+            }
             if action == Action::EditInEditor {
                 let draft = Bindings::lock(&bindings).snapshot().to_string();
-                from_editor = Some(open_in_editor(&draft)?);
+                next_prompt = Some(open_in_editor(&draft)?);
                 continue;
             }
             apply_action(&mut state, action).await?;
         }
-        if let Some(text) = from_editor {
+        if let Some(text) = next_prompt {
             prefill = (!text.is_empty()).then_some(text);
             continue;
         }
@@ -391,6 +423,7 @@ async fn apply_action(state: &mut ReplState, action: Action) -> Result<()> {
             println!("{}", "keyboard shortcuts:".bold());
             println!("{}", bindings::help_panel().dimmed());
         }
+        Action::TakeBackQueue => println!("{}", "— nothing queued".dimmed()),
         // Handled by the caller, which has the prompt to restore.
         Action::EditInEditor => {}
     }

@@ -86,6 +86,9 @@ pub enum Action {
     EditInEditor,
     /// Print the shortcut panel (`?` on an empty line).
     Help,
+    /// `Up` on an empty prompt with messages still queued from the last
+    /// turn: take them back into the prompt for editing.
+    TakeBackQueue,
 }
 
 /// The editing effect a key implies, named so the whole table is testable
@@ -176,6 +179,9 @@ pub struct Bindings {
     /// Mirrors of the REPL's display flags, so the hint can report them
     /// without the helper holding `ReplState`.
     pub tasks_shown: bool,
+    /// How many messages are queued from the last turn (`Up` takes them
+    /// back), mirrored for the same reason.
+    pub queue_pending: usize,
     pub tool_detail: bool,
 }
 
@@ -242,9 +248,10 @@ impl Bindings {
     }
 
     /// Sync the mirrors the hint reports.
-    pub fn set_display(&mut self, tool_detail: bool, tasks_shown: bool) {
+    pub fn set_display(&mut self, tool_detail: bool, tasks_shown: bool, queue_pending: usize) {
         self.tool_detail = tool_detail;
         self.tasks_shown = tasks_shown;
+        self.queue_pending = queue_pending;
     }
 
     /// The live status hint: what the prompt can do right now that has no
@@ -263,6 +270,12 @@ impl Bindings {
             }
             if self.cleared_draft.is_some() {
                 parts.push("Up recalls the cleared draft".to_string());
+            }
+            if self.queue_pending > 0 {
+                parts.push(format!(
+                    "{} queued message(s) — Up takes them back",
+                    self.queue_pending
+                ));
             }
         }
         if parts.is_empty() {
@@ -392,13 +405,19 @@ fn decide(bind: Bind, state: EditState<'_>, bindings: &mut Bindings, now: Instan
         }
         Bind::Newline => Edit::Newline,
         Bind::RecallDraft => {
-            if state.empty()
-                && let Some(draft) = bindings.recall_draft()
-            {
-                Edit::Insert(draft)
-            } else {
-                Edit::FallThrough
+            if !state.empty() {
+                // With text in the line, Up belongs to the cursor/history.
+                return Edit::FallThrough;
             }
+            if let Some(draft) = bindings.recall_draft() {
+                return Edit::Insert(draft);
+            }
+            if bindings.queue_pending > 0 {
+                // Claude Code's take-back: queued messages come back into
+                // the prompt for editing instead of being sent.
+                return act(Action::TakeBackQueue, bindings);
+            }
+            Edit::FallThrough
         }
     }
 }

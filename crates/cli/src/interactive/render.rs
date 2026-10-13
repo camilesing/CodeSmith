@@ -7,16 +7,21 @@
 //! to stdout as whole lines. Tool calls print one collapsed line on
 //! completion by default (Ctrl+O in-turn, `/expand` after the fact — the
 //! terminal is append-only, so expansion is a replay, never a rewrite).
-//! While the turn runs, a single transient "live" line is refreshed in
-//! place via `ESC[2K CR` — never interleaved with permanent text (it is
-//! cleared before any permanent write).
+//! While the turn runs, a transient region of up to two rows is refreshed
+//! in place via `ESC[2K CR`: the live status line, and — once the user types
+//! — the composer the typed line lands in. The region is never interleaved
+//! with permanent text: every permanent write clears it first, and the
+//! blocking prompts (approval / user input / elevation) clear it too before
+//! they take stdin.
 
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
 use std::time::{Duration, Instant};
 
 use colored::Colorize;
+use unicode_width::UnicodeWidthStr;
 
+use super::keys::TurnKey;
 use super::state::ReplState;
 use crate::core::events::{Event, TurnOutcomeStatus};
 use crate::core::ops::Op;
@@ -27,6 +32,12 @@ use codesmith_agent_runtime::mode::ApprovalMode;
 /// Interval between live-line refreshes (spinner/elapsed/ctx).
 const LIVE_REFRESH: Duration = Duration::from_millis(250);
 
+/// Prompt for the mid-turn composer row.
+const COMPOSER_PROMPT: &str = "❯ ";
+
+/// How long the second Ctrl+X Ctrl+K has to arrive to stop everything.
+const STOP_ALL_WINDOW: Duration = Duration::from_secs(3);
+
 /// Why the pump returned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PumpExit {
@@ -36,6 +47,93 @@ pub enum PumpExit {
     EngineGone,
     /// The user pressed Ctrl+C twice.
     UserQuit,
+}
+
+/// The mid-turn composer: what the user types while a turn streams.
+///
+/// Pure buffer editing so the editing rules are unit-tested; drawing the row
+/// and parking the cursor is [`TurnView`]'s job. Insert/delete are
+/// char-aware, so multi-byte input (and paste) never splits a character.
+#[derive(Default)]
+struct Composer {
+    buffer: String,
+    /// Cursor position as a byte offset into `buffer`, always on a char
+    /// boundary.
+    cursor: usize,
+}
+
+impl Composer {
+    fn is_empty(&self) -> bool {
+        self.buffer.is_empty()
+    }
+
+    fn insert(&mut self, c: char) {
+        self.buffer.insert(self.cursor, c);
+        self.cursor += c.len_utf8();
+    }
+
+    fn backspace(&mut self) {
+        if let Some(prev) = self.buffer[..self.cursor].chars().next_back() {
+            self.cursor -= prev.len_utf8();
+            self.buffer.remove(self.cursor);
+        }
+    }
+
+    fn delete(&mut self) {
+        if self.cursor < self.buffer.len() {
+            self.buffer.remove(self.cursor);
+        }
+    }
+
+    fn move_left(&mut self) {
+        if let Some(prev) = self.buffer[..self.cursor].chars().next_back() {
+            self.cursor -= prev.len_utf8();
+        }
+    }
+
+    fn move_right(&mut self) {
+        if let Some(next) = self.buffer[self.cursor..].chars().next() {
+            self.cursor += next.len_utf8();
+        }
+    }
+
+    fn move_home(&mut self) {
+        self.cursor = 0;
+    }
+
+    fn move_end(&mut self) {
+        self.cursor = self.buffer.len();
+    }
+
+    fn kill_to_end(&mut self) -> String {
+        self.buffer.split_off(self.cursor)
+    }
+
+    fn kill_to_start(&mut self) -> String {
+        let head: String = self.buffer.drain(..self.cursor).collect();
+        self.cursor = 0;
+        head
+    }
+
+    /// Ctrl+W: back to the previous whitespace, matching readline and
+    /// Claude Code (one press removes a whole path).
+    fn kill_word(&mut self) -> String {
+        let head = &self.buffer[..self.cursor];
+        let cut = head
+            .trim_end()
+            .rfind(char::is_whitespace)
+            .map_or(0, |i| i + 1);
+        let removed = self.buffer[cut..self.cursor].to_string();
+        self.buffer.replace_range(cut..self.cursor, "");
+        self.cursor = cut;
+        removed
+    }
+
+    /// Empty the composer and hand the text over (Enter, or send-now).
+    fn take(&mut self) -> String {
+        self.cursor = 0;
+        std::mem::take(&mut self.buffer)
+    }
 }
 
 /// One-turn rendering state.
@@ -52,6 +150,13 @@ struct TurnView {
     /// The last permanent line was a tool/agent line; the next assistant
     /// message gets a blank separator so the answer stands out.
     after_tool_line: bool,
+    /// The mid-turn composer; empty means its row is not drawn.
+    composer: Composer,
+    /// Rows the live region occupies right now: 0, 1 (status), or 2 (status
+    /// + composer).
+    live_rows: usize,
+    /// When Ctrl+X Ctrl+K was last pressed, for its confirm window.
+    stop_all_at: Option<Instant>,
 }
 
 impl TurnView {
@@ -62,17 +167,25 @@ impl TurnView {
             ends_with_newline: true,
             pending_tools: HashMap::new(),
             after_tool_line: false,
+            composer: Composer::default(),
+            live_rows: 0,
+            stop_all_at: None,
         }
     }
 
+    /// Clear the whole live region (status row and composer row).
     fn clear_live(&mut self) {
-        if self.live_active {
-            eprint!("\x1b[2K\r");
-            self.live_active = false;
+        match self.live_rows {
+            // Clear the composer row first, step up, clear the status row.
+            2 => eprint!("\x1b[2K\r\x1b[1A\x1b[2K\r"),
+            1 => eprint!("\x1b[2K\r"),
+            _ => {}
         }
+        self.live_rows = 0;
+        self.live_active = false;
     }
 
-    /// Claim the cursor's row for one live frame.
+    /// Claim the cursor's row(s) for one live frame.
     ///
     /// A live frame is a whole-row write, so it closes an open permanent row
     /// first (a streamed delta mid-flight, or a prompt whose answer arrived
@@ -80,6 +193,9 @@ impl TurnView {
     /// redrawing from column 0. Without both halves the frame shares a row
     /// with permanent text: it was appended to the open row, and the next
     /// frame's `ESC[2K` erased that row's real content with it.
+    ///
+    /// The composer row is drawn from the same call, so a keystroke only has
+    /// to update the buffer and redraw.
     fn draw_live(&mut self, frame: &str) {
         self.clear_live();
         if !self.ends_with_newline {
@@ -87,6 +203,19 @@ impl TurnView {
             self.ends_with_newline = true;
         }
         eprint!("\r\x1b[K{frame}");
+        self.live_rows = 1;
+        if !self.composer.is_empty() {
+            eprint!("\n\r\x1b[K{COMPOSER_PROMPT}{}", self.composer.buffer);
+            // Park the cursor at the caret. Column math is display width,
+            // and assumes the row fits the terminal (see the module note in
+            // keys.rs about what the composer does not do).
+            let column = UnicodeWidthStr::width(COMPOSER_PROMPT)
+                + UnicodeWidthStr::width(&self.composer.buffer[..self.composer.cursor]);
+            if column > 0 {
+                eprint!("\r\x1b[{column}C");
+            }
+            self.live_rows = 2;
+        }
         let _ = std::io::stderr().flush();
         self.live_active = true;
     }
@@ -204,26 +333,10 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                 rx.recv().await
             } => event,
             key = keys.recv() => {
-                match key {
-                    Some(super::keys::TurnKey::ToggleDetail) => {
-                        state.tool_detail = !state.tool_detail;
-                        view.clear_live();
-                        if state.tool_detail {
-                            println!(
-                                "{}",
-                                "— tool detail expanded (Ctrl+O to collapse)".dimmed()
-                            );
-                            replay_turn_tool_detail(state);
-                        } else {
-                            println!(
-                                "{}",
-                                "— tool detail collapsed (Ctrl+O to expand)".dimmed()
-                            );
-                        }
-                    }
-                    // None: the tap is gone (non-TTY stdin) — Ctrl+O
-                    // unavailable; `/expand` still works.
-                    None => {}
+                // None: the tap is gone (non-TTY stdin) — the composer and
+                // its keys are unavailable; the turn runs on.
+                if let Some(key) = key {
+                    handle_turn_key(state, &mut view, key, &engine).await;
                 }
                 continue;
             }
@@ -356,6 +469,10 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                     }
                 }
                 view.after_tool_line = true;
+                // A queued message goes to the model as soon as the tool
+                // calls it waited on finish — Claude Code's rule — rather
+                // than waiting for the turn to end.
+                flush_queue_into_turn(state, &mut view, &engine).await;
                 // Keep the sub-agent cache fresh after agent-lifecycle
                 // tools (mirrors the retired loop's ListSubAgents nudge).
                 if matches!(
@@ -545,6 +662,7 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                     turn_output_tokens,
                     turn_duration_secs,
                 );
+                carry_composer_out(state, &mut view);
                 return Ok(PumpExit::TurnDone);
             }
             Event::PauseEvents { .. }
@@ -571,6 +689,264 @@ fn error_envelope_message(envelope: &ErrorEnvelope) -> String {
     // `ErrorEnvelope` renders through its Display in the engine; the REPL
     // only needs the human-readable line.
     envelope.to_string()
+}
+
+/// One mid-turn key press.
+///
+/// Typing and editing touch only the composer; the keys that act (Enter,
+/// send-now, Escape, Ctrl+B, Ctrl+X Ctrl+K, Ctrl+O, Ctrl+T) print and talk
+/// to the engine, so they clear the live region first — permanent output
+/// must never share a row with it.
+async fn handle_turn_key(
+    state: &mut ReplState,
+    view: &mut TurnView,
+    key: TurnKey,
+    engine: &crate::core::engine::EngineHandle,
+) {
+    match key {
+        TurnKey::Char('\0') => {} // consumed sequence with no composer meaning
+        TurnKey::Char(c) => {
+            view.composer.insert(c);
+            redraw_region(state, view);
+        }
+        TurnKey::Newline => {
+            view.composer.insert('\n');
+            redraw_region(state, view);
+        }
+        TurnKey::Backspace => {
+            view.composer.backspace();
+            redraw_region(state, view);
+        }
+        TurnKey::Delete => {
+            view.composer.delete();
+            redraw_region(state, view);
+        }
+        TurnKey::Left => {
+            view.composer.move_left();
+            redraw_region(state, view);
+        }
+        TurnKey::Right => {
+            view.composer.move_right();
+            redraw_region(state, view);
+        }
+        TurnKey::Home => {
+            view.composer.move_home();
+            redraw_region(state, view);
+        }
+        TurnKey::End => {
+            view.composer.move_end();
+            redraw_region(state, view);
+        }
+        TurnKey::Up => {
+            // Claude Code's "take back what you queued": with an empty
+            // composer, Up pulls the newest queued message back for editing.
+            if view.composer.is_empty()
+                && let Some(last) = state.queued_messages.pop()
+            {
+                view.composer.buffer = last;
+                view.composer.cursor = view.composer.buffer.len();
+                view.clear_live();
+                println!("{}", "↑ took back the newest queued message".dimmed());
+                return;
+            }
+            redraw_region(state, view);
+        }
+        TurnKey::Down => {
+            // No composer history mid-turn; the key is consumed so it cannot
+            // leak into the buffer.
+        }
+        TurnKey::KillToEnd | TurnKey::KillToStart | TurnKey::KillWord => {
+            // The killed text goes nowhere: there is no kill ring mid-turn,
+            // and a composer is short-lived. Claude Code's Ctrl+Y ring is a
+            // prompt-time affordance here.
+            match key {
+                TurnKey::KillToEnd => drop(view.composer.kill_to_end()),
+                TurnKey::KillToStart => drop(view.composer.kill_to_start()),
+                _ => drop(view.composer.kill_word()),
+            }
+            redraw_region(state, view);
+        }
+        TurnKey::Queue => {
+            let text = view.composer.take();
+            if text.trim().is_empty() {
+                redraw_region(state, view);
+                return;
+            }
+            state.queued_messages.push(text.clone());
+            view.clear_live();
+            println!(
+                "{}",
+                queued_line(&text, state.queued_messages.len()).dimmed()
+            );
+        }
+        TurnKey::SendNow => {
+            let text = view.composer.take();
+            if !text.trim().is_empty() {
+                state.queued_messages.push(text);
+            }
+            flush_queue_into_turn(state, view, engine).await;
+        }
+        TurnKey::ToggleDetail => {
+            state.tool_detail = !state.tool_detail;
+            view.clear_live();
+            if state.tool_detail {
+                println!("{}", "— tool detail expanded (Ctrl+O to collapse)".dimmed());
+                replay_turn_tool_detail(state);
+            } else {
+                println!("{}", "— tool detail collapsed (Ctrl+O to expand)".dimmed());
+            }
+        }
+        TurnKey::TaskList => {
+            state.show_tasks = !state.show_tasks;
+            view.clear_live();
+            if state.show_tasks {
+                super::print_task_list(state).await;
+            } else {
+                println!("{}", "— task list hidden (Ctrl+T)".dimmed());
+            }
+        }
+        TurnKey::CycleMode => {
+            state.cycle_mode();
+            view.clear_live();
+            println!(
+                "{}",
+                format!(
+                    "switched to {} mode — applies from the next turn",
+                    state.mode.label()
+                )
+                .dimmed()
+            );
+        }
+        TurnKey::Background => {
+            view.clear_live();
+            let _ = engine.send(Op::BackgroundCurrentShell).await;
+            println!("{}", "— backgrounding the running shell (Ctrl+B)".dimmed());
+        }
+        TurnKey::StopAll => {
+            let now = Instant::now();
+            let confirmed = view
+                .stop_all_at
+                .is_some_and(|at| now.duration_since(at) <= STOP_ALL_WINDOW);
+            view.stop_all_at = Some(now);
+            view.clear_live();
+            if confirmed {
+                let _ = engine.send(Op::CancelAllBackgroundTasks).await;
+                println!("{}", "— stopping all background work".yellow());
+            } else {
+                println!(
+                    "{}",
+                    "— press Ctrl+X Ctrl+K again within 3 seconds to stop all background work"
+                        .dimmed()
+                );
+            }
+        }
+        TurnKey::Esc => {
+            view.clear_live();
+            // Claude Code's rule: work that can move to the background does,
+            // and the model keeps reading; only otherwise does Escape
+            // interrupt the turn. Anything already queued goes out either
+            // way (a steer when the turn lives on, the next turn when it
+            // does not).
+            let backgroundable = view
+                .current_tool
+                .as_deref()
+                .is_some_and(is_backgroundable_tool);
+            if backgroundable {
+                let _ = engine.send(Op::BackgroundCurrentShell).await;
+                println!("{}", "⎋ — sent the running tool to the background".dimmed());
+                flush_queue_into_turn(state, view, engine).await;
+            } else {
+                engine.cancel();
+                let queued = state.queued_messages.len();
+                if queued > 0 {
+                    println!(
+                        "{}",
+                        format!("⎋ interrupted — {queued} queued message(s) go out next").yellow()
+                    );
+                } else {
+                    println!("{}", "⎋ interrupted".yellow());
+                }
+            }
+        }
+    }
+}
+
+/// Tools whose work can be detached from the turn: a shell command keeps
+/// running in the background, and a sub-agent has its own task.
+fn is_backgroundable_tool(name: &str) -> bool {
+    name.starts_with("exec_shell") || name.starts_with("agent_")
+}
+
+/// Redraw the live region after a composer edit, using the status line the
+/// ticker would draw (so the composer row keeps its place without waiting
+/// for the next tick).
+fn redraw_region(state: &ReplState, view: &mut TurnView) {
+    let frame = super::status::live_line(state, view.current_tool.as_deref());
+    view.draw_live(&frame);
+}
+
+/// The dim line a queued message prints as.
+fn queued_line(text: &str, pending: usize) -> String {
+    let first = text.lines().next().unwrap_or(text);
+    let more = text.lines().count().saturating_sub(1);
+    let ellipsis = if more > 0 {
+        format!(" (+{more} more line(s))")
+    } else {
+        String::new()
+    };
+    format!("⏸ queued ({pending} pending): {first}{ellipsis}")
+}
+
+/// Hand every queued message to the running turn, in the order typed.
+///
+/// `EngineHandle::steer` is the engine's mid-turn input path: the executor
+/// drains it at the next step boundary and records it as a user message, so
+/// the session log keeps agreeing with what the model saw.
+async fn flush_queue_into_turn(
+    state: &mut ReplState,
+    view: &mut TurnView,
+    engine: &crate::core::engine::EngineHandle,
+) {
+    if state.queued_messages.is_empty() {
+        return;
+    }
+    let sent: Vec<String> = state.queued_messages.drain(..).collect();
+    view.clear_live();
+    for text in &sent {
+        if let Err(err) = engine.steer(text.clone()).await {
+            println!(
+                "{}",
+                format!("✗ could not deliver a queued message: {err}").red()
+            );
+            // Nothing is lost: the message goes back on the queue and the
+            // REPL sends it as the next turn.
+            state.queued_messages.push(text.clone());
+        }
+    }
+    if sent.len() > state.queued_messages.len() {
+        println!(
+            "{}",
+            format!(
+                "→ sent {} queued message(s) to the running turn",
+                sent.len()
+            )
+            .dimmed()
+        );
+    }
+}
+
+/// Carry whatever the user was typing mid-turn out to the prompt.
+///
+/// The composer dies with the turn, and losing a half-typed message to a turn
+/// that happened to end first would feel like the input vanished; the REPL
+/// loop picks this up as the next prompt's text.
+fn carry_composer_out(state: &mut ReplState, view: &mut TurnView) {
+    if view.composer.is_empty() {
+        return;
+    }
+    let text = view.composer.take();
+    view.clear_live();
+    state.turn_end_draft = Some(text);
 }
 
 /// Record a completed call in the session tool log (`/expand` replay),
@@ -1082,6 +1458,70 @@ async fn handle_elevation(
 mod tests {
     use super::*;
 
+    #[test]
+    fn composer_edits_on_char_boundaries() {
+        let mut composer = Composer::default();
+        for c in "héllo".chars() {
+            composer.insert(c);
+        }
+        assert_eq!(composer.buffer, "héllo");
+        assert_eq!(composer.cursor, "héllo".len());
+        composer.backspace();
+        assert_eq!(composer.buffer, "héll");
+        composer.move_home();
+        assert_eq!(composer.cursor, 0);
+        composer.move_right(); // past 'h'
+        assert_eq!(composer.cursor, 1);
+        // The 'é' is two bytes; deleting it must remove the whole character
+        // and leave the rest of the buffer intact.
+        composer.delete();
+        assert_eq!(composer.buffer, "hll");
+        composer.move_end();
+        composer.insert('!');
+        assert_eq!(composer.buffer, "hll!");
+    }
+
+    #[test]
+    fn composer_kills_like_readline() {
+        let mut composer = Composer {
+            buffer: "src/utils/foo.ts and more".to_string(),
+            cursor: "src/utils/foo.ts".len(),
+        };
+        // Ctrl+W ignores punctuation: one press removes the whole path.
+        assert_eq!(composer.kill_word(), "src/utils/foo.ts");
+        assert_eq!(composer.buffer, " and more");
+        assert_eq!(composer.cursor, 0);
+
+        composer.cursor = composer.buffer.len();
+        assert_eq!(composer.kill_to_start(), " and more");
+        assert!(composer.buffer.is_empty());
+
+        composer.buffer = "keep this".to_string();
+        composer.cursor = "keep".len();
+        assert_eq!(composer.kill_to_end(), " this");
+        assert_eq!(composer.buffer, "keep");
+    }
+
+    #[test]
+    fn composer_take_empties_it() {
+        let mut composer = Composer::default();
+        composer.insert('a');
+        composer.insert('b');
+        assert_eq!(composer.take(), "ab");
+        assert!(composer.is_empty());
+        assert_eq!(composer.cursor, 0);
+        assert!(composer.take().is_empty());
+    }
+
+    #[test]
+    fn queued_line_names_the_first_line_and_the_rest() {
+        assert_eq!(queued_line("just one", 1), "⏸ queued (1 pending): just one");
+        assert_eq!(
+            queued_line("first\nsecond\nthird", 2),
+            "⏸ queued (2 pending): first (+2 more line(s))"
+        );
+    }
+
     /// A stand-in for the paragraph-length static descriptions that tools like
     /// `exec_shell` carry (the real one is ~1 KB).
     const LONG_DESCRIPTION: &str = "Write content to a UTF-8 file in the workspace. Use this \
@@ -1170,7 +1610,10 @@ mod tests {
             "an open permanent row (mid-stream delta, unterminated prompt) must be closed \
              before the frame takes the row"
         );
-        assert!(view.live_active, "the frame owns the row until it is cleared");
+        assert!(
+            view.live_active,
+            "the frame owns the row until it is cleared"
+        );
     }
 
     #[test]
