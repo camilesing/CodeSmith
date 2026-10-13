@@ -77,6 +77,53 @@ impl ReplHelper {
         }
     }
 
+    /// Completion inside a `!` line: workspace paths first, then the `!`
+    /// commands this project has run before.
+    ///
+    /// Claude Code documents both for shell mode ("live file path
+    /// autocomplete" and "history-based autocomplete"), and they answer
+    /// different questions: the path list says what exists, the history says
+    /// what you ran last time.
+    fn complete_shell(
+        &self,
+        line: &str,
+        pos: usize,
+        ctx: &Context<'_>,
+    ) -> Option<(usize, Vec<Pair>)> {
+        if !line.trim_start().starts_with('!') {
+            return None;
+        }
+        let (start, word) = word_at(line, pos);
+        if word.is_empty() {
+            return None;
+        }
+        // A word with a separator is a path (`.` hides it: `!ls .` should
+        // still offer history).
+        if word.contains('/') {
+            let Ok(mut index) = self.paths.lock() else {
+                return None;
+            };
+            let candidates: Vec<Pair> = index
+                .complete(word)
+                .into_iter()
+                .map(|entry| {
+                    let replacement = if entry.is_dir {
+                        format!("{}/", entry.path)
+                    } else {
+                        format!("{} ", entry.path)
+                    };
+                    Pair {
+                        display: entry.path,
+                        replacement,
+                    }
+                })
+                .collect();
+            return (!candidates.is_empty()).then_some((start, candidates));
+        }
+        let candidates = shell_history_candidates(ctx, word);
+        (!candidates.is_empty()).then_some((start, candidates))
+    }
+
     /// `@path` candidates for the word at the cursor, or `None` when the
     /// word is not an `@` mention.
     fn complete_mention(&self, line: &str, pos: usize) -> Option<(usize, Vec<Pair>)> {
@@ -128,13 +175,17 @@ impl Completer for ReplHelper {
         &self,
         line: &str,
         pos: usize,
-        _ctx: &Context<'_>,
+        ctx: &Context<'_>,
     ) -> rustyline::Result<(usize, Vec<Pair>)> {
         let (start, pairs) = complete_at(line, pos, &self.user_commands);
-        if pairs.is_empty()
-            && let Some(mention) = self.complete_mention(line, pos)
-        {
+        if !pairs.is_empty() {
+            return Ok((start, pairs));
+        }
+        if let Some(mention) = self.complete_mention(line, pos) {
             return Ok(mention);
+        }
+        if let Some(shell) = self.complete_shell(line, pos, ctx) {
+            return Ok(shell);
         }
         Ok((start, pairs))
     }
@@ -312,6 +363,44 @@ pub(crate) fn complete_at(line: &str, pos: usize, user_cmds: &[String]) -> (usiz
         })
         .collect();
     (start, candidates)
+}
+
+/// `!` commands from the session history whose command line starts with
+/// `partial`, newest first and deduplicated.
+///
+/// Kept free of the helper so a test can pass any `History`.
+fn shell_history_candidates(ctx: &Context<'_>, partial: &str) -> Vec<Pair> {
+    use rustyline::history::SearchDirection;
+
+    let history = ctx.history();
+    let mut seen: Vec<String> = Vec::new();
+    for index in (0..history.len()).rev() {
+        let Ok(Some(found)) = history.get(index, SearchDirection::Forward) else {
+            continue;
+        };
+        let entry = found.entry.trim();
+        let Some(command) = entry.strip_prefix('!') else {
+            continue;
+        };
+        let command = command.trim();
+        if !command.starts_with(partial) {
+            continue;
+        }
+        let command = command.to_string();
+        if seen.contains(&command) {
+            continue;
+        }
+        seen.push(command);
+        if seen.len() >= 20 {
+            break;
+        }
+    }
+    seen.into_iter()
+        .map(|command| Pair {
+            display: command.clone(),
+            replacement: format!("{command} "),
+        })
+        .collect()
 }
 
 /// The dim inline hint rendered after the cursor, or `None` when the line
@@ -509,6 +598,37 @@ mod tests {
 
         let (_, pairs) = helper.complete("plain text", 10, &ctx).expect("none");
         assert!(pairs.is_empty());
+    }
+
+    #[test]
+    fn shell_lines_complete_from_history_newest_first() {
+        use rustyline::history::{DefaultHistory, History};
+
+        let mut history = DefaultHistory::new();
+        history.add("!cargo check").expect("add");
+        history.add("!git status").expect("add");
+        history.add("please run the tests").expect("add");
+        history.add("!git status").expect("add");
+        let ctx = Context::new(&history);
+
+        let pairs = shell_history_candidates(&ctx, "git");
+        assert_eq!(
+            displays(&pairs),
+            ["git status"],
+            "duplicates collapse to one candidate"
+        );
+        assert_eq!(pairs[0].replacement, "git status ");
+
+        let pairs = shell_history_candidates(&ctx, "");
+        assert_eq!(
+            displays(&pairs),
+            ["git status", "cargo check"],
+            "newest first"
+        );
+        assert!(
+            shell_history_candidates(&ctx, "npm").is_empty(),
+            "a command never run offers nothing"
+        );
     }
 
     #[test]
