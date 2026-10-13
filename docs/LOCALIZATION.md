@@ -87,5 +87,8 @@ Before shipping a new locale:
 2. Add locale resolution tests and missing-key tests.
 3. Add narrow-width render coverage for the surfaces that still render text
    (at least `/config`).
-4. Verify CJK width, combining marks, and truncation.
+4. Verify CJK width, combining marks, and truncation — the one-line caps
+   (tool summaries, status line, approval header) truncate by terminal
+   columns via `localization::truncate_to_width`; surfaces without a cap
+   still leave wrapping of wide text to the terminal.
 5. Record native/fluent review status, or mark the locale as automated-QA-only.

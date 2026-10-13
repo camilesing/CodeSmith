@@ -12,9 +12,10 @@
 //!   resolves, but with **no sandbox and no approval prompt**: it is the
 //!   user's own command, typed by the user, like the `!` prefix. That is why
 //!   nothing else may write here.
-//! - Only stdout's first line is kept, capped at [`MAX_CHARS`]: the status
-//!   line is one row, and a command that prints a paragraph would otherwise
-//!   push the prompt off screen.
+//! - Only stdout's first line is kept, capped at [`MAX_COLUMNS`] terminal
+//!   columns (CJK counts as two): the status line is one row as long as the
+//!   terminal is wider than the cap, and a command that prints a paragraph
+//!   would otherwise push the prompt off screen.
 //! - Each run is wrapped in a timeout by the caller; a timed-out run leaves
 //!   its error text in the status line rather than a stale value.
 
@@ -24,8 +25,8 @@ use std::time::{Duration, Instant};
 /// How often the command may run.
 pub const TTL: Duration = Duration::from_secs(5);
 
-/// Cap on the segment's length, in characters.
-pub const MAX_CHARS: usize = 120;
+/// Cap on the segment's length, in terminal columns (CJK counts as two).
+pub const MAX_COLUMNS: usize = 120;
 
 static LAST_RUN: Mutex<Option<Instant>> = Mutex::new(None);
 
@@ -66,16 +67,13 @@ pub fn run(command: &str) -> Result<String, String> {
     if line.is_empty() {
         return Err("statusline command printed nothing".to_string());
     }
-    let mut segment: String = line.chars().take(MAX_CHARS).collect();
-    if line.chars().count() > MAX_CHARS {
-        segment.push('…');
-    }
-    Ok(segment)
+    Ok(crate::localization::truncate_to_width(line, MAX_COLUMNS))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use unicode_width::UnicodeWidthStr;
 
     #[test]
     fn a_command_produces_one_capped_line() {
@@ -83,12 +81,24 @@ mod tests {
         assert_eq!(segment, "first line");
 
         let long = run("printf 'a%.0s' $(seq 1 400)").expect("runs");
-        assert_eq!(
-            long.chars().count(),
-            MAX_CHARS + 1,
-            "capped, with an ellipsis"
+        assert!(
+            long.width() <= MAX_COLUMNS,
+            "capped to the column budget, ellipsis included: {} columns",
+            long.width()
         );
         assert!(long.ends_with('…'));
+    }
+
+    #[test]
+    fn a_cjk_command_line_is_capped_by_columns() {
+        // 200 CJK characters are 400 terminal columns; the cap bounds the row
+        // in columns, so the segment must not reach twice its width.
+        let segment = run("printf '中%.0s' $(seq 1 200)").expect("runs");
+        assert!(
+            segment.width() <= MAX_COLUMNS,
+            "status segment ran to {} columns",
+            segment.width()
+        );
     }
 
     #[test]

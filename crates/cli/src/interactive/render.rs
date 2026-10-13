@@ -13,6 +13,14 @@
 //! with permanent text: every permanent write clears it first, and the
 //! blocking prompts (approval / user input / elevation) clear it too before
 //! they take stdin.
+//!
+//! Known limitations (recorded beside the behaviour it owns): assistant text
+//! is printed verbatim as the model streams it — there is no markdown
+//! rendering and no width-aware reflow, so `**`/backticks and any line breaks
+//! the model wrote reach the terminal as-is, and the terminal owns wrapping
+//! (and therefore where a CJK paragraph breaks). Tool lines are single lines
+//! assembled from column-capped parts (`tool_summary`), but their total width
+//! is not clamped to the terminal, so a narrow terminal still wraps them.
 
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
@@ -260,14 +268,11 @@ fn approval_action(description: &str, args_summary: Option<&str>) -> String {
     let first_sentence = first_line
         .split_once(". ")
         .map_or(first_line, |(head, _)| head);
-    let mut label: String = first_sentence.chars().take(APPROVAL_LABEL_MAX).collect();
-    if first_sentence.chars().count() > APPROVAL_LABEL_MAX {
-        label.push('…');
-    }
-    label
+    crate::localization::truncate_to_width(first_sentence, APPROVAL_LABEL_MAX)
 }
 
-/// Cap on the fallback action label, so the header stays one row.
+/// Cap on the fallback action label, in terminal columns (CJK counts as two),
+/// so the header stays one row on a terminal wider than the cap.
 const APPROVAL_LABEL_MAX: usize = 100;
 
 /// What `[a]` actually covers for this tool, in the user's words.
@@ -1560,9 +1565,18 @@ mod tests {
             !header.contains("heredocs"),
             "only the first sentence may reach the header: {header}"
         );
+        assert!(header.width() <= 140, "header must stay one row: {header}");
+    }
+
+    #[test]
+    fn approval_label_caps_cjk_by_columns() {
+        // A wide-character description must not spend two columns per
+        // character against the one-row cap.
+        let label = approval_action(&"输".repeat(120), None);
         assert!(
-            header.chars().count() <= 140,
-            "header must stay one row: {header}"
+            label.width() <= APPROVAL_LABEL_MAX,
+            "action label ran to {} columns",
+            label.width()
         );
     }
 

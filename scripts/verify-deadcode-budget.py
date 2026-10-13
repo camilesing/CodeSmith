@@ -25,7 +25,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-BUDGET = 330
+BUDGET = 329
 PATTERN = re.compile(r"allow\(dead_code")
 
 
