@@ -74,7 +74,10 @@ prompt 的入口有两个：
   后台视图、扩展面，以及外观与诊断杂项。`/permissions` 展示哪些操作不必询问
   —— 会话授权、持久授权、受信任路径，以及 `[sandbox] auto_allow` 规则 ——
   并写入持久授权存储（`/permissions allow "git status"` 覆盖 `git status -s`
-  而不覆盖 `git push`，用的是审批提示同一套 arity 词典）。`/recap` 按需打印一句话总结，
+  而不覆盖 `git push`，用的是审批提示同一套 arity 词典）。`/cd <path>` 把会话移到
+  另一个工作目录 —— 只能移进当前工作区子树或已受信任路径，因此移动永远不能成为
+  访问未受信任目录树的手段 —— `/add-dir <path>` 则新增那条信任记录（即
+  `/trust add` 写入的同一份记录）。`/recap` 按需打印一句话总结，
   `/output-style` 切换 CodeSmith 具有的压缩风格（`is_simple`），`/resume`
   接受会话*名字*，无参数的 `/rename` 会用首条消息给会话命名。
 
@@ -101,8 +104,8 @@ prompt 的入口有两个：
 `/install-slack-app` `/autofix-pr` `/ultrareview` `/heapdump` `/radio`
 `/stickers` `/powerup` `/team-onboarding` `/insights` `/fast` `/scroll-speed`
 `/tui` `/focus` `/keybindings-file` `/list-agents` `/peers` `/schedule`
-`/loop` `/batch` `/subtask` `/branch` `/import` `/add-dir` `/cd` `/pr`、
-内置技能之外的 `/simplify` 变体，以及 `/plugin` 编写面。
+`/loop` `/batch` `/subtask` `/branch` `/import` `/pr`、内置技能之外的
+`/simplify` 变体，以及 `/plugin` 编写面。
 
 同样在范围之外并写明原因的：键位配置文件（绑定编译在程序内，`/keybindings` 只读）、
 emoji 短代码与拼写检查（二者都需要本 REPL 未随附的数据表）、以及全屏渲染器的

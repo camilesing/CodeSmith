@@ -87,7 +87,11 @@ this fork's users asked for. The ones worth knowing:
   shows what runs without asking — session grants, persisted grants, trusted
   paths, and the `[sandbox] auto_allow` rules — and writes the persisted
   grant store (`/permissions allow "git status"` covers `git status -s` and
-  not `git push`, using the same arity dictionary the approval prompt uses). `/recap` prints a
+  not `git push`, using the same arity dictionary the approval prompt uses).
+  `/cd <path>` moves the session to another working directory — only into the
+  current workspace's subtree or a trusted path, so moving is never a way to
+  reach an untrusted tree — and `/add-dir <path>` adds that trust entry
+  (the record `/trust add` writes). `/recap` prints a
   one-line summary on demand, `/output-style` switches the compression style
   CodeSmith has (`is_simple`), `/resume` accepts a session *name*, and
   `/rename` with no argument names the session from its first message.
@@ -117,9 +121,8 @@ offers something that cannot work: `/desktop` `/mobile` `/teleport`
 `/install-slack-app` `/autofix-pr` `/ultrareview` `/heapdump` `/radio`
 `/stickers` `/powerup` `/team-onboarding` `/insights` `/fast` `/scroll-speed`
 `/tui` `/focus` `/keybindings-file` `/list-agents` `/peers` `/schedule`
-`/loop` `/batch` `/subtask` `/branch` `/import` `/add-dir` `/cd` `/pr`
-`/simplify` variants beyond the bundled skill, and the `/plugin` authoring
-surface.
+`/loop` `/batch` `/subtask` `/branch` `/import` `/pr` `/simplify` variants
+beyond the bundled skill, and the `/plugin` authoring surface.
 
 Also out of scope, with the reason: a keybindings configuration file (the
 bindings are compiled in; `/keybindings` is read-only), emoji shortcodes and
