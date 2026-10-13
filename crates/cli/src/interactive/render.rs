@@ -428,6 +428,13 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
             Event::UserInputRequired { id, request } => {
                 handle_user_input(state, &engine, &mut view, &mut keys, id, request).await;
             }
+            Event::PathAccessRequired {
+                id,
+                tool_name,
+                path,
+            } => {
+                handle_path_access(state, &engine, &mut view, &mut keys, id, tool_name, path).await;
+            }
             Event::ElevationRequired {
                 tool_id,
                 tool_name,
@@ -868,6 +875,104 @@ async fn handle_approval(
     }
 }
 
+/// What a path-access answer does. Split from the prompt because mapping a
+/// typed line to (allow, persist) is the security-relevant half, and this way
+/// it is testable without stdin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PathAccessAnswer {
+    /// `[y]` — allow it for this turn; the engine grants the path in-process.
+    AllowNow,
+    /// `[a]` — allow it and remember it for this workspace (the host writes
+    /// `~/.codesmith/workspace-trust.json`, the store `/trust add` owns).
+    AllowAndRemember,
+    /// Everything else, including `[n]` and an empty line — the call stays
+    /// refused.
+    Decline,
+}
+
+fn parse_path_access_answer(raw: &str) -> PathAccessAnswer {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "y" | "yes" => PathAccessAnswer::AllowNow,
+        "a" | "always" => PathAccessAnswer::AllowAndRemember,
+        _ => PathAccessAnswer::Decline,
+    }
+}
+
+/// The path-access question: a call names a directory outside the workspace.
+/// Ends at the unterminated prompt, like [`approval_frame`].
+fn path_access_frame(tool_name: &str, path: &std::path::Path) -> String {
+    format!(
+        "{} path outside the workspace: {} ({})\nallow? [y] allow it now · [a] always allow it \
+         in this workspace (saved) · [n] skip: ",
+        "⚠".yellow(),
+        path.display().to_string().bold(),
+        tool_name.bold()
+    )
+}
+
+/// `Event::PathAccessRequired` — the user decides whether a call may touch a
+/// path outside the workspace, instead of the engine refusing it outright.
+/// Allowing either way makes the engine grant the path for this turn, so the
+/// call that hit the boundary proceeds; `[a]` additionally persists it
+/// (`/trust add`'s store), which later turns and sub-agents pick up. Declining
+/// keeps the plain refusal.
+async fn handle_path_access(
+    state: &mut ReplState,
+    engine: &crate::core::engine::EngineHandle,
+    view: &mut TurnView,
+    keys: &mut super::keys::KeyTap,
+    id: String,
+    tool_name: String,
+    path: std::path::PathBuf,
+) {
+    view.clear_live();
+    if state.approval_mode == ApprovalMode::Auto {
+        // Same posture as `handle_approval`: an auto session does not stall on
+        // prompts. (YOLO never gets here — `trust_mode` short-circuits
+        // `resolve_path` before any question exists.)
+        let _ = engine.approve_tool_call(id).await;
+        return;
+    }
+
+    state.awaiting_approval = true;
+    // The prompt reads stdin line-by-line; the key tap must let go first.
+    keys.suspend();
+    print!("{}", path_access_frame(&tool_name, &path));
+    let _ = std::io::stdout().flush();
+    let answer = read_stdin_line("").await;
+    keys.resume();
+    state.awaiting_approval = false;
+
+    match parse_path_access_answer(&answer) {
+        PathAccessAnswer::AllowNow => {
+            let _ = engine.approve_tool_call(id).await;
+        }
+        PathAccessAnswer::AllowAndRemember => {
+            // Persist first: the engine's in-process grant covers this turn,
+            // and a failure to write must not silently look like "remembered".
+            match crate::workspace_trust::add(&state.workspace, &path) {
+                Ok(stored) => println!(
+                    "{}",
+                    format!(
+                        "trusted for this workspace: {} — `/trust remove {}` to undo",
+                        stored.display(),
+                        stored.display()
+                    )
+                    .dimmed()
+                ),
+                Err(err) => println!(
+                    "{} could not save the grant ({err}) — allowing it for this run only",
+                    "✗".red()
+                ),
+            }
+            let _ = engine.approve_tool_call(id).await;
+        }
+        PathAccessAnswer::Decline => {
+            let _ = engine.deny_tool_call(id).await;
+        }
+    }
+}
+
 async fn handle_user_input(
     _state: &mut ReplState,
     engine: &crate::core::engine::EngineHandle,
@@ -1066,5 +1171,44 @@ mod tests {
              before the frame takes the row"
         );
         assert!(view.live_active, "the frame owns the row until it is cleared");
+    }
+
+    #[test]
+    fn path_access_frame_names_the_path_and_every_answer() {
+        let frame = path_access_frame("list_dir", std::path::Path::new("/Users/dev/other-repo"));
+        assert!(frame.contains("/Users/dev/other-repo"), "{frame}");
+        assert!(frame.contains("list_dir"), "{frame}");
+        assert!(frame.contains("[y] allow it now"), "{frame}");
+        assert!(
+            frame.contains("[a] always allow it in this workspace"),
+            "{frame}"
+        );
+        assert!(frame.contains("[n] skip"), "{frame}");
+    }
+
+    /// Only an explicit "yes" allows, and only an explicit "always" persists:
+    /// a typo, an empty line, or EOF must leave the path untrusted.
+    #[test]
+    fn path_access_answers_fail_closed() {
+        assert_eq!(parse_path_access_answer("y"), PathAccessAnswer::AllowNow);
+        assert_eq!(
+            parse_path_access_answer(" YES "),
+            PathAccessAnswer::AllowNow
+        );
+        assert_eq!(
+            parse_path_access_answer("a"),
+            PathAccessAnswer::AllowAndRemember
+        );
+        assert_eq!(
+            parse_path_access_answer("Always"),
+            PathAccessAnswer::AllowAndRemember
+        );
+        for refuse in ["n", "no", "", "  ", "nope", "1", "yolo"] {
+            assert_eq!(
+                parse_path_access_answer(refuse),
+                PathAccessAnswer::Decline,
+                "{refuse:?} must not allow"
+            );
+        }
     }
 }

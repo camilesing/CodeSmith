@@ -135,7 +135,13 @@ CodeSmith 文件工具可以访问该工作区之外的哪些具体路径？"
 - 通过 `WorkspaceTrust::load_for(workspace)` 加载
   （`crates/cli/src/workspace_trust.rs:52`）。
 - 通过 `ToolContext::trusted_external_paths` 应用
-  （`crates/agent-runtime/src/tools/spec.rs:204`）。
+  （`crates/agent-runtime/src/tools/spec.rs:204`）——这是一份**活列表**，被该
+  上下文的所有克隆共享：回合中批准的路径（`ToolContext::grant_external_path`）
+  对即将执行的工具以及正在运行的子代理立即可见，无需等到下一回合重建上下文。
+- 文件工具命中未授权的外部路径时会**询问**而非直接失败：引擎发出
+  `Event::PathAccessRequired`，宿主提示（`[y]` 本次放行、`[a]` 同时为本站持久化、
+  `[n]` 保持拒绝），批准即在进程内授予该路径。子代理走同一通道提问，因此它的
+  问题会出现在派发它的那个 UI 里。
 - 仅授予通过 CodeSmith 文件工具访问的权限；它不会放宽 shell
   OS 沙箱。
 

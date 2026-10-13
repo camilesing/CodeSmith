@@ -75,6 +75,15 @@ A cwd outside the workspace that was never trusted is refused with the exact
 of an unrelated tree. The two spawns are approval-gated one at a time; each
 returns immediately, so both children then run concurrently.
 
+A child's own file tools are scoped the same way, and a path it cannot reach
+becomes a question rather than a dead end: the child emits the path-access
+prompt into the session that spawned it, so you answer it once and the approval
+lands in the trust list both the child and its parent read. `[a]` remembers the
+path for the workspace (the same record `/trust add <path>` writes), which is
+the durable way to enable a two-repository sweep. A child asking while the REPL
+sits idle at its prompt — no turn running — times out after five minutes and
+keeps the path untrusted rather than hanging.
+
 ## Context forking
 
 `agent_open` starts fresh by default: the child gets its role prompt plus the

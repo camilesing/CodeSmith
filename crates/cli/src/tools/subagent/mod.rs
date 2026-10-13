@@ -52,6 +52,7 @@ use crate::agent_memory::{
     ResolvedAgentMemory,
 };
 use crate::config::MAX_SUBAGENTS;
+use crate::core::engine::ApprovalDecision;
 use crate::core::events::Event;
 use crate::hooks::{HookContext, HookEvent, emit_detached};
 use crate::llm_client::LlmClientHandle;
@@ -575,6 +576,13 @@ pub struct SubAgentRuntime {
     pub context: ToolContext,
     pub allow_shell: bool,
     pub event_tx: Option<mpsc::Sender<Event>>,
+    /// Approval-decision router shared with the parent engine: a path-access
+    /// question this child hits is emitted on `event_tx` (the parent's UI
+    /// answers it) and the decision returns through here, routed by ask id —
+    /// the same channel the parent turn's own gate waits on. `None` (embeds,
+    /// tests) ⇒ the child cannot ask, and its out-of-workspace calls fail on
+    /// their own path check as before.
+    pub approval_router: Option<std::sync::Arc<crate::core::engine::ApprovalRouter>>,
     /// Manager handle so children can recurse via `agent_spawn`. All agents
     /// at every depth share the same manager.
     pub manager: SharedSubAgentManager,
@@ -669,6 +677,7 @@ impl SubAgentRuntime {
             context,
             allow_shell,
             event_tx,
+            approval_router: None,
             manager,
             spawn_depth: 0,
             max_spawn_depth: DEFAULT_MAX_SPAWN_DEPTH,
@@ -692,6 +701,17 @@ impl SubAgentRuntime {
         pool: Option<std::sync::Arc<tokio::sync::Mutex<crate::mcp::McpPool>>>,
     ) -> Self {
         self.mcp_pool = pool;
+        self
+    }
+
+    /// Route this child's out-of-workspace path questions through the parent
+    /// engine's approval channel, so the UI that spawned it answers them.
+    #[must_use]
+    pub fn with_approval_router(
+        mut self,
+        router: Option<std::sync::Arc<crate::core::engine::ApprovalRouter>>,
+    ) -> Self {
+        self.approval_router = router;
         self
     }
 
@@ -861,6 +881,7 @@ impl SubAgentRuntime {
             context: child_context,
             allow_shell: self.allow_shell,
             event_tx: self.event_tx.clone(),
+            approval_router: self.approval_router.clone(),
             manager: self.manager.clone(),
             spawn_depth: self.spawn_depth + 1,
             max_spawn_depth: self.max_spawn_depth,
@@ -6338,7 +6359,33 @@ struct SubAgentToolRegistry {
     /// Names an `explore` spawn requested that read-only enforcement refuses.
     /// Non-empty fails the spawn (`refused_non_read_only_tools`).
     refused_non_read_only: Vec<String>,
+    /// Where a path-access question goes, when a host is wired (see
+    /// [`PathAsk`]). `None` ⇒ the child cannot ask and out-of-workspace calls
+    /// keep failing on their own path check.
+    path_ask: Option<PathAsk>,
+    /// Distinguishes one ask from the next within this registry, so a repeated
+    /// call for the same path is a fresh question with a fresh id.
+    asks: std::sync::atomic::AtomicU64,
 }
+
+/// The child's end of the parent's path-access channel: the parent's event
+/// channel (where the question surfaces), the shared router (where the answer
+/// is routed back by ask id), the child's cancel token, and the context whose
+/// live trust list an approval is written into — the same list the parent
+/// holds, so one grant covers both.
+#[derive(Clone)]
+struct PathAsk {
+    event_tx: Option<mpsc::Sender<Event>>,
+    router: std::sync::Arc<crate::core::engine::ApprovalRouter>,
+    cancel_token: CancellationToken,
+    context: ToolContext,
+}
+
+/// How long a child waits for the user to answer a path-access question.
+/// Mirrors the runtime host's approval timeout: the REPL only pumps events
+/// while a turn is running, so a child that asks while the session sits idle
+/// would otherwise wait forever.
+const PATH_ASK_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Whether `name` is in the read-only set read off the child registry.
 fn is_read_only_name(read_only: &[String], name: &str) -> bool {
@@ -6432,6 +6479,9 @@ impl SubAgentToolRegistry {
         }
 
         let capability_disabled = runtime.capability_disabled_tools.clone();
+        // The context outlives the registry build below (which consumes a
+        // clone) as the grant target for an approved path.
+        let ask_context = context.clone();
         let mut registry = registry.build(context);
         // Capability manifest (composition layer, slice 2b): the same
         // session-level selection the main turn applies in
@@ -6515,6 +6565,13 @@ impl SubAgentToolRegistry {
             registry,
             capability_disabled,
             refused_non_read_only,
+            path_ask: runtime.approval_router.as_ref().map(|router| PathAsk {
+                event_tx: runtime.event_tx.clone(),
+                router: std::sync::Arc::clone(router),
+                cancel_token: runtime.cancel_token.clone(),
+                context: ask_context,
+            }),
+            asks: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -6612,7 +6669,7 @@ impl SubAgentToolRegistry {
         }
     }
 
-    async fn execute(&self, _agent_id: &str, name: &str, input: Value) -> Result<String> {
+    async fn execute(&self, agent_id: &str, name: &str, input: Value) -> Result<String> {
         if !self.is_tool_allowed(name) {
             return Err(anyhow!("Tool {name} not allowed for this sub-agent"));
         }
@@ -6647,10 +6704,78 @@ impl SubAgentToolRegistry {
             }
         }
         reject_subagent_terminal_takeover(name, &input)?;
+        // An out-of-workspace path is the user's decision, not a dead end. A
+        // child has no prompt of its own, so the question goes to the parent's
+        // UI and the answer decides whether the call below runs or fails.
+        if let Some(path) = self.escaped_path(name, &input) {
+            self.ask_path_access(agent_id, name, &path).await?;
+        }
         self.registry
             .execute(name, input)
             .await
             .map_err(|e| anyhow!(e))
+    }
+
+    /// Path this call names that `resolve_path` would refuse (outside the
+    /// workspace, untrusted). `None` for tools with no path input, an allowed
+    /// path, or a child whose context is in `trust_mode`.
+    fn escaped_path(&self, name: &str, input: &Value) -> Option<PathBuf> {
+        let spec = self.registry.get(name)?;
+        spec.escaped_path_for_input(input, self.registry.context())
+    }
+
+    /// Ask the host for access to `path`, in the parent's prompt (the child
+    /// itself has no UI). Approval grants the path in the shared live trust
+    /// list, so the call that follows — and the parent turn asking for the
+    /// same directory — both resolve it. Refusal returns an error the child's
+    /// model can act on.
+    async fn ask_path_access(&self, agent_id: &str, name: &str, path: &Path) -> Result<()> {
+        let Some(ask) = &self.path_ask else {
+            // No host channel (embeds, tests): leave the refusal to the tool's
+            // own path check, which names `/trust add` for the user.
+            return Ok(());
+        };
+        let id = format!(
+            "sub:{agent_id}:{}",
+            self.asks.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        if let Some(tx) = &ask.event_tx {
+            let _ = tx
+                .send(Event::PathAccessRequired {
+                    id: id.clone(),
+                    tool_name: name.to_string(),
+                    path: path.to_path_buf(),
+                })
+                .await;
+        }
+        match ask
+            .router
+            .wait_with_timeout(&id, Some(&ask.cancel_token), PATH_ASK_TIMEOUT)
+            .await
+        {
+            Ok(Some(ApprovalDecision::Approved { .. }))
+            | Ok(Some(ApprovalDecision::RetryWithPolicy { .. })) => {
+                ask.context.grant_external_path(path.to_path_buf());
+                Ok(())
+            }
+            Ok(Some(ApprovalDecision::Denied { .. })) => Err(anyhow!(
+                "The user declined access to '{}' (outside the workspace, not trusted). \
+                 Do not retry this call or ask for that path again.",
+                path.display()
+            )),
+            // Nobody was there to answer (the parent's UI only prompts while a
+            // turn is running). The path stays untrusted — say so rather than
+            // letting the model treat silence as consent.
+            Ok(None) => Err(anyhow!(
+                "Timed out waiting for the user to allow access to '{}' (outside the workspace, \
+                 not trusted). The path stays untrusted.",
+                path.display()
+            )),
+            Err(err) => Err(anyhow!(
+                "Path access for '{}' was not decided ({err:?}); the path stays untrusted.",
+                path.display()
+            )),
+        }
     }
 }
 

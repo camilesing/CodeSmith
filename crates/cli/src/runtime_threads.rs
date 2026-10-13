@@ -2811,6 +2811,41 @@ impl RuntimeThreadManager {
                     )
                     .await?;
                 }
+                EngineEvent::PathAccessRequired {
+                    id,
+                    tool_name,
+                    path,
+                } => {
+                    // The HTTP host has no prompt loop and no persisted grant
+                    // endpoint, so the decided-on-arrival rule applies: an
+                    // auto-approved or trusted turn gets the path, anything
+                    // else refuses it (the call then fails its own path check,
+                    // as before this event existed).
+                    self.emit_event(
+                        &thread_id,
+                        Some(&turn_id),
+                        None,
+                        "path_access.required",
+                        json!({
+                            "id": id,
+                            "approval_id": id,
+                            "tool_name": tool_name,
+                            "path": path.display().to_string(),
+                        }),
+                    )
+                    .await?;
+
+                    let granted = self
+                        .active_turn_flags(&thread_id, &turn_id)
+                        .await
+                        .is_some_and(|(auto_approve, trust_mode)| auto_approve || trust_mode);
+                    if granted {
+                        let _ = engine.approve_tool_call(id).await;
+                    } else {
+                        let _ = engine.deny_tool_call(id).await;
+                    }
+                    continue;
+                }
                 EngineEvent::ApprovalRequired {
                     id,
                     tool_name,

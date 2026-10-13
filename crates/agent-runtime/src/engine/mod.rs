@@ -138,11 +138,12 @@ pub struct Engine {
     pub(crate) api_provider: ApiProvider,
     pub(crate) mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
     pub(crate) rx_op: mpsc::Receiver<Op>,
-    /// Wrapped in `Arc<tokio::sync::Mutex<…>>` (slice 20 §E) so the
-    /// `HostAgentExecutor` can `Arc::clone` it per turn — the single consumer
-    /// is the executor's `request_approval` (the legacy `await_tool_approval`
-    /// path on `Engine` is retired with the legacy turn loop).
-    pub(crate) rx_approval: Arc<AsyncMutex<mpsc::Receiver<ApprovalDecision>>>,
+    /// Wrapped in `Arc` (slice 20 §E) so the `HostAgentExecutor` can
+    /// `Arc::clone` it per turn — the single consumer is the executor's
+    /// `request_approval` (the legacy `await_tool_approval` path on `Engine`
+    /// is retired with the legacy turn loop). The router lets a sub-agent ask
+    /// through the same channel without stealing another waiter's answer.
+    pub(crate) rx_approval: Arc<approval::ApprovalRouter>,
     /// Write-only after the legacy turn-loop retirement: its consumer
     /// (`await_user_input`) retired with it; the executor owns its own user-input path.
     /// Retained for the `tx_user_input` sender's paired receiver lifetime.
@@ -3217,7 +3218,10 @@ impl Engine {
         session: Session,
         api_provider: ApiProvider,
         rx_op: mpsc::Receiver<Op>,
-        rx_approval: mpsc::Receiver<ApprovalDecision>,
+        // Built by the caller rather than from a raw receiver here: the host
+        // keeps an `Arc` handle so the sub-agents it spawns can wait on the
+        // same channel (their path-access questions bubble to the same UI).
+        rx_approval: Arc<approval::ApprovalRouter>,
         rx_user_input: mpsc::Receiver<UserInputDecision>,
         rx_steer: mpsc::Receiver<String>,
         tx_event: mpsc::Sender<Event>,
@@ -3253,7 +3257,7 @@ impl Engine {
             api_provider,
             mcp_pool: None,
             rx_op,
-            rx_approval: Arc::new(AsyncMutex::new(rx_approval)),
+            rx_approval,
             rx_user_input,
             rx_steer: Arc::new(AsyncMutex::new(rx_steer)),
             tx_event,
@@ -3414,7 +3418,7 @@ pub fn default_active_native_tool_names() -> &'static [&'static str] {
     crate::tools::default_active_native_tool_names()
 }
 
-pub use self::approval::{ApprovalDecision, UserInputDecision};
+pub use self::approval::{ApprovalDecision, ApprovalRouter, ApprovalWaitError, UserInputDecision};
 pub use self::dispatch::should_parallelize_tool_batch;
 pub use self::dispatch::{
     ArgSalvagePolicy, ToolExecOutcome, ToolExecutionBatch, ToolExecutionPlan,

@@ -102,6 +102,13 @@ impl ToolSpec for GrepFilesTool {
         true
     }
 
+    /// Path this search targets that `resolve_path` would refuse (outside the
+    /// workspace, untrusted) — the engine asks the user about it instead of
+    /// failing the search. Same input field `execute` resolves.
+    fn escaped_path_for_input(&self, input: &Value, context: &ToolContext) -> Option<PathBuf> {
+        context.escaped_path(optional_str(input, "path").unwrap_or("."))
+    }
+
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let pattern_str = required_str(&input, "pattern")?;
         let path_str = optional_str(&input, "path").unwrap_or(".");

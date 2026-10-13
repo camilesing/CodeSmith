@@ -540,9 +540,26 @@ skill.
 
 ### Can CodeSmith edit files outside the current repository?
 
-That depends on workspace boundaries, sandbox settings, trust mode, and
-approval policy. For contribution work, keep instructions scoped to the current
-repository unless you intentionally need something else.
+A file tool that targets a path outside the workspace does not simply fail — it
+asks:
+
+```text
+⚠ path outside the workspace: /abs/sibling-repo (list_dir)
+allow? [y] allow it now · [a] always allow it in this workspace (saved) · [n] skip:
+```
+
+`[y]` allows that path for the turn, `[a]` also remembers it for this workspace
+(the list `/trust add <path>` writes — undo it with `/trust remove <path>`), and
+`[n]` keeps the refusal. Persistent grants are recorded per workspace and are
+read again on the next turn, so a trusted sibling repository keeps working
+across restarts. Sub-agents ask the same way: a child that hits the boundary
+raises the question in the session that spawned it.
+
+Shell commands were never workspace-scoped for reads (`rg`, `git -C ../other`
+already reach another checkout); the prompt governs the built-in file tools,
+which must not follow a path the model invented. For contribution work, keep
+instructions scoped to the current repository unless you intentionally need
+something else.
 
 ### Where should I go after this guide?
 

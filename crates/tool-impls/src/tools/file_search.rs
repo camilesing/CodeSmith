@@ -77,6 +77,16 @@ impl ToolSpec for FileSearchTool {
         ApprovalRequirement::Auto
     }
 
+    /// Optional `path` this search targets that `resolve_path` would refuse —
+    /// absent or blank `path` means the workspace itself, which never escapes.
+    fn escaped_path_for_input(&self, input: &Value, context: &ToolContext) -> Option<PathBuf> {
+        let raw = optional_str(input, "path")?;
+        if raw.trim().is_empty() {
+            return None;
+        }
+        context.escaped_path(raw)
+    }
+
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let query = required_str(&input, "query")?.trim();
         if query.is_empty() {

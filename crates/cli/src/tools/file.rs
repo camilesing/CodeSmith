@@ -17,6 +17,16 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
+/// `escaped_path_for_input` body shared by the four file tools: the path this
+/// call names that `resolve_path` would refuse (outside the workspace and not
+/// trusted). The input field read here is the one the tool's `execute`
+/// resolves, so the question the engine asks is about the path the call will
+/// actually touch. `Some` turns that refusal into a user approval.
+fn escaped_input_path(input: &Value, context: &ToolContext) -> Option<PathBuf> {
+    let raw = optional_str(input, "path").unwrap_or(".");
+    context.escaped_path(raw)
+}
+
 // === ReadFileTool ===
 
 /// Tool for reading UTF-8 files from the workspace.
@@ -63,6 +73,10 @@ impl ToolSpec for ReadFileTool {
 
     fn supports_parallel(&self) -> bool {
         true
+    }
+
+    fn escaped_path_for_input(&self, input: &Value, context: &ToolContext) -> Option<PathBuf> {
+        escaped_input_path(input, context)
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
@@ -473,6 +487,10 @@ impl ToolSpec for WriteFileTool {
         ApprovalRequirement::Suggest
     }
 
+    fn escaped_path_for_input(&self, input: &Value, context: &ToolContext) -> Option<PathBuf> {
+        escaped_input_path(input, context)
+    }
+
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let path_str = required_str(&input, "path")?;
         let file_content = required_str(&input, "content")?;
@@ -616,6 +634,10 @@ impl ToolSpec for EditFileTool {
 
     fn approval_requirement(&self) -> ApprovalRequirement {
         ApprovalRequirement::Suggest
+    }
+
+    fn escaped_path_for_input(&self, input: &Value, context: &ToolContext) -> Option<PathBuf> {
+        escaped_input_path(input, context)
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
@@ -1205,6 +1227,10 @@ impl ToolSpec for ListDirTool {
 
     fn supports_parallel(&self) -> bool {
         true
+    }
+
+    fn escaped_path_for_input(&self, input: &Value, context: &ToolContext) -> Option<PathBuf> {
+        escaped_input_path(input, context)
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {

@@ -13,6 +13,32 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
 
 ### Added
 
+- **An out-of-workspace path is now a question, not a dead end**: a file tool
+  pointed outside the workspace (`read_file`, `write_file`, `edit_file`,
+  `list_dir`, `grep_files`, `file_search`) used to fail with
+  `path escapes workspace` and nothing else — the model reported the refusal
+  and stopped, and the only exit (`/trust add <path>`, a REPL command the model
+  cannot run) never reached the user. The engine now emits
+  `Event::PathAccessRequired`, and the host asks:
+
+  ```text
+  ⚠ path outside the workspace: /abs/sibling-repo (list_dir)
+  allow? [y] allow it now · [a] always allow it in this workspace (saved) · [n] skip:
+  ```
+
+  `[y]` grants the path for the turn, `[a]` also persists it to
+  `~/.codesmith/workspace-trust.json` — the same record `/trust add` writes and
+  `/trust remove` undoes — and `[n]` keeps the refusal, with the model told the
+  path was declined instead of `/trust add` being re-offered. The grant reaches
+  the call that asked in the same turn: `ToolContext::trusted_external_paths` is
+  now a shared live list, so it is visible to the running tool and to any child
+  sharing the context. Sub-agents ask through the same channel (their question
+  appears in the session that spawned them) via a new id-routing
+  `ApprovalRouter`, which also fixes a latent hazard: the old
+  drop-on-mismatch wait would let one waiter consume another's answer and leave
+  it waiting until cancellation. Headless hosts answer as they do for
+  approvals — `--auto` allows the path, otherwise it is refused — so a
+  non-interactive run never blocks on a prompt it cannot show.
 - **Plan mode can open read-only sub-agents, including one per repository**:
   `prompts/modes/plan.md` has always told the model to "spawn read-only
   sub-agents for parallel investigation", but the Plan tool registry never
@@ -254,6 +280,19 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
 
 ### Fixed
 
+- **A workspace-escape refusal now names the way out**: `read_file`, `list_dir`,
+  and the other file tools refused an absolute path outside the workspace with
+  nothing but `path escapes workspace` — the `ToolError::PathEscape` `Display`
+  that the model-visible transcript (`engine/turn/batches.rs`) and the REPL line
+  (`interactive/render.rs`) both print. A session asked to compare its checkout
+  against a sibling repository therefore stalled: the model reported the refusal
+  and stopped, and the user never learned the one command that unblocks it. The
+  message now carries the exact `/trust add <path>` inline — the same remedy
+  `docs/SUBAGENTS.md` promises for a sub-agent `cwd` — plus the
+  workspace-relative alternative. The orphaned `format_tool_error` copy of that
+  advice, which recommended the wider `/trust on` and had no production caller
+  left after the TUI's removal, now delegates to the `Display`, so one string
+  owns the remedy.
 - **The REPL's live status line no longer shares a row with permanent text**:
   the transient in-turn line is drawn on stderr with no leading `\r` and no
   erase of its own, relying on an earlier `ESC[2K CR` that only happens when

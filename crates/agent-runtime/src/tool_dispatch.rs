@@ -76,6 +76,20 @@ pub trait ToolDispatcher: Send + Sync {
     /// registered.
     fn approval_requirement_for(&self, name: &str, input: &Value) -> Option<ApprovalRequirement>;
 
+    /// Out-of-workspace, untrusted path this input names — the subject of the
+    /// path-access question the host may ask, and the path the engine grants
+    /// once the user allows it. `None` when the tool targets no path or the
+    /// path is already allowed. The default keeps dispatchers that carry no
+    /// path semantics (embeds, tests) from ever raising the question.
+    fn escaped_path_for(&self, _name: &str, _input: &Value) -> Option<std::path::PathBuf> {
+        None
+    }
+
+    /// Trust `path` for the rest of this process, so the approved call's own
+    /// path check passes. Persisting it belongs to the host — the user was
+    /// asked, and only a "remember" answer reaches disk.
+    fn grant_external_path(&self, _path: std::path::PathBuf) {}
+
     /// Validate finalized model-provided input before approval or execution.
     fn validate_input(&self, name: &str, input: &Value) -> Result<(), ToolError>;
 

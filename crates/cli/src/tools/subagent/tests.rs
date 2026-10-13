@@ -2339,6 +2339,7 @@ fn stub_runtime() -> SubAgentRuntime {
         context,
         allow_shell: true,
         event_tx: None,
+        approval_router: None,
         manager: new_shared_subagent_manager(workspace, 5),
         spawn_depth: 0,
         max_spawn_depth: DEFAULT_MAX_SPAWN_DEPTH,
@@ -2890,6 +2891,144 @@ fn child_cwd_needs_the_workspace_or_a_trusted_root() {
     // Inside the workspace stays allowed without any trust entry.
     let inner = ToolContext::new(workspace.clone());
     assert!(SubagentRunTool::validate_cwd(&workspace, &workspace, &inner).is_ok());
+}
+
+// === child path-access questions bubble to the parent UI ===
+
+/// Build a child registry whose context is `workspace`, wired to a host's
+/// event channel + approval router — the shape `spawn_subagent` produces.
+fn child_registry_with_host(
+    workspace: &std::path::Path,
+    allowed: Option<Vec<String>>,
+) -> (
+    SubAgentToolRegistry,
+    tokio::sync::mpsc::Sender<crate::core::engine::ApprovalDecision>,
+    tokio::sync::mpsc::Receiver<crate::core::events::Event>,
+) {
+    let (tx_event, rx_event) = tokio::sync::mpsc::channel(8);
+    let (tx_approval, rx_approval) = tokio::sync::mpsc::channel(8);
+    let router = Arc::new(crate::core::engine::ApprovalRouter::new(rx_approval));
+
+    let mut runtime = stub_runtime();
+    runtime.context = ToolContext::new(workspace.to_path_buf());
+    runtime.event_tx = Some(tx_event);
+    runtime.approval_router = Some(router);
+    let registry = SubAgentToolRegistry::new(
+        runtime,
+        SubAgentType::General,
+        allowed,
+        Arc::new(Mutex::new(TodoList::new())),
+        Arc::new(Mutex::new(PlanState::default())),
+    );
+    (registry, tx_approval, rx_event)
+}
+
+/// A child that hits the workspace boundary asks the parent's UI instead of
+/// failing: the question is emitted on the parent's event channel, the answer
+/// returns through the shared router, and the approval grants the path in the
+/// live trust list the child shares with its parent — so the call that asked
+/// runs, in the same turn.
+#[tokio::test]
+async fn child_path_escape_asks_the_parent_and_runs_once_approved() {
+    use crate::core::engine::ApprovalDecision;
+    use crate::core::events::Event;
+
+    let workspace = tempdir().expect("workspace tempdir");
+    let outside = tempdir().expect("outside tempdir");
+    let file = outside.path().join("notes.md");
+    std::fs::write(&file, "sibling notes").unwrap();
+
+    let (registry, tx_approval, mut rx_event) =
+        child_registry_with_host(workspace.path(), Some(vec!["read_file".to_string()]));
+
+    let path = file.to_string_lossy().into_owned();
+    let call = tokio::spawn(async move {
+        registry
+            .execute("agent_1", "read_file", json!({ "path": path }))
+            .await
+    });
+
+    // The question reaches the host (the UI that spawned the child)…
+    let id = loop {
+        match rx_event.recv().await {
+            Some(Event::PathAccessRequired {
+                id,
+                tool_name,
+                path,
+            }) => {
+                assert_eq!(tool_name, "read_file");
+                assert_eq!(path, file.canonicalize().expect("canonical file"));
+                break id;
+            }
+            Some(_) => continue,
+            None => panic!("the child never asked about the out-of-workspace path"),
+        }
+    };
+    assert!(
+        id.starts_with("sub:agent_1:"),
+        "the ask id must be child-scoped so answers route to this waiter: {id}"
+    );
+    // …and the host's answer routes back to it.
+    tx_approval
+        .send(ApprovalDecision::Approved { id })
+        .await
+        .expect("send approval");
+
+    let out = call
+        .await
+        .expect("join the child call")
+        .expect("an approved path access must run the call");
+    assert!(
+        out.contains("sibling notes"),
+        "the child read the file it was granted: {out}"
+    );
+}
+
+/// A refusal keeps the call refused and says the path was declined — it must
+/// not hand the child's model the old "run `/trust add`" hint, which is what
+/// the user just turned down.
+#[tokio::test]
+async fn child_path_escape_denial_keeps_the_call_refused() {
+    use crate::core::engine::ApprovalDecision;
+    use crate::core::events::Event;
+
+    let workspace = tempdir().expect("workspace tempdir");
+    let outside = tempdir().expect("outside tempdir");
+    let file = outside.path().join("notes.md");
+    std::fs::write(&file, "sibling notes").unwrap();
+
+    let (registry, tx_approval, mut rx_event) =
+        child_registry_with_host(workspace.path(), Some(vec!["read_file".to_string()]));
+
+    let path = file.to_string_lossy().into_owned();
+    let call = tokio::spawn(async move {
+        registry
+            .execute("agent_2", "read_file", json!({ "path": path }))
+            .await
+    });
+
+    let id = loop {
+        match rx_event.recv().await {
+            Some(Event::PathAccessRequired { id, .. }) => break id,
+            Some(_) => continue,
+            None => panic!("the child never asked about the out-of-workspace path"),
+        }
+    };
+    tx_approval
+        .send(ApprovalDecision::Denied { id })
+        .await
+        .expect("send denial");
+
+    let err = call
+        .await
+        .expect("join the child call")
+        .expect_err("a declined path must fail the call");
+    let message = err.to_string();
+    assert!(message.contains("declined access"), "{message}");
+    assert!(
+        !message.contains("/trust add"),
+        "a declined path must not be re-offered as a `/trust add` hint: {message}"
+    );
 }
 
 #[test]

@@ -567,6 +567,7 @@ use codesmith_agent::memory::ChatHistory;
 use codesmith_agent::models::{ContentBlock, Message, SystemPrompt, Usage};
 use codesmith_agent::tools::{ToolResult, ToolSet};
 
+#[cfg(test)]
 use super::approval::ApprovalDecision;
 use super::capacity_flow::{
     CapacityGateProbe, enforce_tool_pairs_after_front_trim, replay_and_push_verification_note,
@@ -1114,7 +1115,10 @@ pub struct HostAgentExecutor {
     /// ✅ (production's `await_tool_approval` also selects on
     /// `cancel_token.cancelled()` — see guardrail 10 / "Known gaps in
     /// approval" below).
-    pub(crate) approval: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>>,
+    ///
+    /// Routed rather than a bare receiver since sub-agents ask through the
+    /// same channel: see [`super::approval::ApprovalRouter`].
+    pub(crate) approval: Option<Arc<super::approval::ApprovalRouter>>,
     /// Optional compaction probe (§E). `None` ⇒ micro-compact + auto-compact
     /// are no-ops. The probe carries interior-mutable `micro_state` +
     /// `circuit_breaker` (both `Arc<std::sync::Mutex<…>>`, matching the
@@ -1414,7 +1418,7 @@ impl HostAgentExecutor {
         event_tx: Option<mpsc::Sender<Event>>,
         lsp: Option<LspProbe>,
         steer: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<String>>>>,
-        approval: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>>,
+        approval: Option<Arc<super::approval::ApprovalRouter>>,
         compaction: Option<CompactionProbe>,
         capacity: Option<CapacityProbe>,
         subagent: Option<Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<SubAgentCompletion>>>>,
@@ -6512,16 +6516,17 @@ mod tests {
     }
 
     /// Create an approval channel pair: the sender for tests to push
-    /// `ApprovalDecision`s (matched by wire tool id), and the interior-mutable
-    /// receiver the executor expects. Uses `tokio::sync::Mutex` because the
-    /// approval await blocks on `recv().await` — the guard must cross an
-    /// `await`.
+    /// `ApprovalDecision`s (matched by wire tool id), and the router the
+    /// executor expects (see [`super::approval::ApprovalRouter`]).
     fn approval_channel() -> (
         mpsc::Sender<ApprovalDecision>,
-        Arc<tokio::sync::Mutex<mpsc::Receiver<ApprovalDecision>>>,
+        Arc<crate::engine::approval::ApprovalRouter>,
     ) {
         let (tx, rx) = mpsc::channel::<ApprovalDecision>(64);
-        (tx, Arc::new(tokio::sync::Mutex::new(rx)))
+        (
+            tx,
+            Arc::new(crate::engine::approval::ApprovalRouter::new(rx)),
+        )
     }
 
     /// Create a sub-agent completion channel pair: the sender for tests to push
@@ -6895,6 +6900,12 @@ mod tests {
     /// through `Tool::run` (via `ToolSpecAdapter`), not `ToolDispatcher::execute`.
     struct FakeDispatcher {
         approval: Mutex<Option<ApprovalRequirement>>,
+        /// Path this dispatcher reports as escaped (`None` for the §E
+        /// override tests, which are about approval requirements only).
+        escaped: Option<PathBuf>,
+        /// Paths the executor granted, so a test can prove an approval
+        /// reached `grant_external_path` (and a denial did not).
+        granted: Arc<Mutex<Vec<PathBuf>>>,
     }
 
     impl FakeDispatcher {
@@ -6903,7 +6914,22 @@ mod tests {
         fn new(approval: Option<ApprovalRequirement>) -> Self {
             Self {
                 approval: Mutex::new(approval),
+                escaped: None,
+                granted: Arc::new(Mutex::new(Vec::new())),
             }
+        }
+
+        /// Report `path` as the escaped, untrusted path for every input, and
+        /// hand back the grant log to inspect after the run.
+        fn with_escaped_path(self, path: &str) -> (Self, Arc<Mutex<Vec<PathBuf>>>) {
+            let granted = Arc::clone(&self.granted);
+            (
+                Self {
+                    escaped: Some(PathBuf::from(path)),
+                    ..self
+                },
+                granted,
+            )
         }
     }
 
@@ -6933,6 +6959,15 @@ mod tests {
                 .approval
                 .lock()
                 .expect("FakeDispatcher approval poisoned")
+        }
+        fn escaped_path_for(&self, _name: &str, _input: &serde_json::Value) -> Option<PathBuf> {
+            self.escaped.clone()
+        }
+        fn grant_external_path(&self, path: PathBuf) {
+            self.granted
+                .lock()
+                .expect("FakeDispatcher grants poisoned")
+                .push(path);
         }
         fn validate_input(&self, _name: &str, _input: &serde_json::Value) -> Result<(), ToolError> {
             Ok(())
@@ -7541,6 +7576,168 @@ mod tests {
             } => {
                 assert_eq!(content, "ran:ls", "exec tool ran after approval: {content}");
                 assert_eq!(*is_error, Some(false));
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    // === path access (out-of-workspace ask) ================================
+
+    /// An out-of-workspace path is a separate question, not a generic tool
+    /// approval: the executor must emit `Event::PathAccessRequired` (naming
+    /// the path) and, on approval, grant that path so the call's own path
+    /// check passes. The dispatcher here answers `Auto` for the requirement —
+    /// only the escaped path makes the gate fire, which is exactly the rule
+    /// that keeps a read-only tool from slipping through with an
+    /// out-of-workspace path.
+    #[tokio::test]
+    async fn path_access_asks_and_grants_on_approval() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let (tx_event, mut rx_event) = mpsc::channel(256);
+        let (tx_approval, rx_approval) = approval_channel();
+        tx_approval
+            .send(ApprovalDecision::Approved {
+                id: "call_1".to_string(),
+            })
+            .await
+            .unwrap();
+
+        let (dispatcher, granted) =
+            FakeDispatcher::new(Some(ApprovalRequirement::Auto)).with_escaped_path("/sibling");
+
+        let mock = Arc::new(MockLlm::new(vec![read_file_call("notes.md"), end_call()]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            read_file_tools(ReadFileSpec::new("sibling contents")),
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx_event),
+            None,
+            None,
+            Some(rx_approval),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_tool_dispatcher(Some(Arc::new(dispatcher)));
+
+        let reason = executor
+            .run(&mut history, "read the sibling repo".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        let mut asked: Option<(String, String, PathBuf)> = None;
+        let mut generic_approval = false;
+        while let Ok(ev) = rx_event.try_recv() {
+            match ev {
+                Event::PathAccessRequired {
+                    id,
+                    tool_name,
+                    path,
+                } => asked = Some((id, tool_name, path)),
+                Event::ApprovalRequired { .. } => generic_approval = true,
+                _ => {}
+            }
+        }
+        let (id, tool_name, path) = asked.expect("a PathAccessRequired event was emitted");
+        assert_eq!(id, "call_1");
+        assert_eq!(tool_name, "read_file");
+        assert_eq!(path, PathBuf::from("/sibling"));
+        assert!(
+            !generic_approval,
+            "the path question replaces the generic tool approval, not joins it"
+        );
+
+        // Approval granted the path, and the call then ran.
+        assert_eq!(
+            granted.lock().unwrap().clone(),
+            vec![PathBuf::from("/sibling")],
+            "an approval must reach grant_external_path"
+        );
+        match &sess.messages[2].content[0] {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
+                assert_eq!(content, "sibling contents");
+                assert_eq!(*is_error, Some(false));
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    /// A refusal must not grant anything, and the model must be told the path
+    /// was declined for that directory — not handed back the old "run
+    /// `/trust add`" hint, which is what the user just refused.
+    #[tokio::test]
+    async fn path_access_denial_refuses_without_granting() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let (tx_event, mut rx_event) = mpsc::channel(256);
+        let (tx_approval, rx_approval) = approval_channel();
+        tx_approval
+            .send(ApprovalDecision::Denied {
+                id: "call_1".to_string(),
+            })
+            .await
+            .unwrap();
+
+        let (dispatcher, granted) =
+            FakeDispatcher::new(Some(ApprovalRequirement::Auto)).with_escaped_path("/sibling");
+
+        let mock = Arc::new(MockLlm::new(vec![read_file_call("notes.md"), end_call()]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            read_file_tools(ReadFileSpec::new("sibling contents")),
+            callback,
+            AgentExecutorConfig::default(),
+            Some(tx_event),
+            None,
+            None,
+            Some(rx_approval),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_tool_dispatcher(Some(Arc::new(dispatcher)));
+
+        let reason = executor
+            .run(&mut history, "read the sibling repo".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        let mut asked = false;
+        while let Ok(ev) = rx_event.try_recv() {
+            if matches!(ev, Event::PathAccessRequired { .. }) {
+                asked = true;
+            }
+        }
+        assert!(asked, "the question must be asked before any refusal");
+        assert!(
+            granted.lock().unwrap().is_empty(),
+            "a denied path must never be granted"
+        );
+        match &sess.messages[2].content[0] {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
+                assert_eq!(*is_error, Some(true));
+                assert!(
+                    content.contains("declined access to '/sibling'"),
+                    "the refusal must name the declined path: {content}"
+                );
+                assert!(
+                    !content.contains("/trust add"),
+                    "a declined path must not be re-offered as a `/trust add` hint: {content}"
+                );
             }
             other => panic!("expected ToolResult, got {other:?}"),
         }

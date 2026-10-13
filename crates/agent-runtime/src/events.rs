@@ -390,6 +390,20 @@ pub enum Event {
         request: UserInputRequest,
     },
 
+    /// A tool call targets `path`, which lies outside the workspace and is not
+    /// trusted: the host decides, instead of the engine refusing outright.
+    /// Allowing it makes the engine grant the path for this turn (so the call
+    /// runs); allowing it "always" additionally persists it to the workspace
+    /// trust list — that write is the host's, since only it knows which answer
+    /// the user gave. A refusal leaves the call refused. Answered through the
+    /// approval channel by tool-call id, exactly like
+    /// [`Event::ApprovalRequired`].
+    PathAccessRequired {
+        id: String,
+        tool_name: String,
+        path: PathBuf,
+    },
+
     /// Authoritative API conversation state from the engine session.
     ///
     /// The UI receives granular display events, but those are not always a

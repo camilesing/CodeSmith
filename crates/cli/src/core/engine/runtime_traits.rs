@@ -189,6 +189,10 @@ impl HostServices for super::EngineHost {
         .with_inherit_full_registry(req.config.subagent_inherit_full_registry)
         .with_capability_disabled_tools(req.config.disabled_tools.clone())
         .with_mcp_pool(req.mcp_pool)
+        // A child's path-access questions surface in the UI that spawned it,
+        // and the answer comes back through the same router the parent turn's
+        // own approval gate waits on.
+        .with_approval_router(self.approval_router.clone())
         .background_runtime();
         let route =
             resolve_subagent_assignment_route(&runtime, None, req.prompt, &SubAgentType::General)

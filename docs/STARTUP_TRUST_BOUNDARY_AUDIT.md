@@ -144,7 +144,15 @@ may CodeSmith file tools access while `trust_mode` is false?"
 - Loaded through `WorkspaceTrust::load_for(workspace)`
   (`crates/cli/src/workspace_trust.rs:52`).
 - Applied through `ToolContext::trusted_external_paths`
-  (`crates/agent-runtime/src/tools/spec.rs:204`).
+  (`crates/agent-runtime/src/tools/spec.rs:204`) — a live list shared by every
+  clone of the context: an approval granted mid-turn
+  (`ToolContext::grant_external_path`) is visible to the tool about to run and
+  to running sub-agents, without waiting for the next turn's context rebuild.
+- A file tool that targets an untrusted external path asks instead of failing:
+  the engine emits `Event::PathAccessRequired`, the host prompts (`[y]` for this
+  turn, `[a]` to also persist it here, `[n]` to keep the refusal), and an
+  approval grants the path in-process. A sub-agent asks through the same
+  channel, so its question surfaces in the UI that spawned it.
 - Grants access only through CodeSmith file tools; it does not loosen the shell
   OS sandbox.
 
