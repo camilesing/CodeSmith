@@ -217,7 +217,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             false
         }
         Command::Cost => {
-            debug_cmds::cost(state);
+            debug_cmds::usage(state);
             false
         }
         Command::Tools => {
@@ -229,7 +229,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             false
         }
         Command::Context => {
-            debug_cmds::context(state);
+            debug_cmds::context(state, Some(arg_str.as_str()));
             false
         }
         Command::Cache => {
@@ -311,6 +311,31 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
         }
         Command::Keybindings => {
             config_cmds::keybindings();
+            false
+        }
+        Command::Effort => {
+            config_cmds::effort(state, Some(arg_str.as_str()));
+            false
+        }
+        Command::Autocompact => {
+            config_cmds::autocompact(state, Some(arg_str.as_str())).await;
+            false
+        }
+        Command::Sandbox => {
+            let (arg, persist) = split_save_flag(&arg_str);
+            config_cmds::sandbox(state, arg, persist);
+            false
+        }
+        Command::ReleaseNotes => {
+            misc_cmds::release_notes(state, Some(arg_str.as_str()));
+            false
+        }
+        Command::TerminalSetup => {
+            misc_cmds::terminal_setup();
+            false
+        }
+        Command::Tasks => {
+            misc_cmds::tasks(state).await;
             false
         }
         Command::Init => {
@@ -560,6 +585,20 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             false
         }
     }
+}
+
+/// Split a trailing `--save` / `-s` off an argument string.
+fn split_save_flag(arg: &str) -> (Option<&str>, bool) {
+    let trimmed = arg.trim();
+    for flag in ["--save", "-s"] {
+        if let Some(rest) = trimmed.strip_suffix(flag) {
+            return (
+                Some(rest.trim_end()).filter(|value| !value.is_empty()),
+                true,
+            );
+        }
+    }
+    (Some(trimmed).filter(|value| !value.is_empty()), false)
 }
 
 /// `/help` — every registered command, straight from

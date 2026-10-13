@@ -7,6 +7,7 @@ use colored::Colorize;
 
 use super::ReplState;
 use crate::app_state::ReasoningEffort;
+use crate::core::ops::Op;
 use crate::settings::Settings;
 use codesmith_agent_runtime::mode::ApprovalMode;
 
@@ -449,6 +450,170 @@ pub fn keybindings() {
     println!("{}", crate::interactive::bindings::help_panel().dimmed());
 }
 
+/// `/effort [low|medium|high|max|auto|off|status]` — the reasoning-effort
+/// tier, which `/config reasoning_effort` also sets.
+///
+/// `max` is session-only, as in Claude Code: it is the most expensive stop
+/// on the ring and every other stop persists to settings.toml.
+pub fn effort(state: &mut ReplState, arg: Option<&str>) {
+    let Some(value) = arg.map(str::trim).filter(|v| !v.is_empty()) else {
+        println!("effort: {}", state.reasoning_effort_display_label());
+        return;
+    };
+    let value = value.to_ascii_lowercase();
+    if value == "status" {
+        println!("effort: {}", state.reasoning_effort_display_label());
+        return;
+    }
+    let accepted = ["off", "low", "medium", "high", "max", "auto"];
+    if !accepted.contains(&value.as_str()) {
+        println!(
+            "{} unknown effort {value:?} — usage: /effort {}",
+            "✗".red(),
+            accepted.join("|")
+        );
+        return;
+    }
+    let effort = ReasoningEffort::from_setting(&value);
+    state.reasoning_effort = effort;
+    state.update_model_compaction_budget();
+    if effort == ReasoningEffort::Max {
+        println!(
+            "effort = {} (this session only — /effort persists every other level)",
+            effort.short_label()
+        );
+        return;
+    }
+    persist_setting_string("reasoning_effort", effort.as_setting());
+    println!("effort = {}", effort.short_label());
+}
+
+/// `/autocompact [auto|<tokens>]` — the auto-compaction window.
+///
+/// `auto` returns the model-derived threshold; a size (`500k`, `250000`)
+/// pins it for the session. Claude Code's 500k-style shorthand is accepted
+/// so a value can be typed the way it is documented.
+pub async fn autocompact(state: &mut ReplState, arg: Option<&str>) {
+    let Some(value) = arg.map(str::trim).filter(|v| !v.is_empty()) else {
+        println!(
+            "autocompact: {} (threshold {}{})",
+            if state.auto_compact { "on" } else { "off" },
+            state.compact_threshold,
+            if state.auto_compact {
+                String::new()
+            } else {
+                " — compaction is disabled".to_string()
+            }
+        );
+        return;
+    };
+    if value.eq_ignore_ascii_case("auto") {
+        state.update_model_compaction_budget();
+        state.auto_compact = true;
+        apply_compaction(state).await;
+        persist_setting_string("auto_compact", "true");
+        println!(
+            "autocompact: on, window back to the model default ({} tokens)",
+            state.compact_threshold
+        );
+        return;
+    }
+    match parse_token_size(value) {
+        Some(tokens) => {
+            state.compact_threshold = tokens;
+            state.auto_compact = true;
+            apply_compaction(state).await;
+            println!("autocompact: on, window pinned at {tokens} tokens (this session)");
+        }
+        None => println!(
+            "{} unknown window {value:?} — usage: /autocompact auto|<tokens> (500k, 250000)",
+            "✗".red()
+        ),
+    }
+}
+
+/// Push the current compaction settings into the running engine.
+async fn apply_compaction(state: &ReplState) {
+    let config = state.compaction_config();
+    if let Ok(engine) = state.engine() {
+        let _ = engine.send(Op::SetCompaction { config }).await;
+    }
+}
+
+/// `500k` / `2m` / `250000` — Claude Code's size shorthand.
+fn parse_token_size(value: &str) -> Option<usize> {
+    let lowered = value.trim().to_ascii_lowercase();
+    let (digits, scale) = match lowered.strip_suffix('k') {
+        Some(head) => (head, 1_000usize),
+        None => match lowered.strip_suffix('m') {
+            Some(head) => (head, 1_000_000),
+            None => (lowered.as_str(), 1),
+        },
+    };
+    digits.trim().parse::<usize>().ok()?.checked_mul(scale)
+}
+
+/// `/sandbox [on|off|status|read-only|workspace-write|danger-full-access]`.
+///
+/// The sandbox policy is chosen when the engine is built, so a change here
+/// is stored (and persisted with `--save`) and takes effect for the next
+/// engine — a restart. `/status` always names the mode in force now.
+pub fn sandbox(state: &mut ReplState, arg: Option<&str>, persist: bool) {
+    let current = state
+        .config
+        .sandbox_mode
+        .clone()
+        .unwrap_or_else(|| "(default)".to_string());
+    let Some(value) = arg.map(str::trim).filter(|v| !v.is_empty()) else {
+        println!("sandbox: {current}");
+        return;
+    };
+    let requested = value.to_ascii_lowercase();
+    let mode = match requested.as_str() {
+        "status" => {
+            println!("sandbox: {current}");
+            return;
+        }
+        "on" => "workspace-write",
+        "off" => "danger-full-access",
+        other => other,
+    };
+    if !matches!(
+        mode,
+        "read-only" | "workspace-write" | "danger-full-access" | "external-sandbox"
+    ) {
+        println!(
+            "{} unknown sandbox mode {value:?} — on|off|read-only|workspace-write|danger-full-access",
+            "✗".red()
+        );
+        return;
+    }
+    let changed = state.config.sandbox_mode.as_deref() != Some(mode);
+    state.config.sandbox_mode = Some(mode.to_string());
+    if persist {
+        match super::auto_route::persist_root_string_key(
+            state.config_path.as_deref(),
+            "sandbox_mode",
+            mode,
+        ) {
+            Ok(path) => println!("  saved to {}", path.display()),
+            Err(err) => println!("{} could not save sandbox_mode: {err}", "✗".red()),
+        }
+    }
+    if changed {
+        println!(
+            "sandbox = {mode} (applies from the next engine; add --save to keep it){}",
+            if mode == "danger-full-access" {
+                " — commands run unconfined"
+            } else {
+                ""
+            }
+        );
+    } else {
+        println!("sandbox = {mode} (unchanged)");
+    }
+}
+
 fn parse_bool(value: &str) -> Option<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
         "true" | "on" | "1" | "yes" => Some(true),
@@ -466,6 +631,7 @@ fn persist_setting_string(key: &str, value: &str) {
                 "locale" => settings.locale = value.to_string(),
                 "reasoning_effort" => settings.reasoning_effort = Some(value.to_string()),
                 "composer_vim_mode" => settings.composer_vim_mode = value.to_string(),
+                "auto_compact" => settings.auto_compact = value == "true",
                 _ => {}
             }
             if let Err(err) = settings.save() {
@@ -490,4 +656,21 @@ fn expand_tilde(raw: &str) -> String {
         return home.to_string_lossy().into_owned();
     }
     raw.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_token_size;
+
+    #[test]
+    fn token_sizes_accept_claude_codes_shorthand() {
+        assert_eq!(parse_token_size("500k"), Some(500_000));
+        assert_eq!(parse_token_size("2m"), Some(2_000_000));
+        assert_eq!(parse_token_size("250000"), Some(250_000));
+        assert_eq!(parse_token_size(" 12K "), Some(12_000));
+        assert_eq!(parse_token_size(""), None);
+        assert_eq!(parse_token_size("lots"), None);
+        // Overflow is a refusal, not a silent wrap.
+        assert_eq!(parse_token_size("99999999999999m"), None);
+    }
 }
