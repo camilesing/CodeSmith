@@ -29,7 +29,14 @@ fn user_initiated_policy(config: &crate::config::Config) -> NetworkPolicy {
 }
 
 fn discover(state: &ReplState) -> SkillRegistry {
-    crate::skills::discover_for_workspace_and_dir(&state.workspace, &state.skills_dir)
+    let mut registry =
+        crate::skills::discover_for_workspace_and_dir(&state.workspace, &state.skills_dir);
+    // The bundled review/verify skills live beside the discovered ones so
+    // `/skills`, `/skill <name>`, and the commands below share one registry.
+    // A skill of the same name on disk wins (`merge_registered` skips the
+    // collision and records a warning).
+    registry.merge_registered(&crate::bundled_skills::registered());
+    registry
 }
 
 /// `/skills [prefix]` — local list; `--remote` browses the community
@@ -151,6 +158,79 @@ pub async fn review(state: &mut ReplState, args: Option<&str>) {
         skill.name, body
     );
     let _ = super::super::submit(state, format!("{instruction}\n\nReview target: {target}")).await;
+}
+
+/// Activate one of the bundled review/verify skills with a target.
+///
+/// The skills are prompt workflows (see `crate::bundled_skills`), so
+/// activating one is the same call `/skill <name>` makes: the body goes into
+/// the conversation as the instruction for this turn.
+pub async fn activate(state: &mut ReplState, name: &str, target: &str) {
+    let registry = discover(state);
+    let Some(skill) = registry.get(name) else {
+        println!(
+            "{} the {name} skill is missing from this build — /skills lists what is available",
+            "✗".red()
+        );
+        return;
+    };
+    let body = crate::skills::preprocess_skill_body_for_activation(skill);
+    let instruction = format!(
+        "You are now using a skill. Follow these instructions:\n\n# Skill: {}\n\n{}\n\n---\n\nNow respond to the user's request following the above skill instructions.",
+        skill.name, body
+    );
+    let request = if target.trim().is_empty() {
+        instruction
+    } else {
+        format!("{instruction}\n\nTarget: {}", target.trim())
+    };
+    let _ = super::super::submit(state, request).await;
+}
+
+/// Parse `/code-review [low|medium|high|xhigh|max] [--fix] [target]`.
+///
+/// The level and the flag are Claude Code's; this REPL has no separate model
+/// switch per level, so the level is carried into the prompt as the review's
+/// depth instruction rather than silently dropped.
+pub async fn code_review(state: &mut ReplState, args: &str) {
+    let mut depth = String::new();
+    let mut fix = false;
+    let mut target: Vec<&str> = Vec::new();
+    for part in args.split_whitespace() {
+        match part {
+            "low" | "medium" | "high" | "xhigh" | "max" => depth = part.to_string(),
+            "--fix" | "fix" => fix = true,
+            other => target.push(other),
+        }
+    }
+    let mut request = String::new();
+    if !depth.is_empty() {
+        request.push_str(&format!(
+            "Review depth: {depth}. Spend effort accordingly.\n"
+        ));
+    }
+    if fix {
+        request.push_str(
+            "Apply the fixes you are confident about after reporting them, then say what you changed.\n",
+        );
+    }
+    request.push_str(&target.join(" "));
+    activate(state, "code-review", &request).await;
+}
+
+/// `/simplify [target]`
+pub async fn simplify(state: &mut ReplState, target: &str) {
+    activate(state, "simplify", target).await;
+}
+
+/// `/security-review [target]`
+pub async fn security_review(state: &mut ReplState, target: &str) {
+    activate(state, "security-review", target).await;
+}
+
+/// `/run [target]`
+pub async fn run_app(state: &mut ReplState, target: &str) {
+    activate(state, "run", target).await;
 }
 
 /// `/skills --remote` — browse the community registry index.

@@ -67,6 +67,7 @@ mod session_manager;
 mod settings;
 mod shell_dispatcher;
 mod skill_state;
+mod bundled_skills;
 mod skills;
 mod slop_ledger;
 mod snapshot;
