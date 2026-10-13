@@ -27,6 +27,7 @@ pub mod completion;
 pub mod keys;
 pub mod path_index;
 pub mod render;
+pub mod shell_mode;
 pub mod state;
 pub mod status;
 pub mod statusline;
@@ -324,6 +325,18 @@ pub async fn run_repl(
             continue;
         }
 
+        // `!command` runs in the user's shell and joins the conversation
+        // (Claude Code's shell mode). Checked before the command dispatch so
+        // a shell line never reaches the slash-command table.
+        if let Some(command) = shell_mode::command_from_line(trimmed) {
+            run_shell_mode(&mut state, command).await?;
+            match render::pump_turn(&mut state).await? {
+                render::PumpExit::UserQuit | render::PumpExit::EngineGone => break,
+                render::PumpExit::TurnDone => {}
+            }
+            continue;
+        }
+
         // `# text` quick-appends to memory — no turn fires. `##` and `#!`
         // fall through to normal submission (Markdown headings, shebangs).
         if let Some(entry) = commands::misc_cmds::quick_memory_entry(trimmed) {
@@ -617,6 +630,68 @@ async fn refresh_statusline(state: &mut ReplState) {
 
 /// How long a statusline command may run before its output is abandoned.
 const STATUSLINE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// The message list `/btw` sends: the session's conversation, then the
+/// question as the last user message.
+///
+/// `api_messages` is the REPL's copy of what the session has exchanged, so
+/// the side question sees exactly what the model saw — and because the
+/// result is never appended back, the next real turn is unchanged.
+pub(crate) fn btw_request_messages(
+    state: &ReplState,
+    question: &str,
+) -> Vec<crate::models::Message> {
+    let mut messages = state.api_messages.clone();
+    messages.push(crate::models::Message {
+        role: "user".to_string(),
+        content: vec![crate::models::ContentBlock::Text {
+            text: format!(
+                "Side question (answer from this conversation alone; do not use or request tools; \
+                 this exchange will not be part of the conversation): {question}"
+            ),
+            cache_control: None,
+        }],
+    });
+    messages
+}
+
+/// Run one `!command` line: print it, hand it to the model as a user
+/// message, and let the turn answer.
+///
+/// The command runs unsandboxed because the user typed it (the approval
+/// surface gates what the model runs); `respond_to_shell_commands = false`
+/// makes the run report itself without starting a turn.
+async fn run_shell_mode(state: &mut ReplState, command: &str) -> Result<()> {
+    println!("{}", format!("$ {command}").dimmed());
+    let (status, output) =
+        match super::interactive::shell_mode::run(command, &state.workspace).await {
+            Ok(result) => result,
+            Err(err) => {
+                println!("{} {err}", "✗".red());
+                return Ok(());
+            }
+        };
+    if !output.is_empty() {
+        print!("{output}");
+        if !output.ends_with('\n') {
+            println!();
+        }
+    }
+    println!("{}", format!("— {status}").dimmed());
+    if !state.settings.respond_to_shell_commands {
+        println!(
+            "{}",
+            "respond_to_shell_commands = false: the output is in the transcript but no turn was started"
+                .dimmed()
+        );
+        return Ok(());
+    }
+    submit(
+        state,
+        super::interactive::shell_mode::transcript_message(command, &status, &output),
+    )
+    .await
+}
 
 fn prompt_str(state: &ReplState) -> String {
     let accent = theme::accent(

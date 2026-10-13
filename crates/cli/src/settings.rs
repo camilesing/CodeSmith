@@ -106,6 +106,10 @@ pub struct Settings {
     /// A shell command whose stdout is appended to the status line
     /// (`/statusline`), refreshed at most every [`STATUSLINE_TTL`] seconds.
     pub statusline_command: Option<String>,
+    /// Whether a `!command` line starts a turn that answers from its output.
+    /// `false` records the run without asking the model about it — Claude
+    /// Code's `respondToBashCommands`.
+    pub respond_to_shell_commands: bool,
     /// Composer layout density: compact, comfortable, spacious
     pub composer_density: String,
     /// Show a border around the composer input area
@@ -207,6 +211,7 @@ impl Default for Settings {
             background_color: None,
             prompt_color: None,
             statusline_command: None,
+            respond_to_shell_commands: true,
             composer_density: "comfortable".to_string(),
             composer_border: true,
             composer_vim_mode: "normal".to_string(),
