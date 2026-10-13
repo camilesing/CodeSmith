@@ -338,6 +338,21 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             misc_cmds::tasks(state).await;
             false
         }
+        Command::ReloadSkills => {
+            misc_cmds::reload_skills(state);
+            false
+        }
+        Command::ReloadPlugins => {
+            let force = arg_str
+                .split_whitespace()
+                .any(|part| part == "--force" || part == "-f");
+            misc_cmds::reload_plugins(state, force).await;
+            false
+        }
+        Command::Plugins => {
+            misc_cmds::plugins(state).await;
+            false
+        }
         Command::Init => {
             misc_cmds::init(state);
             false
@@ -993,14 +1008,46 @@ fn cmd_provider(state: &mut ReplState, arg: &str) {
     }
 }
 
+/// `/agents` — running sub-agents, plus the two configuration surfaces that
+/// decide how they run.
+///
+/// Sub-agents in CodeSmith are spawned per task with a prompt (`agent_open`);
+/// there is no `.claude/agents/*.md`-style definition file, so what can be
+/// configured is the model each role uses and where its memory lives —
+/// Claude Code's `/agents` covers definitions the model writes at spawn time.
 fn cmd_agents(state: &ReplState) {
     if state.agent_progress.is_empty() {
         println!("no sub-agents running");
-        return;
+    } else {
+        println!("{}", "running sub-agents:".bold());
+        for (id, status) in &state.agent_progress {
+            println!("  {id}: {status}");
+        }
     }
-    println!("{}", "running sub-agents:".bold());
-    for (id, status) in &state.agent_progress {
-        println!("  {id}: {status}");
+    let overrides = state.config.subagent_model_overrides();
+    if overrides.is_empty() {
+        println!(
+            "{}",
+            "no per-role model overrides ([subagents] default_model / worker_model in config.toml)"
+                .dimmed()
+        );
+    } else {
+        println!("{}", "model overrides:".bold());
+        let mut roles: Vec<(&String, &String)> = overrides.iter().collect();
+        roles.sort();
+        for (role, model) in roles {
+            println!("  {role} → {model}");
+        }
+    }
+    // The two roots `agent_memory_candidates` prefers, in its own order.
+    let roots = [
+        state.workspace.join(".codesmith/agent-memory"),
+        state.workspace.join(".claude/agent-memory"),
+    ];
+    for root in roots {
+        if root.is_dir() {
+            println!("{}", format!("agent memory: {}", root.display()).dimmed());
+        }
     }
 }
 

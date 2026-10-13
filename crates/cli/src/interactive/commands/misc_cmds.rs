@@ -824,6 +824,84 @@ fn changelog_sections(text: &str) -> Vec<(String, String)> {
     sections
 }
 
+/// `/reload-skills` — re-read the skill directories.
+///
+/// The available-skill list is part of the **system prompt**
+/// (`prompts::build_system_prompt`'s `skills_block`), which the session
+/// pins as its cache prefix — so this reports what is on disk now and says
+/// plainly that the model sees it on the next prompt rebuild.
+pub fn reload_skills(state: &mut ReplState) {
+    let registry =
+        crate::skills::discover_for_workspace_and_dir(&state.workspace, &state.skills_dir);
+    let names: Vec<String> = registry
+        .list()
+        .iter()
+        .map(|skill| skill.name.clone())
+        .collect();
+    let baseline = state.skill_baseline.get_or_insert_with(|| names.clone());
+    let added: Vec<&String> = names
+        .iter()
+        .filter(|name| !baseline.contains(name))
+        .collect();
+    let removed: Vec<&String> = baseline
+        .iter()
+        .filter(|name| !names.contains(name))
+        .collect();
+    println!(
+        "skills: {} available ({} added, {} removed since startup)",
+        names.len(),
+        added.len(),
+        removed.len()
+    );
+    for name in added {
+        println!("  + {name}");
+    }
+    for name in removed {
+        println!("  - {name}");
+    }
+    *baseline = names;
+    println!(
+        "{}",
+        "the skill list rides the system prompt: the model sees it after the next prompt rebuild, which starts the cache prefix cold"
+            .dimmed()
+    );
+}
+
+/// `/reload-plugins [--force]` — reload mods, dylib extensions, and skills.
+///
+/// `--force` answers the cache question in advance (Claude Code's flag has
+/// the same job): without it the reload is still performed, and the note
+/// about the prompt cache is printed because the tool catalog changed.
+pub async fn reload_plugins(state: &ReplState, force: bool) {
+    println!("{}", "reloading mods, extensions, and skills".bold());
+    super::mods_cmds::mods_command(state, "reload").await;
+    super::extension_cmds::extension_command(state, "reload").await;
+    let registry =
+        crate::skills::discover_for_workspace_and_dir(&state.workspace, &state.skills_dir);
+    println!("skills: {} available", registry.list().len());
+    if !force {
+        println!(
+            "{}",
+            "the tool catalog changed, so the prompt cache starts cold on the next turn — /reload-plugins --force quietens this note"
+                .dimmed()
+        );
+    }
+}
+
+/// `/plugins` — every extension surface in one listing: mods, dylib
+/// extensions, and skills. Enabling and disabling stay with the command
+/// that owns each store (`/mods`, `/extension`, `/skills`).
+pub async fn plugins(state: &ReplState) {
+    println!("{}", "mods (Rhai script packages)".bold());
+    super::mods_cmds::mods_command(state, "list").await;
+    println!();
+    println!("{}", "extensions (dylib)".bold());
+    super::extension_cmds::extension_command(state, "list").await;
+    println!();
+    println!("{}", "skills".bold());
+    super::skills_cmds::list_skills(state, None).await;
+}
+
 /// `/terminal-setup` — what to change in the terminal itself.
 ///
 /// Printed rather than applied: editing a terminal's own config is the

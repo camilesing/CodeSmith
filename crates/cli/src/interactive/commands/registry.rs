@@ -72,6 +72,9 @@ command_table! {
     ReleaseNotes,
     TerminalSetup,
     Tasks,
+    ReloadSkills,
+    ReloadPlugins,
+    Plugins,
     Mods, Models, Memory, Set, Deepseek,
 }
 
@@ -550,6 +553,33 @@ impl Command {
             aliases: &["bashes"],
             group: Group::Context,
             help: "everything in the background: jobs, sub-agents, tasks",
+        },
+        CommandInfo {
+            command: Command::ReloadSkills,
+            name: "reload-skills",
+            usage: "",
+            args: &[],
+            aliases: &[],
+            group: Group::Extensions,
+            help: "re-read the skill directories",
+        },
+        CommandInfo {
+            command: Command::ReloadPlugins,
+            name: "reload-plugins",
+            usage: "[--force]",
+            args: &["--force"],
+            aliases: &[],
+            group: Group::Extensions,
+            help: "reload mods, extensions, and skills",
+        },
+        CommandInfo {
+            command: Command::Plugins,
+            name: "plugins",
+            usage: "",
+            args: &[],
+            aliases: &[],
+            group: Group::Extensions,
+            help: "list mods, extensions, and skills together",
         },
         CommandInfo {
             command: Command::Keybindings,

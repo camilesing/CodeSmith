@@ -147,6 +147,9 @@ pub struct ReplState {
     /// takes it as the next prompt's text, so a turn that ends first never
     /// swallows half-typed input.
     pub turn_end_draft: Option<String>,
+    /// Skill names as first discovered this session, so `/reload-skills` can
+    /// say what appeared or disappeared since startup.
+    pub skill_baseline: Option<Vec<String>>,
     /// Rolling log of completed tool calls for `/expand` and the Ctrl+O
     /// replay, capped at [`crate::tool_summary::TOOL_LOG_CAP`].
     pub tool_log: Vec<crate::tool_summary::ToolCallRecord>,
@@ -341,6 +344,7 @@ impl ReplState {
             show_tasks: false,
             queued_messages: Vec::new(),
             turn_end_draft: None,
+            skill_baseline: None,
             tool_log: Vec::new(),
             tool_log_turn: 0,
             subagent_cache: Vec::new(),
