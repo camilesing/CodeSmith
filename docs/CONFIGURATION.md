@@ -722,11 +722,13 @@ status line; appearance keys such as `theme`, `background_color`, and
   detection for terminals that do not emit bracketed-paste events. This is
   independent of terminal bracketed-paste mode.
 - `mention_menu_limit` (integer, default `128`): maximum number of
-  `@`-mention popup candidates retained before the composer renders the
-  visible window. The visible rows still depend on terminal height.
+  `@`-mention completion candidates kept from the workspace index. The `Tab`
+  candidate list pages through them by terminal height.
 - `mention_walk_depth` (integer, default `6`): maximum workspace depth for
-  `@`-mention completion walks. Set to `0` for unlimited depth in deeply
-  nested workspaces; keep the default in very large repos unless needed.
+  the `@`-mention completion walk. Set to `0` for unlimited depth in deeply
+  nested workspaces; keep the default in very large repos unless needed. The
+  walk respects `.gitignore`, skips hidden files, and is cached for 10 s, so
+  a file created a moment ago completes after the next rebuild.
 - `show_thinking` (on/off)
 - `is_simple` (on/off, default off): answer in maximum-compression "simple"
   (caveman) conversation style — short sentences, no filler or pleasantries —
@@ -755,8 +757,25 @@ status line; appearance keys such as `theme`, `background_color`, and
   cross from the transcript into sidebar borders. Legacy `plan` and `todos`
   values are accepted and normalized to `work`.
 - `max_input_history` (number of submitted input history entries to save,
-  default `100`; displayed as `max_history` in `/config`; cleared drafts are
-  also kept locally for composer history search)
+  default `500`). History is kept **per workspace**
+  (`~/.codesmith/history/<workspace>`); the pre-upgrade single-file history at
+  `~/.codesmith/history` is read once for a workspace that has none of its
+  own and then left in place.
+- `respond_to_shell_commands` (on/off, default on): whether a `!command` line
+  (shell mode) starts a turn that answers from the command's output. `off`
+  records the run in the transcript without asking the model about it.
+- `prompt_color` (one of `red`, `blue`, `green`, `yellow`, `purple`,
+  `orange`, `pink`, `cyan`; unset by default): the prompt bar's color,
+  overriding the theme accent. Set with `/color <name>`, cleared with
+  `/color default`.
+- `statusline_command` (shell command, unset by default): its first stdout
+  line is appended to the status line, refreshed at most once every 5
+  seconds, killed after 1.5 s. It runs **unsandboxed and unasked**, because
+  it is your own command — the same rule shell mode follows. Set with
+  `/statusline <command>`, cleared with `/statusline off`.
+- `composer_vim_mode` (`normal`, `vim`; default `normal`): `vim` switches the
+  prompt to vi keys. Set with `/config editor_mode vim`; the switch applies at
+  the next prompt (the prompt is rebuilt).
 - `default_model` (model name override)
 
 ### Companion files

@@ -52,6 +52,61 @@ prompt 的入口有两个：
 `Tab` 补全命令名（多个匹配时连按两次列出候选），光标后的暗色文字预览匹配命令
 的作用。`/plan`、`/agent`、`/yolo` 分别是对应 `/mode` 取值的快捷方式，也可以在提示符下按 `Shift+Tab` 循环这些模式（`agent → plan → yolo`，实验性 `coordinator_mode` 功能开启时再加 `coordinator`）。
 
+键盘与交互细节（提示符按键、回合中的 composer、vim 模式、shell 模式）见
+[KEYBINDINGS_cn.md](KEYBINDINGS_cn.md)；在空提示符下按 `?` 会打印同一张表。
+
+除核心命令集之外，REPL 还带上了本分支用户要求的 Claude Code 交互。值得知道的：
+
+- **回合运行中也能输入。** `Enter` 排队、`Ctrl+X Ctrl+S` 立即发送、`Esc` 把正在跑的
+  shell/子代理转后台或中断回合、`Ctrl+B` 把 shell 转后台、`Ctrl+X Ctrl+K` 停掉全部
+  后台工作。排队消息会在它等待的工具调用结束时交给模型。
+- **`!command`** 在你的 shell 中执行，并让模型基于其输出作答
+  （`respond_to_shell_commands = false` 则只记录、不启动回合）。
+- **`/btw <question>`** 只依据本会话已有对话作答、无工具，且不会把这次问答加进对话
+  （记录写入 `~/.codesmith/side-questions.jsonl`）。
+- **`/rewind [n|list]`** 把工作区恢复到引擎在改动文件的回合前后拍下的快照之一。
+  仅文件：`/undo` 与 `/retry` 是对话那一半。
+- **`/code-review`、`/security-review`、`/simplify`、`/run`、`/verify`** 是内置技能
+  （提示词工作流），由 `/skills` 列出，磁盘上同名技能可覆盖它们。
+- **`/effort`、`/autocompact`、`/usage`、`/tasks`、`/plugins`、`/reload-skills`、
+  `/reload-plugins`、`/theme`、`/color`、`/statusline`、`/copy`、`/doctor`、
+  `/debug`、`/release-notes`、`/terminal-setup`、`/keybindings`** 覆盖模型档位、
+  后台视图、扩展面，以及外观与诊断杂项。
+
+### 改名的命令
+
+有四个名字现在取 Claude Code 的含义，旧行为仍然可达：
+
+| 之前 | 现在 |
+| :- | :- |
+| `/verify`（claim-check 台账统计） | `/verify` 运行并观察程序；台账统计改为 `/claim-check` |
+| `/review <target>`（激活 review 技能） | `/review` 是 `/code-review` 的别名；技能走 `/review-skill` 或 `/skill review <target>` |
+| `/undo`（丢弃最后一轮问答） | 不变 —— 它是 `/rewind`（文件）配对的对话那一半 |
+| `/stats`（`/home` 别名） | `/stats` 是 `/usage` 的别名；`/home` 保留 `/overview` |
+| `/tasks`（`/task` 别名） | `/tasks` 是后台视图（shell 作业 + 子代理 + 持久任务）；`/task` 保留 `add\|list\|show\|cancel` |
+
+### 未实现
+
+只存在于 Anthropic 自家云或账号面的命令没有本地对应物，因此刻意不注册，
+`/help` 不会给出做不到的东西：`/desktop` `/mobile` `/teleport`
+`/remote-control` `/remote-env` `/background`（后台*会话*）`/artifacts`
+`/design` `/design-login` `/design-sync` `/slides` `/voice` `/chrome`
+`/claude-in-chrome` `/ide` `/upgrade` `/passes` `/usage-credits`
+`/rate-limit-options` `/privacy-settings` `/web-setup` `/install-github-app`
+`/install-slack-app` `/autofix-pr` `/ultrareview` `/heapdump` `/radio`
+`/stickers` `/powerup` `/team-onboarding` `/insights` `/fast` `/scroll-speed`
+`/tui` `/focus` `/keybindings-file` `/list-agents` `/peers` `/schedule`
+`/loop` `/batch` `/subtask` `/branch` `/import` `/output-style` `/recap`
+`/permissions` `/add-dir` `/cd` `/pr`、内置技能之外的 `/simplify` 变体，
+以及 `/plugin` 编写面。
+
+同样在范围之外并写明原因的：键位配置文件（绑定编译在程序内，`/keybindings` 只读）、
+emoji 短代码与拼写检查（二者都需要本 REPL 未随附的数据表）、以及全屏渲染器的
+transcript viewer 按键。
+
+CLI 侧的 PR 审阅入口是 `codesmith pr <N>`；REPL 不带 `/pr`，因为该命令需要
+REPL 并不持有的已解析 `Cli` 句柄。
+
 ## 模型选择
 
 顶层 `--model <id>` 旗标为该次运行覆盖模型——它与 `CODESMITH_MODEL`

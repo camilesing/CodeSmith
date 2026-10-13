@@ -13,6 +13,67 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
 
 ### Added
 
+- **The REPL gained Claude Code's keyboard and command surface** — the
+  interactions this fork's users asked for, ported to a line-based frontend
+  rather than a fullscreen one. The complete key table is
+  [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md) (`?` on an empty prompt prints it,
+  `/keybindings` reprints it).
+
+  Keys. A mid-turn composer: while a turn runs you can type, edit, and queue —
+  `Enter` queues, `Ctrl+X Ctrl+S` (or `Ctrl+Enter` where the terminal reports
+  it) sends now, `Esc` backgrounds running shell/sub-agent work or interrupts,
+  `Ctrl+B` backgrounds a shell, `Ctrl+X Ctrl+K` stops all background work
+  behind a 3-second confirm, `Ctrl+T` toggles the model's task checklist, and
+  `Ctrl+O` works at the prompt as well as mid-turn. A queued message reaches
+  the model as soon as the tool call it waited on finishes, through the
+  engine's existing steer path, so the session log keeps agreeing with what
+  the model saw. Anything still in the composer when a turn ends returns to
+  the next prompt, and `Up` takes queued messages back for editing. At the
+  prompt: `Ctrl+S` stashes a draft, `Ctrl+D` deletes forward or quits on a
+  second press, `Esc Esc` clears a draft while keeping it for `Up`, `Ctrl+G`
+  opens `$VISUAL`/`$EDITOR`, `Alt+P`/`Alt+T` switch model and thinking, `?`
+  prints the shortcut panel, a trailing `\` or `Ctrl+J` makes input
+  multi-line, and history is now per workspace. `composer_vim_mode`,
+  `max_input_history`, `bracketed_paste`, `mention_walk_depth`, and
+  `mention_menu_limit` were documented settings that nothing read; they are
+  wired now (`/config editor_mode vim` switches to rustyline's vi keymap).
+
+  Commands. Shell mode (`!command`) runs in your own shell and lets the model
+  answer from the output; `/btw` asks about the session without adding to it
+  (recorded to `~/.codesmith/side-questions.jsonl`); `/rewind` lists and
+  restores the file snapshots the engine already takes; `/code-review`,
+  `/security-review`, `/simplify`, `/run`, and `/verify` are bundled skills;
+  `/effort`, `/autocompact`, `/usage`, `/tasks`, `/plugins`,
+  `/reload-skills`, `/reload-plugins`, `/theme`, `/color`, `/statusline`,
+  `/copy`, `/doctor`, `/debug`, `/release-notes`, `/terminal-setup`, and
+  `/keybindings` cover the model tier, the background view, the extension
+  surfaces, and the diagnostic odds and ends. `@path` completion and
+  mid-prompt command completion arrive with them.
+
+  Renames, so four names mean what Claude Code means by them: `/verify` now
+  runs and observes the program (the claim-check ledger stats moved to
+  `/claim-check`); `/review` is an alias of `/code-review` (the installed
+  review skill answers to `/review-skill` or `/skill review <target>`);
+  `/stats` is an alias of `/usage` (`/home` keeps `/overview`); `/tasks` is
+  the background view (`/task` keeps its subcommands). `/undo` is unchanged
+  and is the conversation half of the pair `/rewind` completes for files.
+
+  Deliberately absent: the commands that only exist inside Anthropic's cloud
+  or account surface have no local equivalent and are not registered, so
+  `/help` never offers something that cannot work — the list, with reasons, is
+  in [docs/CLI.md](docs/CLI.md).
+
+### Changed
+
+- Input history is per workspace (`~/.codesmith/history/<workspace>`) and its
+  default cap is 500 entries; the pre-upgrade single file is read once for a
+  workspace that has none of its own and left in place.
+- `auto_compact` is reachable from `/config` as documented (the key had no
+  handler) and `/autocompact` pins the window for a session.
+- The REPL's known-limitations note in `state.rs` was rewritten: it had been
+  listing capabilities the port just built (single-line input, no mid-turn
+  input, no `@` completion) as absent.
+
 - **An out-of-workspace path is now a question, not a dead end**: a file tool
   pointed outside the workspace (`read_file`, `write_file`, `edit_file`,
   `list_dir`, `grep_files`, `file_search`) used to fail with
