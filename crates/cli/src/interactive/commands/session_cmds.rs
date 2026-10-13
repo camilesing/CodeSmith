@@ -230,11 +230,68 @@ pub async fn load(state: &mut ReplState, path: Option<&str>) {
 
 /// `/resume <id|prefix|latest>` — resume a saved session in place.
 pub async fn resume(state: &mut ReplState, arg: Option<&str>) {
-    let id = match arg.map(str::trim).filter(|s| !s.is_empty()) {
-        Some(id) => id.to_string(),
+    let requested = arg.map(str::trim).filter(|s| !s.is_empty());
+    // Claude Code's `/resume [session]` takes an id *or a name*; this
+    // resolves a name only when nothing matches as an id prefix, so an id
+    // that happens to look like a title still wins.
+    let id = match requested {
         None => "latest".to_string(),
+        Some(value) => match SessionManager::default_location()
+            .ok()
+            .and_then(|manager| manager.load_session_by_prefix(value).ok())
+        {
+            Some(_) => value.to_string(),
+            None => match find_session_by_name(value) {
+                Some(id) => {
+                    println!("{}", format!("resuming {id} (matched by name)").dimmed());
+                    id
+                }
+                None => value.to_string(),
+            },
+        },
     };
     let _ = super::super::state::resume_session(state, &id).await;
+}
+
+/// The newest session whose title contains `needle`, if any.
+fn find_session_by_name(needle: &str) -> Option<String> {
+    let manager = SessionManager::default_location().ok()?;
+    let sessions = manager.list_sessions().ok()?;
+    let needle = needle.to_ascii_lowercase();
+    sessions
+        .into_iter()
+        .filter(|meta| !meta.title.is_empty() && meta.title.to_ascii_lowercase().contains(&needle))
+        .max_by_key(|meta| meta.updated_at)
+        .map(|meta| meta.id)
+}
+
+/// A title for this session, from its first user message.
+///
+/// Local and synchronous by design (see [`rename`]): the first line of the
+/// first user message, trimmed to the title cap at a word boundary.
+fn derive_title(state: &ReplState) -> Option<String> {
+    let first = state
+        .api_messages
+        .iter()
+        .find(|message| message.role == "user")
+        .and_then(|message| {
+            message.content.iter().find_map(|block| match block {
+                crate::models::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+        })?;
+    let line = first.lines().next().unwrap_or(first).trim();
+    if line.is_empty() {
+        return None;
+    }
+    if line.chars().count() <= MAX_TITLE_LEN {
+        return Some(line.to_string());
+    }
+    let mut title: String = line.chars().take(MAX_TITLE_LEN).collect();
+    if let Some(cut) = title.rfind(char::is_whitespace) {
+        title.truncate(cut);
+    }
+    Some(title)
 }
 
 /// Shared adoption path for `/load`.
@@ -474,8 +531,21 @@ fn prune(days_arg: Option<&str>) {
 
 /// `/rename <title>`
 pub fn rename(state: &mut ReplState, arg: Option<&str>) {
-    let Some(new_title) = arg.map(str::trim).filter(|s| !s.is_empty()) else {
-        println!("{} usage: /rename <new title>", "✗".red());
+    // Claude Code auto-generates the name when none is given. This derives
+    // one from the conversation's first user message instead of asking the
+    // model: a rename is a UI affordance, and a network call for it would
+    // be a surprise cost.
+    let derived = arg
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| derive_title(state));
+    let Some(new_title) = derived.as_deref() else {
+        println!(
+            "{}",
+            "usage: /rename <title> — or /rename with no argument after a message to name the session from it"
+                .red()
+        );
         return;
     };
     if new_title.chars().count() > MAX_TITLE_LEN {

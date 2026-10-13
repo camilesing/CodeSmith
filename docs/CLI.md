@@ -83,7 +83,10 @@ this fork's users asked for. The ones worth knowing:
   `/reload-skills`, `/reload-plugins`, `/theme`, `/color`, `/statusline`,
   `/copy`, `/doctor`, `/debug`, `/release-notes`, `/terminal-setup`,
   `/keybindings`** cover the model tier, the background view, the extension
-  surfaces, and the appearance/diagnostic odds and ends.
+  surfaces, and the appearance/diagnostic odds and ends. `/recap` prints a
+  one-line summary on demand, `/output-style` switches the compression style
+  CodeSmith has (`is_simple`), `/resume` accepts a session *name*, and
+  `/rename` with no argument names the session from its first message.
 
 ### Renamed commands
 
@@ -110,9 +113,9 @@ offers something that cannot work: `/desktop` `/mobile` `/teleport`
 `/install-slack-app` `/autofix-pr` `/ultrareview` `/heapdump` `/radio`
 `/stickers` `/powerup` `/team-onboarding` `/insights` `/fast` `/scroll-speed`
 `/tui` `/focus` `/keybindings-file` `/list-agents` `/peers` `/schedule`
-`/loop` `/batch` `/subtask` `/branch` `/import` `/output-style` `/recap`
-`/permissions` `/add-dir` `/cd` `/pr` `/simplify` variants beyond the bundled
-skill, and the `/plugin` authoring surface.
+`/loop` `/batch` `/subtask` `/branch` `/import` `/permissions` `/add-dir`
+`/cd` `/pr` `/simplify` variants beyond the bundled skill, and the `/plugin`
+authoring surface.
 
 Also out of scope, with the reason: a keybindings configuration file (the
 bindings are compiled in; `/keybindings` is read-only), emoji shortcodes and
