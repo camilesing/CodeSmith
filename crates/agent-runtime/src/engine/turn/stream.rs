@@ -601,6 +601,16 @@ impl HostAgentExecutor {
                                     index: index as usize,
                                 })
                                 .await;
+                            // Commit boundary: same as text — a non-empty
+                            // start payload is billed output (providers can
+                            // seed initial reasoning here), so a retry would
+                            // regenerate and re-bill it. Without this a
+                            // provider that seeds thinking content and dies
+                            // before any thinking delta would classify as
+                            // `Empty` and transparently retry.
+                            if !thinking.is_empty() {
+                                any_content_received = true;
+                            }
                             BlockBuild::Thinking(thinking)
                         }
                         ContentBlockStart::ToolUse {

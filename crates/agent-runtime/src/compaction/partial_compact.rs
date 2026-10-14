@@ -95,14 +95,17 @@ pub fn adjust_pivot_for_tool_pairs(messages: &[Message], pivot: usize) -> usize 
 
 /// Find a good pivot index based on token budget.
 ///
-/// For From direction: find the earliest index where messages[pivot..] tokens
-/// are within the budget, preserving as much prefix as possible.
-/// For UpTo direction: find the smallest pivot whose RETAINED tail
-/// `messages[pivot..]` fits the budget — accumulating from the tail bounds
-/// what remains, not what is thrown away (a head-accumulation bound could
-/// remove only ~`target_tokens` worth and leave a retained tail far above
-/// budget, failing the engine's post-compaction check after the summary
-/// call was already spent).
+/// For From direction: find the latest index whose RETAINED prefix
+/// `messages[..pivot]` stays within the budget — the engine invokes this
+/// during overflow recovery and afterwards requires the whole
+/// post-compaction input to fit the budget, so the kept prefix (not the
+/// summarized suffix) is what must be bounded. For UpTo direction: find
+/// the smallest pivot whose RETAINED tail `messages[pivot..]` fits the
+/// budget — accumulating from the tail bounds what remains, not what is
+/// thrown away (a head-accumulation bound could remove only
+/// ~`target_tokens` worth and leave a retained tail far above budget,
+/// failing the engine's post-compaction check after the summary call was
+/// already spent).
 pub fn find_pivot_for_budget(
     messages: &[Message],
     direction: PartialCompactDirection,
@@ -110,12 +113,16 @@ pub fn find_pivot_for_budget(
 ) -> usize {
     match direction {
         PartialCompactDirection::From => {
-            // Walk backwards from tail, accumulate tokens until budget exceeded.
+            // Accumulate from the head and stop before the KEPT prefix
+            // exceeds the budget (the old backwards walk bounded the
+            // summarized suffix, so a front-heavy conversation kept a
+            // prefix above budget and wasted the summary round-trip on a
+            // post-check that could only fail).
             let mut accumulated = 0usize;
-            for (idx, msg) in messages.iter().enumerate().rev() {
+            for (idx, msg) in messages.iter().enumerate() {
                 accumulated += estimate_tokens_for_message(msg);
                 if accumulated > target_tokens {
-                    return adjust_pivot_for_tool_pairs(messages, idx.saturating_add(1));
+                    return adjust_pivot_for_tool_pairs(messages, idx);
                 }
             }
             // Entire conversation fits in budget — no compaction needed. For
@@ -308,7 +315,33 @@ fn estimate_tokens_for_message(msg: &Message) -> usize {
             ContentBlock::ToolUse { input, .. } => serde_json::to_string(input)
                 .map(|s| counter.count_text(&s))
                 .unwrap_or(100),
-            ContentBlock::ToolResult { content, .. } => counter.count_text(content),
+            ContentBlock::ToolResult {
+                content,
+                content_blocks,
+                ..
+            } => {
+                // `content_blocks` can carry the substantial payload while
+                // `content` is only a short fallback string — ignoring the
+                // blocks under-counted tool-result-heavy history and let
+                // the pivot be trusted for cache/budget decisions it could
+                // not actually satisfy. Image blocks cost the fixed
+                // vision estimate, not their (tiny) JSON serialization.
+                let mut tokens = counter.count_text(content);
+                if let Some(blocks) = content_blocks {
+                    for block in blocks {
+                        tokens += if block.get("type").and_then(serde_json::Value::as_str)
+                            == Some("image")
+                        {
+                            crate::models::IMAGE_BLOCK_ESTIMATED_TOKENS
+                        } else {
+                            serde_json::to_string(block)
+                                .map(|s| counter.count_text(&s))
+                                .unwrap_or(100)
+                        };
+                    }
+                }
+                tokens
+            }
             ContentBlock::Image { .. } => crate::models::IMAGE_BLOCK_ESTIMATED_TOKENS,
             // These blocks are dropped at the wire layer
             // (crates/providers/src/rig_adapter/convert.rs) before the
@@ -376,23 +409,34 @@ mod tests {
     }
 
     #[test]
-    fn find_pivot_from_preserves_prefix() {
-        // Long prefix, short tail.
+    fn find_pivot_from_bounds_the_kept_prefix() {
+        // Long prefix, short tail. Each long message is ~1000+ tokens
+        // under the tokenizer-based estimator.
         let messages = vec![
-            msg("user", &"x".repeat(4000)),      // ~1000 tokens
-            msg("assistant", &"y".repeat(4000)), // ~1000 tokens
-            msg("user", "short"),                // ~1 token
-            msg("assistant", "brief"),           // ~1 token
+            msg("user", &"x".repeat(4000)),
+            msg("assistant", &"y".repeat(4000)),
+            msg("user", "short"),
+            msg("assistant", "brief"),
         ];
 
-        // Target: keep 500 tokens in prefix, summarize the rest.
-        let pivot = find_pivot_for_budget(&messages, PartialCompactDirection::From, 500);
-        // Pivot should be 1 or 2 — prefix is messages[0..pivot].
-        assert!(pivot >= 1, "From pivot should preserve some prefix");
+        // Budget 1500: the kept prefix is [msg0] — adding msg1 (~2000
+        // total) would exceed it. The RETAINED prefix, not the summarized
+        // suffix, is what must fit the budget (the old tail-walk bounded
+        // the suffix and let a front-heavy conversation keep a prefix far
+        // above budget, wasting the summary round-trip on a post-check
+        // that could only fail).
+        let pivot = find_pivot_for_budget(&messages, PartialCompactDirection::From, 1500);
+        assert_eq!(pivot, 1, "prefix keeps only what fits the budget");
         assert!(
             pivot < messages.len(),
             "From pivot should leave something to summarize"
         );
+
+        // Budget smaller than any single message: nothing can be kept —
+        // pivot 0 signals infeasibility so the caller can escalate to
+        // UpTo/Full instead of a doomed From attempt.
+        let pivot = find_pivot_for_budget(&messages, PartialCompactDirection::From, 500);
+        assert_eq!(pivot, 0, "no prefix fits — signal infeasibility");
     }
 
     #[test]

@@ -356,15 +356,34 @@ impl CapacityController {
     }
 
     pub fn mark_turn_start(&mut self, turn_index: u64) {
-        let new_turn = match self.last_snapshot.as_ref() {
+        // `observe()` performs the same reset the first time it sees a new
+        // `turn_index`, so per-turn correctness no longer depends on the
+        // host calling this first (or at all) — hosts that do call it
+        // simply reset a little earlier.
+        if self.is_new_turn(turn_index) {
+            self.reset_per_turn_state();
+        }
+    }
+
+    /// Whether `turn_index` differs from the last observed turn. `None`
+    /// snapshot (first observation ever) counts as a new turn so the very
+    /// first turn's counters start clean.
+    fn is_new_turn(&self, turn_index: u64) -> bool {
+        match self.last_snapshot.as_ref() {
             None => true,
             Some(snapshot) => snapshot.turn_index != turn_index,
-        };
-        if new_turn {
-            self.state.replay_count_this_turn = 0;
-            self.state.replay_disabled_turn = None;
-            self.state.intervention_applied_turn = None;
         }
+    }
+
+    /// Reset the per-turn counters. Keyed to turn changes in BOTH
+    /// `mark_turn_start` and `observe` — without the `observe` reset, a
+    /// host that observes before marking (or skips the mark) would carry
+    /// `replay_count_this_turn` across turns, and a single replay would
+    /// permanently lock the `max_replay_per_turn_reached` gate.
+    fn reset_per_turn_state(&mut self) {
+        self.state.replay_count_this_turn = 0;
+        self.state.replay_disabled_turn = None;
+        self.state.intervention_applied_turn = None;
     }
 
     pub fn mark_intervention_applied(&mut self, turn_index: u64, action: GuardrailAction) {
@@ -396,6 +415,13 @@ impl CapacityController {
     fn observe(&mut self, input: CapacityObservationInput) -> Option<CapacitySnapshot> {
         if !self.config.enabled {
             return None;
+        }
+
+        // Self-contained per-turn reset: an observation is the first thing
+        // each turn (possibly ahead of the host's `mark_turn_start`), so
+        // the reset must not depend on that call ordering.
+        if self.is_new_turn(input.turn_index) {
+            self.reset_per_turn_state();
         }
 
         let context_used_ratio = input.context_used_ratio.clamp(0.0, 2.0);
@@ -456,11 +482,15 @@ impl CapacityController {
     }
 
     fn model_prior(&self, model: &str) -> f64 {
-        let normalized = normalize_model_prior_key(model);
-        self.config
-            .model_priors
-            .get(normalized)
-            .copied()
+        // The explicit fallback ladder for a model the matcher does not
+        // know (unknown vendor, unknown deepseek variant): a configured
+        // `fallback_default` ENTRY in the priors map wins (hosts use it to
+        // calibrate unknown models), then the config field. The old
+        // substring matcher silently mapped unknowns onto deepseek v3
+        // branches instead of reaching either fallback.
+        normalize_model_prior_key(model)
+            .and_then(|key| self.config.model_priors.get(key).copied())
+            .or_else(|| self.config.model_priors.get("fallback_default").copied())
             .unwrap_or(self.config.fallback_default)
     }
 }
@@ -479,23 +509,32 @@ pub fn decide_policy(
     }
 }
 
-fn normalize_model_prior_key(model: &str) -> &str {
-    // Strip optional "deepseek-ai/" NIM namespace prefix before pattern matching.
+/// Map a model id onto its prior key. Anchored to the `deepseek` family
+/// (after stripping the optional `deepseek-ai/` NIM namespace): loose
+/// `contains("r1")`/`contains("v3")` checks used to match unrelated
+/// substrings in non-deepseek ids and silently hand deepseek-calibrated
+/// priors to unknown models. Unknown vendors and unknown deepseek variants
+/// return `None` — the caller owns the fallback policy.
+fn normalize_model_prior_key(model: &str) -> Option<&'static str> {
     let model = model.strip_prefix("deepseek-ai/").unwrap_or(model);
     let lower = model.to_ascii_lowercase();
-    // V4 variants must be checked before the generic V3/chat/reasoner branches
-    // because those branches do not contain "v4" tokens and the ordering prevents
-    // accidental cross-matches.
+    if !lower.starts_with("deepseek") {
+        return None;
+    }
+    // V4 variants first: any OTHER v4 spelling (a future v4-reasoner /
+    // v4-chat) must not inherit a v3 prior through the generic branches.
     if lower.contains("v4-pro") || lower.contains("v4_pro") {
-        "deepseek_v4_pro"
+        Some("deepseek_v4_pro")
     } else if lower.contains("v4-flash") || lower.contains("v4_flash") {
-        "deepseek_v4_flash"
+        Some("deepseek_v4_flash")
+    } else if lower.contains("v4") {
+        None
     } else if lower.contains("reasoner") || lower.contains("r1") {
-        "deepseek_v3_2_reasoner"
+        Some("deepseek_v3_2_reasoner")
     } else if lower.contains("chat") || lower.contains("v3") {
-        "deepseek_v3_2_chat"
+        Some("deepseek_v3_2_chat")
     } else {
-        "fallback_default"
+        None
     }
 }
 
@@ -669,19 +708,19 @@ mod tests {
     fn normalize_v4_pro_variants() {
         assert_eq!(
             normalize_model_prior_key("deepseek-v4-pro"),
-            "deepseek_v4_pro"
+            Some("deepseek_v4_pro")
         );
         assert_eq!(
             normalize_model_prior_key("deepseek-v4_pro"),
-            "deepseek_v4_pro"
+            Some("deepseek_v4_pro")
         );
         assert_eq!(
             normalize_model_prior_key("deepseek-ai/deepseek-v4-pro"),
-            "deepseek_v4_pro"
+            Some("deepseek_v4_pro")
         );
         assert_eq!(
             normalize_model_prior_key("deepseek-ai/deepseek-v4_pro"),
-            "deepseek_v4_pro"
+            Some("deepseek_v4_pro")
         );
     }
 
@@ -689,19 +728,19 @@ mod tests {
     fn normalize_v4_flash_variants() {
         assert_eq!(
             normalize_model_prior_key("deepseek-v4-flash"),
-            "deepseek_v4_flash"
+            Some("deepseek_v4_flash")
         );
         assert_eq!(
             normalize_model_prior_key("deepseek-v4_flash"),
-            "deepseek_v4_flash"
+            Some("deepseek_v4_flash")
         );
         assert_eq!(
             normalize_model_prior_key("deepseek-ai/deepseek-v4-flash"),
-            "deepseek_v4_flash"
+            Some("deepseek_v4_flash")
         );
         assert_eq!(
             normalize_model_prior_key("deepseek-ai/deepseek-v4_flash"),
-            "deepseek_v4_flash"
+            Some("deepseek_v4_flash")
         );
     }
 
@@ -709,16 +748,20 @@ mod tests {
     fn normalize_v4_and_fallback_prior_keys() {
         assert_eq!(
             normalize_model_prior_key("deepseek-v4-pro"),
-            "deepseek_v4_pro"
+            Some("deepseek_v4_pro")
         );
         assert_eq!(
             normalize_model_prior_key("deepseek-v4-flash"),
-            "deepseek_v4_flash"
+            Some("deepseek_v4_flash")
         );
-        assert_eq!(
-            normalize_model_prior_key("unknown-model"),
-            "fallback_default"
-        );
+        // Unknown vendor: no deepseek-calibrated prior — the caller owns
+        // the fallback policy (see `model_prior`).
+        assert_eq!(normalize_model_prior_key("unknown-model"), None);
+        // Unknown deepseek variant: must not silently inherit a v3 prior.
+        assert_eq!(normalize_model_prior_key("deepseek-v4-reasoner"), None);
+        // Non-deepseek ids with r1/v3 substrings stay unmapped.
+        assert_eq!(normalize_model_prior_key("vendor-x-r1-pro"), None);
+        assert_eq!(normalize_model_prior_key("some-v3-turbo"), None);
     }
 
     #[test]

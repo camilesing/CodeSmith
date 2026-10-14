@@ -213,16 +213,22 @@ impl From<LlmError> for ErrorEnvelope {
                 "llm_rate_limited",
                 message,
             ),
+            // ServerError/NetworkError follow the same conventions the
+            // `network()` constructor and `classify()` derive for the same
+            // conditions: Network-family failures are recoverable
+            // Warnings (retryable transport hiccups, rendered amber), and
+            // the code is a STABLE identifier — `llm_server_{status}`
+            // defeated consumers that key on code strings.
             LlmError::ServerError { status, message } => Self::new(
-                ErrorCategory::Internal,
-                ErrorSeverity::Error,
+                ErrorCategory::Network,
+                ErrorSeverity::Warning,
                 true,
-                format!("llm_server_{status}"),
-                message,
+                "llm_server_error",
+                format!("Server error {status}: {message}"),
             ),
             LlmError::NetworkError(message) => Self::new(
                 ErrorCategory::Network,
-                ErrorSeverity::Error,
+                ErrorSeverity::Warning,
                 true,
                 "llm_network_error",
                 message,

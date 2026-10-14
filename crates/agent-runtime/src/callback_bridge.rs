@@ -127,11 +127,20 @@ struct BridgeState {
     /// Keyed by (kind, wire block index); cleared per LLM step because each
     /// step's stream legitimately restarts indexes at 0.
     announced_blocks: std::collections::HashSet<(BlockAnnouncement, usize)>,
-    /// LIFO of pending tool calls: `(wire_id, stashed_input)`. Pushed on
-    /// `on_tool_start`, popped on `on_tool_end` so the end event pairs with the
-    /// most recent start and `tool_args` can be replayed into the
-    /// `ToolCallAfter` hook context.
-    pending: Vec<(String, serde_json::Value)>,
+    /// Block-lifecycle completions (`MessageComplete` / `ThinkingComplete`)
+    /// already forwarded since the last `on_llm_start` — the completion
+    /// mirror of `announced_blocks`: a transparent retry replays the whole
+    /// stream, and an un-gated re-`Complete` for a block whose re-`Started`
+    /// was suppressed would finalize one opened item twice (the mirror
+    /// image of the orphaned-`InProgress` bug the start-dedup prevents).
+    completed_blocks: std::collections::HashSet<(BlockAnnouncement, usize)>,
+    /// LIFO of pending tool calls: `(wire_id, started_name, stashed_input)`.
+    /// Pushed on `on_tool_start`, popped on `on_tool_end` so the end event
+    /// pairs with the most recent start and `tool_args` can be replayed into
+    /// the `ToolCallAfter` hook context. The name rides along so a violated
+    /// LIFO pairing contract is detected and warned instead of silently
+    /// mis-pairing an end with the wrong start.
+    pending: Vec<(String, String, serde_json::Value)>,
 }
 
 /// Per-delta budget for one AssistantStream handler dispatch; a dispatch
@@ -238,7 +247,8 @@ impl Callback for CallbackBridge {
             // execute-time `Event::ToolCallStarted` — dedup.
             let already_announced = {
                 let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-                s.pending.push((id.to_string(), input.clone()));
+                s.pending
+                    .push((id.to_string(), name.to_string(), input.clone()));
                 !s.announced.insert(id.to_string())
             };
 
@@ -274,12 +284,36 @@ impl Callback for CallbackBridge {
             // Pop the most recent start: its wire id pairs the end event,
             // and its stashed input fills `tool_args` (the `on_tool_end`
             // signature is input-less, but `ToolCallAfter` hooks want it).
-            let (id, input) = state
+            // The pairing relies on the caller-side LIFO contract (starts
+            // pushed in index order before dispatch, ends in reverse) — a
+            // violation is detectable via the stashed start name and
+            // warned, never silently mis-paired.
+            let (id, input) = match state
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .pending
                 .pop()
-                .unwrap_or_else(|| ("bridge-?".to_string(), serde_json::Value::Null));
+            {
+                Some((wire_id, started_name, stashed_input)) => {
+                    if started_name != name {
+                        tracing::warn!(
+                            target: "codesmith_runtime::callback_bridge",
+                            "on_tool_end('{name}') paired with a start of \
+                             '{started_name}' — caller violated the LIFO \
+                             start/end pairing contract"
+                        );
+                    }
+                    (wire_id, stashed_input)
+                }
+                None => {
+                    tracing::warn!(
+                        target: "codesmith_runtime::callback_bridge",
+                        "on_tool_end('{name}') fired with an empty pending \
+                         stack — no start to pair with"
+                    );
+                    ("bridge-?".to_string(), serde_json::Value::Null)
+                }
+            };
 
             if let Some(tx) = tx.as_ref() {
                 let _ = tx
@@ -325,6 +359,13 @@ impl Callback for CallbackBridge {
                 let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                 s.announced_blocks.insert((kind, index))
             };
+            // Completion mirror: a transparent retry replays the whole
+            // stream, so a `Complete` for a block whose re-`Started` was
+            // suppressed must not finalize the same item a second time.
+            let first_block_completion = |kind: BlockAnnouncement, index: usize| {
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                s.completed_blocks.insert((kind, index))
+            };
             let event = match delta {
                 StreamDelta::Text { index, content } => Some(Event::MessageDelta {
                     index: *index,
@@ -343,20 +384,27 @@ impl Callback for CallbackBridge {
                         .then_some(Event::ThinkingStarted { index: *index })
                 }
                 StreamDelta::ThinkingComplete { index } => {
-                    Some(Event::ThinkingComplete { index: *index })
+                    first_block_completion(BlockAnnouncement::Thinking, *index)
+                        .then_some(Event::ThinkingComplete { index: *index })
                 }
                 StreamDelta::MessageComplete { index } => {
-                    Some(Event::MessageComplete { index: *index })
+                    first_block_completion(BlockAnnouncement::Message, *index)
+                        .then_some(Event::MessageComplete { index: *index })
                 }
                 StreamDelta::ToolCallStarted { id, name, input } => {
                     // Mark this id as announced so the execute-time
                     // `on_tool_start` skips re-emitting `Event::ToolCallStarted`
-                    // (dedup — the stream-time emission is the single source).
-                    {
-                        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-                        s.announced.insert(id.clone());
-                    }
-                    Some(Event::ToolCallStarted {
+                    // (dedup — the stream-time emission is the single
+                    // source), and make that stream-time emission itself
+                    // first-wins: a transparent retry that already reached
+                    // this block re-emits the same wire id, and the UI must
+                    // not see two announcements for one logical call.
+                    let first_announcement = state
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .announced
+                        .insert(id.clone());
+                    first_announcement.then(|| Event::ToolCallStarted {
                         id: id.clone(),
                         name: name.clone(),
                         input: input.clone(),
@@ -403,10 +451,26 @@ impl Callback for CallbackBridge {
                         text: content.clone(),
                     },
                 );
-                let handle = tokio::runtime::Handle::current();
+                let Ok(handle) = tokio::runtime::Handle::try_current() else {
+                    // The boxed `on_stream_delta` future can be polled
+                    // outside a tokio runtime (the `Callback` trait is
+                    // host-agnostic); extension dispatch needs the handle,
+                    // so skip it instead of panicking from a library-side
+                    // callback. The UI event above has already been sent.
+                    return;
+                };
                 let started = std::time::Instant::now();
-                let dispatch =
-                    tokio::task::spawn_blocking(move || handle.block_on(runner.emit(event)));
+                let dispatch = tokio::task::spawn_blocking(move || {
+                    // On a budget miss the JoinHandle is dropped but this
+                    // task keeps running; if the runtime shuts down while
+                    // the parked `block_on` is still alive it panics —
+                    // unobserved, and process-fatal under `panic = "abort"`
+                    // release profiles. Contain it: the dispatch is
+                    // observe-only, so a shutdown-time panic is swallowed.
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        handle.block_on(runner.emit(event))
+                    }))
+                });
                 let warn_once = || !stream_warned.swap(true, std::sync::atomic::Ordering::Relaxed);
                 match tokio::time::timeout(
                     std::time::Duration::from_millis(STREAM_DISPATCH_BUDGET_MS),
@@ -479,13 +543,17 @@ impl Callback for CallbackBridge {
             // One LLM step = one logical message per block index. The
             // executor fires `on_llm_start` once per step (retries are
             // transparent), so this is the reset point for the
-            // block-announcement dedup — the next step's stream may
-            // legitimately re-announce index 0.
-            state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .announced_blocks
-                .clear();
+            // block-announcement and block-completion dedup — the next
+            // step's stream may legitimately re-announce index 0. Stale
+            // `pending` entries (a step aborted before its tool ends
+            // arrived) are dropped here too, so they cannot poison later
+            // start/end pairing.
+            {
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                s.announced_blocks.clear();
+                s.completed_blocks.clear();
+                s.pending.clear();
+            }
         })
     }
 

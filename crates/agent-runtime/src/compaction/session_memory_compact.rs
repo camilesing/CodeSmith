@@ -41,7 +41,11 @@ pub struct SessionMemoryCompactResult {
 /// Returns `true` when:
 /// 1. The feature is enabled
 /// 2. Memory content exists (MEMORY.md / KoD files)
-/// 3. The conversation exceeds the min_retain_tokens threshold
+/// 3. The conversation exceeds the `max_retain_tokens` budget — the
+///    threshold at which `calculate_retain_start_index` actually produces
+///    a non-zero removal boundary. (Gating on `min_retain_tokens` instead
+///    would let callers invoke a guaranteed no-op compaction for any total
+///    in the min..max window and misread `removed_count == 0` as success.)
 pub fn should_use_session_memory_compact(
     memory_content: &str,
     messages: &[Message],
@@ -54,20 +58,31 @@ pub fn should_use_session_memory_compact(
         return false;
     }
     let total_tokens = estimate_tokens(messages);
-    total_tokens > config.min_retain_tokens
+    total_tokens > config.max_retain_tokens
 }
+
+/// Session-memory budget for the inlined MEMORY.md / KoD content. The
+/// memory text rides inside the summary system prompt, so it consumes the
+/// very context window this compaction protects; beyond this cap the tail
+/// plus summary could jointly exceed the model's limit.
+const MAX_MEMORY_CONTENT_TOKENS: usize = 4_000;
 
 /// Perform session-memory compaction.
 ///
 /// Uses the memory content (MEMORY.md / KoD) as a summary, retaining only
 /// the most recent messages that fit within the token budget. Ensures
 /// tool_use/tool_result pairs are not split at the boundary.
+///
+/// Safe to call unconditionally: `config.enabled` is re-checked here so a
+/// caller that bypasses (or races ahead of)
+/// [`should_use_session_memory_compact`] cannot compact through a mode
+/// that was explicitly turned off.
 pub fn session_memory_compact(
     messages: &[Message],
     memory_content: &str,
     config: &SessionMemoryCompactConfig,
 ) -> SessionMemoryCompactResult {
-    if messages.is_empty() || memory_content.trim().is_empty() {
+    if !config.enabled || messages.is_empty() || memory_content.trim().is_empty() {
         return SessionMemoryCompactResult {
             messages: messages.to_vec(),
             summary_prompt: None,
@@ -75,9 +90,22 @@ pub fn session_memory_compact(
         };
     }
 
+    // Bound the memory content's contribution and count it against the
+    // retention budget: the summary rides in the system prompt of every
+    // post-compaction request.
+    let memory_text = clamp_memory_content(memory_content, MAX_MEMORY_CONTENT_TOKENS);
+    let memory_tokens = memory_text.len().div_ceil(3);
+    let effective_config = SessionMemoryCompactConfig {
+        max_retain_tokens: config
+            .max_retain_tokens
+            .saturating_sub(memory_tokens)
+            .max(1),
+        ..config.clone()
+    };
+
     // Find the retain boundary: accumulate tokens from the tail until
     // we're within min_retain_tokens..max_retain_tokens.
-    let retain_start_idx = calculate_retain_start_index(messages, config);
+    let retain_start_idx = calculate_retain_start_index(messages, &effective_config);
 
     if retain_start_idx == 0 {
         // No messages to remove — entire conversation fits in budget.
@@ -95,7 +123,7 @@ pub fn session_memory_compact(
             "## Session Memory (Auto-Loaded)\n\n\
              The following context was loaded from your persistent session memory. \
              Earlier conversation has been compacted; this summary preserves key facts.\n\n\
-             {memory_content}\n\n\
+             {memory_text}\n\n\
              ---\n\n\
              Pinned messages follow:"
         ),
@@ -245,23 +273,35 @@ fn adjust_index_for_tool_pairs(messages: &[Message], start_idx: usize) -> usize 
     adjusted
 }
 
-/// Conservative token estimate for a single message.
+/// Token estimate for a single message — the SAME accounting the gate
+/// (`crate::compaction::estimate_tokens`) uses, so a transcript the gate
+/// calls oversized cannot look in-budget to the boundary walk. The old
+/// local `len().div_ceil(3)` counter disagreed with the gate's
+/// tokenizer-based counts and ignored `content_blocks` / server-tool
+/// blocks, letting the retained tail materially exceed
+/// `max_retain_tokens`.
 fn estimate_tokens_for_message_conservative(msg: &Message) -> usize {
-    msg.content
-        .iter()
-        .map(|block| match block {
-            ContentBlock::Text { text, .. } => text.len().div_ceil(3),
-            ContentBlock::Thinking { thinking } => thinking.len().div_ceil(3),
-            ContentBlock::ToolUse { input, .. } => serde_json::to_string(input)
-                .map(|s| s.len().div_ceil(3))
-                .unwrap_or(100),
-            ContentBlock::ToolResult { content, .. } => content.len().div_ceil(3),
-            ContentBlock::Image { .. } => crate::models::IMAGE_BLOCK_ESTIMATED_TOKENS,
-            ContentBlock::ServerToolUse { .. }
-            | ContentBlock::ToolSearchToolResult { .. }
-            | ContentBlock::CodeExecutionToolResult { .. } => 0,
-        })
-        .sum()
+    crate::compaction::estimate_tokens_for_message(
+        msg,
+        crate::compaction::message_has_tool_use(msg),
+    )
+}
+
+/// Truncate `text` to roughly `max_tokens` without splitting a UTF-8
+/// character, marking the cut.
+fn clamp_memory_content(text: &str, max_tokens: usize) -> String {
+    let max_chars = max_tokens.saturating_mul(3);
+    if text.len() <= max_chars {
+        return text.to_string();
+    }
+    let mut end = max_chars;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "{}\n…[memory truncated at {max_tokens} tokens]",
+        &text[..end]
+    )
 }
 
 #[cfg(test)]

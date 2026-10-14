@@ -361,6 +361,7 @@ pub fn rebuild_recent_read_files_from_messages(
             if let ContentBlock::ToolResult {
                 tool_use_id,
                 content,
+                content_blocks,
                 is_error,
                 ..
             } = block
@@ -370,6 +371,23 @@ pub fn rebuild_recent_read_files_from_messages(
                 && matches!(is_error, None | Some(false))
                 && let Some(input) = calls.get(tool_use_id)
             {
+                // Persisted transcripts can carry the tool payload in
+                // `content_blocks` with `content` only a short fallback (or
+                // empty): without flattening, such results record an empty
+                // preview yet still occupy one of the RECENT_READ_FILE_LIMIT
+                // slots and participate in dedup-by-path, silently evicting
+                // useful previews and re-injecting empty file context after
+                // compaction.
+                let text = if content.trim().is_empty() {
+                    content_blocks
+                        .iter()
+                        .flatten()
+                        .filter_map(|b| b.get("text").and_then(Value::as_str))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                } else {
+                    content.trim().to_string()
+                };
                 // Mirror the live observe site's hidden-Unicode strip (the
                 // security property the raw-content path would lose) before
                 // the preview is recorded — the rebuilt queue re-enters model
@@ -377,7 +395,7 @@ pub fn rebuild_recent_read_files_from_messages(
                 // additionally runs model-dependent head/tail compaction
                 // (`compact_tool_result_for_context`); the projection rebuild
                 // has no model in scope and applies only the sanitize step.
-                let sanitized = crate::sanitization::partially_sanitize_unicode(content.trim());
+                let sanitized = crate::sanitization::partially_sanitize_unicode(&text);
                 record_read_file_result_into(&files, input, &sanitized);
             }
         }
