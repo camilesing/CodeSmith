@@ -1,7 +1,9 @@
 //! Process-wide retry-state surface (#499).
 //!
-//! The HTTP retry path in `client::send_with_retry` already times its
-//! waits and knows the error category. This module gives the TUI a way
+//! The engine's transparent stream-retry loop
+//! (`engine::turn::stream`) and the host-injected provider `on_retry`
+//! hook (`ProviderConfig.on_retry`) already time their waits and know
+//! the error category. This module gives the TUI a way
 //! to observe that state — `start`, `succeeded`, and `failed` flip a
 //! global `RetryState` that the footer / status panel reads each frame.
 //!
@@ -123,9 +125,13 @@ pub fn snapshot() -> RetryState {
 /// B's `start` overwrites chain A's countdown; B's `succeeded` erases
 /// A's still-in-flight banner mid-countdown).
 pub fn start(attempt: u32, delay: Duration, reason: impl Into<String>) {
+    let now = Instant::now();
+    // `Add<Duration> for Instant` panics on overflow; a bogus
+    // Retry-After-derived delay must degrade, not panic.
+    let deadline = now.checked_add(delay).unwrap_or(now);
     let banner = RetryBanner {
         attempt,
-        deadline: Instant::now() + delay,
+        deadline,
         reason: reason.into(),
     };
     *cell().lock().unwrap_or_else(|e| e.into_inner()) = RetryState::Active(banner);
@@ -219,6 +225,19 @@ mod tests {
             });
         }
         assert_eq!(snapshot().seconds_remaining(), Some(0));
+        clear();
+    }
+
+    #[test]
+    fn start_with_huge_delay_degrades_instead_of_panicking() {
+        // `Instant::now() + Duration` panics on overflow; a bogus
+        // Retry-After-derived delay must clamp, not crash the caller.
+        let _g = setup();
+        start(1, Duration::from_secs(u64::MAX), "rate limited");
+        let s = snapshot();
+        assert!(matches!(s, RetryState::Active(_)), "{s:?}");
+        // Clamped deadline is "now or already due" — never negative.
+        assert!(s.seconds_remaining() <= Some(1));
         clear();
     }
 }

@@ -619,6 +619,46 @@ pub fn defuse_closing_tag(text: &str, tag: &str) -> String {
     out
 }
 
+/// Every framing tag the system prompt wraps around untrusted bodies.
+/// A body injected inside one framing element must not be able to
+/// prematurely close a *different* element rendered later in the prompt,
+/// so all of these are defused together — see
+/// [`defuse_prompt_framing_tags`].
+pub const PROMPT_FRAMING_TAGS: &[&str] = &[
+    "instructions",
+    "handoff",
+    "system_prompt_append",
+    "session_goal",
+    "knowledge_memory",
+    "external_content",
+];
+
+/// Neutralize closing-tag sequences of **every** known prompt framing tag
+/// in untrusted body text.
+///
+/// Per-tag defusing (via [`defuse_closing_tag`]) only stops a body from
+/// closing its *own* element; a `</handoff>` inside an instructions body
+/// would still terminate a later handoff section's framing early, because
+/// configured instructions are rendered before the goal/handoff sections.
+/// Defusing the full [`PROMPT_FRAMING_TAGS`] set closes that gap. The
+/// opening-tag side needs no treatment: a stray `<handoff>` in a body is
+/// inert prose unless something later closes it — which this function
+/// prevents.
+#[must_use]
+pub fn defuse_prompt_framing_tags(text: &str) -> String {
+    let mut out = text.to_string();
+    for tag in PROMPT_FRAMING_TAGS {
+        // Cheap pre-check keeps the already-clean common case at one
+        // `contains("</")` scan plus per-tag probes, with no extra
+        // allocation (`defuse_closing_tag` returns the input unchanged
+        // when nothing matches).
+        if out.contains("</") {
+            out = defuse_closing_tag(&out, tag);
+        }
+    }
+    out
+}
+
 /// Render a path for **user-facing display** with the home directory
 /// contracted to `~`. Use this in the TUI, doctor/setup stdout, and any
 /// other place a viewer might see the output (screenshot, video,

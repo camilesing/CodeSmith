@@ -17,6 +17,7 @@
 //! that happens to contain "REQ" or "FINAL" can't be confused with control
 //! messages.
 
+use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -145,6 +146,13 @@ const DEFAULT_STDOUT_LIMIT: usize = 8_192;
 const ROUND_TIMEOUT: Duration = Duration::from_secs(180);
 /// Retained stderr tail (bytes) for the continuous background reader.
 const STDERR_BUFFER_CAP: usize = 128 * 1024;
+/// Retained stdout bytes per round (head). Only `stdout_limit` bytes are
+/// ever displayed, so a round that prints gigabytes (e.g. processing a
+/// large context file with verbose logging) must not grow host memory
+/// without bound — keep the head plus a dropped-byte marker.
+const FULL_STDOUT_CAP: usize = 1024 * 1024;
+/// Pre-ready stdout lines kept for spawn-failure diagnostics (bytes).
+const PRE_READY_CAPTURE_CAP: usize = 8 * 1024;
 #[cfg(not(windows))]
 const SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(windows)]
@@ -298,24 +306,45 @@ impl PythonRuntime {
         // Python failed to start (missing module, syntax error in the
         // bootstrap, etc.), this is where we'll find out.
         let ready_sentinel = format!("__RLM_READY_{session_id}__");
-        match tokio::time::timeout(SPAWN_READY_TIMEOUT, rt.read_until_ready(&ready_sentinel)).await
+        let mut pre_ready: Vec<String> = Vec::new();
+        match tokio::time::timeout(
+            SPAWN_READY_TIMEOUT,
+            rt.read_until_ready(&ready_sentinel, &mut pre_ready),
+        )
+        .await
         {
             Ok(Ok(())) => Ok(rt),
             Ok(Err(e)) => {
                 let _ = rt.child.kill().await;
-                Err(format!("Python interpreter bootstrap failed: {e}"))
+                Err(format!(
+                    "Python interpreter bootstrap failed: {e}\npre-ready output: {:?}\nstderr tail:\n{}",
+                    pre_ready,
+                    rt.drain_stderr()
+                ))
             }
             Err(_) => {
                 let _ = rt.child.kill().await;
                 Err(format!(
-                    "Python interpreter bootstrap did not signal ready within {}s",
-                    SPAWN_READY_TIMEOUT.as_secs()
+                    "Python interpreter bootstrap did not signal ready within {}s\npre-ready output: {:?}\nstderr tail:\n{}",
+                    SPAWN_READY_TIMEOUT.as_secs(),
+                    pre_ready,
+                    rt.drain_stderr()
                 ))
             }
         }
     }
 
-    async fn read_until_ready(&mut self, ready_sentinel: &str) -> Result<(), String> {
+    /// Read stdout lines until the ready sentinel appears. Lines emitted
+    /// before the sentinel (Python imports printing, early errors) are
+    /// captured — bounded by [`PRE_READY_CAPTURE_CAP`] bytes, oldest
+    /// dropped — so a bootstrap failure can surface what Python actually
+    /// said instead of a generic "closed stdout".
+    async fn read_until_ready(
+        &mut self,
+        ready_sentinel: &str,
+        pre_ready: &mut Vec<String>,
+    ) -> Result<(), String> {
+        let mut captured_bytes = 0usize;
         loop {
             let line = match self.read_stdout_line_lossy().await? {
                 Some(line) => line,
@@ -327,7 +356,14 @@ impl PythonRuntime {
             if trimmed == ready_sentinel {
                 return Ok(());
             }
-            // Pre-ready output is rare; ignore it.
+            // Pre-ready output is rare; keep the newest tail for
+            // diagnostics, bounded by the byte cap.
+            pre_ready.push(trimmed.to_string());
+            captured_bytes += trimmed.len();
+            while captured_bytes > PRE_READY_CAPTURE_CAP && pre_ready.len() > 1 {
+                captured_bytes -= pre_ready[0].len();
+                pre_ready.remove(0);
+            }
         }
     }
 
@@ -388,6 +424,7 @@ impl PythonRuntime {
         let done_prefix = format!("__RLM_DONE_{}__::", self.session_id);
 
         let mut stdout_buf = String::new();
+        let mut stdout_dropped_bytes: u64 = 0;
         let mut final_value: Option<String> = None;
         let mut final_json: Option<Value> = None;
         let mut final_confidence: Option<Value> = None;
@@ -395,9 +432,45 @@ impl PythonRuntime {
         let mut rpc_count: u32 = 0;
         let round_timeout = self.round_timeout;
 
+        // Sub-LLM dispatches queue here (FIFO) while the read loop keeps
+        // draining stdout. Awaiting a dispatch inline would park reads for
+        // the whole — potentially minutes-long — LLM call: Python threads
+        // the user code spawned could fill the stdout pipe and deadlock
+        // the round, and REQs would serialize behind each dispatch. The
+        // protocol is one-outstanding-REQ-at-a-time (Python `_rpc`
+        // blocks in readline), so front-of-queue completion order matches
+        // the wire order.
+        let mut inflight: VecDeque<
+            std::pin::Pin<Box<dyn std::future::Future<Output = RpcResponse> + Send + '_>>,
+        > = VecDeque::new();
+
         let read_loop = async {
             loop {
-                let line = match self.read_stdout_line_lossy().await? {
+                // Take the oldest dispatch out so arm bodies below may
+                // touch `inflight`; an unfinished future goes back to the
+                // FRONT, preserving order.
+                let front = inflight.pop_front();
+                let mut dispatched_resp: Option<RpcResponse> = None;
+                let line_read = match front {
+                    Some(mut dispatch) => {
+                        tokio::select! {
+                            resp = &mut dispatch => {
+                                dispatched_resp = Some(resp);
+                                None
+                            }
+                            line = self.read_stdout_line_lossy() => {
+                                inflight.push_front(dispatch);
+                                Some(line)
+                            }
+                        }
+                    }
+                    None => Some(self.read_stdout_line_lossy().await),
+                };
+                if let Some(resp) = dispatched_resp {
+                    self.send_resp(&resp).await?;
+                    continue;
+                }
+                let line = match line_read.expect("one arm always wins")? {
                     Some(line) => line,
                     None => {
                         return Err("Python interpreter closed stdout mid-round".to_string());
@@ -449,7 +522,11 @@ impl PythonRuntime {
                     let traceback =
                         serde_json::from_str::<String>(rest).unwrap_or_else(|_| rest.to_string());
                     had_error = true;
-                    stdout_buf.push_str(&format!("[traceback]\n{traceback}\n"));
+                    push_capped(
+                        &mut stdout_buf,
+                        &mut stdout_dropped_bytes,
+                        &format!("[traceback]\n{traceback}\n"),
+                    );
                     continue;
                 }
                 if let Some(rest) = trimmed.strip_prefix(&req_prefix) {
@@ -466,18 +543,19 @@ impl PythonRuntime {
                             continue;
                         }
                     };
-                    let resp = match bridge {
-                        Some(b) => b.dispatch(req).await,
-                        None => RpcResponse::Single(SingleResp {
-                            text: String::new(),
-                            error: Some("no LLM bridge bound to this REPL".to_string()),
-                        }),
-                    };
-                    self.send_resp(&resp).await?;
+                    match bridge {
+                        Some(b) => inflight.push_back(b.dispatch(req)),
+                        None => inflight.push_back(Box::pin(async move {
+                            RpcResponse::Single(SingleResp {
+                                text: String::new(),
+                                error: Some("no LLM bridge bound to this REPL".to_string()),
+                            })
+                        })),
+                    }
                     continue;
                 }
 
-                stdout_buf.push_str(&line);
+                push_capped(&mut stdout_buf, &mut stdout_dropped_bytes, &line);
             }
             Ok::<_, String>(())
         };
@@ -502,6 +580,24 @@ impl PythonRuntime {
             }
         } else {
             read_loop.await?;
+        }
+
+        // Defensive drain: the synchronous one-outstanding-REQ protocol
+        // means nothing should still be in flight when DONE arrives, but
+        // if something is, answer it bounded so a protocol violation
+        // can't hang the round.
+        while let Some(mut dispatch) = inflight.pop_front() {
+            match tokio::time::timeout(Duration::from_secs(30), &mut dispatch).await {
+                Ok(resp) => self.send_resp(&resp).await?,
+                Err(_) => break,
+            }
+        }
+
+        if stdout_dropped_bytes > 0 {
+            stdout_buf.push_str(&format!(
+                "\n\n[... REPL stdout retention capped at {FULL_STDOUT_CAP} bytes; \
+                 {stdout_dropped_bytes} further bytes dropped ...]"
+            ));
         }
 
         let stderr = self.drain_stderr();
@@ -1037,6 +1133,24 @@ fn truncate_stdout(stdout: &str, limit: usize) -> String {
         "\n\n[... REPL output truncated: {omitted} bytes omitted ...]\n"
     ));
     out
+}
+
+/// Append `chunk` to `buf`, keeping the retained head at
+/// [`FULL_STDOUT_CAP`] bytes (char-boundary safe) and counting what had
+/// to be dropped so the round result can carry a truncation marker.
+fn push_capped(buf: &mut String, dropped_bytes: &mut u64, chunk: &str) {
+    if buf.len() >= FULL_STDOUT_CAP {
+        *dropped_bytes += chunk.len() as u64;
+        return;
+    }
+    let room = FULL_STDOUT_CAP - buf.len();
+    if chunk.len() <= room {
+        buf.push_str(chunk);
+    } else {
+        let cut = previous_char_boundary(chunk, room);
+        buf.push_str(&chunk[..cut]);
+        *dropped_bytes += (chunk.len() - cut) as u64;
+    }
 }
 
 /// Largest index `<= idx` that falls on a UTF-8 char boundary.

@@ -26,6 +26,7 @@
 
 use super::SandboxPolicy;
 use std::ffi::CString;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::Path;
 
 /// Check if Landlock is available on this system.
@@ -147,9 +148,19 @@ struct LandlockPathBeneathAttr {
 const LANDLOCK_RULE_PATH_BENEATH: u32 = 1;
 
 /// A configured Landlock sandbox
+///
+/// Crate-private by design: `apply()` irreversibly restricts the calling
+/// thread and everything it subsequently spawns, so the only legitimate
+/// call site is between fork and exec (a `pre_exec` closure). Keeping the
+/// surface crate-private prevents a caller from applying it to the
+/// long-lived agent runtime thread by mistake. It gains its first caller
+/// when rule wiring lands (see `from_policy`'s KNOWN LIMITATION).
 #[cfg(target_os = "linux")]
-pub struct LandlockSandbox {
-    ruleset_fd: i32,
+pub(crate) struct LandlockSandbox {
+    /// Owned descriptor: `Drop` closes it on every path — including the
+    /// `try_from` error branch in the constructor — instead of relying on
+    /// a manual `Drop` impl plus ad-hoc closes.
+    ruleset_fd: std::os::fd::OwnedFd,
     // Kept for introspection once Landlock enforcement is wired into command
     // spawning; nothing reads it yet (see `prepare_landlock`).
     #[allow(dead_code)]
@@ -168,7 +179,7 @@ impl LandlockSandbox {
     /// the policy. Rule wiring must land (policy paths + essential runtime
     /// paths such as /usr, /lib, /etc/ld.so.cache, a writable tmp) before
     /// this constructor gains its first caller.
-    pub fn from_policy(policy: &SandboxPolicy) -> std::io::Result<Self> {
+    pub(crate) fn from_policy(policy: &SandboxPolicy) -> std::io::Result<Self> {
         // Determine what filesystem access to handle (restrict).
         // TRUNCATE (folded into LANDLOCK_ACCESS_FS_WRITE) requires ABI v3
         // (kernel 5.19+); on ABI v1/v2 kernels landlock_create_ruleset
@@ -200,23 +211,27 @@ impl LandlockSandbox {
             return Err(std::io::Error::last_os_error());
         }
 
-        let ruleset_fd = i32::try_from(ruleset_fd).map_err(|_| {
-            std::io::Error::other("Failed to create Landlock ruleset: file descriptor out of range")
+        let ruleset_fd = i32::try_from(ruleset_fd).map_err(|e| {
+            std::io::Error::other(format!(
+                "Failed to create Landlock ruleset: file descriptor out of range: {e}"
+            ))
         })?;
 
         Ok(Self {
-            ruleset_fd,
+            // Takes ownership: any error past this point still drops (and
+            // closes) the descriptor.
+            ruleset_fd: std::os::fd::OwnedFd::from_raw_fd(ruleset_fd),
             policy: policy.clone(),
         })
     }
 
     /// Add a read-only rule for a path
-    pub fn allow_read(&self, path: &Path) -> std::io::Result<()> {
+    pub(crate) fn allow_read(&self, path: &Path) -> std::io::Result<()> {
         self.add_rule(path, LANDLOCK_ACCESS_FS_READ | LANDLOCK_ACCESS_FS_EXECUTE)
     }
 
     /// Add a read-write rule for a path
-    pub fn allow_write(&self, path: &Path) -> std::io::Result<()> {
+    pub(crate) fn allow_write(&self, path: &Path) -> std::io::Result<()> {
         self.add_rule(
             path,
             LANDLOCK_ACCESS_FS_READ | LANDLOCK_ACCESS_FS_WRITE | LANDLOCK_ACCESS_FS_EXECUTE,
@@ -256,7 +271,7 @@ impl LandlockSandbox {
         let result = unsafe {
             libc::syscall(
                 libc::SYS_landlock_add_rule,
-                self.ruleset_fd,
+                self.ruleset_fd.as_raw_fd(),
                 LANDLOCK_RULE_PATH_BENEATH,
                 &raw const attr,
                 0u32,
@@ -277,8 +292,10 @@ impl LandlockSandbox {
 
     /// Apply the sandbox to the current process
     ///
-    /// WARNING: This is irreversible for the current process!
-    pub fn apply(&self) -> std::io::Result<()> {
+    /// WARNING: This is irreversible for the current process! Intended to
+    /// run between fork and exec (or inside a `pre_exec` closure) — never
+    /// on a long-lived runtime thread.
+    pub(crate) fn apply(&self) -> std::io::Result<()> {
         // First, drop privileges using prctl
         // Safety: prctl call uses constant arguments and does not access memory.
         let result = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
@@ -288,8 +305,13 @@ impl LandlockSandbox {
 
         // Now restrict the process
         // Safety: syscall uses a valid ruleset fd and no pointer arguments.
-        let result =
-            unsafe { libc::syscall(libc::SYS_landlock_restrict_self, self.ruleset_fd, 0u32) };
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_landlock_restrict_self,
+                self.ruleset_fd.as_raw_fd(),
+                0u32,
+            )
+        };
 
         if result < 0 {
             return Err(std::io::Error::last_os_error());
@@ -300,14 +322,9 @@ impl LandlockSandbox {
 }
 
 #[cfg(target_os = "linux")]
-impl Drop for LandlockSandbox {
-    fn drop(&mut self) {
-        // Safety: `ruleset_fd` is a valid descriptor created by landlock.
-        unsafe {
-            libc::close(self.ruleset_fd);
-        }
-    }
-}
+/// `Drop` for the `OwnedFd` ruleset descriptor closes it on every path;
+/// no manual impl is needed (and none could cover error returns inside
+/// the constructor the way `OwnedFd` does).
 
 /// Detect if a failure was caused by Landlock or seccomp denial.
 ///

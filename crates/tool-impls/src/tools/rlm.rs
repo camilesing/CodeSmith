@@ -185,8 +185,22 @@ impl ToolSpec for RlmOpenTool {
         let session = RlmSession::new(name.clone(), kernel, context_meta.clone(), context_path);
         let id = session.id.clone();
 
-        let mut sessions = context.runtime.rlm_sessions.lock().await;
-        sessions.insert(name.clone(), Arc::new(tokio::sync::Mutex::new(session)));
+        {
+            let mut sessions = context.runtime.rlm_sessions.lock().await;
+            // Re-check under the SAME lock scope as the insert: the earlier
+            // contains_key runs before two long awaits (staging the context
+            // file and spawning the Python kernel), so a concurrent
+            // rlm_open with the same name can slip past it — and a blind
+            // insert would then silently drop the first session's kernel.
+            // Holding the lock across both the check and the insert closes
+            // that check-then-act window.
+            if sessions.contains_key(&name) {
+                return Err(ToolError::invalid_input(format!(
+                    "rlm_open: context name `{name}` already exists"
+                )));
+            }
+            sessions.insert(name.clone(), Arc::new(tokio::sync::Mutex::new(session)));
+        }
 
         ToolResult::json(&json!({
             "name": name,

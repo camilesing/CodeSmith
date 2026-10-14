@@ -35,30 +35,30 @@ const SANITIZE_MAX_ITERATIONS: usize = 10;
 /// untrusted input.
 pub fn partially_sanitize_unicode(input: &str) -> String {
     let mut current = input.to_string();
-    let mut previous = String::new();
-    let mut iterations = 0;
-
-    while current != previous && iterations < SANITIZE_MAX_ITERATIONS {
-        previous = current.clone();
-
+    for _ in 0..SANITIZE_MAX_ITERATIONS {
         // Step 1: NFKC normalization.
         let nfkc: String = current.nfkc().collect();
 
         // Steps 2 + 3: strip dangerous categories and explicit ranges.
-        current = nfkc.chars().filter(|c| !is_dangerous_char(*c)).collect();
+        let next: String = nfkc.chars().filter(|c| !is_dangerous_char(*c)).collect();
 
-        iterations += 1;
+        // Fixpoint reached — the common already-clean case returns after
+        // one pass with no intermediate clones.
+        if next == current {
+            return current;
+        }
+        current = next;
     }
 
-    if iterations >= SANITIZE_MAX_ITERATIONS && current != previous {
-        tracing::warn!(
-            input_preview = %input.chars().take(100).collect::<String>(),
-            iterations,
-            SANITIZE_MAX_ITERATIONS,
-            "Unicode sanitization reached max iterations without reaching a fixpoint; \
-             returning best-effort result"
-        );
-    }
+    // Debug formatting: the raw input is untrusted — hidden Unicode tag
+    // characters, ANSI escapes, or newlines in a Display-formatted preview
+    // would forge log lines (and tool arguments can carry credentials).
+    tracing::warn!(
+        input_preview = ?input.chars().take(100).collect::<String>(),
+        SANITIZE_MAX_ITERATIONS,
+        "Unicode sanitization reached max iterations without reaching a fixpoint; \
+         returning best-effort result"
+    );
     current
 }
 
@@ -154,13 +154,14 @@ pub fn wrap_external_tool_content(tool_name: &str, input: &Value, content: &str)
     let Some(source) = external_content_source(tool_name, input) else {
         return content.to_string();
     };
-    // The payload is untrusted external content: a literal
-    // `</external_content>` inside it would close the provenance wrapper
-    // early and let trailing attacker text escape the demotion (or open a
-    // fake `source="system"` block), so neutralize the closing-tag sequence.
-    // The source label is host/config-derived but still arbitrary enough to
-    // break out of the attribute — strip the characters that could.
-    let neutral = content.replace("</external_content>", "&lt;/external_content&gt;");
+    // The payload is untrusted external content: closing-tag sequences of
+    // any prompt framing element (including `</external_content>` itself)
+    // would close a wrapper early and let trailing attacker text escape
+    // the demotion (or open a fake `source="system"` block), so neutralize
+    // them all via the shared framing-tag set. The source label is
+    // host/config-derived but still arbitrary enough to break out of the
+    // attribute — strip the characters that could.
+    let neutral = crate::utils::defuse_prompt_framing_tags(content);
     let safe_source = source.replace(['"', '<', '&'], "");
     format!("<external_content source=\"{safe_source}\">\n{neutral}\n</external_content>")
 }
@@ -373,7 +374,7 @@ mod tests {
             !out[1..].contains("</external_content><external_content"),
             "payload must not be able to close the wrapper early: {out}"
         );
-        assert!(out.contains("&lt;/external_content&gt;"), "{out}");
+        assert!(out.contains("&lt;/external_content>"), "{out}");
     }
 
     #[test]
