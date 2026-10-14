@@ -101,7 +101,7 @@ function buildFromSourceHint() {
     "You can still run codesmith by building from source with Cargo:",
     "",
     "  # Requires Rust 1.88+ (https://rustup.rs)",
-    "  cargo install codesmith --locked",
+    "  cargo install codesmith-cli --locked   # provides `codesmith`",
     "",
     "Or build from a checkout:",
     "",
