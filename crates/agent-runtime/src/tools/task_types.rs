@@ -23,9 +23,12 @@ pub const fn default_task_schema_version() -> u32 {
     CURRENT_TASK_SCHEMA_VERSION
 }
 
-/// Serde default for [`TaskRecord::auto_approve`].
+/// Serde default for [`TaskRecord::auto_approve`]. Fail closed: a persisted
+/// record that lacks the field (older schema, foreign writer) must not
+/// silently relabel itself as auto-approving — the create path defaults the
+/// same way (`req.auto_approve.unwrap_or(false)`, GHSA-72w5-pf8h-xfp4).
 pub fn default_auto_approve() -> bool {
-    true
+    false
 }
 
 /// Truncate `text` to `limit` chars (appending `...` when truncated), skipping
@@ -302,7 +305,10 @@ impl NewTaskRequest {
             mode: None,
             allow_shell: None,
             trust_mode: None,
-            auto_approve: Some(true),
+            // Leave the approval decision to the manager's fail-closed
+            // default (or an explicit caller choice) — a convenience
+            // constructor must not silently opt tasks into auto-approval.
+            auto_approve: None,
         }
     }
 }

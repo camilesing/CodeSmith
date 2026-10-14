@@ -23,6 +23,18 @@ fn append_event(event: &str, details: Value) -> anyhow::Result<()> {
     let parent = path.parent().map(|p| p.to_path_buf());
     if let Some(ref parent) = parent {
         fs::create_dir_all(parent)?;
+        // The audit log records details of sensitive operations and
+        // `open_append` creates the file 0600; the containing
+        // `~/.codesmith` must not stay world-accessible when this helper
+        // is the first to create it on a fresh machine.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = fs::metadata(parent)?.permissions();
+            if perms.mode() & 0o077 != 0 {
+                fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+            }
+        }
     }
     // Open for append with a BufWriter for buffered I/O, then flush + fsync
     // after each event so the record is durably on disk.

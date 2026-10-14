@@ -285,8 +285,21 @@ export async function safeEqual(a: string, b: string): Promise<boolean> {
   return diff === 0;
 }
 
-export async function createSession(kv: KVNamespace | undefined): Promise<string | null> {
-  if (!kv) return null;
+/**
+ * Mint an admin session. SECURITY INVARIANT: this helper authenticates —
+ * it refuses to mint unless `presentedSecret` matches `expectedSecret`
+ * (constant-time). A route must never reach this function with an
+ * unverified caller: the signature deliberately forces the token pair
+ * through, so `createSession(kv)`-style "mint from nothing" calls cannot
+ * compile. Returns null on missing config, failed auth, or no KV.
+ */
+export async function createSession(
+  kv: KVNamespace | undefined,
+  presentedSecret: string,
+  expectedSecret: string | undefined,
+): Promise<string | null> {
+  if (!kv || !expectedSecret) return null;
+  if (!(await safeEqual(presentedSecret, expectedSecret))) return null;
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   const sid = toBase64Url(bytes);

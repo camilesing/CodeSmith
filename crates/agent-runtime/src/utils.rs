@@ -280,14 +280,39 @@ pub fn require_safe_path_component(id: &str) -> anyhow::Result<()> {
 ///
 /// The returned `BufWriter<fs::File>` wraps the append handle. Call
 /// `.flush()` followed by `.get_ref().sync_all()` after each batch.
+///
+/// On Unix the file is created owner-only (0600) regardless of umask —
+/// append logs record details of sensitive operations — and a
+/// pre-existing file is tightened to 0600 if it was more permissive.
+/// Known limitation: the open still follows a pre-planted symlink (the
+/// callers write under the owner-only `~/.codesmith`, which is the
+/// containment boundary).
 pub fn open_append(path: &Path) -> std::io::Result<std::io::BufWriter<std::fs::File>> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    #[cfg(unix)]
+    let file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(path)?
+    };
+    #[cfg(not(unix))]
     let file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::metadata(path)?.permissions();
+        if perms.mode() & 0o777 != 0o600 {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        }
+    }
     Ok(std::io::BufWriter::new(file))
 }
 
@@ -297,52 +322,43 @@ pub fn flush_and_sync(writer: &mut std::io::BufWriter<std::fs::File>) -> std::io
     writer.get_ref().sync_all()
 }
 
-/// Open a URL in the system's default browser.
+/// Open an http/https URL in the system's default browser.
 ///
 /// Dispatches to the platform-appropriate opener:
 /// - macOS: `open`
 /// - Linux: `xdg-open`
-/// - Windows: `cmd /C start ""`
+/// - Windows: `explorer` (NOT `cmd /C start` — cmd.exe metacharacter
+///   semantics (`&`, `|`, `%VAR%`) are not containable through argv)
 /// - Other: returns an error.
 ///
-/// This is the single entry point for URL opening — every call site in
-/// the codebase should use this instead of hardcoding `Command::new("open")`,
-/// `Command::new("xdg-open")`, or `Command::new("cmd")`.
+/// Only `http`/`https` URLs are dispatched, with no whitespace or control
+/// characters: a URL that ever derives from untrusted content (LLM output,
+/// markdown links, server responses) must not become a command-execution
+/// or arbitrary-handler (`file://`, `ssh://`, …) vector. The opener is
+/// waited on so it does not linger as a zombie.
 pub fn open_url(url: &str) -> Result<()> {
+    let scheme = url.split(':').next().unwrap_or("").to_ascii_lowercase();
+    if scheme != "http" && scheme != "https" {
+        anyhow::bail!("refusing to open non-http(s) URL: {url}");
+    }
+    if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        anyhow::bail!("refusing to open URL containing whitespace/control characters");
+    }
+
     #[cfg(target_os = "macos")]
     let mut command = Command::new("open");
     #[cfg(target_os = "linux")]
     let mut command = Command::new("xdg-open");
     #[cfg(target_os = "windows")]
-    let _command = {
-        let mut cmd = Command::new("cmd");
-        cmd.args(["/C", "start", "", url]);
-        return match cmd
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        {
-            Ok(_) => Ok(()),
-            Err(e) => Err(anyhow::anyhow!("failed to launch browser command: {e}")),
-        };
-    };
+    let mut command = Command::new("explorer");
 
-    // macOS / Linux path
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    {
-        command.arg(url);
-        command
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| anyhow::anyhow!("failed to launch browser command: {e}"))
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    Err(anyhow::anyhow!(
-        "browser opening is unsupported on this platform"
-    ))
+    command.arg(url);
+    command
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .and_then(|mut child| child.wait().map(|_| ()))
+        .map_err(|e| anyhow::anyhow!("failed to launch browser command: {e}"))
 }
 
 /// Spawn a tokio task with panic supervision.
@@ -1236,6 +1252,26 @@ mod project_mapping_tests {
                 let msg = e.to_string();
                 assert!(!msg.is_empty(), "error message must not be empty");
             }
+        }
+    }
+
+    #[test]
+    fn open_url_rejects_non_http_schemes_and_malformed_urls() {
+        // A URL derived from untrusted content must never reach the system
+        // opener unless it is a plain http(s) URL.
+        for url in [
+            "file:///etc/passwd",
+            "ssh://user@host",
+            "javascript:alert(1)",
+            "https://exa mple.com",
+            "https://example.com/\u{0000}",
+        ] {
+            let err =
+                super::open_url(url).expect_err(format!("URL '{url}' must be rejected").as_str());
+            assert!(
+                format!("{err:#}").contains("refusing"),
+                "unexpected error for '{url}': {err:#}"
+            );
         }
     }
 }

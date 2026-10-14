@@ -371,6 +371,16 @@ fn resolve_diff_target(
     if let Some(base) = base
         && !base.trim().is_empty()
     {
+        // `base` is free-form model input formatted into `{base}...HEAD`:
+        // a value starting with `-` would be parsed by git as an option
+        // (e.g. `--output=<path>` writes the diff to an arbitrary file,
+        // breaking the tool's declared read-only capability).
+        let base = base.trim();
+        if base.starts_with('-') || base.chars().any(char::is_whitespace) {
+            return Err(ToolError::invalid_input(format!(
+                "Invalid git base ref: '{base}'"
+            )));
+        }
         cmd.arg(format!("{base}...HEAD"));
     }
     cmd.current_dir(workspace);
@@ -517,9 +527,14 @@ impl PullRequestRef {
     }
 }
 
+/// Components are validated before they become standalone `gh pr diff`
+/// arguments: `owner`/`repo` are restricted to GitHub's `[A-Za-z0-9_.-]`
+/// charset and `number` must be a plain `u64` — anything else (a leading
+/// dash like `--json=x`, whitespace, or a lax scheme such as `httpx://`)
+/// would let model-supplied text inject gh/git options.
 fn parse_pr_url(url: &str) -> Option<PullRequestRef> {
     let trimmed = url.trim().trim_end_matches('/');
-    if !trimmed.starts_with("http") {
+    if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
         return None;
     }
     let parts: Vec<&str> = trimmed.split('/').collect();
@@ -530,13 +545,25 @@ fn parse_pr_url(url: &str) -> Option<PullRequestRef> {
     let owner = parts.get(pull_idx.saturating_sub(2))?;
     let repo = parts.get(pull_idx.saturating_sub(1))?;
     let number = parts.get(pull_idx + 1)?;
-    if owner.is_empty() || repo.is_empty() || number.is_empty() {
+    // GitHub names are `[A-Za-z0-9_.-]` and cannot start with a dash
+    // (GitHub itself rejects that), which also keeps a leading-dash
+    // option from ever reaching gh's argv.
+    let valid_name = |s: &str| {
+        !s.is_empty()
+            && s.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+    };
+    if !valid_name(owner) || !valid_name(repo) {
         return None;
     }
+    // The number must be a plain decimal PR id — a `--flag`-shaped or
+    // otherwise non-numeric segment is an option-injection attempt.
+    let number: String = number.parse::<u64>().ok()?.to_string();
     Some(PullRequestRef {
         owner: (*owner).to_string(),
         repo: (*repo).to_string(),
-        number: (*number).to_string(),
+        number,
     })
 }
 
@@ -557,6 +584,33 @@ mod tests {
     fn ignores_non_pr_url() {
         assert!(parse_pr_url("https://github.com/deepseek-ai/deepseek-cli").is_none());
         assert!(parse_pr_url("not-a-url").is_none());
+    }
+
+    #[test]
+    fn parse_pr_url_rejects_option_injection_shapes() {
+        // Lax schemes…
+        assert!(parse_pr_url("httpx://github.com/a/b/pull/1").is_none());
+        // …and components that would land as standalone gh arguments.
+        // (The host portion is discarded by the parser — only the
+        // charset-validated owner/repo/number reach argv — so an odd
+        // host spelling alone is not an injection.)
+        assert!(parse_pr_url("http://h/o/r/pull/--json=x").is_none());
+        assert!(parse_pr_url("https://github.com/o/r/pull/12x").is_none());
+        // Leading-dash owner would land as a gh option; dashes mid-name
+        // stay legal.
+        assert!(parse_pr_url("https://github.com/-o/r/pull/1").is_none());
+        assert!(parse_pr_url("https://github.com/o-o/r-r/pull/1").is_some());
+        assert!(parse_pr_url("https://github.com/o%20w/r/pull/1").is_none());
+    }
+
+    #[test]
+    fn resolve_diff_target_rejects_option_shaped_base() {
+        let err = resolve_diff_target(Path::new("/tmp"), false, Some("--output=/tmp/pwn"))
+            .expect_err("leading-dash base must be rejected");
+        assert!(err.to_string().contains("Invalid git base ref"));
+        let err = resolve_diff_target(Path::new("/tmp"), false, Some("main~1 && rm -rf /"))
+            .expect_err("whitespace base must be rejected");
+        assert!(err.to_string().contains("Invalid git base ref"));
     }
 
     #[test]

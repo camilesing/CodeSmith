@@ -136,7 +136,7 @@ pub async fn run(state: &mut ReplState, arg: &str) {
 
     let key = state.workspace.to_string_lossy().to_string();
     let granted = state.approval_grants.grants_for(&key);
-    let mut granted: Vec<String> = granted.iter().cloned().collect();
+    let mut granted: Vec<String> = granted.to_vec();
     granted.extend(state.approval_session_approved.iter().cloned());
     let rules = suggestions(counts, &granted);
 

@@ -709,14 +709,27 @@ impl TaskManager {
         self.cfg.data_dir.clone()
     }
 
-    /// Resolve a task artifact reference to an absolute path.
-    #[must_use]
-    pub fn artifact_absolute_path(&self, path: &Path) -> PathBuf {
-        if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.cfg.data_dir.join(path)
+    /// Resolve a task artifact reference to an absolute path, confined to
+    /// the task data root. References come from model-supplied task
+    /// metadata (`patch_path`, `TaskArtifactRef.path`), so absolute inputs
+    /// and `..`/prefix escapes are rejected rather than resolved — mirrors
+    /// `agent_runtime::artifacts::session_artifact_absolute_path`.
+    pub fn artifact_absolute_path(&self, path: &Path) -> Result<PathBuf> {
+        use std::path::Component;
+        if path.is_absolute()
+            || path.components().any(|component| {
+                matches!(
+                    component,
+                    Component::ParentDir | Component::Prefix(_) | Component::RootDir
+                )
+            })
+        {
+            anyhow::bail!(
+                "task artifact reference escapes the task data root: {}",
+                path.display()
+            );
         }
+        Ok(self.cfg.data_dir.join(path))
     }
 
     /// Write a durable task artifact and return the persisted path reference.
@@ -1415,7 +1428,7 @@ impl TaskManagerHost for TaskManager {
     ) -> Result<TaskRecord> {
         TaskManager::record_tool_metadata(self, id_or_prefix, metadata).await
     }
-    fn artifact_absolute_path(&self, path: &Path) -> PathBuf {
+    fn artifact_absolute_path(&self, path: &Path) -> Result<PathBuf> {
         TaskManager::artifact_absolute_path(self, path)
     }
     fn write_task_artifact(&self, task_id: &str, label: &str, content: &str) -> Result<PathBuf> {
@@ -1506,6 +1519,36 @@ mod tests {
             trust_mode: false,
             max_subagents: 2,
         }
+    }
+
+    #[tokio::test]
+    async fn artifact_absolute_path_confines_references_to_data_dir() -> Result<()> {
+        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let manager =
+            TaskManager::start_with_executor(test_config(root.clone()), Arc::new(MockExecutor))
+                .await?;
+
+        // Legitimate relative references (the shape write_artifact emits)
+        // resolve under the data root.
+        let resolved = manager.artifact_absolute_path(Path::new("tasks/t1/attempt.patch"))?;
+        assert!(resolved.starts_with(&root));
+
+        // Model-supplied traversal and absolute references are rejected —
+        // they come from task metadata and must not become arbitrary file
+        // handles.
+        assert!(
+            manager
+                .artifact_absolute_path(Path::new("../../home/user/.ssh/id_rsa"))
+                .is_err()
+        );
+        assert!(
+            manager
+                .artifact_absolute_path(Path::new("/etc/passwd"))
+                .is_err()
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+        Ok(())
     }
 
     #[tokio::test]

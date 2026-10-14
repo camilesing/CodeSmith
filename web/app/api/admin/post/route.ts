@@ -28,12 +28,21 @@ async function checkAuth(req: Request, env: CommunityAgentEnv): Promise<{ ok: bo
 const ALLOWED_ACTIONS = new Set(["post", "discard"]);
 const ALLOWED_ORIGINS = new Set(["https://codesmith.net", "https://www.codesmith.net"]);
 const MAX_BODY_BYTES = 65_536;
+// draft:<type>:<id> exactly as draftKey() produces it — CURATED_KV is a
+// shared namespace (it also holds session:admin:* and usage:* keys), so a
+// free-form key must not reach getDraft/deleteDraft.
+const DRAFT_KEY_RE = /^draft:(triage|pr-review|stale|dupes|digest):[A-Za-z0-9_-]{1,64}$/;
 
 export async function POST(req: Request) {
   const env = await getAgentEnv();
 
+  // CSRF: this is a state-changing admin endpoint riding a cookie. A
+  // missing Origin is only ever a non-browser client (browsers always
+  // send it on POST), and Sec-Fetch-Site must agree the request is
+  // same-origin.
   const origin = req.headers.get("origin");
-  if (origin && !ALLOWED_ORIGINS.has(origin)) {
+  const fetchSite = req.headers.get("sec-fetch-site");
+  if (!origin || !ALLOWED_ORIGINS.has(origin) || (fetchSite && fetchSite !== "same-origin")) {
     return NextResponse.json({ error: "forbidden origin" }, { status: 403 });
   }
 
@@ -56,7 +65,7 @@ export async function POST(req: Request) {
   if (!ALLOWED_ACTIONS.has(action)) {
     return NextResponse.json({ error: "unknown action" }, { status: 400 });
   }
-  if (typeof draftKey !== "string" || !draftKey || draftKey.length > 256) {
+  if (typeof draftKey !== "string" || !DRAFT_KEY_RE.test(draftKey)) {
     return NextResponse.json({ error: "missing or invalid draftKey" }, { status: 400 });
   }
   if (editedBody !== undefined && (typeof editedBody !== "string" || editedBody.length > MAX_BODY_BYTES)) {

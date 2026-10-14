@@ -238,13 +238,18 @@ check_localhost_health() {
 
   if have_command ss; then
     local listeners
-    listeners="$(ss -ltn 2>/dev/null | awk -v port=":${port}" '$4 ~ port {print $4}' || true)"
-    if grep -qE "^127\\.0\\.0\\.1:${port}$|^\\[::1\\]:${port}$" <<<"${listeners}"; then
-      pass "runtime port ${port} is bound to localhost"
-    elif [[ -n "${listeners}" ]]; then
+    # Anchor the port match (`:PORT$`): 1-3 digit ports would otherwise
+    # substring-match longer ports (878 matches 8780-8789).
+    listeners="$(ss -ltn 2>/dev/null | awk -v port=":${port}$" '$4 ~ port {print $4}' || true)"
+    if [[ -z "${listeners}" ]]; then
+      fail "runtime port ${port} is not listening"
+    elif grep -qvE "^(127\\.0\\.0\\.1|\\[::1\\]):${port}$" <<<"${listeners}"; then
+      # ANY non-local listener on the port fails the check — a dual bind
+      # (127.0.0.1 AND 0.0.0.0) still exposes the service on all
+      # interfaces; matching one localhost line is not enough.
       fail "runtime port ${port} is listening on a non-local address: ${listeners//$'\n'/, }"
     else
-      fail "runtime port ${port} is not listening"
+      pass "runtime port ${port} is bound to localhost only"
     fi
   else
     warn "ss is unavailable; skipping bind-address check"

@@ -323,11 +323,19 @@ fn generate_params(policy: &SandboxPolicy, cwd: &Path) -> Vec<(String, PathBuf)>
             .root
             .canonicalize()
             .unwrap_or_else(|_| root.root.clone());
-        params.push((format!("WRITABLE_ROOT_{index}"), canonical));
+        params.push((format!("WRITABLE_ROOT_{index}"), canonical.clone()));
 
         // Add parameters for read-only subpaths
         for (subpath_index, subpath) in root.read_only_subpaths.iter().enumerate() {
-            let canonical_subpath = subpath.canonicalize().unwrap_or_else(|_| subpath.clone());
+            // Fail closed: SBPL `subpath` filters match kernel-resolved
+            // paths, so an exception that falls back to its raw form
+            // (deleted/racy path, `..`, unresolved symlink) silently stops
+            // matching and writes into the "read-only" area stay allowed.
+            // Derive the exception from the canonicalized root instead.
+            let canonical_subpath = match subpath.canonicalize() {
+                Ok(p) => p,
+                Err(_) => canonical.join(subpath.strip_prefix(&root.root).unwrap_or(subpath)),
+            };
             params.push((
                 format!("WRITABLE_ROOT_{index}_RO_{subpath_index}"),
                 canonical_subpath,
@@ -505,6 +513,37 @@ mod tests {
 
         // Should have at least the cache dir param
         assert!(params.iter().any(|(k, _)| k == "DARWIN_USER_CACHE_DIR"));
+    }
+
+    #[test]
+    fn test_read_only_subpath_params_are_kernel_resolved() {
+        // The (require-not (subpath …)) exceptions must match the same
+        // kernel-resolved vnode paths as the writable root (`/tmp` →
+        // `/private/tmp` on macOS); a raw-form fallback would silently stop
+        // excluding the "read-only" area.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(tmp.path().join(".codesmith")).expect("protected dir");
+
+        let policy = SandboxPolicy::workspace_with_roots(vec![tmp.path().to_path_buf()], false);
+        let params = generate_params(&policy, tmp.path());
+
+        let root_param = params
+            .iter()
+            .find(|(k, _)| k == "WRITABLE_ROOT_0")
+            .expect("root param");
+        let ro_param = params
+            .iter()
+            .find(|(k, _)| k == "WRITABLE_ROOT_0_RO_0")
+            .expect("read-only subpath param");
+        // The exception must live under the canonicalized root — never the
+        // raw tempdir spelling.
+        assert!(
+            ro_param.1.starts_with(&root_param.1),
+            "RO param {} must sit under canonical root {}",
+            ro_param.1.display(),
+            root_param.1.display()
+        );
+        assert!(ro_param.1.ends_with(".codesmith"));
     }
 
     /// #558: cargo publish reaches into ~/.cargo/registry; the seatbelt has

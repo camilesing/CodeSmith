@@ -481,9 +481,81 @@ pub fn trust(name: &str, skills_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Outcome of a policy-gated GET whose redirect hops stay inside the
+/// network policy.
+enum GatedGet {
+    /// Final (possibly redirected) response, ready for status checks.
+    Response(reqwest::Response),
+    /// The initial host or a redirect hop was denied.
+    Denied(String),
+    /// The initial host or a redirect hop requires approval.
+    NeedsApproval(String),
+}
+
+/// Maximum redirect hops followed by [`policy_gated_get`].
+const MAX_REDIRECT_HOPS: usize = 5;
+
+/// GET `url` following redirects **manually** so every hop is re-checked
+/// against `network` — the default reqwest client silently follows up to
+/// 10 redirects, which would let an allowed host 302 to any denied or
+/// unlisted one (mirrors `fetch_url.rs` / `web_run.rs`). `etag`, when
+/// present, is sent as `If-None-Match` on the initial request only (the
+/// value belongs to that URL, not to redirect targets).
+async fn policy_gated_get(
+    url: &str,
+    network: &NetworkPolicy,
+    etag: Option<&str>,
+) -> Result<GatedGet> {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .context("failed to build HTTP client")?;
+    let mut current = url.to_string();
+    for hop in 0..=MAX_REDIRECT_HOPS {
+        let host = host_from_url(&current).with_context(|| format!("invalid url: {current}"))?;
+        match network.decide(&host) {
+            Decision::Allow => {}
+            Decision::Deny => return Ok(GatedGet::Denied(host)),
+            Decision::Prompt => return Ok(GatedGet::NeedsApproval(host)),
+        }
+        let mut req = client.get(&current);
+        if hop == 0
+            && let Some(etag) = etag
+        {
+            req = req.header("If-None-Match", etag);
+        }
+        let resp = req
+            .send()
+            .await
+            .with_context(|| format!("failed to GET {current}"))?;
+        if resp.status().is_redirection() {
+            let Some(location) = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+            else {
+                bail!("redirect from {current} without a Location header");
+            };
+            let next = reqwest::Url::parse(&current)
+                .and_then(|base| base.join(location))
+                .with_context(|| format!("invalid redirect from {current} to '{location}'"))?;
+            current = next.to_string();
+            continue;
+        }
+        return Ok(GatedGet::Response(resp));
+    }
+    bail!("too many redirects fetching {url}");
+}
+
+/// Cap on the registry index body — the document lists skills, so a few
+/// hundred KiB is already generous; an unbounded read would let a
+/// policy-allowed host exhaust memory.
+const REGISTRY_BODY_CAP: u64 = 1024 * 1024;
+
 /// Fetch the curated registry and return the parsed entries.
 ///
-/// Honours `network` (skipping the call entirely on Deny / Prompt).
+/// Honours `network` (skipping the call entirely on Deny / Prompt) and
+/// re-checks every redirect hop against it.
 pub async fn fetch_registry(
     network: &NetworkPolicy,
     registry_url: &str,
@@ -492,19 +564,21 @@ pub async fn fetch_registry(
         Some(host) => host,
         None => bail!("invalid registry url: {registry_url}"),
     };
-    match network.decide(&host) {
-        Decision::Allow => {}
-        Decision::Deny => return Ok(RegistryFetchResult::Denied(host)),
-        Decision::Prompt => return Ok(RegistryFetchResult::NeedsApproval(host)),
+    let resp = match policy_gated_get(registry_url, network, None).await? {
+        GatedGet::Response(resp) => resp,
+        GatedGet::Denied(_) => return Ok(RegistryFetchResult::Denied(host)),
+        GatedGet::NeedsApproval(_) => return Ok(RegistryFetchResult::NeedsApproval(host)),
     }
-    let body = reqwest::get(registry_url)
-        .await
-        .with_context(|| format!("failed to fetch registry {registry_url}"))?
-        .error_for_status()
-        .with_context(|| format!("registry {registry_url} returned an error status"))?
-        .text()
+    .error_for_status()
+    .with_context(|| format!("registry {registry_url} returned an error status"))?;
+    let bytes = resp
+        .bytes()
         .await
         .with_context(|| format!("failed to read registry body from {registry_url}"))?;
+    if bytes.len() as u64 > REGISTRY_BODY_CAP {
+        bail!("registry {registry_url} exceeds body cap of {REGISTRY_BODY_CAP} bytes");
+    }
+    let body = String::from_utf8_lossy(&bytes);
     let parsed: RegistryDocument = serde_json::from_str(&body)
         .with_context(|| format!("failed to parse registry json from {registry_url}"))?;
     Ok(RegistryFetchResult::Loaded(parsed))
@@ -674,22 +748,25 @@ async fn sync_one_skill(
             })
             .flatten();
 
-        // Build the request — add If-None-Match if we have a cached ETag.
-        let client = reqwest::Client::new();
-        let mut req = client.get(url);
-        if let Some(ref meta) = existing_meta
-            && let Some(ref etag) = meta.etag
-        {
-            req = req.header("If-None-Match", etag);
-        }
-
-        let resp = match req.send().await {
-            Ok(r) => r,
-            Err(err) => {
-                // Network error — try the next candidate URL.
-                let _ = err;
-                continue;
+        // Conditional GET with manual redirect handling: every hop is
+        // re-checked against the network policy.
+        let etag_header = existing_meta.as_ref().and_then(|meta| meta.etag.clone());
+        let resp = match policy_gated_get(url, network, etag_header.as_deref()).await {
+            Ok(GatedGet::Response(resp)) => resp,
+            Ok(GatedGet::Denied(host)) => {
+                return SkillSyncOutcome::Denied {
+                    name: name.to_string(),
+                    host,
+                };
             }
+            Ok(GatedGet::NeedsApproval(host)) => {
+                return SkillSyncOutcome::NeedsApproval {
+                    name: name.to_string(),
+                    host,
+                };
+            }
+            // Network error — try the next candidate URL.
+            Err(_) => continue,
         };
 
         let status = resp.status();
@@ -955,7 +1032,7 @@ async fn download_first_success(
                 continue;
             }
         }
-        match download_with_cap(url, max_size).await? {
+        match download_with_cap(url, network, max_size).await? {
             DownloadAttempt::Bytes(bytes) => {
                 return Ok(DownloadOutcome::Bytes {
                     bytes,
@@ -964,6 +1041,16 @@ async fn download_first_success(
             }
             DownloadAttempt::NotFound(status) => {
                 last_status = Some(status);
+                continue;
+            }
+            // Only reachable for redirect hops (the initial host was
+            // pre-checked above): record the hop and try the next URL.
+            DownloadAttempt::Denied(host) => {
+                denied_host.get_or_insert(host);
+                continue;
+            }
+            DownloadAttempt::NeedsApproval(host) => {
+                prompt_host.get_or_insert(host);
                 continue;
             }
         }
@@ -985,15 +1072,27 @@ async fn download_first_success(
 enum DownloadAttempt {
     Bytes(Vec<u8>),
     NotFound(reqwest::StatusCode),
+    /// The initial host or a redirect hop was denied by the network policy.
+    Denied(String),
+    /// The initial host or a redirect hop requires approval.
+    NeedsApproval(String),
 }
 
 /// Stream a URL into memory with a size cap. Aborts on the first read that
 /// would push the buffer over `max_size * 4` (the *4 accounts for compression;
 /// the unpack step still enforces `max_size` on the *uncompressed* bytes).
-async fn download_with_cap(url: &str, max_size: u64) -> Result<DownloadAttempt> {
-    let resp = reqwest::get(url)
-        .await
-        .with_context(|| format!("failed to GET {url}"))?;
+/// Redirects are followed manually so every hop re-runs the network policy
+/// check (see [`policy_gated_get`]).
+async fn download_with_cap(
+    url: &str,
+    network: &NetworkPolicy,
+    max_size: u64,
+) -> Result<DownloadAttempt> {
+    let resp = match policy_gated_get(url, network, None).await? {
+        GatedGet::Response(resp) => resp,
+        GatedGet::Denied(host) => return Ok(DownloadAttempt::Denied(host)),
+        GatedGet::NeedsApproval(host) => return Ok(DownloadAttempt::NeedsApproval(host)),
+    };
     let status = resp.status();
     if !status.is_success() {
         if status == reqwest::StatusCode::NOT_FOUND {

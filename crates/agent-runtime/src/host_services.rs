@@ -376,8 +376,11 @@ pub trait TaskManagerHost: Send + Sync {
         id_or_prefix: &str,
         metadata: &serde_json::Value,
     ) -> anyhow::Result<TaskRecord>;
-    /// Resolve a task artifact reference to an absolute path.
-    fn artifact_absolute_path(&self, path: &Path) -> PathBuf;
+    /// Resolve a task artifact reference to an absolute path, confined to
+    /// the task data root: references come from model-supplied task
+    /// metadata, so absolute inputs and `..`-escapes are rejected (mirrors
+    /// `artifacts::session_artifact_absolute_path`).
+    fn artifact_absolute_path(&self, path: &Path) -> anyhow::Result<PathBuf>;
     /// Write a durable task artifact and return the persisted path reference.
     fn write_task_artifact(
         &self,

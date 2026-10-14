@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const https = require("https");
 const http = require("http");
 const {
@@ -111,24 +112,69 @@ function parseChecksumManifest(text) {
   return checksums;
 }
 
+async function downloadBuffer(url, redirects = 0) {
+  if (redirects > 10) {
+    throw new Error(`Too many redirects while downloading ${url}`);
+  }
+  const client = url.startsWith("https:") ? https : http;
+  return new Promise((resolve, reject) => {
+    client
+      .get(
+        url,
+        {
+          headers: {
+            "User-Agent": "codesmith-npm-release-check",
+          },
+        },
+        (res) => {
+          const status = res.statusCode || 0;
+          if (status >= 300 && status < 400 && res.headers.location) {
+            const next = new URL(res.headers.location, url).toString();
+            resolve(downloadBuffer(next, redirects + 1));
+            return;
+          }
+          if (status !== 200) {
+            res.resume();
+            reject(new Error(`Request failed with status ${status}: ${url}`));
+            return;
+          }
+          const chunks = [];
+          res.on("data", (chunk) => chunks.push(chunk));
+          res.on("end", () => resolve(Buffer.concat(chunks)));
+        },
+      )
+      .on("error", reject);
+  });
+}
+
 async function run() {
   const version = resolveBinaryVersion();
   const repo = resolveRepo();
   const assets = allReleaseAssetNames();
 
   console.log(`Verifying ${assets.length} release assets for ${repo}@v${version}...`);
-  for (const asset of assets) {
-    const url = releaseAssetUrl(asset, version, repo);
-    await verifyAsset(url, asset);
-    console.log(`  ok ${asset}`);
-  }
   const checksums = parseChecksumManifest(
     await downloadText(checksumManifestUrl(version, repo)),
   );
   for (const asset of allAssetNames()) {
-    if (!checksums.has(asset)) {
+    // Actually compare the SHA-256 of each downloaded asset against the
+    // manifest value — checking only that the name appears as a key would
+    // let a tampered release pass verification.
+    const expected = checksums.get(asset);
+    if (!expected) {
       throw new Error(`Checksum manifest is missing ${asset}`);
     }
+    const url = releaseAssetUrl(asset, version, repo);
+    const actual = crypto
+      .createHash("sha256")
+      .update(await downloadBuffer(url))
+      .digest("hex");
+    if (actual !== expected) {
+      throw new Error(
+        `${asset} checksum mismatch: expected ${expected}, got ${actual} (${url})`,
+      );
+    }
+    console.log(`  ok ${asset} (sha256 verified)`);
   }
   console.log("Release assets verified.");
 }

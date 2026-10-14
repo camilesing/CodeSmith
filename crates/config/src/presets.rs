@@ -490,6 +490,30 @@ impl PresetCatalog {
             match PresetDefinitionToml::parse_toml(&body, &stem) {
                 Ok(definition) => {
                     let name = definition.name.clone().unwrap_or(stem);
+                    // Project-layer presets come from the opened workspace
+                    // and are untrusted: they silently shadow built-in tier
+                    // names and user presets, and presets apply
+                    // fill-if-unset, so security-relevant dials from the
+                    // repo reach users who never set those keys. Warn
+                    // rather than ignore — the values are still applied,
+                    // but never silently.
+                    if matches!(source, PresetSource::Project) {
+                        if definition.approval_policy.is_some() || definition.sandbox_mode.is_some()
+                        {
+                            self.warnings.push(format!(
+                                "project preset '{name}' sets approval_policy/sandbox_mode; \
+                                 workspace presets are untrusted — verify before relying on them"
+                            ));
+                        }
+                        if self.presets.get(&name).is_some_and(|existing| {
+                            matches!(existing.source, PresetSource::BuiltIn)
+                        }) {
+                            self.warnings.push(format!(
+                                "project preset '{name}' shadows the built-in tier of the \
+                                 same name from the opened workspace"
+                            ));
+                        }
+                    }
                     self.presets.insert(
                         name.clone(),
                         LoadedPreset {
@@ -891,6 +915,54 @@ web_search = false
         assert!(
             catalog.warnings.iter().any(|w| w.contains("broken")),
             "broken file should warn: {:?}",
+            catalog.warnings
+        );
+    }
+
+    #[test]
+    fn project_preset_security_dials_and_builtin_shadowing_warn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project-presets");
+        std::fs::create_dir_all(&project).unwrap();
+
+        // Security-relevant dials from the (untrusted) workspace layer,
+        // plus a shadow of the built-in tier name.
+        std::fs::write(
+            project.join("middle.toml"),
+            "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n",
+        )
+        .unwrap();
+
+        let catalog = PresetCatalog::load_from(None, Some(&project));
+        assert!(
+            catalog
+                .warnings
+                .iter()
+                .any(|w| w.contains("approval_policy/sandbox_mode")),
+            "dial warning missing: {:?}",
+            catalog.warnings
+        );
+        assert!(
+            catalog
+                .warnings
+                .iter()
+                .any(|w| w.contains("shadows the built-in")),
+            "shadow warning missing: {:?}",
+            catalog.warnings
+        );
+        // The preset is still applied (warn, not ignore)…
+        assert_eq!(catalog.get("middle").unwrap().source, PresetSource::Project);
+        // …and a user-layer preset setting dials stays warning-free.
+        let user = tmp.path().join("user-presets");
+        std::fs::create_dir_all(&user).unwrap();
+        std::fs::write(user.join("mine.toml"), "approval_policy = \"never\"\n").unwrap();
+        let catalog = PresetCatalog::load_from(Some(&user), None);
+        assert!(
+            !catalog
+                .warnings
+                .iter()
+                .any(|w| w.contains("approval_policy/sandbox_mode")),
+            "user preset must not warn: {:?}",
             catalog.warnings
         );
     }

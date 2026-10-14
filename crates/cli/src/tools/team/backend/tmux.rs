@@ -61,6 +61,9 @@ impl TeammateBackend for TmuxBackend {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
+            // The pane never started, so nothing will unlink the prompt
+            // file — remove it here rather than leaking prompt content.
+            let _ = tokio::fs::remove_file(&prompt_file).await;
             return Err(BackendError::SpawnFailed {
                 backend: "tmux",
                 message: format!(
