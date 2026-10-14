@@ -3,7 +3,6 @@ name = "codesmith-index"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-readme.workspace = true
 keywords = ["index", "tree-sitter", "search"]
 categories = ["development-tools"]
 license.workspace = true

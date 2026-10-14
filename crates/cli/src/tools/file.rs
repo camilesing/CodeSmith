@@ -13,7 +13,7 @@ use codesmith_agent_runtime::tools::parse_gate;
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -99,7 +99,7 @@ impl ToolSpec for ReadFileTool {
         let pages = optional_str(&input, "pages");
 
         if is_pdf(&file_path)? {
-            return read_pdf(&file_path, pages);
+            return read_pdf(&file_path, pages, context.cancel_token.clone()).await;
         }
         if is_image_for_ocr(&file_path) {
             return read_image_via_ocr(&file_path, path_str);
@@ -314,7 +314,11 @@ fn clean_pdf_text(raw: &str) -> String {
     }
 }
 
-fn read_pdf(path: &Path, pages: Option<&str>) -> Result<ToolResult, ToolError> {
+async fn read_pdf(
+    path: &Path,
+    pages: Option<&str>,
+    cancel_token: Option<CancellationToken>,
+) -> Result<ToolResult, ToolError> {
     // Validate the `pages` spec once, up front, so both extractor paths
     // surface the same error shape on bad input.
     let page_range = match pages {
@@ -341,7 +345,7 @@ fn read_pdf(path: &Path, pages: Option<&str>) -> Result<ToolResult, ToolError> {
         .unwrap_or(false);
 
     if prefer_external {
-        read_pdf_via_pdftotext(path, page_range)
+        read_pdf_via_pdftotext(path, page_range, cancel_token).await
     } else {
         read_pdf_via_pdf_extract(path, page_range)
     }
@@ -386,11 +390,16 @@ fn read_pdf_via_pdf_extract(
     Ok(ToolResult::success(clean_pdf_text(&text)))
 }
 
-fn read_pdf_via_pdftotext(
+/// Upper bound on the external `pdftotext` run: a malformed PDF that makes
+/// poppler spin (or a stuck pipe) must not wedge the tool call forever.
+const PDFTOTEXT_TIMEOUT: Duration = Duration::from_secs(60);
+
+async fn read_pdf_via_pdftotext(
     path: &Path,
     page_range: Option<(u32, u32)>,
+    cancel_token: Option<CancellationToken>,
 ) -> Result<ToolResult, ToolError> {
-    let mut cmd = Command::new("pdftotext");
+    let mut cmd = tokio::process::Command::new("pdftotext");
     cmd.arg("-layout");
 
     if let Some((start, end)) = page_range {
@@ -401,7 +410,10 @@ fn read_pdf_via_pdftotext(
     cmd.arg(path).arg("-"); // output to stdout
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        // Dropping the waiter on timeout/cancellation kills the child
+        // instead of abandoning a hung pdftotext process.
+        .kill_on_drop(true);
 
     let child = match cmd.spawn() {
         Ok(c) => c,
@@ -427,8 +439,24 @@ fn read_pdf_via_pdftotext(
         }
     };
 
-    let output = child
-        .wait_with_output()
+    let wait = child.wait_with_output();
+    let output = match cancel_token {
+        Some(token) => tokio::select! {
+            biased;
+            () = token.cancelled() => {
+                return Err(ToolError::execution_failed(
+                    "pdftotext cancelled before completion",
+                ));
+            }
+            output = tokio::time::timeout(PDFTOTEXT_TIMEOUT, wait) => output,
+        },
+        None => tokio::time::timeout(PDFTOTEXT_TIMEOUT, wait).await,
+    };
+
+    let output = output
+        .map_err(|_| ToolError::Timeout {
+            seconds: PDFTOTEXT_TIMEOUT.as_secs(),
+        })?
         .map_err(|e| ToolError::execution_failed(format!("pdftotext failed to complete: {e}")))?;
 
     if !output.status.success() {
@@ -1809,14 +1837,17 @@ mod tests {
         }
     }
 
-    #[test]
-    fn read_pdf_routes_to_pdftotext_when_setting_opted_in() {
+    #[tokio::test]
+    async fn read_pdf_routes_to_pdftotext_when_setting_opted_in() {
         // Two concerns in one test: with `prefer_external_pdftotext = true`
         // the dispatch must (a) call pdftotext when present, and (b) return
         // the structured `binary_unavailable` response when pdftotext is
         // missing.
-        // Sync test (calls `read_pdf` directly, not the async ReadFileTool
-        // wrapper) so the env-var lock is never held across an `.await`.
+        // Holds the env-var lock across the single `.await` (the pdftotext
+        // child spawn); the runtime is current-thread and the other users of
+        // this lock are separate test threads, so they block rather than
+        // deadlock.
+        #![allow(clippy::await_holding_lock)]
         let _lock = DS_CONFIG_PATH_LOCK.lock().unwrap();
         let _guard = ConfigPathEnvGuard::capture();
 
@@ -1838,9 +1869,9 @@ mod tests {
 
         let pdf_path = tmp.path().join("doc.pdf");
         fs::write(&pdf_path, b"%PDF-1.7\n%%EOF").unwrap();
-        let outcome = read_pdf(&pdf_path, None);
+        let outcome = read_pdf(&pdf_path, None, None).await;
 
-        let pdftotext_present = Command::new("pdftotext")
+        let pdftotext_present = std::process::Command::new("pdftotext")
             .arg("-v")
             .stdout(Stdio::null())
             .stderr(Stdio::null())

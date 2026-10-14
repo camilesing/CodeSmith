@@ -42,6 +42,9 @@ fn add_usage_with_prompt_cache(total: &mut Usage, delta: &Usage) {
         total.prompt_cache_miss_tokens,
         delta.prompt_cache_miss_tokens,
     );
+    total.reasoning_tokens = add_optional_usage(total.reasoning_tokens, delta.reasoning_tokens);
+    total.reasoning_replay_tokens =
+        add_optional_usage(total.reasoning_replay_tokens, delta.reasoning_replay_tokens);
 }
 
 fn add_optional_usage(total: Option<u32>, delta: Option<u32>) -> Option<u32> {
@@ -64,6 +67,8 @@ mod tests {
             output_tokens: 10,
             prompt_cache_hit_tokens: Some(80),
             prompt_cache_miss_tokens: Some(20),
+            reasoning_tokens: Some(30),
+            reasoning_replay_tokens: Some(5),
             ..Usage::default()
         };
         let delta = Usage {
@@ -71,6 +76,8 @@ mod tests {
             output_tokens: 5,
             prompt_cache_hit_tokens: Some(30),
             prompt_cache_miss_tokens: Some(20),
+            reasoning_tokens: Some(12),
+            reasoning_replay_tokens: Some(4),
             ..Usage::default()
         };
 
@@ -80,5 +87,15 @@ mod tests {
         assert_eq!(total.output_tokens, 15);
         assert_eq!(total.prompt_cache_hit_tokens, Some(110));
         assert_eq!(total.prompt_cache_miss_tokens, Some(40));
+        assert_eq!(total.reasoning_tokens, Some(42));
+        assert_eq!(total.reasoning_replay_tokens, Some(9));
+    }
+
+    #[test]
+    fn add_optional_usage_covers_asymmetric_arms() {
+        assert_eq!(add_optional_usage(None, Some(5)), Some(5));
+        assert_eq!(add_optional_usage(Some(5), None), Some(5));
+        assert_eq!(add_optional_usage(None, None), None);
+        assert_eq!(add_optional_usage(Some(u32::MAX), Some(1)), Some(u32::MAX));
     }
 }

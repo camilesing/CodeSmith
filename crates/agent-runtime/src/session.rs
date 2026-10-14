@@ -33,6 +33,16 @@ pub struct RecentReadFile {
 }
 
 /// Session state for the engine.
+///
+/// # Clone semantics
+///
+/// The derived `Clone` deep-copies the value fields (transcript, usage,
+/// cycle state, …) but deliberately SHARES the `Arc`-guarded projections
+/// (`working_set`, `fact_ledger`, `recent_read_files`, `prefix_stability`)
+/// with the original — a clone mutates its own transcript while those
+/// probes keep observing the original's data, and vice versa. This exists
+/// so framework-core probes held across an `executor.run` borrow stay
+/// live; do NOT use `Clone` as a fork/snapshot of a session.
 #[derive(Debug, Clone)]
 pub struct Session {
     /// Model being used

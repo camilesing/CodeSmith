@@ -120,7 +120,7 @@ pub fn create_team_file(team_file: &TeamFile) -> anyhow::Result<PathBuf> {
     fs::create_dir_all(&dir)?;
     let config_path = dir.join("config.json");
     let json = serde_json::to_string_pretty(team_file)?;
-    fs::write(&config_path, json)?;
+    crate::utils::write_atomic(&config_path, json.as_bytes())?;
     // Also create the inboxes subdirectory.
     fs::create_dir_all(dir.join("inboxes"))?;
     // Create the team-scoped task directory.
@@ -166,13 +166,12 @@ pub fn create_team_file_exclusive(team_file: &TeamFile) -> std::io::Result<PathB
     }
     #[cfg(not(unix))]
     {
-        std::fs::write(
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&config_path)?,
-            json.as_bytes(),
-        )?;
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&config_path)?;
+        file.write_all(json.as_bytes())?;
     }
     fs::create_dir_all(dir.join("inboxes"))?;
     let task_dir =

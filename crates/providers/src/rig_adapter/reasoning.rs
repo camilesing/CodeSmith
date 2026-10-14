@@ -42,12 +42,42 @@ pub(crate) fn provider_accepts_reasoning_content(name: &str) -> bool {
     )
 }
 
+/// The known providers from the reject list above — unlike an unrecognized
+/// (custom) name, these are confirmed to reject the `reasoning_content` field,
+/// so even a reasoning-looking model id must not ship it (#224).
+pub(crate) fn provider_rejects_reasoning_content(name: &str) -> bool {
+    matches!(
+        name,
+        "openai"
+            | "atlascloud"
+            | "wanjie-ark"
+            | "volcengine"
+            | "moonshot"
+            | "vllm"
+            | "ollama"
+            | "anthropic"
+    )
+}
+
+/// Whether `model` matched a DeepSeek-scoped arm of
+/// [`requires_reasoning_content`] rather than its generic
+/// `*reasoner*` / `*-reasoning` / `*-thinking` globs: every DeepSeek-scoped
+/// arm (v4 / chat / reasoner / `deepseek-r<digit>`) contains the substring
+/// "deepseek", so this is exact for the DeepSeek arms and only conservative
+/// in the same direction the #1739/#1694 fix already is.
+fn deepseek_scoped(model: &str) -> bool {
+    model.to_lowercase().contains("deepseek")
+}
+
 /// Provider-aware replay gate — the load-bearing predicate for both the
 /// attach/strip decision and the placeholder injection.
 ///
 /// Truth table:
 /// - generic model + provider-rejects-field → `false` (STRIP — #1542 fix)
 /// - generic model + provider-accepts-field → `requires_reasoning_content` = `false` (STRIP)
+/// - glob-only model (`*reasoner*`/`*-reasoning`/`*-thinking`) + known
+///   field-rejecting provider → `false` (STRIP — #224; the generic globs are
+///   for custom deployments, which unknown provider names represent)
 /// - DeepSeek reasoning model on ANY provider → `true` (ATTACH — #1739/#1694 fix)
 /// - any model + effort "off"/… → `false` (STRIP)
 pub(crate) fn should_replay_reasoning_content_for_provider(
@@ -61,6 +91,13 @@ pub(crate) fn should_replay_reasoning_content_for_provider(
         // reasoning model pointed at a DeepSeek-compatible endpoint via the
         // generic `openai` provider still requires reasoning_content replay,
         // or the thinking-mode API returns 400 (#1739 / #1694).
+        return false;
+    }
+    if provider_rejects_reasoning_content(provider) && !deepseek_scoped(model) {
+        // #224: the generic name globs are for custom/proxied deployments,
+        // which an unrecognized provider name already covers. On a provider
+        // known to reject the field they would only ship a 400-triggering
+        // `reasoning_content`.
         return false;
     }
     should_replay_reasoning_content(model, effort)
@@ -86,10 +123,15 @@ pub(crate) fn should_replay_reasoning_content_for_provider(
 /// matching the hand-written early-return). For the no-op provider arms (e.g.
 /// `openai`, `anthropic`), nothing is written — `reasoning_effort` is **not**
 /// passed through verbatim, which is the parity fix for providers that reject it.
+///
+/// `passthrough` is the `CODESMITH_REASONING_PASSTHROUGH` opt-in, resolved once
+/// by the caller (the shaper) at construction so this function stays
+/// deterministic and testable.
 pub(crate) fn apply_reasoning_effort(
     params: &mut Map<String, Value>,
     effort: Option<&str>,
     provider: &str,
+    passthrough: bool,
 ) {
     let Some(effort) = effort else {
         return;
@@ -105,14 +147,7 @@ pub(crate) fn apply_reasoning_effort(
     // verbatim earns a gateway 400 (the failure mode this adapter works
     // around) — the deepseek family's deliberate ""→high mapping below is
     // untouched.
-    if provider == "openai"
-        && !normalized.is_empty()
-        && super::http_fallback::env_flag_enabled(
-            std::env::var("CODESMITH_REASONING_PASSTHROUGH")
-                .ok()
-                .as_deref(),
-        )
-    {
+    if provider == "openai" && !normalized.is_empty() && passthrough {
         match normalized.as_str() {
             "off" | "disabled" | "none" | "false" => {
                 params.insert(
@@ -163,7 +198,7 @@ pub(crate) fn apply_reasoning_effort(
             "nvidia-nim" => {
                 merge_chat_template_kwargs(params, "thinking", json!(false));
             }
-            _ => {}
+            _ => tracing::debug!(provider, "no reasoning-effort shaping for provider"),
         },
         "low" | "minimal" | "medium" | "mid" | "high" | "" => match provider {
             // DeepSeek compatibility: low/medium both map to high.
@@ -206,7 +241,7 @@ pub(crate) fn apply_reasoning_effort(
                 merge_chat_template_kwargs(params, "thinking", json!(true));
                 merge_chat_template_kwargs(params, "reasoning_effort", json!("high"));
             }
-            _ => {}
+            _ => tracing::debug!(provider, "no reasoning-effort shaping for provider"),
         },
         "xhigh" | "max" | "highest" => match provider {
             "deepseek" | "deepseek-cn" | "siliconflow" | "sglang" | "volcengine" => {
@@ -235,9 +270,12 @@ pub(crate) fn apply_reasoning_effort(
                 merge_chat_template_kwargs(params, "thinking", json!(true));
                 merge_chat_template_kwargs(params, "reasoning_effort", json!("max"));
             }
-            _ => {}
+            _ => tracing::debug!(provider, "no reasoning-effort shaping for provider"),
         },
-        _ => {}
+        other => tracing::warn!(
+            effort = other,
+            "unrecognized reasoning_effort value; no reasoning params sent"
+        ),
     }
 }
 
@@ -295,6 +333,24 @@ mod tests {
             "deepseek-v4-pro",
             Some("high")
         ));
+        // glob-only model on a known field-rejecting provider → strip (#224);
+        // the generic globs are for custom deployments, which an unknown
+        // provider name still represents
+        assert!(!should_replay_reasoning_content_for_provider(
+            "vllm",
+            "qwen3-reasoner",
+            Some("high")
+        ));
+        assert!(!should_replay_reasoning_content_for_provider(
+            "openai",
+            "kimi-thinking",
+            None
+        ));
+        assert!(should_replay_reasoning_content_for_provider(
+            "acme-llm",
+            "kimi-thinking",
+            None
+        ));
         // effort off overrides everything
         assert!(!should_replay_reasoning_content_for_provider(
             "deepseek",
@@ -331,7 +387,7 @@ mod tests {
 
     fn params_for(effort: Option<&str>, provider: &str) -> Map<String, Value> {
         let mut map = Map::new();
-        apply_reasoning_effort(&mut map, effort, provider);
+        apply_reasoning_effort(&mut map, effort, provider, false);
         map
     }
 
@@ -411,6 +467,65 @@ mod tests {
         assert!(m.get("reasoning_effort").is_none());
         assert!(m.get("thinking").is_none());
         assert!(params_for(Some("off"), "openai").is_empty());
+    }
+
+    #[test]
+    fn openai_passthrough_forwards_effort_verbatim() {
+        let mut map = Map::new();
+        apply_reasoning_effort(&mut map, Some("high"), "openai", true);
+        assert_eq!(map["reasoning_effort"], json!("high"));
+        let mut map = Map::new();
+        apply_reasoning_effort(&mut map, Some("off"), "openai", true);
+        assert_eq!(map["thinking"], json!({ "type": "disabled" }));
+        // Empty effort stays excluded from the passthrough arm.
+        let mut map = Map::new();
+        apply_reasoning_effort(&mut map, Some(""), "openai", true);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn allowlisted_providers_shape_every_effort_tier() {
+        // Drift guard: a provider allowlisted for `reasoning_content` replay
+        // that loses its arm in one of the effort tiers below silently gets
+        // no thinking control (the `_ => {}` fallthrough). Every allowlisted
+        // name must keep producing params for each tier it shapes.
+        for provider in [
+            "deepseek",
+            "deepseek-cn",
+            "nvidia-nim",
+            "openrouter",
+            "xiaomi-mimo",
+            "novita",
+            "fireworks",
+            "siliconflow",
+            "sglang",
+        ] {
+            assert!(
+                !params_for(Some("high"), provider).is_empty(),
+                "{provider} must have an explicit effort arm"
+            );
+            assert!(
+                !params_for(Some("max"), provider).is_empty(),
+                "{provider} must have an explicit xhigh arm"
+            );
+        }
+        // `off` deliberately sends nothing for fireworks; every other
+        // allowlisted provider must disable thinking explicitly.
+        for provider in [
+            "deepseek",
+            "deepseek-cn",
+            "nvidia-nim",
+            "openrouter",
+            "xiaomi-mimo",
+            "novita",
+            "siliconflow",
+            "sglang",
+        ] {
+            assert!(
+                !params_for(Some("off"), provider).is_empty(),
+                "{provider} must have an explicit off arm"
+            );
+        }
     }
 
     #[test]

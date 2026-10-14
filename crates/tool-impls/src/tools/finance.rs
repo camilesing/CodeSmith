@@ -30,9 +30,11 @@ struct FinanceEndpoints {
 impl Default for FinanceEndpoints {
     fn default() -> Self {
         Self {
-            quote_base: std::env::var("DEEPSEEK_FINANCE_QUOTE_BASE_URL")
+            quote_base: std::env::var("CODESMITH_FINANCE_QUOTE_BASE_URL")
+                .or_else(|_| std::env::var("DEEPSEEK_FINANCE_QUOTE_BASE_URL"))
                 .unwrap_or_else(|_| "https://query1.finance.yahoo.com/v7/finance/quote".into()),
-            chart_base: std::env::var("DEEPSEEK_FINANCE_CHART_BASE_URL")
+            chart_base: std::env::var("CODESMITH_FINANCE_CHART_BASE_URL")
+                .or_else(|_| std::env::var("DEEPSEEK_FINANCE_CHART_BASE_URL"))
                 .unwrap_or_else(|_| "https://query1.finance.yahoo.com/v8/finance/chart".into()),
         }
     }
@@ -40,9 +42,10 @@ impl Default for FinanceEndpoints {
 
 impl FinanceEndpoints {
     fn quote_url(&self, symbol: &str) -> String {
+        let base = self.quote_base.trim_end_matches('/');
+        let sep = if base.contains('?') { '&' } else { '?' };
         format!(
-            "{}?symbols={}",
-            self.quote_base.trim_end_matches('/'),
+            "{base}{sep}symbols={}",
             codesmith_agent_runtime::utils::url_encode(symbol)
         )
     }
@@ -143,7 +146,19 @@ impl AttemptFailure {
 
 pub struct FinanceTool {
     endpoints: FinanceEndpoints,
-    client: Client,
+}
+
+fn shared_client() -> Result<Client, ToolError> {
+    static CLIENT: std::sync::OnceLock<Result<Client, String>> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            Client::builder()
+                .user_agent(USER_AGENT)
+                .build()
+                .map_err(|e| e.to_string())
+        })
+        .clone()
+        .map_err(|e| ToolError::execution_failed(format!("failed to build HTTP client: {e}")))
 }
 
 impl FinanceTool {
@@ -151,10 +166,6 @@ impl FinanceTool {
     pub fn new() -> Self {
         Self {
             endpoints: FinanceEndpoints::default(),
-            client: Client::builder()
-                .user_agent(USER_AGENT)
-                .build()
-                .expect("failed to build HTTP client"),
         }
     }
 
@@ -165,10 +176,6 @@ impl FinanceTool {
                 quote_base: quote_base.into(),
                 chart_base: chart_base.into(),
             },
-            client: Client::builder()
-                .user_agent(USER_AGENT)
-                .build()
-                .expect("failed to build HTTP client"),
         }
     }
 }
@@ -254,20 +261,19 @@ impl ToolSpec for FinanceTool {
 
         let request = normalize_request(raw_ticker, type_hint);
         let timeout = Duration::from_millis(timeout_ms);
+        let client = shared_client()?;
 
         // `timeout_ms` is the budget for the ENTIRE quote+fallback
         // sequence, not per attempt, so total wall time honors the
         // schema's documented "Request timeout in milliseconds".
         let lookup = async {
             let quote_result =
-                fetch_quote_endpoint(&self.client, timeout, &self.endpoints, &request).await;
+                fetch_quote_endpoint(&client, timeout, &self.endpoints, &request).await;
             match quote_result {
                 Ok(result) => ToolResult::json(&result)
                     .map_err(|e| ToolError::execution_failed(e.to_string())),
                 Err(first_failure) => {
-                    match fetch_chart_endpoint(&self.client, timeout, &self.endpoints, &request)
-                        .await
-                    {
+                    match fetch_chart_endpoint(&client, timeout, &self.endpoints, &request).await {
                         Ok(result) => ToolResult::json(&result)
                             .map_err(|e| ToolError::execution_failed(e.to_string())),
                         Err(second_failure) => Err(finalize_failure(
@@ -289,11 +295,11 @@ impl ToolSpec for FinanceTool {
 }
 
 fn normalize_request(raw_ticker: &str, type_hint: Option<&str>) -> FinanceRequest {
+    const BARE_CRYPTO_TICKERS: &[&str] = &["BTC", "ETH", "SOL", "DOGE", "XRP", "ADA", "BNB"];
     let requested_ticker = raw_ticker.trim().to_ascii_uppercase();
-    let resolved_symbol = if requested_ticker == "BTC" {
-        "BTC-USD".to_string()
-    } else if type_hint.is_some_and(|hint| hint.eq_ignore_ascii_case("crypto"))
-        && !requested_ticker.contains('-')
+    let crypto_hint = type_hint.is_some_and(|hint| hint.eq_ignore_ascii_case("crypto"))
+        && !requested_ticker.contains('-');
+    let resolved_symbol = if BARE_CRYPTO_TICKERS.contains(&requested_ticker.as_str()) || crypto_hint
     {
         format!("{requested_ticker}-USD")
     } else {

@@ -277,15 +277,21 @@ impl McpServer {
                 message: "Missing tool name".to_string(),
             })?;
 
-        if self.require_approval
-            && !params
-                .get("approved")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-        {
+        // `require_approval` must not trust the client: the caller that
+        // wants the tool executed is the same party that would assert
+        // `approved=true`. Approval is therefore granted out-of-band, by the
+        // operator launching the server with CODESMITH_MCP_APPROVED_TOOLS
+        // (comma-separated exposed tool names, or `*`). Without that grant
+        // every gated call is denied.
+        if self.require_approval && !tool_approved_out_of_band(name) {
             return Err(RpcError {
                 code: -32001,
-                message: "Approval required. Resend with approved=true.".to_string(),
+                message: format!(
+                    "Tool '{name}' is not approved for this server. Approval is granted \
+                     out-of-band by the operator via CODESMITH_MCP_APPROVED_TOOLS \
+                     (comma-separated tool names, or '*'); client-side approval flags \
+                     are not accepted."
+                ),
             });
         }
 
@@ -499,6 +505,20 @@ fn default_config_path() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".codesmith").join("mcp_server.toml"))
 }
 
+/// Whether `name` (an exposed/public tool name) was approved out-of-band by
+/// the operator through the `CODESMITH_MCP_APPROVED_TOOLS` launch-time
+/// environment variable. Absent or empty denies everything.
+fn tool_approved_out_of_band(name: &str) -> bool {
+    let Ok(granted) = std::env::var("CODESMITH_MCP_APPROVED_TOOLS") else {
+        return false;
+    };
+    let granted = granted.trim();
+    granted == "*"
+        || granted
+            .split(',')
+            .any(|entry| entry.trim().eq_ignore_ascii_case(name))
+}
+
 fn default_expose_tools() -> Vec<String> {
     vec![
         "file_read".to_string(),
@@ -592,7 +612,63 @@ struct RpcError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{EnvVarGuard, lock_test_env};
     use std::collections::HashMap;
+
+    fn approval_server(require: bool) -> (McpServer, Runtime, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let server = McpServer::new(
+            dir.path().to_path_buf(),
+            McpServerSettings {
+                expose_tools: default_expose_tools(),
+                require_approval: require,
+            },
+        )
+        .expect("server");
+        let runtime = Runtime::new().expect("runtime");
+        (server, runtime, dir)
+    }
+
+    #[test]
+    fn client_asserted_approval_flag_is_not_trusted() {
+        let _guard = lock_test_env();
+        let _removed = EnvVarGuard::remove("CODESMITH_MCP_APPROVED_TOOLS");
+        let (mut server, runtime, _dir) = approval_server(true);
+
+        let err = server
+            .call_tool(
+                &runtime,
+                json!({
+                    "name": "shell",
+                    "arguments": { "command": "true" },
+                    "approved": true
+                }),
+                None,
+            )
+            .expect_err("client-asserted approval must be denied");
+        assert_eq!(err.code, -32001);
+        assert!(err.message.contains("not approved"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn env_allowlist_grants_out_of_band_approval() {
+        let _guard = lock_test_env();
+        let _granted = EnvVarGuard::set("CODESMITH_MCP_APPROVED_TOOLS", "file_read");
+        let (mut server, runtime, dir) = approval_server(true);
+        std::fs::write(dir.path().join("note.txt"), "hi").expect("write file");
+
+        let result = server
+            .call_tool(
+                &runtime,
+                json!({
+                    "name": "file_read",
+                    "arguments": { "path": "note.txt" }
+                }),
+                None,
+            )
+            .expect("out-of-band approved tool must execute");
+        assert_eq!(result["isError"], json!(false));
+    }
 
     #[test]
     fn exposed_tools_map_aliases() {

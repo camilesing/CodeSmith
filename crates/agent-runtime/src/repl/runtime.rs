@@ -20,6 +20,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -142,6 +143,8 @@ pub trait RpcDispatcher: Send + Sync {
 
 const DEFAULT_STDOUT_LIMIT: usize = 8_192;
 const ROUND_TIMEOUT: Duration = Duration::from_secs(180);
+/// Retained stderr tail (bytes) for the continuous background reader.
+const STDERR_BUFFER_CAP: usize = 128 * 1024;
 #[cfg(not(windows))]
 const SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(windows)]
@@ -157,6 +160,10 @@ pub struct PythonRuntime {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
+    /// stderr, drained continuously by a background reader task into this
+    /// bounded tail buffer so a chatty child can never fill the OS pipe and
+    /// block mid-round.
+    stderr_buffer: Arc<Mutex<Vec<u8>>>,
     /// Per-spawn session id used in protocol sentinels.
     session_id: String,
     /// Path to the file holding `context` (kept around for cleanup).
@@ -182,13 +189,14 @@ impl PythonRuntime {
     /// Compatibility shim — older RLM code path used to pass a state file.
     /// The state file is no longer used, but the path doubles as an extra
     /// scratch location callers can rely on for cleanup symmetry.
+    #[deprecated(note = "use PythonRuntime::new() or PythonRuntime::spawn_with_context() instead")]
     pub fn with_state_path(_path: PathBuf) -> Self {
         // Synchronous constructor is no longer meaningful: spawning Python
         // is async. Callers in turn.rs already use `spawn_with_context` —
         // this stub is kept only so the public surface compiles for any
         // out-of-tree user. It returns a deliberately broken runtime that
         // panics on first use, which is preferable to silently lying.
-        unreachable!(
+        panic!(
             "PythonRuntime::with_state_path is deprecated — \
              use PythonRuntime::new() or PythonRuntime::spawn_with_context()"
         )
@@ -243,11 +251,40 @@ impl PythonRuntime {
             .take()
             .ok_or_else(|| "Python interpreter stdout pipe missing".to_string())?;
         let stdout = BufReader::new(raw_stdout);
+        let raw_stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| "Python interpreter stderr pipe missing".to_string())?;
+        let stderr_buffer: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let stderr_tail = Arc::clone(&stderr_buffer);
+            tokio::spawn(async move {
+                use tokio::io::AsyncReadExt;
+                let mut stderr = raw_stderr;
+                let mut chunk = [0u8; 4096];
+                loop {
+                    match stderr.read(&mut chunk).await {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            if let Ok(mut guard) = stderr_tail.lock() {
+                                guard.extend_from_slice(&chunk[..n]);
+                                let overflow = guard.len().saturating_sub(STDERR_BUFFER_CAP);
+                                if overflow > 0 {
+                                    guard.drain(..overflow);
+                                }
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
 
         let mut rt = Self {
             child,
             stdin,
             stdout,
+            stderr_buffer,
             session_id: session_id.clone(),
             context_path: context_path.map(Path::to_path_buf),
             stdout_limit: DEFAULT_STDOUT_LIMIT,
@@ -369,7 +406,9 @@ impl PythonRuntime {
                 let trimmed = line.trim_end_matches(['\n', '\r']);
 
                 if let Some(rest) = trimmed.strip_prefix(&done_prefix) {
-                    let _ = rest;
+                    if rest.trim() != round_id.to_string() {
+                        continue;
+                    }
                     break;
                 }
                 if let Some(rest) = trimmed.strip_prefix(&final_prefix) {
@@ -465,7 +504,7 @@ impl PythonRuntime {
             read_loop.await?;
         }
 
-        let stderr = self.drain_stderr().await;
+        let stderr = self.drain_stderr();
         let display = truncate_stdout(stdout_buf.trim_end_matches('\n'), self.stdout_limit);
 
         Ok(ReplRound {
@@ -495,34 +534,11 @@ impl PythonRuntime {
         Ok(())
     }
 
-    async fn drain_stderr(&mut self) -> String {
-        // We don't continuously read stderr — drain whatever's pending after
-        // a round so it can show up in error reports without deadlocking
-        // anything during normal operation.
-        let Some(stderr) = self.child.stderr.as_mut() else {
-            return String::new();
-        };
-        use tokio::io::AsyncReadExt;
-        let mut buf = Vec::new();
-        // Best-effort read with a tight deadline; we don't want to block.
-        let fut = async {
-            let mut chunk = [0u8; 4096];
-            loop {
-                match tokio::time::timeout(Duration::from_millis(20), stderr.read(&mut chunk)).await
-                {
-                    Ok(Ok(0)) => break,
-                    Ok(Ok(n)) => buf.extend_from_slice(&chunk[..n]),
-                    Ok(Err(e)) => {
-                        // Real IO error — distinct from the quiet-gap
-                        // timeout below, and previously swallowed with it.
-                        tracing::debug!("repl: stderr read failed: {e}");
-                        break;
-                    }
-                    Err(_) => break, // 20ms quiet gap
-                }
-            }
-        };
-        let _ = fut.await;
+    fn drain_stderr(&mut self) -> String {
+        // The background reader task keeps the tail buffer current; take
+        // whatever it has collected for this round.
+        let buf =
+            std::mem::take(&mut *self.stderr_buffer.lock().unwrap_or_else(|p| p.into_inner()));
         String::from_utf8_lossy(&buf).to_string()
     }
 

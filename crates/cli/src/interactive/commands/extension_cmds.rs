@@ -33,7 +33,10 @@ pub async fn extension_command(state: &ReplState, arg: &str) {
             Some(id) => set_enabled(id, sub == "enable"),
             None => println!("{} usage: /extension {sub} <id>", "✗".red()),
         },
-        "reload" => println!("{}", super::mods_cmds::reload_note(state).await),
+        "reload" => match super::mods_cmds::reload_note(state).await {
+            Ok(text) => println!("{text}"),
+            Err(err) => println!("{} {err}", "✗".red()),
+        },
         "install" => install(state, rest.join(" ").trim()).await,
         "uninstall" => match rest.first() {
             Some(id) => uninstall(state, id).await,

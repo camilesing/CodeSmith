@@ -31,7 +31,15 @@ fi
 # 2) Workspace ↔ npm package.json.
 workspace_version="$(awk '/^\[workspace\.package\]/{in_ws=1; next} /^\[/{in_ws=0} in_ws && /^version = "/{sub(/^version = "/, ""); sub(/"$/, ""); print; exit}' Cargo.toml || true)"
 npm_version="$(node -p "require('./npm/codesmith/package.json').version" 2>/dev/null || true)"
-if [[ "${workspace_version}" != "${npm_version}" ]]; then
+if [[ -z "${workspace_version}" ]]; then
+  echo "::error::Could not determine workspace version from Cargo.toml." >&2
+  fail=1
+fi
+if [[ -z "${npm_version}" ]]; then
+  echo "::error::Could not determine npm version from npm/codesmith/package.json." >&2
+  fail=1
+fi
+if [[ -n "${workspace_version}" && -n "${npm_version}" && "${workspace_version}" != "${npm_version}" ]]; then
   echo "::error::npm/codesmith/package.json version (${npm_version}) does not match workspace Cargo.toml (${workspace_version})." >&2
   fail=1
 fi
@@ -86,12 +94,15 @@ if [[ "${compare_line}" =~ compare/(v[0-9]+\.[0-9]+\.[0-9]+)\.\.\.${current_tag}
 fi
 if [[ -n "${previous_tag}" ]]; then
   if ! git rev-parse -q --verify "refs/tags/${previous_tag}" >/dev/null; then
-    git fetch --quiet --depth=1 origin "refs/tags/${previous_tag}:refs/tags/${previous_tag}" || true
+    if ! git fetch --quiet --depth=1 origin "refs/tags/${previous_tag}:refs/tags/${previous_tag}"; then
+      echo "::error::Failed to fetch tag ${previous_tag} from origin; cannot verify README contributor credits." >&2
+      fail=1
+    fi
   fi
   if git rev-parse -q --verify "refs/tags/${previous_tag}" >/dev/null; then
     while IFS= read -r line; do
       [[ -z "${line}" ]] && continue
-      handle="$(sed -E 's#.*github.com/([^)/]+).*#\1#' <<<"${line}")"
+      handle="$(sed -E 's#^\+[-*] \*\*\[[^]]+\]\(https://github\.com/([^)/]+).*#\1#' <<<"${line}")"
       if [[ -n "${handle}" && "${handle}" != "${line}" ]]; then
         if ! grep -Fq "github.com/${handle}" <<<"${current_section}" && ! grep -Fq "@${handle}" <<<"${current_section}"; then
           echo "::error::README.md adds contributor @${handle}, but CHANGELOG.md ${workspace_version} does not mention that credit." >&2
@@ -117,8 +128,9 @@ if grep -qE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' SECURITY.md; then
 fi
 
 # 8) Cargo.lock in sync.
-if ! cargo metadata --locked --format-version 1 --no-deps >/dev/null 2>&1; then
+if ! metadata_err="$(cargo metadata --locked --format-version 1 --no-deps 2>&1 >/dev/null)"; then
   echo "::error::Cargo.lock is out of sync with the manifests. Run 'cargo update -p codesmith-cli' or 'cargo build' and commit the result." >&2
+  echo "${metadata_err}" >&2
   fail=1
 fi
 

@@ -101,9 +101,13 @@ impl LargeOutputRouter {
     /// Decide whether `result` for `tool_name` should be synthesised.
     ///
     /// Pass `raw_bypass = true` when the tool call included `raw = true`.
+    /// Failed results are still size-routed: an oversized error payload
+    /// (stack trace, failed diff dump) bloats and can inject into the parent
+    /// context just like an oversized success, and the caller's
+    /// pass-through path applies no truncation of its own.
     #[must_use]
     pub fn route(&self, tool_name: &str, result: &ToolResult, raw_bypass: bool) -> RouteDecision {
-        if raw_bypass || !result.success {
+        if raw_bypass {
             return RouteDecision::PassThrough;
         }
         let threshold = self.config.threshold_for(tool_name);
@@ -147,9 +151,10 @@ impl LargeOutputRouter {
     ///
     /// Returns `None` on timeout (30s), transport error, or an empty
     /// synthesis so the caller keeps its truncation-preview fallback — the
-    /// tool result is never blocked or failed by the synthesis step. On
-    /// success the usage is reported to the cost side-channel (#526) so the
-    /// assist shows up in the session cost.
+    /// tool result is never blocked or failed by the synthesis step. The
+    /// usage is reported to the cost side-channel (#526) as soon as a
+    /// response arrives — before any content validation — so the assist
+    /// always shows up in the session cost.
     pub async fn synthesise_via_utility_llm(
         utility: &UtilityLlm,
         tool_name: &str,
@@ -191,6 +196,8 @@ impl LargeOutputRouter {
         .ok()?
         .ok()?;
 
+        crate::cost_status::report(&utility.model, &response.usage);
+
         // A length-capped synthesis was cut mid-sentence: accept it as a
         // faithful summary and it silently replaces the raw output in the
         // parent context. Bail so the caller keeps its
@@ -215,7 +222,6 @@ impl LargeOutputRouter {
         if text.trim().is_empty() {
             return None;
         }
-        crate::cost_status::report(&utility.model, &response.usage);
         Some(text)
     }
 
@@ -327,14 +333,15 @@ mod tests {
     }
 
     #[test]
-    fn error_results_always_pass_through() {
+    fn oversized_error_results_still_route() {
         let router = LargeOutputRouter::default();
-        let big = "error: ".repeat(2_000);
+        // 17_000 chars ≈ 4,250 tokens — above the 4,096 default threshold.
+        let big = "error: ".repeat(2_500);
         let result = ToolResult::error(big);
-        assert_eq!(
+        assert!(matches!(
             router.route("exec_shell", &result, false),
-            RouteDecision::PassThrough
-        );
+            RouteDecision::Synthesise { .. }
+        ));
     }
 
     #[test]

@@ -43,6 +43,13 @@ pub struct WalkEntry {
 }
 
 /// Walk `root` and collect every indexable file (sorted by path).
+///
+/// Symlinks are not followed (`follow_links(false)`, ripgrep's default):
+/// the walker reports them with a symlink file type, so the `is_file`
+/// filter below drops both symlinked files and whole symlinked
+/// directories. A previously indexed real file replaced by a symlink
+/// therefore vanishes from the live-path set and `IndexStore::delete_missing`
+/// purges its index entries on the next refresh.
 pub fn walk_workspace(root: &Path) -> Result<Vec<WalkEntry>> {
     // The hardcoded excludes below exist for non-git directories where no
     // ignore file covers them (module doc). Inside a git work tree the
@@ -98,8 +105,15 @@ pub fn walk_workspace(root: &Path) -> Result<Vec<WalkEntry>> {
         if rel.as_os_str().is_empty() {
             continue;
         }
+        // `to_string_lossy` maps distinct non-UTF-8 paths to the same
+        // replacement-character string, colliding in the sorted output and
+        // the `live_paths` set — skip them so the mapping stays injective.
+        let Some(rel_path) = rel.to_str().map(|s| s.replace('\\', "/")) else {
+            tracing::debug!(path = %rel.display(), "index walk: skipping non-UTF-8 path");
+            continue;
+        };
         out.push(WalkEntry {
-            rel_path: rel.to_string_lossy().replace('\\', "/"),
+            rel_path,
             mtime_ms: mtime_ms(&meta),
             size: meta.len(),
             language: Language::from_path(rel),
@@ -126,11 +140,13 @@ pub fn live_paths(entries: &[WalkEntry]) -> HashSet<String> {
 }
 
 fn mtime_ms(meta: &Metadata) -> i64 {
-    meta.modified()
-        .ok()
-        .and_then(|m| m.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    match meta.modified() {
+        Ok(m) => match m.duration_since(UNIX_EPOCH) {
+            Ok(d) => d.as_millis().min(i64::MAX as u128) as i64,
+            Err(e) => -(e.duration().as_millis().min(i64::MAX as u128) as i64),
+        },
+        Err(_) => 0,
+    }
 }
 
 #[cfg(test)]

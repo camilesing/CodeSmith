@@ -3,7 +3,6 @@ name = "codesmith-extensions"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-readme.workspace = true
 keywords = ["extensions", "plugins", "agent"]
 categories = ["development-tools"]
 license.workspace = true

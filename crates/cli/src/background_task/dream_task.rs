@@ -4,7 +4,7 @@
 //! in the background, surfacing it in the task registry.
 #![allow(dead_code)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -57,7 +57,7 @@ impl DreamTaskRunner {
 
     /// Get the memory directory path.
     #[allow(dead_code)]
-    pub fn memory_dir(&self) -> &PathBuf {
+    pub fn memory_dir(&self) -> &Path {
         &self.memory_dir
     }
 
@@ -75,21 +75,22 @@ impl DreamTaskRunner {
     /// Returns the path where it was written. Failure to write surfaces as
     /// a Failed result — the old body fabricated `Completed` with a path
     /// that never existed (silent data loss behind a success signal).
-    pub fn complete_dream(&self, consolidation_summary: &str) -> DreamResult {
+    pub fn complete_dream(&self, consolidation_summary: impl Into<String>) -> DreamResult {
+        let summary = consolidation_summary.into();
         let memory_path = self.memory_dir.join("dream_consolidation.md");
         let write = std::fs::create_dir_all(&self.memory_dir)
-            .and_then(|()| std::fs::write(&memory_path, consolidation_summary));
+            .and_then(|()| std::fs::write(&memory_path, &summary));
         match write {
             Ok(()) => DreamResult {
                 status: DreamStatus::Completed,
-                summary: Some(consolidation_summary.to_string()),
+                summary: Some(summary),
                 memory_path: Some(memory_path),
                 error: None,
                 rounds_completed: 0,
             },
             Err(err) => DreamResult {
                 status: DreamStatus::Failed,
-                summary: Some(consolidation_summary.to_string()),
+                summary: Some(summary),
                 memory_path: None,
                 error: Some(format!("failed to write {}: {err}", memory_path.display())),
                 rounds_completed: 0,
@@ -98,12 +99,12 @@ impl DreamTaskRunner {
     }
 
     /// Mark a dream as failed and record the error.
-    pub fn fail_dream(&self, error: &str) -> DreamResult {
+    pub fn fail_dream(&self, error: impl Into<String>) -> DreamResult {
         DreamResult {
             status: DreamStatus::Failed,
             summary: None,
             memory_path: None,
-            error: Some(error.to_string()),
+            error: Some(error.into()),
             rounds_completed: 0,
         }
     }

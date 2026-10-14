@@ -70,9 +70,7 @@ fn command_would_be_sandboxed(context: &ToolContext, command: &str) -> bool {
 // === ToolSpec Implementations ===
 
 use async_trait::async_trait;
-use codesmith_agent_runtime::command_safety::{
-    SafetyLevel, analyze_command, extract_primary_command,
-};
+use codesmith_agent_runtime::command_safety::{SafetyLevel, analyze_command};
 use codesmith_agent_runtime::execpolicy::{ExecPolicyDecision, load_default_policy};
 use codesmith_agent_runtime::features::Feature;
 use codesmith_agent_runtime::tools::cargo_failure_summary::summarize_cargo_failure;
@@ -125,39 +123,47 @@ fn macos_provenance_hint(result: &ShellResult) -> Option<&'static str> {
 
 fn command_likely_needs_network(command: &str) -> bool {
     let normalized = command.to_ascii_lowercase();
-    let Some(primary) = extract_primary_command(&normalized) else {
+    // The subcommand is the token after the program name (skipping any
+    // `env VAR=...` prefix, mirroring extract_primary_command). Matching it
+    // exactly keeps argument text — e.g. `git commit -m "fix clone bug"` —
+    // from tripping what used to be substring needles.
+    let mut tokens = normalized
+        .split_whitespace()
+        .filter(|token| *token != "env" && !token.contains('='));
+    let Some(primary) = tokens.next() else {
         return false;
     };
     let primary = primary.rsplit(['/', '\\']).next().unwrap_or(primary);
+    let subcommand = tokens.next();
+    let third = tokens.next();
 
     match primary {
         "curl" | "wget" | "fetch" | "nc" | "netcat" | "ncat" | "ssh" | "scp" | "sftp" | "rsync"
         | "ftp" | "ping" | "traceroute" | "nslookup" | "dig" | "host" | "nmap" | "gh" | "hub" => {
             true
         }
-        "git" => [
-            " fetch",
-            " pull",
-            " clone",
-            " ls-remote",
-            " submodule",
-            " push",
-        ]
-        .iter()
-        .any(|needle| normalized.contains(needle)),
-        "cargo" => [" install", " fetch", " update", " publish", " search"]
-            .iter()
-            .any(|needle| normalized.contains(needle)),
-        "npm" | "pnpm" | "yarn" => [" install", " i", " add", " update", " publish"]
-            .iter()
-            .any(|needle| normalized.contains(needle)),
-        "pip" | "pip3" | "uv" | "poetry" => [" install", " add", " sync", " update"]
-            .iter()
-            .any(|needle| normalized.contains(needle)),
+        "git" => matches!(
+            subcommand,
+            Some("fetch" | "pull" | "clone" | "ls-remote" | "submodule" | "push")
+        ),
+        "cargo" => {
+            matches!(
+                subcommand,
+                Some("install" | "fetch" | "update" | "publish" | "search")
+            )
+        }
+        "npm" | "pnpm" | "yarn" => matches!(
+            subcommand,
+            Some("install" | "i" | "add" | "update" | "publish")
+        ),
+        "pip" | "pip3" | "uv" | "poetry" => {
+            matches!(subcommand, Some("install" | "add" | "sync" | "update"))
+        }
         "brew" | "apt" | "apt-get" | "yum" | "dnf" | "pacman" => true,
-        "go" => [" get", " install", " mod download"]
-            .iter()
-            .any(|needle| normalized.contains(needle)),
+        "go" => {
+            matches!(subcommand, Some("get" | "install"))
+                || (subcommand == Some("mod") && third == Some("download"))
+        }
         _ => false,
     }
 }
@@ -172,10 +178,11 @@ fn looks_like_network_blocked_failure(result: &ShellResult) -> bool {
     if result.stdout.trim() == "000" {
         return true;
     }
-    if result.sandboxed && result.stdout.is_empty() && result.stderr.is_empty() {
-        return true;
-    }
 
+    // An output-less failure is not by itself evidence of network denial —
+    // a segfault, OOM kill, or a plain `exit 1` looks identical — so a
+    // corroborating symptom (curl's "000" status output above, or an
+    // errno-style message below) is required before claiming it.
     let output = format!("{}\n{}", result.stdout, result.stderr).to_ascii_lowercase();
     [
         "operation not permitted",
@@ -459,7 +466,9 @@ impl ToolSpec for ExecShellTool {
         context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
         let command = required_str(&input, "command")?;
-        let timeout_ms = optional_u64(&input, "timeout_ms", 120_000).min(600_000);
+        // Clamp at the parse site so the enforced timeout, the TimedOut
+        // message, and every downstream consumer report the same value.
+        let timeout_ms = optional_u64(&input, "timeout_ms", 120_000).clamp(1000, 600_000);
         let background = optional_bool(&input, "background", false);
         let interactive = optional_bool(&input, "interactive", false);
         let combined_output = optional_bool(&input, "combined_output", false);
@@ -734,15 +743,22 @@ impl ToolSpec for ExecShellTool {
         // the session slot — surfaced in the result metadata below.
         let mut session_cwd_applied: Option<PathBuf> = None;
         let result = if interactive {
-            let manager = &context.shell_manager;
+            let manager = context.shell_manager.clone();
             manager.set_sandbox_runtime(effective_runtime.clone());
-            manager.execute_interactive_with_policy_env(
-                command,
-                working_dir.as_deref(),
-                timeout_ms,
-                policy_override,
-                extra_env,
-            )
+            let command_text = command.to_string();
+            let spawned = tokio::task::spawn_blocking(move || {
+                manager.execute_interactive_with_policy_env(
+                    &command_text,
+                    working_dir.as_deref(),
+                    timeout_ms,
+                    policy_override,
+                    extra_env,
+                )
+            });
+            match spawned.await {
+                Ok(inner) => inner,
+                Err(e) => Err(anyhow!("interactive shell task failed: {e}")),
+            }
         } else if background {
             let manager = &context.shell_manager;
             manager.set_sandbox_runtime(effective_runtime.clone());
@@ -830,7 +846,7 @@ impl ToolSpec for ExecShellTool {
                     && needs_spill(result.stdout_len, result.stderr_len)
                     && let Some(task_id) = result.task_id.as_deref()
                 {
-                    spill_task_full_output(context, task_id)
+                    spill_task_full_output(context, task_id).await
                 } else {
                     None
                 };
@@ -960,11 +976,38 @@ impl ToolSpec for ExecShellTool {
                 }
                 attach_cargo_failure_summary(&mut metadata, command, &result);
 
+                // `approval_requirement_for_input` grants Auto purely on the
+                // prediction that the command will run sandboxed. When the
+                // live execution instead fell back to unsandboxed mode, that
+                // justification is void: the command ran without approval the
+                // user never gave, so fail the result and say so loudly.
+                // (A `sandbox_denied` result never executed — fail-closed
+                // already — and is not a violation.)
+                let sandbox_auto_approval_violated =
+                    context.sandbox_runtime.auto_allow_bash_if_sandboxed
+                        && command_would_be_sandboxed(context, command)
+                        && !result.sandbox_effective
+                        && !result.sandbox_denied;
+                if sandbox_auto_approval_violated {
+                    metadata["sandbox_auto_approval_violated"] = json!(true);
+                    output = format!(
+                        "UNSANDBOXED FALLBACK ON AN AUTO-APPROVED COMMAND: this command was \
+                         auto-approved on the assumption it would run sandboxed, but it executed \
+                         without the sandbox{} — rerun it with explicit approval.\n\n{output}",
+                        result
+                            .sandbox_unavailable_reason
+                            .as_deref()
+                            .map(|reason| format!(" ({reason})"))
+                            .unwrap_or_default(),
+                    );
+                }
+
                 let mut tool_result = ToolResult {
                     canonical: None,
                     content: output,
-                    success: result.status == ShellStatus::Completed
-                        || result.status == ShellStatus::Running,
+                    success: (result.status == ShellStatus::Completed
+                        || result.status == ShellStatus::Running)
+                        && !sandbox_auto_approval_violated,
                     metadata: Some(metadata),
                 };
                 if let Some(spill) = &full_output_spill {
@@ -1005,7 +1048,10 @@ fn required_task_id(input: &serde_json::Value) -> Result<&str, ToolError> {
         .ok_or_else(|| ToolError::missing_field("task_id"))
 }
 
-fn build_shell_delta_tool_result(delta: ShellDeltaResult, context: &ToolContext) -> ToolResult {
+async fn build_shell_delta_tool_result(
+    delta: ShellDeltaResult,
+    context: &ToolContext,
+) -> ToolResult {
     let mut result = delta.result;
     // P2-6: a foreground command demoted to background reports its cwd marker
     // through this polling path — strip it and fold the cwd into the session
@@ -1029,7 +1075,7 @@ fn build_shell_delta_tool_result(delta: ShellDeltaResult, context: &ToolContext)
         && needs_spill(delta.stdout_total_len, delta.stderr_total_len)
         && let Some(task_id) = result.task_id.as_deref()
     {
-        spill_task_full_output(context, task_id)
+        spill_task_full_output(context, task_id).await
     } else {
         None
     };
@@ -1204,7 +1250,7 @@ fn append_shell_delta_output(
 /// accumulated delta slice a poll path holds may be missing earlier output
 /// consumed by a previous call. Degrades to `None` when the task is gone or
 /// the disk write fails; callers then simply omit the retrieval footer.
-fn spill_task_full_output(context: &ToolContext, task_id: &str) -> Option<ShellSpillInfo> {
+async fn spill_task_full_output(context: &ToolContext, task_id: &str) -> Option<ShellSpillInfo> {
     let detail = context.shell_manager.inspect_job(task_id).ok()?;
     if detail.snapshot.stale {
         // A stale (evicted / restart-orphanned) detail carries only the
@@ -1213,7 +1259,12 @@ fn spill_task_full_output(context: &ToolContext, task_id: &str) -> Option<ShellS
         // fuller file; omit the footer rather than degrade it.
         return None;
     }
-    spill_full_shell_output(task_id, &detail.stdout, &detail.stderr)
+    let stdout = detail.stdout;
+    let stderr = detail.stderr;
+    let task_id = task_id.to_string();
+    tokio::task::spawn_blocking(move || spill_full_shell_output(&task_id, &stdout, &stderr))
+        .await
+        .ok()?
 }
 
 /// Stamp a spilled-output reference into a tool result's metadata and append
@@ -1444,7 +1495,7 @@ impl ToolSpec for ShellWaitTool {
         };
 
         let status = delta.result.status.clone();
-        let mut result = build_shell_delta_tool_result(delta, context);
+        let mut result = build_shell_delta_tool_result(delta, context).await;
         if wait_canceled {
             if matches!(status, ShellStatus::Running) {
                 result.content = format!(
@@ -1549,7 +1600,7 @@ impl ToolSpec for ShellInteractTool {
                 let delta = manager
                     .get_output_delta(task_id, false, 0)
                     .map_err(|err| ToolError::execution_failed(err.to_string()))?;
-                let mut result = build_shell_delta_tool_result(delta, context);
+                let mut result = build_shell_delta_tool_result(delta, context).await;
                 if let Some(metadata) = result.metadata.as_mut()
                     && let Some(object) = metadata.as_object_mut()
                 {
@@ -1570,7 +1621,7 @@ impl ToolSpec for ShellInteractTool {
                 || delta.result.status != ShellStatus::Running
                 || elapsed >= timeout_ms
             {
-                return Ok(build_shell_delta_tool_result(delta, context));
+                return Ok(build_shell_delta_tool_result(delta, context).await);
             }
 
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1618,24 +1669,33 @@ impl ToolSpec for NoteTool {
         input: serde_json::Value,
         context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        let note_content = required_str(&input, "content")?;
+        let note_content = required_str(&input, "content")?.to_string();
+        let notes_path = context.notes_path.clone();
 
-        // Ensure parent directory exists
-        if let Some(parent) = context.notes_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                ToolError::execution_failed(format!("Failed to create notes directory: {e}"))
-            })?;
-        }
+        tokio::task::spawn_blocking(move || -> Result<(), ToolError> {
+            // Ensure parent directory exists
+            if let Some(parent) = notes_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    ToolError::execution_failed(format!("Failed to create notes directory: {e}"))
+                })?;
+            }
 
-        // Append to notes file
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&context.notes_path)
-            .map_err(|e| ToolError::execution_failed(format!("Failed to open notes file: {e}")))?;
+            // Append to notes file
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&notes_path)
+                .map_err(|e| {
+                    ToolError::execution_failed(format!("Failed to open notes file: {e}"))
+                })?;
 
-        writeln!(file, "\n---\n{note_content}")
-            .map_err(|e| ToolError::execution_failed(format!("Failed to write note: {e}")))?;
+            writeln!(file, "\n---\n{note_content}")
+                .map_err(|e| ToolError::execution_failed(format!("Failed to write note: {e}")))?;
+
+            Ok(())
+        })
+        .await
+        .map_err(|e| ToolError::execution_failed(format!("note task failed: {e}")))??;
 
         Ok(ToolResult::success(format!(
             "Note appended to {}",

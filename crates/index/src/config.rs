@@ -14,7 +14,7 @@ use crate::registry::IndexBackendRegistry;
 use crate::types::Language;
 
 /// Default `[index.symbols] backend` when unset.
-pub const DEFAULT_SYMBOLS_BACKEND: &str = "tree-sitter";
+pub const DEFAULT_SYMBOLS_BACKEND: &str = crate::builtin::TREE_SITTER_BACKEND_ID;
 
 /// Default `[index] refresh_budget_ms` when unset.
 pub const DEFAULT_REFRESH_BUDGET_MS: u64 = 2_000;
@@ -27,7 +27,9 @@ pub struct IndexConfig {
     /// compiled in), so the index costs nothing to adopt.
     pub enabled: Option<bool>,
     /// Wall-clock budget for the lazy incremental refresh a single query
-    /// may trigger. Default: [`DEFAULT_REFRESH_BUDGET_MS`].
+    /// may trigger. Default: [`DEFAULT_REFRESH_BUDGET_MS`]. `0` is not a
+    /// valid "disable": [`IndexConfig::effective_refresh_budget_ms`]
+    /// floors it to 1 ms — disable the index to turn the refresh off.
     pub refresh_budget_ms: Option<u64>,
     /// File inventory cache sub-table.
     pub files: IndexFilesConfig,
@@ -180,7 +182,9 @@ impl IndexSemanticConfig {
     /// Effective backend registry id.
     #[must_use]
     pub fn backend_id(&self) -> &str {
-        self.backend.as_deref().unwrap_or("none")
+        self.backend
+            .as_deref()
+            .unwrap_or(crate::builtin::NONE_BACKEND_ID)
     }
 }
 

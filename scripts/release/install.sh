@@ -24,14 +24,14 @@ for bin in codesmith; do
 done
 
 echo ""
-echo "Done. Both binaries installed to $BIN_DIR."
+echo "Done. codesmith installed to $BIN_DIR."
 
 # Check if BIN_DIR is on PATH
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     echo ""
     echo "Add $BIN_DIR to your PATH:"
     echo ""
-    SHELL_NAME="$(basename "${SHELL:-$SHELL}")"
+    SHELL_NAME="$(basename "${SHELL:-/bin/sh}")"
     case "$SHELL_NAME" in
         zsh)  RC="$HOME/.zshrc" ;;
         bash) RC="$HOME/.bashrc" ;;

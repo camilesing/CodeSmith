@@ -790,10 +790,19 @@ impl Runtime {
     }
 
     fn persisted_thread_data(&self, thread_id: &str) -> Result<Value> {
-        let history = self
+        const HISTORY_LIMIT: usize = 500;
+        let mut records = self
             .thread_manager
             .state_store()
-            .list_messages(thread_id, Some(500))?
+            .list_messages(thread_id, Some(HISTORY_LIMIT + 1))?;
+        // `list_messages` walks back from the leaf, so the cap keeps the
+        // most recent messages; older turns are silently dropped unless the
+        // payload says so.
+        let truncated = records.len() > HISTORY_LIMIT;
+        if truncated {
+            records.drain(..records.len() - HISTORY_LIMIT);
+        }
+        let history = records
             .into_iter()
             .map(|message| {
                 json!({
@@ -820,6 +829,7 @@ impl Runtime {
 
         Ok(json!({
             "history": history,
+            "truncated": truncated,
             "checkpoint": checkpoint
         }))
     }
@@ -1136,13 +1146,17 @@ impl Runtime {
             ToolPayload::LocalShell { .. } => "exec_shell",
             _ => call.name.as_str(),
         };
+        let resolved = self
+            .config
+            .resolve_runtime_options(&CliRuntimeOverrides::default());
+        let policy_path = policy_subject_path(&call.payload);
         let decision = self.exec_policy.check(ExecPolicyContext {
             command: &command,
             cwd: &policy_cwd,
             tool: Some(policy_tool),
-            path: None,
+            path: policy_path.as_deref(),
             ask_for_approval: approval_mode,
-            sandbox_mode: None,
+            sandbox_mode: resolved.sandbox_mode.as_deref(),
         })?;
         let precheck = policy_precheck_payload(&decision, &command, &policy_cwd, execution_kind);
         let response_id = format!("tool-{}", Uuid::new_v4());
@@ -1713,6 +1727,22 @@ fn tool_payload_value(payload: &ToolPayload) -> Value {
     serde_json::to_value(payload).unwrap_or_else(
         |_| json!({"type":"serialization_error","message":"tool payload unavailable"}),
     )
+}
+
+/// Extracts the file path a tool call acts on, for path-keyed policy rules.
+/// Only function-tool JSON arguments carrying a `path`/`file_path` string
+/// yield a subject; shell/MCP payloads have no single path.
+fn policy_subject_path(payload: &ToolPayload) -> Option<String> {
+    let ToolPayload::Function { arguments } = payload else {
+        return None;
+    };
+    let value = serde_json::from_str::<Value>(arguments.as_str()).ok()?;
+    ["path", "file_path"]
+        .iter()
+        .filter_map(|key| value.get(*key))
+        .find_map(Value::as_str)
+        .filter(|path| !path.trim().is_empty())
+        .map(str::to_string)
 }
 
 fn tool_output_value(output: &codesmith_protocol::ToolOutput) -> Value {

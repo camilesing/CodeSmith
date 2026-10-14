@@ -509,10 +509,33 @@ impl ToolContext {
     /// `~/.codesmith/workspace-trust.json`). See [`Self::resolve_path`] for
     /// how the list is consulted; the context stores it behind a shared lock
     /// so a mid-turn grant ([`Self::grant_external_path`]) reaches every
-    /// clone.
+    /// clone. Each root is attached as-given plus best-effort canonicalized:
+    /// `resolve_path` compares roots against canonicalized (or normalized)
+    /// candidates, so a root carrying an unresolved symlink component
+    /// (macOS `/tmp`, worktree paths) would never match in its as-given
+    /// form; the as-given form is kept so candidates that cannot be
+    /// canonicalized (paths not yet created) still match.
     #[must_use]
     pub fn with_trusted_external_paths(mut self, paths: Vec<PathBuf>) -> Self {
-        self.trusted_external_paths = Arc::new(std::sync::RwLock::new(paths));
+        let mut roots: Vec<PathBuf> = Vec::with_capacity(paths.len());
+        for path in paths {
+            match path.canonicalize() {
+                Ok(canonical) => {
+                    if !roots.contains(&path) {
+                        roots.push(path);
+                    }
+                    if !roots.contains(&canonical) {
+                        roots.push(canonical);
+                    }
+                }
+                Err(_) => {
+                    if !roots.contains(&path) {
+                        roots.push(path);
+                    }
+                }
+            }
+        }
+        self.trusted_external_paths = Arc::new(std::sync::RwLock::new(roots));
         self
     }
 
@@ -1157,6 +1180,33 @@ mod tests {
             .resolve_path(other_file.to_str().unwrap())
             .expect_err("untrusted path must error");
         assert!(matches!(err, ToolError::PathEscape { .. }));
+    }
+
+    /// A trusted root attached as-given (not pre-canonicalized by the
+    /// caller) must still match: on platforms with symlinked temp dirs
+    /// (macOS `/var` -> `/private/var`) the canonicalized candidate would
+    /// otherwise fail `starts_with` against the as-given root forever.
+    #[test]
+    fn test_tool_context_trusted_external_path_non_canonical_root() {
+        let workspace = tempdir().expect("workspace tempdir");
+        let trusted_root = tempdir().expect("trusted tempdir");
+        let trusted_file = trusted_root.path().join("notes.md");
+        std::fs::write(&trusted_file, "shared notes").unwrap();
+
+        let as_given = trusted_root.path().to_path_buf();
+        let ctx = ToolContext::new(workspace.path().to_path_buf())
+            .with_trusted_external_paths(vec![as_given]);
+
+        let resolved = ctx
+            .resolve_path(trusted_file.to_str().unwrap())
+            .expect("as-given trusted root must resolve");
+        assert!(resolved.ends_with("notes.md"));
+
+        let missing = trusted_root.path().join("new-note.md");
+        let resolved = ctx
+            .resolve_path(missing.to_str().unwrap())
+            .expect("non-existent path under an as-given trusted root must resolve");
+        assert!(resolved.ends_with("new-note.md"));
     }
 
     #[test]

@@ -129,11 +129,15 @@ fn result_ids_of(msg: &RigMessage) -> Vec<String> {
 
 fn user_has_tool_result(msg: &RigMessage) -> bool {
     match msg {
-        RigMessage::User { content } => content
-            .iter()
-            .any(|item| matches!(item, UserContent::ToolResult(_))),
+        RigMessage::User { content } => content_has_tool_result(content),
         _ => false,
     }
+}
+
+fn content_has_tool_result(content: &OneOrMany<UserContent>) -> bool {
+    content
+        .iter()
+        .any(|item| matches!(item, UserContent::ToolResult(_)))
 }
 
 /// Enforce pairing invariants 1–3. In-place via take-and-restore so the
@@ -271,9 +275,10 @@ fn normalize_empty_content(messages: &mut [RigMessage]) -> bool {
                     })
                     .collect();
                 changed |= kept.len() != original_len;
-                // `content: ""` alone (or with only reasoning) on the wire is
-                // at best noise and at worst a strict-provider 400; a
-                // one-space placeholder keeps the message valid.
+                // `content: ""` alone on the wire is at best noise and at
+                // worst a strict-provider 400; a one-space placeholder keeps
+                // the message valid. (Reasoning-only messages are the
+                // provider shaper's call — this sweep never touches them.)
                 if kept.is_empty() {
                     kept.push(AssistantContent::text(PLACEHOLDER.to_string()));
                     changed = true;
@@ -298,15 +303,25 @@ fn normalize_empty_content(messages: &mut [RigMessage]) -> bool {
                         }
                         mut other => {
                             if let UserContent::ToolResult(result) = &mut other {
-                                let all_empty = result.content.iter().all(|c| match c {
-                                    ToolResultContent::Text(text) => text.text.trim().is_empty(),
-                                    _ => false,
-                                });
-                                if all_empty {
-                                    result.content =
-                                        OneOrMany::one(ToolResultContent::text("(empty output)"));
-                                    changed = true;
-                                }
+                                let original_len = result.content.len();
+                                let kept_content: Vec<ToolResultContent> = std::mem::replace(
+                                    &mut result.content,
+                                    OneOrMany::one(ToolResultContent::text(String::new())),
+                                )
+                                .into_iter()
+                                .filter(|c| match c {
+                                    ToolResultContent::Text(text) => !text.text.trim().is_empty(),
+                                    _ => true,
+                                })
+                                .collect();
+                                let kept_len = kept_content.len();
+                                result.content = if kept_content.is_empty() {
+                                    OneOrMany::one(ToolResultContent::text("(empty output)"))
+                                } else {
+                                    OneOrMany::many(kept_content)
+                                        .expect("kept tool-result content is non-empty")
+                                };
+                                changed |= kept_len != original_len;
                             }
                             kept.push(other);
                         }
@@ -328,49 +343,64 @@ fn merge_adjacent_same_role(messages: &mut Vec<RigMessage>) -> bool {
     let mut changed = false;
     let mut idx = 1;
     while idx < messages.len() {
-        let mergeable = match (&messages[idx - 1], &messages[idx]) {
-            (RigMessage::System { .. }, RigMessage::System { .. }) => true,
-            (RigMessage::Assistant { .. }, RigMessage::Assistant { .. }) => true,
-            (RigMessage::User { .. }, RigMessage::User { .. }) => {
-                // Only fold text/image batches; see the module docs for why a
-                // tool-result batch must stay separate from a text batch.
-                !user_has_tool_result(&messages[idx - 1]) && !user_has_tool_result(&messages[idx])
-            }
-            _ => false,
-        };
-        if !mergeable {
-            idx += 1;
-            continue;
-        }
+        // Take `next` out first so the pair can be folded under one borrow; a
+        // pair the fold declines is handed back and goes where it was.
         let next = messages.remove(idx);
-        match (&mut messages[idx - 1], next) {
-            (RigMessage::System { content: a }, RigMessage::System { content: b }) => {
-                a.push_str("\n\n");
-                a.push_str(&b);
-            }
-            (RigMessage::User { content: a }, RigMessage::User { content: b }) => {
-                let items: Vec<UserContent> = a.iter().cloned().chain(b).collect();
-                *a = OneOrMany::many(items).expect("merged user content is non-empty");
-            }
-            (
-                RigMessage::Assistant { content: a, .. },
-                RigMessage::Assistant { content: b, .. },
-            ) => {
-                // Keep reasoning leading: naive concatenation can strand the
-                // second message's Reasoning behind the first's ToolCall
-                // items, and no later pass fixes the ordering. Stable
-                // partition — relative order is otherwise preserved.
-                let mut merged: Vec<AssistantContent> =
-                    a.iter().cloned().chain(b.iter().cloned()).collect();
-                merged.sort_by_key(|item| !matches!(item, AssistantContent::Reasoning(_)));
-                *a = OneOrMany::many(merged).expect("merged assistant content is non-empty");
-            }
-            _ => unreachable!("pair was checked mergeable"),
+        if let Some(declined) = merge_pair(&mut messages[idx - 1], next) {
+            messages.insert(idx, declined);
+            idx += 1;
+        } else {
+            changed = true;
+            // Stay on idx: the next message may merge with the combined one too.
         }
-        changed = true;
-        // Stay on idx: the next message may merge with the combined one too.
     }
     changed
+}
+
+/// Fold `next` into `prev` when they form an adjacent same-role pair that
+/// invariant 4 merges. One match decides mergeability and performs the fold,
+/// so the two decisions share a single source of truth (a separate
+/// mergeability match re-deriving the same discriminants could desynchronize
+/// and turn a logic slip into a per-request panic). Returns the untouched
+/// `next` when the pair is not mergeable, `None` once folded. Take-and-
+/// restore throughout — merging k adjacent messages must not deep-copy the
+/// already-accumulated payloads.
+fn merge_pair(prev: &mut RigMessage, next: RigMessage) -> Option<RigMessage> {
+    match (prev, next) {
+        (RigMessage::System { content: a }, RigMessage::System { content: b }) => {
+            a.push_str("\n\n");
+            a.push_str(&b);
+            None
+        }
+        (RigMessage::Assistant { content: a, .. }, RigMessage::Assistant { content: b, .. }) => {
+            // Keep reasoning leading: naive concatenation can strand the
+            // second message's Reasoning behind the first's ToolCall
+            // items, and no later pass fixes the ordering. Stable
+            // partition — relative order is otherwise preserved.
+            let mut merged: Vec<AssistantContent> =
+                std::mem::replace(a, OneOrMany::one(AssistantContent::text(String::new())))
+                    .into_iter()
+                    .chain(b)
+                    .collect();
+            merged.sort_by_key(|item| !matches!(item, AssistantContent::Reasoning(_)));
+            *a = OneOrMany::many(merged).expect("merged assistant content is non-empty");
+            None
+        }
+        (RigMessage::User { content: a }, RigMessage::User { content: b })
+            if !content_has_tool_result(a) && !content_has_tool_result(&b) =>
+        {
+            // Only fold text/image batches; see the module docs for why a
+            // tool-result batch must stay separate from a text batch.
+            let mut items: Vec<UserContent> =
+                std::mem::replace(a, OneOrMany::one(UserContent::text(String::new())))
+                    .into_iter()
+                    .collect();
+            items.extend(b);
+            *a = OneOrMany::many(items).expect("merged user content is non-empty");
+            None
+        }
+        (_, next) => Some(next),
+    }
 }
 
 /// Enforce invariant 7: the history must carry at least one plain user text
@@ -650,6 +680,49 @@ mod tests {
             result_content(&messages[2], "call_1").as_deref(),
             Some("(empty output)")
         );
+    }
+
+    #[test]
+    fn mixed_tool_result_content_drops_empty_text_parts() {
+        // Empty text beside real content keeps the "(empty output)" padding
+        // from ever applying, but must still not travel on the wire.
+        let mut messages = vec![
+            user_text("go"),
+            assistant_call("call_1"),
+            RigMessage::User {
+                content: OneOrMany::many(vec![UserContent::ToolResult(RigToolResult {
+                    id: "call_1".to_string(),
+                    call_id: None,
+                    content: OneOrMany::many(vec![
+                        ToolResultContent::text(String::new()),
+                        ToolResultContent::text("ok".to_string()),
+                    ])
+                    .expect("non-empty"),
+                })])
+                .expect("non-empty"),
+            },
+        ];
+        sanitize_wire_messages(&mut messages);
+        assert_eq!(
+            result_content(&messages[2], "call_1").as_deref(),
+            Some("ok")
+        );
+        match &messages[2] {
+            RigMessage::User { content } => {
+                for item in content.iter() {
+                    if let UserContent::ToolResult(result) = item {
+                        assert!(
+                            result.content.iter().all(|c| match c {
+                                ToolResultContent::Text(text) => !text.text.trim().is_empty(),
+                                _ => true,
+                            }),
+                            "no empty text part may survive beside real content"
+                        );
+                    }
+                }
+            }
+            other => panic!("expected user message, got {other:?}"),
+        }
     }
 
     #[test]

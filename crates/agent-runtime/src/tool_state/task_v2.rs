@@ -210,21 +210,31 @@ impl TaskV2Manager {
 
         // Maintain bidirectional links: update blockers' `blocks` arrays
         for blocker_id in &blocked_by {
-            if let Ok(mut blocker) = self.read_task_file(blocker_id)
-                && !blocker.blocks.contains(&id_str)
-            {
-                blocker.blocks.push(id_str.clone());
-                self.write_task_file(&blocker)?;
+            match self.read_task_file(blocker_id) {
+                Ok(mut blocker) => {
+                    if !blocker.blocks.contains(&id_str) {
+                        blocker.blocks.push(id_str.clone());
+                        self.write_task_file(&blocker)?;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("task link update: skipping blocker {blocker_id}: {e}");
+                }
             }
         }
 
         // Maintain bidirectional links: update blocked tasks' `blocked_by` arrays
         for blocked_id in &blocks {
-            if let Ok(mut blocked) = self.read_task_file(blocked_id)
-                && !blocked.blocked_by.contains(&id_str)
-            {
-                blocked.blocked_by.push(id_str.clone());
-                self.write_task_file(&blocked)?;
+            match self.read_task_file(blocked_id) {
+                Ok(mut blocked) => {
+                    if !blocked.blocked_by.contains(&id_str) {
+                        blocked.blocked_by.push(id_str.clone());
+                        self.write_task_file(&blocked)?;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("task link update: skipping blocked {blocked_id}: {e}");
+                }
             }
         }
 
@@ -251,16 +261,24 @@ impl TaskV2Manager {
 
         let record = self.read_task_file(id)?;
         let now = Utc::now();
+        let prev_status = record.status;
 
-        let mut updated = record.clone();
+        let mut updated = record;
 
         if let Some(s) = status {
             // Track timing transitions
-            if record.status == TaskV2Status::Pending && s == TaskV2Status::InProgress {
+            if prev_status == TaskV2Status::Pending && s == TaskV2Status::InProgress {
                 updated.started_at = Some(now);
             }
-            if s == TaskV2Status::Completed && record.status != TaskV2Status::Completed {
+            if s == TaskV2Status::Completed && prev_status != TaskV2Status::Completed {
                 updated.completed_at = Some(now);
+            }
+            // Reverse transitions must not keep stale timestamps.
+            if s != TaskV2Status::Completed {
+                updated.completed_at = None;
+            }
+            if s == TaskV2Status::Pending {
+                updated.started_at = None;
             }
             updated.status = s;
         }
@@ -282,10 +300,13 @@ impl TaskV2Manager {
         }
 
         if let Some(merge) = metadata_merge {
-            // Merge metadata keys
-            if let serde_json::Value::Object(existing) = &mut updated.metadata
-                && let serde_json::Value::Object(new_vals) = merge
-            {
+            let serde_json::Value::Object(new_vals) = merge else {
+                return Err(anyhow::anyhow!("metadata_merge must be a JSON object"));
+            };
+            if !updated.metadata.is_object() {
+                updated.metadata = json!({});
+            }
+            if let serde_json::Value::Object(existing) = &mut updated.metadata {
                 for (k, v) in new_vals {
                     if v.is_null() {
                         existing.remove(&k);
@@ -299,13 +320,21 @@ impl TaskV2Manager {
         // Add blocks: update this task's `blocks` and the blocked tasks' `blocked_by`
         if let Some(new_blocks) = add_blocks {
             for block_id in &new_blocks {
+                if block_id == &updated.id {
+                    return Err(anyhow::anyhow!("task {} cannot block itself", updated.id));
+                }
                 if !updated.blocks.contains(block_id) {
                     updated.blocks.push(block_id.clone());
-                    if let Ok(mut blocked) = self.read_task_file(block_id)
-                        && !blocked.blocked_by.contains(&updated.id)
-                    {
-                        blocked.blocked_by.push(updated.id.clone());
-                        self.write_task_file(&blocked)?;
+                    match self.read_task_file(block_id) {
+                        Ok(mut blocked) => {
+                            if !blocked.blocked_by.contains(&updated.id) {
+                                blocked.blocked_by.push(updated.id.clone());
+                                self.write_task_file(&blocked)?;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("task link update: skipping blocked {block_id}: {e}");
+                        }
                     }
                 }
             }
@@ -314,13 +343,24 @@ impl TaskV2Manager {
         // Add blocked_by: update this task's `blocked_by` and the blockers' `blocks`
         if let Some(new_blocked_by) = add_blocked_by {
             for blocker_id in &new_blocked_by {
+                if blocker_id == &updated.id {
+                    return Err(anyhow::anyhow!(
+                        "task {} cannot be blocked by itself",
+                        updated.id
+                    ));
+                }
                 if !updated.blocked_by.contains(blocker_id) {
                     updated.blocked_by.push(blocker_id.clone());
-                    if let Ok(mut blocker) = self.read_task_file(blocker_id)
-                        && !blocker.blocks.contains(&updated.id)
-                    {
-                        blocker.blocks.push(updated.id.clone());
-                        self.write_task_file(&blocker)?;
+                    match self.read_task_file(blocker_id) {
+                        Ok(mut blocker) => {
+                            if !blocker.blocks.contains(&updated.id) {
+                                blocker.blocks.push(updated.id.clone());
+                                self.write_task_file(&blocker)?;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("task link update: skipping blocker {blocker_id}: {e}");
+                        }
                     }
                 }
             }
@@ -340,8 +380,10 @@ impl TaskV2Manager {
         self.list_tasks_inner()
     }
 
-    /// List all tasks without acquiring a lock (caller must hold the write lock).
-    /// Excludes deleted tasks.
+    /// List all tasks without acquiring a lock. Lock-free reads are safe
+    /// because writers stage into a temp file and rename atomically
+    /// (`write_task_file`); callers that mutate around the scan must
+    /// already hold the write lock. Excludes deleted tasks.
     fn list_tasks_inner(&self) -> anyhow::Result<Vec<TaskV2Record>> {
         let mut tasks: Vec<TaskV2Record> = Vec::new();
         if let Ok(entries) = fs::read_dir(&self.task_dir) {
@@ -374,16 +416,26 @@ impl TaskV2Manager {
         if let Ok(record) = self.read_task_file(id) {
             // Remove this task's ID from blockers' `blocks` arrays
             for blocker_id in &record.blocked_by {
-                if let Ok(mut blocker) = self.read_task_file(blocker_id) {
-                    blocker.blocks.retain(|b| b != id);
-                    self.write_task_file(&blocker)?;
+                match self.read_task_file(blocker_id) {
+                    Ok(mut blocker) => {
+                        blocker.blocks.retain(|b| b != id);
+                        self.write_task_file(&blocker)?;
+                    }
+                    Err(e) => {
+                        tracing::warn!("task link cleanup: skipping blocker {blocker_id}: {e}");
+                    }
                 }
             }
             // Remove this task's ID from blocked tasks' `blocked_by` arrays
             for blocked_id in &record.blocks {
-                if let Ok(mut blocked) = self.read_task_file(blocked_id) {
-                    blocked.blocked_by.retain(|b| b != id);
-                    self.write_task_file(&blocked)?;
+                match self.read_task_file(blocked_id) {
+                    Ok(mut blocked) => {
+                        blocked.blocked_by.retain(|b| b != id);
+                        self.write_task_file(&blocked)?;
+                    }
+                    Err(e) => {
+                        tracing::warn!("task link cleanup: skipping blocked {blocked_id}: {e}");
+                    }
                 }
             }
         }
@@ -471,9 +523,10 @@ pub fn render_verification_nudge(completed_count: u32) -> String {
     )
 }
 
-/// Track whether tasks were completed without a verification step.
-/// Threshold = 3: after 3 consecutive completions without verification,
-/// a nudge message is injected.
+/// Task-completion count that triggers a verification nudge when no task
+/// subject/description contains a verification-ish keyword ("verif",
+/// "test", "check" — a loose substring heuristic). The count is the total
+/// number of completed tasks, not completions since the last verification.
 const VERIFICATION_NUDGE_THRESHOLD: u32 = 3;
 
 /// Check whether a verification nudge should be emitted based on task list state.
@@ -882,6 +935,186 @@ mod tests {
         let json = r#"{"id":"1","subject":"test","description":"","status":"pending","blocked_by":[],"metadata":{},"created_at":"2024-01-01T00:00:00Z"}"#;
         let record: TaskV2Record = serde_json::from_str(json).unwrap();
         assert!(record.blocks.is_empty());
+    }
+
+    #[test]
+    fn update_task_metadata_merge_seeds_null_metadata() {
+        let mut mgr = temp_manager();
+        let id = mgr
+            .create_task(
+                "A".into(),
+                "desc".into(),
+                None,
+                None,
+                None,
+                vec![],
+                vec![],
+                None,
+            )
+            .unwrap();
+        let path = mgr.task_file(&id).unwrap();
+        let raw = format!(
+            r#"{{"id":"{id}","subject":"s","status":"pending","created_at":"2024-01-01T00:00:00Z"}}"#
+        );
+        fs::write(&path, raw).unwrap();
+
+        let updated = mgr
+            .update_task(
+                &id,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(json!({"k": "v"})),
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(updated.metadata, json!({"k": "v"}));
+    }
+
+    #[test]
+    fn update_task_rejects_non_object_metadata_merge() {
+        let mut mgr = temp_manager();
+        let id = mgr
+            .create_task(
+                "A".into(),
+                "desc".into(),
+                None,
+                None,
+                None,
+                vec![],
+                vec![],
+                None,
+            )
+            .unwrap();
+
+        let err = mgr
+            .update_task(
+                &id,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(json!([1, 2])),
+                None,
+                None,
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("metadata_merge must be a JSON object")
+        );
+    }
+
+    #[test]
+    fn update_task_reverse_transition_clears_stale_timestamps() {
+        let mut mgr = temp_manager();
+        let id = mgr
+            .create_task(
+                "A".into(),
+                "desc".into(),
+                None,
+                None,
+                None,
+                vec![],
+                vec![],
+                None,
+            )
+            .unwrap();
+
+        mgr.update_task(
+            &id,
+            Some(TaskV2Status::InProgress),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let done = mgr
+            .update_task(
+                &id,
+                Some(TaskV2Status::Completed),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(done.completed_at.is_some());
+
+        let reopened = mgr
+            .update_task(
+                &id,
+                Some(TaskV2Status::Pending),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(reopened.completed_at.is_none());
+        assert!(reopened.started_at.is_none());
+    }
+
+    #[test]
+    fn update_task_rejects_self_reference() {
+        let mut mgr = temp_manager();
+        let id = mgr
+            .create_task(
+                "A".into(),
+                "desc".into(),
+                None,
+                None,
+                None,
+                vec![],
+                vec![],
+                None,
+            )
+            .unwrap();
+
+        let err = mgr
+            .update_task(
+                &id,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(vec![id.clone()]),
+                None,
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("cannot block itself"));
+
+        let err = mgr
+            .update_task(
+                &id,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(vec![id.clone()]),
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("cannot be blocked by itself"));
     }
 
     #[test]

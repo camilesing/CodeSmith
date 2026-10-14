@@ -28,6 +28,16 @@ fn thread_resume_params_round_trip() {
         ThreadRequest::Resume(params) => {
             assert_eq!(params.thread_id, "thread-123");
             assert_eq!(params.model.as_deref(), Some("deepseek-v4-pro"));
+            assert_eq!(params.model_provider.as_deref(), Some("deepseek"));
+            assert_eq!(params.approval_policy.as_deref(), Some("on-request"));
+            assert_eq!(params.sandbox.as_deref(), Some("workspace-write"));
+            assert_eq!(params.base_instructions.as_deref(), Some("base"));
+            assert_eq!(params.developer_instructions.as_deref(), Some("dev"));
+            assert_eq!(params.personality.as_deref(), Some("default"));
+            assert!(params.history.is_none());
+            assert!(params.path.is_none());
+            assert!(params.cwd.is_none());
+            assert!(params.config.is_none());
             assert!(params.persist_extended_history);
         }
         other => panic!("unexpected request: {other:?}"),
@@ -41,7 +51,29 @@ fn thread_list_params_defaults_are_serializable() {
         limit: Some(20),
     });
     let encoded = serde_json::to_string_pretty(&request).expect("serialize list request");
-    assert!(encoded.contains("include_archived"));
+    assert!(encoded.contains("\"kind\": \"list\""));
+    let decoded: ThreadRequest = serde_json::from_str(&encoded).expect("deserialize list request");
+    match decoded {
+        ThreadRequest::List(params) => {
+            assert!(!params.include_archived);
+            assert_eq!(params.limit, Some(20));
+        }
+        other => panic!("unexpected request: {other:?}"),
+    }
+
+    // Defaults: deserializing a bare list body should yield the documented
+    // defaults (`include_archived` has `#[serde(default)]`, `limit` is
+    // `Option`).
+    let defaulted = json!({ "kind": "list" });
+    let decoded: ThreadRequest =
+        serde_json::from_value(defaulted).expect("deserialize list request defaults");
+    match decoded {
+        ThreadRequest::List(params) => {
+            assert!(!params.include_archived);
+            assert_eq!(params.limit, None);
+        }
+        other => panic!("unexpected request: {other:?}"),
+    }
 }
 
 #[test]
@@ -50,7 +82,14 @@ fn event_frame_serialization_contains_expected_tag() {
         turn_id: "turn-1".to_string(),
     };
     let encoded = serde_json::to_string(&frame).expect("serialize frame");
-    assert!(encoded.contains("turn_complete"));
+    let value: Value = serde_json::from_str(&encoded).expect("parse serialized frame");
+    assert_eq!(value["event"], "turn_complete");
+    assert_eq!(value["turn_id"], "turn-1");
+    let decoded: EventFrame = serde_json::from_str(&encoded).expect("deserialize frame");
+    match decoded {
+        EventFrame::TurnComplete { turn_id } => assert_eq!(turn_id, "turn-1"),
+        other => panic!("unexpected frame: {other:?}"),
+    }
 }
 
 #[test]
@@ -91,6 +130,27 @@ fn runtime_event_envelope_roundtrip() {
 }
 
 #[test]
+fn runtime_event_envelope_preserves_conflicting_event_and_kind() {
+    let input = json!({
+        "schema_version": 1,
+        "seq": 16,
+        "event": "item.delta",
+        "kind": "turn.completed",
+        "thread_id": "thr_conflict",
+        "timestamp": "2026-02-11T20:18:49.123Z",
+        "payload": {},
+    });
+    let envelope: RuntimeEventEnvelope =
+        serde_json::from_value(input).expect("deserialize runtime event envelope");
+    assert_eq!(envelope.event, "item.delta");
+    assert_eq!(envelope.kind, "turn.completed");
+
+    let encoded = serde_json::to_value(&envelope).expect("serialize runtime event envelope");
+    assert_eq!(encoded["event"], "item.delta");
+    assert_eq!(encoded["kind"], "turn.completed");
+}
+
+#[test]
 fn runtime_event_envelope_without_schema_version_is_legacy_none() {
     let input = json!({
         "seq": 15,
@@ -111,6 +171,31 @@ fn runtime_event_envelope_without_schema_version_is_legacy_none() {
 }
 
 #[test]
+fn runtime_event_envelope_accepts_and_surfaces_newer_schema_version() {
+    let input = json!({
+        "schema_version": RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION + 1,
+        "seq": 17,
+        "event": "item.delta",
+        "kind": "item.delta",
+        "thread_id": "thr_future",
+        "timestamp": "2026-02-11T20:18:49.123Z",
+        "payload": {},
+    });
+    let envelope: RuntimeEventEnvelope =
+        serde_json::from_value(input).expect("deserialize newer-schema envelope");
+    assert_eq!(
+        envelope.schema_version,
+        Some(RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION + 1)
+    );
+
+    let encoded = serde_json::to_value(&envelope).expect("serialize newer-schema envelope");
+    assert_eq!(
+        encoded["schema_version"],
+        RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION + 1
+    );
+}
+
+#[test]
 fn runtime_event_envelope_thread_level_keeps_turn_and_item_ids() {
     let input = json!({
         "schema_version": 1,
@@ -127,10 +212,13 @@ fn runtime_event_envelope_thread_level_keeps_turn_and_item_ids() {
     assert!(envelope.item_id.is_none());
 
     let encoded = serde_json::to_value(envelope).expect("serialize runtime event envelope");
+    // Wire contract: turn_id/item_id are always present (explicit null when
+    // thread-level), while created_at is omitted entirely when absent.
     assert!(encoded.get("turn_id").is_some());
     assert!(encoded.get("item_id").is_some());
     assert!(encoded["turn_id"].is_null());
     assert!(encoded["item_id"].is_null());
+    assert!(encoded.get("created_at").is_none());
 }
 
 #[test]
@@ -145,7 +233,7 @@ fn runtime_event_envelope_preserves_unknown_fields() {
         "payload": {},
         "forward_compatibility_hint": "v2-ready",
     });
-    let envelope: RuntimeEventEnvelope = serde_json::from_value(input.clone())
+    let envelope: RuntimeEventEnvelope = serde_json::from_value(input)
         .expect("deserialize runtime event envelope with unknown field");
     assert!(envelope.extra.contains_key("forward_compatibility_hint"));
 

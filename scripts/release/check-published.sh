@@ -57,8 +57,9 @@ fail=0
 echo "Checking published release ${version}..."
 
 # Canonical post-rebrand npm package.
-if npm_version="$(npm view "codesmith@${version}" version 2>/dev/null)"; then
-  echo "npm codesmith@${npm_version} is published."
+npm_manifest="$(npm view "codesmith@${version}" --json --fetch-timeout 30000 2>/dev/null || true)"
+if [[ -n "${npm_manifest}" ]]; then
+  echo "npm codesmith@${version} is published."
 else
   echo "npm codesmith@${version} is not published." >&2
   fail=1
@@ -67,9 +68,12 @@ fi
 # `codesmithBinaryVersion` is the internal version-pin field.
 binary_field=""
 npm_binary_version=""
-if value="$(npm view "codesmith@${version}" codesmithBinaryVersion 2>/dev/null)" && [[ -n "${value}" ]]; then
-  binary_field="codesmithBinaryVersion"
-  npm_binary_version="${value}"
+if [[ -n "${npm_manifest}" ]]; then
+  value="$(printf '%s' "${npm_manifest}" | node -e 'const fs = require("fs"); const manifest = JSON.parse(fs.readFileSync(0, "utf8")); console.log(manifest.codesmithBinaryVersion || "");')"
+  if [[ -n "${value}" ]]; then
+    binary_field="codesmithBinaryVersion"
+    npm_binary_version="${value}"
+  fi
 fi
 
 if [[ -n "${binary_field}" ]]; then
@@ -89,7 +93,7 @@ else
 fi
 
 for crate in "${release_crates[@]}"; do
-  if curl -fsSL "https://crates.io/api/v1/crates/${crate}/${version}" >/dev/null 2>&1; then
+  if curl -fsSL --max-time 30 "https://crates.io/api/v1/crates/${crate}/${version}" >/dev/null 2>&1; then
     echo "crates.io ${crate}@${version} is published."
   else
     echo "crates.io ${crate}@${version} is not published." >&2

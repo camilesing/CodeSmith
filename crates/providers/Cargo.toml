@@ -2,7 +2,6 @@
 name = "codesmith-providers"
 version.workspace = true
 edition.workspace = true
-readme.workspace = true
 keywords = ["llm", "providers", "ai", "openai", "deepseek"]
 categories = ["development-tools"]
 rust-version.workspace = true
@@ -57,6 +56,11 @@ mock = []
 # compiled exactly when at least one rig-backed provider is selected. rig
 # compiles all its provider modules unconditionally, so these features select
 # only which CodeSmith factory glue is linked — not which rig providers exist.
+# NOT public API (Cargo features cannot be private): do not enable `rig`
+# directly — a `--features rig` build compiles the adapter but zero provider
+# factories, so `default_registry()` yields only `UncompiledBackendFactory`
+# stubs. Select a concrete provider feature (`openai`, `anthropic`,
+# `deepseek`, `openai-compat`) instead.
 rig = ["dep:rig-core", "dep:reqwest", "dep:base64", "dep:bytes", "dep:tracing"]
 openai = ["rig"]
 anthropic = ["rig"]

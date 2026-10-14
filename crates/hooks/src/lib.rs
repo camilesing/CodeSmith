@@ -136,10 +136,12 @@ impl HookSink for StdoutHookSink {
 /// A [`HookSink`] that appends each event as a JSON line to a file.
 ///
 /// The file is created (along with any missing parent directories) on the
-/// first emitted event. Each line is a JSON object of the form
+/// first emitted event and the handle is then reused, so subsequent emits
+/// only append. Each line is a JSON object of the form
 /// `{"at": "<ISO 8601 timestamp>", "event": {...}}`.
 pub struct JsonlHookSink {
     path: PathBuf,
+    file: tokio::sync::Mutex<Option<tokio::fs::File>>,
 }
 
 impl JsonlHookSink {
@@ -148,24 +150,31 @@ impl JsonlHookSink {
     /// Parent directories are created lazily on the first [`HookSink::emit`]
     /// call.
     pub fn new(path: PathBuf) -> Self {
-        Self { path }
+        Self {
+            path,
+            file: tokio::sync::Mutex::new(None),
+        }
     }
 }
 
 #[async_trait]
 impl HookSink for JsonlHookSink {
     async fn emit(&self, event: &HookEvent) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            tokio::fs::create_dir_all(parent).await.with_context(|| {
-                format!("failed to create hook log directory {}", parent.display())
-            })?;
+        let mut slot = self.file.lock().await;
+        if slot.is_none() {
+            if let Some(parent) = self.path.parent() {
+                tokio::fs::create_dir_all(parent).await.with_context(|| {
+                    format!("failed to create hook log directory {}", parent.display())
+                })?;
+            }
+            let opened = tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)
+                .await
+                .with_context(|| format!("failed to open hook log {}", self.path.display()))?;
+            *slot = Some(opened);
         }
-        let mut file = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-            .await
-            .with_context(|| format!("failed to open hook log {}", self.path.display()))?;
         let payload = json!({
             "at": Utc::now().to_rfc3339(),
             "event": event
@@ -175,10 +184,18 @@ impl HookSink for JsonlHookSink {
         // interleave and corrupt the JSONL line framing.
         let mut encoded = serde_json::to_string(&payload).context("failed to encode hook event")?;
         encoded.push('\n');
-        file.write_all(encoded.as_bytes())
+        match slot
+            .as_mut()
+            .expect("file handle opened above")
+            .write_all(encoded.as_bytes())
             .await
-            .context("failed to write hook event")?;
-        Ok(())
+        {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                *slot = None;
+                Err(err).context("failed to write hook event")
+            }
+        }
     }
 }
 
@@ -186,7 +203,8 @@ impl HookSink for JsonlHookSink {
 ///
 /// The request body is `{"at": "<ISO 8601 timestamp>", "event": {...}}`.
 /// Failed requests are retried up to 2 times with exponential back-off
-/// (200 ms, 400 ms). After exhausting retries the error is propagated.
+/// (200 ms, 400 ms); permanent client errors (4xx) fail immediately.
+/// After exhausting retries the error is propagated.
 pub struct WebhookHookSink {
     url: String,
     client: reqwest::Client,
@@ -224,7 +242,7 @@ impl HookSink for WebhookHookSink {
             match resp {
                 Ok(response) if response.status().is_success() => return Ok(()),
                 Ok(response) => {
-                    if retries >= 2 {
+                    if retries >= 2 || response.status().is_client_error() {
                         anyhow::bail!("webhook returned non-success status {}", response.status());
                     }
                 }
@@ -316,11 +334,21 @@ impl HookDispatcher {
 
     /// Broadcast an event to every registered sink.
     ///
-    /// Errors from individual sinks are silently discarded so that one failing
+    /// Sinks are dispatched concurrently; `emit` returns once every sink
+    /// finished, so successive events stay ordered per sink. Errors from
+    /// individual sinks are silently discarded so that one failing or hung
     /// sink does not block the others.
     pub async fn emit(&self, event: HookEvent) {
+        let mut tasks = Vec::with_capacity(self.sinks.len());
         for sink in &self.sinks {
-            let _ = sink.emit(&event).await;
+            let sink = Arc::clone(sink);
+            let event = event.clone();
+            tasks.push(tokio::spawn(async move {
+                let _ = sink.emit(&event).await;
+            }));
+        }
+        for task in tasks {
+            let _ = task.await;
         }
     }
 }

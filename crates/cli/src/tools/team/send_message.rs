@@ -14,9 +14,10 @@ use crate::tools::team::protocol_handlers::{
     handle_plan_approval_auto_approve, handle_plan_approval_rejection, handle_shutdown_rejection,
     handle_shutdown_request,
 };
+use crate::tools::team::teammate_mailbox::{parse_structured_protocol_from, read_mailbox};
 use crate::tools::team::{
-    SharedTeamContext, TeammateMessage, find_member_by_name, read_team_file, team_lead_name,
-    write_to_mailbox,
+    SharedTeamContext, StructuredProtocolMessage, TeammateMessage, find_member_by_name,
+    read_team_file, team_lead_name, write_to_mailbox,
 };
 
 /// Attribution used when a calling context has no runtime-injected team
@@ -260,6 +261,34 @@ impl ToolSpec for SendMessageTool {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::missing_field("request_id"))?
                     .to_string();
+                // The approval must be bound to a real, outstanding shutdown
+                // request issued to THIS sender — an unbound, caller-supplied
+                // request_id would let a member approve a fabricated request
+                // or one issued to a different teammate. Approvals are also
+                // only meaningful addressed to the lead (the consumer side).
+                if recipient != team_lead_name() {
+                    return Err(ToolError::invalid_input(
+                        "shutdown_approved must be addressed to the team lead",
+                    ));
+                }
+                let mailbox = read_mailbox(&sender_name, &team_name).map_err(|e| {
+                    ToolError::execution_failed(format!("Failed to read mailbox: {e}"))
+                })?;
+                let pending = mailbox.iter().any(|msg| {
+                    matches!(
+                        parse_structured_protocol_from(&msg.text, &msg.from),
+                        Some(StructuredProtocolMessage::ShutdownRequest {
+                            request_id: id,
+                            from,
+                            ..
+                        }) if id == request_id && from == team_lead_name()
+                    )
+                });
+                if !pending {
+                    return Err(ToolError::invalid_input(format!(
+                        "No outstanding shutdown request '{request_id}' issued to '{sender_name}'"
+                    )));
+                }
                 // Write approval protocol to teammate mailbox (informational).
                 // Actual cancellation happens via inbox poller on leader side.
                 let now = chrono::Utc::now().to_rfc3339();
@@ -769,5 +798,70 @@ mod tests {
         )
         .await
         .expect("active member must be allowed");
+    }
+
+    #[tokio::test]
+    async fn shutdown_approval_for_fabricated_request_id_is_rejected() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&make_team("auth-test")).expect("team");
+        let (tool, _ctx) = setup().await;
+
+        let err = tool
+            .execute(
+                json!({
+                    "to": team_lead_name(),
+                    "message": {
+                        "type": "shutdown_approved",
+                        "request_id": "req-shutdown-9999999999999"
+                    }
+                }),
+                &context_with_sender(Some("worker1".to_string())),
+            )
+            .await
+            .expect_err("approval must be bound to an outstanding request");
+        assert!(
+            err.to_string().contains("No outstanding shutdown request"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_approval_for_pending_request_is_delivered_to_lead() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&make_team("auth-test")).expect("team");
+        let (tool, _ctx) = setup().await;
+
+        // Lead issues the shutdown request to worker1 first.
+        let request = tool
+            .execute(
+                shutdown_request_input(),
+                &context_with_sender(Some(team_lead_name().to_string())),
+            )
+            .await
+            .expect("lead must be allowed");
+        let request_id = serde_json::from_str::<serde_json::Value>(&request.content)
+            .expect("request result json")["request_id"]
+            .as_str()
+            .expect("request_id")
+            .to_string();
+
+        tool.execute(
+            json!({
+                "to": team_lead_name(),
+                "message": {"type": "shutdown_approved", "request_id": request_id}
+            }),
+            &context_with_sender(Some("worker1".to_string())),
+        )
+        .await
+        .expect("approval bound to the pending request must be accepted");
+
+        let lead_inbox = read_mailbox(team_lead_name(), "auth-test").expect("lead mailbox");
+        assert!(
+            lead_inbox
+                .iter()
+                .any(|msg| msg.text.contains("shutdown_approved"))
+        );
     }
 }

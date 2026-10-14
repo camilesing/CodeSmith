@@ -373,6 +373,7 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                 state.is_loading = true;
                 state.turn_started_at = Some(Instant::now());
                 state.tool_log_turn += 1;
+                save_crash_recovery_checkpoint(state);
             }
             Event::MessageStarted { .. } => {
                 view.clear_live();
@@ -1005,14 +1006,48 @@ pub(super) fn replay_turn_tool_detail(state: &mut ReplState) {
 /// persistence-actor contract, reduced to the turn boundary). Failures are
 /// silent-by-print: a save miss never interrupts the conversation.
 fn persist_session_turn_boundary(state: &mut ReplState) {
-    use crate::session_manager::create_saved_session_with_id_and_mode;
-
-    if state.api_messages.is_empty() {
+    let Some(session) = saved_session_from_state(state) else {
         return;
-    }
+    };
     let Ok(manager) = crate::session_manager::SessionManager::default_location() else {
         return;
     };
+    if let Err(err) = manager.save_session(&session) {
+        println!(
+            "{}",
+            format!("warning: could not auto-save session: {err}").yellow()
+        );
+        return;
+    }
+    // Adopt the id so subsequent turns update the same session file
+    // instead of minting a new one per turn.
+    state.current_session_id = Some(session.metadata.id.clone());
+    // The turn is over and the regular session file is now the durable
+    // record, so the in-flight crash-recovery checkpoint is redundant.
+    let _ = manager.clear_checkpoint();
+}
+
+/// Snapshot the session as it stands at turn start, so a crash mid-turn is
+/// recoverable on the next launch (`load_checkpoint` path). Best-effort and
+/// silent: a checkpoint miss must never interrupt a running turn.
+fn save_crash_recovery_checkpoint(state: &ReplState) {
+    let Some(session) = saved_session_from_state(state) else {
+        return;
+    };
+    let Ok(manager) = crate::session_manager::SessionManager::default_location() else {
+        return;
+    };
+    let _ = manager.save_checkpoint(&session);
+}
+
+/// Build the persistable session record from REPL state, or `None` when
+/// there is nothing worth persisting yet.
+fn saved_session_from_state(state: &ReplState) -> Option<crate::session_manager::SavedSession> {
+    use crate::session_manager::create_saved_session_with_id_and_mode;
+
+    if state.api_messages.is_empty() {
+        return None;
+    }
     let session_id = state
         .current_session_id
         .clone()
@@ -1034,16 +1069,7 @@ fn persist_session_turn_boundary(state: &mut ReplState) {
     // Keep the persisted record in agreement with state: the `MessageStart`
     // model name alongside the requested id.
     session.metadata.reported_model = state.reported_model.clone();
-    if let Err(err) = manager.save_session(&session) {
-        println!(
-            "{}",
-            format!("warning: could not auto-save session: {err}").yellow()
-        );
-        return;
-    }
-    // Adopt the id so subsequent turns update the same session file
-    // instead of minting a new one per turn.
-    state.current_session_id = Some(session.metadata.id.clone());
+    Some(session)
 }
 
 /// Fire the observer `turn_end` hook (every outcome) and `on_error` (failed

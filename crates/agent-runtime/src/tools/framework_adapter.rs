@@ -39,6 +39,15 @@ use super::spec::{ToolContext, ToolSpec};
 /// one per spec, or use
 /// [`ToolRegistry::to_framework_tool_set`](super::registry::ToolRegistry::to_framework_tool_set)
 /// to wrap a whole registry in one call.
+///
+/// The captured context is a construction-time snapshot, not a live handle:
+/// `ToolContext` carries turn-scoped state (the active turn's
+/// `cancel_token`, the turn-bound `session_cwd` slot, the effective `cwd`,
+/// per-session `auto_approve` / network policy). A `ToolSet` built from an
+/// adapter must therefore be rebuilt every turn — the host's
+/// `TurnDispatchPlan` does exactly that — or tools run against a stale
+/// snapshot: UI cancel no longer interrupts in-flight tools, and worktree /
+/// cwd / policy changes never reach them.
 pub struct ToolSpecAdapter {
     spec: Arc<dyn ToolSpec>,
     context: Arc<ToolContext>,

@@ -58,9 +58,12 @@ pub struct PromptSessionContext<'a> {
     pub project_context_pack_enabled: bool,
     /// Resolved BCP-47 locale tag for the `## Environment` block in
     /// the system prompt (e.g. `"en"`, `"zh-Hans"`, `"hi"`). The
-    /// caller is responsible for resolving this from `Settings`; no
-    /// disk I/O happens inside the prompt builder, so the workspace-
-    /// static portion of the system prompt stays cache-friendly.
+    /// caller is responsible for resolving this from `Settings`; the
+    /// builder does no I/O for the locale itself. (The builder does
+    /// read workspace files — project context, context pack, handoff,
+    /// configured instructions — but only when the bundle is rebuilt,
+    /// which is event-driven: engine construction, mode changes, and
+    /// cycle/compaction resets, not every request.)
     pub locale_tag: &'a str,
     /// When true, a ## Language Output Requirement block is appended
     /// to the system prompt instructing the model to respond in
@@ -166,10 +169,13 @@ pub const INSTRUCTIONS_FILE_MAX_BYTES: usize = 100 * 1024;
 /// Instructs the model to respond in the resolved session locale for all
 /// natural-language output — explanations, summaries, conversation.
 /// Code identifiers, untranslatable technical terms, and explicitly
-/// requested English code blocks are exempt.
-pub fn translation_output_instruction(locale_tag: &str) -> String {
-    let target_language = translation_target_language_for_tag(locale_tag);
-    format!(
+/// requested English code blocks are exempt. Returns `None` for locales
+/// with no mapped target language: silently forcing English on a user who
+/// reads neither English nor a mapped language is worse than following the
+/// normal `## Language` rule.
+pub fn translation_output_instruction(locale_tag: &str) -> Option<String> {
+    let target_language = translation_target_language_for_tag(locale_tag)?;
+    Some(format!(
         "\
 ## Language Output Requirement\n\
 \n\
@@ -182,30 +188,42 @@ Only output English for:\n\
 - Code blocks the user explicitly requests in English\n\n\
 This is a hard display requirement: the user does not read English, \
 so any English prose in your response will block their decision-making."
-    )
+    ))
 }
 
-pub fn translation_target_language_for_tag(locale_tag: &str) -> &'static str {
+pub fn translation_target_language_for_tag(locale_tag: &str) -> Option<&'static str> {
     let normalized = locale_tag.trim().to_ascii_lowercase();
     if normalized.starts_with("zh-hant")
         || normalized.contains("-tw")
         || normalized.contains("-hk")
         || normalized.contains("-mo")
     {
-        "Traditional Chinese (繁體中文)"
+        Some("Traditional Chinese (繁體中文)")
     } else if normalized.starts_with("zh") {
-        "Simplified Chinese (简体中文)"
+        Some("Simplified Chinese (简体中文)")
     } else if normalized.starts_with("hi") {
-        "Hindi (हिन्दी)"
+        Some("Hindi (हिन्दी)")
     } else if normalized.starts_with("es") {
-        "Spanish (Español)"
+        Some("Spanish (Español)")
     } else {
-        "English"
+        None
     }
 }
 
-pub fn hidden_thinking_language_instruction(locale_tag: &str) -> String {
-    let fallback_language = translation_target_language_for_tag(locale_tag);
+pub fn hidden_thinking_language_instruction(locale_tag: &str, translation_enabled: bool) -> String {
+    let fallback_language = translation_target_language_for_tag(locale_tag).unwrap_or("English");
+    let final_reply_rule = if translation_enabled {
+        "The final reply is still user-visible. Follow the `## Language Output Requirement` \
+         section for the final reply — it takes precedence over the latest user-message \
+         language."
+            .to_string()
+    } else {
+        format!(
+            "The final reply is still user-visible. Follow the normal `## Language` rule \
+             for the final reply: mirror the latest user message, and use \
+             {fallback_language} only when the user message is ambiguous."
+        )
+    };
     format!(
         "\
 ## Hidden Thinking Language\n\
@@ -215,11 +233,8 @@ The user has disabled thinking display (`show_thinking = false`). If you emit \
 of the latest user-message language or `## Environment.lang`; the user will \
 not see it, so localizing hidden thinking only adds language switching.\n\
 \n\
-The final reply is still user-visible. Follow the normal `## Language` rule \
-for the final reply: mirror the latest user message, and use \
-{fallback_language} only when the user message is ambiguous. If the user \
-explicitly asks for a different thinking language, follow that explicit request \
-for the current turn."
+{final_reply_rule} If the user explicitly asks for a different thinking \
+language, follow that explicit request for the current turn."
     )
 }
 
@@ -1113,12 +1128,14 @@ pub fn default_prompt_bundle_for_mode_with_context_skills_session_and_approval(
         );
     }
 
-    if session_context.translation_enabled {
+    if session_context.translation_enabled
+        && let Some(block) = translation_output_instruction(session_context.locale_tag)
+    {
         append_section(
             &mut bundle,
             "translation_requirement",
             "Translation output requirement",
-            translation_output_instruction(session_context.locale_tag),
+            block,
             PromptSectionStability::Session,
             PromptSectionSource::Builtin,
         );
@@ -1270,7 +1287,10 @@ pub fn default_prompt_bundle_for_mode_with_context_skills_session_and_approval(
             &mut bundle,
             "hidden_thinking_language",
             "Hidden thinking language",
-            hidden_thinking_language_instruction(session_context.locale_tag),
+            hidden_thinking_language_instruction(
+                session_context.locale_tag,
+                session_context.translation_enabled,
+            ),
             PromptSectionStability::Session,
             PromptSectionSource::Builtin,
         );

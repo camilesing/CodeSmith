@@ -423,10 +423,10 @@ impl IndexStore {
             {
                 continue;
             }
-            out.push(entry);
             if out.len() >= query.limit {
                 break;
             }
+            out.push(entry);
         }
         Ok(out)
     }
@@ -742,6 +742,14 @@ mod tests {
             })
             .expect("list");
         assert_eq!(limited.len(), 2);
+
+        let zero = store
+            .list_files(&FileQuery {
+                limit: 0,
+                ..Default::default()
+            })
+            .expect("list");
+        assert!(zero.is_empty(), "limit 0 means no rows, not one");
     }
 
     #[test]

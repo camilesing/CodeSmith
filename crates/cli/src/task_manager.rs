@@ -32,6 +32,13 @@ use crate::utils::spawn_supervised;
 const DEFAULT_WORKERS: usize = 2;
 const MAX_WORKERS: usize = 8;
 const ARTIFACT_THRESHOLD: usize = 1200;
+/// Upper bound on a turn making no observable progress before the executor
+/// gives up and frees its bounded worker slot. Generous on purpose: gate
+/// commands may run up to ten minutes between events.
+const TURN_STALL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// Grace period after a successfully delivered interrupt for the runtime to
+/// emit a terminal `turn.completed` before the executor abandons the turn.
+const CANCEL_GRACE_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub use codesmith_agent_runtime::host_services::TaskManagerHost;
 pub use codesmith_agent_runtime::tools::task_types::*;
@@ -240,20 +247,42 @@ impl TaskExecutor for EngineTaskExecutor {
 
         let mut final_text = String::new();
         let mut seen_seq = 0u64;
-        let mut cancel_requested = false;
+        // Latches only once `interrupt_turn` is actually delivered — a
+        // failed interrupt is retried on the next poll instead of being
+        // fire-and-forget.
+        let mut interrupt_delivered = false;
+        let mut cancel_announced = false;
+        let mut cancel_grace_deadline: Option<std::time::Instant> = None;
+        let mut last_progress_at = std::time::Instant::now();
         let mut terminal_status: Option<RuntimeTurnStatus> = None;
         let mut terminal_error: Option<String> = None;
 
         loop {
-            if cancel.is_cancelled() && !cancel_requested {
-                cancel_requested = true;
-                let _ = self
+            if cancel.is_cancelled() && !interrupt_delivered {
+                if !cancel_announced {
+                    cancel_announced = true;
+                    let _ = events.send(TaskExecutionEvent::Status {
+                        message: "Cancellation requested".to_string(),
+                    });
+                }
+                match self
                     .runtime_threads
                     .interrupt_turn(&thread.id, &turn.id)
-                    .await;
-                let _ = events.send(TaskExecutionEvent::Status {
-                    message: "Cancellation requested".to_string(),
-                });
+                    .await
+                {
+                    Ok(_) => {
+                        interrupt_delivered = true;
+                        cancel_grace_deadline =
+                            Some(std::time::Instant::now() + CANCEL_GRACE_TIMEOUT);
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            "Failed to interrupt turn {} on thread {}: {err}; retrying",
+                            turn.id,
+                            thread.id
+                        );
+                    }
+                }
             }
 
             let batch = match self
@@ -290,6 +319,7 @@ impl TaskExecutor for EngineTaskExecutor {
                 }
             };
 
+            let made_progress = !batch.is_empty();
             for event in batch {
                 seen_seq = seen_seq.max(event.seq);
                 let _ = events.send(TaskExecutionEvent::RuntimeEvent {
@@ -423,6 +453,57 @@ impl TaskExecutor for EngineTaskExecutor {
 
             if terminal_status.is_some() {
                 break;
+            }
+
+            if made_progress {
+                last_progress_at = std::time::Instant::now();
+            }
+
+            let cancel_expired =
+                cancel_grace_deadline.is_some_and(|deadline| std::time::Instant::now() > deadline);
+            if cancel_expired || last_progress_at.elapsed() > TURN_STALL_TIMEOUT {
+                // The runtime wedged or ignored the delivered interrupt:
+                // bail out (best-effort interrupt + archive) so one of the
+                // bounded worker slots is not pinned forever.
+                let reason = if cancel_expired {
+                    "Task did not terminate after cancellation".to_string()
+                } else {
+                    format!(
+                        "Task runtime stalled: no events for over {} seconds",
+                        TURN_STALL_TIMEOUT.as_secs()
+                    )
+                };
+                tracing::error!(
+                    "Releasing worker for task {} on turn {}: {reason}",
+                    task.id,
+                    turn.id
+                );
+                let _ = events.send(TaskExecutionEvent::Status {
+                    message: format!("{reason}; worker released"),
+                });
+                let _ = self
+                    .runtime_threads
+                    .interrupt_turn(&thread.id, &turn.id)
+                    .await;
+                let _ = self
+                    .runtime_threads
+                    .update_thread(
+                        &thread.id,
+                        UpdateThreadRequest {
+                            archived: Some(true),
+                            ..UpdateThreadRequest::default()
+                        },
+                    )
+                    .await;
+                return TaskExecutionResult {
+                    status: TaskStatus::Failed,
+                    result_text: if final_text.trim().is_empty() {
+                        None
+                    } else {
+                        Some(final_text)
+                    },
+                    error: Some(reason),
+                };
             }
 
             sleep(Duration::from_millis(40)).await;

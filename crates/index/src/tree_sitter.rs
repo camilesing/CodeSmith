@@ -6,7 +6,18 @@
 //! handled with a small stack while walking. References are **lexical**:
 //! identifier leaves whose text equals a known symbol name, excluding the
 //! definition sites themselves.
+//!
+//! JS/TS coverage is deliberately declaration-form only
+//! (`function_declaration`, `method_definition`, …). Definitions whose
+//! symbol-ness depends on the value shape — arrow/function-expression
+//! consts (`const f = () => {}`), anonymous `export default function`,
+//! object-literal methods, TS `method_signature` members — yield no
+//! symbol: the flat kind-mapping table here has no way to key on a
+//! declarator's value, so extending coverage needs structural rules, not
+//! new table rows.
 
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -144,15 +155,24 @@ fn ident_kinds_for(lang: Language) -> &'static [&'static str] {
     }
 }
 
+/// A container scope on the walk stack: either an impl/trait/class the
+/// walked node is a direct member of, or a function body whose nested
+/// definitions are plain functions, not methods.
+enum Scope {
+    Container(String),
+    InFunction,
+}
+
 struct Ctx<'a> {
     source: &'a str,
     rel_path: String,
     lang: Language,
     symbols: Vec<Symbol>,
     occurrences: Vec<Occurrence>,
-    def_name_node_ids: Vec<usize>,
-    def_names: Vec<String>,
-    container: Vec<String>,
+    def_name_node_ids: HashSet<usize>,
+    def_names: HashSet<String>,
+    container: Vec<Scope>,
+    line_starts: Vec<usize>,
 }
 
 impl<'a> Ctx<'a> {
@@ -161,7 +181,13 @@ impl<'a> Ctx<'a> {
     }
 
     fn line_at(&self, row: usize) -> Option<String> {
-        let line = self.source.lines().nth(row)?.trim();
+        let start = *self.line_starts.get(row)?;
+        let end = self
+            .line_starts
+            .get(row + 1)
+            .copied()
+            .unwrap_or(self.source.len());
+        let line = self.source[start..end].trim();
         let truncated: String = line.chars().take(120).collect();
         Some(truncated)
     }
@@ -183,8 +209,8 @@ impl<'a> Ctx<'a> {
             location,
             signature: self.line_at(node.start_position().row),
         });
-        self.def_name_node_ids.push(name_node.id());
-        self.def_names.push(name.to_string());
+        self.def_name_node_ids.insert(name_node.id());
+        self.def_names.insert(name.to_string());
         self.occurrences.push(Occurrence {
             name: name.to_string(),
             role: OccurrenceRole::Definition,
@@ -196,23 +222,21 @@ impl<'a> Ctx<'a> {
 
 /// Extract symbols + lexical occurrences from `source`.
 pub fn extract_symbols(file: &Path, source: &str, lang: Language) -> Result<Extraction> {
-    let mut parser = make_parser(file, lang)?;
-    let tree: Tree = parser
-        .parse(source, None)
-        .context("tree-sitter parse produced no tree")?;
-    let rel_path = file
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
+    let tree = parse_source(file, source, lang)?;
+    let rel_path = file.to_string_lossy().replace('\\', "/");
+    let line_starts: Vec<usize> = std::iter::once(0)
+        .chain(source.match_indices('\n').map(|(i, _)| i + 1))
+        .collect();
     let mut ctx = Ctx {
         source,
         rel_path,
         lang,
         symbols: Vec::new(),
         occurrences: Vec::new(),
-        def_name_node_ids: Vec::new(),
-        def_names: Vec::new(),
+        def_name_node_ids: HashSet::new(),
+        def_names: HashSet::new(),
         container: Vec::new(),
+        line_starts,
     };
     visit(tree.root_node(), &mut ctx);
     collect_references(tree.root_node(), &mut ctx);
@@ -224,6 +248,7 @@ pub fn extract_symbols(file: &Path, source: &str, lang: Language) -> Result<Extr
 
 fn visit(node: Node<'_>, ctx: &mut Ctx<'_>) {
     let kind = node.kind();
+    let mut pushed_function = false;
 
     match ctx.lang {
         Language::Go => {
@@ -248,16 +273,23 @@ fn visit(node: Node<'_>, ctx: &mut Ctx<'_>) {
         _ => {
             if let Some(rule) = rules_for(ctx.lang).iter().find(|r| r.node == kind) {
                 visit_rule_symbol(rule, node, ctx);
+                pushed_function = rule.method_like;
             }
         }
     }
 
     let pushed = push_container_scope(node, kind, ctx);
+    if pushed_function {
+        ctx.container.push(Scope::InFunction);
+    }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         visit(child, ctx);
     }
     if pushed {
+        ctx.container.pop();
+    }
+    if pushed_function {
         ctx.container.pop();
     }
 }
@@ -270,15 +302,20 @@ fn visit_rule_symbol(rule: &Rule, node: Node<'_>, ctx: &mut Ctx<'_>) {
     let Some(name) = ctx.text_of(name_node) else {
         return;
     };
-    let in_container = !ctx.container.is_empty();
+    // A function-like is a method only when directly inside an
+    // impl/trait/class scope; one nested in another function body (a
+    // `fn` inside a method, a `def` inside a method) is a plain function.
     let (kind, container) = if rule.method_like {
-        if in_container {
-            (SymbolKind::Method, ctx.container.last().cloned())
-        } else {
-            (rule.kind, None)
+        match ctx.container.last() {
+            Some(Scope::Container(name)) => (SymbolKind::Method, Some(name.clone())),
+            _ => (rule.kind, None),
         }
     } else if rule.kind == SymbolKind::Method {
-        (SymbolKind::Method, ctx.container.last().cloned())
+        let container = ctx.container.iter().rev().find_map(|scope| match scope {
+            Scope::Container(name) => Some(name.clone()),
+            Scope::InFunction => None,
+        });
+        (SymbolKind::Method, container)
     } else {
         (rule.kind, None)
     };
@@ -365,7 +402,8 @@ fn push_container_scope(node: Node<'_>, kind: &str, ctx: &mut Ctx<'_>) -> bool {
         // `path::To::Type<…>` keeps its path): downstream container joins
         // use the base type name, so generics must not leak into it.
         let base = text.split('<').next().unwrap_or("");
-        ctx.container.push(base.trim().to_string());
+        ctx.container
+            .push(Scope::Container(base.trim().to_string()));
         return true;
     }
     false
@@ -376,7 +414,7 @@ fn collect_references(node: Node<'_>, ctx: &mut Ctx<'_>) {
     if idents.contains(&node.kind())
         && node.child_count() == 0
         && let Some(name) = ctx.text_of(node)
-        && ctx.def_names.iter().any(|n| n == name)
+        && ctx.def_names.contains(name)
         && !ctx.def_name_node_ids.contains(&node.id())
         // A Go struct-field name (`field_identifier` under a
         // `field_declaration`) is a declaration site, not a reference to a
@@ -411,9 +449,15 @@ fn location_of(node: Node<'_>) -> Location {
     }
 }
 
-fn make_parser(file: &Path, lang: Language) -> Result<Parser> {
-    let mut parser = Parser::new();
-    let language: tree_sitter::Language = match lang {
+thread_local! {
+    /// One parser per language per thread (`Parser` is not `Sync`),
+    /// reset between files instead of rebuilt per extraction.
+    static PARSERS: RefCell<HashMap<tree_sitter::Language, Parser>> =
+        RefCell::new(HashMap::new());
+}
+
+fn grammar_for(file: &Path, lang: Language) -> tree_sitter::Language {
+    match lang {
         Language::Rust => tree_sitter_rust::LANGUAGE.into(),
         Language::Python => tree_sitter_python::LANGUAGE.into(),
         Language::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
@@ -429,11 +473,28 @@ fn make_parser(file: &Path, lang: Language) -> Result<Parser> {
             }
         }
         Language::Go => tree_sitter_go::LANGUAGE.into(),
-    };
-    parser
-        .set_language(&language)
-        .context("loading tree-sitter grammar")?;
-    Ok(parser)
+    }
+}
+
+fn parse_source(file: &Path, source: &str, lang: Language) -> Result<Tree> {
+    let language = grammar_for(file, lang);
+    PARSERS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let parser = match cache.entry(language) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let mut parser = Parser::new();
+                parser
+                    .set_language(entry.key())
+                    .context("loading tree-sitter grammar")?;
+                entry.insert(parser)
+            }
+        };
+        parser.reset();
+        parser
+            .parse(source, None)
+            .context("tree-sitter parse produced no tree")
+    })
 }
 
 #[cfg(all(test, feature = "tree-sitter"))]
@@ -595,5 +656,51 @@ fn main() {
         assert_eq!(find("helper").kind, SymbolKind::Function);
         assert_eq!(find("load").kind, SymbolKind::Method);
         assert_eq!(find("load").container.as_deref(), Some("Store"));
+    }
+
+    #[test]
+    fn symbol_paths_carry_the_caller_provided_path() {
+        let source = "fn alpha() {}";
+        let ex = extract(source, "src/a/mod.rs");
+        assert_eq!(ex.symbols[0].path, "src/a/mod.rs");
+        assert_eq!(ex.occurrences[0].path, "src/a/mod.rs");
+    }
+
+    #[test]
+    fn nested_function_likes_are_functions_not_methods() {
+        let source = r#"
+impl Registry {
+    fn build(&self) {
+        fn helper() {}
+    }
+}
+trait Flush {
+    fn flush(&self) {
+        fn inner() {}
+    }
+}
+"#;
+        let ex = extract(source, "nested.rs");
+        let find = |n: &str| ex.symbols.iter().find(|s| s.name == n).unwrap();
+        assert_eq!(find("build").kind, SymbolKind::Method);
+        assert_eq!(find("build").container.as_deref(), Some("Registry"));
+        assert_eq!(find("helper").kind, SymbolKind::Function);
+        assert!(find("helper").container.is_none());
+        assert_eq!(find("flush").kind, SymbolKind::Method);
+        assert_eq!(find("flush").container.as_deref(), Some("Flush"));
+        assert_eq!(find("inner").kind, SymbolKind::Function);
+        assert!(find("inner").container.is_none());
+    }
+
+    #[test]
+    fn python_nested_def_is_function_not_method() {
+        let source =
+            "\nclass Client:\n    def connect(self):\n        def retry():\n            pass\n";
+        let ex = extract(source, "nested.py");
+        let find = |n: &str| ex.symbols.iter().find(|s| s.name == n).unwrap();
+        assert_eq!(find("connect").kind, SymbolKind::Method);
+        assert_eq!(find("connect").container.as_deref(), Some("Client"));
+        assert_eq!(find("retry").kind, SymbolKind::Function);
+        assert!(find("retry").container.is_none());
     }
 }

@@ -68,14 +68,17 @@ impl<'a> Installer<'a> {
         let cdylib = self.builder.build(&art.path)?;
         // 5. D8: temp-load the built dylib's `metadata()` for id/version. No
         //    configure/register (we only read metadata, then drop). The
-        //    `Library` + `Box` must be alive for the `metadata()` call (vtable
-        //    lives in the `Library`); drop both before `place` so the build
-        //    artifact file is free to copy on all platforms.
-        let (_lib, ext_box) = crate::loader::load_dylib(&cdylib)?;
+        //    `LoadedDylib` keeps the `Library` alive for the `metadata()` call
+        //    (vtable lives in the `Library`); drop it before `place` so the
+        //    build artifact file is free to copy on all platforms.
+        let mut loaded = crate::loader::load_dylib(&cdylib)?;
+        let ext_box = loaded
+            .take_extension()
+            .expect("load_dylib always returns an extension");
         let id = ext_box.metadata().id.to_string();
         let version = ext_box.metadata().version.to_string();
         drop(ext_box);
-        drop(_lib);
+        drop(loaded);
         // 6. place (Placer constructed here — id from D8; R3).
         let placer = Placer::new(&id, &self.root);
         let placed = placer.place(&cdylib)?;

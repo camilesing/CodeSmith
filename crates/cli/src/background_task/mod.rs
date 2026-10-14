@@ -124,7 +124,7 @@ pub struct BackgroundTaskRegistry {
     /// Completed task ids waiting for notification injection.
     pending_notifications: VecDeque<String>,
     /// Stall detection patterns for shell commands.
-    stall_patterns: Vec<StallPattern>,
+    stall_patterns: &'static [StallPattern],
     /// Output manager for disk-based output with offset tracking.
     output_mgr: BackgroundTaskOutputManager,
 }
@@ -251,6 +251,9 @@ impl BackgroundTaskRegistry {
         if old_status == new_status && error.is_none() {
             return None;
         }
+        if old_status.is_terminal() {
+            return None;
+        }
         state.status = new_status;
         state.error = error;
 
@@ -279,7 +282,10 @@ impl BackgroundTaskRegistry {
         match state.task_type {
             BackgroundTaskType::Shell => {
                 // ShellManager uses std::sync::Mutex
-                let mut mgr = self.shell_manager.lock().unwrap();
+                let mut mgr = self
+                    .shell_manager
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("shell manager mutex poisoned"))?;
                 mgr.kill(&state.source_id)?;
             }
             BackgroundTaskType::Agent => {
@@ -303,10 +309,19 @@ impl BackgroundTaskRegistry {
     }
 
     /// Background all foreground shell tasks.
+    ///
+    /// Only flags ShellManager to detach its foreground shell(s) on their
+    /// next poll; the detached job is NOT registered here (the registry
+    /// never sees it — registration would have to happen where
+    /// ShellManager consumes the flag). The returned states are the
+    /// already-registered running shell tasks.
     pub fn background_all(&mut self) -> Vec<BackgroundTaskState> {
         // Request ShellManager to background all foreground shells
         {
-            let mut mgr = self.shell_manager.lock().unwrap();
+            let mut mgr = self
+                .shell_manager
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             mgr.request_foreground_background();
         }
 
@@ -345,7 +360,13 @@ impl BackgroundTaskRegistry {
         let output_file = state.output_file.as_ref()?;
         let offset = state.output_offset;
 
-        let (content, new_offset) = self.output_mgr.read_from_offset(output_file, offset).ok()?;
+        let (content, new_offset) = match self.output_mgr.read_from_offset(output_file, offset) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(task_id = %id, error = %e, "failed to read background task output");
+                return None;
+            }
+        };
 
         if new_offset > offset {
             state.output_offset = new_offset;
@@ -411,7 +432,10 @@ impl BackgroundTaskRegistry {
         for (bg_id, shell_id) in shell_ids {
             // Scope the lock so it drops before we mutate self
             let poll_info: Option<(BackgroundTaskStatus, Option<String>, String, Option<i32>)> = {
-                let mut mgr = self.shell_manager.lock().unwrap();
+                let mut mgr = self
+                    .shell_manager
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 match mgr.inspect_job(&shell_id) {
                     Ok(detail) => {
                         let tail = detail.snapshot.stdout_tail.clone();
@@ -452,8 +476,11 @@ impl BackgroundTaskRegistry {
                 {
                     *exit_code = exit_code_val;
                 }
-                if new_status == BackgroundTaskStatus::Failed {
-                    error = Some(format!("exit code {}", exit_code_val.unwrap_or(-1)));
+                if new_status == BackgroundTaskStatus::Failed && error.is_none() {
+                    error = Some(match exit_code_val {
+                        Some(code) => format!("exit code {code}"),
+                        None => "unknown exit code".to_string(),
+                    });
                 }
                 if let Some(r) = self.update_task_status(&bg_id, new_status, error) {
                     results.push(r);
@@ -502,15 +529,16 @@ impl BackgroundTaskRegistry {
             }
         }
 
+        // Durable tasks are not polled yet: nothing registers them (no
+        // `register_durable_task` exists), so they cannot enter the registry.
+        // Polling lands together with durable task registration.
+
         results
     }
 
     /// Check if the tail of shell output looks like an interactive prompt.
     fn looks_like_prompt(&self, tail: &str) -> bool {
-        let last_line = tail.trim_end().lines().last().unwrap_or("");
-        self.stall_patterns
-            .iter()
-            .any(|p| p.pattern.is_match(last_line))
+        shell_bridge::looks_like_prompt(tail, self.stall_patterns)
     }
 }
 
@@ -540,6 +568,43 @@ use codesmith_agent_runtime::tools::handle::truncate_chars;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_registry() -> BackgroundTaskRegistry {
+        let shell = crate::tools::shell::new_shared_shell_manager(PathBuf::from("."));
+        let agents = Arc::new(tokio::sync::RwLock::new(
+            crate::tools::subagent::SubAgentManager::new(PathBuf::from("."), 1),
+        ));
+        BackgroundTaskRegistry::new(shell, agents, None, std::env::temp_dir())
+    }
+
+    #[test]
+    fn terminal_tasks_do_not_retransition_or_renotify() {
+        let mut reg = test_registry();
+        let state = reg.register_dream_task(PathBuf::from("/tmp/mem.bin"));
+        assert!(
+            reg.update_task_status(
+                &state.id,
+                BackgroundTaskStatus::Failed,
+                Some("exit code 1".to_string())
+            )
+            .is_some()
+        );
+        assert_eq!(reg.drain_notifications().len(), 1);
+        let ended_at = reg.get_task(&state.id).expect("task kept").ended_at;
+        assert!(
+            reg.update_task_status(&state.id, BackgroundTaskStatus::Cancelled, None)
+                .is_none(),
+            "a terminal status must not transition again"
+        );
+        assert!(
+            reg.drain_notifications().is_empty(),
+            "no duplicate completion notification"
+        );
+        let after = reg.get_task(&state.id).expect("task kept");
+        assert_eq!(after.status, BackgroundTaskStatus::Failed);
+        assert_eq!(after.error.as_deref(), Some("exit code 1"));
+        assert_eq!(after.ended_at, ended_at, "ended_at must not be overwritten");
+    }
 
     #[test]
     fn summarize_command_short_command_unchanged() {

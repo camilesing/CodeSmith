@@ -3,7 +3,6 @@ name = "codesmith-tools"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-readme.workspace = true
 keywords = ["llm", "agent", "tools"]
 categories = ["development-tools"]
 license.workspace = true

@@ -6,7 +6,7 @@
 //! mode.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -17,12 +17,21 @@ use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
 
 const ACP_PROTOCOL_VERSION: u64 = 1;
 
-pub async fn run_acp_server(config: Config, model: String, default_cwd: PathBuf) -> Result<()> {
+/// Upper bound on tracked sessions; the oldest is evicted beyond it.
+const MAX_ACP_SESSIONS: usize = 128;
+
+/// Stdout is shared between the read loop and spawned prompt tasks, which
+/// write `session/update` notifications and their JSON-RPC response as the
+/// prompt completes.
+type SharedWriter<W> = Arc<tokio::sync::Mutex<W>>;
+
+pub async fn run_acp_server(config: Config, model: String) -> Result<()> {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
     let mut reader = BufReader::new(stdin).lines();
-    let mut writer = tokio::io::BufWriter::new(stdout);
-    let mut server = AcpServer::new(config, model, default_cwd);
+    let writer: SharedWriter<tokio::io::BufWriter<tokio::io::Stdout>> =
+        Arc::new(tokio::sync::Mutex::new(tokio::io::BufWriter::new(stdout)));
+    let mut server = AcpServer::new(config, model);
 
     while let Some(line) = reader.next_line().await? {
         if line.trim().is_empty() {
@@ -32,15 +41,17 @@ pub async fn run_acp_server(config: Config, model: String, default_cwd: PathBuf)
         let message: Value = match serde_json::from_str(&line) {
             Ok(value) => value,
             Err(err) => {
-                write_jsonrpc_error(&mut writer, None, -32700, format!("invalid json: {err}"))
+                let mut writer = writer.lock().await;
+                write_jsonrpc_error(&mut *writer, None, -32700, format!("invalid json: {err}"))
                     .await?;
                 continue;
             }
         };
 
         if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+            let mut writer = writer.lock().await;
             write_jsonrpc_error(
-                &mut writer,
+                &mut *writer,
                 message.get("id").cloned(),
                 -32600,
                 "jsonrpc version must be 2.0",
@@ -53,26 +64,32 @@ pub async fn run_acp_server(config: Config, model: String, default_cwd: PathBuf)
         let method = match message.get("method").and_then(Value::as_str) {
             Some(method) => method,
             None => {
-                write_jsonrpc_error(&mut writer, id, -32600, "missing method").await?;
+                let mut writer = writer.lock().await;
+                write_jsonrpc_error(&mut *writer, id, -32600, "missing method").await?;
                 continue;
             }
         };
         let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
 
-        match server.handle_request(method, params, &mut writer).await {
+        match server.handle_request(method, params, id.clone(), writer.clone()) {
             Ok(AcpDispatch::Response(result)) => {
                 if let Some(id) = id {
-                    write_jsonrpc_result(&mut writer, id, result).await?;
+                    let mut writer = writer.lock().await;
+                    write_jsonrpc_result(&mut *writer, id, result).await?;
                 }
             }
+            // The spawned prompt task writes its own response/error lines.
+            Ok(AcpDispatch::Spawned) => {}
             Ok(AcpDispatch::Shutdown) => {
                 if let Some(id) = id {
-                    write_jsonrpc_result(&mut writer, id, json!(null)).await?;
+                    let mut writer = writer.lock().await;
+                    write_jsonrpc_result(&mut *writer, id, json!(null)).await?;
                 }
                 break;
             }
             Err(err) => {
-                write_jsonrpc_error(&mut writer, id, err.code, err.message).await?;
+                let mut writer = writer.lock().await;
+                write_jsonrpc_error(&mut *writer, id, err.code, err.message).await?;
             }
         }
     }
@@ -83,16 +100,18 @@ pub async fn run_acp_server(config: Config, model: String, default_cwd: PathBuf)
 struct AcpServer {
     config: Config,
     model: String,
-    default_cwd: PathBuf,
     sessions: HashMap<String, AcpSession>,
 }
 
 struct AcpSession {
-    cwd: PathBuf,
+    /// In-flight prompt task for this session, if any.
+    prompt_task: Option<tokio::task::AbortHandle>,
 }
 
 enum AcpDispatch {
     Response(Value),
+    /// A prompt task was spawned; it will answer the request itself.
+    Spawned,
     Shutdown,
 }
 
@@ -102,23 +121,23 @@ struct AcpError {
 }
 
 impl AcpServer {
-    fn new(config: Config, model: String, default_cwd: PathBuf) -> Self {
+    fn new(config: Config, model: String) -> Self {
         Self {
             config,
             model,
-            default_cwd,
             sessions: HashMap::new(),
         }
     }
 
-    async fn handle_request<W>(
+    fn handle_request<W>(
         &mut self,
         method: &str,
         params: Value,
-        writer: &mut W,
+        id: Option<Value>,
+        writer: SharedWriter<W>,
     ) -> std::result::Result<AcpDispatch, AcpError>
     where
-        W: AsyncWrite + Unpin,
+        W: AsyncWrite + Unpin + Send + 'static,
     {
         match method {
             "initialize" => Ok(AcpDispatch::Response(initialize_result(
@@ -126,103 +145,138 @@ impl AcpServer {
             ))),
             "session/new" => Ok(AcpDispatch::Response(self.new_session(params)?)),
             "session/prompt" => {
-                self.prompt(params, writer).await?;
-                Ok(AcpDispatch::Response(json!({ "stopReason": "end_turn" })))
+                self.spawn_prompt(id, params, writer)?;
+                Ok(AcpDispatch::Spawned)
             }
-            "session/cancel" => Ok(AcpDispatch::Response(json!(null))),
+            "session/cancel" => {
+                if let Some(session_id) = params.get("sessionId").and_then(Value::as_str) {
+                    self.cancel_session(session_id);
+                }
+                Ok(AcpDispatch::Response(json!(null)))
+            }
             "shutdown" => Ok(AcpDispatch::Shutdown),
             _ => Err(AcpError::method_not_found(method)),
         }
     }
 
-    fn new_session(&mut self, params: Value) -> std::result::Result<Value, AcpError> {
-        let cwd = params
-            .get("cwd")
-            .and_then(Value::as_str)
-            .map(PathBuf::from)
-            .unwrap_or_else(|| self.default_cwd.clone());
+    fn new_session(&mut self, _params: Value) -> std::result::Result<Value, AcpError> {
         let session_id = format!("codesmith-{}", uuid::Uuid::new_v4());
-        self.sessions.insert(session_id.clone(), AcpSession { cwd });
+        self.sessions
+            .insert(session_id.clone(), AcpSession { prompt_task: None });
         Ok(json!({ "sessionId": session_id }))
     }
 
-    async fn prompt<W>(&self, params: Value, writer: &mut W) -> std::result::Result<(), AcpError>
+    /// Validate the prompt request, then run the LLM call on its own task so
+    /// the read loop stays free to accept `session/cancel` (and other
+    /// requests) while the prompt is in flight. The task owns the response
+    /// for `id`.
+    fn spawn_prompt<W>(
+        &mut self,
+        id: Option<Value>,
+        params: Value,
+        writer: SharedWriter<W>,
+    ) -> std::result::Result<(), AcpError>
     where
-        W: AsyncWrite + Unpin,
+        W: AsyncWrite + Unpin + Send + 'static,
     {
         let session_id = params
             .get("sessionId")
             .and_then(Value::as_str)
-            .ok_or_else(|| AcpError::invalid_params("sessionId is required"))?;
-        let session = self
-            .sessions
-            .get(session_id)
-            .ok_or_else(|| AcpError::invalid_params("unknown sessionId"))?;
+            .ok_or_else(|| AcpError::invalid_params("sessionId is required"))?
+            .to_string();
+        if !self.sessions.contains_key(&session_id) {
+            return Err(AcpError::invalid_params("unknown sessionId"));
+        }
         let prompt = extract_prompt_text(params.get("prompt"))
             .filter(|text| !text.trim().is_empty())
             .ok_or_else(|| AcpError::invalid_params("prompt must include text content"))?;
 
-        let output = self
-            .run_prompt(&prompt, &session.cwd)
-            .await
-            .map_err(|err| AcpError::internal(err.to_string()))?;
-
-        if !output.is_empty() {
-            write_session_update(writer, session_id, output)
-                .await
-                .map_err(|err| AcpError::internal(err.to_string()))?;
+        let config = self.config.clone();
+        let model = self.model.clone();
+        let task_session_id = session_id.clone();
+        // One in-flight prompt per session: a new prompt supersedes (aborts)
+        // any stale one still running.
+        let task = tokio::spawn(async move {
+            let output = match run_prompt(&config, &model, &prompt).await {
+                Ok(output) => output,
+                Err(err) => {
+                    let mut writer = writer.lock().await;
+                    let _ = write_jsonrpc_error(&mut *writer, id, -32603, err.to_string()).await;
+                    return;
+                }
+            };
+            let mut writer = writer.lock().await;
+            if !output.is_empty() {
+                let _ = write_session_update(&mut *writer, &task_session_id, output).await;
+            }
+            if let Some(id) = id {
+                let _ = write_jsonrpc_result(&mut *writer, id, json!({ "stopReason": "end_turn" }))
+                    .await;
+            }
+        });
+        if let Some(session) = self.sessions.get_mut(&session_id) {
+            if let Some(previous) = session.prompt_task.replace(task.abort_handle()) {
+                previous.abort();
+            }
         }
-
         Ok(())
     }
 
-    async fn run_prompt(&self, prompt: &str, cwd: &PathBuf) -> Result<String> {
-        // No ScopedCurrentDir: the guard mutated the PROCESS-wide cwd and
-        // held that change across the awaited LLM calls, so any concurrent
-        // runtime work resolving a relative path observed the wrong session
-        // directory. `resolve_cli_auto_route` takes no cwd (heuristic /
-        // router-model only) and the request below is fully explicit, so
-        // the chdir served nothing.
-        let _ = cwd;
-        let client = crate::core::engine::resolve_llm_client(&self.config)?;
-        let route =
-            crate::main_root::resolve_cli_auto_route(&self.config, &self.model, prompt).await;
-        let reasoning_effort = route
-            .reasoning_effort
-            .map(|effort| effort.as_setting().to_string());
-
-        let request = MessageRequest {
-            model: route.model,
-            messages: vec![Message {
-                role: "user".to_string(),
-                content: vec![ContentBlock::Text {
-                    text: prompt.to_string(),
-                    cache_control: None,
-                }],
-            }],
-            max_tokens: 4096,
-            system: Some(SystemPrompt::Text(
-                "You are a coding assistant inside an ACP-compatible editor. Give concise, actionable responses.".to_string(),
-            )),
-            tools: None,
-            tool_choice: None,
-            metadata: None,
-            thinking: None,
-            reasoning_effort,
-            stream: Some(false),
-            temperature: Some(0.2),
-            top_p: Some(0.9),
-        };
-
-        let response = client.create_message(request).await?;
-        let mut output = String::new();
-        for block in response.content {
-            if let ContentBlock::Text { text, .. } = block {
-                output.push_str(&text);
-            }
+    /// Abort the in-flight prompt task for `session_id`, if any. Dropping
+    /// the task's future cancels the awaited LLM call.
+    fn cancel_session(&mut self, session_id: &str) {
+        if let Some(session) = self.sessions.get_mut(session_id)
+            && let Some(task) = session.prompt_task.take()
+        {
+            task.abort();
         }
-        Ok(output)
     }
+}
+
+async fn run_prompt(config: &Config, model: &str, prompt: &str) -> Result<String> {
+    // No ScopedCurrentDir: the guard mutated the PROCESS-wide cwd and
+    // held that change across the awaited LLM calls, so any concurrent
+    // runtime work resolving a relative path observed the wrong session
+    // directory. `resolve_cli_auto_route` takes no cwd (heuristic /
+    // router-model only) and the request below is fully explicit, so
+    // the chdir served nothing.
+    let client = crate::core::engine::resolve_llm_client(config)?;
+    let route = crate::main_root::resolve_cli_auto_route(config, model, prompt).await;
+    let reasoning_effort = route
+        .reasoning_effort
+        .map(|effort| effort.as_setting().to_string());
+
+    let request = MessageRequest {
+        model: route.model,
+        messages: vec![Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: prompt.to_string(),
+                cache_control: None,
+            }],
+        }],
+        max_tokens: 4096,
+        system: Some(SystemPrompt::Text(
+            "You are a coding assistant inside an ACP-compatible editor. Give concise, actionable responses.".to_string(),
+        )),
+        tools: None,
+        tool_choice: None,
+        metadata: None,
+        thinking: None,
+        reasoning_effort,
+        stream: Some(false),
+        temperature: Some(0.2),
+        top_p: Some(0.9),
+    };
+
+    let response = client.create_message(request).await?;
+    let mut output = String::new();
+    for block in response.content {
+        if let ContentBlock::Text { text, .. } = block {
+            output.push_str(&text);
+        }
+    }
+    Ok(output)
 }
 
 impl AcpError {
@@ -237,13 +291,6 @@ impl AcpError {
         Self {
             code: -32601,
             message: format!("method not found: {method}"),
-        }
-    }
-
-    fn internal(message: impl Into<String>) -> Self {
-        Self {
-            code: -32603,
-            message: message.into(),
         }
     }
 }

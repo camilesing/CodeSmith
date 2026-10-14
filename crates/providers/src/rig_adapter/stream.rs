@@ -420,6 +420,19 @@ where
         self.saw_tool_use = true;
         let index = self.next_index;
         self.next_index = self.next_index.saturating_add(1);
+        // Record the block — `input_delivered` is true because the Start
+        // payload already carried the complete input, so a wire re-delivery
+        // for this id (some gateways resend the complete call at finish) is
+        // fully suppressed instead of opening a duplicate block that the
+        // engine would execute twice.
+        self.tool_blocks_by_id.insert(
+            id.clone(),
+            ToolBlockRecord {
+                index,
+                input_delivered: true,
+                reopened: false,
+            },
+        );
         self.pending.push_back(Ok(StreamEvent::ContentBlockStart {
             index,
             content_block: ContentBlockStart::ToolUse {
@@ -484,9 +497,9 @@ where
 
     /// Emit the deferred `ContentBlockStart` for the current delta tool-use
     /// block, if not already started, using the buffered name (or empty).
-    /// Returns the block's index (or `u32::MAX` if no tool-use block is
-    /// current — unreachable from the dispatcher).
-    fn start_tool_use_if_needed(&mut self) -> u32 {
+    /// Returns the block's index, or `None` when no tool-use block is
+    /// current (unreachable from the dispatcher).
+    fn start_tool_use_if_needed(&mut self) -> Option<u32> {
         let Some(CurrentBlock::ToolUse {
             index,
             id,
@@ -495,7 +508,7 @@ where
             ..
         }) = self.current.as_mut()
         else {
-            return u32::MAX;
+            return None;
         };
         if !*started {
             *started = true;
@@ -514,7 +527,7 @@ where
                 },
             }));
         }
-        *index
+        Some(*index)
     }
 
     fn enqueue_text_delta(&mut self, text: String) {
@@ -594,13 +607,14 @@ where
                     }
                     ToolCallDeltaContent::Delta(args) => {
                         self.ensure_tool_use_delta(id);
-                        let index = self.start_tool_use_if_needed();
-                        if let Some(CurrentBlock::ToolUse { id: cur_id, .. }) = &self.current
-                            && let Some(record) = self.tool_blocks_by_id.get_mut(cur_id)
-                        {
-                            record.input_delivered = true;
+                        if let Some(index) = self.start_tool_use_if_needed() {
+                            if let Some(CurrentBlock::ToolUse { id: cur_id, .. }) = &self.current
+                                && let Some(record) = self.tool_blocks_by_id.get_mut(cur_id)
+                            {
+                                record.input_delivered = true;
+                            }
+                            self.enqueue_input_json_delta(index, args);
                         }
-                        self.enqueue_input_json_delta(index, args);
                     }
                 }
             }
@@ -783,6 +797,32 @@ mod tests {
         );
     }
 
+    /// A gateway that re-delivers the complete `ToolCall` for an id that only
+    /// ever arrived as a complete call must not open a second block: the
+    /// fresh-block path records the id as input-delivered, so the duplicate
+    /// is fully suppressed instead of executed twice.
+    #[tokio::test]
+    async fn duplicate_complete_tool_call_is_suppressed() {
+        let resp = raw_stream(vec![
+            RawStreamingChoice::ToolCall(RawStreamingToolCall::new(
+                "call_x".to_string(),
+                "bash".to_string(),
+                serde_json::json!({"command": "ls"}),
+            )),
+            RawStreamingChoice::ToolCall(RawStreamingToolCall::new(
+                "call_x".to_string(),
+                "bash".to_string(),
+                serde_json::json!({"command": "ls"}),
+            )),
+            RawStreamingChoice::FinalResponse(FakeFinal(RigUsage::new())),
+        ]);
+        let events = collect(resp).await;
+        assert_eq!(
+            tool_use_starts(&events),
+            vec![(0, "call_x".to_string(), "bash".to_string())]
+        );
+    }
+
     /// Parallel calls (A deltas, B deltas, then completes A and B in wire
     /// order): two blocks with distinct real ids — the out-of-order
     /// completes must reconcile with the already-closed delta blocks, not
@@ -828,11 +868,6 @@ mod tests {
         );
     }
 
-    /// A delta block closed while still deferred (Name(A), Name(B), …) that
-    /// never received argument deltas gets its authoritative arguments
-    /// back-filled via a synthetic InputJsonDelta on its (already stopped)
-    /// block index — the engine keeps the build alive after
-    /// ContentBlockStop and prefers `input_buf` at finalize time.
     /// Stop reason carried on the (last) MessageDelta, if any.
     fn message_delta_stop_reason(items: &[AnyResult<StreamEvent>]) -> Option<String> {
         items.iter().rev().find_map(|item| match item {

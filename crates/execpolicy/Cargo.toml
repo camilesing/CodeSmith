@@ -3,7 +3,6 @@ name = "codesmith-execpolicy"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-readme.workspace = true
 keywords = ["policy", "starlark", "sandbox", "security"]
 categories = ["development-tools"]
 license.workspace = true

@@ -43,11 +43,11 @@ pub fn session_files(limit: usize) -> Vec<PathBuf> {
     files.into_iter().map(|(_, path)| path).collect()
 }
 
-fn messages(path: &Path) -> Option<Vec<Value>> {
+/// Parse one session file. Borrowing the messages out of the owned `Value`
+/// (instead of cloning the array) keeps the read to the parse itself.
+fn parsed(path: &Path) -> Option<Value> {
     let content = std::fs::read_to_string(path).ok()?;
-    let value: Value = serde_json::from_str(&content).ok()?;
-    let messages = value.get("messages")?.as_array()?.clone();
-    Some(messages)
+    serde_json::from_str(&content).ok()
 }
 
 /// Every shell command recorded in one session file, in order.
@@ -59,7 +59,9 @@ pub fn shell_commands(path: &Path) -> Vec<String> {
     const SHELL_TOOLS: &[&str] = &["exec_shell", "shell", "bash", "run_shell"];
 
     let mut commands = Vec::new();
-    for message in messages(path).unwrap_or_default() {
+    let value = parsed(path).unwrap_or(Value::Null);
+    let messages = value.get("messages").and_then(Value::as_array);
+    for message in messages.into_iter().flatten() {
         let Some(blocks) = message.get("content").and_then(Value::as_array) else {
             continue;
         };
@@ -96,7 +98,9 @@ pub fn skill_activations(path: &Path) -> Vec<String> {
     const MARKER: &str = "# Skill: ";
 
     let mut names = Vec::new();
-    for message in messages(path).unwrap_or_default() {
+    let value = parsed(path).unwrap_or(Value::Null);
+    let messages = value.get("messages").and_then(Value::as_array);
+    for message in messages.into_iter().flatten() {
         // The marker counts activations of the instruction the engine
         // injects into USER messages — without the role/type gates, a
         // skill body that mentions the marker, an assistant reply echoing

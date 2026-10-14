@@ -73,7 +73,7 @@ impl KnowledgePrefetch {
         let mut budget = self.session_budget.lock().await;
         for mem in memories {
             surfaced.insert(mem.path.clone());
-            budget.consume(mem.byte_count);
+            budget.try_consume(mem.byte_count);
         }
     }
 }

@@ -21,6 +21,40 @@ fn env_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Snapshot the named env vars and restore them on drop — including during
+/// unwind, so a panicking test can't leak its scrubbed/overridden env into
+/// the shared test process.
+#[cfg(unix)]
+struct EnvRestore {
+    snapshots: Vec<(&'static str, Option<std::ffi::OsString>)>,
+}
+
+#[cfg(unix)]
+impl EnvRestore {
+    fn new(names: &[&'static str]) -> Self {
+        Self {
+            snapshots: names.iter().map(|n| (*n, std::env::var_os(n))).collect(),
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for EnvRestore {
+    fn drop(&mut self) {
+        // SAFETY: EnvRestore values are always created while the env_lock
+        // guard is held and drop before it (reverse declaration order), so
+        // env access stays serialized.
+        for (name, value) in &self.snapshots {
+            unsafe {
+                match value {
+                    Some(v) => std::env::set_var(name, v),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
+}
+
 /// Construct a shared shell manager backed by the runtime's no-op terminal
 /// controller. Tests don't need crossterm raw-mode save/restore; the
 /// crossterm-backed constructor lives in the TUI binary.
@@ -179,8 +213,8 @@ fn exec_shell_auto_allows_only_when_sandbox_would_enforce() {
     );
 }
 
-#[test]
-fn shell_result_metadata_reports_sandbox_effective_state() {
+#[tokio::test]
+async fn shell_result_metadata_reports_sandbox_effective_state() {
     let tmp = tempdir().expect("tempdir");
     let ctx = ToolContext::new(tmp.path());
     let mut result = failed_network_shell_result("000", "");
@@ -199,7 +233,8 @@ fn shell_result_metadata_reports_sandbox_effective_state() {
             stderr_total_len: 0,
         },
         &ctx,
-    );
+    )
+    .await;
 
     let metadata = tool_result.metadata.expect("metadata");
     assert_eq!(metadata["sandbox_requested"], json!(true));
@@ -214,12 +249,18 @@ fn shell_result_metadata_reports_sandbox_effective_state() {
 #[test]
 #[cfg(unix)]
 fn shell_execution_scrubs_git_fsmonitor_and_hookspath() {
-    let _guard = env_lock().lock().expect("env lock");
-    let previous_count = std::env::var_os("GIT_CONFIG_COUNT");
-    let previous_key0 = std::env::var_os("GIT_CONFIG_KEY_0");
-    let previous_value0 = std::env::var_os("GIT_CONFIG_VALUE_0");
-    let previous_key1 = std::env::var_os("GIT_CONFIG_KEY_1");
-    let previous_value1 = std::env::var_os("GIT_CONFIG_VALUE_1");
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _env = EnvRestore::new(&[
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_KEY_0",
+        "GIT_CONFIG_VALUE_0",
+        "GIT_CONFIG_KEY_1",
+        "GIT_CONFIG_VALUE_1",
+    ]);
+    // SAFETY: the env_lock guard serializes env access; no other test reads
+    // these vars while held.
     unsafe {
         std::env::remove_var("GIT_CONFIG_COUNT");
         std::env::remove_var("GIT_CONFIG_KEY_0");
@@ -243,29 +284,6 @@ fn shell_execution_scrubs_git_fsmonitor_and_hookspath() {
         )
         .expect("execute");
 
-    unsafe {
-        match previous_count {
-            Some(value) => std::env::set_var("GIT_CONFIG_COUNT", value),
-            None => std::env::remove_var("GIT_CONFIG_COUNT"),
-        }
-        match previous_key0 {
-            Some(value) => std::env::set_var("GIT_CONFIG_KEY_0", value),
-            None => std::env::remove_var("GIT_CONFIG_KEY_0"),
-        }
-        match previous_value0 {
-            Some(value) => std::env::set_var("GIT_CONFIG_VALUE_0", value),
-            None => std::env::remove_var("GIT_CONFIG_VALUE_0"),
-        }
-        match previous_key1 {
-            Some(value) => std::env::set_var("GIT_CONFIG_KEY_1", value),
-            None => std::env::remove_var("GIT_CONFIG_KEY_1"),
-        }
-        match previous_value1 {
-            Some(value) => std::env::set_var("GIT_CONFIG_VALUE_1", value),
-            None => std::env::remove_var("GIT_CONFIG_VALUE_1"),
-        }
-    }
-
     assert_eq!(result.status, ShellStatus::Completed);
     let lines: Vec<&str> = result.stdout.trim_end_matches('\n').split('\n').collect();
     assert_eq!(lines[0], "2");
@@ -286,8 +304,12 @@ fn shell_execution_scrubs_git_fsmonitor_and_hookspath() {
 #[test]
 #[cfg(unix)]
 fn shell_execution_scrubs_parent_env_and_keeps_explicit_env() {
-    let _guard = env_lock().lock().expect("env lock");
-    let previous = std::env::var_os("DEEPSEEK_CHILD_ENV_SHELL_SECRET");
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _env = EnvRestore::new(&["DEEPSEEK_CHILD_ENV_SHELL_SECRET"]);
+    // SAFETY: the env_lock guard serializes env access; no other test reads
+    // this var while held.
     unsafe {
         std::env::set_var("DEEPSEEK_CHILD_ENV_SHELL_SECRET", "parent-secret");
     }
@@ -312,15 +334,6 @@ fn shell_execution_scrubs_parent_env_and_keeps_explicit_env() {
             extra,
         )
         .expect("execute");
-
-    match previous {
-        Some(value) => unsafe {
-            std::env::set_var("DEEPSEEK_CHILD_ENV_SHELL_SECRET", value);
-        },
-        None => unsafe {
-            std::env::remove_var("DEEPSEEK_CHILD_ENV_SHELL_SECRET");
-        },
-    }
 
     assert_eq!(result.status, ShellStatus::Completed);
     assert_eq!(result.stdout, "unset\nexplicit-value\n");
@@ -569,7 +582,36 @@ fn network_restricted_hint_ignores_local_failures() {
 }
 
 #[test]
-fn shell_delta_result_surfaces_network_restricted_hint() {
+fn network_restricted_hint_requires_corroborating_failure_symptom() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = network_restricted_context(tmp.path());
+    // A sandboxed failure with no output and a plain exit code could be a
+    // crash or a silent `exit 1`; that alone must not claim network denial.
+    let result = failed_network_shell_result("", "");
+
+    assert!(
+        shell_network_restricted_hint(&ctx, "curl -s https://api.github.com", &result).is_none()
+    );
+}
+
+#[test]
+fn network_restricted_hint_matches_subcommand_not_argument_text() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = network_restricted_context(tmp.path());
+    let result = failed_network_shell_result("", "couldn't connect to host");
+
+    assert!(
+        shell_network_restricted_hint(&ctx, "git clone https://example.com/repo", &result)
+            .is_some()
+    );
+    // "clone" appears only inside the commit message argument.
+    assert!(
+        shell_network_restricted_hint(&ctx, "git commit -m \"fix clone bug\"", &result).is_none()
+    );
+}
+
+#[tokio::test]
+async fn shell_delta_result_surfaces_network_restricted_hint() {
     let tmp = tempdir().expect("tempdir");
     let ctx = network_restricted_context(tmp.path());
     let result = failed_network_shell_result("000", "");
@@ -582,7 +624,8 @@ fn shell_delta_result_surfaces_network_restricted_hint() {
             stderr_total_len: 0,
         },
         &ctx,
-    );
+    )
+    .await;
 
     assert!(!tool_result.success);
     assert!(tool_result.content.starts_with("Shell command blocked"));
@@ -595,8 +638,8 @@ fn shell_delta_result_surfaces_network_restricted_hint() {
     );
 }
 
-#[test]
-fn shell_delta_result_includes_cargo_failure_summary() {
+#[tokio::test]
+async fn shell_delta_result_includes_cargo_failure_summary() {
     let tmp = tempdir().expect("tempdir");
     let ctx = ToolContext::new(tmp.path());
     let result = ShellResult {
@@ -632,7 +675,8 @@ fn shell_delta_result_includes_cargo_failure_summary() {
             stderr_total_len: 0,
         },
         &ctx,
-    );
+    )
+    .await;
 
     let metadata = tool_result.metadata.expect("metadata");
     assert_eq!(
@@ -653,8 +697,8 @@ fn shell_delta_result_includes_cargo_failure_summary() {
     );
 }
 
-#[test]
-fn shell_delta_result_keeps_existing_summary_for_generic_cargo_failure() {
+#[tokio::test]
+async fn shell_delta_result_keeps_existing_summary_for_generic_cargo_failure() {
     let tmp = tempdir().expect("tempdir");
     let ctx = ToolContext::new(tmp.path());
     let result = ShellResult {
@@ -690,7 +734,8 @@ fn shell_delta_result_keeps_existing_summary_for_generic_cargo_failure() {
             stderr_total_len: 0,
         },
         &ctx,
-    );
+    )
+    .await;
 
     let metadata = tool_result.metadata.expect("metadata");
     assert!(metadata.get("cargo_failure_summary").is_none());
@@ -1250,10 +1295,7 @@ fn session_cwd_capture_rejects_outside_workspace() {
     let outside = std::env::temp_dir().join("codesmith-p2-6-reject-probe");
     std::fs::create_dir_all(&outside).expect("mkdir");
 
-    let mut stdout = format!("{}\n", CWD_MARKER_PREFIX).replace(
-        &format!("{CWD_MARKER_PREFIX}\n"),
-        &format!("{CWD_MARKER_PREFIX}{}\n", outside.display()),
-    );
+    let mut stdout = format!("{CWD_MARKER_PREFIX}{}\n", outside.display());
     let mut stderr = String::new();
     assert!(
         apply_session_cwd_capture(&ctx, &mut stdout, &mut stderr, tmp.path()).is_none(),
@@ -1698,8 +1740,8 @@ impl codesmith_agent_runtime::host_services::ShellManagerApi for StaleInspectMan
 /// previously spilled FULL view with a strictly worse one. The spill must be
 /// skipped so the fuller file survives (no footer rather than a degraded
 /// spill).
-#[test]
-fn test_spill_task_full_output_skips_stale_detail() {
+#[tokio::test]
+async fn test_spill_task_full_output_skips_stale_detail() {
     let tmp = tempdir().expect("tempdir");
     let _spill_root = TestSpillRoot::new(tmp.path());
     let mut ctx = ToolContext::new(tmp.path());
@@ -1710,7 +1752,7 @@ fn test_spill_task_full_output_skips_stale_detail() {
     let path = codesmith_agent_runtime::tools::truncate::write_spillover("stale-task", &full)
         .expect("prime full spill");
 
-    let spill = spill_task_full_output(&ctx, "stale-task");
+    let spill = spill_task_full_output(&ctx, "stale-task").await;
     assert!(
         spill.is_none(),
         "stale detail must not spill over the full file"

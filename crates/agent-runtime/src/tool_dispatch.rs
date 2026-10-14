@@ -106,7 +106,10 @@ pub trait ToolDispatcher: Send + Sync {
     /// `sandbox_override` is a serialized `SandboxPolicy`
     /// (`serde_json::Value`) applied when retrying after an elevated-sandbox
     /// approval. `None` uses the registry's default context. The host
-    /// deserializes the value back into its concrete sandbox-policy type.
+    /// deserializes the value back into its concrete sandbox-policy type;
+    /// on deserialization failure the host MUST abort the execution with an
+    /// error — falling back to the default (typically less strict) policy
+    /// would silently degrade sandboxing on a malformed override.
     async fn execute(
         &self,
         name: &str,

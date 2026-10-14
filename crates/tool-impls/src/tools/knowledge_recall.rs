@@ -1,7 +1,7 @@
 //! `knowledge_recall` tool — explicit memory retrieval by the model.
 //!
 //! Supplements the automatic prefetch with manual recall. The model can
-//! invoke this when it needs specific memory content that wasn surfaced
+//! invoke this when it needs specific memory content that wasn't surfaced
 //! by the prefetch or when it wants to search memories by keyword.
 
 use async_trait::async_trait;
@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use codesmith_agent_runtime::knowledge::age::{memory_age_label, memory_freshness_text};
 use codesmith_agent_runtime::knowledge::budget::{MAX_BYTES_PER_MEMORY, MAX_LINES_PER_MEMORY};
-use codesmith_agent_runtime::knowledge::scan::scan_memory_files;
+use codesmith_agent_runtime::knowledge::scan::{MemoryHeader, scan_memory_files};
 
 use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str,
@@ -64,87 +64,105 @@ impl ToolSpec for KnowledgeRetrievalTool {
             )
         })?;
 
-        let headers = scan_memory_files(memory_dir);
-        if headers.is_empty() {
-            return Ok(ToolResult::success(
-                "No memory files found in the memory directory.",
-            ));
-        }
-
-        // Filter headers by query matching filename or description.
-        let matching: Vec<_> = headers
-            .iter()
-            .filter(|h| {
-                h.filename.to_lowercase().contains(&query_lower)
-                    || h.description
-                        .as_deref()
-                        .is_some_and(|d| d.to_lowercase().contains(&query_lower))
-            })
-            .collect();
-
-        if matching.is_empty() {
-            return Ok(ToolResult::success(format!(
-                "No memories matching '{}'. Available memories: {}",
-                query,
-                headers
-                    .iter()
-                    .map(|h| h.filename.clone())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )));
-        }
-
-        // Read and format matching memories (up to 3 for manual recall).
-        let mut output = String::new();
-        for header in matching.iter().take(3) {
-            match std::fs::read_to_string(&header.file_path) {
-                Ok(content) => {
-                    let (_fm, body) =
-                        codesmith_agent_runtime::knowledge::scan::parse_frontmatter(&content);
-                    let age_label = memory_age_label(header.mtime_ms);
-                    let freshness = memory_freshness_text(header.mtime_ms);
-
-                    // Truncate body.
-                    let mut lines: Vec<&str> = body.lines().collect();
-                    let truncated = lines.len() > MAX_LINES_PER_MEMORY;
-                    if truncated {
-                        lines.truncate(MAX_LINES_PER_MEMORY);
-                    }
-                    let mut body_text = lines.join("\n");
-                    if body_text.len() > MAX_BYTES_PER_MEMORY {
-                        let cutoff =
-                            codesmith_agent_runtime::knowledge::entrypoint::previous_char_boundary(
-                                &body_text,
-                                MAX_BYTES_PER_MEMORY,
-                            );
-                        body_text = format!("{}[truncated]", &body_text[..cutoff]);
-                    }
-
-                    output.push_str(&format!(
-                        "[Memory: {}, last modified {}]\n",
-                        header.filename, age_label
-                    ));
-                    if !freshness.is_empty() {
-                        output.push_str(&format!("{}\n", freshness));
-                    }
-                    output.push_str(&body_text);
-                    if truncated {
-                        output.push_str("\n[truncated: content exceeds memory budget]");
-                    }
-                    output.push_str("\n\n");
-                }
-                // A matching memory that cannot be read (permissions, file
-                // removed between scan and read) must not silently vanish —
-                // the model needs to know recall was degraded.
-                Err(err) => {
-                    output.push_str(&format!(
-                        "[Memory: {} — failed to read: {err}]\n\n",
-                        header.filename
-                    ));
-                }
+        let dir = memory_dir.clone();
+        let query_text = query.to_string();
+        let output = tokio::task::spawn_blocking(move || {
+            let headers = scan_memory_files(&dir);
+            if headers.is_empty() {
+                return "No memory files found in the memory directory.".to_string();
             }
-        }
+
+            // Filter headers by query matching filename or description.
+            let matching: Vec<MemoryHeader> = headers
+                .iter()
+                .filter(|h| {
+                    h.filename.to_lowercase().contains(&query_lower)
+                        || h.description
+                            .as_deref()
+                            .is_some_and(|d| d.to_lowercase().contains(&query_lower))
+                })
+                .cloned()
+                .collect();
+
+            if matching.is_empty() {
+                return format!(
+                    "No memories matching '{}'. Available memories: {}",
+                    query_text,
+                    headers
+                        .iter()
+                        .map(|h| h.filename.clone())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+
+            // Read and format matching memories (up to 3 for manual recall).
+            format_matching_memories(&matching)
+        })
+        .await
+        .map_err(|e| ToolError::execution_failed(format!("memory scan failed: {e}")))?;
 
         Ok(ToolResult::success(output.trim_end().to_string()))
     }
+}
+
+fn format_matching_memories(matching: &[MemoryHeader]) -> String {
+    const MAX_RECALLED_MEMORIES: usize = 3;
+    let mut output = String::new();
+    for header in matching.iter().take(MAX_RECALLED_MEMORIES) {
+        match std::fs::read_to_string(&header.file_path) {
+            Ok(content) => {
+                let (_fm, body) =
+                    codesmith_agent_runtime::knowledge::scan::parse_frontmatter(&content);
+                let age_label = memory_age_label(header.mtime_ms);
+                let freshness = memory_freshness_text(header.mtime_ms);
+
+                // Truncate body.
+                let mut lines: Vec<&str> = body.lines().collect();
+                let truncated = lines.len() > MAX_LINES_PER_MEMORY;
+                if truncated {
+                    lines.truncate(MAX_LINES_PER_MEMORY);
+                }
+                let mut body_text = lines.join("\n");
+                if body_text.len() > MAX_BYTES_PER_MEMORY {
+                    const TRUNCATION_SUFFIX: &str = "\n[truncated]";
+                    let limit = MAX_BYTES_PER_MEMORY.saturating_sub(TRUNCATION_SUFFIX.len());
+                    let cutoff =
+                        codesmith_agent_runtime::knowledge::entrypoint::previous_char_boundary(
+                            &body_text, limit,
+                        );
+                    body_text = format!("{}{}", &body_text[..cutoff], TRUNCATION_SUFFIX);
+                }
+
+                output.push_str(&format!(
+                    "[Memory: {}, last modified {}]\n",
+                    header.filename, age_label
+                ));
+                if !freshness.is_empty() {
+                    output.push_str(&format!("{}\n", freshness));
+                }
+                output.push_str(&body_text);
+                if truncated {
+                    output.push_str("\n[truncated: content exceeds memory budget]");
+                }
+                output.push_str("\n\n");
+            }
+            // A matching memory that cannot be read (permissions, file
+            // removed between scan and read) must not silently vanish —
+            // the model needs to know recall was degraded.
+            Err(err) => {
+                output.push_str(&format!(
+                    "[Memory: {} — failed to read: {err}]\n\n",
+                    header.filename
+                ));
+            }
+        }
+    }
+    if matching.len() > MAX_RECALLED_MEMORIES {
+        output.push_str(&format!(
+            "[{} additional matching memories omitted]\n",
+            matching.len() - MAX_RECALLED_MEMORIES
+        ));
+    }
+    output
 }

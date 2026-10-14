@@ -306,16 +306,17 @@ async fn stop(
         println!("{}", "usage: /loop stop <id|name>".dimmed());
         return;
     }
-    let target = match automations.list_automations().await {
-        Ok(records) => match resolve(&records, needle.trim()) {
-            Ok(record) => record.clone(),
-            Err(err) => {
-                println!("{} {err}", "✗".red());
-                return;
-            }
-        },
+    let records = match automations.list_automations().await {
+        Ok(records) => records,
         Err(err) => {
             println!("{} could not read the automations: {err}", "✗".red());
+            return;
+        }
+    };
+    let target = match resolve(&records, needle.trim()) {
+        Ok(record) => record,
+        Err(err) => {
+            println!("{} {err}", "✗".red());
             return;
         }
     };
@@ -337,16 +338,17 @@ async fn set_paused(
         println!("{}", format!("usage: /loop {verb} <id|name>").dimmed());
         return;
     }
-    let target = match automations.list_automations().await {
-        Ok(records) => match resolve(&records, needle.trim()) {
-            Ok(record) => record.clone(),
-            Err(err) => {
-                println!("{} {err}", "✗".red());
-                return;
-            }
-        },
+    let records = match automations.list_automations().await {
+        Ok(records) => records,
         Err(err) => {
             println!("{} could not read the automations: {err}", "✗".red());
+            return;
+        }
+    };
+    let target = match resolve(&records, needle.trim()) {
+        Ok(record) => record,
+        Err(err) => {
+            println!("{} {err}", "✗".red());
             return;
         }
     };
@@ -387,16 +389,17 @@ async fn run_now(
         );
         return;
     };
-    let target = match automations.list_automations().await {
-        Ok(records) => match resolve(&records, needle.trim()) {
-            Ok(record) => record.clone(),
-            Err(err) => {
-                println!("{} {err}", "✗".red());
-                return;
-            }
-        },
+    let records = match automations.list_automations().await {
+        Ok(records) => records,
         Err(err) => {
             println!("{} could not read the automations: {err}", "✗".red());
+            return;
+        }
+    };
+    let target = match resolve(&records, needle.trim()) {
+        Ok(record) => record,
+        Err(err) => {
+            println!("{} {err}", "✗".red());
             return;
         }
     };

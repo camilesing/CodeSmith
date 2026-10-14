@@ -3,7 +3,6 @@ name = "codesmith-agent-runtime"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-readme.workspace = true
 keywords = ["llm", "agent", "runtime", "sandbox", "tools"]
 categories = ["development-tools"]
 license.workspace = true

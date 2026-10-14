@@ -35,9 +35,10 @@ pub trait ChatHistory: Send + Sync {
     /// context-overflow recovery, turn resets). `reason` is a static label
     /// naming the caller; hosts surface it in diagnostics.
     ///
-    /// Default: `clear` + push loop, which keeps simple embeds working.
-    /// Production hosts should override so the replacement lands in their
-    /// audited store in one step (see agent-runtime's `SessionChatHistory`).
+    /// Default: a non-atomic `clear` + push-loop fallback, which keeps
+    /// simple embeds working. Production hosts should override so the
+    /// replacement lands in their audited store in one step (see
+    /// agent-runtime's `SessionChatHistory`).
     fn replace_all(&mut self, reason: &'static str, messages: Vec<Message>) {
         let _ = reason;
         self.clear();
@@ -81,6 +82,10 @@ impl ChatHistory for VecChatHistory {
 
     fn clear(&mut self) {
         self.messages.clear();
+    }
+
+    fn replace_all(&mut self, _reason: &'static str, messages: Vec<Message>) {
+        self.messages = messages;
     }
 
     fn len(&self) -> usize {

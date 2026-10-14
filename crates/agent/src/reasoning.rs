@@ -22,9 +22,22 @@
 /// family (and thus require `reasoning_content` replay on tool-call turns, or the
 /// API returns 400 — #1739 / #1694)?
 ///
-/// Matches (case-insensitive): `deepseek-v4`, `deepseek-chat*`, `deepseek-reasoner*`,
+/// Matches (case-insensitive): `deepseek-v4`, `*deepseek-chat*`, `*deepseek-reasoner*`,
 /// `*reasoner*`, `*-reasoning`, `*-thinking`, and `deepseek-r<digit>` (r1, r1-distill,
-/// …). Does **not** match `deepseek-v3` / plain `deepseek` — those are non-reasoning.
+/// …). Does **not** match `deepseek-v3` / plain `deepseek` — those are non-reasoning
+/// in their default (non-hybrid-thinking) deployments; a hybrid-thinking v3.x
+/// release would be missed here and needs this heuristic updated (the only
+/// override today is the `reasoning_effort = off` opt-out — there is no
+/// positive override to force replay on).
+///
+/// The three generic markers (`*reasoner*`, `*-reasoning`, `*-thinking`)
+/// deliberately reach third-party reasoning models (`qwen3-reasoner`,
+/// `kimi-thinking`, …) used through custom/proxied deployments, so this
+/// predicate answers "requires `reasoning_content` replay", not "is a
+/// DeepSeek-hosted id". Callers using it for request shaping must layer
+/// their own provider allowlist on top (see the provider gate in
+/// `codesmith-providers` `rig_adapter/reasoning`) rather than assume
+/// DeepSeek-scoped semantics here.
 pub fn requires_reasoning_content(model: &str) -> bool {
     let lower = model.to_lowercase();
     // V4-family direct model IDs.
@@ -34,8 +47,8 @@ pub fn requires_reasoning_content(model: &str) -> bool {
         // resolves to `deepseek-v4-pro`; both have thinking mode enabled by
         // default, so any assistant message carrying tool_calls must replay
         // `reasoning_content` on subsequent turns or the API returns 400.
-        || lower.starts_with("deepseek-chat")
-        || lower.starts_with("deepseek-reasoner")
+        || lower.contains("deepseek-chat")
+        || lower.contains("deepseek-reasoner")
         // Generic reasoning markers used by custom/proxied deployments.
         || lower.contains("reasoner")
         || lower.contains("-reasoning")
@@ -53,19 +66,24 @@ fn has_deepseek_r_series_marker(model_lower: &str) -> bool {
     })
 }
 
+/// Shared predicate: is this `reasoning_effort` value an explicit
+/// "reasoning off" override? This is the canonical synonym list — the
+/// provider-side effort translation (`codesmith-providers`
+/// `apply_reasoning_effort`) and the runtime/CLI effort parsers must stay
+/// in agreement with it (ideally by calling this function), or request
+/// shaping and replay gating diverge silently.
+pub fn is_reasoning_effort_off(effort: &str) -> bool {
+    matches!(
+        effort.trim().to_ascii_lowercase().as_str(),
+        "off" | "disabled" | "none" | "false"
+    )
+}
+
 /// Should the outgoing request re-attach `reasoning_content` to assistant
 /// tool-call turns for this model + effort? Honours the `off`/`disabled`/
 /// `none`/`false` effort override. Model-only (ignores provider).
 pub fn should_replay_reasoning_content(model: &str, effort: Option<&str>) -> bool {
-    if effort
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "off" | "disabled" | "none" | "false"
-            )
-        })
-        .unwrap_or(false)
-    {
+    if effort.is_some_and(is_reasoning_effort_off) {
         return false;
     }
 
@@ -108,6 +126,12 @@ mod tests {
         // server-side, so they must continue to require reasoning_content.
         assert!(requires_reasoning_content("deepseek-chat:free"));
         assert!(requires_reasoning_content("deepseek-reasoner-2025-05"));
+        // Vendor/org-prefixed routed ids — OpenRouter's canonical
+        // `deepseek/deepseek-chat`, vLLM/HuggingFace-style
+        // `deepseek-ai/deepseek-chat` — hit the same alias server-side.
+        assert!(requires_reasoning_content("deepseek/deepseek-chat"));
+        assert!(requires_reasoning_content("deepseek-ai/deepseek-chat"));
+        assert!(requires_reasoning_content("deepseek/deepseek-reasoner"));
     }
 
     #[test]
@@ -184,5 +208,17 @@ mod tests {
     fn replay_is_model_driven_when_effort_unset() {
         assert!(should_replay_reasoning_content("deepseek-v4-pro", None));
         assert!(!should_replay_reasoning_content("gpt-4o", None));
+    }
+
+    #[test]
+    fn is_reasoning_effort_off_matches_synonyms_case_insensitively() {
+        assert!(is_reasoning_effort_off("off"));
+        assert!(is_reasoning_effort_off(" OFF "));
+        assert!(is_reasoning_effort_off("Disabled"));
+        assert!(is_reasoning_effort_off("none"));
+        assert!(is_reasoning_effort_off("false"));
+        assert!(!is_reasoning_effort_off("low"));
+        assert!(!is_reasoning_effort_off("medium"));
+        assert!(!is_reasoning_effort_off(""));
     }
 }

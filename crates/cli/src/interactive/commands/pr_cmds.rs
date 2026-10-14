@@ -120,6 +120,9 @@ fn parse_target(word: &str) -> Result<(u32, Option<String>), String> {
     let number: u32 = digits
         .parse()
         .map_err(|_| format!("no PR number in {word:?}"))?;
+    if number == 0 {
+        return Err("PR numbers start at 1".to_string());
+    }
     Ok((number, Some(format!("{owner}/{name}"))))
 }
 
@@ -149,19 +152,22 @@ pub async fn run(state: &mut ReplState, arg: &str) {
         return;
     }
 
-    let number = request.number;
-    let repo = request.repo.clone();
+    let Request {
+        number,
+        repo,
+        checkout,
+    } = request;
     // `gh` runs as a child process and reads its output to the end — blocking
     // IO that must not sit on the async runtime.
     let fetched = tokio::task::spawn_blocking(move || {
         let view = crate::main_root::run_gh_pr_view(number, repo.as_deref())?;
         let diff = crate::main_root::run_gh_pr_diff(number, repo.as_deref())?;
-        let checkout = if request.checkout {
+        let checkout_error = if checkout {
             crate::main_root::run_gh_pr_checkout(number, repo.as_deref()).err()
         } else {
             None
         };
-        Ok::<_, anyhow::Error>((view, diff, checkout))
+        Ok::<_, anyhow::Error>((view, diff, checkout_error))
     })
     .await;
 
@@ -171,8 +177,20 @@ pub async fn run(state: &mut ReplState, arg: &str) {
             println!("{} /pr #{number} failed: {err}", "✗".red());
             return;
         }
+        Err(err) if err.is_panic() => {
+            // `gh`'s availability was checked before the spawn; a JoinError
+            // here means the blocking closure itself panicked.
+            let panic = err.into_panic();
+            let detail = panic
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| panic.downcast_ref::<&str>().copied())
+                .unwrap_or("unknown panic");
+            println!("{} /pr fetch task panicked: {detail}", "✗".red());
+            return;
+        }
         Err(err) => {
-            println!("{} /pr could not reach `gh`: {err}", "✗".red());
+            println!("{} /pr fetch task was cancelled: {err}", "✗".red());
             return;
         }
     };
@@ -189,7 +207,7 @@ pub async fn run(state: &mut ReplState, arg: &str) {
     );
     println!("{}", format!("  {}", view.url).dimmed());
     match checkout_error {
-        None if request.checkout => println!("{}", "  checked out into this workspace".dimmed()),
+        None if checkout => println!("{}", "  checked out into this workspace".dimmed()),
         Some(err) => println!(
             "{}",
             format!("warning: gh pr checkout failed ({err}); the prompt is still prepared")
@@ -275,6 +293,10 @@ mod tests {
         let err = parse("some-branch").expect_err("junk");
         assert!(err.contains("some-branch"), "{err}");
         assert!(parse("#0").is_err(), "PR numbers start at 1");
+        assert!(
+            parse("https://github.com/o/r/pull/0").is_err(),
+            "URL-derived numbers start at 1 too"
+        );
         assert!(parse("12 --repo").is_err(), "--repo needs a value");
         assert!(parse("12 13").is_err(), "a second target is a typo");
     }

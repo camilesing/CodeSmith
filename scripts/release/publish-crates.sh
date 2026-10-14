@@ -35,9 +35,12 @@ done < <(
 import json
 import subprocess
 
-metadata = json.loads(
-    subprocess.check_output(["cargo", "metadata", "--format-version", "1", "--no-deps"])
-)
+try:
+    metadata = json.loads(
+        subprocess.check_output(["cargo", "metadata", "--format-version", "1", "--no-deps"])
+    )
+except (OSError, subprocess.CalledProcessError) as exc:
+    raise SystemExit(f"cargo metadata failed: {exc}")
 workspace_members = set(metadata["workspace_members"])
 workspace_packages = [
     pkg for pkg in metadata["packages"] if pkg["id"] in workspace_members
@@ -122,7 +125,7 @@ package_has_workspace_deps() {
 crate_version_exists() {
   local crate_name="$1"
   local crate_version="$2"
-  curl -fsSL "https://crates.io/api/v1/crates/${crate_name}/${crate_version}" >/dev/null 2>&1
+  curl -fsSL --max-time 10 "https://crates.io/api/v1/crates/${crate_name}/${crate_version}" >/dev/null 2>&1
 }
 
 wait_for_crate_version() {

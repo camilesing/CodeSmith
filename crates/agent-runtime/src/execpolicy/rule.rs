@@ -35,11 +35,40 @@ impl PatternToken {
 /// First token is fixed since we key by the first token in policy.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PrefixPattern {
-    pub first: Arc<str>,
-    pub rest: Arc<[PatternToken]>,
+    first: Arc<str>,
+    rest: Arc<[PatternToken]>,
 }
 
 impl PrefixPattern {
+    /// Build a pattern, rejecting states that could never match a
+    /// shell-split command: an empty first token, an empty alternative
+    /// list, or empty/blank alternatives would silently fail closed at
+    /// match time, so they are surfaced as `Error::InvalidPattern` here.
+    pub fn new(first: &str, rest: impl Into<Arc<[PatternToken]>>) -> Result<Self> {
+        if first.is_empty() {
+            return Err(Error::InvalidPattern(
+                "pattern first token cannot be empty".to_string(),
+            ));
+        }
+        let rest = rest.into();
+        for token in rest.iter() {
+            if let PatternToken::Alts(alternatives) = token
+                && (alternatives.is_empty()
+                    || alternatives
+                        .iter()
+                        .any(|alternative| alternative.trim().is_empty()))
+            {
+                return Err(Error::InvalidPattern(
+                    "pattern alternatives cannot be empty or blank".to_string(),
+                ));
+            }
+        }
+        Ok(Self {
+            first: Arc::from(first),
+            rest,
+        })
+    }
+
     pub fn matches_prefix(&self, cmd: &[String]) -> Option<Vec<String>> {
         let pattern_length = self.rest.len() + 1;
         if cmd.len() < pattern_length || cmd[0] != self.first.as_ref() {

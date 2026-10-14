@@ -98,6 +98,7 @@ fn strip_heredoc_bodies(command: &str) -> String {
         // them, but for pattern-match purposes they all collapse).
         let mut delim: Option<String> = None;
         let mut redacted = line.to_string();
+        let mut spans: Vec<(usize, usize)> = Vec::new();
         for cap in re.captures_iter(line) {
             // A `<<DELIM` inside a quoted argument (`git commit -m "see <<EOF
             // docs"`) is not a heredoc — skip matches that sit inside a
@@ -108,11 +109,17 @@ fn strip_heredoc_bodies(command: &str) -> String {
             if !at_top_level {
                 continue;
             }
-            // Strip the entire `<<DELIM` text from the line.
-            let whole = cap.get(0).map_or("", |m| m.as_str());
-            redacted = redacted.replace(whole, "");
+            if let Some(m) = cap.get(0) {
+                spans.push((m.start(), m.end()));
+            }
             // Track the last-seen delimiter for body consumption.
             delim = cap.get(1).map(|m| m.as_str().to_string());
+        }
+        // Strip only the top-level `<<DELIM` spans, right-to-left so the
+        // recorded offsets stay valid — the same text inside a quoted
+        // argument is plain data and must survive.
+        for (start, end) in spans.iter().rev() {
+            redacted.replace_range(start..end, "");
         }
         // Trim any double-spaces left after stripping.
         let cleaned = redacted
@@ -466,6 +473,16 @@ mod tests {
         let stripped = super::strip_heredoc_bodies(cmd);
         assert!(stripped.contains("echo done"));
         assert!(stripped.contains("rm -rf /tmp/x"));
+    }
+
+    #[test]
+    fn quoted_heredoc_text_survives_stripping() {
+        // Only the top-level `<<EOF` operator is stripped; the same text
+        // inside a quoted argument is plain data and must survive.
+        let cmd = "cat <<EOF && echo \"<<EOF is not a heredoc\"";
+        let stripped = super::strip_heredoc_bodies(cmd);
+        assert!(stripped.contains("cat && echo"));
+        assert!(stripped.contains("\"<<EOF is not a heredoc\""));
     }
 
     // ── AST-backed precision (tree-sitter-bash) ──────────────────────────

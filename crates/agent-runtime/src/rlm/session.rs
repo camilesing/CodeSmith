@@ -177,10 +177,12 @@ impl SessionObjectSnapshot {
         for object in self.base_objects() {
             cards.push(SessionObjectCard::from_resolved(&object));
         }
-        for index in 0..self.messages.len() {
-            if let Some(object) = self.resolve(&format!("session://active/messages/{index}")) {
-                cards.push(SessionObjectCard::from_resolved(&object));
-            }
+        for (index, message) in self.messages.iter().enumerate() {
+            cards.push(SessionObjectCard::from_resolved(&message_resolved_object(
+                index,
+                message,
+                "Transcript message",
+            )));
         }
         cards
     }
@@ -440,7 +442,10 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     if text.chars().count() <= max_chars {
         return text.to_string();
     }
-    let take = max_chars.saturating_sub(3);
+    if max_chars < 3 {
+        return text.chars().take(max_chars).collect();
+    }
+    let take = max_chars - 3;
     let mut out: String = text.chars().take(take).collect();
     out.push_str("...");
     out

@@ -274,3 +274,93 @@ fn test_fork() {
         .unwrap();
     assert!(thread.current_leaf_id.is_none());
 }
+
+fn thread_metadata(id: &str) -> ThreadMetadata {
+    let now = chrono::Utc::now().timestamp();
+    ThreadMetadata {
+        id: id.to_string(),
+        preview: "hello".to_string(),
+        ephemeral: false,
+        model_provider: "deepseek".to_string(),
+        created_at: now,
+        updated_at: now,
+        status: ThreadStatus::Running,
+        path: None,
+        cwd: PathBuf::from("/tmp/project"),
+        cli_version: "0.0.0-test".to_string(),
+        source: SessionSource::Interactive,
+        name: None,
+        sandbox_policy: None,
+        approval_mode: None,
+        archived: false,
+        archived_at: None,
+        git_sha: None,
+        git_branch: None,
+        git_origin_url: None,
+        memory_mode: None,
+        current_leaf_id: None,
+    }
+}
+
+#[test]
+fn list_messages_does_not_traverse_into_other_threads() {
+    let path = temp_state_path("cross_thread_parent");
+    let store = StateStore::open(Some(path.clone())).expect("open state store");
+    store
+        .upsert_thread(&thread_metadata("thread-a"))
+        .expect("upsert thread a");
+    store
+        .upsert_thread(&thread_metadata("thread-b"))
+        .expect("upsert thread b");
+    let a1 = store
+        .append_message("thread-a", "user", "a1", None)
+        .expect("append a1");
+    let b1 = store
+        .append_message("thread-b", "user", "b1", None)
+        .expect("append b1");
+
+    // No foreign key constrains parent_entry_id to the same thread; simulate
+    // drift by pointing thread-b's leaf at thread-a's message directly.
+    let conn = Connection::open(&path).expect("open raw connection");
+    conn.execute(
+        "UPDATE messages SET parent_entry_id = ?1 WHERE id = ?2",
+        [a1, b1],
+    )
+    .expect("corrupt parent pointer");
+
+    let messages = store
+        .list_messages("thread-b", None)
+        .expect("list messages");
+    assert!(
+        messages
+            .iter()
+            .all(|message| message.thread_id == "thread-b")
+    );
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].content, "b1");
+}
+
+#[test]
+fn list_messages_limit_always_includes_leaf() {
+    let path = temp_state_path("limit_clamp");
+    let store = StateStore::open(Some(path.clone())).expect("open state store");
+    store
+        .upsert_thread(&thread_metadata("thread-clamp"))
+        .expect("upsert thread");
+    for i in 0..3 {
+        store
+            .append_message("thread-clamp", "user", &format!("m{i}"), None)
+            .expect("append message");
+    }
+
+    let messages = store
+        .list_messages("thread-clamp", Some(1))
+        .expect("list messages");
+    assert_eq!(messages.len(), 1);
+
+    let messages = store
+        .list_messages("thread-clamp", Some(0))
+        .expect("list messages");
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].content, "m2");
+}

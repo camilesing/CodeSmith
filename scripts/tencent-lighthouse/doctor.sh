@@ -39,6 +39,7 @@ env_value() {
   local key="$2"
   [[ -f "${file}" ]] || return 0
   grep -E "^[[:space:]]*(export[[:space:]]+)?${key}=" "${file}" \
+    | tr -d '\r' \
     | tail -n 1 \
     | sed -E "s/^[[:space:]]*(export[[:space:]]+)?${key}=//; s/^[[:space:]]+//; s/[[:space:]]+$//; s/^['\"]//; s/['\"]$//" \
     || true
@@ -100,18 +101,16 @@ check_binaries() {
   section "CodeSmith binaries"
   local cargo_bin="/home/${CODESMITH_USER}/.cargo/bin"
   local codesmith="${cargo_bin}/codesmith"
-  local codesmith_bin="${cargo_bin}/codesmith"
   if [[ -x "${codesmith}" ]]; then
     pass "${codesmith} is executable"
     "${codesmith}" --version 2>/dev/null | sed 's/^/[info] codesmith version: /' || warn "codesmith --version failed"
   else
     fail "${codesmith} is missing or not executable"
   fi
-  if [[ -x "${codesmith_bin}" ]]; then
-    pass "${codesmith_bin} is executable"
-    "${codesmith_bin}" --version 2>/dev/null | sed 's/^/[info] codesmith version: /' || warn "codesmith --version failed"
+  if have_command codesmith; then
+    pass "codesmith is available on PATH"
   else
-    fail "${codesmith_bin} is missing or not executable"
+    warn "codesmith is not on PATH for interactive shells"
   fi
 }
 
@@ -286,24 +285,21 @@ check_localhost_health() {
     return
   fi
 
-  local tmp
-  tmp="$(mktemp)"
   if curl -fsS --max-time 3 -H "Authorization: Bearer ${token}" \
-    "http://127.0.0.1:${port}/v1/runtime/info" >"${tmp}"; then
-    if node -e '
-      const fs = require("fs");
-      const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-      if (data.bind_host !== "127.0.0.1") process.exit(2);
-      if (data.auth_required !== true) process.exit(3);
-    ' "${tmp}"; then
-      pass "/v1/runtime/info reports localhost bind and auth_required=true"
-    else
-      fail "/v1/runtime/info did not report localhost bind with auth enabled"
-    fi
+    "http://127.0.0.1:${port}/v1/runtime/info" \
+    | node -e '
+      let raw = "";
+      process.stdin.on("data", (c) => { raw += c; });
+      process.stdin.on("end", () => {
+        const data = JSON.parse(raw);
+        if (data.bind_host !== "127.0.0.1") process.exit(2);
+        if (data.auth_required !== true) process.exit(3);
+      });
+    '; then
+    pass "/v1/runtime/info reports localhost bind and auth_required=true"
   else
-    fail "/v1/runtime/info did not respond with bearer auth"
+    fail "/v1/runtime/info did not respond with bearer auth or report a localhost bind with auth enabled"
   fi
-  rm -f "${tmp}"
 }
 
 main() {

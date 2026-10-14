@@ -245,14 +245,15 @@ pub struct ShellExecResult {
 ///
 /// The engine core runs background shell commands through this trait so it
 /// need not depend on the TUI's concrete `ShellManager` (pty / process
-/// management). `execute` is synchronous: the host locks its `std::sync::Mutex`,
-/// runs the command, and returns before any `Event`-channel await — matching
-/// the pre-trait call site.
+/// management). `execute` is async: the host offloads its synchronous
+/// mutex/command core via `spawn_blocking`, so callers may await it directly
+/// on the async engine loop without stalling the executor.
+#[async_trait::async_trait]
 pub trait ShellApi: Send + Sync {
     /// Execute a shell command. `background = true` requests a detached
     /// background task (the result then carries a `task_id` and a `Running`
     /// status). Mirrors `ShellManager::execute`.
-    fn execute(
+    async fn execute(
         &self,
         command: &str,
         working_dir: Option<&str>,
@@ -547,10 +548,13 @@ pub trait HostServices: Send + Sync {
         cancel_token: CancellationToken,
     );
 
-    /// Downcast the host to its concrete type. Lets TUI tests recover the
-    /// concrete `EngineHost` (and its `subagent_manager` / `lsp_manager` …)
-    /// from the `Arc<dyn HostServices>` the engine holds, now that the
-    /// `host_concrete` test field is gone. Production code never calls this.
+    /// Downcast the host to its concrete type. The CLI's `EngineConstruct`
+    /// uses this to recover the concrete `EngineHost` (and its
+    /// `subagent_manager` / `mod_reload` / `lsp_manager` …) from the
+    /// `Arc<dyn HostServices>` the engine holds, so the host MUST be the
+    /// concrete `EngineHost` or the downcast `expect` fires. Any capability
+    /// needed by non-CLI hosts should be added as a real trait method
+    /// instead of going through this hatch.
     fn as_any(&self) -> &dyn std::any::Any;
 }
 

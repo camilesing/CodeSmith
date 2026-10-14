@@ -109,7 +109,10 @@ impl ProviderFactory for OpenAiCompatFactory {
             default_model,
             GenericShaper::new(self.name),
             base_url,
-            Some(cfg.api_key.clone()),
+            // No FIM/translate endpoints behind LlmClient for this family,
+            // so the adapter needs neither the http shim nor a copy of the
+            // api key (all api_key readers are gated on the shim).
+            None,
             None,
         );
         Ok(Arc::new(adapter) as LlmClientHandle)

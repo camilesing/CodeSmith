@@ -185,14 +185,11 @@ fn install_parent_death_signal(cmd: &mut Command) {
     // (async-signal-safe + no allocation in the post-fork window) are met.
     unsafe {
         cmd.pre_exec(|| {
-            let result = libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM, 0, 0, 0);
-            if result == -1 {
-                // Surface the errno but do not abort the spawn — the child
-                // will simply lose the parent-death cleanup safety net.
-                Err(std::io::Error::last_os_error())
-            } else {
-                Ok(())
-            }
+            // A failed prctl only loses the parent-death safety net;
+            // returning Err would abort the whole spawn, and there is no
+            // async-signal-safe way to surface the errno from the child.
+            let _ = libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM, 0, 0, 0);
+            Ok(())
         });
     }
 }
@@ -360,6 +357,7 @@ pub struct BackgroundShell {
     pub status: ShellStatus,
     pub exit_code: Option<i32>,
     pub started_at: Instant,
+    finished_at: Option<Instant>,
     pub sandbox_type: SandboxType,
     pub sandbox_decision: SandboxDecision,
     pub linked_task_id: Option<String>,
@@ -389,12 +387,14 @@ impl BackgroundShell {
                     } else {
                         ShellStatus::Failed
                     };
+                    self.finished_at.get_or_insert_with(Instant::now);
                     self.collect_output();
                     true
                 }
                 Ok(None) => false, // Still running
                 Err(_) => {
                     self.status = ShellStatus::Failed;
+                    self.finished_at.get_or_insert_with(Instant::now);
                     self.collect_output();
                     true
                 }
@@ -406,21 +406,21 @@ impl BackgroundShell {
 
     /// Collect output from the background threads
     fn collect_output(&mut self) {
-        // Kill the whole process group before joining reader threads.
-        // When the shell spawned persistent background jobs (e.g. `nohup curl`),
-        // those subprocesses keep the pipe write-ends open after the shell exits.
-        // Without this kill, handle.join() blocks indefinitely, freezing the UI
-        // event loop that calls list_jobs() → poll() → collect_output().
+        // Kill the whole process group before collecting: when the shell
+        // spawned persistent background jobs (e.g. `nohup curl`), those
+        // subprocesses keep the pipe write-ends open after the shell exits.
         #[cfg(unix)]
         if let Some(ShellChild::Process(ref mut proc)) = self.child {
             let _ = kill_child_process_group(proc);
         }
-        if let Some(handle) = self.stdout_thread.take() {
-            let _ = handle.join();
-        }
-        if let Some(handle) = self.stderr_thread.take() {
-            let _ = handle.join();
-        }
+        // Reader threads only touch Arc-shared buffers and terminate on
+        // their own once the pipes hit EOF. Joining them here can block
+        // forever — a grandchild that escaped the process group (setsid) or
+        // non-unix builds with no process groups keep the write-ends open —
+        // while the manager mutex is held, freezing every other caller.
+        // Detach instead; the buffers stay readable either way.
+        drop(self.stdout_thread.take());
+        drop(self.stderr_thread.take());
         self.stdin = None;
         self.child = None;
     }
@@ -462,11 +462,27 @@ impl BackgroundShell {
         let stderr_len = stderr_bytes.len();
 
         (
-            String::from_utf8_lossy(&stdout_bytes).to_string(),
-            String::from_utf8_lossy(&stderr_bytes).to_string(),
+            String::from_utf8_lossy(&stdout_bytes).into_owned(),
+            String::from_utf8_lossy(&stderr_bytes).into_owned(),
             stdout_len,
             stderr_len,
         )
+    }
+
+    /// Stderr-only view of the accumulated output. `sandbox_denied` runs on
+    /// every poll of a finished job (`get_output_delta`); cloning only
+    /// stderr there avoids an O(stdout-bytes) copy under the ShellManager
+    /// mutex on long-output jobs.
+    fn stderr_output(&self) -> String {
+        self.stderr_buffer
+            .as_ref()
+            .and_then(|buffer| {
+                buffer
+                    .lock()
+                    .ok()
+                    .map(|data| String::from_utf8_lossy(&data).into_owned())
+            })
+            .unwrap_or_default()
     }
 
     fn take_delta(&mut self) -> (String, String, usize, usize, usize, usize) {
@@ -495,7 +511,7 @@ impl BackgroundShell {
         if matches!(self.status, ShellStatus::Running) {
             return false;
         }
-        let (_, stderr_full, _, _) = self.full_output();
+        let stderr_full = self.stderr_output();
         SandboxManager::was_denied(
             self.sandbox_type,
             self.exit_code.unwrap_or(-1),
@@ -510,6 +526,7 @@ impl BackgroundShell {
             let _ = child.wait();
         }
         self.status = ShellStatus::Killed;
+        self.finished_at.get_or_insert_with(Instant::now);
         self.collect_output();
         Ok(())
     }
@@ -1524,6 +1541,7 @@ impl ShellManager {
             {
                 cmd.process_group(0);
             }
+            install_parent_death_signal(&mut cmd);
 
             child_env::apply_to_command(&mut cmd, child_env::string_map_env(&exec_env.env));
 
@@ -1558,6 +1576,7 @@ impl ShellManager {
             status: ShellStatus::Running,
             exit_code: None,
             started_at: started,
+            finished_at: None,
             sandbox_type,
             sandbox_decision: decision.clone(),
             linked_task_id: None,
@@ -1572,7 +1591,7 @@ impl ShellManager {
         };
 
         if let Some(input) = stdin_data {
-            bg_shell.write_stdin(input, false)?;
+            let _ = bg_shell.write_stdin(input, false);
         }
 
         self.processes.insert(task_id.clone(), bg_shell);
@@ -1607,6 +1626,21 @@ impl ShellManager {
         };
         apply_shell_result_decision_metadata(&mut result, decision);
         Ok(result)
+    }
+
+    /// Poll `task_id` once and report whether it is still running.
+    ///
+    /// Companion for callers that need to wait for a job without holding the
+    /// manager mutex: poll under a brief lock, sleep unlocked, repeat.
+    pub fn poll_task_running(&mut self, task_id: &str) -> Result<bool> {
+        let shell = self
+            .processes
+            .get_mut(task_id)
+            .ok_or_else(|| anyhow!("Task {task_id} not found"))?;
+        if shell.status != ShellStatus::Running {
+            return Ok(false);
+        }
+        Ok(!shell.poll())
     }
 
     /// Get output from a background process
@@ -1849,12 +1883,11 @@ impl ShellManager {
 
     /// Clean up completed processes older than the given duration
     pub fn cleanup(&mut self, max_age: Duration) {
-        let _now = Instant::now();
         self.processes.retain(|_, shell| {
             if shell.status == ShellStatus::Running {
                 true
             } else {
-                shell.started_at.elapsed() < max_age
+                shell.finished_at.is_none_or(|t| t.elapsed() < max_age)
             }
         });
     }
@@ -1931,6 +1964,27 @@ pub type SharedShellManager = Arc<Mutex<ShellManager>>;
 /// callers. The engine-core [`ShellApi`] impl (returning the reduced
 /// [`ShellExecResult`]) lives in this module (`shell_manager`).
 pub struct ShellManagerHost(pub SharedShellManager);
+
+impl ShellManagerHost {
+    /// Wait (up to the clamped `timeout_ms`) for `task_id` to leave the
+    /// `Running` state, polling under a brief manager lock and sleeping with
+    /// the lock released so concurrent `list_jobs` / `kill` / `write_stdin`
+    /// callers are never serialized behind the wait.
+    fn wait_until_settled(&self, task_id: &str, timeout_ms: u64) -> Result<()> {
+        let timeout = Duration::from_millis(timeout_ms.clamp(1000, 600_000));
+        let deadline = Instant::now() + timeout;
+        loop {
+            let running = {
+                let mut guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
+                guard.poll_task_running(task_id)?
+            };
+            if !running || Instant::now() >= deadline {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
 
 /// Tool-facing rich shell surface. Delegates to the inherent
 /// `ShellManager` methods (private ones like `get_output_delta` are visible
@@ -2014,8 +2068,11 @@ impl ShellManagerApi for ShellManagerHost {
         block: bool,
         timeout_ms: u64,
     ) -> anyhow::Result<ShellResult> {
+        if block {
+            self.wait_until_settled(task_id, timeout_ms)?;
+        }
         let mut guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        guard.get_output(task_id, block, timeout_ms)
+        guard.get_output(task_id, false, 0)
     }
 
     fn get_output_delta(
@@ -2024,8 +2081,11 @@ impl ShellManagerApi for ShellManagerHost {
         wait: bool,
         timeout_ms: u64,
     ) -> anyhow::Result<ShellDeltaResult> {
+        if wait {
+            self.wait_until_settled(task_id, timeout_ms)?;
+        }
         let mut guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        guard.get_output_delta(task_id, wait, timeout_ms)
+        guard.get_output_delta(task_id, false, 0)
     }
 
     fn tag_linked_task(&self, task_id: &str, linked_task_id: Option<String>) -> anyhow::Result<()> {
@@ -2049,8 +2109,7 @@ impl ShellManagerApi for ShellManagerHost {
         wait: bool,
         timeout_ms: u64,
     ) -> anyhow::Result<ShellDeltaResult> {
-        let mut guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        guard.poll_delta(task_id, wait, timeout_ms)
+        self.get_output_delta(task_id, wait, timeout_ms)
     }
 
     fn request_foreground_background(&self) {
@@ -2077,17 +2136,31 @@ pub fn new_shared_shell_manager(workspace: PathBuf) -> SharedShellManager {
     Arc::new(Mutex::new(ShellManager::new(workspace)))
 }
 
+#[async_trait::async_trait]
 impl ShellApi for ShellManagerHost {
-    fn execute(
+    async fn execute(
         &self,
         command: &str,
         working_dir: Option<&str>,
         timeout_ms: u64,
         background: bool,
     ) -> anyhow::Result<ShellExecResult> {
-        let mut shell = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        ShellManager::execute(&mut shell, command, working_dir, timeout_ms, background)
-            .map(shell_exec_result_from)
+        let command = command.to_string();
+        let working_dir = working_dir.map(str::to_string);
+        let shared = Arc::clone(&self.0);
+        tokio::task::spawn_blocking(move || {
+            let mut shell = shared.lock().unwrap_or_else(|p| p.into_inner());
+            ShellManager::execute(
+                &mut shell,
+                &command,
+                working_dir.as_deref(),
+                timeout_ms,
+                background,
+            )
+        })
+        .await
+        .map_err(|e| anyhow!("shell execute blocking task failed: {e}"))?
+        .map(shell_exec_result_from)
     }
 }
 

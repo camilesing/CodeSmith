@@ -17,9 +17,13 @@ import subprocess
 import sys
 
 expected = sys.argv[1]
-metadata = json.loads(
-    subprocess.check_output(["cargo", "metadata", "--format-version", "1", "--no-deps"])
-)
+try:
+    metadata = json.loads(
+        subprocess.check_output(["cargo", "metadata", "--format-version", "1", "--no-deps"])
+    )
+except (OSError, subprocess.CalledProcessError) as exc:
+    print(f"cargo metadata failed: {exc}", file=sys.stderr)
+    sys.exit(1)
 workspace_members = set(metadata["workspace_members"])
 packages = [pkg for pkg in metadata["packages"] if pkg["id"] in workspace_members]
 mismatches = [

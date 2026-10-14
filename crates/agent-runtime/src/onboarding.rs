@@ -25,25 +25,28 @@ pub fn is_onboarded() -> bool {
 }
 
 pub fn mark_onboarded() -> io::Result<PathBuf> {
-    let path = default_marker_path()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Home directory not found"))?;
+    let path = default_marker_path().ok_or_else(|| {
+        io::Error::other("home directory not found; cannot resolve onboarding marker path")
+    })?;
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        std::fs::create_dir_all(parent).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("failed to create {}: {e}", parent.display()),
+            )
+        })?;
     }
-    std::fs::write(&path, "")?;
+    std::fs::write(&path, "").map_err(|e| {
+        io::Error::new(e.kind(), format!("failed to write {}: {e}", path.display()))
+    })?;
     Ok(path)
 }
 
-/// Whether the workspace still needs an explicit trust decision, including
-/// the legacy in-repo markers the config-file check does not know about.
+/// Whether the workspace still needs an explicit trust decision.
+///
+/// Trust comes only from the user's own config file: marker files inside
+/// the workspace never grant trust, because a cloned repository can ship
+/// them and self-grant trust.
 pub fn needs_trust(workspace: &Path) -> bool {
-    if crate::workspace_trust::is_workspace_trusted(workspace) {
-        return false;
-    }
-
-    let markers = [
-        workspace.join(".codesmith").join("trusted"),
-        workspace.join(".codesmith").join("trust.json"),
-    ];
-    !markers.iter().any(|path| path.exists())
+    !crate::workspace_trust::is_workspace_trusted(workspace)
 }

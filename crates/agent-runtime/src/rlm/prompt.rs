@@ -22,8 +22,8 @@ The REPL exposes:
 - `chunk(max_chars=20000, overlap=0)` - full-coverage chunks with index/start/end/text fields.
 - `chunk_coverage(chunks)` - coverage summary for chunks produced by `chunk`.
 - `sub_query(prompt, slice=None)` - one child LLM call, optionally scoped to one bounded slice.
-- `sub_query_batch(prompt, slices, dependency_mode="independent", safety_note="...")` - apply one prompt to many independent bounded slices concurrently.
-- `sub_query_map(prompts, slices=None, dependency_mode="independent", safety_note="...")` - run N distinct independent prompts, optionally paired with N bounded slices.
+- `sub_query_batch(prompt, slices, dependency_mode=None, safety_note=None)` - apply one prompt to many independent bounded slices concurrently; `dependency_mode="independent"` must be passed explicitly.
+- `sub_query_map(prompts, slices=None, dependency_mode=None, safety_note=None)` - run N distinct independent prompts, optionally paired with N bounded slices; `dependency_mode="independent"` must be passed explicitly.
 - `sub_query_sequence(prompt, slices, carry_prompt=None)` - process dependent slices sequentially, feeding each child result into the next step.
 - `sub_rlm(prompt, source=None)` - recursive sub-RLM for a sub-task that needs its own decomposition. Pass a bounded source, not the whole body.
 - `SHOW_VARS()` - list user variables and their types.
@@ -185,7 +185,11 @@ mod tests {
     #[test]
     fn rlm_prompt_requires_batch_dependency_safety() {
         let s = body();
-        assert!(s.contains("dependency_mode=\"independent\""));
+        assert!(
+            !s.contains(r#"\""#),
+            "prompt must not contain backslash-escaped quotes"
+        );
+        assert!(s.contains("require an explicit `dependency_mode=\"independent\"` assertion"));
         assert!(s.contains("sub_query_sequence"));
         assert!(s.contains("database or schema migrations"));
         assert!(s.contains("rollback-sensitive"));

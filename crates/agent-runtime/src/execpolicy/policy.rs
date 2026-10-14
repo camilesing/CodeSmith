@@ -37,14 +37,12 @@ impl Policy {
             .ok_or_else(|| Error::InvalidPattern("prefix cannot be empty".to_string()))?;
 
         let rule: RuleRef = Arc::new(PrefixRule {
-            pattern: PrefixPattern {
-                first: Arc::from(first_token.as_str()),
-                rest: rest
-                    .iter()
+            pattern: PrefixPattern::new(
+                first_token.as_str(),
+                rest.iter()
                     .map(|token| PatternToken::Single(token.clone()))
-                    .collect::<Vec<_>>()
-                    .into(),
-            },
+                    .collect::<Vec<_>>(),
+            )?,
             decision,
             justification: None,
         });

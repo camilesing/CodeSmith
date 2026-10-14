@@ -14,11 +14,14 @@
 //! # Example
 //!
 //! ```ignore
-//! use crate::llm_client::{LlmClient, RetryConfig, with_retry};
+//! use crate::llm_client::{LlmClient, LlmError, RetryConfig, with_retry};
 //!
 //! let config = RetryConfig::default();
 //! let result = with_retry(&config, || async {
-//!     client.create_message(request).await
+//!     client
+//!         .create_message(request)
+//!         .await
+//!         .map_err(|e| LlmError::Other(e.to_string()))
 //! }, None).await;
 //! ```
 
@@ -42,6 +45,8 @@ pub type StreamEventBox =
 /// decoupled from the provider implementation (rig-backed today).
 pub type LlmClientHandle = Arc<dyn LlmClient>;
 
+pub mod record_replay;
+
 /// Unified interface for LLM providers.
 ///
 /// This trait abstracts over different LLM APIs (DeepSeek, `OpenAI`, etc.)
@@ -54,8 +59,6 @@ pub type LlmClientHandle = Arc<dyn LlmClient>;
 /// - `fim_completion` and `translate` have default error implementations;
 ///   a provider that supports them overrides them with its provider-specific
 ///   endpoints.
-pub mod record_replay;
-
 // Trait methods + default-impl params are part of the LLM provider interface
 #[allow(dead_code, unused_variables)]
 pub trait LlmClient: Send + Sync {
@@ -192,6 +195,9 @@ impl std::fmt::Display for LlmError {
                 write!(f, "Server error ({status}): {message}")
             }
             LlmError::NetworkError(msg) => write!(f, "Network error: {msg}"),
+            LlmError::Timeout(d) if d.is_zero() => {
+                write!(f, "Request timed out (duration unknown)")
+            }
             LlmError::Timeout(d) => write!(f, "Request timed out after {d:?}"),
             LlmError::AuthenticationError(msg) => write!(f, "Authentication failed: {msg}"),
             LlmError::InvalidRequest { status, message } => {
@@ -268,9 +274,10 @@ impl LlmError {
                         retry_after: None,
                     }
                 } else if body_lower.contains("context_length")
-                    || body_lower.contains("token")
+                    || body_lower.contains("context window")
                     || body_lower.contains("too long")
-                    || body_lower.contains("maximum")
+                    || body_lower.contains("maximum context length")
+                    || body_lower.contains("tokens exceeded")
                 {
                     LlmError::ContextLengthError(body.to_string())
                 } else if body_lower.contains("content_policy")
@@ -676,10 +683,15 @@ where
                 }
 
                 // Calculate delay
-                // Use server's Retry-After if available and configured
+                // Use server's Retry-After if available and configured,
+                // capped by the configured max delay so a misbehaving
+                // server cannot park the client far beyond the backoff budget
                 let base_delay = config.delay_for_attempt(attempt);
+                let retry_after_cap = Duration::from_secs_f64(config.max_delay.max(0.0));
                 let delay = if config.respect_retry_after {
-                    err.suggested_retry_delay().unwrap_or(base_delay)
+                    err.suggested_retry_delay()
+                        .map(|ra| ra.min(retry_after_cap))
+                        .unwrap_or(base_delay)
                 } else {
                     base_delay
                 };
@@ -691,8 +703,11 @@ where
 
                 last_error = Some(err);
 
-                // Wait before retrying
-                tokio::time::sleep(delay).await;
+                // Wait before retrying, clamped to the remaining total-timeout
+                // budget so one sleep cannot overshoot the wall-clock bound
+                let remaining = total_timeout.map(|t| t.saturating_sub(start_time.elapsed()));
+                let sleep_for = remaining.map_or(delay, |r| delay.min(r));
+                tokio::time::sleep(sleep_for).await;
             }
         }
     }
@@ -926,6 +941,17 @@ mod tests {
         // Context length
         let err = LlmError::from_http_response(400, "context_length_exceeded");
         assert!(matches!(err, LlmError::ContextLengthError(_)));
+        let err =
+            LlmError::from_http_response(400, "This model's maximum context length is 4097 tokens");
+        assert!(matches!(err, LlmError::ContextLengthError(_)));
+        let err = LlmError::from_http_response(400, "prompt is too long: 200001 tokens");
+        assert!(matches!(err, LlmError::ContextLengthError(_)));
+
+        // Generic token/maximum mentions are invalid requests, not overflow
+        let err = LlmError::from_http_response(400, "invalid value for max_tokens");
+        assert!(matches!(err, LlmError::InvalidRequest { .. }));
+        let err = LlmError::from_http_response(400, "maximum concurrency reached, retry later");
+        assert!(matches!(err, LlmError::InvalidRequest { .. }));
 
         // Some OpenAI-compatible gateways return quota/rate-limit errors as HTTP 400.
         let err = LlmError::from_http_response(

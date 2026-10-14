@@ -96,7 +96,7 @@ impl ToolSpec for EnterPlanModeTool {
     }
 
     fn capabilities(&self) -> Vec<ToolCapability> {
-        vec![ToolCapability::ReadOnly]
+        vec![ToolCapability::WritesFiles]
     }
 
     fn approval_requirement(&self) -> ApprovalRequirement {

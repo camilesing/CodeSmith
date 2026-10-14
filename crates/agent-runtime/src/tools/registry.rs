@@ -207,6 +207,11 @@ impl ToolRegistry {
                         estimated_tokens,
                         threshold,
                     );
+                    let routed = if result.success {
+                        ToolResult::success(wrapped)
+                    } else {
+                        ToolResult::error(wrapped)
+                    };
                     tracing::debug!(
                         tool = name,
                         estimated_tokens,
@@ -214,7 +219,7 @@ impl ToolRegistry {
                         synthesised = ctx.utility_llm.is_some(),
                         "large-output routed through workshop"
                     );
-                    return Ok(ToolResult::success(wrapped));
+                    return Ok(routed);
                 }
             }
         }
@@ -800,6 +805,36 @@ mod tests {
         }
     }
 
+    /// Tool that fails with a large error body.
+    struct FailingBigOutputTool;
+
+    #[async_trait::async_trait]
+    impl ToolSpec for FailingBigOutputTool {
+        fn name(&self) -> &str {
+            "big_output"
+        }
+
+        fn description(&self) -> &str {
+            "emits a large failing body for workshop routing tests"
+        }
+
+        fn input_schema(&self) -> Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+
+        async fn execute(
+            &self,
+            _input: Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, crate::tools::spec::ToolError> {
+            Ok(ToolResult::error("e".repeat(17_000)))
+        }
+    }
+
     /// Minimal scripted client: create_message answers with fixed text.
     struct SynthesisMockClient {
         reply: Option<&'static str>,
@@ -895,6 +930,30 @@ mod tests {
         assert!(
             result.content.contains("output truncated"),
             "without a utility model the truncation preview is used"
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_failed_result_is_routed_and_stays_failed() {
+        let workspace = std::env::temp_dir().join("codesmith-registry-test-fail");
+        let vars = Arc::new(tokio::sync::Mutex::new(WorkshopVariables::default()));
+        let context = ToolContext::new(workspace)
+            .with_large_output_router(LargeOutputRouter::new(WorkshopConfig::default()), vars);
+        let mut registry = ToolRegistry::new(context);
+        registry.register(Arc::new(FailingBigOutputTool));
+
+        let result = registry
+            .execute_full_with_context("big_output", serde_json::json!({}), None)
+            .await
+            .expect("tool executes");
+        assert!(
+            !result.success,
+            "routing must not relabel a failed result as successful"
+        );
+        assert!(result.content.contains("workshop-synthesis"));
+        assert!(
+            result.content.contains("output truncated"),
+            "oversized error payloads get the truncation preview"
         );
     }
 

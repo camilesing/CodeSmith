@@ -173,12 +173,22 @@ impl ErrorEnvelope {
 
     /// Build an envelope by classifying a raw error message string. Used at
     /// boundaries where the underlying error type was already stringified.
+    ///
+    /// The `code` field is the category label (e.g. `"authentication"`), not
+    /// a stable identifier — consumers that key on stable codes should use
+    /// the typed constructors (`auth_fatal`, `llm_auth_error`, …) instead.
     #[must_use]
     pub fn classify(message: impl Into<String>, recoverable: bool) -> Self {
         let message = message.into();
         let category = classify_error_message(&message);
         let severity = match category {
-            ErrorCategory::Authentication => ErrorSeverity::Critical,
+            ErrorCategory::Authentication => {
+                if recoverable {
+                    ErrorSeverity::Warning
+                } else {
+                    ErrorSeverity::Critical
+                }
+            }
             ErrorCategory::RateLimit | ErrorCategory::Timeout | ErrorCategory::Network => {
                 ErrorSeverity::Warning
             }
@@ -206,12 +216,20 @@ impl ErrorEnvelope {
 impl From<LlmError> for ErrorEnvelope {
     fn from(value: LlmError) -> Self {
         match value {
-            LlmError::RateLimited { message, .. } => Self::new(
+            LlmError::RateLimited {
+                message,
+                retry_after,
+            } => Self::new(
                 ErrorCategory::RateLimit,
                 ErrorSeverity::Warning,
                 true,
                 "llm_rate_limited",
-                message,
+                match retry_after {
+                    Some(duration) => {
+                        format!("{message} (retry after {duration:?})")
+                    }
+                    None => message,
+                },
             ),
             // ServerError/NetworkError follow the same conventions the
             // `network()` constructor and `classify()` derive for the same
@@ -818,5 +836,39 @@ mod tests {
         assert_eq!(format!("{}", ErrorCategory::RateLimit), "rate_limit");
         assert_eq!(format!("{}", ErrorCategory::InvalidInput), "invalid_input");
         assert_eq!(format!("{}", ErrorSeverity::Critical), "critical");
+    }
+
+    #[test]
+    fn classify_never_pairs_critical_with_recoverable() {
+        // Every Critical envelope must be non-recoverable — same pairing
+        // the typed constructors (`fatal_auth`, the `From<LlmError>` auth
+        // arm) enforce.
+        for recoverable in [true, false] {
+            let envelope = ErrorEnvelope::classify("Invalid API key provided", recoverable);
+            assert_eq!(envelope.category, ErrorCategory::Authentication);
+            if recoverable {
+                assert_ne!(envelope.severity, ErrorSeverity::Critical);
+            } else {
+                assert_eq!(envelope.severity, ErrorSeverity::Critical);
+            }
+            // `classify` codes are category labels, not stable identifiers.
+            assert_eq!(envelope.code, "authentication");
+        }
+    }
+
+    #[test]
+    fn rate_limited_envelope_keeps_retry_after_hint() {
+        let envelope = ErrorEnvelope::from(LlmError::RateLimited {
+            message: "Too many requests".to_string(),
+            retry_after: Some(std::time::Duration::from_secs(7)),
+        });
+        assert_eq!(envelope.code, "llm_rate_limited");
+        assert!(envelope.message.contains("retry after"));
+
+        let no_hint = ErrorEnvelope::from(LlmError::RateLimited {
+            message: "Too many requests".to_string(),
+            retry_after: None,
+        });
+        assert_eq!(no_hint.message, "Too many requests");
     }
 }

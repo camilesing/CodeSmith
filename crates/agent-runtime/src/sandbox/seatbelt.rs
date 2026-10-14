@@ -24,7 +24,7 @@
 
 // Note: cfg(target_os = "macos") is already applied at the module level in mod.rs
 
-use super::SandboxPolicy;
+use super::{SandboxPolicy, WritableRoot};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -124,6 +124,34 @@ pub fn is_available() -> bool {
     })
 }
 
+/// Env- and filesystem-derived inputs shared by [`generate_policy`] and
+/// [`generate_params`], resolved ONCE per generated profile so the policy
+/// text and the `-D` param table can never diverge: a `(param "KEY")` the
+/// args never define makes sandbox-exec refuse to load the profile, and
+/// every source below (env vars, `exists()`/`canonicalize()` probes,
+/// TMPDIR) can change between two independent resolutions.
+struct ProfileContext {
+    writable_roots: Vec<WritableRoot>,
+    cargo_home: Option<PathBuf>,
+    npm_cache_dir: Option<PathBuf>,
+    darwin_user_cache_dir: PathBuf,
+}
+
+fn resolve_profile_context(policy: &SandboxPolicy, cwd: &Path) -> ProfileContext {
+    ProfileContext {
+        writable_roots: policy.get_writable_roots(cwd),
+        cargo_home: resolve_cargo_home(),
+        npm_cache_dir: resolve_npm_cache_dir(),
+        darwin_user_cache_dir: get_darwin_user_cache_dir()
+            .or_else(|| {
+                std::env::var("HOME")
+                    .ok()
+                    .map(|home| PathBuf::from(format!("{home}/Library/Caches")))
+            })
+            .unwrap_or_else(|| PathBuf::from("/private/var/empty")),
+    }
+}
+
 /// Create the command-line arguments for sandbox-exec.
 ///
 /// Returns a Vec of arguments that should be prepended to the command.
@@ -133,8 +161,9 @@ pub fn create_seatbelt_args(
     policy: &SandboxPolicy,
     sandbox_cwd: &Path,
 ) -> Vec<String> {
-    let full_policy = generate_policy(policy, sandbox_cwd);
-    let params = generate_params(policy, sandbox_cwd);
+    let ctx = resolve_profile_context(policy, sandbox_cwd);
+    let full_policy = generate_policy(policy, &ctx);
+    let params = generate_params(&ctx);
 
     let mut args = vec!["-p".to_string(), full_policy];
 
@@ -151,7 +180,7 @@ pub fn create_seatbelt_args(
 }
 
 /// Generate the complete Seatbelt policy string for the given policy.
-fn generate_policy(policy: &SandboxPolicy, cwd: &Path) -> String {
+fn generate_policy(policy: &SandboxPolicy, ctx: &ProfileContext) -> String {
     let mut full_policy = SEATBELT_BASE_POLICY.to_string();
 
     // Add read access policy
@@ -160,7 +189,7 @@ fn generate_policy(policy: &SandboxPolicy, cwd: &Path) -> String {
     }
 
     // Add write access policy
-    let file_write_policy = generate_write_policy(policy, cwd);
+    let file_write_policy = generate_write_policy(policy, ctx);
     if !file_write_policy.is_empty() {
         full_policy.push_str("\n\n; Write access policy\n");
         full_policy.push_str(&file_write_policy);
@@ -198,7 +227,7 @@ fn generate_policy(policy: &SandboxPolicy, cwd: &Path) -> String {
     // mutable for `cargo build` to populate them on a cache miss). Skipped
     // entirely when neither `CARGO_HOME` nor `HOME` is set — without one of
     // those we have no path to plumb into the policy params.
-    if resolve_cargo_home().is_some() {
+    if ctx.cargo_home.is_some() {
         full_policy.push_str("\n\n; Cargo home (~/.cargo) — registry/index/git caches\n");
         full_policy.push_str(r#"(allow file-read* (subpath (param "CARGO_HOME")))"#);
         if !matches!(policy, SandboxPolicy::ReadOnly) {
@@ -216,7 +245,7 @@ fn generate_policy(policy: &SandboxPolicy, cwd: &Path) -> String {
     // Read access is always allowed; write access mirrors the cargo pattern —
     // granted for all policies that allow any write, skipped for ReadOnly.
     // Skipped entirely when neither `NPM_CONFIG_CACHE` nor `HOME` is set.
-    if resolve_npm_cache_dir().is_some() {
+    if ctx.npm_cache_dir.is_some() {
         full_policy.push_str("\n\n; npm cache (~/.npm) — npx package downloads\n");
         full_policy.push_str(r#"(allow file-read* (subpath (param "NPM_CACHE_DIR")))"#);
         if !matches!(policy, SandboxPolicy::ReadOnly) {
@@ -255,7 +284,7 @@ fn resolve_npm_cache_dir() -> Option<PathBuf> {
 }
 
 /// Generate the write access portion of the Seatbelt policy.
-fn generate_write_policy(policy: &SandboxPolicy, cwd: &Path) -> String {
+fn generate_write_policy(policy: &SandboxPolicy, ctx: &ProfileContext) -> String {
     // Full disk write access
     if policy.has_full_disk_write_access() {
         return r#"(allow file-write* (regex #"^/"))"#.to_string();
@@ -267,7 +296,7 @@ fn generate_write_policy(policy: &SandboxPolicy, cwd: &Path) -> String {
     }
 
     // Workspace write - enumerate allowed paths
-    let writable_roots = policy.get_writable_roots(cwd);
+    let writable_roots = &ctx.writable_roots;
     if writable_roots.is_empty() {
         return String::new();
     }
@@ -312,11 +341,13 @@ fn generate_write_policy(policy: &SandboxPolicy, cwd: &Path) -> String {
 /// Generate parameter definitions for variable substitution in the policy.
 ///
 /// sandbox-exec allows -DKEY=VALUE to substitute `(param "KEY")` in the policy.
-fn generate_params(policy: &SandboxPolicy, cwd: &Path) -> Vec<(String, PathBuf)> {
+/// All values come from the caller's [`ProfileContext`] snapshot so they stay
+/// in sync with the policy text.
+fn generate_params(ctx: &ProfileContext) -> Vec<(String, PathBuf)> {
     let mut params = Vec::new();
 
     // Add writable root parameters
-    let writable_roots = policy.get_writable_roots(cwd);
+    let writable_roots = &ctx.writable_roots;
 
     for (index, root) in writable_roots.iter().enumerate() {
         let canonical = root
@@ -349,22 +380,19 @@ fn generate_params(policy: &SandboxPolicy, cwd: &Path) -> Vec<(String, PathBuf)>
     // load the profile and every sandboxed command fails (the exact
     // policy/param desync the cargo/npm blocks guard against). Neither
     // confstr nor HOME resolving happens in hardened/launchd contexts and
-    // HOME-less containers, hence the final harmless-directory fallback.
-    let cache_dir = get_darwin_user_cache_dir()
-        .or_else(|| {
-            std::env::var("HOME")
-                .ok()
-                .map(|home| PathBuf::from(format!("{home}/Library/Caches")))
-        })
-        .unwrap_or_else(|| PathBuf::from("/private/var/empty"));
-    params.push(("DARWIN_USER_CACHE_DIR".to_string(), cache_dir));
+    // HOME-less containers, hence the final harmless-directory fallback
+    // (applied in `resolve_profile_context`).
+    params.push((
+        "DARWIN_USER_CACHE_DIR".to_string(),
+        ctx.darwin_user_cache_dir.clone(),
+    ));
 
     // Cargo home (#558): paired with the policy lines emitted by
     // `generate_policy` when `resolve_cargo_home()` succeeds. Both helpers
     // use the same fallback chain so the policy text and the -DKEY=VALUE
     // params stay in sync — emit one without the other and sandbox-exec
     // refuses to load the profile.
-    if let Some(home) = resolve_cargo_home() {
+    if let Some(home) = &ctx.cargo_home {
         let canonical_home = home.canonicalize().unwrap_or_else(|_| home.clone());
         params.push((
             "CARGO_HOME_REGISTRY".to_string(),
@@ -378,7 +406,7 @@ fn generate_params(policy: &SandboxPolicy, cwd: &Path) -> Vec<(String, PathBuf)>
     // `generate_policy` when `resolve_npm_cache_dir()` succeeds. Both helpers
     // use the same fallback chain so the policy text and the -DKEY=VALUE
     // params stay in sync.
-    if let Some(npm_cache) = resolve_npm_cache_dir() {
+    if let Some(npm_cache) = &ctx.npm_cache_dir {
         let canonical = npm_cache
             .canonicalize()
             .unwrap_or_else(|_| npm_cache.clone());
@@ -450,7 +478,8 @@ mod tests {
     fn test_generate_policy_default() {
         let policy = SandboxPolicy::default();
         let cwd = Path::new("/tmp/test");
-        let result = generate_policy(&policy, cwd);
+        let ctx = resolve_profile_context(&policy, cwd);
+        let result = generate_policy(&policy, &ctx);
 
         assert!(result.contains("(version 1)"));
         assert!(result.contains("(deny default)"));
@@ -464,7 +493,8 @@ mod tests {
     fn test_generate_policy_with_network() {
         let policy = SandboxPolicy::workspace_with_network();
         let cwd = Path::new("/tmp/test");
-        let result = generate_policy(&policy, cwd);
+        let ctx = resolve_profile_context(&policy, cwd);
+        let result = generate_policy(&policy, &ctx);
 
         assert!(result.contains("network-outbound"));
         // The policy only promises outbound connectivity; inbound listeners
@@ -477,7 +507,8 @@ mod tests {
     fn test_generate_policy_read_only() {
         let policy = SandboxPolicy::ReadOnly;
         let cwd = Path::new("/tmp/test");
-        let result = generate_policy(&policy, cwd);
+        let ctx = resolve_profile_context(&policy, cwd);
+        let result = generate_policy(&policy, &ctx);
 
         assert!(result.contains("(allow file-read*)"));
         // Should not have workspace write rules
@@ -498,7 +529,8 @@ mod tests {
             false,
         );
         let cwd = Path::new("/tmp/codesmith-seatbelt-cwd");
-        let write_policy = generate_write_policy(&policy, cwd);
+        let ctx = resolve_profile_context(&policy, cwd);
+        let write_policy = generate_write_policy(&policy, &ctx);
 
         // Two explicit roots + the cwd itself.
         assert_eq!(
@@ -512,7 +544,8 @@ mod tests {
     fn test_generate_params() {
         let policy = SandboxPolicy::default();
         let cwd = Path::new("/tmp/test");
-        let params = generate_params(&policy, cwd);
+        let ctx = resolve_profile_context(&policy, cwd);
+        let params = generate_params(&ctx);
 
         // Should have at least the cache dir param
         assert!(params.iter().any(|(k, _)| k == "DARWIN_USER_CACHE_DIR"));
@@ -528,7 +561,8 @@ mod tests {
         std::fs::create_dir_all(tmp.path().join(".codesmith")).expect("protected dir");
 
         let policy = SandboxPolicy::workspace_with_roots(vec![tmp.path().to_path_buf()], false);
-        let params = generate_params(&policy, tmp.path());
+        let ctx = resolve_profile_context(&policy, tmp.path());
+        let params = generate_params(&ctx);
 
         let root_param = params
             .iter()
@@ -569,19 +603,21 @@ mod tests {
 
         let policy = SandboxPolicy::default();
         let cwd = Path::new("/tmp/test");
+        let ctx = resolve_profile_context(&policy, cwd);
 
-        let policy_text = generate_policy(&policy, cwd);
+        let policy_text = generate_policy(&policy, &ctx);
         assert!(policy_text.contains(r#"(allow file-read* (subpath (param "CARGO_HOME")))"#));
         assert!(policy_text.contains("CARGO_HOME_REGISTRY"));
         assert!(policy_text.contains("CARGO_HOME_GIT"));
 
-        let params = generate_params(&policy, cwd);
+        let params = generate_params(&ctx);
         assert!(params.iter().any(|(k, _)| k == "CARGO_HOME"));
         assert!(params.iter().any(|(k, _)| k == "CARGO_HOME_REGISTRY"));
         assert!(params.iter().any(|(k, _)| k == "CARGO_HOME_GIT"));
 
         // Read-only policy should still emit CARGO_HOME read rule but skip writes.
-        let read_only_text = generate_policy(&SandboxPolicy::ReadOnly, cwd);
+        let read_only_ctx = resolve_profile_context(&SandboxPolicy::ReadOnly, cwd);
+        let read_only_text = generate_policy(&SandboxPolicy::ReadOnly, &read_only_ctx);
         assert!(
             read_only_text.contains(r#"(allow file-read* (subpath (param "CARGO_HOME")))"#),
             "read-only mode should still allow reading the cargo registry: {read_only_text}"
@@ -624,8 +660,9 @@ mod tests {
 
         let policy = SandboxPolicy::default();
         let cwd = Path::new("/tmp/test");
-        let policy_text = generate_policy(&policy, cwd);
-        let params = generate_params(&policy, cwd);
+        let ctx = resolve_profile_context(&policy, cwd);
+        let policy_text = generate_policy(&policy, &ctx);
+        let params = generate_params(&ctx);
 
         assert!(!policy_text.contains("CARGO_HOME"));
         assert!(!params.iter().any(|(k, _)| k.starts_with("CARGO_HOME")));
@@ -663,8 +700,9 @@ mod tests {
 
         let policy = SandboxPolicy::default();
         let cwd = Path::new("/tmp/test");
+        let ctx = resolve_profile_context(&policy, cwd);
 
-        let policy_text = generate_policy(&policy, cwd);
+        let policy_text = generate_policy(&policy, &ctx);
         assert!(
             policy_text.contains(r#"(allow file-read* (subpath (param "NPM_CACHE_DIR")))"#),
             "npm cache read rule missing from policy"
@@ -674,14 +712,15 @@ mod tests {
             "npm cache write rule missing from default policy"
         );
 
-        let params = generate_params(&policy, cwd);
+        let params = generate_params(&ctx);
         assert!(
             params.iter().any(|(k, _)| k == "NPM_CACHE_DIR"),
             "NPM_CACHE_DIR param missing"
         );
 
         // ReadOnly policy: read access allowed, write access must be absent.
-        let read_only_text = generate_policy(&SandboxPolicy::ReadOnly, cwd);
+        let read_only_ctx = resolve_profile_context(&SandboxPolicy::ReadOnly, cwd);
+        let read_only_text = generate_policy(&SandboxPolicy::ReadOnly, &read_only_ctx);
         assert!(
             read_only_text.contains(r#"(allow file-read* (subpath (param "NPM_CACHE_DIR")))"#),
             "read-only mode should allow reading the npm cache"
@@ -722,8 +761,9 @@ mod tests {
 
         let policy = SandboxPolicy::default();
         let cwd = Path::new("/tmp/test");
-        let policy_text = generate_policy(&policy, cwd);
-        let params = generate_params(&policy, cwd);
+        let ctx = resolve_profile_context(&policy, cwd);
+        let policy_text = generate_policy(&policy, &ctx);
+        let params = generate_params(&ctx);
 
         assert!(!policy_text.contains("NPM_CACHE_DIR"));
         assert!(!params.iter().any(|(k, _)| k == "NPM_CACHE_DIR"));

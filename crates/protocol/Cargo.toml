@@ -3,7 +3,6 @@ name = "codesmith-protocol"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-readme.workspace = true
 keywords = ["protocol", "agent", "api"]
 categories = ["development-tools"]
 license.workspace = true

@@ -17,6 +17,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+/// Upper bound on the bytes one `read_from_offset` call will return, so a
+/// chatty task with a slow-polling (or late-attaching) UI streams its
+/// backlog in bounded chunks; the remainder is picked up on the next poll.
+const MAX_POLL_READ: usize = 256 * 1024;
+
 /// Manages on-disk output files for background tasks with offset tracking.
 pub struct BackgroundTaskOutputManager {
     output_dir: PathBuf,
@@ -60,13 +65,13 @@ impl BackgroundTaskOutputManager {
     /// [`Self::output_path_for`] (the validated join) — this helper
     /// takes it pre-built so the UI can hold one path across polls.
     pub fn read_from_offset(&self, path: &Path, offset: usize) -> Result<(String, usize)> {
-        if !path.exists() {
-            return Ok((String::new(), offset));
-        }
-        let mut file = fs::OpenOptions::new()
-            .read(true)
-            .open(path)
-            .with_context(|| format!("open {:?}", path))?;
+        let mut file = match fs::OpenOptions::new().read(true).open(path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok((String::new(), offset));
+            }
+            Err(e) => return Err(e).with_context(|| format!("open {:?}", path)),
+        };
         let file_len = file.seek(SeekFrom::End(0))? as usize;
         if offset >= file_len {
             return Ok((String::new(), file_len));
@@ -79,16 +84,24 @@ impl BackgroundTaskOutputManager {
             start += 1;
         }
         file.seek(SeekFrom::Start(start as u64))?;
-        let bytes_to_read = file_len - start;
+        let bytes_to_read = (file_len - start).min(MAX_POLL_READ);
         let mut buf = vec![0u8; bytes_to_read];
-        file.read_exact(&mut buf)?;
+        let mut filled = 0;
+        while filled < buf.len() {
+            match file.read(&mut buf[filled..]) {
+                Ok(0) => break,
+                Ok(n) => filled += n,
+                Err(e) => return Err(e).with_context(|| format!("read {:?}", path)),
+            }
+        }
+        buf.truncate(filled);
         // Torn append at EOF: this is a concurrent read-while-append flow,
         // so the tail can end mid-character. `from_utf8_lossy` would bake a
         // permanent U+FFFD into the content and the returned offset would
         // advance past the torn bytes. Stop at the last complete character
         // instead so the incomplete tail is re-read on the next poll.
         match String::from_utf8(buf) {
-            Ok(content) => Ok((content, file_len)),
+            Ok(content) => Ok((content, start + filled)),
             Err(err) => {
                 let valid = err.utf8_error().valid_up_to();
                 let content = String::from_utf8_lossy(&err.as_bytes()[..valid]).into_owned();
@@ -161,6 +174,24 @@ mod tests {
         let (content, new_offset) = mgr.read_from_offset(&path, 5).expect("read");
         assert_eq!(content, "56789");
         assert_eq!(new_offset, 10);
+    }
+
+    #[test]
+    fn read_from_offset_caps_single_read_and_streams_remainder() {
+        let tmp = tempdir().expect("tempdir");
+        let mgr = BackgroundTaskOutputManager::new(tmp.path().to_path_buf());
+        let chunk = "a".repeat(64 * 1024);
+        for _ in 0..5 {
+            mgr.append_output("t1", &chunk).expect("write");
+        }
+        let total = 5 * 64 * 1024;
+        let path = mgr.output_path_for("t1").expect("path");
+        let (first, off1) = mgr.read_from_offset(&path, 0).expect("read1");
+        assert_eq!(first.len(), MAX_POLL_READ);
+        assert_eq!(off1, MAX_POLL_READ);
+        let (second, off2) = mgr.read_from_offset(&path, off1).expect("read2");
+        assert_eq!(second.len(), total - MAX_POLL_READ);
+        assert_eq!(off2, total);
     }
 
     #[test]

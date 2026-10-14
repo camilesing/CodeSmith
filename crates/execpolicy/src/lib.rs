@@ -81,7 +81,9 @@ pub struct ToolAskRule {
     /// Optional command prefix to match against (uses arity-aware matching).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
-    /// Optional file path pattern to match against.
+    /// Optional file path matched by exact normalized equality (slashes
+    /// unified, case-folded, boundary slashes trimmed) — not a glob or
+    /// prefix pattern.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
 }
@@ -105,7 +107,8 @@ impl ToolAskRule {
         }
     }
 
-    /// Creates an ask rule for a file-tool matching a specific path pattern.
+    /// Creates an ask rule for a file-tool matching a specific path (exact
+    /// normalized equality).
     pub fn file_path(tool: impl Into<String>, path: impl Into<String>) -> Self {
         Self {
             tool: tool.into(),
@@ -310,26 +313,36 @@ impl ExecPolicyEngine {
     fn matching_ask_rule(&self, ctx: &ExecPolicyContext<'_>) -> Option<ToolAskRule> {
         let tool = ctx.tool.unwrap_or("exec_shell");
 
-        self.rulesets
-            .iter()
-            .flat_map(|ruleset| ruleset.ask_rules.iter())
-            .filter(|rule| rule.tool == tool)
-            .filter(|rule| match rule.command.as_deref() {
-                Some(command) => self.arity_dict.allow_rule_matches(command, ctx.command),
-                None => true,
-            })
-            .filter(|rule| match (rule.path.as_deref(), ctx.path) {
-                (Some(pattern), Some(path)) => {
-                    normalize_path_value(pattern) == normalize_path_value(path)
-                }
-                (Some(_), None) => false,
-                (None, _) => true,
-            })
-            .max_by_key(|rule| ask_rule_specificity(rule))
-            .cloned()
+        // `rulesets` is sorted ascending by layer; iterate highest-priority
+        // layer first so a lower layer can never shadow it. Within the
+        // highest layer that has a match, the most specific rule wins.
+        self.rulesets.iter().rev().find_map(|ruleset| {
+            ruleset
+                .ask_rules
+                .iter()
+                .filter(|rule| rule.tool == tool)
+                .filter(|rule| match rule.command.as_deref() {
+                    Some(command) => self.arity_dict.allow_rule_matches(command, ctx.command),
+                    None => true,
+                })
+                .filter(|rule| match (rule.path.as_deref(), ctx.path) {
+                    (Some(pattern), Some(path)) => {
+                        normalize_path_value(pattern) == normalize_path_value(path)
+                    }
+                    (Some(_), None) => false,
+                    (None, _) => true,
+                })
+                .max_by_key(|rule| ask_rule_specificity(rule))
+                .cloned()
+        })
     }
 
-    /// Records an approval key for the current session so subsequent checks skip approval.
+    /// Records an approval key for the current session. The engine itself
+    /// never consults this set — `ExecPolicyContext` carries no
+    /// approval-key input, so `check()` cannot know which invocations were
+    /// already approved. Callers that want remembered approvals to skip
+    /// re-prompting must consult [`ExecPolicyEngine::is_session_approved`]
+    /// themselves before invoking [`ExecPolicyEngine::check`].
     pub fn remember_session_approval(&mut self, approval_key: String) {
         self.approved_for_session.insert(approval_key);
     }
@@ -344,13 +357,16 @@ impl ExecPolicyEngine {
     /// The evaluation order is: deny rules first (always win), then trusted prefix
     /// matching (arity-aware), then typed ask rules, and finally the approval mode.
     pub fn check(&self, ctx: ExecPolicyContext<'_>) -> Result<ExecPolicyDecision> {
-        let normalized = normalize_command(ctx.command);
         let (trusted_prefixes, denied_prefixes) = self.resolve_prefixes();
-        // Deny rules use simple prefix matching (no arity semantics needed).
-        if let Some(rule) = denied_prefixes
-            .iter()
-            .find(|rule| normalized.starts_with(&normalize_command(rule)))
-        {
+        let segments = command_segments(ctx.command);
+        // Deny rules match ANY segment of a (possibly compound) command on a
+        // whole-token prefix, so `true && rm -rf /` still hits a denied `rm`
+        // while a denied `cat` no longer swallows `catalog`.
+        if let Some(rule) = denied_prefixes.iter().find(|rule| {
+            segments
+                .iter()
+                .any(|segment| deny_prefix_matches(rule, segment))
+        }) {
             return Ok(ExecPolicyDecision {
                 allow: false,
                 requires_approval: false,
@@ -363,14 +379,25 @@ impl ExecPolicyEngine {
 
         // Allow (trusted) rules use arity-aware prefix matching so that
         // `auto_allow = ["git status"]` matches `git status -s` but NOT
-        // `git push origin main`.
-        let trusted_rule = trusted_prefixes
-            .iter()
-            .find(|rule| self.arity_dict.allow_rule_matches(rule, ctx.command))
-            .cloned();
+        // `git push origin main`. A compound command (`git status; rm -rf /`)
+        // is never covered by a single-command prefix — it goes to approval.
+        let trusted_rule = if segments.len() > 1 {
+            None
+        } else {
+            trusted_prefixes
+                .iter()
+                .find(|rule| self.arity_dict.allow_rule_matches(rule, ctx.command))
+                .cloned()
+        };
         let is_trusted = trusted_rule.is_some();
 
-        let ask_rule = self.matching_ask_rule(&ctx);
+        // Ask rules only influence the `Never` arm (and its matched-rule
+        // reporting); skip the arity matching + clone entirely otherwise.
+        let ask_rule = if matches!(ctx.ask_for_approval, AskForApproval::Never) {
+            self.matching_ask_rule(&ctx)
+        } else {
+            None
+        };
 
         let requirement = match &ctx.ask_for_approval {
             AskForApproval::Never => {
@@ -454,7 +481,34 @@ impl ExecPolicyEngine {
 }
 
 fn normalize_command(value: &str) -> String {
-    value.trim().to_ascii_lowercase()
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
+/// Splits a raw shell command on the operators that chain further commands
+/// (`;`, `&&`, `||`, `|`, newlines, backticks, `$(`), so prefix rules can be
+/// evaluated against every segment instead of only the first word.
+fn command_segments(command: &str) -> Vec<String> {
+    command
+        .split([';', '|', '&', '\n', '\r', '`'])
+        .flat_map(|chunk| chunk.split("$("))
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Deny-rule match against one command segment: whitespace-normalized,
+/// case-insensitive, whole-token prefix. Unlike the arity-aware allow
+/// matcher this never refuses to match (deny stays maximally strict), but
+/// it respects token boundaries — a denied `cat` does not block `catalog`.
+fn deny_prefix_matches(rule: &str, segment: &str) -> bool {
+    let rule = normalize_command(rule);
+    let segment = normalize_command(segment);
+    !rule.is_empty() && (segment == rule || segment.starts_with(&format!("{rule} ")))
 }
 
 fn first_token(command: &str) -> String {
@@ -756,6 +810,30 @@ mod tests {
     }
 
     #[test]
+    fn ask_rule_resolves_within_highest_layer() {
+        // A longer (more specific) lower-layer rule must not shadow a
+        // user-layer rule: ask rules resolve within the highest-priority
+        // layer that has a match.
+        let engine = ExecPolicyEngine::with_rulesets(vec![
+            Ruleset::builtin_default()
+                .with_ask_rules(vec![ToolAskRule::exec_shell("cargo test --workspace")]),
+            Ruleset::user(vec![], vec![])
+                .with_ask_rules(vec![ToolAskRule::exec_shell("cargo test")]),
+        ]);
+
+        let decision = engine
+            .check(ctx(
+                "cargo test --workspace extra-arg",
+                AskForApproval::Never,
+            ))
+            .unwrap();
+        assert_eq!(
+            decision.matched_rule.as_deref(),
+            Some("tool=exec_shell command=cargo test")
+        );
+    }
+
+    #[test]
     fn never_forbids_untrusted_unmatched_commands() {
         // `Never` documents "forbid commands that would need approval":
         // with no typed ask rule and no trusted prefix, the command must
@@ -777,5 +855,69 @@ mod tests {
             .unwrap();
         assert!(trusted.allow);
         assert!(!trusted.requires_approval);
+    }
+
+    #[test]
+    fn denied_prefix_matches_segment_after_benign_prefix() {
+        // `true && rm -rf /` must hit a denied `rm` — the deny check is not
+        // evadable by prepending a benign command.
+        let engine = ExecPolicyEngine::new(vec![], vec!["rm".to_string()]);
+
+        let decision = engine
+            .check(ctx("true && rm -rf /", AskForApproval::Never))
+            .unwrap();
+        assert!(!decision.allow);
+        assert_eq!(
+            decision.reason(),
+            "Command blocked by denied prefix rule 'rm'"
+        );
+
+        let piped = engine
+            .check(ctx("git status; rm -rf /", AskForApproval::Never))
+            .unwrap();
+        assert!(!piped.allow);
+
+        let substituted = engine
+            .check(ctx("echo $(rm -rf /)", AskForApproval::Never))
+            .unwrap();
+        assert!(!substituted.allow);
+    }
+
+    #[test]
+    fn denied_prefix_matches_despite_extra_whitespace_and_respects_token_boundary() {
+        let engine =
+            ExecPolicyEngine::new(vec![], vec!["git status".to_string(), "cat".to_string()]);
+
+        // Double space inside the command must not evade the deny rule.
+        let evasive = engine
+            .check(ctx("git  status", AskForApproval::Never))
+            .unwrap();
+        assert!(!evasive.allow);
+
+        // A denied `cat` blocks `cat file` but not the unrelated `catalog`.
+        let blocked = engine
+            .check(ctx("cat README.md", AskForApproval::Never))
+            .unwrap();
+        assert!(!blocked.allow);
+        let unrelated = engine
+            .check(ctx("catalog .", AskForApproval::UnlessTrusted))
+            .unwrap();
+        assert!(unrelated.allow);
+        assert_ne!(unrelated.matched_rule.as_deref(), Some("cat"));
+    }
+
+    #[test]
+    fn trusted_prefix_does_not_cover_compound_commands() {
+        // `git status; rm -rf /` must not be auto-approved by a trusted
+        // `git status`: a compound command is never covered by a
+        // single-command prefix rule.
+        let engine = ExecPolicyEngine::new(vec!["git status".to_string()], vec![]);
+
+        let decision = engine
+            .check(ctx("git status; rm -rf /", AskForApproval::UnlessTrusted))
+            .unwrap();
+        assert!(decision.allow);
+        assert!(decision.requires_approval);
+        assert_eq!(decision.matched_rule, None);
     }
 }

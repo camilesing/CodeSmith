@@ -40,14 +40,25 @@ impl ProviderFactory for AnthropicFactory {
     fn build(&self, cfg: &ProviderConfig) -> Result<LlmClientHandle> {
         // Auth is derived from `api_key` only (managed-header guard below);
         // an empty key would build fine and then fail at request time with
-        // an opaque 401/403 — fail loud at build instead.
-        if cfg.api_key.trim().is_empty() {
-            anyhow::bail!(
-                "anthropic provider requires an api_key; set it in \
-                 ProviderConfig::api_key (or the ANTHROPIC_API_KEY \
-                 environment variable)"
-            );
-        }
+        // an opaque 401/403 — fail loud at build instead. Last resort, the
+        // well-known env vars supply the key (mirroring the CLI config
+        // layer's resolution order) so cross-provider utility setups work
+        // with keys that only exist in the environment.
+        let api_key = if !cfg.api_key.trim().is_empty() {
+            cfg.api_key.clone()
+        } else {
+            ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"]
+                .iter()
+                .find_map(|var| std::env::var(var).ok())
+                .filter(|key| !key.trim().is_empty())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "anthropic provider requires an api_key; set it in \
+                         ProviderConfig::api_key (or the ANTHROPIC_API_KEY \
+                         environment variable)"
+                    )
+                })?
+        };
         // Host value wins; empty falls back to the manifest default; both empty
         // keeps the rig compile-time default.
         let base_url =
@@ -57,7 +68,7 @@ impl ProviderFactory for AnthropicFactory {
         // rig's AnthropicBuilder defaults to `ANTHROPIC_VERSION_LATEST` and
         // normalises the base_url (strips trailing `/v1`/`/messages`), so we
         // only need to set key + base_url + extra headers.
-        let mut builder = anthropic::Client::builder().api_key(cfg.api_key.clone());
+        let mut builder = anthropic::Client::builder().api_key(api_key);
         if !base_url.is_empty() {
             builder = builder.base_url(&base_url);
         }
@@ -91,9 +102,14 @@ impl ProviderFactory for AnthropicFactory {
             client,
             default_model,
             AnthropicShaper,
-            base_url,
-            Some(cfg.api_key.clone()),
-            // Anthropic has no FIM/translate endpoints behind LlmClient.
+            // Report the endpoint the rig client actually requests: the
+            // builder normalises the base_url (see the comment above), so the
+            // raw resolved value would diverge from it.
+            anthropic::client::normalize_anthropic_base_url(&base_url),
+            // Anthropic has no FIM/translate endpoints behind LlmClient, so
+            // the adapter needs neither the http shim nor a copy of the api
+            // key (all api_key readers are gated on the shim being present).
+            None,
             None,
         );
         Ok(Arc::new(adapter) as LlmClientHandle)

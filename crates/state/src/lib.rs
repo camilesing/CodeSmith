@@ -475,7 +475,10 @@ impl StateStore {
                 thread.updated_at,
                 thread_status_to_str(&thread.status),
                 path_to_opt_string(thread.path.as_deref()),
-                thread.cwd.display().to_string(),
+                thread
+                    .cwd
+                    .to_str()
+                    .context("thread cwd is not valid UTF-8")?,
                 thread.cli_version,
                 session_source_to_str(&thread.source),
                 thread.name,
@@ -630,6 +633,7 @@ impl StateStore {
                 FROM messages m1
                 LEFT JOIN messages m2 ON m1.id = m2.parent_entry_id
                 WHERE m1.thread_id = ?1 AND m2.id IS NULL
+                ORDER BY m1.created_at ASC, m1.id ASC
                 "#,
             )
             .context("failed to prepare message listing query")?;
@@ -818,14 +822,16 @@ impl StateStore {
     /// the thread's `current_leaf_id`.
     ///
     /// Messages are returned in chronological order (oldest first). The `limit`
-    /// parameter caps how many ancestor messages are traversed; it defaults to 500.
+    /// parameter caps how many ancestor messages are traversed; it defaults to
+    /// 500 and is clamped to a minimum of 1 — the leaf message itself is always
+    /// included in the result.
     pub fn list_messages(
         &self,
         thread_id: &str,
         limit: Option<usize>,
     ) -> Result<Vec<MessageRecord>> {
         let conn = self.conn()?;
-        let limit = i64::try_from(limit.unwrap_or(500)).unwrap_or(500);
+        let limit = i64::try_from(limit.unwrap_or(500).max(1)).unwrap_or(500);
         let mut stmt = conn
             .prepare(
                 r#"
@@ -843,7 +849,7 @@ impl StateStore {
                         SELECT m.id, m.thread_id, m.role, m.content, m.item_json, m.created_at, m.parent_entry_id, a.depth + 1
                         FROM messages m
                         JOIN ancestors a ON m.id = a.parent_entry_id
-                        WHERE a.depth < ?2
+                        WHERE a.depth < ?2 AND m.thread_id = ?1
                     )
                     SELECT id, thread_id, role, content, item_json, created_at, parent_entry_id FROM ancestors
                     ORDER BY depth DESC

@@ -112,6 +112,16 @@ pub fn snapshot() -> RetryState {
 /// Mark an in-flight retry. `attempt` is the number of the *upcoming*
 /// retry (1 for the first); `delay` is how long the client will sleep
 /// before firing.
+///
+/// # Call-site contract
+///
+/// The global is last-writer-wins with no chain ownership: only the
+/// foreground turn's retry loop may call this (and
+/// [`succeeded`](succeeded())/[`failed`](failed())). Background /
+/// sub-agent requests must not — they would light up the foreground
+/// banner — and two concurrent chains clobber each other's state (chain
+/// B's `start` overwrites chain A's countdown; B's `succeeded` erases
+/// A's still-in-flight banner mid-countdown).
 pub fn start(attempt: u32, delay: Duration, reason: impl Into<String>) {
     let banner = RetryBanner {
         attempt,

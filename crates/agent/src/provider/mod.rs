@@ -238,11 +238,16 @@ impl SharedProviderRegistry {
     }
 
     /// Merge every factory of `registry` into this one (upsert). Hosts call
-    /// this once at startup to seed the builtin set.
+    /// this once at startup to seed the builtin set; an id already
+    /// registered (e.g. an extension factory from an earlier generation)
+    /// is left untouched, so a late seed cannot silently clobber it.
     pub fn seed_from(&self, registry: &ProviderRegistry) {
         let mut w = self.inner.write().unwrap_or_else(|e| e.into_inner());
         for factory in registry.snapshot() {
-            w.register(factory);
+            let id = factory.id();
+            if w.resolve(&id).is_none() {
+                w.register(factory);
+            }
         }
     }
 
@@ -354,11 +359,14 @@ pub struct ProviderAlias {
 
 impl ProviderAlias {
     /// Validate + build the aliasing factory. Errors as strings (for the
-    /// caller to wrap in its own error type) when `id` shadows a builtin
-    /// kind, `target` is not builtin, or `base_url` is not an https (or
-    /// loopback-http) URL — misconfiguration fails loud at registration,
+    /// caller to wrap in its own error type) when `id` is empty, shadows a
+    /// builtin kind, `target` is not builtin, or `base_url` is not an https
+    /// (or loopback-http) URL — misconfiguration fails loud at registration,
     /// not at first client build.
     pub fn into_factory(self, shared: SharedProviderRegistry) -> Result<AliasingFactory, String> {
+        if self.id.trim().is_empty() {
+            return Err("provider alias id must not be empty".to_string());
+        }
         let id = ProviderId::from(self.id.as_str());
         if let ProviderId::Builtin(kind) = &id {
             return Err(format!(
@@ -726,6 +734,29 @@ mod tests {
     }
 
     #[test]
+    fn seed_from_does_not_replace_already_registered_ids() {
+        let shared = SharedProviderRegistry::new();
+        let guard = shared.register(Arc::new(EchoFactory {
+            id: ProviderId::from("deepseek"),
+        }));
+        let mut builtins = ProviderRegistry::new();
+        builtins.register(Arc::new(EchoFactory {
+            id: ProviderId::from("deepseek"),
+        }));
+        shared.seed_from(&builtins);
+        // The extension-registered factory survived the seed: dropping its
+        // guard still removes it — the identity check in the guard's Drop
+        // would no-op if the seed had replaced the factory.
+        drop(guard);
+        assert!(
+            shared
+                .resolve(&ProviderId::Builtin(ProviderKind::Deepseek))
+                .is_none(),
+            "seed_from must not replace an already-registered factory"
+        );
+    }
+
+    #[test]
     fn shared_build_unknown_names_registered_ids() {
         let shared = SharedProviderRegistry::new();
         let err = shared
@@ -770,6 +801,17 @@ mod tests {
             .err()
             .expect("shadowing id must fail");
         assert!(err.contains("shadows builtin kind"));
+    }
+
+    #[test]
+    fn alias_rejects_empty_id() {
+        for empty in ["", "   "] {
+            let err = alias_for(empty, "openai")
+                .into_factory(SharedProviderRegistry::new())
+                .err()
+                .unwrap_or_else(|| panic!("alias id {empty:?} must be rejected"));
+            assert!(err.contains("must not be empty"));
+        }
     }
 
     #[test]

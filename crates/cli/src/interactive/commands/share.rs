@@ -1,34 +1,50 @@
 //! Conversation share upload (moved from the retired `commands/share.rs`).
 
 use std::io::Write;
+use std::time::Duration;
 
 use crate::dependencies::ExternalTool;
+
+/// How long `gh gist create` may run before the upload is aborted.
+const GH_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Why a share failed, kept typed so the CLI boundary renders the failure
+/// without re-wrapping context.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ShareError {
+    #[error("failed to write the temp file: {0}")]
+    TempFile(#[source] std::io::Error),
+    #[error("share render task failed: {0}")]
+    Join(#[source] tokio::task::JoinError),
+    #[error("failed to run `gh gist create`: {0}")]
+    GhSpawn(#[source] std::io::Error),
+    #[error("`gh gist create` timed out after {}s", GH_TIMEOUT.as_secs())]
+    GhTimeout,
+    #[error("`gh gist create` failed: {0}")]
+    GhOutput(String),
+    #[error("`gh gist create` did not print a gist URL")]
+    NoUrl,
+}
 
 /// It renders the session as HTML and uploads it via `gh gist create`.
 pub(crate) async fn perform_share(
     history_json: &str,
     model: &str,
     mode: &str,
-) -> Result<String, String> {
-    // Build HTML from the session data
-    let html = render_session_html(history_json, model, mode);
-
-    // Write to a temp file
-    let tmp = match write_temp_html(&html) {
-        Ok(file) => file,
-        Err(e) => return Err(format!("Failed to write temp file: {e}")),
-    };
-
-    // Upload via `gh gist create`. Hand OWNERSHIP of the temp file to the
-    // blocking task: dropping this future while `gh` runs used to delete
-    // the file underneath the detached reader (truncated upload) or leak
-    // an orphaned gist whose URL was never observed.
-    let url = match upload_gist(tmp).await {
-        Ok(url) => url,
-        Err(e) => return Err(format!("Failed to upload Gist: {e}")),
-    };
-
-    Ok(url)
+) -> Result<String, ShareError> {
+    let history = history_json.to_string();
+    let model = model.to_string();
+    let mode = mode.to_string();
+    // Rendering (several full passes over a potentially multi-MB session
+    // JSON) and the synchronous write are blocking work: keep them off the
+    // executor thread.
+    let tmp = tokio::task::spawn_blocking(move || {
+        let html = render_session_html(&history, &model, &mode);
+        write_temp_html(&html)
+    })
+    .await
+    .map_err(ShareError::Join)??;
+    upload_gist(tmp).await
 }
 
 /// Render the session as a standalone HTML page.
@@ -54,10 +70,6 @@ fn render_session_html(history_json: &str, model: &str, mode: &str) -> String {
   }}
   h1 {{ color: #58a6ff; border-bottom: 1px solid #30363d; padding-bottom: 0.5rem; }}
   .meta {{ color: #8b949e; font-size: 0.9rem; margin-bottom: 2rem; }}
-  .message {{ margin: 1rem 0; padding: 0.75rem; border-radius: 6px; }}
-  .user {{ background: #1f2937; border-left: 3px solid #58a6ff; }}
-  .assistant {{ background: #161b22; border-left: 3px solid #3fb950; }}
-  .tool {{ background: #0d1117; border: 1px solid #30363d; font-family: monospace; font-size: 0.85rem; }}
   pre {{ white-space: pre-wrap; word-wrap: break-word; margin: 0; }}
   .footer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #30363d; color: #8b949e; font-size: 0.8rem; }}
 </style>
@@ -87,48 +99,56 @@ fn html_escape(s: &str) -> String {
 }
 
 /// Write HTML to a secure temp file and keep it alive for upload.
-fn write_temp_html(html: &str) -> Result<tempfile::NamedTempFile, String> {
+fn write_temp_html(html: &str) -> Result<tempfile::NamedTempFile, ShareError> {
     let mut tmp = tempfile::Builder::new()
         .prefix("codesmith-share-")
         .suffix(".html")
         .tempfile()
-        .map_err(|e| format!("{e}"))?;
-    tmp.write_all(html.as_bytes()).map_err(|e| format!("{e}"))?;
+        .map_err(ShareError::TempFile)?;
+    tmp.write_all(html.as_bytes())
+        .map_err(ShareError::TempFile)?;
     Ok(tmp)
 }
 
 /// Upload a temp file as a GitHub Gist using the `gh` CLI. Takes ownership
-/// of the file so it outlives the `gh` invocation even if the calling
-/// future is dropped mid-upload.
+/// of the file so it outlives the `gh` invocation.
 ///
 /// The gist is created **secret** (gh's default): the exported session can
 /// embed source code, tool output, and other secrets, and a public gist is
 /// discoverable and cannot be reliably un-leaked. Users who want a public
 /// URL can flip the gist in the GitHub UI afterwards.
-async fn upload_gist(tmp: tempfile::NamedTempFile) -> Result<String, String> {
+///
+/// `gh` runs under a deadline with `kill_on_drop`: a hung upload (network
+/// stall, credential helper hang) is killed instead of pinning a thread
+/// forever, and dropping this future aborts the child cleanly.
+async fn upload_gist(tmp: tempfile::NamedTempFile) -> Result<String, ShareError> {
     let path_owned = tmp.path().to_path_buf();
     let _keep_alive = tmp;
-    let output = tokio::task::spawn_blocking(move || {
-        let mut cmd = crate::dependencies::Gh::command()
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "gh not found"))?;
-        cmd.args([
-            "gist",
-            "create",
-            path_owned.to_string_lossy().as_ref(),
-            "--filename",
-            "session-export.html",
-            "--desc",
-            "codesmith Session Export",
-        ])
-        .output()
-    })
-    .await
-    .map_err(|join_err| format!("gh gist create panicked: {join_err}"))?
-    .map_err(|e| format!("Failed to run `gh gist create`: {e}"))?;
+    let Some(mut cmd) = crate::dependencies::Gh::command() else {
+        return Err(ShareError::GhSpawn(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "gh not found",
+        )));
+    };
+    cmd.args([
+        "gist",
+        "create",
+        path_owned.to_string_lossy().as_ref(),
+        "--filename",
+        "session-export.html",
+        "--desc",
+        "codesmith Session Export",
+    ]);
+    let mut cmd: tokio::process::Command = cmd.into();
+    cmd.kill_on_drop(true);
+    let output = tokio::time::timeout(GH_TIMEOUT, cmd.output())
+        .await
+        .map_err(|_| ShareError::GhTimeout)?
+        .map_err(ShareError::GhSpawn)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("`gh gist create` failed: {stderr}"));
+        return Err(ShareError::GhOutput(stderr.to_string()));
     }
 
     // `gh` can print warnings/notices alongside the URL (GH_DEBUG,
@@ -140,7 +160,7 @@ async fn upload_gist(tmp: tempfile::NamedTempFile) -> Result<String, String> {
         .map(str::trim)
         .filter(|line| line.starts_with("http") && line.contains("gist"))
         .next_back()
-        .ok_or_else(|| "`gh gist create` did not print a gist URL".to_string())?
+        .ok_or(ShareError::NoUrl)?
         .to_string();
 
     Ok(url)
