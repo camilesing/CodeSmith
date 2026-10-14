@@ -1,12 +1,10 @@
 //! RLM turn loop — paper Algorithm 1 driven over a long-lived Python
 //! subprocess + stdin/stdout RPC bridge (no HTTP sidecar).
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
-use uuid::Uuid;
 
 use crate::events::Event;
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Usage};
@@ -14,6 +12,7 @@ use crate::repl::PythonRuntime;
 
 use super::bridge::RlmBridge;
 use super::prompt::rlm_system_prompt;
+use super::session::write_context_file;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -181,7 +180,7 @@ async fn run_rlm_turn_impl(
     // 1. Stage `context` to a temp file. The REPL reads it on bootstrap so
     //    the big string never enters the process command line and doesn't
     //    show up in `ps`.
-    let ctx_path = match write_context_file(&prompt) {
+    let ctx_path = match write_context_file(&prompt).await {
         Ok(p) => p,
         Err(e) => {
             return RlmTurnResult {
@@ -550,18 +549,6 @@ async fn run_rlm_turn_impl(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn write_context_file(prompt: &str) -> std::io::Result<PathBuf> {
-    let dir = std::env::temp_dir().join("deepseek_rlm_ctx");
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join(format!(
-        "ctx_{}_{}.txt",
-        std::process::id(),
-        Uuid::new_v4().simple()
-    ));
-    std::fs::write(&path, prompt)?;
-    Ok(path)
-}
 
 fn build_root_request(model: &str, messages: &[Message], system: &SystemPrompt) -> MessageRequest {
     MessageRequest {

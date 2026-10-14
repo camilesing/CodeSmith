@@ -173,6 +173,10 @@ if [[ "$SERVER_READY" -ne 1 ]]; then
 fi
 STDOUT=$(cat "$STDOUT_FILE")
 rm -f "$STDOUT_FILE"
+# The log capture is complete — stop the unauthenticated all-interfaces
+# server before the assertions run so it is not left listening on 0.0.0.0
+# on a shared network for longer than the test needs.
+stop_server
 
 if echo "$STDOUT" | grep -qF -- "0.0.0.0"; then
     pass "stdout/stderr contains 0.0.0.0 binding warning"
@@ -185,8 +189,6 @@ if echo "$STDOUT" | grep -qi "mobile"; then
 else
     fail "stdout missing mobile URL hint"
 fi
-
-stop_server
 
 # ── summary ──────────────────────────────────────────────────────────────────
 

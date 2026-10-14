@@ -42,6 +42,7 @@ impl TeammateBackend for TmuxBackend {
     }
 
     async fn spawn(&self, spec: &TeammateSpawnSpec) -> Result<SpawnedTeammate, BackendError> {
+        spec.validate_bin()?;
         // The prompt is written to a temp file so we never have to shell-quote
         // an arbitrarily long / arbitrarily nasty prompt string onto the pane
         // command line. The pane process reads and unlinks it on startup.

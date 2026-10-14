@@ -22,7 +22,7 @@ use crate::tools::task_v2::{SharedTaskV2Manager, TaskV2Record, TaskV2Status};
 use crate::tools::team::protocol_handlers::{PermissionDecision, SharedPermissionRequestRegistry};
 use crate::tools::team::{
     IdleReason, StructuredProtocolMessage, TeammateMessage, is_structured_protocol_message,
-    mark_messages_as_read, parse_structured_protocol, read_unread_messages, team_lead_name,
+    mark_messages_as_read, parse_structured_protocol_from, read_unread_messages, team_lead_name,
     write_to_mailbox,
 };
 
@@ -175,7 +175,11 @@ pub fn scan_inbox_with_priority(
 
     for msg in &unread {
         if is_structured_protocol_message(&msg.text) {
-            if let Some(proto) = parse_structured_protocol(&msg.text) {
+            // Envelope-checked parse: the payload's embedded sender must
+            // match the mailbox envelope's actual `from`, or a sender-less
+            // leader response must come from the lead — content alone
+            // would let any teammate forge leader-only directives.
+            if let Some(proto) = parse_structured_protocol_from(&msg.text, &msg.from) {
                 match &proto {
                     StructuredProtocolMessage::ShutdownRequest {
                         request_id,
@@ -469,7 +473,8 @@ pub fn process_inbox_messages(
 
     for msg in &unread {
         if is_structured_protocol_message(&msg.text) {
-            if let Some(protocol) = parse_structured_protocol(&msg.text) {
+            // Same envelope check as scan_inbox_with_priority.
+            if let Some(protocol) = parse_structured_protocol_from(&msg.text, &msg.from) {
                 protocol_msgs.push(protocol);
             }
         } else {

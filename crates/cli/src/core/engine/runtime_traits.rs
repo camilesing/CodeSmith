@@ -413,7 +413,12 @@ impl HostServices for super::EngineHost {
                         client,
                         session.model.clone(),
                         tool_context.clone(),
-                        true, // Coordinator workers need shell access
+                        // Inherit the session's shell gate rather than
+                        // hard-coding it on: `set_mode` forces `allow_shell`
+                        // on Coordinator entry (mirroring the Yolo branch),
+                        // so a user who opted out of shell keeps workers
+                        // shell-less — the gate stays truthful.
+                        session.allow_shell,
                         Some(req.tx_event.clone()),
                         Arc::clone(&self.subagent_manager),
                     )

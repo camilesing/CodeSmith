@@ -69,6 +69,11 @@ pub struct TaskV2Manager {
 impl TaskV2Manager {
     /// Create a new TaskV2Manager for a given task list ID (typically session ID).
     pub fn new(task_list_id: &str) -> anyhow::Result<Self> {
+        // Defense-in-depth for the same rule `task_file` documents: the id
+        // is model-supplied and reaches `Path::join`, so it must be a
+        // single safe path segment — a new caller passing an unsanitized
+        // list id must not silently escape `~/.codesmith/tasks`.
+        crate::utils::require_safe_path_component(task_list_id)?;
         let base = codesmith_config::codesmith_home()?;
         let task_dir = base.join("tasks").join(task_list_id);
         fs::create_dir_all(&task_dir)?;

@@ -41,6 +41,7 @@ impl TeammateBackend for ITermBackend {
     }
 
     async fn spawn(&self, spec: &TeammateSpawnSpec) -> Result<SpawnedTeammate, BackendError> {
+        spec.validate_bin()?;
         let prompt_file = write_prompt_file("iterm", &spec.agent_id, &spec.prompt)?;
         let script = build_applescript(spec, &prompt_file);
 

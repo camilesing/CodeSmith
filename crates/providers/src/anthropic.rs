@@ -51,7 +51,23 @@ impl ProviderFactory for AnthropicFactory {
         if !base_url.is_empty() {
             builder = builder.base_url(&base_url);
         }
-        builder = builder.http_headers(build_header_map(&cfg.http_headers));
+        // Host-supplied extra headers must not override the headers rig
+        // derives from the credentials: an `x-api-key` / `authorization`
+        // entry can silently break or bypass the auth derived from
+        // `cfg.api_key`, and `anthropic-version` changes the wire
+        // protocol. Misconfiguration fails loud at build, not mid-request.
+        let headers = build_header_map(&cfg.http_headers);
+        for managed in ["x-api-key", "authorization", "anthropic-version"] {
+            if headers.contains_key(managed) {
+                anyhow::bail!(
+                    "http_headers must not override the auth-managed header \
+                     `{managed}`; configure credentials via \
+                     ProviderConfig::api_key and the protocol version via the \
+                     client, not extra headers"
+                );
+            }
+        }
+        builder = builder.http_headers(headers);
         // P0-3: backend with a one-shot HTTP/2 → HTTP/1.1 fallback
         // (`rig_adapter::http_fallback`). `http_client` advances the
         // builder's backend type parameter, so it chains into `build`

@@ -218,7 +218,7 @@
         <button id="save-token">Save</button>
       </div>
       <div class="body grid">
-        <input id="token" autocomplete="off" spellcheck="false" placeholder="Runtime token">
+        <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="Runtime token">
         <div id="conn" class="status">Not connected</div>
       </div>
     </section>
@@ -284,7 +284,13 @@
       const params = new URLSearchParams(location.search);
       const urlToken = params.get("token");
       if (!urlToken) return;
-      localStorage.setItem("codesmith_runtime_token", urlToken);
+      // sessionStorage, not localStorage: this token authorizes thread
+      // creation, shell-enabling turns, and approval Allow decisions —
+      // full agent control — so it must not outlive the tab session or
+      // stay readable to injected scripts across sessions. (The deep-link
+      // ?token= flow itself is a known limitation: the value still
+      // touches server/proxy access logs before replaceState strips it.)
+      sessionStorage.setItem("codesmith_runtime_token", urlToken);
       params.delete("token");
       const qs = params.toString();
       history.replaceState(null, "", location.pathname + (qs ? "?" + qs : ""));
@@ -582,9 +588,9 @@
 
     async function boot() {
       takeTokenFromUrl();
-      $("token").value = localStorage.getItem("codesmith_runtime_token") || "";
+      $("token").value = sessionStorage.getItem("codesmith_runtime_token") || "";
       $("save-token").onclick = async () => {
-        localStorage.setItem("codesmith_runtime_token", token());
+        sessionStorage.setItem("codesmith_runtime_token", token());
         await loadThreads().catch((err) => setStatus(err.message, "bad"));
       };
       $("refresh").onclick = () => loadThreads().catch((err) => setStatus(err.message, "bad"));

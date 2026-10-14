@@ -148,10 +148,17 @@ fn resolve_include_target(target: &str, base: &Path) -> PathBuf {
 /// arbitrary files (`~/.ssh/…`, `/etc/…`) into the system prompt. (An
 /// absolute target that resolves *inside* the root does pass — the
 /// containment is the security property, not the spelling.)
-fn include_target_permitted(resolved: &Path, base: &Path) -> bool {
+///
+/// Returns the canonicalized path the check actually verified. Callers must
+/// open **that** path, not the original spelling — re-resolving the original
+/// re-opens the symlink-swap TOCTOU window the check just closed (and keeps
+/// `..`/symlink components out of lexical `starts_with` comparisons).
+fn include_target_permitted(resolved: &Path, base: &Path) -> Option<PathBuf> {
     let canon_resolved = canonicalize_or_keep(resolved);
     let canon_base = canonicalize_or_keep(base);
-    canon_resolved.starts_with(&canon_base)
+    canon_resolved
+        .starts_with(&canon_base)
+        .then_some(canon_resolved)
 }
 
 /// Read a single memory file and recursively expand `@include` directives
@@ -189,27 +196,28 @@ fn process_memory_file(
     if depth > MAX_INCLUDE_DEPTH {
         return None;
     }
-    let canon = canonicalize_or_keep(path);
     // The tier's root files are held to the same containment as include
     // targets: a symlinked `AGENTS.md -> ~/.ssh/id_rsa` (or a rule file
     // pointing at `/etc/passwd`) must not pull out-of-tier content into
     // the system prompt just because `exists()`/`is_file()` follow links.
-    if !include_target_permitted(path, tier_root) {
+    // The check returns the canonical path it verified — load that, not the
+    // original spelling, so a symlink swapped after the check cannot escape.
+    let Some(canon) = include_target_permitted(path, tier_root) else {
         tracing::warn!(
             target: "codesmith::memory",
             path = %path.display(),
             "memory file resolves outside its tier root; skipped"
         );
         return None;
-    }
+    };
     if !processed.insert(canon.clone()) {
         return None;
     }
     if excludes.iter().any(|e| e == &canon) {
         return None;
     }
-    let content = load_context_file(path).ok()?;
-    let base = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let content = load_context_file(&canon).ok()?;
+    let base = canon.parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut out = String::new();
     // Track ``` / ~~~ fence state so `@include` lines shown inside a code
     // block (documentation examples) are treated as the prose they are.
@@ -255,17 +263,22 @@ fn process_memory_file(
             && let Some(target) = match_include_directive(body)
         {
             let resolved = resolve_include_target(target, &base);
-            if !include_target_permitted(&resolved, tier_root) {
+            let Some(resolved_canon) = include_target_permitted(&resolved, tier_root) else {
                 tracing::warn!(
                     target: "codesmith::memory",
                     path = %resolved.display(),
                     "@include target escapes the tier root; skipped"
                 );
                 continue;
-            }
-            if let Some((_, inc_text)) =
-                process_memory_file(&resolved, tier, tier_root, processed, excludes, depth + 1)
-            {
+            };
+            if let Some((_, inc_text)) = process_memory_file(
+                &resolved_canon,
+                tier,
+                tier_root,
+                processed,
+                excludes,
+                depth + 1,
+            ) {
                 out.push_str(&inc_text);
                 if !inc_text.ends_with('\n') {
                     out.push('\n');

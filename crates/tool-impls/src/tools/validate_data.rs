@@ -115,6 +115,20 @@ fn load_input_source(
         (None, None) => Err(ToolError::missing_field("path or content")),
         (Some(path), None) => {
             let resolved = context.resolve_path(path)?;
+            // validate_data is a lightweight metadata check; a model-
+            // supplied path can point at a multi-GB workspace file, which
+            // must not be fully buffered and then parsed end-to-end.
+            const MAX_BYTES: u64 = 4 * 1024 * 1024;
+            let metadata = fs::metadata(&resolved).map_err(|e| {
+                ToolError::execution_failed(format!("Failed to stat {}: {e}", resolved.display()))
+            })?;
+            if metadata.len() > MAX_BYTES {
+                return Err(ToolError::invalid_input(format!(
+                    "File {} is {} bytes; validate_data accepts files up to {MAX_BYTES} bytes",
+                    resolved.display(),
+                    metadata.len()
+                )));
+            }
             let raw_content = fs::read_to_string(&resolved).map_err(|e| {
                 ToolError::execution_failed(format!("Failed to read {}: {e}", resolved.display()))
             })?;

@@ -274,6 +274,9 @@ async fn tool_handler(
             req.call,
             codesmith_execpolicy::AskForApproval::OnRequest,
             &cwd,
+            // This endpoint has no read-only/restricted mode of its own;
+            // mutating tools stay allowed until a policy knob exists.
+            true,
         )
         .await
     {

@@ -3,7 +3,7 @@
 //! When CodeSmith shells out to `git`, the host's `core.fsmonitor` and
 //! `core.hooksPath` configuration can silently alter git's behaviour (spawn
 //! fsmonitor daemons, run hook scripts outside the sandbox). These helpers
-//! inject an indexed `GIT_CONFIG_*` overlay that blanks both keys for the
+//! inject an indexed `GIT_CONFIG_*` overlay that disables both keys for the
 //! child process, so sandboxed/automated git invocations behave
 //! deterministically without mutating the user's on-disk git config.
 //!
@@ -13,15 +13,30 @@
 
 use std::collections::HashMap;
 
-/// Build the git-config overlay that blanks `core.fsmonitor` and
+/// The value `core.hooksPath` is overridden with: an owner-controlled
+/// directory that is intentionally **not created**. `core.hooksPath` has no
+/// "off" spelling — an empty value degrades to a version-dependent
+/// root-relative hook lookup (`/pre-commit`) — so hooks are disabled by
+/// pointing them at a path where the lookup deterministically fails. Only
+/// the owner can create anything under `~/.codesmith` (0700), so a hook
+/// cannot be smuggled in by another local user.
+fn hooks_disabled_path() -> String {
+    codesmith_config::codesmith_home()
+        .map(|home| home.join("hooks-disabled").to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Build the git-config overlay that disables `core.fsmonitor` and
 /// `core.hooksPath` for a child git process.
 pub fn git_scrub_env() -> HashMap<String, String> {
     HashMap::from([
         ("GIT_CONFIG_COUNT".to_string(), "2".to_string()),
         ("GIT_CONFIG_KEY_0".to_string(), "core.fsmonitor".to_string()),
-        ("GIT_CONFIG_VALUE_0".to_string(), "".to_string()),
+        // Explicit boolean disable; `""` only disables fsmonitor because
+        // git's boolean parser maps empty to false.
+        ("GIT_CONFIG_VALUE_0".to_string(), "false".to_string()),
         ("GIT_CONFIG_KEY_1".to_string(), "core.hooksPath".to_string()),
-        ("GIT_CONFIG_VALUE_1".to_string(), "".to_string()),
+        ("GIT_CONFIG_VALUE_1".to_string(), hooks_disabled_path()),
     ])
 }
 
@@ -47,12 +62,15 @@ pub fn merge_git_scrub_env(env: &mut HashMap<String, String>) {
         format!("GIT_CONFIG_KEY_{base}"),
         "core.fsmonitor".to_string(),
     );
-    env.insert(format!("GIT_CONFIG_VALUE_{base}"), String::new());
+    env.insert(format!("GIT_CONFIG_VALUE_{base}"), "false".to_string());
     env.insert(
         format!("GIT_CONFIG_KEY_{}", base + 1),
         "core.hooksPath".to_string(),
     );
-    env.insert(format!("GIT_CONFIG_VALUE_{}", base + 1), String::new());
+    env.insert(
+        format!("GIT_CONFIG_VALUE_{}", base + 1),
+        hooks_disabled_path(),
+    );
 }
 
 #[cfg(test)]
@@ -68,12 +86,16 @@ mod tests {
             env.get("GIT_CONFIG_KEY_0"),
             Some(&"core.fsmonitor".to_string())
         );
-        assert_eq!(env.get("GIT_CONFIG_VALUE_0"), Some(&"".to_string()));
+        assert_eq!(env.get("GIT_CONFIG_VALUE_0"), Some(&"false".to_string()));
         assert_eq!(
             env.get("GIT_CONFIG_KEY_1"),
             Some(&"core.hooksPath".to_string())
         );
-        assert_eq!(env.get("GIT_CONFIG_VALUE_1"), Some(&"".to_string()));
+        let hooks = env["GIT_CONFIG_VALUE_1"].clone();
+        assert!(
+            hooks.ends_with("hooks-disabled") && !hooks.is_empty(),
+            "hooksPath must point at the disabled dir, got {hooks:?}"
+        );
     }
 
     #[test]
@@ -95,8 +117,8 @@ mod tests {
             env.get("GIT_CONFIG_KEY_2"),
             Some(&"core.hooksPath".to_string())
         );
-        assert_eq!(env.get("GIT_CONFIG_VALUE_1"), Some(&"".to_string()));
-        assert_eq!(env.get("GIT_CONFIG_VALUE_2"), Some(&"".to_string()));
+        assert_eq!(env.get("GIT_CONFIG_VALUE_1"), Some(&"false".to_string()));
+        assert!(env["GIT_CONFIG_VALUE_2"].ends_with("hooks-disabled"));
     }
 
     #[test]

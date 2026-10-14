@@ -81,6 +81,23 @@ impl FrameworkTool for ToolSpecAdapter {
         let context = self.context.clone();
         Box::pin(async move {
             // Deref-coercion: `&context` (`&Arc<ToolContext>`) -> `&ToolContext`.
+            // Approval/destructive gating is enforced at the host's
+            // dispatcher surface, not inside each spec — bridging straight
+            // to `execute` (this module's documented design) bypasses it.
+            // That bypass must not be silent: surface it whenever an
+            // approval-gated spec runs without a live permission registry
+            // in the captured context.
+            if spec
+                .capabilities()
+                .contains(&ToolCapability::RequiresApproval)
+                && context.runtime.permission_request_registry.is_none()
+            {
+                tracing::warn!(
+                    tool = %spec.name(),
+                    "approval-gated tool executed via the AgentExecutor bridge; \
+                     dispatcher-level approval gating is bypassed on this path"
+                );
+            }
             spec.execute(input, &context).await
         })
     }

@@ -569,7 +569,16 @@ impl ToolContext {
     /// This handles both existing files (using canonicalize) and non-existent files
     /// (for write operations) by canonicalizing the parent directory and appending
     /// the filename.
-    /// Resolve a path relative to workspace, validating it doesn't escape.
+    ///
+    /// # Known limitation (TOCTOU)
+    ///
+    /// Containment is verified at resolution time only. A symlink created or
+    /// swapped inside the workspace *after* this call — e.g. by a background
+    /// shell task the same model spawned earlier — redirects the returned
+    /// path outside the workspace, and nothing re-checks it. Tools that open
+    /// the returned path for reading or writing should re-verify containment
+    /// on the opened handle (canonicalize the path immediately after open)
+    /// when they cannot tolerate that window.
     ///
     /// # Examples
     ///

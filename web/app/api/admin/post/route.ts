@@ -123,8 +123,15 @@ export async function POST(req: Request) {
     });
 
     if (!ghRes.ok) {
-      const text = await ghRes.text();
-      return NextResponse.json({ error: `GitHub ${ghRes.status}: ${text}` }, { status: 502 });
+      // Log a truncated body server-side only: GitHub error bodies can
+      // carry internal request IDs, rate-limit/abuse metadata, or org and
+      // repo details that must not be proxied to the browser.
+      const text = (await ghRes.text()).slice(0, 512);
+      console.error(`GitHub comment post failed (${draftKey})`, ghRes.status, text);
+      return NextResponse.json(
+        { error: `GitHub API error (${ghRes.status})` },
+        { status: 502 },
+      );
     }
 
     // Mark as posted

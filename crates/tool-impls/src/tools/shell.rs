@@ -594,8 +594,15 @@ impl ToolSpec for ExecShellTool {
                 .map(PathBuf::from)
                 .unwrap_or_else(|| context.cwd.clone());
             let mut policy = policy_override.clone().unwrap_or({
+                // Derive from the runtime network setting instead of
+                // hard-coding `true`: the default sandbox posture is
+                // network-denied (`SandboxPolicy::default`), and with
+                // `auto_allow_bash_if_sandboxed` the "sandboxed" claim is
+                // the justification for skipping approval — silently
+                // granting network under that skip isn't what the user
+                // approved. Opt back in via `[sandbox.network] enabled`.
                 ExecutionSandboxPolicy::ExternalSandbox {
-                    network_access: true,
+                    network_access: effective_runtime.network.enabled.unwrap_or(false),
                 }
             });
             apply_runtime_filesystem_policy(&mut policy, &effective_runtime);

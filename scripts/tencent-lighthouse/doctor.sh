@@ -170,9 +170,24 @@ check_env() {
   [[ "${workspace}" == "${WORKSPACE_ROOT}" || "${workspace}" == "${WORKSPACE_ROOT}/"* ]] \
     && pass "bridge workspace is under ${WORKSPACE_ROOT}" \
     || warn "bridge workspace is outside ${WORKSPACE_ROOT}: ${workspace:-unset}"
-  [[ "${domain:-feishu}" == "feishu" || "${domain:-feishu}" == "lark" || "${domain:-feishu}" == https://open.* ]] \
-    && pass "FEISHU_DOMAIN is ${domain:-feishu}" \
-    || fail "FEISHU_DOMAIN must be feishu, lark, or an https://open.* URL"
+  # Explicit allowlist, not a glob: in `[[ ... == pattern ]]` the pattern
+  # `https://open.*` matches ANY host starting with "open." (`*` crosses
+  # dots and slashes), and FEISHU_DOMAIN decides where the bridge sends
+  # app credentials and message payloads — a lax check here green-lights
+  # exfiltration to an attacker-controlled host. The bridge resolves only
+  # these two official endpoints natively (resolveLarkDomain); anything
+  # else is a custom override this doctor refuses to bless.
+  case "${domain:-feishu}" in
+    feishu|lark)
+      pass "FEISHU_DOMAIN is ${domain:-feishu}"
+      ;;
+    https://open.feishu.cn|https://open.feishu.cn/*|https://open.larksuite.com|https://open.larksuite.com/*)
+      pass "FEISHU_DOMAIN is ${domain}"
+      ;;
+    *)
+      fail "FEISHU_DOMAIN must be feishu, lark, or an https://open.feishu.cn / https://open.larksuite.com URL (got: ${domain})"
+      ;;
+  esac
   [[ "${allow_groups:-false}" == "true" && "${allow_unlisted:-false}" == "true" ]] \
     && fail "group control cannot run with CODESMITH_ALLOW_UNLISTED=true" \
     || pass "group/unlisted mode is not openly combined"

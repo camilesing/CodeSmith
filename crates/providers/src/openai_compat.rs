@@ -63,16 +63,37 @@ impl ProviderFactory for OpenAiCompatFactory {
     }
 
     fn build(&self, cfg: &ProviderConfig) -> Result<LlmClientHandle> {
-        // Host value wins; empty falls back to the manifest default; both empty
-        // keeps the rig compile-time default (api.openai.com/v1).
+        // Host value wins; empty falls back to the manifest default. Both
+        // empty is a configuration error: every kind in this family is a
+        // non-OpenAI endpoint, and silently keeping rig's compile-time
+        // endpoint (api.openai.com/v1) would route requests — and the
+        // provider's own Bearer credential — to a different vendor's
+        // service instead of failing at the configuration site.
         let base_url =
             crate::resolve_with_manifest_default(&cfg.base_url, self.base_url.as_deref());
+        if base_url.is_empty() {
+            anyhow::bail!(
+                "provider '{}' ({}) has no base_url configured (host value \
+                 and manifest default are both empty); refusing to fall back \
+                 to api.openai.com — set the provider's base_url",
+                self.id.as_str(),
+                self.name
+            );
+        }
+        // Same resolution for the model: an empty model id would otherwise
+        // defer to an obscure provider-side failure at the first request.
         let default_model =
             crate::resolve_with_manifest_default(&cfg.default_model, self.model.as_deref());
-        let mut builder = openai::CompletionsClient::builder().api_key(cfg.api_key.clone());
-        if !base_url.is_empty() {
-            builder = builder.base_url(&base_url);
+        if default_model.is_empty() {
+            anyhow::bail!(
+                "provider '{}' ({}) has no model configured (host value and \
+                 manifest default are both empty); set the provider's model",
+                self.id.as_str(),
+                self.name
+            );
         }
+        let mut builder = openai::CompletionsClient::builder().api_key(cfg.api_key.clone());
+        builder = builder.base_url(&base_url);
         builder = builder.http_headers(build_header_map(&cfg.http_headers));
         // P0-3: backend with a one-shot HTTP/2 → HTTP/1.1 fallback
         // (`rig_adapter::http_fallback`). `http_client` advances the

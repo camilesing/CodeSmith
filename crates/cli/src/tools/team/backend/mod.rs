@@ -79,8 +79,28 @@ impl TeammateSpawnSpec {
             allowed_tools: None,
             permission_mode: "ask".to_string(),
             env: HashMap::new(),
-            codesmith_bin: std::env::current_exe().unwrap_or_else(|_| PathBuf::from("codesmith")),
+            // An unresolvable exe leaves the path EMPTY on purpose: the old
+            // fallback to a bare `codesmith` resolved the command word via
+            // PATH, where a shadowed entry would run with the leader's
+            // privileges. Pane backends fail loud on the empty path
+            // (`validate_bin`) instead of spawning an unchecked lookup.
+            codesmith_bin: std::env::current_exe().unwrap_or_default(),
         }
+    }
+
+    /// Fail loud when the spec carries no resolvable binary path — an
+    /// empty `codesmith_bin` means `current_exe()` failed and no explicit
+    /// path was configured. Called by the pane backends (tmux/iTerm); the
+    /// in-process backend never execs a binary and skips this.
+    pub(crate) fn validate_bin(&self) -> Result<(), BackendError> {
+        if self.codesmith_bin.as_os_str().is_empty() {
+            return Err(BackendError::InvalidSpec(
+                "codesmith binary could not be resolved (current_exe() failed and no explicit \
+                 codesmith_bin was set); refusing an unchecked PATH lookup"
+                    .to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 
