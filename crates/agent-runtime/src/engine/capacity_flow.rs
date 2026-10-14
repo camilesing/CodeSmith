@@ -442,7 +442,7 @@ pub(crate) fn is_replayable_read_only(
     }
     tool_registry
         .and_then(|registry| registry.metadata(tool_name))
-        .is_some_and(|metadata| metadata.is_read_only)
+        .is_some_and(|metadata| metadata.is_read_only())
 }
 
 /// Select the most recent successful, read-only, replayable tool-use from the

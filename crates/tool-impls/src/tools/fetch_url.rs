@@ -13,6 +13,7 @@ use codesmith_agent_runtime::network_policy::{Decision, NetworkPolicyDecider};
 use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_u64,
 };
+use codesmith_agent_runtime::tools::tool_catalog::FETCH_URL_NAME;
 use regex::Regex;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -95,7 +96,7 @@ pub struct FetchUrlTool;
 #[async_trait]
 impl ToolSpec for FetchUrlTool {
     fn name(&self) -> &'static str {
-        "fetch_url"
+        FETCH_URL_NAME
     }
 
     fn description(&self) -> &'static str {

@@ -16,6 +16,7 @@ use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_str, optional_u64, required_str,
 };
+use codesmith_agent_runtime::tools::tool_catalog::FILE_SEARCH_NAME;
 
 const FILE_SEARCH_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -31,7 +32,7 @@ pub struct FileSearchTool;
 #[async_trait]
 impl ToolSpec for FileSearchTool {
     fn name(&self) -> &'static str {
-        "file_search"
+        FILE_SEARCH_NAME
     }
 
     fn description(&self) -> &'static str {

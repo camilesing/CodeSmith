@@ -6,6 +6,10 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use chrono::Utc;
+use codesmith_agent_runtime::tools::tool_catalog::{
+    EXEC_SHELL_WAIT_NAME, TASK_CREATE_NAME, TASK_LIST_NAME, TASK_READ_NAME, TASK_SHELL_START_NAME,
+    TASK_SHELL_WAIT_NAME,
+};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -40,7 +44,7 @@ pub struct PrAttemptPreflightTool;
 #[async_trait]
 impl ToolSpec for TaskCreateTool {
     fn name(&self) -> &'static str {
-        "task_create"
+        TASK_CREATE_NAME
     }
 
     fn description(&self) -> &'static str {
@@ -101,7 +105,7 @@ impl ToolSpec for TaskCreateTool {
 #[async_trait]
 impl ToolSpec for TaskListTool {
     fn name(&self) -> &'static str {
-        "task_list"
+        TASK_LIST_NAME
     }
 
     fn description(&self) -> &'static str {
@@ -145,7 +149,7 @@ impl ToolSpec for TaskListTool {
 #[async_trait]
 impl ToolSpec for TaskReadTool {
     fn name(&self) -> &'static str {
-        "task_read"
+        TASK_READ_NAME
     }
 
     fn description(&self) -> &'static str {
@@ -333,9 +337,7 @@ impl ToolSpec for TaskStopTool {
                 let team_name = ctx.team_name.clone();
                 drop(slot);
                 {
-                    let mut task_mgr = task_mgr
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner());
+                    let mut task_mgr = task_mgr.lock().unwrap_or_else(|e| e.into_inner());
                     if let Ok(tasks) = task_mgr.list_tasks() {
                         for task in tasks {
                             if task.owner.as_deref() == Some(target) {
@@ -600,7 +602,7 @@ impl ToolSpec for TaskGateRunTool {
 #[async_trait]
 impl ToolSpec for TaskShellStartTool {
     fn name(&self) -> &'static str {
-        "task_shell_start"
+        TASK_SHELL_START_NAME
     }
 
     fn description(&self) -> &'static str {
@@ -662,7 +664,7 @@ impl ToolSpec for TaskShellStartTool {
 #[async_trait]
 impl ToolSpec for TaskShellWaitTool {
     fn name(&self) -> &'static str {
-        "task_shell_wait"
+        TASK_SHELL_WAIT_NAME
     }
 
     fn description(&self) -> &'static str {
@@ -708,7 +710,7 @@ impl ToolSpec for TaskShellWaitTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let result = ShellWaitTool::new("exec_shell_wait")
+        let result = ShellWaitTool::new(EXEC_SHELL_WAIT_NAME)
             .execute(input.clone(), context)
             .await?;
         let Some(gate) = optional_str(&input, "gate") else {

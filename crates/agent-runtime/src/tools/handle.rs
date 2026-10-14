@@ -51,6 +51,10 @@ pub struct VarHandle {
     pub name: String,
     #[serde(rename = "type")]
     pub type_name: String,
+    /// Kind-dependent length — see [`HandleValue::length`] for the exact
+    /// semantics per payload kind. It is NOT a byte size and NOT a bound on
+    /// the serialized payload: a 1-element list wrapping a 10 MB string
+    /// reports `1`.
     pub length: usize,
     pub repr_preview: String,
     pub sha256: String,
@@ -91,6 +95,18 @@ pub enum HandleValue {
 
 #[allow(dead_code)] // Foundation methods used by upcoming RLM/agent session producers.
 impl HandleValue {
+    /// Kind-dependent length, serialized into [`VarHandle::length`]:
+    ///
+    /// - [`HandleValue::Text`]: char count (Unicode scalar values).
+    /// - JSON arrays: element count.
+    /// - JSON objects: entry count.
+    /// - Other JSON scalars (string/bool/number/null): char count of the
+    ///   serialized JSON form.
+    ///
+    /// The units are deliberately mixed per kind. This is NOT a byte size
+    /// and NOT a bound on the serialized payload: a 1-element list wrapping
+    /// a 10 MB string reports `1`. Use a handle's `count` projection
+    /// (`handle_read`) for byte-accurate sizing.
     fn length(&self) -> usize {
         match self {
             Self::Text(text) => text.chars().count(),
@@ -162,6 +178,11 @@ impl HandleStore {
 
     /// Resolve a handle to its stored payload.
     ///
+    /// Returns an owned clone of the record so callers holding a
+    /// [`SharedHandleStore`] (a tokio `Mutex`) can drop the guard right
+    /// after the lookup instead of holding the global lock across the
+    /// full-payload clone/projection.
+    ///
     /// Last-writer-wins on same-key re-insert: the lookup keys on
     /// `(session_id, name)` only, so a handle issued before a re-insert of
     /// the same key resolves to the *new* payload, whose digest, length and
@@ -169,8 +190,8 @@ impl HandleStore {
     /// the swap verify the digest themselves (`handle_read` rejects a
     /// `sha256` mismatch).
     #[must_use]
-    pub fn get(&self, handle: &VarHandle) -> Option<&HandleRecord> {
-        self.records.get(&handle.key())
+    pub fn get(&self, handle: &VarHandle) -> Option<HandleRecord> {
+        self.records.get(&handle.key()).cloned()
     }
 
     /// Drop every handle owned by `session_id`, returning how many were
@@ -294,7 +315,7 @@ mod tests {
         // renewed handle resolve to the NEW payload (documented
         // last-writer-wins semantics).
         assert_eq!(
-            store.get(&old).map(|r| r.handle.sha256.clone()),
+            store.get(&old).map(|record| record.handle.sha256),
             Some(renewed.sha256.clone())
         );
         assert!(store.get(&renewed).is_some());
@@ -332,12 +353,5 @@ mod tests {
 /// Shared by [`HandleValue::repr_preview`] and the TUI-side projection
 /// helpers (re-exported through the TUI shim).
 pub fn truncate_chars(text: &str, max_chars: usize) -> String {
-    let mut out = String::new();
-    for (idx, ch) in text.chars().enumerate() {
-        if idx == max_chars {
-            break;
-        }
-        out.push(ch);
-    }
-    out
+    text.chars().take(max_chars).collect()
 }

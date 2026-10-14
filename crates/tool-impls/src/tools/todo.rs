@@ -7,6 +7,7 @@ pub use codesmith_agent_runtime::tool_state::todo::*;
 use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
+use codesmith_agent_runtime::tools::tool_catalog::CHECKLIST_WRITE_NAME;
 
 // === Types ===
 
@@ -29,7 +30,7 @@ impl TodoWriteTool {
     pub fn checklist(todo_list: SharedTodoList) -> Self {
         Self {
             todo_list,
-            tool_name: "checklist_write",
+            tool_name: CHECKLIST_WRITE_NAME,
         }
     }
 }

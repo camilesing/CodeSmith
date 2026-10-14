@@ -107,14 +107,13 @@ struct ToolResultContextLimits {
     snippet_chars: usize,
 }
 
+/// Truncate `text` to `limit` chars (appending `...` when truncated).
+/// Delegates to the single implementation in
+/// [`crate::tools::task_types::summarize_text`], so control characters
+/// other than newline/tab are now stripped here too, matching task
+/// summaries (the two copies had drifted apart).
 pub fn summarize_text(text: &str, limit: usize) -> String {
-    if text.chars().count() <= limit {
-        return text.to_string();
-    }
-    let take = limit.saturating_sub(3);
-    let mut out: String = text.chars().take(take).collect();
-    out.push_str("...");
-    out
+    crate::tools::task_types::summarize_text(text, limit)
 }
 
 fn summarize_text_head_tail(text: &str, limit: usize) -> String {

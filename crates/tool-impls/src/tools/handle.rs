@@ -130,8 +130,14 @@ impl ToolSpec for HandleReadTool {
             .map(|n| (n as usize).min(HARD_MAX_CHARS))
             .unwrap_or(DEFAULT_MAX_CHARS);
 
-        let store = context.runtime.handle_store.lock().await;
-        let record = store.get(&handle).ok_or_else(|| {
+        // Scope the store guard to the lookup: `get` clones the record, so
+        // the digest check and the (potentially large) projection run after
+        // the global handle-store lock has been released.
+        let record = {
+            let store = context.runtime.handle_store.lock().await;
+            store.get(&handle)
+        }
+        .ok_or_else(|| {
             ToolError::invalid_input(format!(
                 "handle_read: no payload found for handle {}/{}",
                 handle.session_id, handle.name
@@ -144,15 +150,15 @@ impl ToolSpec for HandleReadTool {
         }
 
         let output = match projection {
-            Projection::Count => count_projection(record),
+            Projection::Count => count_projection(&record),
             Projection::Slice { start, end, unit } => {
-                slice_projection(record, start, end, unit, max_chars)
+                slice_projection(&record, start, end, unit, max_chars)
             }
             Projection::Range { start, end } => {
-                line_range_projection(record, start, end, max_chars)
+                line_range_projection(&record, start, end, max_chars)
             }
-            Projection::JsonPath(path) => jsonpath_projection(record, &path, max_chars)?,
-            Projection::Introspect => introspect_projection(record),
+            Projection::JsonPath(path) => jsonpath_projection(&record, &path, max_chars)?,
+            Projection::Introspect => introspect_projection(&record),
         };
 
         ToolResult::json(&output).map_err(|e| ToolError::execution_failed(e.to_string()))

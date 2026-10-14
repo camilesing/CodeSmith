@@ -8,9 +8,9 @@
 //! the runtime crate). The verbatim test module below exercises the full
 //! public surface via the glob re-export.
 
-pub use codesmith_agent_runtime::prompt_sources::PromptAppendSource;
 #[cfg(test)]
 pub use codesmith_agent_runtime::prompt_sources::InstructionSource;
+pub use codesmith_agent_runtime::prompt_sources::PromptAppendSource;
 pub use codesmith_agent_runtime::prompts::*;
 
 #[cfg(test)]
@@ -1481,13 +1481,11 @@ mod tests {
         let workspace = tmp.path();
         let summary = "## Repo Working Set\nWorkspace: /tmp/x\n";
 
-        let a = match prompt_with_context(AppMode::Agent, workspace, Some(summary), None)
-        {
+        let a = match prompt_with_context(AppMode::Agent, workspace, Some(summary), None) {
             SystemPrompt::Text(text) => text,
             SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
         };
-        let b = match prompt_with_context(AppMode::Agent, workspace, Some(summary), None)
-        {
+        let b = match prompt_with_context(AppMode::Agent, workspace, Some(summary), None) {
             SystemPrompt::Text(text) => text,
             SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
         };
@@ -1551,11 +1549,10 @@ mod tests {
         std::fs::write(handoff_dir.join("handoff.md"), "# handoff body\n").unwrap();
 
         let summary = "## Repo Working Set\nWorkspace: /tmp/x\n";
-        let prompt =
-            match prompt_with_context(AppMode::Agent, workspace, Some(summary), None) {
-                SystemPrompt::Text(text) => text,
-                SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
-            };
+        let prompt = match prompt_with_context(AppMode::Agent, workspace, Some(summary), None) {
+            SystemPrompt::Text(text) => text,
+            SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+        };
 
         let context_pos = prompt
             .find("## Context Management")

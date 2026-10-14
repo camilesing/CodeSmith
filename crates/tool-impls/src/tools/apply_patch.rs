@@ -17,6 +17,7 @@ use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     lsp_diagnostics_for_paths, optional_bool, optional_str, optional_u64, required_str,
 };
+use codesmith_agent_runtime::tools::tool_catalog::APPLY_PATCH_NAME;
 
 /// Maximum lines of context for fuzzy matching (increased for better tolerance)
 const MAX_FUZZ: usize = 50;
@@ -179,7 +180,7 @@ enum ApplyHunkError {
 #[async_trait]
 impl ToolSpec for ApplyPatchTool {
     fn name(&self) -> &'static str {
-        "apply_patch"
+        APPLY_PATCH_NAME
     }
 
     fn description(&self) -> &'static str {

@@ -72,16 +72,17 @@ pub fn spill_full_shell_output(
     stdout: &str,
     stderr: &str,
 ) -> Option<ShellSpillInfo> {
-    // Borrow stdout when stderr is empty (the common case) instead of
-    // duplicating a potentially very large buffer — this runs on every poll
-    // of a large-output task.
-    let combined: std::borrow::Cow<'_, str> = if stderr.is_empty() {
-        std::borrow::Cow::Borrowed(stdout)
+    // Parts-based write: stdout, the STDERR framing, and stderr go to disk
+    // piecewise without ever materialising a second full-size combined
+    // buffer — this runs on every poll of a large-output task. When stderr
+    // is empty (the common case) the spilled view is just stdout.
+    let parts: &[&str] = if stderr.is_empty() {
+        &[stdout]
     } else {
-        std::borrow::Cow::Owned(format!("{stdout}\n\nSTDERR:\n{stderr}"))
+        &[stdout, "\n\nSTDERR:\n", stderr]
     };
-    let total_bytes = combined.len();
-    let path = match super::truncate::write_spillover(spill_id, &combined) {
+    let total_bytes = parts.iter().map(|part| part.len()).sum();
+    let path = match super::truncate::write_spillover_parts(spill_id, parts) {
         Ok(path) => path,
         Err(err) => {
             // Degrade to `None` (a spillover hiccup must never fail the tool

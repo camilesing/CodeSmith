@@ -15,6 +15,7 @@ use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_bool, optional_str, optional_u64,
 };
+use codesmith_agent_runtime::tools::tool_catalog::{GIT_DIFF_NAME, GIT_STATUS_NAME};
 
 const MAX_OUTPUT_CHARS: usize = 40_000;
 const DEFAULT_UNIFIED: u64 = 3;
@@ -28,7 +29,7 @@ pub struct GitStatusTool;
 #[async_trait]
 impl ToolSpec for GitStatusTool {
     fn name(&self) -> &'static str {
-        "git_status"
+        GIT_STATUS_NAME
     }
 
     fn description(&self) -> &'static str {
@@ -109,7 +110,7 @@ pub struct GitDiffTool;
 #[async_trait]
 impl ToolSpec for GitDiffTool {
     fn name(&self) -> &'static str {
-        "git_diff"
+        GIT_DIFF_NAME
     }
 
     fn description(&self) -> &'static str {

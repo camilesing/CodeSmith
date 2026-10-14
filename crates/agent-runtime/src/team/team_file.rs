@@ -4,7 +4,7 @@
 //! Each file holds the team metadata, leader identity, and member roster.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -88,8 +88,16 @@ pub struct TeamMember {
     pub worktree_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
-    #[serde(default)]
+    // Legacy records predating this field were all-active rosters, so a
+    // missing `is_active` defaults to true (a plain `#[serde(default)]`
+    // loaded every legacy member as inactive). Explicit `false` values
+    // round-trip unchanged.
+    #[serde(default = "default_true")]
     pub is_active: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// The team config file stored at `config.json`.
@@ -122,9 +130,8 @@ pub fn create_team_file(team_file: &TeamFile) -> anyhow::Result<PathBuf> {
         .with_context(|| format!("failed to create team dir {}", dir.display()))?;
     let config_path = dir.join("config.json");
     let json = serde_json::to_string_pretty(team_file)?;
-    crate::utils::write_atomic(&config_path, json.as_bytes()).with_context(|| {
-        format!("failed to write team config {}", config_path.display())
-    })?;
+    crate::utils::write_atomic(&config_path, json.as_bytes())
+        .with_context(|| format!("failed to write team config {}", config_path.display()))?;
     // Also create the inboxes subdirectory.
     fs::create_dir_all(dir.join("inboxes"))
         .with_context(|| format!("failed to create team inboxes dir {}", dir.display()))?;
@@ -209,18 +216,26 @@ pub fn write_team_file(team_file: &TeamFile) -> anyhow::Result<()> {
 
 /// Delete the entire team directory and task directory.
 pub fn delete_team_directories(team_name: &str) -> anyhow::Result<()> {
-    use anyhow::Context as _;
-    let dir = team_dir(team_name)?;
-    if dir.exists() {
-        fs::remove_dir_all(&dir)
-            .with_context(|| format!("failed to delete team dir {}", dir.display()))?;
-    }
+    // Task dir first: a mid-way failure leaves the team config intact and
+    // the whole delete retryable (deleting the team dir first would orphan
+    // task files with the config already gone).
     let task_dir = team_task_dir(team_name)?;
-    if task_dir.exists() {
-        fs::remove_dir_all(&task_dir)
-            .with_context(|| format!("failed to delete team task dir {}", task_dir.display()))?;
-    }
+    remove_dir_all_if_exists(&task_dir)?;
+    let dir = team_dir(team_name)?;
+    remove_dir_all_if_exists(&dir)?;
     Ok(())
+}
+
+/// `fs::remove_dir_all` that treats `NotFound` as success. Removes the
+/// exists()-then-remove TOCTOU window (the directory can disappear between
+/// the check and the removal) by removing unconditionally and matching the
+/// error kind instead.
+fn remove_dir_all_if_exists(dir: &Path) -> anyhow::Result<()> {
+    match fs::remove_dir_all(dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(anyhow::Error::new(e).context(format!("failed to delete {}", dir.display()))),
+    }
 }
 
 /// Find a member by name in the team file. Returns cloned member.

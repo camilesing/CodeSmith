@@ -179,6 +179,43 @@ pub fn write_spillover(id: &str, content: &str) -> io::Result<PathBuf> {
     Ok(path)
 }
 
+/// Write the concatenation of `parts` to the spillover file for `id`
+/// without materialising a single combined buffer. Callers that already
+/// hold the components of a large view (e.g. shell stdout + the STDERR
+/// framing + stderr) must not pay for a second full-size allocation —
+/// the spill path runs on every poll of a large-output task. Same file
+/// naming, parent-directory creation, and temp-file + rename durability
+/// as [`write_spillover`]; returns the resolved path on success.
+pub fn write_spillover_parts(id: &str, parts: &[&str]) -> io::Result<PathBuf> {
+    use std::io::Write as _;
+
+    let path = spillover_path(id).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "could not resolve spillover path (empty/invalid id or missing home directory)",
+        )
+    })?;
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("path has no parent directory: {}", path.display()),
+        )
+    })?;
+    fs::create_dir_all(parent)?;
+    // Same temp-name + rename guarantees as `crate::utils::write_atomic`,
+    // fed one part at a time so the combined view never exists in memory.
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    for part in parts {
+        tmp.write_all(part.as_bytes())?;
+    }
+    tmp.as_file().sync_all()?;
+    tmp.persist(&path).map_err(|err| err.error)?;
+    if let Ok(dir) = fs::File::open(parent) {
+        let _ = dir.sync_all();
+    }
+    Ok(path)
+}
+
 /// Drop spillover files older than `max_age`. Returns the number of
 /// files removed. Non-fatal: directory-missing returns 0; per-file
 /// errors are logged and skipped. Mirrors the workspace-snapshot prune

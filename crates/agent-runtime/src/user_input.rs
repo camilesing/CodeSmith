@@ -11,6 +11,12 @@ use codesmith_tools::ToolError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Upper bound for every caller-supplied text field (question header, id,
+/// question body, option label, option description). Emptiness alone would
+/// let a degenerate multi-megabyte string through and blow up TUI rendering
+/// of the prompt.
+const MAX_USER_INPUT_TEXT_CHARS: usize = 512;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserInputOption {
     pub label: String,
@@ -32,7 +38,10 @@ pub struct UserInputRequest {
 
 impl UserInputRequest {
     pub fn from_value(value: &Value) -> Result<Self, ToolError> {
-        let request: UserInputRequest = serde_json::from_value(value.clone()).map_err(|e| {
+        // Deserialize from the reference: `serde_json` implements
+        // `Deserializer` for `&Value`, so the payload is walked in place
+        // instead of deep-cloning the whole object per validate_input call.
+        let request = UserInputRequest::deserialize(value).map_err(|e| {
             ToolError::invalid_input(format!("Invalid request_user_input payload: {e}"))
         })?;
         request.validate()?;
@@ -62,15 +71,30 @@ impl UserInputRequest {
                     "request_user_input.questions.header cannot be empty",
                 ));
             }
+            if q.header.chars().count() > MAX_USER_INPUT_TEXT_CHARS {
+                return Err(ToolError::invalid_input(format!(
+                    "request_user_input.questions.header must be at most {MAX_USER_INPUT_TEXT_CHARS} chars"
+                )));
+            }
             if q.id.trim().is_empty() {
                 return Err(ToolError::invalid_input(
                     "request_user_input.questions.id cannot be empty",
                 ));
             }
+            if q.id.chars().count() > MAX_USER_INPUT_TEXT_CHARS {
+                return Err(ToolError::invalid_input(format!(
+                    "request_user_input.questions.id must be at most {MAX_USER_INPUT_TEXT_CHARS} chars"
+                )));
+            }
             if q.question.trim().is_empty() {
                 return Err(ToolError::invalid_input(
                     "request_user_input.questions.question cannot be empty",
                 ));
+            }
+            if q.question.chars().count() > MAX_USER_INPUT_TEXT_CHARS {
+                return Err(ToolError::invalid_input(format!(
+                    "request_user_input.questions.question must be at most {MAX_USER_INPUT_TEXT_CHARS} chars"
+                )));
             }
             if q.options.len() < 2 || q.options.len() > 3 {
                 return Err(ToolError::invalid_input(
@@ -84,10 +108,20 @@ impl UserInputRequest {
                         "request_user_input option label cannot be empty",
                     ));
                 }
+                if opt.label.chars().count() > MAX_USER_INPUT_TEXT_CHARS {
+                    return Err(ToolError::invalid_input(format!(
+                        "request_user_input option label must be at most {MAX_USER_INPUT_TEXT_CHARS} chars"
+                    )));
+                }
                 if opt.description.trim().is_empty() {
                     return Err(ToolError::invalid_input(
                         "request_user_input option description cannot be empty",
                     ));
+                }
+                if opt.description.chars().count() > MAX_USER_INPUT_TEXT_CHARS {
+                    return Err(ToolError::invalid_input(format!(
+                        "request_user_input option description must be at most {MAX_USER_INPUT_TEXT_CHARS} chars"
+                    )));
                 }
                 if !seen_labels.insert(opt.label.as_str()) {
                     return Err(ToolError::invalid_input(
@@ -119,6 +153,25 @@ impl UserInputResponse {
     /// be one of the corresponding question's offered options. Call this
     /// where a host-submitted response enters the runtime so unchecked
     /// answers never reach the model.
+    ///
+    /// # Wiring status
+    ///
+    /// Currently exercised only by tests. The intended call site — pairing
+    /// a `UserInputDecision::Submitted` response with the pending
+    /// `request_user_input` request — is not reachable today: the response
+    /// channel's consumer was retired with the legacy turn loop
+    /// (`Engine::rx_user_input` is dead code, and no code matches
+    /// `UserInputDecision::Submitted`), `Event::UserInputRequired` is never
+    /// emitted, and `RequestUserInputTool::validate_input` drops the parsed
+    /// `UserInputRequest` (`.map(|_| ())`) while its `execute` errors out
+    /// with "must be handled by the engine". Wiring this up needs an API
+    /// change: the engine-side special-case for `request_user_input` should
+    /// keep the parsed request (keyed by tool-call id), emit
+    /// `Event::UserInputRequired { id, request }`, and call
+    /// `response.validate_against(&pending)` when the matching
+    /// `UserInputDecision::Submitted` arrives — treating an `Err` as an
+    /// invalid submission surfaced to the model (reject the answer, never
+    /// panic).
     pub fn validate_against(&self, request: &UserInputRequest) -> Result<(), ToolError> {
         let mut answered = std::collections::HashSet::new();
         for answer in &self.answers {
@@ -203,6 +256,35 @@ mod tests {
             }],
         };
         assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_text_fields_over_the_char_bound() {
+        let question = |header: String| UserInputQuestion {
+            header,
+            id: "choice".to_string(),
+            question: "Which option?".to_string(),
+            options: vec![
+                UserInputOption {
+                    label: "A".to_string(),
+                    description: "Option A".to_string(),
+                },
+                UserInputOption {
+                    label: "B".to_string(),
+                    description: "Option B".to_string(),
+                },
+            ],
+        };
+        // Exactly at the bound passes...
+        let at_bound = UserInputRequest {
+            questions: vec![question("H".repeat(MAX_USER_INPUT_TEXT_CHARS))],
+        };
+        assert!(at_bound.validate().is_ok());
+        // ...one char over is rejected.
+        let over = UserInputRequest {
+            questions: vec![question("H".repeat(MAX_USER_INPUT_TEXT_CHARS + 1))],
+        };
+        assert!(over.validate().is_err());
     }
 
     #[test]

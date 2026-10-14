@@ -94,10 +94,12 @@ impl Drop for SettingsFileLock {
     }
 }
 
-/// Set `locale` in the settings file, creating it if needed and preserving
-/// every other key (raw TOML merge). Writes atomically via a temp file +
-/// rename, like the TUI's `Settings::save`; it only ever touches the one key
-/// a first-run language choice contributes.
+/// Set `locale` in the settings file, creating it if needed. Uses
+/// `toml_edit` so the edit is format-preserving: user comments, whitespace,
+/// and key order all survive untouched (`toml::to_string_pretty` would drop
+/// comments and re-sort keys). Writes atomically via a temp file + rename,
+/// like the TUI's `Settings::save`; it only ever touches the one key a
+/// first-run language choice contributes.
 pub fn write_settings_locale(tag: &str) -> Result<PathBuf> {
     let path = settings_file_path()?;
     if let Some(parent) = path.parent() {
@@ -109,16 +111,13 @@ pub fn write_settings_locale(tag: &str) -> Result<PathBuf> {
     let mut doc = if path.exists() {
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read settings from {}", path.display()))?;
-        toml::from_str::<toml::Value>(&raw)
+        raw.parse::<toml_edit::DocumentMut>()
             .with_context(|| format!("Failed to parse settings from {}", path.display()))?
     } else {
-        toml::Value::Table(toml::value::Table::new())
+        toml_edit::DocumentMut::new()
     };
-    let root = doc
-        .as_table_mut()
-        .context("Settings root must be a TOML table.")?;
-    root.insert("locale".to_string(), toml::Value::String(tag.to_string()));
-    let content = toml::to_string_pretty(&doc).context("Failed to serialize settings")?;
+    doc["locale"] = toml_edit::value(tag);
+    let content = doc.to_string();
     let tmp = path.with_extension("toml.tmp");
     fs::write(&tmp, &content)
         .with_context(|| format!("Failed to write settings to {}", tmp.display()))?;

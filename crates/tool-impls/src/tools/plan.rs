@@ -7,6 +7,7 @@ pub use codesmith_agent_runtime::tool_state::plan::*;
 use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
+use codesmith_agent_runtime::tools::tool_catalog::UPDATE_PLAN_NAME;
 
 // === Types ===
 
@@ -28,7 +29,7 @@ impl UpdatePlanTool {
 #[async_trait]
 impl ToolSpec for UpdatePlanTool {
     fn name(&self) -> &'static str {
-        "update_plan"
+        UPDATE_PLAN_NAME
     }
 
     fn description(&self) -> &'static str {

@@ -5537,7 +5537,9 @@ pub(crate) async fn run_interactive(
     // we never block startup. Runs unconditionally because the
     // spillover store is created lazily on first write — there's no
     // user-facing setting to gate.
-    match codesmith_agent_runtime::tools::truncate::prune_older_than(codesmith_agent_runtime::tools::truncate::SPILLOVER_MAX_AGE) {
+    match codesmith_agent_runtime::tools::truncate::prune_older_than(
+        codesmith_agent_runtime::tools::truncate::SPILLOVER_MAX_AGE,
+    ) {
         Ok(0) => {}
         Ok(n) => tracing::debug!(
             target: "spillover",

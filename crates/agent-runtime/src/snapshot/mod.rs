@@ -46,6 +46,4 @@ pub use prune::{DEFAULT_MAX_AGE, prune_older_than};
 /// Maximum snapshots kept per workspace side-repo. Oldest are pruned
 /// after each new snapshot to cap disk usage (#1112).
 pub const DEFAULT_MAX_SNAPSHOTS: usize = 50;
-pub use repo::{
-    DEFAULT_MAX_WORKSPACE_BYTES_FOR_SNAPSHOT, Snapshot, SnapshotId, SnapshotRepo,
-};
+pub use repo::{DEFAULT_MAX_WORKSPACE_BYTES_FOR_SNAPSHOT, Snapshot, SnapshotId, SnapshotRepo};

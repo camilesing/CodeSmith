@@ -55,7 +55,7 @@
 //!   [`Tool::capabilities`](codesmith_agent::tools::Tool::capabilities) (`ReadOnly` present AND none of
 //!   `{RequiresApproval, ExecutesCode, WritesFiles}`), mirroring the final
 //!   composite clause of `handle_deepseek_turn`'s `early_tool_start_safe`. Production
-//!   additionally checks `metadata.is_read_only &&
+//!   additionally checks `metadata.is_read_only() &&
 //!   metadata.supports_parallel && !is_interactive && validate_input().is_ok()
 //!   && approval_requirement_for(...) == Auto` plus a tool-catalog allowlist
 //!   (not-MCP / not-code-execution / not-tool-search). Those per-input /
@@ -165,7 +165,7 @@ fn effective_stream_idle_timeout(
 /// gate). The framework `Tool` trait exposes only `capabilities()`, so this is
 /// a **static approximation**: `ReadOnly` present AND none of `{RequiresApproval,
 /// ExecutesCode, WritesFiles}`. Production additionally checks
-/// `metadata.is_read_only && metadata.supports_parallel && !is_interactive &&
+/// `metadata.is_read_only() && metadata.supports_parallel && !is_interactive &&
 /// validate_input().is_ok() && approval_requirement_for(...) == Auto` plus a
 /// tool-catalog allowlist (not-MCP / not-code-execution / not-tool-search) —
 /// those per-input / per-metadata surfaces are not reachable from the framework

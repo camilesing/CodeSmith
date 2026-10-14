@@ -78,6 +78,11 @@ impl FrameworkTool for ToolSpecAdapter {
         self.spec.capabilities()
     }
 
+    /// `input` is model-produced and untrusted: this adapter forwards it to
+    /// [`ToolSpec::execute`] without validating it against `input_schema()`.
+    /// Every spec must treat its input as untrusted — validate against its
+    /// own schema and reject malformed values (typed `ToolError::InvalidInput`),
+    /// never silently coerce to defaults.
     fn run(
         &self,
         input: Value,
@@ -169,7 +174,12 @@ mod tests {
 
     fn temp_context() -> Arc<ToolContext> {
         let tmp = tempdir().expect("tempdir");
-        Arc::new(ToolContext::new(tmp.path().to_path_buf()))
+        let ctx = Arc::new(ToolContext::new(tmp.path().to_path_buf()));
+        // Leak the guard so the workspace directory outlives this helper —
+        // dropping `TempDir` deletes it, leaving `workspace` dangling for any
+        // filesystem-touching spec under test.
+        Box::leak(Box::new(tmp));
+        ctx
     }
 
     #[tokio::test]

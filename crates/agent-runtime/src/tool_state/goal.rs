@@ -84,6 +84,11 @@ impl GoalState {
         match objective {
             Some(objective) => {
                 let changed = self.objective.as_deref() != Some(objective);
+                // token_budget asymmetry: a changed objective is a fresh
+                // goal, so the host's budget (even `None`) replaces any
+                // locally-set one; an unchanged objective only adopts a
+                // `Some` budget so a host that doesn't track budgets can't
+                // clear what was set locally.
                 if changed {
                     self.objective = Some(objective.to_string());
                     self.token_budget = token_budget;
@@ -94,12 +99,18 @@ impl GoalState {
                     self.token_budget = token_budget;
                 }
 
-                if changed || self.status.is_none() {
-                    self.status = Some(if completed {
-                        GoalStatus::Complete
-                    } else {
-                        GoalStatus::Active
-                    });
+                // Diff the status, not just its presence: ignoring
+                // `completed` when the objective is unchanged and a status
+                // exists let host and runtime silently diverge, so
+                // continuation prompts kept firing for a goal the host
+                // already reported done.
+                let new_status = if completed {
+                    GoalStatus::Complete
+                } else {
+                    GoalStatus::Active
+                };
+                if changed || self.status.is_none() || self.status != Some(new_status) {
+                    self.status = Some(new_status);
                     self.finished_at = completed.then(Instant::now);
                 }
             }
@@ -240,4 +251,30 @@ pub fn render_continuation_prompt(
         continuation_index,
         max_continuations,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sync_from_host_tracks_completion_on_unchanged_objective() {
+        let mut state = GoalState::default();
+        state.sync_from_host(Some("ship the release"), Some(1000), false);
+        assert!(state.snapshot().is_active());
+
+        // Unchanged objective + completed=true must flip the status: the old
+        // guard ignored `completed` whenever a status already existed, so
+        // host and runtime silently diverged and continuation prompts kept
+        // firing for a goal the host reported done.
+        state.sync_from_host(Some("ship the release"), None, true);
+        assert!(!state.snapshot().is_active());
+        assert_eq!(state.snapshot().status, "complete");
+
+        // Syncing completed=true a second time on the same unchanged
+        // objective stays complete — the goal is not resurrected.
+        state.sync_from_host(Some("ship the release"), None, true);
+        assert!(!state.snapshot().is_active());
+        assert_eq!(state.snapshot().status, "complete");
+    }
 }

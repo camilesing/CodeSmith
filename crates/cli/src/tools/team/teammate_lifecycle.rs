@@ -847,7 +847,8 @@ pub async fn run_teammate_loop(mut rt: TeammateRuntime) -> TeammateResult {
                         // provides `unassign_teammate_tasks` for exactly
                         // this; skipping it stranded owned tasks.
                         {
-                            let mut manager = rt.task_v2_manager.lock().unwrap_or_else(|e| e.into_inner());
+                            let mut manager =
+                                rt.task_v2_manager.lock().unwrap_or_else(|e| e.into_inner());
                             let _ = manager.unassign_teammate_tasks(&rt.agent_name);
                         }
                         break TeammateState::ShutdownApproved;

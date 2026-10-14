@@ -15,6 +15,7 @@ use codesmith_agent_runtime::tools::spec::{
     ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_str, optional_u64,
     required_str,
 };
+use codesmith_agent_runtime::tools::tool_catalog::{FIND_REFERENCES_NAME, SYMBOL_SEARCH_NAME};
 use codesmith_index::{IndexStats, SymbolKind, SymbolQuery};
 use serde_json::{Value, json};
 
@@ -36,7 +37,7 @@ pub struct SymbolSearchTool;
 #[async_trait]
 impl ToolSpec for SymbolSearchTool {
     fn name(&self) -> &'static str {
-        "symbol_search"
+        SYMBOL_SEARCH_NAME
     }
 
     fn description(&self) -> &'static str {
@@ -153,7 +154,7 @@ pub struct FindReferencesTool;
 #[async_trait]
 impl ToolSpec for FindReferencesTool {
     fn name(&self) -> &'static str {
-        "find_references"
+        FIND_REFERENCES_NAME
     }
 
     fn description(&self) -> &'static str {

@@ -656,9 +656,8 @@ impl ToolSpec for FailClosedTool {
 // which is only legal while `ToolRegistry` was a TUI type).
 #[async_trait::async_trait]
 impl ToolDispatcher for ToolRegistry {
-    fn has_tool(&self, name: &str) -> bool {
-        self.get(name).is_some()
-    }
+    // `has_tool` uses the trait default (`metadata(name).is_some()`) — the
+    // same single map lookup this impl would do.
 
     fn resolve(&self, requested: &str) -> Option<String> {
         ToolRegistry::resolve(self, requested).map(String::from)
@@ -671,8 +670,6 @@ impl ToolDispatcher for ToolRegistry {
             description: spec.description().to_string(),
             capabilities: spec.capabilities(),
             approval_requirement: spec.approval_requirement(),
-            is_read_only: spec.is_read_only(),
-            is_sandboxable: spec.is_sandboxable(),
             supports_parallel: spec.supports_parallel(),
             defer_loading: spec.defer_loading(),
         })
@@ -732,15 +729,22 @@ impl ToolDispatcher for ToolRegistry {
         input: Value,
         sandbox_override: Option<Value>,
     ) -> Result<ToolResult, ToolError> {
-        let context_override = sandbox_override.and_then(|v| {
-            match serde_json::from_value::<crate::sandbox::SandboxPolicy>(v) {
+        let context_override = match sandbox_override {
+            None => None,
+            Some(v) => match serde_json::from_value::<crate::sandbox::SandboxPolicy>(v) {
                 Ok(policy) => Some(self.context().clone().with_elevated_sandbox_policy(policy)),
                 Err(e) => {
+                    // The dispatcher contract (see `ToolDispatcher::execute`)
+                    // requires aborting on override deserialization failure —
+                    // falling back to the default (typically less strict)
+                    // policy would silently degrade sandboxing.
                     tracing::warn!(error = %e, "invalid sandbox override policy JSON");
-                    None
+                    return Err(ToolError::invalid_input(format!(
+                        "invalid sandbox override policy: {e}"
+                    )));
                 }
-            }
-        });
+            },
+        };
         self.execute_full_with_context(name, input, context_override.as_ref())
             .await
     }
