@@ -45,8 +45,15 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    # rglob on a nonexistent directory yields nothing instead of raising,
+    # so a wrong --root (or a renamed crates/) silently counted zero and
+    # passed — a ratchet must not pass on an empty scan.
+    crates = args.root / "crates"
+    if not crates.is_dir():
+        print(f"dead_code: scan root not found: {crates}")
+        return 1
     per_file: dict[str, int] = {}
-    for path in sorted((args.root / "crates").rglob("*.rs")):
+    for path in sorted(crates.rglob("*.rs")):
         text = path.read_text(encoding="utf-8", errors="replace")
         hits = sum(1 for line in text.splitlines() if PATTERN.search(line))
         if hits:

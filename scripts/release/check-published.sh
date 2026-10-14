@@ -44,7 +44,7 @@ done
 cd "${repo_root}"
 
 if [[ -z "${version}" ]]; then
-  version="$(grep -E '^version = "' Cargo.toml | head -n1 | sed -E 's/^version = "([^"]+)".*/\1/')"
+  version="$(awk '/^\[workspace\.package\]/{in_ws=1; next} /^\[/{in_ws=0} in_ws && /^version = "/{sub(/^version = "/, ""); sub(/"$/, ""); print; exit}' Cargo.toml || true)"
 fi
 
 if [[ -z "${version}" ]]; then

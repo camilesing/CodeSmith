@@ -45,10 +45,14 @@ async function main() {
       if (assets.some((asset) => asset.target === assetName)) {
         continue;
       }
+      // Map platform-named assets to their OWN files in buildDir: both
+      // branches of the old ternary produced the same locally built
+      // binary, so e.g. the *-windows-x64.exe asset silently contained
+      // the Linux binary.
+      const localBinaryName = isWindows ? "codesmith.exe" : "codesmith";
+      const sourceName = assetName === "codesmith" ? localBinaryName : assetName;
       assets.push({
-        source: assetName.startsWith("codesmith")
-          ? path.join(buildDir, isWindows ? "codesmith.exe" : "codesmith")
-          : path.join(buildDir, isWindows ? "codesmith.exe" : "codesmith"),
+        source: path.join(buildDir, sourceName),
         target: assetName,
       });
     }

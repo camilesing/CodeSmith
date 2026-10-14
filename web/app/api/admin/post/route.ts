@@ -100,6 +100,14 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "no target number" }, { status: 400 });
     }
 
+    // Idempotency: `posted` only flips after a successful GitHub fetch,
+    // so a client retry after a timeout (or a KV write failure after a
+    // successful post) used to re-publish the same comment — a visible
+    // duplicate on the public issue.
+    if (action === "post" && draft.posted) {
+      return NextResponse.json({ ok: true, action: "already-posted" });
+    }
+
     const repo = env.GITHUB_REPO ?? GITHUB_REPO;
     const commentUrl = `https://api.github.com/repos/${repo}/issues/${draft.targetNumber}/comments`;
 

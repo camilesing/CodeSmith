@@ -26,6 +26,10 @@ mismatches = [
     f"{pkg['name']}={pkg['version']}" for pkg in packages if pkg["version"] != expected
 ]
 
+if not packages:
+  print("No workspace packages found; is this run from the Cargo workspace root?", file=sys.stderr)
+  sys.exit(1)
+
 if mismatches:
     print(f"Tag version {expected} does not match all workspace crates:", file=sys.stderr)
     for item in mismatches:

@@ -80,7 +80,17 @@ function deriveProviders() {
     Ollama: { id: "ollama", label: "Ollama", env: "OLLAMA_API_KEY" },
     Anthropic: { id: "anthropic", label: "Anthropic", env: "ANTHROPIC_API_KEY" },
   };
-  return variants.map((v) => labelMap[v]).filter(Boolean);
+  const mapped = variants.map((v) => {
+    if (!labelMap[v]) {
+      // A provider newly added to the Rust enum must not silently vanish
+      // from the site — that is the exact drift this script exists to catch.
+      console.warn(
+        `[derive-facts] ApiProvider variant "${v}" has no labelMap entry — update web/scripts/derive-facts.mjs`,
+      );
+    }
+    return labelMap[v];
+  });
+  return mapped.filter(Boolean);
 }
 
 function deriveDefaultModel() {

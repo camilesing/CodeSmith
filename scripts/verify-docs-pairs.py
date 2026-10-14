@@ -37,6 +37,9 @@ def main() -> int:
     )
     args = parser.parse_args()
     docs = args.root / "docs"
+    if not docs.is_dir():
+        print(f"docs pairs: scan root not found: {docs}")
+        return 1
 
     violations: list[str] = []
     pairs = 0

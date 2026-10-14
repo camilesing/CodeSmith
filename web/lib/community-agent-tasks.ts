@@ -98,6 +98,12 @@ export async function runCurate(env: AgentEnv): Promise<Record<string, unknown>>
 }
 
 export async function runTriage(env: AgentEnv): Promise<Record<string, unknown>> {
+  if (!env.DEEPSEEK_API_KEY) {
+    // Fail fast like runCurate: without the key every item burns a doomed
+    // round-trip sending `Bearer undefined` and 401-ing, while triage and
+    // friends still report ok:true with a `failed` count.
+    return { ok: false, skipped: true, reason: "DEEPSEEK_API_KEY not set" };
+  }
   const repo = env.GITHUB_REPO ?? "camilesing/CodeSmith";
   try {
     const res = await fetch(
@@ -111,6 +117,10 @@ export async function runTriage(env: AgentEnv): Promise<Record<string, unknown>>
         },
       }
     );
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`GitHub request failed: ${res.status} ${text.slice(0, 200)}`);
+    }
     const issues = (await res.json()) as { number: number; title: string; body?: string; updated_at: string; html_url: string; pull_request?: unknown; labels: { name: string }[] }[];
     const newIssues = issues.filter((i) => !i.pull_request).slice(0, 10);
 
@@ -169,6 +179,12 @@ export async function runTriage(env: AgentEnv): Promise<Record<string, unknown>>
 }
 
 export async function runPrReview(env: AgentEnv): Promise<Record<string, unknown>> {
+  if (!env.DEEPSEEK_API_KEY) {
+    // Fail fast like runCurate: without the key every item burns a doomed
+    // round-trip sending `Bearer undefined` and 401-ing, while triage and
+    // friends still report ok:true with a `failed` count.
+    return { ok: false, skipped: true, reason: "DEEPSEEK_API_KEY not set" };
+  }
   const repo = env.GITHUB_REPO ?? "camilesing/CodeSmith";
   try {
     const res = await fetch(
@@ -182,6 +198,10 @@ export async function runPrReview(env: AgentEnv): Promise<Record<string, unknown
         },
       }
     );
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`GitHub request failed: ${res.status} ${text.slice(0, 200)}`);
+    }
     const prs = (await res.json()) as { number: number; title: string; body?: string; updated_at: string; html_url: string; changed_files?: number; additions?: number; deletions?: number; user: { login: string } }[];
 
     let processed = 0;
@@ -257,6 +277,12 @@ export async function runPrReview(env: AgentEnv): Promise<Record<string, unknown
 }
 
 export async function runStale(env: AgentEnv): Promise<Record<string, unknown>> {
+  if (!env.DEEPSEEK_API_KEY) {
+    // Fail fast like runCurate: without the key every item burns a doomed
+    // round-trip sending `Bearer undefined` and 401-ing, while triage and
+    // friends still report ok:true with a `failed` count.
+    return { ok: false, skipped: true, reason: "DEEPSEEK_API_KEY not set" };
+  }
   const repo = env.GITHUB_REPO ?? "camilesing/CodeSmith";
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   try {
@@ -271,6 +297,10 @@ export async function runStale(env: AgentEnv): Promise<Record<string, unknown>> 
         },
       }
     );
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`GitHub request failed: ${res.status} ${text.slice(0, 200)}`);
+    }
     const data = (await res.json()) as { items?: { number: number; title: string; body?: string; updated_at: string; html_url: string }[] };
     const issues = data.items ?? [];
 
@@ -328,6 +358,12 @@ export async function runStale(env: AgentEnv): Promise<Record<string, unknown>> 
 }
 
 export async function runDupes(env: AgentEnv): Promise<Record<string, unknown>> {
+  if (!env.DEEPSEEK_API_KEY) {
+    // Fail fast like runCurate: without the key every item burns a doomed
+    // round-trip sending `Bearer undefined` and 401-ing, while triage and
+    // friends still report ok:true with a `failed` count.
+    return { ok: false, skipped: true, reason: "DEEPSEEK_API_KEY not set" };
+  }
   const repo = env.GITHUB_REPO ?? "camilesing/CodeSmith";
   try {
     const res = await fetch(
@@ -341,6 +377,10 @@ export async function runDupes(env: AgentEnv): Promise<Record<string, unknown>> 
         },
       }
     );
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`GitHub request failed: ${res.status} ${text.slice(0, 200)}`);
+    }
     const issues = (await res.json()) as { number: number; title: string; body?: string; updated_at: string; html_url: string; pull_request?: unknown }[];
     const openIssues = issues
       .filter((i) => !i.pull_request)
@@ -403,6 +443,12 @@ export async function runDupes(env: AgentEnv): Promise<Record<string, unknown>> 
 }
 
 export async function runDigest(env: AgentEnv): Promise<Record<string, unknown>> {
+  if (!env.DEEPSEEK_API_KEY) {
+    // Fail fast like runCurate: without the key every item burns a doomed
+    // round-trip sending `Bearer undefined` and 401-ing, while triage and
+    // friends still report ok:true with a `failed` count.
+    return { ok: false, skipped: true, reason: "DEEPSEEK_API_KEY not set" };
+  }
   const repo = env.GITHUB_REPO ?? "camilesing/CodeSmith";
   const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 

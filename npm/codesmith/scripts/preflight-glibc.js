@@ -41,6 +41,12 @@ function detectHostGlibc() {
       stdio: ["ignore", "pipe", "ignore"],
     });
     const firstLine = out.split("\n", 1)[0];
+    // Guard against non-glibc loaders (musl, uClibc, busybox variants)
+    // whose --version output contains an unrelated version number —
+    // parsing it reported a bogus "glibc 1.2.5 too old" (or silently
+    // passed a high unrelated version) instead of the intended
+    // "no GNU libc detected" guidance.
+    if (!/glibc|GNU libc/i.test(firstLine)) return null;
     const version = parseVersion(firstLine);
     if (version) return version;
   } catch {
