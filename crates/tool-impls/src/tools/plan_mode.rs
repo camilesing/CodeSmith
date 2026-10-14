@@ -128,6 +128,14 @@ impl ToolSpec for EnterPlanModeTool {
                 message: format!("Failed to create plan file: {e}"),
             })?;
 
+        // Resolve the plan file path (pure computation) BEFORE mutating
+        // state so a failure cannot leave plan mode half-activated with
+        // the caller believing entry failed.
+        let plan_path =
+            plan_file::plan_file_path(&slug).map_err(|e| ToolError::ExecutionFailed {
+                message: format!("Failed to resolve plan file path: {e}"),
+            })?;
+
         // Save the current mode and activate plan mode
         // The caller (the turn loop, in host_executor) should set pre_plan_mode to the current AppMode name
         // before calling this tool, or we capture it here as "Agent" (default).
@@ -135,14 +143,8 @@ impl ToolSpec for EnterPlanModeTool {
             state.pre_plan_mode = Some("Agent".to_string());
         }
         state.active = true;
-        state.current_slug = Some(slug.clone());
+        state.current_slug = Some(slug);
         state.model_initiated = true;
-
-        // Get the plan file path for the result message
-        let plan_path =
-            plan_file::plan_file_path(&slug).map_err(|e| ToolError::ExecutionFailed {
-                message: format!("Failed to resolve plan file path: {e}"),
-            })?;
 
         let message = format!(
             "Entered plan mode. Plan file: {}\n\n{}",
@@ -216,7 +218,13 @@ impl ToolSpec for ExitPlanModeTool {
             });
         }
 
-        let slug = state.current_slug.clone().unwrap_or_default();
+        let slug = state
+            .current_slug
+            .clone()
+            .ok_or_else(|| ToolError::ExecutionFailed {
+                message: "plan mode is active but no plan file slug is set; state is inconsistent"
+                    .to_string(),
+            })?;
         let pre_mode = state
             .pre_plan_mode
             .clone()
@@ -319,15 +327,21 @@ impl ToolSpec for WritePlanFileTool {
         // the plan file after plan mode ended (or under a stale slug).
         // The plan_state lock is only taken after, so no deadlock.
         let state = self.plan_mode_state.lock().await;
-        let (slug, is_active) = (state.current_slug.clone().unwrap_or_default(), state.active);
 
-        if !is_active {
+        if !state.active {
             return Err(ToolError::PermissionDenied {
                 message:
                     "write_plan_file is only available in plan mode. Call enter_plan_mode first."
                         .to_string(),
             });
         }
+        let slug = state
+            .current_slug
+            .clone()
+            .ok_or_else(|| ToolError::ExecutionFailed {
+                message: "plan mode is active but no plan file slug is set; state is inconsistent"
+                    .to_string(),
+            })?;
 
         let content = input
             .get("content")
@@ -344,27 +358,46 @@ impl ToolSpec for WritePlanFileTool {
         // Release plan_mode_state before taking plan_state (lock order:
         // plan_mode_state → plan_state, never nested).
         drop(state);
-        // Also update in-memory PlanState for TUI rendering
+        // Also update in-memory PlanState for TUI rendering. Derive plan
+        // steps from markdown headings (## / ### lines) OUTSIDE fenced code
+        // blocks, preserving existing per-step statuses by text so a
+        // rewrite does not reset in-progress/completed steps to pending.
+        // The sync always runs (even to an empty plan) so the TUI cannot
+        // keep showing a stale plan after the file on disk changed.
         let mut plan_state_guard = self.plan_state.lock().await;
-        // Derive plan steps from markdown headings (## or ### lines)
+        let existing: std::collections::HashMap<&str, crate::tools::plan::StepStatus> =
+            plan_state_guard
+                .steps()
+                .iter()
+                .map(|s| (s.text.as_str(), s.status.clone()))
+                .collect();
+        let mut in_fence = false;
         let steps: Vec<crate::tools::plan::PlanItemArg> = content
             .lines()
-            .filter(|line| line.trim().starts_with("## ") || line.trim().starts_with("### "))
-            .map(|line| {
-                let text = line.trim().trim_start_matches('#').trim().to_string();
-                crate::tools::plan::PlanItemArg {
-                    step: text,
-                    status: crate::tools::plan::StepStatus::Pending,
+            .filter_map(|line| {
+                let trimmed = line.trim();
+                if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                    in_fence = !in_fence;
+                    return None;
                 }
+                if in_fence || !(trimmed.starts_with("## ") || trimmed.starts_with("### ")) {
+                    return None;
+                }
+                let text = trimmed.trim_start_matches('#').trim().to_string();
+                Some(crate::tools::plan::PlanItemArg {
+                    status: existing
+                        .get(text.as_str())
+                        .cloned()
+                        .unwrap_or(crate::tools::plan::StepStatus::Pending),
+                    step: text,
+                })
             })
             .collect();
 
-        if !steps.is_empty() {
-            plan_state_guard.update(crate::tools::plan::UpdatePlanArgs {
-                explanation: None,
-                plan: steps,
-            });
-        }
+        plan_state_guard.update(crate::tools::plan::UpdatePlanArgs {
+            explanation: None,
+            plan: steps,
+        });
 
         let path = plan_file::plan_file_path(&slug).map_err(|e| ToolError::ExecutionFailed {
             message: format!("Failed to resolve plan file path: {e}"),

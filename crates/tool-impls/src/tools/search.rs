@@ -20,6 +20,11 @@ use tokio_util::sync::CancellationToken;
 /// Maximum number of results to return to avoid overwhelming output
 const MAX_RESULTS: usize = 100;
 
+/// Hard cap on caller-supplied context_lines. Anything larger is a
+/// misbehaving caller; the real value of more context decays long before
+/// this and the cap keeps range arithmetic overflow-free.
+const MAX_CONTEXT_LINES: u64 = 1_000;
+
 /// Maximum file size to search (skip large binaries)
 const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10MB
 
@@ -112,8 +117,12 @@ impl ToolSpec for GrepFilesTool {
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let pattern_str = required_str(&input, "pattern")?;
         let path_str = optional_str(&input, "path").unwrap_or(".");
+        // Clamp at the parse site: a huge caller-supplied value used to
+        // saturate to usize::MAX and overflow `line_idx + context_lines`
+        // inside collect_context (panic in debug, wrapped range in release).
         let context_lines =
-            usize::try_from(optional_u64(&input, "context_lines", 2)).unwrap_or(usize::MAX);
+            usize::try_from(optional_u64(&input, "context_lines", 2).min(MAX_CONTEXT_LINES))
+                .unwrap_or(2);
         let case_insensitive = optional_bool(&input, "case_insensitive", false);
         let multiline = optional_bool(&input, "multiline", false);
         let max_results = usize::try_from(optional_u64(&input, "max_results", MAX_RESULTS as u64))
@@ -390,7 +399,9 @@ fn collect_context(
         .filter_map(|i| lines.get(i).map(|s| (*s).to_string()))
         .collect();
     let context_after: Vec<String> = ((line_idx + 1)
-        ..=(line_idx + context_lines).min(lines.len().saturating_sub(1)))
+        ..=line_idx
+            .saturating_add(context_lines)
+            .min(lines.len().saturating_sub(1)))
         .filter_map(|i| lines.get(i).map(|s| (*s).to_string()))
         .collect();
     (context_before, context_after)
@@ -484,6 +495,16 @@ fn should_include(path: &str, patterns: &[String]) -> bool {
 /// Simple glob pattern matching
 /// Supports: * (any chars), ** (any path), ? (single char)
 pub fn matches_glob(path: &str, pattern: &str) -> bool {
+    // The walker yields OS-native separators; normalize so directory globs
+    // (e.g. "src/*.rs" and the default "node_modules/*" excludes) also
+    // match on Windows, where relative paths come out with '\'.
+    let normalized;
+    let path = if path.contains('\\') {
+        normalized = path.replace('\\', "/");
+        normalized.as_str()
+    } else {
+        path
+    };
     // Handle ** for any path
     if pattern.contains("**") {
         let parts: Vec<&str> = pattern.split("**").collect();

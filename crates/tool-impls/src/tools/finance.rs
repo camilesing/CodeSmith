@@ -255,23 +255,35 @@ impl ToolSpec for FinanceTool {
         let request = normalize_request(raw_ticker, type_hint);
         let timeout = Duration::from_millis(timeout_ms);
 
-        let quote_result =
-            fetch_quote_endpoint(&self.client, timeout, &self.endpoints, &request).await;
-        match quote_result {
-            Ok(result) => {
-                ToolResult::json(&result).map_err(|e| ToolError::execution_failed(e.to_string()))
-            }
-            Err(first_failure) => {
-                match fetch_chart_endpoint(&self.client, timeout, &self.endpoints, &request).await {
-                    Ok(result) => ToolResult::json(&result)
-                        .map_err(|e| ToolError::execution_failed(e.to_string())),
-                    Err(second_failure) => Err(finalize_failure(
-                        &request,
-                        timeout_ms,
-                        &[first_failure, second_failure],
-                    )),
+        // `timeout_ms` is the budget for the ENTIRE quote+fallback
+        // sequence, not per attempt, so total wall time honors the
+        // schema's documented "Request timeout in milliseconds".
+        let lookup = async {
+            let quote_result =
+                fetch_quote_endpoint(&self.client, timeout, &self.endpoints, &request).await;
+            match quote_result {
+                Ok(result) => ToolResult::json(&result)
+                    .map_err(|e| ToolError::execution_failed(e.to_string())),
+                Err(first_failure) => {
+                    match fetch_chart_endpoint(&self.client, timeout, &self.endpoints, &request)
+                        .await
+                    {
+                        Ok(result) => ToolResult::json(&result)
+                            .map_err(|e| ToolError::execution_failed(e.to_string())),
+                        Err(second_failure) => Err(finalize_failure(
+                            &request,
+                            timeout_ms,
+                            &[first_failure, second_failure],
+                        )),
+                    }
                 }
             }
+        };
+        match tokio::time::timeout(timeout, lookup).await {
+            Ok(result) => result,
+            Err(_) => Err(ToolError::Timeout {
+                seconds: millis_to_timeout_seconds(timeout_ms),
+            }),
         }
     }
 }

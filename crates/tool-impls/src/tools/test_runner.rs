@@ -161,14 +161,13 @@ fn run_cargo(workspace: &Path, args: &[String]) -> Result<std::process::Output, 
 }
 
 fn format_command(workspace: &Path, args: &[String]) -> String {
-    format!(
-        "(cd {} && cargo {})",
-        workspace.display(),
-        args.iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>()
-            .join(" ")
-    )
+    // Quote args via shlex so the recorded command round-trips through
+    // `shlex::split` — `summarize_cargo_failure` runs that split on this
+    // string, and a plain space join with a quoted arg returns None,
+    // silently suppressing the whole failure summary.
+    let joined =
+        shlex::try_join(args.iter().map(String::as_str)).unwrap_or_else(|_| args.join(" "));
+    format!("(cd {} && cargo {})", workspace.display(), joined)
 }
 
 fn truncate_with_note(text: &str, max_chars: usize) -> String {

@@ -30,7 +30,8 @@
 //! anything in the list goes through unchanged.
 
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -39,6 +40,15 @@ use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_str, required_str,
 };
+
+/// Wall-clock cap for one pandoc conversion. Model-selected inputs can be
+/// pathological (deeply nested markup, huge documents) and hang pandoc —
+/// without a cap the tool call (and its worker thread) wedges indefinitely.
+const PANDOC_TIMEOUT: Duration = Duration::from_secs(60);
+/// Cap on captured output before it lands in ToolResult/ToolError strings,
+/// so a runaway conversion cannot flood the model context.
+const MAX_INLINE_CHARS: usize = 100_000;
+const MAX_ERROR_CHARS: usize = 2_000;
 
 /// Curated whitelist of pandoc target formats. Each entry corresponds
 /// to a `--to=<format>` value pandoc accepts natively without
@@ -154,22 +164,32 @@ impl ToolSpec for PandocConvertTool {
             )
         })?;
 
-        let mut cmd = Command::new(&pandoc);
+        let mut cmd = tokio::process::Command::new(&pandoc);
         cmd.arg(&source_path);
         cmd.arg("--to").arg(&target_format);
         if let Some(out) = resolved_output_path.as_ref() {
             cmd.arg("--output").arg(out);
         }
+        // kill_on_drop: when the overall timeout below fires, the dropped
+        // output future must take the child down instead of leaving a
+        // detached pandoc running.
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
 
-        let output = cmd
-            .output()
+        let output = tokio::time::timeout(PANDOC_TIMEOUT, cmd.output())
+            .await
+            .map_err(|_| ToolError::Timeout {
+                seconds: PANDOC_TIMEOUT.as_secs(),
+            })?
             .map_err(|e| ToolError::execution_failed(format!("failed to launch pandoc: {e}")))?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stderr = truncate_chars(
+                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+                MAX_ERROR_CHARS,
+            );
             return Err(ToolError::execution_failed(format!(
                 "pandoc failed (exit {:?}): {stderr}",
                 output.status.code()
@@ -184,11 +204,25 @@ impl ToolSpec for PandocConvertTool {
                 out.display()
             )
         } else {
-            let text = String::from_utf8_lossy(&output.stdout).to_string();
+            let text = truncate_chars(
+                String::from_utf8_lossy(&output.stdout).to_string(),
+                MAX_INLINE_CHARS,
+            );
             return Ok(ToolResult::success(text));
         };
         Ok(ToolResult::success(summary))
     }
+}
+
+/// Truncate to at most `max_chars` characters on char boundaries,
+/// appending a `[truncated]` marker when text was cut.
+fn truncate_chars(text: String, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text;
+    }
+    let mut out: String = text.chars().take(max_chars).collect();
+    out.push_str("\n[truncated]");
+    out
 }
 
 /// Whitelist of target formats whose output is binary (and therefore
