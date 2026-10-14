@@ -615,12 +615,20 @@ fn request_has_runtime_token(req: &Request, expected: &str) -> bool {
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|raw| raw.strip_prefix("Bearer "))
-        .is_some_and(|token| token == expected)
+        .is_some_and(|token| constant_time_eq(token.as_bytes(), expected.as_bytes()))
         || req
             .headers()
             .get("x-codesmith-runtime-token")
             .and_then(|value| value.to_str().ok())
-            .is_some_and(|token| token == expected)
+            .is_some_and(|token| constant_time_eq(token.as_bytes(), expected.as_bytes()))
+}
+
+/// Constant-time equality for token comparisons: ordinary `==` short-circuits
+/// on the first differing byte, letting a LAN-bound caller time out the
+/// bearer token one byte at a time. Length is compared up front — leaking
+/// the token's length is not exploitable here.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |diff, (x, y)| diff | (x ^ y)) == 0
 }
 
 fn runtime_token_required_response() -> Response {
@@ -688,7 +696,8 @@ async fn mobile_page(State(state): State<RuntimeApiState>, req: Request) -> Resp
         // address-bar navigation cannot set headers. The client strips the
         // token from the URL immediately after load and every subsequent
         // `/v1/*` call uses the Authorization header instead.
-        && token_from_query(req.uri().query()).is_none_or(|token| token != expected)
+        && token_from_query(req.uri().query())
+            .is_none_or(|token| !constant_time_eq(token.as_bytes(), expected.as_bytes()))
     {
         return runtime_token_required_response();
     }
@@ -1028,9 +1037,14 @@ async fn list_threads_summary(
     let limit = query.limit.unwrap_or(50).clamp(1, 500);
     let search = query.search.as_deref().map(str::to_ascii_lowercase);
     let filter = resolve_thread_filter(query.include_archived, query.archived_only);
+    // When searching, fetch the untruncated list first: the search filter
+    // runs below on data (title/preview) that only per-thread detail
+    // provides, so applying `limit` up front silently drops matches ranked
+    // beyond it by recency. The result is truncated to `limit` at the end.
+    let fetch_limit = if search.is_some() { None } else { Some(limit) };
     let threads = state
         .runtime_threads
-        .list_threads(filter, Some(limit))
+        .list_threads(filter, fetch_limit)
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
 
@@ -1116,7 +1130,13 @@ async fn list_threads_summary(
 async fn workspace_status(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<WorkspaceStatusResponse>, ApiError> {
-    Ok(Json(collect_workspace_status(&state.workspace)))
+    // `collect_workspace_status` runs 4+ sequential git subprocesses; keep
+    // them off the async workers (the server may run with as few as 2).
+    let workspace = state.workspace.clone();
+    let status = tokio::task::spawn_blocking(move || collect_workspace_status(&workspace))
+        .await
+        .map_err(|e| ApiError::internal(format!("workspace status task failed: {e}")))?;
+    Ok(Json(status))
 }
 
 async fn list_skills(
@@ -1251,7 +1271,7 @@ async fn list_mcp_servers(
 ) -> Result<Json<McpServersResponse>, ApiError> {
     let config = load_mcp_config_or_default(&state.mcp_config_path)?;
     let mut pool = McpPool::new(config.clone());
-    let _errors = pool.connect_all().await;
+    let _errors = connect_all_bounded(&mut pool).await;
     let connected: HashSet<String> = pool
         .connected_servers()
         .into_iter()
@@ -1288,7 +1308,7 @@ async fn list_mcp_tools(
 ) -> Result<Json<McpToolsResponse>, ApiError> {
     let mut pool = McpPool::from_config_path(&state.mcp_config_path)
         .map_err(|e| ApiError::internal(format!("Failed to load MCP config: {e}")))?;
-    let _errors = pool.connect_all().await;
+    let _errors = connect_all_bounded(&mut pool).await;
 
     let mut tools = Vec::new();
     for (prefixed_name, tool) in pool.all_tools() {
@@ -1570,6 +1590,10 @@ async fn stream_thread_events(
         .await
         .map_err(map_thread_err)?;
 
+    // Subscribe before reading the backlog so no event can slip between the
+    // snapshot and the subscription; the `seq <= last_seq` check inside the
+    // stream deduplicates the overlap.
+    let mut live = state.runtime_threads.subscribe_events();
     let backlog = state
         .runtime_threads
         .events_since(&id, query.since_seq)
@@ -1579,7 +1603,6 @@ async fn stream_thread_events(
         last_seq = last.seq;
     }
 
-    let mut live = state.runtime_threads.subscribe_events();
     let thread_id = id.clone();
     let stream = stream! {
         for event in backlog {
@@ -1668,13 +1691,18 @@ async fn stream_turn(
         .await
         .map_err(|e| ApiError::internal(format!("Failed to start stream turn: {e}")))?;
 
+    // Subscribe before reading the backlog (same race as
+    // `stream_thread_events`): a `turn.completed` broadcast between the
+    // snapshot and the subscription would otherwise leave this stream
+    // waiting on keepalives forever.
+    let mut live = state.runtime_threads.subscribe_events();
     let backlog = state
         .runtime_threads
         .events_since(&thread.id, None)
         .map_err(|e| ApiError::internal(format!("Failed to load stream backlog: {e}")))?;
-    let mut live = state.runtime_threads.subscribe_events();
     let thread_id = thread.id.clone();
     let turn_id = turn.id.clone();
+    let mut last_seq = backlog.last().map(|event| event.seq).unwrap_or(0);
 
     let stream = stream! {
         yield Ok(sse_json("turn.started", json!({
@@ -1707,6 +1735,11 @@ async fn stream_turn(
             if event.thread_id != thread_id || event.turn_id.as_deref() != Some(&turn_id) {
                 continue;
             }
+            // Deduplicate the subscribe-before-snapshot overlap.
+            if event.seq <= last_seq {
+                continue;
+            }
+            last_seq = event.seq;
             if let Some(mapped) = map_compat_stream_event(&event) {
                 yield Ok(mapped);
             }
@@ -1854,6 +1887,19 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
     }
     let truncated: String = text.chars().take(max_chars.saturating_sub(3)).collect();
     format!("{truncated}...")
+}
+
+/// Connect every configured MCP server for the status endpoints, bounded in
+/// time. Each server's connect already carries its own timeout
+/// (`McpTimeouts::connect_timeout`, 10s by default); this outer bound keeps
+/// a pathological config (many hung servers across sequential batches) from
+/// stalling a GET for their aggregate duration. On timeout the pool reports
+/// whatever it managed to register.
+async fn connect_all_bounded(pool: &mut McpPool) -> Vec<(String, anyhow::Error)> {
+    const MCP_STATUS_CONNECT_BUDGET: Duration = Duration::from_secs(30);
+    tokio::time::timeout(MCP_STATUS_CONNECT_BUDGET, pool.connect_all())
+        .await
+        .unwrap_or_default()
 }
 
 fn collect_workspace_status(workspace: &std::path::Path) -> WorkspaceStatusResponse {
@@ -2350,6 +2396,15 @@ mod tests {
             Some("abc ABC+/?:=&%".to_string())
         );
         assert_eq!(token_from_query(Some("token=bad%ZZ")), None);
+    }
+
+    #[test]
+    fn constant_time_eq_compares_without_early_exit() {
+        assert!(constant_time_eq(b"", b""));
+        assert!(constant_time_eq(b"same-token", b"same-token"));
+        assert!(!constant_time_eq(b"same-token", b"same-tokem"));
+        assert!(!constant_time_eq(b"same-token", b"same-token-extra"));
+        assert!(!constant_time_eq(b"", b"a"));
     }
 
     async fn spawn_test_server_with_root(

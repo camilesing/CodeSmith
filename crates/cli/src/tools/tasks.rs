@@ -782,23 +782,32 @@ impl ToolSpec for PrAttemptRecordTool {
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let task_id = task_id_from_input_or_context(&input, context)?;
-        let base_sha = git_output(&context.workspace, &["rev-parse", "HEAD"]).ok();
+        // Four sequential git subprocesses — keep them off the async
+        // workers, matching `pr_attempt_preflight`.
+        let workspace = context.workspace.clone();
+        let (base_sha, branch, diff, changed_files) = tokio::task::spawn_blocking(move || {
+            let base_sha = git_output(&workspace, &["rev-parse", "HEAD"]).ok();
+            let branch = git_output(&workspace, &["rev-parse", "--abbrev-ref", "HEAD"]).ok();
+            let diff = git_output(&workspace, &["diff", "HEAD", "--binary", "--no-color"]);
+            let changed_files = git_output(&workspace, &["diff", "HEAD", "--name-only"]);
+            (base_sha, branch, diff, changed_files)
+        })
+        .await
+        .map_err(|join_err| {
+            ToolError::execution_failed(format!("git diff collection panicked: {join_err}"))
+        })?;
         let head_sha = base_sha.clone();
-        let branch = git_output(&context.workspace, &["rev-parse", "--abbrev-ref", "HEAD"]).ok();
         // `git diff HEAD` — the bare form compared the working tree to the INDEX
         // only, so a fully staged attempt yielded an empty diff ("No
         // working-tree diff to record") and a partially staged one recorded
         // an incomplete patch.
-        let diff = git_output(
-            &context.workspace,
-            &["diff", "HEAD", "--binary", "--no-color"],
-        )?;
+        let diff = diff?;
         if diff.trim().is_empty() {
             return Ok(ToolResult::error(
                 "No working-tree diff to record as an attempt.",
             ));
         }
-        let changed_files = git_output(&context.workspace, &["diff", "HEAD", "--name-only"])?
+        let changed_files = changed_files?
             .lines()
             .filter(|line| !line.trim().is_empty())
             .map(ToString::to_string)

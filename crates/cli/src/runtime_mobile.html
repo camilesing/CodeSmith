@@ -267,7 +267,10 @@
       source: null,
       eventCount: 0,
       sinceSeq: 0,
-      reconnectMs: 500
+      reconnectMs: 500,
+      // approval id -> live Allow/Deny button container, so a later
+      // decided/timeout event (live or replayed) can settle it.
+      approvals: new Map()
     };
 
     function setStatus(message, tone = "") {
@@ -316,16 +319,6 @@
       }
       if (res.status === 204) return null;
       return res.json();
-    }
-
-    function escapeHtml(raw) {
-      return String(raw).replace(/[&<>"']/g, (char) => ({
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        "\"": "&quot;",
-        "'": "&#039;"
-      }[char]));
     }
 
     function eventPayload(data) {
@@ -378,23 +371,72 @@
           body: JSON.stringify({ decision, remember })
         });
         const decided = result?.decision ?? decision;
-        container.innerHTML = "<span class='meta'>Decision sent: " + escapeHtml(decided) + "</span>";
+        settleApprovalContainer(container, "Decision sent: " + decided);
       } catch (err) {
         for (const button of container.querySelectorAll("button")) button.disabled = false;
         throw err;
       }
     }
 
+    const MAX_EVENT_NODES = 400;
+
+    function settleApprovalContainer(container, label) {
+      container.replaceChildren();
+      const meta = document.createElement("span");
+      meta.className = "meta";
+      meta.textContent = label;
+      container.appendChild(meta);
+    }
+
+    function settleApproval(approvalId, label) {
+      const container = state.approvals.get(approvalId);
+      if (!container || !container.isConnected) return;
+      settleApprovalContainer(container, label);
+      state.approvals.delete(approvalId);
+    }
+
     function appendEvent(name, data) {
+      // A later decided/timeout event settles the matching approval block —
+      // without this, replaying a thread's backlog (since_seq=0 on every
+      // thread switch) re-renders live Allow/Deny buttons for approvals
+      // that were already decided.
+      if (name === "approval.decided" || name === "approval.timeout") {
+        const payload = eventPayload(data) || {};
+        if (payload.approval_id) {
+          settleApproval(
+            payload.approval_id,
+            name === "approval.timeout"
+              ? "Approval timed out"
+              : "Approval " + (payload.decision || "decided")
+          );
+        }
+      }
       const text = eventText(name, data);
       if (!text) return;
+      const events = $("events");
+      state.eventCount += 1;
+      $("event-count").textContent = state.eventCount + " events";
+      // Coalesce consecutive stream deltas into the previous node instead of
+      // materializing one styled node per chunk.
+      if (name === "item.delta" && events.lastElementChild?.dataset?.deltas === "1") {
+        events.lastElementChild.appendChild(document.createTextNode(text));
+        events.scrollTop = events.scrollHeight;
+        return;
+      }
       const item = document.createElement("div");
       item.className = "event";
-      if (name === "item.delta") item.classList.add("agent");
+      if (name === "item.delta") {
+        item.classList.add("agent");
+        item.dataset.deltas = "1";
+      }
       if (name === "item.started" || name.includes("tool")) item.classList.add("tool");
       if (name.includes("failed") || name.includes("denied") || name.includes("timeout")) item.classList.add("error");
       if (name === "turn.completed" || name === "approval.decided") item.classList.add("ok");
-      item.innerHTML = "<div class='meta'>" + escapeHtml(name) + "</div>" + escapeHtml(text);
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      meta.textContent = name;
+      item.appendChild(meta);
+      item.appendChild(document.createTextNode(text));
 
       const approval = approvalInfo(name, data);
       if (approval) {
@@ -413,12 +455,14 @@
         actions.appendChild(allow);
         actions.appendChild(deny);
         item.appendChild(actions);
+        state.approvals.set(approval.id, actions);
       }
 
-      $("events").appendChild(item);
-      state.eventCount += 1;
-      $("event-count").textContent = state.eventCount + " events";
-      $("events").scrollTop = $("events").scrollHeight;
+      events.appendChild(item);
+      while (events.children.length > MAX_EVENT_NODES) {
+        events.removeChild(events.firstElementChild);
+      }
+      events.scrollTop = events.scrollHeight;
     }
 
     async function loadThreads() {
@@ -432,10 +476,14 @@
       for (const thread of threads) {
         const el = document.createElement("button");
         el.className = "thread" + (thread.id === state.threadId ? " active" : "");
-        el.innerHTML =
-          "<div class='thread-title'>" + escapeHtml(thread.title || thread.id) + "</div>" +
-          "<div class='meta'>" + escapeHtml(thread.mode || "") + " / " +
-          escapeHtml(thread.model || "") + "</div>";
+        const title = document.createElement("div");
+        title.className = "thread-title";
+        title.textContent = thread.title || thread.id;
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = (thread.mode || "") + " / " + (thread.model || "");
+        el.appendChild(title);
+        el.appendChild(meta);
         el.onclick = () => selectThread(thread.id, thread.title || thread.id);
         list.appendChild(el);
       }
@@ -451,8 +499,7 @@
           auto_approve: $("auto-approve").checked
         })
       });
-      await loadThreads();
-      selectThread(thread.id, thread.title || thread.id);
+      await selectThread(thread.id, thread.title || thread.id);
     }
 
     async function selectThread(id, title) {
@@ -461,6 +508,7 @@
       state.eventCount = 0;
       state.sinceSeq = 0;
       state.reconnectMs = 500;
+      state.approvals.clear();
       $("event-count").textContent = "0 events";
       $("active-title").textContent = title || id;
       $("events").innerHTML = "";
@@ -506,16 +554,23 @@
             "/events?since_seq=" + (state.sinceSeq || 0),
           { headers: streamHeaders, signal: controller.signal }
         );
-        if (!res.ok || !res.body) throw new Error("event stream HTTP " + res.status);
+        if (!res.ok || !res.body) {
+          if (res.status >= 400 && res.status < 500) {
+            // 401/403/404 cannot be fixed by retrying — surface the status
+            // instead of masking it behind reconnect backoff forever.
+            setStatus("Event stream error " + res.status + " — check the access token", "bad");
+            return;
+          }
+          throw new Error("event stream HTTP " + res.status);
+        }
         setStatus("Connected", "ok");
         delay = 500;
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
-        for (;;) {
-          const { done, value: chunk } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(chunk, { stream: true });
+        // SSE lines may arrive CRLF- or CR-terminated (spec-legal; some
+        // mobile proxies rewrite them), so normalize before frame splitting.
+        const takeFrames = () => {
           let sep;
           while ((sep = buffer.indexOf("\n\n")) !== -1) {
             const frame = buffer.slice(0, sep);
@@ -532,7 +587,17 @@
             }
             if (dataLines.length) handleEventFrame(eventName, dataLines.join("\n"));
           }
+        };
+        for (;;) {
+          const { done, value: chunk } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(chunk, { stream: true }).replace(/\r\n?/g, "\n");
+          takeFrames();
         }
+        // Flush the decoder's pending multibyte tail and dispatch a final
+        // frame that arrived without a terminating blank line.
+        buffer += decoder.decode().replace(/\r\n?/g, "\n");
+        takeFrames();
         // Stream ended cleanly (server-side timeout) — reconnect.
         throw new Error("event stream ended");
       } catch (err) {
@@ -586,6 +651,22 @@
       );
     }
 
+    // Double-tapping Send/Steer on mobile used to fire two concurrent
+    // POSTs with the same prompt; disable the button for the flight.
+    function withBusy(button, fn) {
+      return async () => {
+        if (button.disabled) return;
+        button.disabled = true;
+        try {
+          await fn();
+        } catch (err) {
+          setStatus(err.message, "bad");
+        } finally {
+          button.disabled = false;
+        }
+      };
+    }
+
     async function boot() {
       takeTokenFromUrl();
       $("token").value = sessionStorage.getItem("codesmith_runtime_token") || "";
@@ -595,8 +676,8 @@
       };
       $("refresh").onclick = () => loadThreads().catch((err) => setStatus(err.message, "bad"));
       $("new-thread").onclick = () => newThread().catch((err) => setStatus(err.message, "bad"));
-      $("send").onclick = () => sendPrompt().catch((err) => setStatus(err.message, "bad"));
-      $("steer").onclick = () => steerTurn().catch((err) => setStatus(err.message, "bad"));
+      $("send").onclick = withBusy($("send"), sendPrompt);
+      $("steer").onclick = withBusy($("steer"), steerTurn);
       $("interrupt").onclick = () => interruptTurn().catch((err) => setStatus(err.message, "bad"));
       await loadThreads();
       setStatus("Connected", "ok");
