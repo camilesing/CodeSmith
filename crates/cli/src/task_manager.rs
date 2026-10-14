@@ -25,7 +25,7 @@ use uuid::Uuid;
 use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS};
 use crate::runtime_threads::{
     CreateThreadRequest, RuntimeThreadManager, RuntimeThreadManagerConfig, RuntimeTurnStatus,
-    SharedRuntimeThreadManager, StartTurnRequest,
+    SharedRuntimeThreadManager, StartTurnRequest, UpdateThreadRequest,
 };
 use crate::utils::spawn_supervised;
 
@@ -209,6 +209,19 @@ impl TaskExecutor for EngineTaskExecutor {
         {
             Ok(turn) => turn,
             Err(err) => {
+                // Best-effort cleanup: the thread record exists but no task
+                // references it — archive it instead of leaving a dangling
+                // runtime thread behind.
+                let _ = self
+                    .runtime_threads
+                    .update_thread(
+                        &thread.id,
+                        UpdateThreadRequest {
+                            archived: Some(true),
+                            ..UpdateThreadRequest::default()
+                        },
+                    )
+                    .await;
                 return TaskExecutionResult {
                     status: TaskStatus::Failed,
                     result_text: None,
@@ -249,6 +262,22 @@ impl TaskExecutor for EngineTaskExecutor {
             {
                 Ok(batch) => batch,
                 Err(err) => {
+                    // The turn may still be running with nobody polling it —
+                    // interrupt it and archive the thread before bailing.
+                    let _ = self
+                        .runtime_threads
+                        .interrupt_turn(&thread.id, &turn.id)
+                        .await;
+                    let _ = self
+                        .runtime_threads
+                        .update_thread(
+                            &thread.id,
+                            UpdateThreadRequest {
+                                archived: Some(true),
+                                ..UpdateThreadRequest::default()
+                            },
+                        )
+                        .await;
                     return TaskExecutionResult {
                         status: TaskStatus::Failed,
                         result_text: if final_text.trim().is_empty() {
@@ -543,6 +572,16 @@ impl TaskManager {
     #[allow(dead_code)] // Public API for external callers (runtime API)
     pub fn shutdown(&self) {
         self.cancel_token.cancel();
+        // Propagate to per-task tokens: `run_task`'s select! only races
+        // `event_rx.recv()` against `exec_fut`, so a worker mid-execution
+        // never observes the manager token — without cancelling the
+        // running tasks too, in-flight work keeps running to completion
+        // after shutdown.
+        if let Ok(state) = self.state.try_lock() {
+            for token in state.running_cancel.values() {
+                token.cancel();
+            }
+        }
     }
 
     #[allow(dead_code)] // Public API for external callers
@@ -1038,8 +1077,13 @@ impl TaskManager {
 
         let now = Utc::now();
         if cancel.is_cancelled() && result.status == TaskStatus::Completed {
+            // A cancel landing in the window between the executor
+            // returning Completed and this lock being acquired must not
+            // discard a fully-completed task's output: the work succeeded.
+            // Mark it canceled (the user asked) but keep the result — only
+            // an executor that itself observed cancellation (returned
+            // Canceled) carries no result.
             result.status = TaskStatus::Canceled;
-            result.result_text = None;
             result.error = None;
         }
 

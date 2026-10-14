@@ -84,7 +84,15 @@ pub fn interval_to_rrule(interval: &str) -> Result<String, String> {
         } else {
             format!("FREQ=HOURLY;INTERVAL={count}")
         }),
-        "d" | "D" => Ok(format!("FREQ=HOURLY;INTERVAL={}", count * 24)),
+        "d" | "D" => {
+            // `count` is any user-supplied number: `count * 24` overflows
+            // u32 (panic in debug, silent wrap in release — the wrapped
+            // value can even reach INTERVAL=0, i.e. fire-every-tick).
+            let hours = count.checked_mul(24).ok_or_else(|| {
+                format!("{raw} is too long an interval to schedule — the maximum is 178956970d")
+            })?;
+            Ok(format!("FREQ=HOURLY;INTERVAL={hours}"))
+        }
         "m" | "M" | "s" | "S" => Err(format!(
             "{raw} is below the scheduler's floor of one hour — use 1h or more, \
              or a `sleep` loop in a shell for finer cadence"

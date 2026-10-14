@@ -224,65 +224,90 @@ fn usable(server: ImportedServer, skipped: &mut Vec<(String, String)>) -> Option
 
 /// Extract importable servers from an MCP document.
 ///
-/// Accepts the `mcpServers` mapping Claude, Cursor, and Gemini use. An entry
-/// naming neither a command nor a url is skipped with a reason rather than
-/// imported as an empty server.
+/// Accepts the `mcpServers` mapping Claude, Cursor, and Gemini use, plus
+/// Claude Code's project-scoped `projects."<path>".mcpServers` nesting
+/// (`~/.claude.json` keeps most servers there). An entry naming neither a
+/// command nor a url is skipped with a reason rather than imported as an
+/// empty server.
 #[must_use]
 pub fn servers_from_json(document: &serde_json::Value) -> Found {
     let mut found = Found::default();
-    let Some(map) = document
+    let mut maps: Vec<&serde_json::Map<String, serde_json::Value>> = Vec::new();
+    if let Some(map) = document
         .get("mcpServers")
         .or_else(|| document.get("servers"))
         .and_then(|value| value.as_object())
-    else {
-        return found;
-    };
-    for (name, entry) in map {
-        let strings = |field: &str| {
-            entry
-                .get(field)
+    {
+        maps.push(map);
+    }
+    if let Some(projects) = document.get("projects").and_then(|value| value.as_object()) {
+        for project in projects.values() {
+            if let Some(map) = project
+                .get("mcpServers")
+                .or_else(|| project.get("servers"))
                 .and_then(|value| value.as_object())
-                .map(|map| {
-                    map.iter()
-                        .filter_map(|(key, value)| {
-                            value.as_str().map(|value| (key.clone(), value.to_string()))
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default()
-        };
-        let args = entry
-            .get("args")
-            .and_then(|value| value.as_array())
-            .map(|args| {
-                args.iter()
-                    .filter_map(|arg| arg.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let candidate = ImportedServer {
-            name: name.clone(),
-            command: entry
-                .get("command")
-                .and_then(|value| value.as_str())
-                .map(str::to_string),
-            args,
-            env: strings("env"),
-            url: entry
-                .get("url")
-                .and_then(|value| value.as_str())
-                .map(str::to_string),
-            transport: entry
-                .get("transport")
-                .and_then(|value| value.as_str())
-                .map(str::to_string),
-            headers: strings("headers"),
-        };
-        if let Some(server) = usable(candidate, &mut found.skipped) {
-            found.servers.push(server);
+            {
+                maps.push(map);
+            }
+        }
+    }
+    for map in maps {
+        for (name, entry) in map {
+            if let Some(server) = usable(imported_from_json(name, entry), &mut found.skipped) {
+                found.servers.push(server);
+            }
         }
     }
     found
+}
+
+/// Convert one JSON server entry. Non-string scalars in env/headers/args
+/// are stringified rather than dropped: a stdio server losing a numeric
+/// token from `env` launches without it, and dropping one positional arg
+/// silently shifts every later flag onto the wrong position.
+fn imported_from_json(name: &str, entry: &serde_json::Value) -> ImportedServer {
+    let scalar = |value: &serde_json::Value| -> Option<String> {
+        match value {
+            serde_json::Value::String(s) => Some(s.clone()),
+            serde_json::Value::Number(n) => Some(n.to_string()),
+            serde_json::Value::Bool(b) => Some(b.to_string()),
+            _ => None,
+        }
+    };
+    let strings = |field: &str| {
+        entry
+            .get(field)
+            .and_then(|value| value.as_object())
+            .map(|map| {
+                map.iter()
+                    .filter_map(|(key, value)| scalar(value).map(|value| (key.clone(), value)))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    let args = entry
+        .get("args")
+        .and_then(|value| value.as_array())
+        .map(|args| args.iter().filter_map(scalar).collect())
+        .unwrap_or_default();
+    ImportedServer {
+        name: name.to_string(),
+        command: entry
+            .get("command")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        args,
+        env: strings("env"),
+        url: entry
+            .get("url")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        transport: entry
+            .get("transport")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        headers: strings("headers"),
+    }
 }
 
 /// The same extraction for Codex's TOML `[mcp_servers.<name>]` tables.
@@ -305,6 +330,18 @@ pub fn servers_from_toml(document: &str) -> Found {
         return found;
     };
     for (name, entry) in map {
+        // Same scalar-stringify policy as the JSON side: TOML legally
+        // allows integer/boolean values, and dropping one silently loses a
+        // token or shifts positional args.
+        let scalar = |value: &toml::Value| -> Option<String> {
+            match value {
+                toml::Value::String(s) => Some(s.clone()),
+                toml::Value::Integer(n) => Some(n.to_string()),
+                toml::Value::Float(f) => Some(f.to_string()),
+                toml::Value::Boolean(b) => Some(b.to_string()),
+                _ => None,
+            }
+        };
         let strings = |field: &str| {
             entry
                 .get(field)
@@ -312,9 +349,7 @@ pub fn servers_from_toml(document: &str) -> Found {
                 .map(|table| {
                     table
                         .iter()
-                        .filter_map(|(key, value)| {
-                            value.as_str().map(|value| (key.clone(), value.to_string()))
-                        })
+                        .filter_map(|(key, value)| scalar(value).map(|value| (key.clone(), value)))
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default()
@@ -322,11 +357,7 @@ pub fn servers_from_toml(document: &str) -> Found {
         let args = entry
             .get("args")
             .and_then(|value| value.as_array())
-            .map(|args| {
-                args.iter()
-                    .filter_map(|arg| arg.as_str().map(str::to_string))
-                    .collect()
-            })
+            .map(|args| args.iter().filter_map(scalar).collect())
             .unwrap_or_default();
         let candidate = ImportedServer {
             name: name.clone(),
@@ -459,11 +490,28 @@ pub fn run(state: &ReplState, arg: &str, yes: bool) {
         }
     };
     let mut added = Vec::new();
+    // Names inserted during THIS run: two sources can define the same name
+    // (e.g. Claude and Cursor both defining `context7`). The pre-existing
+    // check alone misreports the second as "already configured", and in a
+    // dry run (nothing inserted) both duplicates look importable while the
+    // real run would add only one — this makes dry run and write agree.
+    let mut seen_this_run: std::collections::HashSet<String> = std::collections::HashSet::new();
     for server in candidates {
         if config.servers.contains_key(&server.name) {
             println!(
                 "  {}",
                 format!("{} already configured — left alone", server.name).dimmed()
+            );
+            continue;
+        }
+        if !seen_this_run.insert(server.name.clone()) {
+            println!(
+                "  {}",
+                format!(
+                    "{} already imported from another source — left alone",
+                    server.name
+                )
+                .dimmed()
             );
             continue;
         }

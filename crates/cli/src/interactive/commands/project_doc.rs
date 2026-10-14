@@ -4,16 +4,19 @@ use std::fmt::Write as _;
 use std::io::Read;
 use std::path::Path;
 
-/// If `workspace` is inside a git repository, ensure `.codesmith/` and
-/// `.codesmith/` is listed in the nearest `.gitignore` so that snapshots,
-/// instructions, and other workspace-local state are not accidentally committed.
+/// If `workspace` is inside a git repository, ensure `.codesmith/` is
+/// listed in the repo root's `.gitignore` so that snapshots, instructions,
+/// and other workspace-local state are not accidentally committed.
 pub(crate) fn ensure_codesmith_gitignored(workspace: &Path) {
-    // Only act if this workspace is a git repo.
-    if !workspace.join(".git").exists() {
+    // Find the nearest ENCLOSING repository: a workspace opened as a
+    // subdirectory of a larger repo (a common layout) has no `.git` of its
+    // own, and the old `workspace/.git` check silently skipped the ignore
+    // entry entirely there.
+    let Some(repo_root) = workspace.ancestors().find(|dir| dir.join(".git").exists()) else {
         return;
-    }
+    };
 
-    let gitignore = workspace.join(".gitignore");
+    let gitignore = repo_root.join(".gitignore");
     let entries = [".codesmith/"];
 
     // Read existing contents once. Missing = empty, but a real read
@@ -227,14 +230,28 @@ fn detect_project_type(workspace: &Path) -> String {
 
 /// Extract project name from Cargo.toml
 fn extract_cargo_name(content: &str) -> Option<String> {
+    // Anchor to the `[package]` table and the exact `name` key: a plain
+    // `starts_with("name")` also matched `namespace = "…"` and took the
+    // first hit anywhere (`[[bin]]`, `[workspace.package]`, …), so the
+    // generated doc could carry a wrong project name.
+    let mut in_package = false;
     for line in content.lines() {
         let line = line.trim();
-        if line.starts_with("name") && line.contains('=') {
-            let parts: Vec<&str> = line.splitn(2, '=').collect();
-            if parts.len() == 2 {
-                let name = parts[1].trim().trim_matches('"').trim_matches('\'');
-                return Some(name.to_string());
-            }
+        if line.starts_with('[') {
+            in_package = line == "[package]";
+            continue;
+        }
+        if in_package
+            && let Some((key, value)) = line.split_once('=')
+            && key.trim() == "name"
+        {
+            return Some(
+                value
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .to_string(),
+            );
         }
     }
     None

@@ -51,7 +51,22 @@ pub fn parse(arg: &str) -> Result<Option<Request>, String> {
                 let value = words
                     .next()
                     .ok_or_else(|| "--repo needs an owner/name argument".to_string())?;
-                repo = Some(value.to_string());
+                // Validate the owner/name shape: blindly consuming the
+                // next word let `/pr --repo --checkout 12` set
+                // repo = "--checkout" and forwarded the garbage to `gh`.
+                let valid = |part: &str| {
+                    !part.is_empty()
+                        && part.starts_with(|c: char| c.is_ascii_alphanumeric())
+                        && part
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+                };
+                match value.split_once('/') {
+                    Some((owner, name)) if valid(owner) && valid(name) && !name.contains('/') => {
+                        repo = Some(value.to_string());
+                    }
+                    _ => return Err(format!("--repo wants owner/name, got {value:?}")),
+                }
             }
             "--checkout" | "-c" => checkout = true,
             _ if number.is_none() => {

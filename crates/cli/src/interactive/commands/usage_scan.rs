@@ -97,20 +97,31 @@ pub fn skill_activations(path: &Path) -> Vec<String> {
 
     let mut names = Vec::new();
     for message in messages(path).unwrap_or_default() {
+        // The marker counts activations of the instruction the engine
+        // injects into USER messages — without the role/type gates, a
+        // skill body that mentions the marker, an assistant reply echoing
+        // it, or a tool result containing it all counted as extra
+        // activations and inflated `/skill-doctor`'s numbers.
+        if message.get("role").and_then(Value::as_str) != Some("user") {
+            continue;
+        }
         let Some(blocks) = message.get("content").and_then(Value::as_array) else {
             continue;
         };
         for block in blocks {
+            if block.get("type").and_then(Value::as_str) != Some("text") {
+                continue;
+            }
             let Some(text) = block.get("text").and_then(Value::as_str) else {
                 continue;
             };
-            for (index, _) in text.match_indices(MARKER) {
+            // At most the FIRST marker per block: the activation
+            // instruction embeds the whole skill body after the marker, so
+            // later occurrences inside that body are content, not
+            // activations.
+            if let Some(index) = text.find(MARKER) {
                 let rest = &text[index + MARKER.len()..];
-                let name = rest
-                    .split(|c: char| c.is_whitespace())
-                    .next()
-                    .unwrap_or_default()
-                    .trim();
+                let name = rest.split_whitespace().next().unwrap_or("");
                 if !name.is_empty() {
                     names.push(name.to_string());
                 }

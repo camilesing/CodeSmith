@@ -56,7 +56,12 @@ impl PathIndex {
         Self {
             root,
             depth,
-            limit,
+            // `depth == 0` means unlimited, but `limit == 0` would break
+            // the walk on its first tick and silently disable ALL
+            // @-completion (a `mention_menu_limit = 0` in config); a zero
+            // or misconfigured value degrades to the smallest workable
+            // menu instead of turning the feature off.
+            limit: limit.max(1),
             built: None,
             entries: Vec::new(),
         }
@@ -72,7 +77,7 @@ impl PathIndex {
         let mut hits: Vec<Entry> = self
             .entries
             .iter()
-            .filter(|entry| entry.path.starts_with(partial))
+            .filter(|entry| starts_with_ci(&entry.path, partial))
             .cloned()
             .collect();
         hits.truncate(self.limit);
@@ -134,9 +139,37 @@ fn walk(root: &Path, depth: usize, _limit: usize) -> Vec<Entry> {
     entries
 }
 
+/// Case-insensitive prefix test. The plain byte `starts_with` returned
+/// zero hits for `Src/` or `readme` on case-insensitive filesystems (the
+/// default on macOS and Windows) even though the shell/@-mention
+/// resolution feeding completion finds the file; the on-disk casing is
+/// still what gets completed, so there is no ambiguity cost.
+fn starts_with_ci(path: &str, partial: &str) -> bool {
+    let mut path_chars = path.chars().flat_map(char::to_lowercase);
+    partial
+        .chars()
+        .flat_map(char::to_lowercase)
+        .all(|c| path_chars.next() == Some(c))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prefix_match_is_case_insensitive() {
+        assert!(starts_with_ci("README.md", "readme"));
+        assert!(starts_with_ci("src/main.rs", "Src/"));
+        assert!(!starts_with_ci("src/main.rs", "main"));
+    }
+
+    #[test]
+    fn zero_limit_degrades_to_one_instead_of_disabling_completion() {
+        let dir = fixture();
+        let mut index = PathIndex::new(dir.path().to_path_buf(), 6, 0);
+        let hits = index.complete("src/");
+        assert!(!hits.is_empty(), "limit 0 must not disable completion");
+    }
 
     /// A workspace with a gitignored `target/`, a nested source file, and a
     /// directory that should be offered with its `/` continuation.

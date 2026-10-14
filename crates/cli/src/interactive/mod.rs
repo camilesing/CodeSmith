@@ -78,7 +78,7 @@ pub async fn run_repl(
         crate::automation_manager::AutomationManager::default_location()?,
     ));
     let automation_cancel = tokio_util::sync::CancellationToken::new();
-    let _automation_scheduler = crate::automation_manager::spawn_scheduler(
+    let automation_scheduler = crate::automation_manager::spawn_scheduler(
         automations.clone(),
         task_manager.clone(),
         automation_cancel.clone(),
@@ -173,10 +173,15 @@ pub async fn run_repl(
     if state.hooks.has_hooks_for_event(HookEvent::SessionStart) {
         let executor = state.hooks.clone();
         let context = state.hook_context();
-        let _ = tokio::task::spawn_blocking(move || {
-            executor.execute(HookEvent::SessionStart, &context);
-        })
-        .await;
+        // Surface the worker's failure (a panicking hook executor is
+        // otherwise invisible), unlike the message_submit path which
+        // prints both JoinErrors and per-hook failures.
+        if let Err(join) =
+            tokio::task::spawn_blocking(move || executor.execute(HookEvent::SessionStart, &context))
+                .await
+        {
+            println!("{} session_start hook worker failed: {join}", "✗".red());
+        }
     }
 
     print_banner(&state);
@@ -298,7 +303,7 @@ pub async fn run_repl(
                 // draft — put the original text back (the function's own
                 // doc promise, previously defeated by `?` aborting the
                 // whole session).
-                next_prompt = Some(match open_in_editor(&draft) {
+                next_prompt = Some(match open_in_editor(&draft).await {
                     Ok(text) => text,
                     Err(err) => {
                         println!("{} editor failed, draft restored: {err}", "✗".red());
@@ -393,7 +398,7 @@ pub async fn run_repl(
             continue;
         }
 
-        let (content, mut image_paths) = extract_attachments(trimmed);
+        let (content, mut image_paths) = extract_attachments(trimmed, &state.workspace);
         image_paths.extend(
             state
                 .pending_attachments
@@ -419,6 +424,13 @@ pub async fn run_repl(
     if let Some(engine) = state.engine.as_ref() {
         let _ = engine.send(Op::Shutdown).await;
     }
+    // The automation scheduler only exits on its token — cancel it (and
+    // give it a moment to leave) so it cannot keep waking every 15s and
+    // ticking automations against managers that are shutting down. Harmless
+    // in the CLI today only because the process exits right after; any
+    // embedding or test that keeps the runtime alive would leak it.
+    automation_cancel.cancel();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), automation_scheduler).await;
     let _ = save_history(&mut editor, history_path.as_deref());
 
     // session_end hooks run before the process exits (awaited so a hook
@@ -427,10 +439,14 @@ pub async fn run_repl(
     if state.hooks.has_hooks_for_event(HookEvent::SessionEnd) {
         let executor = state.hooks.clone();
         let context = state.hook_context();
-        let _ = tokio::task::spawn_blocking(move || {
-            executor.execute(HookEvent::SessionEnd, &context);
-        })
-        .await;
+        // Same observability as SessionStart: a hook that flushes state on
+        // the way out must not fail silently.
+        if let Err(join) =
+            tokio::task::spawn_blocking(move || executor.execute(HookEvent::SessionEnd, &context))
+                .await
+        {
+            println!("{} session_end hook worker failed: {join}", "✗".red());
+        }
     }
 
     println!("{}", "bye.".dimmed());
@@ -910,7 +926,16 @@ async fn print_task_list(state: &ReplState) {
 /// here, so nothing is holding raw mode. A missing editor binary is a
 /// printed notice, not a lost draft — the caller puts the original text
 /// back.
-fn open_in_editor(draft: &str) -> Result<String> {
+async fn open_in_editor(draft: &str) -> Result<String> {
+    // The editor round-trip is minutes of blocking time (plus fs IO
+    // around it) — it must not sit on the async runtime worker.
+    let draft = draft.to_string();
+    tokio::task::spawn_blocking(move || open_in_editor_blocking(&draft))
+        .await
+        .context("editor task failed")?
+}
+
+fn open_in_editor_blocking(draft: &str) -> Result<String> {
     use std::io::Write as _;
 
     let editor = std::env::var("VISUAL")
@@ -932,7 +957,13 @@ fn open_in_editor(draft: &str) -> Result<String> {
     file.flush().context("flushing the editor buffer")?;
     let path = file.path().to_path_buf();
 
-    let status = std::process::Command::new(&editor)
+    // $VISUAL/$EDITOR commonly carries arguments ("code --wait", "vim -f");
+    // `Command::new` with the whole string tries to exec a binary
+    // literally named "code --wait" and fails to spawn.
+    let mut editor_words = editor.split_whitespace();
+    let program = editor_words.next().unwrap_or("vi");
+    let status = std::process::Command::new(program)
+        .args(editor_words)
         .arg(&path)
         .status()
         .with_context(|| format!("running {editor}"))
@@ -1115,20 +1146,31 @@ fn save_history(editor: &mut ReplEditor, history: Option<&std::path::Path>) -> R
 }
 
 /// Split `@path` image attachments out of the input line. Non-image
-/// tokens and non-existent paths stay in the message text.
-fn extract_attachments(input: &str) -> (String, Vec<String>) {
+/// tokens and non-existent paths stay in the message text. Relative paths
+/// resolve against the session workspace (the REPL can be started with a
+/// workspace other than the process CWD); the resolved path is what gets
+/// attached.
+fn extract_attachments(input: &str, workspace: &std::path::Path) -> (String, Vec<String>) {
     let mut image_paths = Vec::new();
     let mut words = Vec::new();
     for token in input.split_whitespace() {
-        if let Some(path) = token.strip_prefix('@')
-            && let Some(extension) = path.rsplit('.').next().map(str::to_ascii_lowercase)
-            && IMAGE_EXTENSIONS.contains(&extension.as_str())
-            && std::path::Path::new(path).is_file()
-        {
-            image_paths.push(path.to_string());
-        } else {
-            words.push(token);
+        if let Some(path) = token.strip_prefix('@') {
+            let resolved = if std::path::Path::new(path).is_absolute() {
+                std::path::PathBuf::from(path)
+            } else {
+                workspace.join(path)
+            };
+            let matches_image = path
+                .rsplit('.')
+                .next()
+                .map(|ext| IMAGE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+                .unwrap_or(false);
+            if matches_image && resolved.is_file() {
+                image_paths.push(resolved.display().to_string());
+                continue;
+            }
         }
+        words.push(token);
     }
     (words.join(" "), image_paths)
 }

@@ -131,10 +131,17 @@ async fn upload_gist(tmp: tempfile::NamedTempFile) -> Result<String, String> {
         return Err(format!("`gh gist create` failed: {stderr}"));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if stdout.is_empty() {
-        return Err("`gh gist create` returned no output".to_string());
-    }
+    // `gh` can print warnings/notices alongside the URL (GH_DEBUG,
+    // extension wrappers, newer gh versions) — echoing raw stdout would
+    // hand that noise back as the share "URL". Keep the last line that
+    // actually looks like a gist URL.
+    let url = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("http") && line.contains("gist"))
+        .next_back()
+        .ok_or_else(|| "`gh gist create` did not print a gist URL".to_string())?
+        .to_string();
 
-    Ok(stdout)
+    Ok(url)
 }
