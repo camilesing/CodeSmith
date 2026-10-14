@@ -178,36 +178,41 @@ pub fn parse_tool_calls(text: &str) -> ParseResult {
         clean_text = clean_text.replace(full_match, "");
     }
 
-    // Also parse standalone <invoke> blocks that might not be wrapped
+    // Also parse standalone <invoke> blocks that might not be wrapped.
+    // Collect matches first so the loop can mutate `clean_text` without
+    // cloning the full text per capture; each capture then removes exactly
+    // its own occurrence.
     let invoke_regex = get_invoke_regex();
-    for cap in invoke_regex.captures_iter(&clean_text.clone()) {
-        let (Some(full_match), Some(tool_name), Some(inner)) = (cap.get(0), cap.get(1), cap.get(2))
-        else {
-            continue;
-        };
-        let full_match = full_match.as_str();
-        let tool_name = tool_name.as_str();
-        let inner = inner.as_str();
-
-        let args = parse_xml_parameters(inner);
+    let invoke_matches: Vec<_> = invoke_regex
+        .captures_iter(&clean_text)
+        .map(|cap| (cap[0].to_string(), cap[1].to_string(), cap[2].to_string()))
+        .collect();
+    for (full_match, tool_name, inner) in invoke_matches {
+        let args = parse_xml_parameters(&inner);
         id_counter += 1;
         tool_calls.push(ParsedToolCall {
-            name: tool_name.to_string(),
+            name: tool_name,
             args,
             id: format!("xml_tool_{id_counter}"),
         });
 
-        clean_text = clean_text.replace(full_match, "");
+        clean_text = clean_text.replacen(&full_match, "", 1);
     }
 
-    // Clean up extra whitespace and empty lines
-    clean_text = clean_text
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
-        .trim()
-        .to_string();
+    // Clean up whitespace: collapse runs of 2+ blank lines into one and trim
+    // leading/trailing blank lines, preserving the single blank lines that
+    // separate markdown paragraphs.
+    let mut cleaned = String::with_capacity(clean_text.len());
+    let mut prev_blank = true; // skip leading blank lines
+    for line in clean_text.lines() {
+        let blank = line.trim().is_empty();
+        if !blank || !prev_blank {
+            cleaned.push_str(line);
+            cleaned.push('\n');
+        }
+        prev_blank = blank;
+    }
+    let clean_text = cleaned.trim_end().to_string();
 
     ParseResult {
         clean_text,
@@ -486,7 +491,7 @@ pub fn has_tool_call_markers(text: &str) -> bool {
     text.contains("[TOOL_CALL]")
         || text.contains("<codesmith:tool_call")
         || text.contains("<tool_call")
-        || text.contains("<invoke ")
+        || text.contains("<invoke")
 }
 
 #[cfg(test)]

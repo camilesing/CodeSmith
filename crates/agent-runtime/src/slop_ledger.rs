@@ -487,11 +487,13 @@ impl SlopLedger {
                 let source = e.source_links.first().map(|s| s.as_str()).unwrap_or("-");
                 let title = truncate_str(&e.title, 60);
                 out.push_str(&format!(
-                    "| {} | {:?} | {:?} | {:?} | {title} | {source} |\n",
+                    "| {} | {:?} | {:?} | {:?} | {} | {} |\n",
                     short_id(&e.id),
                     e.severity,
                     e.confidence,
-                    e.status
+                    e.status,
+                    md_table_cell(&title),
+                    md_table_cell(source),
                 ));
             }
             out.push('\n');
@@ -635,6 +637,10 @@ impl ToolSpec for SlopLedgerAppendTool {
         let entries_val = input
             .get("entries")
             .and_then(|v| v.as_array())
+            // `[]` would append nothing yet still save the file and report
+            // "Appended 0 slop ledger entries (N total): " with a dangling
+            // colon — reject it like the schema text says.
+            .filter(|a| !a.is_empty())
             .ok_or_else(|| ToolError::invalid_input("'entries' must be a non-empty array"))?;
 
         let mut appended = Vec::new();
@@ -997,6 +1003,14 @@ fn truncate_str(s: &str, max_chars: usize) -> String {
     format!("{truncated}…")
 }
 
+/// Escape a value destined for a markdown pipe-table cell: a raw `|` would
+/// add a phantom column and a newline would break the row. The `{:?}`
+/// columns (severity/confidence/status) are quoted by Debug and need no
+/// escaping.
+fn md_table_cell(s: &str) -> String {
+    s.replace('|', "\\|").replace(['\n', '\r'], " ")
+}
+
 /// Return a display-safe short id without assuming byte offsets are char
 /// boundaries. Ledger ids are normally UUIDs, but imported or hand-edited
 /// ledgers may contain shorter or non-ASCII ids.
@@ -1356,14 +1370,15 @@ mod tests {
     fn export_markdown() {
         let (_tmp, mut ledger) = temp_ledger();
 
+        // Pipe and newline in title/source must not corrupt the table row.
         let mut entry = SlopEntry::new(
             SlopBucket::StaleDocs,
             SlopSeverity::Medium,
             SlopConfidence::High,
-            "Outdated README".into(),
+            "Outdated README | flags\ncrossed lines".into(),
             "The README references removed flags.".into(),
         );
-        entry.source_links = vec!["README.md:42".into()];
+        entry.source_links = vec!["README.md:42 | L43".into()];
         let _ = ledger.append(vec![entry]);
 
         let md = ledger.export_markdown(Some("Test Export"), None);
@@ -1371,6 +1386,19 @@ mod tests {
         assert!(md.contains("stale_docs"));
         assert!(md.contains("Outdated README"));
         assert!(md.contains("README.md:42"));
+        // The table row carries the escaped forms: `|` as `\|`, newline as
+        // a space (these exact strings cannot come from the raw title,
+        // which has a real newline between "flags" and "crossed").
+        assert!(md.contains("Outdated README \\| flags crossed lines"));
+        assert!(md.contains("README.md:42 \\| L43"));
+        // ...and the table row still has the expected 6 cells (count pipes
+        // with the escaped `\|` pairs masked out).
+        let table_row = md
+            .lines()
+            .find(|l| l.starts_with("| ") && l.contains("Outdated README"))
+            .expect("table row for the entry");
+        let unescaped = table_row.replace("\\|", "\u{0}");
+        assert_eq!(unescaped.split('|').count(), 8); // 6 cells + 2 edge pipes
     }
 
     #[test]

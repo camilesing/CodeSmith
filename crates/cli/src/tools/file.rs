@@ -10,6 +10,9 @@ use super::spec::{
 };
 use async_trait::async_trait;
 use codesmith_agent_runtime::tools::parse_gate;
+use codesmith_agent_runtime::tools::tool_catalog::{
+    EDIT_FILE_NAME, LIST_DIR_NAME, READ_FILE_NAME, WRITE_FILE_NAME,
+};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -35,7 +38,7 @@ pub struct ReadFileTool;
 #[async_trait]
 impl ToolSpec for ReadFileTool {
     fn name(&self) -> &'static str {
-        "read_file"
+        READ_FILE_NAME
     }
 
     fn description(&self) -> &'static str {
@@ -479,7 +482,7 @@ pub struct WriteFileTool;
 #[async_trait]
 impl ToolSpec for WriteFileTool {
     fn name(&self) -> &'static str {
-        "write_file"
+        WRITE_FILE_NAME
     }
 
     fn description(&self) -> &'static str {
@@ -604,7 +607,7 @@ pub struct EditFileTool;
 #[async_trait]
 impl ToolSpec for EditFileTool {
     fn name(&self) -> &'static str {
-        "edit_file"
+        EDIT_FILE_NAME
     }
 
     fn description(&self) -> &'static str {
@@ -1241,7 +1244,7 @@ const LIST_DIR_TIMEOUT: Duration = Duration::from_secs(30);
 #[async_trait]
 impl ToolSpec for ListDirTool {
     fn name(&self) -> &'static str {
-        "list_dir"
+        LIST_DIR_NAME
     }
 
     fn description(&self) -> &'static str {

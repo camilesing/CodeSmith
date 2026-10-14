@@ -204,12 +204,15 @@ impl ToolRegistryBuilder {
     #[must_use]
     pub fn with_shell_tools(self) -> Self {
         use super::shell::{ExecShellTool, ShellCancelTool, ShellInteractTool, ShellWaitTool};
+        use codesmith_agent_runtime::tools::tool_catalog::{
+            EXEC_INTERACT_NAME, EXEC_SHELL_INTERACT_NAME, EXEC_SHELL_WAIT_NAME, EXEC_WAIT_NAME,
+        };
         self.with_tool(Arc::new(ExecShellTool))
-            .with_tool(Arc::new(ShellWaitTool::new("exec_shell_wait")))
-            .with_tool(Arc::new(ShellInteractTool::new("exec_shell_interact")))
+            .with_tool(Arc::new(ShellWaitTool::new(EXEC_SHELL_WAIT_NAME)))
+            .with_tool(Arc::new(ShellInteractTool::new(EXEC_SHELL_INTERACT_NAME)))
             .with_tool(Arc::new(ShellCancelTool))
-            .with_tool(Arc::new(ShellWaitTool::new("exec_wait")))
-            .with_tool(Arc::new(ShellInteractTool::new("exec_interact")))
+            .with_tool(Arc::new(ShellWaitTool::new(EXEC_WAIT_NAME)))
+            .with_tool(Arc::new(ShellInteractTool::new(EXEC_INTERACT_NAME)))
     }
 
     /// Include search tools (`grep_files`).

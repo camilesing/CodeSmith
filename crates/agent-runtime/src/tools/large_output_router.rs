@@ -188,13 +188,29 @@ impl LargeOutputRouter {
             top_p: None,
         };
 
-        let response = tokio::time::timeout(
+        let response = match tokio::time::timeout(
             std::time::Duration::from_secs(30),
             utility.client.create_message(request),
         )
         .await
-        .ok()?
-        .ok()?;
+        {
+            Ok(Ok(response)) => response,
+            Ok(Err(err)) => {
+                tracing::warn!(
+                    tool = tool_name,
+                    error = %err,
+                    "utility-model synthesis failed; falling back to truncation preview"
+                );
+                return None;
+            }
+            Err(_elapsed) => {
+                tracing::warn!(
+                    tool = tool_name,
+                    "utility-model synthesis timed out after 30s; falling back to truncation preview"
+                );
+                return None;
+            }
+        };
 
         crate::cost_status::report(&utility.model, &response.usage);
 
@@ -265,19 +281,27 @@ impl WorkshopVariables {
         self.last_tool_name = tool_name.to_string();
     }
 
-    /// Retrieve and clear the stored raw output (consume semantics so the
-    /// variable is not accidentally promoted twice).
+    /// Peek at the stored raw output without consuming it, so a failed
+    /// promotion can be retried.
     ///
     /// Called by the `promote_to_context` tool (not yet wired in this PR).
     #[must_use]
     #[allow(dead_code)] // consumed by promote_to_context tool in follow-up
-    pub fn take_raw(&mut self) -> Option<(String, String)> {
+    pub fn peek_raw(&self) -> Option<(&str, &str)> {
         if self.last_tool_result.is_empty() {
             return None;
         }
-        let content = std::mem::take(&mut self.last_tool_result);
-        let name = std::mem::take(&mut self.last_tool_name);
-        Some((name, content))
+        Some((&self.last_tool_name, &self.last_tool_result))
+    }
+
+    /// Clear the stored raw output; callers should only invoke this once
+    /// promotion has succeeded, so a failed promotion is never left
+    /// unrecoverable and a second store cannot silently overwrite a value
+    /// the caller has not yet consumed.
+    #[allow(dead_code)] // consumed by promote_to_context tool in follow-up
+    pub fn clear_raw(&mut self) {
+        self.last_tool_result.clear();
+        self.last_tool_name.clear();
     }
 }
 
@@ -379,17 +403,23 @@ mod tests {
     }
 
     #[test]
-    fn workshop_variables_store_and_take() {
+    fn workshop_variables_store_peek_clear() {
         let mut vars = WorkshopVariables::default();
-        assert!(vars.take_raw().is_none());
+        assert!(vars.peek_raw().is_none());
 
         vars.store_raw("read_file", "raw content here");
-        let taken = vars.take_raw().expect("should have content");
-        assert_eq!(taken.0, "read_file");
-        assert_eq!(taken.1, "raw content here");
+        let (name, content) = vars.peek_raw().expect("should have content");
+        assert_eq!(name, "read_file");
+        assert_eq!(content, "raw content here");
 
-        // Second take is empty — consume semantics
-        assert!(vars.take_raw().is_none());
+        // Peek is non-consuming: repeated peeks see the same value until
+        // the caller clears after a successful promotion.
+        let (name, content) = vars.peek_raw().expect("peek does not consume");
+        assert_eq!(name, "read_file");
+        assert_eq!(content, "raw content here");
+
+        vars.clear_raw();
+        assert!(vars.peek_raw().is_none());
     }
 
     #[test]

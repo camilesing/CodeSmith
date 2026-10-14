@@ -450,13 +450,12 @@ pub fn detect_denial(exit_code: i32, stderr: &str) -> bool {
         return false;
     }
 
-    // Common sandbox denial messages
-    let denial_patterns = [
-        "Operation not permitted",
-        "sandbox-exec",
-        "deny(",
-        "Sandbox: ",
-    ];
+    // Common sandbox denial messages. The bare binary name "sandbox-exec"
+    // is deliberately absent — it over-matched any stderr line mentioning
+    // the binary (e.g. a usage message); `SandboxManager::was_denied`
+    // already gates on the command having actually run under sandbox-exec,
+    // so EPERM ("Operation not permitted") stays corroborated.
+    let denial_patterns = ["Operation not permitted", "deny(", "Sandbox: "];
 
     denial_patterns.iter().any(|p| stderr.contains(p))
 }

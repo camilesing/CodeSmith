@@ -38,6 +38,17 @@ pub fn default_auto_approve() -> bool {
 /// control characters other than newline/tab. Shared by `TaskSummary::from`
 /// and the manager's timeline / tool-call / result summarization.
 pub fn summarize_text(text: &str, limit: usize) -> String {
+    // Tiny budgets cannot fit the 3-char "..." suffix: `take` saturates to
+    // zero and any non-empty input would return "..." — 3 chars, over a
+    // limit of 0..=3. Return the first `limit` kept chars verbatim (same
+    // control-char filter as the loop below) instead.
+    if limit <= 3 {
+        return text
+            .chars()
+            .filter(|&c| !c.is_control() || c == '\n' || c == '\t')
+            .take(limit)
+            .collect();
+    }
     let take = limit.saturating_sub(3);
     let mut count = 0;
     let mut out = String::new();

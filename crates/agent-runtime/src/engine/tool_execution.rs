@@ -175,7 +175,7 @@ impl Engine {
                         "tool '{tool_name}' is not registered"
                     )));
                 };
-                if !metadata.is_read_only {
+                if !metadata.is_read_only() {
                     return Err(ToolError::invalid_input(format!(
                         "Tool '{tool_name}' is not read-only and cannot run in parallel"
                     )));

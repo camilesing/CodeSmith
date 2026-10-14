@@ -17,6 +17,9 @@ use similar::TextDiff;
 /// can skip the "no changes" header. The output uses git-style `--- a/...`
 /// / `+++ b/...` headers and three lines of context — matching the format
 /// the TUI's `diff_render::render_diff` already understands.
+///
+/// Layout contract: the first `@@` hunk header is always line 3 of the
+/// output; the TUI diff detector (#505) relies on that position.
 #[must_use]
 pub fn make_unified_diff(path: &str, old: &str, new: &str) -> String {
     if old == new {
@@ -111,15 +114,38 @@ mod tests {
     }
 
     #[test]
+    fn deletion_renders_against_empty_new() {
+        let old = "first line\nsecond line\n";
+        let diff = make_unified_diff("gone.txt", old, "");
+        assert!(diff.contains("--- a/gone.txt"), "{diff}");
+        assert!(diff.contains("+++ b/gone.txt"), "{diff}");
+        assert!(diff.contains("-first line"), "{diff}");
+        assert!(diff.contains("-second line"), "{diff}");
+    }
+
+    #[test]
+    fn missing_trailing_newline_is_handled() {
+        let old = "alpha\n";
+        let new = "alpha\nbeta"; // no trailing newline
+        let diff = make_unified_diff("foo.txt", old, new);
+        assert!(diff.contains("+beta"), "{diff}");
+        assert!(diff.lines().any(|l| l.starts_with("@@")), "{diff}");
+        // `similar` emits the git-style missing-newline hint after the
+        // unterminated change; the TUI renderer's diff gutter (#505) must
+        // tolerate it as a body line.
+        assert!(diff.contains("\\ No newline at end of file"), "{diff}");
+    }
+
+    #[test]
     fn diff_contains_hunk_header_so_tui_renders_it() {
-        // The TUI detector scans the first 5 lines for `@@`. Make sure the
-        // unified diff puts a hunk header within that window so the
-        // diff-aware renderer kicks in (#505).
+        // Deterministic layout contract (#505): `--- a/...` (line 1),
+        // `+++ b/...` (line 2), first `@@` hunk header at line 3 — the TUI's
+        // output_looks_like_diff scans a 5-line window, so the header must
+        // stay at exactly this position.
         let diff = make_unified_diff("foo.txt", "a\n", "b\n");
         let head: Vec<&str> = diff.lines().take(5).collect();
-        assert!(
-            head.iter().any(|line| line.starts_with("@@")),
-            "expected hunk header in first 5 lines; got {head:?}"
-        );
+        assert_eq!(head.first().copied(), Some("--- a/foo.txt"), "{head:?}");
+        assert_eq!(head.get(1).copied(), Some("+++ b/foo.txt"), "{head:?}");
+        assert!(head.get(2).is_some_and(|l| l.starts_with("@@")), "{head:?}");
     }
 }

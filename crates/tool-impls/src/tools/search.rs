@@ -8,6 +8,7 @@ use codesmith_agent_runtime::tools::spec::{
     ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_bool, optional_str,
     optional_u64, required_str,
 };
+use codesmith_agent_runtime::tools::tool_catalog::GREP_FILES_NAME;
 use grep_matcher::Matcher;
 use grep_regex::RegexMatcherBuilder;
 use serde::{Deserialize, Serialize};
@@ -49,7 +50,7 @@ pub struct GrepFilesTool;
 #[async_trait]
 impl ToolSpec for GrepFilesTool {
     fn name(&self) -> &'static str {
-        "grep_files"
+        GREP_FILES_NAME
     }
 
     fn description(&self) -> &'static str {

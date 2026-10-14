@@ -20,10 +20,10 @@ mod tests {
     // The tests exercise the runtime compaction engine broadly (state
     // submodules, config, planner); import its full surface here. The glob
     // is cfg(test)-scoped so it never leaks into the bin's paths.
-    use codesmith_agent_runtime::compaction::*;
     use crate::llm_client::mock::MockLlmClient;
     use crate::llm_client::{LlmClient, StreamEventBox};
     use crate::models::{MessageResponse, Usage};
+    use codesmith_agent_runtime::compaction::*;
     use serde_json::json;
 
     // Imports that only the tests below consume. They live inside the

@@ -69,6 +69,9 @@ semver = "1.0.28"
 thiserror = "2.0"
 tokio = { version = "1.49.0", features = ["full"] }
 toml = "0.9.7"
+# Format-preserving TOML editing (comments/whitespace/key order survive a
+# single-key rewrite, e.g. settings_file's locale write).
+toml_edit = "0.23"
 sha2 = "0.10"
 ignore = "0.4"
 # ripgrep engine crates: `grep_files` walks with `ignore` and matches with

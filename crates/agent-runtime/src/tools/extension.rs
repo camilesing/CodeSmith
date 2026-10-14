@@ -52,6 +52,11 @@ impl ToolSpec for ExtensionToolSpecAdapter {
         if schema.get("type").and_then(|v| v.as_str()) == Some("object") {
             schema
         } else {
+            tracing::warn!(
+                "extension tool '{}' declared a non-object-rooted input schema; \
+                 substituting a bare object schema (declared properties/required dropped)",
+                self.tool.name()
+            );
             serde_json::json!({ "type": "object" })
         }
     }
@@ -62,15 +67,14 @@ impl ToolSpec for ExtensionToolSpecAdapter {
         match self.tool.execute(input, &*self.ctx).await {
             Ok(result) => Ok(result),
             Err(err) => {
-                // Map the extension error back to a `ToolError` execution
-                // failure so the agent loop surfaces it as a normal tool
-                // failure (not a crash). The extension error's message is
-                // preserved; `StaleContext` gets a fixed string to mirror
-                // the guard's Display rendering.
+                // Forward the extension error to the agent loop as a normal tool
+                // failure. `Tool { message, .. }` forwards the inner message verbatim —
+                // `From<ToolError>` leaves `tool` empty, so rendering the wrapper would
+                // add "extension tool '' failed:" noise on top of the original text.
+                // `StaleContext` renders via its own Display, which tells the model the
+                // runtime was invalidated (not worth retrying).
                 let message = match err {
-                    codesmith_agent::extension::ExtensionError::StaleContext => {
-                        "extension context is stale".to_string()
-                    }
+                    codesmith_agent::extension::ExtensionError::Tool { message, .. } => message,
                     other => other.to_string(),
                 };
                 Err(ToolError::execution_failed(message))
@@ -88,6 +92,13 @@ impl ToolSpec for ExtensionToolSpecAdapter {
 /// they are NOT added to any subagent's tool-subset basis (§4b — subagents
 /// build their own fresh built-in-only `ToolRegistry` and never hold dylib
 /// `Arc`s; the exclusion is structural, not a runtime guard).
+///
+/// Torn-read note: `bound_context()` and `bound_tools()` lock the runner's
+/// context and tools registries separately (no atomic snapshot —
+/// `bind_core` swaps the context *before* flushing pending tools). Callers
+/// must serialize this call against `bind_core` / reload / re-register;
+/// the host's per-turn dispatcher build satisfies this by running on the
+/// engine task, off the bind path.
 pub fn register_extension_tools(registry: &mut ToolRegistry, runner: &ExtensionRunner) {
     let Some(ctx) = runner.bound_context() else {
         // No bound context yet (pre-bind_core) → nothing to adapt.

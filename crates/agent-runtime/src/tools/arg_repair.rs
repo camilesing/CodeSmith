@@ -57,7 +57,13 @@ pub fn repair(raw: &str) -> Result<Value, ArgRepairError> {
     if let Ok(v) = serde_json::from_str(&s) {
         return Ok(v);
     }
-    // Fallback: empty object
+    // Fallback: empty object. Log only the length — the raw model tool
+    // arguments may be sensitive and must never reach the logs.
+    tracing::debug!(
+        target: "codesmith_agent_runtime::arg_repair",
+        "arg repair ladder exhausted after {} chars; falling back to empty object",
+        raw.len()
+    );
     Ok(Value::Object(Map::new()))
 }
 

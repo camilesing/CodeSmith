@@ -216,6 +216,11 @@ impl Session {
         mcp_config_path: PathBuf,
     ) -> Self {
         // Load project context from AGENTS.md, CLAUDE.md, etc.
+        // NOTE: blocking filesystem I/O — walks parent dirs reading
+        // AGENTS.md/CLAUDE.md — called from async paths (cli `run_repl` →
+        // `spawn_engine`/`build_engine`). One-time and bounded today; if it
+        // grows, async call sites should offload it via
+        // `tokio::task::spawn_blocking`.
         let project_context = load_project_context_with_parents(&workspace);
         let has_context = project_context.has_instructions();
 
@@ -376,9 +381,12 @@ pub fn rebuild_recent_read_files_from_messages(
                 ..
             } = block
                 // The production record site (executor batches) always writes
-                // `Some(!success)`; `None` stays accepted as a defensive /
-                // legacy-transcript shape.
-                && matches!(is_error, None | Some(false))
+                // `Some(!success)`. Unlike the live observe site, this
+                // transcript rebuild requires an explicit `Some(false)`:
+                // legacy transcripts that omitted the flag on FAILED reads
+                // would otherwise leak error text back in as successful
+                // previews. A `None` result here is simply skipped.
+                && matches!(is_error, Some(false))
                 && let Some(input) = calls.get(tool_use_id)
             {
                 // Persisted transcripts can carry the tool payload in

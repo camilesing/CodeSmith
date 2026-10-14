@@ -371,6 +371,17 @@ impl AutomationManager {
     ) -> Result<AutomationRecord> {
         let mut existing = self.get_automation(id)?;
 
+        // Reject a no-op patch before it bumps `updated_at` and rewrites the
+        // file — a silent touch misleads users scanning `updated_at`.
+        if req.name.is_none()
+            && req.prompt.is_none()
+            && req.rrule.is_none()
+            && req.cwds.is_none()
+            && req.status.is_none()
+        {
+            bail!("update request must set at least one field");
+        }
+
         if let Some(name) = req.name {
             if name.trim().is_empty() {
                 bail!("Automation name cannot be empty");
@@ -1029,5 +1040,34 @@ mod tests {
 
         assert!(!path.exists());
         assert!(!runs_dir.exists());
+    }
+
+    #[test]
+    fn rejects_all_none_update_request() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let manager = AutomationManager::open(tempdir.path().to_path_buf()).expect("manager");
+
+        let created = manager
+            .create_automation(CreateAutomationRequest {
+                name: "Keep me".to_string(),
+                prompt: "prompt".to_string(),
+                rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
+                cwds: Vec::new(),
+                status: Some(AutomationStatus::Active),
+            })
+            .expect("create");
+
+        let before = manager.get_automation(&created.id).expect("read back");
+        let err = manager
+            .update_automation(&created.id, UpdateAutomationRequest::default())
+            .expect_err("all-None update must be rejected");
+        assert!(
+            err.to_string().contains("at least one field"),
+            "unexpected error: {err}"
+        );
+
+        // The no-op must not bump `updated_at` or otherwise touch the record.
+        let after = manager.get_automation(&created.id).expect("read back");
+        assert_eq!(after.updated_at, before.updated_at);
     }
 }

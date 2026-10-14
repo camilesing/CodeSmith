@@ -27,6 +27,9 @@ pub const fn default_run_schema_version() -> u32 {
 #[serde(rename_all = "snake_case")]
 pub enum AutomationStatus {
     Active,
+    // Forward-compat fallback: an unknown status in a persisted (possibly
+    // newer-schema) file deserializes as Paused so it never auto-executes.
+    #[serde(other)]
     Paused,
 }
 
@@ -36,8 +39,12 @@ pub enum AutomationRunStatus {
     Queued,
     Running,
     Completed,
-    Failed,
     Canceled,
+    // Forward-compat fallback: an unknown run status deserializes as a
+    // terminal Failed so reconcile logic never retries it. (Serde requires
+    // the `other` variant to be last.)
+    #[serde(other)]
+    Failed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +108,11 @@ pub struct CreateAutomationRequest {
     pub status: Option<AutomationStatus>,
 }
 
+/// Patch semantics: every field is optional; `Some` means "set/replace".
+/// Empty strings for `name`/`prompt` are rejected by the receivers;
+/// `Some(Vec::new())` for `cwds` clears the list (an empty cwd list means
+/// runs default to workspace `None`); an all-`None` request is rejected by
+/// the canonical receiver (`AutomationManager::update_automation`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UpdateAutomationRequest {
     pub name: Option<String>,

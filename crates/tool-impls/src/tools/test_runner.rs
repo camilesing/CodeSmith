@@ -15,6 +15,7 @@ use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_bool, optional_str,
 };
+use codesmith_agent_runtime::tools::tool_catalog::RUN_TESTS_NAME;
 
 use codesmith_agent_runtime::dependencies::ExternalTool;
 
@@ -40,7 +41,7 @@ struct RunTestsOutput {
 #[async_trait]
 impl ToolSpec for RunTestsTool {
     fn name(&self) -> &'static str {
-        "run_tests"
+        RUN_TESTS_NAME
     }
 
     fn description(&self) -> &'static str {

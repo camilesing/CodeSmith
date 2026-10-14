@@ -16,6 +16,7 @@ use crate::config::SearchProvider;
 use crate::network_policy::{Decision, NetworkPolicyDecider};
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose};
+use codesmith_agent_runtime::tools::tool_catalog::WEB_SEARCH_NAME;
 use regex::Regex;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -136,7 +137,7 @@ pub struct WebSearchTool;
 #[async_trait]
 impl ToolSpec for WebSearchTool {
     fn name(&self) -> &'static str {
-        "web_search"
+        WEB_SEARCH_NAME
     }
 
     fn description(&self) -> &'static str {

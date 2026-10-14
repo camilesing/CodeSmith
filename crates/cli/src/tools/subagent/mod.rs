@@ -41,6 +41,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
+use codesmith_agent_runtime::tools::tool_catalog::AGENT_OPEN_NAME;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tokio::{sync::mpsc, task::JoinHandle};
@@ -1973,7 +1974,7 @@ impl AgentOpenTool {
 #[async_trait]
 impl ToolSpec for AgentOpenTool {
     fn name(&self) -> &'static str {
-        "agent_open"
+        AGENT_OPEN_NAME
     }
 
     fn description(&self) -> &'static str {
@@ -5100,7 +5101,10 @@ async fn run_subagent(
             tool_results.push(ContentBlock::ToolResult {
                 tool_use_id: tool_id,
                 content: result,
-                is_error: None,
+                // Persist the explicit success/error flag: the transcript
+                // rebuild of `recent_read_files` only projects `Some(false)`
+                // results, so `None` would drop successful read previews.
+                is_error: Some(!tool_ok),
                 content_blocks: None,
             });
         }

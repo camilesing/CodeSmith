@@ -304,66 +304,86 @@ pub async fn install_with_registry(
     hasher.update(&bytes);
     let checksum = format!("{:x}", hasher.finalize());
 
-    let staged = stage_tarball(&bytes, skills_dir, max_size)?;
+    // Everything below is blocking I/O (gzip decode, directory renames,
+    // marker write) — run it on the blocking pool instead of stalling the
+    // async runtime's worker threads.
+    let skills_dir = skills_dir.to_path_buf();
+    let marker_spec = source_spec_string(&source);
+    let outcome = tokio::task::spawn_blocking(move || -> Result<InstallOutcome> {
+        let staged = stage_tarball(&bytes, &skills_dir, max_size)?;
 
-    // Move the staged dir into its final location. If `update` is set and the
-    // destination exists, replace it; otherwise reject.
-    let final_path = skills_dir.join(&staged.skill_name);
-    if final_path.exists() {
-        if !update {
-            // Clean up the staging dir before returning the error.
-            let _ = fs::remove_dir_all(&staged.staged_path);
-            return Err(InstallError::AlreadyInstalled(staged.skill_name).into());
-        }
-        // Best-effort backup-then-replace; on failure we restore the original.
-        // Hidden name so discovery never surfaces a leftover `.bak/`.
-        let backup = skills_dir.join(format!(".{}.bak", staged.skill_name));
-        // If a previous failed update left a stale `.bak/`, drop it.
-        if backup.exists() {
-            fs::remove_dir_all(&backup).ok();
-        }
-        fs::rename(&final_path, &backup).with_context(|| {
-            format!(
-                "failed to backup existing skill at {}",
-                final_path.display()
-            )
-        })?;
-        if let Err(err) = fs::rename(&staged.staged_path, &final_path) {
-            // Roll back: restore the backup so the user isn't left with an
-            // empty skill directory.
-            fs::rename(&backup, &final_path).ok();
-            return Err(err).context("failed to install staged skill");
-        }
-        fs::remove_dir_all(&backup).ok();
-    } else {
-        if let Some(parent) = final_path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!("failed to create skills directory {}", parent.display())
+        // Write the provenance marker into the STAGED tree before the final
+        // rename. `extract_into` refuses tarball-supplied
+        // `.installed-from`/`.trusted` markers, so this write is the only
+        // way the marker can appear — unforgeable by the artifact — and the
+        // rename becomes the single atomic commit point. A marker-write
+        // failure here cleans up the staging dir and never touches the
+        // installed (or previous) version, instead of bricking a freshly
+        // renamed skill that update/uninstall/trust can no longer locate.
+        let marker_body = serde_json::json!({
+            "spec": marker_spec,
+            "url": source_url,
+            "checksum": checksum,
+        })
+        .to_string();
+        fs::write(staged.staged_path.join(INSTALLED_FROM_MARKER), &marker_body).with_context(
+            || {
+                format!(
+                    "failed to write {} marker for skill {}",
+                    INSTALLED_FROM_MARKER, staged.skill_name
+                )
+            },
+        )?;
+
+        // Move the staged dir into its final location. If `update` is set and the
+        // destination exists, replace it; otherwise reject.
+        let final_path = skills_dir.join(&staged.skill_name);
+        if final_path.exists() {
+            if !update {
+                // Clean up the staging dir before returning the error.
+                let _ = fs::remove_dir_all(&staged.staged_path);
+                return Err(InstallError::AlreadyInstalled(staged.skill_name).into());
+            }
+            // Best-effort backup-then-replace; on failure we restore the original.
+            // Hidden name so discovery never surfaces a leftover `.bak/`.
+            let backup = skills_dir.join(format!(".{}.bak", staged.skill_name));
+            // If a previous failed update left a stale `.bak/`, drop it.
+            if backup.exists() {
+                fs::remove_dir_all(&backup).ok();
+            }
+            fs::rename(&final_path, &backup).with_context(|| {
+                format!(
+                    "failed to backup existing skill at {}",
+                    final_path.display()
+                )
             })?;
+            if let Err(err) = fs::rename(&staged.staged_path, &final_path) {
+                // Roll back: restore the backup so the user isn't left with an
+                // empty skill directory.
+                fs::rename(&backup, &final_path).ok();
+                return Err(err).context("failed to install staged skill");
+            }
+            fs::remove_dir_all(&backup).ok();
+        } else {
+            if let Some(parent) = final_path.parent() {
+                fs::create_dir_all(parent).with_context(|| {
+                    format!("failed to create skills directory {}", parent.display())
+                })?;
+            }
+            fs::rename(&staged.staged_path, &final_path)
+                .context("failed to install staged skill")?;
         }
-        fs::rename(&staged.staged_path, &final_path).context("failed to install staged skill")?;
-    }
 
-    // Write the marker last so a partial install never leaves a stale
-    // .installed-from on disk.
-    let marker_body = serde_json::json!({
-        "spec": source_spec_string(&source),
-        "url": source_url,
-        "checksum": checksum,
+        Ok(InstallOutcome::Installed(InstalledSkill {
+            name: staged.skill_name,
+            path: final_path,
+            source_checksum: checksum,
+        }))
     })
-    .to_string();
-    fs::write(final_path.join(INSTALLED_FROM_MARKER), marker_body).with_context(|| {
-        format!(
-            "failed to write {} marker for skill {}",
-            INSTALLED_FROM_MARKER, staged.skill_name
-        )
-    })?;
+    .await
+    .context("skill install task failed")??;
 
-    Ok(InstallOutcome::Installed(InstalledSkill {
-        name: staged.skill_name,
-        path: final_path,
-        source_checksum: checksum,
-    }))
+    Ok(outcome)
 }
 
 /// Re-fetch a previously installed skill and replace it on disk if the

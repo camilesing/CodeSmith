@@ -26,6 +26,7 @@ use codesmith_agent_runtime::tools::shell_output::{
     ShellSpillInfo, needs_spill, spill_full_shell_output, spillover_footer, summarize_output,
     truncate_with_meta,
 };
+use codesmith_agent_runtime::tools::tool_catalog::EXEC_SHELL_NAME;
 
 // Shell result/view data types live in the runtime crate so they can cross the
 // `Arc<dyn HostServices>` boundary once `ShellManager` is trait-erased.
@@ -379,7 +380,7 @@ pub struct ExecShellTool;
 #[async_trait]
 impl ToolSpec for ExecShellTool {
     fn name(&self) -> &'static str {
-        "exec_shell"
+        EXEC_SHELL_NAME
     }
 
     fn description(&self) -> &'static str {
@@ -628,7 +629,7 @@ impl ToolSpec for ExecShellTool {
             let backend_result = backend.exec(request).await;
 
             let (result, full_output_spill) = match backend_result {
-                Ok(output) => {
+                Ok(mut output) => {
                     let (stdout, stdout_meta) = truncate_with_meta(&output.stdout);
                     let (stderr, stderr_meta) = truncate_with_meta(&output.stderr);
                     let mut result = ShellResult {
@@ -664,13 +665,21 @@ impl ToolSpec for ExecShellTool {
                     result.sandbox_backend = Some("opensandbox".to_string());
                     // P0-2: external-sandbox runs bypass the shell manager
                     // (no task id), so spill the full backend output under a
-                    // fresh id — the elided middle stays retrievable.
+                    // fresh id — the elided middle stays retrievable. The
+                    // synchronous full-file rewrite runs on spawn_blocking
+                    // (same posture as `spill_task_full_output`) with owned
+                    // buffers moved into the closure, so the async executor
+                    // never blocks on the disk write.
                     let spill = if needs_spill(stdout_meta.original_len, stderr_meta.original_len) {
-                        spill_full_shell_output(
-                            &fresh_shell_spill_id(),
-                            &output.stdout,
-                            &output.stderr,
-                        )
+                        let stdout = std::mem::take(&mut output.stdout);
+                        let stderr = std::mem::take(&mut output.stderr);
+                        let spill_id = fresh_shell_spill_id();
+                        tokio::task::spawn_blocking(move || {
+                            spill_full_shell_output(&spill_id, &stdout, &stderr)
+                        })
+                        .await
+                        .ok()
+                        .flatten()
                     } else {
                         None
                     };

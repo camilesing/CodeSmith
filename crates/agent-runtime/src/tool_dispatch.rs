@@ -33,15 +33,29 @@ pub struct ToolMetadata {
     pub capabilities: Vec<ToolCapability>,
     /// Static approval requirement (input-independent baseline).
     pub approval_requirement: ApprovalRequirement,
-    /// Whether the tool is read-only.
-    pub is_read_only: bool,
-    /// Whether the tool is sandboxable.
-    pub is_sandboxable: bool,
     /// Whether the tool can be executed in parallel with others.
     pub supports_parallel: bool,
     /// Whether the tool should be excluded from the model-visible catalog
     /// (deferred loading).
     pub defer_loading: bool,
+}
+
+impl ToolMetadata {
+    /// Whether the tool is read-only. Mirrors `ToolSpec::is_read_only`:
+    /// `ReadOnly` capability without any `WritesFiles`/`ExecutesCode`
+    /// override.
+    #[must_use]
+    pub fn is_read_only(&self) -> bool {
+        self.capabilities.contains(&ToolCapability::ReadOnly)
+            && !self.capabilities.contains(&ToolCapability::WritesFiles)
+            && !self.capabilities.contains(&ToolCapability::ExecutesCode)
+    }
+
+    /// Whether the tool is sandboxable. Mirrors `ToolSpec::is_sandboxable`.
+    #[must_use]
+    pub fn is_sandboxable(&self) -> bool {
+        self.capabilities.contains(&ToolCapability::Sandboxable)
+    }
 }
 
 /// Per-turn tool dispatch surface.
@@ -52,8 +66,11 @@ pub struct ToolMetadata {
 /// `ToolContext` and `ToolSpec` trait on the host side.
 #[async_trait::async_trait]
 pub trait ToolDispatcher: Send + Sync {
-    /// Whether a tool with `name` is registered (canonical name).
-    fn has_tool(&self, name: &str) -> bool;
+    /// Whether a tool with `name` is registered (canonical name). The default
+    /// derives it from `metadata` — the same lookup an explicit impl would do.
+    fn has_tool(&self, name: &str) -> bool {
+        self.metadata(name).is_some()
+    }
 
     /// Resolve a non-canonical tool name to its registered canonical name.
     ///
@@ -88,7 +105,15 @@ pub trait ToolDispatcher: Send + Sync {
     /// Trust `path` for the rest of this process, so the approved call's own
     /// path check passes. Persisting it belongs to the host — the user was
     /// asked, and only a "remember" answer reaches disk.
-    fn grant_external_path(&self, _path: std::path::PathBuf) {}
+    fn grant_external_path(&self, path: std::path::PathBuf) {
+        // A dispatcher reporting an escaped path but forgetting the grant
+        // fails closed with no diagnostic; leave a trace so that gap is
+        // visible in debug logs.
+        tracing::debug!(
+            path = %path.display(),
+            "grant_external_path not overridden by dispatcher; approved path was not granted — the retried call may hit the tool's path check again"
+        );
+    }
 
     /// Validate finalized model-provided input before approval or execution.
     fn validate_input(&self, name: &str, input: &Value) -> Result<(), ToolError>;

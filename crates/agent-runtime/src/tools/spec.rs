@@ -348,6 +348,11 @@ impl ToolContext {
     }
 
     /// Create a `ToolContext` with all settings specified.
+    ///
+    /// Derived from [`Self::new`]: the parameters below override the
+    /// `new` defaults, every other field keeps them. `resolve_project_state_dir`
+    /// (used for the default notes/mcp paths in `new`) is a pure path join,
+    /// so overriding its results here has no side effects.
     #[allow(dead_code)]
     pub fn with_options(
         workspace: impl Into<PathBuf>,
@@ -355,45 +360,11 @@ impl ToolContext {
         notes_path: impl Into<PathBuf>,
         mcp_config_path: impl Into<PathBuf>,
     ) -> Self {
-        let workspace = workspace.into();
-        let shell_manager = wrap_shell_manager(new_shared_shell_manager(workspace.clone()));
-        let cwd = workspace.clone();
-        Self {
-            workspace,
-            cwd,
-            session_cwd: None,
-            shell_manager,
-            trust_mode,
-            sandbox_policy: SandboxPolicy::None,
-            notes_path: notes_path.into(),
-            mcp_config_path: mcp_config_path.into(),
-            elevated_sandbox_policy: None,
-            shell_network_denied_hint: None,
-            auto_approve: false,
-            features: Features::with_defaults(),
-            parse_gate: true,
-            state_namespace: "workspace".to_string(),
-            trusted_external_paths: TrustedExternalPaths::default(),
-            network_policy: None,
-            runtime: RuntimeToolServices::default(),
-            session_objects: None,
-            cancel_token: None,
-            sandbox_backend: None,
-            sandbox_runtime: SandboxRuntimeConfig::default(),
-            memory_path: None,
-            memory_dir: None,
-            agent_memory_dir: None,
-            agent_memory_agent_type: None,
-            agent_memory_scope: None,
-            lsp_manager: None,
-            large_output_router: None,
-            utility_llm: None,
-            search_provider: crate::config_types::SearchProvider::default(),
-            search_api_key: None,
-            workshop_vars: None,
-            registered_skills: Vec::new(),
-            skills_dir: None,
-        }
+        let mut ctx = Self::new(workspace);
+        ctx.trust_mode = trust_mode;
+        ctx.notes_path = notes_path.into();
+        ctx.mcp_config_path = mcp_config_path.into();
+        ctx
     }
 
     /// Create a `ToolContext` with auto-approve mode (YOLO).
@@ -404,45 +375,9 @@ impl ToolContext {
         mcp_config_path: impl Into<PathBuf>,
         auto_approve: bool,
     ) -> Self {
-        let workspace = workspace.into();
-        let shell_manager = wrap_shell_manager(new_shared_shell_manager(workspace.clone()));
-        let cwd = workspace.clone();
-        Self {
-            workspace,
-            cwd,
-            session_cwd: None,
-            shell_manager,
-            trust_mode,
-            sandbox_policy: SandboxPolicy::None,
-            notes_path: notes_path.into(),
-            mcp_config_path: mcp_config_path.into(),
-            elevated_sandbox_policy: None,
-            shell_network_denied_hint: None,
-            auto_approve,
-            features: Features::with_defaults(),
-            parse_gate: true,
-            state_namespace: "workspace".to_string(),
-            trusted_external_paths: TrustedExternalPaths::default(),
-            network_policy: None,
-            runtime: RuntimeToolServices::default(),
-            session_objects: None,
-            cancel_token: None,
-            sandbox_backend: None,
-            sandbox_runtime: SandboxRuntimeConfig::default(),
-            memory_path: None,
-            memory_dir: None,
-            agent_memory_dir: None,
-            agent_memory_agent_type: None,
-            agent_memory_scope: None,
-            lsp_manager: None,
-            large_output_router: None,
-            utility_llm: None,
-            search_provider: crate::config_types::SearchProvider::default(),
-            search_api_key: None,
-            workshop_vars: None,
-            registered_skills: Vec::new(),
-            skills_dir: None,
-        }
+        let mut ctx = Self::with_options(workspace, trust_mode, notes_path, mcp_config_path);
+        ctx.auto_approve = auto_approve;
+        ctx
     }
 
     /// Attach a per-domain network policy to this context (#135).

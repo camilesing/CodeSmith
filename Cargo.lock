@@ -820,6 +820,7 @@ dependencies = [
  "tokio-tungstenite",
  "tokio-util",
  "toml",
+ "toml_edit",
  "tracing",
  "tree-sitter",
  "tree-sitter-bash",
@@ -5100,6 +5101,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow 0.7.14",
 ]
 
