@@ -25,16 +25,34 @@ pub fn git_scrub_env() -> HashMap<String, String> {
     ])
 }
 
-/// Merge the git-config scrub overlay into `env`, unless the caller has
-/// already set `GIT_CONFIG_COUNT` (in which case their explicit configuration
-/// is respected to avoid constructing a conflicting indexed overlay).
+/// Merge the git-config scrub overlay into `env`, re-indexing around any
+/// existing `GIT_CONFIG_COUNT`.
+///
+/// An inherited count (a `shell_env` hook, CI wrapper, or parent git
+/// tooling exporting indexed config) must not silently skip the scrub and
+/// re-enable `core.hooksPath`/`core.fsmonitor` — and a malformed inherited
+/// count makes git >= 2.31 hard-fail ("bogus format in GIT_CONFIG_COUNT").
+/// So instead of skipping, the scrub entries are appended at the highest
+/// indices and the count is bumped: git applies later indices last, so the
+/// scrub entries always take precedence. A non-numeric inherited count is
+/// treated as base 0 (its dangling `GIT_CONFIG_KEY_<n>` entries, if any,
+/// would have broken git anyway).
 pub fn merge_git_scrub_env(env: &mut HashMap<String, String>) {
-    if env.contains_key("GIT_CONFIG_COUNT") {
-        // Respect explicit caller configuration rather than constructing a
-        // potentially conflicting indexed git-config environment.
-        return;
-    }
-    env.extend(git_scrub_env());
+    let base = env
+        .get("GIT_CONFIG_COUNT")
+        .and_then(|count| count.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+    env.insert("GIT_CONFIG_COUNT".to_string(), (base + 2).to_string());
+    env.insert(
+        format!("GIT_CONFIG_KEY_{base}"),
+        "core.fsmonitor".to_string(),
+    );
+    env.insert(format!("GIT_CONFIG_VALUE_{base}"), String::new());
+    env.insert(
+        format!("GIT_CONFIG_KEY_{}", base + 1),
+        "core.hooksPath".to_string(),
+    );
+    env.insert(format!("GIT_CONFIG_VALUE_{}", base + 1), String::new());
 }
 
 #[cfg(test)]
@@ -59,15 +77,45 @@ mod tests {
     }
 
     #[test]
-    fn merge_respects_explicit_git_config_count() {
+    fn merge_reindexes_around_explicit_git_config_count() {
         let mut env = HashMap::new();
         env.insert("GIT_CONFIG_COUNT".to_string(), "1".to_string());
         env.insert("GIT_CONFIG_KEY_0".to_string(), "user.email".to_string());
         merge_git_scrub_env(&mut env);
-        // Caller's overlay is preserved; scrub keys are NOT injected.
-        assert_eq!(env.get("GIT_CONFIG_COUNT"), Some(&"1".to_string()));
+        // Caller's overlay is preserved at its indices; the scrub entries
+        // are appended at the highest indices (later = higher precedence in
+        // git) and the count is bumped.
+        assert_eq!(env.get("GIT_CONFIG_COUNT"), Some(&"3".to_string()));
         assert_eq!(env.get("GIT_CONFIG_KEY_0"), Some(&"user.email".to_string()));
-        assert!(!env.contains_key("GIT_CONFIG_KEY_1"));
+        assert_eq!(
+            env.get("GIT_CONFIG_KEY_1"),
+            Some(&"core.fsmonitor".to_string())
+        );
+        assert_eq!(
+            env.get("GIT_CONFIG_KEY_2"),
+            Some(&"core.hooksPath".to_string())
+        );
+        assert_eq!(env.get("GIT_CONFIG_VALUE_1"), Some(&"".to_string()));
+        assert_eq!(env.get("GIT_CONFIG_VALUE_2"), Some(&"".to_string()));
+    }
+
+    #[test]
+    fn merge_replaces_malformed_inherited_count() {
+        // A malformed count (hook noise, half-written value) must not
+        // survive: git >= 2.31 hard-fails on "bogus format" and the scrub
+        // would otherwise be skipped entirely.
+        let mut env = HashMap::new();
+        env.insert("GIT_CONFIG_COUNT".to_string(), "not-a-number".to_string());
+        merge_git_scrub_env(&mut env);
+        assert_eq!(env.get("GIT_CONFIG_COUNT"), Some(&"2".to_string()));
+        assert_eq!(
+            env.get("GIT_CONFIG_KEY_0"),
+            Some(&"core.fsmonitor".to_string())
+        );
+        assert_eq!(
+            env.get("GIT_CONFIG_KEY_1"),
+            Some(&"core.hooksPath".to_string())
+        );
     }
 
     #[test]

@@ -190,6 +190,18 @@ fn process_memory_file(
         return None;
     }
     let canon = canonicalize_or_keep(path);
+    // The tier's root files are held to the same containment as include
+    // targets: a symlinked `AGENTS.md -> ~/.ssh/id_rsa` (or a rule file
+    // pointing at `/etc/passwd`) must not pull out-of-tier content into
+    // the system prompt just because `exists()`/`is_file()` follow links.
+    if !include_target_permitted(path, tier_root) {
+        tracing::warn!(
+            target: "codesmith::memory",
+            path = %path.display(),
+            "memory file resolves outside its tier root; skipped"
+        );
+        return None;
+    }
     if !processed.insert(canon.clone()) {
         return None;
     }
@@ -758,6 +770,30 @@ mod tests {
                 "a symlink resolving outside the tier root must be dropped"
             );
             assert!(merged.contains("root"));
+        }
+    }
+
+    #[test]
+    fn symlinked_tier_root_file_is_dropped() {
+        // The tier's root file itself must obey the same containment as
+        // include targets: `AGENTS.md -> ~/.ssh/id_rsa`-style symlinks (or
+        // symlinked `.claude/rules` entries) must not load out-of-tier
+        // content even though exists()/is_file() follow links.
+        #[cfg(unix)]
+        {
+            let tmp = tempdir().unwrap();
+            let ws = tmp.path().join("ws");
+            fs::create_dir_all(&ws).unwrap();
+            let secret_dir = tmp.path().join("secrets");
+            fs::create_dir_all(&secret_dir).unwrap();
+            write(&secret_dir.join("id_rsa.md"), "PRIVATE_KEY_BODY");
+            std::os::unix::fs::symlink(secret_dir.join("id_rsa.md"), ws.join("AGENTS.md")).unwrap();
+
+            let merged = load_all_memory_tiers(&ws, None, &[]);
+            assert!(
+                !merged.contains("PRIVATE_KEY_BODY"),
+                "a tier-root file resolving outside the workspace must be dropped"
+            );
         }
     }
 

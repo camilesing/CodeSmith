@@ -264,18 +264,41 @@ pub(crate) fn shell_quote(s: &str) -> String {
     out
 }
 
-/// Write the teammate's initial prompt to a stable temp file and return its
-/// path. The pane process is expected to read (and unlink) it on startup.
+/// Write the teammate's initial prompt to a temp file and return its path.
+/// The pane process is expected to read (and unlink) it on startup.
+///
+/// The file is created with `O_EXCL` under a randomized name and 0600
+/// permissions (via `tempfile`): the old predictable
+/// `codesmith-team-prompt-<agent_id>.txt` path let any local user
+/// pre-plant a symlink in the shared temp dir and gain an
+/// arbitrary-file-overwrite primitive with the prompt as content, and the
+/// 0644 default leaked the prompt (which carries repo context) to other
+/// local users. Callers remove the file when the spawn fails; the pane
+/// unlinks it on success.
 pub(crate) fn write_prompt_file(
     backend: &'static str,
     agent_id: &str,
     prompt: &str,
 ) -> Result<PathBuf, BackendError> {
-    let mut path = std::env::temp_dir();
-    path.push(format!("codesmith-team-prompt-{agent_id}.txt"));
-    std::fs::write(&path, prompt).map_err(|e| BackendError::SpawnFailed {
+    let mut file = tempfile::Builder::new()
+        .prefix(&format!("codesmith-team-prompt-{agent_id}-"))
+        .suffix(".txt")
+        .tempfile_in(std::env::temp_dir())
+        .map_err(|e| BackendError::SpawnFailed {
+            backend,
+            message: format!("failed to create prompt file for {agent_id}: {e}"),
+        })?;
+    std::io::Write::write_all(&mut file, prompt.as_bytes()).map_err(|e| {
+        BackendError::SpawnFailed {
+            backend,
+            message: format!("failed to write prompt file for {agent_id}: {e}"),
+        }
+    })?;
+    // Detach the file from the guard without deleting it — the pane
+    // process owns the unlink from here.
+    let (_, path) = file.keep().map_err(|e| BackendError::SpawnFailed {
         backend,
-        message: format!("failed to write prompt file {}: {e}", path.display()),
+        message: format!("failed to persist prompt file for {agent_id}: {e}"),
     })?;
     Ok(path)
 }

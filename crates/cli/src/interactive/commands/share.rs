@@ -96,6 +96,11 @@ fn write_temp_html(html: &str) -> Result<tempfile::NamedTempFile, String> {
 }
 
 /// Upload a file as a GitHub Gist using the `gh` CLI.
+///
+/// The gist is created **secret** (gh's default): the exported session can
+/// embed source code, tool output, and other secrets, and a public gist is
+/// discoverable and cannot be reliably un-leaked. Users who want a public
+/// URL can flip the gist in the GitHub UI afterwards.
 async fn upload_gist(path: &Path) -> Result<String, String> {
     let path_owned = path.to_path_buf();
     let output = tokio::task::spawn_blocking(move || {
@@ -104,7 +109,6 @@ async fn upload_gist(path: &Path) -> Result<String, String> {
         cmd.args([
             "gist",
             "create",
-            "--public",
             path_owned.to_string_lossy().as_ref(),
             "--filename",
             "session-export.html",

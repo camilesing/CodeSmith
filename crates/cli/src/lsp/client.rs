@@ -446,14 +446,22 @@ async fn reader_task(mut stdout: tokio::process::ChildStdout, tx: mpsc::Sender<V
         buf.extend_from_slice(&tmp[..n]);
         // Try to parse as many frames as we can from the accumulated buffer.
         while let Some((header_end, content_length)) = parse_header(&buf) {
-            if buf.len() < header_end + content_length {
+            // A hostile/buggy server can send Content-Length near
+            // usize::MAX: the addition would panic in debug builds and
+            // wrap in release (then panic on the inverted slice range).
+            // Treat an overflowing frame as malformed — fail closed.
+            let Some(frame_end) = header_end.checked_add(content_length) else {
+                tracing::warn!("lsp: Content-Length overflow; closing reader");
+                return;
+            };
+            if buf.len() < frame_end {
                 break; // need more bytes
             }
-            let body = &buf[header_end..header_end + content_length];
+            let body = &buf[header_end..frame_end];
             let parsed = serde_json::from_slice::<Value>(body).ok();
             // Drop the consumed bytes regardless of parse result so a bad frame
             // does not stall the loop.
-            buf.drain(..header_end + content_length);
+            buf.drain(..frame_end);
             if let Some(value) = parsed
                 && tx.send(value).await.is_err()
             {

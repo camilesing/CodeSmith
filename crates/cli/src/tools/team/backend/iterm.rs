@@ -56,6 +56,9 @@ impl TeammateBackend for ITermBackend {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            // The pane never started, so nothing will unlink the prompt
+            // file — remove it here rather than leaking prompt content.
+            let _ = tokio::fs::remove_file(&prompt_file).await;
             return Err(BackendError::SpawnFailed {
                 backend: "iterm",
                 message: format!("osascript exited {}: {stderr}", output.status),
@@ -64,6 +67,7 @@ impl TeammateBackend for ITermBackend {
 
         let session_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if session_id.is_empty() {
+            let _ = tokio::fs::remove_file(&prompt_file).await;
             return Err(BackendError::SpawnFailed {
                 backend: "iterm",
                 message: "osascript did not return a session id".to_string(),

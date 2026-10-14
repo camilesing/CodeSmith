@@ -34,7 +34,9 @@ export async function POST(req: Request) {
     });
   }
 
-  const sid = await createSession(env.CURATED_KV);
+  // createSession re-verifies the token itself (its signature forces the
+  // pair through) — minting cannot happen without a matched secret.
+  const sid = await createSession(env.CURATED_KV, submitted, env.MAINTAINER_TOKEN);
   if (!sid) {
     return new NextResponse("Session storage unavailable", {
       status: 503,

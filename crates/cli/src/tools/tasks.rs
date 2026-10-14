@@ -944,7 +944,9 @@ impl ToolSpec for PrAttemptPreflightTool {
             .patch_path
             .as_ref()
             .ok_or_else(|| ToolError::invalid_input("Attempt has no patch artifact"))?;
-        let patch_path = manager.artifact_absolute_path(patch_ref);
+        let patch_path = manager.artifact_absolute_path(patch_ref).map_err(|err| {
+            ToolError::invalid_input(format!("invalid patch artifact reference: {err:#}"))
+        })?;
         let workspace = context.workspace.clone();
         let out = tokio::task::spawn_blocking(move || {
             crate::dependencies::Git::command()
