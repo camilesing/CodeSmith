@@ -2,6 +2,21 @@
 
 use std::collections::{HashMap, VecDeque};
 
+/// p_fail scoring weights (hand-calibrated heuristic, not a fitted model):
+/// negative slack of any kind pushes the failure probability up, and the
+/// violation ratio / volatility / recent-drop terms add evidence that the
+/// window is not merely tight but deteriorating. The magnitudes encode
+/// relative importance only — final slack dominates, then minimum slack,
+/// then violation ratio; volatility and drop are confirmatory. Named so a
+/// reviewer can tell deliberate calibration from a typo; the derivation
+/// discussion lives in git history (#63 follow-up).
+const W_FINAL_SLACK: f64 = -1.65;
+const W_MIN_SLACK: f64 = -0.85;
+const W_VIOLATION_RATIO: f64 = 1.35;
+const W_SLACK_VOLATILITY: f64 = 0.70;
+const W_SLACK_DROP: f64 = 0.28;
+const Z_INTERCEPT: f64 = 0.12;
+
 /// Controller settings.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CapacityControllerConfig {
@@ -39,7 +54,12 @@ impl Default for CapacityControllerConfig {
             // can opt in via `capacity.enabled = true` in
             // `~/.codesmith/config.toml`.
             enabled: false,
-            // Thresholds retained for the opt-in path; tuning notes live
+            // Thresholds retained for the opt-in path. low_risk_max = 0.50
+            // is deliberate, not a typo: the score already encodes "worse
+            // than even" by construction — a predicted failure probability
+            // at or below ~50% means the window is merely tight, not
+            // failing, and the controller stays out of the way; only >0.62
+            // (medium_risk_max) escalates past a refresh. Tuning notes live
             // in git history (#63 follow-up).
             low_risk_max: 0.50,
             medium_risk_max: 0.62,
@@ -108,13 +128,37 @@ pub struct CapacityObservationInput {
 }
 
 /// Rolling slack profile.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct DynamicSlackProfile {
     pub final_slack: f64,
     pub min_slack: f64,
     pub violation_ratio: f64,
     pub slack_volatility: f64,
     pub slack_drop: f64,
+}
+
+impl DynamicSlackProfile {
+    /// The no-data profile. `min_slack = INFINITY` (not the derived `0.0`,
+    /// which sits exactly on the violation boundary) so "no observations"
+    /// stays unambiguous if this type is ever reused outside
+    /// `compute_profile`, which never returns it (observe always pushes at
+    /// least one value first).
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            final_slack: 0.0,
+            min_slack: f64::INFINITY,
+            violation_ratio: 0.0,
+            slack_volatility: 0.0,
+            slack_drop: 0.0,
+        }
+    }
+}
+
+impl Default for DynamicSlackProfile {
+    fn default() -> Self {
+        Self::empty()
+    }
 }
 
 /// Per-checkpoint capacity snapshot.
@@ -247,6 +291,16 @@ impl CapacityController {
     }
 
     /// Decide intervention from the latest snapshot, with cooldown and safety gates.
+    ///
+    /// Fail-open on cooldown: when the proposed top-tier action is on
+    /// cooldown, the decision collapses to `NoIntervention` (with
+    /// `cooldown_blocked = true`) rather than degrading to the next-lower
+    /// tier — e.g. a High-severity snapshot proposing `VerifyAndReplan`
+    /// during the replan cooldown yields no intervention at all, even
+    /// though a replay might still relieve pressure. This is deliberate:
+    /// the controller is opt-in and must not stack substitute interventions
+    /// the policy did not choose for the current snapshot. The same posture
+    /// applies to the refresh-cooldown arm.
     #[must_use]
     pub fn decide(
         &mut self,
@@ -450,12 +504,12 @@ impl CapacityController {
         );
 
         let profile = compute_profile(&self.slack_window);
-        let z = (-1.65 * profile.final_slack)
-            + (-0.85 * profile.min_slack)
-            + (1.35 * profile.violation_ratio)
-            + (0.70 * profile.slack_volatility)
-            + (0.28 * profile.slack_drop)
-            - 0.12;
+        let z = (W_FINAL_SLACK * profile.final_slack)
+            + (W_MIN_SLACK * profile.min_slack)
+            + (W_VIOLATION_RATIO * profile.violation_ratio)
+            + (W_SLACK_VOLATILITY * profile.slack_volatility)
+            + (W_SLACK_DROP * profile.slack_drop)
+            - Z_INTERCEPT;
         let p_fail = sigmoid(z).clamp(0.0, 1.0);
         let risk_band = if p_fail <= self.config.low_risk_max {
             RiskBand::Low
@@ -551,35 +605,41 @@ fn push_window<T>(window: &mut VecDeque<T>, value: T, max_len: usize) {
 
 fn compute_profile(window: &VecDeque<f64>) -> DynamicSlackProfile {
     if window.is_empty() {
-        return DynamicSlackProfile::default();
+        return DynamicSlackProfile::empty();
     }
 
-    let values: Vec<f64> = window.iter().copied().collect();
-    let final_slack = *values.last().unwrap_or(&0.0);
-    let min_slack = values.iter().copied().fold(f64::INFINITY, f64::min);
-    let violations = values.iter().filter(|v| **v <= 0.0).count() as f64;
-    let violation_ratio = violations / (values.len() as f64);
-
-    let deltas: Vec<f64> = values.windows(2).map(|w| w[1] - w[0]).collect();
-    let slack_drop = if values.len() >= 2 {
-        (values[values.len() - 2] - values[values.len() - 1]).max(0.0)
-    } else {
+    // Single pass with rolling accumulators: `observe` runs at every
+    // checkpoint, so the two intermediate Vec allocations per call were pure
+    // overhead for an 8-element window.
+    let final_slack = *window.back().unwrap_or(&0.0);
+    let mut min_slack = f64::INFINITY;
+    let mut violations = 0usize;
+    let mut prev: Option<f64> = None;
+    let (mut delta_sum, mut delta_sum_sq, mut delta_count) = (0.0f64, 0.0f64, 0usize);
+    for &value in window {
+        min_slack = min_slack.min(value);
+        if value <= 0.0 {
+            violations += 1;
+        }
+        if let Some(previous) = prev.replace(value) {
+            let delta = value - previous;
+            delta_sum += delta;
+            delta_sum_sq += delta * delta;
+            delta_count += 1;
+        }
+    }
+    let violation_ratio = violations as f64 / window.len() as f64;
+    // The last delta, from the second-to-last to the final value, clamped
+    // to drops only.
+    let slack_drop = window.iter().rev().nth(1).map_or(0.0, |&second_to_last| {
+        (second_to_last - final_slack).max(0.0)
+    });
+    let slack_volatility = if delta_count == 0 {
         0.0
-    };
-
-    let slack_volatility = if deltas.is_empty() {
-        0.0
     } else {
-        let mean = deltas.iter().sum::<f64>() / (deltas.len() as f64);
-        let var = deltas
-            .iter()
-            .map(|delta| {
-                let centered = *delta - mean;
-                centered * centered
-            })
-            .sum::<f64>()
-            / (deltas.len() as f64);
-        var.sqrt()
+        let mean = delta_sum / delta_count as f64;
+        let var = delta_sum_sq / delta_count as f64 - mean * mean;
+        var.max(0.0).sqrt()
     };
 
     DynamicSlackProfile {

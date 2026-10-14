@@ -40,7 +40,8 @@
 //!   surface for `ExtensionEvent::ToolExecutionUpdate`; the host has no
 //!   streaming `Tool` contract yet (`Tool::run` is one-shot), so there is no
 //!   host `Event` variant to bridge it to. A streaming `Tool` variant (§F-later)
-//!   would add one. ⁵ `on_llm_start` forwards nothing but clears the
+//!   would add one. ⁵ `on_llm_start` forwards the per-step `LlmRequest`
+//!   envelope summary (event-sourcing slice 5) and clears the
 //!   block-announcement dedup set: the executor fires it once per LLM step
 //!   (transparent stream retries happen inside a step), and a retry re-emits
 //!   the same `MessageStarted` / `ThinkingStarted` announcements, which hosts
@@ -419,6 +420,14 @@ impl Callback for CallbackBridge {
             if let Some(tx) = tx.as_ref()
                 && let Some(event) = event
             {
+                // Intentional backpressure: `MessageDelta` text must arrive
+                // ordered and lossless, so a slow (or stalled) host
+                // consumer stalls this bridge — and through it the
+                // executor's stream-consumption loop — rather than the
+                // bridge dropping deltas. A CLOSED receiver is different:
+                // the send resolves immediately and the event is dropped
+                // (best-effort delivery to a dead UI must not break the
+                // turn).
                 let _ = tx.send(event).await;
             }
             // Route B (streaming observation) — forward assistant TEXT
@@ -1487,14 +1496,12 @@ mod assistant_stream_tests {
             "at least the deltas after the trip were skipped (dispatched {dispatched})"
         );
 
-        // Let the detached first dispatch finish before the test runtime
-        // drops — a `block_on` inside `spawn_blocking` panics if the
-        // runtime is shut down mid-sleep.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !seen.lock().unwrap().iter().any(|s| s == "one-done")
-            && std::time::Instant::now() < deadline
-        {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
+        // No shutdown drain needed here: every TrickleStream dispatch
+        // completes under the 250 ms per-delta budget before the next delta
+        // is dispatched (nothing is detached — which is precisely why the
+        // breaker trips via the cumulative path). An earlier revision kept
+        // a wait loop for a "one-done" marker, but that marker is only
+        // pushed by SlowStream in the other test, so the loop always spun
+        // to its 5 s deadline for nothing.
     }
 }

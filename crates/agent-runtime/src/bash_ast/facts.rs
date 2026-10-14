@@ -186,10 +186,16 @@ impl BashFacts {
         self.segments.iter().any(|s| s.has_process_substitution)
     }
 
-    /// Top-level flow segments (flattened inner segments excluded). `None`
-    /// when the top level contains statements that have no segment form
-    /// (compound statements, standalone assignments) — callers should fall
-    /// back to conservative string handling rather than drop them.
+    /// Top-level flow segments (flattened inner segments excluded).
+    ///
+    /// The `Option` carries two states with opposite safety implications —
+    /// do NOT bridge `None` with `unwrap_or_default()`/`unwrap_or(vec![])`:
+    /// - `Some(vec![])` — the command is empty: nothing runs.
+    /// - `None` — the top level has statements with no segment form
+    ///   (compound statements, standalone assignments): everything runs,
+    ///   flattened into nested segments; the caller MUST fall back to
+    ///   conservative string handling rather than treat it as an empty
+    ///   command.
     pub fn top_level_segments(&self) -> Option<Vec<&CommandSegment>> {
         let top: Vec<&CommandSegment> = self.segments.iter().filter(|s| !s.is_nested).collect();
         if top.is_empty() && !self.segments.is_empty() {
