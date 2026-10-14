@@ -41,12 +41,18 @@ fn normalize_managed_dir(path: PathBuf) -> std::io::Result<PathBuf> {
             "managed directory path cannot be empty",
         ));
     }
-    if path.components().any(|component| {
-        matches!(
-            component,
-            Component::ParentDir | Component::Prefix(_) | Component::RootDir
-        )
-    }) && path.is_relative()
+    // `ParentDir` is rejected unconditionally: `..` smuggles out of the
+    // intended directory whether the path is relative or absolute (the old
+    // `&& path.is_relative()` guard skipped the whole check for absolute
+    // paths, where `RootDir`/`Prefix` necessarily appear, letting
+    // `/home/x/app/../../elsewhere` pass). `RootDir`/`Prefix` are only
+    // meaningful as a rejection for relative paths — every absolute path
+    // contains them by definition.
+    if path.components().any(|c| matches!(c, Component::ParentDir))
+        || (path.is_relative()
+            && path
+                .components()
+                .any(|c| matches!(c, Component::Prefix(_) | Component::RootDir)))
     {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,

@@ -87,6 +87,14 @@ pub struct CreateAutomationRequest {
     pub name: String,
     pub prompt: String,
     pub rrule: String,
+    /// Working directories for runs. Raw, unvalidated paths at this shared
+    /// contract boundary — a hand-edited persisted `AutomationRecord`
+    /// deserializes the same field, so validation cannot live only at the
+    /// tool-input edge. Consumers must canonicalize each entry and verify
+    /// it exists (and is within allowed roots, where the deployment has
+    /// them) before using it as a task workspace; `allow_shell: false`
+    /// downstream mitigates but does not remove the exposure (file
+    /// reads/writes still land in the chosen directory).
     #[serde(default)]
     pub cwds: Vec<PathBuf>,
     #[serde(default)]

@@ -568,20 +568,37 @@ mod manifest_default_tests {
 
     #[cfg(feature = "openai-compat")]
     #[test]
-    fn factory_empty_cfg_and_no_manifest_default_falls_through() {
-        // No manifest default + empty host → the resolved value stays empty,
-        // so the rig builder keeps its compile-time default. The adapter still
-        // surfaces the (empty) resolved value as before.
+    fn factory_empty_cfg_and_no_manifest_default_fails_fast() {
+        // No manifest default + empty host: this family has no sensible
+        // default endpoint — silently keeping rig's compile-time
+        // api.openai.com/v1 would send the provider's credential to a
+        // different vendor's service, so both values must fail loud at
+        // the configuration site instead.
         let factory = openai_compat::OpenAiCompatFactory::new(
             ProviderId::from("acme-llm"),
             "acme-llm",
             None,
             None,
         );
-        let handle = factory
+        let err = factory
             .build(&empty_cfg(ProviderId::from("acme-llm")))
-            .expect("build should succeed");
-        assert_eq!(handle.base_url(), "");
-        assert_eq!(handle.model(), "");
+            .err()
+            .expect("empty base_url must fail fast");
+        let msg = err.to_string();
+        assert!(msg.contains("no base_url configured"), "{msg}");
+        assert!(msg.contains("acme-llm"), "{msg}");
+
+        // Model-only gap: a base_url is resolved but no model anywhere.
+        let factory = openai_compat::OpenAiCompatFactory::new(
+            ProviderId::from("acme-llm"),
+            "acme-llm",
+            Some(String::from("https://acme.example/v1")),
+            None,
+        );
+        let err = factory
+            .build(&empty_cfg(ProviderId::from("acme-llm")))
+            .err()
+            .expect("empty model must fail fast");
+        assert!(err.to_string().contains("no model configured"), "{}", err);
     }
 }

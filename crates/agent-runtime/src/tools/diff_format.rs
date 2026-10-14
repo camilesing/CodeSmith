@@ -22,13 +22,46 @@ pub fn make_unified_diff(path: &str, old: &str, new: &str) -> String {
     if old == new {
         return String::new();
     }
-    let a = format!("a/{path}");
-    let b = format!("b/{path}");
+    let header_path = escape_header_path(path);
+    let a = format!("a/{header_path}");
+    let b = format!("b/{header_path}");
     let diff = TextDiff::from_lines(old, new);
     diff.unified_diff()
         .context_radius(3)
         .header(&a, &b)
         .to_string()
+}
+
+/// Git-style header-path escaping: the `path` is tool/agent-controlled and
+/// is interpolated into the single-line `--- a/...` / `+++ b/...` headers,
+/// so a newline in it would let header content escape into the diff body
+/// (fabricated `@@` hunks or `+`/`-` gutter lines that spoof what the user
+/// and the model see). C-quote the path whenever it contains control
+/// characters or quote/backslash bytes, mirroring git's `quote_c_style`;
+/// plain paths pass through unchanged.
+fn escape_header_path(path: &str) -> String {
+    let needs_quoting = path
+        .bytes()
+        .any(|b| b < 0x20 || b == 0x7f || b == b'"' || b == b'\\');
+    if !needs_quoting {
+        return path.to_string();
+    }
+    let mut out = String::from("\"");
+    for ch in path.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                out.push_str(&format!("\\{:03o}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 #[cfg(test)]
@@ -50,6 +83,21 @@ mod tests {
         assert!(diff.contains("+++ b/foo.txt"), "{diff}");
         assert!(diff.contains("-beta"), "{diff}");
         assert!(diff.contains("+BETA"), "{diff}");
+    }
+
+    #[test]
+    fn newline_in_path_cannot_inject_diff_body() {
+        let old = "a\n";
+        let new = "b\n";
+        let diff = make_unified_diff("evil.txt\n@@ -1 +1 @@\n-fake", old, new);
+        // The header must stay on one line: the newline is escaped, so no
+        // fabricated hunk header or gutter line from the path reaches the
+        // rendered diff body.
+        assert!(
+            diff.contains("--- a/\"evil.txt\\n@@ -1 +1 @@\\n-fake\""),
+            "{diff}"
+        );
+        assert!(!diff.contains("\n-fake\n"), "{diff}");
     }
 
     #[test]

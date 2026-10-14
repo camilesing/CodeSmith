@@ -51,6 +51,20 @@ fn authorize_protocol_action(action: &str, sender: &str, team_name: &str) -> Res
         .map_err(|e| ToolError::execution_failed(format!("Failed to read team roster: {}", e)))?;
     let is_lead = sender == team_lead_name();
     let is_member = find_member_by_name(&team_file, sender).is_some_and(|member| member.is_active);
+    // Name-squatting guard: authorization keys on display names (the
+    // runtime injects the agent NAME as `team_sender`). A teammate spawned
+    // with the display name "team-lead" would pass `is_lead` above and
+    // gain every lead-only action — shutdowns, plan approvals, permission
+    // grants. The real lead is not a roster member (its identity lives in
+    // `lead_agent_id`), so any roster entry carrying the lead name is a
+    // squatter: the name no longer proves lead identity, and we refuse
+    // rather than guess which "team-lead" is real.
+    if is_lead && find_member_by_name(&team_file, team_lead_name()).is_some() {
+        return Err(ToolError::invalid_input(format!(
+            "a roster member of team '{team_name}' is named 'team-lead'; the lead name no \
+             longer proves lead identity — refusing lead authorization"
+        )));
+    }
     if !is_lead && !is_member {
         return Err(ToolError::invalid_input(format!(
             "Sender '{sender}' is not an active member of team '{team_name}'"

@@ -82,6 +82,24 @@ impl ToolSpec for RunTestsTool {
             let split = shlex::split(extra).ok_or_else(|| {
                 ToolError::invalid_input("Failed to parse 'args' as shell-style tokens")
             })?;
+            // Model-supplied args run under an approval prompt rendered as
+            // "cargo test" — cargo flags themselves can widen the blast
+            // radius far beyond the workspace (`--manifest-path` runs tests
+            // from an arbitrary project; `--config` can set
+            // `target.<triple>.runner`, an arbitrary command executed for
+            // every test binary; `--target-dir`/`--target` redirect the
+            // build). Reject them before a `--` separator; tokens after
+            // `--` go to the test binary and are the intended use case.
+            const BLOCKED_FLAGS: &[&str] =
+                &["--manifest-path", "--config", "--target-dir", "--target"];
+            for token in split.iter().take_while(|t| t.as_str() != "--") {
+                let flag = token.split('=').next().unwrap_or("");
+                if BLOCKED_FLAGS.contains(&flag) {
+                    return Err(ToolError::invalid_input(format!(
+                        "args flag `{flag}` redirects the build outside the workspace"
+                    )));
+                }
+            }
             args.extend(split);
         }
 

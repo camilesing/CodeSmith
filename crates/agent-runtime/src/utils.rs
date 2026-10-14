@@ -257,6 +257,18 @@ pub fn is_safe_path_component(component: &str) -> bool {
     if bytes[0] == b'.' || bytes[bytes.len() - 1] == b'.' {
         return false;
     }
+    // Windows reserved device names (CON, PRN, AUX, NUL, COM1-9, LPT1-9,
+    // including spellings like `CON.txt`) are pure ASCII alphanumerics, so
+    // they pass the whitelist below yet alias a device when the component
+    // is joined into a path on Windows. Reject by stem, case-insensitively.
+    const RESERVED: &[&str] = &[
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    let stem = component.split('.').next().unwrap_or("");
+    if RESERVED.contains(&stem.to_ascii_uppercase().as_str()) {
+        return false;
+    }
     // Strict per-character whitelist. `char` iteration keeps multi-byte
     // sequences intact so non-ASCII like 'é' fails cleanly instead of
     // slipping through as a lucky byte sequence.
@@ -984,6 +996,19 @@ mod safe_path_component_tests {
     fn rejects_dot_and_dotdot() {
         assert!(!is_safe_path_component("."));
         assert!(!is_safe_path_component(".."));
+    }
+
+    #[test]
+    fn rejects_windows_reserved_device_names() {
+        // Reserved names alias devices when joined into a path on Windows,
+        // in any casing and with any extension (`CON.txt` → stem `CON`).
+        for name in ["CON", "con", "NUL", "PRN", "AUX", "COM1", "LPT9"] {
+            assert!(!is_safe_path_component(name), "{name} must be rejected");
+        }
+        assert!(!is_safe_path_component("COM3.log"));
+        // Near-misses that are ordinary names stay accepted.
+        assert!(is_safe_path_component("CONSOLE"));
+        assert!(is_safe_path_component("console-log"));
     }
 
     #[test]

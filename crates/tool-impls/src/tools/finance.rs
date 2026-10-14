@@ -434,13 +434,29 @@ async fn fetch_response_body(
         })?;
 
     let status = response.status();
-    let body = response.text().await.map_err(|err| {
+    // Cap the body read: quotes are small JSON documents and the error
+    // snippet needs ~120 chars, so anything larger is a misbehaving or
+    // compromised endpoint. The read also runs before the status check, so
+    // error responses are drained under the same cap instead of unbounded.
+    const MAX_BODY_BYTES: usize = 1024 * 1024;
+    let mut response = response;
+    let mut buf = Vec::with_capacity(8 * 1024);
+    while let Some(chunk) = response.chunk().await.map_err(|err| {
         if err.is_timeout() {
             AttemptFailure::timeout(endpoint)
         } else {
             AttemptFailure::upstream(endpoint, format!("failed to read response body: {err}"))
         }
-    })?;
+    })? {
+        buf.extend_from_slice(&chunk);
+        if buf.len() > MAX_BODY_BYTES {
+            return Err(AttemptFailure::upstream(
+                endpoint,
+                format!("response body exceeds {MAX_BODY_BYTES} bytes"),
+            ));
+        }
+    }
+    let body = String::from_utf8_lossy(&buf).into_owned();
 
     if !status.is_success() {
         return Err(status_failure(endpoint, status, &body));

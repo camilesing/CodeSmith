@@ -798,23 +798,15 @@ async fn sync_one_skill(
             .map(|s| s.to_string());
 
         let compressed_cap = max_size.saturating_mul(4);
-        let bytes = match resp.bytes().await {
+        let bytes = match read_body_capped(resp, compressed_cap, url).await {
             Ok(b) => b,
             Err(err) => {
                 return SkillSyncOutcome::Failed {
                     name: name.to_string(),
-                    reason: format!("failed to read body from {url}: {err:#}"),
+                    reason: format!("download from {url} failed: {err:#}"),
                 };
             }
         };
-        if bytes.len() as u64 > compressed_cap {
-            return SkillSyncOutcome::Failed {
-                name: name.to_string(),
-                reason: format!(
-                    "download from {url} exceeds compressed size cap ({compressed_cap} bytes)"
-                ),
-            };
-        }
 
         // Compute SHA-256 of the downloaded bytes.
         let mut hasher = Sha256::new();
@@ -1103,14 +1095,27 @@ async fn download_with_cap(
     // Soft cap on the *compressed* download — well above max_size to allow
     // for highly compressible payloads but still bounded.
     let compressed_cap = max_size.saturating_mul(4);
-    let bytes = resp
-        .bytes()
+    let bytes = read_body_capped(resp, compressed_cap, url).await?;
+    Ok(DownloadAttempt::Bytes(bytes))
+}
+
+/// Stream a response body into a buffer, aborting on the first chunk that
+/// pushes the running total over `cap` — a misbehaving server must not be
+/// able to buffer an arbitrarily large body into RAM before the cap fires
+/// (a buffered-then-checked read defeats the cap).
+async fn read_body_capped(mut resp: reqwest::Response, cap: u64, url: &str) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
         .await
-        .with_context(|| format!("failed to read body of {url}"))?;
-    if (bytes.len() as u64) > compressed_cap {
-        bail!("download {url} exceeds compressed size cap of {compressed_cap} bytes");
+        .with_context(|| format!("failed to read body of {url}"))?
+    {
+        bytes.extend_from_slice(&chunk);
+        if bytes.len() as u64 > cap {
+            bail!("body of {url} exceeds size cap of {cap} bytes");
+        }
     }
-    Ok(DownloadAttempt::Bytes(bytes.to_vec()))
+    Ok(bytes)
 }
 
 struct StagedSkill {

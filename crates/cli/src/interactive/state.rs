@@ -428,10 +428,16 @@ impl ReplState {
 
         if entering_coordinator {
             // Coordinator mode requires auto-approve so workers can execute
-            // their tools without prompting for each one.
+            // their tools without prompting for each one — and its workers
+            // need shell, so the gate is forced on here (mirroring the
+            // Yolo branch) instead of being bypassed at the runtime layer:
+            // a user who opted out of shell sees the opt-in change modes,
+            // and `/status` stays truthful.
             self.approval_mode = ApprovalMode::Auto;
+            self.allow_shell = true;
         } else if leaving_coordinator {
             self.approval_mode = ApprovalMode::Suggest;
+            self.allow_shell = false;
         }
 
         if entering_yolo {

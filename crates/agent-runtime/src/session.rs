@@ -291,6 +291,12 @@ impl Session {
 /// the framework-core `ReinjectProbe::record_read_file_result` call this so
 /// the observe logic has a single source (lifted now rather than duplicated —
 /// same precedent as `edit_file_paths` / `summarize_subagents`).
+///
+/// The hidden-Unicode strip (HackerOne #3086545) lives *here*, at the single
+/// choke point, so every caller — including future direct ones that bypass
+/// the executor's observe site — pushes sanitized content into the queue
+/// that re-enters model context post-compaction. Idempotent for text the
+/// executor path already sanitized.
 pub(crate) fn record_read_file_result_into(
     files: &Arc<StdMutex<VecDeque<RecentReadFile>>>,
     input: &Value,
@@ -299,7 +305,8 @@ pub(crate) fn record_read_file_result_into(
     let Some(path) = input.get("path").and_then(Value::as_str) else {
         return;
     };
-    let preview = summarize_chars(output_for_context, RECENT_READ_FILE_SNIPPET_CHARS);
+    let sanitized = crate::sanitization::partially_sanitize_unicode(output_for_context);
+    let preview = summarize_chars(&sanitized, RECENT_READ_FILE_SNIPPET_CHARS);
     let mut files = files.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(existing) = files.iter().position(|entry| entry.path == path) {
         files.remove(existing);

@@ -1096,11 +1096,17 @@ impl Runtime {
     }
 
     /// Evaluates execution policy and dispatches a tool call.
+    ///
+    /// `allow_mutating` is the caller-owned mutating-tool guard (see
+    /// `ToolRegistry::dispatch`): read-only / restricted callers pass
+    /// `false` so mutating tools (file writes, shell) are rejected by the
+    /// registry rather than silently enabled.
     pub async fn invoke_tool(
         &self,
         call: ToolCall,
         approval_mode: AskForApproval,
         cwd: &Path,
+        allow_mutating: bool,
     ) -> Result<Value> {
         let fallback_cwd = cwd.display().to_string();
         let (command, policy_cwd, execution_kind) = call.execution_subject(&fallback_cwd);
@@ -1222,7 +1228,11 @@ impl Runtime {
             })
             .await;
 
-        match self.tool_registry.dispatch(call.clone(), true).await {
+        match self
+            .tool_registry
+            .dispatch(call.clone(), allow_mutating)
+            .await
+        {
             Ok(tool_output) => {
                 let result_frame = EventFrame::ToolCallResult {
                     response_id: response_id.clone(),

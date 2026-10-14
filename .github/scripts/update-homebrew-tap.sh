@@ -97,11 +97,16 @@ EOF
 
 # --- push to tap repo --------------------------------------------------
 # Auth goes through an HTTP extra header instead of the URL so a git failure
-# never echoes the PAT. The header is scoped to github.com only.
+# never echoes the PAT. The header is scoped to github.com only, and it is
+# passed via git's environment config (GIT_CONFIG_*) rather than a `-c`
+# argument: argv is visible to other local users via `ps` for the lifetime
+# of the clone/push, and base64 is trivially reversible.
 AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${TOKEN}" | base64)"
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+export GIT_CONFIG_VALUE_0="${AUTH_HEADER}"
 
-git -c "http.https://github.com/.extraheader=${AUTH_HEADER}" \
-  clone --depth 1 "https://github.com/${TAP_REPO}.git" "${TAP_DIR}"
+git clone --depth 1 "https://github.com/${TAP_REPO}.git" "${TAP_DIR}"
 
 mkdir -p "${TAP_DIR}/Formula"
 cp "${FORMULA_FILE}" "${TAP_DIR}/Formula/codesmith.rb"
@@ -121,5 +126,5 @@ git commit -m "chore: bump formula to ${VERSION}
 
 Automated update from the release workflow."
 
-git -c "http.https://github.com/.extraheader=${AUTH_HEADER}" push origin HEAD:main
+git push origin HEAD:main
 echo "Pushed formula update to ${TAP_REPO} (v${VERSION})"

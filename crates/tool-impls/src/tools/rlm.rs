@@ -175,7 +175,7 @@ impl ToolSpec for RlmOpenTool {
             }
         }
 
-        let context_path = write_context_file(&body).map_err(|e| {
+        let context_path = write_context_file(&body).await.map_err(|e| {
             ToolError::execution_failed(format!("rlm_open: failed to stage context: {e}"))
         })?;
         let kernel = PythonRuntime::spawn_with_context(&context_path)

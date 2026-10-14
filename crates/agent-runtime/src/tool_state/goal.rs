@@ -200,7 +200,24 @@ pub fn render_continuation_prompt(
     continuation_index: u32,
     max_continuations: u32,
 ) -> String {
-    let goal_json = serde_json::to_string_pretty(snapshot).unwrap_or_else(|_| "{}".to_string());
+    let goal_json = serde_json::to_string_pretty(snapshot)
+        .unwrap_or_else(|_| {
+            // Unreachable with the current all-infallibly-serializable
+            // fields, but the fallback replacing the whole state with `{}`
+            // must at least be observable if it ever fires.
+            tracing::warn!(
+                target: "codesmith::goal",
+                "goal snapshot serialization failed; continuation prompt gets empty state"
+            );
+            "{}".to_string()
+        })
+        // `objective`/`evidence`/`blocker` are model-controlled strings
+        // landing inside a ```json fence; a backtick run in them could
+        // close the fence for consumers that don't parse Markdown
+        // strictly, restructuring the instruction block that drives
+        // continuation decisions. This is prompt text, not a stored
+        // record — defusing backticks loses nothing durable.
+        .replace('`', "'");
     format!(
         "{}\n\n## Active Goal State\n\n```json\n{}\n```\n\nContinuation pass: {}/{}.\nIf the goal is complete, call `update_goal` with `status: \"complete\"` and concrete evidence. If it is blocked, call `update_goal` with `status: \"blocked\"` and the blocker. Otherwise continue making progress toward the objective.",
         crate::prompts::GOAL_CONTINUATION_PROMPT.trim(),

@@ -267,7 +267,20 @@ fn shell_execution_scrubs_git_fsmonitor_and_hookspath() {
     }
 
     assert_eq!(result.status, ShellStatus::Completed);
-    assert_eq!(result.stdout, "2\ncore.fsmonitor\n\ncore.hooksPath\n\n");
+    let lines: Vec<&str> = result.stdout.trim_end_matches('\n').split('\n').collect();
+    assert_eq!(lines[0], "2");
+    assert_eq!(lines[1], "core.fsmonitor");
+    // Explicit boolean disable; the empty value only worked because git
+    // parses "" as false.
+    assert_eq!(lines[2], "false");
+    assert_eq!(lines[3], "core.hooksPath");
+    // hooksPath has no "off" spelling — it points at the (never created)
+    // owner-only disabled dir so the hook lookup deterministically fails.
+    assert!(
+        lines[4].ends_with("hooks-disabled") && lines[4].contains(".codesmith"),
+        "hooksPath points at the disabled dir: {}",
+        lines[4]
+    );
 }
 
 #[test]

@@ -35,7 +35,7 @@ struct SandboxRunResponse {
 ///
 /// Manual `Debug` so the API key never prints in plaintext.
 pub struct OpenSandboxBackend {
-    base_url: String,
+    base_url: reqwest::Url,
     api_key: Option<String>,
     timeout_secs: u64,
     client: reqwest::Client,
@@ -44,7 +44,7 @@ pub struct OpenSandboxBackend {
 impl std::fmt::Debug for OpenSandboxBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OpenSandboxBackend")
-            .field("base_url", &self.base_url)
+            .field("base_url", &self.base_url.as_str())
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("timeout_secs", &self.timeout_secs)
             .finish()
@@ -59,13 +59,35 @@ impl OpenSandboxBackend {
     /// `Authorization: Bearer <key>` when set. `timeout_secs` controls the
     /// HTTP request timeout.
     pub fn new(base_url: String, api_key: Option<String>, timeout_secs: u64) -> Result<Self> {
+        // Parse once and fail fast: the URL is built by string
+        // concatenation downstream, so a misconfigured value with an
+        // embedded path/query or a non-HTTP scheme would silently target a
+        // completely different endpoint — one this adapter sends the Bearer
+        // key and shell commands to.
+        let base = reqwest::Url::parse(base_url.trim_end_matches('/'))
+            .with_context(|| format!("invalid OpenSandbox base URL: {base_url:?}"))?;
+        if !matches!(base.scheme(), "http" | "https") {
+            anyhow::bail!("invalid OpenSandbox base URL {base_url:?}: scheme must be http(s)");
+        }
+        if api_key.is_some() && base.scheme() != "https" {
+            // Plaintext HTTP would expose the bearer token on the wire;
+            // loopback is the one reasonable local-dev exception.
+            if base.host_str() != Some("localhost")
+                && !base.host_str().is_some_and(|h| h.starts_with("127."))
+            {
+                anyhow::bail!(
+                    "refusing to send the OpenSandbox API key over plaintext HTTP to {base_url:?}; \
+                     use https or a loopback host"
+                );
+            }
+        }
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
             .build()
             .context("failed to construct HTTP client for OpenSandbox backend")?;
 
         Ok(Self {
-            base_url,
+            base_url: base,
             api_key,
             timeout_secs,
             client,
@@ -74,7 +96,18 @@ impl OpenSandboxBackend {
 
     /// Build the full URL for the sandbox run endpoint.
     fn run_url(&self) -> String {
-        format!("{}/v1/sandbox/run", self.base_url.trim_end_matches('/'))
+        // Append the endpoint path onto the parsed base (string-append
+        // semantics: `{base}/v1/sandbox/run`), dropping any query/fragment
+        // the configured base carried so a misconfigured value cannot
+        // smuggle parameters into the request URL.
+        let mut url = self.base_url.clone();
+        url.set_path(&format!(
+            "{}/v1/sandbox/run",
+            self.base_url.path().trim_end_matches('/')
+        ));
+        url.set_query(None);
+        url.set_fragment(None);
+        url.to_string()
     }
 }
 

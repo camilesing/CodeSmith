@@ -65,6 +65,15 @@ impl CommandSegment {
     /// redirections (`operator target`) appended. Quotes are already
     /// resolved in argv, so a quoted `&&` inside an argument stays inside
     /// the segment instead of splitting it.
+    ///
+    /// # This is a matching key, not shell
+    ///
+    /// The result does **not** round-trip to shell: argv tokens with quotes
+    /// resolved are joined unquoted (so quoted data is indistinguishable
+    /// from control syntax), and flattened substitution placeholders
+    /// (`$(…)`, backticks) are inlined verbatim. Consumers must treat it as
+    /// an opaque string for allow/deny matching only — never re-parse,
+    /// re-execute, or otherwise interpret it as shell syntax.
     pub fn command_string(&self) -> String {
         let mut parts: Vec<String> = self.argv.clone();
         for redirect in &self.redirects {

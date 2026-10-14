@@ -194,12 +194,16 @@ fn redact_home(text: &str) -> String {
 /// and `token`/`secret` (`_` is a word character). The compounds allow
 /// whitespace separators too (`api[\s_-]?key`): the most common provider
 /// phrasing is "invalid API key: sk-…", and over-masking is the safe
-/// direction for an outbound scrubber.
+/// direction for an outbound scrubber. Bare query-parameter credential
+/// names (`?key=…` Gemini, `?sig=`/`?signature=` signed URLs) and plurals
+/// (`api_keys=`) are covered by the `keys?`/`sig`/`signature` members —
+/// a `key=`/`sig=` param IS a credential, so masking it is the declared
+/// safe direction, not collateral.
 fn redact_credentials(text: &str) -> String {
     static CREDENTIAL_RUN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re = CREDENTIAL_RUN.get_or_init(|| {
         regex::Regex::new(
-            r#"(?i)\bauthorization\b["']?\s*[:=][^\n]*|\b(?:api[\s_-]?key|access[\s_-]?token|refresh[\s_-]?token|client[\s_-]?secret|token|secret|password)["']?\s*[:=]\s*\S+|\bbearer\s+\S+"#,
+            r#"(?i)\bauthorization\b["']?\s*[:=][^\n]*|\b(?:api[\s_-]?keys?|access[\s_-]?keys?|access[\s_-]?tokens?|refresh[\s_-]?tokens?|client[\s_-]?secrets?|signature|sig|keys?|tokens?|secrets?|passwords?|passwd|pwd)["']?\s*[:=]\s*\S+|\bbearer\s+\S+"#,
         )
         .expect("static credential regex compiles")
     });
@@ -309,7 +313,12 @@ pub(crate) fn resolve_analysis_target(
         }
         None => Err(match main_err {
             Some(cause) => {
-                format!("no LLM client resolved (main and utility both unavailable; main: {cause})")
+                // Same scrub as transport errors: the resolution cause can
+                // quote provider config (base URLs, key material).
+                format!(
+                    "no LLM client resolved (main and utility both unavailable; main: {})",
+                    redact_outbound(&cause)
+                )
             }
             None => "no LLM client resolved (main and utility both unavailable)".to_string(),
         }),
@@ -355,7 +364,16 @@ Apply the analysis contract from your instructions."
     let response =
         match tokio::time::timeout(timeout_duration, client.create_message(request)).await {
             Ok(Ok(response)) => response,
-            Ok(Err(err)) => return Err(format!("request failed: {err}")),
+            Ok(Err(err)) => {
+                // Transport error Display implementations routinely embed
+                // the request URL, and several providers authenticate via
+                // query string — the failure text must pass the outbound
+                // scrubber before it becomes user-visible output.
+                return Err(format!(
+                    "request failed: {}",
+                    redact_outbound(&err.to_string())
+                ));
+            }
             Err(_) => return Err(format!("timed out after {ANALYSIS_TIMEOUT_SECS}s")),
         };
     codesmith_agent_runtime::cost_status::report(model, &response.usage);

@@ -50,6 +50,14 @@ pub async fn list(workspace: &std::path::Path) -> Result<Vec<SnapshotRow>, Strin
 
 /// Restore the workspace to one snapshot.
 pub async fn restore(workspace: &std::path::Path, id: String) -> Result<(), String> {
+    // `restore` feeds the id into `git checkout <id> -- :/` and deletes
+    // working-tree paths — a destructive whole-tree operation. The id must
+    // be a hex object name: anything else (including a leading `-`, which
+    // git parses as an option) is rejected at this boundary, before the
+    // repo is even opened.
+    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!("not a snapshot id: {id}"));
+    }
     let workspace = workspace.to_path_buf();
     tokio::task::spawn_blocking(move || {
         let repo = SnapshotRepo::open_or_init(&workspace).map_err(describe_open_error)?;

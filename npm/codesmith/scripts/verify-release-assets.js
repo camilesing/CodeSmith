@@ -1,6 +1,5 @@
 const crypto = require("crypto");
 const https = require("https");
-const http = require("http");
 const {
   allAssetNames,
   allReleaseAssetNames,
@@ -9,6 +8,17 @@ const {
 } = require("./artifacts");
 
 const pkg = require("../package.json");
+
+// This script's whole purpose is release integrity verification, so it
+// refuses plaintext HTTP for the initial URL and for every redirect target
+// — an https -> http downgrade would let a MITM serve a tampered manifest.
+// Plain HTTP is allowed only when CODESMITH_RELEASE_BASE_URL is explicitly
+// overridden (local testing against a staging origin).
+function requireHttps(url) {
+  if (!url.startsWith("https:") && !process.env.CODESMITH_RELEASE_BASE_URL) {
+    throw new Error(`Refusing insecure HTTP request: ${url}`);
+  }
+}
 
 function resolveBinaryVersion() {
   const configuredVersion =
@@ -22,11 +32,21 @@ function resolveRepo() {
   return process.env.CODESMITH_GITHUB_REPO || "camilesing/CodeSmith";
 }
 
+function clientFor(url) {
+  requireHttps(url);
+  if (url.startsWith("https:")) {
+    return https;
+  }
+  // Only reachable when CODESMITH_RELEASE_BASE_URL is explicitly
+  // overridden (see requireHttps) — local testing against a staging origin.
+  return require("http");
+}
+
 function requestStatus(url, method = "HEAD", redirects = 0) {
   if (redirects > 10) {
     throw new Error(`Too many redirects while checking ${url}`);
   }
-  const client = url.startsWith("https:") ? https : http;
+  const client = clientFor(url);
   return new Promise((resolve, reject) => {
     const req = client.request(
       url,
@@ -64,7 +84,7 @@ async function verifyAsset(url, label) {
 }
 
 async function downloadText(url, redirects = 0) {
-  const client = url.startsWith("https:") ? https : http;
+  const client = clientFor(url);
   return new Promise((resolve, reject) => {
     client
       .get(

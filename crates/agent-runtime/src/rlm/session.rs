@@ -110,15 +110,37 @@ impl Default for RlmSessionConfig {
     }
 }
 
-pub fn write_context_file(body: &str) -> std::io::Result<PathBuf> {
-    let dir = std::env::temp_dir().join("deepseek_rlm_ctx");
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join(format!(
-        "session_{}_{}.txt",
+/// Stage prompt/transcript data for the Python REPL under an unpredictable
+/// per-call directory with owner-only permissions: the staged text is
+/// sensitive, and a fixed shared name under the system temp dir is
+/// world-readable under the default umask and a pre-creation/symlink target
+/// for other local users. `create_dir` (not `create_dir_all`) fails loud if
+/// the exact directory already exists.
+pub async fn write_context_file(body: &str) -> std::io::Result<PathBuf> {
+    let dir = std::env::temp_dir().join(format!(
+        "deepseek_rlm_ctx_{}_{}",
         std::process::id(),
         Uuid::new_v4().simple()
     ));
-    std::fs::write(&path, body)?;
+    let path = dir.join("context.txt");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::create_dir(&dir).await?;
+        tokio::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).await?;
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .await?;
+        tokio::io::AsyncWriteExt::write_all(&mut file, body.as_bytes()).await?;
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::fs::create_dir(&dir).await?;
+        tokio::fs::write(&path, body).await?;
+    }
     Ok(path)
 }
 

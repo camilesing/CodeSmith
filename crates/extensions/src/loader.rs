@@ -53,13 +53,22 @@ pub(crate) fn write_sha256_sidecar(dylib: &Path) -> Result<(), ExtensionError> {
 /// `Library::new` maps file bytes straight to executable code, so a swapped
 /// artifact must never reach it. Dylibs installed before the sidecar
 /// existed — and bare dylib sources — have no sidecar and load unchanged.
+///
+/// Known limitation: a `NotFound` sidecar only downgrades the load to
+/// unverified with a warning. Under the "silently swapped artifact" threat
+/// model an attacker with write access to the dylib almost certainly can
+/// also delete its sibling sidecar — deleting the attestation defeats the
+/// gate. Anchoring digests outside the dylib's directory (a manifest the
+/// loader owns) would close that; it is deliberately not built yet.
 fn verify_dylib_integrity(path: &Path) -> Result<(), ExtensionError> {
     let sidecar = sha256_sidecar_path(path);
     let expected = match std::fs::read_to_string(&sidecar) {
         Ok(content) => content.trim().to_string(),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            tracing::debug!(
-                "dylib {} has no sha256 sidecar; loading unverified",
+            tracing::warn!(
+                "dylib {} has no sha256 sidecar; loading UNVERIFIED (an attacker \
+                 with write access to the dylib can delete the sidecar to reach \
+                 this path)",
                 path.display()
             );
             return Ok(());

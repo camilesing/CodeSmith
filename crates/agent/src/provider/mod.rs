@@ -392,11 +392,17 @@ impl ProviderAlias {
 
 /// Validate a provider-alias `base_url` override: https on any host (the
 /// user opted into the gateway), or http on a **loopback** host only
-/// (local gateways: Ollama, vLLM, LM Studio). The host must match exactly
-/// after stripping the port and IPv6 brackets — a prefix check would let
-/// `http://localhost.evil.example` through. Anything else could redirect
-/// the user's provider credentials and full prompts to an
-/// attacker-controlled host.
+/// (local gateways: Ollama, vLLM, LM Studio). Anything else could redirect
+/// the user's provider credentials and full prompts to an attacker-
+/// controlled host.
+///
+/// Parsed with the same `url` crate the HTTP clients use (via
+/// `reqwest::Url`, a re-export) so validation and the client can never
+/// disagree about what the "host" is — the previous string-splitting had
+/// exactly such divergences: text after the closing IPv6 bracket was
+/// ignored (`http://[::1].evil.example/v1` passed), and exact-equality
+/// host matching rejected loopback spellings real clients accept
+/// (`127.0.0.2`, `::ffff:127.0.0.1`, expanded `0:0:0:0:0:0:0:1`).
 pub fn validate_alias_base_url(url: &str) -> Result<(), String> {
     let reject = |reason: &str| {
         Err(format!(
@@ -405,31 +411,31 @@ pub fn validate_alias_base_url(url: &str) -> Result<(), String> {
              user's api_key and full prompts to this URL"
         ))
     };
-    let Some((scheme, rest)) = url.split_once("://") else {
-        return reject(" (no scheme)");
+    let parsed = match reqwest::Url::parse(url) {
+        Ok(u) => u,
+        Err(_) => return reject(" (unparseable URL)"),
     };
+    // Userinfo is not allowed: `http://user:pass@host` buries credentials
+    // in the URL and confuses "which host did the user mean" reasoning.
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return reject(" (userinfo not allowed)");
+    }
+    let scheme = parsed.scheme();
     if scheme.eq_ignore_ascii_case("https") {
         return Ok(());
     }
     if !scheme.eq_ignore_ascii_case("http") {
         return reject(" (not http(s))");
     }
-    let host_port = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    // Userinfo is not allowed: in `http://localhost:11434@evil.example`
-    // the colon split below would extract `localhost` and accept it as
-    // loopback, while the HTTP client parses the authority with host
-    // `evil.example` — same hole through the IPv6 bracket branch for
-    // `http://[::1]@evil.example`.
-    if host_port.contains('@') {
-        return reject(" (userinfo not allowed)");
-    }
-    let host = if let Some(bracketed) = host_port.strip_prefix('[') {
-        // [::1] or [::1]:port
-        bracketed.split(']').next().unwrap_or_default()
-    } else {
-        host_port.rsplit_once(':').map_or(host_port, |(h, _)| h)
+    let host = parsed.host_str().unwrap_or_default();
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    let loopback = match bare.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => ip.is_loopback(),
+        Ok(std::net::IpAddr::V6(ip)) => {
+            ip.is_loopback() || ip.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback())
+        }
+        Err(_) => bare.eq_ignore_ascii_case("localhost"),
     };
-    let loopback = host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1";
     if loopback {
         Ok(())
     } else {
@@ -485,6 +491,17 @@ impl ProviderFactory for AliasingFactory {
         }
         if let Some(h) = &self.http_headers {
             cfg.http_headers = h.clone();
+        }
+        // Validate the *effective* URL on every path, not only when the
+        // alias overrides base_url: without an override the host-supplied
+        // `cfg.base_url` flows straight into `target.build()`, and the
+        // https/loopback guarantee cannot rest on host diligence alone.
+        // An empty value means the target's own default endpoint and is
+        // left to the target.
+        if !cfg.base_url.trim().is_empty()
+            && let Err(reason) = validate_alias_base_url(&cfg.base_url)
+        {
+            bail!("provider alias '{}': {reason}", self.id.as_str());
         }
         target.build(&cfg)
     }
@@ -777,6 +794,10 @@ mod tests {
             "http://127.0.0.1.evil.example/v1",
             "http://localhost:11434@evil.example/v1",
             "http://[::1]@evil.example/v1",
+            // Text after the closing IPv6 bracket: unparseable as a URL
+            // under the same parser the HTTP client uses — rejected here
+            // instead of accepted and deferred to client leniency.
+            "http://[::1].evil.example/v1",
             "http://attacker.example/v1",
             "ftp://attacker.example/v1",
             "attacker.example/v1",
@@ -802,8 +823,12 @@ mod tests {
             "HTTPS://gw.example.test/v1",
             "http://localhost:11434/v1",
             "http://127.0.0.1:8000/v1",
+            "http://127.0.0.2/v1",
             "http://[::1]:1234/v1",
             "http://[::1]/v1",
+            // Loopback spellings real HTTP clients accept.
+            "http://[::ffff:127.0.0.1]/v1",
+            "http://[0:0:0:0:0:0:0:1]/v1",
         ] {
             alias.base_url = Some(good.to_string());
             assert!(
@@ -849,5 +874,30 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("my-gw"), "names the alias id: {msg}");
         assert!(msg.contains("openai"), "names the target id: {msg}");
+    }
+
+    #[test]
+    fn aliasing_factory_validates_host_passthrough_base_url() {
+        // Without a base_url override the host-supplied value flows into
+        // the target build — the https/loopback rule must hold on that
+        // path too, not only on the override path.
+        let shared = SharedProviderRegistry::new();
+        let _target = shared.register(Arc::new(EchoFactory {
+            id: ProviderId::from("openai"),
+        }));
+        let mut alias = alias_for("my-gw", "openai");
+        // No base_url override: the host-supplied value is the effective
+        // one, and must be validated on that passthrough path.
+        alias.base_url = None;
+        let factory = alias.into_factory(shared.clone()).expect("valid alias");
+        let _alias = shared.register(Arc::new(factory));
+        let mut cfg = cfg_for(ProviderId::from("my-gw"));
+        cfg.base_url = "http://attacker.example/v1".to_string();
+        let err = shared
+            .build(&cfg)
+            .err()
+            .expect("host-supplied non-loopback http base_url must fail at build");
+        let msg = err.to_string();
+        assert!(msg.contains("attacker.example"), "names the URL: {msg}");
     }
 }

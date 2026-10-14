@@ -125,8 +125,16 @@ pub fn load_default_policy() -> Result<Option<ExecPolicyConfig>> {
     let Some(path) = default_execpolicy_path() else {
         return Ok(None);
     };
-    if !path.exists() {
-        return Ok(None);
+    // `exists()` conflates "file absent" with any stat failure — a
+    // permission error on `~/.codesmith` must not silently disable
+    // allow/deny enforcement. Only `NotFound` means "no policy".
+    match std::fs::metadata(&path) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(anyhow::Error::new(e)
+                .context(format!("failed to stat execpolicy file {}", path.display())));
+        }
     }
     ExecPolicyConfig::from_path(&path).map(Some)
 }
