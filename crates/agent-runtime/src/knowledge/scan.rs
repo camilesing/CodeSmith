@@ -99,24 +99,18 @@ pub fn parse_frontmatter(content: &str) -> (Frontmatter, &str) {
     let after_first = &trimmed[3..];
     let rest = after_first.trim_start_matches('\n');
     let closing_delim = "\n---";
-    let closing_pos = rest.find(closing_delim).or_else(|| {
-        // Handle case where closing --- is at end of file without trailing newline.
-        if rest.ends_with("---") {
-            Some(rest.len() - 3)
-        } else {
-            None
-        }
-    });
-
-    if closing_pos.is_none() {
-        return (Frontmatter::default(), content);
-    }
-
-    let closing_pos = closing_pos.unwrap();
-    let frontmatter_text = &rest[..closing_pos];
-    // Skip the closing delimiter ("\n---" = 4 chars) and any leading newlines.
-    let body_start = closing_pos + closing_delim.len();
-    let body = rest[body_start..].trim_start_matches('\n');
+    let (frontmatter_text, body) = match rest.find(closing_delim) {
+        Some(pos) => (
+            &rest[..pos],
+            // Skip the closing delimiter ("\n---" = 4 chars) and any
+            // leading newlines.
+            rest[pos + closing_delim.len()..].trim_start_matches('\n'),
+        ),
+        // Closing `---` at end of input without a trailing newline —
+        // nothing follows the delimiter, so the body is empty.
+        None if rest.ends_with("---") => (&rest[..rest.len() - 3], ""),
+        None => return (Frontmatter::default(), content),
+    };
 
     let fm = parse_frontmatter_lines(frontmatter_text);
     (fm, body)
@@ -254,6 +248,19 @@ type: unknown_type
 Body.";
         let (fm, _) = parse_frontmatter(content);
         assert!(fm.memory_type.is_none());
+    }
+
+    #[test]
+    fn parse_frontmatter_closing_delimiter_at_eof_does_not_panic() {
+        // Regression: the `ends_with("---")` fallback used to skip 4 bytes
+        // for a 3-byte trailing delimiter, slicing past the end of the
+        // input and panicking on any memory file without a final newline.
+        let (fm, body) = parse_frontmatter("---\n---");
+        assert!(fm.name.is_none());
+        assert_eq!(body, "");
+
+        let (fm, _) = parse_frontmatter("---\nname: a---");
+        assert_eq!(fm.name.as_deref(), Some("a"));
     }
 
     #[test]

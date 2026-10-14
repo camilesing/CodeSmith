@@ -24,7 +24,7 @@
 // its site. Mirrors the `child_env` file-local allow pattern.
 #![allow(unsafe_code)]
 
-use super::{CommandSpec, SandboxPolicy};
+use super::SandboxPolicy;
 use std::ffi::CString;
 use std::path::Path;
 
@@ -280,30 +280,6 @@ impl Drop for LandlockSandbox {
             libc::close(self.ruleset_fd);
         }
     }
-}
-
-/// Create a helper script that sets up Landlock before running the command.
-///
-/// Since Landlock restricts the current process, we need a helper that:
-/// 1. Sets up the Landlock ruleset
-/// 2. Applies the restrictions
-/// 3. Execs the target command
-///
-/// This returns the command to run with the helper.
-#[cfg(target_os = "linux")]
-pub fn create_landlock_wrapper(
-    spec: &CommandSpec,
-    _writable_paths: &[std::path::PathBuf],
-    _readable_paths: &[std::path::PathBuf],
-) -> Vec<String> {
-    // For simplicity, we'll use a shell wrapper that applies Landlock via a helper binary
-    // In production, this would be a compiled binary that's part of the CLI
-
-    // For now, just return the original command without sandboxing
-    // A full implementation would include a compiled landlock-helper binary
-    let mut cmd = vec![spec.program.clone()];
-    cmd.extend(spec.args.clone());
-    cmd
 }
 
 /// Detect if a failure was caused by Landlock or seccomp denial.

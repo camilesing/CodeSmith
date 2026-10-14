@@ -298,8 +298,15 @@ fn generate_write_policy(policy: &SandboxPolicy, cwd: &Path) -> String {
         return String::new();
     }
 
-    // Combine all write policies with allow
-    format!("(allow file-write*\n  {})", policies.join("\n  "))
+    // SBPL ANDs every filter inside a single `allow`, so disjoint roots
+    // joined under one statement would require a path to be under all of
+    // them at once — silently denying every write. Emit one allow
+    // statement per root (or per root+exceptions group) instead.
+    policies
+        .iter()
+        .map(|p| format!("(allow file-write* {p})"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Generate parameter definitions for variable substitution in the policy.
@@ -464,6 +471,30 @@ mod tests {
         assert!(result.contains("(allow file-read*)"));
         // Should not have workspace write rules
         assert!(!result.contains("WRITABLE_ROOT"));
+    }
+
+    #[test]
+    fn test_multi_root_write_policy_emits_one_allow_per_root() {
+        // SBPL ANDs every filter inside a single `allow` statement, so
+        // disjoint writable roots joined under one allow would deny ALL
+        // writes (a path cannot sit under two roots at once). Each root
+        // must get its own `(allow file-write* …)`.
+        let policy = SandboxPolicy::workspace_with_roots(
+            vec![
+                PathBuf::from("/tmp/codesmith-seatbelt-root-a"),
+                PathBuf::from("/tmp/codesmith-seatbelt-root-b"),
+            ],
+            false,
+        );
+        let cwd = Path::new("/tmp/codesmith-seatbelt-cwd");
+        let write_policy = generate_write_policy(&policy, cwd);
+
+        // Two explicit roots + the cwd itself.
+        assert_eq!(
+            write_policy.matches("(allow file-write*").count(),
+            3,
+            "expected one allow statement per writable root, got:\n{write_policy}"
+        );
     }
 
     #[test]

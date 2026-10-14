@@ -598,6 +598,16 @@ async fn sync_one_skill(
     cache_dir: &Path,
     max_size: u64,
 ) -> SkillSyncOutcome {
+    // Registry keys come straight from the remote index.json; a key like
+    // `../evil` must be rejected before any cache-dir join below — the
+    // tarball branch remove_dir_all's its destination.
+    if validate_skill_name_segment(name).is_err() {
+        return SkillSyncOutcome::Failed {
+            name: name.to_string(),
+            reason: format!("registry key '{name}' is not a path-safe skill name"),
+        };
+    }
+
     // Resolve the source to a concrete URL list.
     let source = match InstallSource::parse(&entry.source) {
         Ok(s) => s,
@@ -1802,5 +1812,31 @@ mod tests {
             source_spec_string(&InstallSource::Registry("x".into())),
             "x"
         );
+    }
+
+    #[tokio::test]
+    async fn sync_rejects_non_path_safe_registry_key() {
+        // A registry key like `../evil` comes straight from the remote
+        // index.json; it must be rejected before any cache-dir join —
+        // the tarball branch remove_dir_all's its destination.
+        let entry = RegistryEntry {
+            source: "github:octocat/skill".to_string(),
+            description: None,
+        };
+        let outcome = sync_one_skill(
+            "../evil",
+            &entry,
+            &NetworkPolicy::default(),
+            Path::new("/tmp/codesmith-skill-cache-test"),
+            1024,
+        )
+        .await;
+        match outcome {
+            SkillSyncOutcome::Failed { name, reason } => {
+                assert_eq!(name, "../evil");
+                assert!(reason.contains("path-safe"), "got: {reason}");
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
     }
 }
