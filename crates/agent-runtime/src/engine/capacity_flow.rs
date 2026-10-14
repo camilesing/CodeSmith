@@ -152,7 +152,7 @@ pub(crate) fn latest_user_and_verified(messages: &[Message]) -> (Option<Message>
 /// model sees the reset on the next request within the same turn (the loop
 /// `continue`s and rebuilds the request from `history.messages()`).
 pub(crate) fn reset_history_to_latest_user_and_verified(history: &mut dyn ChatHistory) {
-    let kept = kept_verify_and_replan_messages(history.messages());
+    let kept = kept_verify_and_replan_messages(&history.messages());
     history.replace_all("verify-and-replan reset", kept);
 }
 
@@ -533,13 +533,13 @@ pub(crate) async fn replay_and_push_verification_note(
     tool_registry: Option<&dyn ToolDispatcher>,
     system: Option<&SystemPrompt>,
 ) -> Option<ReplayOutcome> {
-    let candidate = select_replay_candidate_from_messages(history.messages(), tool_registry)?;
+    let candidate = select_replay_candidate_from_messages(&history.messages(), tool_registry)?;
     let registry = tool_registry?;
 
     // Capture the pre-intervention token level BEFORE the verification note
     // lands in the transcript — mirrors `TargetedRefreshOutcome`'s
     // `before_tokens` (the post-`run` emit would otherwise under-report).
-    let before_tokens = estimate_input_tokens_conservative(history.messages(), system);
+    let before_tokens = estimate_input_tokens_conservative(&history.messages(), system);
 
     let replay_result = registry
         .execute(&candidate.name, candidate.input.clone(), None)

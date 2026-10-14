@@ -147,7 +147,7 @@ impl DefaultAgentExecutor {
             let api_tools = tools.to_api_tools();
             let request = MessageRequest {
                 model: client.model().to_string(),
-                messages: history.messages().to_vec(),
+                messages: history.messages(),
                 max_tokens,
                 system: system.clone(),
                 tools: if api_tools.is_empty() {
