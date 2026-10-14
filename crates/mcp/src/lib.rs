@@ -917,7 +917,8 @@ fn dispatch_stdio_request(
                 )));
             }
             if !state.running.get(&parsed.name).copied().unwrap_or(false) {
-                state.manager
+                state
+                    .manager
                     .register_server(
                         definition.config.clone(),
                         definition.filter.clone(),
@@ -1107,11 +1108,13 @@ mod tests {
     #[test]
     fn manager_start_all_marks_ready_for_registered_clients() {
         let mut manager = McpManager::default();
-        manager.register_server(
-            make_server_config("s1"),
-            ToolFilter::default(),
-            Box::new(InMemoryMcpClient::default().with_tool("t", json!(null))),
-        ).unwrap();
+        manager
+            .register_server(
+                make_server_config("s1"),
+                ToolFilter::default(),
+                Box::new(InMemoryMcpClient::default().with_tool("t", json!(null))),
+            )
+            .unwrap();
         let mut events = Vec::new();
         let summary = manager.start_all(|e| events.push(e));
         assert_eq!(summary.ready, vec!["s1"]);
@@ -1129,11 +1132,13 @@ mod tests {
     #[test]
     fn manager_start_all_marks_failed_when_client_missing() {
         let mut manager = McpManager::default();
-        manager.register_server(
-            make_server_config("s1"),
-            ToolFilter::default(),
-            Box::new(InMemoryMcpClient::default()),
-        ).unwrap();
+        manager
+            .register_server(
+                make_server_config("s1"),
+                ToolFilter::default(),
+                Box::new(InMemoryMcpClient::default()),
+            )
+            .unwrap();
         manager.stop_server("s1").unwrap();
         let summary = manager.start_all(|_| {});
         assert!(summary.ready.is_empty());
@@ -1146,11 +1151,13 @@ mod tests {
         let mut manager = McpManager::default();
         let mut cfg = make_server_config("s1");
         cfg.enabled = false;
-        manager.register_server(
-            cfg,
-            ToolFilter::default(),
-            Box::new(InMemoryMcpClient::default()),
-        ).unwrap();
+        manager
+            .register_server(
+                cfg,
+                ToolFilter::default(),
+                Box::new(InMemoryMcpClient::default()),
+            )
+            .unwrap();
         let summary = manager.start_all(|_| {});
         assert!(summary.ready.is_empty());
         assert_eq!(summary.cancelled, vec!["s1"]);
@@ -1162,14 +1169,16 @@ mod tests {
         let client = InMemoryMcpClient::default()
             .with_tool("allowed", json!(null))
             .with_tool("denied", json!(null));
-        manager.register_server(
-            make_server_config("s1"),
-            ToolFilter {
-                allow: vec!["allowed".to_string()],
-                deny: vec![],
-            },
-            Box::new(client),
-        ).unwrap();
+        manager
+            .register_server(
+                make_server_config("s1"),
+                ToolFilter {
+                    allow: vec!["allowed".to_string()],
+                    deny: vec![],
+                },
+                Box::new(client),
+            )
+            .unwrap();
         let tools = manager.list_tools().unwrap();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].tool_name, "allowed");
@@ -1181,14 +1190,16 @@ mod tests {
         let client = InMemoryMcpClient::default()
             .with_tool("a", json!(null))
             .with_tool("b", json!(null));
-        manager.register_server(
-            make_server_config("s1"),
-            ToolFilter {
-                allow: vec!["a".to_string(), "b".to_string()],
-                deny: vec!["b".to_string()],
-            },
-            Box::new(client),
-        ).unwrap();
+        manager
+            .register_server(
+                make_server_config("s1"),
+                ToolFilter {
+                    allow: vec!["a".to_string(), "b".to_string()],
+                    deny: vec!["b".to_string()],
+                },
+                Box::new(client),
+            )
+            .unwrap();
         let tools = manager.list_tools().unwrap();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].tool_name, "a");
@@ -1197,11 +1208,13 @@ mod tests {
     #[test]
     fn manager_call_tool_delegates_to_client() {
         let mut manager = McpManager::default();
-        manager.register_server(
-            make_server_config("s1"),
-            ToolFilter::default(),
-            Box::new(InMemoryMcpClient::default().with_tool("t", json!({"v": 42}))),
-        ).unwrap();
+        manager
+            .register_server(
+                make_server_config("s1"),
+                ToolFilter::default(),
+                Box::new(InMemoryMcpClient::default().with_tool("t", json!({"v": 42}))),
+            )
+            .unwrap();
         let result = manager.call_tool("s1", "t", json!({})).unwrap();
         assert_eq!(result["v"], 42);
     }
@@ -1216,11 +1229,13 @@ mod tests {
     #[test]
     fn manager_call_qualified_tool_parses_name() {
         let mut manager = McpManager::default();
-        manager.register_server(
-            make_server_config("my_server"),
-            ToolFilter::default(),
-            Box::new(InMemoryMcpClient::default().with_tool("my_tool", json!({"ok": true}))),
-        ).unwrap();
+        manager
+            .register_server(
+                make_server_config("my_server"),
+                ToolFilter::default(),
+                Box::new(InMemoryMcpClient::default().with_tool("my_tool", json!({"ok": true}))),
+            )
+            .unwrap();
         let result = manager
             .call_qualified_tool("mcp__my_server__my_tool", json!({}))
             .unwrap();
@@ -1232,11 +1247,13 @@ mod tests {
         let long_server = "server".repeat(20);
         let long_tool = "tool".repeat(20);
         let mut manager = McpManager::default();
-        manager.register_server(
-            make_server_config(&long_server),
-            ToolFilter::default(),
-            Box::new(InMemoryMcpClient::default().with_tool(&long_tool, json!({"ok": true}))),
-        ).unwrap();
+        manager
+            .register_server(
+                make_server_config(&long_server),
+                ToolFilter::default(),
+                Box::new(InMemoryMcpClient::default().with_tool(&long_tool, json!({"ok": true}))),
+            )
+            .unwrap();
         let tools = manager.list_tools().unwrap();
         let qualified = &tools[0].qualified_name;
         assert!(qualified.len() <= 64);
@@ -1249,11 +1266,13 @@ mod tests {
     #[test]
     fn manager_unregister_removes_server() {
         let mut manager = McpManager::default();
-        manager.register_server(
-            make_server_config("s1"),
-            ToolFilter::default(),
-            Box::new(InMemoryMcpClient::default()),
-        ).unwrap();
+        manager
+            .register_server(
+                make_server_config("s1"),
+                ToolFilter::default(),
+                Box::new(InMemoryMcpClient::default()),
+            )
+            .unwrap();
         manager.unregister_server("s1").unwrap();
         assert!(manager.configs.is_empty());
     }
@@ -1275,13 +1294,16 @@ mod tests {
     #[test]
     fn manager_list_resources_returns_from_clients() {
         let mut manager = McpManager::default();
-        manager.register_server(
-            make_server_config("s1"),
-            ToolFilter::default(),
-            Box::new(
-                InMemoryMcpClient::default().with_resource("mcp://s1/health", json!({"ok": true})),
-            ),
-        ).unwrap();
+        manager
+            .register_server(
+                make_server_config("s1"),
+                ToolFilter::default(),
+                Box::new(
+                    InMemoryMcpClient::default()
+                        .with_resource("mcp://s1/health", json!({"ok": true})),
+                ),
+            )
+            .unwrap();
         let resources = manager.list_resources().unwrap();
         assert_eq!(resources.len(), 1);
         assert_eq!(resources[0].server_name, "s1");
@@ -1290,13 +1312,16 @@ mod tests {
     #[test]
     fn manager_read_resource_delegates() {
         let mut manager = McpManager::default();
-        manager.register_server(
-            make_server_config("s1"),
-            ToolFilter::default(),
-            Box::new(
-                InMemoryMcpClient::default().with_resource("mcp://s1/health", json!({"ok": true})),
-            ),
-        ).unwrap();
+        manager
+            .register_server(
+                make_server_config("s1"),
+                ToolFilter::default(),
+                Box::new(
+                    InMemoryMcpClient::default()
+                        .with_resource("mcp://s1/health", json!({"ok": true})),
+                ),
+            )
+            .unwrap();
         let result = manager.read_resource("s1", "mcp://s1/health").unwrap();
         assert_eq!(result["ok"], true);
     }
@@ -1304,11 +1329,13 @@ mod tests {
     #[test]
     fn manager_update_sandbox_state_returns_notices() {
         let mut manager = McpManager::default();
-        manager.register_server(
-            make_server_config("s1"),
-            ToolFilter::default(),
-            Box::new(InMemoryMcpClient::default()),
-        ).unwrap();
+        manager
+            .register_server(
+                make_server_config("s1"),
+                ToolFilter::default(),
+                Box::new(InMemoryMcpClient::default()),
+            )
+            .unwrap();
         let notices = manager.update_sandbox_state("strict", "/tmp").unwrap();
         assert_eq!(notices.len(), 1);
         assert_eq!(notices[0]["server_name"], "s1");
