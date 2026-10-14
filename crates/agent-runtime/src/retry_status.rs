@@ -91,19 +91,22 @@ fn cell() -> &'static Mutex<RetryState> {
 const STALE_ACTIVE_GRACE: Duration = Duration::from_secs(30);
 
 /// Public read snapshot for renderers.
+///
+/// Poison recovery everywhere (not a silent `Err(_) => Idle`): after one
+/// panic while the lock is held, the whole surface would otherwise freeze —
+/// `snapshot()` lying "no retry" while a banner stays Active, and every
+/// mutator no-op'ing until process restart. `RetryState` is a plain enum
+/// with no panic-sensitive invariant, so recovering the guard is safe (the
+/// same recovery `test_guard` below already demonstrates).
 #[must_use]
 pub fn snapshot() -> RetryState {
-    match cell().lock() {
-        Ok(mut state) => {
-            if let RetryState::Active(banner) = &*state
-                && banner.deadline + STALE_ACTIVE_GRACE < Instant::now()
-            {
-                *state = RetryState::Idle;
-            }
-            state.clone()
-        }
-        Err(_) => RetryState::Idle,
+    let mut state = cell().lock().unwrap_or_else(|e| e.into_inner());
+    if let RetryState::Active(banner) = &*state
+        && banner.deadline + STALE_ACTIVE_GRACE < Instant::now()
+    {
+        *state = RetryState::Idle;
     }
+    state.clone()
 }
 
 /// Mark an in-flight retry. `attempt` is the number of the *upcoming*
@@ -115,35 +118,27 @@ pub fn start(attempt: u32, delay: Duration, reason: impl Into<String>) {
         deadline: Instant::now() + delay,
         reason: reason.into(),
     };
-    if let Ok(mut s) = cell().lock() {
-        *s = RetryState::Active(banner);
-    }
+    *cell().lock().unwrap_or_else(|e| e.into_inner()) = RetryState::Active(banner);
 }
 
 /// Mark the retry chain as having succeeded. Hides the banner.
 pub fn succeeded() {
-    if let Ok(mut s) = cell().lock() {
-        *s = RetryState::Idle;
-    }
+    *cell().lock().unwrap_or_else(|e| e.into_inner()) = RetryState::Idle;
 }
 
 /// Mark the retry chain as having exhausted retries. The renderer keeps
 /// the failure row until [`clear`] (typically called on `TurnStarted`).
 pub fn failed(reason: impl Into<String>) {
-    if let Ok(mut s) = cell().lock() {
-        *s = RetryState::Failed {
-            reason: reason.into(),
-            since: Instant::now(),
-        };
-    }
+    *cell().lock().unwrap_or_else(|e| e.into_inner()) = RetryState::Failed {
+        reason: reason.into(),
+        since: Instant::now(),
+    };
 }
 
 /// Reset to idle. Called on `TurnStarted` so the previous turn's
 /// failure row doesn't bleed into the next turn.
 pub fn clear() {
-    if let Ok(mut s) = cell().lock() {
-        *s = RetryState::Idle;
-    }
+    *cell().lock().unwrap_or_else(|e| e.into_inner()) = RetryState::Idle;
 }
 
 /// Test helper: serialize tests that touch the global state so cargo's

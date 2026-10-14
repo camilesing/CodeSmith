@@ -276,15 +276,32 @@ fn extract_balanced_segment(text: &str, open: char, close: char) -> Option<Strin
     let start = text.find(open)?;
     let mut depth = 0i32;
     let mut end = None;
+    // Track JSON string state while counting: a `}` inside a string value
+    // (`note {"a": "y}"} tail`) must not close the object — the extracted
+    // segment used to be the truncated `{"a": "y"}`, which parses
+    // successfully but has silently rewritten the argument value
+    // ("y}" → "y"), turning malformed model output into wrong-but-
+    // executable tool arguments via the fallback ladder.
+    let mut in_string = false;
+    let mut escaped = false;
     for (offset, ch) in text[start..].char_indices() {
-        if ch == open {
-            depth += 1;
-        } else if ch == close {
-            depth -= 1;
-            if depth == 0 {
-                end = Some(start + offset + ch.len_utf8());
-                break;
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' if in_string => escaped = true,
+            '"' => in_string = !in_string,
+            _ if in_string => {}
+            _ if ch == open => depth += 1,
+            _ if ch == close => {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(start + offset + ch.len_utf8());
+                    break;
+                }
             }
+            _ => {}
         }
     }
     end.map(|end_idx| text[start..end_idx].to_string())
@@ -452,6 +469,18 @@ pub fn mcp_tool_is_read_only(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extract_json_segment_ignores_braces_inside_strings() {
+        // The `}` inside the string value must not close the object — the
+        // truncated segment `{"a": "y"}` parses fine but has silently
+        // rewritten the argument value from `y}` to `y`.
+        let text = r#"note {"a": "y}"} tail"#;
+        assert_eq!(
+            extract_json_segment(text).as_deref(),
+            Some(r#"{"a": "y}"}"#)
+        );
+    }
 
     #[test]
     fn strict_policy_refuses_truncated_buffer_instead_of_repairing() {

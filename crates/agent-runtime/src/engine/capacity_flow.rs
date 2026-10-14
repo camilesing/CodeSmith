@@ -174,6 +174,14 @@ pub(crate) fn kept_verify_and_replan_messages(messages: &[Message]) -> Vec<Messa
         kept.push(msg);
     }
     let Some(verified) = latest_verified else {
+        if kept.is_empty() {
+            // No non-runtime user Text message anywhere (the transcript
+            // opens with engine notes, or the user turn carries only
+            // tool/image blocks): replacing with an empty list would
+            // destroy ALL residual context and most OpenAI-compatible
+            // providers reject a zero-message request outright.
+            kept.push(synthetic_continue_message());
+        }
         return kept;
     };
     match verification_call_message(messages, &verified) {
@@ -208,6 +216,20 @@ pub(crate) fn kept_verify_and_replan_messages(messages: &[Message]) -> Vec<Messa
         None => kept.push(flatten_tool_results_to_text(verified)),
     }
     kept
+}
+
+/// Wire-valid fallback anchor for a VerifyAndReplan reset that would
+/// otherwise produce an empty transcript — a plain user text message is
+/// always accepted, and the canonical state (goal/confirmed facts) rides
+/// in the system prompt rather than the transcript.
+fn synthetic_continue_message() -> Message {
+    Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "Continue the task from the canonical state.".to_string(),
+            cache_control: None,
+        }],
+    }
 }
 
 /// The assistant message whose `ToolUse` pairs with any `[verification
@@ -398,6 +420,16 @@ pub(crate) fn select_replay_candidate_from_messages(
                 && let Some((content, is_error)) = results.get(id.as_str())
                 && *is_error != Some(true)
                 && is_replayable_read_only(name, tool_registry)
+                // MCP tools are deliberately excluded on THIS transcript-
+                // based path: it re-executes through `registry.execute`
+                // only — no `mcp_pool`, no `tool_exec_lock` — so an MCP
+                // candidate would deterministically fail name resolution,
+                // be recorded as a replay error, and degrade the capacity
+                // risk model with a failed-verification note. The legacy
+                // `apply_verify_with_tool_replay` routes MCP candidates
+                // through `ensure_mcp_pool()` + the exec lock and keeps
+                // replaying them.
+                && !McpPool::is_mcp_tool(name)
             {
                 return Some(ReplayCandidate {
                     id: id.clone(),
@@ -1661,6 +1693,20 @@ impl Engine {
             .rev()
             .find_map(|msg| {
                 if msg.role != "user" {
+                    return None;
+                }
+                // Same runtime-note filter as `latest_user_and_verified`:
+                // engine-injected notes (verdict flushes, deliverables,
+                // sub-agent completions) are appended after the real query,
+                // and without this filter the newest note becomes the
+                // canonical goal — folded into the system prompt, persisted
+                // into the capacity memory record, and re-enshrined by
+                // `rehydrate_latest_canonical_state` on later sessions.
+                let is_runtime_note = msg.content.iter().any(|block| {
+                    matches!(block, ContentBlock::Text { text, .. }
+                        if text.starts_with(super::RUNTIME_EVENT_PREFIX))
+                });
+                if is_runtime_note {
                     return None;
                 }
                 msg.content.iter().find_map(|block| match block {

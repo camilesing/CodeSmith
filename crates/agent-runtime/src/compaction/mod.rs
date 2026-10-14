@@ -117,7 +117,33 @@ pub fn estimate_tokens_for_message(message: &Message, include_thinking: bool) ->
             ContentBlock::ToolUse { input, .. } => serde_json::to_string(input)
                 .map(|s| counter.count_text(&s))
                 .unwrap_or(100),
-            ContentBlock::ToolResult { content, .. } => counter.count_text(content),
+            ContentBlock::ToolResult {
+                content,
+                content_blocks,
+                ..
+            } => {
+                // Structured result blocks occupy context just like the
+                // fallback string — counting only `content` under-counted
+                // tool-result-heavy history and let compaction/pivot
+                // decisions trust a budget that was already overshot.
+                // Image blocks cost the fixed vision estimate, not their
+                // (tiny) JSON serialization.
+                let mut tokens = counter.count_text(content);
+                if let Some(blocks) = content_blocks {
+                    for block in blocks {
+                        tokens += if block.get("type").and_then(serde_json::Value::as_str)
+                            == Some("image")
+                        {
+                            crate::models::IMAGE_BLOCK_ESTIMATED_TOKENS
+                        } else {
+                            serde_json::to_string(block)
+                                .map(|s| counter.count_text(&s))
+                                .unwrap_or(100)
+                        };
+                    }
+                }
+                tokens
+            }
             // Vision providers tile images into fixed-size patches, so the
             // token cost is roughly size-independent (see
             // `IMAGE_BLOCK_ESTIMATED_TOKENS`).

@@ -15,12 +15,15 @@ use crate::mode::ReasoningEffort;
 /// Rules:
 /// - Sub-agent contexts (`is_subagent == true`) → `Low`
 /// - Last user message contains a high-effort keyword
-///   (English: `debug`, `error`; Chinese: 调试 / 错误 / 报错 / 出错 /
+///   (English: `debug`, `error`, `bug`; Chinese: 调试 / 错误 / 报错 / 出错 /
 ///   崩溃 / 調試 / 錯誤; Japanese: デバッグ / エラー / バグ) → `Max`
 /// - Last user message contains a low-effort keyword
 ///   (English: `search`, `lookup`; Chinese: 搜索 / 查找 / 查询;
 ///   Japanese: 検索) → `Low`
 /// - Everything else → `High`
+///
+/// ASCII keywords match on word boundaries and CJK keywords on substrings
+/// (see [`matches_keyword`]).
 #[must_use]
 pub fn select(is_subagent: bool, last_msg: &str) -> ReasoningEffort {
     if is_subagent {
@@ -29,15 +32,36 @@ pub fn select(is_subagent: bool, last_msg: &str) -> ReasoningEffort {
 
     let lower = last_msg.to_ascii_lowercase();
 
-    if HIGH_EFFORT_KEYWORDS.iter().any(|kw| lower.contains(kw)) {
+    if HIGH_EFFORT_KEYWORDS
+        .iter()
+        .any(|kw| matches_keyword(&lower, kw))
+    {
         return ReasoningEffort::Max;
     }
 
-    if LOW_EFFORT_KEYWORDS.iter().any(|kw| lower.contains(kw)) {
+    if LOW_EFFORT_KEYWORDS
+        .iter()
+        .any(|kw| matches_keyword(&lower, kw))
+    {
         return ReasoningEffort::Low;
     }
 
     ReasoningEffort::High
+}
+
+/// Keyword containment test. ASCII keywords match on word boundaries so a
+/// keyword cannot fire on an unrelated superstring — `"research this"`
+/// must not hit `search` (dropping an open-ended task to `Low`), and
+/// `"terror"` must not hit `error` (spiking to `Max`). CJK text has no
+/// word separators, so those keywords keep substring matching.
+fn matches_keyword(lower_haystack: &str, kw: &str) -> bool {
+    if kw.is_ascii() {
+        lower_haystack
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|word| word == kw)
+    } else {
+        lower_haystack.contains(kw)
+    }
 }
 
 /// Keywords that bump `reasoning_effort` to `Max`. Latin terms are
@@ -49,9 +73,12 @@ pub fn select(is_subagent: bool, last_msg: &str) -> ReasoningEffort {
 /// paying for Auto mode silently got `High` even on hard debugging
 /// tasks.
 const HIGH_EFFORT_KEYWORDS: &[&str] = &[
-    // English (unchanged from the original keyword set).
+    // English (the original keyword set, plus `bug` to keep parity with
+    // Japanese バグ below — safe under word-boundary matching, where the
+    // substring "bug" would otherwise collide with unrelated words).
     "debug",
     "error",
+    "bug",
     // Simplified / Traditional Chinese.
     "\u{8c03}\u{8bd5}", // 调试
     "\u{9519}\u{8bef}", // 错误
@@ -90,19 +117,32 @@ mod tests {
 
     #[test]
     fn debug_or_error_returns_max() {
-        assert_eq!(select(false, "find a bug"), ReasoningEffort::High);
+        // `bug` is a Max keyword (parity with Japanese バグ) — safe under
+        // word-boundary matching.
+        assert_eq!(select(false, "find a bug"), ReasoningEffort::Max);
         assert_eq!(select(false, "debug crash"), ReasoningEffort::Max);
         assert_eq!(select(false, "Error: timeout"), ReasoningEffort::Max);
         assert_eq!(select(false, "fix this error"), ReasoningEffort::Max);
         assert_eq!(select(false, "DEBUG output"), ReasoningEffort::Max);
+        // Boundary matching: a keyword must not fire on an unrelated
+        // superstring.
+        assert_eq!(
+            select(false, "research this algorithm"),
+            ReasoningEffort::High
+        );
+        assert_eq!(select(false, "a terror of clouds"), ReasoningEffort::High);
     }
 
     #[test]
     fn search_or_lookup_returns_low() {
         assert_eq!(select(false, "search for the file"), ReasoningEffort::Low);
         assert_eq!(select(false, "lookup docs"), ReasoningEffort::Low);
-        assert_eq!(select(false, "SearchQuery"), ReasoningEffort::Low);
+        // `lookup_user` splits on `_` (non-alphanumeric separator), so the
+        // `lookup` word still matches. "SearchQuery" is one word — the
+        // identifier mention is not a low-effort request under boundary
+        // matching.
         assert_eq!(select(false, "lookup_user"), ReasoningEffort::Low);
+        assert_eq!(select(false, "SearchQuery"), ReasoningEffort::High);
     }
 
     #[test]

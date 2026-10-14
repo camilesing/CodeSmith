@@ -252,6 +252,29 @@ pub struct SlopLedgerFilter {
     pub limit: Option<usize>,
 }
 
+/// Parse an optional enum filter for the query/export tools: absent →
+/// `None`; present-but-invalid → `invalid_input`. The old
+/// `.and_then(from_str)` chain silently dropped a typo'd value
+/// ("staledoc") to `None`, making the query return ALL entries — the
+/// opposite of what the caller asked for.
+fn parse_enum_filter<T>(
+    input: &Value,
+    key: &'static str,
+    parse: fn(&str) -> Option<T>,
+) -> Result<Option<T>, ToolError> {
+    match input.get(key) {
+        None => Ok(None),
+        Some(v) => {
+            let s = v.as_str().ok_or_else(|| {
+                ToolError::invalid_input(format!("invalid '{key}' (must be a string): {v}"))
+            })?;
+            parse(s).map(Some).ok_or_else(|| {
+                ToolError::invalid_input(format!("invalid value for '{key}': {s:?}"))
+            })
+        }
+    }
+}
+
 // ── Ledger (collection + persistence) ──────────────────────────────────────
 
 /// The slop ledger — a collection of entries with JSON file persistence.
@@ -730,27 +753,26 @@ impl ToolSpec for SlopLedgerQueryTool {
 
     async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
         let filter = SlopLedgerFilter {
-            bucket: input
-                .get("bucket")
-                .and_then(|v| v.as_str())
-                .and_then(SlopBucket::from_str),
-            severity: input
-                .get("severity")
-                .and_then(|v| v.as_str())
-                .and_then(SlopSeverity::from_str),
-            status: input
-                .get("status")
-                .and_then(|v| v.as_str())
-                .and_then(SlopEntryStatus::from_str),
+            bucket: parse_enum_filter(&input, "bucket", SlopBucket::from_str)?,
+            severity: parse_enum_filter(&input, "severity", SlopSeverity::from_str)?,
+            status: parse_enum_filter(&input, "status", SlopEntryStatus::from_str)?,
             search: input
                 .get("search")
                 .and_then(|v| v.as_str())
                 .map(String::from),
-            limit: input
-                .get("limit")
-                .and_then(|v| v.as_u64())
-                .map(|n| n as usize)
-                .or(Some(50)),
+            // A malformed limit (negative, fractional, string) is an error,
+            // not a silent fallback to 50.
+            limit: match input.get("limit") {
+                None => Some(50),
+                Some(v) => {
+                    let n = v.as_u64().ok_or_else(|| {
+                        ToolError::invalid_input(format!(
+                            "invalid 'limit' (must be a non-negative integer): {v}"
+                        ))
+                    })?;
+                    Some(n.min(usize::MAX as u64) as usize)
+                }
+            },
         };
 
         let ledger = SlopLedger::load()
@@ -760,8 +782,21 @@ impl ToolSpec for SlopLedgerQueryTool {
             return Ok(ToolResult::success("Slop ledger is empty."));
         }
 
+        // Report the pre-truncation match count: `query` truncates to
+        // `limit`, and "Found N" on the truncated count misled the caller
+        // about total matches.
+        let mut count_filter = filter.clone();
+        count_filter.limit = None;
+        let total = ledger.query(&count_filter).len();
         let results = ledger.query(&filter);
-        let mut out = format!("Found {} matching slop ledger entries:\n\n", results.len());
+        let mut out = if total > results.len() {
+            format!(
+                "Found {total} matching slop ledger entries (showing first {}):\n\n",
+                results.len()
+            )
+        } else {
+            format!("Found {total} matching slop ledger entries:\n\n")
+        };
         for entry in &results {
             out.push_str(&format!(
                 "- [{}] **{}** ({:?} | {:?} | {:?}) — {}\n",
@@ -912,18 +947,9 @@ impl ToolSpec for SlopLedgerExportTool {
             || input.get("status").is_some()
         {
             Some(SlopLedgerFilter {
-                bucket: input
-                    .get("bucket")
-                    .and_then(|v| v.as_str())
-                    .and_then(SlopBucket::from_str),
-                severity: input
-                    .get("severity")
-                    .and_then(|v| v.as_str())
-                    .and_then(SlopSeverity::from_str),
-                status: input
-                    .get("status")
-                    .and_then(|v| v.as_str())
-                    .and_then(SlopEntryStatus::from_str),
+                bucket: parse_enum_filter(&input, "bucket", SlopBucket::from_str)?,
+                severity: parse_enum_filter(&input, "severity", SlopSeverity::from_str)?,
+                status: parse_enum_filter(&input, "status", SlopEntryStatus::from_str)?,
                 ..Default::default()
             })
         } else {

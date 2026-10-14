@@ -42,15 +42,28 @@ fn cell() -> &'static Mutex<CostEstimate> {
 /// and returns. No-op on models the pricing table doesn't know.
 pub fn report(model: &str, usage: &Usage) {
     let Some(cost) = crate::pricing::calculate_turn_cost_estimate_from_usage(model, usage) else {
+        // A pricing-table miss makes this accrual a silent no-op — the
+        // exact under-reporting leak (#526) this module exists to prevent.
+        // Surface the coverage hole so a newly added model can't silently
+        // reintroduce it (background calls are rare, so per-miss logging
+        // is low-frequency).
+        tracing::warn!(
+            model,
+            "cost_status: model missing from the pricing table; background usage not accrued"
+        );
         return;
     };
     if !cost.is_positive() {
         return;
     }
-    if let Ok(mut pending) = cell().lock() {
-        pending.usd += cost.usd;
-        pending.cny += cost.cny;
-    }
+    // Poison recovery instead of `if let Ok`: dropping the Err arm would
+    // silently swallow accrued cost for the process lifetime after any
+    // future panic while the lock is held (the module exists to prevent
+    // exactly that class of silent loss). `CostEstimate` carries no
+    // invariant the guard could violate.
+    let mut pending = cell().lock().unwrap_or_else(|e| e.into_inner());
+    pending.usd += cost.usd;
+    pending.cny += cost.cny;
 }
 
 /// Take the pending cost, resetting the pool to zero. Test-only:
@@ -66,9 +79,8 @@ fn take_for_tests() -> CostEstimate {
 /// state.
 #[cfg(test)]
 pub fn reset_for_tests() {
-    if let Ok(mut pending) = cell().lock() {
-        *pending = CostEstimate::default();
-    }
+    let mut pending = cell().lock().unwrap_or_else(|e| e.into_inner());
+    *pending = CostEstimate::default();
 }
 
 #[cfg(test)]
