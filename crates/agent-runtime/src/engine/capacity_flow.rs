@@ -273,6 +273,60 @@ fn flatten_tool_results_to_text(mut msg: Message) -> Message {
     msg
 }
 
+/// Shared error-escalation gate (production lines 332–353): no errors at
+/// all; transient-only without context overflow; non-overflow with fewer
+/// than 2 consecutive error steps. The overflow signal is the envelope
+/// CODE, not the broad InvalidInput category — bad tool arguments and bad
+/// model names are also InvalidInput and must not trigger a
+/// VerifyAndReplan reset. Network / rate-limit / timeout are transient and
+/// skip escalation; anything else only escalates with consecutive
+/// failures. Both the probe (`CapacityGateProbe::decide_error_escalation`)
+/// and the Engine copy consult this — the duplicated inline forms had
+/// drifted.
+fn error_escalation_gated(
+    step_error_count: usize,
+    consecutive_tool_error_steps: u32,
+    error_envelopes: &[ErrorEnvelope],
+) -> bool {
+    if step_error_count == 0 && consecutive_tool_error_steps < 2 {
+        return false;
+    }
+    let has_context_overflow = error_envelopes
+        .iter()
+        .any(|envelope| envelope.code == "context_overflow");
+    let only_transient = !error_envelopes.is_empty()
+        && error_envelopes.iter().all(|envelope| {
+            matches!(
+                envelope.category,
+                ErrorCategory::Network | ErrorCategory::RateLimit | ErrorCategory::Timeout
+            )
+        });
+    if only_transient && !has_context_overflow {
+        return false;
+    }
+    if !has_context_overflow && consecutive_tool_error_steps < 2 {
+        return false;
+    }
+    true
+}
+
+/// Force the snapshot to High + severe when the step's failures repeated
+/// (production lines 371–376). Shared by the probe and Engine
+/// error-escalation copies.
+fn forced_high_severe(
+    snapshot: &CapacitySnapshot,
+    step_error_count: usize,
+    consecutive_tool_error_steps: u32,
+) -> CapacitySnapshot {
+    let repeated_failures = step_error_count >= 2 || consecutive_tool_error_steps >= 2;
+    let mut forced = snapshot.clone();
+    if repeated_failures && !(snapshot.risk_band == RiskBand::High && snapshot.severe) {
+        forced.risk_band = RiskBand::High;
+        forced.severe = true;
+    }
+    forced
+}
+
 /// Trim oldest messages off the transcript until the estimated input tokens
 /// fit `target` — the `&mut dyn ChatHistory` form of
 /// [`Engine::trim_oldest_messages_to_budget`] (whose body is a pure loop over
@@ -291,14 +345,29 @@ pub(crate) fn trim_oldest_messages_to_budget_history(
     target_input_budget: usize,
 ) -> usize {
     let mut messages = history.messages().to_vec();
-    let mut removed = 0usize;
-    while messages.len() > MIN_RECENT_MESSAGES_TO_KEEP
-        && estimate_input_tokens_conservative(&messages, system) > target_input_budget
-    {
-        messages.remove(0);
-        removed = removed.saturating_add(1);
+    // O(n log n) instead of O(n²): the old loop re-estimated the whole
+    // transcript and shifted the Vec (`remove(0)`) per removed message —
+    // exactly on the deep-trim path where transcripts are largest. The
+    // estimate is monotone non-increasing under prefix removal (every
+    // message contributes >= 0 tokens), so binary-search the smallest
+    // prefix that fits; the keep-floor clamps the search range the same
+    // way the old loop condition did.
+    let max_removable = messages.len().saturating_sub(MIN_RECENT_MESSAGES_TO_KEEP);
+    let (mut lo, mut hi) = (0usize, max_removable);
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if estimate_input_tokens_conservative(&messages[mid..], system) <= target_input_budget {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
     }
+    // `lo == max_removable` when nothing within the keep floor fits — the
+    // old loop stopped at the same place (len == KEEP), so no separate
+    // verification is needed.
+    let mut removed = lo;
     if removed > 0 {
+        messages.drain(..removed);
         removed += enforce_tool_pairs_after_front_trim(&mut messages);
         history.replace_all("front trim to budget", messages);
     }
@@ -462,9 +531,15 @@ pub(crate) fn select_replay_candidate_from_messages(
 pub(crate) async fn replay_and_push_verification_note(
     history: &mut dyn ChatHistory,
     tool_registry: Option<&dyn ToolDispatcher>,
+    system: Option<&SystemPrompt>,
 ) -> Option<ReplayOutcome> {
     let candidate = select_replay_candidate_from_messages(history.messages(), tool_registry)?;
     let registry = tool_registry?;
+
+    // Capture the pre-intervention token level BEFORE the verification note
+    // lands in the transcript — mirrors `TargetedRefreshOutcome`'s
+    // `before_tokens` (the post-`run` emit would otherwise under-report).
+    let before_tokens = estimate_input_tokens_conservative(history.messages(), system);
 
     let replay_result = registry
         .execute(&candidate.name, candidate.input.clone(), None)
@@ -526,6 +601,7 @@ pub(crate) async fn replay_and_push_verification_note(
         replay_outcome,
         diff_summary,
         verification_note,
+        before_tokens,
     })
 }
 
@@ -715,6 +791,10 @@ impl CapacityGateProbe {
     /// (production lines 390–401) so the host post-`run`
     /// `apply_verify_and_replan` records it via slice 33's
     /// `&decision.reason` plumbing.
+    ///
+    /// Known asymmetry vs the Engine copy: this probe does not emit the
+    /// `CapacityDecision` event (no emit channel at this seam) — it RETURNS
+    /// the decision so the host can emit/record it post-`run`.
     #[allow(clippy::too_many_arguments)]
     pub fn decide_error_escalation(
         &self,
@@ -726,56 +806,30 @@ impl CapacityGateProbe {
         consecutive_tool_error_steps: u32,
         error_envelopes: &[ErrorEnvelope],
     ) -> Option<CapacityDecision> {
-        // Early-return gating (production lines 332–353): no errors at all;
-        // transient-only without context overflow; non-overflow with fewer
-        // than 2 consecutive error steps.
-        if step_error_count == 0 && consecutive_tool_error_steps < 2 {
-            return None;
-        }
-        // Categorize this step's failures by the typed envelope rather than
-        // substring-matching error strings. Context overflow (identified by
-        // its envelope CODE, not the broad InvalidInput category — bad tool
-        // arguments and bad model names are also InvalidInput and must not
-        // trigger a VerifyAndReplan reset) always escalates; network /
-        // rate-limit / timeout are transient and skip escalation; anything
-        // else only escalates with consecutive failures.
-        let has_context_overflow = error_envelopes
-            .iter()
-            .any(|envelope| envelope.code == "context_overflow");
-        let only_transient = !error_envelopes.is_empty()
-            && error_envelopes.iter().all(|envelope| {
-                matches!(
-                    envelope.category,
-                    ErrorCategory::Network | ErrorCategory::RateLimit | ErrorCategory::Timeout
-                )
-            });
-        if only_transient && !has_context_overflow {
-            return None;
-        }
-        if !has_context_overflow && consecutive_tool_error_steps < 2 {
+        // Shared gate + classification (see `error_escalation_gated` and
+        // `forced_high_severe` — extracted because this logic is duplicated
+        // verbatim by `Engine::run_capacity_error_escalation_checkpoint`
+        // and the two copies had drifted).
+        if !error_escalation_gated(
+            step_error_count,
+            consecutive_tool_error_steps,
+            error_envelopes,
+        ) {
             return None;
         }
 
         // Get/observe snapshot (production lines 355–369). `last_snapshot()`
-        // clones + releases the lock before `or_else`, so there is no
+        // clones + releases the lock before the fallback, so there is no
         // re-entrant deadlock (the slice 33 deadlock-fix concern does not
         // apply to the probe path).
         let last = self.last_snapshot();
         let snapshot =
             last.or_else(|| self.observe_pre_turn(messages, step, tool_call_ids, system));
-        #[allow(clippy::manual_let_else)]
-        #[allow(clippy::manual_let_else)]
         let Some(snapshot) = snapshot else {
             return None;
         };
 
-        // Force to High+severe if repeated failures (production lines 371–376).
-        let repeated_failures = step_error_count >= 2 || consecutive_tool_error_steps >= 2;
-        let mut forced = snapshot.clone();
-        if repeated_failures && !(snapshot.risk_band == RiskBand::High && snapshot.severe) {
-            forced.risk_band = RiskBand::High;
-            forced.severe = true;
-        }
+        let forced = forced_high_severe(&snapshot, step_error_count, consecutive_tool_error_steps);
 
         // Decide (production lines 378–382). The controller's per-turn
         // cooldown (set by seam 1/4) returns `NoIntervention` here if an
@@ -811,11 +865,18 @@ impl Engine {
         client: Option<&dyn crate::llm_client::LlmClient>,
         mode: AppMode,
     ) -> bool {
+        // Build the observation BEFORE taking the controller lock:
+        // `capacity_observation` locks `session.working_set`, so evaluating
+        // it under the guard nests controller -> working_set and would
+        // deadlock against any future caller taking them in the other
+        // order (the probe path already builds first for exactly this
+        // reason).
+        let input = self.capacity_observation(turn);
         let snapshot = self
             .capacity_controller
             .lock()
             .expect("capacity_controller poisoned")
-            .observe_pre_turn(self.capacity_observation(turn));
+            .observe_pre_turn(input);
         let decision = self
             .capacity_controller
             .lock()
@@ -843,11 +904,14 @@ impl Engine {
         _step_error_count: usize,
         _consecutive_tool_error_steps: u32,
     ) -> bool {
+        // Same lock-ordering rule as the pre-request checkpoint: build the
+        // observation before locking the controller.
+        let input = self.capacity_observation(turn);
         let snapshot = self
             .capacity_controller
             .lock()
             .expect("capacity_controller poisoned")
-            .observe_post_tool(self.capacity_observation(turn));
+            .observe_post_tool(input);
         let decision = self
             .capacity_controller
             .lock()
@@ -858,19 +922,20 @@ impl Engine {
 
         match decision.action {
             GuardrailAction::VerifyWithToolReplay => {
-                let _ = self
-                    .apply_verify_with_tool_replay(
-                        turn,
-                        mode,
-                        snapshot.as_ref(),
-                        tool_registry,
-                        tool_exec_lock,
-                        mcp_pool,
-                        false,
-                        None,
-                    )
-                    .await;
-                false
+                // Propagate the replay result (mirrors the VerifyAndReplan
+                // arm and the refresh path above) so the caller can tell an
+                // intervention was applied instead of a uniform `false`.
+                self.apply_verify_with_tool_replay(
+                    turn,
+                    mode,
+                    snapshot.as_ref(),
+                    tool_registry,
+                    tool_exec_lock,
+                    mcp_pool,
+                    false,
+                    None,
+                )
+                .await
             }
             GuardrailAction::VerifyAndReplan => {
                 self.apply_verify_and_replan(
@@ -894,27 +959,14 @@ impl Engine {
         consecutive_tool_error_steps: u32,
         error_envelopes: &[ErrorEnvelope],
     ) -> bool {
-        if step_error_count == 0 && consecutive_tool_error_steps < 2 {
-            return false;
-        }
-
-        // Same classification as the probe's `decide_error_escalation`: the
-        // overflow signal is the envelope CODE, not the broad InvalidInput
-        // category (which bad tool arguments and bad model names share).
-        let has_context_overflow = error_envelopes
-            .iter()
-            .any(|envelope| envelope.code == "context_overflow");
-        let only_transient = !error_envelopes.is_empty()
-            && error_envelopes.iter().all(|envelope| {
-                matches!(
-                    envelope.category,
-                    ErrorCategory::Network | ErrorCategory::RateLimit | ErrorCategory::Timeout
-                )
-            });
-        if only_transient && !has_context_overflow {
-            return false;
-        }
-        if !has_context_overflow && consecutive_tool_error_steps < 2 {
+        // Shared gate + classification — the probe copy
+        // (`CapacityGateProbe::decide_error_escalation`) uses the same
+        // helpers, so the two paths cannot drift again.
+        if !error_escalation_gated(
+            step_error_count,
+            consecutive_tool_error_steps,
+            error_envelopes,
+        ) {
             return false;
         }
 
@@ -924,22 +976,24 @@ impl Engine {
             .expect("capacity_controller poisoned")
             .last_snapshot()
             .cloned();
-        let snapshot = last.or_else(|| {
-            self.capacity_controller
-                .lock()
-                .expect("capacity_controller poisoned")
-                .observe_pre_turn(self.capacity_observation(turn))
-        });
+        // Lock-ordering: the fallback observation is built before the
+        // second controller lock is taken (see the pre-request checkpoint)
+        // — and only when actually needed.
+        let snapshot = match last {
+            Some(snapshot) => Some(snapshot),
+            None => {
+                let input = self.capacity_observation(turn);
+                self.capacity_controller
+                    .lock()
+                    .expect("capacity_controller poisoned")
+                    .observe_pre_turn(input)
+            }
+        };
         let Some(snapshot) = snapshot else {
             return false;
         };
 
-        let repeated_failures = step_error_count >= 2 || consecutive_tool_error_steps >= 2;
-        let mut forced = snapshot.clone();
-        if repeated_failures && !(snapshot.risk_band == RiskBand::High && snapshot.severe) {
-            forced.risk_band = RiskBand::High;
-            forced.severe = true;
-        }
+        let forced = forced_high_severe(&snapshot, step_error_count, consecutive_tool_error_steps);
 
         let decision = self
             .capacity_controller
@@ -1398,7 +1452,7 @@ impl Engine {
         skip_transcript: bool,
         outcome: Option<ReplayOutcome>,
     ) -> bool {
-        let before_tokens = self.estimated_input_tokens();
+        let mut before_tokens = self.estimated_input_tokens();
 
         // §E slice 3b: when the executor already applied the transcript portion
         // (candidate select → re-execute → push `[verification replay]` note)
@@ -1413,6 +1467,9 @@ impl Engine {
                 let Some(outcome) = outcome else {
                     return false;
                 };
+                // The note is already in the transcript by now — the carried
+                // pre-note estimate is the honest pre-intervention level.
+                before_tokens = outcome.before_tokens;
                 (
                     outcome.tool_id,
                     outcome.tool_name,

@@ -17,6 +17,15 @@
 //! lands; until then they keep the usage observable in one place
 //! instead of scattered (or dropped) across callers.
 //!
+//! Single-consumer assumption (second known limitation): the pool is one
+//! process-wide cell fed by many producers (compaction, cycle restart,
+//! purge, large-output routing, seam recompaction). When a drain consumer
+//! lands, whichever session drains first would absorb every other flow's
+//! background costs — a drain must therefore either be provably
+//! single-consumer (one session per process) or the pool must be keyed by
+//! session/engine id in the same change. Do not wire a drain without
+//! resolving this.
+//!
 //! Why a side-channel and not a plumbed callback: the leaky callers
 //! (`compaction.rs`, `seam_manager.rs`, `cycle_manager.rs`) are
 //! engine-internal machinery without a direct handle to app state
@@ -83,6 +92,20 @@ pub fn reset_for_tests() {
     *pending = CostEstimate::default();
 }
 
+/// Cross-suite serialization for tests that touch the process-wide pool.
+/// The whole test binary runs in parallel while `PENDING` is shared, so any
+/// suite whose machinery transitively calls [`report`] (compaction /
+/// cycle-manager / purge tests with stub clients that return usage) must
+/// hold this guard around the reporting span, joining the same domain as
+/// this module's own tests — a module-local lock cannot see them.
+#[cfg(test)]
+pub(crate) fn cost_pool_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static M: OnceLock<Mutex<()>> = OnceLock::new();
+    M.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,19 +118,9 @@ mod tests {
         }
     }
 
-    /// Tests run in parallel and share the static — serialize the
-    /// ones that touch the pool through this mutex so concurrent
-    /// `report`/`drain` doesn't make assertions racy.
-    fn serial_lock() -> std::sync::MutexGuard<'static, ()> {
-        static M: OnceLock<Mutex<()>> = OnceLock::new();
-        M.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-    }
-
     #[test]
     fn report_adds_to_pool_and_take_returns_then_resets() {
-        let _g = serial_lock();
+        let _g = cost_pool_test_lock();
         reset_for_tests();
         report("deepseek-v4-flash", &small_usage());
         let first = take_for_tests();
@@ -123,7 +136,7 @@ mod tests {
 
     #[test]
     fn report_skips_unknown_models() {
-        let _g = serial_lock();
+        let _g = cost_pool_test_lock();
         reset_for_tests();
         // NIM-hosted models intentionally have no DeepSeek pricing.
         report("deepseek-ai/deepseek-v4-pro", &small_usage());
@@ -132,7 +145,7 @@ mod tests {
 
     #[test]
     fn report_accumulates_across_multiple_calls() {
-        let _g = serial_lock();
+        let _g = cost_pool_test_lock();
         reset_for_tests();
         report("deepseek-v4-flash", &small_usage());
         report("deepseek-v4-flash", &small_usage());

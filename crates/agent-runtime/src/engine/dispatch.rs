@@ -99,6 +99,14 @@ pub fn caller_type_for_tool_use(caller: Option<&ToolCaller>) -> &str {
     caller.map_or("direct", |c| c.caller_type.as_str())
 }
 
+/// Whether `caller` may invoke a tool whose definition carries an
+/// `allowed_callers` list. Tri-state, all fail-closed:
+/// - field absent → `direct` callers only (the default posture);
+/// - field present but EMPTY (`allowed_callers: []`) → also `direct` only —
+///   a config typo writing `[]` where the field should be omitted quietly
+///   locks out every non-direct caller with no diagnostic, so prefer
+///   omitting the field entirely;
+/// - non-empty → exactly the listed caller types.
 pub fn caller_allowed_for_tool(caller: Option<&ToolCaller>, tool_def: Option<&Tool>) -> bool {
     let requested = caller_type_for_tool_use(caller);
     if let Some(def) = tool_def
@@ -185,7 +193,25 @@ pub enum ArgSalvagePolicy {
 ///      model was cut off mid-argument (P0-2), and the partial-parse
 ///      mirror may hold fabricated arguments that must not execute.
 pub fn final_tool_input(state: &ToolUseState) -> serde_json::Value {
-    final_tool_input_with_policy(state, ArgSalvagePolicy::RepairAllowed)
+    final_tool_input_for_turn(state, false)
+}
+
+/// Select the salvage policy from the turn outcome so an output-limit-
+/// truncated turn structurally cannot run the repair ladder (P0-2): the
+/// caller passes whether the turn's stop reason said the provider output
+/// limit was hit, and this boundary picks [`ArgSalvagePolicy::StrictOnly`]
+/// accordingly — relying on every caller to remember the convention is
+/// exactly the gap P0-2 closed.
+pub fn final_tool_input_for_turn(
+    state: &ToolUseState,
+    output_limit_truncated: bool,
+) -> serde_json::Value {
+    let policy = if output_limit_truncated {
+        ArgSalvagePolicy::StrictOnly
+    } else {
+        ArgSalvagePolicy::RepairAllowed
+    };
+    final_tool_input_with_policy(state, policy)
 }
 
 /// [`final_tool_input`] with an explicit salvage [`ArgSalvagePolicy`] —
@@ -340,13 +366,29 @@ pub fn parse_parallel_tool_calls(
             .or_else(|| item.get("tool"))
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::missing_field("recipient_name"))?;
-        let params = item
+        let params = match item
             .get("parameters")
             .or_else(|| item.get("input"))
             .or_else(|| item.get("args"))
             .or_else(|| item.get("arguments"))
-            .cloned()
-            .unwrap_or_else(|| json!({}));
+        {
+            Some(params) => params.clone(),
+            None => {
+                // Distinguish "legitimately omitted for a zero-arg tool"
+                // from an unrecognized shape (e.g. a typo'd `params` key):
+                // an item that carries any other content but no recognized
+                // argument key is almost certainly malformed — visible,
+                // not silently executed with `{}`.
+                if item.as_object().is_some_and(|object| object.len() > 1) {
+                    tracing::warn!(
+                        target: "codesmith::dispatch",
+                        "multi_tool_use.parallel entry carries no recognized argument key \
+                         (parameters/input/args/arguments); executing with no arguments: {item}"
+                    );
+                }
+                json!({})
+            }
+        };
         calls.push((normalize_parallel_tool_name(name), params));
     }
 
@@ -444,26 +486,26 @@ pub fn should_force_update_plan_first(mode: AppMode, content: &str) -> bool {
     !asks_for_repo_exploration
 }
 
+/// MCP tools that are safe to run in parallel AND read-only. One shared
+/// list — the two predicates are consulted from different modules
+/// (`tool_execution.rs` vs `capacity_flow.rs`), so duplicated literals
+/// would drift silently. Known limitation: classification is by bare tool
+/// name; anything surfaced under one of these names gets read-only +
+/// parallel-safe semantics regardless of what it actually does.
+const MCP_PARALLEL_SAFE_TOOLS: &[&str] = &[
+    "list_mcp_resources",
+    "list_mcp_resource_templates",
+    "mcp_read_resource",
+    "read_mcp_resource",
+    "mcp_get_prompt",
+];
+
 pub fn mcp_tool_is_parallel_safe(name: &str) -> bool {
-    matches!(
-        name,
-        "list_mcp_resources"
-            | "list_mcp_resource_templates"
-            | "mcp_read_resource"
-            | "read_mcp_resource"
-            | "mcp_get_prompt"
-    )
+    MCP_PARALLEL_SAFE_TOOLS.contains(&name)
 }
 
 pub fn mcp_tool_is_read_only(name: &str) -> bool {
-    matches!(
-        name,
-        "list_mcp_resources"
-            | "list_mcp_resource_templates"
-            | "mcp_read_resource"
-            | "read_mcp_resource"
-            | "mcp_get_prompt"
-    )
+    MCP_PARALLEL_SAFE_TOOLS.contains(&name)
 }
 
 #[cfg(test)]

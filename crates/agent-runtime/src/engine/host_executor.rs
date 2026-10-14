@@ -3744,6 +3744,7 @@ impl HostAgentExecutor {
                         let outcome = replay_and_push_verification_note(
                             history,
                             self.tool_dispatcher.as_deref(),
+                            system.as_ref(),
                         )
                         .await;
                         *self
@@ -11001,9 +11002,10 @@ mod tests {
 
         let mut history = SessionChatHistory::new(&mut sess);
         let before_len = history.messages().len();
-        let outcome = replay_and_push_verification_note(&mut history, Some(dispatcher.as_ref()))
-            .await
-            .expect("replay found a candidate");
+        let outcome =
+            replay_and_push_verification_note(&mut history, Some(dispatcher.as_ref()), None)
+                .await
+                .expect("replay found a candidate");
 
         // The `[verification replay]` note was pushed onto the transcript
         // mid-loop via `ChatHistory` (in-place on `session.messages`).

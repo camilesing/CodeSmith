@@ -231,18 +231,19 @@ fn adjust_index_for_tool_pairs(messages: &[Message], start_idx: usize) -> usize 
         return start_idx;
     }
 
-    let mut tool_uses: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    let mut tool_results: std::collections::HashMap<String, usize> =
-        std::collections::HashMap::new();
+    // Borrowed keys: cloning every tool id String per block was pure
+    // allocation overhead on long transcripts.
+    let mut tool_uses: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    let mut tool_results: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
 
     for (idx, msg) in messages.iter().enumerate() {
         for block in &msg.content {
             match block {
                 ContentBlock::ToolUse { id, .. } => {
-                    tool_uses.entry(id.clone()).or_insert(idx);
+                    tool_uses.entry(id.as_str()).or_insert(idx);
                 }
                 ContentBlock::ToolResult { tool_use_id, .. } => {
-                    tool_results.entry(tool_use_id.clone()).or_insert(idx);
+                    tool_results.entry(tool_use_id.as_str()).or_insert(idx);
                 }
                 _ => {}
             }
@@ -251,23 +252,29 @@ fn adjust_index_for_tool_pairs(messages: &[Message], start_idx: usize) -> usize 
 
     let mut adjusted = start_idx;
 
+    // Each pass moves the boundary to the EARLIEST crossing pair in one
+    // step (the old first-hit-and-restart form re-scanned all pairs per
+    // move). Passes now equal the number of distinct boundary positions,
+    // not the number of crossing pairs. Note: this cannot be collapsed to
+    // the single-pass "min earliest over pairs with latest >= start_idx" —
+    // a chain (a pair entirely left of the first move can cross the moved
+    // boundary) needs the iteration.
     loop {
-        let mut moved = false;
+        let mut next = adjusted;
         for (id, use_idx) in &tool_uses {
-            let Some(result_idx) = tool_results.get(id) else {
+            let Some(&result_idx) = tool_results.get(id) else {
                 continue;
             };
-            let earliest = (*use_idx).min(*result_idx);
-            let latest = (*use_idx).max(*result_idx);
+            let earliest = (*use_idx).min(result_idx);
+            let latest = (*use_idx).max(result_idx);
             if earliest < adjusted && latest >= adjusted {
-                adjusted = earliest;
-                moved = true;
-                break;
+                next = next.min(earliest);
             }
         }
-        if !moved {
+        if next >= adjusted {
             break;
         }
+        adjusted = next;
     }
 
     adjusted

@@ -3437,9 +3437,10 @@ pub use self::approval::{ApprovalDecision, ApprovalRouter, ApprovalWaitError, Us
 pub use self::dispatch::should_parallelize_tool_batch;
 pub use self::dispatch::{
     ArgSalvagePolicy, ToolExecOutcome, ToolExecutionBatch, ToolExecutionPlan,
-    caller_allowed_for_tool, final_tool_input, final_tool_input_with_policy, format_tool_error,
-    parse_tool_input, parse_tool_input_with_policy, plan_tool_execution_batches,
-    should_force_update_plan_first, should_stop_after_plan_tool,
+    caller_allowed_for_tool, final_tool_input, final_tool_input_for_turn,
+    final_tool_input_with_policy, format_tool_error, parse_tool_input,
+    parse_tool_input_with_policy, plan_tool_execution_batches, should_force_update_plan_first,
+    should_stop_after_plan_tool,
 };
 use self::dispatch::{
     ParallelToolResult, ParallelToolResultEntry, ToolExecGuard, mcp_tool_is_parallel_safe,

@@ -41,14 +41,27 @@ static MEMORY_EXCLUDES: OnceLock<Vec<String>> = OnceLock::new();
 /// Publish the memory exclude list for the process. Called once by
 /// `Engine::new_runtime` from `EngineConfig.memory_excludes`. A second call
 /// (e.g. engine rebuild in-process) is a no-op: excludes are config-time
-/// data and a stale value is preferable to a race.
+/// data and a stale value is preferable to a race. The drop is logged —
+/// excludes are security-relevant configuration, so silently ignoring an
+/// updated (e.g. stricter) list must at least be diagnosable.
 pub fn set_memory_excludes(excludes: Vec<String>) {
+    if let Some(existing) = MEMORY_EXCLUDES.get()
+        && *existing != excludes
+    {
+        tracing::warn!(
+            target: "codesmith::memory",
+            "set_memory_excludes called again with different values; keeping the first: {:?}",
+            existing
+        );
+    }
     let _ = MEMORY_EXCLUDES.set(excludes);
 }
 
 /// The effective exclude list: the published config value merged with the
-/// `CODESMITH_MEMORY_EXCLUDES` env var (colon-separated), so users can also
-/// override at the shell without editing config. Duplicates are dropped.
+/// `CODESMITH_MEMORY_EXCLUDES` env var (`:`-separated; `;` on Windows, the
+/// `PATH` convention, so `C:\...` exclude paths do not split at the drive
+/// colon), so users can also override at the shell without editing config.
+/// Duplicates are dropped.
 pub fn memory_excludes() -> Vec<String> {
     let mut out: Vec<String> = MEMORY_EXCLUDES
         .get()
@@ -58,9 +71,13 @@ pub fn memory_excludes() -> Vec<String> {
         .filter(|s| !s.is_empty())
         .collect();
     if let Ok(env_val) = std::env::var("CODESMITH_MEMORY_EXCLUDES") {
+        #[cfg(windows)]
+        let separator = ';';
+        #[cfg(not(windows))]
+        let separator = ':';
         out.extend(
             env_val
-                .split(':')
+                .split(separator)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
         );
@@ -216,7 +233,25 @@ fn process_memory_file(
     if excludes.iter().any(|e| e == &canon) {
         return None;
     }
-    let content = load_context_file(&canon).ok()?;
+    let content = match load_context_file(&canon) {
+        Ok(content) => content,
+        Err(err) => {
+            // A typo'd, oversized, or transiently unreadable include must
+            // not vanish silently (escape targets warn; so does this).
+            tracing::warn!(
+                target: "codesmith::memory",
+                path = %canon.display(),
+                error = ?err,
+                "memory file failed to load; skipped"
+            );
+            // A failed load cannot recurse, so removing the path from the
+            // dedup set is cycle-safe — and the same file stays loadable
+            // when it later appears as a tier root or the failure was
+            // transient.
+            processed.remove(&canon);
+            return None;
+        }
+    };
     let base = canon.parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut out = String::new();
     // Track ``` / ~~~ fence state so `@include` lines shown inside a code
@@ -240,26 +275,38 @@ fn process_memory_file(
         // bare rest (markers + optional trailing whitespace, no info
         // string) — a documented nested example like ```sh inside an open
         // fence is content, not a closer.
+        //
+        // Indentation matters (CommonMark): fences open only when indented
+        // <= 3 spaces; a line indented >= 4 OUTSIDE a fence is
+        // indented-code-block content and must stay inert for both fence
+        // toggling and `@include` directive matching — otherwise an
+        // indented example fence desynchronizes tracking and an indented
+        // `@include` (documentation prose) gets expanded into the prompt.
         let trimmed = body.trim_start();
+        let indent = body.len() - trimmed.len();
+        let inert = fence.is_none() && indent >= 4;
         let after_marker = |marker: char| trimmed.trim_start_matches(marker);
-        match fence {
-            Some(active) => {
-                let rest = after_marker(active);
-                if trimmed.len() - rest.len() >= 3 && rest.trim().is_empty() {
-                    fence = None;
+        if !inert {
+            match fence {
+                Some(active) => {
+                    let rest = after_marker(active);
+                    if trimmed.len() - rest.len() >= 3 && rest.trim().is_empty() {
+                        fence = None;
+                    }
                 }
-            }
-            None => {
-                for marker in ['`', '~'] {
-                    let rest = after_marker(marker);
-                    if trimmed.len() - rest.len() >= 3 && !rest.contains(marker) {
-                        fence = Some(marker);
-                        break;
+                None => {
+                    for marker in ['`', '~'] {
+                        let rest = after_marker(marker);
+                        if trimmed.len() - rest.len() >= 3 && !rest.contains(marker) {
+                            fence = Some(marker);
+                            break;
+                        }
                     }
                 }
             }
         }
         if fence.is_none()
+            && !inert
             && let Some(target) = match_include_directive(body)
         {
             let resolved = resolve_include_target(target, &base);

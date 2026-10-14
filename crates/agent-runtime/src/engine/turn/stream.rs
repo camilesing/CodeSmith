@@ -206,6 +206,11 @@ enum BlockBuild {
 /// (streamed `InputJsonDelta` fragments) with a fallback to the
 /// `start_input` carried by `ContentBlockStart::ToolUse`, and finally to an
 /// empty object — the same logic as the CORE `accumulate_stream`'s tail.
+/// NOTE (CORE parity): once any fragment was buffered, an unparseable
+/// buffer yields `Value::Null` — the `start_input` / empty-object
+/// fallbacks do NOT apply (the partial-tool-input test relies on this
+/// shape). `Null` input is non-executable; the turn loop routes it to
+/// feedback rather than executing a zero-arg call.
 /// Extracted so both [`finalize_blocks`] (at stream end) and the early-start
 /// spawn (at `ContentBlockStop`, mid-stream) finalize identically.
 fn finalize_tool_input(input_buf: &str, start_input: &serde_json::Value) -> serde_json::Value {
@@ -651,14 +656,17 @@ impl HostAgentExecutor {
                                 }
                                 // Forward the delta to the callback before
                                 // buffering — the host's UI streams as the
-                                // model produces text.
+                                // model produces text. Buffer FIRST, then
+                                // move the owned String into the emission:
+                                // cloning per delta allocated a fresh String
+                                // in the hot path for no reason.
+                                buf.push_str(&text);
                                 self.callback
                                     .on_stream_delta(&StreamDelta::Text {
                                         index: index as usize,
-                                        content: text.clone(),
+                                        content: text,
                                     })
                                     .await;
-                                buf.push_str(&text);
                             }
                             (BlockBuild::Thinking(buf), Delta::ThinkingDelta { thinking }) => {
                                 // Commit boundary: same as text deltas —
@@ -666,13 +674,13 @@ impl HostAgentExecutor {
                                 if !thinking.is_empty() {
                                     any_content_received = true;
                                 }
+                                buf.push_str(&thinking);
                                 self.callback
                                     .on_stream_delta(&StreamDelta::Thinking {
                                         index: index as usize,
-                                        content: thinking.clone(),
+                                        content: thinking,
                                     })
                                     .await;
-                                buf.push_str(&thinking);
                             }
                             (
                                 BlockBuild::ToolUse { input_buf, .. },
@@ -827,6 +835,46 @@ impl HostAgentExecutor {
         }
     }
 
+    /// Env-gated long hold for provider quota walls. Reads
+    /// `CODESMITH_RATE_LIMIT_HOLD_SECS` once (total wait budget per stuck
+    /// request, e.g. 7200 to ride out a GLM 5h-usage-cap window). When set and
+    /// budget remains, sleeps one poll interval (60s) while honouring
+    /// cancellation, accumulating into `held`. Returns `false` (no hold) when
+    /// the env is unset or the budget is exhausted, leaving the caller on its
+    /// pre-existing fail path.
+    async fn try_rate_limit_hold(
+        &self,
+        cancel_token: &Option<tokio_util::sync::CancellationToken>,
+        held: &mut std::time::Duration,
+    ) -> bool {
+        let Some(budget) = rate_limit_hold_budget() else {
+            return false;
+        };
+        if *held >= budget {
+            return false;
+        }
+        let poll = std::time::Duration::from_secs(60).min(budget - *held);
+        self.emit_status(format!(
+            "Rate limited; holding for quota window (held {}s/{}s budget)",
+            held.as_secs(),
+            budget.as_secs()
+        ))
+        .await;
+        tokio::select! {
+            biased;
+            _ = async {
+                match cancel_token {
+                    Some(token) => token.cancelled().await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => false,
+            _ = tokio::time::sleep(poll) => {
+                *held += poll;
+                true
+            }
+        }
+    }
+
     /// (2) per-step post-stream seam — transparent stream retry + reactive
     /// capacity recovery.
     ///
@@ -877,46 +925,6 @@ impl HostAgentExecutor {
     /// functionally equivalent for the retry decision; the inner retry's
     /// advantage is avoiding a redundant `MessageStart` round-trip, which
     /// matters only for latency-sensitive production paths.
-    /// Env-gated long hold for provider quota walls. Reads
-    /// `CODESMITH_RATE_LIMIT_HOLD_SECS` once (total wait budget per stuck
-    /// request, e.g. 7200 to ride out a GLM 5h-usage-cap window). When set and
-    /// budget remains, sleeps one poll interval (60s) while honouring
-    /// cancellation, accumulating into `held`. Returns `false` (no hold) when
-    /// the env is unset or the budget is exhausted, leaving the caller on its
-    /// pre-existing fail path.
-    async fn try_rate_limit_hold(
-        &self,
-        cancel_token: &Option<tokio_util::sync::CancellationToken>,
-        held: &mut std::time::Duration,
-    ) -> bool {
-        let Some(budget) = rate_limit_hold_budget() else {
-            return false;
-        };
-        if *held >= budget {
-            return false;
-        }
-        let poll = std::time::Duration::from_secs(60).min(budget - *held);
-        self.emit_status(format!(
-            "Rate limited; holding for quota window (held {}s/{}s budget)",
-            held.as_secs(),
-            budget.as_secs()
-        ))
-        .await;
-        tokio::select! {
-            biased;
-            _ = async {
-                match cancel_token {
-                    Some(token) => token.cancelled().await,
-                    None => std::future::pending::<()>().await,
-                }
-            } => false,
-            _ = tokio::time::sleep(poll) => {
-                *held += poll;
-                true
-            }
-        }
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn stream_with_transparent_retry(
         &self,

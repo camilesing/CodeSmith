@@ -204,6 +204,12 @@ pub struct ReplayOutcome {
     pub replay_outcome: String,
     pub diff_summary: String,
     pub verification_note: String,
+    /// Transcript token estimate captured BEFORE the mid-loop replay pushed
+    /// the `[verification replay]` note — the post-`run` state work must
+    /// report this as the intervention's `before_prompt_tokens`, not
+    /// re-estimate (the note is already in the transcript by then, which
+    /// would under-report the intervention).
+    pub before_tokens: usize,
 }
 
 /// Outcome of a mid-loop `TargetedContextRefresh` transcript portion (slice 3c
