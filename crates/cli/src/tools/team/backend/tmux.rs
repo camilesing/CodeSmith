@@ -42,22 +42,35 @@ impl TeammateBackend for TmuxBackend {
     }
 
     async fn spawn(&self, spec: &TeammateSpawnSpec) -> Result<SpawnedTeammate, BackendError> {
-        spec.validate_bin()?;
+        spec.validate()?;
         // The prompt is written to a temp file so we never have to shell-quote
         // an arbitrarily long / arbitrarily nasty prompt string onto the pane
         // command line. The pane process reads and unlinks it on startup.
-        let prompt_file = write_prompt_file("tmux", &spec.agent_id, &spec.prompt)?;
+        // The write is sync, so it is offloaded off the async executor.
+        let agent_id = spec.agent_id.clone();
+        let prompt = spec.prompt.clone();
+        let prompt_file =
+            tokio::task::spawn_blocking(move || write_prompt_file("tmux", &agent_id, &prompt))
+                .await
+                .map_err(|e| BackendError::SpawnFailed {
+                    backend: "tmux",
+                    message: format!("prompt-file task failed: {e}"),
+                })??;
 
         let argv = build_tmux_argv(spec, &prompt_file);
         // argv[0] == "tmux".
-        let output = Command::new(&argv[0])
-            .args(&argv[1..])
-            .output()
-            .await
-            .map_err(|e| BackendError::Unavailable {
-                backend: "tmux",
-                message: format!("failed to invoke tmux: {e}"),
-            })?;
+        let output = match Command::new(&argv[0]).args(&argv[1..]).output().await {
+            Ok(output) => output,
+            Err(e) => {
+                // tmux never ran, so nothing will unlink the prompt file —
+                // remove it here rather than leaking prompt content.
+                let _ = tokio::fs::remove_file(&prompt_file).await;
+                return Err(BackendError::Unavailable {
+                    backend: "tmux",
+                    message: format!("failed to invoke tmux: {e}"),
+                });
+            }
+        };
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -75,13 +88,7 @@ impl TeammateBackend for TmuxBackend {
         }
 
         // `-P -F "#{pane_id}"` prints the new pane id to stdout.
-        let pane_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if pane_id.is_empty() {
-            return Err(BackendError::SpawnFailed {
-                backend: "tmux",
-                message: "tmux did not return a pane id".to_string(),
-            });
-        }
+        let pane_id = parse_tmux_pane_id(&output.stdout)?;
 
         Ok(SpawnedTeammate {
             agent_id: spec.agent_id.clone(),
@@ -89,6 +96,22 @@ impl TeammateBackend for TmuxBackend {
             team_name: spec.team_name.clone(),
             backend: BackendKind::Tmux,
             handle: TeammateHandle::TmuxPane(pane_id),
+        })
+    }
+}
+
+/// tmux prints exactly one `%N` line. Any extra diagnostic or multi-line
+/// output baked into the handle would make every later pane operation
+/// (`kill-pane`, `send-keys`) fail with a confusing error, so the shape is
+/// validated before it is accepted.
+fn parse_tmux_pane_id(stdout: &[u8]) -> Result<String, BackendError> {
+    let pane_id = String::from_utf8_lossy(stdout).trim().to_string();
+    if !pane_id.is_empty() && pane_id.lines().count() == 1 && pane_id.starts_with('%') {
+        Ok(pane_id)
+    } else {
+        Err(BackendError::SpawnFailed {
+            backend: "tmux",
+            message: format!("tmux returned an unexpected pane id: {pane_id:?}"),
         })
     }
 }
@@ -102,12 +125,22 @@ pub fn build_tmux_argv(spec: &TeammateSpawnSpec, prompt_file: &Path) -> Vec<Stri
     let mut argv = vec![
         "tmux".to_string(),
         "split-window".to_string(),
+        // Create the pane without selecting it, so spawning a teammate does
+        // not steal keyboard focus from the leader's pane (panes stay
+        // visible and interactive).
+        "-d".to_string(),
         // Run the pane in the teammate's working directory.
         "-c".to_string(),
         spec.cwd.to_string_lossy().into_owned(),
     ];
     // Propagate any extra env vars into the pane (`-e KEY=VALUE`).
     for (k, v) in &spec.env {
+        // tmux splits `-e` at the first '='; an empty key or one containing
+        // '='/'\0' would silently drop or corrupt the pane environment —
+        // skip invalid names instead.
+        if k.is_empty() || k.contains('=') || k.contains('\0') {
+            continue;
+        }
         argv.push("-e".to_string());
         argv.push(format!("{k}={v}"));
     }
@@ -130,7 +163,7 @@ mod tests {
             "demo".to_string(),
         );
         spec.agent_type = "team".to_string();
-        spec.permission_mode = "auto".to_string();
+        spec.permission_mode = super::super::PermissionMode::Auto;
         spec.cwd = PathBuf::from("/repo/worktrees/worker-1");
         spec.codesmith_bin = PathBuf::from("/usr/local/bin/codesmith");
         spec.model = Some("deepseek-v3".to_string());
@@ -166,13 +199,41 @@ mod tests {
     }
 
     #[test]
-    fn argv_starts_with_tmux_split_window_and_cwd() {
+    fn argv_starts_with_tmux_split_window_detached_and_cwd() {
         let spec = sample_spec();
         let argv = build_tmux_argv(&spec, Path::new("/tmp/p.txt"));
         assert_eq!(argv[0], "tmux");
         assert_eq!(argv[1], "split-window");
-        assert_eq!(argv[2], "-c");
-        assert_eq!(argv[3], "/repo/worktrees/worker-1");
+        // `-d` keeps the new pane from stealing focus from the leader.
+        assert_eq!(argv[2], "-d");
+        assert_eq!(argv[3], "-c");
+        assert_eq!(argv[4], "/repo/worktrees/worker-1");
+    }
+
+    #[test]
+    fn argv_skips_env_keys_that_tmux_would_misparse() {
+        let mut spec = sample_spec();
+        spec.env = std::collections::HashMap::from([
+            ("DEEPSEEK_API_KEY".to_string(), "sk-test".to_string()),
+            ("A=B".to_string(), "splitter".to_string()),
+            ("".to_string(), "empty".to_string()),
+            ("\0key".to_string(), "nul".to_string()),
+        ]);
+        let argv = build_tmux_argv(&spec, Path::new("/tmp/p.txt"));
+        let e_idx = argv.iter().position(|a| a == "-e").expect("-e present");
+        assert_eq!(argv[e_idx + 1], "DEEPSEEK_API_KEY=sk-test");
+        assert!(
+            !argv.iter().any(|a| a.starts_with("A=")),
+            "invalid keys must be skipped: {argv:?}"
+        );
+    }
+
+    #[test]
+    fn parse_pane_id_accepts_single_percent_line_only() {
+        assert_eq!(parse_tmux_pane_id(b"%5\n").expect("valid"), "%5");
+        assert!(parse_tmux_pane_id(b"").is_err());
+        assert!(parse_tmux_pane_id(b"5").is_err());
+        assert!(parse_tmux_pane_id(b"%5\nextra\n").is_err());
     }
 
     #[test]

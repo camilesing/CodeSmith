@@ -1,9 +1,6 @@
 //! Team discovery — utilities for reading team config and finding members.
 
-use crate::tools::team::team_file::{
-    TeamFile, TeamMember, find_member_by_agent_id, find_member_by_name, read_team_file,
-    remove_member_by_name, write_team_file,
-};
+use crate::tools::team::team_file::{TeamFile, TeamMember, read_team_file, write_team_file};
 
 /// Read the team config file from disk.
 pub fn read_team_config(team_name: &str) -> anyhow::Result<TeamFile> {
@@ -13,25 +10,6 @@ pub fn read_team_config(team_name: &str) -> anyhow::Result<TeamFile> {
 /// Write the team config file back to disk.
 pub fn write_team_config(team_file: &TeamFile) -> anyhow::Result<()> {
     write_team_file(team_file)
-}
-
-/// Find a member by name. Returns None if not found.
-#[allow(dead_code)]
-pub fn find_member(team_file: &TeamFile, name: &str) -> Option<TeamMember> {
-    find_member_by_name(team_file, name)
-}
-
-/// Find a member by agent ID. Returns None if not found.
-#[allow(dead_code)]
-pub fn find_member_by_id(team_file: &TeamFile, agent_id: &str) -> Option<TeamMember> {
-    find_member_by_agent_id(team_file, agent_id)
-}
-
-/// Remove a member by name from the team file, returning the removed member.
-/// Caller must call `write_team_config()` to persist.
-#[allow(dead_code)]
-pub fn remove_member(team_file: &mut TeamFile, name: &str) -> Option<TeamMember> {
-    remove_member_by_name(team_file, name)
 }
 
 /// Add a member to the team file, rejecting duplicates by name or
@@ -57,25 +35,17 @@ pub fn add_member(team_file: &mut TeamFile, member: TeamMember) -> anyhow::Resul
     Ok(())
 }
 
-/// Mark a member as inactive. Caller must call `write_team_config()` to persist.
-pub fn set_member_inactive(team_file: &mut TeamFile, name: &str) -> bool {
-    if let Some(member) = team_file.members.iter_mut().find(|m| m.name == name) {
-        member.is_active = false;
-        true
-    } else {
-        false
-    }
-}
-
-/// Mark a member as active. Caller must call `write_team_config()` to persist.
-#[allow(dead_code)]
-pub fn set_member_active(team_file: &mut TeamFile, name: &str) -> bool {
-    if let Some(member) = team_file.members.iter_mut().find(|m| m.name == name) {
-        member.is_active = true;
-        true
-    } else {
-        false
-    }
+/// Mark a member as inactive. Fails when no member carries the name — the
+/// old `bool` conflated not-found with success and every call site
+/// discarded it with `let _ =`, so a bad name silently "succeeded".
+/// Names are unique (`add_member` rejects duplicates), so the first match
+/// is the only match. Caller must call `write_team_config()` to persist.
+pub fn set_member_inactive(team_file: &mut TeamFile, name: &str) -> anyhow::Result<()> {
+    let Some(member) = team_file.members.iter_mut().find(|m| m.name == name) else {
+        anyhow::bail!("no team member named '{name}' in team '{}'", team_file.name);
+    };
+    member.is_active = false;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -120,30 +90,13 @@ mod tests {
     }
 
     #[test]
-    fn remove_member_removes_correct_member() {
+    fn set_member_inactive_marks_and_reports_unknown_name() {
         let mut tf = make_team();
         add_member(&mut tf, make_member("alice", true)).expect("add");
-        add_member(&mut tf, make_member("bob", true)).expect("add");
-        let removed = remove_member(&mut tf, "alice");
-        assert!(removed.is_some());
-        assert_eq!(tf.members.len(), 1);
-        assert_eq!(tf.members[0].name, "bob");
-    }
-
-    #[test]
-    fn set_member_inactive_and_active_toggle() {
-        let mut tf = make_team();
-        add_member(&mut tf, make_member("alice", true)).expect("add");
-        assert!(set_member_inactive(&mut tf, "alice"));
+        set_member_inactive(&mut tf, "alice").expect("known name succeeds");
         assert!(!tf.members[0].is_active);
-        assert!(set_member_active(&mut tf, "alice"));
-        assert!(tf.members[0].is_active);
-    }
 
-    #[test]
-    fn set_member_inactive_returns_false_for_unknown() {
-        let mut tf = make_team();
-        assert!(!set_member_inactive(&mut tf, "nobody"));
-        assert!(!set_member_active(&mut tf, "nobody"));
+        let err = set_member_inactive(&mut tf, "nobody").expect_err("unknown name must fail");
+        assert!(err.to_string().contains("nobody"), "got: {err}");
     }
 }

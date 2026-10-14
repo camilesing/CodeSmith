@@ -6520,7 +6520,17 @@ pub(crate) async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -
             }
         })
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    let auto_approve = args.permission_mode.eq_ignore_ascii_case("auto");
+    let auto_approve = match crate::tools::team::PermissionMode::from_cli(&args.permission_mode) {
+        Some(crate::tools::team::PermissionMode::Auto) => true,
+        Some(crate::tools::team::PermissionMode::Ask) => false,
+        None => {
+            crate::logging::warn(format!(
+                "unrecognized --permission-mode {:?}; using ask",
+                args.permission_mode
+            ));
+            false
+        }
+    };
     let allowed_tools: Option<Vec<String>> = args.allowed_tools.as_ref().map(|csv| {
         csv.split(',')
             .map(|s| s.trim().to_string())
@@ -6805,8 +6815,18 @@ pub(crate) async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -
         },
     );
     if let Ok(mut tf) = read_team_config(&args.team) {
-        let _ = set_member_inactive(&mut tf, &args.name);
-        let _ = write_team_config(&tf);
+        if let Err(err) = set_member_inactive(&mut tf, &args.name) {
+            crate::logging::warn(format!(
+                "failed to mark teammate '{}' inactive: {err}",
+                args.name
+            ));
+        }
+        if let Err(err) = write_team_config(&tf) {
+            crate::logging::warn(format!(
+                "failed to persist team config for '{}': {err}",
+                args.team
+            ));
+        }
     }
 
     if let Some(err) = turn_error.as_ref().filter(|e| !e.trim().is_empty()) {

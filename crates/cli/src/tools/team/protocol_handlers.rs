@@ -62,16 +62,19 @@ pub fn handle_shutdown_request(
 pub use codesmith_agent_runtime::team::handle_shutdown_approval;
 
 /// Handle shutdown rejection from a teammate. The teammate continues working.
+///
+/// `sender` is the teammate rejecting the shutdown and `recipient` the lead
+/// receiving the rejection (the inverted `_leader_name`/`_teammate_name`
+/// names used to invite a real bug the moment this no-op starts using its
+/// parameters). Informational only — the teammate's mailbox already
+/// contains their rejection response.
 pub fn handle_shutdown_rejection(
     _request_id: &str,
-    _leader_name: &str,
-    _teammate_name: &str,
+    _sender_name: &str,
+    _recipient_name: &str,
     _team_name: &str,
     _reason: String,
 ) -> anyhow::Result<()> {
-    // Rejection is informational — no side effects needed.
-    // The teammate's mailbox already contains their rejection response
-    // written by handle_shutdown_request in teammate_lifecycle.
     Ok(())
 }
 

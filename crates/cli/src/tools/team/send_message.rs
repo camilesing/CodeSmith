@@ -89,6 +89,60 @@ impl SendMessageTool {
     }
 }
 
+/// Validate that `recipient` names the lead or an active teammate before
+/// delivery — a typo'd or nonexistent name used to "succeed" by creating an
+/// inbox file nobody polls, misleading the caller into believing the
+/// message was delivered (distinct names can also collide after
+/// `sanitize_name`, silently redirecting messages).
+fn ensure_known_recipient(recipient: &str, team_name: &str) -> Result<(), ToolError> {
+    if recipient == "*" {
+        return Ok(());
+    }
+    let team_file = read_team_file(team_name)
+        .map_err(|e| ToolError::execution_failed(format!("Failed to read team roster: {}", e)))?;
+    let known = recipient == team_lead_name()
+        || find_member_by_name(&team_file, recipient).is_some_and(|m| m.is_active);
+    if known {
+        Ok(())
+    } else {
+        Err(ToolError::invalid_input(format!(
+            "Recipient '{}' is not an active member of team '{}'",
+            recipient, team_name
+        )))
+    }
+}
+
+/// Serialize a protocol payload and deliver it to a teammate mailbox.
+/// Both the payload and the envelope carry the SAME timestamp — the
+/// branches used to call `Utc::now()` twice, so the two could disagree.
+fn deliver_protocol(
+    recipient: &str,
+    team_name: &str,
+    sender: &str,
+    mut protocol: serde_json::Value,
+    summary: &str,
+) -> Result<(), ToolError> {
+    let now = chrono::Utc::now().to_rfc3339();
+    if let Some(obj) = protocol.as_object_mut() {
+        obj.insert("timestamp".to_string(), json!(now));
+    }
+    let text = serde_json::to_string(&protocol)
+        .map_err(|e| ToolError::execution_failed(format!("Serialize failed: {}", e)))?;
+    write_to_mailbox(
+        recipient,
+        team_name,
+        TeammateMessage {
+            from: sender.to_string(),
+            text,
+            timestamp: now,
+            read: false,
+            color: None,
+            summary: Some(summary.to_string()),
+        },
+    )
+    .map_err(|e| ToolError::execution_failed(format!("Delivery failed: {}", e)))
+}
+
 #[async_trait]
 impl ToolSpec for SendMessageTool {
     fn name(&self) -> &'static str {
@@ -235,8 +289,10 @@ impl ToolSpec for SendMessageTool {
 
         // Protocol actions carry privilege (plan approvals, shutdowns,
         // permission grants) — authorize the sender against the roster
-        // before dispatching.
+        // before dispatching, then confirm the recipient exists so a
+        // typo'd name cannot "deliver" into an inbox nobody polls.
         authorize_protocol_action(type_str, &sender_name, &team_name)?;
+        ensure_known_recipient(&recipient, &team_name)?;
 
         match type_str {
             "shutdown_request" => {
@@ -291,27 +347,17 @@ impl ToolSpec for SendMessageTool {
                 }
                 // Write approval protocol to teammate mailbox (informational).
                 // Actual cancellation happens via inbox poller on leader side.
-                let now = chrono::Utc::now().to_rfc3339();
-                let protocol_text = serde_json::to_string(&json!({
-                    "type": "shutdown_approved",
-                    "request_id": request_id,
-                    "from": sender_name,
-                    "timestamp": now,
-                }))
-                .map_err(|e| ToolError::execution_failed(format!("Serialize failed: {}", e)))?;
-                write_to_mailbox(
+                deliver_protocol(
                     &recipient,
                     &team_name,
-                    TeammateMessage {
-                        from: sender_name.clone(),
-                        text: protocol_text,
-                        timestamp: chrono::Utc::now().to_rfc3339(),
-                        read: false,
-                        color: None,
-                        summary: Some("shutdown approved".to_string()),
-                    },
-                )
-                .map_err(|e| ToolError::execution_failed(format!("Delivery failed: {}", e)))?;
+                    &sender_name,
+                    json!({
+                        "type": "shutdown_approved",
+                        "request_id": request_id.clone(),
+                        "from": sender_name,
+                    }),
+                    "shutdown approved",
+                )?;
                 ToolResult::json(&json!({
                     "success": true,
                     "message": format!("Shutdown approved for {}", recipient),
@@ -402,27 +448,17 @@ impl ToolSpec for SendMessageTool {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::missing_field("permission_mode"))?
                     .to_string();
-                let now = chrono::Utc::now().to_rfc3339();
-                let protocol_text = serde_json::to_string(&json!({
-                    "type": "mode_set_request",
-                    "from": sender_name,
-                    "permission_mode": permission_mode,
-                    "timestamp": now,
-                }))
-                .map_err(|e| ToolError::execution_failed(format!("Serialize failed: {}", e)))?;
-                write_to_mailbox(
+                deliver_protocol(
                     &recipient,
                     &team_name,
-                    TeammateMessage {
-                        from: sender_name.clone(),
-                        text: protocol_text,
-                        timestamp: chrono::Utc::now().to_rfc3339(),
-                        read: false,
-                        color: None,
-                        summary: Some(format!("mode set: {}", permission_mode)),
-                    },
-                )
-                .map_err(|e| ToolError::execution_failed(format!("Delivery failed: {}", e)))?;
+                    &sender_name,
+                    json!({
+                        "type": "mode_set_request",
+                        "from": sender_name,
+                        "permission_mode": permission_mode,
+                    }),
+                    &format!("mode set: {}", permission_mode),
+                )?;
                 ToolResult::json(&json!({
                     "success": true,
                     "message": format!("Mode set request sent to {}: {}", recipient, permission_mode),
@@ -447,28 +483,18 @@ impl ToolSpec for SendMessageTool {
                             .collect()
                     })
                     .unwrap_or_default();
-                let now = chrono::Utc::now().to_rfc3339();
-                let protocol_text = serde_json::to_string(&json!({
-                    "type": "team_permission_update",
-                    "from": sender_name,
-                    "allowed_tools": allowed_tools,
-                    "denied_tools": denied_tools,
-                    "timestamp": now,
-                }))
-                .map_err(|e| ToolError::execution_failed(format!("Serialize failed: {}", e)))?;
-                write_to_mailbox(
+                deliver_protocol(
                     &recipient,
                     &team_name,
-                    TeammateMessage {
-                        from: sender_name.clone(),
-                        text: protocol_text,
-                        timestamp: chrono::Utc::now().to_rfc3339(),
-                        read: false,
-                        color: None,
-                        summary: Some("permission update".to_string()),
-                    },
-                )
-                .map_err(|e| ToolError::execution_failed(format!("Delivery failed: {}", e)))?;
+                    &sender_name,
+                    json!({
+                        "type": "team_permission_update",
+                        "from": sender_name,
+                        "allowed_tools": allowed_tools,
+                        "denied_tools": denied_tools,
+                    }),
+                    "permission update",
+                )?;
                 ToolResult::json(&json!({
                     "success": true,
                     "message": format!("Permission update sent to {}", recipient),
@@ -479,25 +505,13 @@ impl ToolSpec for SendMessageTool {
                 // Forward as-is — the inbox poller will classify and route.
                 let mut forwarded = obj.clone();
                 forwarded.insert("from".to_string(), json!(sender_name));
-                forwarded.insert(
-                    "timestamp".to_string(),
-                    json!(chrono::Utc::now().to_rfc3339()),
-                );
-                let protocol_text = serde_json::to_string(&forwarded)
-                    .map_err(|e| ToolError::execution_failed(format!("Serialize failed: {}", e)))?;
-                write_to_mailbox(
+                deliver_protocol(
                     &recipient,
                     &team_name,
-                    TeammateMessage {
-                        from: sender_name.clone(),
-                        text: protocol_text,
-                        timestamp: chrono::Utc::now().to_rfc3339(),
-                        read: false,
-                        color: None,
-                        summary: Some(format!("sandbox permission: {}", type_str)),
-                    },
-                )
-                .map_err(|e| ToolError::execution_failed(format!("Delivery failed: {}", e)))?;
+                    &sender_name,
+                    serde_json::Value::Object(forwarded),
+                    &format!("sandbox permission: {}", type_str),
+                )?;
                 ToolResult::json(&json!({
                     "success": true,
                     "message": format!("Sandbox permission {} sent to {}", type_str, recipient),
@@ -570,7 +584,9 @@ impl SendMessageTool {
                 .map_err(|e| ToolError::execution_failed(e.to_string()));
         }
 
-        // Single recipient DM.
+        // Single recipient DM — check the roster so a typo'd name cannot
+        // silently "deliver" into an inbox nobody polls.
+        ensure_known_recipient(recipient, team_name)?;
         write_to_mailbox(recipient, team_name, team_msg).map_err(|e| {
             ToolError::execution_failed(format!("Failed to deliver to {}: {}", recipient, e))
         })?;

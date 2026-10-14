@@ -175,10 +175,26 @@ impl ToolSpec for TeamCreateTool {
             }
         };
 
-        // Create team-scoped TaskV2Manager.
-        let task_v2_manager = new_shared_task_v2_manager(&sanitized).map_err(|e| {
-            ToolError::execution_failed(format!("Failed to create task manager: {}", e))
-        })?;
+        // Create team-scoped TaskV2Manager. On failure, roll back the
+        // on-disk team created above — otherwise every retry hits the
+        // "already exists" check and fails permanently until the user
+        // manually deletes ~/.codesmith/teams/<name>. Creation was
+        // exclusive (O_EXCL), so the rollback cannot clobber another team.
+        let task_v2_manager = match new_shared_task_v2_manager(&sanitized) {
+            Ok(manager) => manager,
+            Err(e) => {
+                if let Err(cleanup_err) = crate::tools::team::delete_team_directories(&team_name) {
+                    crate::logging::warn(format!(
+                        "failed to roll back team '{}' after task-manager failure: {cleanup_err}",
+                        team_name
+                    ));
+                }
+                return Err(ToolError::execution_failed(format!(
+                    "Failed to create task manager: {}",
+                    e
+                )));
+            }
+        };
 
         let team_ctx = TeamContext {
             team_name: team_name.clone(),

@@ -354,8 +354,18 @@ impl ToolSpec for TaskStopTool {
                     let _ = task_mgr.unassign_teammate_tasks(target);
                 }
                 if let Ok(mut team_file) = crate::tools::team::read_team_config(&team_name) {
-                    let _ = crate::tools::team::set_member_inactive(&mut team_file, target);
-                    let _ = crate::tools::team::write_team_config(&team_file);
+                    if let Err(err) =
+                        crate::tools::team::set_member_inactive(&mut team_file, target)
+                    {
+                        crate::logging::warn(format!(
+                            "failed to mark teammate '{target}' inactive: {err}"
+                        ));
+                    }
+                    if let Err(err) = crate::tools::team::write_team_config(&team_file) {
+                        crate::logging::warn(format!(
+                            "failed to persist team config for '{team_name}': {err}"
+                        ));
+                    }
                 }
                 return Ok(ToolResult::success(format!("Stopped teammate: {target}"))
                     .with_metadata(json!({
