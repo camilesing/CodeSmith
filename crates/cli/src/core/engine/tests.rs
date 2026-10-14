@@ -2686,7 +2686,9 @@ async fn post_tool_replay_invoked_when_high_non_severe_risk() {
         )
         .await;
 
-    assert!(!restarted);
+    // The replay intervention applied — the checkpoint now propagates the
+    // replay result (previously a hardwired `false` masked it).
+    assert!(restarted);
     let has_verification_note = engine.session.messages.iter().any(|msg| {
         msg.content.iter().any(|block| match block {
             ContentBlock::ToolResult { content, .. } => content.contains("[verification replay]"),
@@ -2952,6 +2954,7 @@ async fn apply_verify_with_tool_replay_skip_transcript_uses_outcome() {
         diff_summary: "output_match".to_string(),
         verification_note: "[verification replay] tool=read_file pass=true details=output_match"
             .to_string(),
+        before_tokens: before_len * 10,
     };
 
     let applied = engine

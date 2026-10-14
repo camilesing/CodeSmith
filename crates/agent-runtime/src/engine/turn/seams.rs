@@ -81,10 +81,17 @@ impl HostAgentExecutor {
     /// steer arm, and the mid-stream buffer flush
     /// ([`flush_pending_steers`](Self::flush_pending_steers)) — single source for
     /// the observe + enrich + push logic so the three push sites cannot drift.
-    /// Sync: [`ChatHistory::push`] is sync and `observe_user_message` /
+    /// Validation lives here too (module invariant): a whitespace-only steer
+    /// is dropped (`false`), so no intake site can forget the trim/skip-empty
+    /// guard and inject an empty `user` message. Sync:
+    /// [`ChatHistory::push`] is sync and `observe_user_message` /
     /// `enrich_user_text_message` are sync (the lock on the shared working set
     /// is never held across an `await`).
-    pub(crate) fn push_steer_message(&self, steer: String, history: &mut dyn ChatHistory) {
+    pub(crate) fn push_steer_message(&self, steer: String, history: &mut dyn ChatHistory) -> bool {
+        let steer = steer.trim().to_string();
+        if steer.is_empty() {
+            return false;
+        }
         let message = match &self.turn_meta {
             Some(probe) => {
                 probe.observe_user_message(&steer);
@@ -99,12 +106,14 @@ impl HostAgentExecutor {
             },
         };
         history.push(message);
+        true
     }
 
     /// Flush mid-stream-buffered steers into the transcript (observe + enrich +
     /// push). No status — "Steer input queued" was already emitted during
     /// buffering in [`reduce_stream`](Self::reduce_stream). Returns the count
-    /// flushed so callers can decide whether to resume the turn. Mirrors
+    /// actually PUSHED (whitespace-only entries never become messages) so
+    /// callers can decide whether to resume the turn. Mirrors
     /// production's `pending_steers.drain(..)` at `handle_deepseek_turn`
     /// (post-stream no-tools — caller resumes on a fresh step) and
     /// `:2632-2637` (post-tool — caller falls through to the next step).
@@ -113,11 +122,13 @@ impl HostAgentExecutor {
         pending: &mut Vec<String>,
         history: &mut dyn ChatHistory,
     ) -> usize {
-        let count = pending.len();
+        let mut pushed = 0usize;
         for steer in pending.drain(..) {
-            self.push_steer_message(steer, history);
+            if self.push_steer_message(steer, history) {
+                pushed += 1;
+            }
         }
-        count
+        pushed
     }
 
     /// (1) per-step pre-request seam — drain queued steer inputs into the
@@ -154,15 +165,17 @@ impl HostAgentExecutor {
                     Err(_) => break,
                 }
             };
-            let steer = steer.trim().to_string();
-            if steer.is_empty() {
-                continue;
-            }
             // Compute the status preview before moving `steer` into the
             // message (mirrors production's `steer.clone()` + summarize).
-            let status = format!("Steer input accepted: {}", summarize_text(&steer, 120));
-            self.push_steer_message(steer, history);
-            self.emit_status(status).await;
+            let status = format!(
+                "Steer input accepted: {}",
+                summarize_text(steer.trim(), 120)
+            );
+            // Trim/skip-empty lives in `push_steer_message` — the shared
+            // push point enforces it for every intake site.
+            if self.push_steer_message(steer, history) {
+                self.emit_status(status).await;
+            }
         }
     }
 
@@ -181,12 +194,23 @@ impl HostAgentExecutor {
     /// **Host-side concern:** the host calls this BEFORE
     /// `AgentExecutor::run`, not inside the turn loop. Calling it inside
     /// `run_inner` would discard steers the host queued for the current turn
-    /// before calling `run`.
-    pub async fn drain_stale_steers(&self) {
+    /// before calling `run`. **Stall hazard:** the guard is the same tokio
+    /// mutex the sub-agent blocking hold's steer arm holds across
+    /// `recv().await`, and `lock().await` has no timeout — a host that
+    /// (mis)calls this while a turn is in the hold stalls here until the
+    /// hold resolves (steer arrival, child completion, or cancel). Returns
+    /// the number of stale steers discarded so the host can surface it
+    /// ("N stale inputs discarded") — the drop was previously unobservable
+    /// across the crate boundary.
+    pub async fn drain_stale_steers(&self) -> usize {
         let Some(rx) = &self.steer else {
-            return;
+            return 0;
         };
         let mut guard = rx.lock().await;
-        while guard.try_recv().is_ok() {}
+        let mut dropped = 0usize;
+        while guard.try_recv().is_ok() {
+            dropped += 1;
+        }
+        dropped
     }
 }
