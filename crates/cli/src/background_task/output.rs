@@ -5,6 +5,14 @@
 
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
+
+/// Read the single byte at `offset` (seeking) for UTF-8 boundary probing.
+fn buf_probe(file: &mut std::fs::File, offset: usize) -> std::io::Result<u8> {
+    file.seek(SeekFrom::Start(offset as u64))?;
+    let mut byte = [0u8; 1];
+    file.read_exact(&mut byte)?;
+    Ok(byte[0])
+}
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -63,12 +71,30 @@ impl BackgroundTaskOutputManager {
         if offset >= file_len {
             return Ok((String::new(), file_len));
         }
-        file.seek(SeekFrom::Start(offset as u64))?;
-        let bytes_to_read = file_len - offset;
+        // A caller offset landing mid-character (stored across polls)
+        // would start the returned slice on a UTF-8 continuation byte;
+        // skip up to 3 leading continuation bytes defensively.
+        let mut start = offset;
+        while start < file_len && (buf_probe(&mut file, start)? & 0xC0) == 0x80 {
+            start += 1;
+        }
+        file.seek(SeekFrom::Start(start as u64))?;
+        let bytes_to_read = file_len - start;
         let mut buf = vec![0u8; bytes_to_read];
         file.read_exact(&mut buf)?;
-        let content = String::from_utf8_lossy(&buf).to_string();
-        Ok((content, file_len))
+        // Torn append at EOF: this is a concurrent read-while-append flow,
+        // so the tail can end mid-character. `from_utf8_lossy` would bake a
+        // permanent U+FFFD into the content and the returned offset would
+        // advance past the torn bytes. Stop at the last complete character
+        // instead so the incomplete tail is re-read on the next poll.
+        match String::from_utf8(buf) {
+            Ok(content) => Ok((content, file_len)),
+            Err(err) => {
+                let valid = err.utf8_error().valid_up_to();
+                let content = String::from_utf8_lossy(&err.as_bytes()[..valid]).into_owned();
+                Ok((content, start + valid))
+            }
+        }
     }
 
     /// Get the total size of a task's output file.

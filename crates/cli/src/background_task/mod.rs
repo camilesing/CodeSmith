@@ -315,7 +315,10 @@ impl BackgroundTaskRegistry {
             .values()
             .filter(|s| {
                 s.task_type == BackgroundTaskType::Shell
-                    && s.status == BackgroundTaskStatus::Running
+                    && matches!(
+                        s.status,
+                        BackgroundTaskStatus::Running | BackgroundTaskStatus::Stalled
+                    )
             })
             .cloned()
             .collect()
@@ -397,7 +400,10 @@ impl BackgroundTaskRegistry {
             .iter()
             .filter(|(_, s)| {
                 s.task_type == BackgroundTaskType::Shell
-                    && s.status == BackgroundTaskStatus::Running
+                    && matches!(
+                        s.status,
+                        BackgroundTaskStatus::Running | BackgroundTaskStatus::Stalled
+                    )
             })
             .map(|(id, s)| (id.clone(), s.source_id.clone()))
             .collect();
@@ -406,18 +412,27 @@ impl BackgroundTaskRegistry {
             // Scope the lock so it drops before we mutate self
             let poll_info: Option<(BackgroundTaskStatus, Option<String>, String, Option<i32>)> = {
                 let mut mgr = self.shell_manager.lock().unwrap();
-                if let Ok(detail) = mgr.inspect_job(&shell_id) {
-                    let tail = detail.snapshot.stdout_tail.clone();
-                    let status: BackgroundTaskStatus = detail.snapshot.status.into();
-                    let exit_code = detail.snapshot.exit_code;
-                    // mgr drops here at scope end
-                    Some((status, None, tail, exit_code))
-                } else {
-                    None
+                match mgr.inspect_job(&shell_id) {
+                    Ok(detail) => {
+                        let tail = detail.snapshot.stdout_tail.clone();
+                        let status: BackgroundTaskStatus = detail.snapshot.status.into();
+                        let exit_code = detail.snapshot.exit_code;
+                        // mgr drops here at scope end
+                        Some((status, None, tail, exit_code))
+                    }
+                    Err(err) => Some((
+                        BackgroundTaskStatus::Failed,
+                        Some(format!("shell job lost: {err}")),
+                        String::new(),
+                        None,
+                    )),
                 }
             };
 
-            if let Some((new_status, mut error, tail, exit_code_val)) = poll_info {
+            let Some((new_status, mut error, tail, exit_code_val)) = poll_info else {
+                continue;
+            };
+            {
                 // Check stall first (only if still Running)
                 if new_status == BackgroundTaskStatus::Running && self.looks_like_prompt(&tail) {
                     if let Some(r) = self.update_task_status(

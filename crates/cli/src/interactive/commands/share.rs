@@ -3,7 +3,6 @@
 use std::io::Write;
 
 use crate::dependencies::ExternalTool;
-use std::path::Path;
 
 /// It renders the session as HTML and uploads it via `gh gist create`.
 pub(crate) async fn perform_share(
@@ -20,8 +19,11 @@ pub(crate) async fn perform_share(
         Err(e) => return Err(format!("Failed to write temp file: {e}")),
     };
 
-    // Upload via `gh gist create`
-    let url = match upload_gist(tmp.path()).await {
+    // Upload via `gh gist create`. Hand OWNERSHIP of the temp file to the
+    // blocking task: dropping this future while `gh` runs used to delete
+    // the file underneath the detached reader (truncated upload) or leak
+    // an orphaned gist whose URL was never observed.
+    let url = match upload_gist(tmp).await {
         Ok(url) => url,
         Err(e) => return Err(format!("Failed to upload Gist: {e}")),
     };
@@ -95,14 +97,17 @@ fn write_temp_html(html: &str) -> Result<tempfile::NamedTempFile, String> {
     Ok(tmp)
 }
 
-/// Upload a file as a GitHub Gist using the `gh` CLI.
+/// Upload a temp file as a GitHub Gist using the `gh` CLI. Takes ownership
+/// of the file so it outlives the `gh` invocation even if the calling
+/// future is dropped mid-upload.
 ///
 /// The gist is created **secret** (gh's default): the exported session can
 /// embed source code, tool output, and other secrets, and a public gist is
 /// discoverable and cannot be reliably un-leaked. Users who want a public
 /// URL can flip the gist in the GitHub UI afterwards.
-async fn upload_gist(path: &Path) -> Result<String, String> {
-    let path_owned = path.to_path_buf();
+async fn upload_gist(tmp: tempfile::NamedTempFile) -> Result<String, String> {
+    let path_owned = tmp.path().to_path_buf();
+    let _keep_alive = tmp;
     let output = tokio::task::spawn_blocking(move || {
         let mut cmd = crate::dependencies::Gh::command()
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "gh not found"))?;

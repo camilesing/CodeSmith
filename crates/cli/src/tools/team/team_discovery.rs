@@ -34,9 +34,27 @@ pub fn remove_member(team_file: &mut TeamFile, name: &str) -> Option<TeamMember>
     remove_member_by_name(team_file, name)
 }
 
-/// Add a member to the team file. Caller must call `write_team_config()` to persist.
-pub fn add_member(team_file: &mut TeamFile, member: TeamMember) {
+/// Add a member to the team file, rejecting duplicates by name or
+/// agent_id: the in-memory `ctx.teammates` guard at call sites cannot see
+/// members persisted on disk by another session, and duplicate names make
+/// every name-based lookup/removal/toggle ambiguous (first match wins).
+/// Caller must call `write_team_config()` to persist.
+pub fn add_member(team_file: &mut TeamFile, member: TeamMember) -> anyhow::Result<()> {
+    if team_file.members.iter().any(|m| m.name == member.name) {
+        anyhow::bail!("team member with name '{}' already exists", member.name);
+    }
+    if team_file
+        .members
+        .iter()
+        .any(|m| m.agent_id == member.agent_id)
+    {
+        anyhow::bail!(
+            "team member with agent_id '{}' already exists",
+            member.agent_id
+        );
+    }
     team_file.members.push(member);
+    Ok(())
 }
 
 /// Mark a member as inactive. Caller must call `write_team_config()` to persist.
@@ -96,7 +114,7 @@ mod tests {
     #[test]
     fn add_member_appends_to_members() {
         let mut tf = make_team();
-        add_member(&mut tf, make_member("alice", true));
+        add_member(&mut tf, make_member("alice", true)).expect("add");
         assert_eq!(tf.members.len(), 1);
         assert_eq!(tf.members[0].name, "alice");
     }
@@ -104,8 +122,8 @@ mod tests {
     #[test]
     fn remove_member_removes_correct_member() {
         let mut tf = make_team();
-        add_member(&mut tf, make_member("alice", true));
-        add_member(&mut tf, make_member("bob", true));
+        add_member(&mut tf, make_member("alice", true)).expect("add");
+        add_member(&mut tf, make_member("bob", true)).expect("add");
         let removed = remove_member(&mut tf, "alice");
         assert!(removed.is_some());
         assert_eq!(tf.members.len(), 1);
@@ -115,7 +133,7 @@ mod tests {
     #[test]
     fn set_member_inactive_and_active_toggle() {
         let mut tf = make_team();
-        add_member(&mut tf, make_member("alice", true));
+        add_member(&mut tf, make_member("alice", true)).expect("add");
         assert!(set_member_inactive(&mut tf, "alice"));
         assert!(!tf.members[0].is_active);
         assert!(set_member_active(&mut tf, "alice"));

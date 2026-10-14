@@ -389,13 +389,17 @@ pub async fn wait_for_next_prompt_or_shutdown(rt: &mut TeammateRuntime) -> WaitR
             Err(_) => continue,
         };
 
+        // Resolve pending permission responses BEFORE the shutdown
+        // early-return: scan_inbox_with_priority already marked everything
+        // read, so returning first used to permanently drop same-batch
+        // permission responses / plan approvals / mode-set requests and
+        // leave their waiters hanging.
+        resolve_permission_responses(&inbox.permission_responses, &rt.permission_registry);
+
         // Shutdown request has highest priority.
         if let Some(entry) = inbox.shutdown_request {
             return WaitResult::ShutdownRequest(entry);
         }
-
-        // Resolve pending permission responses.
-        resolve_permission_responses(&inbox.permission_responses, &rt.permission_registry);
 
         // Apply plan approval responses.
         for resp in &inbox.plan_approval_responses {
@@ -510,14 +514,30 @@ pub fn send_idle_notification(
 /// Handle a shutdown request protocol message.
 /// Returns the new state: ShutdownApproved or ShutdownRejected.
 /// Default: approve shutdown. In production, model decides via LLM.
-pub fn handle_shutdown_request(
+pub async fn handle_shutdown_request(
+    rt: &TeammateRuntime,
     request_id: &str,
     agent_name: &str,
     team_name: &str,
 ) -> anyhow::Result<TeammateState> {
     let now = chrono::Utc::now().to_rfc3339();
 
-    let approved = true;
+    // Default-approve, but reject when this teammate still owns
+    // in-progress work — the hardcoded `true` made the reject branch dead
+    // code and approved away stranded tasks (their owner then disappears).
+    let owns_in_progress = {
+        let manager = rt.task_v2_manager.lock().await;
+        manager
+            .list_tasks()
+            .map(|tasks| {
+                tasks.iter().any(|task| {
+                    task.owner.as_deref() == Some(agent_name)
+                        && matches!(task.status, crate::tools::task_v2::TaskV2Status::InProgress)
+                })
+            })
+            .unwrap_or(false)
+    };
+    let approved = !owns_in_progress;
 
     let protocol = if approved {
         StructuredProtocolMessage::ShutdownApproved {
@@ -631,12 +651,17 @@ async fn mark_task_completed(rt: &TeammateRuntime, task_id: &str, summary: Optio
     );
 }
 
-/// Record a task execution failure without inventing a failed task status.
+/// Record a task execution failure: reset the task to `Pending` and clear
+/// the owner (with the error as metadata). The old None-status version
+/// left the task `InProgress` and owned by this agent — `claim_task`'s
+/// busy check then rejected every future claim after ONE transient
+/// failure, permanently idling the teammate (`try_claim_next_task`
+/// swallows the error and just keeps polling).
 async fn record_task_error(rt: &TeammateRuntime, task_id: &str, error: &str) {
     let mut manager = rt.task_v2_manager.lock().await;
-    let _ = manager.update_task(
+    if let Err(err) = manager.update_task(
         task_id,
-        None,
+        Some(crate::tools::task_v2::TaskV2Status::Pending),
         None,
         None,
         None,
@@ -644,7 +669,20 @@ async fn record_task_error(rt: &TeammateRuntime, task_id: &str, error: &str) {
         Some(serde_json::json!({ "last_teammate_error": error })),
         None,
         None,
-    );
+    ) {
+        crate::logging::warn(format!(
+            "failed to reset task {task_id} after teammate error: {err}"
+        ));
+    }
+    // `update_task`'s owner parameter is set-only (None = unchanged), so
+    // ownership is cleared through the manager's unassign helper — the
+    // busy check in `claim_task` blocks on ANY in-progress ownership.
+    if let Err(err) = manager.unassign_teammate_tasks(&rt.agent_name) {
+        crate::logging::warn(format!(
+            "failed to unassign {} after task error: {err}",
+            rt.agent_name
+        ));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -698,8 +736,17 @@ pub async fn run_teammate_loop(mut rt: TeammateRuntime) -> TeammateResult {
                 break;
             }
             WaitResult::ShutdownRequest(entry) => {
-                match handle_shutdown_request(&entry.request_id, &rt.agent_name, &rt.team_name) {
+                match handle_shutdown_request(&rt, &entry.request_id, &rt.agent_name, &rt.team_name)
+                    .await
+                {
                     Ok(TeammateState::ShutdownApproved) => {
+                        // Release owned tasks before exiting — the manager
+                        // provides `unassign_teammate_tasks` for exactly
+                        // this; skipping it stranded owned tasks.
+                        {
+                            let mut manager = rt.task_v2_manager.lock().await;
+                            let _ = manager.unassign_teammate_tasks(&rt.agent_name);
+                        }
                         state = TeammateState::ShutdownApproved;
                         break;
                     }

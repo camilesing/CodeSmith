@@ -172,6 +172,12 @@ impl ToolSpec for AgentMemoryEditTool {
         let path = resolve_agent_memory_tool_path(context, required_str(&input, "path")?)?;
         let search = required_str(&input, "search")?;
         let replace = required_str(&input, "replace")?;
+        // Empty search passes `matches("")` (len+1 hits) and `replace("",
+        // …)` splices between every character — catastrophic corruption of
+        // the memory file.
+        if search.is_empty() {
+            return Err(ToolError::invalid_input("search must not be empty"));
+        }
         if search == replace {
             return Err(ToolError::invalid_input("search and replace are identical"));
         }

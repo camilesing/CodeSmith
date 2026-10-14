@@ -81,7 +81,17 @@ impl OpenSandboxBackend {
 #[async_trait]
 impl SandboxBackend for OpenSandboxBackend {
     async fn exec(&self, request_body: SandboxRunRequest) -> Result<SandboxOutput> {
-        let mut req = self.client.post(self.run_url()).json(&request_body);
+        // Honor the per-command budget plus transport overhead — the
+        // client-wide default used to abort long-running commands
+        // client-side with a misleading "Failed to reach" error while the
+        // remote command kept executing.
+        let budget = std::time::Duration::from_millis(request_body.timeout_ms)
+            .saturating_add(std::time::Duration::from_secs(5));
+        let mut req = self
+            .client
+            .post(self.run_url())
+            .timeout(budget)
+            .json(&request_body);
 
         if let Some(ref api_key) = self.api_key {
             req = req.bearer_auth(api_key);

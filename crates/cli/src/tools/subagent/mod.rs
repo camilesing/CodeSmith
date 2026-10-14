@@ -2731,7 +2731,8 @@ async fn spawn_team_teammate_in_process(
                 session_id: None,
                 is_active: true,
             },
-        );
+        )
+        .map_err(|e| ToolError::execution_failed(format!("Failed to add team member: {e}")))?;
         write_team_config(&team_file).map_err(|e| {
             ToolError::execution_failed(format!("Failed to write team config: {e}"))
         })?;
@@ -2916,7 +2917,8 @@ async fn spawn_team_teammate_in_pane(
                 session_id: None,
                 is_active: true,
             },
-        );
+        )
+        .map_err(|e| ToolError::execution_failed(format!("Failed to add team member: {e}")))?;
         write_team_config(&team_file).map_err(|e| {
             ToolError::execution_failed(format!("Failed to write team config: {e}"))
         })?;

@@ -93,7 +93,11 @@ impl SkillStateStore {
 
     fn persist(&self) -> Result<()> {
         let Some(path) = self.path.as_ref() else {
-            return Ok(());
+            // A detached store (constructed via `Default`, e.g. the
+            // runtime_api fallback after an unreadable state file) used to
+            // report success here while writing nothing — silent data loss
+            // behind a false success signal.
+            anyhow::bail!("skill state store has no backing file; cannot persist skill state");
         };
         let on_disk = OnDiskState {
             disabled: self.disabled.iter().cloned().collect(),

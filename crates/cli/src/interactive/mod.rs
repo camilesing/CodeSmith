@@ -196,10 +196,17 @@ pub async fn run_repl(
     let mut editor_mode = state.settings.composer_vim_mode.clone();
     loop {
         if let Some(text) = pending_submit.take() {
-            submit(&mut state, text).await?;
-            match render::pump_turn(&mut state).await? {
-                render::PumpExit::UserQuit | render::PumpExit::EngineGone => break,
-                render::PumpExit::TurnDone => continue,
+            if let Err(err) = submit(&mut state, text).await {
+                println!("{} {err}", "✗".red());
+                break;
+            }
+            match render::pump_turn(&mut state).await {
+                Ok(render::PumpExit::UserQuit | render::PumpExit::EngineGone) => break,
+                Ok(render::PumpExit::TurnDone) => continue,
+                Err(err) => {
+                    println!("{} {err}", "✗".red());
+                    break;
+                }
             }
         }
 
@@ -209,10 +216,17 @@ pub async fn run_repl(
         if !state.queued_messages.is_empty() {
             let text = state.queued_messages.remove(0);
             println!("{}", "▶ sending the queued message".dimmed());
-            submit(&mut state, text).await?;
-            match render::pump_turn(&mut state).await? {
-                render::PumpExit::UserQuit | render::PumpExit::EngineGone => break,
-                render::PumpExit::TurnDone => continue,
+            if let Err(err) = submit(&mut state, text).await {
+                println!("{} {err}", "✗".red());
+                break;
+            }
+            match render::pump_turn(&mut state).await {
+                Ok(render::PumpExit::UserQuit | render::PumpExit::EngineGone) => break,
+                Ok(render::PumpExit::TurnDone) => continue,
+                Err(err) => {
+                    println!("{} {err}", "✗".red());
+                    break;
+                }
             }
         }
 
@@ -280,10 +294,23 @@ pub async fn run_repl(
             }
             if action == Action::EditInEditor {
                 let draft = Bindings::lock(&bindings).snapshot().to_string();
-                next_prompt = Some(open_in_editor(&draft)?);
+                // A missing editor binary is a printed notice, not a lost
+                // draft — put the original text back (the function's own
+                // doc promise, previously defeated by `?` aborting the
+                // whole session).
+                next_prompt = Some(match open_in_editor(&draft) {
+                    Ok(text) => text,
+                    Err(err) => {
+                        println!("{} editor failed, draft restored: {err}", "✗".red());
+                        draft
+                    }
+                });
                 continue;
             }
-            apply_action(&mut state, action).await?;
+            if let Err(err) = apply_action(&mut state, action).await {
+                println!("{} {err}", "✗".red());
+                break;
+            }
         }
         if let Some(text) = next_prompt {
             prefill = (!text.is_empty()).then_some(text);
@@ -315,7 +342,12 @@ pub async fn run_repl(
                 continue;
             }
             Err(rustyline::error::ReadlineError::Eof) => break,
-            Err(err) => return Err(anyhow::anyhow!("input error: {err}")),
+            Err(err) => {
+                // A broken stdin ends the loop like Eof — the shutdown tail
+                // still runs instead of propagating out of run_repl.
+                println!("{} input error: {err}", "✗".red());
+                break;
+            }
         };
         consecutive_interrupts = 0;
         // A `\` at the end of a line continued the prompt; it is a marker,
@@ -339,10 +371,17 @@ pub async fn run_repl(
         // (Claude Code's shell mode). Checked before the command dispatch so
         // a shell line never reaches the slash-command table.
         if let Some(command) = shell_mode::command_from_line(trimmed) {
-            run_shell_mode(&mut state, command).await?;
-            match render::pump_turn(&mut state).await? {
-                render::PumpExit::UserQuit | render::PumpExit::EngineGone => break,
-                render::PumpExit::TurnDone => {}
+            if let Err(err) = run_shell_mode(&mut state, command).await {
+                println!("{} {err}", "✗".red());
+                break;
+            }
+            match render::pump_turn(&mut state).await {
+                Ok(render::PumpExit::UserQuit | render::PumpExit::EngineGone) => break,
+                Ok(render::PumpExit::TurnDone) => {}
+                Err(err) => {
+                    println!("{} {err}", "✗".red());
+                    break;
+                }
             }
             continue;
         }
@@ -361,10 +400,17 @@ pub async fn run_repl(
                 .drain(..)
                 .map(|path| path.display().to_string()),
         );
-        submit_with_images(&mut state, content, image_paths).await?;
-        match render::pump_turn(&mut state).await? {
-            render::PumpExit::UserQuit | render::PumpExit::EngineGone => break,
-            render::PumpExit::TurnDone => {}
+        if let Err(err) = submit_with_images(&mut state, content, image_paths).await {
+            println!("{} {err}", "✗".red());
+            break;
+        }
+        match render::pump_turn(&mut state).await {
+            Ok(render::PumpExit::UserQuit | render::PumpExit::EngineGone) => break,
+            Ok(render::PumpExit::TurnDone) => {}
+            Err(err) => {
+                println!("{} {err}", "✗".red());
+                break;
+            }
         }
     }
 
@@ -376,8 +422,8 @@ pub async fn run_repl(
     let _ = save_history(&mut editor, history_path.as_deref());
 
     // session_end hooks run before the process exits (awaited so a hook
-    // that flushes state finishes first). Only graceful exits reach here —
-    // the early `?` returns above skip it.
+    // that flushes state finishes first). In-loop errors are converted to
+    // a printed notice + `break`, so every exit path reaches this tail.
     if state.hooks.has_hooks_for_event(HookEvent::SessionEnd) {
         let executor = state.hooks.clone();
         let context = state.hook_context();

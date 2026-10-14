@@ -324,8 +324,16 @@ impl ToolSpec for TaskStopTool {
                 if let Some(reason) = reason.clone() {
                     metadata["reason"] = json!(reason);
                 }
+                // Capture everything the tail needs, then DROP the
+                // team_context guard before taking the task lock: holding
+                // both nested async locks (plus the sync fs I/O under
+                // them) stalls all team operations and invites lock-order
+                // inversion.
+                let task_mgr = ctx.task_v2_manager.clone();
+                let team_name = ctx.team_name.clone();
+                drop(slot);
                 {
-                    let mut task_mgr = ctx.task_v2_manager.lock().await;
+                    let mut task_mgr = task_mgr.lock().await;
                     if let Ok(tasks) = task_mgr.list_tasks() {
                         for task in tasks {
                             if task.owner.as_deref() == Some(target) {
@@ -345,7 +353,7 @@ impl ToolSpec for TaskStopTool {
                     }
                     let _ = task_mgr.unassign_teammate_tasks(target);
                 }
-                if let Ok(mut team_file) = crate::tools::team::read_team_config(&ctx.team_name) {
+                if let Ok(mut team_file) = crate::tools::team::read_team_config(&team_name) {
                     let _ = crate::tools::team::set_member_inactive(&mut team_file, target);
                     let _ = crate::tools::team::write_team_config(&team_file);
                 }
@@ -777,13 +785,20 @@ impl ToolSpec for PrAttemptRecordTool {
         let base_sha = git_output(&context.workspace, &["rev-parse", "HEAD"]).ok();
         let head_sha = base_sha.clone();
         let branch = git_output(&context.workspace, &["rev-parse", "--abbrev-ref", "HEAD"]).ok();
-        let diff = git_output(&context.workspace, &["diff", "--binary", "--no-color"])?;
+        // `git diff HEAD` — the bare form compared the working tree to the INDEX
+        // only, so a fully staged attempt yielded an empty diff ("No
+        // working-tree diff to record") and a partially staged one recorded
+        // an incomplete patch.
+        let diff = git_output(
+            &context.workspace,
+            &["diff", "HEAD", "--binary", "--no-color"],
+        )?;
         if diff.trim().is_empty() {
             return Ok(ToolResult::error(
                 "No working-tree diff to record as an attempt.",
             ));
         }
-        let changed_files = git_output(&context.workspace, &["diff", "--name-only"])?
+        let changed_files = git_output(&context.workspace, &["diff", "HEAD", "--name-only"])?
             .lines()
             .filter(|line| !line.trim().is_empty())
             .map(ToString::to_string)
@@ -1140,7 +1155,10 @@ fn classify_gate_failure(
         return "passed".to_string();
     }
     let haystack = format!("{stderr}\n{stdout}").to_ascii_lowercase();
-    if haystack.contains("address already in use") || haystack.contains("port") {
+    if haystack.contains("address already in use")
+        || haystack.contains("eaddrinuse")
+        || haystack.contains("cannot assign requested address")
+    {
         "environment_port_binding".to_string()
     } else if gate == "clippy" || haystack.contains("warning:") {
         "lint_failure".to_string()

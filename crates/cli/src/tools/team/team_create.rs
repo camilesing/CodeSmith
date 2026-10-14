@@ -10,8 +10,8 @@ use crate::tools::spec::{
 };
 use crate::tools::task_v2::new_shared_task_v2_manager;
 use crate::tools::team::{
-    SharedTeamContext, TeamContext, TeamFile, TeamMember, create_team_file, format_lead_agent_id,
-    sanitize_name, team_lead_name,
+    SharedTeamContext, TeamContext, TeamFile, TeamMember, create_team_file_exclusive,
+    format_lead_agent_id, sanitize_name, team_lead_name,
 };
 
 pub struct TeamCreateTool {
@@ -82,14 +82,14 @@ impl ToolSpec for TeamCreateTool {
             return Err(ToolError::not_available("agent_teams feature is disabled"));
         }
 
-        // Check one-team-per-leader constraint.
-        {
-            let tc = self.team_context.lock().await;
-            if tc.is_some() {
-                return Err(ToolError::invalid_input(
-                    "Already in a team. Only one team per leader session.",
-                ));
-            }
+        // Check one-team-per-leader constraint, holding the guard until
+        // the TeamContext is installed so concurrent execute() calls
+        // cannot both pass the check and silently overwrite each other.
+        let mut team_guard = self.team_context.lock().await;
+        if team_guard.is_some() {
+            return Err(ToolError::invalid_input(
+                "Already in a team. Only one team per leader session.",
+            ));
         }
 
         let team_name = input
@@ -119,10 +119,14 @@ impl ToolSpec for TeamCreateTool {
         // A second session creating the same-named team would silently
         // clobber the existing roster (the one-team-per-leader guard above
         // is in-process only). Refuse instead.
-        if crate::tools::team::team_config_path(&team_name)
+        // Creation itself is exclusive (O_EXCL on config.json) — the
+        // `.exists()` pre-check was a TOCTOU across sessions, and its
+        // `.unwrap_or(false)` silently skipped the guard when home-dir
+        // resolution failed.
+        let pre_exists = crate::tools::team::team_config_path(&team_name)
             .map(|path| path.exists())
-            .unwrap_or(false)
-        {
+            .unwrap_or(false);
+        if pre_exists {
             return Err(ToolError::invalid_input(format!(
                 "A team named '{}' already exists; pick a different name or delete the existing team first",
                 sanitized
@@ -155,9 +159,21 @@ impl ToolSpec for TeamCreateTool {
             members: vec![leader_member],
         };
 
-        let team_file_path = create_team_file(&team_file).map_err(|e| {
-            ToolError::execution_failed(format!("Failed to create team file: {}", e))
-        })?;
+        let team_file_path = match create_team_file_exclusive(&team_file) {
+            Ok(path) => path,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(ToolError::invalid_input(format!(
+                    "A team named '{}' already exists; pick a different name or delete the existing team first",
+                    sanitized
+                )));
+            }
+            Err(e) => {
+                return Err(ToolError::execution_failed(format!(
+                    "Failed to create team file: {}",
+                    e
+                )));
+            }
+        };
 
         // Create team-scoped TaskV2Manager.
         let task_v2_manager = new_shared_task_v2_manager(&sanitized).map_err(|e| {
@@ -173,10 +189,8 @@ impl ToolSpec for TeamCreateTool {
             teammate_cancel_tokens: std::collections::HashMap::new(),
         };
 
-        {
-            let mut tc = self.team_context.lock().await;
-            *tc = Some(team_ctx);
-        }
+        // `team_guard` has been held since the one-team-per-leader check.
+        *team_guard = Some(team_ctx);
 
         let result = json!({
             "team_name": team_name,

@@ -71,16 +71,29 @@ impl DreamTaskRunner {
         self.max_rounds
     }
 
-    /// Mark a dream as completed. Returns the path where the
-    /// consolidated memory was written.
+    /// Mark a dream as completed, persisting the consolidated memory.
+    /// Returns the path where it was written. Failure to write surfaces as
+    /// a Failed result — the old body fabricated `Completed` with a path
+    /// that never existed (silent data loss behind a success signal).
     pub fn complete_dream(&self, consolidation_summary: &str) -> DreamResult {
         let memory_path = self.memory_dir.join("dream_consolidation.md");
-        DreamResult {
-            status: DreamStatus::Completed,
-            summary: Some(consolidation_summary.to_string()),
-            memory_path: Some(memory_path),
-            error: None,
-            rounds_completed: 0,
+        let write = std::fs::create_dir_all(&self.memory_dir)
+            .and_then(|()| std::fs::write(&memory_path, consolidation_summary));
+        match write {
+            Ok(()) => DreamResult {
+                status: DreamStatus::Completed,
+                summary: Some(consolidation_summary.to_string()),
+                memory_path: Some(memory_path),
+                error: None,
+                rounds_completed: 0,
+            },
+            Err(err) => DreamResult {
+                status: DreamStatus::Failed,
+                summary: Some(consolidation_summary.to_string()),
+                memory_path: None,
+                error: Some(format!("failed to write {}: {err}", memory_path.display())),
+                rounds_completed: 0,
+            },
         }
     }
 

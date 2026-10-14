@@ -94,7 +94,7 @@ impl PathIndex {
 
 /// Walk `root` for completable paths. Kept free so the walk can be tested
 /// against a temporary directory without a `PathIndex`.
-fn walk(root: &Path, depth: usize, limit: usize) -> Vec<Entry> {
+fn walk(root: &Path, depth: usize, _limit: usize) -> Vec<Entry> {
     let mut builder = WalkBuilder::new(root);
     builder
         .standard_filters(true) // .gitignore, .ignore, hidden files
@@ -107,8 +107,14 @@ fn walk(root: &Path, depth: usize, limit: usize) -> Vec<Entry> {
     }
 
     let mut entries = Vec::new();
+    // Walk cap is deliberately larger than the menu `limit`: truncating the
+    // walk at the menu limit kept whichever paths readdir happened to yield
+    // first (pre-sort), so matching files beyond the cap were never indexed
+    // and prefix queries could return zero hits in any real repository.
+    // `complete()` applies the per-query menu cap itself.
+    const MAX_INDEXED: usize = 5_000;
     for (visited, result) in builder.build().enumerate() {
-        if visited >= MAX_VISITED || entries.len() >= limit {
+        if visited >= MAX_VISITED || entries.len() >= MAX_INDEXED {
             break;
         }
         let Ok(entry) = result else { continue };

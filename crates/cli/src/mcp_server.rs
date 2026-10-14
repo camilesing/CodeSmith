@@ -431,18 +431,18 @@ impl McpServer {
         {
             let mut thread = self.threads.lock().unwrap();
             let convo = thread.entry(thread_id.clone()).or_default();
-            // If codesmith, we already have just the user message; if codesmith-reply,
-            // the user message was appended to the cloned messages above but we need
-            // to also append it to the stored thread and then the assistant response.
-            if internal_name == "codesmith" {
-                convo.push(Message {
-                    role: "user".to_string(),
-                    content: vec![ContentBlock::Text {
-                        text: prompt.to_string(),
-                        cache_control: None,
-                    }],
-                });
-            }
+            // The user turn is persisted for BOTH paths — for
+            // `codesmith-reply` the cloned request messages got it but the
+            // stored thread did not, so later replies on the same thread
+            // replayed two consecutive assistant messages and a lost user
+            // turn.
+            convo.push(Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: prompt.to_string(),
+                    cache_control: None,
+                }],
+            });
             convo.push(Message {
                 role: "assistant".to_string(),
                 content: vec![ContentBlock::Text {

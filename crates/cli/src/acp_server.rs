@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
@@ -177,7 +177,13 @@ impl AcpServer {
     }
 
     async fn run_prompt(&self, prompt: &str, cwd: &PathBuf) -> Result<String> {
-        let _cwd_guard = ScopedCurrentDir::new(cwd)?;
+        // No ScopedCurrentDir: the guard mutated the PROCESS-wide cwd and
+        // held that change across the awaited LLM calls, so any concurrent
+        // runtime work resolving a relative path observed the wrong session
+        // directory. `resolve_cli_auto_route` takes no cwd (heuristic /
+        // router-model only) and the request below is fully explicit, so
+        // the chdir served nothing.
+        let _ = cwd;
         let client = crate::core::engine::resolve_llm_client(&self.config)?;
         let route =
             crate::main_root::resolve_cli_auto_route(&self.config, &self.model, prompt).await;
@@ -216,28 +222,6 @@ impl AcpServer {
             }
         }
         Ok(output)
-    }
-}
-
-struct ScopedCurrentDir {
-    prior: PathBuf,
-}
-
-impl ScopedCurrentDir {
-    fn new(cwd: &PathBuf) -> Result<Self> {
-        let prior = std::env::current_dir()?;
-        if cwd.as_os_str().is_empty() {
-            return Ok(Self { prior });
-        }
-        std::env::set_current_dir(cwd)
-            .map_err(|err| anyhow!("failed to enter ACP session cwd {}: {err}", cwd.display()))?;
-        Ok(Self { prior })
-    }
-}
-
-impl Drop for ScopedCurrentDir {
-    fn drop(&mut self) {
-        let _ = std::env::set_current_dir(&self.prior);
     }
 }
 
