@@ -192,21 +192,27 @@ fn context_breakdown(state: &ReplState) {
 }
 
 fn prompt_text_len(prompt: &crate::models::SystemPrompt) -> usize {
+    // Character counts (see `content_chars`): byte lengths inflate CJK.
     match prompt {
-        crate::models::SystemPrompt::Text(text) => text.len(),
+        crate::models::SystemPrompt::Text(text) => text.chars().count(),
         crate::models::SystemPrompt::Blocks(blocks) => {
-            blocks.iter().map(|block| block.text.len()).sum()
+            blocks.iter().map(|block| block.text.chars().count()).sum()
         }
     }
 }
 
 fn content_chars(block: &crate::models::ContentBlock) -> usize {
+    // Character counts, not byte lengths: the caller's estimate assumes
+    // four characters per token, and byte lengths inflate CJK content
+    // ~3x.
     match block {
-        crate::models::ContentBlock::Text { text, .. } => text.len(),
-        crate::models::ContentBlock::ToolUse { input, .. } => input.to_string().len(),
-        crate::models::ContentBlock::ToolResult { content, .. } => content.to_string().len(),
+        crate::models::ContentBlock::Text { text, .. } => text.chars().count(),
+        crate::models::ContentBlock::ToolUse { input, .. } => input.to_string().chars().count(),
+        crate::models::ContentBlock::ToolResult { content, .. } => {
+            content.to_string().chars().count()
+        }
         crate::models::ContentBlock::Image { .. } => 1024, // one image ≈ 1k tokens
-        other => format!("{other:?}").len(),
+        other => format!("{other:?}").chars().count(),
     }
 }
 
@@ -250,7 +256,8 @@ pub fn cache(state: &ReplState, arg: Option<&str>) {
     }
 }
 
-/// `/diff` — git diff since session start.
+/// `/diff` — working-tree changes via `git diff` (worktree vs index; no
+/// session-start baseline is captured).
 pub fn diff(state: &ReplState) {
     let Some(mut name_only_cmd) = Git::command() else {
         println!("{} git not found on PATH", "✗".red());
@@ -270,10 +277,22 @@ pub fn diff(state: &ReplState) {
         .output();
     match (name_only, stat) {
         (Ok(name), Ok(stat_output)) => {
+            // `.output()` only errors on spawn failure — a non-git
+            // directory (or any git error) exits non-zero with empty
+            // stdout, which the old "no changes" message misreported.
+            if !name.status.success() || !stat_output.status.success() {
+                let stderr = String::from_utf8_lossy(&name.stderr);
+                println!(
+                    "git diff failed (exit {:?}) — is this a git repository?\n{}",
+                    name.status.code(),
+                    stderr.trim()
+                );
+                return;
+            }
             let name_stdout = String::from_utf8_lossy(&name.stdout);
             let stat_stdout = String::from_utf8_lossy(&stat_output.stdout);
             if name_stdout.trim().is_empty() {
-                println!("no changes since session start");
+                println!("no changes in the working tree");
                 return;
             }
             let files: Vec<&str> = name_stdout.lines().filter(|l| !l.is_empty()).collect();
@@ -323,15 +342,14 @@ pub fn edit(state: &ReplState) {
 /// Remove the last exchange (assistant tail + the triggering user message)
 /// from the engine session and local state. Port of `undo_conversation`.
 async fn truncate_to_before_last_user(state: &mut ReplState) -> usize {
-    let mut removed = 0usize;
-    while let Some(last) = state.api_messages.last() {
-        let was_user = last.role == "user";
-        state.api_messages.pop();
-        removed += 1;
-        if was_user {
-            break;
-        }
-    }
+    // Locate the last user message first: a history with no user turn at
+    // all (resumed/imported/seeded sessions) must not be drained wholesale
+    // and reported as a successful undo.
+    let Some(last_user_idx) = state.api_messages.iter().rposition(|m| m.role == "user") else {
+        return 0;
+    };
+    let removed = state.api_messages.len() - last_user_idx;
+    state.api_messages.truncate(last_user_idx);
     if removed > 0 {
         match state.engine() {
             Ok(engine) => {
@@ -394,6 +412,22 @@ pub async fn retry(state: &mut ReplState) {
         println!("{} no previous request to retry", "✗".red());
         return;
     };
+    // Retry reconstructs the turn from Text blocks only — images and
+    // tool-result blocks in the original user message are dropped, so say
+    // so instead of silently re-sending a materially different request.
+    if let Some(msg) = state.api_messages.iter().rev().find(|m| m.role == "user") {
+        let dropped = msg
+            .content
+            .iter()
+            .filter(|b| !matches!(b, crate::models::ContentBlock::Text { .. }))
+            .count();
+        if dropped > 0 {
+            println!(
+                "{} retry resends text only — {dropped} image/tool-result block(s) dropped",
+                "⚠".yellow()
+            );
+        }
+    }
     truncate_to_before_last_user(state).await;
     println!("retrying: {}", truncate_for_display(&input, 50));
     // The previous exchange is already truncated — a failed resubmission

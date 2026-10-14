@@ -243,6 +243,17 @@ impl SessionManager {
                 "Session id cannot be empty",
             ));
         }
+        if trimmed == "checkpoints" {
+            // Reserved: the checkpoint subsystem owns
+            // `<sessions>/checkpoints/`. "checkpoints" is a perfectly
+            // valid session id by the charset check, and a caller-owned id
+            // that collided would make `delete_session("checkpoints")`
+            // `remove_dir_all` the crash-recovery directory.
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "session id 'checkpoints' is reserved",
+            ));
+        }
         if !trimmed
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
@@ -283,8 +294,12 @@ impl SessionManager {
         // Atomic write via write_atomic (NamedTempFile + fsync + persist)
         write_atomic(&path, content.as_bytes())?;
 
-        // Clean up old sessions if we have too many
-        self.cleanup_old_sessions()?;
+        // Clean up old sessions if we have too many. The session is
+        // already durably written at this point, so a cleanup failure must
+        // not turn into a spurious save failure (or look like data loss).
+        if let Err(err) = self.cleanup_old_sessions() {
+            tracing::warn!(target: "codesmith::session", %err, "post-save session cleanup failed");
+        }
 
         Ok(path)
     }
@@ -388,10 +403,21 @@ impl SessionManager {
             let entry = entry?;
             let path = entry.path();
 
-            if path.extension().is_some_and(|ext| ext == "json")
-                && let Ok(session) = Self::load_session_metadata(&path)
-            {
-                sessions.push(session);
+            if path.extension().is_some_and(|ext| ext == "json") {
+                // An unparseable file (corruption, partial write, legacy
+                // quirk) is skipped but logged: without this it silently
+                // disappears from pickers, prefix resolution, prune, and
+                // workspace-resume, and users see sessions "lost" with
+                // nothing in the logs.
+                match Self::load_session_metadata(&path) {
+                    Ok(session) => sessions.push(session),
+                    Err(err) => tracing::warn!(
+                        target: "codesmith::session",
+                        path = %path.display(),
+                        %err,
+                        "skipping unparseable session file"
+                    ),
+                }
             }
         }
 
@@ -790,10 +816,22 @@ fn extract_top_level_metadata(buf: &[u8]) -> Option<SessionMetadata> {
         }
         if c == b'"' {
             // If we're already in a string, this closes it; otherwise it
-            // opens one. But before flipping we check for the key match
-            // when we're entering a string at exactly this position.
+            // opens one. When entering a string at exactly this position,
+            // check for the key match AND validate that a colon follows —
+            // a candidate whose match is a string VALUE (e.g. the literal
+            // "metadata" appearing before the real key) must advance the
+            // scan, not abort it: the old early `return None` (and the
+            // full-buffer retry repeating the same mis-target) made a
+            // valid metadata block later in the file permanently
+            // unfindable.
             if !in_string && bytes[idx..].starts_with(key_pat) {
-                break idx;
+                let mut probe = idx + key_pat.len();
+                while probe < bytes.len() && (bytes[probe] as char).is_whitespace() {
+                    probe += 1;
+                }
+                if probe < bytes.len() && bytes[probe] == b':' {
+                    break idx;
+                }
             }
             in_string = !in_string;
             idx += 1;

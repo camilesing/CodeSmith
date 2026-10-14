@@ -3,8 +3,11 @@
 //!
 //! The engine snapshots the workspace around every file-mutating turn (the
 //! side-git repo in `~/.codesmith/snapshots/<project>`), so the history is
-//! already recorded; this command lists it and checks one back out. Nothing
-//! new is written by the listing path.
+//! already recorded; this command lists it and checks one back out. The
+//! listing path is read-only in intent but not in effect: on a workspace
+//! with no snapshots yet, `SnapshotRepo::open_or_init` initializes the
+//! side repo (directories, `git init`, config, excludes file) as a side
+//! effect of the first `/rewind list`.
 //!
 //! Known limitations (recorded beside the behaviour it owns):
 //!
@@ -93,7 +96,15 @@ impl SnapshotRow {
     /// Short id for the list: enough of the SHA to copy out of the terminal.
     #[must_use]
     pub fn short_id(&self) -> &str {
-        &self.id[..self.id.len().min(8)]
+        // `id` is a public, unvalidated String (rows can be built with
+        // non-SHA ids — the unit tests do), so the slice index must be
+        // floored to a UTF-8 char boundary or a multi-byte character
+        // spanning byte 8 panics.
+        let mut end = self.id.len().min(8);
+        while end > 0 && !self.id.is_char_boundary(end) {
+            end -= 1;
+        }
+        &self.id[..end]
     }
 }
 
