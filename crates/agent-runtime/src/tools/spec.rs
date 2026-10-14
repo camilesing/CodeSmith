@@ -641,8 +641,14 @@ impl ToolContext {
         }
 
         // For non-existent paths (e.g., files to be created), validate via parent
-        // Find the deepest existing ancestor and canonicalize it
-        let mut existing_ancestor = candidate.clone();
+        // Find the deepest existing ancestor and canonicalize it. `candidate`
+        // must be lexically normalized (`.`/`..` resolved) BEFORE the walk:
+        // `Path::file_name()` returns None for a trailing `..`, so an
+        // un-normalized tail silently drops the `..` while keeping the
+        // component above it — `new/../safe.txt` (with `new/` missing)
+        // rebuilt as `ws/new/safe.txt`, a path the model never named. The
+        // final containment check below still validates the rebuilt result.
+        let mut existing_ancestor = normalize_path(&candidate);
         let mut suffix_parts: Vec<std::ffi::OsString> = Vec::new();
 
         while !existing_ancestor.exists() {
@@ -1088,8 +1094,17 @@ mod tests {
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
 
-        let result = ctx.resolve_path("new/../safe.txt");
-        assert!(result.is_ok());
+        let result = ctx
+            .resolve_path("new/../safe.txt")
+            .expect("`..` must resolve, not error");
+        // `..` must be RESOLVED, not silently dropped: the old walk
+        // rebuilt this as `<ws>/new/safe.txt` — a path the caller never
+        // named — while `is_ok()` masked it.
+        let display = result.to_string_lossy();
+        assert!(
+            display.ends_with("safe.txt") && !display.contains("new"),
+            "must normalize to the workspace's safe.txt, got {display}"
+        );
     }
 
     #[test]

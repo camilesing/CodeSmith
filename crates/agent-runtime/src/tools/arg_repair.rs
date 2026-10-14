@@ -84,8 +84,17 @@ fn strip_control_chars_in_strings(s: &str) -> String {
             out.push(ch);
             continue;
         }
-        if in_string && (ch as u32) < 0x20 && ch != '\t' && ch != '\n' && ch != '\r' {
-            // Drop control characters inside strings
+        if in_string && (ch as u32) < 0x20 {
+            // Escape the three serde_json rejects in escaped form
+            // (RFC 8259 forbids ALL raw control chars in strings — literal
+            // tab/newline/CR included, which are the most common form of
+            // the documented local-backend failure mode); drop the rest.
+            match ch {
+                '\t' => out.push_str("\\t"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                _ => {}
+            }
             continue;
         }
         out.push(ch);
@@ -213,6 +222,16 @@ mod tests {
     fn repairs_missing_close_bracket() {
         let v = repair(r#"["a", "b""#).unwrap();
         assert_eq!(v, json!(["a", "b"]));
+    }
+
+    #[test]
+    fn escapes_literal_newline_and_tab_in_values() {
+        // serde_json rejects ALL raw control chars in strings (RFC 8259) —
+        // literal \n/\t used to survive stage 2 and the whole repair
+        // silently fell back to `{}`.
+        let raw = "{\"note\": \"line one\nline two\tindented\"}";
+        let v = repair(raw).unwrap();
+        assert_eq!(v, json!({"note": "line one\nline two\tindented"}));
     }
 
     #[test]

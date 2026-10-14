@@ -405,15 +405,40 @@ async fn run_rlm_turn_impl(
                 .await;
 
             // 4d. Execute the code in the REPL with the bridge servicing
-            //     llm_query / rlm_query callbacks.
-            let round = match repl.run(&code_to_run, Some(&bridge)).await {
-                Ok(r) => r,
-                Err(e) => {
+            //     llm_query / rlm_query callbacks. The REPL's per-round
+            //     timeout is intentionally `None` for RLM (long-running
+            //     analysis code), so wrap the await in a generous backstop:
+            //     an infinite loop, `input()`, or a socket read without a
+            //     timeout used to wedge the round — and its parent turn —
+            //     permanently with no user-visible way out.
+            const RLM_ROUND_BACKSTOP_TIMEOUT: Duration = Duration::from_secs(600);
+            let round = match tokio::time::timeout(
+                RLM_ROUND_BACKSTOP_TIMEOUT,
+                repl.run(&code_to_run, Some(&bridge)),
+            )
+            .await
+            {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => {
                     break 'turn RlmTurnResult {
                         answer: String::new(),
                         iterations: iteration + 1,
                         duration: start.elapsed(),
                         error: Some(format!("REPL execution failed: {e}")),
+                        usage: total_usage,
+                        termination: RlmTermination::Error,
+                        trace: trace.clone(),
+                        total_rpcs,
+                    };
+                }
+                Err(_) => {
+                    break 'turn RlmTurnResult {
+                        answer: String::new(),
+                        iterations: iteration + 1,
+                        duration: start.elapsed(),
+                        error: Some(format!(
+                            "RLM round exceeded the {RLM_ROUND_BACKSTOP_TIMEOUT:?} backstop; runtime terminated"
+                        )),
                         usage: total_usage,
                         termination: RlmTermination::Error,
                         trace: trace.clone(),
@@ -481,10 +506,15 @@ async fn run_rlm_turn_impl(
             ));
 
             if messages.len() > MAX_HISTORY_MESSAGES {
-                let drop_from = messages.len() - MAX_HISTORY_MESSAGES + 1;
-                let mut kept = vec![messages[0].clone()];
-                kept.extend(messages.drain(drop_from..));
-                messages = kept;
+                // Drop whole (assistant, user-metadata) PAIRS after the
+                // seed user message. The old head-trim computed an even
+                // index — always a user metadata message — producing
+                // [user_seed, user_round1, asst2, ...] with round 1's
+                // assistant reply silently dropped; strict chat APIs
+                // (Anthropic Messages) reject non-alternating roles.
+                while messages.len() > MAX_HISTORY_MESSAGES {
+                    messages.drain(1..3);
+                }
             }
         }
 

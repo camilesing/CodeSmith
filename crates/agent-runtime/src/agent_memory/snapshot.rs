@@ -132,14 +132,21 @@ fn resolve_snapshot_dir(workspace: &Path, agent_type: &str) -> PathBuf {
         .join(".codesmith")
         .join("agent-memory-snapshots")
         .join(&segment);
-    if codesmith.exists() {
+    // Prefer the directory that actually HOLDS snapshot data, not merely
+    // exists: a later-created `.codesmith` dir (another agent type, a
+    // config migration, the user) used to flip resolution away from an
+    // existing `.claude` snapshot, silently resetting drift detection.
+    let has_snapshot_data = |dir: &Path| {
+        dir.join("snapshot.json").exists() || dir.join(".snapshot-synced.json").exists()
+    };
+    if has_snapshot_data(&codesmith) {
         return codesmith;
     }
     let claude = workspace
         .join(".claude")
         .join("agent-memory-snapshots")
         .join(&segment);
-    if claude.exists() {
+    if has_snapshot_data(&claude) {
         return claude;
     }
     codesmith

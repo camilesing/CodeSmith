@@ -394,7 +394,18 @@ async fn post_form_json(
         .with_context(|| format!("OAuth request to {url} failed"))?;
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
-    if !status.is_success() {
+    // RFC 6749 §5.2 / RFC 8628 §3.5 deliver OAuth errors
+    // (authorization_pending, slow_down, invalid_grant, access_denied …)
+    // as HTTP 400 with a JSON body; GitHub returns 200-with-error-body.
+    // Bailing on every non-2xx aborted the device flow on the very first
+    // pending poll for spec-compliant providers and turned refresh
+    // failures into opaque transport errors. Hand a JSON error body to
+    // `parse_token_response`; only treat non-2xx as a hard failure when
+    // the body is not a recognizable OAuth error payload.
+    let is_oauth_error_payload = serde_json::from_str::<serde_json::Value>(&body)
+        .map(|value| value.get("error").is_some())
+        .unwrap_or(false);
+    if !status.is_success() && !is_oauth_error_payload {
         bail!("OAuth endpoint {url} returned {status}: {}", excerpt(&body));
     }
     Ok(body)

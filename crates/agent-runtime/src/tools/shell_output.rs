@@ -173,13 +173,25 @@ pub fn truncate_with_meta(output: &str) -> (String, TruncationMeta) {
 /// `MAX_PRESERVED_SUMMARY_LINES` lines, oldest-first within each match
 /// class so the most actionable signal is at the end.
 pub fn collect_summary_lines(text: &str) -> Vec<String> {
+    // Byte caps: a single huge line matching a broad substring ("FAIL"
+    // anywhere in a minified bundle or base64 blob) used to be preserved
+    // in full, blowing the context budget the line cap alone claims to
+    // bound.
+    const MAX_PRESERVED_LINE_BYTES: usize = 512;
+    const MAX_PRESERVED_TOTAL_BYTES: usize = 8_192;
+
     let mut preserved: Vec<String> = Vec::new();
+    let mut total_bytes = 0usize;
     for line in text.lines() {
-        if preserved.len() >= MAX_PRESERVED_SUMMARY_LINES {
+        if preserved.len() >= MAX_PRESERVED_SUMMARY_LINES
+            || total_bytes >= MAX_PRESERVED_TOTAL_BYTES
+        {
             break;
         }
         if is_summary_line(line) {
-            preserved.push(line.to_string());
+            let cut = char_boundary_at_or_before(line, MAX_PRESERVED_LINE_BYTES);
+            total_bytes = total_bytes.saturating_add(cut);
+            preserved.push(line[..cut].to_string());
         }
     }
     preserved

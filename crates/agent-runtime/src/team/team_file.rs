@@ -9,11 +9,19 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 /// Sanitize a team name for use in directory/file paths.
-/// Replaces non-alphanumeric chars with hyphens, lowercased.
+/// Replaces non-ASCII-alphanumeric chars with hyphens, lowercased.
+///
+/// ASCII-only: the old `is_alphanumeric()` accepted non-ASCII letters
+/// (é, Ω, 中) that `to_ascii_lowercase()` left untouched, producing
+/// filesystem-hostile, platform-inconsistent paths (macOS NFD vs Linux).
+/// Known limitation: distinct names can still collide ("My Team" and
+/// "my_team" both sanitize to "my-team") — creation therefore goes
+/// through [`create_team_file_exclusive`], which surfaces a collision as
+/// an error instead of silently overwriting the other team's roster.
 pub fn sanitize_name(name: &str) -> String {
     name.chars()
         .map(|c| {
-            if c.is_alphanumeric() {
+            if c.is_ascii_alphanumeric() {
                 c.to_ascii_lowercase()
             } else {
                 '-'
@@ -101,6 +109,12 @@ pub struct TeamFile {
 }
 
 /// Create the team directory and write an initial config.json.
+///
+/// Overwrites any existing config at the path — kept for callers that
+/// genuinely mean replace; team CREATION should use
+/// [`create_team_file_exclusive`] so a name collision (including the
+/// sanitize collisions documented on [`sanitize_name`]) fails instead of
+/// destroying another team's roster.
 pub fn create_team_file(team_file: &TeamFile) -> anyhow::Result<PathBuf> {
     let dir = team_dir(&team_file.name)?;
     fs::create_dir_all(&dir)?;
@@ -111,6 +125,58 @@ pub fn create_team_file(team_file: &TeamFile) -> anyhow::Result<PathBuf> {
     fs::create_dir_all(dir.join("inboxes"))?;
     // Create the team-scoped task directory.
     let task_dir = team_task_dir(&team_file.name)?;
+    fs::create_dir_all(&task_dir)?;
+    Ok(config_path)
+}
+
+/// Create a team config.json exclusively: fails with
+/// [`std::io::ErrorKind::AlreadyExists`] if the sanitized name is taken.
+///
+/// The old `.exists()` pre-check in callers was a TOCTOU across
+/// sessions/processes — two sessions racing on names that sanitize
+/// identically both passed and the second silently clobbered the first
+/// team's roster on disk.
+pub fn create_team_file_exclusive(team_file: &TeamFile) -> std::io::Result<PathBuf> {
+    let dir = team_dir(&team_file.name).map_err(|err| std::io::Error::other(format!("{}", err)))?;
+    fs::create_dir_all(&dir)?;
+    let config_path = dir.join("config.json");
+    if sanitize_name(&team_file.name).is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "team name '{}' sanitizes to an empty directory name",
+                team_file.name
+            ),
+        ));
+    }
+    let json = serde_json::to_string_pretty(team_file)
+        .map_err(|err| std::io::Error::other(format!("{err}")))?;
+    // O_EXCL creation: a pre-existing config.json (or a symlink planted at
+    // that path) fails instead of being followed and overwritten.
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&config_path)?;
+        file.write_all(json.as_bytes())?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&config_path)?,
+            json.as_bytes(),
+        )?;
+    }
+    fs::create_dir_all(dir.join("inboxes"))?;
+    let task_dir =
+        team_task_dir(&team_file.name).map_err(|err| std::io::Error::other(format!("{}", err)))?;
     fs::create_dir_all(&task_dir)?;
     Ok(config_path)
 }

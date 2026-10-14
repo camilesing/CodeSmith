@@ -32,7 +32,7 @@ use super::truncation::stop_reason_indicates_output_truncation;
 use crate::engine::dispatch::{ToolExecutionBatch, ToolExecutionPlan, plan_tool_execution_batches};
 use crate::engine::host_executor::HostAgentExecutor;
 use crate::engine::loop_guard::{AttemptDecision, LoopGuard, OutcomeDecision};
-use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope};
+use crate::error_taxonomy::ErrorEnvelope;
 
 /// The `ToolResult` fed back when the loop-guard blocks an identical repeat
 /// call (mirrors `handle_deepseek_turn`'s `loop_guard_block_tool_result`). Duplicated here
@@ -133,7 +133,7 @@ impl HostAgentExecutor {
         extension: &Option<Arc<codesmith_extensions::ExtensionRunner>>,
         intent_summary: &Option<String>,
         step_error_count: &mut usize,
-        step_error_categories: &mut Vec<ErrorCategory>,
+        step_error_envelopes: &mut Vec<ErrorEnvelope>,
     ) -> Option<String> {
         let mut loop_guard_halt: Option<String> = None;
         let n = tool_uses.len();
@@ -704,7 +704,7 @@ impl HostAgentExecutor {
                     // not a dispatch error (faithful to production).
                     let envelope: ErrorEnvelope = e.clone().into();
                     *step_error_count += 1;
-                    step_error_categories.push(envelope.category);
+                    step_error_envelopes.push(envelope);
                 }
             }
 

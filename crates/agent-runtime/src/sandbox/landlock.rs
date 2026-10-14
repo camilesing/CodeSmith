@@ -158,11 +158,28 @@ pub struct LandlockSandbox {
 
 #[cfg(target_os = "linux")]
 impl LandlockSandbox {
-    /// Create a new Landlock sandbox from policy
+    /// Create a new Landlock sandbox from policy.
+    ///
+    /// KNOWN LIMITATION — do not connect a caller yet: this creates the
+    /// ruleset with `handled_access_fs` set but ZERO path-beneath rules,
+    /// and never translates `policy` into them. Applying the result would
+    /// deny ALL handled access (including execute on the target binary
+    /// and the dynamic loader), bricking the process instead of enforcing
+    /// the policy. Rule wiring must land (policy paths + essential runtime
+    /// paths such as /usr, /lib, /etc/ld.so.cache, a writable tmp) before
+    /// this constructor gains its first caller.
     pub fn from_policy(policy: &SandboxPolicy) -> std::io::Result<Self> {
-        // Determine what filesystem access to handle (restrict)
-        let handled_access =
+        // Determine what filesystem access to handle (restrict).
+        // TRUNCATE (folded into LANDLOCK_ACCESS_FS_WRITE) requires ABI v3
+        // (kernel 5.19+); on ABI v1/v2 kernels landlock_create_ruleset
+        // returns EINVAL and the whole sandbox becomes unavailable. Mask
+        // it off there — unhandled rights are simply unrestricted, which
+        // is the documented best-effort approach.
+        let mut handled_access =
             LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ | LANDLOCK_ACCESS_FS_WRITE;
+        if get_abi_version().unwrap_or(0) < 3 {
+            handled_access &= !LANDLOCK_ACCESS_FS_TRUNCATE;
+        }
 
         let attr = LandlockRulesetAttr {
             handled_access_fs: handled_access,
@@ -216,8 +233,16 @@ impl LandlockSandbox {
         let fd = unsafe { libc::open(path_cstr.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
 
         if fd < 0 {
-            // Path doesn't exist, skip this rule
-            return Ok(());
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::NotFound {
+                // Path doesn't exist — documented skip-missing semantics.
+                return Ok(());
+            }
+            // Every other failure (EACCES, ENOTDIR, ELOOP, …) must
+            // propagate: silently dropping the rule would produce a
+            // sandbox that DENIES access the policy explicitly granted,
+            // with no diagnostic.
+            return Err(err);
         }
 
         let attr = LandlockPathBeneathAttr {

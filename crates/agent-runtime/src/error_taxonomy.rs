@@ -269,13 +269,15 @@ impl From<LlmError> for ErrorEnvelope {
                 "llm_parse_error",
                 message,
             ),
-            LlmError::ContextLengthError(message) => Self::new(
-                ErrorCategory::InvalidInput,
-                ErrorSeverity::Error,
-                false,
-                "llm_context_length",
-                message,
-            ),
+            LlmError::ContextLengthError(message) => {
+                // Route through the dedicated constructor so the typed path
+                // agrees with the string classifier and the `/compact`
+                // recovery doc: `recoverable: false` here would disagree
+                // with both and could flip the session offline on an
+                // overflow. Auto-retry stays keyed off
+                // `LlmError::is_retryable()`, which overflow is not.
+                Self::context_overflow(message)
+            }
             LlmError::Other(message) => Self::new(
                 ErrorCategory::Internal,
                 ErrorSeverity::Error,
@@ -364,18 +366,14 @@ pub fn classify_error_message(message: &str) -> ErrorCategory {
         || lower.contains("connection")
         || lower.contains("dns")
         || lower.contains("temporarily unavailable")
-        || lower.contains(" 502 ")
-        || lower.contains(" 503 ")
-        || lower.contains(" 504 ")
-        || lower.starts_with("502 ")
-        || lower.starts_with("503 ")
-        || lower.starts_with("504 ")
-        || lower.ends_with(" 502")
-        || lower.ends_with(" 503")
-        || lower.ends_with(" 504")
-        || lower == "502"
-        || lower == "503"
-        || lower == "504"
+        // Word-boundary matching (like the 429 check above): the padded
+        // starts_with/ends_with/equality forms missed punctuation-adjacent
+        // occurrences such as "HTTP 502:", "status=502", "(502)", or
+        // "upstream:503", which then fell through to Internal and lost
+        // the Network retry semantics.
+        || contains_status_code(&lower, "502")
+        || contains_status_code(&lower, "503")
+        || contains_status_code(&lower, "504")
     {
         return ErrorCategory::Network;
     }

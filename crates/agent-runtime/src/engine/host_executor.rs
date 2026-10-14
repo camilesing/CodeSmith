@@ -595,7 +595,7 @@ use crate::compaction::{
     CompactionConfig, CompactionEnhancements, compact_messages_safe, message_text, should_compact,
 };
 use crate::config_types::ApiProvider;
-use crate::error_taxonomy::ErrorCategory;
+use crate::error_taxonomy::ErrorEnvelope;
 use crate::events::Event;
 use crate::host_services::LspManagerApi;
 use crate::lsp_diagnostics::DiagnosticBlock;
@@ -3262,7 +3262,7 @@ impl HostAgentExecutor {
             // Only `Err(ToolError)` counts — `Ok(ToolResult { success: false })`
             // is a failed result, not a dispatch error (faithful to production).
             let mut step_error_count: usize = 0;
-            let mut step_error_categories: Vec<ErrorCategory> = Vec::new();
+            let mut step_error_envelopes: Vec<ErrorEnvelope> = Vec::new();
             // `usage` rides along (P2-5 anchor) — only the Content arm has
             // a real reading; every other arm carries a default.
             // `stop_reason` feeds the P0-2 truncation gate below (an
@@ -3652,7 +3652,7 @@ impl HostAgentExecutor {
                     &extension,
                     &intent_summary,
                     &mut step_error_count,
-                    &mut step_error_categories,
+                    &mut step_error_envelopes,
                 )
                 .await;
 
@@ -3808,7 +3808,7 @@ impl HostAgentExecutor {
                     system.as_ref(),
                     step_error_count,
                     consecutive_tool_error_steps,
-                    &step_error_categories,
+                    &step_error_envelopes,
                 )
             {
                 gate.mark_intervention_applied(decision.action);
@@ -11012,21 +11012,17 @@ mod tests {
         assert_eq!(note.role, "user");
         let block = note.content.last().expect("note has a block");
         let note_content = match block {
-            ContentBlock::ToolResult {
-                tool_use_id,
-                content,
-                is_error,
-                content_blocks,
-            } => {
-                assert_eq!(tool_use_id, "e1");
-                assert!(content.contains("[verification replay]"));
-                assert!(content.contains("tool=echo"));
-                assert!(content.contains("pass=true"));
-                assert_eq!(*is_error, None);
-                assert!(content_blocks.is_none());
-                content.clone()
+            ContentBlock::Text { text, .. } => {
+                // A plain user Text block, NOT a second ToolResult keyed by
+                // the original call's id — that shipped two results for one
+                // tool call on every subsequent request (the strict-provider
+                // 400 shape `kept_verify_and_replan_messages` repairs).
+                assert!(text.contains("[verification replay]"));
+                assert!(text.contains("tool=echo"));
+                assert!(text.contains("pass=true"));
+                text.clone()
             }
-            other => panic!("expected ToolResult note, got {other:?}"),
+            other => panic!("expected Text note, got {other:?}"),
         };
 
         // The outcome carries the values the host's post-`run` state work needs
@@ -11660,7 +11656,13 @@ mod tests {
             None,
             2,
             2,
-            &[crate::error_taxonomy::ErrorCategory::Tool],
+            &[crate::error_taxonomy::ErrorEnvelope::new(
+                crate::error_taxonomy::ErrorCategory::Tool,
+                crate::error_taxonomy::ErrorSeverity::Error,
+                false,
+                "tool_execution_failed",
+                "test",
+            )],
         );
         assert!(
             decision.is_none(),

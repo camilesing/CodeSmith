@@ -177,9 +177,13 @@ pub enum ArgSalvagePolicy {
 ///      actually emitted.
 ///   2. `input` (the per-delta best-effort parse mirror) — used when the
 ///      buffer is empty (pre-streaming tool calls take this path).
-///   3. `input_buffer` non-empty but unparseable → fall back to `input`
-///      (the per-delta parser has already mirrored the most recent valid
-///      partial parse into `tool_state.input`).
+///   3. `input_buffer` non-empty but unparseable → under
+///      [`ArgSalvagePolicy::RepairAllowed`] fall back to `input` (the
+///      per-delta parser has already mirrored the most recent valid
+///      partial parse). Under [`ArgSalvagePolicy::StrictOnly`] return
+///      `Value::Null` instead: a non-empty unparseable buffer means the
+///      model was cut off mid-argument (P0-2), and the partial-parse
+///      mirror may hold fabricated arguments that must not execute.
 pub fn final_tool_input(state: &ToolUseState) -> serde_json::Value {
     final_tool_input_with_policy(state, ArgSalvagePolicy::RepairAllowed)
 }
@@ -191,12 +195,17 @@ pub fn final_tool_input_with_policy(
     state: &ToolUseState,
     policy: ArgSalvagePolicy,
 ) -> serde_json::Value {
-    if !state.input_buffer.trim().is_empty()
-        && let Some(parsed) = parse_tool_input_with_policy(&state.input_buffer, policy)
+    let buffer_empty = state.input_buffer.trim().is_empty();
+    if !buffer_empty && let Some(parsed) = parse_tool_input_with_policy(&state.input_buffer, policy)
     {
         return parsed;
     }
-    state.input.clone()
+    if buffer_empty || policy == ArgSalvagePolicy::RepairAllowed {
+        return state.input.clone();
+    }
+    // StrictOnly + non-empty unparseable buffer: non-executable (P0-2) —
+    // the turn loop routes Null input to feedback.
+    serde_json::Value::Null
 }
 
 pub fn parse_tool_input(buffer: &str) -> Option<serde_json::Value> {

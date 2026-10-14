@@ -83,9 +83,21 @@ impl CommandSegment {
             let token = self.argv[idx].as_str();
             if token == "env" {
                 idx += 1;
-                while idx < self.argv.len()
-                    && (self.argv[idx].starts_with('-') || is_env_assignment(&self.argv[idx]))
-                {
+                // Flags that take a SEPARATE value (`-u VAR`, `-C DIR`,
+                // `-S STR`, `--split-string STR`) must consume their value
+                // too — otherwise `env -u VAR rm -rf /` reports `VAR` as
+                // the primary command and safety/allow-deny logic keys on
+                // the wrong program.
+                let mut flag_takes_value = false;
+                while idx < self.argv.len() {
+                    let arg = self.argv[idx].as_str();
+                    if flag_takes_value {
+                        flag_takes_value = false;
+                    } else if matches!(arg, "-u" | "-C" | "-S" | "--split-string") {
+                        flag_takes_value = true;
+                    } else if !arg.starts_with('-') && !is_env_assignment(arg) {
+                        break;
+                    }
                     idx += 1;
                 }
                 continue;

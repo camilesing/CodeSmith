@@ -165,6 +165,10 @@ pub struct PythonRuntime {
     round_count: u64,
     started: Instant,
     round_timeout: Option<Duration>,
+    /// Set when a round timed out and the child was killed: later `run()`
+    /// calls must fail fast instead of writing protocol frames into a
+    /// dead stream.
+    poisoned: bool,
 }
 
 impl PythonRuntime {
@@ -249,6 +253,7 @@ impl PythonRuntime {
             stdout_limit: DEFAULT_STDOUT_LIMIT,
             round_count: 0,
             started: Instant::now(),
+            poisoned: false,
             round_timeout,
         };
 
@@ -317,6 +322,11 @@ impl PythonRuntime {
     where
         D: RpcDispatcher + ?Sized,
     {
+        if self.poisoned {
+            return Err(
+                "REPL runtime was terminated after a round timeout; spawn a new one".to_string(),
+            );
+        }
         let started = Instant::now();
         self.round_count += 1;
         let round_id = self.round_count;
@@ -438,8 +448,15 @@ impl PythonRuntime {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => return Err(e),
                 Err(_) => {
+                    // The child is in an unknown state (mid-execution or
+                    // blocked in _rpc's readline). Kill it and mark the
+                    // runtime poisoned so a later run() fails fast instead
+                    // of writing protocol frames into a stream the child
+                    // will consume at the wrong position.
+                    let _ = self.child.kill().await;
+                    self.poisoned = true;
                     return Err(format!(
-                        "REPL round timed out after {}s",
+                        "REPL round timed out after {}s; runtime terminated",
                         round_timeout.as_secs()
                     ));
                 }
@@ -495,7 +512,13 @@ impl PythonRuntime {
                 {
                     Ok(Ok(0)) => break,
                     Ok(Ok(n)) => buf.extend_from_slice(&chunk[..n]),
-                    _ => break,
+                    Ok(Err(e)) => {
+                        // Real IO error — distinct from the quiet-gap
+                        // timeout below, and previously swallowed with it.
+                        tracing::debug!("repl: stderr read failed: {e}");
+                        break;
+                    }
+                    Err(_) => break, // 20ms quiet gap
                 }
             }
         };

@@ -1086,9 +1086,19 @@ fn primary_token_index(tokens: &[String]) -> Option<usize> {
         let token = tokens[idx].as_str();
         if token == "env" {
             idx += 1;
-            while idx < tokens.len()
-                && (tokens[idx].starts_with('-') || is_env_assignment(&tokens[idx]))
-            {
+            // Mirrors `CommandSegment::primary`: value-taking env flags
+            // (`-u VAR`, `-C DIR`, `-S STR`, `--split-string STR`) consume
+            // their value so it is not misread as the primary command.
+            let mut flag_takes_value = false;
+            while idx < tokens.len() {
+                let arg = tokens[idx].as_str();
+                if flag_takes_value {
+                    flag_takes_value = false;
+                } else if matches!(arg, "-u" | "-C" | "-S" | "--split-string") {
+                    flag_takes_value = true;
+                } else if !arg.starts_with('-') && !is_env_assignment(arg) {
+                    break;
+                }
                 idx += 1;
             }
             continue;

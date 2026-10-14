@@ -82,10 +82,28 @@ fn cell() -> &'static Mutex<RetryState> {
     STATE.get_or_init(|| Mutex::new(RetryState::Idle))
 }
 
+/// A banner whose deadline passed more than this long ago is stale.
+/// Some call paths never emit a terminal `succeeded()`/`failed()` — the
+/// user aborts mid-retry, or the rate-limit-hold reset zeroes the attempt
+/// counter so the next healthy round skips the gated `succeeded()` — and
+/// without self-healing the "retrying / firing now" banner lingers for
+/// the rest of a healthy turn.
+const STALE_ACTIVE_GRACE: Duration = Duration::from_secs(30);
+
 /// Public read snapshot for renderers.
 #[must_use]
 pub fn snapshot() -> RetryState {
-    cell().lock().map(|s| s.clone()).unwrap_or(RetryState::Idle)
+    match cell().lock() {
+        Ok(mut state) => {
+            if let RetryState::Active(banner) = &*state
+                && banner.deadline + STALE_ACTIVE_GRACE < Instant::now()
+            {
+                *state = RetryState::Idle;
+            }
+            state.clone()
+        }
+        Err(_) => RetryState::Idle,
+    }
 }
 
 /// Mark an in-flight retry. `attempt` is the number of the *upcoming*

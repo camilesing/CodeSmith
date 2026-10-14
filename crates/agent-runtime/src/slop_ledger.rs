@@ -366,9 +366,35 @@ impl SlopLedger {
         results
     }
 
-    /// Find an entry by id.
+    /// Find an entry by id (first prefix match). Prefer
+    /// [`Self::resolve_mut`], which rejects empty, unknown, and ambiguous
+    /// id prefixes instead of silently updating an arbitrary entry.
     pub fn find_mut(&mut self, id: &str) -> Option<&mut SlopEntry> {
         self.entries.iter_mut().find(|e| e.id.starts_with(id))
+    }
+
+    /// Resolve an id or unique prefix; fails on empty (which matched EVERY
+    /// entry), unknown, and ambiguous prefixes (which silently updated an
+    /// arbitrary first match).
+    pub fn resolve_mut(&mut self, id: &str) -> Result<&mut SlopEntry, String> {
+        if id.is_empty() {
+            return Err("entry id prefix must not be empty".to_string());
+        }
+        let matches: Vec<usize> = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.id.starts_with(id))
+            .map(|(index, _)| index)
+            .collect();
+        match matches.as_slice() {
+            &[index] => Ok(&mut self.entries[index]),
+            [] => Err(format!("no slop ledger entry matches id '{id}'")),
+            _ => Err(format!(
+                "slop ledger id '{id}' is ambiguous ({} matches); use the full id",
+                matches.len()
+            )),
+        }
     }
 
     /// Update an entry's status (and optionally other fields) and save.
@@ -379,9 +405,12 @@ impl SlopLedger {
         cleanup_recommendation: Option<String>,
     ) -> io::Result<Option<&SlopEntry>> {
         let full_id = {
-            let entry = match self.find_mut(id) {
-                Some(e) => e,
-                None => return Ok(None),
+            let entry = match self.resolve_mut(id) {
+                Ok(e) => e,
+                Err(reason) => {
+                    eprintln!("[slop-ledger] refusing update: {reason}");
+                    return Ok(None);
+                }
             };
             entry.status = status;
             entry.updated_at = chrono::Utc::now().to_rfc3339();
@@ -585,6 +614,7 @@ impl ToolSpec for SlopLedgerAppendTool {
             .and_then(|v| v.as_array())
             .ok_or_else(|| ToolError::invalid_input("'entries' must be a non-empty array"))?;
 
+        let _io_guard = ledger_io_lock();
         let mut ledger = SlopLedger::load()
             .map_err(|e| ToolError::execution_failed(format!("failed to load slop ledger: {e}")))?;
 
@@ -806,6 +836,7 @@ impl ToolSpec for SlopLedgerUpdateTool {
             .and_then(|v| v.as_str())
             .map(String::from);
 
+        let _io_guard = ledger_io_lock();
         let mut ledger = SlopLedger::load()
             .map_err(|e| ToolError::execution_failed(format!("failed to load slop ledger: {e}")))?;
 
@@ -926,6 +957,22 @@ pub fn short_id(id: &str) -> String {
     id.chars().take(8).collect()
 }
 
+/// Serializes load→mutate→save cycles across the ledger tools in this
+/// process. `write_atomic` only makes the individual rename atomic — the
+/// read-modify-write cycle around it is not: concurrent tool invocations
+/// each loaded the same snapshot and the last save silently discarded the
+/// other's entries. The section under the guard is fully synchronous, so
+/// a std Mutex is safe on the async executor.
+/// Known limitation: process-local — concurrent CLI processes on the same
+/// `~/.codesmith` still race (a cross-process file lock would need a new
+/// dependency).
+fn ledger_io_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
 /// Redact sensitive patterns from exported text: API keys and secrets
 /// paths. Scan the output for known key prefixes (`sk-`, `Bearer `, `dsk-`)
 /// and replace the token until a whitespace / punctuation boundary with
@@ -938,9 +985,18 @@ fn redact_exported_text(text: &mut String) {
     let mut i = 0usize;
     while i < bytes.len() {
         let mut matched = false;
+        // Real key prefixes are literal lowercase "sk-"/"Bearer " at a
+        // token start; the old case-insensitive substring match mangled
+        // ordinary words ("task-", "disk-", "whisk-", "bearer of").
+        let at_token_start = i == 0
+            || matches!(
+                bytes[i - 1],
+                b' ' | b'\t' | b'\n' | b'\r' | b'"' | b'\'' | b'(' | b'`' | b'['
+            );
         for prefix in prefixes {
-            if bytes[i..].len() >= prefix.len()
-                && bytes[i..i + prefix.len()].eq_ignore_ascii_case(prefix)
+            if at_token_start
+                && bytes[i..].len() >= prefix.len()
+                && bytes[i..i + prefix.len()] == prefix[..]
             {
                 // Scan forward to first whitespace or delimiter.
                 let end = bytes[i + prefix.len()..]
@@ -1194,6 +1250,34 @@ mod tests {
         assert_eq!(
             loaded.entries[0].cleanup_recommendation,
             Some("Renamed in #1234".into())
+        );
+    }
+
+    #[test]
+    fn resolve_mut_rejects_empty_and_ambiguous_ids() {
+        let entry = |id: &str| SlopEntry {
+            id: id.to_string(),
+            ..SlopEntry::new(
+                SlopBucket::NamingDrift,
+                SlopSeverity::Low,
+                SlopConfidence::High,
+                "title".into(),
+                "desc".into(),
+            )
+        };
+        let mut ledger = SlopLedger {
+            entries: vec![entry("slop-aaaa0001"), entry("slop-aaaa0002")],
+            ledger_path: std::path::PathBuf::from("/nonexistent/slop.json"),
+        };
+        // Empty id used to match EVERY entry and mutate the first.
+        assert!(ledger.resolve_mut("").is_err());
+        // Ambiguous prefix used to silently update an arbitrary entry.
+        assert!(ledger.resolve_mut("slop-aaaa").is_err());
+        // Unique prefix still resolves.
+        assert!(
+            ledger
+                .resolve_mut("slop-aaaa0001")
+                .is_ok_and(|entry| entry.id == "slop-aaaa0001")
         );
     }
 
