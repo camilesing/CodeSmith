@@ -1763,7 +1763,7 @@ fn runtime_event_payload(event: crate::runtime_threads::RuntimeEventRecord) -> s
     let timestamp = event.timestamp.to_rfc3339();
     let schema_version = RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION;
     let envelope = RuntimeEventEnvelope {
-        schema_version,
+        schema_version: Some(schema_version),
         seq: event.seq,
         event: event_name.clone(),
         kind: event_name,

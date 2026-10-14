@@ -44,11 +44,29 @@ pub struct WalkEntry {
 
 /// Walk `root` and collect every indexable file (sorted by path).
 pub fn walk_workspace(root: &Path) -> Result<Vec<WalkEntry>> {
+    // The hardcoded excludes below exist for non-git directories where no
+    // ignore file covers them (module doc). Inside a git work tree the
+    // gitignore machinery decides — force-excluding `build/`/`dist/`/`venv/`
+    // there silently drops *tracked* source from the index and
+    // `delete_missing` then purges their entries.
+    let mut in_git = root.join(".git").exists();
+    let mut cur = root;
+    while !in_git {
+        match cur.parent() {
+            Some(parent) => {
+                in_git = parent.join(".git").exists();
+                cur = parent;
+            }
+            None => break,
+        }
+    }
     let mut overrides = ignore::overrides::OverrideBuilder::new(root);
-    for dir in DEFAULT_EXCLUDES {
-        overrides
-            .add(&format!("!{dir}/"))
-            .with_context(|| format!("building index walk override for {dir}"))?;
+    if !in_git {
+        for dir in DEFAULT_EXCLUDES {
+            overrides
+                .add(&format!("!{dir}/"))
+                .with_context(|| format!("building index walk override for {dir}"))?;
+        }
     }
     let walker = WalkBuilder::new(root)
         .hidden(true)

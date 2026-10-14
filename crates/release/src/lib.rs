@@ -72,18 +72,27 @@ pub enum ReleaseQuery {
 
 /// Determines the appropriate [`ReleaseQuery`] for the given channel, taking
 /// environment-variable overrides (mirror URL, pinned version) into account.
-pub fn resolve_release_query(channel: ReleaseChannel) -> ReleaseQuery {
-    let version = update_version_from_env().unwrap_or_else(|| env!("CARGO_PKG_VERSION").into());
-    if let Some(base_url) = release_base_url_from_env(&version) {
-        return ReleaseQuery::Mirror { base_url, version };
+/// Fails when a mirror is selected but `CODESMITH_VERSION` is not pinned:
+/// falling back to the running version would make `latest` == `current` and
+/// the update check a permanent silent no-op.
+pub fn resolve_release_query(channel: ReleaseChannel) -> Result<ReleaseQuery> {
+    // The base URL is probed with the running version only to satisfy the
+    // signature; the pinned version below is what the Mirror query carries.
+    if let Some(base_url) = release_base_url_from_env(env!("CARGO_PKG_VERSION")) {
+        let version = update_version_from_env().context(
+            "release mirror selected (CODESMITH_RELEASE_BASE_URL / \
+             CODESMITH_USE_CNB_MIRROR) but CODESMITH_VERSION is not pinned; \
+             cannot determine the latest release from a mirror directory",
+        )?;
+        return Ok(ReleaseQuery::Mirror { base_url, version });
     }
 
-    match channel {
+    Ok(match channel {
         ReleaseChannel::Stable => ReleaseQuery::GitHubLatest {
             url: LATEST_RELEASE_URL,
         },
         ReleaseChannel::Beta => ReleaseQuery::GitHubReleaseList { url: RELEASES_URL },
-    }
+    })
 }
 
 /// Reads the release base URL from environment variables, falling back to the
@@ -99,7 +108,11 @@ pub fn release_base_url_from_env(version: &str) -> Option<String> {
         }
     }
 
-    if std::env::var(CNB_MIRROR_ENV).is_ok() {
+    // Empty counts as unset (script templates export `VAR=` unconditionally);
+    // non-Unicode values are treated as unset, matching the base-URL handling.
+    if let Ok(value) = std::env::var(CNB_MIRROR_ENV)
+        && !value.trim().is_empty()
+    {
         return Some(cnb_release_base_url(version));
     }
     None
@@ -192,7 +205,10 @@ fn release_response_body(
 ) -> Result<String> {
     let body = body.with_context(|| format!("failed to read {description} response from {url}"))?;
     if !status.is_success() {
-        bail!("GitHub release request failed with HTTP {status}: {body}");
+        // Bounded snippet: the failure body is unbounded (a proxy's HTML
+        // error page can be megabytes); chars() avoids slicing mid-UTF-8.
+        let snippet: String = body.chars().take(512).collect();
+        bail!("GitHub release request failed with HTTP {status}: {snippet}");
     }
     Ok(body)
 }
@@ -210,7 +226,10 @@ struct ReleaseListEntry {
 /// Extracts the `tag_name` field from a GitHub single-release JSON response.
 pub fn latest_tag_from_release_json(body: &str) -> Result<String> {
     let release: ReleaseTag = serde_json::from_str(body).with_context(|| {
-        format!("failed to parse release JSON from GitHub API. Response: {body}")
+        format!(
+            "failed to parse release JSON from GitHub API. Response: {}",
+            body.chars().take(512).collect::<String>()
+        )
     })?;
     Ok(release.tag_name)
 }
@@ -219,12 +238,23 @@ pub fn latest_tag_from_release_json(body: &str) -> Result<String> {
 /// entry whose name contains `"beta"`.
 pub fn latest_beta_tag_from_release_list_json(body: &str) -> Result<String> {
     let releases: Vec<ReleaseListEntry> = serde_json::from_str(body).with_context(|| {
-        format!("failed to parse release list JSON from GitHub API. Response: {body}")
+        format!(
+            "failed to parse release list JSON from GitHub API. Response: {}",
+            body.chars().take(512).collect::<String>()
+        )
     })?;
     releases
         .into_iter()
-        .find(|release| is_beta_tag(&release.tag_name))
-        .map(|release| release.tag_name)
+        .filter_map(|release| {
+            // Parse-gated: a tag like `v1.5.0+beta` (substring match, empty
+            // pre-release) or a malformed `beta-2024.10` must not be
+            // selected here only to disagree with (or fail inside)
+            // `update_is_needed` later.
+            let tag = release.tag_name;
+            let version = parse_release_version(&tag).ok()?;
+            version_is_beta(&version).then_some(tag)
+        })
+        .next()
         .context("no beta release found in GitHub releases")
 }
 
@@ -233,7 +263,7 @@ pub fn latest_beta_tag_from_release_list_json(body: &str) -> Result<String> {
 /// For mirrors the version is derived from the pinned environment variable;
 /// for GitHub channels the appropriate API endpoint is queried.
 pub async fn latest_release_tag_async(channel: ReleaseChannel) -> Result<String> {
-    match resolve_release_query(channel) {
+    match resolve_release_query(channel)? {
         ReleaseQuery::Mirror { version, .. } => Ok(format!("v{}", version.trim_start_matches('v'))),
         ReleaseQuery::GitHubLatest { url } => {
             let body = fetch_release_json_async(url, "latest release").await?;
@@ -248,7 +278,7 @@ pub async fn latest_release_tag_async(channel: ReleaseChannel) -> Result<String>
 
 /// Blocking counterpart of [`latest_release_tag_async`].
 pub fn latest_release_tag_blocking(channel: ReleaseChannel) -> Result<String> {
-    match resolve_release_query(channel) {
+    match resolve_release_query(channel)? {
         ReleaseQuery::Mirror { version, .. } => Ok(format!("v{}", version.trim_start_matches('v'))),
         ReleaseQuery::GitHubLatest { url } => {
             let body = fetch_release_json_blocking(url, "latest release")?;
@@ -326,7 +356,9 @@ pub fn is_beta_tag(tag_name: &str) -> bool {
     tag_name.to_ascii_lowercase().contains("beta")
 }
 
-fn version_is_beta(version: &semver::Version) -> bool {
+/// Returns `true` if the version's pre-release segment contains `"beta"`
+/// (case-insensitive) — the semver-grounded form of [`is_beta_tag`].
+pub fn version_is_beta(version: &semver::Version) -> bool {
     version.pre.as_str().to_ascii_lowercase().contains("beta")
 }
 

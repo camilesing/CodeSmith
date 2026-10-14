@@ -341,15 +341,17 @@ impl ExtensionRunner {
             .prompt_sections
             .lock()
             .expect("prompt sections poisoned");
-        if sections.len() >= MAX_PROMPT_SECTIONS {
-            return Err(ExtensionError::Config(format!(
-                "too many prompt sections (>{MAX_PROMPT_SECTIONS})"
-            )));
-        }
-        // Re-registering an id replaces its text in place (id is identity).
+        // Re-registering an id replaces its text in place (id is identity) —
+        // an in-place replacement does not grow the collection, so the cap
+        // only applies when a new entry would actually be added.
         if let Some(slot) = sections.iter_mut().find(|(existing, _)| *existing == id) {
             slot.1 = text;
         } else {
+            if sections.len() >= MAX_PROMPT_SECTIONS {
+                return Err(ExtensionError::Config(format!(
+                    "too many prompt sections (>{MAX_PROMPT_SECTIONS})"
+                )));
+            }
             sections.push((id, text));
         }
         Ok(())
@@ -410,14 +412,6 @@ impl ExtensionRunner {
     ) -> Result<(), ExtensionError> {
         validate_skill_registration(&skill.name, &skill.description, &skill.body)?;
         let mut skills = self.skills.lock().expect("registered skills poisoned");
-        if skills.len() >= codesmith_agent::extension::MAX_REGISTERED_SKILLS {
-            return Err(ExtensionError::Config(format!(
-                "too many registered skills (>{}), rejecting {:?} from mod {:?}",
-                codesmith_agent::extension::MAX_REGISTERED_SKILLS,
-                skill.name,
-                skill.owner
-            )));
-        }
         if let Some(existing) = skills
             .iter()
             .find(|s| s.name == skill.name && s.owner != skill.owner)
@@ -428,10 +422,19 @@ impl ExtensionRunner {
             )));
         }
         // Same owner re-registering replaces in place (owner+name is
-        // identity); otherwise append in registration order.
+        // identity); otherwise append in registration order. The cap only
+        // applies when a new entry would actually be added.
         if let Some(slot) = skills.iter_mut().find(|s| s.name == skill.name) {
             *slot = skill;
         } else {
+            if skills.len() >= codesmith_agent::extension::MAX_REGISTERED_SKILLS {
+                return Err(ExtensionError::Config(format!(
+                    "too many registered skills (>{}), rejecting {:?} from mod {:?}",
+                    codesmith_agent::extension::MAX_REGISTERED_SKILLS,
+                    skill.name,
+                    skill.owner
+                )));
+            }
             skills.push(skill);
         }
         Ok(())
@@ -572,12 +575,14 @@ impl ExtensionRunner {
         for pt in pending.tools.drain(..) {
             let name = pt.tool.name().to_string();
             let arc: Arc<dyn ToolDefinition> = Arc::from(pt.tool);
-            tools.insert(name, arc);
+            // First-wins, matching the documented slice-1 conflict policy:
+            // plain `insert` replaces and silently yields last-wins.
+            tools.entry(name).or_insert(arc);
         }
         for pc in pending.commands.drain(..) {
             let name = pc.command.name().to_string();
             let arc: Arc<dyn CommandDefinition> = Arc::from(pc.command);
-            commands.insert(name, arc);
+            commands.entry(name).or_insert(arc);
         }
         for ph in pending.handlers.drain(..) {
             handlers.push(RegisteredHandler {

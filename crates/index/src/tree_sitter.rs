@@ -317,6 +317,13 @@ fn visit_go_method(node: Node<'_>, ctx: &mut Ctx<'_>) {
                 .next_back()
                 .unwrap_or(inner)
                 .trim_start_matches('*')
+                // `*Registry[T]` → `Registry`: container joins by base type
+                // name, so generics-bearing receivers must not leak the
+                // parameter list.
+                .split('<')
+                .next()
+                .unwrap_or("")
+                .trim()
                 .to_string()
         });
     ctx.push_symbol(name, SymbolKind::Method, container, node, name_node);
@@ -354,7 +361,11 @@ fn push_container_scope(node: Node<'_>, kind: &str, ctx: &mut Ctx<'_>) -> bool {
     if let Some(name_node) = name
         && let Some(text) = ctx.text_of(name_node)
     {
-        ctx.container.push(text.to_string());
+        // Strip generic parameters (`impl<T> Registry<T>` → `Registry`, and
+        // `path::To::Type<…>` keeps its path): downstream container joins
+        // use the base type name, so generics must not leak into it.
+        let base = text.split('<').next().unwrap_or("");
+        ctx.container.push(base.trim().to_string());
         return true;
     }
     false
@@ -367,6 +378,14 @@ fn collect_references(node: Node<'_>, ctx: &mut Ctx<'_>) {
         && let Some(name) = ctx.text_of(node)
         && ctx.def_names.iter().any(|n| n == name)
         && !ctx.def_name_node_ids.contains(&node.id())
+        // A Go struct-field name (`field_identifier` under a
+        // `field_declaration`) is a declaration site, not a reference to a
+        // same-named indexed symbol.
+        && !(ctx.lang == Language::Go
+            && node.kind() == "field_identifier"
+            && node
+                .parent()
+                .is_some_and(|p| p.kind() == "field_declaration"))
     {
         ctx.occurrences.push(Occurrence {
             name: name.to_string(),

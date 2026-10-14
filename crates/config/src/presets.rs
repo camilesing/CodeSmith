@@ -148,6 +148,7 @@ impl MemoryLevel {
 /// can say "the default surface minus web tools" without enumerating the
 /// whole catalog.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PresetToolsToml {
     #[serde(default)]
     pub include: Option<Vec<String>>,
@@ -162,6 +163,7 @@ pub struct PresetToolsToml {
 /// fill-if-unset (explicit user config wins) and participating in the
 /// `diy` deviation check.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PresetDefinitionToml {
     /// Display name. Defaults to the file stem for file-loaded presets;
     /// required (implicitly) for built-ins.
@@ -299,6 +301,17 @@ impl PresetDefinitionToml {
         {
             bail!("invalid approval_policy '{policy}' (expected suggest | auto | never)");
         }
+        if let Some(mode) = &self.sandbox_mode
+            && !matches!(
+                mode.trim().to_ascii_lowercase().as_str(),
+                "read-only" | "workspace-write" | "danger-full-access"
+            )
+        {
+            bail!(
+                "invalid sandbox_mode '{mode}' \
+                 (expected read-only | workspace-write | danger-full-access)"
+            );
+        }
         if let Some(level) = &self.memory_level
             && MemoryLevel::from_setting(level).is_none()
         {
@@ -372,7 +385,14 @@ impl PresetCatalog {
     /// Load the catalog for a workspace using the default locations.
     pub fn load(workspace: Option<&Path>) -> Self {
         let Ok(home) = crate::codesmith_home() else {
-            return Self::load_from(None, None);
+            let mut catalog = Self::load_from(None, None);
+            // The whole user layer vanished — record it, consistent with the
+            // unreadable-file handling, so listings can explain why presets
+            // (including ones persisted in settings.toml) fail lookup.
+            catalog
+                .warnings
+                .push("codesmith home unresolved: user preset layer skipped".to_string());
+            return catalog;
         };
         let user_dir = home.join(PRESETS_DIR_NAME);
         let legacy_user_dir = home.join(LEGACY_MODES_DIR_NAME);
@@ -449,7 +469,15 @@ impl PresetCatalog {
     fn insert_dir(&mut self, dir: &Path, source: PresetSource, legacy: Option<&str>) {
         let entries = match std::fs::read_dir(dir) {
             Ok(entries) => entries,
-            Err(_) => return, // missing directory is the common case
+            // A missing directory is the common case; any other IO error
+            // (e.g. PermissionDenied) silently vanishing the whole layer is
+            // not — record it like the unreadable-file case below.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+            Err(err) => {
+                self.warnings
+                    .push(format!("{}: unreadable ({err})", dir.display()));
+                return;
+            }
         };
         let mut files: Vec<_> = entries
             .filter_map(Result::ok)
@@ -591,7 +619,16 @@ pub fn builtin_tier_matrix() -> Vec<(&'static str, [Option<bool>; 4])> {
         .bool_dials()
         .into_iter()
         .enumerate()
-        .map(|(i, (key, _))| (key, [tiers[0][i], tiers[1][i], tiers[2][i], tiers[3][i]]))
+        .map(|(i, (key, _))| {
+            // A tier that failed to parse has an empty Vec (insert_builtin
+            // records a warning); indexing it directly would panic. A missing
+            // tier column reads as "no opinion" instead.
+            let at = |tier: &Vec<Option<bool>>| tier.get(i).copied().flatten();
+            (
+                key,
+                [at(&tiers[0]), at(&tiers[1]), at(&tiers[2]), at(&tiers[3])],
+            )
+        })
         .collect()
 }
 

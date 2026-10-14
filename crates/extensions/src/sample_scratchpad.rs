@@ -76,21 +76,48 @@ impl ToolDefinition for ScratchTool {
         input: Value,
         _ctx: &dyn ExtensionContext,
     ) -> Result<ToolResult, ExtensionError> {
-        let op = input.get("op").and_then(|v| v.as_str()).unwrap_or("get");
+        // The schema declares `op` required with a closed enum: a missing,
+        // non-string, or unknown op is a caller mistake, not a read.
+        let op = input
+            .get("op")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ExtensionError::Tool {
+                tool: "scratch".to_string(),
+                message: format!(
+                    "missing or non-string field 'op' (expected \"get\" or \"set\"); \
+                     input provided: {}",
+                    input
+                ),
+            })?;
         match op {
             "set" => {
-                let text = input
-                    .get("text")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                *SCRATCH.lock().unwrap() = Some(text.clone());
-                Ok(ToolResult::success(format!("scratch set to {text:?}")))
+                // `text` is not optional for set: silently writing "" would
+                // irreversibly destroy the previous scratchpad contents.
+                let text = input.get("text").and_then(Value::as_str).ok_or_else(|| {
+                    ExtensionError::Tool {
+                        tool: "scratch".to_string(),
+                        message: "field 'text' must be a string when op is \"set\"".to_string(),
+                    }
+                })?;
+                let msg = format!("scratch set to {text:?}");
+                // Recover from poisoning: the payload is a plain String with
+                // no invariant a panic could corrupt, and a poisoned mutex
+                // would turn every later scratch call into a panic.
+                *SCRATCH.lock().unwrap_or_else(|e| e.into_inner()) = Some(text.to_string());
+                Ok(ToolResult::success(msg))
             }
-            _ => {
-                let val = SCRATCH.lock().unwrap().clone().unwrap_or_default();
+            "get" => {
+                let val = SCRATCH
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone()
+                    .unwrap_or_default();
                 Ok(ToolResult::success(val))
             }
+            other => Err(ExtensionError::Tool {
+                tool: "scratch".to_string(),
+                message: format!("unknown op {other:?} (expected \"get\" or \"set\")"),
+            }),
         }
     }
 }
@@ -113,7 +140,7 @@ impl CommandDefinition for ScratchCommand {
     ) -> Result<CommandOutput, ExtensionError> {
         let val = SCRATCH
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .clone()
             .unwrap_or_else(|| "(empty)".into());
         Ok(CommandOutput::Message(format!("scratchpad: {val}")))

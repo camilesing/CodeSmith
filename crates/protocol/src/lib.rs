@@ -11,8 +11,12 @@ pub mod runtime {
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct RuntimeEventEnvelope {
-        #[serde(default = "default_runtime_event_envelope_schema_version")]
-        pub schema_version: u32,
+        /// Envelope schema version. `None` means the payload predates schema
+        /// versioning (legacy) — defaulting absence to the *current* version
+        /// would silently re-interpret legacy payloads once the version bumps
+        /// past 1, defeating the field's purpose.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub schema_version: Option<u32>,
         pub seq: u64,
         pub event: String,
         pub kind: String,
@@ -26,10 +30,6 @@ pub mod runtime {
         #[serde(default)]
         #[serde(flatten)]
         pub extra: BTreeMap<String, Value>,
-    }
-
-    fn default_runtime_event_envelope_schema_version() -> u32 {
-        RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION
     }
 }
 

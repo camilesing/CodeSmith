@@ -66,6 +66,17 @@ impl MockClient {
                 if text.is_empty() { None } else { Some(text) }
             })
     }
+
+    /// Echo text for a request, distinguishing "no user message at all"
+    /// from "the last user message carried no text" (e.g. an image-only
+    /// turn) — conflating them distorts test assertions built on the mock.
+    fn echo_text(messages: &[Message]) -> String {
+        match messages.iter().rev().find(|m| m.role == "user") {
+            None => String::from("mock: no user message to echo"),
+            Some(_) => Self::last_user_text(messages)
+                .unwrap_or_else(|| String::from("mock: last user message contained no text")),
+        }
+    }
 }
 
 impl LlmClient for MockClient {
@@ -81,8 +92,7 @@ impl LlmClient for MockClient {
         &self,
         request: MessageRequest,
     ) -> Pin<Box<dyn Future<Output = Result<MessageResponse>> + Send + '_>> {
-        let text = Self::last_user_text(&request.messages)
-            .unwrap_or_else(|| String::from("mock: no user message to echo"));
+        let text = Self::echo_text(&request.messages);
         let model = self.model.clone();
         Box::pin(async move { Ok(Self::text_response(&model, &text)) })
     }
@@ -91,8 +101,7 @@ impl LlmClient for MockClient {
         &self,
         request: MessageRequest,
     ) -> Pin<Box<dyn Future<Output = Result<StreamEventBox>> + Send + '_>> {
-        let text = Self::last_user_text(&request.messages)
-            .unwrap_or_else(|| String::from("mock: no user message to echo"));
+        let text = Self::echo_text(&request.messages);
         let model = self.model.clone();
         Box::pin(async move {
             // MessageStart carries an empty content list; the echoed text is

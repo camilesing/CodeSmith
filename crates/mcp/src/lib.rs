@@ -444,7 +444,9 @@ fn qualify_tool_name(server: &str, tool: &str) -> String {
     if name.len() > 64 {
         let mut hasher = DefaultHasher::new();
         name.hash(&mut hasher);
-        let hash = format!("{:x}", hasher.finish());
+        // Zero-pad: `{:x}` omits leading zeros, so the hex can be shorter
+        // than 12 chars and `&hash[..12]` would panic on slice out of range.
+        let hash = format!("{:016x}", hasher.finish());
         let suffix = format!("_{}", &hash[..12]);
         let component_budget = 64 - "mcp__".len() - "__".len() - suffix.len();
         let mut server_len = server.len().min(component_budget / 2);
@@ -573,6 +575,12 @@ pub fn run_stdio_server(
             continue;
         }
 
+        // Write failures (e.g. broken pipe) end the session loop instead of
+        // returning early: the caller still receives the collected
+        // definitions + `stopped` lifecycle, which matters most exactly on
+        // the disconnect path. Notifications (no `id`) get no response per
+        // JSON-RPC 2.0 — strict peers reject unsolicited `"id": null`
+        // replies (e.g. `notifications/initialized`).
         let request: JsonRpcRequest = match serde_json::from_str(&line) {
             Ok(value) => value,
             Err(err) => {
@@ -580,8 +588,12 @@ pub fn run_stdio_server(
                     None,
                     JsonRpcError::parse_error(format!("invalid json: {err}")),
                 );
-                writeln!(stdout, "{msg}")?;
-                stdout.flush()?;
+                if writeln!(stdout, "{msg}")
+                    .and_then(|_| stdout.flush())
+                    .is_err()
+                {
+                    break;
+                }
                 continue;
             }
         };
@@ -591,30 +603,51 @@ pub fn run_stdio_server(
             .as_deref()
             .is_some_and(|version| version != "2.0")
         {
-            let response = jsonrpc_error(
-                request.id,
-                JsonRpcError::invalid_request("jsonrpc version must be 2.0"),
-            );
-            writeln!(stdout, "{response}")?;
-            stdout.flush()?;
+            if let Some(id) = request.id.clone() {
+                let response = jsonrpc_error(
+                    Some(id),
+                    JsonRpcError::invalid_request("jsonrpc version must be 2.0"),
+                );
+                if writeln!(stdout, "{response}")
+                    .and_then(|_| stdout.flush())
+                    .is_err()
+                {
+                    break;
+                }
+            }
             continue;
         }
 
         let response = match dispatch_stdio_request(&mut state, &request.method, request.params) {
             Ok((result, should_exit)) => {
-                let payload = jsonrpc_result(request.id, result);
-                writeln!(stdout, "{payload}")?;
-                stdout.flush()?;
+                if let Some(id) = request.id {
+                    let payload = jsonrpc_result(Some(id), result);
+                    if writeln!(stdout, "{payload}")
+                        .and_then(|_| stdout.flush())
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
                 if should_exit {
                     break;
                 }
                 continue;
             }
-            Err(err) => jsonrpc_error(request.id, err),
+            Err(err) => request.id.map(|id| jsonrpc_error(Some(id), err)),
         };
 
-        writeln!(stdout, "{response}")?;
-        stdout.flush()?;
+        match response {
+            Some(response) => {
+                if writeln!(stdout, "{response}")
+                    .and_then(|_| stdout.flush())
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            None => continue,
+        }
     }
 
     state.lifecycle_state = "stopped".to_string();
@@ -942,6 +975,10 @@ fn dispatch_stdio_request(
                 // blocked every future `server/start` for this name.
                 state.running.insert(parsed.name.clone(), false);
                 if let Err(err) = state.manager.stop_server(&parsed.name) {
+                    // Restore the flag: the manager still holds its client
+                    // (tools stay listable/callable), so reporting
+                    // not-running would disagree with actual state.
+                    state.running.insert(parsed.name.clone(), true);
                     tracing::warn!("mcp stop_server '{}' failed: {err}", parsed.name);
                     return Err(JsonRpcError::internal(err.to_string()));
                 }

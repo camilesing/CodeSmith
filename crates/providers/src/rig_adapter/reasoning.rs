@@ -123,12 +123,17 @@ pub(crate) fn apply_reasoning_effort(
             "xhigh" | "max" | "highest" => {
                 params.insert("reasoning_effort".to_string(), serde_json::json!("high"));
             }
-            _ => {
+            // Known tiers forward verbatim; anything else (a typo like
+            // "ultra") is a no-op, sharing the policy of the non-passthrough
+            // match below — forwarding it verbatim earns the gateway 400
+            // this adapter exists to work around.
+            "low" | "minimal" | "medium" | "mid" | "high" => {
                 params.insert(
                     "reasoning_effort".to_string(),
                     serde_json::json!(normalized),
                 );
             }
+            _ => {}
         }
         return;
     }
@@ -149,20 +154,14 @@ pub(crate) fn apply_reasoning_effort(
             // reasoning trace, causing 10+ seconds of perceived "freeze"
             // before the first content token (PR #1480 by @h3c-hexin).
             "vllm" => {
-                params.insert(
-                    "chat_template_kwargs".to_string(),
-                    json!({ "enable_thinking": false }),
-                );
+                merge_chat_template_kwargs(params, "enable_thinking", json!(false));
             }
             "openai" | "atlascloud" | "wanjie-ark" | "moonshot" | "ollama" => {}
             // Anthropic uses /v1/messages and the AnthropicShaper applies its
             // own thinking config; GenericShaper is never used for anthropic.
             "anthropic" => {}
             "nvidia-nim" => {
-                params.insert(
-                    "chat_template_kwargs".to_string(),
-                    json!({ "thinking": false }),
-                );
+                merge_chat_template_kwargs(params, "thinking", json!(false));
             }
             _ => {}
         },
@@ -191,10 +190,7 @@ pub(crate) fn apply_reasoning_effort(
                 params.insert("reasoning_effort".to_string(), json!("high"));
             }
             "vllm" => {
-                params.insert(
-                    "chat_template_kwargs".to_string(),
-                    json!({ "enable_thinking": true }),
-                );
+                merge_chat_template_kwargs(params, "enable_thinking", json!(true));
                 // vLLM supports low/medium/high natively — pass through the
                 // user-chosen value instead of hard-coding "high".
                 let value = match normalized.as_str() {
@@ -207,10 +203,8 @@ pub(crate) fn apply_reasoning_effort(
             "openai" | "atlascloud" | "wanjie-ark" | "moonshot" | "ollama" => {}
             "anthropic" => {}
             "nvidia-nim" => {
-                params.insert(
-                    "chat_template_kwargs".to_string(),
-                    json!({ "thinking": true, "reasoning_effort": "high" }),
-                );
+                merge_chat_template_kwargs(params, "thinking", json!(true));
+                merge_chat_template_kwargs(params, "reasoning_effort", json!("high"));
             }
             _ => {}
         },
@@ -230,10 +224,7 @@ pub(crate) fn apply_reasoning_effort(
                 params.insert("reasoning_effort".to_string(), json!("max"));
             }
             "vllm" => {
-                params.insert(
-                    "chat_template_kwargs".to_string(),
-                    json!({ "enable_thinking": true }),
-                );
+                merge_chat_template_kwargs(params, "enable_thinking", json!(true));
                 // vLLM only supports none/low/medium/high — downgrade
                 // "max" to "high" instead of sending an invalid value.
                 params.insert("reasoning_effort".to_string(), json!("high"));
@@ -241,14 +232,25 @@ pub(crate) fn apply_reasoning_effort(
             "openai" | "atlascloud" | "wanjie-ark" | "moonshot" | "ollama" => {}
             "anthropic" => {}
             "nvidia-nim" => {
-                params.insert(
-                    "chat_template_kwargs".to_string(),
-                    json!({ "thinking": true, "reasoning_effort": "max" }),
-                );
+                merge_chat_template_kwargs(params, "thinking", json!(true));
+                merge_chat_template_kwargs(params, "reasoning_effort", json!("max"));
             }
             _ => {}
         },
         _ => {}
+    }
+}
+
+/// Merge `key: value` into the `chat_template_kwargs` object of `params`,
+/// preserving keys already present — `additional_params` is a shared,
+/// caller-populated escape hatch, and a whole-object `insert` would silently
+/// drop coexisting template kwargs.
+fn merge_chat_template_kwargs(params: &mut Map<String, Value>, key: &str, value: Value) {
+    let entry = params
+        .entry("chat_template_kwargs".to_string())
+        .or_insert_with(|| json!({}));
+    if let Some(obj) = entry.as_object_mut() {
+        obj.insert(key.to_string(), value);
     }
 }
 

@@ -74,8 +74,14 @@ pub(crate) fn sanitize_wire_messages(messages: &mut Vec<RigMessage>) {
             break;
         }
     }
-    // Insert-only, no interplay with the fixpoint passes above.
+    // Insert-only w.r.t. tool pairing, but the note can land adjacent to a
+    // mergeable user batch (e.g. an image-only turn) — settle merges one
+    // more time so the sanitizer's own output cannot violate invariant 4
+    // (a merged [Text(note), Image] message still satisfies invariant 7).
     let note_inserted = ensure_user_text_message(messages);
+    if note_inserted {
+        merge_adjacent_same_role(messages);
+    }
     if changed_any || note_inserted {
         // Aggregate counts only — never content. When the model suddenly
         // behaves differently after an emergency trim or `/undo`, this line
@@ -350,8 +356,14 @@ fn merge_adjacent_same_role(messages: &mut Vec<RigMessage>) -> bool {
                 RigMessage::Assistant { content: a, .. },
                 RigMessage::Assistant { content: b, .. },
             ) => {
-                let items: Vec<AssistantContent> = a.iter().cloned().chain(b).collect();
-                *a = OneOrMany::many(items).expect("merged assistant content is non-empty");
+                // Keep reasoning leading: naive concatenation can strand the
+                // second message's Reasoning behind the first's ToolCall
+                // items, and no later pass fixes the ordering. Stable
+                // partition — relative order is otherwise preserved.
+                let mut merged: Vec<AssistantContent> =
+                    a.iter().cloned().chain(b.iter().cloned()).collect();
+                merged.sort_by_key(|item| !matches!(item, AssistantContent::Reasoning(_)));
+                *a = OneOrMany::many(merged).expect("merged assistant content is non-empty");
             }
             _ => unreachable!("pair was checked mergeable"),
         }
