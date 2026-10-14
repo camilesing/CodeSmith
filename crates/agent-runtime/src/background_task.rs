@@ -56,6 +56,21 @@ pub enum BackgroundTaskStatus {
 }
 
 impl BackgroundTaskStatus {
+    /// Label matching the serde `snake_case` representation — the single
+    /// source of truth for status text in notifications and summaries.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Killed => "killed",
+            Self::Cancelled => "cancelled",
+            Self::Stalled => "stalled",
+        }
+    }
+
     /// True if the status is terminal (won't transition further).
     #[must_use]
     pub fn is_terminal(self) -> bool {
@@ -67,6 +82,13 @@ impl BackgroundTaskStatus {
 }
 
 /// Map SubAgentStatus → BackgroundTaskStatus.
+///
+/// Intentional collapses (documented rather than widened — the serialized
+/// `BackgroundTaskStatus` is model-visible and adding variants is a wire
+/// change): `Interrupted(_)` maps to `Failed` (not `Cancelled`) so an
+/// interrupted agent still reads as "did not succeed", and the
+/// `Interrupted`/`Failed` reason payloads are dropped here — callers that
+/// need the reason carry it via `BackgroundTaskSummary::error`.
 impl From<SubAgentStatus> for BackgroundTaskStatus {
     fn from(s: SubAgentStatus) -> Self {
         match s {
@@ -80,6 +102,11 @@ impl From<SubAgentStatus> for BackgroundTaskStatus {
 }
 
 /// Map ShellStatus → BackgroundTaskStatus.
+///
+/// Intentional collapse: `TimedOut` maps to `Failed`. A distinct
+/// `TimedOut` variant would be a serialized-wire change for a distinction
+/// no current consumer acts on; the shell layer's own records keep the
+/// precise cause.
 impl From<ShellStatus> for BackgroundTaskStatus {
     fn from(s: ShellStatus) -> Self {
         match s {
@@ -155,14 +182,7 @@ fn escape_xml_text(s: &str) -> String {
 /// Format a background task notification for injection into conversation.
 /// Mirrors Claude Code's `<task_notification>` XML format.
 pub fn format_notification_message(notification: &BackgroundTaskNotification) -> String {
-    let status_label = match notification.status {
-        BackgroundTaskStatus::Completed => "completed",
-        BackgroundTaskStatus::Failed => "failed",
-        BackgroundTaskStatus::Killed => "killed",
-        BackgroundTaskStatus::Cancelled => "cancelled",
-        BackgroundTaskStatus::Stalled => "stalled",
-        _ => "unknown",
-    };
+    let status_label = notification.status.as_str();
     format!(
         "<background_task_notification>\n\
          <task_id>{}</task_id>\n\
@@ -182,7 +202,10 @@ pub fn format_notification_message(notification: &BackgroundTaskNotification) ->
                 .as_deref()
                 .unwrap_or("(no output)"),
         ),
-        notification.duration_ms.unwrap_or(0),
+        // A missing duration must not render as a measured 0 ms.
+        notification
+            .duration_ms
+            .map_or_else(|| "unknown".to_string(), |ms| ms.to_string()),
     )
 }
 

@@ -61,6 +61,18 @@ fn sanitize_id_component(input: &str) -> String {
         .collect()
 }
 
+/// FNV-1a 32-bit. Implemented locally (not `DefaultHasher`) because the
+/// checksum is embedded in persisted artifact ids and must stay stable
+/// across std versions.
+fn fnv1a_32(bytes: &[u8]) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in bytes {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
+}
+
 fn is_valid_session_id(session_id: &str) -> bool {
     !session_id.is_empty()
         && session_id
@@ -70,7 +82,15 @@ fn is_valid_session_id(session_id: &str) -> bool {
 
 #[must_use]
 pub fn artifact_id_for_tool_call(tool_call_id: &str) -> String {
-    format!("art_{}", sanitize_id_component(tool_call_id))
+    let sanitized = sanitize_id_component(tool_call_id);
+    if sanitized == tool_call_id {
+        format!("art_{sanitized}")
+    } else {
+        // Sanitization is lossy: without the checksum, "call/a" and
+        // "call:b" would collapse onto the same artifact file and silently
+        // overwrite each other.
+        format!("art_{sanitized}_{:08x}", fnv1a_32(tool_call_id.as_bytes()))
+    }
 }
 
 #[must_use]
@@ -91,6 +111,11 @@ fn artifact_sessions_root() -> Option<PathBuf> {
     Some(home.join(".codesmith").join("sessions"))
 }
 
+/// Test-session-root override. `#[doc(hidden)]`: compiled unconditionally
+/// (dependencies are never built with `cfg(test)`, see the module note) but
+/// not part of the supported API surface — production callers must not
+/// redirect artifact writes.
+#[doc(hidden)]
 pub fn set_test_artifact_sessions_root(root: Option<PathBuf>) -> Option<PathBuf> {
     let mut guard = TEST_ARTIFACT_SESSIONS_ROOT
         .lock()
@@ -144,11 +169,19 @@ pub fn write_session_artifact(
     artifact_id: &str,
     content: &str,
 ) -> io::Result<(PathBuf, PathBuf)> {
+    // Split the failure causes: a caller-controlled bad session id gets its
+    // own message instead of being reported as "missing home directory".
+    if !is_valid_session_id(session_id) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid session id: {session_id:?}"),
+        ));
+    }
     let relative_path = session_artifact_relative_path(artifact_id);
     let absolute_path =
         session_artifact_absolute_path(session_id, &relative_path).ok_or_else(|| {
             io::Error::new(
-                io::ErrorKind::InvalidInput,
+                io::ErrorKind::NotFound,
                 "could not resolve session artifact path (missing home directory)",
             )
         })?;
@@ -161,7 +194,9 @@ pub fn write_session_artifact(
 
 fn preview_text(content: &str, max_chars: usize) -> String {
     let mut preview: String = content.chars().take(max_chars).collect();
-    if content.chars().count() > max_chars {
+    // `nth` short-circuits after at most max_chars+1 chars; `count()` would
+    // re-scan the whole (potentially multi-megabyte) output.
+    if content.chars().nth(max_chars).is_some() {
         preview.push_str("...");
     }
     preview
@@ -175,9 +210,18 @@ pub fn record_tool_output_artifact(
     content: &str,
 ) -> ArtifactRecord {
     let storage_path = storage_path.into();
-    let byte_size = std::fs::metadata(&storage_path)
-        .map(|metadata| metadata.len())
-        .unwrap_or_else(|_| content.len() as u64);
+    let byte_size = match std::fs::metadata(&storage_path) {
+        Ok(metadata) => metadata.len(),
+        Err(err) => {
+            // Observable, not silent: the fallback size can mismatch the
+            // file actually on disk.
+            tracing::warn!(
+                "artifacts: stat failed for {}: {err}; recording content length instead",
+                storage_path.display()
+            );
+            content.len() as u64
+        }
+    };
     record_tool_output_artifact_with_size(
         session_id,
         tool_call_id,

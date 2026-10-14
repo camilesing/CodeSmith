@@ -8,6 +8,8 @@
 //! the engine-closure extraction — the engine body references this via
 //! `crate::auto_reasoning::select`.
 
+use unicode_normalization::UnicodeNormalization;
+
 use crate::mode::ReasoningEffort;
 
 /// Choose a concrete `ReasoningEffort` tier for the next API request.
@@ -30,7 +32,11 @@ pub fn select(is_subagent: bool, last_msg: &str) -> ReasoningEffort {
         return ReasoningEffort::Low;
     }
 
-    let lower = last_msg.to_ascii_lowercase();
+    // NFKC first, then Unicode lowercasing: `to_ascii_lowercase` alone left
+    // full-width Latin (ｅｒｒｏｒ, common CJK-IME output) and half-width
+    // katakana (ﾃﾞﾊﾞｯｸﾞ) unmatched against every keyword — the exact gap the
+    // CJK expansion meant to close.
+    let lower: String = last_msg.nfkc().flat_map(char::to_lowercase).collect();
 
     if HIGH_EFFORT_KEYWORDS
         .iter()
@@ -143,6 +149,24 @@ mod tests {
         // matching.
         assert_eq!(select(false, "lookup_user"), ReasoningEffort::Low);
         assert_eq!(select(false, "SearchQuery"), ReasoningEffort::High);
+    }
+
+    #[test]
+    fn high_effort_keyword_wins_over_low() {
+        // Both "search" (Low) and "error" (Max) present → Max. Pins the
+        // check order: the high list must stay first.
+        assert_eq!(
+            select(false, "search the logs for this error"),
+            ReasoningEffort::Max,
+        );
+    }
+
+    #[test]
+    fn full_width_latin_and_half_width_kana_match_after_nfkc() {
+        // ｅｒｒｏｒ (full-width, CJK-IME output) and ﾃﾞﾊﾞｯｸﾞ (half-width
+        // katakana) must reach the same keywords as their NFKC folds.
+        assert_eq!(select(false, "ｅｒｒｏｒが発生した"), ReasoningEffort::Max);
+        assert_eq!(select(false, "ﾃﾞﾊﾞｯｸﾞしたい"), ReasoningEffort::Max);
     }
 
     #[test]

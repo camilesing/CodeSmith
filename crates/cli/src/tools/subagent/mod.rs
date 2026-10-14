@@ -5854,7 +5854,12 @@ fn resolve_agent_memory_for_spawn(
                 request.scope,
                 &dir,
                 &prompt,
-            );
+            )
+            .map_err(|err| {
+                ToolError::execution_failed(format!(
+                    "failed to load agent memory snapshot status: {err}"
+                ))
+            })?;
             if status.snapshot.is_none() || status.prompt_changed {
                 crate::agent_memory::initialize_or_update_snapshot(
                     workspace,

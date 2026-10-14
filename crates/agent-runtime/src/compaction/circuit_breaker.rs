@@ -105,8 +105,11 @@ impl CompactionCircuitBreaker {
     /// Check whether a manual `/compact` attempt should proceed.
     ///
     /// Always returns `true` — manual compaction bypasses the breaker
-    /// (explicit user agency overrides automatic safety).
-    pub fn force_attempt(&self) -> bool {
+    /// (explicit user agency overrides automatic safety). This is a
+    /// self-documenting hook, not a check: the bypass is enforced by
+    /// manual-compaction call sites simply never consulting
+    /// `should_attempt`. `const` so it cannot be mistaken for gating logic.
+    pub const fn force_attempt(&self) -> bool {
         true
     }
 
@@ -120,11 +123,18 @@ impl CompactionCircuitBreaker {
 
     /// Record a failed compaction attempt.
     ///
-    /// Increments consecutive_failures. If it reaches `trip_threshold`,
-    /// the breaker trips (opens) with a fresh recovery timeout.
+    /// Increments consecutive_failures (saturating). If it reaches
+    /// `trip_threshold`, the breaker trips (opens) with a fresh recovery
+    /// timeout — except when it is already open: only a failed half-open
+    /// probe restarts the recovery window, so an out-of-band failure (e.g.
+    /// a manual `/compact` that bypassed the breaker but still reports
+    /// through this method) cannot keep auto-compaction locked out
+    /// indefinitely.
     pub fn record_failure(&mut self) {
-        self.consecutive_failures += 1;
-        if self.consecutive_failures >= self.trip_threshold {
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        if self.consecutive_failures >= self.trip_threshold
+            && !matches!(self.state, BreakerState::Open { .. })
+        {
             self.state = BreakerState::Open {
                 tripped_at: Instant::now(),
             };
@@ -147,132 +157,6 @@ impl CompactionCircuitBreaker {
     pub fn reset(&mut self) {
         self.consecutive_failures = 0;
         self.state = BreakerState::Closed;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_breaker_allows_attempts() {
-        let mut breaker = CompactionCircuitBreaker::new();
-        assert!(breaker.should_attempt());
-        assert!(!breaker.is_tripped());
-    }
-
-    #[test]
-    fn breaker_trips_after_threshold_failures() {
-        let mut breaker = CompactionCircuitBreaker::new();
-        assert!(breaker.should_attempt());
-
-        breaker.record_failure();
-        assert!(!breaker.is_tripped());
-        assert!(breaker.should_attempt());
-
-        breaker.record_failure();
-        assert!(!breaker.is_tripped());
-        assert!(breaker.should_attempt());
-
-        breaker.record_failure(); // 3rd failure → trip
-        assert!(breaker.is_tripped());
-        assert!(!breaker.should_attempt());
-    }
-
-    #[test]
-    fn success_resets_breaker() {
-        let mut breaker = CompactionCircuitBreaker::new();
-        breaker.record_failure();
-        breaker.record_failure();
-
-        breaker.record_success();
-        assert!(!breaker.is_tripped());
-        assert_eq!(breaker.consecutive_failures(), 0);
-        assert!(breaker.should_attempt());
-    }
-
-    #[test]
-    fn force_attempt_always_succeeds() {
-        let mut breaker = CompactionCircuitBreaker::new();
-        breaker.record_failure();
-        breaker.record_failure();
-        breaker.record_failure();
-        assert!(breaker.is_tripped());
-
-        // Manual compact bypasses breaker
-        assert!(breaker.force_attempt());
-    }
-
-    #[test]
-    fn half_open_after_recovery_timeout() {
-        let mut breaker = CompactionCircuitBreaker::with_config(1, Duration::from_millis(100));
-        breaker.record_failure(); // trip immediately (threshold=1)
-
-        assert!(!breaker.should_attempt()); // still in timeout
-
-        // Wait for recovery timeout
-        std::thread::sleep(Duration::from_millis(150));
-        assert!(breaker.should_attempt()); // half-open
-    }
-
-    #[test]
-    fn half_open_failure_re_trips() {
-        let mut breaker = CompactionCircuitBreaker::with_config(1, Duration::from_millis(100));
-        breaker.record_failure();
-        std::thread::sleep(Duration::from_millis(150));
-
-        assert!(breaker.should_attempt()); // half-open, allow probe
-        breaker.record_failure(); // probe fails → re-trip
-        assert!(breaker.is_tripped());
-        assert!(!breaker.should_attempt());
-    }
-
-    #[test]
-    fn half_open_success_closes() {
-        let mut breaker = CompactionCircuitBreaker::with_config(1, Duration::from_millis(100));
-        breaker.record_failure();
-        std::thread::sleep(Duration::from_millis(150));
-
-        assert!(breaker.should_attempt()); // half-open
-        breaker.record_success(); // probe succeeds → close
-        assert!(!breaker.is_tripped());
-        assert!(breaker.should_attempt());
-    }
-
-    #[test]
-    fn half_open_admits_exactly_one_probe() {
-        // The docs promise half-open "allows one attempt" — the probe
-        // admission must be exclusive until its outcome resolves the
-        // state, or multiple triggers consulting should_attempt() while a
-        // compaction is in flight would each start an attempt.
-        let mut breaker = CompactionCircuitBreaker::with_config(1, Duration::from_millis(50));
-        breaker.record_failure();
-        std::thread::sleep(Duration::from_millis(80));
-
-        assert!(breaker.should_attempt(), "first call admits the probe");
-        assert!(!breaker.should_attempt(), "second call is refused");
-        assert!(
-            !breaker.should_attempt(),
-            "still refused without an outcome"
-        );
-
-        // The probe's outcome resolves the state either way.
-        breaker.record_success();
-        assert!(breaker.should_attempt(), "closed again after a good probe");
-    }
-
-    #[test]
-    fn reset_clears_all_state() {
-        let mut breaker = CompactionCircuitBreaker::new();
-        breaker.record_failure();
-        breaker.record_failure();
-        breaker.record_failure();
-        assert!(breaker.is_tripped());
-
-        breaker.reset();
-        assert!(!breaker.is_tripped());
-        assert_eq!(breaker.consecutive_failures(), 0);
-        assert!(breaker.should_attempt());
     }
 }
 
@@ -452,5 +336,152 @@ mod refill_tests {
         assert_eq!(det.streak(), 0);
         det.discard_last_trigger();
         assert_eq!(det.streak(), 0, "saturating — must not underflow");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_breaker_allows_attempts() {
+        let mut breaker = CompactionCircuitBreaker::new();
+        assert!(breaker.should_attempt());
+        assert!(!breaker.is_tripped());
+    }
+
+    #[test]
+    fn breaker_trips_after_threshold_failures() {
+        let mut breaker = CompactionCircuitBreaker::new();
+        assert!(breaker.should_attempt());
+
+        breaker.record_failure();
+        assert!(!breaker.is_tripped());
+        assert!(breaker.should_attempt());
+
+        breaker.record_failure();
+        assert!(!breaker.is_tripped());
+        assert!(breaker.should_attempt());
+
+        breaker.record_failure(); // 3rd failure → trip
+        assert!(breaker.is_tripped());
+        assert!(!breaker.should_attempt());
+    }
+
+    #[test]
+    fn success_resets_breaker() {
+        let mut breaker = CompactionCircuitBreaker::new();
+        breaker.record_failure();
+        breaker.record_failure();
+
+        breaker.record_success();
+        assert!(!breaker.is_tripped());
+        assert_eq!(breaker.consecutive_failures(), 0);
+        assert!(breaker.should_attempt());
+    }
+
+    #[test]
+    fn force_attempt_always_succeeds() {
+        let mut breaker = CompactionCircuitBreaker::new();
+        breaker.record_failure();
+        breaker.record_failure();
+        breaker.record_failure();
+        assert!(breaker.is_tripped());
+
+        // Manual compact bypasses breaker
+        assert!(breaker.force_attempt());
+    }
+
+    #[test]
+    fn half_open_after_recovery_timeout() {
+        // 10 ms timeout with a 200 ms sleep: a 20× margin, so scheduler
+        // noise on a loaded CI runner cannot flip the outcome.
+        let mut breaker = CompactionCircuitBreaker::with_config(1, Duration::from_millis(10));
+        breaker.record_failure(); // trip immediately (threshold=1)
+
+        assert!(!breaker.should_attempt()); // still in timeout
+
+        // Wait for recovery timeout
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(breaker.should_attempt()); // half-open
+    }
+
+    #[test]
+    fn half_open_failure_re_trips() {
+        let mut breaker = CompactionCircuitBreaker::with_config(1, Duration::from_millis(10));
+        breaker.record_failure();
+        std::thread::sleep(Duration::from_millis(200));
+
+        assert!(breaker.should_attempt()); // half-open, allow probe
+        breaker.record_failure(); // probe fails → re-trip
+        assert!(breaker.is_tripped());
+        assert!(!breaker.should_attempt());
+    }
+
+    #[test]
+    fn half_open_success_closes() {
+        let mut breaker = CompactionCircuitBreaker::with_config(1, Duration::from_millis(10));
+        breaker.record_failure();
+        std::thread::sleep(Duration::from_millis(200));
+
+        assert!(breaker.should_attempt()); // half-open
+        breaker.record_success(); // probe succeeds → close
+        assert!(!breaker.is_tripped());
+        assert!(breaker.should_attempt());
+    }
+
+    #[test]
+    fn half_open_admits_exactly_one_probe() {
+        // The docs promise half-open "allows one attempt" — the probe
+        // admission must be exclusive until its outcome resolves the
+        // state, or multiple triggers consulting should_attempt() while a
+        // compaction is in flight would each start an attempt.
+        let mut breaker = CompactionCircuitBreaker::with_config(1, Duration::from_millis(10));
+        breaker.record_failure();
+        std::thread::sleep(Duration::from_millis(200));
+
+        assert!(breaker.should_attempt(), "first call admits the probe");
+        assert!(!breaker.should_attempt(), "second call is refused");
+        assert!(
+            !breaker.should_attempt(),
+            "still refused without an outcome"
+        );
+
+        // The probe's outcome resolves the state either way.
+        breaker.record_success();
+        assert!(breaker.should_attempt(), "closed again after a good probe");
+    }
+
+    #[test]
+    fn failure_while_open_does_not_extend_the_recovery_window() {
+        // An out-of-band failure recorded while the breaker is already
+        // open (e.g. a manual /compact that bypassed the breaker) must not
+        // restart the recovery timeout and lock auto-compaction out
+        // indefinitely.
+        let mut breaker = CompactionCircuitBreaker::with_config(1, Duration::from_millis(10));
+        breaker.record_failure(); // trip
+        std::thread::sleep(Duration::from_millis(120));
+        breaker.record_failure(); // out-of-band, 120 ms into the window
+        std::thread::sleep(Duration::from_millis(120));
+        // 240 ms since the original trip (window was 10 ms) but only
+        // 120 ms since the second failure — a re-armed window would refuse.
+        assert!(
+            breaker.should_attempt(),
+            "out-of-band failure must not re-arm the recovery window"
+        );
+    }
+
+    #[test]
+    fn reset_clears_all_state() {
+        let mut breaker = CompactionCircuitBreaker::new();
+        breaker.record_failure();
+        breaker.record_failure();
+        breaker.record_failure();
+        assert!(breaker.is_tripped());
+
+        breaker.reset();
+        assert!(!breaker.is_tripped());
+        assert_eq!(breaker.consecutive_failures(), 0);
+        assert!(breaker.should_attempt());
     }
 }

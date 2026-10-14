@@ -58,13 +58,10 @@ pub fn initialize_or_update_snapshot(
     memory_dir: &Path,
     prompt: &str,
 ) -> std::io::Result<AgentMemorySnapshot> {
-    let snapshot_dir = resolve_snapshot_dir(workspace, agent_type);
+    let snapshot_dir = resolve_snapshot_dir(workspace, agent_type)?;
     fs::create_dir_all(&snapshot_dir)?;
     let snapshot = build_snapshot(agent_type, scope, memory_dir, prompt)?;
-    fs::write(
-        snapshot_dir.join("snapshot.json"),
-        serde_json::to_string_pretty(&snapshot).unwrap_or_else(|_| "{}".to_string()),
-    )?;
+    write_snapshot_atomic(&snapshot_dir, "snapshot.json", &snapshot)?;
     Ok(snapshot)
 }
 
@@ -74,23 +71,37 @@ pub fn mark_snapshot_synced(
     agent_type: &str,
     snapshot: &AgentMemorySnapshot,
 ) -> std::io::Result<()> {
-    let snapshot_dir = resolve_snapshot_dir(workspace, agent_type);
+    let snapshot_dir = resolve_snapshot_dir(workspace, agent_type)?;
     fs::create_dir_all(&snapshot_dir)?;
-    fs::write(
-        snapshot_dir.join(".snapshot-synced.json"),
-        serde_json::to_string_pretty(snapshot).unwrap_or_else(|_| "{}".to_string()),
-    )
+    write_snapshot_atomic(&snapshot_dir, ".snapshot-synced.json", snapshot)
 }
 
-#[must_use]
+/// Write a snapshot file atomically: serialize to a temp file in the same
+/// directory, then `rename` it into place (atomic replace on POSIX,
+/// replace-existing on Windows). A crash or concurrent reader can therefore
+/// never observe a truncated file that later parses as `None` — which would
+/// silently disable change detection. Serialization errors propagate
+/// instead of persisting a `{}` that is guaranteed to fail deserializing.
+fn write_snapshot_atomic(
+    snapshot_dir: &Path,
+    file_name: &str,
+    snapshot: &AgentMemorySnapshot,
+) -> std::io::Result<()> {
+    let payload = serde_json::to_string_pretty(snapshot).map_err(std::io::Error::from)?;
+    let target = snapshot_dir.join(file_name);
+    let tmp = snapshot_dir.join(format!("{file_name}.tmp"));
+    fs::write(&tmp, payload)?;
+    fs::rename(&tmp, &target)
+}
+
 pub fn load_snapshot_status(
     workspace: &Path,
     agent_type: &str,
     scope: AgentMemoryScope,
     memory_dir: &Path,
     prompt: &str,
-) -> AgentMemorySnapshotStatus {
-    let snapshot_dir = resolve_snapshot_dir(workspace, agent_type);
+) -> std::io::Result<AgentMemorySnapshotStatus> {
+    let snapshot_dir = resolve_snapshot_dir(workspace, agent_type)?;
     let snapshot_path = snapshot_dir.join("snapshot.json");
     let synced_path = snapshot_dir.join(".snapshot-synced.json");
     let snapshot = read_snapshot(&snapshot_path);
@@ -107,27 +118,37 @@ pub fn load_snapshot_status(
             None
         }
     };
+    // When either side is missing (build failure, unreadable or corrupt
+    // snapshot, or simply no snapshot yet) the comparison is impossible —
+    // report as changed so downstream errs on the side of syncing instead
+    // of silently treating an unknown state as "in sync". With no snapshot
+    // at all, `true` is also the semantically correct "needs
+    // initialization" answer.
     let prompt_changed = match (&snapshot, &current) {
         (Some(old), Some(current)) => old.prompt_hash != current.prompt_hash,
-        _ => false,
+        _ => true,
     };
     let memory_changed = match (&snapshot, &current) {
         (Some(old), Some(current)) => old.memory_hash != current.memory_hash,
-        _ => false,
+        _ => true,
     };
-    AgentMemorySnapshotStatus {
+    Ok(AgentMemorySnapshotStatus {
         snapshot_path,
         synced_path,
         snapshot,
         synced,
         prompt_changed,
         memory_changed,
-    }
+    })
 }
 
-fn resolve_snapshot_dir(workspace: &Path, agent_type: &str) -> PathBuf {
+/// Resolve the snapshot directory for `agent_type`. Fails on an agent type
+/// that cannot be sanitized into a path segment: collapsing two distinct
+/// invalid types onto a shared `"unknown"` segment made agent A's hashes
+/// compare against agent B's, producing arbitrary wrong drift results.
+fn resolve_snapshot_dir(workspace: &Path, agent_type: &str) -> std::io::Result<PathBuf> {
     let segment = crate::agent_memory::paths::sanitize_agent_type_segment(agent_type)
-        .unwrap_or_else(|_| "unknown".to_string());
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
     let codesmith = workspace
         .join(".codesmith")
         .join("agent-memory-snapshots")
@@ -140,16 +161,16 @@ fn resolve_snapshot_dir(workspace: &Path, agent_type: &str) -> PathBuf {
         dir.join("snapshot.json").exists() || dir.join(".snapshot-synced.json").exists()
     };
     if has_snapshot_data(&codesmith) {
-        return codesmith;
+        return Ok(codesmith);
     }
     let claude = workspace
         .join(".claude")
         .join("agent-memory-snapshots")
         .join(&segment);
     if has_snapshot_data(&claude) {
-        return claude;
+        return Ok(claude);
     }
-    codesmith
+    Ok(codesmith)
 }
 
 fn build_snapshot(
@@ -215,21 +236,36 @@ fn collect_md_files(
         let path = entry.path();
         let file_type = entry.file_type()?;
         if file_type.is_dir() {
+            // Known limitation: symlinked subdirectories are not traversed
+            // (`file_type()` does not follow links — deliberate, to avoid
+            // cycles and escaping the memory tree), while a symlinked `.md`
+            // file IS read. Coverage is therefore conservative but
+            // cycle-safe.
             collect_md_files(root, &path, entries)?;
-        } else if path.extension().and_then(|ext| ext.to_str()) == Some("md") {
+        } else if path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            // Case-insensitive so `NOTES.MD` and `File.Md` stay covered on
+            // case-insensitive filesystems.
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+        {
             let relative = path
                 .strip_prefix(root)
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .replace('\\', "/");
-            // Hashing an unreadable file as empty would silently skew the
-            // memory hash; skip it with a warning instead.
+            // An unreadable file must change the digest: hashing it as
+            // absent would report "in sync" while coverage silently shrank.
+            // Mix a sentinel carrying the error so the hash flips.
             match fs::read_to_string(&path) {
                 Ok(content) => entries.push((relative, content)),
-                Err(err) => tracing::warn!(
-                    "agent memory: skipping unreadable file {}: {err}",
-                    path.display()
-                ),
+                Err(err) => {
+                    tracing::warn!(
+                        "agent memory: hashing unreadable file as sentinel {}: {err}",
+                        path.display()
+                    );
+                    entries.push((relative, format!("<unreadable: {err}>")));
+                }
             }
         }
     }
@@ -294,7 +330,31 @@ mod tests {
             AgentMemoryScope::Project,
             memory.path(),
             "new prompt",
-        );
+        )
+        .unwrap();
         assert!(status.prompt_changed);
+    }
+
+    #[test]
+    fn unknown_comparison_defaults_to_changed() {
+        // A corrupt snapshot must read as "changed" so the sync path errs
+        // on the side of re-initializing instead of skipping the sync.
+        let workspace = tempdir().unwrap();
+        let memory = tempdir().unwrap();
+        let snapshot_dir = workspace
+            .path()
+            .join(".codesmith/agent-memory-snapshots/review");
+        std::fs::create_dir_all(&snapshot_dir).unwrap();
+        std::fs::write(snapshot_dir.join("snapshot.json"), "not json").unwrap();
+        let status = load_snapshot_status(
+            workspace.path(),
+            "review",
+            AgentMemoryScope::Project,
+            memory.path(),
+            "prompt",
+        )
+        .unwrap();
+        assert!(status.prompt_changed);
+        assert!(status.memory_changed);
     }
 }
