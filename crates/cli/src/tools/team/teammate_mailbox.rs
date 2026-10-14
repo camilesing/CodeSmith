@@ -156,43 +156,20 @@ pub enum StructuredProtocolMessage {
     },
 }
 
-/// Check whether a message text contains a structured protocol payload.
-/// True when the text starts with `{` and contains a `"type"` key with a
-/// known protocol message type value.
+/// Check whether a message text is a structured protocol payload.
+///
+/// Derived directly from the typed enum — the single source of truth. The
+/// old string-list-of-types check also matched payloads whose OTHER fields
+/// were invalid, so consumers recognized them as protocol and then
+/// silently dropped them when the typed parse failed.
 pub fn is_structured_protocol_message(text: &str) -> bool {
     let trimmed = text.trim();
-    if !trimmed.starts_with('{') {
-        return false;
-    }
-    if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed)
-        && let Some(type_val) = val.get("type").and_then(|v| v.as_str())
-    {
-        return matches!(
-            type_val,
-            "shutdown_request"
-                | "shutdown_approved"
-                | "shutdown_rejected"
-                | "idle_notification"
-                | "task_assignment"
-                | "permission_request"
-                | "permission_response"
-                | "plan_approval_request"
-                | "plan_approval_response"
-                | "team_permission_update"
-                | "mode_set_request"
-                | "sandbox_permission_request"
-                | "sandbox_permission_response"
-        );
-    }
-    false
+    trimmed.starts_with('{') && serde_json::from_str::<StructuredProtocolMessage>(trimmed).is_ok()
 }
 
 /// Parse a structured protocol message from text. Returns None if text
 /// is not a valid protocol JSON.
 pub fn parse_structured_protocol(text: &str) -> Option<StructuredProtocolMessage> {
-    if !is_structured_protocol_message(text) {
-        return None;
-    }
     serde_json::from_str(text.trim()).ok()
 }
 
@@ -276,14 +253,29 @@ fn acquire_inbox_lock(agent_name: &str, team_name: &str) -> anyhow::Result<RwLoc
 /// Read all messages from a teammate's inbox file.
 pub fn read_mailbox(agent_name: &str, team_name: &str) -> anyhow::Result<Vec<TeammateMessage>> {
     let path = inbox_path(agent_name, team_name)?;
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
     let lock = acquire_inbox_lock(agent_name, team_name)?;
     let _guard = lock.read()?;
-    let json = fs::read_to_string(&path)?;
-    let messages: Vec<TeammateMessage> = serde_json::from_str(&json)?;
-    Ok(messages)
+    // The existence decision and the read happen under the same lock: a
+    // pre-lock `path.exists()` raced with writers, so a file created in
+    // the window made the inbox look empty and one removed in it surfaced
+    // a raw NotFound error.
+    match fs::read_to_string(&path) {
+        Ok(json) => match serde_json::from_str::<Vec<TeammateMessage>>(&json) {
+            Ok(messages) => Ok(messages),
+            // A corrupt inbox used to hard-fail every reader until a writer
+            // quarantined it; readers now degrade to empty with a warning
+            // while the write path still preserves the evidence file.
+            Err(err) => {
+                crate::logging::warn(format!(
+                    "teammate inbox corrupt ({err}): {}",
+                    path.display()
+                ));
+                Ok(Vec::new())
+            }
+        },
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(err) => Err(err.into()),
+    }
 }
 
 /// Read only unread messages from a teammate's inbox.
@@ -325,12 +317,13 @@ pub fn write_to_mailbox(
 /// Mark all messages in a teammate's inbox as read.
 pub fn mark_messages_as_read(agent_name: &str, team_name: &str) -> anyhow::Result<()> {
     let path = inbox_path(agent_name, team_name)?;
+    let mut lock = acquire_inbox_lock(agent_name, team_name)?;
+    let _guard = lock.write()?;
+    // Decide existence under the write lock — the pre-lock check raced
+    // with delivery, so a message arriving in the window was left unmarked.
     if !path.exists() {
         return Ok(());
     }
-
-    let mut lock = acquire_inbox_lock(agent_name, team_name)?;
-    let _guard = lock.write()?;
 
     let updated: Vec<TeammateMessage> = read_inbox_or_quarantine(&path)?
         .into_iter()
@@ -349,11 +342,12 @@ pub fn mark_messages_as_read(agent_name: &str, team_name: &str) -> anyhow::Resul
 #[allow(dead_code)]
 pub fn clear_mailbox(agent_name: &str, team_name: &str) -> anyhow::Result<()> {
     let path = inbox_path(agent_name, team_name)?;
+    let mut lock = acquire_inbox_lock(agent_name, team_name)?;
+    let _guard = lock.write()?;
+    // Under the lock for the same reason as `mark_messages_as_read`.
     if !path.exists() {
         return Ok(());
     }
-    let mut lock = acquire_inbox_lock(agent_name, team_name)?;
-    let _guard = lock.write()?;
     write_inbox_atomic(&path, "[]")?;
     Ok(())
 }
@@ -377,8 +371,17 @@ fn read_inbox_or_quarantine(path: &Path) -> anyhow::Result<Vec<TeammateMessage>>
     match serde_json::from_str(&content) {
         Ok(messages) => Ok(messages),
         Err(err) => {
-            let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
-            let quarantined = path.with_extension(format!("corrupt-{timestamp}.json"));
+            // Nanosecond precision plus a while-exists counter: a
+            // second-resolution name let two corruptions within one second
+            // collide, and fs::rename silently replaced the earlier
+            // evidence file (on Unix).
+            let ts = chrono::Utc::now().format("%Y%m%dT%H%M%S%.9fZ");
+            let mut quarantined = path.with_extension(format!("corrupt-{ts}.json"));
+            let mut n = 0;
+            while quarantined.exists() {
+                n += 1;
+                quarantined = path.with_extension(format!("corrupt-{ts}-{n}.json"));
+            }
             let quarantine_result = fs::rename(path, &quarantined);
             crate::logging::warn(format!(
                 "teammate inbox corrupt ({err}); {} — continuing with an empty inbox at {}",
@@ -453,32 +456,42 @@ mod tests {
 
     #[test]
     fn is_structured_protocol_message_true_for_known_types() {
-        let types = [
-            "shutdown_request",
-            "shutdown_approved",
-            "shutdown_rejected",
-            "idle_notification",
-            "task_assignment",
-            "permission_request",
-            "permission_response",
-            "plan_approval_request",
-            "plan_approval_response",
-            "team_permission_update",
-            "mode_set_request",
-            "sandbox_permission_request",
-            "sandbox_permission_response",
+        // Full valid payloads — the check is derived from the typed enum,
+        // so every required field must be present.
+        let payloads = [
+            r#"{"type":"shutdown_request","request_id":"r","from":"a","timestamp":"t"}"#,
+            r#"{"type":"shutdown_approved","request_id":"r","from":"a","timestamp":"t"}"#,
+            r#"{"type":"shutdown_rejected","request_id":"r","from":"a","reason":"x","timestamp":"t"}"#,
+            r#"{"type":"idle_notification","from":"a","timestamp":"t"}"#,
+            r#"{"type":"task_assignment","task_id":"t1","subject":"s","description":"d","assigned_by":"a","timestamp":"t"}"#,
+            r#"{"type":"permission_request","request_id":"r","agent_id":"a","tool_name":"t","tool_use_id":"u","description":"d"}"#,
+            r#"{"type":"permission_response","request_id":"r","subtype":"success"}"#,
+            r#"{"type":"plan_approval_request","from":"a","timestamp":"t","plan_file_path":"p","request_id":"r"}"#,
+            r#"{"type":"plan_approval_response","request_id":"r","approved":true,"timestamp":"t"}"#,
+            r#"{"type":"team_permission_update","from":"a","allowed_tools":[],"denied_tools":[],"timestamp":"t"}"#,
+            r#"{"type":"mode_set_request","from":"a","permission_mode":"auto","timestamp":"t"}"#,
+            r#"{"type":"sandbox_permission_request","request_id":"r","agent_id":"a","tool_name":"t","tool_use_id":"u","domain":"d","description":"d"}"#,
+            r#"{"type":"sandbox_permission_response","request_id":"r","subtype":"allow"}"#,
         ];
-        for t in types {
-            let json = format!("{{\"type\":\"{t}\"}}");
+        for payload in payloads {
             assert!(
-                is_structured_protocol_message(&json),
-                "expected true for {t}"
+                is_structured_protocol_message(payload),
+                "expected true for {payload}"
             );
         }
     }
 
     #[test]
-    fn is_structured_protocol_message_false_for_plain_text() {
+    fn is_structured_protocol_message_false_for_partial_or_unknown_payloads() {
+        // Known type with missing required fields — recognized by the old
+        // string-list check, then silently dropped when the typed parse
+        // failed.
+        assert!(!is_structured_protocol_message(
+            r#"{"type":"shutdown_request"}"#
+        ));
+        assert!(!is_structured_protocol_message(
+            r#"{"type":"made_up_protocol"}"#
+        ));
         assert!(!is_structured_protocol_message("hello teammate"));
         assert!(!is_structured_protocol_message(""));
     }
@@ -592,6 +605,23 @@ mod tests {
 
         let msgs = read_mailbox("target", "mb-concurrent").expect("read");
         assert_eq!(msgs.len(), 5, "no messages lost in concurrent writes");
+    }
+
+    #[test]
+    fn read_mailbox_degrades_to_empty_on_corrupt_inbox() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&make_team_file("mb-read-corrupt")).expect("team");
+
+        write_to_mailbox("worker1", "mb-read-corrupt", make_message("leader", "keep"))
+            .expect("seed");
+        let path = inbox_path("worker1", "mb-read-corrupt").expect("path");
+        fs::write(&path, "{\"torn\": tru").expect("corrupt");
+
+        // A corrupt inbox must not hard-fail every reader until a writer
+        // quarantines it — degrade to empty.
+        let msgs = read_mailbox("worker1", "mb-read-corrupt").expect("read tolerates corrupt");
+        assert!(msgs.is_empty());
     }
 
     #[test]

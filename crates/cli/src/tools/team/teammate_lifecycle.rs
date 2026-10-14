@@ -7,7 +7,6 @@
 //! Priority inbox scanning: shutdown > lead messages > peer messages >
 //! permission responses > plan approval responses > task assignments.
 #![allow(dead_code)]
-#![allow(unused_assignments)]
 
 use std::time::Duration;
 
@@ -309,7 +308,12 @@ pub async fn try_claim_next_task(
 
     let tasks = match manager.list_tasks() {
         Ok(t) => t,
-        Err(_) => return None,
+        Err(err) => {
+            crate::logging::warn(format!(
+                "teammate '{agent_name}' failed to list tasks: {err}"
+            ));
+            return None;
+        }
     };
 
     // Build set of IDs that are not yet completed (still blocking).
@@ -338,11 +342,20 @@ pub async fn try_claim_next_task(
         // Claim it.
         let claimed = match manager.claim_task(&task.id, agent_name) {
             Ok(t) => t,
-            Err(_) => continue,
+            Err(err) => {
+                crate::logging::warn(format!(
+                    "teammate '{agent_name}' failed to claim task {}: {err}",
+                    task.id
+                ));
+                continue;
+            }
         };
 
-        // Set status to in_progress.
-        let _ = manager.update_task(
+        // Set status to in_progress. If the status write fails, the claim
+        // already persisted ownership — release it or the task is stranded
+        // forever (every claimer skips tasks with an owner, and this loop
+        // only returns tasks it just claimed).
+        if let Err(err) = manager.update_task(
             &task.id,
             Some(TaskV2Status::InProgress),
             None,
@@ -352,7 +365,19 @@ pub async fn try_claim_next_task(
             None,
             None,
             None,
-        );
+        ) {
+            crate::logging::warn(format!(
+                "failed to mark task {} in_progress after claim: {err}",
+                task.id
+            ));
+            if let Err(unassign_err) = manager.unassign_teammate_tasks(agent_name) {
+                crate::logging::warn(format!(
+                    "failed to unassign tasks of '{agent_name}' after status-update failure: \
+                     {unassign_err}"
+                ));
+            }
+            continue;
+        }
 
         return Some(claimed);
     }
@@ -380,6 +405,7 @@ pub enum WaitResult {
 /// Polls every 500ms with priority checks.
 pub async fn wait_for_next_prompt_or_shutdown(rt: &mut TeammateRuntime) -> WaitResult {
     let mut interval = tokio::time::interval(Duration::from_millis(500));
+    let mut scan_failures: u32 = 0;
 
     loop {
         interval.tick().await;
@@ -389,8 +415,24 @@ pub async fn wait_for_next_prompt_or_shutdown(rt: &mut TeammateRuntime) -> WaitR
         }
 
         let inbox = match scan_inbox_with_priority(&rt.agent_name, &rt.team_name) {
-            Ok(i) => i,
-            Err(_) => continue,
+            Ok(i) => {
+                scan_failures = 0;
+                i
+            }
+            Err(err) => {
+                // A persistent scan failure (bad permissions, unreadable
+                // inbox) used to make the teammate look alive while doing
+                // nothing, with no diagnostic anywhere. Log the first
+                // failure and then every 20th (10s at this tick).
+                scan_failures += 1;
+                if scan_failures == 1 || scan_failures.is_multiple_of(20) {
+                    crate::logging::warn(format!(
+                        "teammate '{}' inbox scan failed (attempt {scan_failures}): {err}",
+                        rt.agent_name
+                    ));
+                }
+                continue;
+            }
         };
 
         // Resolve pending permission responses BEFORE the shutdown
@@ -422,6 +464,15 @@ pub async fn wait_for_next_prompt_or_shutdown(rt: &mut TeammateRuntime) -> WaitR
             }
         }
 
+        // Apply team permission updates (lead-only protocol) so the next
+        // execute_teammate_prompt honors them — they used to be collected
+        // and silently discarded, leaving the protocol effectively dead.
+        apply_team_permission_updates(
+            &rt.agent_name,
+            &mut rt.allowed_tools,
+            &inbox.team_permission_updates,
+        );
+
         // Build prompt from lead + peer messages + task assignments.
         if !inbox.lead_messages.is_empty()
             || !inbox.peer_messages.is_empty()
@@ -437,16 +488,58 @@ pub async fn wait_for_next_prompt_or_shutdown(rt: &mut TeammateRuntime) -> WaitR
     }
 }
 
+/// Apply lead-authored `team_permission_update` messages to a teammate's
+/// tool allowlist: add `allowed_tools`, remove `denied_tools`.
+fn apply_team_permission_updates(
+    agent_name: &str,
+    allowed_tools: &mut Option<Vec<String>>,
+    updates: &[TeamPermissionUpdateEntry],
+) {
+    for upd in updates {
+        if upd.from != team_lead_name() {
+            continue;
+        }
+        if allowed_tools.is_none() && upd.allowed_tools.is_empty() && !upd.denied_tools.is_empty() {
+            // An unrestricted teammate cannot honor a pure deny-list
+            // without knowing the full tool universe; applying it as an
+            // empty allowlist would lock it out of everything.
+            crate::logging::warn(format!(
+                "team permission update for '{agent_name}' carries only denied tools while \
+                 the teammate is unrestricted; ignoring"
+            ));
+            continue;
+        }
+        let allowed = allowed_tools.get_or_insert_with(Vec::new);
+        for tool in &upd.allowed_tools {
+            if !allowed.contains(tool) {
+                allowed.push(tool.clone());
+            }
+        }
+        allowed.retain(|t| !upd.denied_tools.contains(t));
+    }
+}
+
 /// Resolve permission responses from inbox by matching to oneshot channels.
 fn resolve_permission_responses(
     responses: &[PermissionResponseEntry],
     registry: &SharedPermissionRequestRegistry,
 ) {
-    let mut reg = registry.lock().unwrap();
+    // Recover from poisoning instead of unwrapping: a panic in any other
+    // holder of this mutex used to take the whole teammate loop down.
+    let mut reg = registry
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     for resp in responses {
         let decision = if resp.subtype == "success" || resp.subtype == "allow" {
             PermissionDecision::Allow
         } else {
+            // Log before denying: an unrecognized subtype (protocol drift,
+            // a typo on the leader side) used to become an unexplained
+            // permission denial with no trace.
+            crate::logging::warn(format!(
+                "permission response '{}' has unrecognized subtype {:?}; resolving to Deny",
+                resp.request_id, resp.subtype
+            ));
             PermissionDecision::Deny {
                 reason: resp.error.clone(),
             }
@@ -643,7 +736,7 @@ async fn execute_teammate_prompt(
 async fn mark_task_completed(rt: &TeammateRuntime, task_id: &str, summary: Option<&str>) {
     let metadata = summary.map(|summary| serde_json::json!({ "teammate_summary": summary }));
     let mut manager = rt.task_v2_manager.lock().await;
-    let _ = manager.update_task(
+    if let Err(err) = manager.update_task(
         task_id,
         Some(TaskV2Status::Completed),
         None,
@@ -653,7 +746,14 @@ async fn mark_task_completed(rt: &TeammateRuntime, task_id: &str, summary: Optio
         metadata,
         None,
         None,
-    );
+    ) {
+        // A discarded failure used to leave the task `InProgress` on disk
+        // while the agent believed it complete, with no signal anywhere.
+        crate::logging::warn(format!(
+            "teammate '{}' failed to mark task {task_id} completed: {err}",
+            rt.agent_name
+        ));
+    }
 }
 
 /// Record a task execution failure: reset the task to `Pending` and clear
@@ -703,11 +803,9 @@ async fn record_task_error(rt: &TeammateRuntime, task_id: &str, error: &str) {
 /// 4. Execute one LLM/tool run through SubagentRunTool.
 /// 5. Send idle notification → loop back.
 pub async fn run_teammate_loop(mut rt: TeammateRuntime) -> TeammateResult {
-    let mut state = TeammateState::Initializing;
     let mut summary: Option<String> = None;
 
     if !rt.initial_prompt.trim().is_empty() && !rt.cancel_token.is_cancelled() {
-        state = TeammateState::Active;
         match execute_teammate_prompt(&rt, rt.initial_prompt.clone()).await {
             Ok(result_summary) => {
                 summary = result_summary.clone();
@@ -724,22 +822,22 @@ pub async fn run_teammate_loop(mut rt: TeammateRuntime) -> TeammateResult {
                     send_idle_notification(&rt.agent_name, &rt.team_name, summary.clone(), None);
             }
         }
-        state = TeammateState::Idle;
     }
 
-    loop {
+    // Each iteration exits with `break <state>` carrying the intended
+    // final state — intermediate `Active` assignments used to be dead
+    // writes overwritten by a trailing `state = Idle` (hidden behind
+    // `#![allow(unused_assignments)]`), so the loop could never report
+    // `Active` externally.
+    let final_state = loop {
         if rt.cancel_token.is_cancelled() {
-            state = TeammateState::Terminated;
-            break;
+            break TeammateState::Terminated;
         }
 
         let wait_result = wait_for_next_prompt_or_shutdown(&mut rt).await;
 
         match wait_result {
-            WaitResult::Aborted => {
-                state = TeammateState::Terminated;
-                break;
-            }
+            WaitResult::Aborted => break TeammateState::Terminated,
             WaitResult::ShutdownRequest(entry) => {
                 match handle_shutdown_request(&rt, &entry.request_id, &rt.agent_name, &rt.team_name)
                     .await
@@ -752,26 +850,17 @@ pub async fn run_teammate_loop(mut rt: TeammateRuntime) -> TeammateResult {
                             let mut manager = rt.task_v2_manager.lock().await;
                             let _ = manager.unassign_teammate_tasks(&rt.agent_name);
                         }
-                        state = TeammateState::ShutdownApproved;
-                        break;
+                        break TeammateState::ShutdownApproved;
                     }
-                    Ok(TeammateState::ShutdownRejected) => {
-                        state = TeammateState::Idle;
-                        continue;
-                    }
-                    _ => {
-                        state = TeammateState::Idle;
-                        continue;
-                    }
+                    // Rejected or handler error: the teammate keeps working.
+                    _ => continue,
                 }
             }
             WaitResult::NewMessage(inbox) => {
                 let prompt = format_prompt_from_inbox(&inbox);
                 if prompt.is_empty() {
-                    state = TeammateState::Idle;
                     continue;
                 }
-                state = TeammateState::Active;
                 match execute_teammate_prompt(&rt, prompt).await {
                     Ok(result_summary) => {
                         summary = result_summary.clone();
@@ -794,7 +883,6 @@ pub async fn run_teammate_loop(mut rt: TeammateRuntime) -> TeammateResult {
                 }
             }
             WaitResult::TaskClaimed(task) => {
-                state = TeammateState::Active;
                 let prompt = format!(
                     "Complete all open tasks. Start with task #{}:\n\n{}\n\n{}",
                     task.id, task.subject, task.description
@@ -823,14 +911,12 @@ pub async fn run_teammate_loop(mut rt: TeammateRuntime) -> TeammateResult {
                 }
             }
         }
-
-        state = TeammateState::Idle;
-    }
+    };
 
     TeammateResult {
         agent_id: rt.agent_id.clone(),
         agent_name: rt.agent_name.clone(),
-        final_state: state,
+        final_state,
         summary,
     }
 }
@@ -868,4 +954,59 @@ pub fn poll_leader_inbox(team_name: &str) -> anyhow::Result<Vec<String>> {
         .collect();
 
     Ok([protocol_texts, text_contents].concat())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn update(from: &str, allowed: &[&str], denied: &[&str]) -> TeamPermissionUpdateEntry {
+        TeamPermissionUpdateEntry {
+            from: from.to_string(),
+            allowed_tools: allowed.iter().map(|s| s.to_string()).collect(),
+            denied_tools: denied.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn permission_updates_add_and_remove_from_existing_allowlist() {
+        let mut allowed = Some(vec!["read".to_string(), "bash".to_string()]);
+        apply_team_permission_updates(
+            "w1",
+            &mut allowed,
+            &[
+                update(team_lead_name(), &["web_search"], &["bash"]),
+                // Non-lead updates are ignored.
+                update("peer", &["rm"], &[]),
+            ],
+        );
+        assert_eq!(
+            allowed,
+            Some(vec!["read".to_string(), "web_search".to_string()])
+        );
+    }
+
+    #[test]
+    fn permission_update_initializes_allowlist_for_unrestricted_teammate() {
+        let mut allowed = None;
+        apply_team_permission_updates(
+            "w1",
+            &mut allowed,
+            &[update(team_lead_name(), &["read", "bash"], &[])],
+        );
+        assert_eq!(allowed, Some(vec!["read".to_string(), "bash".to_string()]));
+    }
+
+    #[test]
+    fn deny_only_update_is_ignored_for_unrestricted_teammate() {
+        // Applying a pure deny-list to an unrestricted teammate as an empty
+        // allowlist would lock it out of everything.
+        let mut allowed = None;
+        apply_team_permission_updates(
+            "w1",
+            &mut allowed,
+            &[update(team_lead_name(), &[], &["rm"])],
+        );
+        assert_eq!(allowed, None);
+    }
 }

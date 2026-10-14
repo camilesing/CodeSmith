@@ -20,6 +20,7 @@ mod team_memory;
 mod teammate_lifecycle;
 mod teammate_mailbox;
 
+pub use backend::PermissionMode;
 pub use codesmith_agent_runtime::tool_state::team::*;
 pub use inbox_poller::run_leader_inbox_poller;
 pub use protocol_handlers::new_shared_permission_registry;

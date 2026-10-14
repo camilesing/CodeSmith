@@ -28,6 +28,38 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// Permission mode for a spawned teammate. Modeled as an enum so invalid
+/// values are unrepresentable at the spec boundary — the old free-form
+/// `String` let typos or hostile values flow unchecked onto the pane
+/// command line, silently degrading to "ask" far downstream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionMode {
+    Auto,
+    Ask,
+}
+
+impl PermissionMode {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Ask => "ask",
+        }
+    }
+
+    /// Parse the CLI/env spelling (`--permission-mode`). Unknown values are
+    /// `None` so the caller can warn instead of silently degrading.
+    #[must_use]
+    pub fn from_cli(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "ask" => Some(Self::Ask),
+            _ => None,
+        }
+    }
+}
+
 /// Backend-agnostic description of a teammate to spawn.
 ///
 /// Carries only portable fields — everything a pane backend needs to launch
@@ -54,8 +86,8 @@ pub struct TeammateSpawnSpec {
     pub cwd: PathBuf,
     /// Optional narrow tool allowlist.
     pub allowed_tools: Option<Vec<String>>,
-    /// Permission mode: `"auto"` or `"ask"`.
-    pub permission_mode: String,
+    /// Permission mode for the teammate.
+    pub permission_mode: PermissionMode,
     /// Extra environment variables to set in a spawned pane process.
     pub env: HashMap<String, String>,
     /// Binary to invoke for pane backends (defaults to `current_exe()`).
@@ -64,7 +96,7 @@ pub struct TeammateSpawnSpec {
 
 impl TeammateSpawnSpec {
     /// Build a spec with the given identity/portable fields and sensible
-    /// defaults for the rest (`permission_mode = "ask"`, empty env,
+    /// defaults for the rest (`permission_mode = ask`, empty env,
     /// `codesmith_bin` from `current_exe()`).
     #[must_use]
     pub fn new(agent_id: String, agent_name: String, team_name: String) -> Self {
@@ -77,28 +109,53 @@ impl TeammateSpawnSpec {
             model: None,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             allowed_tools: None,
-            permission_mode: "ask".to_string(),
+            permission_mode: PermissionMode::Ask,
             env: HashMap::new(),
             // An unresolvable exe leaves the path EMPTY on purpose: the old
             // fallback to a bare `codesmith` resolved the command word via
             // PATH, where a shadowed entry would run with the leader's
             // privileges. Pane backends fail loud on the empty path
-            // (`validate_bin`) instead of spawning an unchecked lookup.
+            // (`validate`) instead of spawning an unchecked lookup.
             codesmith_bin: std::env::current_exe().unwrap_or_default(),
         }
     }
 
-    /// Fail loud when the spec carries no resolvable binary path — an
-    /// empty `codesmith_bin` means `current_exe()` failed and no explicit
-    /// path was configured. Called by the pane backends (tmux/iTerm); the
-    /// in-process backend never execs a binary and skips this.
-    pub(crate) fn validate_bin(&self) -> Result<(), BackendError> {
+    /// Fail loud when the spec cannot be launched as a pane process.
+    /// Called by the pane backends (tmux/iTerm); the in-process backend
+    /// never execs a binary and skips this. Rejects:
+    /// - an empty `codesmith_bin` (`current_exe()` failed; an unchecked
+    ///   PATH lookup could run a shadowed binary with the leader's
+    ///   privileges),
+    /// - a relative `cwd`, which would resolve against the pane shell's
+    ///   own working directory and silently defeat the explicit
+    ///   `--cwd`/`-c` passing,
+    /// - non-UTF-8 paths, which `to_string_lossy` would corrupt into
+    ///   quoted-but-nonexistent paths failing at exec with a confusing
+    ///   "no such file" error.
+    pub(crate) fn validate(&self) -> Result<(), BackendError> {
         if self.codesmith_bin.as_os_str().is_empty() {
             return Err(BackendError::InvalidSpec(
                 "codesmith binary could not be resolved (current_exe() failed and no explicit \
                  codesmith_bin was set); refusing an unchecked PATH lookup"
                     .to_string(),
             ));
+        }
+        if !self.cwd.is_absolute() {
+            return Err(BackendError::InvalidSpec(format!(
+                "teammate cwd must be absolute (got {:?}); a relative path resolves against \
+                 the pane shell's working directory, not the leader's",
+                self.cwd
+            )));
+        }
+        for (what, path) in [
+            ("codesmith binary", &self.codesmith_bin),
+            ("cwd", &self.cwd),
+        ] {
+            if path.to_str().is_none() {
+                return Err(BackendError::InvalidSpec(format!(
+                    "teammate {what} path is not valid UTF-8: {path:?}"
+                )));
+            }
         }
         Ok(())
     }
@@ -177,11 +234,21 @@ pub enum BackendError {
 }
 
 impl BackendError {
-    /// Convert into a [`crate::tools::spec::ToolError`] with an
-    /// execution-failed classification, matching the existing spawn path's
-    /// error posture.
+    /// Convert into a [`crate::tools::spec::ToolError`], preserving the
+    /// caller/user-vs-execution distinction: `InvalidSpec`,
+    /// `DuplicateTeammate`, and `TeamMismatch` are caller errors (retry
+    /// with a new name / the right team), not execution failures, so they
+    /// classify as invalid input instead of being flattened into
+    /// execution-failed.
     pub(crate) fn into_tool_error(self) -> crate::tools::spec::ToolError {
-        crate::tools::spec::ToolError::execution_failed(self.to_string())
+        match self {
+            BackendError::InvalidSpec(_)
+            | BackendError::DuplicateTeammate(_)
+            | BackendError::TeamMismatch { .. } => {
+                crate::tools::spec::ToolError::invalid_input(self.to_string())
+            }
+            _ => crate::tools::spec::ToolError::execution_failed(self.to_string()),
+        }
     }
 }
 
@@ -248,7 +315,7 @@ pub(crate) fn build_team_teammate_command(spec: &TeammateSpawnSpec, prompt_file:
         "--agent-type".to_string(),
         shell_quote(&spec.agent_type),
         "--permission-mode".to_string(),
-        shell_quote(&spec.permission_mode),
+        shell_quote(spec.permission_mode.as_str()),
     ];
     if let Some(model) = spec.model.as_ref() {
         parts.push("--model".to_string());
@@ -335,7 +402,7 @@ mod tests {
             "demo".to_string(),
         );
         assert_eq!(spec.agent_type, "team");
-        assert_eq!(spec.permission_mode, "ask");
+        assert_eq!(spec.permission_mode, PermissionMode::Ask);
         assert!(spec.model.is_none());
         assert!(spec.allowed_tools.is_none());
         assert!(spec.env.is_empty());
@@ -373,6 +440,39 @@ mod tests {
         let tool = err.into_tool_error();
         let msg = format!("{tool}");
         assert!(msg.contains("worker-1"), "msg = {msg}");
+    }
+
+    #[test]
+    fn permission_mode_cli_roundtrip() {
+        assert_eq!(PermissionMode::from_cli("auto"), Some(PermissionMode::Auto));
+        assert_eq!(PermissionMode::from_cli(" ASK "), Some(PermissionMode::Ask));
+        assert_eq!(PermissionMode::from_cli("yolo"), None);
+        assert_eq!(PermissionMode::Auto.as_str(), "auto");
+        assert_eq!(PermissionMode::Ask.as_str(), "ask");
+    }
+
+    #[test]
+    fn validate_rejects_relative_cwd_and_non_utf8_paths() {
+        let mut spec = TeammateSpawnSpec::new(
+            "team_agent_abcd1234".to_string(),
+            "worker-1".to_string(),
+            "demo".to_string(),
+        );
+        spec.codesmith_bin = PathBuf::from("/usr/local/bin/codesmith");
+        spec.cwd = PathBuf::from("relative/dir");
+        let err = spec.validate().expect_err("relative cwd must be rejected");
+        assert!(err.to_string().contains("absolute"), "got: {err}");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            spec.cwd = PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/\xff"));
+            let err = spec.validate().expect_err("non-UTF-8 cwd must be rejected");
+            assert!(err.to_string().contains("UTF-8"), "got: {err}");
+        }
+
+        spec.cwd = PathBuf::from("/repo");
+        spec.validate().expect("absolute UTF-8 paths are valid");
     }
 
     #[test]

@@ -21,17 +21,21 @@ static DETECTED: OnceLock<BackendKind> = OnceLock::new();
 /// Resolve the backend kind for the current process, cached after the first
 /// call.
 ///
-/// Tests should call [`reset_cache_for_tests`] between scenarios.
+/// Tests should exercise the pure decision table via
+/// [`detect_backend_kind_from_env`] instead of this cached entry point — the
+/// `OnceLock` cache cannot be reset within a process.
 #[must_use]
 pub fn detect_backend_kind() -> BackendKind {
     *DETECTED.get_or_init(detect_backend_kind_uncached)
 }
 
 /// Bypass the cache — the raw detection logic. Exposed so tests can exercise
-/// the decision table without polluting the global cache.
+/// the decision table without polluting the global cache. Reads only the
+/// three env vars it needs instead of materializing the whole environment
+/// into a map.
 #[must_use]
 pub fn detect_backend_kind_uncached() -> BackendKind {
-    detect_backend_kind_from_env(&std::env::vars().collect())
+    detect_backend_kind_with(|key| std::env::var(key).ok())
 }
 
 /// Pure decision table over a snapshot of the process environment.
@@ -39,20 +43,36 @@ pub fn detect_backend_kind_uncached() -> BackendKind {
 pub fn detect_backend_kind_from_env(
     env: &std::collections::HashMap<String, String>,
 ) -> BackendKind {
-    // 1. Explicit override.
-    if let Some(value) = env.get("CODESMITH_TEAM_BACKEND") {
-        return parse_backend_kind(value).unwrap_or_else(|| fallback_from_env(env));
-    }
-    fallback_from_env(env)
+    detect_backend_kind_with(|key| env.get(key).cloned())
 }
 
-fn fallback_from_env(env: &std::collections::HashMap<String, String>) -> BackendKind {
+/// Decision table driven by targeted lookups, so production reads three env
+/// vars without the full-env snapshot and tests pass a small fixed map.
+fn detect_backend_kind_with(lookup: impl Fn(&str) -> Option<String>) -> BackendKind {
+    // 1. Explicit override — the strongest signal of user intent, so an
+    // unrecognized value warns before degrading to environment detection.
+    if let Some(value) = lookup("CODESMITH_TEAM_BACKEND") {
+        return match parse_backend_kind(&value) {
+            Some(kind) => kind,
+            None => {
+                crate::logging::warn(format!(
+                    "unrecognized CODESMITH_TEAM_BACKEND={value:?}; \
+                     falling back to environment detection"
+                ));
+                detect_from_env(&lookup)
+            }
+        };
+    }
+    detect_from_env(&lookup)
+}
+
+fn detect_from_env(lookup: &impl Fn(&str) -> Option<String>) -> BackendKind {
     // 2. Inside a tmux session — `tmux split-window` targets the active pane.
-    if env.get("TMUX").is_some() {
+    if lookup("TMUX").is_some() {
         return BackendKind::Tmux;
     }
     // 3. Running inside iTerm2 — AppleScript can open a new tab.
-    if env.get("TERM_PROGRAM").map(String::as_str) == Some("iTerm.app") {
+    if lookup("TERM_PROGRAM").as_deref() == Some("iTerm.app") {
         return BackendKind::Iter;
     }
     // 4. Default: run teammates in the leader's process.

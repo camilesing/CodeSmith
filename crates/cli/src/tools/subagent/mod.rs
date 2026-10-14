@@ -65,8 +65,8 @@ use crate::tools::spec::{
     optional_bool, optional_u64, required_str,
 };
 use crate::tools::team::{
-    TeamMember, TeammateInfo, TeammateRuntime, add_member, read_team_config, run_teammate_loop,
-    write_team_config,
+    PermissionMode, TeamMember, TeammateInfo, TeammateRuntime, add_member, read_team_config,
+    run_teammate_loop, write_team_config,
 };
 use crate::tools::todo::{SharedTodoList, TodoList};
 use crate::utils::spawn_supervised;
@@ -2812,9 +2812,18 @@ async fn spawn_team_teammate_in_process(
                 ctx.teammate_cancel_tokens.remove(&cleanup_agent_name);
             }
             if let Ok(mut team_file) = read_team_config(&cleanup_team_name) {
-                let _ =
-                    crate::tools::team::set_member_inactive(&mut team_file, &cleanup_agent_name);
-                let _ = write_team_config(&team_file);
+                if let Err(err) =
+                    crate::tools::team::set_member_inactive(&mut team_file, &cleanup_agent_name)
+                {
+                    crate::logging::warn(format!(
+                        "failed to mark teammate '{cleanup_agent_name}' inactive: {err}"
+                    ));
+                }
+                if let Err(err) = write_team_config(&team_file) {
+                    crate::logging::warn(format!(
+                        "failed to persist team config after '{cleanup_agent_name}' exit: {err}"
+                    ));
+                }
             }
         },
     );
@@ -2936,18 +2945,17 @@ async fn spawn_team_teammate_in_pane(
         ctx.team_name.clone()
     };
 
-    let permission_mode = if runtime.context.auto_approve {
-        "auto".to_string()
-    } else {
-        "ask".to_string()
-    };
     let mut spec = TeammateSpawnSpec::new(agent_id.clone(), agent_name.clone(), team_name.clone());
     spec.agent_type = agent_type.as_str().to_string();
     spec.prompt = effective_prompt.clone();
     spec.model = effective_model.clone();
     spec.cwd = cwd.clone();
     spec.allowed_tools = spawn_request.allowed_tools.clone();
-    spec.permission_mode = permission_mode;
+    spec.permission_mode = if runtime.context.auto_approve {
+        PermissionMode::Auto
+    } else {
+        PermissionMode::Ask
+    };
 
     let backend: Box<dyn TeammateBackend> = match kind {
         crate::tools::team::backend::BackendKind::Tmux => Box::new(TmuxBackend::new()),
