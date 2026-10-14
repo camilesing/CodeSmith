@@ -170,13 +170,14 @@ impl HookSink for JsonlHookSink {
             "at": Utc::now().to_rfc3339(),
             "event": event
         });
-        let encoded = serde_json::to_string(&payload).context("failed to encode hook event")?;
+        // Single write including the newline: with O_APPEND each write lands
+        // atomically, but two separate writes let a concurrent writer
+        // interleave and corrupt the JSONL line framing.
+        let mut encoded = serde_json::to_string(&payload).context("failed to encode hook event")?;
+        encoded.push('\n');
         file.write_all(encoded.as_bytes())
             .await
             .context("failed to write hook event")?;
-        file.write_all(b"\n")
-            .await
-            .context("failed to write hook event newline")?;
         Ok(())
     }
 }

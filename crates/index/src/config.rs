@@ -57,6 +57,11 @@ impl IndexConfig {
     /// a semantic backend, if enabled, must exist and declare
     /// [`IndexCapability::Semantic`]. Fails fast listing registered ids.
     pub fn validate(&self, registry: &IndexBackendRegistry) -> Result<()> {
+        // Master switch off ⇒ nothing will be built, so nothing needs
+        // validating — the same skip policy as a disabled `[index.symbols]`.
+        if !self.is_enabled() {
+            return Ok(());
+        }
         if self.symbols.is_enabled()
             && !registry.has_capability(self.symbols.backend_id(), IndexCapability::Symbols)
         {
@@ -140,9 +145,11 @@ impl IndexSymbolsConfig {
 }
 
 /// `[index.symbols.languages]` — one boolean per language, all `Option`
-/// with enabled defaults.
+/// with enabled defaults. Unknown keys are rejected: a mistyped or
+/// not-yet-supported language name (`kotlin = true`) silently falling back
+/// to "not configured" contradicts the fail-fast validation goal.
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct IndexLanguages {
     pub rust: Option<bool>,
     pub python: Option<bool>,
@@ -295,5 +302,19 @@ mod tests {
         .expect("parses");
         cfg.validate(&registry())
             .expect("disabled capability skips backend check");
+    }
+
+    #[test]
+    fn disabled_master_switch_skips_backend_validation() {
+        let cfg: IndexConfig = toml::from_str(
+            r#"
+            enabled = false
+            [symbols]
+            backend = "does-not-exist"
+        "#,
+        )
+        .expect("parses");
+        cfg.validate(&registry())
+            .expect("disabled index skips backend checks");
     }
 }

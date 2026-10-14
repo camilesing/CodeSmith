@@ -38,6 +38,16 @@ impl ProviderFactory for AnthropicFactory {
     }
 
     fn build(&self, cfg: &ProviderConfig) -> Result<LlmClientHandle> {
+        // Auth is derived from `api_key` only (managed-header guard below);
+        // an empty key would build fine and then fail at request time with
+        // an opaque 401/403 — fail loud at build instead.
+        if cfg.api_key.trim().is_empty() {
+            anyhow::bail!(
+                "anthropic provider requires an api_key; set it in \
+                 ProviderConfig::api_key (or the ANTHROPIC_API_KEY \
+                 environment variable)"
+            );
+        }
         // Host value wins; empty falls back to the manifest default; both empty
         // keeps the rig compile-time default.
         let base_url =

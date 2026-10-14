@@ -209,24 +209,34 @@ impl ToolResult {
 }
 
 /// Helper to extract a required string field from JSON input.
+///
+/// Distinguishes "field absent" from "field present but not a string":
+/// conflating them makes the provided-fields hint list the very field it
+/// claims is missing, sending the model into an unsatisfiable retry loop.
 pub fn required_str<'a>(input: &'a Value, field: &str) -> std::result::Result<&'a str, ToolError> {
-    input.get(field).and_then(Value::as_str).ok_or_else(|| {
-        // When the field is missing, list the fields the caller *did*
-        // supply so the model can spot the mismatch without a retry.
-        let provided: Vec<&str> = input
+    match input.get(field) {
+        Some(Value::String(s)) => Ok(s),
+        None => Err(input
             .as_object()
-            .map(|obj| obj.keys().map(|k| k.as_str()).collect())
-            .unwrap_or_default();
-        if provided.is_empty() {
-            ToolError::missing_field(field)
-        } else {
-            let hint = format!(
-                "missing required field '{field}'. Input provided: {}",
-                provided.join(", ")
-            );
-            ToolError::invalid_input(hint)
-        }
-    })
+            .map(|obj| {
+                // List the fields the caller *did* supply so the model can
+                // spot the mismatch without a retry.
+                let provided: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
+                if provided.is_empty() {
+                    ToolError::missing_field(field)
+                } else {
+                    let hint = format!(
+                        "missing required field '{field}'. Input provided: {}",
+                        provided.join(", ")
+                    );
+                    ToolError::invalid_input(hint)
+                }
+            })
+            .unwrap_or_else(|| ToolError::missing_field(field))),
+        Some(other) => Err(ToolError::invalid_input(format!(
+            "field '{field}' must be a string, got: {other}"
+        ))),
+    }
 }
 
 /// Helper to extract an optional string field from JSON input.
@@ -236,11 +246,22 @@ pub fn optional_str<'a>(input: &'a Value, field: &str) -> Option<&'a str> {
 }
 
 /// Helper to extract a required u64 field from JSON input.
+///
+/// Distinguishes "field absent" from "field present but not a non-negative
+/// integer" (negative, fractional, or string values) — same rationale as
+/// [`required_str`].
 pub fn required_u64(input: &Value, field: &str) -> std::result::Result<u64, ToolError> {
-    input
-        .get(field)
-        .and_then(Value::as_u64)
-        .ok_or_else(|| ToolError::missing_field(field))
+    match input.get(field) {
+        Some(Value::Number(n)) => n.as_u64().ok_or_else(|| {
+            ToolError::invalid_input(format!(
+                "field '{field}' must be a non-negative integer, got: {n}"
+            ))
+        }),
+        None => Err(ToolError::missing_field(field)),
+        Some(other) => Err(ToolError::invalid_input(format!(
+            "field '{field}' must be a non-negative integer, got: {other}"
+        ))),
+    }
 }
 
 /// Helper to extract an optional u64 field with default.
@@ -407,6 +428,16 @@ pub trait ToolHandler: Send + Sync {
 /// Parallel-safe tools acquire a read lock (allowing overlap), while
 /// serial tools acquire a write lock (exclusive access). Reentrant calls
 /// (e.g. a tool invoking another tool) skip locking to avoid deadlock.
+///
+/// Known limitations of the reentrancy probe (task-local
+/// `TOOL_EXECUTION_LOCK_HELD`): (1) Tokio task-locals do NOT propagate into
+/// `tokio::spawn`/`spawn_blocking` children — a subtask that calls
+/// `dispatch` is not detected as reentrant and will block on a lock an
+/// ancestor may hold (deadlock if the ancestor awaits it); route spawned
+/// sub-dispatches back through a task that re-enters the scope. (2) The
+/// flag is a single global across all `ToolCallRuntime` instances — a
+/// nested dispatch targeting a *different* registry also returns
+/// `Reentrant` and skips that registry's serial lock.
 #[derive(Debug)]
 pub struct ToolCallRuntime {
     execution_lock: Arc<RwLock<()>>,
@@ -634,10 +665,25 @@ mod tests {
         assert_eq!(required_str(&input, "name").expect("name"), "demo");
         assert_eq!(optional_u64(&input, "count", 0), 7);
         assert!(optional_bool(&input, "enabled", false));
+        // Present-but-wrong-type is a distinct error from absent: the
+        // provided-fields hint must not list the field it claims is missing.
         assert!(matches!(
             required_u64(&input, "name"),
+            Err(ToolError::InvalidInput { .. })
+        ));
+        let absent_with_hint =
+            required_str(&json!({"count": 7}), "name").expect_err("name is absent");
+        assert!(
+            absent_with_hint
+                .to_string()
+                .contains("missing required field 'name'")
+        );
+        assert!(matches!(
+            required_str(&json!({}), "name"),
             Err(ToolError::MissingField { .. })
         ));
+        let wrong_type = required_str(&json!({"name": 42}), "name").expect_err("not a string");
+        assert!(wrong_type.to_string().contains("must be a string"));
     }
 
     #[test]

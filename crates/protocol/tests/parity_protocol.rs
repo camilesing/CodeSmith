@@ -69,7 +69,7 @@ fn runtime_event_envelope_roundtrip() {
     });
     let envelope: RuntimeEventEnvelope =
         serde_json::from_value(input).expect("deserialize runtime event envelope");
-    assert_eq!(envelope.schema_version, 1);
+    assert_eq!(envelope.schema_version, Some(1));
     assert_eq!(envelope.seq, 12);
     assert_eq!(envelope.event, "item.delta");
     assert_eq!(envelope.kind, "item.delta");
@@ -91,7 +91,7 @@ fn runtime_event_envelope_roundtrip() {
 }
 
 #[test]
-fn runtime_event_envelope_defaults_to_api_schema_version() {
+fn runtime_event_envelope_without_schema_version_is_legacy_none() {
     let input = json!({
         "seq": 15,
         "event": "thread.started",
@@ -103,10 +103,11 @@ fn runtime_event_envelope_defaults_to_api_schema_version() {
     let envelope: RuntimeEventEnvelope = serde_json::from_value(input)
         .expect("deserialize runtime event envelope without schema version");
 
-    assert_eq!(
-        envelope.schema_version,
-        RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION
-    );
+    // Absence is observable: defaulting it to the current
+    // RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION would silently re-interpret
+    // legacy payloads once the version bumps past 1.
+    assert_eq!(envelope.schema_version, None);
+    let _ = RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION;
 }
 
 #[test]

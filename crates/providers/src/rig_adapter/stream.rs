@@ -144,11 +144,23 @@ where
                     continue;
                 }
                 Some(Err(e)) => {
+                    // Keep partial content well-formed (open block closed)
+                    // before surfacing the error, matching the unproven path
+                    // above — a salvaging consumer would otherwise get an
+                    // unterminated block.
+                    state.close_current_block();
                     state.pending.push_back(Err(anyhow::Error::new(e)));
                     state.finished = true;
                     continue;
                 }
                 Some(Ok(item)) => {
+                    // Guard the dispatch: nothing proves rig never yields
+                    // post-Final content (buggy gateways can send text after
+                    // the finish_reason chunk), and the terminal
+                    // MessageDelta must remain terminal.
+                    if state.termination_proven {
+                        continue;
+                    }
                     state.handle_streamed_item(item);
                     continue;
                 }
@@ -200,6 +212,11 @@ impl CurrentBlock {
 struct ToolBlockRecord {
     index: u32,
     input_delivered: bool,
+    /// The wire id was re-opened after intervening content: the block build
+    /// was reset by the re-issued Start, so the trailing complete `ToolCall`
+    /// must re-issue the authoritative payload even though deltas were
+    /// delivered for an earlier segment.
+    reopened: bool,
 }
 
 struct MapperState<R>
@@ -348,16 +365,18 @@ where
                             caller: None,
                         },
                     }));
-                } else if !record.input_delivered && !input.is_null() {
-                    // Started block that never streamed arguments: re-issue
-                    // the Start on the same index carrying the authoritative
-                    // name+input (the engine overwrites the block build on a
-                    // repeated index). A synthetic post-Stop InputJsonDelta
-                    // only fixed FINAL assembly — the engine finalizes and
-                    // speculatively dispatches at Stop with the announced
-                    // empty input, so the early task and the ToolCallStarted
-                    // announcement carried wrong arguments. The Stop emitted
-                    // by `close_current_block` below finalizes the rebuild.
+                } else if (!record.input_delivered || record.reopened) && !input.is_null() {
+                    // Started block that never streamed arguments — or one
+                    // re-opened after intervening content, whose build was
+                    // reset by the re-issued Start: re-issue the Start on the
+                    // same index carrying the authoritative name+input (the
+                    // engine overwrites the block build on a repeated index).
+                    // A synthetic post-Stop InputJsonDelta only fixed FINAL
+                    // assembly — the engine finalizes and speculatively
+                    // dispatches at Stop with the announced empty input, so
+                    // the early task and the ToolCallStarted announcement
+                    // carried wrong arguments. The Stop emitted by
+                    // `close_current_block` below finalizes the rebuild.
                     let index = record.index;
                     self.pending.push_back(Ok(StreamEvent::ContentBlockStart {
                         index,
@@ -374,13 +393,14 @@ where
             }
             // Closed delta block for this id — suppress the duplicate block.
             // Back-fill arguments if none streamed (the block closed while
-            // still deferred, e.g. Name(A) followed by Name(B)): re-issue
+            // still deferred, e.g. Name(A) followed by Name(B)) or if the id
+            // was re-opened mid-stream (the re-Start reset the build): re-issue
             // the Start with the authoritative name+input followed by a new
             // Stop. The synthetic post-Stop InputJsonDelta only fixed final
             // assembly, not the Stop-time announce/early-dispatch (see the
             // started-block arm above); the engine dedupes the re-announce
             // and replaces/aborts the stale id-keyed early task.
-            if !record.input_delivered && !input.is_null() {
+            if (!record.input_delivered || record.reopened) && !input.is_null() {
                 let index = record.index;
                 self.pending.push_back(Ok(StreamEvent::ContentBlockStart {
                     index,
@@ -424,6 +444,25 @@ where
         {
             return;
         }
+        // Re-opening a wire id after intervening content resumes the recorded
+        // block instead of allocating a duplicate: a second block with the
+        // same wire id collides in the engine's id-keyed announce/early-task
+        // maps and strands the earlier closed block (double-execution
+        // hazard). started=false re-emits `ContentBlockStart` on the recorded
+        // index — the engine overwrites the block build on a repeated index.
+        if self.tool_blocks_by_id.contains_key(&id) {
+            self.close_current_block();
+            if let Some(record) = self.tool_blocks_by_id.get_mut(&id) {
+                record.reopened = true;
+                self.current = Some(CurrentBlock::ToolUse {
+                    index: record.index,
+                    id,
+                    name: None,
+                    started: false,
+                });
+            }
+            return;
+        }
         self.close_current_block();
         let index = self.next_index;
         self.next_index = self.next_index.saturating_add(1);
@@ -438,6 +477,7 @@ where
             ToolBlockRecord {
                 index,
                 input_delivered: false,
+                reopened: false,
             },
         );
     }
@@ -980,23 +1020,27 @@ mod tests {
             RawStreamingChoice::FinalResponse(FakeFinal(RigUsage::new())),
         ]);
         let events = collect(resp).await;
+        // The deferred call_a block closes with its buffered name (Start on
+        // index 0), call_b streams its own Start, and the trailing complete
+        // call_a re-issues the authoritative Start on the SAME index 0
+        // (the engine overwrites the block build on a repeated index).
         assert_eq!(
             tool_use_starts(&events),
             vec![
                 (0, "call_a".to_string(), "tool_a".to_string()),
                 (1, "call_b".to_string(), "tool_b".to_string()),
+                (0, "call_a".to_string(), "tool_a".to_string()),
             ]
         );
-        let backfill = events.iter().find_map(|ev| match ev {
-            StreamEvent::ContentBlockDelta {
+        let authoritative = events.iter().rev().find_map(|ev| match ev {
+            StreamEvent::ContentBlockStart {
                 index: 0,
-                delta: Delta::InputJsonDelta { partial_json },
-            } => Some(partial_json.clone()),
+                content_block: ContentBlockStart::ToolUse { input, .. },
+            } => Some(input.clone()),
             _ => None,
         });
-        let backfill = backfill.expect("call_a must receive a synthetic InputJsonDelta");
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&backfill).unwrap(),
+            authoritative.expect("call_a authoritative Start re-issued on index 0"),
             serde_json::json!({"p": 7})
         );
     }

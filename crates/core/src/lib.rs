@@ -494,28 +494,24 @@ impl ThreadManager {
             name: None,
         };
         self.persist_thread(&thread)?;
-        match &initial_history {
-            InitialHistory::Forked(items) => {
-                for item in items {
-                    self.store.append_message(
-                        &thread.id,
-                        "history",
-                        &item.to_string(),
-                        Some(item.clone()),
-                    )?;
-                }
+        let items: &[Value] = match &initial_history {
+            InitialHistory::Forked(items) => items,
+            InitialHistory::Resumed { history, .. } => history,
+            InitialHistory::New => &[],
+        };
+        for item in items {
+            if let Err(err) = self.store.append_message(
+                &thread.id,
+                "history",
+                &item.to_string(),
+                Some(item.clone()),
+            ) {
+                // The thread row is already committed; without cleanup a
+                // mid-loop failure leaves a ghost thread with a partial
+                // history. Best-effort rollback (cascades to messages).
+                let _ = self.store.delete_thread(&thread.id);
+                return Err(err);
             }
-            InitialHistory::Resumed { history, .. } => {
-                for item in history {
-                    self.store.append_message(
-                        &thread.id,
-                        "history",
-                        &item.to_string(),
-                        Some(item.clone()),
-                    )?;
-                }
-            }
-            InitialHistory::New => {}
         }
         self.running_threads
             .insert(thread.id.clone(), thread.clone());
@@ -538,6 +534,7 @@ impl ThreadManager {
     ) -> Result<Option<NewThread>> {
         if params.history.is_none()
             && let Some(thread) = self.running_threads.get(&params.thread_id).cloned()
+            && thread.status == ThreadStatus::Running
         {
             return Ok(Some(NewThread {
                 model: params.model.clone().unwrap_or_else(|| "auto".to_string()),
@@ -595,6 +592,22 @@ impl ThreadManager {
             return Ok(None);
         };
         let parent_thread = to_protocol_thread(parent);
+        // Copy the parent's actual history (its current branch), then append
+        // the provenance marker last so the fork preview derives from the
+        // first real item instead of raw marker JSON. A marker-only fork
+        // starts effectively empty, contradicting `InitialHistory::Forked`'s
+        // documented "with the given history items".
+        let parent_id = parent_thread.id.clone();
+        let mut history: Vec<Value> = self
+            .store
+            .list_messages(&parent_id, None)?
+            .into_iter()
+            .filter_map(|record| record.item)
+            .collect();
+        history.push(json!({
+            "type": "fork",
+            "from_thread_id": parent_id
+        }));
         let new = self.spawn_thread_with_history(
             params
                 .model_provider
@@ -604,10 +617,7 @@ impl ThreadManager {
                 .cwd
                 .clone()
                 .unwrap_or_else(|| fallback_cwd.to_path_buf()),
-            InitialHistory::Forked(vec![json!({
-                "type": "fork",
-                "from_thread_id": parent_thread.id
-            })]),
+            InitialHistory::Forked(history),
             params.persist_extended_history,
         )?;
         Ok(Some(new))
@@ -656,6 +666,11 @@ impl ThreadManager {
     /// Restores an archived thread to active status.
     pub fn unarchive_thread(&mut self, thread_id: &str) -> Result<()> {
         self.store.mark_unarchived(thread_id)?;
+        // Mirror archive_thread: the cached entry would otherwise keep
+        // reporting Archived after a successful unarchive.
+        if let Some(thread) = self.running_threads.get_mut(thread_id) {
+            thread.status = ThreadStatus::Idle;
+        }
         Ok(())
     }
 
@@ -827,7 +842,7 @@ impl Runtime {
             ThreadRequest::Create { .. } => {
                 let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
                 let new = self.thread_manager.spawn_thread_with_history(
-                    "deepseek".to_string(),
+                    self.config.provider.as_str().to_string(),
                     cwd,
                     InitialHistory::New,
                     false,
@@ -844,7 +859,7 @@ impl Runtime {
                     params
                         .model_provider
                         .clone()
-                        .unwrap_or_else(|| "deepseek".to_string()),
+                        .unwrap_or_else(|| self.config.provider.as_str().to_string()),
                     cwd,
                     InitialHistory::New,
                     params.persist_extended_history,
@@ -858,7 +873,7 @@ impl Runtime {
                 if let Some(new) = self.thread_manager.resume_thread_with_history(
                     &params,
                     &fallback_cwd,
-                    "deepseek".to_string(),
+                    self.config.provider.as_str().to_string(),
                 )? {
                     let mut response = thread_response_from_new("resumed", new);
                     response.data = self.persisted_thread_data(&response.thread_id)?;
@@ -978,7 +993,10 @@ impl Runtime {
             }
             ThreadRequest::Message { thread_id, input } => {
                 self.thread_manager.touch_message(&thread_id, &input)?;
-                let response_id = format!("{thread_id}:{}", input.len());
+                // UUID-based like `handle_prompt`: `{thread_id}:{len}` collides
+                // for same-length inputs, conflating distinct turns in any
+                // response_id-keyed consumer.
+                let response_id = format!("resp-{}", Uuid::new_v4());
                 self.hooks
                     .emit(HookEvent::ResponseStart {
                         response_id: response_id.clone(),
@@ -1060,9 +1078,13 @@ impl Runtime {
         });
         if let Some(thread_id) = req.thread_id.as_ref() {
             self.thread_manager.touch_message(thread_id, &req.prompt)?;
+            // Runtime metadata, not assistant output — a "assistant" role
+            // would be replayed as conversation history by Read/Resume data,
+            // forks, and any list_messages consumer, polluting model context
+            // with config echoes.
             let assistant_message_id = self.thread_manager.store.append_message(
                 thread_id,
-                "assistant",
+                "metadata",
                 &payload.to_string(),
                 Some(payload.clone()),
             )?;
@@ -1809,7 +1831,7 @@ fn runtime_status_to_job_state(status: JobStatus) -> JobStateStatus {
     match status {
         JobStatus::Queued => JobStateStatus::Queued,
         JobStatus::Running => JobStateStatus::Running,
-        JobStatus::Paused => JobStateStatus::Running,
+        JobStatus::Paused => JobStateStatus::Paused,
         JobStatus::Completed => JobStateStatus::Completed,
         JobStatus::Failed => JobStateStatus::Failed,
         JobStatus::Cancelled => JobStateStatus::Cancelled,
@@ -1820,6 +1842,7 @@ fn job_state_status_to_runtime(status: JobStateStatus) -> JobStatus {
     match status {
         JobStateStatus::Queued => JobStatus::Queued,
         JobStateStatus::Running => JobStatus::Running,
+        JobStateStatus::Paused => JobStatus::Paused,
         JobStateStatus::Completed => JobStatus::Completed,
         JobStateStatus::Failed => JobStatus::Failed,
         JobStateStatus::Cancelled => JobStatus::Cancelled,
@@ -2130,7 +2153,7 @@ mod tests {
         );
         assert_eq!(
             runtime_status_to_job_state(JobStatus::Paused),
-            JobStateStatus::Running
+            JobStateStatus::Paused
         );
         assert_eq!(
             runtime_status_to_job_state(JobStatus::Completed),

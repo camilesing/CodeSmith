@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use codesmith_release::{
     CHECKSUM_MANIFEST_ASSET, ReleaseChannel, ReleaseQuery, UPDATE_USER_AGENT,
-    compare_release_versions, is_beta_tag, mirror_asset_url, resolve_release_query,
-    update_is_needed, update_network_fallback_hint,
+    compare_release_versions, mirror_asset_url, parse_release_version, resolve_release_query,
+    update_is_needed, update_network_fallback_hint, version_is_beta,
 };
 use reqwest::Proxy;
 use std::io::Write;
@@ -330,7 +330,7 @@ fn latest_release_tag(channel: ReleaseChannel, proxy: Option<&Proxy>) -> Result<
 
 /// Fetch the latest release metadata from GitHub.
 fn fetch_latest_release(channel: ReleaseChannel, proxy: Option<&Proxy>) -> Result<FetchedRelease> {
-    match resolve_release_query(channel) {
+    match resolve_release_query(channel)? {
         ReleaseQuery::Mirror { base_url, version } => Ok(FetchedRelease {
             release: release_from_mirror_base_url(
                 &base_url,
@@ -414,7 +414,14 @@ fn fetch_latest_beta_release_from_url(url: &str, proxy: Option<&Proxy>) -> Resul
 
     releases
         .into_iter()
-        .find(|release| is_beta_tag(&release.tag_name))
+        .filter_map(|release| {
+            // Parse-gated: a substring "beta" match (e.g. `v1.5.0+beta`,
+            // malformed `beta-2024.10`) must not be selected here only to
+            // disagree with (or fail inside) `update_is_needed` later.
+            let version = parse_release_version(&release.tag_name).ok()?;
+            version_is_beta(&version).then_some(release)
+        })
+        .next()
         .context("no beta release found in GitHub releases")
 }
 
@@ -729,9 +736,9 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codesmith-win
             assets: vec![],
         };
 
-        assert!(!is_beta_tag(&rc_prerelease.tag_name));
-        assert!(is_beta_tag(&beta_tag.tag_name));
-        assert!(!is_beta_tag(&stable.tag_name));
+        assert!(!codesmith_release::is_beta_tag(&rc_prerelease.tag_name));
+        assert!(codesmith_release::is_beta_tag(&beta_tag.tag_name));
+        assert!(!codesmith_release::is_beta_tag(&stable.tag_name));
     }
 
     fn serve_http_once(

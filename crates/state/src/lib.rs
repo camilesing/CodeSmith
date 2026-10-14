@@ -178,6 +178,8 @@ pub enum JobStateStatus {
     Queued,
     /// Job is currently executing.
     Running,
+    /// Job is temporarily paused and may resume later.
+    Paused,
     /// Job has finished successfully.
     Completed,
     /// Job has failed with an error.
@@ -536,29 +538,40 @@ impl StateStore {
     }
 
     /// Archive a thread, setting its status to [`ThreadStatus::Archived`] and
-    /// recording the current timestamp.
+    /// recording the current timestamp. Fails when the id matches no thread
+    /// (a silent no-op hides typos and already-deleted ids from callers).
     pub fn mark_archived(&self, id: &str) -> Result<()> {
         let conn = self.conn()?;
-        conn.execute(
-            "UPDATE threads SET archived = 1, archived_at = ?2, status = ?3 WHERE id = ?1",
-            params![
-                id,
-                Utc::now().timestamp(),
-                thread_status_to_str(&ThreadStatus::Archived)
-            ],
-        )
-        .context("failed to archive thread")?;
+        let changed = conn
+            .execute(
+                "UPDATE threads SET archived = 1, archived_at = ?2, status = ?3 WHERE id = ?1",
+                params![
+                    id,
+                    Utc::now().timestamp(),
+                    thread_status_to_str(&ThreadStatus::Archived)
+                ],
+            )
+            .context("failed to archive thread")?;
+        if changed == 0 {
+            anyhow::bail!("no thread with id {id} to archive");
+        }
         Ok(())
     }
 
-    /// Unarchive a thread, removing the archived flag and clearing `archived_at`.
+    /// Unarchive a thread, removing the archived flag, clearing `archived_at`,
+    /// and restoring a non-archived status (`idle`; the pre-archive status is
+    /// not retained). Fails when the id matches no thread.
     pub fn mark_unarchived(&self, id: &str) -> Result<()> {
         let conn = self.conn()?;
-        conn.execute(
-            "UPDATE threads SET archived = 0, archived_at = NULL WHERE id = ?1",
-            params![id],
-        )
-        .context("failed to unarchive thread")?;
+        let changed = conn
+            .execute(
+                "UPDATE threads SET archived = 0, archived_at = NULL, status = ?2 WHERE id = ?1",
+                params![id, thread_status_to_str(&ThreadStatus::Idle)],
+            )
+            .context("failed to unarchive thread")?;
+        if changed == 0 {
+            anyhow::bail!("no thread with id {id} to unarchive");
+        }
         Ok(())
     }
 
@@ -573,14 +586,19 @@ impl StateStore {
 
     /// Set the memory mode for a thread.
     ///
-    /// Pass `None` to clear the memory mode.
+    /// Pass `None` to clear the memory mode. Fails when the id matches no
+    /// thread.
     pub fn set_thread_memory_mode(&self, id: &str, mode: Option<&str>) -> Result<()> {
         let conn = self.conn()?;
-        conn.execute(
-            "UPDATE threads SET memory_mode = ?2 WHERE id = ?1",
-            params![id, mode],
-        )
-        .context("failed to update thread memory mode")?;
+        let changed = conn
+            .execute(
+                "UPDATE threads SET memory_mode = ?2 WHERE id = ?1",
+                params![id, mode],
+            )
+            .context("failed to update thread memory mode")?;
+        if changed == 0 {
+            anyhow::bail!("no thread with id {id} to set memory mode on");
+        }
         Ok(())
     }
 
@@ -651,11 +669,24 @@ impl StateStore {
     /// string here would never match.
     pub fn set_current_leaf_id(&self, thread_id: &str, current_leaf_id: i64) -> Result<()> {
         let conn = self.conn()?;
-        conn.execute(
-            "UPDATE threads SET current_leaf_id = ?1 WHERE id = ?2",
-            params![current_leaf_id, thread_id],
-        )
-        .context("failed to update thread current leaf id")?;
+        // The EXISTS guard pins the leaf to a message of this thread: without
+        // it (and with no FK on messages.parent_entry_id) a wrong id is stored
+        // silently and list_messages then walks — and leaks — another
+        // thread's message tree.
+        let changed = conn
+            .execute(
+                "UPDATE threads SET current_leaf_id = ?1
+                 WHERE id = ?2
+                   AND EXISTS (SELECT 1 FROM messages m WHERE m.id = ?1 AND m.thread_id = ?2)",
+                params![current_leaf_id, thread_id],
+            )
+            .context("failed to update thread current leaf id")?;
+        if changed == 0 {
+            anyhow::bail!(
+                "message {current_leaf_id} does not belong to thread {thread_id} \
+                 (or thread not found)"
+            );
+        }
         Ok(())
     }
 
@@ -987,7 +1018,7 @@ impl StateStore {
                     params![thread_id, checkpoint_id],
                     |row| {
                         let state_json: String = row.get(2)?;
-                        let state = serde_json::from_str(&state_json).unwrap_or(Value::Null);
+                        let state = parse_checkpoint_state(&state_json)?;
                         Ok(CheckpointRecord {
                             thread_id: row.get(0)?,
                             checkpoint_id: row.get(1)?,
@@ -1008,7 +1039,7 @@ impl StateStore {
             params![thread_id],
             |row| {
                 let state_json: String = row.get(2)?;
-                let state = serde_json::from_str(&state_json).unwrap_or(Value::Null);
+                let state = parse_checkpoint_state(&state_json)?;
                 Ok(CheckpointRecord {
                     thread_id: row.get(0)?,
                     checkpoint_id: row.get(1)?,
@@ -1043,7 +1074,7 @@ impl StateStore {
         let mut out = Vec::new();
         while let Some(row) = rows.next().context("failed to iterate checkpoint rows")? {
             let state_json: String = row.get(2).context("failed to read checkpoint state json")?;
-            let state = serde_json::from_str(&state_json).unwrap_or(Value::Null);
+            let state = parse_checkpoint_state(&state_json)?;
             out.push(CheckpointRecord {
                 thread_id: row.get(0).context("failed to read checkpoint thread id")?,
                 checkpoint_id: row.get(1).context("failed to read checkpoint id")?,
@@ -1237,10 +1268,20 @@ fn path_to_opt_string(path: Option<&Path>) -> Option<String> {
     path.map(|p| p.display().to_string())
 }
 
+/// Decode a checkpoint `state_json` column, failing loudly on corrupt JSON.
+/// Silently substituting `Null` would let a caller restore a checkpoint whose
+/// state was wiped with no error — inconsistent with `item_json` handling.
+fn parse_checkpoint_state(state_json: &str) -> rusqlite::Result<Value> {
+    serde_json::from_str(state_json).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(err))
+    })
+}
+
 fn job_state_status_to_str(status: &JobStateStatus) -> &'static str {
     match status {
         JobStateStatus::Queued => "queued",
         JobStateStatus::Running => "running",
+        JobStateStatus::Paused => "paused",
         JobStateStatus::Completed => "completed",
         JobStateStatus::Failed => "failed",
         JobStateStatus::Cancelled => "cancelled",
@@ -1251,6 +1292,7 @@ fn job_state_status_from_str(value: &str) -> JobStateStatus {
     match value {
         "queued" => JobStateStatus::Queued,
         "running" => JobStateStatus::Running,
+        "paused" => JobStateStatus::Paused,
         "completed" => JobStateStatus::Completed,
         "failed" => JobStateStatus::Failed,
         "cancelled" => JobStateStatus::Cancelled,
