@@ -2153,7 +2153,7 @@ impl HostAgentExecutor {
         // `replace_all` swap.
         {
             let mut state = probe.micro_state.lock().expect("poisoned");
-            if should_trigger_micro_compact(history.messages(), &state, false) {
+            if should_trigger_micro_compact(&history.messages(), &state, false) {
                 let mut msgs = history.messages().to_vec();
                 let cleared = micro_compact_messages(&mut msgs, &mut state);
                 if cleared > 0 {
@@ -2164,7 +2164,7 @@ impl HostAgentExecutor {
                         accumulate_cleared_facts(
                             ledger,
                             &probe.workspace,
-                            history.messages(),
+                            &history.messages(),
                             &msgs,
                         );
                     }
@@ -2194,7 +2194,7 @@ impl HostAgentExecutor {
         // the safe wrapper does NOT early-return when under threshold, so
         // without this gate it would summarize an in-budget transcript.
         if !should_compact(
-            history.messages(),
+            &history.messages(),
             &probe.config,
             Some(&probe.workspace),
             None,
@@ -2383,7 +2383,7 @@ impl HostAgentExecutor {
             return None;
         };
 
-        let before_tokens = estimate_input_tokens_conservative(history.messages(), system);
+        let before_tokens = estimate_input_tokens_conservative(&history.messages(), system);
 
         // Working-set pins + paths mirror `Engine::apply_targeted_context_refresh`'s
         // `self.session.working_set` reads. The working set is `Arc`-shared with
@@ -2393,7 +2393,7 @@ impl HostAgentExecutor {
         let (compaction_pins, compaction_paths) = {
             let ws = gate.working_set().lock().expect("working_set poisoned");
             (
-                ws.pinned_message_indices(history.messages(), gate.workspace()),
+                ws.pinned_message_indices(&history.messages(), gate.workspace()),
                 ws.top_paths(24),
             )
         };
@@ -2401,7 +2401,7 @@ impl HostAgentExecutor {
         let mut refreshed = false;
         let should_run_summary_compaction = compaction.config.enabled
             && should_compact(
-                history.messages(),
+                &history.messages(),
                 &compaction.config,
                 Some(gate.workspace()),
                 Some(&compaction_pins),
@@ -2470,7 +2470,7 @@ impl HostAgentExecutor {
                 .as_ref()
                 .and_then(|p| p.provider_input_budget())
                 .unwrap_or(compaction.config.token_threshold.max(1));
-            if estimate_input_tokens_conservative(history.messages(), system) > target_budget {
+            if estimate_input_tokens_conservative(&history.messages(), system) > target_budget {
                 let trimmed =
                     trim_oldest_messages_to_budget_history(history, system, target_budget);
                 refreshed = trimmed > 0;
@@ -2541,7 +2541,8 @@ impl HostAgentExecutor {
         // since are estimated. Falls back to the pure estimate when no
         // anchor exists yet or history shrank past it.
         let anchor = *self.usage_anchor.lock().expect("poisoned");
-        let estimated = estimate_input_tokens_anchored(history.messages(), system, anchor.as_ref());
+        let estimated =
+            estimate_input_tokens_anchored(&history.messages(), system, anchor.as_ref());
         if estimated <= target_budget {
             return CapacityPreflight::Proceed;
         }
@@ -2630,7 +2631,7 @@ impl HostAgentExecutor {
         self.emit_status(format!("Emergency context compaction started ({reason})"))
             .await;
 
-        let before_tokens = estimate_input_tokens_conservative(history.messages(), system);
+        let before_tokens = estimate_input_tokens_conservative(&history.messages(), system);
         let before_count = history.len();
 
         // Phase 1 — best-effort micro-compact (no API call). Production's
@@ -2645,10 +2646,10 @@ impl HostAgentExecutor {
             let cleared = micro_compact_messages(&mut msgs, &mut local_state);
             if cleared > 0 {
                 if let Some(ledger) = probe.fact_ledger() {
-                    accumulate_cleared_facts(ledger, &probe.workspace, history.messages(), &msgs);
+                    accumulate_cleared_facts(ledger, &probe.workspace, &history.messages(), &msgs);
                 }
                 history.replace_all("overflow-recovery: micro-compact", msgs);
-                let after_micro = estimate_input_tokens_conservative(history.messages(), system);
+                let after_micro = estimate_input_tokens_conservative(&history.messages(), system);
                 if after_micro <= target_budget {
                     self.emit_status(
                         "Emergency recovery: micro-compaction cleared enough context".to_string(),
@@ -2742,7 +2743,7 @@ impl HostAgentExecutor {
         // Phase 3 — hard trim oldest messages (mirrors mod.rs:1852 +
         // trim_oldest_messages_to_budget). `ChatHistory` has no `remove(0)`,
         // so clone → trim Vec → audited `replace_all` swap.
-        let after_compact = estimate_input_tokens_conservative(history.messages(), system);
+        let after_compact = estimate_input_tokens_conservative(&history.messages(), system);
         if after_compact > target_budget {
             let mut msgs = history.messages().to_vec();
             let before_trim = msgs.len();
@@ -2785,7 +2786,7 @@ impl HostAgentExecutor {
             }
         }
 
-        let after_tokens = estimate_input_tokens_conservative(history.messages(), system);
+        let after_tokens = estimate_input_tokens_conservative(&history.messages(), system);
         let after_count = history.len();
         let recovered = after_tokens <= target_budget
             && (after_tokens < before_tokens || after_count < before_count);
@@ -3083,7 +3084,7 @@ impl HostAgentExecutor {
             // post-tool (seam 4) actions and don't fire here.
             if let Some(gate) = &self.capacity_gate
                 && let Some(snapshot) = gate.observe_pre_turn(
-                    history.messages(),
+                    &history.messages(),
                     step,
                     &tool_call_ids_this_run,
                     system.as_ref(),
@@ -3181,7 +3182,7 @@ impl HostAgentExecutor {
             // how the request is *expressible*, not what it contains.
             let mut request = crate::prompt_zones::ThreeZoneRequest {
                 prefix: &frozen_prefix,
-                log: history.messages(),
+                log: &history.messages(),
                 scratch: crate::prompt_zones::TurnScratch::new(),
                 model: client.model().to_string(),
                 max_tokens,
@@ -3691,7 +3692,7 @@ impl HostAgentExecutor {
             // (`skip_transcript = false`), faithful to the pre-3c path.
             if let Some(gate) = &self.capacity_gate
                 && let Some(snapshot) = gate.observe_post_tool(
-                    history.messages(),
+                    &history.messages(),
                     step,
                     &tool_call_ids_this_run,
                     system.as_ref(),
@@ -3803,7 +3804,7 @@ impl HostAgentExecutor {
             };
             if let Some(gate) = &self.capacity_gate
                 && let Some(decision) = gate.decide_error_escalation(
-                    history.messages(),
+                    &history.messages(),
                     step,
                     &tool_call_ids_this_run,
                     system.as_ref(),
@@ -9624,12 +9625,8 @@ mod tests {
         assert!(pushed > 0, "plan + todo candidates pushed");
         // Every pushed candidate (the trailing user messages) starts with the
         // `<turn_meta>` block.
-        let reinjected = history
-            .messages()
-            .iter()
-            .rev()
-            .take(pushed)
-            .collect::<Vec<_>>();
+        let messages = history.messages();
+        let reinjected = messages.iter().rev().take(pushed).collect::<Vec<_>>();
         assert_eq!(
             reinjected.len(),
             pushed,
@@ -11010,7 +11007,8 @@ mod tests {
         // The `[verification replay]` note was pushed onto the transcript
         // mid-loop via `ChatHistory` (in-place on `session.messages`).
         assert_eq!(history.messages().len(), before_len + 1);
-        let note = history.messages().last().expect("note pushed");
+        let messages = history.messages();
+        let note = messages.last().expect("note pushed");
         assert_eq!(note.role, "user");
         let block = note.content.last().expect("note has a block");
         let note_content = match block {

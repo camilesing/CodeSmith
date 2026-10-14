@@ -125,8 +125,8 @@ impl<'a> SessionChatHistory<'a> {
 }
 
 impl<'a> ChatHistory for SessionChatHistory<'a> {
-    fn messages(&self) -> &[Message] {
-        &self.session.messages
+    fn messages(&self) -> Vec<Message> {
+        self.session.messages.to_vec()
     }
 
     fn push(&mut self, message: Message) {

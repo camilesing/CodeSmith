@@ -18,9 +18,12 @@ use crate::models::Message;
 /// Dyn-safe so an [`crate::executor::AgentExecutor`] can hold a `&mut dyn
 /// ChatHistory` without naming the backing store.
 pub trait ChatHistory: Send + Sync {
-    /// Borrow the current message list (API format: alternating user/assistant
-    /// turns, with tool results as `role:"user"` `ToolResult` blocks).
-    fn messages(&self) -> &[Message];
+    /// Snapshot of the current message list (API format: alternating
+    /// user/assistant turns, with tool results as `role:"user"` `ToolResult`
+    /// blocks). Owned copy so any backing store — an in-memory `Vec`, a DB,
+    /// a session file behind a lock — can implement it without borrowing
+    /// past a lock guard.
+    fn messages(&self) -> Vec<Message>;
 
     /// Append a message — an assistant turn or a tool-result user turn. The
     /// executor is responsible for the role/turn structure; the backing store
@@ -72,8 +75,8 @@ impl VecChatHistory {
 }
 
 impl ChatHistory for VecChatHistory {
-    fn messages(&self) -> &[Message] {
-        &self.messages
+    fn messages(&self) -> Vec<Message> {
+        self.messages.clone()
     }
 
     fn push(&mut self, message: Message) {
