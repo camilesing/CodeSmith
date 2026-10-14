@@ -332,19 +332,33 @@ async fn truncate_to_before_last_user(state: &mut ReplState) -> usize {
             break;
         }
     }
-    if removed > 0
-        && let Ok(engine) = state.engine()
-    {
-        let _ = engine
-            .send(Op::SyncSession {
-                session_id: state.current_session_id.clone(),
-                messages: state.api_messages.clone(),
-                system_prompt: state.system_prompt.clone(),
-                system_prompt_override: false,
-                model: state.model.clone(),
-                workspace: state.workspace.clone(),
-            })
-            .await;
+    if removed > 0 {
+        match state.engine() {
+            Ok(engine) => {
+                if let Err(err) = engine
+                    .send(Op::SyncSession {
+                        session_id: state.current_session_id.clone(),
+                        messages: state.api_messages.clone(),
+                        system_prompt: state.system_prompt.clone(),
+                        system_prompt_override: false,
+                        model: state.model.clone(),
+                        workspace: state.workspace.clone(),
+                    })
+                    .await
+                {
+                    // Local history was truncated — the engine session is
+                    // now stale. Surfacing it beats silently diverging.
+                    println!(
+                        "{} local history truncated, but engine sync failed: {err}",
+                        "✗".red()
+                    );
+                }
+            }
+            Err(err) => println!(
+                "{} local history truncated, but engine is unavailable: {err}",
+                "✗".red()
+            ),
+        }
     }
     removed
 }
@@ -382,7 +396,11 @@ pub async fn retry(state: &mut ReplState) {
     };
     truncate_to_before_last_user(state).await;
     println!("retrying: {}", truncate_for_display(&input, 50));
-    let _ = super::super::submit(state, input).await;
+    // The previous exchange is already truncated — a failed resubmission
+    // must not pass silently.
+    if let Err(err) = super::super::submit(state, input).await {
+        println!("{} retry failed: {err}", "✗".red());
+    }
 }
 
 fn truncate_for_display(text: &str, max_chars: usize) -> String {

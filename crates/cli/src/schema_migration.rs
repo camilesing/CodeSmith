@@ -143,7 +143,17 @@ pub trait SchemaMigration {
             }
             step(value)?;
             current = step_from + 1;
-            value["schema_version"] = serde_json::json!(current);
+            // serde_json's IndexMut panics for a non-object top level
+            // (array/string/number record files); surface a typed error.
+            let obj = value.as_object_mut().ok_or_else(|| MigrationError {
+                from_version: current,
+                to_version: step_from + 1,
+                reason: format!(
+                    "{} record is not a JSON object; cannot stamp schema_version",
+                    Self::DOMAIN
+                ),
+            })?;
+            obj.insert("schema_version".to_string(), serde_json::json!(current));
         }
 
         if current != Self::CURRENT_VERSION {
@@ -373,5 +383,31 @@ mod tests {
         let bak = backup_before_migrate(&path, "test_session");
         // The path is well-formed even though copy failed.
         assert!(bak.to_string_lossy().ends_with(".json.bak"));
+    }
+    #[test]
+    fn migration_lists_and_versions_are_consistent() {
+        // With NO migration steps shipped, CURRENT_VERSION must equal the
+        // version the on-disk writers stamp directly (2): lowering it to
+        // satisfy the textbook `len + 1` invariant would make every
+        // existing v2 record fail `migrate()` as "newer than supported".
+        // Once a real v1→v2 step lands, `len + 1` becomes the contract —
+        // this test fails either way it drifts.
+        fn check<M: SchemaMigration>() {
+            // With no steps shipped, CURRENT_VERSION equals whatever the
+            // domain's writers stamp (session=1, runtime/task=2) — lowering
+            // it to satisfy the textbook invariant would fail every
+            // existing record as "newer than supported". The guard that
+            // holds in BOTH regimes: a domain can never claim fewer
+            // versions than its step count plus one.
+            assert!(
+                M::CURRENT_VERSION as usize > M::MIGRATIONS.len(),
+                "{} violates CURRENT_VERSION > MIGRATIONS.len()",
+                M::DOMAIN
+            );
+        }
+        check::<registry::SessionMigration>();
+        check::<registry::RuntimeMigration>();
+        check::<registry::TaskMigration>();
+        check::<registry::AutomationMigration>();
     }
 }

@@ -270,10 +270,12 @@ impl LspTransport for StdioLspTransport {
     ) -> Result<Vec<Diagnostic>> {
         let path_buf = path.to_path_buf();
         let uri = uri_from_path(&path_buf);
-        // Cache keys use the canonical path — the same form `uri_from_path`
-        // sends and the server echoes back — so a canonicalized publish
-        // matches even when the caller passed a symlinked path.
-        let cache_key = canonicalize_best_effort(&path_buf);
+        // Key the cache exactly like the dispatcher stores it: decode the
+        // URI we send (spec-shaped: `\\?\` stripped on Windows, `/`
+        // separators) so lookups match on Windows as well as Unix. The old
+        // canonicalize-based key compared `\\?\C:\…` against a stored
+        // `C:/…` and missed on every publish.
+        let cache_key = path_from_uri(&uri).unwrap_or_else(|| canonicalize_best_effort(&path_buf));
 
         // Either send didOpen (first time) or didChange (subsequent edits).
         let mut opened = self.opened.lock().await;

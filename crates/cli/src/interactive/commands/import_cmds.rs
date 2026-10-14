@@ -443,7 +443,21 @@ pub fn run(state: &ReplState, arg: &str, yes: bool) {
     }
 
     let config_path = state.mcp_config_path.clone();
-    let mut config = crate::mcp::load_config(&config_path).unwrap_or_default();
+    // `load_config` returns `Ok(default)` only for a MISSING file; the Err
+    // arm means an existing mcp.json that is unreadable/unparseable. With
+    // `--yes` the later save would then overwrite it with only the
+    // imported servers — silently destroying the user's existing config.
+    let mut config = match crate::mcp::load_config(&config_path) {
+        Ok(config) => config,
+        Err(err) => {
+            println!(
+                "{} could not read existing MCP config {}: {err}",
+                "✗".red(),
+                config_path.display()
+            );
+            return;
+        }
+    };
     let mut added = Vec::new();
     for server in candidates {
         if config.servers.contains_key(&server.name) {

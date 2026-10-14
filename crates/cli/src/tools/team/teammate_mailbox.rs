@@ -265,7 +265,7 @@ pub fn write_to_mailbox(
     // Read current messages, append new one, write back. A corrupt inbox is
     // quarantined instead of silently replaced — `unwrap_or_default` here
     // used to drop every stored message on one bad read.
-    let mut updated = read_inbox_or_quarantine(&path);
+    let mut updated = read_inbox_or_quarantine(&path)?;
     updated.push(message);
     let json = serde_json::to_string(&updated)?;
     write_inbox_atomic(&path, &json)?;
@@ -283,7 +283,7 @@ pub fn mark_messages_as_read(agent_name: &str, team_name: &str) -> anyhow::Resul
     let mut lock = acquire_inbox_lock(agent_name, team_name)?;
     let _guard = lock.write()?;
 
-    let updated: Vec<TeammateMessage> = read_inbox_or_quarantine(&path)
+    let updated: Vec<TeammateMessage> = read_inbox_or_quarantine(&path)?
         .into_iter()
         .map(|mut m| {
             m.read = true;
@@ -312,21 +312,21 @@ pub fn clear_mailbox(agent_name: &str, team_name: &str) -> anyhow::Result<()> {
 /// Read the inbox JSON, or — when the file exists but cannot be parsed —
 /// move it aside (evidence preserved) and continue with an empty inbox.
 /// Must be called while holding the inbox write lock.
-fn read_inbox_or_quarantine(path: &Path) -> Vec<TeammateMessage> {
+fn read_inbox_or_quarantine(path: &Path) -> anyhow::Result<Vec<TeammateMessage>> {
     let content = match fs::read_to_string(path) {
         Ok(content) => content,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        // A non-NotFound read failure (EACCES, non-UTF-8) must PROPAGATE:
+        // returning an empty Vec here sent the caller straight to the
+        // atomic overwrite, permanently destroying every stored message
+        // with no quarantine copy — unlike the serde arm below.
         Err(err) => {
-            crate::logging::warn(format!(
-                "teammate inbox unreadable ({}): {}",
-                err,
-                path.display()
-            ));
-            return Vec::new();
+            return Err(anyhow::Error::new(err)
+                .context(format!("teammate inbox unreadable: {}", path.display())));
         }
     };
     match serde_json::from_str(&content) {
-        Ok(messages) => messages,
+        Ok(messages) => Ok(messages),
         Err(err) => {
             let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
             let quarantined = path.with_extension(format!("corrupt-{timestamp}.json"));
@@ -339,7 +339,7 @@ fn read_inbox_or_quarantine(path: &Path) -> Vec<TeammateMessage> {
                 },
                 path.display()
             ));
-            Vec::new()
+            Ok(Vec::new())
         }
     }
 }

@@ -454,9 +454,18 @@ impl SessionManager {
         let sessions = self.list_sessions()?;
 
         if sessions.len() > MAX_SESSIONS {
-            // Delete oldest sessions
+            // Delete oldest sessions — surfacing failures: a silent
+            // `let _` hid evictions that failed (or evicted a session
+            // still open elsewhere) with zero signal.
             for session in sessions.iter().skip(MAX_SESSIONS) {
-                let _ = self.delete_session(&session.id);
+                if let Err(err) = self.delete_session(&session.id) {
+                    tracing::warn!(
+                        target: "session",
+                        id = %session.id,
+                        %err,
+                        "failed to evict session over MAX_SESSIONS cap"
+                    );
+                }
             }
         }
 
@@ -729,10 +738,14 @@ fn strip_legacy_truncation_note(system_prompt: Option<String>) -> Option<String>
     if !trimmed.contains("older messages were dropped") {
         return Some(sp);
     }
-    // The note block ends with "\n\n---\n\n" (7 chars) followed by the real prompt.
-    trimmed
-        .find("\n\n---\n\n")
-        .map(|pos| trimmed[pos + 7..].to_string())
+    // The note block ends with "\n\n---\n\n" followed by the real prompt.
+    // If the separator is absent (note-format drift), KEEP the original
+    // prompt — returning None used to discard the user's entire system
+    // prompt on load.
+    match trimmed.find("\n\n---\n\n") {
+        Some(pos) => Some(trimmed[pos + "\n\n---\n\n".len()..].to_string()),
+        None => Some(sp.to_string()),
+    }
 }
 
 /// String-scan a JSON byte buffer for the top-level `"metadata":{...}`

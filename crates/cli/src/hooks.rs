@@ -746,15 +746,26 @@ impl HookExecutor {
         };
 
         match child.wait_timeout(timeout) {
-            Ok(Some(status)) => HookResult {
-                name: hook.name.clone(),
-                success: status.success(),
-                exit_code: status.code(),
-                stdout: join_reader(stdout_reader),
-                stderr: join_reader(stderr_reader),
-                duration: started.elapsed(),
-                error: None,
-            },
+            Ok(Some(status)) => {
+                // Bound the pipe-draining phase too: a descendant process
+                // (nohup job &, daemonizer) inheriting the write end keeps
+                // the pipe open after the direct child exits, and the
+                // unbounded join below would then hang the caller forever —
+                // the timeout arm avoids joining for exactly this reason.
+                // The deadline covers both readers; whoever misses it
+                // contributes empty output instead of a hang.
+                let drain_deadline = std::time::Instant::now()
+                    + std::time::Duration::from_secs(timeout_secs.clamp(1, 5));
+                HookResult {
+                    name: hook.name.clone(),
+                    success: status.success(),
+                    exit_code: status.code(),
+                    stdout: join_reader_bounded(stdout_reader, drain_deadline),
+                    stderr: join_reader_bounded(stderr_reader, drain_deadline),
+                    duration: started.elapsed(),
+                    error: None,
+                }
+            }
             Ok(None) => {
                 kill_hook_child(&mut child);
                 // Do not join pipe threads on timeout: descendant processes can
@@ -905,10 +916,22 @@ fn spawn_pipe_reader(mut pipe: impl Read + Send + 'static) -> JoinHandle<String>
     })
 }
 
-fn join_reader(reader: Option<JoinHandle<String>>) -> String {
-    reader
-        .and_then(|handle| handle.join().ok())
+/// Join a pipe reader, giving up at `deadline`. A stuck reader (a
+/// descendant process holds the pipe open) leaks its thread — acceptable
+/// next to hanging the whole hook pipeline; the process exits soon after.
+fn join_reader_bounded(reader: Option<JoinHandle<String>>, deadline: std::time::Instant) -> String {
+    use std::sync::mpsc;
+    let Some(handle) = reader else {
+        return String::new();
+    };
+    let (tx, rx) = mpsc::channel();
+    let _forwarder = thread::spawn(move || {
+        let _ = tx.send(handle.join().unwrap_or_default());
+    });
+    rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
         .unwrap_or_default()
+    // `forwarder` may still be parked on the stuck reader — leaked by
+    // design, see the doc above.
 }
 
 fn spawn_stdin_writer(mut stdin: std::process::ChildStdin, mut bytes: Vec<u8>) -> JoinHandle<()> {

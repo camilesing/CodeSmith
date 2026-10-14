@@ -86,19 +86,6 @@ pub fn apply_to_config(config: &mut Config, definition: &PresetDefinitionToml) -
         &mut deviated,
     );
 
-    if let Some(level) = &definition.memory_level
-        && let Some(parsed) = MemoryLevel::from_setting(level)
-    {
-        let memory = config.memory.get_or_insert_with(Default::default);
-        let (want_enabled, want_kod) = match parsed {
-            MemoryLevel::Goldfish => (Some(false), Some(false)),
-            MemoryLevel::Notebook => (Some(true), Some(false)),
-            MemoryLevel::Elephant => (Some(true), Some(true)),
-        };
-        fill_bool(&mut memory.enabled, want_enabled, &mut deviated);
-        fill_bool(&mut memory.kod_enabled, want_kod, &mut deviated);
-    }
-
     if let Some(features) = &definition.features
         && !features.is_empty()
     {
@@ -132,17 +119,33 @@ pub fn apply_to_config(config: &mut Config, definition: &PresetDefinitionToml) -
         &mut deviated,
     );
 
-    let memory = config.memory.get_or_insert_with(Default::default);
-    fill_bool(
-        &mut memory.enabled,
-        definition.memory_enabled,
-        &mut deviated,
-    );
-    fill_bool(
-        &mut memory.kod_enabled,
-        definition.memory_kod_enabled,
-        &mut deviated,
-    );
+    // Resolve BOTH preset-side memory sources into one desired value
+    // first (explicit keys override the derived level): feeding them
+    // through fill_bool separately let a preset that sets both
+    // `memory_level` and `memory_kod_enabled` compare its own two keys
+    // against each other, spuriously flagging `deviated` (mislabeling the
+    // tier as diy) and letting the level silently win.
+    let derived = definition
+        .memory_level
+        .as_deref()
+        .and_then(MemoryLevel::from_setting)
+        .map(|parsed| match parsed {
+            MemoryLevel::Goldfish => (Some(false), Some(false)),
+            MemoryLevel::Notebook => (Some(true), Some(false)),
+            MemoryLevel::Elephant => (Some(true), Some(true)),
+        });
+    let (want_enabled, want_kod) = match derived {
+        Some((enabled, kod)) => (
+            definition.memory_enabled.or(enabled),
+            definition.memory_kod_enabled.or(kod),
+        ),
+        None => (definition.memory_enabled, definition.memory_kod_enabled),
+    };
+    if want_enabled.is_some() || want_kod.is_some() {
+        let memory = config.memory.get_or_insert_with(Default::default);
+        fill_bool(&mut memory.enabled, want_enabled, &mut deviated);
+        fill_bool(&mut memory.kod_enabled, want_kod, &mut deviated);
+    }
 
     fill_bool(
         &mut config.context.enabled,

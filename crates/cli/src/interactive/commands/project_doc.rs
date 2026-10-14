@@ -16,8 +16,21 @@ pub(crate) fn ensure_codesmith_gitignored(workspace: &Path) {
     let gitignore = workspace.join(".gitignore");
     let entries = [".codesmith/"];
 
-    // Read existing contents once.
-    let existing = std::fs::read_to_string(&gitignore).unwrap_or_default();
+    // Read existing contents once. Missing = empty, but a real read
+    // failure (permissions, non-UTF-8) must not masquerade as empty —
+    // the dedup check below would then re-append `.codesmith/` on every
+    // invocation, accumulating duplicate lines.
+    let existing = match std::fs::read_to_string(&gitignore) {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => {
+            crate::logging::warn(format!(
+                "cannot read {}: {err} — .codesmith/ may not be git-ignored",
+                gitignore.display()
+            ));
+            return;
+        }
+    };
     let mut missing: Vec<&str> = Vec::new();
     for entry in entries {
         let entry_no_slash = entry.trim_end_matches('/');

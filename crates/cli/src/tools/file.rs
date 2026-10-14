@@ -996,7 +996,19 @@ fn leading_whitespace_fuzzy_matches(contents: &str, search: &str) -> Vec<(usize,
         let Some(&mapped_start) = byte_map.get(norm_start) else {
             break;
         };
-        let original_start = line_start_before(contents, mapped_start);
+        let line_start = line_start_before(contents, mapped_start);
+        // Indentation-tolerant matches must begin at a line start modulo
+        // whitespace: a mid-line hit (the snippet inside a string literal
+        // or comment) used to expand the replace range back to column 0,
+        // deleting the entire preceding prefix and corrupting the file.
+        if !contents[line_start..mapped_start]
+            .chars()
+            .all(|c| matches!(c, ' ' | '\t'))
+        {
+            cursor = norm_end;
+            continue;
+        }
+        let original_start = line_start;
         let original_end = byte_map.get(norm_end).copied().unwrap_or(contents.len());
         matches.push((original_start, original_end));
         // Advance past the whole match (a char boundary): advancing one
