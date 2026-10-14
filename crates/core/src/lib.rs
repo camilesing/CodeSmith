@@ -751,6 +751,16 @@ impl Runtime {
             // Starting with an empty job list is recoverable, but it must be
             // visible — otherwise persisted jobs vanish with no trace.
             tracing::error!("failed to load jobs from state store: {err:#}");
+        } else {
+            // Jobs that were Running/Queued at crash time reload in that
+            // state with no executor attached and would stay stuck forever.
+            // `resume_pending` exists exactly for this — without the call it
+            // was dead code on the only load path.
+            for job in jobs.resume_pending() {
+                if let Err(err) = jobs.persist_job(&state, &job.id) {
+                    tracing::error!("failed to persist requeued job {}: {err:#}", job.id);
+                }
+            }
         }
         Self {
             config,

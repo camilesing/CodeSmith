@@ -422,10 +422,13 @@ impl ExecPolicyEngine {
                         prefixes: vec![first_token(ctx.command)],
                     })
                 },
-                proposed_network_policy_amendments: vec![NetworkPolicyAmendment {
-                    host: ctx.cwd.to_string(),
-                    action: NetworkPolicyRuleAction::Allow,
-                }],
+                // No network amendment: `ctx.cwd` is a filesystem path,
+                // not a hostname — persisting it on approval created a
+                // semantically wrong network allow rule, proposed even
+                // for purely local commands. A real host is not derivable
+                // here; derive one when a network-relevant command shape
+                // is added.
+                proposed_network_policy_amendments: vec![],
             },
         };
 
@@ -556,13 +559,10 @@ mod tests {
                 ..
             } => {
                 assert_eq!(amendment.prefixes, vec!["cargo"]);
-                assert_eq!(
-                    proposed_network_policy_amendments,
-                    vec![NetworkPolicyAmendment {
-                        host: "/workspace".to_string(),
-                        action: NetworkPolicyRuleAction::Allow,
-                    }]
-                );
+                // No network amendment is proposed: the old one used the
+                // cwd ("/workspace") as a host — a filesystem path, not a
+                // hostname.
+                assert!(proposed_network_policy_amendments.is_empty());
             }
             other => panic!("expected approval with proposed amendment, got {other:?}"),
         }
@@ -734,6 +734,25 @@ mod tests {
             decision.matched_rule.as_deref(),
             Some("tool=edit_file path= /TMP/PROJECT/ ")
         );
+    }
+
+    #[test]
+    fn higher_layer_shadows_lower_layer_trusted_prefix() {
+        // Documented precedence: "the highest-priority layer's longest
+        // matching prefix wins". The old flatten-lowest-first + first-
+        // match resolution let a BuiltinDefault entry beat a User-layer
+        // entry (the opposite of the shadowing intent).
+        let mut engine = ExecPolicyEngine::new(vec![], vec![]);
+        engine.add_ruleset(Ruleset::user(vec!["cargo test".to_string()], vec![]));
+        // rulesets sort by layer; user > agent > builtin_default.
+        let mut builtin_layer = Ruleset::builtin_default();
+        builtin_layer.trusted_prefixes = vec!["cargo".to_string()];
+        engine.add_ruleset(builtin_layer);
+
+        let decision = engine
+            .check(ctx("cargo test --workspace", AskForApproval::UnlessTrusted))
+            .unwrap();
+        assert_eq!(decision.matched_rule.as_deref(), Some("cargo test"));
     }
 
     #[test]

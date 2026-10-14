@@ -349,23 +349,50 @@ where
                         },
                     }));
                 } else if !record.input_delivered && !input.is_null() {
-                    // Started block that never streamed arguments: back-fill
-                    // like the closed-block case below.
-                    if let Ok(args) = serde_json::to_string(&input) {
-                        self.enqueue_input_json_delta(record.index, args);
-                    }
+                    // Started block that never streamed arguments: re-issue
+                    // the Start on the same index carrying the authoritative
+                    // name+input (the engine overwrites the block build on a
+                    // repeated index). A synthetic post-Stop InputJsonDelta
+                    // only fixed FINAL assembly — the engine finalizes and
+                    // speculatively dispatches at Stop with the announced
+                    // empty input, so the early task and the ToolCallStarted
+                    // announcement carried wrong arguments. The Stop emitted
+                    // by `close_current_block` below finalizes the rebuild.
+                    let index = record.index;
+                    self.pending.push_back(Ok(StreamEvent::ContentBlockStart {
+                        index,
+                        content_block: ContentBlockStart::ToolUse {
+                            id,
+                            name,
+                            input,
+                            caller: None,
+                        },
+                    }));
                 }
                 self.close_current_block();
                 return;
             }
             // Closed delta block for this id — suppress the duplicate block.
             // Back-fill arguments if none streamed (the block closed while
-            // still deferred, e.g. Name(A) followed by Name(B)).
-            if !record.input_delivered
-                && !input.is_null()
-                && let Ok(args) = serde_json::to_string(&input)
-            {
-                self.enqueue_input_json_delta(record.index, args);
+            // still deferred, e.g. Name(A) followed by Name(B)): re-issue
+            // the Start with the authoritative name+input followed by a new
+            // Stop. The synthetic post-Stop InputJsonDelta only fixed final
+            // assembly, not the Stop-time announce/early-dispatch (see the
+            // started-block arm above); the engine dedupes the re-announce
+            // and replaces/aborts the stale id-keyed early task.
+            if !record.input_delivered && !input.is_null() {
+                let index = record.index;
+                self.pending.push_back(Ok(StreamEvent::ContentBlockStart {
+                    index,
+                    content_block: ContentBlockStart::ToolUse {
+                        id,
+                        name,
+                        input,
+                        caller: None,
+                    },
+                }));
+                self.pending
+                    .push_back(Ok(StreamEvent::ContentBlockStop { index }));
             }
             return;
         }

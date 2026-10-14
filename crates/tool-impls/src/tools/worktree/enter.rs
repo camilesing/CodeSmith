@@ -96,18 +96,40 @@ impl ToolSpec for EnterWorktreeTool {
         // 5. Create git worktree
         let create_result = get_or_create_worktree(&git_root, &slug)?;
 
-        // 6. Update WorktreeSessionState
+        // 6. Update WorktreeSessionState. Re-verify under the lock: the
+        // initial `!state.active` check ran before the (slow) git/process
+        // work above, and a concurrent enter/exit interleaving in between
+        // would have its state silently overwritten here (orphaning a
+        // worktree/branch, or resurrecting a cleared session with a stale
+        // original_cwd).
         {
             let mut state = self
                 .worktree_state
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
+            if state.active {
+                return Err(ToolError::execution_failed(
+                    "Already in a worktree session. Use exit_worktree first before entering another.",
+                ));
+            }
             state.active = true;
             state.worktree_path = Some(create_result.worktree_path.clone());
             state.worktree_branch = Some(create_result.worktree_branch.clone());
             state.worktree_name = Some(slug.clone());
             state.original_cwd = Some(context.cwd.clone());
-            state.original_head_commit = Some(create_result.head_commit.clone());
+            // For a RESUMED worktree, `create_result.head_commit` is the
+            // worktree's CURRENT HEAD — storing it as the session baseline
+            // made exit_worktree's `rev-list original..HEAD` count report
+            // 0 for all prior-session commits, so `action: "remove"` could
+            // delete earlier work (dir + `git branch -D`) without
+            // `discard_changes`. Use the branch point when derivable.
+            let baseline = if create_result.existed {
+                merge_base_baseline(&create_result.worktree_path, &create_result.worktree_branch)
+                    .unwrap_or_else(|| create_result.head_commit.clone())
+            } else {
+                create_result.head_commit.clone()
+            };
+            state.original_head_commit = Some(baseline);
             state.session_id = None; // session_id not available in ToolContext
         }
 
@@ -132,4 +154,25 @@ impl ToolSpec for EnterWorktreeTool {
 
         Ok(ToolResult::success(message))
     }
+}
+
+/// Baseline for a RESUMED worktree: the merge-base of the worktree branch
+/// and the default branch, so prior-session commits stay visible to
+/// exit_worktree's `rev-list original..HEAD` safety check. Best-effort —
+/// callers fall back to the current HEAD when git cannot answer.
+fn merge_base_baseline(worktree_path: &std::path::Path, worktree_branch: &str) -> Option<String> {
+    if worktree_branch.is_empty() {
+        return None;
+    }
+    let default_branch = super::get_default_branch(worktree_path).ok()?;
+    let output = super::run_git(
+        worktree_path,
+        &["merge-base", worktree_branch, &default_branch],
+    )
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (sha.len() == 40).then_some(sha)
 }

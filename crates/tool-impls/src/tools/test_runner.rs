@@ -104,10 +104,15 @@ impl ToolSpec for RunTestsTool {
 
         let mut tool_result =
             ToolResult::json(&result).map_err(|e| ToolError::execution_failed(e.to_string()))?;
+        // Summarize from the FULL buffers, not the head-truncated views:
+        // cargo prints compile chatter first and the actionable failure
+        // details (the `failures:` listing, `panicked at`, `test result:`)
+        // near the END — on a big build the truncated head holds only
+        // compiler noise and the summary is silently dropped.
         if let Some(summary) = summarize_cargo_failure(
             &result.command,
-            &result.stdout,
-            &result.stderr,
+            &stdout_raw,
+            &stderr_raw,
             Some(result.exit_code),
         ) {
             tool_result = tool_result.with_metadata(json!({

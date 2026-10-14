@@ -118,7 +118,17 @@ pub struct StdoutHookSink;
 #[async_trait]
 impl HookSink for StdoutHookSink {
     async fn emit(&self, event: &HookEvent) -> Result<()> {
-        println!("{}", event.to_json());
+        // `println!` panics on write failure (EPIPE when the consumer of a
+        // piped stdout exits), violating the HookSink contract ("avoid
+        // panicking") from inside an async fn, and takes the stdout lock
+        // synchronously. Propagate the error into the Result instead.
+        let mut line = event.to_json().to_string();
+        line.push('\n');
+        use tokio::io::AsyncWriteExt;
+        tokio::io::stdout()
+            .write_all(line.as_bytes())
+            .await
+            .context("failed to write hook event to stdout")?;
         Ok(())
     }
 }
@@ -184,10 +194,15 @@ pub struct WebhookHookSink {
 impl WebhookHookSink {
     /// Create a new sink that sends events to the given `url`.
     pub fn new(url: String) -> Self {
-        Self {
-            url,
-            client: reqwest::Client::new(),
-        }
+        // No default timeout existed: one stalled/black-holing endpoint
+        // blocked emit indefinitely despite the documented best-effort
+        // contract and the serial dispatcher fan-out.
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .connect_timeout(std::time::Duration::from_secs(3))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        Self { url, client }
     }
 }
 
