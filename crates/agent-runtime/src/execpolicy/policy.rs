@@ -131,7 +131,10 @@ impl Evaluation {
 
     /// Caller is responsible for ensuring that `matched_rules` is non-empty.
     fn from_matches(matched_rules: Vec<RuleMatch>) -> Self {
-        let decision = matched_rules.iter().map(RuleMatch::decision).max();
+        let decision = matched_rules
+            .iter()
+            .map(RuleMatch::decision)
+            .reduce(Decision::most_restrictive);
         #[expect(clippy::expect_used)]
         let decision = decision.expect("invariant failed: matched_rules must be non-empty");
 

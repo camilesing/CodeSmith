@@ -100,14 +100,16 @@ impl ExecPolicyConfig {
             );
         }
 
-        for (group, rules) in &self.rules {
+        for rules in self.rules.values() {
             for pattern in &rules.allow {
                 // Allow rules use arity-aware prefix matching first so that
                 // `allow = ["git status"]` matches `git status -s` but NOT
                 // `git push origin main`.  Fall back to regex-style
                 // `pattern_matches` for wildcard patterns (e.g. `cargo *`).
                 if prefix_allow_matches(pattern, command) || pattern_matches(pattern, command) {
-                    let _ = group;
+                    // Unlike Deny, Allow carries no provenance message: it
+                    // surfaces as silent auto-approval, so there is nothing
+                    // to attribute the decision to.
                     return ExecPolicyDecision::Allow;
                 }
             }

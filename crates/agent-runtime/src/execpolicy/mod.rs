@@ -1,6 +1,3 @@
-#![allow(dead_code)]
-#![allow(unused_imports)]
-
 pub mod amend;
 pub mod decision;
 pub mod error;

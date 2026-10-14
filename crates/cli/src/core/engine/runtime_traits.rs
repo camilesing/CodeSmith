@@ -561,18 +561,21 @@ impl HostServices for super::EngineHost {
                 .await;
         }
 
-        // Derive the framework-core `ToolSet` (§E) from the concrete `ToolRegistry`
-        // *before* the type erase below — `to_framework_tool_set()` takes `&self`
-        // so it borrows, not moves. After the `.map()` erase the concrete type is
-        // unrecoverable from `Arc<dyn ToolDispatcher>`.
-        let framework_tool_set = tool_registry
-            .as_ref()
-            .map(|r| Arc::new(r.to_framework_tool_set()));
-
-        TurnDispatchPlan {
-            tool_registry: tool_registry.map(|r| Arc::new(r) as Arc<dyn ToolDispatcher>),
-            tools,
-            framework_tool_set,
+        // The registry, its catalog, and the framework `ToolSet` (§E) are
+        // populated together or not at all. `to_framework_tool_set()` takes
+        // `&self` so it must run *before* the type erase below — after the
+        // erase the concrete type is unrecoverable from
+        // `Arc<dyn ToolDispatcher>`.
+        match (tool_registry, tools) {
+            (Some(registry), Some(tools)) => TurnDispatchPlan::Tools {
+                framework_tool_set: Arc::new(registry.to_framework_tool_set()),
+                tool_registry: Arc::new(registry) as Arc<dyn ToolDispatcher>,
+                tools,
+            },
+            // `tools` derives from the same `tool_registry` option above, so
+            // the pair is Some/None together; if that derivation ever breaks,
+            // fail toward NoTools — a partial plan is unrepresentable now.
+            _ => TurnDispatchPlan::NoTools,
         }
     }
 
@@ -594,12 +597,16 @@ impl HostServices for super::EngineHost {
         team_name: String,
         tx_op: mpsc::Sender<Op>,
         cancel_token: CancellationToken,
-    ) {
+    ) -> anyhow::Result<()> {
+        // `spawn_supervised` catches panics in the poller future and logs
+        // them itself; the `Ok` here is the "spawned" acknowledgement the
+        // engine logs failures against.
         spawn_supervised(
             "leader-inbox-poller",
             std::panic::Location::caller(),
             run_leader_inbox_poller(team_name, tx_op, cancel_token),
         );
+        Ok(())
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

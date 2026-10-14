@@ -121,13 +121,23 @@ fn strip_heredoc_bodies(command: &str) -> String {
         for (start, end) in spans.iter().rev() {
             redacted.replace_range(start..end, "");
         }
-        // Trim any double-spaces left after stripping.
-        let cleaned = redacted
-            .split_whitespace()
-            .filter(|t| !t.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ");
-        out.push_str(&cleaned);
+        // Tidy only lines a heredoc operator was actually stripped from;
+        // every other line must survive verbatim. `split_whitespace` is not
+        // quote-aware, so re-joining an untouched line (a quoted `<<EOF`
+        // argument, a here-string) would collapse spacing inside quoted
+        // arguments (`echo "a  b"` → `echo "a b"`) and make normalization
+        // disagree with the no-`<<` early-return path.
+        if spans.is_empty() {
+            out.push_str(line);
+        } else {
+            // Trim any double-spaces left after stripping.
+            let cleaned = redacted
+                .split_whitespace()
+                .filter(|t| !t.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            out.push_str(&cleaned);
+        }
         out.push('\n');
         if let Some(d) = delim {
             // Skip body lines until we hit the matching delimiter.
@@ -331,10 +341,21 @@ fn pattern_matches_any_segment_legacy(pattern: &str, command: &str) -> bool {
 }
 
 fn wildcard_pattern_matches_single(pattern: &str, command: &str) -> bool {
-    let escaped = regex::escape(pattern).replace("\\*", ".*");
-    let Ok(re) = Regex::new(&format!("^{escaped}$")) else {
-        return false;
-    };
+    // Rules re-check the same patterns for every evaluated command, and
+    // `Regex::new` is orders of magnitude more expensive than `is_match`,
+    // so compiled patterns are cached keyed by pattern string (mirroring
+    // the `HEREDOC_RE_INIT` OnceLock above).
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Regex>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let re = cache.entry(pattern.to_owned()).or_insert_with(|| {
+        let escaped = regex::escape(pattern).replace("\\*", ".*");
+        // `regex::escape` output is always a valid pattern.
+        Regex::new(&format!("^{escaped}$")).expect("escaped wildcard regex compiles")
+    });
     re.is_match(command)
 }
 
@@ -407,6 +428,25 @@ mod tests {
         // Output keeps the `<<<` — content not stripped.
         assert!(stripped.contains("<<<"));
         assert!(stripped.contains("some text"));
+    }
+
+    #[test]
+    fn strip_heredoc_preserves_untouched_lines_verbatim() {
+        // A line with no heredoc operator must not be re-tokenized:
+        // `split_whitespace` is not quote-aware, so the double space inside
+        // the quoted argument would collapse and an allow pattern written
+        // with the double space would stop matching.
+        let cmd = "echo \"a  b\"\ncat <<EOF\nbody\nEOF";
+        let stripped = super::strip_heredoc_bodies(cmd);
+        assert!(
+            stripped.contains("echo \"a  b\""),
+            "untouched line must survive verbatim: {stripped}"
+        );
+        // Same for a line whose only `<<` sits inside quotes (no body
+        // consumption, and now also no whitespace collapse).
+        let cmd = "git commit -m \"see <<EOF docs\"";
+        let stripped = super::strip_heredoc_bodies(cmd);
+        assert_eq!(stripped.trim_end(), cmd);
     }
 
     #[test]

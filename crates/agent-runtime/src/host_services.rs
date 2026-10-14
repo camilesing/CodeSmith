@@ -541,12 +541,16 @@ pub trait HostServices: Send + Sync {
     /// the host rather than naming the concrete `run_leader_inbox_poller`.
     /// The host owns the supervised spawn; `cancel_token` is a child of the
     /// engine's turn token so engine shutdown cancels the poller.
+    ///
+    /// A spawn failure must not be silent: without this poller an AgentTeams
+    /// leader stops receiving dispatches entirely, so hosts surface spawn
+    /// failures in the returned `Result` and the engine logs them.
     fn spawn_leader_inbox_poller(
         &self,
         team_name: String,
         tx_op: mpsc::Sender<Op>,
         cancel_token: CancellationToken,
-    );
+    ) -> anyhow::Result<()>;
 
     /// Downcast the host to its concrete type. The CLI's `EngineConstruct`
     /// uses this to recover the concrete `EngineHost` (and its
@@ -594,28 +598,59 @@ pub struct TurnDispatchRequest<'a> {
 ///
 /// Carries the trait-erased tool registry and the model-visible catalog built
 /// for this turn; the engine body feeds both into the streaming turn loop and
-/// the `TurnComplete` event. `tools` is `None` iff `tool_registry` is `None`
-/// (mirroring the pre-factory `tool_registry.as_ref().map(build_catalog)`
-/// derivation).
+/// the `TurnComplete` event.
 ///
 /// `framework_tool_set` is the framework-core [`ToolSet`] (§E) derived from the
 /// concrete `ToolRegistry` *before* it is erased into `Arc<dyn ToolDispatcher>`
 /// — the trait object cannot be recovered, so the `ToolSet` must be built while
-/// the concrete type is still in hand. It is `None` iff `tool_registry` is
-/// `None`. Unused until `HostAgentExecutor` is wired into `handle_send_message`;
-/// populated here so the wire-in has the `Arc<ToolSet>` it needs for
+/// the concrete type is still in hand. Unused until `HostAgentExecutor` is
+/// wired into `handle_send_message`; populated here so the wire-in has the
+/// `Arc<ToolSet>` it needs for
 /// [`HostAgentExecutor::new`](crate::engine::HostAgentExecutor::new).
-pub struct TurnDispatchPlan {
-    /// Trait-erased registry (`ToolRegistry` in the TUI host) when tools are
-    /// available for this mode, else `None`.
-    pub tool_registry: Option<Arc<dyn ToolDispatcher>>,
-    /// Model-visible tool catalog (built-ins + MCP, with deferral applied),
-    /// paired with `tool_registry`.
-    pub tools: Option<Vec<Tool>>,
-    /// Framework-core `ToolSet` (§E) for [`HostAgentExecutor`], derived from
-    /// the concrete `ToolRegistry` before the type erase. `None` iff
-    /// `tool_registry` is `None`.
-    pub framework_tool_set: Option<Arc<codesmith_agent::tools::ToolSet>>,
+///
+/// The registry / catalog / framework set are populated together or not at
+/// all — modeled as an enum so an inconsistent "some fields `Some`, some
+/// `None`" plan is unrepresentable (the three independent `Option` fields
+/// this replaces enforced that invariant only in doc comments).
+pub enum TurnDispatchPlan {
+    /// No tools available for this mode.
+    NoTools,
+    /// Trait-erased registry, model-visible catalog (built-ins + MCP, with
+    /// deferral applied), and the framework-core `ToolSet` (§E) for
+    /// [`HostAgentExecutor`], always populated together.
+    Tools {
+        tool_registry: Arc<dyn ToolDispatcher>,
+        tools: Vec<Tool>,
+        framework_tool_set: Arc<codesmith_agent::tools::ToolSet>,
+    },
+}
+
+impl TurnDispatchPlan {
+    /// Trait-erased registry, when tools are available for this mode.
+    pub fn tool_registry(&self) -> Option<&Arc<dyn ToolDispatcher>> {
+        match self {
+            Self::NoTools => None,
+            Self::Tools { tool_registry, .. } => Some(tool_registry),
+        }
+    }
+
+    /// Model-visible tool catalog; empty slice when no tools are available.
+    pub fn tools(&self) -> &[Tool] {
+        match self {
+            Self::NoTools => &[],
+            Self::Tools { tools, .. } => tools,
+        }
+    }
+
+    /// Framework-core `ToolSet` (§E), when tools are available for this mode.
+    pub fn framework_tool_set(&self) -> Option<&Arc<codesmith_agent::tools::ToolSet>> {
+        match self {
+            Self::NoTools => None,
+            Self::Tools {
+                framework_tool_set, ..
+            } => Some(framework_tool_set),
+        }
+    }
 }
 
 /// Inputs the engine body supplies to [`HostServices::spawn_subagent`].

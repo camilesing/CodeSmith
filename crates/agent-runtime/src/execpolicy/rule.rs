@@ -70,18 +70,24 @@ impl PrefixPattern {
     }
 
     pub fn matches_prefix(&self, cmd: &[String]) -> Option<Vec<String>> {
-        let pattern_length = self.rest.len() + 1;
-        if cmd.len() < pattern_length || cmd[0] != self.first.as_ref() {
+        if !self.is_prefix_match(cmd) {
             return None;
         }
+        Some(cmd[..self.rest.len() + 1].to_vec())
+    }
 
-        for (pattern_token, cmd_token) in self.rest.iter().zip(&cmd[1..pattern_length]) {
-            if !pattern_token.matches(cmd_token) {
-                return None;
-            }
+    /// [`PrefixPattern::matches_prefix`] as a membership check, without
+    /// building the matched-prefix `Vec` — for callers that only need the
+    /// boolean (example validation).
+    pub fn is_prefix_match(&self, cmd: &[String]) -> bool {
+        let pattern_length = self.rest.len() + 1;
+        if cmd.len() < pattern_length || cmd[0] != self.first.as_ref() {
+            return false;
         }
-
-        Some(cmd[..pattern_length].to_vec())
+        self.rest
+            .iter()
+            .zip(&cmd[1..pattern_length])
+            .all(|(pattern_token, cmd_token)| pattern_token.matches(cmd_token))
     }
 }
 
@@ -125,6 +131,13 @@ pub trait Rule: Any + Debug + Send + Sync {
     fn program(&self) -> &str;
 
     fn matches(&self, cmd: &[String]) -> Option<RuleMatch>;
+
+    /// Membership check for callers that discard the [`RuleMatch`]: the
+    /// default still allocates via [`Rule::matches`]; implementations with
+    /// a cheaper check (e.g. [`PrefixRule`]) should override it.
+    fn is_match(&self, cmd: &[String]) -> bool {
+        self.matches(cmd).is_some()
+    }
 }
 
 pub type RuleRef = Arc<dyn Rule>;
@@ -143,6 +156,10 @@ impl Rule for PrefixRule {
                 justification: self.justification.clone(),
             })
     }
+
+    fn is_match(&self, cmd: &[String]) -> bool {
+        self.pattern.is_prefix_match(cmd)
+    }
 }
 
 /// Count how many rules match each provided example and error if any example is unmatched.
@@ -150,7 +167,7 @@ pub fn validate_match_examples(rules: &[RuleRef], matches: &[Vec<String>]) -> Re
     let mut unmatched_examples = Vec::new();
 
     for example in matches {
-        if rules.iter().any(|rule| rule.matches(example).is_some()) {
+        if rules.iter().any(|rule| rule.is_match(example)) {
             continue;
         }
 
@@ -164,16 +181,36 @@ pub fn validate_match_examples(rules: &[RuleRef], matches: &[Vec<String>]) -> Re
         Ok(())
     } else {
         Err(Error::ExampleDidNotMatch {
-            rules: rules.iter().map(|rule| format!("{rule:?}")).collect(),
+            // Rule program keys only (bounded to the first few plus a
+            // count): the full `Debug` payload embedded pattern tokens and
+            // multi-line justifications, dumping the entire policy into
+            // logs for a large ruleset.
+            rules: bounded_rule_summaries(rules),
             examples: unmatched_examples,
         })
     }
 }
 
+/// Render a bounded summary of the rule set: the first few program keys and
+/// the count of the remainder.
+fn bounded_rule_summaries(rules: &[RuleRef]) -> Vec<String> {
+    const MAX_LISTED: usize = 8;
+    let mut summaries: Vec<String> = rules
+        .iter()
+        .take(MAX_LISTED)
+        .map(|rule| rule.program().to_string())
+        .collect();
+    let remaining = rules.len().saturating_sub(MAX_LISTED);
+    if remaining > 0 {
+        summaries.push(format!("(+{remaining} more rules)"));
+    }
+    summaries
+}
+
 /// Ensure that no rule matches any provided negative example.
 pub fn validate_not_match_examples(rules: &[RuleRef], not_matches: &[Vec<String>]) -> Result<()> {
     for example in not_matches {
-        if let Some(rule) = rules.iter().find(|rule| rule.matches(example).is_some()) {
+        if let Some(rule) = rules.iter().find(|rule| rule.is_match(example)) {
             return Err(Error::ExampleDidMatch {
                 rule: format!("{rule:?}"),
                 example: try_join(example.iter().map(String::as_str))

@@ -379,13 +379,11 @@ pub fn classify_error_message(message: &str) -> ErrorCategory {
     if contains_auth_keyword(&lower) {
         return ErrorCategory::Authentication;
     }
-    if lower.contains("permission")
-        || lower.contains("forbidden")
-        || lower.contains("denied")
-        || lower.contains("authorization")
-    {
-        return ErrorCategory::Authorization;
-    }
+    // Network runs before Authorization: substring words like "denied"
+    // also appear in network failures ("connection denied by firewall"),
+    // and the Network category carries the retry/amber semantics those
+    // need. Pure permission rejections ("Tool 'edit_file' denied by user")
+    // carry no network keywords, so they still land in Authorization.
     if lower.contains("network")
         || lower.contains("connection")
         || lower.contains("dns")
@@ -400,6 +398,13 @@ pub fn classify_error_message(message: &str) -> ErrorCategory {
         || contains_status_code(&lower, "504")
     {
         return ErrorCategory::Network;
+    }
+    if lower.contains("permission")
+        || lower.contains("forbidden")
+        || lower.contains("denied")
+        || lower.contains("authorization")
+    {
+        return ErrorCategory::Authorization;
     }
     if lower.contains("parse") || lower.contains("syntax") || lower.contains("malformed") {
         return ErrorCategory::Parse;
@@ -643,6 +648,24 @@ mod tests {
                 classify(msg),
                 ErrorCategory::Authentication,
                 "expected Authentication for `{msg}`",
+            );
+        }
+    }
+
+    #[test]
+    fn network_denied_phrasing_beats_authorization_substrings() {
+        // Network runs before Authorization: "denied" also appears in
+        // network failures, which need the Network retry semantics.
+        // Pure permission rejections keep landing in Authorization (see
+        // `authorization_catches_forbidden_and_denied`).
+        for msg in [
+            "connection denied by firewall",
+            "network access to host denied",
+        ] {
+            assert_eq!(
+                classify(msg),
+                ErrorCategory::Network,
+                "expected Network for `{msg}`",
             );
         }
     }
