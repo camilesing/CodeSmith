@@ -164,13 +164,20 @@ impl PromptBundle {
         Self::default()
     }
 
+    /// The dynamic-boundary predicate: the first section that is
+    /// session-scoped, dynamic, or uncacheable ends the cache-stable
+    /// prefix. Shared by [`Self::from_sections`], [`Self::push`], and
+    /// [`Self::stable_prefix_text`] (via the stored index) so the three
+    /// cannot drift apart.
+    fn is_dynamic_boundary(section: &PromptSection) -> bool {
+        matches!(
+            section.stability,
+            PromptSectionStability::Session | PromptSectionStability::Dynamic
+        ) || section.cache_policy != PromptCachePolicy::Cacheable
+    }
+
     pub fn from_sections(sections: Vec<PromptSection>) -> Self {
-        let dynamic_boundary_index = sections.iter().position(|section| {
-            matches!(
-                section.stability,
-                PromptSectionStability::Session | PromptSectionStability::Dynamic
-            ) || section.cache_policy != PromptCachePolicy::Cacheable
-        });
+        let dynamic_boundary_index = sections.iter().position(Self::is_dynamic_boundary);
         Self {
             sections,
             dynamic_boundary_index,
@@ -178,12 +185,7 @@ impl PromptBundle {
     }
 
     pub fn push(&mut self, section: PromptSection) {
-        if self.dynamic_boundary_index.is_none()
-            && (matches!(
-                section.stability,
-                PromptSectionStability::Session | PromptSectionStability::Dynamic
-            ) || section.cache_policy != PromptCachePolicy::Cacheable)
-        {
+        if self.dynamic_boundary_index.is_none() && Self::is_dynamic_boundary(&section) {
             self.dynamic_boundary_index = Some(self.sections.len());
         }
         self.sections.push(section);

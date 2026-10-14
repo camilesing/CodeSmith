@@ -45,6 +45,11 @@ fn add_usage_with_prompt_cache(total: &mut Usage, delta: &Usage) {
     total.reasoning_tokens = add_optional_usage(total.reasoning_tokens, delta.reasoning_tokens);
     total.reasoning_replay_tokens =
         add_optional_usage(total.reasoning_replay_tokens, delta.reasoning_replay_tokens);
+    // `server_tool_use` is deliberately NOT accumulated: it is a per-response
+    // struct (per server-side tool, e.g. web_search), not a scalar
+    // Option<u32>, and summing its fields across heterogeneous responses
+    // would invent totals the providers never reported. RLM turns surface
+    // the final response's value instead.
 }
 
 fn add_optional_usage(total: Option<u32>, delta: Option<u32>) -> Option<u32> {

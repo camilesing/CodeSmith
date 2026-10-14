@@ -8,7 +8,7 @@
 use std::fs;
 use std::path::Path;
 
-use crate::utils::defuse_closing_tag;
+use crate::utils::defuse_prompt_framing_tags;
 
 use super::budget::{MAX_ENTRYPOINT_BYTES, MAX_ENTRYPOINT_LINES};
 
@@ -88,10 +88,11 @@ pub fn compose_knowledge_block(memory_dir: &Path) -> Option<String> {
     let truncation = load_entrypoint(memory_dir)?;
 
     let mut block = String::from("<knowledge_memory source=\"MEMORY.md\">\n");
-    // MEMORY.md is user/workspace-editable, so any `</knowledge_memory`
-    // sequence in it is defused — it must not close the framing tag early
-    // and leak the guidance tail as apparent top-level prompt text.
-    block.push_str(&defuse_closing_tag(&truncation.content, "knowledge_memory"));
+    // MEMORY.md is user/workspace-editable, so closing sequences of any
+    // prompt framing tag are defused — they must not close this (or a
+    // later section's) framing early and leak the guidance tail as
+    // apparent top-level prompt text.
+    block.push_str(&defuse_prompt_framing_tags(&truncation.content));
 
     if truncation.was_line_truncated || truncation.was_byte_truncated {
         block.push_str("\n\n[Note: MEMORY.md was truncated to fit budget limits. ");
