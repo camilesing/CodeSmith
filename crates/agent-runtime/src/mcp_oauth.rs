@@ -53,6 +53,34 @@ pub struct McpOAuthConfig {
     pub token_url: Option<String>,
 }
 
+/// Reject user-configured OAuth endpoints that do not use `https://`: a
+/// cleartext `http://` hop would send the refresh token and receive access
+/// tokens in the clear. Plain `http://` stays allowed for loopback hosts
+/// (`localhost` / `127.x` / `[::1]`) for local testing.
+fn ensure_secure_endpoint(url: &str) -> Result<()> {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        bail!("oauth endpoint `{url}` must be an https:// URL");
+    };
+    if scheme.eq_ignore_ascii_case("https") {
+        return Ok(());
+    }
+    if scheme.eq_ignore_ascii_case("http") {
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+        let host_port = authority
+            .rsplit_once('@')
+            .map_or(authority, |(_, host)| host);
+        let host = if let Some(bracketed) = host_port.strip_prefix('[') {
+            bracketed.split(']').next().unwrap_or_default()
+        } else {
+            host_port.split(':').next().unwrap_or_default()
+        };
+        if matches!(host, "localhost" | "::1" | "[::1]") || host.starts_with("127.") {
+            return Ok(());
+        }
+    }
+    bail!("oauth endpoint `{url}` must use https:// (http:// is only allowed for loopback hosts)");
+}
+
 impl McpOAuthConfig {
     pub fn device_code_endpoint(&self) -> Result<&str> {
         if let Some(url) = self
@@ -60,6 +88,7 @@ impl McpOAuthConfig {
             .as_deref()
             .filter(|s| !s.trim().is_empty())
         {
+            ensure_secure_endpoint(url)?;
             return Ok(url);
         }
         if let Some((device, _)) = known_provider_endpoints(&self.provider) {
@@ -73,6 +102,7 @@ impl McpOAuthConfig {
 
     pub fn token_endpoint(&self) -> Result<&str> {
         if let Some(url) = self.token_url.as_deref().filter(|s| !s.trim().is_empty()) {
+            ensure_secure_endpoint(url)?;
             return Ok(url);
         }
         if let Some((_, token)) = known_provider_endpoints(&self.provider) {
@@ -192,7 +222,11 @@ fn unix_now() -> i64 {
 }
 
 fn expires_at_from_now(expires_in: u64) -> i64 {
-    unix_now().saturating_add(expires_in as i64)
+    // `expires_in` comes from the (untrusted) OAuth endpoint: a value above
+    // `i64::MAX` would wrap negative on the plain `as` cast and mark a fresh
+    // token instantly expired, triggering a doomed refresh on every connect.
+    let lifetime = i64::try_from(expires_in).unwrap_or(i64::MAX);
+    unix_now().saturating_add(lifetime)
 }
 
 /// Resolve the `Authorization` header value for a server at connect time:
@@ -214,8 +248,15 @@ pub async fn resolve_authorization_value(
             config: config.clone(),
         };
         let current = format!("Bearer {}", token.access_token);
-        if let Ok(Some(fresh)) = try_refresh_matching(client, secrets, &state, &current).await {
-            token = fresh;
+        match try_refresh_matching(client, secrets, &state, &current).await {
+            Ok(Some(fresh)) => token = fresh,
+            // A misconfigured `token_url`, network failure, or failed persist
+            // falls back to the stored (already expired) token — say so,
+            // mirroring the `Denied` warning, instead of degrading silently.
+            Ok(None) => {}
+            Err(err) => tracing::debug!(
+                "mcp oauth `{server}`: proactive token refresh failed,                  falling back to the stored token: {err:#}"
+            ),
         }
     }
     Ok(Some(format!("Bearer {}", token.access_token)))
@@ -488,7 +529,12 @@ pub async fn run_device_flow(
     println!("Waiting for authorization…");
 
     let mut interval = Duration::from_secs(code.interval.max(1));
-    let deadline = Instant::now() + Duration::from_secs(code.expires_in.max(1));
+    // A hostile/huge `expires_in` from the endpoint would overflow when
+    // added to `Instant::now()` and panic the process; clamp to a generous
+    // ceiling instead (30 days) — no legitimate device code lives longer.
+    const MAX_DEVICE_CODE_LIFETIME_SECS: u64 = 30 * 24 * 60 * 60;
+    let lifetime = code.expires_in.clamp(1, MAX_DEVICE_CODE_LIFETIME_SECS);
+    let deadline = Instant::now() + Duration::from_secs(lifetime);
     loop {
         tokio::time::sleep(interval).await;
         if Instant::now() >= deadline {
@@ -598,6 +644,47 @@ mod tests {
         assert_eq!(oauth.provider, "github");
         assert_eq!(oauth.client_id, "Iv1.test");
         assert!(serde_json::to_string(&with).unwrap().contains("\"oauth\""));
+    }
+
+    #[test]
+    fn custom_endpoints_require_https_except_loopback() {
+        let https = McpOAuthConfig {
+            provider: "custom".to_string(),
+            client_id: "cid".to_string(),
+            scopes: vec![],
+            device_code_url: Some("https://sso.example.com/device".to_string()),
+            token_url: Some("https://sso.example.com/token".to_string()),
+        };
+        assert_eq!(
+            https.device_code_endpoint().unwrap(),
+            "https://sso.example.com/device"
+        );
+        assert_eq!(
+            https.token_endpoint().unwrap(),
+            "https://sso.example.com/token"
+        );
+
+        // Plain http:// is only for loopback hosts (local testing).
+        let loopback = McpOAuthConfig {
+            provider: "custom".to_string(),
+            client_id: "cid".to_string(),
+            scopes: vec![],
+            device_code_url: Some("http://127.0.0.1:9990/device".to_string()),
+            token_url: Some("http://localhost:9990/token".to_string()),
+        };
+        assert!(loopback.device_code_endpoint().is_ok());
+        assert!(loopback.token_endpoint().is_ok());
+
+        // A cleartext remote endpoint would leak the refresh token — reject.
+        let cleartext = McpOAuthConfig {
+            provider: "custom".to_string(),
+            client_id: "cid".to_string(),
+            scopes: vec![],
+            device_code_url: Some("http://sso.example.com/device".to_string()),
+            token_url: Some("http://sso.example.com/token".to_string()),
+        };
+        assert!(cleartext.device_code_endpoint().is_err());
+        assert!(cleartext.token_endpoint().is_err());
     }
 
     #[test]

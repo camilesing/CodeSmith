@@ -78,7 +78,7 @@ pub use crate::engine_config::EngineConfig;
 /// for the spawn / cycle-state factories; `ShellExecStatus` for comparing a
 /// background shell's terminal status.
 use crate::host_services::{
-    HostServices, ShellExecStatus, SpawnSubAgentRequest, StructuredStateRequest,
+    HostServices, ShellExecStatus, SpawnSubAgentRequest, StructuredStateRequest, TurnDispatchPlan,
     TurnDispatchRequest,
 };
 
@@ -541,7 +541,14 @@ impl Engine {
                                 let child_token = cancel_token.child_token();
                                 poller_token = Some(child_token.clone());
                                 let tx_op = tx_op.clone();
-                                host.spawn_leader_inbox_poller(team_name, tx_op, child_token);
+                                if let Err(err) =
+                                    host.spawn_leader_inbox_poller(team_name, tx_op, child_token)
+                                {
+                                    // Without the poller this leader stops
+                                    // receiving team dispatches entirely —
+                                    // say so instead of degrading silently.
+                                    tracing::error!("failed to spawn leader inbox poller: {err:#}");
+                                }
                             }
                         }
                     }
@@ -1360,7 +1367,10 @@ impl Engine {
             runtime_ui: &self.runtime_ui,
         };
         let plan = self.host.build_turn_dispatcher(req).await;
-        let tool_catalog_for_event = plan.tools.clone();
+        let tool_catalog_for_event = match &plan {
+            TurnDispatchPlan::NoTools => None,
+            TurnDispatchPlan::Tools { tools, .. } => Some(tools.clone()),
+        };
         let base_url_for_event = self
             .llm_client
             .as_ref()
@@ -1378,10 +1388,10 @@ impl Engine {
             .clone()
             .expect("llm_client guarded non-None at handle_send_message line 1070");
         let tools = plan
-            .framework_tool_set
-            .clone()
+            .framework_tool_set()
+            .cloned()
             .unwrap_or_else(|| Arc::new(ToolSet::default()));
-        let hook_host = plan.tool_registry.as_ref().and_then(|r| r.hook_host());
+        let hook_host = plan.tool_registry().and_then(|r| r.hook_host());
         let total_tokens = self
             .session
             .total_usage
@@ -1509,7 +1519,7 @@ impl Engine {
             self.config.capacity.profile_window,
             self.turn_counter,
         )))
-        .with_tool_dispatcher(plan.tool_registry.clone())
+        .with_tool_dispatcher(plan.tool_registry().cloned())
         .with_turn_meta(Some(turn_meta_probe))
         .with_reinject(Some(reinject_probe))
         .with_extension_runner(self.extension_runner.clone())
@@ -1665,7 +1675,7 @@ impl Engine {
                             &turn,
                             mode,
                             snapshot.as_ref(),
-                            plan.tool_registry.as_deref(),
+                            plan.tool_registry().map(Arc::as_ref),
                             Arc::clone(&self.tool_exec_lock),
                             self.mcp_pool.clone(),
                             true,
@@ -1722,8 +1732,7 @@ impl Engine {
         // out of the tree must not leak the isolation boundary).
         {
             let captured = plan
-                .tool_registry
-                .as_ref()
+                .tool_registry()
                 .and_then(|registry| registry.session_cwd_override());
             let wt_state = self.config.worktree_state.lock().unwrap();
             let worktree = if wt_state.active {
@@ -1825,7 +1834,7 @@ impl Engine {
                             command
                         },
                     );
-                let dispatcher = plan.tool_registry.clone();
+                let dispatcher = plan.tool_registry().cloned();
                 let pending = Arc::clone(&self.pending_result_verifications);
                 let tx_event = self.tx_event.clone();
                 let model = self.session.model.clone();
@@ -1835,7 +1844,7 @@ impl Engine {
                 // on_tool_start/on_tool_end through it) and the session
                 // cancel token, so a detached re-run dies with the
                 // session instead of outliving Esc.
-                let hook_host = plan.tool_registry.as_ref().and_then(|r| r.hook_host());
+                let hook_host = plan.tool_registry().and_then(|r| r.hook_host());
                 let replay_callback: Arc<dyn Callback> = Arc::new(
                     CallbackBridge::new(
                         Some(self.tx_event.clone()),

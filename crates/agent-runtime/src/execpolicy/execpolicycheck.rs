@@ -22,7 +22,11 @@ pub struct ExecPolicyCheckCommand {
     #[arg(long)]
     pub pretty: bool,
 
-    /// Command tokens to check against the policy.
+    /// Command tokens to check against the policy. All options (e.g.
+    /// `--pretty`) must appear before the command; anything after the first
+    /// command token — including option-like strings such as `--force` — is
+    /// absorbed into the command. Use `--` before commands that contain
+    /// option-like tokens.
     #[arg(
         value_name = "COMMAND",
         required = true,
@@ -34,8 +38,15 @@ pub struct ExecPolicyCheckCommand {
 
 impl ExecPolicyCheckCommand {
     /// Load the policies for this command, evaluate the command, and render JSON output.
+    ///
+    /// This is a raw-match diagnostic tool, not a full evaluation: the
+    /// heuristics fallback is disabled, so an unmatched command yields an
+    /// empty `matchedRules` list and a `null` `decision` (unlike
+    /// [`Policy::check`], which always produces a decision).
     pub fn run(&self) -> Result<()> {
         let policy = load_policies(&self.rules)?;
+        // `None` disables the heuristics fallback: this tool reports raw
+        // rule matches only, so an unmatched command yields no decision.
         let matched_rules = policy.matches_for_command(&self.command, None);
 
         let json = format_matches_json(&matched_rules, self.pretty)?;
@@ -45,10 +56,19 @@ impl ExecPolicyCheckCommand {
     }
 }
 
+/// Render matched rules as the tool's JSON output.
+///
+/// Contract: `matchedRules` is always present, and `decision` is always
+/// *serialized* — as the most restrictive matched decision, or `null` when
+/// no rules match — so machine consumers never have to treat a missing key
+/// as "no match".
 pub fn format_matches_json(matched_rules: &[RuleMatch], pretty: bool) -> Result<String> {
     let output = ExecPolicyCheckOutput {
         matched_rules,
-        decision: matched_rules.iter().map(RuleMatch::decision).max(),
+        decision: matched_rules
+            .iter()
+            .map(RuleMatch::decision)
+            .reduce(Decision::most_restrictive),
     };
 
     if pretty {
@@ -78,6 +98,7 @@ pub fn load_policies(policy_paths: &[PathBuf]) -> Result<Policy> {
 struct ExecPolicyCheckOutput<'a> {
     #[serde(rename = "matchedRules")]
     matched_rules: &'a [RuleMatch],
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Serialized as `null` when no rules match, so consumers can rely on
+    /// the key always being present.
     decision: Option<Decision>,
 }

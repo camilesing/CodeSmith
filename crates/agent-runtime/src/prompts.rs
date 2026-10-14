@@ -338,7 +338,17 @@ fn cap_untrusted_block(trimmed: &str, max_bytes: usize) -> String {
 /// cannot impersonate other prompt sections or flood the prompt.
 pub fn load_handoff_block(workspace: &Path) -> Option<String> {
     let path = workspace.join(HANDOFF_RELATIVE_PATH);
-    let raw = std::fs::read_to_string(&path).ok()?;
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        // Absent is the normal fresh-workspace case; *unreadable* means the
+        // relay context is silently lost — surface that instead of treating
+        // it as absence (mirroring `render_instructions_block`'s warning).
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(err) => {
+            tracing::warn!("handoff: skipping {}: {err}", path.display());
+            return None;
+        }
+    };
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;

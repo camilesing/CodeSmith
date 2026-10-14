@@ -4,6 +4,7 @@ use thiserror::Error;
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Error {
     #[error("invalid decision: {0}")]
     InvalidDecision(String),
@@ -23,6 +24,9 @@ pub enum Error {
     },
     #[error("expected example to not match rule `{rule}`: {example}")]
     ExampleDidMatch { rule: String, example: String },
+    // `starlark::Error` does not implement `std::error::Error`, so
+    // thiserror `#[from]`/`#[source]` cannot apply here — the diagnostic is
+    // deliberately flattened into the Display string instead.
     #[error("starlark error: {0}")]
     Starlark(StarlarkError),
 }
