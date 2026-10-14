@@ -725,7 +725,16 @@ impl ExtensionRunner {
     pub async fn try_dispatch_command(&self, name: &str, args: &str) -> Option<CommandOutput> {
         let cmd = self.commands.lock().unwrap().get(name).cloned()?;
         let ctx = self.context.lock().unwrap().clone()?;
-        cmd.run(&*ctx, args).await.ok()
+        match cmd.run(&*ctx, args).await {
+            Ok(output) => Some(output),
+            Err(err) => {
+                tracing::error!(
+                    target: "codesmith_extensions::runner",
+                    "extension command {name:?} failed: {err}"
+                );
+                None
+            }
+        }
     }
 
     /// Snapshot of bound tools (name → def) for the host's

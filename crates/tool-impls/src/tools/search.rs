@@ -208,10 +208,15 @@ impl ToolSpec for GrepFilesTool {
             let mut files_searched = 0;
             let mut total_matches = 0;
 
+            // Early-exit marker: matches beyond the cap in LATER files must
+            // still report `truncated` (total_matches == max_results alone reads as
+            // exhaustive when the cap lands exactly at a file boundary).
+            let mut stopped_early = false;
             for file_path in files {
                 check_cancelled(cancel_token)?;
 
                 if results.len() >= max_results {
+                    stopped_early = true;
                     break;
                 }
 
@@ -307,7 +312,7 @@ impl ToolSpec for GrepFilesTool {
                 "matches": matches_json,
                 "total_matches": total_matches,
                 "files_searched": files_searched,
-                "truncated": total_matches > max_results,
+                "truncated": total_matches > max_results || stopped_early,
             }))
         })
         .await?;

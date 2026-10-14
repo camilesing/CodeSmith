@@ -11,7 +11,7 @@ use std::fs::Metadata;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use ignore::WalkBuilder;
 
 use crate::types::Language;
@@ -57,10 +57,12 @@ pub fn walk_workspace(root: &Path) -> Result<Vec<WalkEntry>> {
         .overrides(overrides.build().context("building index walk overrides")?)
         .build();
     let mut out = Vec::new();
+    let mut skipped = 0usize;
     for entry in walker {
         let entry = match entry {
             Ok(entry) => entry,
             Err(err) => {
+                skipped += 1;
                 tracing::debug!(%err, "index walk: skipping unreadable entry");
                 continue;
             }
@@ -68,7 +70,10 @@ pub fn walk_workspace(root: &Path) -> Result<Vec<WalkEntry>> {
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             continue;
         }
-        let Ok(meta) = entry.metadata() else { continue };
+        let Ok(meta) = entry.metadata() else {
+            skipped += 1;
+            continue;
+        };
         let Ok(rel) = entry.path().strip_prefix(root) else {
             continue;
         };
@@ -83,6 +88,17 @@ pub fn walk_workspace(root: &Path) -> Result<Vec<WalkEntry>> {
         });
     }
     out.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+    // Returning Ok for a PARTIAL file set would let `delete_missing` purge
+    // the index entries of every file the walk could not read (a transient
+    // EACCES / locked dir) — silent index data loss until a full rebuild.
+    // Fail instead; the caller skips the delete pass on error.
+    if skipped > 0 {
+        bail!(
+            "index walk skipped {skipped} entries under {}; refusing to produce a partial \
+             live-path set that could trigger spurious index deletions",
+            root.display()
+        );
+    }
     Ok(out)
 }
 

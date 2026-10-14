@@ -314,12 +314,12 @@ impl ToolSpec for WritePlanFileTool {
         input: serde_json::Value,
         _context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        // Acquire plan_mode_state lock, extract needed data, then release
-        // before acquiring plan_state lock to avoid deadlock.
-        let (slug, is_active) = {
-            let state = self.plan_mode_state.lock().await;
-            (state.current_slug.clone().unwrap_or_default(), state.active)
-        };
+        // Hold the guard across the disk write: a concurrent exit/enter
+        // used to interleave between the snapshot and the write, writing
+        // the plan file after plan mode ended (or under a stale slug).
+        // The plan_state lock is only taken after, so no deadlock.
+        let state = self.plan_mode_state.lock().await;
+        let (slug, is_active) = (state.current_slug.clone().unwrap_or_default(), state.active);
 
         if !is_active {
             return Err(ToolError::PermissionDenied {
@@ -341,6 +341,9 @@ impl ToolSpec for WritePlanFileTool {
                 message: format!("Failed to write plan file: {e}"),
             })?;
 
+        // Release plan_mode_state before taking plan_state (lock order:
+        // plan_mode_state → plan_state, never nested).
+        drop(state);
         // Also update in-memory PlanState for TUI rendering
         let mut plan_state_guard = self.plan_state.lock().await;
         // Derive plan steps from markdown headings (## or ### lines)

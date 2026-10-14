@@ -65,7 +65,11 @@ impl ToolDefinition for ScratchTool {
         })
     }
     fn capabilities(&self) -> Vec<ToolCapability> {
-        vec![ToolCapability::ReadOnly]
+        // `set` mutates the process-global SCRATCH: declaring ReadOnly
+        // let capability-based gating (approval skipping, speculative
+        // early dispatch) treat mutations as side-effect free. No existing
+        // capability describes in-memory mutation — declare none.
+        vec![]
     }
     async fn execute(
         &self,

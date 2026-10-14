@@ -206,9 +206,27 @@ impl McpManager {
         config: McpServerConfig,
         filter: ToolFilter,
         client: Box<dyn McpManagedClient>,
-    ) {
+    ) -> anyhow::Result<()> {
+        // Reject registrations whose SANITIZED component collides with an
+        // existing one: "My-Server" and "my_server" both qualify to
+        // `mcp__my_server__*`, exposing duplicate tool names and routing
+        // `call_qualified_tool`'s fallback scan to whichever server the
+        // HashMap yields first.
+        let sanitized = sanitize_component(&config.name);
+        for existing in self.configs.keys() {
+            if sanitize_component(existing) == sanitized {
+                anyhow::bail!(
+                    "MCP server name '{}/{}' collides with '{}' after sanitization                      (both qualify to mcp__{}__*); rename one of them",
+                    config.name,
+                    "",
+                    existing,
+                    sanitized
+                );
+            }
+        }
         self.clients.insert(config.name.clone(), client);
         self.configs.insert(config.name.clone(), (config, filter));
+        Ok(())
     }
 
     /// Start all registered servers, emitting status updates via the callback.
@@ -323,16 +341,21 @@ impl McpManager {
 
         if let Ok((server_name, tool_name)) = &parsed
             && self.clients.contains_key(server_name)
-            && let Ok(result) = self.call_tool(server_name, tool_name, arguments.clone())
         {
-            return Ok(result);
+            // Propagate execution errors instead of swallowing them: the
+            // old `let Ok(result)` chain fell through to the fallback scan
+            // AND a trailing repeat of the same call, so a possibly
+            // non-idempotent tool could execute up to three times per
+            // request. The scan below is only for names the direct path
+            // cannot resolve.
+            return self.call_tool(server_name, tool_name, arguments);
         }
 
         for (server_name, (_, filter)) in &self.configs {
             let Some(client) = self.clients.get(server_name) else {
                 continue;
             };
-            for tool in client.list_tools()? {
+            for tool in client.list_tools().unwrap_or_default() {
                 if !allowed_by_filter(&tool.tool_name, filter) {
                     continue;
                 }
@@ -611,11 +634,15 @@ fn build_stdio_state(initial_definitions: Vec<McpServerDefinition>) -> StdioMcpS
         let should_start = definition.config.enabled;
         definitions.insert(name.clone(), definition.clone());
         if should_start {
-            manager.register_server(
+            if let Err(err) = manager.register_server(
                 definition.config.clone(),
                 definition.filter.clone(),
                 default_stdio_client(&name),
-            );
+            ) {
+                tracing::warn!("skipping MCP server {name}: {err:#}");
+                running.insert(name.clone(), false);
+                continue;
+            }
             running.insert(name, true);
         } else {
             running.insert(name, false);
@@ -859,12 +886,18 @@ fn dispatch_stdio_request(
                 },
             );
             let should_run = parsed.start && parsed.server.enabled;
-            if should_run {
-                state.manager.register_server(
+            if should_run
+                && let Err(err) = state.manager.register_server(
                     parsed.server.clone(),
                     parsed.filter.clone(),
                     default_stdio_client(&name),
-                );
+                )
+            {
+                return Err(JsonRpcError {
+                    code: -32000,
+                    message: format!("MCP server {name} rejected: {err:#}"),
+                    data: None,
+                });
             }
             state.running.insert(name, should_run);
             Ok((json!({ "lifecycle": lifecycle_snapshot(state) }), false))
@@ -884,11 +917,18 @@ fn dispatch_stdio_request(
                 )));
             }
             if !state.running.get(&parsed.name).copied().unwrap_or(false) {
-                state.manager.register_server(
-                    definition.config.clone(),
-                    definition.filter.clone(),
-                    default_stdio_client(&parsed.name),
-                );
+                state.manager
+                    .register_server(
+                        definition.config.clone(),
+                        definition.filter.clone(),
+                        default_stdio_client(&parsed.name),
+                    )
+                    .map_err(|err| {
+                        JsonRpcError::invalid_params(format!(
+                            "MCP server {} rejected: {err:#}",
+                            parsed.name
+                        ))
+                    })?;
                 state.running.insert(parsed.name, true);
             }
             Ok((json!({ "lifecycle": lifecycle_snapshot(state) }), false))
@@ -1071,7 +1111,7 @@ mod tests {
             make_server_config("s1"),
             ToolFilter::default(),
             Box::new(InMemoryMcpClient::default().with_tool("t", json!(null))),
-        );
+        ).unwrap();
         let mut events = Vec::new();
         let summary = manager.start_all(|e| events.push(e));
         assert_eq!(summary.ready, vec!["s1"]);
@@ -1093,7 +1133,7 @@ mod tests {
             make_server_config("s1"),
             ToolFilter::default(),
             Box::new(InMemoryMcpClient::default()),
-        );
+        ).unwrap();
         manager.stop_server("s1").unwrap();
         let summary = manager.start_all(|_| {});
         assert!(summary.ready.is_empty());
@@ -1110,7 +1150,7 @@ mod tests {
             cfg,
             ToolFilter::default(),
             Box::new(InMemoryMcpClient::default()),
-        );
+        ).unwrap();
         let summary = manager.start_all(|_| {});
         assert!(summary.ready.is_empty());
         assert_eq!(summary.cancelled, vec!["s1"]);
@@ -1129,7 +1169,7 @@ mod tests {
                 deny: vec![],
             },
             Box::new(client),
-        );
+        ).unwrap();
         let tools = manager.list_tools().unwrap();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].tool_name, "allowed");
@@ -1148,7 +1188,7 @@ mod tests {
                 deny: vec!["b".to_string()],
             },
             Box::new(client),
-        );
+        ).unwrap();
         let tools = manager.list_tools().unwrap();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].tool_name, "a");
@@ -1161,7 +1201,7 @@ mod tests {
             make_server_config("s1"),
             ToolFilter::default(),
             Box::new(InMemoryMcpClient::default().with_tool("t", json!({"v": 42}))),
-        );
+        ).unwrap();
         let result = manager.call_tool("s1", "t", json!({})).unwrap();
         assert_eq!(result["v"], 42);
     }
@@ -1180,7 +1220,7 @@ mod tests {
             make_server_config("my_server"),
             ToolFilter::default(),
             Box::new(InMemoryMcpClient::default().with_tool("my_tool", json!({"ok": true}))),
-        );
+        ).unwrap();
         let result = manager
             .call_qualified_tool("mcp__my_server__my_tool", json!({}))
             .unwrap();
@@ -1196,7 +1236,7 @@ mod tests {
             make_server_config(&long_server),
             ToolFilter::default(),
             Box::new(InMemoryMcpClient::default().with_tool(&long_tool, json!({"ok": true}))),
-        );
+        ).unwrap();
         let tools = manager.list_tools().unwrap();
         let qualified = &tools[0].qualified_name;
         assert!(qualified.len() <= 64);
@@ -1213,7 +1253,7 @@ mod tests {
             make_server_config("s1"),
             ToolFilter::default(),
             Box::new(InMemoryMcpClient::default()),
-        );
+        ).unwrap();
         manager.unregister_server("s1").unwrap();
         assert!(manager.configs.is_empty());
     }
@@ -1241,7 +1281,7 @@ mod tests {
             Box::new(
                 InMemoryMcpClient::default().with_resource("mcp://s1/health", json!({"ok": true})),
             ),
-        );
+        ).unwrap();
         let resources = manager.list_resources().unwrap();
         assert_eq!(resources.len(), 1);
         assert_eq!(resources[0].server_name, "s1");
@@ -1256,7 +1296,7 @@ mod tests {
             Box::new(
                 InMemoryMcpClient::default().with_resource("mcp://s1/health", json!({"ok": true})),
             ),
-        );
+        ).unwrap();
         let result = manager.read_resource("s1", "mcp://s1/health").unwrap();
         assert_eq!(result["ok"], true);
     }
@@ -1268,7 +1308,7 @@ mod tests {
             make_server_config("s1"),
             ToolFilter::default(),
             Box::new(InMemoryMcpClient::default()),
-        );
+        ).unwrap();
         let notices = manager.update_sandbox_state("strict", "/tmp").unwrap();
         assert_eq!(notices.len(), 1);
         assert_eq!(notices[0]["server_name"], "s1");
