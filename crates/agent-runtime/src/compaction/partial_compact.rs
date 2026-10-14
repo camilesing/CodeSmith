@@ -97,8 +97,12 @@ pub fn adjust_pivot_for_tool_pairs(messages: &[Message], pivot: usize) -> usize 
 ///
 /// For From direction: find the earliest index where messages[pivot..] tokens
 /// are within the budget, preserving as much prefix as possible.
-/// For UpTo direction: find the latest index where messages[0..pivot] tokens
-/// exceed the budget, removing as little as needed.
+/// For UpTo direction: find the smallest pivot whose RETAINED tail
+/// `messages[pivot..]` fits the budget — accumulating from the tail bounds
+/// what remains, not what is thrown away (a head-accumulation bound could
+/// remove only ~`target_tokens` worth and leave a retained tail far above
+/// budget, failing the engine's post-compaction check after the summary
+/// call was already spent).
 pub fn find_pivot_for_budget(
     messages: &[Message],
     direction: PartialCompactDirection,
@@ -114,22 +118,25 @@ pub fn find_pivot_for_budget(
                     return adjust_pivot_for_tool_pairs(messages, idx.saturating_add(1));
                 }
             }
-            // Entire conversation fits in budget — no compaction needed.
-            0
+            // Entire conversation fits in budget — no compaction needed. For
+            // `From` the no-op pivot is `messages.len()` (summarizing
+            // nothing); returning 0 would summarize the ENTIRE conversation
+            // including the prefix, destroying the prefix cache this
+            // direction exists to preserve.
+            messages.len()
         }
         PartialCompactDirection::UpTo => {
-            // Walk forwards from head, accumulate tokens until budget exceeded.
             let mut accumulated = 0usize;
-            for (idx, msg) in messages.iter().enumerate() {
+            let mut pivot = messages.len();
+            for (idx, msg) in messages.iter().enumerate().rev() {
                 accumulated += estimate_tokens_for_message(msg);
                 if accumulated > target_tokens {
-                    // Return pivot after the current message so at least one is removed.
-                    let pivot = idx.saturating_add(1);
-                    return adjust_pivot_for_tool_pairs(messages, pivot.min(messages.len()));
+                    // Pivot after the current message so at least one is removed.
+                    pivot = idx.saturating_add(1);
+                    break;
                 }
             }
-            // Entire conversation fits in budget.
-            messages.len()
+            adjust_pivot_for_tool_pairs(messages, pivot.min(messages.len()))
         }
     }
 }
@@ -137,10 +144,11 @@ pub fn find_pivot_for_budget(
 /// Perform a partial compaction.
 ///
 /// Depending on direction:
-/// - **From**: Retains messages `[0..pivot]` as prefix, summarizes `[pivot..]`.
-///   Result: prefix messages + summary block + retained tail messages.
-/// - **UpTo**: Retains messages `[pivot..]`, summarizes `[0..pivot]`.
-///   Result: summary block (in system prompt) + retained tail messages.
+/// - **From**: Retains messages `[0..pivot]` as prefix, summarizes
+///   `[pivot..]` into a user message carrying the summary (the system
+///   prompt is untouched so the preserved prefix cache survives).
+/// - **UpTo**: Retains messages `[pivot..]`, summarizes `[0..pivot]`
+///   into a system-prompt block.
 pub async fn partial_compact(
     client: &dyn LlmClient,
     messages: &[Message],
@@ -199,8 +207,28 @@ pub async fn partial_compact(
         });
     }
 
-    // Generate summary using LLM.
-    let summary_text = crate::compaction::create_summary(client, &to_summarize, &request.model)
+    // Generate summary using LLM. `user_feedback` (the engine's overflow
+    // reason) is prepended to the summarized input — create_summary has no
+    // parameter for it and it was silently dropped, contradicting the
+    // field's documented purpose.
+    let mut summarize_input = to_summarize.clone();
+    if let Some(feedback) = request
+        .user_feedback
+        .as_deref()
+        .filter(|feedback| !feedback.trim().is_empty())
+    {
+        summarize_input.insert(
+            0,
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: format!("[caller feedback: {feedback}]"),
+                    cache_control: None,
+                }],
+            },
+        );
+    }
+    let summary_text = crate::compaction::create_summary(client, &summarize_input, &request.model)
         .await?
         .text;
 
@@ -226,7 +254,15 @@ pub async fn partial_compact(
         },
     };
 
-    let summary_prompt = Some(SystemPrompt::Blocks(vec![summary_block]));
+    // `From` already embeds the summary in the injected user message; also
+    // returning a system-prompt block would land the summary text twice
+    // (the caller applies both), and rewriting the system prompt adds a
+    // fresh ephemeral cache breakpoint that invalidates the prefix cache
+    // `From` exists to preserve.
+    let summary_prompt = match request.direction {
+        PartialCompactDirection::From => None,
+        PartialCompactDirection::UpTo => Some(SystemPrompt::Blocks(vec![summary_block])),
+    };
 
     // Build resulting message list.
     let result_messages = match request.direction {
@@ -357,6 +393,34 @@ mod tests {
             pivot < messages.len(),
             "From pivot should leave something to summarize"
         );
+    }
+
+    #[test]
+    fn find_pivot_from_fits_case_is_a_no_op() {
+        // Everything fits: `From` must return messages.len() (summarize
+        // nothing). Returning 0 summarized the ENTIRE conversation
+        // including the prefix, destroying the prefix cache this
+        // direction exists to preserve.
+        let messages = vec![msg("user", "hi"), msg("assistant", "hello")];
+        let pivot = find_pivot_for_budget(&messages, PartialCompactDirection::From, 100_000);
+        assert_eq!(pivot, messages.len());
+    }
+
+    #[test]
+    fn find_pivot_up_to_bounds_the_retained_tail() {
+        // The retained tail must fit the budget. The old head-accumulation
+        // bounded what was REMOVED: [small, huge, small] with target 500
+        // removed only ~500 tokens of head and left the huge message
+        // retained (post-compaction check still failing, summary wasted).
+        let messages = vec![
+            msg("user", &"a".repeat(100)),
+            msg("assistant", &"b".repeat(2000)),
+            msg("user", &"c".repeat(100)),
+            msg("assistant", &"d".repeat(100)),
+        ];
+        let pivot = find_pivot_for_budget(&messages, PartialCompactDirection::UpTo, 500);
+        // The 2000-token message must be on the removed side.
+        assert!(pivot > 1, "pivot {pivot} must exclude the huge message");
     }
 
     #[test]

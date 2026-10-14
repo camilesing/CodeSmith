@@ -291,23 +291,31 @@ fn parse_arrow_syntax(inner: &str, id_counter: &mut u32) -> Option<ParsedToolCal
         if let Ok(args_json) = serde_json::from_str::<Value>(args_str) {
             args_json
         } else if let Some(brace_start) = args_str.find('{') {
-            // Try to extract the content between braces
+            // Extract the content between braces. `char_indices` gives BYTE
+            // offsets (a `.chars().enumerate()` index added to a byte slice
+            // position lands mid-UTF-8 on multibyte content), and an
+            // unbalanced/truncated brace run takes the rest of the string
+            // instead of slicing `[start..end - 1]` — which underflowed to
+            // `usize::MAX` when no closing brace was ever found.
             let mut brace_count = 0;
-            let mut end_idx = brace_start;
-            for (i, c) in args_str[brace_start..].chars().enumerate() {
+            let mut end_idx: Option<usize> = None;
+            for (i, c) in args_str[brace_start..].char_indices() {
                 match c {
                     '{' => brace_count += 1,
                     '}' => {
                         brace_count -= 1;
                         if brace_count == 0 {
-                            end_idx = brace_start + i + 1;
+                            end_idx = Some(brace_start + i);
                             break;
                         }
                     }
                     _ => {}
                 }
             }
-            let content = &args_str[brace_start + 1..end_idx - 1];
+            let content = match end_idx {
+                Some(end) => &args_str[brace_start + 1..end],
+                None => &args_str[brace_start + 1..],
+            };
 
             // Try to parse as JSON
             if let Ok(json) = serde_json::from_str::<Value>(&format!("{{{content}}}")) {
@@ -420,15 +428,18 @@ fn parse_flexible_format(inner: &str, id_counter: &mut u32) -> Option<ParsedTool
 fn extract_json_object(text: &str) -> Option<Value> {
     let start = text.find('{')?;
     let mut brace_count = 0;
-    let mut end_idx = start;
+    // `char_indices` for byte offsets — a `.chars().enumerate()` index is
+    // a char count, which lands the slice inside a UTF-8 sequence on
+    // multibyte content (e.g. `{"query": "你好"}`) and panics.
+    let mut end_idx: Option<usize> = None;
 
-    for (i, c) in text[start..].chars().enumerate() {
+    for (i, c) in text[start..].char_indices() {
         match c {
             '{' => brace_count += 1,
             '}' => {
                 brace_count -= 1;
                 if brace_count == 0 {
-                    end_idx = start + i + 1;
+                    end_idx = Some(start + i + 1);
                     break;
                 }
             }
@@ -436,7 +447,7 @@ fn extract_json_object(text: &str) -> Option<Value> {
         }
     }
 
-    let json_str = &text[start..end_idx];
+    let json_str = &text[start..end_idx?];
     serde_json::from_str(json_str).ok()
 }
 
@@ -451,6 +462,29 @@ pub fn has_tool_call_markers(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arrow_syntax_with_unbalanced_braces_does_not_panic() {
+        // Truncated streaming text: the `{` never closes. The old slicing
+        // `[start..end_idx - 1]` underflowed to usize::MAX and panicked.
+        let text = "[TOOL_CALL]\n{tool => \"list_dir\", args => {\"path\": \"src";
+        let result = parse_tool_calls(text);
+        // Best-effort parse of the remainder — the contract is "no panic".
+        assert!(!result.tool_calls.is_empty() || result.clean_text.len() <= text.len());
+    }
+
+    #[test]
+    fn json_object_extraction_handles_multibyte_and_unbalanced() {
+        // Char-count vs byte-offset slicing used to land inside the CJK
+        // sequence and panic.
+        let parsed = extract_json_object("{\"query\": \"你好，世界\"}");
+        assert_eq!(
+            parsed.and_then(|v| v.get("query").and_then(|q| q.as_str()).map(str::to_string)),
+            Some("你好，世界".to_string())
+        );
+        // Unbalanced braces return None instead of slicing garbage.
+        assert!(extract_json_object("{\"a\":").is_none());
+    }
 
     #[test]
     fn test_parse_arrow_syntax() {

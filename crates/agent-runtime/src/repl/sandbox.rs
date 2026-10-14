@@ -24,7 +24,10 @@ pub fn extract_repl_blocks(text: &str) -> Vec<ReplBlock> {
         };
         let code = code_region[..end_offset].to_string();
         let global_start = text.len() - rest.len() + start_idx;
-        let global_end = global_start + code_start + end_offset + 3;
+        // One PAST the closing "\n```" fence — matches how `rest` advances
+        // below (+4). The old +3 landed ON the final backtick, leaving a
+        // stray '`' in any downstream slice/splice built on these offsets.
+        let global_end = global_start + code_start + end_offset + 4;
         blocks.push(ReplBlock {
             code,
             start_offset: global_start,

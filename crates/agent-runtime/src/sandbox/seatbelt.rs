@@ -343,18 +343,21 @@ fn generate_params(policy: &SandboxPolicy, cwd: &Path) -> Vec<(String, PathBuf)>
         }
     }
 
-    // Add Darwin user cache directory
-    if let Some(cache_dir) = get_darwin_user_cache_dir() {
-        params.push(("DARWIN_USER_CACHE_DIR".to_string(), cache_dir));
-    } else {
-        // Fallback to a reasonable default
-        if let Ok(home) = std::env::var("HOME") {
-            params.push((
-                "DARWIN_USER_CACHE_DIR".to_string(),
-                PathBuf::from(format!("{home}/Library/Caches")),
-            ));
-        }
-    }
+    // Add Darwin user cache directory. The policy text ABOVE references
+    // `(param "DARWIN_USER_CACHE_DIR")` unconditionally, so the param must
+    // ALWAYS be defined — an undefined param makes sandbox-exec refuse to
+    // load the profile and every sandboxed command fails (the exact
+    // policy/param desync the cargo/npm blocks guard against). Neither
+    // confstr nor HOME resolving happens in hardened/launchd contexts and
+    // HOME-less containers, hence the final harmless-directory fallback.
+    let cache_dir = get_darwin_user_cache_dir()
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|home| PathBuf::from(format!("{home}/Library/Caches")))
+        })
+        .unwrap_or_else(|| PathBuf::from("/private/var/empty"));
+    params.push(("DARWIN_USER_CACHE_DIR".to_string(), cache_dir));
 
     // Cargo home (#558): paired with the policy lines emitted by
     // `generate_policy` when `resolve_cargo_home()` succeeds. Both helpers

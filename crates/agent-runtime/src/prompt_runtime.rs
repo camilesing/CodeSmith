@@ -208,13 +208,17 @@ impl PromptBundle {
         SystemPrompt::Text(self.render_text())
     }
 
+    /// The byte-prefix of [`Self::render_text`] up to (not including) the
+    /// first session/dynamic/uncacheable section — truncating at
+    /// `dynamic_boundary_index`. Filtering sections by stability instead
+    /// would join non-adjacent sections when a dynamic one sits between
+    /// cacheable ones, producing a string that is NOT a byte-prefix of the
+    /// rendered prompt and therefore useless as a provider cache
+    /// breakpoint (cached prefixes must byte-match the full prompt's start).
     pub fn stable_prefix_text(&self) -> String {
-        self.sections
+        let boundary = self.dynamic_boundary_index.unwrap_or(self.sections.len());
+        self.sections[..boundary]
             .iter()
-            .filter(|section| {
-                section.stability.is_reusable_prefix()
-                    && section.cache_policy == PromptCachePolicy::Cacheable
-            })
             .map(PromptSection::render)
             .filter(|section| !section.trim().is_empty())
             .collect::<Vec<_>>()

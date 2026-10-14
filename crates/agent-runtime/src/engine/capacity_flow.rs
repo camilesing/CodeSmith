@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use codesmith_agent::memory::ChatHistory;
 
-use crate::error_taxonomy::ErrorCategory;
+use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope};
 use crate::tool_dispatch::ToolDispatcher;
 use crate::working_set::WorkingSet;
 
@@ -473,13 +473,17 @@ pub(crate) async fn replay_and_push_verification_note(
         "[verification replay] tool={} pass={} details={}",
         candidate.name, pass, diff_summary
     );
+    // Push as a plain user Text block, NOT a ToolResult keyed by the
+    // original call's tool_use_id: the original result for that id is
+    // still in the transcript, so a second one would ship two results for
+    // one call on every subsequent request — the strict-provider 400 shape
+    // (GLM "messages 参数非法") that `kept_verify_and_replan_messages`
+    // exists to repair.
     history.push(Message {
         role: "user".to_string(),
-        content: vec![ContentBlock::ToolResult {
-            tool_use_id: candidate.id.clone(),
-            content: verification_note.clone(),
-            is_error: None,
-            content_blocks: None,
+        content: vec![ContentBlock::Text {
+            text: verification_note.clone(),
+            cache_control: None,
         }],
     });
 
@@ -688,7 +692,7 @@ impl CapacityGateProbe {
         system: Option<&SystemPrompt>,
         step_error_count: usize,
         consecutive_tool_error_steps: u32,
-        error_categories: &[ErrorCategory],
+        error_envelopes: &[ErrorEnvelope],
     ) -> Option<CapacityDecision> {
         // Early-return gating (production lines 332–353): no errors at all;
         // transient-only without context overflow; non-overflow with fewer
@@ -696,15 +700,20 @@ impl CapacityGateProbe {
         if step_error_count == 0 && consecutive_tool_error_steps < 2 {
             return None;
         }
-        // Categorize this step's failures by typed `ErrorCategory` rather than
-        // substring-matching error strings. Context overflow always escalates;
-        // network / rate-limit / timeout are transient and skip escalation;
-        // anything else only escalates with consecutive failures.
-        let has_context_overflow = error_categories.contains(&ErrorCategory::InvalidInput);
-        let only_transient = !error_categories.is_empty()
-            && error_categories.iter().all(|c| {
+        // Categorize this step's failures by the typed envelope rather than
+        // substring-matching error strings. Context overflow (identified by
+        // its envelope CODE, not the broad InvalidInput category — bad tool
+        // arguments and bad model names are also InvalidInput and must not
+        // trigger a VerifyAndReplan reset) always escalates; network /
+        // rate-limit / timeout are transient and skip escalation; anything
+        // else only escalates with consecutive failures.
+        let has_context_overflow = error_envelopes
+            .iter()
+            .any(|envelope| envelope.code == "context_overflow");
+        let only_transient = !error_envelopes.is_empty()
+            && error_envelopes.iter().all(|envelope| {
                 matches!(
-                    c,
+                    envelope.category,
                     ErrorCategory::Network | ErrorCategory::RateLimit | ErrorCategory::Timeout
                 )
             });
@@ -749,7 +758,10 @@ impl CapacityGateProbe {
         // Override the reason with the escalation format (production lines
         // 390–401) so the host post-`run` `apply_verify_and_replan` records
         // the escalation context (slice 33 passes `&decision.reason`).
-        let category_labels: Vec<String> = error_categories.iter().map(|c| c.to_string()).collect();
+        let category_labels: Vec<String> = error_envelopes
+            .iter()
+            .map(|e| e.category.to_string())
+            .collect();
         decision.reason = format!(
             "error_escalation: step_errors={}, consecutive_steps={}, categories={}",
             step_error_count,
@@ -848,21 +860,22 @@ impl Engine {
         mode: AppMode,
         step_error_count: usize,
         consecutive_tool_error_steps: u32,
-        error_categories: &[ErrorCategory],
+        error_envelopes: &[ErrorEnvelope],
     ) -> bool {
         if step_error_count == 0 && consecutive_tool_error_steps < 2 {
             return false;
         }
 
-        // Categorize this step's failures by typed `ErrorCategory` rather than
-        // substring-matching error strings. Context overflow always escalates;
-        // network / rate-limit / timeout are transient and skip escalation;
-        // anything else only escalates with consecutive consecutive failures.
-        let has_context_overflow = error_categories.contains(&ErrorCategory::InvalidInput);
-        let only_transient = !error_categories.is_empty()
-            && error_categories.iter().all(|c| {
+        // Same classification as the probe's `decide_error_escalation`: the
+        // overflow signal is the envelope CODE, not the broad InvalidInput
+        // category (which bad tool arguments and bad model names share).
+        let has_context_overflow = error_envelopes
+            .iter()
+            .any(|envelope| envelope.code == "context_overflow");
+        let only_transient = !error_envelopes.is_empty()
+            && error_envelopes.iter().all(|envelope| {
                 matches!(
-                    c,
+                    envelope.category,
                     ErrorCategory::Network | ErrorCategory::RateLimit | ErrorCategory::Timeout
                 )
             });
@@ -908,7 +921,10 @@ impl Engine {
             return false;
         }
 
-        let category_labels: Vec<String> = error_categories.iter().map(|c| c.to_string()).collect();
+        let category_labels: Vec<String> = error_envelopes
+            .iter()
+            .map(|e| e.category.to_string())
+            .collect();
         self.apply_verify_and_replan(
             turn,
             mode,

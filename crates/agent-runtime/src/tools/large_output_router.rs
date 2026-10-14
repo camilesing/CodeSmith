@@ -164,7 +164,11 @@ impl LargeOutputRouter {
                     cache_control: None,
                 }],
             }],
-            max_tokens: 1_024,
+            // ~800 words (the prompt's own budget) already tokenize to
+            // roughly 1,050-1,300 tokens — more when the summary preserves
+            // code and paths, which the prompt demands — so 1,024 routinely
+            // cut the synthesis mid-sentence.
+            max_tokens: 2_048,
             system: None,
             tools: None,
             tool_choice: None,
@@ -183,6 +187,16 @@ impl LargeOutputRouter {
         .await
         .ok()?
         .ok()?;
+
+        // A length-capped synthesis was cut mid-sentence: accept it as a
+        // faithful summary and it silently replaces the raw output in the
+        // parent context. Bail so the caller keeps its
+        // truncation-preview fallback instead.
+        if response.stop_reason.as_deref().is_some_and(|reason| {
+            reason.eq_ignore_ascii_case("length") || reason.eq_ignore_ascii_case("max_tokens")
+        }) {
+            return None;
+        }
 
         let mut text = String::new();
         for block in &response.content {

@@ -103,9 +103,45 @@ pub fn session_memory_compact(
     };
     let summary_prompt = Some(SystemPrompt::Blocks(vec![summary_block]));
 
-    // Retain messages from retain_start_idx onwards.
-    let retained = messages[retain_start_idx..].to_vec();
-    let removed_count = retain_start_idx;
+    // Retain messages from retain_start_idx onwards. Tool_result blocks
+    // whose tool_use lives on the removed side of the boundary are dropped
+    // at the BLOCK level: skipping whole messages (the old forward-skip in
+    // the boundary computation) threw away sibling user text and valid
+    // tool_use blocks, and could orphan retained results whose use lived
+    // in a skipped message — a transcript shape strict APIs reject.
+    let retained_tool_uses: std::collections::HashSet<&str> = messages[retain_start_idx..]
+        .iter()
+        .flat_map(|msg| msg.content.iter())
+        .filter_map(|block| match block {
+            ContentBlock::ToolUse { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    let retained: Vec<Message> = messages[retain_start_idx..]
+        .iter()
+        .filter_map(|msg| {
+            let content: Vec<ContentBlock> = msg
+                .content
+                .clone()
+                .into_iter()
+                .filter(|block| match block {
+                    ContentBlock::ToolResult { tool_use_id, .. } => {
+                        retained_tool_uses.contains(tool_use_id.as_str())
+                    }
+                    _ => true,
+                })
+                .collect();
+            if content.is_empty() {
+                None
+            } else {
+                Some(Message {
+                    role: msg.role.clone(),
+                    content,
+                })
+            }
+        })
+        .collect();
+    let removed_count = messages.len() - retained.len();
 
     SessionMemoryCompactResult {
         messages: retained,
@@ -124,7 +160,13 @@ fn calculate_retain_start_index(
     config: &SessionMemoryCompactConfig,
 ) -> usize {
     let mut accumulated_tokens = 0usize;
-    let mut candidate_idx = messages.len();
+    // `None` = no boundary found (everything fits — retain all, index 0).
+    // A boundary found at `idx + 1 == messages.len()` (the tail-most
+    // message alone exceeds max) is a DIFFERENT state and must not be
+    // conflated with it: the old `messages.len()` sentinel reset both to 0,
+    // silently retaining the entire oversized transcript exactly when the
+    // conversation was most over budget.
+    let mut candidate_idx: Option<usize> = None;
 
     for (idx, msg) in messages.iter().enumerate().rev() {
         let msg_tokens = estimate_tokens_for_message_conservative(msg);
@@ -132,24 +174,19 @@ fn calculate_retain_start_index(
 
         if accumulated_tokens > config.max_retain_tokens {
             // We've exceeded the max budget; stop here.
-            candidate_idx = idx + 1;
+            candidate_idx = Some(idx + 1);
             break;
         }
 
         if accumulated_tokens >= config.min_retain_tokens {
             // We've reached the minimum budget; this is a good boundary.
-            candidate_idx = idx;
+            candidate_idx = Some(idx);
             // Continue checking if we can include more without exceeding max.
         }
     }
 
-    // If we never exceeded max, retain everything from candidate_idx.
-    if candidate_idx >= messages.len() {
-        candidate_idx = 0;
-    }
-
     // Adjust to preserve tool_use/tool_result pairs.
-    adjust_index_for_tool_pairs(messages, candidate_idx)
+    adjust_index_for_tool_pairs(messages, candidate_idx.unwrap_or(0))
 }
 
 /// Adjust a start index to ensure we don't split tool_use/tool_result pairs.
@@ -157,8 +194,10 @@ fn calculate_retain_start_index(
 /// Retention always keeps a suffix of the transcript. If either side of a
 /// tool pair is retained while the other side would be removed, move the
 /// boundary back to the earlier side of the pair. Repeat until all known pairs
-/// that cross the boundary are fully retained. Orphaned tool results at the
-/// boundary are dropped by moving the boundary forward past them.
+/// that cross the boundary are fully retained. Orphaned tool_result blocks
+/// (their tool_use lives on the removed side) are filtered at the split in
+/// [`session_memory_compact`] — not by moving the boundary forward, which
+/// used to drop whole multi-block messages.
 fn adjust_index_for_tool_pairs(messages: &[Message], start_idx: usize) -> usize {
     if start_idx == 0 || start_idx >= messages.len() {
         return start_idx;
@@ -201,18 +240,6 @@ fn adjust_index_for_tool_pairs(messages: &[Message], start_idx: usize) -> usize 
         if !moved {
             break;
         }
-    }
-
-    while adjusted < messages.len()
-        && messages[adjusted].content.iter().any(|block| {
-            matches!(
-                block,
-                ContentBlock::ToolResult { tool_use_id, .. }
-                    if !tool_uses.contains_key(tool_use_id)
-            )
-        })
-    {
-        adjusted += 1;
     }
 
     adjusted
