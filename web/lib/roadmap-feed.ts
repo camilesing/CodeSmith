@@ -140,13 +140,31 @@ export async function getCachedRoadmap(kv: KVNamespace | undefined, ghToken: str
     if (kv) {
       const cached = await kv.get(KV_KEY);
       if (cached) {
-        const parsed = JSON.parse(cached) as RoadmapFeed;
-        return { ...parsed, shipped: withPinnedShipped(parsed.shipped ?? []) };
+        try {
+          const parsed = JSON.parse(cached) as RoadmapFeed;
+          return { ...parsed, shipped: withPinnedShipped(parsed.shipped ?? []) };
+        } catch {
+          // Corrupt/truncated cache: treat as a miss and fall through to a
+          // fresh fetch instead of nulling the whole function (the outer
+          // catch used to discard the healthy network path).
+        }
       }
     }
     const fresh = await fetchRoadmap(ghToken);
     if (kv) {
-      await kv.put(KV_KEY, JSON.stringify(fresh), { expirationTtl: KV_TTL });
+      // Skip caching a degraded feed: gh() collapses rate-limit 403s and
+      // network errors into empty category lists, and caching that for the
+      // full TTL would poison the cache for 30 minutes. The put itself is
+      // best-effort — a KV write error must not discard the fresh data.
+      const degraded =
+        [fresh.underway, fresh.considered, fresh.ruledOut].every(
+          (items) => items.length === 0
+        );
+      if (!degraded) {
+        await kv
+          .put(KV_KEY, JSON.stringify(fresh), { expirationTtl: KV_TTL })
+          .catch(() => {});
+      }
     }
     return fresh;
   } catch {

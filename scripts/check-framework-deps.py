@@ -68,9 +68,16 @@ def main() -> int:
             kind = dep.get("kind") or "normal"
             if kind == "dev":
                 continue  # exempt: never enters framework artifacts
-            if dep["name"] in FRAMEWORK:
+            # In cargo metadata, dependencies[].name is the manifest key /
+            # rename alias when a dep is declared as
+            # `alias = { package = "real-name", path = ... }`; the real
+            # package name is only in the optional `package` field. The
+            # alias check both false-flagged renamed framework deps and let
+            # a renamed non-framework dep evade the FRAMEWORK guard.
+            real_name = dep.get("package") or dep["name"]
+            if real_name in FRAMEWORK:
                 continue
-            violations.append(f"{name} -> {dep['name']} [{kind}]")
+            violations.append(f"{name} -> {real_name} [{kind}]")
 
     if violations:
         print("error: framework crate depends on a non-framework workspace crate:")

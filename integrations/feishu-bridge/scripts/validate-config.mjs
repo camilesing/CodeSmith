@@ -47,15 +47,24 @@ function parseArgs(argv) {
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
+    const readOptionValue = (name) => {
+      const value = argv[index + 1];
+      if (!value || value.startsWith("--")) {
+        console.error(`missing value for ${name}`);
+        process.exit(2);
+      }
+      index += 1;
+      return value;
+    };
     switch (arg) {
       case "--env":
-        parsed.env = argv[++index];
+        parsed.env = readOptionValue("--env");
         break;
       case "--runtime-env":
-        parsed.runtimeEnv = argv[++index];
+        parsed.runtimeEnv = readOptionValue("--runtime-env");
         break;
       case "--workspace-root":
-        parsed.workspaceRoot = argv[++index];
+        parsed.workspaceRoot = readOptionValue("--workspace-root");
         break;
       case "--check-filesystem":
         parsed.checkFilesystem = true;

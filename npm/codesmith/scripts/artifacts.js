@@ -77,10 +77,17 @@ function executableName(base, platform) {
 
 function releaseBaseUrl(version, repo = "camilesing/CodeSmith") {
   // CODESMITH_RELEASE_BASE_URL is the canonical override.
-  const override = process.env.CODESMITH_RELEASE_BASE_URL;
+  const override = String(process.env.CODESMITH_RELEASE_BASE_URL || "").trim();
   if (override) {
-    const trimmed = String(override).trim();
-    return trimmed.endsWith("/") ? trimmed : `${trimmed}/`;
+    const base = override.endsWith("/") ? override : `${override}/`;
+    try {
+      new URL(base);
+    } catch {
+      throw new Error(
+        `CODESMITH_RELEASE_BASE_URL must be a valid absolute URL (got: ${override}).`,
+      );
+    }
+    return base;
   }
   // When CODESMITH_USE_CNB_MIRROR is set, use the CNB (China-friendly)
   // mirror that already builds and publishes binary release assets.

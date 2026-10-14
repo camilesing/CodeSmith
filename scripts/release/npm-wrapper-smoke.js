@@ -27,7 +27,14 @@ function usesWindowsCommandShim(command) {
 function runCommand(command, args, options = {}) {
   const cwd = options.cwd || repoRoot;
   console.log(`$ ${[command, ...args].map(shellQuote).join(" ")}`);
-  const child = spawn(command, args, {
+  // cmd.exe re-parses the joined command line, so arguments containing
+  // spaces (tmpdir user-profile paths) or metacharacters must be quoted
+  // when the shim is active or npm receives truncated arguments.
+  const needsShim = usesWindowsCommandShim(command);
+  const spawnArgs = needsShim
+    ? args.map((arg) => (/[^\w.\-/:@%]/.test(arg) ? JSON.stringify(arg) : arg))
+    : args;
+  const child = spawn(command, spawnArgs, {
     cwd,
     env: {
       ...process.env,
@@ -35,7 +42,7 @@ function runCommand(command, args, options = {}) {
     },
     // Note: no `encoding` here — it is an exec/execFile option, silently
     // ignored by spawn; capture mode sets the stream encoding manually.
-    shell: usesWindowsCommandShim(command),
+    shell: needsShim,
     stdio: options.capture ? ["ignore", "pipe", "pipe"] : "inherit",
     windowsHide: true,
   });

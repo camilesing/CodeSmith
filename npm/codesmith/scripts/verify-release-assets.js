@@ -63,7 +63,7 @@ async function verifyAsset(url, label) {
   }
 }
 
-async function downloadText(url) {
+async function downloadText(url, redirects = 0) {
   const client = url.startsWith("https:") ? https : http;
   return new Promise((resolve, reject) => {
     client
@@ -77,8 +77,12 @@ async function downloadText(url) {
         (res) => {
           const status = res.statusCode || 0;
           if (status >= 300 && status < 400 && res.headers.location) {
+            if (redirects > 10) {
+              reject(new Error(`Too many redirects while downloading ${url}`));
+              return;
+            }
             const next = new URL(res.headers.location, url).toString();
-            resolve(downloadText(next));
+            resolve(downloadText(next, redirects + 1));
             return;
           }
           if (status !== 200) {

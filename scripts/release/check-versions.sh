@@ -29,8 +29,8 @@ if [[ -n "${literals}" ]]; then
 fi
 
 # 2) Workspace ↔ npm package.json.
-workspace_version="$(grep -E '^version = "' Cargo.toml | head -n1 | sed -E 's/^version = "([^"]+)".*/\1/')"
-npm_version="$(node -p "require('./npm/codesmith/package.json').version")"
+workspace_version="$(awk '/^\[workspace\.package\]/{in_ws=1; next} /^\[/{in_ws=0} in_ws && /^version = "/{sub(/^version = "/, ""); sub(/"$/, ""); print; exit}' Cargo.toml || true)"
+npm_version="$(node -p "require('./npm/codesmith/package.json').version" 2>/dev/null || true)"
 if [[ "${workspace_version}" != "${npm_version}" ]]; then
   echo "::error::npm/codesmith/package.json version (${npm_version}) does not match workspace Cargo.toml (${workspace_version})." >&2
   fail=1
