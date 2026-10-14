@@ -294,6 +294,19 @@ impl PromptRuntime {
         self.cache.remove(id);
     }
 
+    /// Return the cached section for `id`, building and caching it on first
+    /// request (when its policy is `Cacheable`).
+    ///
+    /// # Staleness contract
+    ///
+    /// The cache is keyed solely by section id — there is no content
+    /// fingerprint or generation counter. When the data behind a section
+    /// changes (workspace context edited, memory updated, MCP responses
+    /// differ), callers MUST invalidate first via
+    /// [`invalidate_section`](Self::invalidate_section) /
+    /// [`clear_cached_sections`](Self::clear_cached_sections); nothing in
+    /// this type invalidates automatically. Cached entries are never
+    /// pruned except by those two methods.
     pub fn cached_or_insert_with(
         &mut self,
         id: &str,
@@ -310,7 +323,7 @@ impl PromptRuntime {
     }
 
     pub fn render_effective_system_prompt(
-        &mut self,
+        &self,
         input: EffectiveSystemPromptInput,
     ) -> SystemPrompt {
         build_effective_system_prompt(input).render_system_prompt()
@@ -336,7 +349,15 @@ pub fn parse_rendered_sections(content: &str) -> Option<Vec<ParsedPromptSection<
     let mut cursor = 0usize;
     while let Some(relative_start) = content[cursor..].find(SECTION_HEADER_PREFIX) {
         let start = cursor + relative_start;
-        let header_end_relative = content[start..].find(SECTION_HEADER_SUFFIX)?;
+        let header_end_relative = match content[start..].find(SECTION_HEADER_SUFFIX) {
+            Some(relative) => relative,
+            None => {
+                // Unterminated marker: treat it as literal text and keep the
+                // sections parsed so far instead of discarding them.
+                cursor = start + SECTION_HEADER_PREFIX.len();
+                continue;
+            }
+        };
         let header_end = start + header_end_relative + SECTION_HEADER_SUFFIX.len();
         let header = &content[start + SECTION_HEADER_PREFIX.len()..start + header_end_relative];
         let body_start = if content[header_end..].starts_with('\n') {
@@ -526,5 +547,23 @@ mod tests {
         // only as inert body text.
         assert!(parsed[0].body.contains("&lt;!-- prompt-section:"));
         assert_eq!(parsed[0].stability, Some(PromptSectionStability::Static));
+    }
+
+    #[test]
+    fn unterminated_marker_keeps_preceding_sections() {
+        let bundle = PromptBundle::from_sections(vec![PromptSection::cacheable(
+            "a",
+            "A",
+            "body",
+            PromptSectionStability::Static,
+            PromptSectionSource::Builtin,
+        )]);
+        let rendered = format!(
+            "{}\n<!-- prompt-section: id=\"broken\"",
+            bundle.render_text()
+        );
+        let parsed = parse_rendered_sections(&rendered).expect("sections");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].id.as_deref(), Some("a"));
     }
 }

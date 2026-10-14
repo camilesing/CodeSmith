@@ -392,7 +392,7 @@ pub fn scan(source: Source, home: Option<&Path>, workspace: &Path) -> Found {
         let Ok(raw) = std::fs::read_to_string(&path) else {
             continue;
         };
-        let found = if path.extension().is_some_and(|ext| ext == "toml") {
+        let mut found = if path.extension().is_some_and(|ext| ext == "toml") {
             servers_from_toml(&raw)
         } else {
             match serde_json::from_str::<serde_json::Value>(&raw) {
@@ -405,6 +405,18 @@ pub fn scan(source: Source, home: Option<&Path>, workspace: &Path) -> Found {
                 }
             }
         };
+        // `servers_from_toml` records an unparseable document under the
+        // synthetic "(file)" name; name the actual path like the JSON branch
+        // and do not report the file as read.
+        if found
+            .skipped
+            .first()
+            .is_some_and(|(name, _)| name == "(file)")
+        {
+            let (_, reason) = found.skipped.remove(0);
+            total.skipped.push((path.display().to_string(), reason));
+            continue;
+        }
         total.read_files.push(path);
         total.servers.extend(found.servers);
         total.skipped.extend(found.skipped);
@@ -631,6 +643,27 @@ args = ["mcp-server-fetch"]
         assert_eq!(
             found.skipped,
             vec![("empty".to_string(), "neither command nor url".to_string())]
+        );
+    }
+
+    #[test]
+    fn an_unparseable_toml_names_the_file_and_is_not_reported_as_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join(".codex").join("config.toml");
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::write(&config, "mcp_servers = ").unwrap();
+        let found = scan(Source::Codex, None, dir.path());
+        assert!(found.read_files.is_empty(), "the file did not parse");
+        assert_eq!(found.skipped.len(), 1);
+        assert!(
+            found.skipped[0].0.contains("config.toml"),
+            "skip names the failing path: {:?}",
+            found.skipped[0]
+        );
+        assert!(
+            found.skipped[0].1.starts_with("unreadable TOML"),
+            "skip reason: {:?}",
+            found.skipped[0]
         );
     }
 

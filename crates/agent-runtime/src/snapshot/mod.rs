@@ -21,8 +21,12 @@
 //!     - 7-day default retention (`session_manager` prunes at session
 //!       start via [`prune::prune_older_than`]).
 //!     - `gc.auto = 0` on the side repo (we don't want background gcs
-//!       firing mid-turn) plus an explicit `git gc --prune=now` after
-//!       prune.
+//!       firing mid-turn) plus an explicit `git gc --prune=<grace>` after
+//!       prune. NOTE: the side repo is shared by any two processes open
+//!       on the same workspace path, so `--prune=now` maintenance could
+//!       delete a concurrent session's freshly-written mid-snapshot
+//!       objects; the grace period (mirroring the tmp_pack staleness
+//!       heuristic) keeps young objects alive.
 //!     - Startup cleanup for stale `tmp_pack_*` files left by interrupted
 //!       git pack operations.
 //!

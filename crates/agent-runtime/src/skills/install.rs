@@ -243,8 +243,8 @@ pub enum InstallError {
 /// 3. Stream the tarball into a tempfile (capped at `max_size`).
 /// 4. Validate the archive (path-traversal, size, no symlinks in the selected
 ///    skill subtree, SKILL.md present with required frontmatter fields) into a
-///    sibling `<name>.tmp/` directory.
-/// 5. Atomic-rename `<name>.tmp/` → `<name>/`.
+///    hidden, per-attempt staging directory under `skills_dir`.
+/// 5. Atomic-rename the staging directory → `<name>/`.
 /// 6. Write `.installed-from` and return [`InstalledSkill`].
 ///
 /// `update = false` rejects an existing destination. Pass `update = true`
@@ -316,7 +316,8 @@ pub async fn install_with_registry(
             return Err(InstallError::AlreadyInstalled(staged.skill_name).into());
         }
         // Best-effort backup-then-replace; on failure we restore the original.
-        let backup = skills_dir.join(format!("{}.bak", staged.skill_name));
+        // Hidden name so discovery never surfaces a leftover `.bak/`.
+        let backup = skills_dir.join(format!(".{}.bak", staged.skill_name));
         // If a previous failed update left a stale `.bak/`, drop it.
         if backup.exists() {
             fs::remove_dir_all(&backup).ok();
@@ -1123,7 +1124,8 @@ struct StagedSkill {
     staged_path: PathBuf,
 }
 
-/// Validate a tarball and extract it into `<skills_dir>/<name>.tmp/`.
+/// Validate a tarball and extract it into a hidden per-attempt staging
+/// directory under `skills_dir`.
 fn stage_tarball(bytes: &[u8], skills_dir: &Path, max_size: u64) -> Result<StagedSkill> {
     fs::create_dir_all(skills_dir)
         .with_context(|| format!("failed to create skills directory {}", skills_dir.display()))?;
@@ -1135,20 +1137,20 @@ fn stage_tarball(bytes: &[u8], skills_dir: &Path, max_size: u64) -> Result<Stage
 
     let scan = scan_tarball(bytes, max_size)?;
 
-    // Prepare staged directory. Use a `.tmp` suffix so a crashed install
-    // never collides with a real name; remove any leftover from a prior
-    // failed attempt.
-    let staged_path = skills_dir.join(format!("{}.tmp", scan.skill_name));
-    if staged_path.exists() {
-        fs::remove_dir_all(&staged_path).with_context(|| {
+    // Prepare a unique, hidden staging directory. The leading `.` keeps
+    // skill discovery from ever picking a crashed attempt's leftover up as
+    // a skill, and the random suffix keeps two concurrent installs/updates
+    // of the same skill from deleting each other's staging tree.
+    let staged_path = tempfile::Builder::new()
+        .prefix(&format!(".{}.tmp-", scan.skill_name))
+        .tempdir_in(skills_dir)
+        .with_context(|| {
             format!(
-                "failed to clean stale staging dir {}",
-                staged_path.display()
+                "failed to create staging dir under {}",
+                skills_dir.display()
             )
-        })?;
-    }
-    fs::create_dir_all(&staged_path)
-        .with_context(|| format!("failed to create staging dir {}", staged_path.display()))?;
+        })?
+        .keep();
 
     // Second pass — extract.
     let result = extract_into(&scan, bytes, &staged_path, max_size);

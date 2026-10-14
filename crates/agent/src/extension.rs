@@ -72,8 +72,11 @@ pub enum ExtensionError {
 
 impl From<ToolError> for ExtensionError {
     /// Wrap a [`ToolError`] from a `ToolDefinition::execute` into the
-    /// extension error surface so the `ExtensionToolSpecAdapter` can map
-    /// back to `ToolError` losslessly (Task 5).
+    /// extension error surface. Lossy: only the rendered message survives
+    /// (the structured variant is flattened and `tool` is left empty — the
+    /// source carries no tool name), and the
+    /// `ExtensionToolSpecAdapter` re-flattens to
+    /// `ToolError::execution_failed` on the way back anyway.
     fn from(err: ToolError) -> Self {
         ExtensionError::Tool {
             tool: String::new(),
@@ -87,8 +90,11 @@ impl From<ToolError> for ExtensionError {
 /// Stable identity + display metadata for an extension.
 ///
 /// `id` is the stable key (lowercase, `-`-separated); `name` is the human
-/// display; `version` mirrors the crate version. Slice 1 populates from
-/// [`ExtensionMetadata::new`]`(id)`.
+/// display; `version` mirrors the crate version — note that
+/// [`ExtensionMetadata::new`] can only bake the `codesmith-agent` framework
+/// crate's version (`env!` is evaluated when this crate is compiled); an
+/// extension whose own crate version should be reported must carry it via
+/// [`ExtensionMetadata::from_strings`].
 ///
 /// Fields are `Cow<'static, str>` so both registration styles coexist:
 /// compiled-in extensions keep the const [`ExtensionMetadata::new`] (borrowed
@@ -103,6 +109,11 @@ pub struct ExtensionMetadata {
 }
 
 impl ExtensionMetadata {
+    /// Const constructor for compiled-in extensions. `version` reports the
+    /// `codesmith-agent` framework crate's version, NOT the calling
+    /// extension's own version — `env!` here is evaluated against this
+    /// crate. Use [`ExtensionMetadata::from_strings`] to carry the
+    /// extension's real version.
     #[must_use]
     pub const fn new(id: &'static str) -> Self {
         Self {
@@ -582,8 +593,17 @@ pub trait CommandDefinition: Send + Sync {
 #[derive(Debug, Clone)]
 pub enum HandlerOutcome {
     Continue,
-    Cancel { reason: String },
-    Block { reason: String },
+    Cancel {
+        reason: String,
+    },
+    Block {
+        reason: String,
+    },
+    /// Invariant: the replacement event MUST carry the same
+    /// [`ExtensionEvent::kind`] as the running event — a cross-variant
+    /// transform violates the event's
+    /// [`dispatch_mode`](ExtensionEventKind::dispatch_mode) contract and the
+    /// downstream actionable-field extraction at the seam.
     Transform(ExtensionEvent),
 }
 
@@ -628,8 +648,9 @@ pub type ToolGuardFn = Arc<dyn Fn(&ToolCallEvent) -> Option<String> + Send + Syn
 ///   that bypasses the seam, so the deny-only floor is equivalent).
 /// - Main-turn calls only: sub-agent registries bind no extension runner
 ///   (§F5d structural exclusion), so their executions pass no guard.
-/// - A guard closure that errors abstains; the error is logged by the
-///   caller (same fail-open isolation policy as handler errors).
+/// - A guard closure that panics abstains (fail-open); the panic is caught
+///   and logged here, so containment does not depend on the emit seam
+///   (same isolation policy as the message-projection fold path).
 pub struct GuardHandler {
     label: String,
     guard: ToolGuardFn,
@@ -653,12 +674,24 @@ impl Handler for GuardHandler {
         _ctx: &dyn ExtensionContext,
     ) -> Result<HandlerOutcome, ExtensionError> {
         match event {
-            ExtensionEvent::ToolCall(e) => Ok(match (self.guard)(e) {
-                Some(reason) => HandlerOutcome::Block {
-                    reason: format!("{}: {}", self.label, reason),
-                },
-                None => HandlerOutcome::Continue,
-            }),
+            ExtensionEvent::ToolCall(e) => {
+                let denied =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (self.guard)(e)));
+                Ok(match denied {
+                    Ok(Some(reason)) => HandlerOutcome::Block {
+                        reason: format!("{}: {}", self.label, reason),
+                    },
+                    Ok(None) => HandlerOutcome::Continue,
+                    Err(_) => {
+                        tracing::error!(
+                            target: "codesmith_extensions",
+                            "tool guard {} panicked; abstaining (fail-open)",
+                            self.label
+                        );
+                        HandlerOutcome::Continue
+                    }
+                })
+            }
             // Unreachable behind a `ToolCall` kind filter; a misrouted
             // guard abstains rather than denying an event it never saw.
             _ => Ok(HandlerOutcome::Continue),
@@ -848,16 +881,9 @@ pub type MessageProjectionHubArc = Arc<MessageProjectionHub>;
 /// Manual `Debug` (the fold closures are not `Debug`); reports the count.
 impl std::fmt::Debug for MessageProjectionHub {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let count = self.inner.lock().map_or(0, |state| state.projections.len());
         f.debug_struct("MessageProjectionHub")
-            .field(
-                "projections",
-                &self
-                    .inner
-                    .lock()
-                    .expect("projection hub poisoned")
-                    .projections
-                    .len(),
-            )
+            .field("projections", &count)
             .finish()
     }
 }
@@ -868,11 +894,31 @@ struct HubState {
     /// Set by `clear`; the engine consumes it (`take_dirty`) to refold from
     /// the live transcript after a reload.
     dirty: bool,
+    /// Bumped by `clear`; a `refold_all` whose folds straddled a `clear`
+    /// leaves the reload signal set instead of clobbering it.
+    clear_generation: u64,
+    /// Monotonic source of per-projection lineage versions. Every state
+    /// commit draws a fresh one, so a fold snapshotted before a `clear` /
+    /// re-register / `refold_all` commit can never land on the projection
+    /// incarnation that exists afterwards.
+    next_version: u64,
+}
+
+impl HubState {
+    fn draw_version(&mut self) -> u64 {
+        let version = self.next_version;
+        self.next_version += 1;
+        version
+    }
 }
 
 struct StoredProjection {
     owner: String,
     key: String,
+    /// Lineage token: drawn from [`HubState::next_version`] at registration
+    /// and re-drawn at every wholesale state commit; a fold commits only
+    /// onto the incarnation it snapshotted.
+    version: u64,
     init: Value,
     state: Value,
     fold: MessageFoldFn,
@@ -919,9 +965,11 @@ impl MessageProjectionHub {
                 "too many message projections (>{MAX_MESSAGE_PROJECTIONS})"
             ));
         }
+        let version = state.draw_version();
         state.projections.push(StoredProjection {
             owner: owner.to_string(),
             key: key.to_string(),
+            version,
             init: init.clone(),
             state: init,
             fold,
@@ -939,11 +987,12 @@ impl MessageProjectionHub {
     /// panicking fold is contained by `catch_unwind` instead of poisoning
     /// the mutex; a slow fold (Rhai op budget, `mod_state_set` file I/O)
     /// cannot block other hub operations while it runs. The re-lock after
-    /// the folds commits by `(owner, key)` identity, so a concurrent
-    /// `register`/`clear` interleaving never applies a fold result to a
-    /// projection it did not start from.
+    /// the folds commits by `(owner, key)` identity plus the projection's
+    /// lineage `version`, so a concurrent `register`/`clear`/`refold_all`
+    /// interleaving never applies a fold result to a projection it did not
+    /// start from.
     pub fn fold_message(&self, message: &crate::models::Message) {
-        let snapshot: Vec<(String, String, Value, MessageFoldFn)> = {
+        let snapshot: Vec<(String, String, u64, Value, MessageFoldFn)> = {
             let state = self.inner.lock().expect("projection hub poisoned");
             if state.projections.is_empty() {
                 return;
@@ -955,47 +1004,50 @@ impl MessageProjectionHub {
                     (
                         p.owner.clone(),
                         p.key.clone(),
+                        p.version,
                         p.state.clone(),
                         Arc::clone(&p.fold),
                     )
                 })
                 .collect()
         };
-        let mut folded: Vec<(String, String, Value)> = Vec::new();
-        let mut doomed: Vec<(String, String)> = Vec::new();
-        for (owner, key, current, fold) in snapshot {
+        let mut folded: Vec<(String, String, u64, Value)> = Vec::new();
+        let mut doomed: Vec<(String, String, u64)> = Vec::new();
+        for (owner, key, version, current, fold) in snapshot {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fold(current, message)))
             {
-                Ok(Ok(next)) => folded.push((owner, key, next)),
+                Ok(Ok(next)) => folded.push((owner, key, version, next)),
                 Ok(Err(e)) => {
                     tracing::error!(
                         target: "codesmith_extensions",
                         "message projection {owner}/{key} failed and was dropped: {e}"
                     );
-                    doomed.push((owner, key));
+                    doomed.push((owner, key, version));
                 }
                 Err(_) => {
                     tracing::error!(
                         target: "codesmith_extensions",
                         "message projection {owner}/{key} panicked and was dropped"
                     );
-                    doomed.push((owner, key));
+                    doomed.push((owner, key, version));
                 }
             }
         }
         let mut state = self.inner.lock().expect("projection hub poisoned");
-        for (owner, key, next) in folded {
+        for (owner, key, version, next) in folded {
+            let fresh = state.draw_version();
             if let Some(p) = state
                 .projections
                 .iter_mut()
-                .find(|p| p.owner == owner && p.key == key)
+                .find(|p| p.owner == owner && p.key == key && p.version == version)
             {
                 p.state = next;
+                p.version = fresh;
             }
         }
         state
             .projections
-            .retain(|p| !doomed.contains(&(p.owner.clone(), p.key.clone())));
+            .retain(|p| !doomed.contains(&(p.owner.clone(), p.key.clone(), p.version)));
     }
 
     /// Reset every projection to its `init` and fold the whole transcript
@@ -1009,8 +1061,10 @@ impl MessageProjectionHub {
     /// at its init forever; it is picked up by a bounded follow-up pass
     /// ([`REFOLD_MAX_PASSES`] caps registration storms).
     pub fn refold_all(&self, messages: &[crate::models::Message]) {
-        let mut pending: Vec<(String, String, Value, MessageFoldFn)> = {
+        let clear_generation;
+        let mut pending: Vec<(String, String, u64, Value, MessageFoldFn)> = {
             let state = self.inner.lock().expect("projection hub poisoned");
+            clear_generation = state.clear_generation;
             if state.projections.is_empty() {
                 return;
             }
@@ -1021,6 +1075,7 @@ impl MessageProjectionHub {
                     (
                         p.owner.clone(),
                         p.key.clone(),
+                        p.version,
                         p.init.clone(),
                         Arc::clone(&p.fold),
                     )
@@ -1042,8 +1097,8 @@ impl MessageProjectionHub {
                 );
                 return;
             }
-            let mut folded: Vec<(String, String, Option<Value>)> = Vec::new();
-            for (owner, key, init, fold) in &pending {
+            let mut folded: Vec<(String, String, u64, Option<Value>)> = Vec::new();
+            for (owner, key, version, init, fold) in &pending {
                 let mut state = init.clone();
                 let mut failed = false;
                 for message in messages {
@@ -1072,35 +1127,41 @@ impl MessageProjectionHub {
                     }
                 }
                 let next = if failed { None } else { Some(state) };
-                folded.push((owner.clone(), key.clone(), next));
+                folded.push((owner.clone(), key.clone(), *version, next));
             }
             pending = {
                 let mut state = self.inner.lock().expect("projection hub poisoned");
-                state.dirty = false;
+                // A `clear` that landed while we folded owns the dirty flag;
+                // consuming it here would swallow the reload signal.
+                if state.clear_generation == clear_generation {
+                    state.dirty = false;
+                }
                 let done: Vec<(String, String)> = folded
                     .iter()
-                    .map(|(owner, key, _)| (owner.clone(), key.clone()))
+                    .map(|(owner, key, _, _)| (owner.clone(), key.clone()))
                     .collect();
                 state.projections.retain(|p| {
-                    match folded
-                        .iter()
-                        .find(|(owner, key, _)| *owner == p.owner && *key == p.key)
-                    {
-                        // Not ours: registered while we were folding — keep,
-                        // and pick it up on the next pass.
+                    match folded.iter().find(|(owner, key, version, _)| {
+                        *owner == p.owner && *key == p.key && *version == p.version
+                    }) {
+                        // Not ours: registered (or re-registered) while we
+                        // were folding — keep, and pick it up on the next
+                        // pass.
                         None => true,
-                        Some((_, _, Some(_))) => true,
-                        Some((_, _, None)) => false,
+                        Some((_, _, _, Some(_))) => true,
+                        Some((_, _, _, None)) => false,
                     }
                 });
-                for (owner, key, next) in folded {
+                for (owner, key, version, next) in folded {
+                    let fresh = state.draw_version();
                     if let Some(next) = next
                         && let Some(p) = state
                             .projections
                             .iter_mut()
-                            .find(|p| p.owner == owner && p.key == key)
+                            .find(|p| p.owner == owner && p.key == key && p.version == version)
                     {
                         p.state = next;
+                        p.version = fresh;
                     }
                 }
                 state
@@ -1111,6 +1172,7 @@ impl MessageProjectionHub {
                         (
                             p.owner.clone(),
                             p.key.clone(),
+                            p.version,
                             p.init.clone(),
                             Arc::clone(&p.fold),
                         )
@@ -1126,6 +1188,7 @@ impl MessageProjectionHub {
     pub fn clear(&self) {
         let mut state = self.inner.lock().expect("projection hub poisoned");
         state.projections.clear();
+        state.clear_generation += 1;
         state.dirty = true;
     }
 
@@ -1558,8 +1621,19 @@ mod tests {
                 K::SessionBeforeCompact,
             ),
             (ExtensionEvent::SessionCompact, K::SessionCompact),
+            (
+                ExtensionEvent::AssistantStream(AssistantStreamEvent { text: "x".into() }),
+                K::AssistantStream,
+            ),
+            (
+                ExtensionEvent::ToolsChange {
+                    added: vec![],
+                    removed: vec![],
+                },
+                K::ToolsChange,
+            ),
         ];
-        assert_eq!(cases.len(), 23, "all variants covered");
+        assert_eq!(cases.len(), 25, "all variants covered");
         for (ev, kind) in cases {
             assert_eq!(ev.kind(), kind, "kind mismatch for {ev:?}");
         }
@@ -1689,6 +1763,103 @@ mod tests {
         );
     }
 
+    // --- snapshot/commit lineage (reload thread races the engine) ----------
+
+    #[test]
+    fn stale_fold_does_not_land_on_a_re_registered_incarnation() {
+        let hub = MessageProjectionHubArc::new(MessageProjectionHub::new());
+        // The fold re-enters the hub mid-fold (what a concurrent reload's
+        // `clear` + re-registration of the same `(owner, key)` looks like to
+        // an in-flight fold).
+        let hub2 = Arc::clone(&hub);
+        let fold: MessageFoldFn = Arc::new(move |state, _| {
+            if state.as_u64() == Some(0) {
+                hub2.clear();
+                hub2.register("m", "count", Value::from(100), counting_fold())
+                    .unwrap();
+            }
+            Ok(Value::from(state.as_u64().map_or(100, |n| n + 1)))
+        });
+        hub.register("m", "count", Value::from(0), fold).unwrap();
+        hub.fold_message(&proj_msg("user"));
+        assert_eq!(
+            hub.state("m", "count"),
+            Some(Value::from(100)),
+            "the fresh incarnation keeps its init; the stale fold is dropped"
+        );
+    }
+
+    #[test]
+    fn doomed_fold_does_not_drop_a_re_registered_incarnation() {
+        let hub = MessageProjectionHubArc::new(MessageProjectionHub::new());
+        let hub2 = Arc::clone(&hub);
+        let flaky: MessageFoldFn = Arc::new(move |state, _| {
+            if state.as_u64() == Some(0) {
+                hub2.clear();
+                hub2.register("m", "flaky", Value::from(42), counting_fold())
+                    .unwrap();
+                Err("script bug".to_string())
+            } else {
+                Ok(state)
+            }
+        });
+        hub.register("m", "flaky", Value::from(0), flaky).unwrap();
+        hub.fold_message(&proj_msg("user"));
+        assert_eq!(
+            hub.state("m", "flaky"),
+            Some(Value::from(42)),
+            "the failed fold only dooms the incarnation it snapshotted"
+        );
+    }
+
+    #[test]
+    fn fold_snapshotted_before_a_refold_commit_does_not_revert_it() {
+        let hub = MessageProjectionHubArc::new(MessageProjectionHub::new());
+        let fired = std::sync::atomic::AtomicBool::new(false);
+        let hub2 = Arc::clone(&hub);
+        let fold: MessageFoldFn = Arc::new(move |state, msg| {
+            if !fired.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                hub2.refold_all(&[proj_msg("assistant")]);
+                Ok(Value::from(999u64))
+            } else {
+                let n = state.as_u64().unwrap_or(0) + u64::from(msg.role == "assistant");
+                Ok(Value::from(n))
+            }
+        });
+        hub.register("m", "count", Value::from(0), fold).unwrap();
+        hub.fold_message(&proj_msg("user"));
+        assert_eq!(
+            hub.state("m", "count"),
+            Some(Value::from(1)),
+            "the refold result survives; the stale fold does not overwrite it"
+        );
+    }
+
+    #[test]
+    fn refold_commit_does_not_clobber_a_mid_fold_clear() {
+        let hub = MessageProjectionHubArc::new(MessageProjectionHub::new());
+        let hub2 = Arc::clone(&hub);
+        let fold: MessageFoldFn = Arc::new(move |state, _| {
+            if state.as_u64() == Some(0) {
+                // A reload lands while the refold's folds run outside the
+                // lock: clear() empties the hub and raises the reload flag.
+                hub2.clear();
+            }
+            Ok(state)
+        });
+        hub.register("m", "count", Value::from(0), fold).unwrap();
+        hub.refold_all(&[proj_msg("assistant")]);
+        assert_eq!(
+            hub.state("m", "count"),
+            None,
+            "the clear() dropped the projection"
+        );
+        assert!(
+            hub.take_dirty(),
+            "the clear()'s reload signal survives the refold commit"
+        );
+    }
+
     fn guard_call_event(name: &str, command: &str) -> ExtensionEvent {
         ExtensionEvent::ToolCall(ToolCallEvent {
             id: "t1".to_string(),
@@ -1742,6 +1913,17 @@ mod tests {
         // matched).
         let out = rt
             .block_on(h.handle(&ExtensionEvent::ToolExecutionStart, &ctx))
+            .unwrap();
+        assert!(matches!(out, HandlerOutcome::Continue));
+    }
+
+    #[test]
+    fn guard_handler_panic_fails_open() {
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let guard: ToolGuardFn = Arc::new(|_| panic!("guard bug"));
+        let h = GuardHandler::new("guard (mod: safety)", guard);
+        let out = rt
+            .block_on(h.handle(&guard_call_event("exec_shell", "ls"), &TestContext::new()))
             .unwrap();
         assert!(matches!(out, HandlerOutcome::Continue));
     }

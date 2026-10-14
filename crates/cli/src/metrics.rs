@@ -313,7 +313,9 @@ fn read_audit_log(path: &Path, since: Option<DateTime<Utc>>, rollup: &mut Rollup
                     .and_then(|t| t.as_str())
                     .unwrap_or("unknown");
                 let stats = rollup.tool_mut(tool_name);
-                stats.calls += 1;
+                // Approval tallies only — an approval is not an invocation,
+                // so it must not feed `calls` (the same invocation is also
+                // counted once via its completion event / session record).
                 stats.auto_approved += 1;
             }
             "tool.approval.prompted" => {
@@ -322,7 +324,6 @@ fn read_audit_log(path: &Path, since: Option<DateTime<Utc>>, rollup: &mut Rollup
                     .and_then(|t| t.as_str())
                     .unwrap_or("unknown");
                 let stats = rollup.tool_mut(tool_name);
-                stats.calls += 1;
                 stats.prompted += 1;
             }
             "tool.completed" | "tool.result" => {
@@ -344,16 +345,17 @@ fn read_audit_log(path: &Path, since: Option<DateTime<Utc>>, rollup: &mut Rollup
                     stats.elapsed_samples += 1;
                 }
 
-                // Success / failure
-                let success = v
+                // Success / failure — only judge when the field is present;
+                // defaulting a missing field to success would inflate the
+                // success rate when result data is absent.
+                match v
                     .pointer("/details/success")
                     .or_else(|| v.pointer("/payload/success"))
                     .and_then(|b| b.as_bool())
-                    .unwrap_or(true);
-                if success {
-                    stats.successes += 1;
-                } else {
-                    stats.failures += 1;
+                {
+                    Some(true) => stats.successes += 1,
+                    Some(false) => stats.failures += 1,
+                    None => {}
                 }
             }
             "compaction.completed" | "context.compaction" => {
@@ -541,9 +543,11 @@ fn read_session_file(path: &Path, since: Option<DateTime<Utc>>, rollup: &mut Rol
                         .unwrap_or("");
                     if let Some((name, elapsed_ms)) = pending.remove(id) {
                         let stats = rollup.tool_mut(&name);
-                        // Only count if not already counted via audit log (we don't de-dup, so
-                        // session files may double-count approvals; that's acceptable — users who
-                        // want precise counts should use --json and cross-reference).
+                        // tool_use→tool_result pairs are the canonical
+                        // per-invocation count for session files (approval
+                        // events feed only auto_approved/prompted). No
+                        // cross-source de-dup is attempted — precise counts
+                        // need --json and cross-reference.
                         stats.calls += 1;
                         if let Some(ms) = elapsed_ms {
                             stats.total_elapsed_ms += ms;
@@ -743,7 +747,12 @@ fn print_human(rollup: &Rollup) {
 
     // ── Tools ──────────────────────────────────────────────────────────────
     let total_calls = rollup.total_tool_calls();
-    if total_calls > 0 {
+    let total_approvals: u64 = rollup
+        .tools
+        .values()
+        .map(|t| t.auto_approved + t.prompted)
+        .sum();
+    if total_calls > 0 || total_approvals > 0 {
         // Overall success rate from session-file data (where we have result info).
         let total_ok: u64 = rollup.tools.values().map(|t| t.successes).sum();
         let total_judged: u64 = rollup
@@ -1002,9 +1011,10 @@ mod tests {
         read_audit_log(tmp.path(), None, &mut rollup);
 
         assert_eq!(rollup.parsed_lines, 2);
-        assert_eq!(rollup.tools["exec_shell"].calls, 1);
+        // Approvals tally separately — they must not inflate `calls`.
+        assert_eq!(rollup.tools["exec_shell"].calls, 0);
         assert_eq!(rollup.tools["exec_shell"].auto_approved, 1);
-        assert_eq!(rollup.tools["read_file"].calls, 1);
+        assert_eq!(rollup.tools["read_file"].auto_approved, 1);
     }
 
     #[test]
@@ -1051,7 +1061,8 @@ mod tests {
         // Only the newer line should be counted.
         assert_eq!(rollup.parsed_lines, 1);
         assert!(!rollup.tools.contains_key("exec_shell"));
-        assert_eq!(rollup.tools["read_file"].calls, 1);
+        assert_eq!(rollup.tools["read_file"].auto_approved, 1);
+        assert_eq!(rollup.tools["read_file"].calls, 0);
     }
 
     #[test]

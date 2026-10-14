@@ -19,10 +19,13 @@ use serde_json::{Value, json};
 use crate::ExtensionMetadata;
 use crate::discovery::ExtensionRegistration;
 
-/// Shared scratchpad string (per-process; slice 1 — a real per-session store
-/// scoped via [`ExtensionContext`] is §F2). Guarded by a `std::sync::Mutex`
-/// because extension handlers/tools may be called from any runtime worker.
-static SCRATCH: Mutex<Option<String>> = Mutex::new(None);
+/// Instance-scoped scratchpad string: created once per `ScratchpadExtension`
+/// in `configure` and shared by that instance's tool + command, so concurrent
+/// sessions never read or overwrite each other's scratch data (a real
+/// per-session store scoped via [`ExtensionContext`] is §F2). Guarded by a
+/// `std::sync::Mutex` because extension handlers/tools may be called from any
+/// runtime worker.
+type Scratch = Arc<Mutex<Option<String>>>;
 
 /// The sample extension. [`Extension::configure`] registers all three
 /// contribution kinds against the (stub) [`ExtensionApi`]; the runner flushes
@@ -36,15 +39,20 @@ impl Extension for ScratchpadExtension {
         &M
     }
     async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
-        api.register_tool(Box::new(ScratchTool))?;
-        api.register_command(Box::new(ScratchCommand))?;
+        let scratch: Scratch = Arc::new(Mutex::new(None));
+        api.register_tool(Box::new(ScratchTool {
+            scratch: Arc::clone(&scratch),
+        }))?;
+        api.register_command(Box::new(ScratchCommand { scratch }))?;
         api.on(Arc::new(TurnStartLogger))?;
         Ok(())
     }
 }
 
-/// `scratch` tool — writes or reads a per-process scratch string.
-pub struct ScratchTool;
+/// `scratch` tool — writes or reads the extension instance's scratch string.
+pub struct ScratchTool {
+    scratch: Scratch,
+}
 
 #[async_trait]
 impl ToolDefinition for ScratchTool {
@@ -65,7 +73,7 @@ impl ToolDefinition for ScratchTool {
         })
     }
     fn capabilities(&self) -> Vec<ToolCapability> {
-        // `set` mutates the process-global SCRATCH: declaring ReadOnly
+        // `set` mutates the shared scratch state: declaring ReadOnly would
         // let capability-based gating (approval skipping, speculative
         // early dispatch) treat mutations as side-effect free. No existing
         // capability describes in-memory mutation — declare none.
@@ -103,11 +111,12 @@ impl ToolDefinition for ScratchTool {
                 // Recover from poisoning: the payload is a plain String with
                 // no invariant a panic could corrupt, and a poisoned mutex
                 // would turn every later scratch call into a panic.
-                *SCRATCH.lock().unwrap_or_else(|e| e.into_inner()) = Some(text.to_string());
+                *self.scratch.lock().unwrap_or_else(|e| e.into_inner()) = Some(text.to_string());
                 Ok(ToolResult::success(msg))
             }
             "get" => {
-                let val = SCRATCH
+                let val = self
+                    .scratch
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .clone()
@@ -123,7 +132,9 @@ impl ToolDefinition for ScratchTool {
 }
 
 /// `/scratch` command — prints the current scratchpad contents.
-pub struct ScratchCommand;
+pub struct ScratchCommand {
+    scratch: Scratch,
+}
 
 #[async_trait]
 impl CommandDefinition for ScratchCommand {
@@ -138,7 +149,8 @@ impl CommandDefinition for ScratchCommand {
         _ctx: &dyn ExtensionCommandContext,
         _args: &str,
     ) -> Result<CommandOutput, ExtensionError> {
-        let val = SCRATCH
+        let val = self
+            .scratch
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
@@ -186,9 +198,11 @@ mod tests {
 
     #[tokio::test]
     async fn scratch_tool_round_trips() {
-        // Reset + set + get.
-        *SCRATCH.lock().unwrap() = None;
-        let tool = ScratchTool;
+        // Fresh instance-scoped state — no reset (and no process-global
+        // shared with other tests) needed.
+        let tool = ScratchTool {
+            scratch: Arc::new(Mutex::new(None)),
+        };
         struct Ctx;
         #[async_trait]
         impl ExtensionContext for Ctx {

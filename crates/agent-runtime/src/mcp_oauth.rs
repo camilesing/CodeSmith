@@ -146,6 +146,32 @@ pub fn store_token_with(secrets: &Secrets, server: &str, token: &McpOAuthToken) 
         .map_err(|err| anyhow::anyhow!("failed to store MCP OAuth token: {err}"))
 }
 
+/// [`load_token_with`] off the async runtime: the secret store hits the OS
+/// keyring (synchronous FFI) or the permissioned-file fallback (blocking
+/// `std::fs`), which must not stall runtime worker threads.
+async fn load_token_blocking(secrets: &Secrets, server: &str) -> Result<Option<McpOAuthToken>> {
+    let secrets = secrets.clone();
+    let server = server.to_string();
+    tokio::task::spawn_blocking(move || load_token_with(&secrets, &server))
+        .await
+        .context("MCP OAuth token load task failed")?
+}
+
+/// [`store_token_with`] off the async runtime, for the same reason as
+/// [`load_token_blocking`].
+async fn store_token_blocking(
+    secrets: &Secrets,
+    server: &str,
+    token: &McpOAuthToken,
+) -> Result<()> {
+    let secrets = secrets.clone();
+    let server = server.to_string();
+    let token = token.clone();
+    tokio::task::spawn_blocking(move || store_token_with(&secrets, &server, &token))
+        .await
+        .context("MCP OAuth token store task failed")?
+}
+
 /// Whether a stored token's lifetime has elapsed. Tokens without a
 /// reported expiry never count as expired (GitHub's default user tokens do
 /// not expire).
@@ -179,7 +205,7 @@ pub async fn resolve_authorization_value(
     server: &str,
     config: &McpOAuthConfig,
 ) -> Result<Option<String>> {
-    let Some(mut token) = load_token_with(secrets, server)? else {
+    let Some(mut token) = load_token_blocking(secrets, server).await? else {
         return Ok(None);
     };
     if token_is_expired(&token) && token.refresh_token.is_some() {
@@ -205,7 +231,7 @@ pub async fn try_refresh_matching(
     state: &OAuthState,
     current_bearer: &str,
 ) -> Result<Option<McpOAuthToken>> {
-    let Some(stored) = load_token_with(secrets, &state.server)? else {
+    let Some(stored) = load_token_blocking(secrets, &state.server).await? else {
         return Ok(None);
     };
     let current = bearer_token_value(current_bearer);
@@ -235,7 +261,7 @@ pub async fn try_refresh_matching(
                 // the previous one rather than losing refreshability.
                 token.refresh_token = Some(refresh_token);
             }
-            store_token_with(secrets, &state.server, &token)?;
+            store_token_blocking(secrets, &state.server, &token).await?;
             Ok(Some(token))
         }
         DeviceTokenOutcome::AuthorizationPending | DeviceTokenOutcome::SlowDown => Ok(None),
@@ -274,10 +300,12 @@ pub struct DeviceCode {
 pub fn parse_device_code_response(body: &str) -> Result<DeviceCode> {
     #[derive(Deserialize)]
     struct Raw {
-        device_code: String,
-        user_code: String,
-        #[serde(alias = "verification_url")]
-        verification_uri: String,
+        #[serde(default)]
+        device_code: Option<String>,
+        #[serde(default)]
+        user_code: Option<String>,
+        #[serde(default, alias = "verification_url")]
+        verification_uri: Option<String>,
         #[serde(default = "default_expires_in")]
         expires_in: u64,
         #[serde(default = "default_interval")]
@@ -302,10 +330,22 @@ pub fn parse_device_code_response(body: &str) -> Result<DeviceCode> {
             raw.error_description.unwrap_or_default()
         );
     }
+    let device_code = raw
+        .device_code
+        .filter(|code| !code.trim().is_empty())
+        .context("device-code response missing `device_code`")?;
+    let user_code = raw
+        .user_code
+        .filter(|code| !code.trim().is_empty())
+        .context("device-code response missing `user_code`")?;
+    let verification_uri = raw
+        .verification_uri
+        .filter(|uri| !uri.trim().is_empty())
+        .context("device-code response missing `verification_uri`")?;
     Ok(DeviceCode {
-        device_code: raw.device_code,
-        user_code: raw.user_code,
-        verification_uri: raw.verification_uri,
+        device_code,
+        user_code,
+        verification_uri,
         expires_in: raw.expires_in,
         interval: raw.interval,
     })
@@ -466,7 +506,7 @@ pub async fn run_device_flow(
         .await?;
         match parse_token_response(&body) {
             DeviceTokenOutcome::Granted(token) => {
-                store_token_with(secrets, server, &token)?;
+                store_token_blocking(secrets, server, &token).await?;
                 println!("Authorization stored for MCP server `{server}`.");
                 return Ok(token);
             }
@@ -595,7 +635,11 @@ mod tests {
         );
 
         let err = r#"{"error":"invalid_client"}"#;
-        assert!(parse_device_code_response(err).is_err());
+        let rejected = parse_device_code_response(err).unwrap_err();
+        assert!(rejected.to_string().contains("rejected"));
+
+        let missing = r#"{"user_code":"UC"}"#;
+        assert!(parse_device_code_response(missing).is_err());
     }
 
     #[test]

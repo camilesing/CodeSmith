@@ -1,7 +1,6 @@
 //! AGENTS.md bootstrap (moved from the retired `commands/init.rs`).
 
 use std::fmt::Write as _;
-use std::io::Read;
 use std::path::Path;
 
 /// If `workspace` is inside a git repository, ensure `.codesmith/` is
@@ -58,17 +57,8 @@ pub(crate) fn ensure_codesmith_gitignored(workspace: &Path) {
         .open(&gitignore)
     {
         // If the file is non-empty and doesn't end with a newline, add one first.
-        if let Ok(meta) = file.metadata()
-            && meta.len() > 0
-            && let Ok(mut f) = std::fs::File::open(&gitignore)
-        {
-            use std::io::Seek;
-            if f.seek(std::io::SeekFrom::End(-1)).is_ok() {
-                let mut buf = [0u8; 1];
-                if f.read_exact(&mut buf).is_ok() && buf[0] != b'\n' {
-                    let _ = writeln!(file);
-                }
-            }
+        if !existing.is_empty() && !existing.ends_with('\n') {
+            let _ = writeln!(file);
         }
         for entry in &missing {
             let _ = writeln!(file, "{entry}");

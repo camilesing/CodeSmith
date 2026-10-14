@@ -5,7 +5,7 @@
 # real HTTP requests.
 #
 # Usage:  ./scripts/mobile-smoke.sh
-# Requires: curl, a built binary at target/release/codesmith
+# Requires: curl, python3, a built binary at target/release/codesmith
 #           (the script will build it if cargo is available).
 
 set -euo pipefail
@@ -26,10 +26,23 @@ fail() { printf "\033[1;31m  ✗ %s\033[0m\n" "$*"; FAIL=$((FAIL + 1)); }
 cleanup() {
     if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
         kill "$SERVER_PID" 2>/dev/null || true
+        for _ in $(seq 1 20); do
+            kill -0 "$SERVER_PID" 2>/dev/null || break
+            sleep 0.1
+        done
+        kill -9 "$SERVER_PID" 2>/dev/null || true
         wait "$SERVER_PID" 2>/dev/null || true
+    fi
+    if [[ -n "${STDOUT_FILE:-}" ]]; then
+        rm -f "$STDOUT_FILE"
     fi
 }
 trap cleanup EXIT
+
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "error: python3 is required for dynamic port selection" >&2
+    exit 1
+fi
 
 pick_port() {
     # Find a free TCP port on loopback.
@@ -43,13 +56,16 @@ start_server() {
     SERVER_PID=$!
     # Wait for the server to become ready.
     for _ in $(seq 1 30); do
-        if curl -sf "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+        if curl -sf --connect-timeout 1 --max-time 2 "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
             return 0
         fi
         sleep 0.3
     done
     fail "Server did not become ready on port $port"
     cleanup
+    SERVER_PID=""
+    echo ""
+    log "Results: $PASS passed, $FAIL failed"
     return 1
 }
 
@@ -75,7 +91,7 @@ assert_status() {
     local url="http://127.0.0.1:${PORT}${path}"
     # No -f: HTTP error responses must still surface their status/body to the
     # assertions below (curl's write-out prints the code either way).
-    local curl_args=(-s -o /dev/null -w '%{http_code}' -X "$method")
+    local curl_args=(-s --connect-timeout 2 --max-time 5 -o /dev/null -w '%{http_code}' -X "$method")
     if [[ -n "$header" ]]; then
         curl_args+=(-H "$header")
     fi
@@ -97,7 +113,7 @@ assert_status() {
 assert_body_contains() {
     local method="$1" path="$2" header="$3" substring="$4"
     local url="http://127.0.0.1:${PORT}${path}"
-    local curl_args=(-s -X "$method")
+    local curl_args=(-s --connect-timeout 2 --max-time 5 -X "$method")
     if [[ -n "$header" ]]; then
         curl_args+=(-H "$header")
     fi
@@ -117,6 +133,11 @@ assert_body_contains() {
 if [[ ! -x "$BINARY" ]]; then
     log "Binary not found; building codesmith in release mode..."
     cargo build -p codesmith-cli --release --locked
+fi
+
+if [[ ! -x "$BINARY" ]]; then
+    log "ERROR: build finished but '$BINARY' is still missing or not executable"
+    exit 1
 fi
 
 log "Using binary: $BINARY"
@@ -159,7 +180,7 @@ STDOUT_FILE=$(mktemp)
 SERVER_PID=$!
 SERVER_READY=0
 for _ in $(seq 1 30); do
-    if curl -sf "http://127.0.0.1:${PORT}/health" > /dev/null 2>&1; then
+    if curl -sf --connect-timeout 1 --max-time 2 "http://127.0.0.1:${PORT}/health" > /dev/null 2>&1; then
         SERVER_READY=1
         break
     fi

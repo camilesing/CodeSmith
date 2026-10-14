@@ -41,18 +41,18 @@
 // per-item dead-code warnings at the module level.
 #![allow(dead_code)]
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Result, anyhow};
 use async_stream::try_stream;
 use futures_util::Stream;
 
 use crate::models::{
-    ContentBlock, MessageDelta, MessageRequest, MessageResponse, StreamEvent, Usage,
+    ContentBlock, ContentBlockStart, MessageDelta, MessageRequest, MessageResponse, StreamEvent,
+    Usage,
 };
 
 use super::{LlmClient, StreamEventBox};
@@ -93,7 +93,6 @@ pub enum FauxStep {
 pub struct MockLlmClient {
     canned: Mutex<VecDeque<FauxStep>>,
     captured_requests: Mutex<Vec<MessageRequest>>,
-    calls: AtomicUsize,
     provider_name: &'static str,
     model: String,
     /// If set, [`LlmClient::create_message`] returns this verbatim. Otherwise
@@ -109,7 +108,6 @@ impl MockLlmClient {
         Self {
             canned: Mutex::new(canned.into_iter().map(FauxStep::Canned).collect()),
             captured_requests: Mutex::new(Vec::new()),
-            calls: AtomicUsize::new(0),
             provider_name: "mock",
             model: "mock-model".to_string(),
             canned_messages: Mutex::new(VecDeque::new()),
@@ -163,10 +161,14 @@ impl MockLlmClient {
     }
 
     /// Number of completed calls to either `create_message` or
-    /// `create_message_stream`.
+    /// `create_message_stream`. Derived from the captured-request log, so it
+    /// excludes calls that failed because the queue was exhausted.
     #[must_use]
     pub fn call_count(&self) -> usize {
-        self.calls.load(Ordering::SeqCst)
+        self.captured_requests
+            .lock()
+            .expect("MockLlmClient.captured_requests mutex poisoned")
+            .len()
     }
 
     /// Number of canned turns still queued.
@@ -203,7 +205,6 @@ impl MockLlmClient {
             .lock()
             .expect("MockLlmClient.captured_requests mutex poisoned")
             .push(request.clone());
-        self.calls.fetch_add(1, Ordering::SeqCst);
     }
 
     fn pop_step(&self) -> Option<FauxStep> {
@@ -242,20 +243,20 @@ impl LlmClient for MockLlmClient {
         request: MessageRequest,
     ) -> Pin<Box<dyn Future<Output = Result<MessageResponse>> + Send + '_>> {
         Box::pin(async move {
-            self.record_request(&request);
-
             if let Some(canned) = self.pop_message() {
+                self.record_request(&request);
                 return Ok(canned);
             }
 
             // Fallback: synthesize a MessageResponse from the next streaming turn.
             let Some(step) = self.pop_step() else {
                 return Err(anyhow!(
-                    "MockLlmClient: create_message called but no canned response queued (request #{})",
-                    self.calls.load(Ordering::SeqCst)
+                    "MockLlmClient: create_message called but no canned response queued (call #{})",
+                    self.call_count()
                 ));
             };
 
+            self.record_request(&request);
             let turn = self.turn_from_step(step, &request);
             Ok(synthesize_message_response(turn, &self.model))
         })
@@ -266,15 +267,14 @@ impl LlmClient for MockLlmClient {
         request: MessageRequest,
     ) -> Pin<Box<dyn Future<Output = Result<StreamEventBox>> + Send + '_>> {
         Box::pin(async move {
-            self.record_request(&request);
-
             let Some(step) = self.pop_step() else {
                 return Err(anyhow!(
                     "MockLlmClient: create_message_stream called but no canned turn queued (call #{})",
-                    self.calls.load(Ordering::SeqCst)
+                    self.call_count()
                 ));
             };
 
+            self.record_request(&request);
             let turn = self.turn_from_step(step, &request);
             Ok(stream_from_canned(turn))
         })
@@ -286,10 +286,10 @@ impl LlmClient for MockLlmClient {
 }
 
 /// Wrap a canned event vector as a stream that yields each event in order and
-/// auto-appends `MessageStop` if the trailing event is not already one.
+/// auto-appends `MessageStop` if the turn does not already contain one.
 fn stream_from_canned(turn: CannedTurn) -> StreamEventBox {
     let s = try_stream! {
-        let has_stop = matches!(turn.last(), Some(StreamEvent::MessageStop));
+        let has_stop = turn.iter().any(|ev| matches!(ev, StreamEvent::MessageStop));
         for ev in turn {
             yield ev;
         }
@@ -301,43 +301,126 @@ fn stream_from_canned(turn: CannedTurn) -> StreamEventBox {
 }
 
 /// Best-effort: collapse a streaming turn into a non-streaming
-/// `MessageResponse` by concatenating text deltas. Used only as a fallback
-/// when callers `create_message` without a queued `MessageResponse`.
+/// `MessageResponse`. Text, thinking, and tool_use blocks (including
+/// `input_json_delta` fragments and `message_delta` usage) are carried
+/// over. Used only as a fallback when callers `create_message` without a
+/// queued `MessageResponse`.
 fn synthesize_message_response(turn: CannedTurn, model: &str) -> MessageResponse {
     use crate::models::Delta;
 
-    let mut text = String::new();
+    let mut blocks: Vec<(u32, ContentBlock)> = Vec::new();
+    let mut json_deltas: HashMap<u32, String> = HashMap::new();
     let mut stop_reason: Option<String> = None;
+    let mut usage: Option<Usage> = None;
 
     for ev in turn {
         match ev {
-            StreamEvent::ContentBlockDelta {
-                delta: Delta::TextDelta { text: t },
-                ..
-            } => text.push_str(&t),
+            StreamEvent::ContentBlockStart {
+                index,
+                content_block,
+            } => blocks.push((index, content_block_from_start(content_block))),
+            StreamEvent::ContentBlockDelta { index, delta } => match delta {
+                Delta::TextDelta { text } => {
+                    match blocks.iter_mut().rev().find(|(i, _)| *i == index) {
+                        Some((_, ContentBlock::Text { text: t, .. })) => t.push_str(&text),
+                        Some(_) => {}
+                        None => blocks.push((
+                            index,
+                            ContentBlock::Text {
+                                text,
+                                cache_control: None,
+                            },
+                        )),
+                    }
+                }
+                Delta::ThinkingDelta { thinking } => {
+                    match blocks.iter_mut().rev().find(|(i, _)| *i == index) {
+                        Some((_, ContentBlock::Thinking { thinking: t })) => t.push_str(&thinking),
+                        Some(_) => {}
+                        None => blocks.push((index, ContentBlock::Thinking { thinking })),
+                    }
+                }
+                Delta::InputJsonDelta { partial_json } => {
+                    json_deltas
+                        .entry(index)
+                        .or_default()
+                        .push_str(&partial_json);
+                }
+            },
             StreamEvent::MessageDelta {
                 delta: MessageDelta {
                     stop_reason: sr, ..
                 },
-                ..
-            } => stop_reason = sr,
+                usage: u,
+            } => {
+                stop_reason = sr;
+                usage = u.or(usage);
+            }
             _ => {}
         }
     }
+
+    for (index, block) in &mut blocks {
+        if let Some(acc) = json_deltas.remove(index)
+            && let Ok(value) = serde_json::from_str::<serde_json::Value>(&acc)
+        {
+            match block {
+                ContentBlock::ToolUse { input, .. } | ContentBlock::ServerToolUse { input, .. } => {
+                    *input = value;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut content: Vec<ContentBlock> = blocks.into_iter().map(|(_, b)| b).collect();
+    if content.is_empty() {
+        content.push(ContentBlock::Text {
+            text: String::new(),
+            cache_control: None,
+        });
+    }
+    let stop_reason = stop_reason.or_else(|| {
+        content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Text { .. }))
+            .then(|| "end_turn".to_string())
+    });
 
     MessageResponse {
         id: "mock_msg".to_string(),
         r#type: "message".to_string(),
         role: "assistant".to_string(),
-        content: vec![ContentBlock::Text {
-            text,
-            cache_control: None,
-        }],
+        content,
         model: model.to_string(),
-        stop_reason: stop_reason.or_else(|| Some("end_turn".to_string())),
+        stop_reason,
         stop_sequence: None,
         container: None,
-        usage: Usage::default(),
+        usage: usage.unwrap_or_default(),
+    }
+}
+
+fn content_block_from_start(content_block: ContentBlockStart) -> ContentBlock {
+    match content_block {
+        ContentBlockStart::Text { text } => ContentBlock::Text {
+            text,
+            cache_control: None,
+        },
+        ContentBlockStart::Thinking { thinking } => ContentBlock::Thinking { thinking },
+        ContentBlockStart::ToolUse {
+            id,
+            name,
+            input,
+            caller,
+        } => ContentBlock::ToolUse {
+            id,
+            name,
+            input,
+            caller,
+        },
+        ContentBlockStart::ServerToolUse { id, name, input } => {
+            ContentBlock::ServerToolUse { id, name, input }
+        }
     }
 }
 
@@ -548,6 +631,12 @@ mod tests {
             Ok(_) => panic!("should error on empty queue"),
             Err(err) => assert!(format!("{err}").contains("no canned")),
         }
+        assert_eq!(
+            mock.call_count(),
+            0,
+            "a queue-exhausted call is not a completed call"
+        );
+        assert!(mock.captured_requests().is_empty());
     }
 
     #[tokio::test]
@@ -575,6 +664,27 @@ mod tests {
             }
         }
         assert!(saw_stop, "auto MessageStop missing");
+    }
+
+    #[tokio::test]
+    async fn stream_does_not_duplicate_mid_sequence_message_stop() {
+        // MessageStop does not need to be the final element; a mid-sequence
+        // stop must not trigger a duplicate auto-appended stop.
+        let turn = vec![
+            canned::message_stop(),
+            canned::text_block_start(0),
+            canned::text_delta(0, "x"),
+        ];
+        let mock = MockLlmClient::new(vec![turn]);
+
+        let mut stream = mock.create_message_stream(empty_request()).await.unwrap();
+        let mut stop_count = 0;
+        while let Some(ev) = stream.next().await {
+            if matches!(ev.expect("event"), StreamEvent::MessageStop) {
+                stop_count += 1;
+            }
+        }
+        assert_eq!(stop_count, 1, "mid-sequence MessageStop was re-emitted");
     }
 
     #[tokio::test]
@@ -625,6 +735,58 @@ mod tests {
             _ => panic!("expected text"),
         };
         assert_eq!(text, "from factory");
+    }
+
+    #[tokio::test]
+    async fn create_message_synthesizes_tool_call_from_streaming_turn() {
+        let mock = MockLlmClient::new(vec![canned::tool_call_turn(
+            "call_9",
+            "read_file",
+            r#"{"path":"/tmp/a.rs"}"#,
+        )]);
+        let resp = mock.create_message(empty_request()).await.unwrap();
+        match resp.content.first().expect("tool_use block") {
+            ContentBlock::ToolUse {
+                id,
+                name,
+                input,
+                caller: _,
+            } => {
+                assert_eq!(id, "call_9");
+                assert_eq!(name, "read_file");
+                assert_eq!(*input, serde_json::json!({"path": "/tmp/a.rs"}));
+            }
+            other => panic!("expected tool_use, got {other:?}"),
+        }
+        assert_eq!(resp.stop_reason.as_deref(), Some("tool_use"));
+    }
+
+    #[tokio::test]
+    async fn create_message_does_not_fabricate_stop_reason_for_non_text_turn() {
+        let turn = vec![canned::thinking_delta(0, "pondering")];
+        let mock = MockLlmClient::new(vec![turn]);
+
+        let resp = mock.create_message(empty_request()).await.unwrap();
+        assert!(matches!(
+            resp.content.first().expect("thinking block"),
+            ContentBlock::Thinking { .. }
+        ));
+        assert_eq!(resp.stop_reason, None);
+    }
+
+    #[tokio::test]
+    async fn create_message_propagates_usage_from_message_delta() {
+        let usage = Usage {
+            input_tokens: 11,
+            output_tokens: 13,
+            ..Usage::default()
+        };
+        let mut turn = canned::simple_text_turn("tracked");
+        turn.insert(4, canned::message_delta("end_turn", Some(usage.clone())));
+        let mock = MockLlmClient::new(vec![turn]);
+
+        let resp = mock.create_message(empty_request()).await.unwrap();
+        assert_eq!(resp.usage, usage);
     }
 
     #[tokio::test]

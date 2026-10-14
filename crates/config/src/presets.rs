@@ -299,7 +299,10 @@ impl PresetDefinitionToml {
                 "suggest" | "suggested" | "on-request" | "untrusted" | "auto" | "never"
             )
         {
-            bail!("invalid approval_policy '{policy}' (expected suggest | auto | never)");
+            bail!(
+                "invalid approval_policy '{policy}' \
+                 (expected suggest | suggested | on-request | untrusted | auto | never)"
+            );
         }
         if let Some(mode) = &self.sandbox_mode
             && !matches!(
@@ -612,14 +615,19 @@ pub fn builtin_tier_matrix() -> Vec<(&'static str, [Option<bool>; 4])> {
                 .unwrap_or_default()
         })
         .collect();
-    catalog
-        .get(TIER_NAMES[0])
-        .map(|loaded| loaded.definition.clone())
-        .unwrap_or_default()
-        .bool_dials()
+    let dial_keys: Vec<&'static str> = match catalog.get(TIER_NAMES[0]) {
+        Some(loaded) => loaded
+            .definition
+            .bool_dials()
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect(),
+        None => Vec::new(),
+    };
+    dial_keys
         .into_iter()
         .enumerate()
-        .map(|(i, (key, _))| {
+        .map(|(i, key)| {
             // A tier that failed to parse has an empty Vec (insert_builtin
             // records a warning); indexing it directly would panic. A missing
             // tier column reads as "no opinion" instead.

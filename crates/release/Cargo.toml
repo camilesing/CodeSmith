@@ -3,7 +3,6 @@ name = "codesmith-release"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-readme.workspace = true
 keywords = ["release", "updater", "github"]
 categories = ["development-tools"]
 license.workspace = true
@@ -12,7 +11,13 @@ description = "Shared CodeSmith release discovery and version comparison helpers
 
 [dependencies]
 anyhow.workspace = true
-reqwest = { workspace = true, features = ["blocking"] }
+reqwest.workspace = true
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[features]
+## Opt-in blocking HTTP helpers; keeps reqwest's blocking client (and its
+## tokio runtime glue) out of the default dependency graph for consumers
+## that only need the pure helpers (version comparison, mirror-URL builders).
+blocking = ["reqwest/blocking"]

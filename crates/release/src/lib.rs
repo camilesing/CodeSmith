@@ -1,3 +1,4 @@
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -118,21 +119,27 @@ pub fn release_base_url_from_env(version: &str) -> Option<String> {
     None
 }
 
-/// Constructs the CNB mirror asset URL for a given version tag.
+/// Constructs the CNB mirror asset URL for a given version tag. Only a
+/// single optional leading `v` is stripped (`vv1.2.3` keeps its second `v`).
 pub fn cnb_release_base_url(version: &str) -> String {
     format!(
         "{}/v{}",
         CNB_RELEASE_ASSET_BASE.trim_end_matches('/'),
-        version.trim_start_matches('v')
+        version.strip_prefix('v').unwrap_or(version)
     )
 }
 
 /// Returns the pinned update version from the `CODESMITH_VERSION` environment
-/// variable, or `None` when unset.
+/// variable, or `None` when unset. Only a single optional leading `v` is
+/// stripped, so `vv1.2.3` stays `v1.2.3` and surfaces as an invalid pin
+/// downstream instead of silently becoming `1.2.3`.
 pub fn update_version_from_env() -> Option<String> {
     std::env::var(UPDATE_VERSION_ENV)
         .ok()
-        .map(|value| value.trim().trim_start_matches('v').to_string())
+        .map(|value| {
+            let trimmed = value.trim();
+            trimmed.strip_prefix('v').unwrap_or(trimmed).to_string()
+        })
         .filter(|value| !value.is_empty())
 }
 
@@ -155,15 +162,47 @@ pub fn update_network_fallback_hint() -> String {
     )
 }
 
+/// Cached blocking metadata client (fresh TLS config + connection pool are
+/// expensive to rebuild per call). `None` inside the `OnceLock` records a
+/// build failure so the same error surfaces on every call.
+#[cfg(feature = "blocking")]
+fn blocking_metadata_client() -> Result<&'static reqwest::blocking::Client> {
+    static CLIENT: OnceLock<Option<reqwest::blocking::Client>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::blocking::Client::builder()
+                .user_agent(UPDATE_USER_AGENT)
+                .timeout(RELEASE_METADATA_TIMEOUT)
+                .build()
+                .ok()
+        })
+        .as_ref()
+        .context("failed to build release check HTTP client")
+}
+
+/// Cached async metadata client — the async twin of
+/// [`blocking_metadata_client`].
+fn async_metadata_client() -> Result<&'static reqwest::Client> {
+    static CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .user_agent(UPDATE_USER_AGENT)
+                .timeout(RELEASE_METADATA_TIMEOUT)
+                .build()
+                .ok()
+        })
+        .as_ref()
+        .context("failed to build release check HTTP client")
+}
+
 /// Fetches a release JSON payload from `url` using a blocking HTTP client.
 ///
-/// `description` is included in error messages to identify the request purpose.
+/// `description` is included in error messages to identify the request
+/// purpose. Only available with the `blocking` crate feature.
+#[cfg(feature = "blocking")]
 pub fn fetch_release_json_blocking(url: &str, description: &str) -> Result<String> {
-    let client = reqwest::blocking::Client::builder()
-        .user_agent(UPDATE_USER_AGENT)
-        .timeout(RELEASE_METADATA_TIMEOUT)
-        .build()
-        .context("failed to build release check HTTP client")?;
+    let client = blocking_metadata_client()?;
     let response = client
         .get(url)
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
@@ -178,11 +217,7 @@ pub fn fetch_release_json_blocking(url: &str, description: &str) -> Result<Strin
 
 /// Async counterpart of [`fetch_release_json_blocking`].
 pub async fn fetch_release_json_async(url: &str, description: &str) -> Result<String> {
-    let client = reqwest::Client::builder()
-        .user_agent(UPDATE_USER_AGENT)
-        .timeout(RELEASE_METADATA_TIMEOUT)
-        .build()
-        .context("failed to build release check HTTP client")?;
+    let client = async_metadata_client()?;
     let response = client
         .get(url)
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
@@ -263,30 +298,52 @@ pub fn latest_beta_tag_from_release_list_json(body: &str) -> Result<String> {
 /// For mirrors the version is derived from the pinned environment variable;
 /// for GitHub channels the appropriate API endpoint is queried.
 pub async fn latest_release_tag_async(channel: ReleaseChannel) -> Result<String> {
+    resolve_latest_tag(channel, |url, description| {
+        fetch_release_json_async(url, description)
+    })
+    .await
+}
+
+/// Blocking counterpart of [`latest_release_tag_async`]. Only available with
+/// the `blocking` crate feature.
+#[cfg(feature = "blocking")]
+pub fn latest_release_tag_blocking(channel: ReleaseChannel) -> Result<String> {
+    block_on(resolve_latest_tag(channel, |url, description| {
+        std::future::ready(fetch_release_json_blocking(url, description))
+    }))
+}
+
+/// Shared dispatch + parse chain behind the two `latest_release_tag_*`
+/// wrappers, parameterized over the fetch mechanism so fixes to query
+/// handling land in exactly one place.
+async fn resolve_latest_tag<F, Fut>(channel: ReleaseChannel, fetch: F) -> Result<String>
+where
+    F: Fn(&'static str, &'static str) -> Fut,
+    Fut: std::future::Future<Output = Result<String>>,
+{
     match resolve_release_query(channel)? {
-        ReleaseQuery::Mirror { version, .. } => Ok(format!("v{}", version.trim_start_matches('v'))),
+        ReleaseQuery::Mirror { version, .. } => Ok(format!("v{version}")),
         ReleaseQuery::GitHubLatest { url } => {
-            let body = fetch_release_json_async(url, "latest release").await?;
-            latest_tag_from_release_json(&body)
+            latest_tag_from_release_json(&fetch(url, "latest release").await?)
         }
         ReleaseQuery::GitHubReleaseList { url } => {
-            let body = fetch_release_json_async(url, "release list").await?;
-            latest_beta_tag_from_release_list_json(&body)
+            latest_beta_tag_from_release_list_json(&fetch(url, "release list").await?)
         }
     }
 }
 
-/// Blocking counterpart of [`latest_release_tag_async`].
-pub fn latest_release_tag_blocking(channel: ReleaseChannel) -> Result<String> {
-    match resolve_release_query(channel)? {
-        ReleaseQuery::Mirror { version, .. } => Ok(format!("v{}", version.trim_start_matches('v'))),
-        ReleaseQuery::GitHubLatest { url } => {
-            let body = fetch_release_json_blocking(url, "latest release")?;
-            latest_tag_from_release_json(&body)
-        }
-        ReleaseQuery::GitHubReleaseList { url } => {
-            let body = fetch_release_json_blocking(url, "release list")?;
-            latest_beta_tag_from_release_list_json(&body)
+/// Drives `fut` to completion on the current thread for the blocking
+/// wrapper. The futures passed in wrap fully blocking calls in
+/// `std::future::ready`, so a single poll completes them; the yield loop
+/// only guards against that ever changing.
+#[cfg(feature = "blocking")]
+fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+    let mut fut = std::pin::pin!(fut);
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    loop {
+        match fut.as_mut().poll(&mut cx) {
+            std::task::Poll::Ready(out) => return out,
+            std::task::Poll::Pending => std::thread::yield_now(),
         }
     }
 }
@@ -308,8 +365,15 @@ pub fn compare_release_versions(
 /// Determines whether an update is needed for the given channel.
 ///
 /// For [`Stable`](ReleaseChannel::Stable) an update is needed when the latest
-/// release is strictly newer. For [`Beta`](ReleaseChannel::Beta) the logic also
-/// allows switching from a stable release to a beta on the same release line.
+/// release is strictly newer — including when the latest tag carries a
+/// pre-release. That is safe for the GitHub flow because the
+/// `/releases/latest` endpoint never returns pre-releases; on the Stable
+/// channel a pre-release tag can otherwise only arrive through an explicitly
+/// pinned mirror version, which is a deliberate user choice. For
+/// [`Beta`](ReleaseChannel::Beta) the logic also allows switching from a
+/// stable release to a beta on the same release line; a beta user is never
+/// auto-upgraded to the final stable release of that same line (the beta
+/// channel tracks betas).
 pub fn update_is_needed(
     channel: ReleaseChannel,
     current_version: &str,
@@ -375,6 +439,12 @@ mod tests {
         assert_eq!(
             cnb_release_base_url("v0.8.47"),
             "https://cnb.cool/camilesing/CodeSmith/-/releases/v0.8.47"
+        );
+        // Only ONE leading `v` is stripped: `vv…` keeps its second `v`
+        // (an invalid pin stays visibly invalid).
+        assert_eq!(
+            cnb_release_base_url("vv0.8.47"),
+            "https://cnb.cool/camilesing/CodeSmith/-/releases/vv0.8.47"
         );
     }
 

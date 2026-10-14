@@ -272,6 +272,9 @@ impl McpManager {
                 });
             }
         }
+        ready.sort();
+        failed.sort_by(|a, b| a.server_name.cmp(&b.server_name));
+        cancelled.sort();
         McpStartupCompleteEvent {
             ready,
             failed,
@@ -318,6 +321,7 @@ impl McpManager {
                 });
             }
         }
+        out.sort_by(|a, b| a.qualified_name.cmp(&b.qualified_name));
         Ok(out)
     }
 
@@ -381,6 +385,7 @@ impl McpManager {
                 out.push(resource);
             }
         }
+        out.sort_by(|a, b| a.uri.cmp(&b.uri));
         Ok(out)
     }
 
@@ -833,7 +838,7 @@ fn dispatch_stdio_request(
             let mut tools = state
                 .manager
                 .list_tools()
-                .map_err(|err| JsonRpcError::internal(err.to_string()))?;
+                .map_err(|err| JsonRpcError::internal(format!("{err:#}")))?;
             if let Some(server) = parsed.server {
                 tools.retain(|tool| tool.server_name == server);
             }
@@ -856,11 +861,13 @@ fn dispatch_stdio_request(
             } else {
                 arguments
             };
-            let result = if tool_name.starts_with("mcp__") {
+            let result = if tool_name.starts_with("mcp__")
+                && parse_qualified_tool_name(&tool_name).is_ok()
+            {
                 state
                     .manager
                     .call_qualified_tool(&tool_name, arguments)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?
+                    .map_err(|err| JsonRpcError::internal(format!("{err:#}")))?
             } else {
                 let server = server
                     .context("missing server for unqualified tool")
@@ -868,7 +875,7 @@ fn dispatch_stdio_request(
                 state
                     .manager
                     .call_tool(&server, &tool_name, arguments)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?
+                    .map_err(|err| JsonRpcError::internal(format!("{err:#}")))?
             };
             Ok((json!({ "result": result }), false))
         }
@@ -877,7 +884,7 @@ fn dispatch_stdio_request(
             let mut resources = state
                 .manager
                 .list_resources()
-                .map_err(|err| JsonRpcError::internal(err.to_string()))?;
+                .map_err(|err| JsonRpcError::internal(format!("{err:#}")))?;
             if let Some(server) = parsed.server {
                 resources.retain(|resource| resource.server_name == server);
             }
@@ -893,7 +900,7 @@ fn dispatch_stdio_request(
             let value = state
                 .manager
                 .read_resource(&server_name, &uri)
-                .map_err(|err| JsonRpcError::internal(err.to_string()))?;
+                .map_err(|err| JsonRpcError::internal(format!("{err:#}")))?;
             Ok((json!({ "resource": value }), false))
         }
         "server/list" | "servers/list" => {
@@ -980,7 +987,7 @@ fn dispatch_stdio_request(
                     // not-running would disagree with actual state.
                     state.running.insert(parsed.name.clone(), true);
                     tracing::warn!("mcp stop_server '{}' failed: {err}", parsed.name);
-                    return Err(JsonRpcError::internal(err.to_string()));
+                    return Err(JsonRpcError::internal(format!("{err:#}")));
                 }
             }
             state.running.insert(parsed.name, false);
@@ -1298,6 +1305,33 @@ mod tests {
 
         let result = manager.call_qualified_tool(qualified, json!({})).unwrap();
         assert_eq!(result["ok"], true);
+    }
+
+    #[test]
+    fn tools_call_routes_unparseable_mcp_prefixed_tool_via_server_param() {
+        let mut manager = McpManager::default();
+        manager
+            .register_server(
+                make_server_config("s1"),
+                ToolFilter::default(),
+                Box::new(
+                    InMemoryMcpClient::default().with_tool("mcp__helper", json!({"ok": true})),
+                ),
+            )
+            .unwrap();
+        let mut state = StdioMcpState {
+            manager,
+            definitions: HashMap::new(),
+            running: HashMap::new(),
+            lifecycle_state: "running".to_string(),
+        };
+        let (result, _) = dispatch_stdio_request(
+            &mut state,
+            "tools/call",
+            json!({ "name": "mcp__helper", "server": "s1" }),
+        )
+        .expect("tools/call dispatch");
+        assert_eq!(result["result"]["ok"], true);
     }
 
     #[test]

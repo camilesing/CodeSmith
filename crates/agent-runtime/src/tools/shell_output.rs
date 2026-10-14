@@ -170,8 +170,12 @@ pub fn truncate_with_meta(output: &str) -> (String, TruncationMeta) {
 /// otherwise be discarded by truncation. Recognises Cargo/rustc output,
 /// generic test framework summaries, panic markers, exit-status lines,
 /// and `Finished`/`running ...` markers. Returns at most
-/// `MAX_PRESERVED_SUMMARY_LINES` lines, oldest-first within each match
-/// class so the most actionable signal is at the end.
+/// `MAX_PRESERVED_SUMMARY_LINES` lines. High-signal lines (errors, panics,
+/// test results, failures) are collected first so early build progress
+/// markers (`Compiling`/`Building`/`Running`/`Finished`/`running ...`)
+/// cannot exhaust the budget and crowd out later failures in the omitted
+/// middle (#242); remaining budget fills with progress lines. Oldest-first
+/// within each class.
 pub fn collect_summary_lines(text: &str) -> Vec<String> {
     // Byte caps: a single huge line matching a broad substring ("FAIL"
     // anywhere in a minified bundle or base64 blob) used to be preserved
@@ -180,19 +184,37 @@ pub fn collect_summary_lines(text: &str) -> Vec<String> {
     const MAX_PRESERVED_LINE_BYTES: usize = 512;
     const MAX_PRESERVED_TOTAL_BYTES: usize = 8_192;
 
+    fn is_progress_marker(trimmed: &str) -> bool {
+        trimmed.starts_with("Finished")
+            || trimmed.starts_with("Compiling")
+            || trimmed.starts_with("Building")
+            || trimmed.starts_with("Running")
+            || trimmed.starts_with("running ")
+    }
+
+    let mut high_signal: Vec<&str> = Vec::new();
+    let mut progress: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        if is_summary_line(line) {
+            if is_progress_marker(line.trim_start()) {
+                progress.push(line);
+            } else {
+                high_signal.push(line);
+            }
+        }
+    }
+
     let mut preserved: Vec<String> = Vec::new();
     let mut total_bytes = 0usize;
-    for line in text.lines() {
+    for line in high_signal.into_iter().chain(progress) {
         if preserved.len() >= MAX_PRESERVED_SUMMARY_LINES
             || total_bytes >= MAX_PRESERVED_TOTAL_BYTES
         {
             break;
         }
-        if is_summary_line(line) {
-            let cut = char_boundary_at_or_before(line, MAX_PRESERVED_LINE_BYTES);
-            total_bytes = total_bytes.saturating_add(cut);
-            preserved.push(line[..cut].to_string());
-        }
+        let cut = char_boundary_at_or_before(line, MAX_PRESERVED_LINE_BYTES);
+        total_bytes = total_bytes.saturating_add(cut);
+        preserved.push(line[..cut].to_string());
     }
     preserved
 }
@@ -491,5 +513,38 @@ note: see help
         let preserved = collect_summary_lines(body);
         assert!(preserved.iter().any(|line| line.contains("error[E0277]")));
         assert!(preserved.iter().any(|line| line.contains("warning:")));
+    }
+
+    #[test]
+    fn collect_summary_lines_prioritises_errors_over_progress_noise() {
+        let mut body = String::new();
+        for _ in 0..(MAX_PRESERVED_SUMMARY_LINES + 10) {
+            body.push_str("Compiling crate-dep v0.1.0\n");
+        }
+        body.push_str("error[E0432]: unresolved import `foo`\n");
+        body.push_str("test result: FAILED. 0 passed; 1 failed\n");
+
+        let preserved = collect_summary_lines(&body);
+        assert!(
+            preserved.iter().any(|line| line.contains("error[E0432]")),
+            "a later error must survive early progress noise: {preserved:?}"
+        );
+        assert!(
+            preserved
+                .iter()
+                .any(|line| line.contains("test result: FAILED")),
+            "a later test result must survive early progress noise: {preserved:?}"
+        );
+        assert!(preserved.len() <= MAX_PRESERVED_SUMMARY_LINES);
+        assert!(
+            preserved
+                .iter()
+                .position(|line| line.contains("error[E0432]"))
+                .unwrap()
+                < preserved
+                    .iter()
+                    .position(|line| line.starts_with("Compiling"))
+                    .unwrap_or(preserved.len())
+        );
     }
 }

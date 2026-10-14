@@ -86,7 +86,9 @@ class Codesmith < Formula
   end
 
   def install
-    bin.install Dir["*"].first => "codesmith"
+    artifacts = Dir["codesmith-*"]
+    raise "expected exactly one codesmith-* artifact in the staging directory, found: #{artifacts}" if artifacts.length != 1
+    bin.install artifacts.first => "codesmith"
   end
 
   test do
@@ -110,6 +112,9 @@ git clone --depth 1 "https://github.com/${TAP_REPO}.git" "${TAP_DIR}"
 
 mkdir -p "${TAP_DIR}/Formula"
 cp "${FORMULA_FILE}" "${TAP_DIR}/Formula/codesmith.rb"
+# A malformed heredoc (unbalanced blocks, broken interpolation) must fail the
+# workflow here, before anything is committed or pushed to the tap.
+ruby -c "${TAP_DIR}/Formula/codesmith.rb" >/dev/null || die "Generated formula is not valid Ruby"
 
 cd "${TAP_DIR}"
 git config user.name  "github-actions[bot]"
@@ -126,5 +131,16 @@ git commit -m "chore: bump formula to ${VERSION}
 
 Automated update from the release workflow."
 
-git push origin HEAD:main
+TAP_BRANCH="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's/^origin\///')"
+TAP_BRANCH="${TAP_BRANCH:-main}"
+
+if ! git push origin "HEAD:${TAP_BRANCH}"; then
+  # A commit landed on the tap between the clone and this push: fetch the
+  # moved branch tip and retry once on top of it instead of aborting the
+  # release on a non-fast-forward.
+  echo "::warning::push to ${TAP_BRANCH} was non-fast-forward; rebasing and retrying once"
+  git fetch --depth 1 origin "${TAP_BRANCH}"
+  git rebase "origin/${TAP_BRANCH}"
+  git push origin "HEAD:${TAP_BRANCH}" || die "push to ${TAP_REPO}:${TAP_BRANCH} failed after rebase retry"
+fi
 echo "Pushed formula update to ${TAP_REPO} (v${VERSION})"

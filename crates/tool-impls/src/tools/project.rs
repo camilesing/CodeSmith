@@ -55,7 +55,10 @@ impl ToolSpec for ProjectMapTool {
         let max_depth = usize::try_from(optional_u64(&input, "max_depth", 3))
             .map(|d| d.clamp(1, 10))
             .map_err(|_| ToolError::invalid_input("max_depth out of range"))?;
-        let map = generate_project_map(&context.workspace, max_depth)?;
+        let root = context.workspace.clone();
+        let map = tokio::task::spawn_blocking(move || generate_project_map(&root, max_depth))
+            .await
+            .map_err(|e| ToolError::execution_failed(e.to_string()))??;
         ToolResult::json(&map).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 }
@@ -89,6 +92,7 @@ fn generate_project_map(root: &std::path::Path, max_depth: usize) -> Result<Proj
             key_files.push(rel.to_string_lossy().to_string());
         }
     }
+    key_files.sort_unstable();
 
     Ok(ProjectMap {
         tree,

@@ -97,12 +97,22 @@ pub(crate) enum MaxTokensSpec {
 #[cfg(any(feature = "openai", feature = "deepseek", feature = "openai-compat"))]
 pub(crate) struct GenericShaper {
     name: &'static str,
+    /// `CODESMITH_REASONING_PASSTHROUGH` opt-in, resolved once here so the
+    /// per-request shaping path stays deterministic (no env lock, testable).
+    passthrough: bool,
 }
 
 #[cfg(any(feature = "openai", feature = "deepseek", feature = "openai-compat"))]
 impl GenericShaper {
-    pub(crate) const fn new(name: &'static str) -> Self {
-        Self { name }
+    pub(crate) fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            passthrough: super::http_fallback::env_flag_enabled(
+                std::env::var("CODESMITH_REASONING_PASSTHROUGH")
+                    .ok()
+                    .as_deref(),
+            ),
+        }
     }
 }
 
@@ -141,7 +151,12 @@ impl RequestShaper for GenericShaper {
         // through verbatim — those providers reject it, and the hand-written
         // client's `apply_reasoning_effort` is the sole authority on the field
         // (parity fix vs. the previous unconditional passthrough).
-        reasoning::apply_reasoning_effort(&mut map, req.reasoning_effort.as_deref(), self.name);
+        reasoning::apply_reasoning_effort(
+            &mut map,
+            req.reasoning_effort.as_deref(),
+            self.name,
+            self.passthrough,
+        );
         if map.is_empty() {
             None
         } else {

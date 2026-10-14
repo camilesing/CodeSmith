@@ -27,10 +27,10 @@ pub const MAX_MEMORY_FILES: usize = 200;
 pub const MAX_SESSION_BYTES: usize = 500_000;
 
 /// Tracks session-wide byte consumption for surfaced memories.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct SessionByteBudget {
-    pub max_bytes: usize,
-    pub bytes_consumed: usize,
+    max_bytes: usize,
+    bytes_consumed: usize,
 }
 
 impl SessionByteBudget {
@@ -43,12 +43,17 @@ impl SessionByteBudget {
 
     /// Check whether there is enough budget remaining for `additional` bytes.
     pub fn can_afford(&self, additional: usize) -> bool {
-        self.bytes_consumed + additional <= self.max_bytes
+        additional <= self.remaining()
     }
 
-    /// Consume `bytes` from the budget.
-    pub fn consume(&mut self, bytes: usize) {
-        self.bytes_consumed += bytes;
+    /// Try to consume `bytes` atomically; returns `false` (leaving the
+    /// budget unchanged) when there is not enough remaining.
+    pub fn try_consume(&mut self, bytes: usize) -> bool {
+        if !self.can_afford(bytes) {
+            return false;
+        }
+        self.bytes_consumed = self.bytes_consumed.saturating_add(bytes);
+        true
     }
 
     /// Remaining bytes in the budget.
@@ -76,14 +81,22 @@ mod tests {
     #[test]
     fn budget_cannot_afford_over_limit() {
         let mut budget = SessionByteBudget::new();
-        budget.consume(MAX_SESSION_BYTES);
+        assert!(budget.try_consume(MAX_SESSION_BYTES));
         assert!(!budget.can_afford(1));
+    }
+
+    #[test]
+    fn budget_try_consume_rejects_past_limit() {
+        let mut budget = SessionByteBudget::new();
+        assert!(budget.try_consume(MAX_SESSION_BYTES - 1));
+        assert!(!budget.try_consume(2));
+        assert_eq!(budget.remaining(), 1);
     }
 
     #[test]
     fn budget_remaining_decreases() {
         let mut budget = SessionByteBudget::new();
-        budget.consume(100_000);
+        assert!(budget.try_consume(100_000));
         assert_eq!(budget.remaining(), MAX_SESSION_BYTES - 100_000);
     }
 }

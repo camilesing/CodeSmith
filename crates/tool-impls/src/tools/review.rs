@@ -130,8 +130,17 @@ impl ReviewOutput {
 }
 
 fn parse_review_output_json(raw: &str) -> Option<ReviewOutput> {
+    parse_review_output_json_depth(raw, 0)
+}
+
+fn parse_review_output_json_depth(raw: &str, depth: usize) -> Option<ReviewOutput> {
+    const MAX_UNWRAP_DEPTH: usize = 4;
     if let Ok(parsed) = serde_json::from_str::<ReviewOutput>(raw) {
         return Some(parsed);
+    }
+
+    if depth >= MAX_UNWRAP_DEPTH {
+        return None;
     }
 
     let Value::String(inner) = serde_json::from_str::<Value>(raw).ok()? else {
@@ -140,7 +149,7 @@ fn parse_review_output_json(raw: &str) -> Option<ReviewOutput> {
     if inner.trim().is_empty() || inner == raw {
         return None;
     }
-    parse_review_output_json(&inner)
+    parse_review_output_json_depth(&inner, depth + 1)
 }
 
 pub struct ReviewTool {
@@ -222,8 +231,21 @@ impl ToolSpec for ReviewTool {
                 .unwrap_or(DEFAULT_MAX_CHARS)
                 .clamp(1, MAX_MAX_CHARS);
 
-        let source =
-            resolve_review_source(target, kind.as_deref(), staged, base.as_deref(), context)?;
+        let target_owned = target.to_string();
+        let context = context.clone();
+        let source = tokio::task::spawn_blocking(move || {
+            resolve_review_source(
+                &target_owned,
+                kind.as_deref(),
+                staged,
+                base.as_deref(),
+                &context,
+            )
+        })
+        .await
+        .map_err(|e| {
+            ToolError::execution_failed(format!("review source resolution task failed: {e}"))
+        })??;
         let prompt = build_review_prompt(&source, max_chars);
 
         let request = MessageRequest {
@@ -498,12 +520,24 @@ fn normalize_severity(value: &str) -> String {
 
 fn extract_json_block(raw: &str) -> Option<&str> {
     let start = raw.find('{')?;
-    let end = raw.rfind('}')?;
-    if end <= start {
-        None
-    } else {
-        Some(&raw[start..=end])
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (offset, ch) in raw[start..].char_indices() {
+        match ch {
+            '\\' if in_string => escaped = !escaped,
+            '"' if !escaped => in_string = !in_string,
+            '{' if !in_string => depth += 1,
+            '}' if !in_string => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(&raw[start..=start + offset]);
+                }
+            }
+            _ => escaped = false,
+        }
     }
+    None
 }
 
 fn diff_mode_from_target(target: &str) -> Option<bool> {
@@ -618,6 +652,44 @@ mod tests {
         let raw = "prefix {\"summary\":\"ok\"} suffix";
         let block = extract_json_block(raw).expect("block");
         assert!(block.contains("\"summary\""));
+    }
+
+    #[test]
+    fn extracts_first_balanced_json_object() {
+        let raw = "notes {\"a\":1} then {\"summary\":\"ok\"}";
+        let block = extract_json_block(raw).expect("block");
+        assert_eq!(block, "{\"a\":1}");
+    }
+
+    #[test]
+    fn extract_json_block_handles_braces_inside_strings() {
+        let raw = "prefix {\"summary\":\"has } brace\"} suffix";
+        let block = extract_json_block(raw).expect("block");
+        assert_eq!(block, "{\"summary\":\"has } brace\"}");
+    }
+
+    #[test]
+    fn extract_json_block_returns_none_when_unbalanced() {
+        assert!(extract_json_block("{\"summary\": \"open").is_none());
+    }
+
+    #[test]
+    fn review_output_parses_first_object_when_prose_and_json_mixed() {
+        let raw = "Here is the review:\n{\"summary\":\"mixed\",\"issues\":[],\"suggestions\":[],\"overall_assessment\":\"ok\"}\nLet me know.";
+        let output = ReviewOutput::from_str(raw);
+        assert_eq!(output.summary, "mixed");
+        assert_eq!(output.overall_assessment, "ok");
+    }
+
+    #[test]
+    fn review_output_rejects_deeply_nested_encoding() {
+        let mut raw = serde_json::json!({"summary": "s"}).to_string();
+        for _ in 0..10 {
+            raw = serde_json::to_string(&raw).expect("encode string");
+        }
+        let output = ReviewOutput::from_str(&raw);
+        assert!(output.issues.is_empty());
+        assert!(!output.summary.contains("\"summary\""));
     }
 
     #[test]

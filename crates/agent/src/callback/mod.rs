@@ -261,9 +261,8 @@ impl Callback for CallbackSet {
         &'a self,
         request: &'a MessageRequest,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        let cbs = self.callbacks.clone();
         Box::pin(async move {
-            for cb in &cbs {
+            for cb in &self.callbacks {
                 cb.on_llm_start(request).await;
             }
         })
@@ -273,9 +272,8 @@ impl Callback for CallbackSet {
         &'a self,
         content: &'a [ContentBlock],
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        let cbs = self.callbacks.clone();
         Box::pin(async move {
-            for cb in &cbs {
+            for cb in &self.callbacks {
                 cb.on_llm_end(content).await;
             }
         })
@@ -287,9 +285,8 @@ impl Callback for CallbackSet {
         name: &'a str,
         input: &'a serde_json::Value,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        let cbs = self.callbacks.clone();
         Box::pin(async move {
-            for cb in &cbs {
+            for cb in &self.callbacks {
                 cb.on_tool_start(id, name, input).await;
             }
         })
@@ -300,9 +297,8 @@ impl Callback for CallbackSet {
         name: &'a str,
         result: &'a Result<ToolResult, ToolError>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        let cbs = self.callbacks.clone();
         Box::pin(async move {
-            for cb in &cbs {
+            for cb in &self.callbacks {
                 cb.on_tool_end(name, result).await;
             }
         })
@@ -314,18 +310,16 @@ impl Callback for CallbackSet {
         name: &'a str,
         message: &'a str,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        let cbs = self.callbacks.clone();
         Box::pin(async move {
-            for cb in &cbs {
+            for cb in &self.callbacks {
                 cb.on_tool_progress(id, name, message).await;
             }
         })
     }
 
     fn on_step<'a>(&'a self, step: u32) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        let cbs = self.callbacks.clone();
         Box::pin(async move {
-            for cb in &cbs {
+            for cb in &self.callbacks {
                 cb.on_step(step).await;
             }
         })
@@ -335,9 +329,8 @@ impl Callback for CallbackSet {
         &'a self,
         reason: &'a StopReason,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        let cbs = self.callbacks.clone();
         Box::pin(async move {
-            for cb in &cbs {
+            for cb in &self.callbacks {
                 cb.on_complete(reason).await;
             }
         })
@@ -347,9 +340,8 @@ impl Callback for CallbackSet {
         &'a self,
         delta: &'a StreamDelta,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        let cbs = self.callbacks.clone();
         Box::pin(async move {
-            for cb in &cbs {
+            for cb in &self.callbacks {
                 cb.on_stream_delta(delta).await;
             }
         })

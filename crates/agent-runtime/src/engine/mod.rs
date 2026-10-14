@@ -823,10 +823,11 @@ impl Engine {
                 } => {
                     let timeout_ms = timeout_secs.unwrap_or(600).saturating_mul(1_000);
                     let cwd_str = cwd.as_ref().map(|path| path.to_string_lossy().to_string());
-                    let result =
-                        self.host
-                            .shell()
-                            .execute(&command, cwd_str.as_deref(), timeout_ms, true);
+                    let result = self
+                        .host
+                        .shell()
+                        .execute(&command, cwd_str.as_deref(), timeout_ms, true)
+                        .await;
                     match result {
                         Ok(shell_result) => {
                             if let Some(shell_id) = shell_result.task_id.clone() {

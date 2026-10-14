@@ -33,7 +33,6 @@ edition = "2024"
 rust-version = "1.88"
 license = "MIT"
 repository = "https://github.com/camilesing/CodeSmith"
-readme = "README.md"
 
 [workspace.dependencies]
 anyhow = "1.0.100"
@@ -68,8 +67,6 @@ tokio = { version = "1.49.0", features = ["full"] }
 toml = "0.9.7"
 sha2 = "0.10"
 ignore = "0.4"
-# notify: file watching for the Mods script-layer hot reload (§F script mod
-# layer Phase B7). Watch-only; events are debounced + cooldown-gated.
 # ripgrep engine crates: `grep_files` walks with `ignore` and matches with
 # `grep-regex`/`grep-matcher` so tool search gets ripgrep semantics
 # (gitignore-aware walking, multi-line mode) without shelling out to `rg`.

@@ -3,7 +3,6 @@ name = "extensions-fixture-dylib"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-readme.workspace = true
 keywords = ["llm", "agent"]
 categories = ["development-tools"]
 license.workspace = true

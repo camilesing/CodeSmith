@@ -251,20 +251,14 @@ fn policy_builtins(builder: &mut GlobalsBuilder) {
 
         let rest: Arc<[PatternToken]> = remaining_tokens.to_vec().into();
 
-        let rules: Vec<RuleRef> = first_token
-            .alternatives()
-            .iter()
-            .map(|head| {
-                Arc::new(PrefixRule {
-                    pattern: PrefixPattern {
-                        first: Arc::from(head.as_str()),
-                        rest: rest.clone(),
-                    },
-                    decision,
-                    justification: justification.clone(),
-                }) as RuleRef
-            })
-            .collect();
+        let mut rules: Vec<RuleRef> = Vec::new();
+        for head in first_token.alternatives() {
+            rules.push(Arc::new(PrefixRule {
+                pattern: PrefixPattern::new(head, rest.clone())?,
+                decision,
+                justification: justification.clone(),
+            }) as RuleRef);
+        }
 
         validate_not_match_examples(&rules, &not_matches)?;
         validate_match_examples(&rules, &matches)?;

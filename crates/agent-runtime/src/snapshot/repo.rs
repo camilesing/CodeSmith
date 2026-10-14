@@ -52,6 +52,19 @@ pub struct SnapshotRepo {
 
 const STALE_TMP_PACK_AGE: Duration = Duration::from_secs(60 * 60);
 
+/// Object-prune grace for `git gc`/`git prune`. The side repo is keyed only
+/// by the workspace path, so two agent processes open on the same workspace
+/// share one repo; `--prune=now` would delete a concurrent session's
+/// freshly-written, still-unreachable mid-snapshot objects. Mirroring the
+/// tmp_pack staleness heuristic keeps young objects alive while old ones
+/// are still reclaimed.
+const PRUNE_GRACE: Duration = STALE_TMP_PACK_AGE;
+
+/// `git gc --prune` / `git prune --expire` value for [PRUNE_GRACE].
+fn prune_grace_age() -> String {
+    format!("{}.seconds.ago", PRUNE_GRACE.as_secs())
+}
+
 /// Maximum total snapshot storage in megabytes before pruning kicks in at
 /// snapshot time. Keeps the side repo from blowing up the user's disk during
 /// long-running or high-churn sessions (#1112).
@@ -612,7 +625,8 @@ impl SnapshotRepo {
             }
         }
 
-        // Reclaim space.
+        // Reclaim space. The grace period (not `--prune=now`) protects a
+        // concurrent session's freshly-written objects — see [PRUNE_GRACE].
         let _ = run_git(
             &self.git_dir,
             &self.work_tree,
@@ -621,7 +635,7 @@ impl SnapshotRepo {
         let _ = run_git(
             &self.git_dir,
             &self.work_tree,
-            &["gc", "--prune=now", "--quiet"],
+            &["gc", &format!("--prune={}", prune_grace_age()), "--quiet"],
         );
 
         Ok(removed)
@@ -707,7 +721,7 @@ impl SnapshotRepo {
         let _ = run_git(
             &self.git_dir,
             &self.work_tree,
-            &["gc", "--prune=now", "--quiet"],
+            &["gc", &format!("--prune={}", prune_grace_age()), "--quiet"],
         );
         Ok(removed)
     }
@@ -715,7 +729,11 @@ impl SnapshotRepo {
     /// Drop unreachable loose objects left behind by interrupted or
     /// orphaned side-repo operations.
     pub fn prune_unreachable_objects(&self) -> io::Result<()> {
-        let prune = run_git(&self.git_dir, &self.work_tree, &["prune", "--expire=now"])?;
+        let prune = run_git(
+            &self.git_dir,
+            &self.work_tree,
+            &["prune", &format!("--expire={}", prune_grace_age())],
+        )?;
         if !prune.status.success() {
             return Err(io_other(format!(
                 "git prune failed: {}",

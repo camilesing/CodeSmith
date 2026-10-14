@@ -62,8 +62,13 @@ fn scan_memory_files_with_limit(memory_dir: &Path, limit: Option<usize>) -> Vec<
         .filter(|h| h.filename != "MEMORY.md")
         .collect();
 
-    // Sort by mtime descending (most recent first).
-    headers.sort_by(|a, b| b.mtime_ms.cmp(&a.mtime_ms));
+    // Sort by mtime descending (most recent first), with the filename as a
+    // deterministic tiebreaker so equal-mtime truncation is reproducible.
+    headers.sort_by(|a, b| {
+        b.mtime_ms
+            .cmp(&a.mtime_ms)
+            .then_with(|| a.filename.cmp(&b.filename))
+    });
 
     // Enforce the limit — drop oldest.
     if let Some(limit) = limit
@@ -119,6 +124,12 @@ pub fn parse_frontmatter(content: &str) -> (Frontmatter, &str) {
 fn parse_frontmatter_lines(text: &str) -> Frontmatter {
     let mut fm = Frontmatter::default();
     for line in text.lines() {
+        // Skip indented (nested YAML) lines — only top-level keys are
+        // meaningful here, and a nested `name:` must not shadow the
+        // top-level value.
+        if line.trim_start() != line {
+            continue;
+        }
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -143,12 +154,20 @@ fn collect_md_files(memory_dir: &Path) -> Vec<PathBuf> {
         return files;
     }
     // Read directory entries (flat, no recursion — memory files live at top level).
-    if let Ok(entries) = fs::read_dir(memory_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "md") {
-                files.push(path);
+    match fs::read_dir(memory_dir) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|ext| ext == "md") {
+                    files.push(path);
+                }
             }
+        }
+        Err(err) => {
+            tracing::warn!(
+                "knowledge scan: failed to read {}: {err}",
+                memory_dir.display()
+            );
         }
     }
     files
@@ -157,18 +176,6 @@ fn collect_md_files(memory_dir: &Path) -> Vec<PathBuf> {
 fn build_header(path: &Path, memory_dir: &Path) -> Option<MemoryHeader> {
     // Skip on failure, but loudly — a memory file that silently vanishes
     // from the listing hides real corruption.
-    let mtime = match fs::metadata(path) {
-        Ok(meta) => meta.modified().ok()?,
-        Err(err) => {
-            tracing::warn!("knowledge scan: skipping {}: {err}", path.display());
-            return None;
-        }
-    };
-    let mtime_ms = mtime
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_millis() as i64;
-
     let content = match fs::read_to_string(path) {
         Ok(content) => content,
         Err(err) => {
@@ -176,6 +183,25 @@ fn build_header(path: &Path, memory_dir: &Path) -> Option<MemoryHeader> {
             return None;
         }
     };
+    // Stat after reading so the recorded mtime matches the parsed bytes.
+    let mtime = match fs::metadata(path).and_then(|meta| meta.modified()) {
+        Ok(mtime) => mtime,
+        Err(err) => {
+            tracing::warn!("knowledge scan: skipping {}: {err}", path.display());
+            return None;
+        }
+    };
+    let mtime_ms = match mtime.duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => duration.as_millis() as i64,
+        Err(err) => {
+            tracing::warn!(
+                "knowledge scan: skipping {}: pre-epoch mtime: {err}",
+                path.display()
+            );
+            return None;
+        }
+    };
+
     let (fm, _body) = parse_frontmatter(&content);
 
     let filename = path
@@ -261,6 +287,20 @@ Body.";
 
         let (fm, _) = parse_frontmatter("---\nname: a---");
         assert_eq!(fm.name.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn parse_frontmatter_indented_keys_do_not_shadow_top_level() {
+        let content = "\
+---
+name: outer
+nested:
+  name: inner
+---
+Body.";
+        let (fm, body) = parse_frontmatter(content);
+        assert_eq!(fm.name.as_deref(), Some("outer"));
+        assert!(body.starts_with("Body."));
     }
 
     #[test]

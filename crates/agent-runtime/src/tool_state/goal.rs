@@ -108,7 +108,11 @@ impl GoalState {
     }
 
     pub fn create(&mut self, objective: String, token_budget: Option<u32>) {
-        self.objective = Some(objective);
+        let objective = objective.trim();
+        if objective.is_empty() {
+            return;
+        }
+        self.objective = Some(objective.to_string());
         self.token_budget = token_budget;
         self.status = Some(GoalStatus::Active);
         self.started_at = Some(Instant::now());
@@ -119,6 +123,13 @@ impl GoalState {
 
     pub fn resume(&mut self, objective: Option<String>) -> Result<(), &'static str> {
         if let Some(objective) = objective {
+            if self.objective.as_deref() == Some(objective.trim()) {
+                self.status = Some(GoalStatus::Active);
+                self.finished_at = None;
+                self.evidence = None;
+                self.blocker = None;
+                return Ok(());
+            }
             self.create(objective, self.token_budget);
             return Ok(());
         }
@@ -133,7 +144,7 @@ impl GoalState {
     }
 
     pub fn mark_complete(&mut self, evidence: String) -> Result<(), &'static str> {
-        if self.objective.is_none() {
+        if !self.is_active() {
             return Err("No active goal exists to complete.");
         }
         self.status = Some(GoalStatus::Complete);
@@ -144,11 +155,12 @@ impl GoalState {
     }
 
     pub fn mark_blocked(&mut self, blocker: String) -> Result<(), &'static str> {
-        if self.objective.is_none() {
+        if !self.is_active() {
             return Err("No active goal exists to block.");
         }
         self.status = Some(GoalStatus::Blocked);
         self.finished_at = Some(Instant::now());
+        self.evidence = None;
         self.blocker = Some(blocker);
         Ok(())
     }
@@ -167,7 +179,10 @@ impl GoalState {
                 .unwrap_or("none")
                 .to_string(),
             token_budget: self.token_budget,
-            elapsed_seconds: self.started_at.map(|started| started.elapsed().as_secs()),
+            elapsed_seconds: self.started_at.map(|started| {
+                let end = self.finished_at.unwrap_or_else(Instant::now);
+                end.duration_since(started).as_secs()
+            }),
             evidence: self.evidence.clone(),
             blocker: self.blocker.clone(),
         }

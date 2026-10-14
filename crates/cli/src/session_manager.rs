@@ -305,7 +305,6 @@ impl SessionManager {
     }
 
     /// Save a crash-recovery checkpoint for in-flight turns.
-    #[cfg(test)]
     pub fn save_checkpoint(&self, session: &SavedSession) -> std::io::Result<PathBuf> {
         let checkpoints = self.sessions_dir.join("checkpoints");
         fs::create_dir_all(&checkpoints)?;

@@ -89,7 +89,15 @@ impl ToolSpec for RememberTool {
 
         // KoD mode: write frontmatter file to memory directory.
         if let Some(memory_dir) = &context.memory_dir {
-            return write_kod_memory(memory_dir, note, name, description, memory_type);
+            let dir = memory_dir.clone();
+            let note_text = note.to_string();
+            return tokio::task::spawn_blocking(move || {
+                write_kod_memory(&dir, &note_text, name, description, memory_type)
+            })
+            .await
+            .map_err(|err| {
+                ToolError::execution_failed(format!("memory write task failed: {err}"))
+            })?;
         }
 
         // Legacy mode: append to single memory file.
@@ -100,9 +108,18 @@ impl ToolSpec for RememberTool {
             )
         })?;
 
-        codesmith_agent_runtime::memory::append_entry(path, note).map_err(|err| {
-            ToolError::execution_failed(format!("failed to append to {}: {err}", path.display()))
-        })?;
+        let path = path.to_path_buf();
+        let note_text = note.to_string();
+        tokio::task::spawn_blocking(move || {
+            codesmith_agent_runtime::memory::append_entry(&path, &note_text).map_err(|err| {
+                ToolError::execution_failed(format!(
+                    "failed to append to {}: {err}",
+                    path.display()
+                ))
+            })
+        })
+        .await
+        .map_err(|err| ToolError::execution_failed(format!("memory write task failed: {err}")))??;
 
         Ok(ToolResult::success(format!(
             "remembered: {}",
@@ -155,10 +172,9 @@ fn write_kod_memory(
 
     // Build frontmatter. `name` / `description` are model-supplied and are
     // sanitized to a single-line YAML scalar so they cannot forge a
-    // `\n---\n` document boundary, inject extra frontmatter keys, or break
-    // out of the MEMORY.md pointer line below. `filename` (slug) and
-    // `memory_type` (internally controlled enum) are already structurally
-    // safe and pass through the sanitizer unchanged.
+    // `\n---\n` document boundary or inject extra frontmatter keys.
+    // `filename` (slug) and `memory_type` (internally controlled enum) are
+    // already structurally safe and pass through the sanitizer unchanged.
     let fm_name = sanitize_frontmatter_value(name.as_deref().unwrap_or(&filename));
     let fm_description = sanitize_frontmatter_value(description.as_deref().unwrap_or(note.trim()));
 
@@ -185,13 +201,23 @@ fn write_kod_memory(
         },
     )?;
 
-    // Append pointer line to MEMORY.md entrypoint.
+    // Append pointer line to MEMORY.md entrypoint. Markdown brackets are
+    // stripped from the interpolated values so a hostile name/description
+    // cannot forge link syntax in MEMORY.md.
     let entrypoint_path = resolve_memory_entrypoint(memory_dir);
-    let pointer_line = format!("- [{fm_name}]({filename}.md) — {fm_description}");
+    let pointer_line = format!(
+        "- [{}]({filename}.md) — {}",
+        fm_name.replace(['[', ']'], ""),
+        fm_description.replace(['[', ']'], "")
+    );
     if let Err(err) = append_to_entrypoint(&entrypoint_path, &pointer_line) {
         // Non-critical: entrypoint update failure shouldn't block the write.
         // Log but don't fail.
-        eprintln!("warning: failed to update MEMORY.md entrypoint: {err}");
+        tracing::warn!(
+            path = %entrypoint_path.display(),
+            error = %err,
+            "failed to update MEMORY.md entrypoint"
+        );
     }
 
     Ok(ToolResult::success(format!(
@@ -516,5 +542,27 @@ mod tests {
         let lines: Vec<&str> = entry.lines().collect();
         assert_eq!(lines.len(), 1, "pointer stays a single line: {entry}");
         assert!(lines[0].starts_with("- [ptr](ptr.md) —"));
+    }
+
+    #[test]
+    fn kod_pointer_line_strips_markdown_link_brackets() {
+        // A name shaped to close the pointer link and open a forged one
+        // must lose its brackets before landing in MEMORY.md.
+        let tmp = tempdir().unwrap();
+        write_kod_memory(
+            tmp.path(),
+            "note",
+            Some("x](evil.md) — [y".to_string()),
+            None,
+            MemoryType::Feedback,
+        )
+        .expect("write");
+
+        let entry = std::fs::read_to_string(tmp.path().join("MEMORY.md")).expect("MEMORY.md");
+        assert_eq!(
+            entry.matches("](").count(),
+            1,
+            "pointer line must contain exactly one link target: {entry}"
+        );
     }
 }

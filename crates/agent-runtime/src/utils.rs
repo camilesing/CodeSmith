@@ -233,6 +233,9 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     std::io::Write::write_all(&mut tmp, contents)?;
     tmp.as_file().sync_all()?;
     tmp.persist(path)?;
+    if let Ok(dir) = std::fs::File::open(parent) {
+        let _ = dir.sync_all();
+    }
     Ok(())
 }
 
@@ -421,7 +424,7 @@ fn write_panic_dump(
     location: &std::panic::Location<'_>,
     message: &str,
 ) -> std::io::Result<()> {
-    let home = dirs::home_dir().ok_or_else(|| {
+    let home = effective_home_dir().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "home directory not found")
     })?;
     let crash_dir = home.join(".codesmith").join("crashes");
@@ -501,7 +504,16 @@ pub fn truncate_with_ellipsis(s: &str, max_len: usize, ellipsis: &str) -> String
     if s.len() <= max_len {
         return s.to_string();
     }
-    let budget = max_len.saturating_sub(ellipsis.len());
+    if max_len <= ellipsis.len() {
+        let end = s
+            .char_indices()
+            .map(|(i, _)| i)
+            .take_while(|&i| i <= max_len)
+            .last()
+            .unwrap_or(0);
+        return s[..end].to_string();
+    }
+    let budget = max_len - ellipsis.len();
     // Find the last char boundary that fits within the byte budget.
     let safe_end = s
         .char_indices()
@@ -620,7 +632,7 @@ pub fn defuse_closing_tag(text: &str, tag: &str) -> String {
 /// resolve correctly across processes.
 #[must_use]
 pub fn display_path(path: &Path) -> String {
-    display_path_with_home(path, dirs::home_dir().as_deref())
+    display_path_with_home(path, effective_home_dir().as_deref())
 }
 
 /// Like [`display_path`] but takes an explicit home directory instead of

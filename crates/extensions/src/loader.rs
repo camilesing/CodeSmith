@@ -33,9 +33,17 @@ pub(crate) fn sha256_sidecar_path(dylib: &Path) -> PathBuf {
 
 pub(crate) fn dylib_sha256(dylib: &Path) -> std::io::Result<String> {
     use sha2::{Digest, Sha256};
-    let bytes = std::fs::read(dylib)?;
+    use std::io::Read;
+    let mut file = std::io::BufReader::new(std::fs::File::open(dylib)?);
     let mut hasher = Sha256::new();
-    hasher.update(&bytes);
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
     Ok(format!("{:x}", hasher.finalize()))
 }
 
@@ -54,13 +62,21 @@ pub(crate) fn write_sha256_sidecar(dylib: &Path) -> Result<(), ExtensionError> {
 /// artifact must never reach it. Dylibs installed before the sidecar
 /// existed — and bare dylib sources — have no sidecar and load unchanged.
 ///
+/// Returns the sidecar's recorded digest on success, so [`load_dylib`] can
+/// re-hash after mapping the library and unload on drift. That post-load
+/// check catches a swap in the window between the two opens, but a
+/// determined attacker can still swap the artifact in for `dlopen` and
+/// restore it before the re-hash — the residual race is inherent to
+/// hash-then-open-by-path; closing it fully needs an fd-anchored load,
+/// which is not portable across the supported platforms.
+///
 /// Known limitation: a `NotFound` sidecar only downgrades the load to
 /// unverified with a warning. Under the "silently swapped artifact" threat
 /// model an attacker with write access to the dylib almost certainly can
 /// also delete its sibling sidecar — deleting the attestation defeats the
 /// gate. Anchoring digests outside the dylib's directory (a manifest the
 /// loader owns) would close that; it is deliberately not built yet.
-fn verify_dylib_integrity(path: &Path) -> Result<(), ExtensionError> {
+fn verify_dylib_integrity(path: &Path) -> Result<Option<String>, ExtensionError> {
     let sidecar = sha256_sidecar_path(path);
     let expected = match std::fs::read_to_string(&sidecar) {
         Ok(content) => content.trim().to_string(),
@@ -71,7 +87,7 @@ fn verify_dylib_integrity(path: &Path) -> Result<(), ExtensionError> {
                  this path)",
                 path.display()
             );
-            return Ok(());
+            return Ok(None);
         }
         Err(err) => {
             return Err(ExtensionError::Load(format!(
@@ -88,17 +104,44 @@ fn verify_dylib_integrity(path: &Path) -> Result<(), ExtensionError> {
             path.display()
         )));
     }
-    Ok(())
+    Ok(Some(expected))
 }
 
-/// Load a dylib + construct its `Extension`. Returns the `Library` (which
-/// the caller MUST keep alive for as long as any registered contribution's
-/// vtable is reachable) and the `Box<dyn Extension>` (consumed by
-/// `ExtensionRunner::load` during `configure`, then dropped). Errors →
+/// A dylib `Library` paired with the `Extension` it constructed, with the
+/// drop order enforced by construction: `extension` is declared first, so
+/// its destructor (which runs dylib code via its vtable) executes strictly
+/// before `library` drops and unmaps the code. The `Library` must
+/// additionally outlive every contribution registered during `configure` —
+/// callers that park it in their own registry do so via
+/// [`LoadedDylib::into_library`].
+pub struct LoadedDylib {
+    extension: Option<Box<dyn Extension>>,
+    library: Library,
+}
+
+impl LoadedDylib {
+    /// Takes the extension for `configure`; the `Library` stays owned here
+    /// (outliving all registered contributions) until drop.
+    pub fn take_extension(&mut self) -> Option<Box<dyn Extension>> {
+        self.extension.take()
+    }
+
+    /// Moves the `Library` out (e.g. into a registry that keeps it alive).
+    /// A not-yet-taken extension is dropped first, while the library is
+    /// still mapped.
+    pub fn into_library(mut self) -> Library {
+        drop(self.extension.take());
+        self.library
+    }
+}
+
+/// Load a dylib + construct its `Extension`, returned as a [`LoadedDylib`]
+/// whose drop order is fixed by construction (the `Box<dyn Extension>`
+/// drops strictly before the `Library`). Errors →
 /// [`ExtensionError::Load`] (integrity / open / symbol lookup / null
 /// return).
-pub fn load_dylib(path: &Path) -> Result<(Library, Box<dyn Extension>), ExtensionError> {
-    verify_dylib_integrity(path)?;
+pub fn load_dylib(path: &Path) -> Result<LoadedDylib, ExtensionError> {
+    let expected = verify_dylib_integrity(path)?;
     let library = unsafe { Library::new(path) }.map_err(|e| {
         // libloading's `Display` for `DlOpen` is just "dlopen failed"; the OS
         // reason (dlerror string) lives in the error's `source`.
@@ -107,6 +150,17 @@ pub fn load_dylib(path: &Path) -> Result<(Library, Box<dyn Extension>), Extensio
             .unwrap_or_else(|| "system reported no detail".to_string());
         ExtensionError::Load(format!("open dylib {path:?}: {reason}"))
     })?;
+    if let Some(expected) = expected
+        && dylib_sha256(path)
+            .map_err(|e| ExtensionError::Load(format!("read {}: {e}", path.display())))?
+            != expected
+    {
+        // Dropping `library` runs dlclose, unmapping the swapped code.
+        return Err(ExtensionError::Load(format!(
+            "dylib {} changed on disk between integrity check and load; unloading",
+            path.display()
+        )));
+    }
     let register: Symbol<unsafe extern "C" fn() -> *mut dyn Extension> =
         unsafe { library.get(REGISTER_SYMBOL) }.map_err(|e| {
             let reason = std::error::Error::source(&e)
@@ -124,7 +178,10 @@ pub fn load_dylib(path: &Path) -> Result<(Library, Box<dyn Extension>), Extensio
     // same global allocator as the host (same compiler + codesmith-agent
     // version). Fat-pointer return representation matches under lockstep.
     let extension = unsafe { Box::from_raw(ptr) };
-    Ok((library, extension))
+    Ok(LoadedDylib {
+        extension: Some(extension),
+        library,
+    })
 }
 
 #[cfg(test)]

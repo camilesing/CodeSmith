@@ -52,7 +52,9 @@ pub struct TuiOptions {
     pub memory_path: PathBuf,
     pub mcp_config_path: PathBuf,
     pub use_memory: bool,
-    /// Start in agent mode (defaults to agent; --yolo starts in YOLO)
+    /// Start in agent mode when true and `yolo` is false. When both flags
+    /// are false, mode selection falls through to the coordinator flag or
+    /// the settings default (see `interactive::state`).
     pub start_in_agent_mode: bool,
     /// Auto-approve tool executions (yolo mode)
     pub yolo: bool,

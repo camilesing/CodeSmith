@@ -261,18 +261,24 @@ pub struct IndexStats {
 #[derive(Debug, Clone, Deserialize)]
 pub struct SymbolQuery {
     /// Case-insensitive substring of the symbol name (required, non-empty).
+    /// An empty needle would match every symbol, so implementations of
+    /// [`IndexServiceApi::search_symbols`] must reject it with an error.
     pub query: String,
     /// Optional kind filter.
     pub kind: Option<SymbolKind>,
     /// Optional glob filter on the workspace-relative path
     /// (e.g. `crates/tui/**/*.rs`).
     pub file_glob: Option<String>,
-    /// Maximum results. Callers should pass [`DEFAULT_SYMBOL_LIMIT`] when
-    /// the user did not choose one.
+    /// Maximum results. Must be at least 1 (`0` yields no rows, not
+    /// "unlimited"); callers should pass [`DEFAULT_SYMBOL_LIMIT`] when the
+    /// user did not choose one.
     pub limit: usize,
 }
 
 impl Default for SymbolQuery {
+    /// `query` defaults to the empty string — valid only as a
+    /// `..Default::default()` struct-update base, never as a runnable
+    /// query (implementations reject it).
     fn default() -> Self {
         Self {
             query: String::new(),
@@ -290,14 +296,15 @@ pub struct FileQuery {
     pub glob: Option<String>,
     /// Optional extension filter (without the dot, e.g. `rs`).
     pub extension: Option<String>,
-    /// Maximum results.
+    /// Maximum results. Must be at least 1 (`0` yields no rows, not
+    /// "unlimited"); callers should pass [`DEFAULT_FILE_LIMIT`] when the
+    /// user did not choose one.
     pub limit: usize,
 }
 
 impl Default for FileQuery {
     /// Manual like `SymbolQuery`'s: a derived `Default` would produce
-    /// `limit: 0`, which the store's `list_files` treats as "stop after
-    /// the first matching row".
+    /// `limit: 0`, which lists no files at all.
     fn default() -> Self {
         Self {
             glob: None,
@@ -310,6 +317,9 @@ impl Default for FileQuery {
 /// Bound on the lazy incremental refresh a single query may trigger.
 /// Files beyond the budget are left stale and counted in
 /// [`IndexStats::stale_files`] instead of blocking the agent turn.
+///
+/// The wall-clock ceiling is cooperative: it is checked between file
+/// extractions, so a single slow parse or disk read may overshoot it.
 #[derive(Debug, Clone, Copy)]
 pub struct RefreshBudget {
     /// Maximum number of files to (re-)extract in one refresh.
@@ -327,26 +337,26 @@ impl Default for RefreshBudget {
     }
 }
 
-/// Precompiled glob: the pattern is split and char-collected once per
-/// query, then matched per candidate row. Providers evaluate one glob
-/// against up to hundreds of rows (sometimes while holding the store
-/// mutex) — re-splitting the pattern per row is pure waste.
+/// Precompiled glob: the pattern is split once per query, then matched per
+/// candidate row. Providers evaluate one glob against up to hundreds of rows
+/// (sometimes while holding the store mutex) — re-splitting the pattern per
+/// row is pure waste.
 #[derive(Debug, Clone)]
 pub struct GlobMatcher {
-    segments: Vec<Vec<char>>,
+    segments: Vec<Box<str>>,
 }
 
 impl GlobMatcher {
     #[must_use]
     pub fn new(pattern: &str) -> Self {
         Self {
-            segments: pattern.split('/').map(|s| s.chars().collect()).collect(),
+            segments: pattern.split('/').map(Box::from).collect(),
         }
     }
 
     #[must_use]
     pub fn matches(&self, path: &str) -> bool {
-        let segs: Vec<Vec<char>> = path.split('/').map(|s| s.chars().collect()).collect();
+        let segs: Vec<&str> = path.split('/').collect();
         match_segments(&self.segments, &segs)
     }
 }
@@ -361,61 +371,70 @@ pub fn glob_match(pattern: &str, path: &str) -> bool {
     GlobMatcher::new(pattern).matches(path)
 }
 
-fn match_segments(pat: &[Vec<char>], segs: &[Vec<char>]) -> bool {
+fn match_segments(pat: &[Box<str>], segs: &[&str]) -> bool {
     // Bottom-up DP over (pattern index, segment index): `dp[i][j]` asks
     // whether `pat[i..]` matches `segs[j..]`. The naive recursion retries
     // `**` at every split point (O(segs^k) for k double-stars) — model
     // input reaches this via the unvalidated `symbol_search` `file_glob`
     // param, evaluated per candidate, so adversarial globs must not be
     // able to burn unbounded CPU. Each grid cell is evaluated once:
-    // O(pattern segments × path segments).
+    // O(pattern segments × path segments); only two DP rows are retained.
     let (m, n) = (pat.len(), segs.len());
-    let is_double_star = |i: usize| pat[i].len() == 2 && pat[i][0] == '*' && pat[i][1] == '*';
-    let mut dp = vec![vec![false; n + 1]; m + 1];
-    dp[m][n] = true;
+    let is_double_star = |i: usize| pat[i].as_ref() == "**";
+    let mut next = vec![false; n + 1];
+    let mut cur = vec![false; n + 1];
+    next[n] = true;
     for i in (0..m).rev() {
         for j in (0..=n).rev() {
-            dp[i][j] = if is_double_star(i) {
+            cur[j] = if is_double_star(i) {
                 // Consume no segment, or consume one more and stay on the
                 // double-star (it may absorb any number of segments).
-                dp[i + 1][j] || (j < n && dp[i][j + 1])
+                next[j] || (j < n && cur[j + 1])
             } else {
-                j < n && chars_match(&pat[i], &segs[j]) && dp[i + 1][j + 1]
+                j < n && chars_match(&pat[i], segs[j]) && next[j + 1]
             };
         }
+        std::mem::swap(&mut next, &mut cur);
     }
-    dp[0][0]
+    next[0]
 }
 
-fn chars_match(p: &[char], s: &[char]) -> bool {
+fn chars_match(p: &str, s: &str) -> bool {
     // Greedy single-segment wildcard match (`*` and `?` only — `*` never
     // crosses segments). Classic last-star backtracking: on a mismatch,
     // retry from one character further into the text instead of recursing
     // into both branches, so the `*a*a*a*a*a*b`-shaped patterns that make
     // the two-branch recursion exponential cost at most O(len(p) × len(s)).
+    // Byte-offset indices advanced only by whole `char`s keep non-ASCII
+    // segments safe.
     let (mut pi, mut si) = (0usize, 0usize);
     let (mut star, mut mark) = (usize::MAX, 0usize);
     while si < s.len() {
-        if pi < p.len() && (p[pi] == '?' || p[pi] == s[si]) {
-            pi += 1;
-            si += 1;
-        } else if pi < p.len() && p[pi] == '*' {
-            star = pi;
-            mark = si;
-            pi += 1;
-        } else if star != usize::MAX {
+        let sc = s[si..].chars().next().unwrap();
+        if pi < p.len() {
+            let pc = p[pi..].chars().next().unwrap();
+            if pc == '?' || pc == sc {
+                pi += pc.len_utf8();
+                si += sc.len_utf8();
+                continue;
+            }
+            if pc == '*' {
+                star = pi;
+                mark = si;
+                pi += 1;
+                continue;
+            }
+        }
+        if star != usize::MAX {
             // The star swallows one more character; resume after it.
             pi = star + 1;
-            mark += 1;
+            mark += s[mark..].chars().next().unwrap().len_utf8();
             si = mark;
         } else {
             return false;
         }
     }
-    while pi < p.len() && p[pi] == '*' {
-        pi += 1;
-    }
-    pi == p.len()
+    p[pi..].chars().all(|c| c == '*')
 }
 
 /// Outcome of a lazy incremental refresh: what the refresh did plus the
@@ -436,6 +455,8 @@ pub struct RefreshOutcome {
 #[async_trait]
 pub trait IndexServiceApi: Send + Sync {
     /// Case-insensitive substring search over symbol definitions.
+    /// Implementations must reject an empty `query` with an error — an
+    /// empty needle would otherwise match every symbol.
     async fn search_symbols(&self, query: SymbolQuery) -> Result<Vec<Symbol>>;
 
     /// Definitions whose name case-insensitively equals `name`.
@@ -449,7 +470,11 @@ pub trait IndexServiceApi: Send + Sync {
 
     /// Lazy incremental freshness pass bounded by `budget`. Query methods
     /// call this internally; exposing it lets a host command force a
-    /// stronger refresh.
+    /// stronger refresh. The budget is honored between file extractions.
+    /// Because query methods refresh internally, dropping a query future
+    /// can cancel its in-flight refresh: implementations must tolerate
+    /// cancellation between files without losing staleness bookkeeping or
+    /// leaving the store locked.
     async fn refresh(&self, budget: RefreshBudget) -> Result<RefreshOutcome>;
 
     /// Cached counters; does not touch the filesystem.

@@ -637,10 +637,6 @@ impl ToolSpec for SlopLedgerAppendTool {
             .and_then(|v| v.as_array())
             .ok_or_else(|| ToolError::invalid_input("'entries' must be a non-empty array"))?;
 
-        let _io_guard = ledger_io_lock();
-        let mut ledger = SlopLedger::load()
-            .map_err(|e| ToolError::execution_failed(format!("failed to load slop ledger: {e}")))?;
-
         let mut appended = Vec::new();
         for entry_val in entries_val {
             let bucket_str = required_str(entry_val, "bucket")?;
@@ -684,12 +680,25 @@ impl ToolSpec for SlopLedgerAppendTool {
             appended.push(entry);
         }
 
-        let (total, ids) = ledger.append(appended);
+        // load/save touch the disk (save fsyncs via write_atomic), so the
+        // whole serialized read-append-write runs on the blocking pool.
+        let (total, ids) =
+            tokio::task::spawn_blocking(move || -> Result<(usize, Vec<String>), ToolError> {
+                let _io_guard = ledger_io_lock();
+                let mut ledger = SlopLedger::load().map_err(|e| {
+                    ToolError::execution_failed(format!("failed to load slop ledger: {e}"))
+                })?;
+                let appended = ledger.append(appended);
+                ledger.save().map_err(|e| {
+                    ToolError::execution_failed(format!("failed to save slop ledger: {e}"))
+                })?;
+                Ok(appended)
+            })
+            .await
+            .map_err(|e| {
+                ToolError::execution_failed(format!("slop ledger append task failed: {e}"))
+            })??;
         let appended_count = ids.len();
-
-        ledger
-            .save()
-            .map_err(|e| ToolError::execution_failed(format!("failed to save slop ledger: {e}")))?;
 
         Ok(ToolResult::success(format!(
             "Appended {} slop ledger entr{} ({} total): {}",
@@ -775,7 +784,9 @@ impl ToolSpec for SlopLedgerQueryTool {
             },
         };
 
-        let ledger = SlopLedger::load()
+        let ledger = tokio::task::spawn_blocking(SlopLedger::load)
+            .await
+            .map_err(|e| ToolError::execution_failed(format!("slop ledger load task failed: {e}")))?
             .map_err(|e| ToolError::execution_failed(format!("failed to load slop ledger: {e}")))?;
 
         if ledger.is_empty() {
@@ -858,7 +869,7 @@ impl ToolSpec for SlopLedgerUpdateTool {
     }
 
     async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let id = required_str(&input, "id")?;
+        let id = required_str(&input, "id")?.to_string();
         let status =
             SlopEntryStatus::from_str(required_str(&input, "status")?).ok_or_else(|| {
                 ToolError::invalid_input(
@@ -871,24 +882,33 @@ impl ToolSpec for SlopLedgerUpdateTool {
             .and_then(|v| v.as_str())
             .map(String::from);
 
-        let _io_guard = ledger_io_lock();
-        let mut ledger = SlopLedger::load()
-            .map_err(|e| ToolError::execution_failed(format!("failed to load slop ledger: {e}")))?;
+        // load/save touch the disk (save fsyncs via write_atomic), so the
+        // whole serialized load-update-save runs on the blocking pool.
+        tokio::task::spawn_blocking(move || -> Result<ToolResult, ToolError> {
+            let _io_guard = ledger_io_lock();
+            let mut ledger = SlopLedger::load().map_err(|e| {
+                ToolError::execution_failed(format!("failed to load slop ledger: {e}"))
+            })?;
 
-        match ledger.update_status(id, status, cleanup) {
-            Ok(Some(entry)) => Ok(ToolResult::success(format!(
-                "Updated slop ledger entry {} ({}) → {:?}",
-                short_id(&entry.id),
-                entry.title,
-                entry.status
-            ))),
-            Ok(None) => Ok(ToolResult::success(format!(
-                "No slop ledger entry found matching '{id}'. Use slop_ledger_query to list entries."
-            ))),
-            Err(e) => Err(ToolError::execution_failed(format!(
-                "failed to update slop ledger: {e}"
-            ))),
-        }
+            match ledger.update_status(&id, status, cleanup) {
+                Ok(Some(entry)) => Ok(ToolResult::success(format!(
+                    "Updated slop ledger entry {} ({}) → {:?}",
+                    short_id(&entry.id),
+                    entry.title,
+                    entry.status
+                ))),
+                Ok(None) => Ok(ToolResult::success(format!(
+                    "No slop ledger entry found matching '{id}'. Use slop_ledger_query to list entries."
+                ))),
+                Err(e) => Err(ToolError::execution_failed(format!(
+                    "failed to update slop ledger: {e}"
+                ))),
+            }
+        })
+        .await
+        .map_err(|e| {
+            ToolError::execution_failed(format!("slop ledger update task failed: {e}"))
+        })?
     }
 }
 
@@ -956,7 +976,9 @@ impl ToolSpec for SlopLedgerExportTool {
             None
         };
 
-        let ledger = SlopLedger::load()
+        let ledger = tokio::task::spawn_blocking(SlopLedger::load)
+            .await
+            .map_err(|e| ToolError::execution_failed(format!("slop ledger load task failed: {e}")))?
             .map_err(|e| ToolError::execution_failed(format!("failed to load slop ledger: {e}")))?;
 
         let markdown = ledger.export_markdown(title, filter.as_ref());

@@ -668,9 +668,11 @@ pub(crate) fn statusline_command(state: &mut ReplState, arg: &str) {
 
 /// Refresh the statusline segment when its command is due.
 ///
-/// Runs under `spawn_blocking` with a hard timeout: a status command that
-/// hangs must not hang the prompt, and the cached text is what the renderer
-/// prints in the meantime.
+/// Runs under `spawn_blocking` with a hard deadline enforced inside
+/// [`statusline::run`](crate::interactive::statusline::run) (the child is
+/// killed on expiry): a status command that hangs must not hang the prompt
+/// or leak the process, and the cached text is what the renderer prints in
+/// the meantime.
 async fn refresh_statusline(state: &mut ReplState) {
     let Some(command) = state.settings.statusline_command.clone() else {
         state.statusline_text = None;
@@ -679,23 +681,19 @@ async fn refresh_statusline(state: &mut ReplState) {
     if !crate::interactive::statusline::is_due() {
         return;
     }
-    let output = tokio::time::timeout(
-        STATUSLINE_TIMEOUT,
-        tokio::task::spawn_blocking(move || crate::interactive::statusline::run(&command)),
-    )
+    let output = tokio::task::spawn_blocking(move || {
+        crate::interactive::statusline::run(&command, STATUSLINE_TIMEOUT)
+    })
     .await;
     match output {
-        Ok(Ok(Ok(text))) => {
+        Ok(Ok(text)) => {
             state.statusline_text = Some(text);
         }
-        Ok(Ok(Err(err))) => {
+        Ok(Err(err)) => {
             state.statusline_text = Some(format!("✗ {err}"));
         }
-        Ok(Err(join)) => {
+        Err(join) => {
             state.statusline_text = Some(format!("✗ statusline task failed: {join}"));
-        }
-        Err(_) => {
-            state.statusline_text = Some("✗ statusline command timed out".to_string());
         }
     }
 }
@@ -766,6 +764,17 @@ async fn run_shell_mode(state: &mut ReplState, command: &str) -> Result<()> {
 }
 
 fn prompt_str(state: &ReplState) -> String {
+    // `/theme` validates before storing, but the settings file reaches
+    // `accent()` directly; a typo there would otherwise be
+    // indistinguishable from `theme = "terminal"`.
+    static WARNED_UNKNOWN_THEME: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    if !theme::is_known_theme(&state.settings.theme) && WARNED_UNKNOWN_THEME.set(()).is_ok() {
+        tracing::warn!(
+            "unknown theme {:?} in settings — using the default accent; one of: {}",
+            state.settings.theme,
+            theme::THEME_NAMES.join("|")
+        );
+    }
     let accent = theme::accent(
         &state.settings.theme,
         state.settings.prompt_color.as_deref(),
@@ -1108,13 +1117,16 @@ fn build_editor(
         if let Some(parent) = history.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if editor.load_history(history).is_err()
-            && let Some(legacy) = legacy_history_path()
-        {
-            // Pre-upgrade history lived in one file for every workspace;
-            // read it once so the first project after the upgrade keeps its
-            // recall. The old file is left alone.
-            let _ = editor.load_history(&legacy);
+        if editor.load_history(history).is_err() {
+            // Older builds keyed the file with std's DefaultHasher; read the
+            // old file once so recall survives the key change. Before
+            // per-workspace files, history lived in one shared file; the old
+            // files are left alone, and saves go to the new key.
+            let recovered = stale_hash_history_path(&state.workspace)
+                .is_some_and(|stale| editor.load_history(&stale).is_ok());
+            if !recovered && let Some(legacy) = legacy_history_path() {
+                let _ = editor.load_history(&legacy);
+            }
         }
     }
     Ok((editor, history))
@@ -1124,6 +1136,31 @@ fn build_editor(
 /// directory; a single shared file mixed unrelated projects' prompts into
 /// every session's Up-arrow recall.
 fn history_path(workspace: &std::path::Path) -> Option<std::path::PathBuf> {
+    let home = crate::config::effective_home_dir()?;
+    Some(
+        home.join("history")
+            .join(format!("{:016x}", workspace_key(workspace))),
+    )
+}
+
+/// Stable-by-construction key for [`history_path`]: FNV-1a over the path
+/// bytes. std reserves the right to change `DefaultHasher`'s algorithm
+/// between releases, which would silently orphan every workspace's history
+/// file; FNV-1a cannot drift with the toolchain.
+fn workspace_key(workspace: &std::path::Path) -> u64 {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut key = FNV_OFFSET_BASIS;
+    for byte in workspace.to_string_lossy().as_bytes() {
+        key ^= u64::from(*byte);
+        key = key.wrapping_mul(FNV_PRIME);
+    }
+    key
+}
+
+/// The pre-FNV key (std `DefaultHasher`), kept only to read a history file
+/// written by an older build once, so recall survives the key change.
+fn stale_hash_history_path(workspace: &std::path::Path) -> Option<std::path::PathBuf> {
     let home = crate::config::effective_home_dir()?;
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     std::hash::Hash::hash(&workspace.to_string_lossy().as_ref(), &mut hasher);

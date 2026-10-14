@@ -291,21 +291,24 @@ mod tests {
     /// hit rate even when most of the prompt was uncached.
     #[test]
     fn summary_cache_hit_percent_uses_input_tokens_as_denominator() {
+        fn approx(actual: f64, expected: f64) -> bool {
+            (actual - expected).abs() <= 1e-9 * expected.abs().max(1.0)
+        }
         // Both fields populated and consistent.
-        assert!((summary_cache_hit_percent(800, 1000) - 80.0).abs() < f64::EPSILON);
+        assert!(approx(summary_cache_hit_percent(800, 1000), 80.0));
         // No cache hit at all.
-        assert!((summary_cache_hit_percent(0, 1000) - 0.0).abs() < f64::EPSILON);
+        assert!(approx(summary_cache_hit_percent(0, 1000), 0.0));
         // Full cache hit.
-        assert!((summary_cache_hit_percent(1000, 1000) - 100.0).abs() < f64::EPSILON);
+        assert!(approx(summary_cache_hit_percent(1000, 1000), 100.0));
         // Partial-telemetry guard: provider reports `cache_hit` only,
         // miss is unknown (treated as 0 by the caller). Naive
         // `hit / (hit + miss)` would have reported 100%; against
         // `input_tokens` the answer is the real share.
-        assert!((summary_cache_hit_percent(200, 1000) - 20.0).abs() < f64::EPSILON);
+        assert!(approx(summary_cache_hit_percent(200, 1000), 20.0));
         // Defensive: zero `input_tokens` short-circuits without a
         // divide-by-zero.
-        assert!((summary_cache_hit_percent(0, 0) - 0.0).abs() < f64::EPSILON);
-        assert!((summary_cache_hit_percent(50, 0) - 0.0).abs() < f64::EPSILON);
+        assert!(approx(summary_cache_hit_percent(0, 0), 0.0));
+        assert!(approx(summary_cache_hit_percent(50, 0), 0.0));
     }
 
     #[test]
@@ -1217,8 +1220,7 @@ mod tests {
 
         // Message 1 contains apply_patch tool call with matching result (message 2)
         // Both should be pinned due to tool call pairing
-        // Messages 5, 6, 7, 8 are recent (last 4 messages)
-        eprintln!("Pinned indices: {:?}", plan.pinned_indices);
+        // Messages 4-7 fall inside the KEEP_RECENT_MESSAGES window.
 
         // apply_patch tool call and its result should be pinned
         assert!(

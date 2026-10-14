@@ -49,6 +49,12 @@ use crate::utils::spawn_supervised;
 /// keeping startup bounded — a wedged server cannot hang us forever.
 const INIT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Upper bound on the reader's accumulated buffer when no parseable frame
+/// header sits at its start (a server banner or non-LSP garbage on stdout).
+/// Exceeding it with nothing parseable fails the reader closed instead of
+/// buffering forever.
+const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
+
 /// Trait the LSP manager talks to. A real LSP server speaks this via stdio;
 /// tests use an in-process fake.
 #[async_trait]
@@ -97,7 +103,9 @@ pub struct StdioLspTransport {
     /// Language id passed in `textDocument/didOpen` (e.g. "rust").
     language_id: &'static str,
     /// Track which files we have opened so the second touch sends
-    /// `didChange` instead of `didOpen`.
+    /// `didChange` instead of `didOpen`. Keyed by the canonical form used
+    /// for the didOpen/didChange URI so two spellings of the same file
+    /// (symlink vs target, relative vs absolute) count as one document.
     opened: AsyncMutex<HashMap<PathBuf, i64>>,
 }
 
@@ -224,11 +232,13 @@ impl StdioLspTransport {
             }
             Ok(Err(_)) => {
                 // The oneshot sender was dropped: the dispatcher exited
-                // (server died / stdout closed) without replying.
-                tracing::warn!(
-                    server = command,
-                    "lsp: dispatcher closed before initialize response; sending initialized anyway"
-                );
+                // (server died / stdout closed) without replying. Nothing
+                // downstream can succeed on this transport — a spawn that
+                // hands out a healthy-looking client would silently report
+                // empty diagnostics for every later call.
+                return Err(anyhow!(
+                    "LSP server `{command}` exited before responding to initialize"
+                ));
             }
             Err(_) => {
                 // Drop the stale slot so a very late response finds nothing.
@@ -279,9 +289,9 @@ impl LspTransport for StdioLspTransport {
 
         // Either send didOpen (first time) or didChange (subsequent edits).
         let mut opened = self.opened.lock().await;
-        let is_new = !opened.contains_key(&path_buf);
-        let new_version = opened.get(&path_buf).copied().unwrap_or(0) + 1;
-        opened.insert(path_buf.clone(), new_version);
+        let is_new = !opened.contains_key(&cache_key);
+        let new_version = opened.get(&cache_key).copied().unwrap_or(0) + 1;
+        opened.insert(cache_key.clone(), new_version);
         drop(opened);
 
         let payload = if is_new {
@@ -319,15 +329,22 @@ impl LspTransport for StdioLspTransport {
         send_message(&self.tx_outbound, &payload).await?;
 
         // Wait for the first `publishDiagnostics` for this file that lands
-        // after our request (version > `start_version`). Stale cache entries
-        // from earlier edits are ignored while waiting, so repeat edits never
-        // surface pre-edit diagnostics. Servers typically publish within a
-        // few hundred ms; for initial cold-start (rust-analyzer) it can be
-        // many seconds — but the manager guards us with a separate timeout.
+        // after our request (version > `start_version`) AND plausibly
+        // reflects the text we just sent: servers publish asynchronously,
+        // so an in-flight publish for the PREVIOUS edit can land after
+        // `start_version`. When the server echoes the document version
+        // (LSP >= 3.15) only entries at or above `new_version` are accepted;
+        // servers that omit it fall back to the publish counter alone.
+        // Stale cache entries from earlier edits are ignored while waiting,
+        // so repeat edits never surface pre-edit diagnostics. Servers
+        // typically publish within a few hundred ms; for initial cold-start
+        // (rust-analyzer) it can be many seconds — but the manager guards
+        // us with a separate timeout.
         let deadline = tokio::time::Instant::now() + wait;
         loop {
-            if let Some((items, version)) = self.diagnostics_cache.get(&cache_key)
+            if let Some((items, version, doc_version)) = self.diagnostics_cache.get(&cache_key)
                 && version > start_version
+                && doc_version.is_none_or(|dv| dv >= new_version)
             {
                 return Ok(items);
             }
@@ -363,14 +380,18 @@ impl LspTransport for StdioLspTransport {
 /// `mpsc::Receiver` behind an async mutex, which serialized every concurrent
 /// `diagnostics_for` call on the same transport — a call waiting out its
 /// timeout for file A also blocked the call for file B.
+/// One cached publish: the diagnostics, the global publish counter when
+/// stored, and the document version the server echoed (`None` when omitted).
+type CachedDiagnostics = (Vec<Diagnostic>, u64, Option<i64>);
+
 #[derive(Default)]
 struct DiagnosticsCache {
-    /// Canonical path -> (latest diagnostics, publish counter when stored).
-    inner: std::sync::RwLock<HashMap<PathBuf, (Vec<Diagnostic>, u64)>>,
+    /// Canonical path -> latest cached publish for that document.
+    inner: std::sync::RwLock<HashMap<PathBuf, CachedDiagnostics>>,
 }
 
 impl DiagnosticsCache {
-    fn get(&self, path: &Path) -> Option<(Vec<Diagnostic>, u64)> {
+    fn get(&self, path: &Path) -> Option<CachedDiagnostics> {
         self.inner
             .read()
             .expect("lsp diagnostics cache lock poisoned")
@@ -378,11 +399,11 @@ impl DiagnosticsCache {
             .cloned()
     }
 
-    fn store(&self, path: PathBuf, items: Vec<Diagnostic>, version: u64) {
+    fn store(&self, path: PathBuf, items: Vec<Diagnostic>, version: u64, doc_version: Option<i64>) {
         self.inner
             .write()
             .expect("lsp diagnostics cache lock poisoned")
-            .insert(path, (items, version));
+            .insert(path, (items, version, doc_version));
     }
 }
 
@@ -446,6 +467,13 @@ async fn reader_task(mut stdout: tokio::process::ChildStdout, tx: mpsc::Sender<V
             Err(_) => return,
         };
         buf.extend_from_slice(&tmp[..n]);
+        if buf.len() > MAX_FRAME_BYTES && parse_header(&buf).is_none() {
+            tracing::warn!(
+                bytes = buf.len(),
+                "lsp: unparseable frame header; closing reader"
+            );
+            return;
+        }
         // Try to parse as many frames as we can from the accumulated buffer.
         while let Some((header_end, content_length)) = parse_header(&buf) {
             // A hostile/buggy server can send Content-Length near
@@ -504,9 +532,9 @@ async fn dispatcher_task(
         // Notifications have a `method` and no `id`.
         let method = value.get("method").and_then(|v| v.as_str());
         if method == Some("textDocument/publishDiagnostics") {
-            if let Some((path, diags)) = parse_publish_diagnostics(&value) {
+            if let Some((path, diags, doc_version)) = parse_publish_diagnostics(&value) {
                 version += 1;
-                cache.store(path, diags, version);
+                cache.store(path, diags, version, doc_version);
                 // `send` fails only once every receiver is gone (transport
                 // dropped) — nothing useful to do then.
                 let _ = version_tx.send(version);
@@ -526,11 +554,14 @@ async fn dispatcher_task(
 /// Decode a `textDocument/publishDiagnostics` notification. A malformed
 /// `diagnostics` ENTRY only drops that entry (logged); the rest of the
 /// notification is still returned. Returns `None` only when the envelope
-/// itself (params/uri/diagnostics array) is unusable.
-fn parse_publish_diagnostics(value: &Value) -> Option<(PathBuf, Vec<Diagnostic>)> {
+/// itself (params/uri/diagnostics array) is unusable. The document version
+/// the server echoes (LSP >= 3.15, `params.version`) is carried alongside
+/// so consumers can reject publishes that predate their edit.
+fn parse_publish_diagnostics(value: &Value) -> Option<(PathBuf, Vec<Diagnostic>, Option<i64>)> {
     let params = value.get("params")?;
     let uri = params.get("uri")?.as_str()?;
     let path = path_from_uri(uri)?;
+    let doc_version = params.get("version").and_then(|v| v.as_i64());
     let raw = params.get("diagnostics")?.as_array()?;
     let mut out = Vec::with_capacity(raw.len());
     for d in raw {
@@ -564,7 +595,7 @@ fn parse_publish_diagnostics(value: &Value) -> Option<(PathBuf, Vec<Diagnostic>)
             message,
         });
     }
-    Some((path, out))
+    Some((path, out, doc_version))
 }
 
 /// Canonicalize `path` for use as a URI source / cache key, falling back to
@@ -703,6 +734,7 @@ mod tests {
             "method": "textDocument/publishDiagnostics",
             "params": {
                 "uri": "file:///tmp/foo.rs",
+                "version": 7,
                 "diagnostics": [
                     {
                         "range": {
@@ -715,8 +747,9 @@ mod tests {
                 ]
             }
         });
-        let (path, diags) = parse_publish_diagnostics(&payload).expect("parses");
+        let (path, diags, doc_version) = parse_publish_diagnostics(&payload).expect("parses");
         assert_eq!(path, PathBuf::from("/tmp/foo.rs"));
+        assert_eq!(doc_version, Some(7));
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].line, 12);
         assert_eq!(diags[0].column, 8);
@@ -752,7 +785,7 @@ mod tests {
                 ]
             }
         });
-        let (path, diags) = parse_publish_diagnostics(&payload).expect("parses");
+        let (path, diags, _) = parse_publish_diagnostics(&payload).expect("parses");
         assert_eq!(path, PathBuf::from("/tmp/foo.rs"));
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].message, "valid");
@@ -918,12 +951,13 @@ mod tests {
             pending,
         ));
 
-        let notification = |message: &str| {
+        let notification = |message: &str, doc_version: Value| {
             json!({
                 "jsonrpc": "2.0",
                 "method": "textDocument/publishDiagnostics",
                 "params": {
                     "uri": "file:///tmp/my%20file.rs",
+                    "version": doc_version,
                     "diagnostics": [
                         {
                             "range": {
@@ -939,33 +973,35 @@ mod tests {
         };
 
         tx_inbound
-            .send(notification("first"))
+            .send(notification("first", json!(null)))
             .await
             .expect("send 1");
         timeout(Duration::from_secs(2), version_rx.changed())
             .await
             .expect("version bumped after first publish")
             .expect("watch sender alive");
-        let (items, version) = cache
+        let (items, version, doc_version) = cache
             .get(&PathBuf::from("/tmp/my file.rs"))
             .expect("cached after first publish");
         assert_eq!(version, 1);
+        assert_eq!(doc_version, None, "null version means server omitted it");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].message, "first");
 
         // Second publish replaces the entry and bumps the version tag.
         tx_inbound
-            .send(notification("second"))
+            .send(notification("second", json!(2)))
             .await
             .expect("send 2");
         timeout(Duration::from_secs(2), version_rx.changed())
             .await
             .expect("version bumped after second publish")
             .expect("watch sender alive");
-        let (items, version) = cache
+        let (items, version, doc_version) = cache
             .get(&PathBuf::from("/tmp/my file.rs"))
             .expect("cached after second publish");
         assert_eq!(version, 2);
+        assert_eq!(doc_version, Some(2), "echoed document version is stored");
         assert_eq!(items[0].message, "second");
 
         drop(tx_inbound);

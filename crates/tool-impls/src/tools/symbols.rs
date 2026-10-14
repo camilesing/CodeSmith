@@ -119,19 +119,24 @@ impl ToolSpec for SymbolSearchTool {
             ))?
             .clone();
 
+        // Query one row past the requested limit so `truncated` is exact: a
+        // result set that exactly fills the limit is not truncation.
         let query = SymbolQuery {
             query: query_str,
             kind,
             file_glob,
-            limit,
+            limit: limit + 1,
         };
-        let symbols = tokio::time::timeout(INDEX_TOOL_TIMEOUT, service.search_symbols(query))
+        let mut symbols = tokio::time::timeout(INDEX_TOOL_TIMEOUT, service.search_symbols(query))
             .await
-            .map_err(|_| ToolError::Timeout { seconds: 30 })?
+            .map_err(|_| ToolError::Timeout {
+                seconds: INDEX_TOOL_TIMEOUT.as_secs(),
+            })?
             .map_err(|err| ToolError::execution_failed(format!("index search failed: {err}")))?;
 
         let stats = service.stats();
-        let truncated = symbols.len() >= limit;
+        let truncated = symbols.len() > limit;
+        symbols.truncate(limit);
         ToolResult::json(&json!({
             "symbols": symbols,
             "total": symbols.len(),
@@ -197,20 +202,26 @@ impl ToolSpec for FindReferencesTool {
             ))?
             .clone();
 
-        // Definitions and occurrences are two service calls; issue them
-        // together so the (lazy) freshness pass runs once.
+        // Definitions and occurrences are two service calls; run them
+        // sequentially so the lazy freshness pass triggered by the first
+        // call runs at most once and is visible to the second. Both calls
+        // share the single INDEX_TOOL_TIMEOUT budget.
         let (definitions, occurrences) = tokio::time::timeout(INDEX_TOOL_TIMEOUT, async {
             let definitions = service.find_definition(&name).await;
             let occurrences = service.find_references(&name).await;
             (definitions, occurrences)
         })
         .await
-        .map_err(|_| ToolError::Timeout { seconds: 30 })?;
+        .map_err(|_| ToolError::Timeout {
+            seconds: INDEX_TOOL_TIMEOUT.as_secs(),
+        })?;
 
-        let definitions = definitions
-            .map_err(|err| ToolError::execution_failed(format!("index lookup failed: {err}")))?;
-        let mut occurrences = occurrences
-            .map_err(|err| ToolError::execution_failed(format!("index lookup failed: {err}")))?;
+        let definitions = definitions.map_err(|err| {
+            ToolError::execution_failed(format!("definition lookup failed: {err}"))
+        })?;
+        let mut occurrences = occurrences.map_err(|err| {
+            ToolError::execution_failed(format!("reference lookup failed: {err}"))
+        })?;
         // Capture the pre-truncation count so `total_occurrences` reports
         // the true match count instead of always collapsing to `limit`.
         let total_occurrences = occurrences.len();

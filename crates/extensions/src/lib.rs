@@ -59,7 +59,7 @@ pub use install_source::{
     Placer, PrebuiltDylibSource, SourceArtifact, SourceKind, SourceSpec,
 };
 pub use installer::{InstallReport, Installer, UninstallReport};
-pub use loader::load_dylib;
+pub use loader::{LoadedDylib, load_dylib};
 pub use manifest::ExtensionManifest;
 pub use runner::{EmitOutcome, ExtensionRunner};
 pub use script::{

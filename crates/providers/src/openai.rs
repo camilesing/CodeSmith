@@ -70,8 +70,10 @@ impl ProviderFactory for OpenAiFactory {
             default_model,
             GenericShaper::new("openai"),
             base_url,
-            Some(cfg.api_key.clone()),
-            // OpenAI has no FIM/translate endpoints behind LlmClient.
+            // OpenAI has no FIM/translate endpoints behind LlmClient, so the
+            // adapter needs neither the http shim nor a copy of the api key
+            // (all api_key readers are gated on the shim being present).
+            None,
             None,
         );
         Ok(Arc::new(adapter) as LlmClientHandle)

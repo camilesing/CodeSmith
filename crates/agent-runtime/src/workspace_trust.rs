@@ -14,11 +14,30 @@ use anyhow::{Context, Result};
 
 use crate::utils::effective_home_dir;
 
-/// Canonicalize a path, falling back to the original on failure (e.g. the
-/// path does not exist yet). Keeps comparisons stable across symlink/realpath
-/// differences.
+/// Canonicalize a path, falling back to a lexically absolutized copy on
+/// failure (e.g. the path does not exist yet). Keeps comparisons stable
+/// across symlink/realpath differences and — unlike a raw-path fallback —
+/// produces the same key whether or not the target currently exists on disk.
 pub fn canonicalize_or_keep(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+    path.canonicalize()
+        .unwrap_or_else(|_| lexical_absolute(path).unwrap_or_else(|_| path.to_path_buf()))
+}
+
+/// `std::path::absolute` + lexical `.`/`..` normalization, so trust keys are
+/// stable regardless of filesystem state.
+fn lexical_absolute(path: &Path) -> std::io::Result<PathBuf> {
+    let abs = std::path::absolute(path)?;
+    let mut normalized = PathBuf::new();
+    for comp in abs.components() {
+        match comp {
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    Ok(normalized)
 }
 
 /// Expand a leading `~` (and env vars via `shellexpand`) to an absolute path.
@@ -97,15 +116,38 @@ pub fn workspace_trust_level_from_doc<'a>(
 }
 
 /// Whether `workspace` is marked trusted in the CodeSmith config file.
+///
+/// Fail-closed: an unreadable or unparseable config leaves the workspace
+/// untrusted. Read failures other than "file missing" and parse failures
+/// are logged (`tracing::warn!`) so a corrupted or permission-denied config
+/// is distinguishable from a genuinely untrusted workspace instead of
+/// silently re-prompting users who already ran the trust wizard.
 pub fn is_workspace_trusted(workspace: &Path) -> bool {
     let Some(config_path) = default_config_path() else {
         return false;
     };
-    let Ok(raw) = fs::read_to_string(config_path) else {
-        return false;
+    let raw = match fs::read_to_string(&config_path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(err) => {
+            tracing::warn!(
+                path = %config_path.display(),
+                error = %err,
+                "failed to read CodeSmith config; treating workspace as untrusted"
+            );
+            return false;
+        }
     };
-    let Ok(doc) = toml::from_str::<toml::Value>(&raw) else {
-        return false;
+    let doc = match toml::from_str::<toml::Value>(&raw) {
+        Ok(doc) => doc,
+        Err(err) => {
+            tracing::warn!(
+                path = %config_path.display(),
+                error = %err,
+                "failed to parse CodeSmith config; treating workspace as untrusted"
+            );
+            return false;
+        }
     };
     workspace_trust_level_from_doc(&doc, workspace).is_some_and(is_trusted_level)
 }

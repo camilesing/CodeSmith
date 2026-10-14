@@ -497,8 +497,10 @@ impl ExtensionRunner {
     /// `reload_extension_runtime` before re-populate loads fresh dylibs.
     /// Idempotent (empty `libraries` → no-op).
     pub fn drain_libraries_to_pending(&self) {
-        let mut libs = self.libraries.lock().expect("libraries lock poisoned");
-        let drained = std::mem::take(&mut *libs);
+        let drained = {
+            let mut libs = self.libraries.lock().expect("libraries lock poisoned");
+            std::mem::take(&mut *libs)
+        };
         let mut pending = self
             .pending_drop
             .lock()
@@ -550,12 +552,16 @@ impl ExtensionRunner {
     /// the kept `Library`). Lockstep (§8.2) assumed. Mirrors the static
     /// `load` path.
     pub async fn load_dylib(&self, path: &Path) -> Result<(), ExtensionError> {
-        let (library, extension) = crate::loader::load_dylib(path)?;
+        let mut loaded = crate::loader::load_dylib(path)?;
+        let extension = loaded.take_extension();
         self.libraries
             .lock()
             .expect("libraries lock poisoned")
-            .push(library);
-        self.load(&*extension).await
+            .push(loaded.into_library());
+        match extension {
+            Some(extension) => self.load(&*extension).await,
+            None => Ok(()),
+        }
     }
 
     /// Bind the host context + flush `pending_*` into the live registries.
@@ -565,48 +571,60 @@ impl ExtensionRunner {
     /// a stale generation + return `StaleContext` (slice 1: stubs are
     /// short-lived — dropped after `load` — so this is a §F2 concern; the
     /// generation guard is the stable contract).
-    pub fn bind_core(&self, context: Arc<dyn ExtensionCommandContext>) {
+    ///
+    /// Flush-time rejections (prompt sections at cap, skills at cap or with
+    /// a cross-owner conflict, message projections) are logged and returned
+    /// so the host can surface them.
+    pub fn bind_core(&self, context: Arc<dyn ExtensionCommandContext>) -> Vec<ExtensionError> {
         *self.context.lock().unwrap() = Some(context);
-        let mut pending = self.pending.lock().unwrap();
-        let mut tools = self.tools.lock().unwrap();
-        let mut commands = self.commands.lock().unwrap();
-        let mut handlers = self.handlers.lock().unwrap();
-        let mut providers = self.providers.lock().unwrap();
-        for pt in pending.tools.drain(..) {
+        // Drain `pending` under its own lock; each registry is flushed below
+        // while holding at most that one registry's lock (never across the
+        // `shared` registry's lock — see `clear_providers`).
+        let drained = {
+            let mut pending = self.pending.lock().unwrap();
+            std::mem::take(&mut *pending)
+        };
+        let mut rejections = Vec::new();
+        for pt in drained.tools {
             let name = pt.tool.name().to_string();
             let arc: Arc<dyn ToolDefinition> = Arc::from(pt.tool);
             // First-wins, matching the documented slice-1 conflict policy:
             // plain `insert` replaces and silently yields last-wins.
-            tools.entry(name).or_insert(arc);
+            self.tools.lock().unwrap().entry(name).or_insert(arc);
         }
-        for pc in pending.commands.drain(..) {
+        for pc in drained.commands {
             let name = pc.command.name().to_string();
             let arc: Arc<dyn CommandDefinition> = Arc::from(pc.command);
-            commands.entry(name).or_insert(arc);
+            self.commands.lock().unwrap().entry(name).or_insert(arc);
         }
-        for ph in pending.handlers.drain(..) {
-            handlers.push(RegisteredHandler {
-                handler: ph.handler,
-                kind_filter: ph.kind_filter,
-            });
+        {
+            let mut handlers = self.handlers.lock().unwrap();
+            for ph in drained.handlers {
+                handlers.push(RegisteredHandler {
+                    handler: ph.handler,
+                    kind_filter: ph.kind_filter,
+                });
+            }
         }
-        for (id, text) in pending.prompt_sections.drain(..) {
+        for (id, text) in drained.prompt_sections {
             if let Err(e) = self.register_prompt_section(id, text) {
                 tracing::warn!(
                     target: "codesmith_extensions",
                     "prompt section rejected at bind: {e}"
                 );
+                rejections.push(e);
             }
         }
-        for skill in pending.skills.drain(..) {
-            if let Err(e) = self.register_skill(skill.clone()) {
+        for skill in drained.skills {
+            if let Err(e) = self.register_skill(skill) {
                 tracing::warn!(
                     target: "codesmith_extensions",
                     "registered skill rejected at bind: {e}"
                 );
+                rejections.push(e);
             }
         }
-        for mp in pending.message_projections.drain(..) {
+        for mp in drained.message_projections {
             if let Err(e) = self
                 .message_projection_hub
                 .register(&mp.owner, &mp.key, mp.init, mp.fold)
@@ -615,9 +633,10 @@ impl ExtensionRunner {
                     target: "codesmith_extensions",
                     "message projection rejected at bind: {e}"
                 );
+                rejections.push(ExtensionError::Config(e));
             }
         }
-        for pp in pending.providers.drain(..) {
+        for pp in drained.providers {
             let id = pp.factory.id();
             let guard = self
                 .shared
@@ -629,8 +648,9 @@ impl ExtensionRunner {
                 "extension provider registered: {}",
                 id.as_str(),
             );
-            providers.push(guard);
+            self.providers.lock().unwrap().push(guard);
         }
+        rejections
     }
 
     /// Cheap pre-check for hot-path emitters: whether any bound handler
@@ -672,17 +692,25 @@ impl ExtensionRunner {
         // Snapshot the matching handlers under a short lock; dispatch outside
         // the lock so a long-running handler doesn't hold it.
         let kind = event.kind();
-        let matching: Vec<Arc<dyn Handler>> = self
+        let matching: Vec<RegisteredHandler> = self
             .handlers
             .lock()
             .unwrap()
             .iter()
             .filter(|rh| rh.kind_filter.is_none() || rh.kind_filter == Some(kind))
-            .map(|rh| Arc::clone(&rh.handler))
+            .cloned()
             .collect();
         let mut event = event;
         let mut outcome = HandlerOutcome::Continue;
-        for h in matching {
+        for rh in matching {
+            // The variant filter binds to the RUNNING event kind: a handler
+            // earlier in the chain may have `Transform`ed the event to a
+            // different kind, which must not still reach subscribers of the
+            // pre-chain kind.
+            if rh.kind_filter.is_some_and(|filter| filter != event.kind()) {
+                continue;
+            }
+            let h = rh.handler;
             // §F2a: catch_unwind so a panicking handler can't tear down the
             // agent loop (§8.3 error isolation).
             let result = AssertUnwindSafe(h.handle(&event, &*ctx))
@@ -1148,6 +1176,71 @@ mod tests {
         assert_eq!(*s, vec!["other"]);
     }
 
+    /// A `Transform` that switches the event kind stops delivery to handlers
+    /// subscribed to the pre-chain kind: the variant filter is re-checked
+    /// against the running event before each handler call.
+    #[tokio::test]
+    async fn f2a_transform_to_other_kind_skips_variant_subscriber() {
+        struct TransformToolCallToTurnStart;
+        #[async_trait::async_trait]
+        impl Handler for TransformToolCallToTurnStart {
+            async fn handle(
+                &self,
+                event: &ExtensionEvent,
+                _ctx: &dyn ExtensionContext,
+            ) -> Result<HandlerOutcome, ExtensionError> {
+                if matches!(event, ExtensionEvent::ToolCall(_)) {
+                    Ok(HandlerOutcome::Transform(ExtensionEvent::TurnStart {
+                        turn_id: "t1".into(),
+                    }))
+                } else {
+                    Ok(HandlerOutcome::Continue)
+                }
+            }
+        }
+
+        struct TransformKindExt {
+            seen: Arc<Mutex<Vec<&'static str>>>,
+        }
+        #[async_trait::async_trait]
+        impl Extension for TransformKindExt {
+            fn metadata(&self) -> &ExtensionMetadata {
+                static M: ExtensionMetadata = ExtensionMetadata::new("transform-kind");
+                &M
+            }
+            async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+                api.on(Arc::new(TransformToolCallToTurnStart))?;
+                api.on_variant(
+                    ExtensionEventKind::ToolCall,
+                    Arc::new(RecHandler {
+                        seen: self.seen.clone(),
+                    }),
+                )?;
+                Ok(())
+            }
+        }
+
+        let runner = ExtensionRunner::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        runner
+            .load(&TransformKindExt { seen: seen.clone() })
+            .await
+            .unwrap();
+        runner.bind_core(Arc::new(Ctx { generation: 1 }));
+        let out = runner
+            .emit(ExtensionEvent::ToolCall(ToolCallEvent {
+                id: "c1".into(),
+                name: "echo".into(),
+                input: json!({}),
+            }))
+            .await;
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "variant subscriber must not see the transformed kind"
+        );
+        assert!(matches!(out.event, ExtensionEvent::TurnStart { .. }));
+    }
+
     struct PanickingHandler;
     #[async_trait::async_trait]
     impl Handler for PanickingHandler {
@@ -1561,6 +1654,31 @@ mod tests {
                 .register_prompt_section("overflow".into(), "x".into())
                 .is_err()
         );
+    }
+
+    #[test]
+    fn bind_core_returns_flush_rejections() {
+        struct OverflowSections;
+        #[async_trait::async_trait]
+        impl Extension for OverflowSections {
+            fn metadata(&self) -> &ExtensionMetadata {
+                static M: ExtensionMetadata = ExtensionMetadata::new("overflow-sections");
+                &M
+            }
+            async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+                // The stub validates the section shape but not the cap, so
+                // one section too many is first rejected at the flush.
+                for i in 0..=MAX_PROMPT_SECTIONS {
+                    api.register_prompt_section(format!("s{i}"), "x".into())?;
+                }
+                Ok(())
+            }
+        }
+        let runner = ExtensionRunner::new();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        rt.block_on(runner.load(&OverflowSections)).expect("load");
+        let rejections = runner.bind_core(Arc::new(Ctx { generation: 1 }));
+        assert_eq!(rejections.len(), 1, "overflow surfaced to the host");
     }
 
     #[test]

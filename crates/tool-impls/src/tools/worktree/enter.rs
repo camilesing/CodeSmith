@@ -8,8 +8,8 @@ use codesmith_tools::{ApprovalRequirement, ToolCapability, ToolError, ToolResult
 use codesmith_agent_runtime::tools::spec::{ToolContext, ToolSpec};
 
 use super::{
-    SharedWorktreeSessionState, find_canonical_git_root, generate_random_slug, get_current_branch,
-    get_or_create_worktree, validate_worktree_slug,
+    SharedWorktreeSessionState, WorktreeCreateResult, find_canonical_git_root,
+    generate_random_slug, get_or_create_worktree, validate_worktree_slug,
 };
 
 pub struct EnterWorktreeTool {
@@ -66,10 +66,11 @@ impl ToolSpec for EnterWorktreeTool {
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         // 1. Check if already in a worktree session
         {
-            let state = self
-                .worktree_state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let state = self.worktree_state.lock().map_err(|_| {
+                ToolError::execution_failed(
+                    "worktree session state lock is poisoned (a prior update panicked)",
+                )
+            })?;
             if state.active {
                 return Err(ToolError::execution_failed(
                     "Already in a worktree session. Use exit_worktree first before entering another.",
@@ -86,22 +87,33 @@ impl ToolSpec for EnterWorktreeTool {
             None => generate_random_slug(),
         };
 
-        // 3. Resolve canonical git root from context.workspace. Fail fast
-        // with an actionable message instead of silently falling back to
-        // the workspace path, which only surfaces later as a raw
-        // `git worktree add` "not a git repository" stderr.
-        let git_root = find_canonical_git_root(&context.workspace).ok_or_else(|| {
-            ToolError::execution_failed(
-                "enter_worktree requires a git repository, but no git root was found \
-                 for the current workspace",
-            )
-        })?;
+        // 3-4. Resolve the canonical git root and create the worktree. All of
+        // this is blocking git subprocess + fs work (`git worktree add` can
+        // take seconds on a large repo), so it runs on the blocking pool
+        // instead of the async executor.
+        let workspace_root = context.workspace.clone();
+        let slug_for_task = slug.clone();
+        let create_result =
+            tokio::task::spawn_blocking(move || -> Result<WorktreeCreateResult, ToolError> {
+                // 3. Resolve canonical git root from context.workspace. Fail
+                // fast with an actionable message instead of silently
+                // falling back to the workspace path, which only surfaces
+                // later as a raw `git worktree add` "not a git repository"
+                // stderr.
+                let git_root = find_canonical_git_root(&workspace_root).ok_or_else(|| {
+                    ToolError::execution_failed(
+                        "enter_worktree requires a git repository, but no git root was found \
+                         for the current workspace",
+                    )
+                })?;
 
-        // 4. Get current branch for tracking
-        let _original_branch = get_current_branch(&context.cwd).ok();
-
-        // 5. Create git worktree
-        let create_result = get_or_create_worktree(&git_root, &slug)?;
+                // 4. Create git worktree
+                get_or_create_worktree(&git_root, &slug_for_task)
+            })
+            .await
+            .map_err(|e| {
+                ToolError::execution_failed(format!("worktree creation task failed: {e}"))
+            })??;
 
         // 6. Update WorktreeSessionState. Re-verify under the lock: the
         // initial `!state.active` check ran before the (slow) git/process
@@ -110,10 +122,11 @@ impl ToolSpec for EnterWorktreeTool {
         // worktree/branch, or resurrecting a cleared session with a stale
         // original_cwd).
         {
-            let mut state = self
-                .worktree_state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let mut state = self.worktree_state.lock().map_err(|_| {
+                ToolError::execution_failed(
+                    "worktree session state lock is poisoned (a prior update panicked)",
+                )
+            })?;
             if state.active {
                 return Err(ToolError::execution_failed(
                     "Already in a worktree session. Use exit_worktree first before entering another.",

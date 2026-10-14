@@ -230,7 +230,9 @@ pub struct TaskRecord {
     pub artifacts: Vec<TaskArtifactRef>,
     #[serde(default)]
     pub github_events: Vec<TaskGithubEvent>,
+    #[serde(default)]
     pub tool_calls: Vec<TaskToolCallSummary>,
+    #[serde(default)]
     pub timeline: Vec<TaskTimelineEntry>,
 }
 

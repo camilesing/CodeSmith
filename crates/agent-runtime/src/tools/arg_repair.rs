@@ -102,66 +102,136 @@ fn strip_control_chars_in_strings(s: &str) -> String {
     out
 }
 
-/// Strip trailing commas before `}` or `]`.
+/// Strip trailing commas before `}` or `]` (or at end of input). A
+/// quote/escape-aware scan so `,}` / `,]` sequences inside string values are
+/// left untouched.
 fn strip_trailing_commas(s: &str) -> String {
-    // Repeatedly replace ",}" and ",]" until stable (handles nested cases).
-    let mut out = s.to_string();
-    loop {
-        let prev = out.clone();
-        out = out.replace(",}", "}").replace(",]", "]");
-        // Handle trailing comma at end of string
-        out = out.trim_end_matches(',').to_string();
-        if out == prev {
-            break;
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut in_string = false;
+    let mut escape = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        if escape {
+            out.push(ch);
+            escape = false;
+            i += 1;
+            continue;
         }
+        if in_string {
+            if ch == '\\' {
+                escape = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            out.push(ch);
+            i += 1;
+            continue;
+        }
+        match ch {
+            '"' => {
+                in_string = true;
+                out.push(ch);
+            }
+            ',' => {
+                let mut next = i + 1;
+                while next < chars.len() && chars[next].is_ascii_whitespace() {
+                    next += 1;
+                }
+                if next == chars.len() || chars[next] == '}' || chars[next] == ']' {
+                    i += 1;
+                    continue;
+                }
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+        i += 1;
     }
     out
 }
 
-/// Balance braces and brackets: count `{`/`}` and `[`/`]`, append closers if
-/// positive delta (more opens than closes). Caps iterations so a
-/// catastrophically broken input doesn't loop forever.
+/// Balance braces and brackets: append a closer for every unclosed opener,
+/// in reverse (LIFO) order. A quote/escape-aware scan so brackets inside
+/// string values don't count. Caps iterations so a catastrophically broken
+/// input doesn't loop forever.
 fn balance_braces(s: &str, max_iter: usize) -> String {
     let mut out = s.to_string();
     for _ in 0..max_iter {
-        let brace_delta: i32 = out
-            .chars()
-            .map(|ch| match ch {
-                '{' => 1,
-                '}' => -1,
-                _ => 0,
-            })
-            .sum();
-        let bracket_delta: i32 = out
-            .chars()
-            .map(|ch| match ch {
-                '[' => 1,
-                ']' => -1,
-                _ => 0,
-            })
-            .sum();
-        if brace_delta <= 0 && bracket_delta <= 0 {
+        let mut stack: Vec<char> = Vec::new();
+        let mut in_string = false;
+        let mut escape = false;
+        for ch in out.chars() {
+            if escape {
+                escape = false;
+            } else if in_string {
+                if ch == '\\' {
+                    escape = true;
+                } else if ch == '"' {
+                    in_string = false;
+                }
+            } else {
+                match ch {
+                    '"' => in_string = true,
+                    '{' | '[' => stack.push(ch),
+                    '}' => {
+                        if stack.last() == Some(&'{') {
+                            stack.pop();
+                        }
+                    }
+                    ']' => {
+                        if stack.last() == Some(&'[') {
+                            stack.pop();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if stack.is_empty() || in_string {
             break;
         }
-        // Append needed closers in reverse order (brackets before braces
-        // for correct nesting when both are unbalanced).
-        for _ in 0..bracket_delta.max(0) {
-            out.push(']');
-        }
-        for _ in 0..brace_delta.max(0) {
-            out.push('}');
+        while let Some(open) = stack.pop() {
+            out.push(match open {
+                '{' => '}',
+                '[' => ']',
+                _ => unreachable!(),
+            });
         }
     }
     out
 }
 
 /// Strip excess closers when the delta is negative (more closes than opens).
+/// A quote/escape-aware scan so closers inside string values are kept and do
+/// not consume depth budget.
 fn strip_excess_closers(s: &str) -> String {
     let mut brace_depth: i32 = 0;
     let mut bracket_depth: i32 = 0;
+    let mut in_string = false;
+    let mut escape = false;
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
+        if escape {
+            out.push(ch);
+            escape = false;
+            continue;
+        }
+        if in_string {
+            if ch == '\\' {
+                escape = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            out.push(ch);
+            continue;
+        }
         match ch {
+            '"' => {
+                in_string = true;
+                out.push(ch);
+            }
             '}' => {
                 if brace_depth > 0 {
                     brace_depth -= 1;
@@ -285,5 +355,31 @@ mod tests {
     fn repairs_brace_balance_with_trailing_comma() {
         let v = repair(r#"{"a": 1,"#).unwrap();
         assert_eq!(v, json!({"a": 1}));
+    }
+
+    #[test]
+    fn trailing_comma_strip_skips_comma_closer_inside_strings() {
+        let v = repair(r#"{"a": "x,}", "b": 1"#).unwrap();
+        assert_eq!(v, json!({"a": "x,}", "b": 1}));
+        let v = repair(r##"{"a": "x,]", "b": ["y,]""##).unwrap();
+        assert_eq!(v, json!({"a": "x,]", "b": ["y,]"]}));
+    }
+
+    #[test]
+    fn balances_unclosed_openers_in_lifo_order() {
+        let v = repair(r#"[{"a": 1"#).unwrap();
+        assert_eq!(v, json!([{"a": 1}]));
+    }
+
+    #[test]
+    fn brace_balance_ignores_brackets_inside_strings() {
+        let v = repair(r##"{"a": "[""##).unwrap();
+        assert_eq!(v, json!({"a": "["}));
+    }
+
+    #[test]
+    fn excess_closer_strip_ignores_closers_inside_strings() {
+        let v = repair(r#"{"a": "}", "b": 1}}"#).unwrap();
+        assert_eq!(v, json!({"a": "}", "b": 1}));
     }
 }

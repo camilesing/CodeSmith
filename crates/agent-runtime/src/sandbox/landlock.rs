@@ -225,8 +225,10 @@ impl LandlockSandbox {
 
     /// Add a path rule to the ruleset
     fn add_rule(&self, path: &Path, access: u64) -> std::io::Result<()> {
-        let path_cstr = CString::new(path.to_string_lossy().as_bytes())
-            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid path"))?;
+        use std::os::unix::ffi::OsStrExt;
+        let path_cstr = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "Path contains NUL byte")
+        })?;
 
         // Open the path to get a file descriptor
         // Safety: `path_cstr` is NUL-terminated and lives for the duration of the call.
@@ -325,8 +327,10 @@ pub fn detect_denial(exit_code: i32, stderr: &str) -> bool {
         || stderr.contains("EACCES")
         || stderr.contains("EPERM");
 
-    // Seccomp denials (#2182): SIGSYS (exit code 31 or "Bad system call").
+    // Seccomp denials (#2182): SIGSYS — exit code 31, or 128+31=159 when a
+    // shell parent reports the signal death, or "Bad system call".
     let seccomp_denial = exit_code == 31
+        || exit_code == 128 + 31
         || stderr.contains("Bad system call")
         || stderr.contains("bad system call")
         || stderr.contains("SIGSYS")
@@ -370,6 +374,8 @@ mod tests {
             assert!(detect_denial(1, "Permission denied"));
             assert!(detect_denial(1, "Operation not permitted"));
             assert!(!detect_denial(0, "Success"));
+            // SIGSYS death reported by a shell parent: 128 + 31.
+            assert!(detect_denial(159, ""));
         }
     }
 }

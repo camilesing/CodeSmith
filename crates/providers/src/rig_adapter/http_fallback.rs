@@ -276,7 +276,8 @@ static DUMP_SEQ: AtomicU64 = AtomicU64::new(0);
 /// Truthy values accepted for env toggles in this adapter
 /// (`CODESMITH_DUMP_400_PAYLOAD`, `CODESMITH_REASONING_PASSTHROUGH` — same
 /// family as the TUI's `CODESMITH_TUI_DEBUG`). Shared so the flags cannot
-/// drift apart; `reasoning.rs` reads one on every request build.
+/// drift apart; the reasoning shaper resolves its flag once at construction,
+/// never per request.
 pub(crate) fn env_flag_enabled(raw: Option<&str>) -> bool {
     raw.is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
 }

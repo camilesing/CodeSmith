@@ -377,19 +377,25 @@ pub struct ToolInvocation {
 /// tool was not found, its kind did not match, it was rejected because it
 /// is mutating, it timed out, was cancelled, or its handler returned an
 /// error.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, thiserror::Error, Serialize, Deserialize)]
 pub enum FunctionCallError {
     /// No tool with the given name is registered.
+    #[error("tool not found: {name}")]
     ToolNotFound { name: String },
     /// The payload kind does not match the handler's expected kind.
+    #[error("payload kind mismatch: expected {expected:?}, got {got:?}")]
     KindMismatch { expected: ToolKind, got: ToolKind },
     /// The tool is mutating but `allow_mutating` was `false`.
+    #[error("mutating tool '{name}' rejected: allow_mutating is false")]
     MutatingToolRejected { name: String },
     /// The tool execution exceeded its configured timeout.
+    #[error("tool '{name}' timed out after {timeout_ms}ms")]
     TimedOut { name: String, timeout_ms: u64 },
     /// The tool execution was cancelled.
+    #[error("tool '{name}' was cancelled")]
     Cancelled { name: String },
     /// The tool handler returned an error.
+    #[error("tool '{name}' failed: {error}")]
     ExecutionFailed { name: String, error: String },
 }
 
@@ -417,6 +423,13 @@ pub trait ToolHandler: Send + Sync {
     }
 
     /// Execute the tool with the given invocation context.
+    ///
+    /// Cancellation safety: the dispatcher enforces `timeout_ms` with
+    /// `tokio::time::timeout`, which drops this future mid-execution.
+    /// Work already spawned into detached tasks or child processes keeps
+    /// running after the caller has been told `TimedOut`, so handlers
+    /// must either be cancellation-safe (idempotent side effects) or tear
+    /// down their detached work when dropped.
     async fn handle(
         &self,
         invocation: ToolInvocation,
@@ -487,11 +500,14 @@ pub struct ToolRegistry {
 impl ToolRegistry {
     /// Register a tool with its specification and handler.
     ///
-    /// The tool's name is taken from `spec.name`. Returns an error if
-    /// registration fails (currently infallible, but the `Result` is
-    /// reserved for future validation).
+    /// The tool's name is taken from `spec.name`. Returns an error if a
+    /// tool with the same name is already registered — silent replacement
+    /// would make the earlier tool vanish with no diagnostic.
     pub fn register(&mut self, spec: ToolSpec, handler: Arc<dyn ToolHandler>) -> Result<()> {
         let name = spec.name.clone();
+        if self.handlers.contains_key(&name) {
+            anyhow::bail!("tool '{name}' is already registered");
+        }
         self.specs.insert(
             name.clone(),
             ConfiguredToolSpec {
@@ -528,10 +544,11 @@ impl ToolRegistry {
         let configured =
             self.specs
                 .get(&call.name)
-                .cloned()
                 .ok_or_else(|| FunctionCallError::ToolNotFound {
                     name: call.name.clone(),
                 })?;
+        let supports_parallel = configured.supports_parallel_tool_calls;
+        let timeout_ms = configured.spec.timeout_ms;
 
         let payload_kind = tool_payload_kind(&call.payload);
         let expected = handler.kind();
@@ -555,15 +572,12 @@ impl ToolRegistry {
             source: call.source,
         };
 
-        let _guard = self
-            .runtime
-            .acquire(configured.supports_parallel_tool_calls)
-            .await;
+        let _guard = self.runtime.acquire(supports_parallel).await;
 
         TOOL_EXECUTION_LOCK_HELD
             .scope(
                 (),
-                self.execute_with_timeout(handler, configured.spec.timeout_ms, invocation),
+                self.execute_with_timeout(handler, timeout_ms, invocation),
             )
             .await
     }

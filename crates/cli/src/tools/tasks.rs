@@ -680,6 +680,21 @@ impl ToolSpec for TaskShellWaitTool {
         ApprovalRequirement::Auto
     }
 
+    fn approval_requirement_for_input(
+        &self,
+        input: &Value,
+        _context: &ToolContext,
+    ) -> ApprovalRequirement {
+        // Recording gate evidence writes a log artifact and durable task
+        // state — the same effects `task_gate_run` gates behind Required.
+        // Plain polling stays read-only/auto-approved.
+        if input.get("gate").is_some() {
+            ApprovalRequirement::Required
+        } else {
+            ApprovalRequirement::Auto
+        }
+    }
+
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let result = ShellWaitTool::new("exec_shell_wait")
             .execute(input.clone(), context)
@@ -773,11 +788,13 @@ impl ToolSpec for PrAttemptRecordTool {
     }
 
     fn capabilities(&self) -> Vec<ToolCapability> {
-        vec![ToolCapability::ReadOnly]
+        // Writes a patch artifact under the task data dir and appends a
+        // durable attempt record — not read-only.
+        vec![ToolCapability::WritesFiles]
     }
 
     fn approval_requirement(&self) -> ApprovalRequirement {
-        ApprovalRequirement::Auto
+        ApprovalRequirement::Required
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {

@@ -53,7 +53,9 @@ const MAX_ERROR_CHARS: usize = 2_000;
 /// Curated whitelist of pandoc target formats. Each entry corresponds
 /// to a `--to=<format>` value pandoc accepts natively without
 /// additional system tooling. Keep this list short and intentional —
-/// the schema description below references it verbatim.
+/// the schema enum below references it verbatim, and the prose lists in
+/// `description()` and the schema description must list every entry
+/// (guarded by `format_whitelist_prose_lists_every_supported_format`).
 pub(crate) const SUPPORTED_TARGET_FORMATS: &[&str] = &[
     "markdown",   // Pandoc-flavored Markdown (the safe round-trip default)
     "gfm",        // GitHub-Flavored Markdown
@@ -80,7 +82,7 @@ impl ToolSpec for PandocConvertTool {
     }
 
     fn description(&self) -> &'static str {
-        "Convert a document between formats via pandoc. Reads `source_path` (any pandoc-supported input format — pandoc autodetects from extension), converts to `target_format`, and either writes the result to `output_path` (when provided) or returns the converted text inline. Supported targets: markdown, gfm, commonmark, html, rst, latex, docx, odt, epub, plain, asciidoc. Use this instead of shelling out to pandoc via `exec_shell` — no approval prompt for output_path-less reads, structured errors, and a curated format whitelist."
+        "Convert a document between formats via pandoc. Reads `source_path` (any pandoc-supported input format — pandoc autodetects from extension), converts to `target_format`, and either writes the result to `output_path` (when provided) or returns the converted text inline. Supported targets: markdown, gfm, commonmark, html, rst, latex, docx, odt, epub, plain, asciidoc. Use this instead of shelling out to pandoc via `exec_shell` — structured errors and a curated format whitelist."
     }
 
     fn input_schema(&self) -> Value {
@@ -98,7 +100,7 @@ impl ToolSpec for PandocConvertTool {
                 },
                 "output_path": {
                     "type": "string",
-                    "description": "Optional path to write the converted document to. When omitted, the converted text is returned inline (text formats only — binary formats like docx/odt/epub require output_path)."
+                    "description": "Optional path to write the converted document to. An existing file at that path is overwritten — prefer a fresh output path. When omitted, the converted text is returned inline (text formats only — binary formats like docx/odt/epub require output_path)."
                 }
             },
             "required": ["source_path", "target_format"]
@@ -261,6 +263,28 @@ mod tests {
     }
 
     #[test]
+    fn format_whitelist_prose_lists_every_supported_format() {
+        let tool = PandocConvertTool;
+        let schema = tool.input_schema();
+        let schema_desc = schema
+            .get("properties")
+            .and_then(|p| p.get("target_format"))
+            .and_then(|t| t.get("description"))
+            .and_then(|d| d.as_str())
+            .expect("target_format description must be present in schema");
+        for fmt in SUPPORTED_TARGET_FORMATS {
+            assert!(
+                tool.description().contains(fmt),
+                "tool description() must list `{fmt}`"
+            );
+            assert!(
+                schema_desc.contains(fmt),
+                "schema target_format description must list `{fmt}`"
+            );
+        }
+    }
+
+    #[test]
     fn binary_formats_require_output_path() {
         for fmt in ["docx", "odt", "epub"] {
             assert!(format_is_binary(fmt));
@@ -321,6 +345,7 @@ mod tests {
         if !pandoc_present() {
             // Tool wouldn't be registered without pandoc; mirror the
             // catalog-build behaviour.
+            eprintln!("skipping: pandoc not installed");
             return;
         }
         let tmp = tempdir().expect("tempdir");
@@ -350,6 +375,7 @@ mod tests {
     #[tokio::test]
     async fn pandoc_convert_writes_output_path_and_reports_summary() {
         if !pandoc_present() {
+            eprintln!("skipping: pandoc not installed");
             return;
         }
         let tmp = tempdir().expect("tempdir");

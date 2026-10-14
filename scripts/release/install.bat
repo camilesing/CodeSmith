@@ -16,12 +16,8 @@ if %ERRORLEVEL% neq 0 (
     exit /b 1
 )
 
-if %ERRORLEVEL% neq 0 (
-    exit /b 1
-)
-
 echo.
-echo Done. Both binaries installed to %BIN_DIR%.
+echo Done. codesmith installed to %BIN_DIR%.
 echo.
 echo Add %BIN_DIR% to your PATH:
 echo   1. Open Start, search "environment variables"
@@ -31,6 +27,6 @@ echo   4. Click "New" and add: %BIN_DIR%
 echo   5. Click OK, then restart your terminal
 echo.
 echo Or run this in an admin PowerShell:
-echo   [Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', 'User') + ';%BIN_DIR%', 'User')
+echo   $p=[Environment]::GetEnvironmentVariable('Path','User'); if(($p -split ';') -notcontains '%BIN_DIR%'){[Environment]::SetEnvironmentVariable('Path',"$p;%BIN_DIR%",'User')}
 echo.
 echo Then run: codesmith

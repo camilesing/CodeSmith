@@ -1,8 +1,9 @@
 //! Bounded, cached workspace index behind `@path` completion.
 //!
 //! rustyline calls completion synchronously on the render thread, so the walk
-//! is capped on both ends: at most `limit` candidate paths are kept and at
-//! most [`MAX_VISITED`] entries are visited. A rebuild happens at most once
+//! is capped on both ends: at most `limit` candidate paths are kept, at most
+//! [`MAX_VISITED`] entries are visited, and one walk runs at most
+//! [`MAX_WALK_TIME`]. A rebuild happens at most once
 //! per [`TTL`], and only when the user actually asks for a path completion.
 //!
 //! Known limitations (recorded beside the behaviour it owns):
@@ -30,6 +31,10 @@ const TTL: Duration = Duration::from_secs(10);
 /// stall the render thread even when the candidate limit is never reached
 /// (a deep tree of ignored-then-reincluded files, say).
 const MAX_VISITED: usize = 50_000;
+/// Wall-clock budget for one walk: a slow or network-mounted workspace
+/// (NFS/SMB, where per-entry syscalls cost milliseconds) degrades to a
+/// partial index instead of stalling the render thread for seconds.
+const MAX_WALK_TIME: Duration = Duration::from_millis(500);
 
 /// One completable path, relative to the workspace root.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,11 +123,21 @@ fn walk(root: &Path, depth: usize, _limit: usize) -> Vec<Entry> {
     // and prefix queries could return zero hits in any real repository.
     // `complete()` applies the per-query menu cap itself.
     const MAX_INDEXED: usize = 5_000;
+    let deadline = Instant::now() + MAX_WALK_TIME;
     for (visited, result) in builder.build().enumerate() {
         if visited >= MAX_VISITED || entries.len() >= MAX_INDEXED {
             break;
         }
-        let Ok(entry) = result else { continue };
+        if visited % 256 == 0 && Instant::now() > deadline {
+            break; // serve the partial index collected so far
+        }
+        let entry = match result {
+            Ok(entry) => entry,
+            Err(err) => {
+                tracing::debug!(root = %root.display(), "mention walk error: {err}");
+                continue;
+            }
+        };
         if entry.depth() == 0 {
             continue; // the root itself is not a candidate
         }

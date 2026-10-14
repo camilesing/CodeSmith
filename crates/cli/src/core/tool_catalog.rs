@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 /// Where a catalog tool came from. Classification precedence mirrors the
 /// registry's name-collision rule: plugin > extension > mcp > builtin (a
 /// later registration under a builtin's name replaces it).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ToolOrigin {
     Builtin,
     Plugin,
@@ -66,6 +66,15 @@ impl ToolCatalogSnapshot {
         let entries = names
             .iter()
             .map(|name| {
+                debug_assert!(
+                    [plugin, extension, mcp]
+                        .iter()
+                        .filter(|s| s.contains(name))
+                        .count()
+                        <= 1,
+                    "ambiguous origin for {name}: catalog precedence may diverge from \
+                     the registry's later-registration-replaces rule"
+                );
                 let origin = if plugin.contains(name) {
                     ToolOrigin::Plugin
                 } else if extension.contains(name) {
@@ -157,17 +166,17 @@ fn diff_names(
     prev: &ToolCatalogSnapshot,
     next: &ToolCatalogSnapshot,
 ) -> Option<(Vec<String>, Vec<String>)> {
-    let prev_set: std::collections::HashSet<&str> =
-        prev.entries.iter().map(|(n, _)| n.as_str()).collect();
-    let next_set: std::collections::HashSet<&str> =
-        next.entries.iter().map(|(n, _)| n.as_str()).collect();
+    let prev_set: std::collections::HashSet<(&str, ToolOrigin)> =
+        prev.entries.iter().map(|(n, o)| (n.as_str(), *o)).collect();
+    let next_set: std::collections::HashSet<(&str, ToolOrigin)> =
+        next.entries.iter().map(|(n, o)| (n.as_str(), *o)).collect();
     let mut added: Vec<String> = next_set
         .difference(&prev_set)
-        .map(|s| (*s).to_string())
+        .map(|(n, _)| (*n).to_string())
         .collect();
     let mut removed: Vec<String> = prev_set
         .difference(&next_set)
-        .map(|s| (*s).to_string())
+        .map(|(n, _)| (*n).to_string())
         .collect();
     if added.is_empty() && removed.is_empty() {
         return None;
@@ -242,6 +251,25 @@ mod tests {
             "identical catalog emits nothing"
         );
         assert_eq!(state.current().unwrap().entries.len(), 2);
+    }
+
+    #[test]
+    fn update_diffs_same_name_origin_change() {
+        let state = ToolCatalogState::default();
+        let names = vec!["mytool".to_string()];
+        let empty: std::collections::HashSet<String> = Default::default();
+        let plugin: std::collections::HashSet<String> =
+            ["mytool"].iter().map(|n| n.to_string()).collect();
+        state.update(ToolCatalogSnapshot::capture(
+            &names, &empty, &empty, &empty, &empty,
+        ));
+        assert_eq!(
+            state.update(ToolCatalogSnapshot::capture(
+                &names, &plugin, &empty, &empty, &empty
+            )),
+            Some((vec!["mytool".to_string()], vec!["mytool".to_string()])),
+            "a re-origined tool surfaces as removed+added under the same name"
+        );
     }
 
     #[test]

@@ -3,12 +3,12 @@ name = "codesmith-state"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-readme.workspace = true
 keywords = ["state", "persistence", "agent"]
 categories = ["development-tools"]
 license.workspace = true
 repository.workspace = true
 description = "Session/thread persistence and recovery model for the CodeSmith workspace architecture"
+exclude = ["*.db", "*.sqlite", "*.sqlite3"]
 
 [dependencies]
 anyhow.workspace = true

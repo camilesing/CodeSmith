@@ -4,6 +4,8 @@
 //! `PROMPT_PATTERNS` in LocalShellTask.tsx) and utility functions
 //! for bridging ShellManager background shells into the unified registry.
 
+use std::sync::LazyLock;
+
 use regex::Regex;
 
 use super::StallPattern;
@@ -14,7 +16,7 @@ use super::StallPattern;
 /// for keyboard input. Used to gate the stall notification: we stay silent
 /// on commands that are merely slow (git log -S, long builds) and only
 /// notify when the tail looks like an interactive prompt.
-pub fn default_stall_patterns() -> Vec<StallPattern> {
+static DEFAULT_STALL_PATTERNS: LazyLock<Vec<StallPattern>> = LazyLock::new(|| {
     let patterns: &[(&str, &str)] = &[
         (r"(?i)\(y/n\)", "yes/no confirmation (y/n)"),
         (r"(?i)\[y/n\]", "yes/no confirmation [y/n]"),
@@ -30,24 +32,63 @@ pub fn default_stall_patterns() -> Vec<StallPattern> {
         (r"(?i)overwrite\?", "overwrite prompt"),
         (r"(?i)confirm\s*\?", "confirmation prompt"),
         (r"(?i)login\s*:", "login prompt"),
-        (r"Username\s*:", "username prompt"),
+        (r"(?i)username\s*:", "username prompt"),
     ];
     patterns
         .iter()
-        .filter_map(|(pat, desc)| {
-            Regex::new(pat).ok().map(|r| StallPattern {
-                pattern: r,
-                description: desc.to_string(),
-            })
+        .map(|(pat, desc)| StallPattern {
+            pattern: Regex::new(pat)
+                .unwrap_or_else(|e| panic!("built-in stall pattern {pat:?} must compile: {e}")),
+            description: desc.to_string(),
         })
         .collect()
+});
+
+/// Compiled-once default stall patterns (see [`DEFAULT_STALL_PATTERNS`]).
+pub fn default_stall_patterns() -> &'static [StallPattern] {
+    &DEFAULT_STALL_PATTERNS
+}
+
+/// Remove ANSI escape sequences (CSI and OSC) from terminal output so
+/// color/cursor codes around a prompt cannot defeat pattern matching.
+fn strip_ansi_escapes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('[') => {
+                for b in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&b) {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                while let Some(b) = chars.next() {
+                    if b == '\u{7}' {
+                        break;
+                    }
+                    if b == '\u{1b}' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Check if the tail of shell output looks like an interactive prompt.
 /// Extracted as a standalone function so it can be used without the registry.
-#[allow(dead_code)]
 pub fn looks_like_prompt(tail: &str, patterns: &[StallPattern]) -> bool {
-    let last_line = tail.trim_end().lines().last().unwrap_or("");
+    let plain = strip_ansi_escapes(tail.trim_end());
+    let last_line = plain.lines().last().unwrap_or("");
     patterns.iter().any(|p| p.pattern.is_match(last_line))
 }
 
@@ -103,5 +144,21 @@ mod tests {
         assert!(!looks_like_prompt("(y/n)\nBuild complete", &patterns));
         // normal text on first line, (y/n) on last line => true
         assert!(looks_like_prompt("Building...\nContinue? (y/n)", &patterns));
+    }
+
+    #[test]
+    fn looks_like_prompt_strips_ansi_escapes() {
+        let patterns = default_stall_patterns();
+        // Color reset between prompt text and colon, and a trailing cursor
+        // reset after `?` — both must not defeat the patterns.
+        assert!(looks_like_prompt("Password\u{1b}[0m:", &patterns));
+        assert!(looks_like_prompt(
+            "Do you want to continue?\u{1b}[0m",
+            &patterns
+        ));
+        assert!(looks_like_prompt(
+            "Deploy\u{1b}[1;32m ready\u{1b}[0m to proceed?\u{1b}[0m",
+            &patterns
+        ));
     }
 }

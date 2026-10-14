@@ -25,6 +25,7 @@ use codesmith_agent::provider::{ProviderConfig, ProviderFactory, ProviderId};
 /// Built by [`MockProviderFactory`] from a [`ProviderConfig`]; the
 /// `default_model` becomes [`LlmClient::model`]. No network calls are made.
 pub struct MockClient {
+    name: &'static str,
     model: String,
 }
 
@@ -81,7 +82,7 @@ impl MockClient {
 
 impl LlmClient for MockClient {
     fn provider_name(&self) -> &'static str {
-        "mock"
+        self.name
     }
 
     fn model(&self) -> &str {
@@ -112,7 +113,7 @@ impl LlmClient for MockClient {
                 r#type: String::from("message"),
                 role: String::from("assistant"),
                 content: Vec::new(),
-                model: model.clone(),
+                model,
                 stop_reason: None,
                 stop_sequence: None,
                 container: None,
@@ -149,6 +150,7 @@ impl LlmClient for MockClient {
 /// Factory that builds [`MockClient`]s. Registers under the `mock` provider id.
 pub struct MockProviderFactory {
     id: ProviderId,
+    name: &'static str,
 }
 
 impl Default for MockProviderFactory {
@@ -163,14 +165,32 @@ impl MockProviderFactory {
     pub fn new() -> Self {
         Self {
             id: ProviderId::from("mock"),
+            name: "mock",
         }
     }
 
     /// Create a factory registering under a custom id, for hosts that want to
-    /// register the mock under their own name.
+    /// register the mock under their own name. The built client's
+    /// `provider_name` follows the id, so routing and telemetry see the name
+    /// the factory was registered under.
     #[must_use]
     pub fn with_id(id: ProviderId) -> Self {
-        Self { id }
+        Self {
+            name: static_provider_name(&id),
+            id,
+        }
+    }
+}
+
+/// Resolve a `&'static str` provider name for a [`ProviderId`] so
+/// [`LlmClient::provider_name`] (which returns `&'static str`) can follow a
+/// custom id. Builtin ids map to their stable `as_str`; a custom id leaks one
+/// copy, bounded by the small set of factory constructions (the registry's
+/// `leak_str` precedent).
+fn static_provider_name(id: &ProviderId) -> &'static str {
+    match id {
+        ProviderId::Builtin(kind) => kind.as_str(),
+        ProviderId::Custom(name) => Box::leak(name.clone().into_boxed_str()),
     }
 }
 
@@ -181,6 +201,7 @@ impl ProviderFactory for MockProviderFactory {
 
     fn build(&self, cfg: &ProviderConfig) -> Result<LlmClientHandle> {
         Ok(Arc::new(MockClient {
+            name: self.name,
             model: cfg.default_model.clone(),
         }) as LlmClientHandle)
     }
@@ -236,6 +257,22 @@ mod tests {
     }
 
     #[test]
+    fn with_id_factory_reports_custom_provider_name() {
+        let factory = MockProviderFactory::with_id(ProviderId::from("acme-mock"));
+        assert_eq!(factory.id(), ProviderId::from("acme-mock"));
+        let client = factory
+            .build(&cfg_for_mock())
+            .expect("mock factory should build a client");
+        assert_eq!(client.provider_name(), "acme-mock");
+        // Builtin ids keep their stable name.
+        let factory = MockProviderFactory::with_id(ProviderId::from("mock"));
+        let client = factory
+            .build(&cfg_for_mock())
+            .expect("mock factory should build a client");
+        assert_eq!(client.provider_name(), "mock");
+    }
+
+    #[test]
     fn default_registry_resolves_mock() {
         let registry = crate::default_registry();
         assert!(
@@ -257,6 +294,7 @@ mod tests {
     #[tokio::test]
     async fn create_message_echoes_last_user_text() {
         let client = MockClient {
+            name: "mock",
             model: String::from("mock-model"),
         };
         let response = client
@@ -280,6 +318,7 @@ mod tests {
     #[tokio::test]
     async fn create_message_stream_yields_text_delta_and_stops() {
         let client = MockClient {
+            name: "mock",
             model: String::from("mock-model"),
         };
         let stream = client

@@ -1,18 +1,16 @@
-#![allow(dead_code)]
-
 //! Sandbox policy definitions for command execution restrictions.
 //!
 //! The portable policy data types (`SandboxPolicy`, `WritableRoot`) now live
 //! in `codesmith-agent-runtime`'s `sandbox` module so they can cross the
-//! `Arc<dyn HostServices>` boundary. This module re-exports them and keeps the
-//! platform-coupled `SandboxExecutor` trait plus the safety-level → behavior
-//! mapping, which reference TUI-local command-spec/safety types.
+//! `Arc<dyn HostServices>` boundary. This module re-exports them and keeps
+//! the safety-level → behavior mapping, which references the TUI-local
+//! command-safety types. The mapping and `SandboxPolicyBehavior` have no
+//! production caller yet (#2186), so they are gated to the test build.
 
-use std::io;
 #[cfg(test)]
 use std::path::{Path, PathBuf};
 
-use super::{CommandSpec, ExecEnv};
+#[cfg(test)]
 use crate::command_safety::SafetyLevel;
 
 pub use codesmith_agent_runtime::sandbox::SandboxPolicy;
@@ -21,33 +19,14 @@ pub use codesmith_agent_runtime::sandbox::SandboxPolicy;
 #[cfg(test)]
 pub use codesmith_agent_runtime::sandbox::WritableRoot;
 
-/// Unified trait for platform-specific sandbox executors (#2186).
-///
-/// Each platform module (seatbelt, landlock, windows) provides an
-/// implementation of this trait. The `SandboxManager` dispatches through
-/// the trait instead of calling platform-specific functions directly.
-pub trait SandboxExecutor {
-    /// Prepare a sandboxed execution environment from a command spec.
-    ///
-    /// Returns the transformed command, environment, and sandbox metadata
-    /// needed to spawn the process.
-    fn prepare(&self, spec: &CommandSpec) -> io::Result<ExecEnv>;
-
-    /// Check if a command failure was caused by sandbox denial.
-    fn was_denied(&self, exit_code: i32, stderr: &str) -> bool;
-
-    /// Get a human-readable description of why the sandbox blocked the command.
-    fn denial_message(&self, stderr: &str) -> String;
-
-    /// Returns the type of sandbox this executor provides.
-    fn sandbox_type(&self) -> super::SandboxType;
-}
-
 /// Map a command safety classification to the appropriate sandbox policy (#2186).
 ///
 /// - `Safe` / `WorkspaceSafe` → use the default sandbox policy
 /// - `RequiresApproval` → user must approve before execution (handled by caller)
-/// - `Dangerous` → blocked unless in YOLO mode with trust
+/// - `Dangerous` → always mapped to `Blocked`. Any YOLO-mode/trust override
+///   is the caller's responsibility and must be decided BEFORE consulting
+///   this mapping; this function performs no override of its own.
+#[cfg(test)]
 pub fn map_safety_level_to_behavior(
     level: SafetyLevel,
     default_policy: &SandboxPolicy,
@@ -62,13 +41,15 @@ pub fn map_safety_level_to_behavior(
 }
 
 /// Behavior decision for a sandboxed command based on safety level.
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub enum SandboxPolicyBehavior {
     /// Execute with the given sandbox policy.
     Sandboxed(SandboxPolicy),
     /// User approval required before execution.
     RequiresApproval,
-    /// Block execution entirely (unless YOLO+trust).
+    /// Block execution entirely. Callers that implement a YOLO-mode/trust
+    /// override must apply it before consulting this mapping.
     Blocked,
 }
 
@@ -108,6 +89,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_writable_root_basic() {
         let root = WritableRoot::new(PathBuf::from("/project"));
         assert!(root.is_path_writable(Path::new("/project/src/main.rs")));
@@ -115,6 +97,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_writable_root_with_exceptions() {
         let root = WritableRoot::with_exceptions(
             PathBuf::from("/project"),

@@ -3,8 +3,6 @@
 //! Validates JSON or TOML from inline content or a workspace file path and
 //! returns parser errors with lightweight metadata.
 
-use std::fs;
-
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
@@ -94,7 +92,8 @@ impl ToolSpec for ValidateDataTool {
         let content = optional_str(&input, "content");
         let requested_format = DataFormat::from_input(optional_str(&input, "format"))?;
 
-        let (source_name, raw_content, extension) = load_input_source(path, content, context)?;
+        let (source_name, raw_content, extension) =
+            load_input_source(path, content, context).await?;
         match requested_format {
             DataFormat::Json => validate_json(&raw_content, &source_name),
             DataFormat::Toml => validate_toml(&raw_content, &source_name),
@@ -103,7 +102,7 @@ impl ToolSpec for ValidateDataTool {
     }
 }
 
-fn load_input_source(
+async fn load_input_source(
     path: Option<&str>,
     content: Option<&str>,
     context: &ToolContext,
@@ -119,7 +118,7 @@ fn load_input_source(
             // supplied path can point at a multi-GB workspace file, which
             // must not be fully buffered and then parsed end-to-end.
             const MAX_BYTES: u64 = 4 * 1024 * 1024;
-            let metadata = fs::metadata(&resolved).map_err(|e| {
+            let metadata = tokio::fs::metadata(&resolved).await.map_err(|e| {
                 ToolError::execution_failed(format!("Failed to stat {}: {e}", resolved.display()))
             })?;
             if metadata.len() > MAX_BYTES {
@@ -129,7 +128,7 @@ fn load_input_source(
                     metadata.len()
                 )));
             }
-            let raw_content = fs::read_to_string(&resolved).map_err(|e| {
+            let raw_content = tokio::fs::read_to_string(&resolved).await.map_err(|e| {
                 ToolError::execution_failed(format!("Failed to read {}: {e}", resolved.display()))
             })?;
             let extension = resolved
@@ -142,23 +141,43 @@ fn load_input_source(
     }
 }
 
+/// Extension-derived format hint for auto mode — a separate two-variant
+/// type so the user-facing `DataFormat::Auto` cannot reach this match.
+enum FormatHint {
+    Json,
+    Toml,
+}
+
 fn validate_auto(
     raw_content: &str,
     source_name: &str,
     extension: Option<&str>,
 ) -> Result<ToolResult, ToolError> {
-    let hint = match extension {
-        Some("json") => Some(DataFormat::Json),
-        Some("toml") => Some(DataFormat::Toml),
+    let hinted = match extension {
+        Some("json") => Some(FormatHint::Json),
+        Some("toml") => Some(FormatHint::Toml),
         _ => None,
     };
 
-    if let Some(format_hint) = hint {
-        return match format_hint {
-            DataFormat::Json => validate_json(raw_content, source_name),
-            DataFormat::Toml => validate_toml(raw_content, source_name),
-            DataFormat::Auto => unreachable!(),
+    if let Some(format_hint) = hinted {
+        let hinted_outcome = match format_hint {
+            FormatHint::Json => validate_json(raw_content, source_name),
+            FormatHint::Toml => validate_toml(raw_content, source_name),
         };
+        if hinted_outcome.as_ref().is_ok_and(|r| r.success) {
+            return hinted_outcome;
+        }
+        // The documented auto behavior falls back to trying both formats
+        // when the extension hint disagrees with the content.
+        let fallback_outcome = match format_hint {
+            FormatHint::Json => validate_toml(raw_content, source_name),
+            FormatHint::Toml => validate_json(raw_content, source_name),
+        };
+        if fallback_outcome.as_ref().is_ok_and(|r| r.success) {
+            return fallback_outcome;
+        }
+        // Neither parser accepted it: report the hinted format's error.
+        return hinted_outcome;
     }
 
     let json_result = serde_json::from_str::<serde_json::Value>(raw_content);
@@ -270,6 +289,7 @@ fn summarize_toml(value: &toml::Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use tempfile::tempdir;
 
     #[tokio::test]
@@ -326,5 +346,35 @@ mod tests {
             .await
             .expect_err("should fail");
         assert!(matches!(err, ToolError::InvalidInput { .. }));
+    }
+
+    #[tokio::test]
+    async fn validate_auto_falls_back_when_extension_hint_disagrees() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path());
+        let config = tmp.path().join("data.json");
+        fs::write(&config, "name = \"deepseek\"\n").expect("write");
+
+        let result = ValidateDataTool
+            .execute(json!({"path": "data.json"}), &ctx)
+            .await
+            .expect("execute");
+        assert!(result.success);
+        assert!(result.content.contains("\"format\": \"toml\""));
+    }
+
+    #[tokio::test]
+    async fn validate_auto_reports_hinted_format_when_both_fail() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path());
+        let config = tmp.path().join("broken.toml");
+        fs::write(&config, "not valid =\n").expect("write");
+
+        let result = ValidateDataTool
+            .execute(json!({"path": "broken.toml"}), &ctx)
+            .await
+            .expect("execute");
+        assert!(!result.success);
+        assert!(result.content.contains("Invalid TOML"));
     }
 }

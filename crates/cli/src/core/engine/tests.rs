@@ -1424,6 +1424,11 @@ fn turn_tool_registry_builder_keeps_plan_mode_read_only_for_files() {
         "update_plan",
         // #plan-mode-v2: the sole permitted write tool in plan mode
         "write_plan_file",
+        // Entering plan mode creates the (empty) plan file it hands out —
+        // the same plan-file carve-out as write_plan_file. Registered in
+        // plan mode only so a stray re-entry fails loudly; the capability
+        // is WritesFiles (not ReadOnly) so gating layers see the write.
+        "enter_plan_mode",
     ];
     let mut write_or_exec_tools: Vec<String> = registry
         .all()

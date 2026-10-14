@@ -211,14 +211,26 @@ fn content_chars(block: &crate::models::ContentBlock) -> usize {
         crate::models::ContentBlock::ToolResult { content, .. } => {
             content.to_string().chars().count()
         }
-        crate::models::ContentBlock::Image { .. } => 1024, // one image ≈ 1k tokens
+        crate::models::ContentBlock::Image { .. } => 4000, // ~1k tokens at 4 chars/token
         other => format!("{other:?}").chars().count(),
     }
 }
 
 /// `/cache [n]` — per-turn prefix-cache telemetry table (#263).
 pub fn cache(state: &ReplState, arg: Option<&str>) {
-    let want = arg.and_then(|s| s.parse::<usize>().ok()).unwrap_or(10);
+    let want = match arg {
+        Some(s) => match s.parse::<usize>() {
+            Ok(n) => n,
+            Err(_) => {
+                println!(
+                    "{} '/cache {s}' is not a number — showing last 10 turns",
+                    "⚠".yellow()
+                );
+                10
+            }
+        },
+        None => 10,
+    };
     let history = &state.session.turn_cache_history;
     if history.is_empty() {
         println!("{}", "no cache telemetry yet — run a turn first".dimmed());

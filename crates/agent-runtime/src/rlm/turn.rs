@@ -255,13 +255,26 @@ async fn run_rlm_turn_impl(
                 };
             }
 
-            let _ = tx_event
+            if tx_event
                 .send(Event::status(format!(
                     "RLM iteration {}/{}",
                     iteration + 1,
                     MAX_RLM_ITERATIONS
                 )))
-                .await;
+                .await
+                .is_err()
+            {
+                break 'turn RlmTurnResult {
+                    answer: String::new(),
+                    iterations: iteration,
+                    duration: start.elapsed(),
+                    error: Some("RLM event channel closed; turn aborted".to_string()),
+                    usage: total_usage,
+                    termination: RlmTermination::Error,
+                    trace: trace.clone(),
+                    total_rpcs,
+                };
+            }
 
             // 4a. Root LLM generates code from metadata-only context.
             let request = build_root_request(&model, &messages, &system);
@@ -300,9 +313,13 @@ async fn run_rlm_turn_impl(
                     if consecutive_no_code >= MAX_CONSECUTIVE_NO_CODE {
                         break 'turn RlmTurnResult {
                             answer: final_val,
+                            error: Some(
+                                "RLM: FINAL returned without executing any ```repl block; \
+                                 answer is unverified (guessed from context preview)"
+                                    .to_string(),
+                            ),
                             iterations: iteration + 1,
                             duration: start.elapsed(),
-                            error: None,
                             usage: total_usage,
                             termination: RlmTermination::NoCode,
                             trace: trace.clone(),
@@ -746,7 +763,19 @@ fn parse_text_final(text: &str) -> Option<String> {
         }
         if let Some(rest) = trimmed.strip_prefix("FINAL(") {
             let inner = rest.trim_end();
-            if let Some(end) = inner.rfind(')') {
+            let mut depth = 1i32;
+            let end = inner.char_indices().find_map(|(i, c)| match c {
+                '(' => {
+                    depth += 1;
+                    None
+                }
+                ')' => {
+                    depth -= 1;
+                    (depth == 0).then_some(i)
+                }
+                _ => None,
+            });
+            if let Some(end) = end {
                 let value = inner[..end].trim();
                 if !value.is_empty() {
                     return Some(strip_quotes(value));
@@ -761,7 +790,7 @@ fn strip_code_fences(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut in_fence = false;
     for line in text.lines() {
-        if line.trim_start().starts_with("```") {
+        if line.starts_with("```") {
             in_fence = !in_fence;
             continue;
         }
@@ -858,6 +887,27 @@ mod tests {
         let text =
             "Some prose.\n```repl\n# Note: when ready, call FINAL(value)\nx = 1\n```\nMore prose.";
         assert!(parse_text_final(text).is_none());
+    }
+
+    #[test]
+    fn parse_text_final_survives_indented_fence_lines() {
+        // Indented ``` lines inside the Python (e.g. triple-quoted markdown)
+        // must not toggle the fence state and swallow a later top-level
+        // FINAL directive.
+        let text = "```repl\nmd = \"\"\"\n    ```python\n\"\"\"\nprint(md)\n```\nFINAL(42)";
+        assert_eq!(parse_text_final(text).as_deref(), Some("42"));
+    }
+
+    #[test]
+    fn parse_text_final_ignores_trailing_prose_with_parens() {
+        let text = "FINAL(Yes.) (see note (2))";
+        assert_eq!(parse_text_final(text).as_deref(), Some("Yes."));
+    }
+
+    #[test]
+    fn parse_text_final_matches_nested_parens() {
+        let text = "FINAL(max(a, b))";
+        assert_eq!(parse_text_final(text).as_deref(), Some("max(a, b)"));
     }
 
     #[test]

@@ -9,6 +9,13 @@ pub mod runtime {
 
     pub const RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION: u32 = 1;
 
+    /// Envelope for runtime events streamed over the wire protocol.
+    ///
+    /// The `extra` map uses `#[serde(flatten)]` to carry unknown top-level
+    /// fields across a round-trip. Flatten buffers the whole map through
+    /// serde's `Content` type, which only works with self-describing
+    /// formats: this envelope is JSON-only and cannot be deserialized from
+    /// binary formats such as bincode or postcard.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct RuntimeEventEnvelope {
         /// Envelope schema version. `None` means the payload predates schema
@@ -23,7 +30,9 @@ pub mod runtime {
         pub thread_id: String,
         pub turn_id: Option<String>,
         pub item_id: Option<String>,
+        /// Event timestamp, formatted as RFC 3339.
         pub timestamp: String,
+        /// Envelope creation timestamp, formatted as RFC 3339.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub created_at: Option<String>,
         pub payload: Value,
@@ -68,7 +77,9 @@ pub struct Thread {
     pub preview: String,
     pub ephemeral: bool,
     pub model_provider: String,
+    /// Unix timestamp (seconds) when the thread was created.
     pub created_at: i64,
+    /// Unix timestamp (seconds) of the most recent update.
     pub updated_at: i64,
     pub status: ThreadStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -165,11 +176,16 @@ pub struct ThreadSetNameParams {
     pub name: String,
 }
 
+/// A request that operates on conversation threads, tagged by `kind`.
+///
+/// A request carrying an unknown `kind` tag (e.g. from a newer producer)
+/// fails deserialization; consumers that must tolerate unknown requests
+/// should inspect the raw JSON tag before decoding into this enum.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ThreadRequest {
     Create {
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Value::is_null")]
         metadata: Value,
     },
     Start(ThreadStartParams),
@@ -522,6 +538,10 @@ pub struct ApprovalDecisionRequest {
 /// Events are tagged by the `event` field and cover the full lifecycle of a
 /// turn: response streaming, tool calls, MCP lifecycle, command execution,
 /// patch application, approvals, and errors.
+///
+/// A frame carrying an unknown `event` tag (e.g. from a newer producer)
+/// fails deserialization; consumers that must tolerate unknown events
+/// should inspect the raw JSON tag before decoding into this enum.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum EventFrame {

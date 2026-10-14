@@ -205,13 +205,13 @@ fn print_digest(rollup: &Rollup, window: &str) {
     }
 
     let calls = rollup.total_tool_calls();
-    if calls == 0 {
+    let (auto, prompted) = approvals(rollup);
+    if calls == 0 && auto + prompted == 0 {
         println!(
             "  {}              (no tool calls recorded)",
             "tools".dimmed()
         );
     } else {
-        let (auto, prompted) = approvals(rollup);
         let rate = match success_rate(rollup) {
             Some(pct) => format!("{pct:.1}% success"),
             None => "no result data".to_string(),

@@ -99,7 +99,9 @@ impl HandleValue {
     fn stable_bytes(&self) -> Vec<u8> {
         match self {
             Self::Text(text) => text.as_bytes().to_vec(),
-            Self::Json(value) => serde_json::to_vec(value).unwrap_or_default(),
+            Self::Json(value) => {
+                serde_json::to_vec(value).expect("serde_json::Value always serializes to JSON")
+            }
         }
     }
 
@@ -138,9 +140,26 @@ impl HandleStore {
         self.insert(session_id, name, HandleValue::Json(value))
     }
 
+    /// Resolve a handle to its stored payload.
+    ///
+    /// Last-writer-wins on same-key re-insert: the lookup keys on
+    /// `(session_id, name)` only, so a handle issued before a re-insert of
+    /// the same key resolves to the *new* payload, whose digest, length and
+    /// type no longer match the passed handle. Consumers that must detect
+    /// the swap verify the digest themselves (`handle_read` rejects a
+    /// `sha256` mismatch).
     #[must_use]
     pub fn get(&self, handle: &VarHandle) -> Option<&HandleRecord> {
         self.records.get(&handle.key())
+    }
+
+    /// Drop every handle owned by `session_id`, returning how many were
+    /// removed. Lets the runtime reclaim the large payloads (RLM transcripts,
+    /// sub-agent artifacts) a finished session parked in the store.
+    pub fn remove_session(&mut self, session_id: &str) -> usize {
+        let before = self.records.len();
+        self.records.retain(|key, _| key.session_id != session_id);
+        before - self.records.len()
     }
 
     fn insert(

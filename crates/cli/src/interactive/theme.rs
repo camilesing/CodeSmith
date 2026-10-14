@@ -31,9 +31,12 @@ pub const THEME_NAMES: &[&str] = &[
     "gruvbox-dark",
 ];
 
-/// Color names accepted by `/color`, matching Claude Code's list.
+/// Color names accepted by `/color`: Claude Code's list plus the basic
+/// ANSI names (`magenta`, `white`, `black`) that [`parse_color`] accepts
+/// and every terminal can render.
 pub const COLOR_NAMES: &[&str] = &[
-    "red", "blue", "green", "yellow", "purple", "orange", "pink", "cyan",
+    "red", "blue", "green", "yellow", "purple", "magenta", "orange", "pink", "cyan", "white",
+    "black",
 ];
 
 /// Parse a color name into a terminal color.
@@ -127,24 +130,99 @@ pub fn accent(theme: &str, prompt_color: Option<&str>) -> Accent {
     }
 }
 
+/// Whether `name` is a documented theme, so settings loading can warn on
+/// typos instead of silently falling back.
+#[must_use]
+pub fn is_known_theme(name: &str) -> bool {
+    let key = name.trim().to_ascii_lowercase();
+    key.is_empty() || THEME_NAMES.contains(&key.as_str())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn every_documented_theme_resolves() {
+    fn every_documented_theme_resolves_to_its_pinned_accent() {
+        let pinned = [
+            ("terminal", Color::Cyan),
+            ("system", Color::Cyan),
+            ("dark", Color::Cyan),
+            ("light", Color::Blue),
+            ("grayscale", Color::White),
+            (
+                "catppuccin-mocha",
+                Color::TrueColor {
+                    r: 203,
+                    g: 166,
+                    b: 247,
+                },
+            ),
+            (
+                "tokyo-night",
+                Color::TrueColor {
+                    r: 122,
+                    g: 162,
+                    b: 247,
+                },
+            ),
+            (
+                "dracula",
+                Color::TrueColor {
+                    r: 189,
+                    g: 147,
+                    b: 249,
+                },
+            ),
+            (
+                "gruvbox-dark",
+                Color::TrueColor {
+                    r: 215,
+                    g: 153,
+                    b: 33,
+                },
+            ),
+        ];
+        for (name, expected) in pinned {
+            assert_eq!(accent(name, None).prompt, expected, "{name} drifted");
+        }
         for name in THEME_NAMES {
-            let accent = accent(name, None);
-            // The fallback is the default accent, which is a legitimate
-            // answer; what must not happen is a panic or a stray color for a
-            // name that is documented.
-            assert!(matches!(
-                accent.prompt,
-                Color::Cyan | Color::Blue | Color::White | Color::TrueColor { .. }
-            ));
+            assert!(
+                pinned.iter().any(|(n, _)| n == name),
+                "{name} has no pinned accent"
+            );
         }
         assert_eq!(accent("nonsense", None).prompt, Color::Cyan);
         assert_eq!(accent("", None).prompt, Color::Cyan);
+    }
+
+    #[test]
+    fn advertised_color_names_and_parsed_color_names_match() {
+        for name in COLOR_NAMES {
+            assert!(
+                parse_color(name).is_some(),
+                "{name} advertised but unparsable"
+            );
+        }
+        for name in [
+            "red", "blue", "green", "yellow", "purple", "magenta", "orange", "pink", "cyan",
+            "white", "black",
+        ] {
+            assert!(
+                COLOR_NAMES.contains(&name),
+                "{name} parses but /color never advertises it"
+            );
+        }
+    }
+
+    #[test]
+    fn theme_recognition_covers_the_documented_names() {
+        for name in THEME_NAMES {
+            assert!(is_known_theme(name), "{name} must be known");
+        }
+        assert!(is_known_theme(""));
+        assert!(is_known_theme(" Dracula "));
+        assert!(!is_known_theme("dracul"));
     }
 
     #[test]

@@ -16,9 +16,7 @@ pub mod opensandbox;
 pub mod policy;
 pub mod runtime;
 
-pub use codesmith_agent_runtime::sandbox::{
-    CommandSpec, ExecEnv, SandboxManager, SandboxType, get_platform_sandbox,
-};
+pub use codesmith_agent_runtime::sandbox::{CommandSpec, SandboxManager, get_platform_sandbox};
 pub use policy::SandboxPolicy;
 pub use runtime::{
     SandboxBackendKind, SandboxFilesystemConfig, SandboxNetworkConfig, SandboxRuntimeConfig,

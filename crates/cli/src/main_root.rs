@@ -1234,7 +1234,7 @@ pub(crate) async fn real_main() -> Result<()> {
                 } else if args.acp {
                     let config = load_config_from_cli(&cli)?;
                     let model = config.default_model();
-                    acp_server::run_acp_server(config, model, workspace).await
+                    acp_server::run_acp_server(config, model).await
                 } else {
                     unreachable!("server mode count checked above")
                 }
@@ -7473,12 +7473,25 @@ mod project_config_tests {
 
     #[test]
     fn startup_boundary_allows_workspace_initialization_for_trusted_workspace() {
+        let _guard = crate::test_support::lock_test_env();
+        let _cfg_path = crate::test_support::EnvVarGuard::remove("CODESMITH_CONFIG_PATH");
         let tmp = tempdir().expect("tempdir");
-        let trust_dir = tmp.path().join(".codesmith");
-        fs::create_dir_all(&trust_dir).expect("mkdir trust marker dir");
-        fs::write(trust_dir.join("trusted"), "trusted\n").expect("write trust marker");
+        // Trust lives in the USER config only — an in-repo marker must never
+        // grant trust (a cloned hostile workspace could otherwise initialize
+        // itself).
+        let home = tempdir().expect("home dir");
+        let cfg_dir = home.path().join(".codesmith");
+        fs::create_dir_all(&cfg_dir).expect("mkdir user config dir");
+        let key = codesmith_agent_runtime::workspace_trust::workspace_config_key(tmp.path());
+        fs::write(
+            cfg_dir.join("config.toml"),
+            format!("[projects.\"{key}\"]\ntrust_level = \"trusted\"\n"),
+        )
+        .expect("write trust to user config");
 
-        let boundary = resolve_workspace_init_boundary(tmp.path(), false, false);
+        let boundary = with_home_dir(home.path(), || {
+            resolve_workspace_init_boundary(tmp.path(), false, false)
+        });
 
         assert!(boundary.workspace_trusted_at_start);
         assert!(!boundary.bypassed_by_explicit_user_choice);

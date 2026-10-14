@@ -11,49 +11,55 @@ use super::ReplState;
 pub async fn mods_command(state: &ReplState, arg: &str) {
     let mut parts = arg.split_whitespace();
     let sub = parts.next().unwrap_or("list").to_ascii_lowercase();
-    let rest: Vec<&str> = parts.collect();
+    let id = parts.next();
     match sub.as_str() {
-        "" | "list" | "ls" => {
-            let workspace = state.workspace.clone();
-            let listing = tokio::task::spawn_blocking(move || {
-                let store = crate::mod_state::ModStateStore::load_default()
-                    .map_err(|err| format!("load mod state: {err}"))?;
-                Ok::<String, String>(crate::mod_ops::list_mods(&workspace, &store))
-            })
-            .await
-            .unwrap_or_else(|err| Err(format!("list worker failed: {err}")));
-            match listing {
-                Ok(text) => println!("{text}"),
-                Err(err) => println!("{} {err}", "✗".red()),
-            }
-        }
+        "list" | "ls" => match listing(state).await {
+            Ok(text) => println!("{text}"),
+            Err(err) => println!("{} {err}", "✗".red()),
+        },
         "status" => status(state).await,
-        "info" => match rest.first() {
+        "info" => match id {
             Some(id) => info(state, id).await,
             None => usage(),
         },
-        "activate" => match rest.first() {
+        "activate" => match id {
             Some(id) => mutate(state, id, Action::Activate).await,
             None => usage(),
         },
-        "enable" => match rest.first() {
+        "enable" => match id {
             Some(id) => mutate(state, id, Action::Enable).await,
             None => usage(),
         },
-        "disable" => match rest.first() {
+        "disable" => match id {
             Some(id) => mutate(state, id, Action::Disable).await,
             None => usage(),
         },
-        "remove" => match rest.first() {
+        "remove" => match id {
             Some(id) => mutate(state, id, Action::Remove).await,
             None => usage(),
         },
-        "reload" => println!("{}", reload_note(state).await),
+        "reload" => match reload_note(state).await {
+            Ok(text) => println!("{text}"),
+            Err(err) => println!("{} {err}", "✗".red()),
+        },
         other => println!(
             "{} unknown subcommand `{other}` — list | status | info | activate | enable | disable | remove | reload",
             "✗".red()
         ),
     }
+}
+
+/// The mod listing both `/mods` (bare and `list`) and `/mods status` print,
+/// read through the same blocking worker.
+async fn listing(state: &ReplState) -> Result<String, String> {
+    let workspace = state.workspace.clone();
+    tokio::task::spawn_blocking(move || {
+        let store = crate::mod_state::ModStateStore::load_default()
+            .map_err(|err| format!("load mod state: {err}"))?;
+        Ok::<String, String>(crate::mod_ops::list_mods(&workspace, &store))
+    })
+    .await
+    .unwrap_or_else(|err| Err(format!("list worker failed: {err}")))
 }
 
 fn usage() {
@@ -64,15 +70,7 @@ fn usage() {
 }
 
 async fn status(state: &ReplState) {
-    let workspace = state.workspace.clone();
-    let listing = tokio::task::spawn_blocking(move || {
-        let store = crate::mod_state::ModStateStore::load_default()
-            .map_err(|err| format!("load mod state: {err}"))?;
-        Ok::<String, String>(crate::mod_ops::list_mods(&workspace, &store))
-    })
-    .await
-    .unwrap_or_else(|err| Err(format!("list worker failed: {err}")));
-    match listing {
+    match listing(state).await {
         Ok(text) => println!("{text}"),
         Err(err) => println!("{} {err}", "✗".red()),
     }
@@ -174,7 +172,10 @@ async fn mutate(state: &ReplState, id: &str, action: Action) {
     match result {
         Ok(text) => {
             println!("{text}");
-            println!("{}", reload_note(state).await);
+            match reload_note(state).await {
+                Ok(text) => println!("{text}"),
+                Err(err) => println!("{} {err}", "✗".red()),
+            }
         }
         Err(err) => println!("{} {err}", "✗".red()),
     }
@@ -183,19 +184,26 @@ async fn mutate(state: &ReplState, id: &str, action: Action) {
 /// Reload the whole extension layer (compiled-in + dylib + mods) from
 /// disk-fresh state — shared with `/extension reload`. Unavailable when no
 /// runner is bound (embeds/tests).
-pub(super) async fn reload_note(state: &ReplState) -> String {
+pub(super) async fn reload_note(state: &ReplState) -> Result<String, String> {
     let Some(runner) = state.extension_runner.clone() else {
-        return "Reload unavailable in this session (no bound extension runner); changes take effect on the next session start or /mods reload.".to_string();
+        return Err("Reload unavailable in this session (no bound extension runner); changes take effect on the next session start or /mods reload.".to_string());
     };
     let Ok(engine) = state.engine() else {
-        return "Reload unavailable in this session (engine not running).".to_string();
+        return Err("Reload unavailable in this session (engine not running).".to_string());
     };
     let token = engine.cancel_token.clone();
     let workspace = state.workspace.clone();
     let mods_enabled = state.config.mods_enabled();
-    tokio::task::spawn_blocking(move || {
+    let note = tokio::task::spawn_blocking(move || {
         crate::mod_ops::reload_mods(&runner, &workspace, token, mods_enabled)
     })
     .await
-    .unwrap_or_else(|err| format!("reload worker failed: {err}"))
+    .map_err(|err| format!("reload worker failed: {err}"))?;
+    // `reload_mods` reports failures in-band ("Reload aborted: …"); route
+    // them to the error marker at this boundary.
+    if note.starts_with("Reload aborted") {
+        Err(note)
+    } else {
+        Ok(note)
+    }
 }

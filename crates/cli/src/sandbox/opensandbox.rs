@@ -137,8 +137,23 @@ impl SandboxBackend for OpenSandboxBackend {
 
         let status = response.status();
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+            let body = response
+                .text()
+                .await
+                .context("failed to read OpenSandbox error body")?;
+            let body: String = body.chars().take(1024).collect();
             anyhow::bail!("OpenSandbox returned HTTP {}: {}", status.as_u16(), body);
+        }
+
+        // The endpoint is trusted to run commands, not to be well-behaved
+        // about response size: bound the accepted body so a misbehaving or
+        // hostile endpoint cannot force unbounded memory use in the caller.
+        const MAX_RESPONSE_BYTES: u64 = 32 * 1024 * 1024;
+        if let Some(len) = response.content_length() {
+            anyhow::ensure!(
+                len <= MAX_RESPONSE_BYTES,
+                "OpenSandbox response too large: {len} bytes (limit {MAX_RESPONSE_BYTES})"
+            );
         }
 
         let parsed: SandboxRunResponse = response

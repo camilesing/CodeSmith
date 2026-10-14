@@ -2,7 +2,9 @@
 //!
 //! Companion to the checkpoint-restart cycle architecture (#124). When the
 //! agent's `<carry_forward>` briefing missed something, this tool scans the
-//! on-disk JSONL archives at `~/.deepseek/sessions/<id>/cycles/*.jsonl` and
+//! on-disk JSONL archives under the resolved sessions dir
+//! (`resolve_state_dir("sessions")`, typically `~/.codesmith/sessions`,
+//! with a fallback to `~/.deepseek/sessions`) at `<id>/cycles/*.jsonl` and
 //! returns the top-N matching messages.
 //!
 //! ## Scoring
@@ -122,51 +124,60 @@ impl ToolSpec for RecallArchiveTool {
             },
         };
 
-        let session_id = context.state_namespace.as_str();
-        let archives = list_archives(session_id).map_err(|err| {
-            ToolError::execution_failed(format!("Failed to enumerate cycle archives: {err}"))
-        })?;
-
-        if archives.is_empty() {
-            return Ok(ToolResult::success(json!({
-                "hits": [],
-                "note": "No prior cycle archives exist. The session has not crossed a cycle boundary yet."
-            }).to_string()));
-        }
-
-        let (documents, skipped_records) =
-            load_messages(&archives, cycle_filter).map_err(|err| {
-                ToolError::execution_failed(format!("Failed to read cycle archives: {err}"))
+        let session_id = context.state_namespace.as_str().to_string();
+        let scan = tokio::task::spawn_blocking(move || -> Result<ToolResult, ToolError> {
+            let archives = list_archives(&session_id).map_err(|err| {
+                ToolError::execution_failed(format!("Failed to enumerate cycle archives: {err}"))
             })?;
 
-        if documents.is_empty() {
-            let note = match cycle_filter {
-                Some(c) => format!("Cycle {c} has no messages in its archive."),
-                None => "Cycle archives exist but contain no message text.".to_string(),
-            };
-            return Ok(ToolResult::success(
-                json!({"hits": [], "note": note}).to_string(),
-            ));
-        }
+            if archives.is_empty() {
+                return Ok(ToolResult::success(
+                    json!({
+                        "hits": [],
+                        "note": "No prior cycle archives exist. The session has not crossed a cycle boundary yet."
+                    })
+                    .to_string(),
+                ));
+            }
 
-        let query_tokens = tokenize(&query);
-        if query_tokens.is_empty() {
-            return Err(ToolError::invalid_input(
-                "query has no scoring tokens after tokenization",
-            ));
-        }
+            let (documents, skipped_records) =
+                load_messages(&archives, cycle_filter).map_err(|err| {
+                    ToolError::execution_failed(format!("Failed to read cycle archives: {err}"))
+                })?;
 
-        let hits = score_bm25(&documents, &query_tokens, max_results);
+            if documents.is_empty() {
+                let note = match cycle_filter {
+                    Some(c) => format!("Cycle {c} has no messages in its archive."),
+                    None => "Cycle archives exist but contain no message text.".to_string(),
+                };
+                return Ok(ToolResult::success(
+                    json!({"hits": [], "note": note}).to_string(),
+                ));
+            }
 
-        let payload = json!({
-            "query": query,
-            "cycles_searched": archives.len(),
-            "messages_scanned": documents.len(),
-            "skipped_records": skipped_records,
-            "hits": hits,
+            let query_tokens = tokenize(&query);
+            if query_tokens.is_empty() {
+                return Err(ToolError::invalid_input(
+                    "query has no scoring tokens after tokenization",
+                ));
+            }
+
+            let hits = score_bm25(&documents, &query_tokens, max_results);
+
+            let payload = json!({
+                "query": query,
+                "cycles_searched": archives.len(),
+                "messages_scanned": documents.len(),
+                "skipped_records": skipped_records,
+                "hits": hits,
+            });
+
+            Ok(ToolResult::success(payload.to_string()))
         });
 
-        Ok(ToolResult::success(payload.to_string()))
+        scan.await.map_err(|err| {
+            ToolError::execution_failed(format!("archive scan task failed: {err}"))
+        })?
     }
 }
 
@@ -328,21 +339,36 @@ fn score_bm25(docs: &[ArchivedDoc], query_tokens: &[String], max_results: usize)
     let n = docs.len() as f64;
     let avgdl: f64 = docs.iter().map(|d| d.tokens.len() as f64).sum::<f64>() / n.max(1.0);
 
+    let term_counts: Vec<HashMap<&str, u32>> = docs
+        .iter()
+        .map(|d| {
+            let mut counts: HashMap<&str, u32> = HashMap::new();
+            for token in &d.tokens {
+                *counts.entry(token.as_str()).or_insert(0) += 1;
+            }
+            counts
+        })
+        .collect();
+
     // Document frequency per query term.
     let mut df: HashMap<&str, u64> = HashMap::new();
     for token in query_tokens {
-        let mut count = 0u64;
-        for doc in docs {
-            if doc.tokens.iter().any(|t| t == token) {
-                count += 1;
-            }
-        }
+        let count = term_counts
+            .iter()
+            .filter(|counts| counts.contains_key(token.as_str()))
+            .count() as u64;
         df.insert(token.as_str(), count);
     }
 
     let mut scored: Vec<(f64, &ArchivedDoc)> = docs
         .iter()
-        .map(|doc| (bm25_doc_score(doc, query_tokens, &df, n, avgdl), doc))
+        .zip(&term_counts)
+        .map(|(doc, counts)| {
+            (
+                bm25_doc_score(counts, doc.tokens.len(), query_tokens, &df, n, avgdl),
+                doc,
+            )
+        })
         .filter(|(score, _)| *score > 0.0)
         .collect();
 
@@ -362,19 +388,20 @@ fn score_bm25(docs: &[ArchivedDoc], query_tokens: &[String], max_results: usize)
 }
 
 fn bm25_doc_score(
-    doc: &ArchivedDoc,
+    term_counts: &HashMap<&str, u32>,
+    doc_len: usize,
     query_tokens: &[String],
     df: &HashMap<&str, u64>,
     n: f64,
     avgdl: f64,
 ) -> f64 {
-    let dl = doc.tokens.len() as f64;
+    let dl = doc_len as f64;
     if dl == 0.0 {
         return 0.0;
     }
     let mut score = 0.0;
     for token in query_tokens {
-        let tf = doc.tokens.iter().filter(|t| *t == token).count() as f64;
+        let tf = term_counts.get(token.as_str()).copied().unwrap_or(0) as f64;
         if tf == 0.0 {
             continue;
         }
@@ -399,8 +426,14 @@ fn best_window(text: &str, query_tokens: &[String], window_chars: usize) -> Stri
     for token in query_tokens {
         let mut start = 0usize;
         while let Some(pos) = lower[start..].find(token.as_str()) {
-            hit_positions.push(start + pos);
-            start += pos + token.len();
+            let abs = start + pos;
+            let after = abs + token.len();
+            let before_ok = !lower[..abs].ends_with(char::is_alphanumeric);
+            let after_ok = !lower[after..].starts_with(char::is_alphanumeric);
+            if before_ok && after_ok {
+                hit_positions.push(abs);
+            }
+            start = after;
         }
     }
     if hit_positions.is_empty() {
@@ -408,11 +441,21 @@ fn best_window(text: &str, query_tokens: &[String], window_chars: usize) -> Stri
     }
     hit_positions.sort_unstable();
 
-    // Greedy: center the window on the first hit, walk forward as long as
-    // additional hits fit in the window.
-    let center = hit_positions[0];
-    let half = window_chars / 2;
-    let start = center.saturating_sub(half);
+    // Greedy: slide a window of `window_chars` bytes over the sorted hit
+    // positions and keep the start whose window covers the most hits.
+    let mut best_start = hit_positions[0];
+    let mut best_count = 0usize;
+    let mut lo = 0usize;
+    for hi in 0..hit_positions.len() {
+        while hit_positions[hi].saturating_sub(hit_positions[lo]) >= window_chars {
+            lo += 1;
+        }
+        if hi - lo + 1 > best_count {
+            best_count = hi - lo + 1;
+            best_start = hit_positions[lo];
+        }
+    }
+    let start = best_start.saturating_sub(window_chars / 2);
     let end = (start + window_chars).min(text.len());
     let start = align_char_boundary(text, start, false);
     let end = align_char_boundary(text, end, true);
@@ -708,6 +751,22 @@ mod tests {
         let text = "lorem ipsum dolor sit amet, the quick brown fox jumps over the lazy dog";
         let win = best_window(text, &["fox".to_string()], 30);
         assert!(win.contains("fox"), "got: {win}");
+    }
+
+    #[test]
+    fn best_window_ignores_substring_hits_inside_tokens() {
+        let text = "we concatenate strings here, then a cat sits";
+        let win = best_window(text, &["cat".to_string()], 16);
+        assert!(win.contains("cat sits"), "got: {win}");
+        assert!(!win.contains("concatenate"), "got: {win}");
+    }
+
+    #[test]
+    fn best_window_prefers_densest_hit_cluster() {
+        let filler = "0123456789".repeat(4);
+        let text = format!("alpha {filler} alpha alpha");
+        let win = best_window(&text, &["alpha".to_string()], 30);
+        assert!(win.contains("alpha alpha"), "got: {win}");
     }
 
     #[test]
