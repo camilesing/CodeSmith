@@ -28,21 +28,40 @@ def main() -> int:
         "--nocapture",
         "--test-threads=1",
     ]
-    proc = subprocess.run(cmd, text=True, capture_output=True, check=False)
+    try:
+        proc = subprocess.run(
+            cmd, text=True, capture_output=True, check=False, timeout=600
+        )
+    except FileNotFoundError:
+        sys.stderr.write("cargo not found on PATH\n")
+        return 1
+    except subprocess.TimeoutExpired:
+        sys.stderr.write("cargo test timed out after 600 s\n")
+        return 1
     sys.stdout.write(proc.stdout)
 
     # The Rust test prints the marker with `eprintln!` (stderr), so scan
-    # stderr for it; scanning stdout could never find the marker.
-    for line in proc.stderr.splitlines():
-        if MARKER in line:
-            metrics = json.loads(line.split(MARKER, 1)[1])
-            print(json.dumps(metrics, indent=2, sort_keys=True))
-            sys.stderr.write(proc.stderr)
-            return proc.returncode
-
+    # stderr for it; scanning stdout could never find the marker. Anchor the
+    # match at line start and require exactly one hit: an unanchored
+    # substring could grab an unrelated diagnostic mentioning the marker.
+    matches = [
+        line[len(MARKER):]
+        for line in proc.stderr.splitlines()
+        if line.startswith(MARKER)
+    ]
+    if len(matches) != 1:
+        sys.stderr.write(proc.stderr)
+        sys.stderr.write("expected exactly one TOOL_CATALOG_METRICS marker\n")
+        return proc.returncode or 1
+    try:
+        metrics = json.loads(matches[0])
+    except json.JSONDecodeError:
+        sys.stderr.write(proc.stderr)
+        sys.stderr.write(f"malformed TOOL_CATALOG_METRICS payload: {matches[0]!r}\n")
+        return proc.returncode or 1
+    print(json.dumps(metrics, indent=2, sort_keys=True))
     sys.stderr.write(proc.stderr)
-    sys.stderr.write("missing TOOL_CATALOG_METRICS marker\n")
-    return proc.returncode or 1
+    return proc.returncode
 
 
 if __name__ == "__main__":

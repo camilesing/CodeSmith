@@ -10,20 +10,23 @@ import {
   validateBridgeConfig
 } from "../src/lib.mjs";
 
-const args = parseArgs(process.argv.slice(2));
+const DEFAULT_WORKSPACE_ROOT = "/opt/whalebro";
 
 try {
+  // Inside the try so an unknown argument gets the friendly failure path
+  // below instead of a raw stack trace.
+  const args = parseArgs(process.argv.slice(2));
   const bridgeEnv = args.env ? parseEnvText(await fs.readFile(args.env, "utf8")) : process.env;
   const runtimeEnv = args.runtimeEnv
     ? parseEnvText(await fs.readFile(args.runtimeEnv, "utf8"))
     : null;
   const result = validateBridgeConfig(bridgeEnv, {
     runtimeEnv,
-    workspaceRoot: args.workspaceRoot || "/opt/whalebro"
+    workspaceRoot: args.workspaceRoot
   });
 
   if (args.checkFilesystem) {
-    await appendFilesystemChecks(result, bridgeEnv, args);
+    await appendFilesystemChecks(result, bridgeEnv);
   }
 
   if (args.json) {
@@ -41,7 +44,7 @@ function parseArgs(argv) {
   const parsed = {
     env: "",
     runtimeEnv: "",
-    workspaceRoot: "/opt/whalebro",
+    workspaceRoot: DEFAULT_WORKSPACE_ROOT,
     checkFilesystem: false,
     json: false
   };
@@ -84,27 +87,21 @@ function parseArgs(argv) {
   return parsed;
 }
 
-async function appendFilesystemChecks(result, env, args) {
+async function appendFilesystemChecks(result, env) {
   const workspace = cleanEnvValue(env.CODESMITH_WORKSPACE);
   if (workspace) {
-    await checkReadableDirectory(result, workspace, "workspace");
+    await checkDirectoryAccess(result, workspace, "workspace", false);
   }
 
   const threadMapPath = cleanEnvValue(env.FEISHU_THREAD_MAP_PATH);
   if (threadMapPath) {
     const parent = path.dirname(threadMapPath);
-    await checkWritableDirectory(result, parent, "thread map directory");
-  }
-
-  if (args.env) {
-    await checkReadableFile(result, args.env, "bridge env file");
-  }
-  if (args.runtimeEnv) {
-    await checkReadableFile(result, args.runtimeEnv, "runtime env file");
+    await checkDirectoryAccess(result, parent, "thread map directory", true);
   }
 }
 
-async function checkReadableDirectory(result, dir, label) {
+async function checkDirectoryAccess(result, dir, label, writable) {
+  const access = writable ? "writable" : "readable";
   try {
     const stat = await fs.stat(dir);
     if (!stat.isDirectory()) {
@@ -112,42 +109,13 @@ async function checkReadableDirectory(result, dir, label) {
       result.ok = false;
       return;
     }
-    await fs.access(dir, fsConstants.R_OK | fsConstants.X_OK);
-    result.info.push({ code: "readable_directory", message: `${label} is readable: ${dir}` });
-  } catch (error) {
-    result.errors.push({ code: "directory_access", message: `${label} is not readable: ${dir}` });
-    result.ok = false;
-  }
-}
-
-async function checkWritableDirectory(result, dir, label) {
-  try {
-    const stat = await fs.stat(dir);
-    if (!stat.isDirectory()) {
-      result.errors.push({ code: "not_directory", message: `${label} is not a directory: ${dir}` });
-      result.ok = false;
-      return;
-    }
-    await fs.access(dir, fsConstants.R_OK | fsConstants.W_OK | fsConstants.X_OK);
-    result.info.push({ code: "writable_directory", message: `${label} is writable: ${dir}` });
+    const modes = writable
+      ? fsConstants.R_OK | fsConstants.W_OK | fsConstants.X_OK
+      : fsConstants.R_OK | fsConstants.X_OK;
+    await fs.access(dir, modes);
+    result.info.push({ code: `${access}_directory`, message: `${label} is ${access}: ${dir}` });
   } catch {
-    result.errors.push({ code: "directory_access", message: `${label} is not writable: ${dir}` });
-    result.ok = false;
-  }
-}
-
-async function checkReadableFile(result, filePath, label) {
-  try {
-    const stat = await fs.stat(filePath);
-    if (!stat.isFile()) {
-      result.errors.push({ code: "not_file", message: `${label} is not a file: ${filePath}` });
-      result.ok = false;
-      return;
-    }
-    await fs.access(filePath, fsConstants.R_OK);
-    result.info.push({ code: "readable_file", message: `${label} is readable: ${filePath}` });
-  } catch {
-    result.errors.push({ code: "file_access", message: `${label} is not readable: ${filePath}` });
+    result.errors.push({ code: "directory_access", message: `${label} is not ${access}: ${dir}` });
     result.ok = false;
   }
 }
@@ -158,7 +126,7 @@ function printHelp() {
 Options:
   --env FILE             Read bridge env from FILE instead of process.env.
   --runtime-env FILE     Read runtime env and verify the shared bearer token.
-  --workspace-root DIR   Expected remote workspace root (default: /opt/whalebro).
+  --workspace-root DIR   Expected remote workspace root (default: ${DEFAULT_WORKSPACE_ROOT}).
   --check-filesystem     Verify workspace and thread-map paths are usable.
   --json                 Print machine-readable JSON.
   -h, --help             Show this help.

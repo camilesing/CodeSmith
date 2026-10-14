@@ -41,15 +41,23 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def main() -> int:
-    meta = json.loads(
-        subprocess.run(
+    try:
+        proc = subprocess.run(
             ["cargo", "metadata", "--format-version", "1", "--no-deps"],
             cwd=REPO_ROOT,
-            check=True,
             capture_output=True,
             text=True,
-        ).stdout
-    )
+        )
+    except FileNotFoundError:
+        print("error: cargo not found on PATH; cannot inspect workspace deps")
+        return 1
+    if proc.returncode != 0:
+        # Surface cargo's own stderr — a captured-but-unprinted failure
+        # leaves the CI gate dying with an opaque traceback.
+        print("error: cargo metadata failed:")
+        print(proc.stderr)
+        return 1
+    meta = json.loads(proc.stdout)
     packages = {p["name"]: p for p in meta["packages"]}
     unknown = FRAMEWORK - packages.keys()
     if unknown:

@@ -1,7 +1,7 @@
 const fs = require("fs");
 const { execFileSync } = require("child_process");
 
-const GLIBC_VERSION_RE = /GLIBC_(\d+)\.(\d+)(?:\.(\d+))?/g;
+const GLIBC_VERSION_SOURCE_RE = /GLIBC_(\d+)\.(\d+)(?:\.(\d+))?/g;
 
 function isLinux() {
   return process.platform === "linux";
@@ -55,13 +55,9 @@ function detectHostGlibc() {
   return null;
 }
 
-function detectBinaryRequiredGlibc(filePath) {
-  const buf = fs.readFileSync(filePath);
-  const text = buf.toString("latin1");
+function highestGlibcIn(text) {
   let highest = null;
-  GLIBC_VERSION_RE.lastIndex = 0;
-  let match;
-  while ((match = GLIBC_VERSION_RE.exec(text)) !== null) {
+  for (const match of text.matchAll(GLIBC_VERSION_SOURCE_RE)) {
     const version = [Number(match[1]), Number(match[2]), Number(match[3] || 0)];
     if (!highest || compareVersion(version, highest) > 0) {
       highest = version;
@@ -70,19 +66,47 @@ function detectBinaryRequiredGlibc(filePath) {
   return highest;
 }
 
+function detectBinaryRequiredGlibc(filePath) {
+  let buf;
+  try {
+    buf = fs.readFileSync(filePath);
+  } catch (err) {
+    // The preflight exists to give install-time guidance; a raw ENOENT /
+    // EACCES defeats that purpose.
+    throw new Error(
+      `Unable to read the prebuilt binary at ${filePath} (${err.message}). ` +
+        "Reinstall the package or build from source with Cargo.",
+    );
+  }
+  // Authoritative source first: readelf -V reports only the dynamic version
+  // metadata (version needs / symbol versions). The raw string scan below
+  // over-reports — GLIBC_ matches inside debug sections or other non-symbol
+  // data inflate the requirement and can fail hosts that would run the
+  // binary fine. matchAll on a local copy of the regex, so no shared
+  // lastIndex state survives an early throw.
+  try {
+    const out = execFileSync("readelf", ["-V", filePath], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return highestGlibcIn(out);
+  } catch {
+    // readelf unavailable — fall back to the raw scan.
+  }
+  return highestGlibcIn(buf.toString("latin1"));
+}
+
 function buildFromSourceHint() {
   return [
     "You can still run codesmith by building from source with Cargo:",
     "",
     "  # Requires Rust 1.88+ (https://rustup.rs)",
-    "  cargo install codesmith-cli --locked   # provides `codesmith`",
-    "  cargo install codesmith --locked   # provides `codesmith`",
+    "  cargo install codesmith --locked",
     "",
     "Or build from a checkout:",
     "",
     "  git clone https://github.com/camilesing/CodeSmith.git",
     "  cd CodeSmith",
-    "  cargo install --path crates/cli --locked",
     "  cargo install --path crates/cli --locked",
     "",
     "See https://github.com/camilesing/CodeSmith/blob/main/docs/INSTALL.md",
