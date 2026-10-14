@@ -23,3 +23,23 @@ pub fn threshold_message(ratio: f32) -> Option<&'static str> {
         .find(|(t, _)| ratio >= *t)
         .map(|(_, m)| *m)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thresholds_are_sorted_descending() {
+        assert!(THRESHOLDS.windows(2).all(|w| w[0].0 > w[1].0));
+    }
+
+    #[test]
+    fn selects_highest_reached_threshold() {
+        assert_eq!(threshold_message(0.91), Some(THRESHOLDS[0].1));
+        assert_eq!(threshold_message(0.9), Some(THRESHOLDS[0].1));
+        assert_eq!(threshold_message(0.8), Some(THRESHOLDS[1].1));
+        assert_eq!(threshold_message(0.7), Some(THRESHOLDS[2].1));
+        assert_eq!(threshold_message(0.6), Some(THRESHOLDS[2].1));
+        assert_eq!(threshold_message(0.5), None);
+    }
+}

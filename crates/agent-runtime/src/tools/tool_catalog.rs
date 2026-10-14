@@ -7,9 +7,14 @@
 //! list) can live in `codesmith-agent-runtime` without a circular
 //! dependency back into the TUI engine body.
 
-/// Native tools enabled by default. These are loaded eagerly and never
-/// deferred by `should_default_defer_tool`. The prompt builder's core
-/// tool taxonomy block references a subset of these names.
+/// Native tools enabled by default. Tools listed here are marked
+/// non-deferred by `crate::engine::tool_catalog::should_default_defer_tool`,
+/// so they are eager-loaded *whenever they are registered at all*. Note
+/// that registration itself can be config-gated (e.g. `symbol_search` /
+/// `find_references` need an enabled code index; shell and task-shell
+/// tools need `allow_shell`), in which case the entry here is inert. The
+/// prompt builder renders its core-tool taxonomy block from this list —
+/// keep it in sync with the enforcing function.
 pub const DEFAULT_ACTIVE_NATIVE_TOOLS: &[&str] = &[
     "agent_open",
     "apply_patch",

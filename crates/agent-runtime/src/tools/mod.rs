@@ -1,5 +1,12 @@
 //! Tool infrastructure: specs, registry, and shared utilities.
 //!
+//! Tool code runs inside the host's runtime (TUI alt-screen today): raw
+//! `print!` / `eprintln!` in tool infrastructure corrupts the host's
+//! rendering (#1085). Route output through `tracing_*` or the tool result
+//! instead. Fires under `cargo clippy`, not plain `cargo build`.
+#![deny(clippy::print_stdout)]
+#![deny(clippy::print_stderr)]
+//!
 //! This module hosts the terminal-agnostic tool infrastructure that both the
 //! engine body (in `codesmith-agent-runtime`) and concrete tool implementations
 //! (in `codesmith-tool-impls`) depend on:

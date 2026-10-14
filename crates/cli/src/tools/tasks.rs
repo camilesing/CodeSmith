@@ -326,14 +326,16 @@ impl ToolSpec for TaskStopTool {
                 }
                 // Capture everything the tail needs, then DROP the
                 // team_context guard before taking the task lock: holding
-                // both nested async locks (plus the sync fs I/O under
-                // them) stalls all team operations and invites lock-order
+                // both nested locks (plus the sync fs I/O under them)
+                // stalls all team operations and invites lock-order
                 // inversion.
                 let task_mgr = ctx.task_v2_manager.clone();
                 let team_name = ctx.team_name.clone();
                 drop(slot);
                 {
-                    let mut task_mgr = task_mgr.lock().await;
+                    let mut task_mgr = task_mgr
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
                     if let Ok(tasks) = task_mgr.list_tasks() {
                         for task in tasks {
                             if task.owner.as_deref() == Some(target) {

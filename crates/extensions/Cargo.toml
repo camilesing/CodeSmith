@@ -11,22 +11,22 @@ description = "Extension runtime: discovery, loading, event dispatch, stale-cont
 
 [dependencies]
 anyhow.workspace = true
-async-trait = "0.1"
-futures-util = "0.3.31"
+async-trait.workspace = true
+futures-util.workspace = true
 codesmith-agent = { path = "../agent", version = "0.9.0" }
 codesmith-tools = { path = "../tools", version = "0.9.0" }
-inventory = "0.3"
+inventory.workspace = true
 rhai.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-tempfile = "3.16"
+tempfile.workspace = true
 toml.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-tokio-util = { version = "0.7.16" }
+tokio-util.workspace = true
 tracing.workspace = true
-libloading = "0.9.0"
+libloading.workspace = true
 
 [dev-dependencies]
 extensions-fixture-dylib = { path = "../extensions-fixture-dylib" }

@@ -3024,7 +3024,7 @@ pub(crate) async fn run_doctor(
     // Storage surfaces (#422 / #440 / #500)
     println!();
     println!("{}", "Storage:".bold());
-    if let Some(spillover_root) = crate::tools::truncate::spillover_root() {
+    if let Some(spillover_root) = codesmith_agent_runtime::tools::truncate::spillover_root() {
         let (present, count) = if spillover_root.is_dir() {
             (true, count_dir_entries(&spillover_root))
         } else {
@@ -3588,12 +3588,12 @@ pub(crate) fn run_doctor_json(
         },
         "storage": {
             "spillover": {
-                "path": crate::tools::truncate::spillover_root()
+                "path": codesmith_agent_runtime::tools::truncate::spillover_root()
                     .map(|p| p.display().to_string())
                     .unwrap_or_default(),
-                "present": crate::tools::truncate::spillover_root()
+                "present": codesmith_agent_runtime::tools::truncate::spillover_root()
                     .is_some_and(|p| p.is_dir()),
-                "count": crate::tools::truncate::spillover_root()
+                "count": codesmith_agent_runtime::tools::truncate::spillover_root()
                     .filter(|p| p.is_dir())
                     .map(|p| count_dir_entries(&p))
                     .unwrap_or(0),
@@ -5537,7 +5537,7 @@ pub(crate) async fn run_interactive(
     // we never block startup. Runs unconditionally because the
     // spillover store is created lazily on first write — there's no
     // user-facing setting to gate.
-    match crate::tools::truncate::prune_older_than(crate::tools::truncate::SPILLOVER_MAX_AGE) {
+    match codesmith_agent_runtime::tools::truncate::prune_older_than(codesmith_agent_runtime::tools::truncate::SPILLOVER_MAX_AGE) {
         Ok(0) => {}
         Ok(n) => tracing::debug!(
             target: "spillover",

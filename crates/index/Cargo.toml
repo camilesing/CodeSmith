@@ -39,7 +39,7 @@ tree-sitter-go = { workspace = true, optional = true }
 # test builds so grammar tests run under plain `cargo test -p
 # codesmith-index`; downstream default-feature builds stay grammar-free.
 codesmith-index = { path = ".", features = ["tree-sitter"] }
-tempfile = "3"
+tempfile.workspace = true
 toml.workspace = true
 
 [features]

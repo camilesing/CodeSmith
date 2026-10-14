@@ -471,7 +471,7 @@ impl ToolRegistryBuilder {
     /// Include the `revert_turn` tool. Approval-gated since it mutates
     /// the workspace; the model uses it when the user asks to "undo my
     /// last edit". Backed by the per-workspace snapshot side-repo
-    /// (`crate::snapshot`).
+    /// (`codesmith_agent_runtime::snapshot`).
     #[must_use]
     pub fn with_revert_turn_tool(self) -> Self {
         use super::revert_turn::RevertTurnTool;

@@ -293,11 +293,11 @@ pub struct RetryConfig {
 }
 
 fn default_snapshot_max_age_days() -> u64 {
-    crate::snapshot::DEFAULT_MAX_AGE.as_secs() / (24 * 60 * 60)
+    codesmith_agent_runtime::snapshot::DEFAULT_MAX_AGE.as_secs() / (24 * 60 * 60)
 }
 
 fn default_snapshot_max_workspace_gb() -> u64 {
-    crate::snapshot::DEFAULT_MAX_WORKSPACE_BYTES_FOR_SNAPSHOT / (1024 * 1024 * 1024)
+    codesmith_agent_runtime::snapshot::DEFAULT_MAX_WORKSPACE_BYTES_FOR_SNAPSHOT / (1024 * 1024 * 1024)
 }
 
 /// Workspace side-git snapshot configuration (#137).

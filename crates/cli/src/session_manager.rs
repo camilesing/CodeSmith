@@ -629,7 +629,7 @@ pub fn default_sessions_dir() -> std::io::Result<PathBuf> {
 /// Always non-fatal. Returns silently — callers don't need the count
 /// (the underlying repo logs at WARN if anything blew up).
 pub fn prune_workspace_snapshots(workspace: &Path, max_age: std::time::Duration) {
-    match crate::snapshot::prune_older_than(workspace, max_age) {
+    match codesmith_agent_runtime::snapshot::prune_older_than(workspace, max_age) {
         Ok(0) => {}
         Ok(n) => {
             tracing::debug!(target: "snapshot", "boot prune removed {n} snapshot(s)");

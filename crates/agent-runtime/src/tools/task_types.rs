@@ -18,9 +18,12 @@ pub const TIMELINE_SUMMARY_LIMIT: usize = 240;
 
 pub const CURRENT_TASK_SCHEMA_VERSION: u32 = 2;
 
-/// Serde default for [`TaskRecord::schema_version`].
+/// Serde default for [`TaskRecord::schema_version`]. Records written before
+/// this field existed predate the v2 format, so default to 1: the loader then
+/// sees `schema_version < CURRENT` and such records route through the
+/// migration gate instead of silently relabelling themselves as v2.
 pub const fn default_task_schema_version() -> u32 {
-    CURRENT_TASK_SCHEMA_VERSION
+    1
 }
 
 /// Serde default for [`TaskRecord::auto_approve`]. Fail closed: a persisted

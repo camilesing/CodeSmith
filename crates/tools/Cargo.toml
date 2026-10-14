@@ -14,7 +14,11 @@ anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 codesmith-protocol = { path = "../protocol", version = "0.9.0" }
-serde.workspace = true
+# `rc` is opted in locally (not workspace-wide): `ToolResult::canonical:
+# Option<Arc<serde_json::Value>>` keeps event-fanout clones O(1), and this
+# crate's Arc/Rc deserialize targets are audited for deep immutability (no
+# Mutex/RefCell pointees) as they cross provider/mod payload boundaries.
+serde = { workspace = true, features = ["rc"] }
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

@@ -71,7 +71,6 @@ mod shell_dispatcher;
 mod skill_state;
 mod skills;
 mod slop_ledger;
-mod snapshot;
 mod task_manager;
 #[cfg(test)]
 mod test_support;

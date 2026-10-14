@@ -1,98 +1,71 @@
-#![allow(dead_code)]
 //! System prompts for different modes.
 //!
 //! Re-export shim: portable production logic lives in
-//! `codesmith_agent_runtime::prompts`. The two `..._with_context[_and_skills]`
-//! entry points stay TUI-local because they pre-render the skills block via
-//! `crate::skills::render_*` (skills discovery is workspace-coupled and has
-//! not yet migrated to the runtime crate). The verbatim test module below
-//! exercises the full public surface via the glob re-export.
+//! `codesmith_agent_runtime::prompts`; the engine assembles the system
+//! prompt via `system_prompt_for_mode_with_context_skills_session_and_approval`
+//! with a fully-configured `PromptSessionContext` (skills discovery happens
+//! at the call site — it is workspace-coupled and has not yet migrated to
+//! the runtime crate). The verbatim test module below exercises the full
+//! public surface via the glob re-export.
 
-pub use codesmith_agent_runtime::prompt_sources::{InstructionSource, PromptAppendSource};
+pub use codesmith_agent_runtime::prompt_sources::PromptAppendSource;
+#[cfg(test)]
+pub use codesmith_agent_runtime::prompt_sources::InstructionSource;
 pub use codesmith_agent_runtime::prompts::*;
 
+#[cfg(test)]
 use crate::app_state::AppMode;
+#[cfg(test)]
 use crate::models::SystemPrompt;
 #[cfg(test)]
 use codesmith_agent_runtime::mode::ApprovalMode;
-use std::path::Path;
-
-/// Get the system prompt for a specific mode with project context.
-pub fn system_prompt_for_mode_with_context(
-    mode: AppMode,
-    workspace: &Path,
-    working_set_summary: Option<&str>,
-) -> SystemPrompt {
-    system_prompt_for_mode_with_context_and_skills(
-        mode,
-        workspace,
-        working_set_summary,
-        None,
-        None,
-        None,
-        None,
-    )
-}
-
-/// Get the system prompt for a specific mode with project and skills context.
-///
-/// **Volatile-content-last invariant.** Blocks are appended in order from
-/// most-static to most-volatile so DeepSeek's KV prefix cache hits the
-/// longest possible byte prefix turn-over-turn:
-///
-///   1. mode prompt (compile-time constant)
-///   2. project context / fallback (workspace-static)
-///   3. skills block (skills-dir-static)
-///   4. `## Context Management` (compile-time constant, Agent/Yolo only)
-///   5. compaction relay template (compile-time constant)
-///   6. relay block — file-backed; rewritten by `/compact` and on exit
-///
-/// Anything appended after a volatile block forfeits the cache for the rest
-/// of the request. New blocks belong above the relay boundary unless they
-/// themselves are turn-volatile. Working-set metadata is now injected into the
-/// latest user message as per-turn metadata instead of this system prompt.
-pub fn system_prompt_for_mode_with_context_and_skills(
-    mode: AppMode,
-    workspace: &Path,
-    working_set_summary: Option<&str>,
-    skills_dir: Option<&Path>,
-    instructions: Option<&[InstructionSource]>,
-    user_memory_block: Option<&str>,
-    knowledge_prompt_block: Option<&str>,
-) -> SystemPrompt {
-    system_prompt_for_mode_with_context_skills_and_session(
-        mode,
-        workspace,
-        working_set_summary,
-        skills_dir,
-        instructions,
-        PromptSessionContext {
-            user_memory_block,
-            knowledge_prompt_block,
-            goal_objective: None,
-            project_context_pack_enabled: true,
-            locale_tag: "en",
-            translation_enabled: false,
-            model_id: "codesmith",
-            show_thinking: true,
-            is_simple: false,
-            personality: Personality::Calm,
-            skills_block: crate::skills::render_available_skills_context_for_workspace(workspace)
-                .or_else(|| skills_dir.and_then(crate::skills::render_available_skills_context)),
-        },
-    )
-}
 
 #[cfg(test)]
 mod tests {
     // Don't assert on prose. If you wouldn't fail a code review for
     // changing the wording, don't fail a test for it.
     use super::*;
+    use std::path::Path;
     use tempfile::tempdir;
 
     /// Discriminator unique to the injected relay block (not present in the
     /// agent prompt's own discussion of the convention).
     const HANDOFF_BLOCK_MARKER: &str = "left a relay artifact at `.codesmith/handoff.md`";
+
+    /// Build the system prompt the way the old TUI-local wrappers did: a
+    /// fully-specified English `PromptSessionContext` with the workspace's
+    /// rendered skills block. The handoff / byte-stability tests below pin
+    /// the runtime assembly path (`..._with_context_skills_and_session`)
+    /// with this representative context.
+    fn prompt_with_context(
+        mode: AppMode,
+        workspace: &Path,
+        working_set_summary: Option<&str>,
+        instructions: Option<&[InstructionSource]>,
+    ) -> SystemPrompt {
+        system_prompt_for_mode_with_context_skills_and_session(
+            mode,
+            workspace,
+            working_set_summary,
+            None,
+            instructions,
+            PromptSessionContext {
+                user_memory_block: None,
+                knowledge_prompt_block: None,
+                goal_objective: None,
+                project_context_pack_enabled: true,
+                locale_tag: "en",
+                translation_enabled: false,
+                model_id: "codesmith",
+                show_thinking: true,
+                is_simple: false,
+                personality: Personality::Calm,
+                skills_block: crate::skills::render_available_skills_context_for_workspace(
+                    workspace,
+                ),
+            },
+        )
+    }
 
     #[test]
     fn memory_extraction_prompt_uses_recent_messages_and_existing_memory() {
@@ -976,7 +949,7 @@ mod tests {
         )
         .unwrap();
 
-        let prompt = match system_prompt_for_mode_with_context(AppMode::Agent, workspace, None) {
+        let prompt = match prompt_with_context(AppMode::Agent, workspace, None, None) {
             SystemPrompt::Text(text) => text,
             SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
         };
@@ -989,7 +962,7 @@ mod tests {
     #[test]
     fn missing_handoff_does_not_inject_block() {
         let tmp = tempdir().expect("tempdir");
-        let prompt = match system_prompt_for_mode_with_context(AppMode::Agent, tmp.path(), None) {
+        let prompt = match prompt_with_context(AppMode::Agent, tmp.path(), None, None) {
             SystemPrompt::Text(text) => text,
             SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
         };
@@ -1002,7 +975,7 @@ mod tests {
         let dir = tmp.path().join(".codesmith");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("handoff.md"), "   \n\n  ").unwrap();
-        let prompt = match system_prompt_for_mode_with_context(AppMode::Agent, tmp.path(), None) {
+        let prompt = match prompt_with_context(AppMode::Agent, tmp.path(), None, None) {
             SystemPrompt::Text(text) => text,
             SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
         };
@@ -1147,7 +1120,7 @@ mod tests {
     #[test]
     fn compact_template_is_included_in_full_prompt() {
         let tmp = tempdir().expect("tempdir");
-        let prompt = match system_prompt_for_mode_with_context(AppMode::Agent, tmp.path(), None) {
+        let prompt = match prompt_with_context(AppMode::Agent, tmp.path(), None, None) {
             SystemPrompt::Text(text) => text,
             SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
         };
@@ -1472,23 +1445,24 @@ mod tests {
         // the env-dependent config home; serialize against env-mutating tests.
         let _guard = crate::test_support::lock_test_env();
         // Same workspace, no working_set / skills churn between calls →
-        // identical bytes. This pins the most representative production
-        // surface (engine.rs builds the system prompt via this fn or
-        // its sibling _and_skills variant on every turn).
+        // identical bytes. This pins the byte-stability contract on the
+        // runtime assembly path the engine drives every turn (via its own
+        // fully-configured PromptSessionContext); the helper here supplies
+        // a representative context.
         let tmp = tempdir().expect("tempdir");
         let workspace = tmp.path();
 
         for mode in [AppMode::Agent, AppMode::Yolo, AppMode::Plan] {
-            let a = match system_prompt_for_mode_with_context(mode, workspace, None) {
+            let a = match prompt_with_context(mode, workspace, None, None) {
                 SystemPrompt::Text(text) => text,
                 SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
             };
-            let b = match system_prompt_for_mode_with_context(mode, workspace, None) {
+            let b = match prompt_with_context(mode, workspace, None, None) {
                 SystemPrompt::Text(text) => text,
                 SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
             };
             assert_byte_identical(
-                &format!("system_prompt_for_mode_with_context(mode={mode:?}) on empty workspace"),
+                &format!("prompt_with_context(mode={mode:?}) on empty workspace"),
                 &a,
                 &b,
             );
@@ -1507,12 +1481,12 @@ mod tests {
         let workspace = tmp.path();
         let summary = "## Repo Working Set\nWorkspace: /tmp/x\n";
 
-        let a = match system_prompt_for_mode_with_context(AppMode::Agent, workspace, Some(summary))
+        let a = match prompt_with_context(AppMode::Agent, workspace, Some(summary), None)
         {
             SystemPrompt::Text(text) => text,
             SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
         };
-        let b = match system_prompt_for_mode_with_context(AppMode::Agent, workspace, Some(summary))
+        let b = match prompt_with_context(AppMode::Agent, workspace, Some(summary), None)
         {
             SystemPrompt::Text(text) => text,
             SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
@@ -1547,11 +1521,11 @@ mod tests {
         )
         .unwrap();
 
-        let a = match system_prompt_for_mode_with_context(AppMode::Agent, workspace, None) {
+        let a = match prompt_with_context(AppMode::Agent, workspace, None, None) {
             SystemPrompt::Text(text) => text,
             SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
         };
-        let b = match system_prompt_for_mode_with_context(AppMode::Agent, workspace, None) {
+        let b = match prompt_with_context(AppMode::Agent, workspace, None, None) {
             SystemPrompt::Text(text) => text,
             SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
         };
@@ -1578,7 +1552,7 @@ mod tests {
 
         let summary = "## Repo Working Set\nWorkspace: /tmp/x\n";
         let prompt =
-            match system_prompt_for_mode_with_context(AppMode::Agent, workspace, Some(summary)) {
+            match prompt_with_context(AppMode::Agent, workspace, Some(summary), None) {
                 SystemPrompt::Text(text) => text,
                 SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
             };
@@ -1729,14 +1703,11 @@ mod tests {
         std::fs::write(&extra, "EXTRA_INSTRUCTIONS_MARKER_BODY").unwrap();
 
         let extra_source: super::InstructionSource = extra.clone().into();
-        let prompt = match super::system_prompt_for_mode_with_context_and_skills(
+        let prompt = match prompt_with_context(
             AppMode::Agent,
             workspace,
             None,
-            None,
             Some(std::slice::from_ref(&extra_source)),
-            None,
-            None,
         ) {
             SystemPrompt::Text(text) => text,
             SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
