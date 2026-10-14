@@ -1,7 +1,8 @@
-//! Re-export of [`codesmith_agent_runtime::cost_status`] (Phase 6 §6b-1).
+//! Re-export of [`codesmith_agent_runtime::cost_status`].
 //!
-//! Canonical home is now `codesmith_agent_runtime`. This glob shim flattens
-//! the runtime module's public items so `crate::cost_status::<item>` paths in
-//! the TUI keep working until later steps rewire them onto the runtime crate
-//! directly.
-pub use codesmith_agent_runtime::cost_status::*;
+//! Canonical home is now `codesmith_agent_runtime`. This shim keeps the
+//! `crate::cost_status::report` calls in seam-manager working; new code
+//! should import from the runtime crate directly.
+// TODO(shim-removal): remove this shim once the remaining call sites are
+// rewired onto `codesmith_agent_runtime::cost_status` directly.
+pub use codesmith_agent_runtime::cost_status::report;

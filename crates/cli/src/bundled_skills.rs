@@ -1,7 +1,9 @@
-//! Bundled skills — the review and verification workflows Claude Code ships
+//! Bundled skills — the review and verification workflows CodeSmith ships
 //! as built-in skills (`/code-review`, `/security-review`, `/simplify`,
-//! `/run`, `/verify`), its `/batch` parallel-changes workflow, and the
-//! authoring/teaching pair `/run-skill-generator` and `/update-config`.
+//! `/run`, `/verify-app`), its `/batch` parallel-changes workflow, the
+//! authoring/teaching pair `/run-skill-generator` and `/update-config`, and
+//! the research and extension pair `/deep-research` and
+//! `/plugin-authoring`.
 //!
 //! They are skills, not commands with logic: each one is a prompt the model
 //! follows, so they live beside the discovered skills and merge into the same

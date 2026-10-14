@@ -5,6 +5,12 @@
 // produces the "scroll demon" regression (#1085 / v0.8.27 follow-up).
 // Route status/error reporting through `tracing::*` instead — the
 // `runtime_log` subscriber captures it to `~/.codesmith/logs/`.
+//
+// Scope: these denies lint only code lexically defined in `crate::tools`
+// (and they fire under `cargo clippy`, not plain `cargo build`). The
+// re-exported tool surfaces are enforced at their source:
+// `codesmith-tool-impls` (crate root) and `codesmith-agent-runtime::tools`
+// (module root) carry the same deny pair.
 #![deny(clippy::print_stdout)]
 #![deny(clippy::print_stderr)]
 
@@ -59,7 +65,6 @@ pub mod team;
 pub use codesmith_tool_impls::tools::test_runner;
 pub use codesmith_tool_impls::tools::todo;
 pub use codesmith_tool_impls::tools::tool_result_retrieval;
-pub mod truncate;
 pub use codesmith_tool_impls::tools::user_input;
 pub use codesmith_tool_impls::tools::validate_data;
 pub use codesmith_tool_impls::tools::web_run;

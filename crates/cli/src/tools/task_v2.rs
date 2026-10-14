@@ -155,7 +155,7 @@ impl ToolSpec for TaskV2CreateTool {
         let metadata = input.get("metadata").cloned();
 
         let subject_display = subject.clone();
-        let mut manager = self.manager.lock().await;
+        let mut manager = self.manager.lock().unwrap_or_else(|e| e.into_inner());
         let task_id = manager
             .create_task(
                 subject,
@@ -303,7 +303,7 @@ impl ToolSpec for TaskV2UpdateTool {
 
         // Handle deletion as a special case
         if status == Some(TaskV2Status::Deleted) {
-            let mut manager = self.manager.lock().await;
+            let mut manager = self.manager.lock().unwrap_or_else(|e| e.into_inner());
             manager
                 .soft_delete_task(&task_id)
                 .map_err(|e| ToolError::ExecutionFailed {
@@ -359,7 +359,7 @@ impl ToolSpec for TaskV2UpdateTool {
 
         let completed = status == Some(TaskV2Status::Completed);
 
-        let mut manager = self.manager.lock().await;
+        let mut manager = self.manager.lock().unwrap_or_else(|e| e.into_inner());
         let updated = manager
             .update_task(
                 &task_id,
@@ -466,7 +466,7 @@ impl ToolSpec for TaskV2GetTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::missing_field("task_id"))?;
 
-        let manager = self.manager.lock().await;
+        let manager = self.manager.lock().unwrap_or_else(|e| e.into_inner());
         let record = manager
             .get_task(task_id)
             .map_err(|e| ToolError::ExecutionFailed {
@@ -525,7 +525,7 @@ impl ToolSpec for TaskV2ListTool {
         _input: serde_json::Value,
         _context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        let manager = self.manager.lock().await;
+        let manager = self.manager.lock().unwrap_or_else(|e| e.into_inner());
         let tasks = manager
             .list_tasks()
             .map_err(|e| ToolError::ExecutionFailed {

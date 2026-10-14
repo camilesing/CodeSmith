@@ -506,12 +506,17 @@ impl TaskV2Manager {
 }
 
 /// Shared reference to TaskV2Manager.
-pub type SharedTaskV2Manager = Arc<tokio::sync::Mutex<TaskV2Manager>>;
+///
+/// `std::sync::Mutex` is deliberate: the manager's methods are fully
+/// synchronous (blocking fs + flock) and the guard is never held across
+/// an `.await`, so an async mutex would only misrepresent the critical
+/// section (tokio's own guidance).
+pub type SharedTaskV2Manager = Arc<std::sync::Mutex<TaskV2Manager>>;
 
 /// Create a new shared TaskV2Manager.
 pub fn new_shared_task_v2_manager(task_list_id: &str) -> anyhow::Result<SharedTaskV2Manager> {
     let manager = TaskV2Manager::new(task_list_id)?;
-    Ok(Arc::new(tokio::sync::Mutex::new(manager)))
+    Ok(Arc::new(std::sync::Mutex::new(manager)))
 }
 
 /// Render the verification nudge message.

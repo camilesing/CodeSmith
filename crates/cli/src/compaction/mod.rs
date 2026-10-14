@@ -6,16 +6,21 @@
 //! paths keep resolving; it also owns the compaction *test* module (which
 //! depends on TUI-local `MockLlmClient` / `HookExecutor`).
 
-// Re-export the full compaction surface — config + token helpers + state
-// submodules + the heavy `compact` engine — so `crate::compaction::<item>`
-// resolves for the engine, the submodules below, and the tests. The two
-// reinject/partial-compaction submodules now live in agent-runtime and are
-// pulled in by this glob as public submodules.
-pub use codesmith_agent_runtime::compaction::*;
+// Re-export exactly what this crate consumes through `crate::compaction::<item>`
+// (engine config + token estimator + planner entry points). Upstream renames
+// or removals now fail loudly here instead of at distant call sites.
+// TODO(shim-removal): remove this shim once the remaining call sites are
+// rewired onto `codesmith_agent_runtime::compaction` directly.
+pub use codesmith_agent_runtime::compaction::{
+    CompactionConfig, KEEP_RECENT_MESSAGES, estimate_input_tokens_conservative, plan_compaction,
+};
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    // The tests exercise the runtime compaction engine broadly (state
+    // submodules, config, planner); import its full surface here. The glob
+    // is cfg(test)-scoped so it never leaks into the bin's paths.
+    use codesmith_agent_runtime::compaction::*;
     use crate::llm_client::mock::MockLlmClient;
     use crate::llm_client::{LlmClient, StreamEventBox};
     use crate::models::{MessageResponse, Usage};
@@ -1465,7 +1470,7 @@ mod tests {
 
     // === PreCompact hook + session-memory-first enhancements (#485) ===
 
-    use crate::compaction::session_memory_compact::SessionMemoryCompactConfig;
+    use codesmith_agent_runtime::compaction::session_memory_compact::SessionMemoryCompactConfig;
     // Only the #[cfg(not(windows))] PreCompact hook tests below consume these.
     #[cfg(not(windows))]
     use crate::hooks::{Hook, HookContext, HookEvent, HookExecutor, HooksConfig};

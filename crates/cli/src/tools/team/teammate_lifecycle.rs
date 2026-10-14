@@ -304,7 +304,7 @@ pub async fn try_claim_next_task(
     agent_name: &str,
     task_v2_manager: &SharedTaskV2Manager,
 ) -> Option<TaskV2Record> {
-    let mut manager = task_v2_manager.lock().await;
+    let mut manager = task_v2_manager.lock().unwrap_or_else(|e| e.into_inner());
 
     let tasks = match manager.list_tasks() {
         Ok(t) => t,
@@ -624,7 +624,7 @@ pub async fn handle_shutdown_request(
     // in-progress work — the hardcoded `true` made the reject branch dead
     // code and approved away stranded tasks (their owner then disappears).
     let owns_in_progress = {
-        let manager = rt.task_v2_manager.lock().await;
+        let manager = rt.task_v2_manager.lock().unwrap_or_else(|e| e.into_inner());
         manager
             .list_tasks()
             .map(|tasks| {
@@ -735,7 +735,7 @@ async fn execute_teammate_prompt(
 /// Complete a claimed task after successful execution.
 async fn mark_task_completed(rt: &TeammateRuntime, task_id: &str, summary: Option<&str>) {
     let metadata = summary.map(|summary| serde_json::json!({ "teammate_summary": summary }));
-    let mut manager = rt.task_v2_manager.lock().await;
+    let mut manager = rt.task_v2_manager.lock().unwrap_or_else(|e| e.into_inner());
     if let Err(err) = manager.update_task(
         task_id,
         Some(TaskV2Status::Completed),
@@ -763,7 +763,7 @@ async fn mark_task_completed(rt: &TeammateRuntime, task_id: &str, summary: Optio
 /// failure, permanently idling the teammate (`try_claim_next_task`
 /// swallows the error and just keeps polling).
 async fn record_task_error(rt: &TeammateRuntime, task_id: &str, error: &str) {
-    let mut manager = rt.task_v2_manager.lock().await;
+    let mut manager = rt.task_v2_manager.lock().unwrap_or_else(|e| e.into_inner());
     if let Err(err) = manager.update_task(
         task_id,
         Some(crate::tools::task_v2::TaskV2Status::Pending),
@@ -847,7 +847,7 @@ pub async fn run_teammate_loop(mut rt: TeammateRuntime) -> TeammateResult {
                         // provides `unassign_teammate_tasks` for exactly
                         // this; skipping it stranded owned tasks.
                         {
-                            let mut manager = rt.task_v2_manager.lock().await;
+                            let mut manager = rt.task_v2_manager.lock().unwrap_or_else(|e| e.into_inner());
                             let _ = manager.unassign_teammate_tasks(&rt.agent_name);
                         }
                         break TeammateState::ShutdownApproved;

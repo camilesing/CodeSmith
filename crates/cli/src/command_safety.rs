@@ -1,7 +1,8 @@
-//! Re-export of [`codesmith_agent_runtime::command_safety`] (Phase 6 §6b-1).
+//! Re-export of [`codesmith_agent_runtime::command_safety`].
 //!
-//! Canonical home is now `codesmith_agent_runtime`. This glob shim flattens
-//! the runtime module's public items so `crate::command_safety::<item>` paths
-//! in the TUI keep working until later steps rewire them onto the runtime
-//! crate directly.
-pub use codesmith_agent_runtime::command_safety::*;
+//! Canonical home is now `codesmith_agent_runtime`. This shim keeps the
+//! `crate::command_safety::<item>` paths that remain in the TUI working;
+//! new code should import from the runtime crate directly.
+// TODO(shim-removal): remove this shim once the remaining call sites are
+// rewired onto `codesmith_agent_runtime::command_safety` directly.
+pub use codesmith_agent_runtime::command_safety::{SafetyLevel, analyze_command};

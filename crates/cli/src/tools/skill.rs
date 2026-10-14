@@ -3,7 +3,9 @@
 //!
 //! ## Why a tool when skills already surface in the system prompt?
 //!
-//! `prompts.rs::system_prompt_for_mode_with_context_and_skills` injects
+//! The system prompt's skills block (rendered by
+//! `crate::skills::render_available_skills_context_for_workspace` and fed
+//! into the runtime prompt builder) injects
 //! a one-line listing of every available skill (name + description +
 //! file path) so the model knows what's in the catalogue at the start
 //! of every turn. The full body of each skill is *not* loaded — that

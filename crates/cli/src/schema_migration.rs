@@ -27,9 +27,21 @@
 //!
 //! ## Load-site usage
 //!
-//! Inside the load function, after deserialization:
+//! Inside the load function, after deserialization. The whole
+//! check–migrate–backup–write cycle must hold an advisory cross-process
+//! lock ([`lock_record`]) — two concurrent CLI invocations loading the
+//! same record would otherwise both pass the version check against the
+//! same on-disk bytes, and their backup/write interleaving would let the
+//! second writer's `.bak` capture already-migrated content (destroying
+//! the true original) while last-writer-wins drops the other's update:
 //!
 //! ```ignore
+//! let mut lock = lock_record(&path)?;
+//! let _guard = lock.write()?;
+//! // Re-read under the lock: another process may have migrated the
+//! // record between the initial read and here.
+//! let raw = std::fs::read_to_string(&path)?;
+//! let mut record: SessionRecord = serde_json::from_str(&raw)?;
 //! if record.schema_version < SessionMigration::CURRENT_VERSION {
 //!     let mut value: serde_json::Value = serde_json::from_str(&raw)?;
 //!     let _final = SessionMigration::migrate(
@@ -201,6 +213,30 @@ pub fn backup_before_migrate(path: &Path, domain: &str) -> PathBuf {
         ),
     }
     bak
+}
+
+/// Take an advisory cross-process lock covering a record's whole
+/// read–migrate–backup–write cycle. Call `lock.write()?` on the returned
+/// value and hold the guard until the migrated record has been written —
+/// without it, two concurrent CLI processes loading the same file can
+/// both pass the version check against the same on-disk bytes and race
+/// their backup/write interleavings (the second `.bak` then captures
+/// already-migrated content and last-writer-wins drops the other's
+/// update). The lock file lives next to the record (same directory ⇒
+/// same filesystem), mirroring the `task_v2` `.lock` idiom.
+#[allow(dead_code)] // Public surface; first concrete migrator lands when v2 ships.
+pub fn lock_record(path: &Path) -> std::io::Result<fd_lock::RwLock<fs::File>> {
+    let lock_path = path.with_extension(
+        path.extension()
+            .map(|ext| format!("{}.lock", ext.to_string_lossy()))
+            .unwrap_or_else(|| "lock".to_string()),
+    );
+    fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    Ok(fd_lock::RwLock::new(fs::File::open(&lock_path)?))
 }
 
 /// Per-domain migration registrations.
@@ -384,6 +420,23 @@ mod tests {
         // The path is well-formed even though copy failed.
         assert!(bak.to_string_lossy().ends_with(".json.bak"));
     }
+    #[test]
+    fn lock_record_creates_lock_file_and_grants_write_guard() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("session_abc.json");
+        std::fs::write(&path, r#"{"id":"abc"}"#).expect("write");
+
+        let mut lock = lock_record(&path).expect("lock file opens");
+        let guard = lock.write().expect("write guard acquired");
+        let lock_path = tmp.path().join("session_abc.json.lock");
+        assert!(lock_path.exists(), "lock file must exist beside the record");
+        drop(guard);
+
+        // Re-acquirable after release (sequential, same process).
+        let mut lock = lock_record(&path).expect("lock file reopens");
+        drop(lock.write().expect("write guard re-acquired"));
+    }
+
     #[test]
     fn migration_lists_and_versions_are_consistent() {
         // With NO migration steps shipped, CURRENT_VERSION must equal the

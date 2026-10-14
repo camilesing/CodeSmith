@@ -18,7 +18,7 @@ codesmith-agent = { path = "../agent", version = "0.9.0" }
 # `providers_manifest()`. No cycle — config has no providers/agent edge.
 codesmith-config = { path = "../config", version = "0.9.0" }
 anyhow.workspace = true
-futures-util = "0.3.31"
+futures-util.workspace = true
 serde_json.workspace = true
 # rig powers the OpenAI/Anthropic/DeepSeek/OpenAI-compat providers. Optional so a
 # `--no-default-features` build stays provider-less (the Lego `mock`-only build).
@@ -30,11 +30,11 @@ reqwest = { workspace = true, optional = true }
 # Image content blocks are base64-encoded at request-build time in
 # `rig_adapter::convert`. Optional with the `rig` aggregate so a
 # `--no-default-features` build stays lean.
-base64 = { version = "0.22.1", optional = true }
+base64 = { workspace = true, optional = true }
 # Request bodies are materialized as `Bytes` in the
 # `rig_adapter::http_fallback` backend (cheap clone for the HTTP/1.1 replay).
 # Same major version rig-core already pulls in — no extra compile.
-bytes = { version = "1", optional = true }
+bytes = { workspace = true, optional = true }
 # Env-gated forensic dump of failed provider requests
 # (`rig_adapter::http_fallback`). Optional with the `rig` aggregate so a
 # `--no-default-features` build stays lean.

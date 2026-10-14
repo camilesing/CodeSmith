@@ -4,8 +4,12 @@
 //! `core.hooksPath` configuration can silently alter git's behaviour (spawn
 //! fsmonitor daemons, run hook scripts outside the sandbox). These helpers
 //! inject an indexed `GIT_CONFIG_*` overlay that disables both keys for the
-//! child process, so sandboxed/automated git invocations behave
-//! deterministically without mutating the user's on-disk git config.
+//! child process (requires git >= 2.31; older versions ignore the overlay),
+//! without mutating the user's on-disk git config. The guarantee covers only
+//! these two keys and only values from lower-precedence sources: other
+//! config — including values injected via `GIT_CONFIG_PARAMETERS` or
+//! relocated `GIT_CONFIG_SYSTEM`/`GIT_CONFIG_GLOBAL` files — still applies
+//! unless callers also set `GIT_CONFIG_NOSYSTEM`/`GIT_CONFIG_GLOBAL`.
 //!
 //! Terminal-agnostic (pure `std::collections::HashMap`); lives in the runtime
 //! crate so the `ShellManager` and any downstream tool implementation can call

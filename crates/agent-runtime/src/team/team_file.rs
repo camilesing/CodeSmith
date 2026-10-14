@@ -116,16 +116,22 @@ pub struct TeamFile {
 /// sanitize collisions documented on [`sanitize_name`]) fails instead of
 /// destroying another team's roster.
 pub fn create_team_file(team_file: &TeamFile) -> anyhow::Result<PathBuf> {
+    use anyhow::Context as _;
     let dir = team_dir(&team_file.name)?;
-    fs::create_dir_all(&dir)?;
+    fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create team dir {}", dir.display()))?;
     let config_path = dir.join("config.json");
     let json = serde_json::to_string_pretty(team_file)?;
-    crate::utils::write_atomic(&config_path, json.as_bytes())?;
+    crate::utils::write_atomic(&config_path, json.as_bytes()).with_context(|| {
+        format!("failed to write team config {}", config_path.display())
+    })?;
     // Also create the inboxes subdirectory.
-    fs::create_dir_all(dir.join("inboxes"))?;
+    fs::create_dir_all(dir.join("inboxes"))
+        .with_context(|| format!("failed to create team inboxes dir {}", dir.display()))?;
     // Create the team-scoped task directory.
     let task_dir = team_task_dir(&team_file.name)?;
-    fs::create_dir_all(&task_dir)?;
+    fs::create_dir_all(&task_dir)
+        .with_context(|| format!("failed to create team task dir {}", task_dir.display()))?;
     Ok(config_path)
 }
 
@@ -182,29 +188,37 @@ pub fn create_team_file_exclusive(team_file: &TeamFile) -> std::io::Result<PathB
 
 /// Read the team config.json from disk.
 pub fn read_team_file(team_name: &str) -> anyhow::Result<TeamFile> {
+    use anyhow::Context as _;
     let path = team_config_path(team_name)?;
-    let json = fs::read_to_string(&path)?;
-    let team_file: TeamFile = serde_json::from_str(&json)?;
+    let json = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read team config {}", path.display()))?;
+    let team_file: TeamFile = serde_json::from_str(&json)
+        .with_context(|| format!("failed to parse team config {}", path.display()))?;
     Ok(team_file)
 }
 
 /// Write the team config.json back to disk (full overwrite).
 pub fn write_team_file(team_file: &TeamFile) -> anyhow::Result<()> {
+    use anyhow::Context as _;
     let path = team_config_path(&team_file.name)?;
     let json = serde_json::to_string_pretty(team_file)?;
-    crate::utils::write_atomic(&path, json.as_bytes())?;
+    crate::utils::write_atomic(&path, json.as_bytes())
+        .with_context(|| format!("failed to write team config {}", path.display()))?;
     Ok(())
 }
 
 /// Delete the entire team directory and task directory.
 pub fn delete_team_directories(team_name: &str) -> anyhow::Result<()> {
+    use anyhow::Context as _;
     let dir = team_dir(team_name)?;
     if dir.exists() {
-        fs::remove_dir_all(&dir)?;
+        fs::remove_dir_all(&dir)
+            .with_context(|| format!("failed to delete team dir {}", dir.display()))?;
     }
     let task_dir = team_task_dir(team_name)?;
     if task_dir.exists() {
-        fs::remove_dir_all(&task_dir)?;
+        fs::remove_dir_all(&task_dir)
+            .with_context(|| format!("failed to delete team task dir {}", task_dir.display()))?;
     }
     Ok(())
 }
