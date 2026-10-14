@@ -27,7 +27,25 @@ ALLOWLIST = {
 }
 
 
+def validate_allowlist() -> None:
+    # Fail loud on hand-edits: the allowlist names BASE docs only. An entry
+    # without `.md` (or a `_cn` entry) would slice into nonsense paths below
+    # ("README" probes "REA_cn.md") and quietly degrade into a no-op
+    # exemption, and the two scan loops disagree on whether `_cn` entries
+    # are legal at all — settle the contract here, at startup.
+    for name in sorted(ALLOWLIST):
+        if not name.endswith(".md") or name.endswith("_cn.md"):
+            raise ValueError(
+                f"bad allowlist entry {name!r}: must name a base .md doc"
+            )
+
+
 def main() -> int:
+    try:
+        validate_allowlist()
+    except ValueError as err:
+        print(f"docs pairs: {err}")
+        return 1
     parser = argparse.ArgumentParser(description="Bilingual docs-pair guard.")
     parser.add_argument(
         "--root",

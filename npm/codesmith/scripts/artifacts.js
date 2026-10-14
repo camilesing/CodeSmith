@@ -3,18 +3,23 @@ const os = require("os");
 
 const CHECKSUM_MANIFEST = "codesmith-artifacts-sha256.txt";
 
+const DEFAULT_REPO = "camilesing/CodeSmith";
+
+// `binary` is the installable executable for the platform/arch; `extras`
+// ships alongside it as a release asset but is never installed as the
+// binary (e.g. the Windows launcher .bat).
 const ASSET_MATRIX = {
   linux: {
-    x64: ["codesmith-linux-x64"],
-    arm64: ["codesmith-linux-arm64"],
-    riscv64: ["codesmith-linux-riscv64"],
+    x64: { binary: "codesmith-linux-x64", extras: [] },
+    arm64: { binary: "codesmith-linux-arm64", extras: [] },
+    riscv64: { binary: "codesmith-linux-riscv64", extras: [] },
   },
   darwin: {
-    x64: ["codesmith-macos-x64"],
-    arm64: ["codesmith-macos-arm64"],
+    x64: { binary: "codesmith-macos-x64", extras: [] },
+    arm64: { binary: "codesmith-macos-arm64", extras: [] },
   },
   win32: {
-    x64: ["codesmith-windows-x64.exe", "codesmith.bat"],
+    x64: { binary: "codesmith-windows-x64.exe", extras: ["codesmith.bat"] },
   },
 };
 
@@ -48,7 +53,7 @@ function detectBinaryNames() {
   return {
     platform,
     arch,
-    codesmith: pair[0],
+    codesmith: pair.binary,
   };
 }
 
@@ -58,7 +63,7 @@ function unsupportedBuildHint() {
     "You can still run codesmith by building from source with Cargo:",
     "",
     "  # Requires Rust 1.88+ (https://rustup.rs)",
-    "  cargo install codesmith-cli --locked   # provides `codesmith`",
+    "  cargo install codesmith --locked",
     "",
     "Or build from a checkout:",
     "",
@@ -71,11 +76,16 @@ function unsupportedBuildHint() {
   ].join("\n");
 }
 
-function executableName(base, platform) {
-  return platform === "win32" ? `${base}.exe` : base;
+function isCnbMirrorEnabled() {
+  // Plain truthiness would route "0"/"false" — the conventional opt-out
+  // spellings — to the CNB mirror.
+  const flag = String(process.env.CODESMITH_USE_CNB_MIRROR || "")
+    .trim()
+    .toLowerCase();
+  return flag !== "" && flag !== "0" && flag !== "false";
 }
 
-function releaseBaseUrl(version, repo = "camilesing/CodeSmith") {
+function releaseBaseUrl(version, repo = DEFAULT_REPO) {
   // CODESMITH_RELEASE_BASE_URL is the canonical override.
   const override = String(process.env.CODESMITH_RELEASE_BASE_URL || "").trim();
   if (override) {
@@ -89,19 +99,19 @@ function releaseBaseUrl(version, repo = "camilesing/CodeSmith") {
     }
     return base;
   }
-  // When CODESMITH_USE_CNB_MIRROR is set, use the CNB (China-friendly)
+  // When CODESMITH_USE_CNB_MIRROR is enabled, use the CNB (China-friendly)
   // mirror that already builds and publishes binary release assets.
-  if (process.env.CODESMITH_USE_CNB_MIRROR) {
+  if (isCnbMirrorEnabled()) {
     return `https://cnb.cool/${repo}/-/releases/v${version}/`;
   }
   return `https://github.com/${repo}/releases/download/v${version}/`;
 }
 
-function releaseAssetUrl(baseName, version, repo = "camilesing/CodeSmith") {
+function releaseAssetUrl(baseName, version, repo = DEFAULT_REPO) {
   return new URL(baseName, releaseBaseUrl(version, repo)).toString();
 }
 
-function checksumManifestUrl(version, repo = "camilesing/CodeSmith") {
+function checksumManifestUrl(version, repo = DEFAULT_REPO) {
   return releaseAssetUrl(CHECKSUM_MANIFEST, version, repo);
 }
 
@@ -112,8 +122,8 @@ function releaseBinaryDirectory() {
 function allAssetNames() {
   const names = [];
   for (const platformAssets of Object.values(ASSET_MATRIX)) {
-    for (const assets of Object.values(platformAssets)) {
-      names.push(...assets);
+    for (const entry of Object.values(platformAssets)) {
+      names.push(entry.binary, ...entry.extras);
     }
   }
   return Array.from(new Set(names));
@@ -128,8 +138,8 @@ module.exports = {
   allReleaseAssetNames,
   CHECKSUM_MANIFEST,
   checksumManifestUrl,
+  DEFAULT_REPO,
   detectBinaryNames,
-  executableName,
   releaseAssetUrl,
   releaseBaseUrl,
   releaseBinaryDirectory,

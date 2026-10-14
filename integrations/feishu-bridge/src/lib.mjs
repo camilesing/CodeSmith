@@ -20,6 +20,12 @@ export function parseEnvText(raw) {
     if (index <= 0) continue;
     const key = normalized.slice(0, index).trim();
     let value = normalized.slice(index + 1).trim();
+    // Strip trailing comments on unquoted values (common dotenv behavior):
+    // TOKEN=abc123 # note would otherwise parse as "abc123 # note" and fail
+    // token_mismatch / invalid-auth in ways that are hard to diagnose.
+    if (!/^["']/.test(value)) {
+      value = value.split(/\s+#/)[0].trim();
+    }
     if (
       (value.startsWith('"') && value.endsWith('"')) ||
       (value.startsWith("'") && value.endsWith("'"))
@@ -105,7 +111,9 @@ export function stripGroupPrefix(text, { chatType, requirePrefix, prefix }) {
   }
   const marker = prefix || "/ds";
   if (trimmed === marker) return { accepted: true, text: "/help" };
-  if (trimmed.startsWith(`${marker} `)) {
+  // Accept any whitespace after the marker — a pasted multiline message like
+  // "/ds\n<question>" used to be silently dropped.
+  if (trimmed.startsWith(marker) && /^\s/.test(trimmed.slice(marker.length))) {
     return { accepted: true, text: trimmed.slice(marker.length).trim() };
   }
   return { accepted: false, text: "" };
@@ -142,7 +150,12 @@ export function commandAction(command) {
     case "new":
       return { kind: "new_thread" };
     case "resume":
-      return { kind: "resume", threadId: command.args };
+      // Only the first token is the thread id; "/resume <id> extra text"
+      // used to bind the whole remainder and fail lookup confusingly.
+      return {
+        kind: "resume",
+        threadId: command.args.split(/\s+/).filter(Boolean)[0] || ""
+      };
     case "interrupt":
       return { kind: "interrupt" };
     case "compact":
@@ -179,14 +192,38 @@ export function preservedChatStateFields(state = {}) {
 
 export function splitMessage(text, maxChars = 3500) {
   const value = String(text || "");
-  const chars = Array.from(value);
-  if (chars.length <= maxChars) return value ? [value] : [];
+  if (!value) return [];
+  if (Array.from(value).length <= maxChars) return [value];
+  // Prefer newline boundaries so code fences and JSON payloads stay intact;
+  // only an oversized single line falls back to code-point slicing. A chunk
+  // never gains a trailing newline the input did not have.
   const chunks = [];
-  let cursor = 0;
-  while (cursor < chars.length) {
-    chunks.push(chars.slice(cursor, cursor + maxChars).join(""));
-    cursor += maxChars;
+  let current = "";
+  let currentChars = 0;
+  for (const line of value.split("\n")) {
+    const lineChars = Array.from(line).length;
+    if (lineChars > maxChars) {
+      if (current) {
+        chunks.push(current);
+        current = "";
+        currentChars = 0;
+      }
+      const chars = Array.from(line);
+      for (let cursor = 0; cursor < chars.length; cursor += maxChars) {
+        chunks.push(chars.slice(cursor, cursor + maxChars).join(""));
+      }
+      continue;
+    }
+    const separator = current ? 1 : 0;
+    if (currentChars + separator + lineChars > maxChars) {
+      chunks.push(current);
+      current = "";
+      currentChars = 0;
+    }
+    current += (current ? "\n" : "") + line;
+    currentChars += (current ? 1 : 0) + lineChars;
   }
+  if (current) chunks.push(current);
   return chunks;
 }
 
@@ -195,7 +232,9 @@ export function compactRuntimeError(status, body) {
     body?.error?.message ||
     body?.message ||
     (typeof body === "string" ? body : JSON.stringify(body));
-  return `Runtime API request failed (${status}): ${message}`;
+  // A failed fetch with no response body leaves every fallback falsy
+  // (JSON.stringify(undefined) is undefined) — keep the message meaningful.
+  return `Runtime API request failed (${status}): ${message ?? "unknown error"}`;
 }
 
 export function latestRunningTurn(detail) {
@@ -243,8 +282,15 @@ export function validateBridgeConfig(env, options = {}) {
   }
 
   const domain = cleanEnvValue(env.FEISHU_DOMAIN || "feishu").toLowerCase();
-  if (!["feishu", "lark"].includes(domain) && !/^https:\/\/open\./.test(domain)) {
-    add(errors, "invalid_domain", "FEISHU_DOMAIN must be feishu, lark, or an https://open.* URL");
+  // Explicit allowlist: FEISHU_DOMAIN selects the endpoint that receives
+  // FEISHU_APP_SECRET during token exchange, so a loose /^https:\/\/open\./
+  // prefix check accepted attacker-chosen hosts like https://open.evil.example.
+  const allowedOpenUrls = new Set([
+    "https://open.feishu.cn",
+    "https://open.larksuite.com"
+  ]);
+  if (!["feishu", "lark"].includes(domain) && !allowedOpenUrls.has(domain)) {
+    add(errors, "invalid_domain", "FEISHU_DOMAIN must be feishu, lark, or an allowlisted open-platform URL");
   }
 
   const runtimeUrl = cleanEnvValue(env.CODESMITH_RUNTIME_URL || "http://127.0.0.1:7878");

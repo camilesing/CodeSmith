@@ -2,6 +2,7 @@
 
 const crypto = require("crypto");
 const fs = require("fs/promises");
+const { createReadStream } = require("fs");
 const path = require("path");
 
 const {
@@ -13,9 +14,14 @@ const {
 const WINDOWS_LAUNCHER = "codesmith.bat";
 const WINDOWS_CLI_ASSET = "codesmith-windows-x64.exe";
 
+// Streaming hash: release executables can be hundreds of MB; whole-file
+// buffering just to hash them scales peak memory with binary size.
 async function sha256(filePath) {
-  const content = await fs.readFile(filePath);
-  return crypto.createHash("sha256").update(content).digest("hex");
+  const hash = crypto.createHash("sha256");
+  for await (const chunk of createReadStream(filePath)) {
+    hash.update(chunk);
+  }
+  return hash.digest("hex");
 }
 
 async function main() {
@@ -58,24 +64,31 @@ async function main() {
     }
   }
 
+  // Clear stale assets from previous runs: mkdir alone leaves behind files
+  // with no manifest entry, which a later upload could publish with
+  // mismatched checksums.
+  await fs.rm(outputDir, { recursive: true, force: true });
   await fs.mkdir(outputDir, { recursive: true });
 
-  const manifestLines = [];
-  for (const asset of assets) {
-    const outputPath = path.join(outputDir, asset.target);
-    await fs.copyFile(asset.source, outputPath);
-    manifestLines.push(`${await sha256(outputPath)}  ${asset.target}`);
-  }
+  // Copy + hash are independent per asset (the manifest is re-sorted
+  // afterwards anyway), so run them concurrently.
+  const manifestLines = await Promise.all(
+    assets.map(async (asset) => {
+      const outputPath = path.join(outputDir, asset.target);
+      await fs.copyFile(asset.source, outputPath);
+      return `${await sha256(outputPath)}  ${asset.target}`;
+    }),
+  );
 
   if (assets.some((asset) => asset.target === WINDOWS_CLI_ASSET)) {
     const batContent = [
       "@echo off",
-      "where wt >nul 2>nul",
       "set NO_ANIMATIONS=1",
+      "where wt >nul 2>nul",
       'if "%ERRORLEVEL%"=="0" (',
-      '    wt --title CodeSmith cmd /k "%~dp0codesmith-windows-x64.exe"',
+      `    wt --title CodeSmith cmd /k "%~dp0${WINDOWS_CLI_ASSET}"`,
       ") else (",
-      '    "%~dp0codesmith-windows-x64.exe"',
+      `    "%~dp0${WINDOWS_CLI_ASSET}"`,
       ")",
       "",
     ].join("\r\n");
@@ -90,11 +103,13 @@ async function main() {
   const manifestPath = path.join(outputDir, CHECKSUM_MANIFEST);
   await fs.writeFile(manifestPath, `${manifestLines.join("\n")}\n`, "utf8");
 
-  console.log(`Prepared ${assets.length} assets in ${outputDir}`);
+  // manifestLines, not assets: the Windows launcher gets a manifest entry
+  // without being an asset entry.
+  console.log(`Prepared ${manifestLines.length} assets in ${outputDir}`);
   console.log(`Wrote checksum manifest ${manifestPath}`);
 }
 
 main().catch((error) => {
-  console.error("Failed to prepare local release assets:", error.message);
+  console.error("Failed to prepare local release assets:", error);
   process.exit(1);
 });

@@ -26,6 +26,7 @@ const path = require("path");
 
 const {
   checksumManifestUrl,
+  DEFAULT_REPO,
   detectBinaryNames,
   releaseAssetUrl,
   releaseBinaryDirectory,
@@ -87,7 +88,7 @@ function resolvePackageVersion() {
 }
 
 function resolveRepo() {
-  return process.env.CODESMITH_GITHUB_REPO || "camilesing/CodeSmith";
+  return process.env.CODESMITH_GITHUB_REPO || DEFAULT_REPO;
 }
 
 function isOptionalInstall(argv = process.argv.slice(2), env = process.env) {

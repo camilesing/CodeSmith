@@ -26,13 +26,13 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   nativeBuildInputs = [
     pkg-config
-  ] ++ lib.optionals stdenv.isLinux [
+  ] ++ lib.optionals (stdenv.isLinux && autoPatchelfHook != null) [
     autoPatchelfHook
   ];
 
   buildInputs = [
     openssl
-  ] ++ lib.optionals stdenv.isLinux [
+  ] ++ lib.optionals (stdenv.isLinux && dbus != null) [
     dbus.dev
     dbus.lib
     stdenv.cc.cc.lib

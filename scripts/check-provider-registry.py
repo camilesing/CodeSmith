@@ -48,27 +48,78 @@ def require_index(source: str, needle: str, context: str, start: int = 0) -> int
 
 def markdown_section(source: str, heading: str) -> str:
     start = require_index(source, heading, "docs/PROVIDERS.md")
-    next_heading = source.find("\n## ", start + len(heading))
-    end = len(source) if next_heading == -1 else next_heading
+    # Terminate at ANY ATX heading: stopping only at "\n## " pulled `###`
+    # subsection content (e.g. "### Xiaomi MiMo Notes") into the section, so
+    # tables added to a subsection would leak into the row sets.
+    next_heading = re.search(r"\n#{1,6} ", source[start + len(heading) :])
+    end = (
+        len(source) if next_heading is None else start + len(heading) + next_heading.start()
+    )
     return source[start:end]
+
+
+def _skip_string_literal(source: str, index: int) -> int:
+    # index points at the opening quote; return the index just past the
+    # closing quote. Raw strings (r"…") are not special-cased — the as_str
+    # blocks under scan use plain literals.
+    quote = source[index]
+    index += 1
+    while index < len(source):
+        if source[index] == "\\":
+            index += 2
+            continue
+        if source[index] == quote:
+            return index + 1
+        index += 1
+    return index
 
 
 def extract_match_block(
     source: str, signature: str, context: str, start: int = 0
 ) -> str:
     start = require_index(source, signature, context, start)
-    match_start = require_index(source, "match", f"match block after {signature!r}", start)
-    brace_start = require_index(source, "{", f"match block after {signature!r}", match_start)
+    match_start = require_index(
+        source, "match self {", f"match block after {signature!r}", start
+    )
+    brace_start = match_start + len("match self {") - 1
     depth = 0
-    for index in range(brace_start, len(source)):
+    index = brace_start
+    while index < len(source):
         char = source[index]
+        # Braces inside string/char literals and comments would otherwise
+        # truncate or extend the extracted block and silently yield a wrong
+        # provider-ID set.
+        if char in "\"'":
+            index = _skip_string_literal(source, index)
+            continue
+        if source.startswith("//", index):
+            newline = source.find("\n", index)
+            index = len(source) if newline == -1 else newline
+            continue
         if char == "{":
             depth += 1
         elif char == "}":
             depth -= 1
             if depth == 0:
                 return source[brace_start + 1 : index]
+        index += 1
     raise ValueError(f"could not parse match block after {signature!r}")
+
+
+def as_str_pairs(block: str, enum_name: str) -> dict[str, str]:
+    pairs = re.findall(r"Self::(\w+)\s*=>\s*\"([^\"]+)\"", block)
+    if not pairs:
+        raise ValueError(f"{enum_name}::as_str returned no providers")
+    # Or-patterns (`Self::A | Self::B => "x"`), guards, and block bodies are
+    # invisible to the arm regex — a silent partial parse is a false pass on
+    # exactly the drift this script exists to catch, so demand that every
+    # `Self::` occurrence was accounted for.
+    if len(re.findall(r"Self::", block)) != len(pairs):
+        raise ValueError(
+            f"{enum_name}::as_str contains arms the drift check cannot "
+            "parse (or-patterns, guards, or block bodies)"
+        )
+    return {variant: provider_id for variant, provider_id in pairs}
 
 
 def provider_kind_ids(config_rs: str) -> dict[str, str]:
@@ -81,10 +132,7 @@ def provider_kind_ids(config_rs: str) -> dict[str, str]:
         "crates/config/src/lib.rs",
         impl_start,
     )
-    pairs = re.findall(r"Self::(\w+)\s*=>\s*\"([^\"]+)\"", block)
-    if not pairs:
-        raise ValueError("ProviderKind::as_str returned no providers")
-    return {variant: provider_id for variant, provider_id in pairs}
+    return as_str_pairs(block, "ProviderKind")
 
 
 def api_provider_ids(config_types_rs: str) -> dict[str, str]:
@@ -99,10 +147,7 @@ def api_provider_ids(config_types_rs: str) -> dict[str, str]:
         "crates/agent-runtime/src/config_types.rs",
         impl_start,
     )
-    pairs = re.findall(r"Self::(\w+)\s*=>\s*\"([^\"]+)\"", block)
-    if not pairs:
-        raise ValueError("ApiProvider::as_str returned no providers")
-    return {variant: provider_id for variant, provider_id in pairs}
+    return as_str_pairs(block, "ApiProvider")
 
 
 def provider_tables(config_rs: str) -> set[str]:
@@ -157,8 +202,10 @@ def default_strings(cli_config_rs: str) -> set[str]:
 def missing_default_strings(providers_md: str, defaults: set[str]) -> list[str]:
     # Inline-code validation should not let fenced TOML/bash examples pair a
     # stray backtick with later prose; strip fenced blocks before scanning.
-    inline_source = re.sub(r"```.*?```", "", providers_md, flags=re.DOTALL)
-    code_spans = set(re.findall(r"`([^`]+)`", inline_source))
+    # Tilde fences are stripped too, and code spans cannot cross lines — an
+    # accidentally created code span must not mask an undocumented default.
+    inline_source = re.sub(r"(```|~~~)[\s\S]*?\1", "", providers_md)
+    code_spans = set(re.findall(r"`([^`\n]+)`", inline_source))
     return sorted(defaults - code_spans)
 
 
@@ -174,14 +221,14 @@ def report_set(label: str, expected: set[str], actual: set[str]) -> list[str]:
 
 
 def report_provider_enum_drift(
-    provider_kind_ids: set[str], api_provider_ids: set[str]
+    canonical_ids: set[str], live_api_ids: set[str]
 ) -> list[str]:
     errors = []
-    missing_from_api_provider = sorted(provider_kind_ids - api_provider_ids)
+    missing_from_api_provider = sorted(canonical_ids - live_api_ids)
     unexpected_api_provider_ids = sorted(
-        api_provider_ids - provider_kind_ids - API_PROVIDER_ONLY_IDS
+        live_api_ids - canonical_ids - API_PROVIDER_ONLY_IDS
     )
-    missing_allowlisted_ids = sorted(API_PROVIDER_ONLY_IDS - api_provider_ids)
+    missing_allowlisted_ids = sorted(API_PROVIDER_ONLY_IDS - live_api_ids)
 
     if missing_from_api_provider:
         errors.append(
@@ -239,7 +286,7 @@ def main() -> int:
                 "docs/PROVIDERS.md does not mention default strings as Markdown code spans: "
                 + ", ".join(missing_defaults)
             )
-    except ValueError as err:
+    except (ValueError, OSError) as err:
         errors = [str(err)]
 
     if errors:

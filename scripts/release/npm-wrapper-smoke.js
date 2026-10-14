@@ -108,10 +108,18 @@ function serveDirectory(root) {
         "Content-Length": fileStat.size,
         "Content-Type": "application/octet-stream",
       });
-      fs.createReadStream(filePath).pipe(response);
+      const fileStream = fs.createReadStream(filePath);
+      // pipe() does not forward source errors: a read failure after the 200
+      // head was sent would crash the smoke script as an uncaught exception.
+      fileStream.on("error", (error) => {
+        console.error("asset server read failed:", error);
+        response.destroy(error);
+      });
+      fileStream.pipe(response);
     } catch (error) {
+      console.error("asset server error:", error);
       response.writeHead(error && error.code === "ENOENT" ? 404 : 500);
-      response.end(error && error.message ? error.message : "not found");
+      response.end("not found");
     }
   });
 
@@ -190,12 +198,24 @@ async function main() {
     process.exitCode = 1;
   } finally {
     if (server) {
-      await new Promise((resolve) => server.close(resolve));
+      await new Promise((resolve) => {
+        server.close(resolve);
+        // close() waits out open keep-alive sockets; force-terminate them so
+        // the smoke script cannot hang at exit.
+        server.closeAllConnections?.();
+      });
     }
     if (!keepTemp) {
-      await fsp.rm(tempRoot, { force: true, recursive: true });
+      // Cleanup must not hijack the exit path: a locked tempdir (EBUSY on
+      // Windows) is a warning, not a smoke failure.
+      await fsp.rm(tempRoot, { force: true, recursive: true }).catch((error) => {
+        console.error(`failed to clean smoke workspace ${tempRoot}: ${error.message}`);
+      });
     }
   }
 }
 
-main();
+main().catch((error) => {
+  console.error(`npm wrapper smoke crashed: ${error && error.stack ? error.stack : error}`);
+  process.exitCode = 1;
+});

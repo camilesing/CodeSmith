@@ -21,10 +21,13 @@ SCRIPTS = Path(__file__).resolve().parent
 
 
 def run_guard(script: str, root: Path, *extra: str) -> subprocess.CompletedProcess:
+    # A guard regressing into an infinite loop must fail this one test, not
+    # hang the whole suite: TimeoutExpired surfaces as an error naming it.
     return subprocess.run(
         [sys.executable, str(SCRIPTS / script), "--root", str(root), *extra],
         capture_output=True,
         text=True,
+        timeout=30,
     )
 
 
@@ -34,10 +37,25 @@ def write(root: Path, relpath: str, text: str = "") -> None:
     path.write_text(text)
 
 
+def docs_pairs_allowlist() -> set[str]:
+    # Derive the fixture from the guard's real ALLOWLIST so the two cannot
+    # drift (a hand-copied set here would break every DocsPairsGuard test
+    # the day the guard's allowlist grows).
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "verify_docs_pairs", SCRIPTS / "verify-docs-pairs.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return set(module.ALLOWLIST)
+
+
 def write_allowlisted(root: Path) -> None:
     # The guard errors on allowlist entries with no matching doc, so every
     # fixture tree must carry the full allowlist (see verify-docs-pairs.py).
-    write(root, "docs/CAPABILITY_GRAPH.md")
+    for name in docs_pairs_allowlist():
+        write(root, f"docs/{name}")
 
 
 class DocsPairsGuard(unittest.TestCase):
@@ -68,7 +86,7 @@ class DocsPairsGuard(unittest.TestCase):
             write_allowlisted(root)
             result = run_guard("verify-docs-pairs.py", root)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("1 allowlisted", result.stdout)
+            self.assertIn(f"{len(docs_pairs_allowlist())} allowlisted", result.stdout)
 
     def test_stale_allowlist_entry_fails_and_names_it(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

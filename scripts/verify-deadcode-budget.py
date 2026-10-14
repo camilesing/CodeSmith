@@ -25,8 +25,12 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-BUDGET = 329
-PATTERN = re.compile(r"allow\(dead_code")
+BUDGET = 328
+# Whitespace-tolerant: `allow( dead_code )` and attribute lists must count
+# too, otherwise the ratchet can be dodged purely by reformatting. (Wrapped
+# cfg_attr spellings that split `allow(` and `dead_code` across lines remain
+# out of reach of a line-based count.)
+PATTERN = re.compile(r"allow\s*\(\s*dead_code")
 
 
 def main() -> int:
@@ -54,7 +58,13 @@ def main() -> int:
         return 1
     per_file: dict[str, int] = {}
     for path in sorted(crates.rglob("*.rs")):
-        text = path.read_text(encoding="utf-8", errors="replace")
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as err:
+            # Fail (never skip): an unreadable file must not silently drop
+            # its count from the receipt.
+            print(f"dead_code: cannot read {path}: {err}")
+            return 1
         hits = sum(1 for line in text.splitlines() if PATTERN.search(line))
         if hits:
             per_file[str(path.relative_to(args.root))] = hits

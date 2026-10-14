@@ -72,22 +72,32 @@ def crate_of(path: Path) -> str:
 
 def scan() -> list[tuple[str, str, list[str], list[str]]]:
     # Read every source once and reuse the text across all seams (the seam
-    # count multiplies the tree walk otherwise).
+    # count multiplies the tree walk otherwise). Sorted for deterministic
+    # output across machines/filesystem orders; line comments are stripped
+    # so a doc-comment mention of `dyn Seam` does not count as a consumer
+    # reference (impl-in-test noise remains accepted, see the docstring).
     sources = [
-        (crate_of(p), p.read_text(encoding="utf-8", errors="replace"))
-        for p in (REPO_ROOT / "crates").glob("*/src/**/*.rs")
+        (crate_of(p), re.sub(r"//[^\n]*", "", p.read_text(encoding="utf-8", errors="replace")))
+        for p in sorted((REPO_ROOT / "crates").glob("*/src/**/*.rs"))
         if "target" not in p.parts
     ]
     rows = []
     for seam in SEAMS:
+        esc = re.escape(seam)
         definition = None
         providers: set[str] = set()
         consumers: set[str] = set()
-        impl_re = re.compile(rf"\bimpl\s*(?:<[^>]*>\s*)?{seam}\s+for\b")
-        def_re = re.compile(rf"\bpub trait {seam}\b")
-        dyn_re = re.compile(rf"\bdyn {seam}\b")
+        impl_re = re.compile(rf"\bimpl\s*(?:<[^>]*>\s*)?{esc}\s+for\b")
+        def_re = re.compile(rf"\bpub trait {esc}\b")
+        dyn_re = re.compile(rf"\bdyn {esc}\b")
         for crate, text in sources:
             if def_re.search(text):
+                if definition is not None and definition != crate:
+                    print(
+                        f"warning: seam {seam} defined in multiple crates: "
+                        f"{definition}, {crate}",
+                        file=sys.stderr,
+                    )
                 definition = crate
             if impl_re.search(text):
                 providers.add(crate)
@@ -135,6 +145,9 @@ def main() -> int:
         print(f"capability graph fresh ({len(SEAMS)} seams)")
         return 0
 
+    # Symmetric with the --check path: a checkout without docs/ must not
+    # crash the write path with a raw traceback.
+    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUT_PATH.write_text(generated, encoding="utf-8")
     print(f"wrote {OUT_PATH.relative_to(REPO_ROOT)} ({len(SEAMS)} seams)")
     return 0
