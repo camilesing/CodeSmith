@@ -97,40 +97,51 @@ impl ToolSpec for KnowledgeRetrievalTool {
         // Read and format matching memories (up to 3 for manual recall).
         let mut output = String::new();
         for header in matching.iter().take(3) {
-            if let Ok(content) = std::fs::read_to_string(&header.file_path) {
-                let (_fm, body) =
-                    codesmith_agent_runtime::knowledge::scan::parse_frontmatter(&content);
-                let age_label = memory_age_label(header.mtime_ms);
-                let freshness = memory_freshness_text(header.mtime_ms);
+            match std::fs::read_to_string(&header.file_path) {
+                Ok(content) => {
+                    let (_fm, body) =
+                        codesmith_agent_runtime::knowledge::scan::parse_frontmatter(&content);
+                    let age_label = memory_age_label(header.mtime_ms);
+                    let freshness = memory_freshness_text(header.mtime_ms);
 
-                // Truncate body.
-                let mut lines: Vec<&str> = body.lines().collect();
-                let truncated = lines.len() > MAX_LINES_PER_MEMORY;
-                if truncated {
-                    lines.truncate(MAX_LINES_PER_MEMORY);
-                }
-                let mut body_text = lines.join("\n");
-                if body_text.len() > MAX_BYTES_PER_MEMORY {
-                    let cutoff =
-                        codesmith_agent_runtime::knowledge::entrypoint::previous_char_boundary(
-                            &body_text,
-                            MAX_BYTES_PER_MEMORY,
-                        );
-                    body_text = format!("{}[truncated]", &body_text[..cutoff]);
-                }
+                    // Truncate body.
+                    let mut lines: Vec<&str> = body.lines().collect();
+                    let truncated = lines.len() > MAX_LINES_PER_MEMORY;
+                    if truncated {
+                        lines.truncate(MAX_LINES_PER_MEMORY);
+                    }
+                    let mut body_text = lines.join("\n");
+                    if body_text.len() > MAX_BYTES_PER_MEMORY {
+                        let cutoff =
+                            codesmith_agent_runtime::knowledge::entrypoint::previous_char_boundary(
+                                &body_text,
+                                MAX_BYTES_PER_MEMORY,
+                            );
+                        body_text = format!("{}[truncated]", &body_text[..cutoff]);
+                    }
 
-                output.push_str(&format!(
-                    "[Memory: {}, last modified {}]\n",
-                    header.filename, age_label
-                ));
-                if !freshness.is_empty() {
-                    output.push_str(&format!("{}\n", freshness));
+                    output.push_str(&format!(
+                        "[Memory: {}, last modified {}]\n",
+                        header.filename, age_label
+                    ));
+                    if !freshness.is_empty() {
+                        output.push_str(&format!("{}\n", freshness));
+                    }
+                    output.push_str(&body_text);
+                    if truncated {
+                        output.push_str("\n[truncated: content exceeds memory budget]");
+                    }
+                    output.push_str("\n\n");
                 }
-                output.push_str(&body_text);
-                if truncated {
-                    output.push_str("\n[truncated: content exceeds memory budget]");
+                // A matching memory that cannot be read (permissions, file
+                // removed between scan and read) must not silently vanish —
+                // the model needs to know recall was degraded.
+                Err(err) => {
+                    output.push_str(&format!(
+                        "[Memory: {} — failed to read: {err}]\n\n",
+                        header.filename
+                    ));
                 }
-                output.push_str("\n\n");
             }
         }
 

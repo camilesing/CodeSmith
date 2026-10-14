@@ -129,6 +129,28 @@ fn write_kod_memory(
                 .join("_"),
         )
     });
+    // Bound the slug so one very long "word" cannot blow past the typical
+    // 255-byte filesystem name limit, and never emit the hidden dotfile
+    // `.md` (slug of a symbol-only name like "###" is empty).
+    let mut filename: String = filename.chars().take(64).collect();
+    if filename.is_empty() {
+        let millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        filename = format!("memory_{millis}");
+    }
+    // A slug collision must not silently clobber the existing memory
+    // file — durable data would be lost with a success message that
+    // reads identically for create and overwrite. Disambiguate with a
+    // numeric suffix instead.
+    if memory_dir.join(format!("{filename}.md")).exists() {
+        let mut n = 2u32;
+        while memory_dir.join(format!("{filename}_{n}.md")).exists() {
+            n += 1;
+        }
+        filename = format!("{filename}_{n}");
+    }
     let file_path = memory_dir.join(format!("{filename}.md"));
 
     // Build frontmatter. `name` / `description` are model-supplied and are
@@ -173,7 +195,7 @@ fn write_kod_memory(
     }
 
     Ok(ToolResult::success(format!(
-        "remembered as {memory_type} memory: {}",
+        "remembered as {memory_type} memory ({filename}.md): {}",
         note.trim().chars().take(60).collect::<String>()
     )))
 }

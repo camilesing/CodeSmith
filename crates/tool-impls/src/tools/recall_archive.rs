@@ -24,8 +24,7 @@ use serde_json::{Value, json};
 use codesmith_agent_runtime::cycle_manager::open_archive;
 use codesmith_agent_runtime::models::{ContentBlock, Message};
 use codesmith_agent_runtime::tools::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
-    optional_u64, required_str,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str,
 };
 
 const DEFAULT_MAX_RESULTS: usize = 3;
@@ -95,10 +94,33 @@ impl ToolSpec for RecallArchiveTool {
             return Err(ToolError::invalid_input("query cannot be empty"));
         }
 
-        let max_results = (optional_u64(&input, "max_results", DEFAULT_MAX_RESULTS as u64)
-            as usize)
-            .clamp(1, HARD_MAX_RESULTS);
-        let cycle_filter = input.get("cycle").and_then(Value::as_u64).map(|n| n as u32);
+        let max_results = match input.get("max_results") {
+            None | Some(Value::Null) => DEFAULT_MAX_RESULTS,
+            Some(v) => match v.as_u64() {
+                Some(n) => usize::try_from(n)
+                    .unwrap_or(DEFAULT_MAX_RESULTS)
+                    .clamp(1, HARD_MAX_RESULTS),
+                None => {
+                    return Err(ToolError::invalid_input(
+                        "max_results must be a positive integer",
+                    ));
+                }
+            },
+        };
+        // Reject wrong-typed/out-of-range values instead of silently
+        // changing behavior: `Value::as_u64` returns None for `{"cycle": -1}`,
+        // which the old `.unwrap_or`-style parse treated as *no filter*.
+        let cycle_filter = match input.get("cycle") {
+            None | Some(Value::Null) => None,
+            Some(v) => match v.as_u64() {
+                Some(n) if n <= u32::MAX as u64 => Some(n as u32),
+                _ => {
+                    return Err(ToolError::invalid_input(
+                        "cycle must be a non-negative integer",
+                    ));
+                }
+            },
+        };
 
         let session_id = context.state_namespace.as_str();
         let archives = list_archives(session_id).map_err(|err| {
@@ -112,9 +134,10 @@ impl ToolSpec for RecallArchiveTool {
             }).to_string()));
         }
 
-        let documents = load_messages(&archives, cycle_filter).map_err(|err| {
-            ToolError::execution_failed(format!("Failed to read cycle archives: {err}"))
-        })?;
+        let (documents, skipped_records) =
+            load_messages(&archives, cycle_filter).map_err(|err| {
+                ToolError::execution_failed(format!("Failed to read cycle archives: {err}"))
+            })?;
 
         if documents.is_empty() {
             let note = match cycle_filter {
@@ -139,6 +162,7 @@ impl ToolSpec for RecallArchiveTool {
             "query": query,
             "cycles_searched": archives.len(),
             "messages_scanned": documents.len(),
+            "skipped_records": skipped_records,
             "hits": hits,
         });
 
@@ -202,12 +226,16 @@ fn list_archives(session_id: &str) -> Result<Vec<(u32, PathBuf)>, std::io::Error
     Ok(archives)
 }
 
-/// Read messages from each archive into a flat scoreable list.
+/// Read messages from each archive into a flat scoreable list. Returns the
+/// documents plus the count of records skipped as corrupt/truncated — one
+/// bad record must not make the whole tool permanently unusable for that
+/// session, so it is skipped and surfaced instead of aborting the recall.
 fn load_messages(
     archives: &[(u32, PathBuf)],
     cycle_filter: Option<u32>,
-) -> Result<Vec<ArchivedDoc>, anyhow::Error> {
+) -> Result<(Vec<ArchivedDoc>, usize), anyhow::Error> {
     let mut docs: Vec<ArchivedDoc> = Vec::new();
+    let mut skipped = 0usize;
     for (cycle_n, path) in archives {
         if let Some(filter) = cycle_filter
             && *cycle_n != filter
@@ -216,7 +244,13 @@ fn load_messages(
         }
         let (header, reader) = open_archive(path)?;
         for (idx, message_result) in reader.enumerate() {
-            let message = message_result?;
+            let message = match message_result {
+                Ok(message) => message,
+                Err(_) => {
+                    skipped += 1;
+                    continue;
+                }
+            };
             let text = message_text(&message);
             if text.trim().is_empty() {
                 continue;
@@ -234,7 +268,7 @@ fn load_messages(
             });
         }
     }
-    Ok(docs)
+    Ok((docs, skipped))
 }
 
 /// Concatenate all text-bearing content blocks of a message.

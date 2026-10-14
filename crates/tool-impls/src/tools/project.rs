@@ -35,7 +35,9 @@ impl ToolSpec for ProjectMapTool {
             "properties": {
                 "max_depth": {
                     "type": "integer",
-                    "description": "Maximum depth for the tree view (default: 3)."
+                    "minimum": 1,
+                    "maximum": 10,
+                    "description": "Maximum depth for the tree view (default: 3, clamped to 1-10)."
                 }
             }
         })
@@ -50,7 +52,9 @@ impl ToolSpec for ProjectMapTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let max_depth = optional_u64(&input, "max_depth", 3) as usize;
+        let max_depth = usize::try_from(optional_u64(&input, "max_depth", 3))
+            .map(|d| d.clamp(1, 10))
+            .map_err(|_| ToolError::invalid_input("max_depth out of range"))?;
         let map = generate_project_map(&context.workspace, max_depth)?;
         ToolResult::json(&map).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
@@ -66,7 +70,16 @@ fn generate_project_map(root: &std::path::Path, max_depth: usize) -> Result<Proj
     builder.hidden(false).follow_links(false).max_depth(Some(2));
     let walker = builder.build();
 
-    for entry in walker.flatten() {
+    for entry in walker {
+        let entry = match entry {
+            Ok(entry) => entry,
+            // A partially scanned workspace must still be diagnosable:
+            // log skipped entries instead of silently dropping them.
+            Err(err) => {
+                tracing::debug!(error = %err, "project_map: skipping unreadable entry");
+                continue;
+            }
+        };
         if entry.file_type().is_some_and(|ft| ft.is_symlink()) {
             continue;
         }

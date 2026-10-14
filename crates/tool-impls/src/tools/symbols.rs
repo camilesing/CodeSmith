@@ -211,7 +211,10 @@ impl ToolSpec for FindReferencesTool {
             .map_err(|err| ToolError::execution_failed(format!("index lookup failed: {err}")))?;
         let mut occurrences = occurrences
             .map_err(|err| ToolError::execution_failed(format!("index lookup failed: {err}")))?;
-        let truncated = occurrences.len() > limit;
+        // Capture the pre-truncation count so `total_occurrences` reports
+        // the true match count instead of always collapsing to `limit`.
+        let total_occurrences = occurrences.len();
+        let truncated = total_occurrences > limit;
         occurrences.truncate(limit);
 
         let stats = service.stats();
@@ -219,7 +222,7 @@ impl ToolSpec for FindReferencesTool {
             "name": name,
             "definitions": definitions,
             "occurrences": occurrences,
-            "total_occurrences": occurrences.len(),
+            "total_occurrences": total_occurrences,
             "truncated": truncated,
             "index": index_status(&stats),
         }))

@@ -86,9 +86,16 @@ impl ToolSpec for EnterWorktreeTool {
             None => generate_random_slug(),
         };
 
-        // 3. Resolve canonical git root from context.workspace
-        let git_root = find_canonical_git_root(&context.workspace)
-            .unwrap_or_else(|| context.workspace.clone());
+        // 3. Resolve canonical git root from context.workspace. Fail fast
+        // with an actionable message instead of silently falling back to
+        // the workspace path, which only surfaces later as a raw
+        // `git worktree add` "not a git repository" stderr.
+        let git_root = find_canonical_git_root(&context.workspace).ok_or_else(|| {
+            ToolError::execution_failed(
+                "enter_worktree requires a git repository, but no git root was found \
+                 for the current workspace",
+            )
+        })?;
 
         // 4. Get current branch for tracking
         let _original_branch = get_current_branch(&context.cwd).ok();
