@@ -18,6 +18,10 @@ if [ -z "${TOKEN:-}" ]; then
   exit 1
 fi
 
+# TAG is interpolated into the release URL, the Ruby formula body (which
+# Homebrew evaluates on every end-user machine), and the commit message —
+# refuse anything outside a plain vX.Y.Z[-suffix] shape.
+[[ "${TAG}" =~ ^v[0-9]+(\.[0-9]+)+(-[0-9A-Za-z.]+)?$ ]] || die "Refusing unvalidated TAG: ${TAG}"
 VERSION="${TAG#v}"
 
 die() { echo "::error::${1}" >&2; exit 1; }
@@ -34,11 +38,15 @@ sha() {
 
 # --- read checksums ---------------------------------------------------
 
-# The single codesmith binary
-readonly SHA_COD_MACOS_ARM="$(sha codesmith-macos-arm64)"
-readonly SHA_COD_MACOS_X64="$(sha codesmith-macos-x64)"
-readonly SHA_COD_LINUX_ARM="$(sha codesmith-linux-arm64)"
-readonly SHA_COD_LINUX_X64="$(sha codesmith-linux-x64)"
+# The single codesmith binary.
+# Plain assignments first: `readonly VAR="$(…)"` masks the subshell's exit
+# status (the builtin itself returns 0), so a missing manifest entry would
+# not abort and an empty sha256 would get pushed to the tap.
+SHA_COD_MACOS_ARM="$(sha codesmith-macos-arm64)"
+SHA_COD_MACOS_X64="$(sha codesmith-macos-x64)"
+SHA_COD_LINUX_ARM="$(sha codesmith-linux-arm64)"
+SHA_COD_LINUX_X64="$(sha codesmith-linux-x64)"
+readonly SHA_COD_MACOS_ARM SHA_COD_MACOS_X64 SHA_COD_LINUX_ARM SHA_COD_LINUX_X64
 
 # --- temp dirs --------------------------------------------------------
 
@@ -61,12 +69,22 @@ class Codesmith < Formula
     if Hardware::CPU.arm?
       url "${BASE_URL}/codesmith-macos-arm64", using: :nounzip
       sha256 "${SHA_COD_MACOS_ARM}"
-    
+    else
+      url "${BASE_URL}/codesmith-macos-x64", using: :nounzip
+      sha256 "${SHA_COD_MACOS_X64}"
+    end
+  end
+
   on_linux do
     if Hardware::CPU.arm?
       url "${BASE_URL}/codesmith-linux-arm64", using: :nounzip
       sha256 "${SHA_COD_LINUX_ARM}"
-    
+    else
+      url "${BASE_URL}/codesmith-linux-x64", using: :nounzip
+      sha256 "${SHA_COD_LINUX_X64}"
+    end
+  end
+
   def install
     bin.install Dir["*"].first => "codesmith"
   end
