@@ -1,10 +1,64 @@
 # CodeSmith
 
-> Terminal coding agent for open-source and open-weight coding models — DeepSeek, Moonshot, OpenAI-compatible gateways, vLLM, Ollama, and more. Streams reasoning, edits workspaces behind approval gates, and auto mode picks model + thinking level per turn.
 
 [简体中文 README](README.zh-CN.md)
 
-![codesmith screenshot](assets/screenshot.png)
+````bash
+➜  CodeSmith git:(main) ✗ codesmith
+CodeSmith 0.9.0 (4fe017cfcc60) —  GLM5.3 · AGENT mode · preset middle
+workspace /Users/camile/Work/Rust/CodeSmith · /help lists commands (Tab completes, Shift+Tab cycles the mode) · ? shows the keyboard shortcuts · Ctrl+C cancels a turn
+● idle │ middle │ 🧭 0% (48/200k) │ 🚥agent │ 🤖0 │ GLM5.3 │ 🧠high │ v0.9.0 (4fe017cfcc60)
+❯ What the project?
+CodeSmith is a terminal coding agent for open-weight models — DeepSeek, Moonshot, OpenAI
+-compatible gateways, vLLM, Ollama,
+ and similar. The idea: a model answers a question; an agent finishes a task
+. CodeSmith is the harness in between.
+
+Key traits:
+
+- **Written
+ Constitution** — ranks competing authorities (user intent outranks stale instructions, verification
+ outranks confidence).
+- **Approval gates
+ + OS sandboxing** — tool calls that
+ write are gated; execution is sandboxed.
+- **
+Rollback snapshots** — every turn leaves one, so edits are revert
+ible.
+- **Sub-agents** — up to 20 run
+ concurrently for
+ parallel work.
+- **Provider
+-neutral** — `rig-core` is one swappable implementation behind its own `LlmClient`/`Tool` traits;
+ not tied to one vendor.
+
+It
+'s a Rust
+ workspace (~20 crates split into
+ a framework group and an implementation group), a fork of CodeWhale,
+ itself derived from deepseek-tui. Not affiliated
+ with DeepSeek Inc. MIT licensed.
+
+Quick
+start:
+
+```bash
+codesmith auth set --provider deepseek   # or CODE
+SMITH_API_KEY
+codesmith doctor
+ # verify setup
+codesmith                                # interactive REPL
+```
+
+Docs live
+in `docs/`
+— `GUIDE.md` to start, `HARNESS.md` for how the agent machinery
+works, `ARCHITECTURE.md` for crate boundaries
+. Note the install channels (npm/Home
+brew/Docker) aren't live yet; build
+from source with `cargo install --path crates/cli --locked`.
+● idle │ middle │ 🧭 8% (15k/200k) │ 🚥agent │ 🤖0 │ claude-sonnet-4-5 │ 🧠high │ v0.9.0 (4fe017cfcc60)
+````
 
 ## Install
 
