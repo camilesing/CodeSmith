@@ -13,7 +13,7 @@ description = "Tool invocation lifecycle, schema validation, and scheduler paral
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
-codesmith-protocol = { path = "../protocol", version = "0.9.0" }
+codesmith-protocol.workspace = true
 # `rc` is opted in locally (not workspace-wide): `ToolResult::canonical:
 # Option<Arc<serde_json::Value>>` keeps event-fanout clones O(1), and this
 # crate's Arc/Rc deserialize targets are audited for deep immutability (no
@@ -21,5 +21,11 @@ codesmith-protocol = { path = "../protocol", version = "0.9.0" }
 serde = { workspace = true, features = ["rc"] }
 serde_json.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
+# Local (non-inherited) tokio: workspace inheritance can only ADD features,
+# so inheriting would impose the workspace-level `full` surface (net,
+# process, fs, signal, …) on any downstream consumer of this publishable
+# crate. The audited local need (src + tests/parity_tools.rs) is `rt`
+# (spawn/task_local), `sync`, `time`, and `macros` (#[tokio::test],
+# select!).
+tokio = { version = "1.49.0", features = ["rt", "sync", "time", "macros"] }
 uuid.workspace = true

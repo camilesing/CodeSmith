@@ -12,14 +12,14 @@ description = "Core runtime boundaries for the CodeSmith workspace architecture"
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
-codesmith-agent = { path = "../agent", version = "0.9.0" }
-codesmith-config = { path = "../config", version = "0.9.0" }
-codesmith-execpolicy = { path = "../execpolicy", version = "0.9.0" }
-codesmith-hooks = { path = "../hooks", version = "0.9.0" }
-codesmith-mcp = { path = "../mcp", version = "0.9.0" }
-codesmith-protocol = { path = "../protocol", version = "0.9.0" }
-codesmith-state = { path = "../state", version = "0.9.0" }
-codesmith-tools = { path = "../tools", version = "0.9.0" }
+codesmith-agent.workspace = true
+codesmith-config.workspace = true
+codesmith-execpolicy.workspace = true
+codesmith-hooks.workspace = true
+codesmith-mcp.workspace = true
+codesmith-protocol.workspace = true
+codesmith-state.workspace = true
+codesmith-tools.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 uuid.workspace = true

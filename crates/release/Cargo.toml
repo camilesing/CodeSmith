@@ -10,11 +10,13 @@ repository.workspace = true
 description = "Shared CodeSmith release discovery and version comparison helpers"
 
 [dependencies]
-anyhow.workspace = true
 reqwest.workspace = true
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# The crate's public error surface is the typed `ReleaseError` enum;
+# `anyhow` stays confined to the consuming binaries.
+thiserror.workspace = true
 
 [features]
 ## Opt-in blocking HTTP helpers; keeps reqwest's blocking client (and its

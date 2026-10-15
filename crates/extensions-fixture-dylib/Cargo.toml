@@ -13,6 +13,6 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 async-trait.workspace = true
-codesmith-agent = { path = "../agent", version = "0.9.0" }
-codesmith-tools = { path = "../tools", version = "0.9.0" }
+codesmith-agent.workspace = true
+codesmith-tools.workspace = true
 serde_json.workspace = true

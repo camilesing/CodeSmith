@@ -1246,7 +1246,12 @@ fn thread_status_from_str(value: &str) -> ThreadStatus {
         "failed" => ThreadStatus::Failed,
         "paused" => ThreadStatus::Paused,
         "archived" => ThreadStatus::Archived,
-        _ => ThreadStatus::Idle,
+        // Tolerant read (D1): unknown values keep a row loadable, but schema
+        // drift must be observable rather than silently relabeled.
+        _ => {
+            tracing::warn!("unknown thread status {value:?} in state db; defaulting to idle");
+            ThreadStatus::Idle
+        }
     }
 }
 
@@ -1302,7 +1307,11 @@ fn job_state_status_from_str(value: &str) -> JobStateStatus {
         "completed" => JobStateStatus::Completed,
         "failed" => JobStateStatus::Failed,
         "cancelled" => JobStateStatus::Cancelled,
-        _ => JobStateStatus::Queued,
+        // Tolerant read (D1): see `thread_status_from_str`.
+        _ => {
+            tracing::warn!("unknown job state status {value:?} in state db; defaulting to queued");
+            JobStateStatus::Queued
+        }
     }
 }
 
@@ -1338,6 +1347,18 @@ fn row_to_thread(row: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadMetadata> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_status_strings_fall_back_to_their_default() {
+        assert!(matches!(
+            thread_status_from_str("hibernating"),
+            ThreadStatus::Idle
+        ));
+        assert!(matches!(
+            job_state_status_from_str("vanishing"),
+            JobStateStatus::Queued
+        ));
+    }
 
     fn test_thread(id: &str) -> ThreadMetadata {
         let now = chrono::Utc::now().timestamp();

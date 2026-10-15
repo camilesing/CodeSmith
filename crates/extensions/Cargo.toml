@@ -18,8 +18,8 @@ include = ["src/**", "Cargo.toml", "build.rs"]
 anyhow.workspace = true
 async-trait.workspace = true
 futures-util.workspace = true
-codesmith-agent = { path = "../agent", version = "0.9.0" }
-codesmith-tools = { path = "../tools", version = "0.9.0" }
+codesmith-agent.workspace = true
+codesmith-tools.workspace = true
 inventory.workspace = true
 rhai.workspace = true
 serde.workspace = true
@@ -34,4 +34,4 @@ tracing.workspace = true
 libloading.workspace = true
 
 [dev-dependencies]
-extensions-fixture-dylib = { path = "../extensions-fixture-dylib" }
+extensions-fixture-dylib.workspace = true

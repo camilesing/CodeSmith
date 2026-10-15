@@ -3,6 +3,7 @@
 //! This intentionally covers UI chrome only. It does not change model prompts,
 //! model output language, provider behavior, or media payload semantics.
 
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[allow(dead_code)]
@@ -677,13 +678,17 @@ pub fn truncate_to_width(text: &str, max_width: usize) -> String {
     let limit = max_width - ellipsis_width;
     let mut out = String::new();
     let mut width = 0usize;
-    for ch in text.chars() {
-        let ch_width = ch.width().unwrap_or(0);
-        if width + ch_width > limit {
+    // Whole grapheme clusters only: cutting after a base character's
+    // zero-width joiner or combining mark (emoji ZWJ sequences, Indic
+    // matras) leaves a broken glyph in front of the ellipsis. A cluster
+    // wider than the remaining budget is dropped whole, never split.
+    for cluster in text.graphemes(true) {
+        let cluster_width: usize = cluster.chars().map(|ch| ch.width().unwrap_or(0)).sum();
+        if width + cluster_width > limit {
             break;
         }
-        out.push(ch);
-        width += ch_width;
+        out.push_str(cluster);
+        width += cluster_width;
     }
     out.push('…');
     out
@@ -2287,6 +2292,25 @@ mod tests {
             assert!(
                 truncated.width() <= 12,
                 "{tag} sample overflowed: {truncated:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn width_truncation_cuts_on_grapheme_cluster_boundaries() {
+        // Whatever the column budget, the truncated body must never end on
+        // a zero-width joiner or a combining mark split from its base — the
+        // chars() loop used to break right after a U+200D, rendering a
+        // broken glyph in front of the ellipsis.
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}";
+        let mixed = format!("a{family}बिcd\u{0301}e");
+        assert_eq!(truncate_to_width(&mixed, 0), "");
+        for budget in 1..=20 {
+            let out = truncate_to_width(&mixed, budget);
+            let body = out.strip_suffix('…').unwrap_or(&out);
+            assert!(
+                !body.ends_with('\u{200D}') && !body.ends_with('\u{0301}'),
+                "cut inside a grapheme cluster at budget {budget}: {out:?}"
             );
         }
     }

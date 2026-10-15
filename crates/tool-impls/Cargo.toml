@@ -10,11 +10,11 @@ repository.workspace = true
 description = "Model-visible tool implementations for CodeSmith (concrete impl ToolSpec blocks)"
 
 [dependencies]
-codesmith-agent = { path = "../agent", version = "0.9.0" }
-codesmith-agent-runtime = { path = "../agent-runtime", version = "0.9.0", features = ["parse-gate"] }
-codesmith-config = { path = "../config", version = "0.9.0" }
-codesmith-index = { path = "../index", version = "0.9.0" }
-codesmith-tools = { path = "../tools", version = "0.9.0" }
+codesmith-agent.workspace = true
+codesmith-agent-runtime = { workspace = true, features = ["parse-gate"] }
+codesmith-config.workspace = true
+codesmith-index.workspace = true
+codesmith-tools.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true

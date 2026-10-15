@@ -1,8 +1,89 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
 use serde::Deserialize;
+use thiserror::Error;
+
+/// Typed failure surface for release discovery and version comparison.
+///
+/// Every public fallible function in this crate returns this enum so
+/// consumers (the CLI updater, `codesmith doctor`) can match on the failure
+/// kind instead of re-parsing message strings; `anyhow` stays confined to
+/// the consuming binaries.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum ReleaseError {
+    /// A release mirror was selected via environment override, but
+    /// `CODESMITH_VERSION` was not pinned, so the latest release cannot be
+    /// derived from a mirror directory.
+    #[error(
+        "release mirror selected (CODESMITH_RELEASE_BASE_URL / \
+         CODESMITH_USE_CNB_MIRROR) but CODESMITH_VERSION is not pinned; \
+         cannot determine the latest release from a mirror directory"
+    )]
+    MirrorVersionNotPinned,
+    /// The metadata HTTP client could not be built.
+    #[error("failed to build release check HTTP client")]
+    HttpClientBuild,
+    /// The metadata request itself failed (network, DNS, TLS).
+    #[error("failed to fetch {description} from {url}")]
+    Http {
+        url: String,
+        description: String,
+        #[source]
+        source: reqwest::Error,
+    },
+    /// The metadata response body could not be read.
+    #[error("failed to read {description} response from {url}")]
+    HttpBody {
+        url: String,
+        description: String,
+        #[source]
+        source: reqwest::Error,
+    },
+    /// GitHub answered a non-success status; `snippet` is a bounded excerpt
+    /// of the failure body (a proxy's HTML error page can be megabytes).
+    #[error("GitHub release request failed with HTTP {status}: {snippet}")]
+    HttpStatus {
+        status: reqwest::StatusCode,
+        snippet: String,
+    },
+    /// A release JSON payload failed to decode; `snippet` is a bounded
+    /// excerpt of the offending body.
+    #[error("failed to parse release JSON from GitHub API. Response: {snippet}")]
+    Parse {
+        snippet: String,
+        #[source]
+        source: serde_json::Error,
+    },
+    /// The release list carried no beta-tagged entry.
+    #[error("no beta release found in GitHub releases")]
+    NoBetaRelease,
+    /// The current version string is not valid semver.
+    #[error("failed to parse current version {value:?}")]
+    InvalidCurrentVersion {
+        value: String,
+        #[source]
+        source: semver::Error,
+    },
+    /// The latest release tag is not valid semver.
+    #[error("failed to parse latest release tag {value:?}")]
+    InvalidLatestTag {
+        value: String,
+        #[source]
+        source: semver::Error,
+    },
+    /// A version string is not valid semver.
+    #[error("invalid semver: {value:?}")]
+    InvalidVersion {
+        value: String,
+        #[source]
+        source: semver::Error,
+    },
+}
+
+/// Result alias for this crate's public surface: [`ReleaseError`] by default.
+pub type Result<T, E = ReleaseError> = std::result::Result<T, E>;
 
 /// Filename of the SHA-256 checksum manifest included in every release.
 ///
@@ -80,11 +161,7 @@ pub fn resolve_release_query(channel: ReleaseChannel) -> Result<ReleaseQuery> {
     // The base URL is probed with the running version only to satisfy the
     // signature; the pinned version below is what the Mirror query carries.
     if let Some(base_url) = release_base_url_from_env(env!("CARGO_PKG_VERSION")) {
-        let version = update_version_from_env().context(
-            "release mirror selected (CODESMITH_RELEASE_BASE_URL / \
-             CODESMITH_USE_CNB_MIRROR) but CODESMITH_VERSION is not pinned; \
-             cannot determine the latest release from a mirror directory",
-        )?;
+        let version = update_version_from_env().ok_or(ReleaseError::MirrorVersionNotPinned)?;
         return Ok(ReleaseQuery::Mirror { base_url, version });
     }
 
@@ -177,7 +254,7 @@ fn blocking_metadata_client() -> Result<&'static reqwest::blocking::Client> {
                 .ok()
         })
         .as_ref()
-        .context("failed to build release check HTTP client")
+        .ok_or(ReleaseError::HttpClientBuild)
 }
 
 /// Cached async metadata client — the async twin of
@@ -193,7 +270,7 @@ fn async_metadata_client() -> Result<&'static reqwest::Client> {
                 .ok()
         })
         .as_ref()
-        .context("failed to build release check HTTP client")
+        .ok_or(ReleaseError::HttpClientBuild)
 }
 
 /// Fetches a release JSON payload from `url` using a blocking HTTP client.
@@ -207,12 +284,18 @@ pub fn fetch_release_json_blocking(url: &str, description: &str) -> Result<Strin
         .get(url)
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
         .send()
-        .with_context(|| format!("failed to fetch {description} from {url}"))?;
+        .map_err(|source| ReleaseError::Http {
+            url: url.to_string(),
+            description: description.to_string(),
+            source,
+        })?;
     let status = response.status();
-    let body = response
-        .text()
-        .with_context(|| format!("failed to read {description} response from {url}"));
-    release_response_body(status, body, url, description)
+    let body = response.text().map_err(|source| ReleaseError::HttpBody {
+        url: url.to_string(),
+        description: description.to_string(),
+        source,
+    });
+    release_response_body(status, body)
 }
 
 /// Async counterpart of [`fetch_release_json_blocking`].
@@ -223,27 +306,30 @@ pub async fn fetch_release_json_async(url: &str, description: &str) -> Result<St
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
         .send()
         .await
-        .with_context(|| format!("failed to fetch {description} from {url}"))?;
+        .map_err(|source| ReleaseError::Http {
+            url: url.to_string(),
+            description: description.to_string(),
+            source,
+        })?;
     let status = response.status();
     let body = response
         .text()
         .await
-        .with_context(|| format!("failed to read {description} response from {url}"));
-    release_response_body(status, body, url, description)
+        .map_err(|source| ReleaseError::HttpBody {
+            url: url.to_string(),
+            description: description.to_string(),
+            source,
+        });
+    release_response_body(status, body)
 }
 
-fn release_response_body(
-    status: reqwest::StatusCode,
-    body: Result<String>,
-    url: &str,
-    description: &str,
-) -> Result<String> {
-    let body = body.with_context(|| format!("failed to read {description} response from {url}"))?;
+fn release_response_body(status: reqwest::StatusCode, body: Result<String>) -> Result<String> {
+    let body = body?;
     if !status.is_success() {
         // Bounded snippet: the failure body is unbounded (a proxy's HTML
         // error page can be megabytes); chars() avoids slicing mid-UTF-8.
         let snippet: String = body.chars().take(512).collect();
-        bail!("GitHub release request failed with HTTP {status}: {snippet}");
+        return Err(ReleaseError::HttpStatus { status, snippet });
     }
     Ok(body)
 }
@@ -260,11 +346,9 @@ struct ReleaseListEntry {
 
 /// Extracts the `tag_name` field from a GitHub single-release JSON response.
 pub fn latest_tag_from_release_json(body: &str) -> Result<String> {
-    let release: ReleaseTag = serde_json::from_str(body).with_context(|| {
-        format!(
-            "failed to parse release JSON from GitHub API. Response: {}",
-            body.chars().take(512).collect::<String>()
-        )
+    let release: ReleaseTag = serde_json::from_str(body).map_err(|source| ReleaseError::Parse {
+        snippet: body.chars().take(512).collect(),
+        source,
     })?;
     Ok(release.tag_name)
 }
@@ -272,12 +356,11 @@ pub fn latest_tag_from_release_json(body: &str) -> Result<String> {
 /// Scans a GitHub release-list JSON response and returns the tag of the first
 /// entry whose name contains `"beta"`.
 pub fn latest_beta_tag_from_release_list_json(body: &str) -> Result<String> {
-    let releases: Vec<ReleaseListEntry> = serde_json::from_str(body).with_context(|| {
-        format!(
-            "failed to parse release list JSON from GitHub API. Response: {}",
-            body.chars().take(512).collect::<String>()
-        )
-    })?;
+    let releases: Vec<ReleaseListEntry> =
+        serde_json::from_str(body).map_err(|source| ReleaseError::Parse {
+            snippet: body.chars().take(512).collect(),
+            source,
+        })?;
     releases
         .into_iter()
         .filter_map(|release| {
@@ -290,7 +373,7 @@ pub fn latest_beta_tag_from_release_list_json(body: &str) -> Result<String> {
             version_is_beta(&version).then_some(tag)
         })
         .next()
-        .context("no beta release found in GitHub releases")
+        .ok_or(ReleaseError::NoBetaRelease)
 }
 
 /// Async helper that resolves the latest release tag for the given channel.
@@ -355,10 +438,15 @@ pub fn compare_release_versions(
     current_version: &str,
     latest_tag: &str,
 ) -> Result<std::cmp::Ordering> {
-    let current = parse_release_version(current_version)
-        .with_context(|| format!("failed to parse current version {current_version:?}"))?;
-    let latest = parse_release_version(latest_tag)
-        .with_context(|| format!("failed to parse latest release tag {latest_tag:?}"))?;
+    let current =
+        parse_version(current_version).map_err(|source| ReleaseError::InvalidCurrentVersion {
+            value: current_version.to_string(),
+            source,
+        })?;
+    let latest = parse_version(latest_tag).map_err(|source| ReleaseError::InvalidLatestTag {
+        value: latest_tag.to_string(),
+        source,
+    })?;
     Ok(current.cmp(&latest))
 }
 
@@ -379,10 +467,15 @@ pub fn update_is_needed(
     current_version: &str,
     latest_tag: &str,
 ) -> Result<bool> {
-    let current = parse_release_version(current_version)
-        .with_context(|| format!("failed to parse current version {current_version:?}"))?;
-    let latest = parse_release_version(latest_tag)
-        .with_context(|| format!("failed to parse latest release tag {latest_tag:?}"))?;
+    let current =
+        parse_version(current_version).map_err(|source| ReleaseError::InvalidCurrentVersion {
+            value: current_version.to_string(),
+            source,
+        })?;
+    let latest = parse_version(latest_tag).map_err(|source| ReleaseError::InvalidLatestTag {
+        value: latest_tag.to_string(),
+        source,
+    })?;
 
     match channel {
         ReleaseChannel::Stable => Ok(current < latest),
@@ -406,13 +499,22 @@ pub fn update_is_needed(
 /// Parses a version string (with optional `v` prefix and trailing build info)
 /// into a [`semver::Version`].
 pub fn parse_release_version(value: &str) -> Result<semver::Version> {
+    parse_version(value).map_err(|source| ReleaseError::InvalidVersion {
+        value: value.to_string(),
+        source,
+    })
+}
+
+/// Version core parser shared by the public parse and the side-tagging
+/// variants above.
+fn parse_version(value: &str) -> std::result::Result<semver::Version, semver::Error> {
     let version = value
         .trim()
         .trim_start_matches('v')
         .split_whitespace()
         .next()
         .unwrap_or("");
-    semver::Version::parse(version).with_context(|| format!("invalid semver: {value:?}"))
+    semver::Version::parse(version)
 }
 
 /// Returns `true` if the tag name contains `"beta"` (case-insensitive).
@@ -519,5 +621,29 @@ mod tests {
             err.to_string().contains("no beta release found"),
             "unexpected error: {err:#}"
         );
+    }
+
+    #[test]
+    fn release_errors_are_matchable_by_kind() {
+        assert!(matches!(
+            parse_release_version("not-a-version"),
+            Err(ReleaseError::InvalidVersion { .. })
+        ));
+        assert!(matches!(
+            latest_tag_from_release_json("<html>not json</html>"),
+            Err(ReleaseError::Parse { .. })
+        ));
+        assert!(matches!(
+            latest_beta_tag_from_release_list_json(r#"[{ "tag_name": "v0.9.0" }]"#),
+            Err(ReleaseError::NoBetaRelease)
+        ));
+        assert!(matches!(
+            compare_release_versions("oops", "v0.9.0"),
+            Err(ReleaseError::InvalidCurrentVersion { .. })
+        ));
+        assert!(matches!(
+            compare_release_versions("0.9.0", "oops"),
+            Err(ReleaseError::InvalidLatestTag { .. })
+        ));
     }
 }

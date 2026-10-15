@@ -48,6 +48,12 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Run clippy
         run: cargo clippy --workspace --all-features --locked -- -D warnings
+      - name: Check default-feature index build
+        # The workspace test build never compiles codesmith-index without its
+        # tree-sitter feature (the crate's self dev-dependency turns it on for
+        # `cargo test`), so cover the configuration default-feature consumers
+        # actually ship. No --all-targets: dev-deps must stay out.
+        run: cargo check -p codesmith-index --no-default-features --locked
       - name: Check provider registry drift
         run: python3 scripts/check-provider-registry.py
       - name: Check framework dependency direction
