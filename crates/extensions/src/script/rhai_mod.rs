@@ -2511,5 +2511,19 @@ mod tests {
         assert_eq!(shell["max_output_size"], serde_json::json!(30_000));
         assert_eq!(shell["head_bytes"], serde_json::json!(22_000));
         assert_eq!(shell["tail_bytes"], serde_json::json!(8_000));
+        let compact = defaults
+            .iter()
+            .find(|(k, _)| *k == codesmith_agent::policy::PolicyKind::CompactPolicy)
+            .map(|(_, v)| v.clone())
+            .expect("builtin compact-policy present");
+        assert_eq!(
+            compact["cache_trigger_threshold"],
+            serde_json::json!(32 * 1024)
+        );
+        assert_eq!(compact["time_trigger_gap_secs"], serde_json::json!(3600));
+        assert_eq!(
+            compact["cleared_placeholder"],
+            serde_json::json!("[tool result cleared for context economy]")
+        );
     }
 }

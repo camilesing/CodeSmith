@@ -188,7 +188,11 @@ recompile.
 - Kinds: `output-diff` (`context_radius`), `shell-output`
   (`max_output_size`, `head_bytes`, `tail_bytes`, `summary_max_lines`,
   `summary_max_chars`, `preserved_summary_lines`, `preserved_line_bytes`,
-  `preserved_total_bytes`).
+  `preserved_total_bytes`), `compact-policy` (`cache_trigger_threshold`,
+  `time_trigger_gap_secs`, `micro_compactable_tools`,
+  `cleared_placeholder` — the compaction engine itself stays in Rust;
+  the summarizer prompt is merged from several session sources and is
+  not a single template, so it stays out of this seam).
 - Resolution is **last-wins by load order** (builtin < global < project):
   a user mod overrides the builtin default by registering the same kind —
   deliberately unlike tools/commands, where the incumbent keeps the name.
@@ -196,7 +200,7 @@ recompile.
   warn and fall back to the compiled defaults at read time — a mod bug
   cannot brick the mechanism it tunes.
 - **Builtin tier**: the defaults themselves ship as embedded Rhai mods
-  (`builtin-output-diff`, `builtin-shell-output` — sources under
+  (`builtin-output-diff`, `builtin-shell-output`, `builtin-compact-policy` — sources under
   `crates/extensions/src/script/builtin/`). They always load (even with
   `[mods] enabled = false`; the flag gates user mods only), skip
   consent/hash gates (they ship in the binary), use ephemeral KV, and are

@@ -48,6 +48,12 @@ pub const BUILTIN_MODS: &[BuiltinMod] = &[
         description: "Default shell-output truncation policy (sizes and budgets)",
         source: include_str!("builtin/shell_output.rhai"),
     },
+    BuiltinMod {
+        id: "builtin-compact-policy",
+        version: "0.1.0",
+        description: "Default micro-compaction policy (thresholds, tools, placeholder)",
+        source: include_str!("builtin/compact_policy.rhai"),
+    },
 ];
 
 /// Compile + run every builtin mod against the runner (used by the host's
