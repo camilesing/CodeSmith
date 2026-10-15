@@ -115,26 +115,26 @@ mod tests {
         let patterns = default_stall_patterns();
         assert!(looks_like_prompt(
             "Do you want to continue? (y/n)",
-            &patterns
+            patterns
         ));
     }
 
     #[test]
     fn looks_like_prompt_true_for_password_prompt() {
         let patterns = default_stall_patterns();
-        assert!(looks_like_prompt("Password:", &patterns));
+        assert!(looks_like_prompt("Password:", patterns));
     }
 
     #[test]
     fn looks_like_prompt_false_for_normal_output() {
         let patterns = default_stall_patterns();
-        assert!(!looks_like_prompt("Build complete", &patterns));
+        assert!(!looks_like_prompt("Build complete", patterns));
     }
 
     #[test]
     fn looks_like_prompt_false_for_empty_string() {
         let patterns = default_stall_patterns();
-        assert!(!looks_like_prompt("", &patterns));
+        assert!(!looks_like_prompt("", patterns));
     }
 
     #[test]
@@ -151,14 +151,14 @@ mod tests {
         let patterns = default_stall_patterns();
         // Color reset between prompt text and colon, and a trailing cursor
         // reset after `?` — both must not defeat the patterns.
-        assert!(looks_like_prompt("Password\u{1b}[0m:", &patterns));
+        assert!(looks_like_prompt("Password\u{1b}[0m:", patterns));
         assert!(looks_like_prompt(
             "Do you want to continue?\u{1b}[0m",
-            &patterns
+            patterns
         ));
         assert!(looks_like_prompt(
             "Deploy\u{1b}[1;32m ready\u{1b}[0m to proceed?\u{1b}[0m",
-            &patterns
+            patterns
         ));
     }
 }

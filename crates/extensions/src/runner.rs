@@ -155,6 +155,18 @@ pub(crate) struct PendingMessageProjection {
     pub fold: codesmith_agent::extension::MessageFoldFn,
 }
 
+/// Outcome of [`ExtensionRunner::unload_retained_mod`].
+#[derive(Debug, Clone)]
+#[must_use]
+pub struct UnloadModOutcome {
+    /// Whether a retained slot existed for the id (false = no-op).
+    pub evicted: bool,
+    /// How many surviving mods re-registered cleanly.
+    pub replayed: usize,
+    /// Survivor replay failures + the unbound-context error, if any.
+    pub errors: Vec<String>,
+}
+
 /// The host runtime. Constructed by [`ExtensionRunner::new`] +
 /// [`ExtensionRunner::load`](Self::load) (runs each extension's `configure`
 /// against a **stub** api), then [`ExtensionRunner::bind_core`](Self::bind_core)
@@ -221,11 +233,27 @@ pub struct ExtensionRunner {
     skills: Mutex<Vec<codesmith_agent::extension::SkillRegistration>>,
     /// Session log folds — mod-registered message projections. The hub is
     /// runner-created but host-shared: the engine folds transcript
-    /// mutations through the same `Arc` (`fold_message` / `refold_all`),
+    /// mutations through this `Arc` (`fold_message` / `refold_all`),
     /// `projection_state(key)` reads from inside mod scripts, and
     /// `clear_message_projections` / reload drop the generation's entries
     /// (the engine refolds from the transcript on the next turn).
     message_projection_hub: codesmith_agent::extension::MessageProjectionHubArc,
+    /// Per-mod lifecycle — retained script mods, in load order. Retention
+    /// is what makes single-mod unload cheap: `unload_retained_mod` clears
+    /// the bound registrations and replays the survivors from these slots
+    /// (adapter re-creation against the retained compiled AST — no
+    /// recompile). Only script mods are retained: dylib/compiled-in
+    /// `configure` is factory-cheap and their code lifetime is governed by
+    /// `libraries` / the inventory. Known limitation: a mod's KV store is
+    /// file-backed and deliberately NOT evicted — it is the mod's opt-in
+    /// persistent state, the unload reclaims only the compiled form.
+    mod_slots: Mutex<Vec<Arc<crate::script::rhai_mod::RhaiMod>>>,
+    /// Serializes per-mod transitions (`bind_mod` / `unload_retained_mod`)
+    /// so two concurrent manage_mods calls cannot interleave
+    /// clear→replay sequences. Tokio mutex (held across `configure`
+    /// awaits); guards transitions only — never held across `emit` or
+    /// tool dispatch.
+    transition_lock: tokio::sync::Mutex<()>,
 }
 
 impl ExtensionRunner {
@@ -248,6 +276,8 @@ impl ExtensionRunner {
             message_projection_hub: codesmith_agent::extension::MessageProjectionHubArc::new(
                 codesmith_agent::extension::MessageProjectionHub::new(),
             ),
+            mod_slots: Mutex::new(Vec::new()),
+            transition_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -530,6 +560,136 @@ impl ExtensionRunner {
         drop(drained); // dylibs unloaded, no lock held
     }
 
+    // === Per-mod lifecycle (single-mod load/unload, manual boundary) =======
+
+    /// The bound-registration clear suite the whole-layer reload spells
+    /// out: handlers, tools, commands, providers, prompt sections, skills,
+    /// message projections. NOT the dylib two-phase unload — that stays
+    /// [`drain_libraries_to_pending`](Self::drain_libraries_to_pending) +
+    /// [`drop_pending`](Self::drop_pending).
+    pub fn clear_bound_registrations(&self) {
+        self.clear_handlers();
+        self.clear_tools();
+        self.clear_commands();
+        self.clear_providers();
+        self.clear_prompt_sections();
+        self.clear_skills();
+        self.clear_message_projections();
+    }
+
+    /// Retain a loaded script mod for per-mod replay. Same-id retain
+    /// replaces in place (idempotent against a host double-load);
+    /// otherwise append, preserving load order — the replay flush follows
+    /// that order, so first-wins name conflicts keep their original
+    /// winners.
+    pub fn retain_mod(&self, m: Arc<crate::script::rhai_mod::RhaiMod>) {
+        let mut slots = self.mod_slots.lock().expect("mod slots lock poisoned");
+        match slots
+            .iter()
+            .position(|s| s.metadata().id == m.metadata().id)
+        {
+            Some(i) => slots[i] = m,
+            None => slots.push(m),
+        }
+    }
+
+    /// Drop `id`'s retained compiled form (bound registrations untouched —
+    /// pair with [`unload_retained_mod`](Self::unload_retained_mod)).
+    /// True when a slot existed. Once its bound adapters are cleared, the
+    /// slot was the last owner of the mod's compiled `Engine`/`AST`, so
+    /// dropping it is the whole unload.
+    pub fn evict_mod(&self, id: &str) -> bool {
+        let mut slots = self.mod_slots.lock().expect("mod slots lock poisoned");
+        let Some(i) = slots.iter().position(|s| s.metadata().id == id) else {
+            return false;
+        };
+        slots.remove(i);
+        true
+    }
+
+    /// Ids of retained script mods, in load order.
+    #[must_use]
+    pub fn retained_mod_ids(&self) -> Vec<String> {
+        self.mod_slots
+            .lock()
+            .expect("mod slots lock poisoned")
+            .iter()
+            .map(|m| m.metadata().id.to_string())
+            .collect()
+    }
+
+    /// Drop every retained slot — the whole-layer reload path calls this
+    /// before repopulating (fresh compiles re-retain from disk).
+    pub fn clear_mod_slots(&self) {
+        self.mod_slots
+            .lock()
+            .expect("mod slots lock poisoned")
+            .clear();
+    }
+
+    /// Bind one freshly compiled script mod: `configure` (captures
+    /// registrations) → flush → retain → generation bump. The registration
+    /// set change takes effect for future turns exactly like a reload (the
+    /// per-turn dispatcher rebuild + tools-change diff observe it at the
+    /// turn boundary). Returns the flush rejections (the same surface
+    /// `bind_core` reports); `Err` when the runtime has no bound context
+    /// (embeds/tests that skipped the extension layer — fail loud, the
+    /// mod is NOT retained half-bound).
+    pub async fn bind_mod(
+        &self,
+        m: Arc<crate::script::rhai_mod::RhaiMod>,
+    ) -> Result<Vec<ExtensionError>, ExtensionError> {
+        let _guard = self.transition_lock.lock().await;
+        self.load(&*m).await?;
+        let rejections = self.flush_pending()?;
+        self.retain_mod(m);
+        self.invalidate();
+        Ok(rejections)
+    }
+
+    /// Unload one retained script mod without recompiling its peers: evict
+    /// the slot, clear every bound registration, replay the survivors'
+    /// registrations against their retained compiled ASTs, bump the
+    /// generation once. `evicted: false` when `id` has no retained slot
+    /// (nothing was live under that id — a no-op). `errors` carries
+    /// survivor replay failures and the unbound-context error; the evict
+    /// itself always completes — the slot drop is the no-residue unload
+    /// guarantee, independent of the survivors' health.
+    pub async fn unload_retained_mod(&self, id: &str) -> UnloadModOutcome {
+        let _guard = self.transition_lock.lock().await;
+        if !self.evict_mod(id) {
+            return UnloadModOutcome {
+                evicted: false,
+                replayed: 0,
+                errors: Vec::new(),
+            };
+        }
+        self.clear_bound_registrations();
+        let slots: Vec<_> = self
+            .mod_slots
+            .lock()
+            .expect("mod slots lock poisoned")
+            .clone();
+        let mut errors = Vec::new();
+        let mut replayed = 0usize;
+        for m in slots {
+            let mid = m.metadata().id.to_string();
+            match self.load(&*m).await {
+                Ok(()) => replayed += 1,
+                Err(e) => errors.push(format!("re-register mod {mid}: {e}")),
+            }
+        }
+        if let Err(e) = self.flush_pending() {
+            errors.push(e.to_string());
+        }
+        self.invalidate();
+        UnloadModOutcome {
+            evicted: true,
+            replayed,
+            errors,
+        }
+    }
+
     /// Load + configure one extension against a **stub** api. Registrations
     /// queue into `pending_*`. Called by `build_extension_runtime` (Task 9)
     /// for each discovered extension, BEFORE `bind_core`.
@@ -577,6 +737,23 @@ impl ExtensionRunner {
     /// so the host can surface them.
     pub fn bind_core(&self, context: Arc<dyn ExtensionCommandContext>) -> Vec<ExtensionError> {
         *self.context.lock().unwrap() = Some(context);
+        // The context was just set, so the unbound error is unreachable in
+        // practice — surface it anyway rather than discard it.
+        self.flush_pending().unwrap_or_else(|e| vec![e])
+    }
+
+    /// `bind_core` minus the context swap: drain `pending` into the live
+    /// registries against the already-bound context. The per-mod lifecycle
+    /// paths (`bind_mod` / `unload_retained_mod`) re-flush through this
+    /// after replaying a subset of extensions; `Err` when the runtime was
+    /// never bound (embeds/tests that skipped the extension layer).
+    fn flush_pending(&self) -> Result<Vec<ExtensionError>, ExtensionError> {
+        if self.context.lock().unwrap().is_none() {
+            return Err(ExtensionError::Config(
+                "extension runtime has no bound context — per-mod transitions require a bound session"
+                    .to_string(),
+            ));
+        }
         // Drain `pending` under its own lock; each registry is flushed below
         // while holding at most that one registry's lock (never across the
         // `shared` registry's lock — see `clear_providers`).
@@ -650,7 +827,7 @@ impl ExtensionRunner {
             );
             self.providers.lock().unwrap().push(guard);
         }
-        rejections
+        Ok(rejections)
     }
 
     /// Cheap pre-check for hot-path emitters: whether any bound handler
@@ -830,6 +1007,11 @@ impl std::fmt::Debug for ExtensionRunner {
             .lock()
             .expect("context mutex poisoned")
             .is_some();
+        let mods = self
+            .mod_slots
+            .lock()
+            .expect("mod slots mutex poisoned")
+            .len();
         f.debug_struct("ExtensionRunner")
             .field("generation", &self.generation.load(Ordering::Acquire))
             .field("bound", &bound)
@@ -839,6 +1021,7 @@ impl std::fmt::Debug for ExtensionRunner {
             .field("libraries", &libraries)
             .field("pending_drop", &pending_drop)
             .field("providers", &providers)
+            .field("mods", &mods)
             .finish()
     }
 }

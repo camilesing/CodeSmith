@@ -285,7 +285,7 @@ pub fn remove(workspace: &Path, state: &mut ModStateStore, id: &str) -> Result<S
         let _ = std::fs::remove_file(kv_dir.join(format!("{scope}-{}.json", m.id)));
     }
     Ok(format!(
-        "Removed mod '{id}' ({}). Bindings clear on the next mods reload.",
+        "Removed mod '{id}' ({}). Its bindings unload immediately after this.",
         m.dir.display()
     ))
 }
@@ -496,6 +496,144 @@ pub fn load_rhai_mod(
         None => ModKvStore::ephemeral(),
     };
     RhaiMod::load(m, kv, hub).map_err(|e| e.to_string())
+}
+
+// === Per-mod lifecycle (single-mod load/unload, manual boundary) ============
+
+/// Drive an async runner transition from sync (spawn_blocking) context —
+/// the same thread + current-thread-runtime pattern
+/// `populate_extension_runtime` uses (building a tokio runtime on a runtime
+/// worker thread panics; see the comment there). The future must be owned
+/// (clone the `Arc<ExtensionRunner>` into it).
+fn drive_transition<F>(fut: F) -> F::Output
+where
+    F: std::future::Future + Send,
+    F::Output: Send,
+{
+    std::thread::scope(|s| {
+        let handle = s.spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("mod transition runtime")
+                .block_on(fut)
+        });
+        handle.join().expect("mod transition thread panicked")
+    })
+}
+
+/// Load one activated mod live — the single-mod counterpart of
+/// [`reload_mods`]. The populate gate (activated + enabled + entry-hash
+/// consent) is re-checked for this id, then compile + bind + retain.
+/// Survivors are untouched: no recompile, no whole-layer reload. Fails
+/// loud in-band (the returned message says what is wrong; nothing loads).
+pub fn load_mod(
+    runner: &Arc<ExtensionRunner>,
+    workspace: &Path,
+    id: &str,
+    mods_enabled: bool,
+) -> String {
+    if !mods_enabled {
+        return format!(
+            "Mod layer disabled ([mods] enabled = false) — '{id}' stays on disk; it loads at the next session with the layer enabled."
+        );
+    }
+    let Some(m) = discover_workspace_mods(workspace)
+        .into_iter()
+        .find(|m| m.id == id)
+    else {
+        return format!("No mod with id '{id}' on disk — /mods list shows what exists.");
+    };
+    let Ok(state) = ModStateStore::load_default() else {
+        return "Mod state unreadable — activation status unknown; nothing loaded.".to_string();
+    };
+    if state.is_disabled(id) {
+        return format!("Mod '{id}' is disabled — enable it first (/mods enable {id}).");
+    }
+    if !state.is_activated(id) {
+        return format!("Mod '{id}' is not activated — activate it first (/mods activate {id}).");
+    }
+    let hash = match entry_file_hash(&m.entry_path) {
+        Ok(h) => h,
+        Err(e) => return format!("Cannot read '{id}' entry file: {e} — nothing loaded."),
+    };
+    match state.activation_hash_state(id, &hash) {
+        ActivationHashState::Matches => {}
+        ActivationHashState::NoRecord => {
+            // Legacy activation without a recorded hash — the same backfill
+            // the populate gate performs, under the state lock.
+            let _guard = mod_state_lock();
+            match ModStateStore::load_default() {
+                Ok(mut fresh) => {
+                    if let Err(e) = fresh.record_activation_hash(id, &hash) {
+                        tracing::warn!(
+                            target: "codesmith_mods",
+                            "backfill activation hash for {id}: {e}"
+                        );
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    target: "codesmith_mods",
+                    "backfill activation hash for {id}: state unreadable ({e})"
+                ),
+            }
+        }
+        ActivationHashState::Changed => {
+            return format!(
+                "Mod '{id}' entry file changed since activation — the recorded consent does not cover this content. /mods activate {id} to re-consent."
+            );
+        }
+    }
+    let kv_dir = state.kv_dir();
+    let hub = runner.message_projection_hub();
+    let rhai_mod = match load_rhai_mod(&m, kv_dir.as_deref(), hub) {
+        Ok(m) => Arc::new(m),
+        Err(e) => return format!("Compile '{id}' failed, nothing loaded: {e}"),
+    };
+    let gen_before = runner.generation();
+    let runner_in = Arc::clone(runner);
+    match drive_transition(async move { runner_in.bind_mod(rhai_mod).await }) {
+        Ok(rejections) => {
+            let mut msg = format!(
+                "Loaded mod '{id}' live (generation {gen_before} → {}); takes effect at the next turn boundary.",
+                runner.generation()
+            );
+            for r in rejections {
+                msg.push_str(&format!(" Rejected registration: {r}"));
+            }
+            msg
+        }
+        Err(e) => {
+            format!("Bind '{id}' failed: {e} — the mod stays on disk; retry or /mods reload.")
+        }
+    }
+}
+
+/// Unload one live mod — the single-mod counterpart of [`reload_mods`]:
+/// drop its compiled form, re-register the survivors from their retained
+/// compiled ASTs (no recompile), bump the generation once. Known
+/// limitation, by design: the mod's KV file persists (its opt-in store);
+/// the unload reclaims the compiled engine + AST only.
+pub fn unload_mod(runner: &Arc<ExtensionRunner>, id: &str) -> String {
+    let gen_before = runner.generation();
+    let survivors_before = runner.retained_mod_ids();
+    let runner_in = Arc::clone(runner);
+    let id_in = id.to_string();
+    let outcome = drive_transition(async move { runner_in.unload_retained_mod(&id_in).await });
+    if !outcome.evicted {
+        return format!(
+            "Mod '{id}' had no live binding this session (discovered, not loaded); nothing to unload."
+        );
+    }
+    let mut msg = format!(
+        "Unloaded mod '{id}' (generation {gen_before} → {}); {} surviving mod(s) re-registered without recompile.",
+        runner.generation(),
+        survivors_before.iter().filter(|s| s.as_str() != id).count()
+    );
+    if !outcome.errors.is_empty() {
+        msg.push_str(&format!(" Errors: {}.", outcome.errors.join("; ")));
+    }
+    msg
 }
 
 #[cfg(test)]
@@ -777,5 +915,117 @@ trust_level = "trusted"
         use codesmith_agent::extension::Extension as _;
         assert_eq!(rhai.metadata().id, "loadable");
         assert_eq!(rhai.registrations().len(), 1);
+    }
+
+    // === Per-mod lifecycle (single-mod load/unload) ========================
+
+    /// A fixture mod whose entry registers one named tool.
+    fn write_tool_fixture_mod(root: &Path, id: &str, tool: &str) -> PathBuf {
+        let dir = write_fixture_mod(root, id);
+        std::fs::write(
+            dir.join("mod.rhai"),
+            format!(
+                r#"register_tool(#{{ name: "{tool}", description: "test tool", schema: #{{ type: "object", properties: #{{}}, additionalProperties: false }} }}, |input, ctx| {{ ok("{tool}") }});"#
+            ),
+        )
+        .unwrap();
+        dir
+    }
+
+    /// A runner bound against the real host context (the engine-build
+    /// wiring, minus the engine).
+    fn bound_runner(workspace: &Path) -> Arc<ExtensionRunner> {
+        use codesmith_extensions::HostExtensionContext;
+        let runner = Arc::new(ExtensionRunner::new());
+        let ctx = HostExtensionContext::new(
+            workspace.to_path_buf(),
+            codesmith_agent::extension::ExtensionMode::Tui,
+            Arc::new(StdMutex::new(true)),
+            Arc::new(StdMutex::new(CancellationToken::new())),
+            runner.generation_arc(),
+        );
+        runner.bind_core(Arc::new(ctx));
+        runner
+    }
+
+    #[test]
+    fn load_and_unload_single_mod_keep_survivors() {
+        let _env = crate::test_support::lock_test_env();
+        let dir = TempDir::new().unwrap();
+        let _home = ScopedHome::set_trusted(&dir, &dir.path().join("ws"));
+        let ws = workspace_in(&dir);
+        let mods_root = ws.join(".codesmith").join("mods");
+        write_tool_fixture_mod(&mods_root, "mod-a", "tool-a");
+        write_tool_fixture_mod(&mods_root, "mod-b", "tool-b");
+        {
+            let _guard = mod_state_lock();
+            let mut state = ModStateStore::load_default().unwrap();
+            activate(&ws, &mut state, "mod-a").unwrap();
+            activate(&ws, &mut state, "mod-b").unwrap();
+        }
+
+        let runner = bound_runner(&ws);
+        let note = load_mod(&runner, &ws, "mod-a", true);
+        assert!(note.contains("Loaded mod 'mod-a' live"), "{note}");
+        let note = load_mod(&runner, &ws, "mod-b", true);
+        assert!(note.contains("Loaded mod 'mod-b' live"), "{note}");
+
+        let tools = |runner: &Arc<ExtensionRunner>| {
+            let mut names: Vec<_> = runner
+                .bound_tools()
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(tools(&runner), vec!["tool-a", "tool-b"]);
+
+        // Unload one: its binding goes, the survivor stays live without a
+        // recompile, generation bumps.
+        let gen_before = runner.generation();
+        let note = unload_mod(&runner, "mod-a");
+        assert!(note.contains("Unloaded mod 'mod-a'"), "{note}");
+        assert!(runner.generation() > gen_before);
+        assert_eq!(tools(&runner), vec!["tool-b"]);
+
+        // Enable-after-disable roundtrip: the same mod loads back live.
+        // Slot order is preserved (same-id retain replaces in place).
+        let note = load_mod(&runner, &ws, "mod-a", true);
+        assert!(note.contains("Loaded mod 'mod-a' live"), "{note}");
+        assert_eq!(tools(&runner), vec!["tool-a", "tool-b"]);
+    }
+
+    #[test]
+    fn load_mod_refuses_hash_drift_and_unloaded_ids() {
+        let _env = crate::test_support::lock_test_env();
+        let dir = TempDir::new().unwrap();
+        let _home = ScopedHome::set_trusted(&dir, &dir.path().join("ws"));
+        let ws = workspace_in(&dir);
+        let mods_root = ws.join(".codesmith").join("mods");
+        let mod_dir = write_tool_fixture_mod(&mods_root, "drift", "tool-drift");
+        {
+            let _guard = mod_state_lock();
+            let mut state = ModStateStore::load_default().unwrap();
+            activate(&ws, &mut state, "drift").unwrap();
+        }
+        let runner = bound_runner(&ws);
+        assert!(load_mod(&runner, &ws, "drift", true).contains("Loaded mod 'drift' live"));
+
+        // Content changed since the recorded consent: load must refuse
+        // (the one-time consent no longer covers this content).
+        std::fs::write(
+            mod_dir.join("mod.rhai"),
+            r#"register_tool(#{ name: "tool-drift-2", description: "d", schema: #{ type: "object", properties: #{} } }, |i| ok("x"));"#,
+        )
+        .unwrap();
+        let note = load_mod(&runner, &ws, "drift", true);
+        assert!(note.contains("changed since activation"), "{note}");
+
+        // Unknown id: loud no-op.
+        let note = load_mod(&runner, &ws, "ghost", true);
+        assert!(note.contains("No mod with id 'ghost'"), "{note}");
+        let note = unload_mod(&runner, "ghost");
+        assert!(note.contains("no live binding"), "{note}");
     }
 }

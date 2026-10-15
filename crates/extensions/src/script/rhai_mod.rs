@@ -1351,6 +1351,122 @@ mod tests {
         assert!(matches!(m, Err(ExtensionError::Load(_))), "got {m:?}");
     }
 
+    // === Per-mod lifecycle (retain / evict / replay) =======================
+
+    struct PerModCtx;
+    #[async_trait::async_trait]
+    impl codesmith_agent::extension::ExtensionContext for PerModCtx {
+        fn cwd(&self) -> &std::path::Path {
+            std::path::Path::new(".")
+        }
+        fn mode(&self) -> codesmith_agent::extension::ExtensionMode {
+            codesmith_agent::extension::ExtensionMode::Tui
+        }
+        fn is_idle(&self) -> bool {
+            true
+        }
+        fn signal(&self) -> tokio_util::sync::CancellationToken {
+            tokio_util::sync::CancellationToken::new()
+        }
+        fn generation(&self) -> u64 {
+            1
+        }
+    }
+    impl codesmith_agent::extension::ExtensionCommandContext for PerModCtx {}
+
+    fn tool_mod(id: &str, dir: &TempDir, tool: &str) -> RhaiMod {
+        let script = format!(
+            r#"register_tool(#{{ name: "{tool}", description: "test tool", schema: #{{ type: "object", properties: #{{}}, additionalProperties: false }} }}, |input, ctx| {{ ok("{tool}") }});"#
+        );
+        RhaiMod::load(&discovered_for(dir, id, &script), kv_for(dir, id), hub())
+            .expect("load tool mod")
+    }
+
+    #[test]
+    fn unload_retained_mod_keeps_survivors_live() {
+        let dir = TempDir::new().unwrap();
+        let alpha = tool_mod("alpha", &dir, "alpha-tool");
+        let beta = tool_mod("beta", &dir, "beta-tool");
+
+        let runner = crate::ExtensionRunner::new();
+        runner.bind_core(Arc::new(PerModCtx));
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(runner.bind_mod(Arc::new(alpha)))
+            .expect("bind alpha");
+        rt.block_on(runner.bind_mod(Arc::new(beta)))
+            .expect("bind beta");
+
+        let bound = |runner: &crate::ExtensionRunner| {
+            let mut names: Vec<_> = runner
+                .bound_tools()
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect();
+            names.sort(); // bound_tools is a HashMap snapshot — order-free compare
+            names
+        };
+        assert_eq!(bound(&runner), vec!["alpha-tool", "beta-tool"]);
+        assert_eq!(runner.retained_mod_ids(), vec!["alpha", "beta"]);
+
+        // Evict one mod: its tool disappears, the survivor stays live from
+        // its retained compiled AST (no recompile), generation bumps once.
+        let gen_before = runner.generation();
+        let outcome = rt.block_on(runner.unload_retained_mod("alpha"));
+        assert!(outcome.evicted);
+        assert_eq!(outcome.replayed, 1, "{outcome:?}");
+        assert!(outcome.errors.is_empty(), "{outcome:?}");
+        assert!(runner.generation() > gen_before);
+        assert_eq!(bound(&runner), vec!["beta-tool"]);
+        assert_eq!(runner.retained_mod_ids(), vec!["beta"]);
+
+        // Evicting an id with no slot is a no-op (nothing was live).
+        let outcome = rt.block_on(runner.unload_retained_mod("ghost"));
+        assert!(!outcome.evicted);
+        assert_eq!(bound(&runner), vec!["beta-tool"]);
+    }
+
+    #[test]
+    fn unload_then_bind_mod_roundtrips() {
+        let dir = TempDir::new().unwrap();
+        let alpha = Arc::new(tool_mod("alpha", &dir, "alpha-tool"));
+
+        let runner = crate::ExtensionRunner::new();
+        runner.bind_core(Arc::new(PerModCtx));
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(runner.bind_mod(Arc::clone(&alpha)))
+            .expect("bind");
+        let outcome = rt.block_on(runner.unload_retained_mod("alpha"));
+        assert!(outcome.evicted);
+        assert!(runner.bound_tools().is_empty());
+
+        // Re-bind the same compiled mod (the enable-after-disable path):
+        // registrations return, a second generation bump.
+        let gen_before = runner.generation();
+        rt.block_on(runner.bind_mod(alpha)).expect("re-bind");
+        assert!(runner.generation() > gen_before);
+        assert_eq!(
+            runner
+                .bound_tools()
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>(),
+            vec!["alpha-tool"]
+        );
+    }
+
+    #[test]
+    fn bind_mod_requires_bound_context() {
+        let dir = TempDir::new().unwrap();
+        let alpha = tool_mod("alpha", &dir, "alpha-tool");
+        // No bind_core: the per-mod path must fail loud, not half-bind.
+        let runner = crate::ExtensionRunner::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(runner.bind_mod(Arc::new(alpha)));
+        assert!(result.is_err(), "got {result:?}");
+        assert!(runner.retained_mod_ids().is_empty());
+        assert!(runner.bound_tools().is_empty());
+    }
+
     // === Route A — register_provider(spec) ================================
 
     #[test]

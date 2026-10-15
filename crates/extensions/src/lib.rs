@@ -61,7 +61,7 @@ pub use install_source::{
 pub use installer::{InstallReport, Installer, UninstallReport};
 pub use loader::{LoadedDylib, load_dylib};
 pub use manifest::ExtensionManifest;
-pub use runner::{EmitOutcome, ExtensionRunner};
+pub use runner::{EmitOutcome, ExtensionRunner, UnloadModOutcome};
 pub use script::{
     DiscoveredMod, ModKvStore, ModManifest, RhaiMod, apply_mod_trust_gate, discover_mods,
 };
