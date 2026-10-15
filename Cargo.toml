@@ -24,7 +24,7 @@ default-members = ["crates/cli", "crates/app-server"]
 resolver = "3"
 
 [workspace.package]
-version = "0.9.0"
+version = "0.10.0"
 edition = "2024"
 # Rust 1.88 stabilized `let_chains` in `if`/`while` conditions, which the
 # codebase relies on extensively. Cargo enforces this so users on older
@@ -47,26 +47,26 @@ clap_complete = "4.5"
 # inherit via `<dep>.workspace = true` so a version bump is a one-line change
 # and `cargo publish` keeps its mandatory version key. check-versions.sh #3
 # guards these pins against workspace-version drift.
-codesmith-agent = { path = "crates/agent", version = "0.9.0" }
-codesmith-agent-runtime = { path = "crates/agent-runtime", version = "0.9.0" }
-codesmith-app-server = { path = "crates/app-server", version = "0.9.0" }
-codesmith-config = { path = "crates/config", version = "0.9.0" }
-codesmith-core = { path = "crates/core", version = "0.9.0" }
-codesmith-execpolicy = { path = "crates/execpolicy", version = "0.9.0" }
-codesmith-extensions = { path = "crates/extensions", version = "0.9.0" }
-codesmith-hooks = { path = "crates/hooks", version = "0.9.0" }
-codesmith-index = { path = "crates/index", version = "0.9.0" }
-codesmith-mcp = { path = "crates/mcp", version = "0.9.0" }
-codesmith-protocol = { path = "crates/protocol", version = "0.9.0" }
+codesmith-agent = { path = "crates/agent", version = "0.10.0" }
+codesmith-agent-runtime = { path = "crates/agent-runtime", version = "0.10.0" }
+codesmith-app-server = { path = "crates/app-server", version = "0.10.0" }
+codesmith-config = { path = "crates/config", version = "0.10.0" }
+codesmith-core = { path = "crates/core", version = "0.10.0" }
+codesmith-execpolicy = { path = "crates/execpolicy", version = "0.10.0" }
+codesmith-extensions = { path = "crates/extensions", version = "0.10.0" }
+codesmith-hooks = { path = "crates/hooks", version = "0.10.0" }
+codesmith-index = { path = "crates/index", version = "0.10.0" }
+codesmith-mcp = { path = "crates/mcp", version = "0.10.0" }
+codesmith-protocol = { path = "crates/protocol", version = "0.10.0" }
 # `default-features = false` here (not in members): inheritance cannot
 # override default-features, so the no-network `mock` provider stays out of
 # every consumer; members add back the provider features they route to.
-codesmith-providers = { path = "crates/providers", version = "0.9.0", default-features = false }
-codesmith-release = { path = "crates/release", version = "0.9.0" }
-codesmith-secrets = { path = "crates/secrets", version = "0.9.0" }
-codesmith-state = { path = "crates/state", version = "0.9.0" }
-codesmith-tools = { path = "crates/tools", version = "0.9.0" }
-codesmith-tool-impls = { path = "crates/tool-impls", version = "0.9.0" }
+codesmith-providers = { path = "crates/providers", version = "0.10.0", default-features = false }
+codesmith-release = { path = "crates/release", version = "0.10.0" }
+codesmith-secrets = { path = "crates/secrets", version = "0.10.0" }
+codesmith-state = { path = "crates/state", version = "0.10.0" }
+codesmith-tools = { path = "crates/tools", version = "0.10.0" }
+codesmith-tool-impls = { path = "crates/tool-impls", version = "0.10.0" }
 dirs = "6.0.0"
 # Test-fixture dylib (publish = false): hoisted so the extensions dev-dep
 # inherits like every other internal path dep; carries no version pin.
