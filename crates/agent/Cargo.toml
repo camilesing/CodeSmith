@@ -11,10 +11,10 @@ description = "Model/provider registry, LLM client trait, and wire models for th
 
 [dependencies]
 anyhow.workspace = true
-codesmith-config = { path = "../config", version = "0.9.0" }
+codesmith-config.workspace = true
 # §E — leaf tool value-types (ToolResult/ToolError/ToolCapability/
 # ApprovalRequirement). Cycle-free: tools -> protocol -> {serde, serde_json}.
-codesmith-tools = { path = "../tools", version = "0.9.0" }
+codesmith-tools.workspace = true
 futures-util.workspace = true
 reqwest = { workspace = true }
 serde.workspace = true

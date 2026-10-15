@@ -43,7 +43,34 @@ axum = { version = "0.8.5", features = ["json"] }
 chrono = { version = "0.4.43", features = ["serde"] }
 clap = { version = "4.5.54", features = ["derive"] }
 clap_complete = "4.5"
+# Internal workspace crates: path + version pins live here once; members
+# inherit via `<dep>.workspace = true` so a version bump is a one-line change
+# and `cargo publish` keeps its mandatory version key. check-versions.sh #3
+# guards these pins against workspace-version drift.
+codesmith-agent = { path = "crates/agent", version = "0.9.0" }
+codesmith-agent-runtime = { path = "crates/agent-runtime", version = "0.9.0" }
+codesmith-app-server = { path = "crates/app-server", version = "0.9.0" }
+codesmith-config = { path = "crates/config", version = "0.9.0" }
+codesmith-core = { path = "crates/core", version = "0.9.0" }
+codesmith-execpolicy = { path = "crates/execpolicy", version = "0.9.0" }
+codesmith-extensions = { path = "crates/extensions", version = "0.9.0" }
+codesmith-hooks = { path = "crates/hooks", version = "0.9.0" }
+codesmith-index = { path = "crates/index", version = "0.9.0" }
+codesmith-mcp = { path = "crates/mcp", version = "0.9.0" }
+codesmith-protocol = { path = "crates/protocol", version = "0.9.0" }
+# `default-features = false` here (not in members): inheritance cannot
+# override default-features, so the no-network `mock` provider stays out of
+# every consumer; members add back the provider features they route to.
+codesmith-providers = { path = "crates/providers", version = "0.9.0", default-features = false }
+codesmith-release = { path = "crates/release", version = "0.9.0" }
+codesmith-secrets = { path = "crates/secrets", version = "0.9.0" }
+codesmith-state = { path = "crates/state", version = "0.9.0" }
+codesmith-tools = { path = "crates/tools", version = "0.9.0" }
+codesmith-tool-impls = { path = "crates/tool-impls", version = "0.9.0" }
 dirs = "6.0.0"
+# Test-fixture dylib (publish = false): hoisted so the extensions dev-dep
+# inherits like every other internal path dep; carries no version pin.
+extensions-fixture-dylib = { path = "crates/extensions-fixture-dylib" }
 futures-util = "0.3.31"
 inventory = "0.3"
 libloading = "0.9.0"
@@ -100,4 +127,5 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 unicode-normalization = "0.1"
 unicode-properties = "0.1"
+unicode-segmentation = "1.12"
 uuid = { version = "1.11", features = ["v4"] }

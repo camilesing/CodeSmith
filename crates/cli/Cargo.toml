@@ -22,24 +22,24 @@ axum.workspace = true
 chrono.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
-codesmith-agent = { path = "../agent", version = "0.9.0" }
-codesmith-agent-runtime = { path = "../agent-runtime", version = "0.9.0", features = ["hf-tokenizer", "parse-gate"] }
-codesmith-app-server = { path = "../app-server", version = "0.9.0" }
-codesmith-config = { path = "../config", version = "0.9.0" }
-codesmith-execpolicy = { path = "../execpolicy", version = "0.9.0" }
-codesmith-extensions = { path = "../extensions", version = "0.9.0" }
-codesmith-index = { path = "../index", version = "0.9.0", features = ["tree-sitter"] }
-codesmith-mcp = { path = "../mcp", version = "0.9.0" }
-codesmith-protocol = { path = "../protocol", version = "0.9.0" }
-# Provider implementations (rig-backed). `default-features = false` keeps the
-# no-network `mock` provider out of the binary; the four rig features select
+codesmith-agent.workspace = true
+codesmith-agent-runtime = { workspace = true, features = ["hf-tokenizer", "parse-gate"] }
+codesmith-app-server.workspace = true
+codesmith-config.workspace = true
+codesmith-execpolicy.workspace = true
+codesmith-extensions.workspace = true
+codesmith-index = { workspace = true, features = ["tree-sitter"] }
+codesmith-mcp.workspace = true
+codesmith-protocol.workspace = true
+# Provider implementations (rig-backed). The workspace root keeps
+# `default-features = false` (mock stays out); the four rig features select
 # every provider the engine routes config to via `default_registry()`.
-codesmith-providers = { path = "../providers", version = "0.9.0", default-features = false, features = ["openai", "anthropic", "deepseek", "openai-compat"] }
-codesmith-release = { path = "../release", version = "0.9.0" }
-codesmith-secrets = { path = "../secrets", version = "0.9.0" }
-codesmith-state = { path = "../state", version = "0.9.0" }
-codesmith-tools = { path = "../tools", version = "0.9.0" }
-codesmith-tool-impls = { path = "../tool-impls", version = "0.9.0" }
+codesmith-providers = { workspace = true, features = ["openai", "anthropic", "deepseek", "openai-compat"] }
+codesmith-release.workspace = true
+codesmith-secrets.workspace = true
+codesmith-state.workspace = true
+codesmith-tools.workspace = true
+codesmith-tool-impls.workspace = true
 colored = "3.0.0"
 crossterm = "0.29"
 dirs.workspace = true
@@ -65,7 +65,7 @@ similar = "2"
 starlark = "0.13.0"
 tar = "0.4"
 tempfile.workspace = true
-thiserror = "2.0"
+thiserror.workspace = true
 tiny_http = "0.12"
 tokio.workspace = true
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
@@ -74,6 +74,7 @@ toml.workspace = true
 tower-http = { version = "0.6", features = ["cors"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+unicode-segmentation.workspace = true
 unicode-width = "0.2"
 uuid = { version = "1.11", features = ["v4"] }
 wait-timeout = "0.2"

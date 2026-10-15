@@ -7,7 +7,9 @@
 #      crate must inherit `version.workspace = true`.
 #   2. `npm/codesmith/package.json` `version` matches the workspace
 #      `version` in the root `Cargo.toml`.
-#   3. Internal `codesmith-*` path dependency pins match the workspace version.
+#   3. Internal `codesmith-*` path dependency pins — root
+#      `[workspace.dependencies]` entries and any remaining member-local
+#      pins — match the workspace version.
 #   4. The current release-note section exists in `CHANGELOG.md`.
 #   5. The current release has a dated Keep a Changelog entry and compare link.
 #   6. README contributor additions are mentioned in the current release entry.
@@ -44,10 +46,17 @@ if [[ -n "${workspace_version}" && -n "${npm_version}" && "${workspace_version}"
   fail=1
 fi
 
-# 3) Internal path dependency pins.
+# 3) Internal path dependency pins. Since the D6 hoist the versioned pins
+#    live in the root [workspace.dependencies]; member manifests inherit via
+#    `workspace = true`. Both surfaces are checked so a pin can never drift
+#    from the workspace version (which would break `cargo publish` or
+#    resolve against a stale crates.io release).
+internal_dep_pin_re='codesmith-[a-z-]+[[:space:]]*=[[:space:]]*\{[^}]*version[[:space:]]*=[[:space:]]*"'
 internal_dep_drift="$(
-  grep -nE 'codesmith-[a-z-]+[[:space:]]*=[[:space:]]*\{[^}]*version[[:space:]]*=[[:space:]]*"' crates/*/Cargo.toml \
-    | grep -v "version[[:space:]]*=[[:space:]]*\"${workspace_version}\"" || true
+  {
+    grep -nE "${internal_dep_pin_re}" Cargo.toml || true
+    grep -nE "${internal_dep_pin_re}" crates/*/Cargo.toml || true
+  } | grep -v "version[[:space:]]*=[[:space:]]*\"${workspace_version}\"" || true
 )"
 if [[ -n "${internal_dep_drift}" ]]; then
   echo "::error::Internal codesmith-* path dependency versions must match workspace version ${workspace_version}:" >&2

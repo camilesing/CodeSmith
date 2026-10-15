@@ -14,11 +14,11 @@ anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 clap.workspace = true
-codesmith-agent = { path = "../agent", version = "0.9.0" }
-codesmith-config = { path = "../config", version = "0.9.0" }
-codesmith-extensions = { path = "../extensions", version = "0.9.0" }
-codesmith-secrets = { path = "../secrets", version = "0.9.0" }
-codesmith-tools = { path = "../tools", version = "0.9.0" }
+codesmith-agent.workspace = true
+codesmith-config.workspace = true
+codesmith-extensions.workspace = true
+codesmith-secrets.workspace = true
+codesmith-tools.workspace = true
 dirs.workspace = true
 fd-lock = "4.0.4"
 flate2 = "1.1"
