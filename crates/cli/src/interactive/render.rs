@@ -12,7 +12,9 @@
 //! — the composer the typed line lands in. The region is never interleaved
 //! with permanent text: every permanent write clears it first, and the
 //! blocking prompts (approval / user input / elevation) clear it too before
-//! they take stdin.
+//! they take stdin. The status-line ticker additionally yields while a
+//! permanent row is open, so streamed text is never force-closed (broken
+//! mid-word) just to refresh a frame the next delta would erase anyway.
 //!
 //! Known limitations (recorded beside the behaviour it owns): assistant text
 //! is printed verbatim as the model streams it — there is no markdown
@@ -196,14 +198,17 @@ impl TurnView {
     /// Claim the cursor's row(s) for one live frame.
     ///
     /// A live frame is a whole-row write, so it closes an open permanent row
-    /// first (a streamed delta mid-flight, or a prompt whose answer arrived
-    /// without an echoed newline) and then erases whatever the row held before
-    /// redrawing from column 0. Without both halves the frame shares a row
-    /// with permanent text: it was appended to the open row, and the next
-    /// frame's `ESC[2K` erased that row's real content with it.
+    /// first (a prompt whose answer arrived without an echoed newline) and
+    /// then erases whatever the row held before redrawing from column 0.
+    /// Without both halves the frame shares a row with permanent text: it
+    /// was appended to the open row, and the next frame's `ESC[2K` erased
+    /// that row's real content with it.
     ///
     /// The composer row is drawn from the same call, so a keystroke only has
-    /// to update the buffer and redraw.
+    /// to update the buffer and redraw. The caller owns the row-closing
+    /// policy: the ticker goes through [`Self::tick_live`], which never
+    /// closes a row, while composer redraws close one deliberately — user
+    /// input must be visible immediately.
     fn draw_live(&mut self, frame: &str) {
         self.clear_live();
         if !self.ends_with_newline {
@@ -226,6 +231,20 @@ impl TurnView {
         }
         let _ = std::io::stderr().flush();
         self.live_active = true;
+    }
+
+    /// One status-line refresh from the `LIVE_REFRESH` ticker.
+    ///
+    /// The ticker never closes an open permanent row: doing so breaks a
+    /// streamed line mid-word wherever the stream happened to pause (the
+    /// break is permanent — the terminal is append-only), while the frame
+    /// itself is erased by the next delta within milliseconds. So an open
+    /// row simply skips the frame; it resumes once the row closes.
+    fn tick_live(&mut self, frame: &str) {
+        if !self.ends_with_newline {
+            return;
+        }
+        self.draw_live(frame);
     }
 }
 
@@ -347,7 +366,7 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
             }
             _ = live_ticker.tick() => {
                 let frame = super::status::live_line(state, view.current_tool.as_deref());
-                view.draw_live(&frame);
+                view.tick_live(&frame);
                 continue;
             }
             _ = tokio::signal::ctrl_c() => {
@@ -1647,12 +1666,36 @@ mod tests {
         view.draw_live("◉ working");
         assert!(
             view.ends_with_newline,
-            "an open permanent row (mid-stream delta, unterminated prompt) must be closed \
+            "an open permanent row (unterminated prompt) must be closed \
              before the frame takes the row"
         );
         assert!(
             view.live_active,
             "the frame owns the row until it is cleared"
+        );
+    }
+
+    #[test]
+    fn ticker_frame_yields_to_an_open_permanent_row() {
+        // A streamed delta mid-paragraph leaves the row open; a tick that
+        // drew over it would close the row mid-word — the 250 ms line breaks
+        // this repository shipped before the guard.
+        let mut view = TurnView::new();
+        view.ends_with_newline = false;
+        view.tick_live("◉ working");
+        assert!(
+            !view.live_active,
+            "a tick must not draw a frame over an open text row"
+        );
+        assert!(
+            !view.ends_with_newline,
+            "a tick must not close an open text row mid-word"
+        );
+        view.ends_with_newline = true;
+        view.tick_live("◉ working");
+        assert!(
+            view.live_active,
+            "once the row is closed the frame draws as usual"
         );
     }
 
