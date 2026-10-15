@@ -1,10 +1,63 @@
 # CodeSmith
 
-> 面向开源与开放权重编程模型的终端编程智能体——支持 DeepSeek、Moonshot、OpenAI 兼容网关、vLLM、Ollama 等。流式输出思考过程，在审批门控下编辑本地工作区，auto 模式按轮次自动选择模型与推理强度。
 
 [English README](README.md)
 
-![codesmith 截图](assets/screenshot.png)
+````bash
+➜  CodeSmith git:(main) ✗ codesmith
+CodeSmith 0.9.0 (4fe017cfcc60) — GLM5.3 · AGENT mode · preset middle
+workspace /Users/camile/Work/Rust/CodeSmith · /help lists commands (Tab completes, Shift+Tab cycles the mode) · ? shows the keyboard shortcuts · Ctrl+C cancels a turn
+● idle │ middle │ 🧭 0% (48/200k) │ 🚥agent │ 🤖0 │ GLM5.3 │ 🧠high │ v0.9.0 (4fe017cfcc60)
+❯ 这是什么项目？
+这是 **CodeSmith** —— 一个面向开源权重模型的终端编码代理（terminal coding agent）。
+
+核心定位：模型回答问题，代理完成任务
+，CodeSmith 就是两者
+之间的 harness。它是 CodeWhale 的分支，而 CodeWhale 又源自 deepseek
+-tui，与 DeepSeek 公司无关联。
+
+主要
+特性：
+
+- **成文宪法** —— 对相互冲突的权威做
+排序（用户当前意图高于过时指令，验证高于自信）
+- **审批门控
+ + OS 沙箱** —— 会写入的工具调用需要
+审批，执行环境被
+沙箱隔离
+- **回滚快照** —— 每一轮对话都留
+有快照，编辑可回退
+- **子代理** —— 最多
+ 20 个并发运行，支持并行工作
+- **提供商中立** —— `rig-core` 只是自己
+ `LlmClient`/`Tool` trait
+背后可替换的一种实现，不绑定单一厂商
+
+技术形态：
+Rust 工作区，约 20 个 crate，分为**
+框架组**（`protocol`、`tools`、`agent`、`config`、`secrets`、`extensions
+`、`agent-runtime`）和**实现组**（`providers`、`tool-impls`、
+`cli`、`app-server` 等）。框架 crate 在构建图上不允许
+依赖实现组的 crate，由 `scripts/check-framework-deps.py` 在 CI 强制。
+
+快速上手：
+
+```bash
+codesmith auth set --provider deepseek   # 或
+ export CODESMITH_API_KEY
+codesmith doctor                         # 检查配置与
+连通性
+codesmith                                # 交互式 REPL
+```
+
+注意：npm/Homebrew/Docker
+等安装渠道还没上线
+，目前需从源码构建（`cargo install --path crates/cli --locked`）。文档在 `docs/` 下 —— 入
+门看 `GUIDE.md`，机制看 `HARNESS.md`
+，crate 边界看 `ARCHITECTURE.md`。
+● idle │ middle │ 🧭 8% (16k/200k) │ 🚥agent │ 🤖0 │ claude-sonnet-4-5 │ 🧠high │ v0.9.0 (4fe017cfcc60)
+❯
+````
 
 ## 安装
 
