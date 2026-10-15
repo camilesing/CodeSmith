@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::fs;
-#[cfg(unix)]
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
@@ -2376,25 +2375,69 @@ check_for_updates = true
     Ok(true)
 }
 
-/// Write a config file with owner-only permissions (Unix 0o600). Shared by
-/// the config template bootstrap, the agent-runtime trust write, and the CLI
-/// first-run wizard's merged config write. A chmod failure after the
-/// contents are written is a warning, not an error: filesystems that reject
-/// Unix chmod (Docker bind-mounts of NTFS, network shares — #897) still get
-/// the bytes on disk, and the host's native ACL model does the access
-/// control.
+/// Write a config file with owner-only permissions (Unix 0o600), atomically:
+/// the contents land in a sibling temp file that is fsynced and renamed over
+/// the target, so a crash or a concurrent reader can never observe a torn or
+/// half-truncated file (the trust read-modify-write in agent-runtime relies
+/// on this). Shared by the config template bootstrap, the agent-runtime
+/// trust write, and the CLI first-run wizard's merged config write. A chmod
+/// failure after the contents are written is a warning, not an error:
+/// filesystems that reject Unix chmod (Docker bind-mounts of NTFS, network
+/// shares — #897) still get the bytes on disk, and the host's native ACL
+/// model does the access control.
 pub fn write_config_file_private(path: &Path, content: &str) -> Result<()> {
-    #[cfg(unix)]
-    {
-        let mut file = fs::OpenOptions::new()
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "config.toml".to_string());
+
+    // Sibling temp file in the same directory so the rename is atomic
+    // (same filesystem). `create_new` plus a per-attempt nonce avoids
+    // clobbering a concurrent writer's temp file.
+    let mut last_err = None;
+    for attempt in 0..8u32 {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        let tmp_path = parent.join(format!(
+            ".{file_name}.tmp-{}-{nonce}",
+            std::process::id() + attempt
+        ));
+        #[cfg(unix)]
+        let open = fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .mode(0o600)
-            .open(path)
-            .with_context(|| format!("failed to write config at {}", path.display()))?;
-        file.write_all(content.as_bytes())
-            .with_context(|| format!("failed to write config at {}", path.display()))?;
+            .open(&tmp_path);
+        #[cfg(not(unix))]
+        let open = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path);
+        let mut file = match open {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                last_err = Some(err);
+                continue;
+            }
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("failed to write config at {}", path.display()));
+            }
+        };
+        let write_result = file
+            .write_all(content.as_bytes())
+            .and_then(|()| file.sync_all())
+            .with_context(|| format!("failed to write config at {}", path.display()));
+        if let Err(err) = write_result {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(err);
+        }
+        #[cfg(unix)]
         if let Err(err) = file.set_permissions(fs::Permissions::from_mode(0o600)) {
             tracing::warn!(
                 path = %path.display(),
@@ -2403,13 +2446,28 @@ pub fn write_config_file_private(path: &Path, content: &str) -> Result<()> {
                  not support Unix chmod. File contents written."
             );
         }
+        drop(file);
+        if let Err(err) = fs::rename(&tmp_path, path) {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(err)
+                .with_context(|| format!("failed to write config at {}", path.display()));
+        }
+        // Make the rename itself durable (best-effort where dir fsync is
+        // unsupported).
+        if let Ok(dir) = fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+        return Ok(());
     }
-    #[cfg(not(unix))]
-    {
-        fs::write(path, content)
-            .with_context(|| format!("failed to write config at {}", path.display()))?;
-    }
-    Ok(())
+    // All temp-name attempts collided with an existing file — effectively
+    // unreachable, but keep the io::Error for the error type.
+    Err(anyhow::Error::new(last_err.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "temp config name collision",
+        )
+    })))
+    .with_context(|| format!("failed to write config at {}", path.display()))
 }
 
 /// Process-wide default [`Secrets`] façade. The first caller wins; the

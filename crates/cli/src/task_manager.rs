@@ -883,7 +883,7 @@ impl TaskManager {
     }
 
     async fn worker_loop(self: Arc<Self>) {
-        loop {
+        'drain: loop {
             if self.cancel_token.is_cancelled() {
                 tracing::debug!("Worker exiting due to shutdown");
                 break;
@@ -896,41 +896,45 @@ impl TaskManager {
                         if let Some(task) = state.tasks.get_mut(&task_id) {
                             if task.status != TaskStatus::Queued {
                                 let _ = self.persist_queue_locked(&state.queue);
-                                None
-                            } else {
-                                let now = Utc::now();
-                                task.status = TaskStatus::Running;
-                                task.started_at = Some(now);
-                                task.ended_at = None;
-                                task.duration_ms = None;
-                                task.error = None;
-                                task.timeline.push(TaskTimelineEntry {
-                                    timestamp: now,
-                                    kind: "running".to_string(),
-                                    summary: "Task started".to_string(),
-                                    detail_path: None,
-                                });
-
-                                let request = {
-                                    ExecutionTask {
-                                        id: task.id.clone(),
-                                        prompt: task.prompt.clone(),
-                                        model: task.model.clone(),
-                                        workspace: task.workspace.clone(),
-                                        mode_label: task.mode.clone(),
-                                        allow_shell: task.allow_shell,
-                                        trust_mode: task.trust_mode,
-                                        auto_approve: task.auto_approve,
-                                    }
-                                };
-                                let cancel = CancellationToken::new();
-                                state.running_cancel.insert(task_id.clone(), cancel.clone());
-
-                                if let Err(err) = self.persist_all_locked(&state) {
-                                    tracing::error!("Failed to persist task start: {err}");
-                                }
-                                Some((task_id, request, cancel))
+                                // A stale/duplicate id was skipped — keep
+                                // draining instead of parking on
+                                // `notified()`: runnable entries may still
+                                // be queued behind it, and the next
+                                // `add_task` notify is not guaranteed.
+                                continue 'drain;
                             }
+                            let now = Utc::now();
+                            task.status = TaskStatus::Running;
+                            task.started_at = Some(now);
+                            task.ended_at = None;
+                            task.duration_ms = None;
+                            task.error = None;
+                            task.timeline.push(TaskTimelineEntry {
+                                timestamp: now,
+                                kind: "running".to_string(),
+                                summary: "Task started".to_string(),
+                                detail_path: None,
+                            });
+
+                            let request = {
+                                ExecutionTask {
+                                    id: task.id.clone(),
+                                    prompt: task.prompt.clone(),
+                                    model: task.model.clone(),
+                                    workspace: task.workspace.clone(),
+                                    mode_label: task.mode.clone(),
+                                    allow_shell: task.allow_shell,
+                                    trust_mode: task.trust_mode,
+                                    auto_approve: task.auto_approve,
+                                }
+                            };
+                            let cancel = CancellationToken::new();
+                            state.running_cancel.insert(task_id.clone(), cancel.clone());
+
+                            if let Err(err) = self.persist_all_locked(&state) {
+                                tracing::error!("Failed to persist task start: {err}");
+                            }
+                            Some((task_id, request, cancel))
                         } else {
                             let _ = self.persist_queue_locked(&state.queue);
                             None
@@ -1234,7 +1238,13 @@ impl TaskManager {
         fs::create_dir_all(&artifact_dir)
             .with_context(|| format!("Failed to create artifact dir {}", artifact_dir.display()))?;
         let stamp = Utc::now().format("%Y%m%dT%H%M%S%.3fZ");
-        let filename = format!("{stamp}_{}.txt", sanitize_filename(label));
+        // The millisecond stamp plus label is not unique: two same-label
+        // artifacts inside one millisecond (concurrent gates, repeated
+        // same-name tool calls, finalize re-writes) produced identical
+        // filenames and silently overwrote earlier evidence. A uuid
+        // fragment guarantees the second write lands beside the first.
+        let unique = &uuid::Uuid::new_v4().simple().to_string()[..6];
+        let filename = format!("{stamp}_{}-{unique}.txt", sanitize_filename(label));
         let absolute = artifact_dir.join(filename);
         fs::write(&absolute, content)
             .with_context(|| format!("Failed to write artifact {}", absolute.display()))?;

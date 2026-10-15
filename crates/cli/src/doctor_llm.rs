@@ -154,7 +154,11 @@ impl DoctorFindings {
                 })
             })
             .collect();
-        json!({
+        // Say when the list was cut, so the model (and the caller comparing
+        // against the progress line's full count) can tell the payload only
+        // carries the first MAX_FINDINGS entries.
+        let findings_omitted = self.entries.len().saturating_sub(MAX_FINDINGS);
+        let mut payload = json!({
             "environment": {
                 "os": os,
                 "provider": provider,
@@ -162,8 +166,11 @@ impl DoctorFindings {
                 "model": model,
             },
             "findings": findings,
-        })
-        .to_string()
+        });
+        if findings_omitted > 0 {
+            payload["findings_omitted"] = json!(findings_omitted);
+        }
+        payload.to_string()
     }
 }
 
@@ -175,7 +182,14 @@ fn redact_home(text: &str) -> String {
         return text.to_string();
     };
     let home = home.display().to_string();
-    if home.is_empty() || !text.contains(&home) {
+    // A root-only home ("/", "\", "C:", "C:\") would rewrite every
+    // separator in the text — URLs would become "https:~~api.example.com~v1"
+    // — so treat it as unresolvable and skip the fold entirely.
+    let is_root = {
+        let trimmed = home.trim_end_matches(['/', '\\']);
+        trimmed.is_empty() || trimmed.ends_with(':')
+    };
+    if home.is_empty() || is_root || !text.contains(&home) {
         return text.to_string();
     }
     text.replace(&home, "~")
@@ -222,10 +236,19 @@ fn redact_credentials(text: &str) -> String {
 fn redact_absolute_paths(text: &str) -> String {
     text.split_whitespace()
         .map(|tok| {
-            let is_unix_abs =
-                (tok.starts_with('/') && !tok.starts_with("//")) || tok.starts_with('\\');
+            // Leading punctuation (`(/etc/app.cfg)`, `"C:\workspaces\x"`)
+            // and `key=` prefixes (`path=/workspaces/proj`) must not let an
+            // absolute path escape the prefix checks — strip them before
+            // deciding, and mask the whole token when a path shape hides
+            // behind one (over-masking stays the safe direction).
+            let stripped = tok.trim_start_matches(['(', '[', '{', '"', '\'', '`']);
+            let candidate = stripped
+                .split_once('=')
+                .map_or(stripped, |(_, value)| value);
+            let is_unix_abs = (candidate.starts_with('/') && !candidate.starts_with("//"))
+                || candidate.starts_with('\\');
             let is_windows_abs = {
-                let bytes = tok.as_bytes();
+                let bytes = candidate.as_bytes();
                 bytes.len() >= 3
                     && bytes[0].is_ascii_alphabetic()
                     && bytes[1] == b':'
@@ -505,6 +528,47 @@ mod tests {
         findings.error("Net", "redirected to //cdn.example.com/x");
         let payload = findings.to_prompt_payload("linux", "openai", "https://gw.internal", "gpt");
         assert!(payload.contains("//cdn.example.com/x"), "{payload}");
+    }
+
+    #[test]
+    fn outbound_details_mask_punctuated_and_prefixed_absolute_paths() {
+        // Leading punctuation (`(/etc/app.cfg)`, `"C:\workspaces\x"`) or a
+        // `key=` prefix (`path=/workspaces/proj`) used to dodge the
+        // prefix-only absolute-path check.
+        let mut findings = DoctorFindings::new();
+        findings.error(
+            "Filesystem",
+            "open failed for (/etc/app.cfg) and \"C:\\workspaces\\x\" path=/workspaces/proj",
+        );
+        let payload = findings.to_prompt_payload("linux", "openai", "https://gw.internal", "gpt");
+        assert!(!payload.contains("etc/app.cfg"), "{payload}");
+        assert!(!payload.contains("workspaces"), "{payload}");
+        assert!(payload.contains("<path>"), "{payload}");
+    }
+
+    #[test]
+    fn payload_reports_findings_beyond_the_cap() {
+        let mut findings = DoctorFindings::new();
+        for i in 0..=MAX_FINDINGS {
+            findings.error("Section", format!("finding {i}"));
+        }
+        let payload = findings.to_prompt_payload(
+            "macos",
+            "deepseek",
+            "https://api.deepseek.com",
+            "deepseek-chat",
+        );
+        assert!(payload.contains(r#""findings_omitted":1"#), "{payload}");
+        // The omitted count is only surfaced when the list was actually cut.
+        let mut capped = DoctorFindings::new();
+        capped.error("Section", "only finding");
+        let payload = capped.to_prompt_payload(
+            "macos",
+            "deepseek",
+            "https://api.deepseek.com",
+            "deepseek-chat",
+        );
+        assert!(!payload.contains("findings_omitted"), "{payload}");
     }
 
     #[test]

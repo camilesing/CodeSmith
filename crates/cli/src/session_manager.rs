@@ -550,9 +550,19 @@ impl SessionManager {
         workspace: &Path,
     ) -> std::io::Result<Option<SessionMetadata>> {
         let sessions = self.list_sessions()?;
+        // Hoist the current workspace's canonical path and git root out
+        // of the per-session loop: `workspace_scope_matches` resolves
+        // both per call, costing O(sessions × depth) stat() walks on
+        // every resume/list.
+        let current_canonical = fs::canonicalize(workspace).ok();
+        let current_root = find_git_root(workspace);
         Ok(sessions.into_iter().find(|session| {
-            workspace_scope_matches(&session.workspace, workspace)
-                && !is_empty_auto_created_session(session)
+            workspace_scope_matches_precomputed(
+                &session.workspace,
+                workspace,
+                current_canonical.as_deref(),
+                current_root.as_ref(),
+            ) && !is_empty_auto_created_session(session)
         }))
     }
 
@@ -569,15 +579,31 @@ impl SessionManager {
 }
 
 pub(crate) fn workspace_scope_matches(saved_workspace: &Path, current_workspace: &Path) -> bool {
-    if paths_equivalent(saved_workspace, current_workspace) {
+    let current_canonical = fs::canonicalize(current_workspace).ok();
+    let current_root = find_git_root(current_workspace);
+    workspace_scope_matches_precomputed(
+        saved_workspace,
+        current_workspace,
+        current_canonical.as_deref(),
+        current_root.as_ref(),
+    )
+}
+
+/// [`workspace_scope_matches`] with the current workspace's canonical
+/// path and git root already resolved, so per-session callers do not
+/// repeat those filesystem walks inside a loop.
+fn workspace_scope_matches_precomputed(
+    saved_workspace: &Path,
+    current_workspace: &Path,
+    current_canonical: Option<&Path>,
+    current_root: Option<&PathBuf>,
+) -> bool {
+    if paths_equivalent_with(saved_workspace, current_workspace, current_canonical) {
         return true;
     }
 
-    match (
-        find_git_root(saved_workspace),
-        find_git_root(current_workspace),
-    ) {
-        (Some(saved_root), Some(current_root)) => paths_equivalent(&saved_root, &current_root),
+    match (find_git_root(saved_workspace), current_root) {
+        (Some(saved_root), Some(current_root)) => paths_equivalent(&saved_root, current_root),
         _ => false,
     }
 }
@@ -587,8 +613,12 @@ fn is_empty_auto_created_session(session: &SessionMetadata) -> bool {
 }
 
 fn paths_equivalent(lhs: &Path, rhs: &Path) -> bool {
+    paths_equivalent_with(lhs, rhs, fs::canonicalize(rhs).ok().as_deref())
+}
+
+/// [`paths_equivalent`] with `rhs`'s canonical form already resolved.
+fn paths_equivalent_with(lhs: &Path, rhs: &Path, rhs_canonical: Option<&Path>) -> bool {
     let lhs_canonical = fs::canonicalize(lhs).ok();
-    let rhs_canonical = fs::canonicalize(rhs).ok();
     match (lhs_canonical, rhs_canonical) {
         (Some(lhs), Some(rhs)) => lhs == rhs,
         _ => lhs == rhs,
@@ -946,7 +976,9 @@ fn truncate_title(s: &str, max_len: usize) -> String {
     if char_count <= max_len {
         first_line.to_string()
     } else {
-        let truncated: String = first_line.chars().take(max_len - 3).collect();
+        // `max_len < 3` must not underflow: saturate, and let the later
+        // filter cap the resulting over-length title at `max_len`.
+        let truncated: String = first_line.chars().take(max_len.saturating_sub(3)).collect();
         format!("{truncated}...")
     }
 }
@@ -1568,6 +1600,16 @@ mod tests {
         fs::write(second.join(".git"), "gitdir: .git/worktrees/b").expect("write second marker");
 
         assert!(!workspace_scope_matches(&first, &second));
+    }
+
+    #[test]
+    fn truncate_title_tiny_max_len_does_not_underflow() {
+        // `max_len < 3` used to compute `max_len - 3` on usize: panic in
+        // debug, usize::MAX in release.
+        let title = truncate_title("a meaningful session title", 2);
+        assert_eq!(title, "...");
+        assert_eq!(truncate_title("hello", 5), "hello");
+        assert_eq!(truncate_title("hello world", 8), "hello...");
     }
 
     #[test]

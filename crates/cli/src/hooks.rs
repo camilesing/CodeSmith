@@ -79,7 +79,10 @@ pub struct Hook {
     #[serde(default)]
     pub condition: Option<HookCondition>,
 
-    /// Timeout in seconds (default: 30)
+    /// Timeout in seconds (default: 30). The executor-level
+    /// `default_timeout_secs` override — when set — always takes
+    /// precedence over this value (table-over-hook precedence, as
+    /// documented in `docs/HOOKS.md`).
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
 
@@ -158,7 +161,9 @@ pub struct HooksConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
 
-    /// Global timeout override (applies if hook doesn't specify one)
+    /// Global timeout override. When set it takes precedence over every
+    /// hook's `timeout_secs` (table-over-hook precedence, documented in
+    /// `docs/HOOKS.md`); when unset, each hook's own timeout applies.
     #[serde(default)]
     pub default_timeout_secs: Option<u64>,
 
@@ -298,7 +303,6 @@ impl HookExecutor {
         self.config.enabled
     }
 
-    /// Get the session ID
     /// Read-only access to the underlying configuration. Used by
     /// `/hooks` (#460 read-only MVP) so the user can list configured
     /// hooks without reaching for `cat ~/.codesmith/config.toml`.
@@ -306,6 +310,7 @@ impl HookExecutor {
         &self.config
     }
 
+    /// Get the session ID
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
@@ -547,7 +552,9 @@ impl HookExecutor {
     ///
     /// The structured-stdin events (`turn_end`, `subagent_spawn`,
     /// `subagent_complete`) receive their JSON envelope on stdin; every
-    /// other event runs with no stdin.
+    /// other event runs with no stdin. Background hooks are the exception:
+    /// they always run with null stdio (see [`Self::execute_background`])
+    /// and never receive the envelope.
     pub fn execute(&self, event: HookEvent, context: &HookContext) -> Vec<HookResult> {
         if !self.config.enabled {
             return Vec::new();
@@ -615,46 +622,10 @@ impl HookExecutor {
     }
 
     /// Check if a hook's condition matches the context
-    #[allow(clippy::only_used_in_recursion)]
     fn matches_condition(&self, hook: &Hook, context: &HookContext) -> bool {
         match &hook.condition {
-            None | Some(HookCondition::Always) => true,
-            Some(HookCondition::ToolName { name }) => {
-                context.tool_name.as_ref().is_some_and(|n| n == name)
-            }
-            Some(HookCondition::ToolCategory { category }) => {
-                // Map tool names to categories
-                let tool_category = context.tool_name.as_ref().map(|name| match name.as_str() {
-                    "exec_shell" => "shell",
-                    "write_file" | "edit_file" | "apply_patch" => "file_write",
-                    "read_file" | "list_dir" | "grep_files" => "safe",
-                    _ => "other",
-                });
-                tool_category.is_some_and(|c| c == category.as_str())
-            }
-            Some(HookCondition::Mode { mode }) => context
-                .mode
-                .as_ref()
-                .is_some_and(|m| m.to_lowercase() == mode.to_lowercase()),
-            Some(HookCondition::ExitCode { code }) => context.tool_exit_code == Some(*code),
-            Some(HookCondition::All { conditions }) => conditions.iter().all(|c| {
-                self.matches_condition(
-                    &Hook {
-                        condition: Some(c.clone()),
-                        ..hook.clone()
-                    },
-                    context,
-                )
-            }),
-            Some(HookCondition::Any { conditions }) => conditions.iter().any(|c| {
-                self.matches_condition(
-                    &Hook {
-                        condition: Some(c.clone()),
-                        ..hook.clone()
-                    },
-                    context,
-                )
-            }),
+            None => true,
+            Some(condition) => condition_matches(condition, context),
         }
     }
 
@@ -691,6 +662,10 @@ impl HookExecutor {
             .clone()
             .unwrap_or_else(|| self.default_working_dir.clone());
 
+        // Table-over-hook precedence (documented in `docs/HOOKS.md`): the
+        // global `default_timeout_secs` override wins whenever it is set;
+        // otherwise the hook's own `timeout_secs` (serde default 30)
+        // applies.
         let timeout_secs = self
             .config
             .default_timeout_secs
@@ -803,8 +778,10 @@ impl HookExecutor {
     /// (serde default 30) — the same resolution as the sync path: a hook
     /// that never exits is killed instead of leaking a process forever —
     /// on Unix the whole process group dies with it; on Windows only the
-    /// direct child can be killed. Output is discarded (null stdio) — the
-    /// previous form collected it and then threw it away.
+    /// direct child can be killed. All stdio is null — output is discarded
+    /// (the previous form collected it and then threw it away), and the
+    /// hook never receives the structured-stdin JSON envelope its
+    /// foreground twin would have read.
     fn execute_background(&self, hook: &Hook, env_vars: &HashMap<String, String>) -> HookResult {
         let started = Instant::now();
         let working_dir = self
@@ -816,10 +793,11 @@ impl HookExecutor {
         let cmd = hook.command.clone();
         let env = env_vars.clone();
         let wd = working_dir.clone();
-        // Same resolution as the sync path: the executor-level
-        // `default_timeout_secs` override must bound background hooks too —
-        // binding `hook.timeout_secs` directly killed them at the serde
-        // default while foreground hooks ran to the configured override.
+        // Same resolution as the sync path (table-over-hook): the
+        // executor-level `default_timeout_secs` override must bound
+        // background hooks too — binding `hook.timeout_secs` directly
+        // killed them at the serde default while foreground hooks ran to
+        // the configured override.
         let timeout_secs = self
             .config
             .default_timeout_secs
@@ -890,6 +868,38 @@ impl HookExecutor {
     }
 }
 
+/// Recursive condition matcher, free-standing so `All`/`Any` recursion
+/// borrows the nested `&HookCondition` directly — the previous form cloned
+/// the whole `Hook` per sub-condition (multiplied per nesting level) on a
+/// path that runs on every tool dispatch (#455).
+fn condition_matches(condition: &HookCondition, context: &HookContext) -> bool {
+    match condition {
+        HookCondition::Always => true,
+        HookCondition::ToolName { name } => context.tool_name.as_ref().is_some_and(|n| n == name),
+        HookCondition::ToolCategory { category } => {
+            // Map tool names to categories
+            let tool_category = context.tool_name.as_ref().map(|name| match name.as_str() {
+                "exec_shell" => "shell",
+                "write_file" | "edit_file" | "apply_patch" => "file_write",
+                "read_file" | "list_dir" | "grep_files" => "safe",
+                _ => "other",
+            });
+            tool_category.is_some_and(|c| c == category.as_str())
+        }
+        HookCondition::Mode { mode } => context
+            .mode
+            .as_ref()
+            .is_some_and(|m| m.to_lowercase() == mode.to_lowercase()),
+        HookCondition::ExitCode { code } => context.tool_exit_code == Some(*code),
+        HookCondition::All { conditions } => {
+            conditions.iter().all(|c| condition_matches(c, context))
+        }
+        HookCondition::Any { conditions } => {
+            conditions.iter().any(|c| condition_matches(c, context))
+        }
+    }
+}
+
 /// Kill a timed-out hook child. On Unix the hook runs in its own process
 /// group (see [`HookExecutor::own_process_group`]), so the kill takes the
 /// whole tree — killing only the `sh -c` wrapper leaves grandchildren
@@ -910,9 +920,23 @@ fn kill_hook_child(child: &mut std::process::Child) {
 
 fn spawn_pipe_reader(mut pipe: impl Read + Send + 'static) -> JoinHandle<String> {
     thread::spawn(move || {
-        let mut buf = String::new();
-        let _ = pipe.read_to_string(&mut buf);
-        buf
+        // Read bytes, not a String: `read_to_string` fails at the first
+        // invalid UTF-8 byte and would silently drop everything read so
+        // far — one stray byte (localized output, binary noise) could
+        // wipe a `pre_compact` preserve context or a `shell_env` block.
+        // Decode lossily so the hook's whole contribution survives.
+        let mut bytes = Vec::new();
+        let _ = pipe.read_to_end(&mut bytes);
+        match String::from_utf8(bytes) {
+            Ok(text) => text,
+            Err(err) => {
+                tracing::warn!(
+                    target: "hooks",
+                    "hook output was not valid UTF-8; invalid bytes were replaced"
+                );
+                String::from_utf8_lossy(err.as_bytes()).into_owned()
+            }
+        }
     })
 }
 

@@ -45,7 +45,9 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 pick_port() {
-    # Find a free TCP port on loopback.
+    # Find a free TCP port on loopback. NOTE: racy — the socket is closed
+    # before the caller binds, so the port may be taken; callers should
+    # treat bind failure as retryable.
     python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'
 }
 

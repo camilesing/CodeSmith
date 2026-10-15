@@ -40,13 +40,25 @@ fn lexical_absolute(path: &Path) -> std::io::Result<PathBuf> {
     Ok(normalized)
 }
 
-/// Expand a leading `~` (and env vars via `shellexpand`) to an absolute path.
+/// Expand a leading `~` (tilde expansion via `shellexpand`) to an absolute
+/// path. Only the tilde form is expanded — no env-var substitution happens.
 pub fn expand_path(path: &str) -> PathBuf {
+    // `~` is the home shorthand only when followed by a path separator (or
+    // nothing). Backslash counts as a separator on Windows only: on Unix it
+    // is a legal filename character, so `~\foo` must stay a relative path
+    // instead of silently resolving to `$HOME/foo` and missing trust keys.
+    #[cfg(windows)]
+    let is_tilde_sep = |s: &str| s.is_empty() || s.starts_with('/') || s.starts_with('\\');
+    #[cfg(not(windows))]
+    let is_tilde_sep = |s: &str| s.is_empty() || s.starts_with('/');
     if let Some(stripped) = path.strip_prefix('~')
-        && (stripped.is_empty() || stripped.starts_with('/') || stripped.starts_with('\\'))
+        && is_tilde_sep(stripped)
         && let Some(mut home) = effective_home_dir()
     {
+        #[cfg(windows)]
         let suffix = stripped.trim_start_matches(['/', '\\']);
+        #[cfg(not(windows))]
+        let suffix = stripped.trim_start_matches('/');
         if !suffix.is_empty() {
             home.push(suffix);
         }
@@ -186,6 +198,24 @@ pub fn save_workspace_trust(workspace: &Path) -> Result<PathBuf> {
         .context("Failed to resolve config path: home directory not found.")?;
     ensure_parent_dir_private(&config_path)?;
 
+    // Serialize the read-modify-write against concurrent writers (the TUI
+    // and the CLI first-run wizard both land here) with an advisory lock
+    // next to the config file; without it, two processes each merge into
+    // their own stale snapshot and one side's unrelated fields are lost.
+    // The write itself goes through `write_config_file_private`, which is
+    // a temp-file + rename, so concurrent readers never observe a torn
+    // TOML file. Mirrors the evolution-log lock posture.
+    let lock_path = config_path.with_extension("lock");
+    let lock_file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&lock_path)
+        .with_context(|| format!("Failed to open config lock at {}", lock_path.display()))?;
+    let mut lock = fd_lock::RwLock::new(lock_file);
+    let _guard = lock
+        .write()
+        .map_err(|err| std::io::Error::other(format!("config lock failed: {err}")))?;
+
     let mut doc = if config_path.exists() {
         let raw = fs::read_to_string(&config_path)?;
         toml::from_str::<toml::Value>(&raw)
@@ -202,32 +232,77 @@ pub fn save_workspace_trust(workspace: &Path) -> Result<PathBuf> {
 }
 
 /// `create_dir_all` on the parent plus a best-effort Unix tightening of
-/// group/other bits. Mirrors the CLI's `ensure_parent_dir`: filesystems that
-/// reject chmod (Docker bind-mounts of NTFS, network shares — #897) only get
-/// a warning; the directory already exists by then, so the write continues.
+/// group/other bits. `create_dir_all` can create several intermediate
+/// components, so the tightening walks every component this call actually
+/// created (pre-existing ancestors further up are out of scope to modify);
+/// otherwise a custom `CODESMITH_CONFIG_PATH` like
+/// `~/creds/nested/.codesmith/config.toml` would leave the fresh `~/creds`
+/// and `~/creds/nested` at umask defaults. Mirrors the CLI's
+/// `ensure_parent_dir`: filesystems that reject chmod (Docker bind-mounts
+/// of NTFS, network shares — #897) only get a warning; the directory
+/// already exists by then, so the write continues.
 fn ensure_parent_dir_private(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
+        // Deepest ancestor that already exists before the create below.
+        let mut deepest_existing = parent.to_path_buf();
+        while !deepest_existing.exists() {
+            match deepest_existing.parent() {
+                Some(p) if !p.as_os_str().is_empty() => deepest_existing = p.to_path_buf(),
+                _ => break,
+            }
+        }
         fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(meta) = fs::metadata(parent) {
-                let mode = meta.permissions().mode();
-                if mode & 0o077 != 0 {
-                    let mut perms = meta.permissions();
-                    perms.set_mode(mode & !0o077);
-                    if let Err(err) = fs::set_permissions(parent, perms) {
-                        tracing::warn!(
-                            path = %parent.display(),
-                            error = %err,
-                            "could not tighten parent dir permissions; \
-                             filesystem may not support Unix chmod. Continuing."
-                        );
-                    }
+            let mut dir = parent.to_path_buf();
+            loop {
+                tighten_dir_mode_best_effort(&dir);
+                if dir == deepest_existing {
+                    break;
+                }
+                match dir.parent() {
+                    Some(p) if !p.as_os_str().is_empty() => dir = p.to_path_buf(),
+                    _ => break,
                 }
             }
         }
     }
     Ok(())
+}
+
+/// Best-effort `& !0o077` tightening of group/other bits with the
+/// warn-and-continue semantics documented on [`ensure_parent_dir_private`].
+#[cfg(unix)]
+fn tighten_dir_mode_best_effort(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = fs::metadata(dir) {
+        let mode = meta.permissions().mode();
+        if mode & 0o077 != 0 {
+            let mut perms = meta.permissions();
+            perms.set_mode(mode & !0o077);
+            if let Err(err) = fs::set_permissions(dir, perms) {
+                tracing::warn!(
+                    path = %dir.display(),
+                    error = %err,
+                    "could not tighten parent dir permissions; \
+                     filesystem may not support Unix chmod. Continuing."
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::expand_path;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn backslash_after_tilde_is_not_a_home_separator_on_unix() {
+        // Backslash is a legal filename character on Unix: `~\foo` is a
+        // relative path, not `$HOME/foo`, and must survive expansion
+        // untouched so trust-key comparisons don't silently miss.
+        assert_eq!(expand_path(r"~\foo").to_str(), Some(r"~\foo"));
+    }
 }

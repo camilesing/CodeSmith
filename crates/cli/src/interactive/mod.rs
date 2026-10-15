@@ -119,7 +119,7 @@ pub async fn run_repl(
         config,
         EngineHost {
             runtime_services: state.runtime_services.clone(),
-            hooks: Some(state.hooks.clone()),
+            hooks: Some(std::sync::Arc::new(state.hooks.clone())),
             shell_manager: Some(state.shell_manager.clone()),
             ..Default::default()
         },

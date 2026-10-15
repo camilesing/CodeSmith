@@ -76,6 +76,10 @@ pub struct MigrationError {
     pub from_version: u32,
     pub to_version: u32,
     pub reason: String,
+    /// Optional underlying error (e.g. a serde parse/reshape failure),
+    /// preserved for diagnostics instead of being pre-formatted into
+    /// `reason`; wired into [`std::error::Error::source`].
+    pub source: Option<Box<dyn std::error::Error + Send + Sync>>,
 }
 
 impl std::fmt::Display for MigrationError {
@@ -88,7 +92,11 @@ impl std::fmt::Display for MigrationError {
     }
 }
 
-impl std::error::Error for MigrationError {}
+impl std::error::Error for MigrationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source.as_ref().map(|err| &**err as _)
+    }
+}
 
 /// Signature of a single forward migration step.
 #[allow(dead_code)] // Public surface; first concrete migrator lands when v2 ships.
@@ -129,6 +137,24 @@ pub trait SchemaMigration {
                     Self::DOMAIN,
                     Self::CURRENT_VERSION
                 ),
+                source: None,
+            });
+        }
+
+        // A record stamped 0 (or missing `schema_version` and defaulted)
+        // is invalid input, not a misordered step list — reject it here
+        // so the error names the domain and the bad version instead of
+        // surfacing as a bogus "migration list is non-contiguous at
+        // index 0" / "migrated to v0 but expected v1".
+        if version < 1 {
+            return Err(MigrationError {
+                from_version: version,
+                to_version: Self::CURRENT_VERSION,
+                reason: format!(
+                    "{} record has invalid schema_version {version} (expected >= 1)",
+                    Self::DOMAIN
+                ),
+                source: None,
             });
         }
 
@@ -151,6 +177,7 @@ pub trait SchemaMigration {
                         "{} migration list is non-contiguous at index {idx}",
                         Self::DOMAIN
                     ),
+                    source: None,
                 });
             }
             step(value)?;
@@ -164,6 +191,7 @@ pub trait SchemaMigration {
                     "{} record is not a JSON object; cannot stamp schema_version",
                     Self::DOMAIN
                 ),
+                source: None,
             })?;
             obj.insert("schema_version".to_string(), serde_json::json!(current));
         }
@@ -177,6 +205,7 @@ pub trait SchemaMigration {
                     Self::DOMAIN,
                     Self::CURRENT_VERSION
                 ),
+                source: None,
             });
         }
 
@@ -389,6 +418,21 @@ mod tests {
         assert_eq!(err.from_version, 99);
         assert_eq!(err.to_version, 3);
         assert!(err.reason.contains("newer than current"));
+    }
+
+    #[test]
+    fn migrate_rejects_version_zero_with_explicit_error() {
+        use std::error::Error;
+
+        // A v0 record (invalid input, e.g. missing schema_version
+        // defaulted to 0) must be blamed as such — not as a
+        // "non-contiguous migration list" or a "migrated to v0" mismatch.
+        let mut value = serde_json::json!({ "id": "abc" });
+        let err = TestThreadMigration::migrate(&mut value, 0).expect_err("must reject");
+        assert_eq!(err.from_version, 0);
+        assert!(err.reason.contains("invalid schema_version 0"));
+        assert!(err.reason.contains("test_thread"));
+        assert!(err.source().is_none());
     }
 
     #[test]

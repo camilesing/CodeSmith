@@ -216,9 +216,9 @@ impl McpManager {
         for existing in self.configs.keys() {
             if sanitize_component(existing) == sanitized {
                 anyhow::bail!(
-                    "MCP server name '{}/{}' collides with '{}' after sanitization                      (both qualify to mcp__{}__*); rename one of them",
+                    "MCP server name '{}' collides with '{}' after sanitization \
+                     (both qualify to mcp__{}__*); rename one of them",
                     config.name,
-                    "",
                     existing,
                     sanitized
                 );
@@ -232,6 +232,9 @@ impl McpManager {
     /// Start all registered servers, emitting status updates via the callback.
     ///
     /// Returns a summary of which servers are ready, failed, or cancelled.
+    /// Servers are visited in name order (HashMap iteration is randomly
+    /// seeded), so both the event stream and the summary are reproducible
+    /// across runs.
     pub fn start_all<F>(&self, mut emit: F) -> McpStartupCompleteEvent
     where
         F: FnMut(McpStartupUpdateEvent),
@@ -239,42 +242,42 @@ impl McpManager {
         let mut ready = Vec::new();
         let mut failed = Vec::new();
         let mut cancelled = Vec::new();
-        for (server_name, (cfg, _)) in &self.configs {
+        let mut names: Vec<&str> = self.configs.keys().map(String::as_str).collect();
+        names.sort();
+        for server_name in names {
+            let (cfg, _) = &self.configs[server_name];
             if !cfg.enabled {
                 emit(McpStartupUpdateEvent {
-                    server_name: server_name.clone(),
+                    server_name: server_name.to_string(),
                     status: McpStartupStatus::Cancelled,
                 });
-                cancelled.push(server_name.clone());
+                cancelled.push(server_name.to_string());
                 continue;
             }
             emit(McpStartupUpdateEvent {
-                server_name: server_name.clone(),
+                server_name: server_name.to_string(),
                 status: McpStartupStatus::Starting,
             });
             if self.clients.contains_key(server_name) {
                 emit(McpStartupUpdateEvent {
-                    server_name: server_name.clone(),
+                    server_name: server_name.to_string(),
                     status: McpStartupStatus::Ready,
                 });
-                ready.push(server_name.clone());
+                ready.push(server_name.to_string());
             } else {
                 let error = "client not registered".to_string();
                 emit(McpStartupUpdateEvent {
-                    server_name: server_name.clone(),
+                    server_name: server_name.to_string(),
                     status: McpStartupStatus::Failed {
                         error: error.clone(),
                     },
                 });
                 failed.push(McpStartupFailure {
-                    server_name: server_name.clone(),
+                    server_name: server_name.to_string(),
                     error,
                 });
             }
         }
-        ready.sort();
-        failed.sort_by(|a, b| a.server_name.cmp(&b.server_name));
-        cancelled.sort();
         McpStartupCompleteEvent {
             ready,
             failed,
@@ -1205,6 +1208,49 @@ mod tests {
         let summary = manager.start_all(|_| {});
         assert!(summary.ready.is_empty());
         assert_eq!(summary.cancelled, vec!["s1"]);
+    }
+
+    #[test]
+    fn manager_start_all_emits_events_in_name_order() {
+        // HashMap iteration is randomly seeded; the event stream must not
+        // inherit that non-determinism.
+        let mut manager = McpManager::default();
+        for name in ["srv_b", "srv_a"] {
+            manager
+                .register_server(
+                    make_server_config(name),
+                    ToolFilter::default(),
+                    Box::new(InMemoryMcpClient::default()),
+                )
+                .unwrap();
+        }
+        let mut events = Vec::new();
+        manager.start_all(|event| events.push(event));
+        let order: Vec<&str> = events.iter().map(|e| e.server_name.as_str()).collect();
+        assert_eq!(order, vec!["srv_a", "srv_a", "srv_b", "srv_b"]);
+    }
+
+    #[test]
+    fn manager_register_server_rejects_duplicate_name() {
+        // A duplicate (exact or sanitized-equal) name must not silently
+        // repoint the live server's client.
+        let mut manager = McpManager::default();
+        manager
+            .register_server(
+                make_server_config("s1"),
+                ToolFilter::default(),
+                Box::new(InMemoryMcpClient::default()),
+            )
+            .unwrap();
+        let err = manager
+            .register_server(
+                make_server_config("s1"),
+                ToolFilter::default(),
+                Box::new(InMemoryMcpClient::default()),
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("collides"), "{err:#}");
+        assert_eq!(manager.configs.len(), 1);
     }
 
     #[test]

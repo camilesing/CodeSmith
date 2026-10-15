@@ -29,10 +29,10 @@ use crate::models::{MessageRequest, MessageResponse, StreamEvent};
 use crate::retry::RetryPolicy;
 use anyhow::Result;
 use std::future::Future;
+use std::hash::{BuildHasher, RandomState};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use uuid::Uuid;
 
 // === LlmClient Trait ===
 
@@ -503,10 +503,12 @@ impl RetryConfig {
         let final_delay = if self.jitter {
             // Add random jitter to prevent thundering herd problem
             let jitter_range = capped_delay * self.jitter_factor;
-            // Use UUID v4 entropy for jitter randomness.
-            let bytes = *Uuid::new_v4().as_bytes();
-            let sample = u16::from_le_bytes([bytes[0], bytes[1]]);
-            let random_factor = f64::from(sample) / f64::from(u16::MAX); // 0.0 to 1.0
+            // Std-only jitter source: each `RandomState` draws fresh
+            // OS-seeded keys, so hashing a fixed value yields an
+            // unpredictable u64 without a `rand` dependency (this crate
+            // deliberately keeps its RNG footprint std-only).
+            let sample = RandomState::new().hash_one(0u8);
+            let random_factor = f64::from((sample % 65_536) as u16) / f64::from(u16::MAX); // 0.0 to 1.0
             let jitter = jitter_range * (2.0 * random_factor - 1.0); // -range to +range
 
             (capped_delay + jitter).max(0.0)

@@ -8,6 +8,11 @@ categories = ["development-tools"]
 license.workspace = true
 repository.workspace = true
 description = "Extension runtime: discovery, loading, event dispatch, stale-context guard for CodeSmith extensions"
+# Packaging hygiene: the path-only dev-dependency on the unpublished
+# `extensions-fixture-dylib` is stripped from the packaged manifest by
+# modern Cargo, but without an allow-list any fixture data or generated
+# artifacts that later land in this directory would be packaged on publish.
+include = ["src/**", "Cargo.toml", "build.rs"]
 
 [dependencies]
 anyhow.workspace = true

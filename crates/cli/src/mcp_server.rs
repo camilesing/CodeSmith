@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -74,6 +74,45 @@ pub fn run_mcp_server(workspace: PathBuf) -> Result<()> {
     server.run()
 }
 
+/// A retained conversation thread plus its recency, for bounded eviction.
+struct ThreadEntry {
+    messages: Vec<Message>,
+    last_used: Instant,
+}
+
+/// Upper bound on retained conversation threads. Threads are in-memory
+/// only and replies only grow them, so without a cap a long-running
+/// server accumulates every conversation indefinitely; beyond the cap
+/// the least-recently-used thread is evicted before a new conversation
+/// is inserted.
+const MAX_THREADS: usize = 64;
+
+/// LLM backend for the codesmith/codesmith-reply tools, resolved lazily
+/// on first use and reused afterwards: resolving per call re-read the
+/// config from disk and rebuilt the HTTP client on every request, and
+/// silently picked up mid-session config changes.
+struct LlmBackend {
+    client: crate::llm_client::LlmClientHandle,
+    /// Model used when a call does not override it — the loaded config's
+    /// default, not a hardcoded id.
+    default_model: String,
+}
+
+fn resolve_llm_backend() -> Result<LlmBackend, RpcError> {
+    let config = Config::load(None, None).map_err(|e| RpcError {
+        code: -32000,
+        message: format!("Failed to load config: {e}"),
+    })?;
+    let client = crate::core::engine::resolve_llm_client(&config).map_err(|e| RpcError {
+        code: -32000,
+        message: format!("Failed to create LLM client: {e}"),
+    })?;
+    Ok(LlmBackend {
+        client,
+        default_model: config.default_model(),
+    })
+}
+
 struct McpServer {
     workspace: PathBuf,
     registry: crate::tools::ToolRegistry,
@@ -81,9 +120,11 @@ struct McpServer {
     require_approval: bool,
     /// Thread-based conversation state for codesmith/codesmith-reply tools.
     /// Maps thread_id -> ordered list of messages in the conversation.
-    threads: Arc<Mutex<HashMap<String, Vec<Message>>>>,
+    threads: HashMap<String, ThreadEntry>,
     /// Monotonic request counter for notification correlation.
     next_notification_id: u64,
+    /// See [`LlmBackend`]; resolved on the first codesmith call.
+    llm: Option<LlmBackend>,
 }
 
 impl McpServer {
@@ -113,8 +154,9 @@ impl McpServer {
             registry,
             exposed_tools,
             require_approval: settings.require_approval,
-            threads: Arc::new(Mutex::new(HashMap::new())),
+            threads: HashMap::new(),
             next_notification_id: 0,
+            llm: None,
         })
     }
 
@@ -129,8 +171,22 @@ impl McpServer {
             if trimmed.is_empty() {
                 continue;
             }
-            let Ok(message) = serde_json::from_str::<Value>(trimmed) else {
-                continue;
+            let message = match serde_json::from_str::<Value>(trimmed) {
+                Ok(message) => message,
+                Err(_) => {
+                    // Unparseable input must not vanish silently:
+                    // JSON-RPC requires a -32700 Parse error response so
+                    // the peer can detect the protocol violation.
+                    let response = json!({
+                        "jsonrpc": "2.0",
+                        "id": null,
+                        "error": { "code": -32700, "message": "Parse error" }
+                    });
+                    let payload = serde_json::to_string(&response)?;
+                    writeln!(stdout, "{payload}")?;
+                    stdout.flush()?;
+                    continue;
+                }
             };
 
             if let Some(response) = self.handle_message(&runtime, message) {
@@ -144,8 +200,20 @@ impl McpServer {
     }
 
     fn handle_message(&mut self, runtime: &Runtime, message: Value) -> Option<Value> {
-        let method = message.get("method").and_then(Value::as_str)?;
         let id = message.get("id").cloned();
+        let Some(method) = message.get("method").and_then(Value::as_str) else {
+            // A missing or non-string "method" is an Invalid Request per
+            // JSON-RPC 2.0; respond (with null id when absent) instead of
+            // letting the peer's request vanish.
+            return Some(json!({
+                "jsonrpc": "2.0",
+                "id": id.unwrap_or(Value::Null),
+                "error": {
+                    "code": -32600,
+                    "message": "Invalid Request: missing or non-string method"
+                }
+            }));
+        };
 
         match method {
             "initialize" => respond(id.as_ref(), initialize_response()),
@@ -185,7 +253,7 @@ impl McpServer {
                                 },
                                 "model": {
                                     "type": "string",
-                                    "description": "Optional model identifier (default: deepseek-v4-pro)"
+                                    "description": "Optional model identifier (defaults to the configured default model)"
                                 },
                                 "cwd": {
                                     "type": "string",
@@ -346,7 +414,14 @@ impl McpServer {
         let model = arguments
             .get("model")
             .and_then(Value::as_str)
-            .unwrap_or("deepseek-v4-pro");
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                self.llm
+                    .as_ref()
+                    .expect("backend resolved above")
+                    .default_model
+                    .clone()
+            });
 
         // Resolve thread_id
         let thread_id = if internal_name == "codesmith" {
@@ -363,15 +438,17 @@ impl McpServer {
                 .to_string()
         };
 
-        // Load config and create client
-        let config = Config::load(None, None).map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Failed to load config: {e}"),
-        })?;
-        let client = crate::core::engine::resolve_llm_client(&config).map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Failed to create LLM client: {e}"),
-        })?;
+        // Resolve config/client once and reuse across calls (see
+        // [`LlmBackend`]).
+        if self.llm.is_none() {
+            self.llm = Some(resolve_llm_backend()?);
+        }
+        let client = self
+            .llm
+            .as_ref()
+            .expect("backend resolved above")
+            .client
+            .clone();
 
         // Build message list
         let user_message = Message {
@@ -385,18 +462,19 @@ impl McpServer {
         let messages = if internal_name == "codesmith" {
             vec![user_message]
         } else {
-            let thread = self.threads.lock().unwrap();
-            let mut existing = thread.get(&thread_id).cloned().ok_or_else(|| RpcError {
+            let thread = self.threads.get_mut(&thread_id).ok_or_else(|| RpcError {
                 code: -32602,
                 message: format!("Thread not found: {thread_id}"),
             })?;
+            thread.last_used = Instant::now();
+            let mut existing = thread.messages.clone();
             existing.push(user_message);
             existing
         };
 
         // Send the API request (non-streaming for the basic version)
         let request = MessageRequest {
-            model: model.to_string(),
+            model,
             messages: messages.clone(),
             max_tokens: 16384,
             system: None,
@@ -435,21 +513,32 @@ impl McpServer {
 
         // Store the assistant response in the thread
         {
-            let mut thread = self.threads.lock().unwrap();
-            let convo = thread.entry(thread_id.clone()).or_default();
+            // Bound memory: evict least-recently-used threads beyond the
+            // cap before inserting a new conversation.
+            if internal_name == "codesmith" && self.threads.len() >= MAX_THREADS {
+                evict_lru_thread(&mut self.threads);
+            }
+            let convo = self
+                .threads
+                .entry(thread_id.clone())
+                .or_insert(ThreadEntry {
+                    messages: Vec::new(),
+                    last_used: Instant::now(),
+                });
+            convo.last_used = Instant::now();
             // The user turn is persisted for BOTH paths — for
             // `codesmith-reply` the cloned request messages got it but the
             // stored thread did not, so later replies on the same thread
             // replayed two consecutive assistant messages and a lost user
             // turn.
-            convo.push(Message {
+            convo.messages.push(Message {
                 role: "user".to_string(),
                 content: vec![ContentBlock::Text {
                     text: prompt.to_string(),
                     cache_control: None,
                 }],
             });
-            convo.push(Message {
+            convo.messages.push(Message {
                 role: "assistant".to_string(),
                 content: vec![ContentBlock::Text {
                     text: response_text.clone(),
@@ -482,8 +571,12 @@ impl McpServer {
         });
         if let Ok(payload) = serde_json::to_string(&notification) {
             let mut stdout = io::stdout();
-            let _ = writeln!(stdout, "{payload}");
-            let _ = stdout.flush();
+            // stdout is the protocol stream: a dropped notification must
+            // not be silent, so surface write/flush failures on stderr
+            // instead of discarding them.
+            if let Err(err) = writeln!(stdout, "{payload}").and_then(|_| stdout.flush()) {
+                eprintln!("failed to write MCP notification: {err}");
+            }
         }
 
         Ok(json!({
@@ -503,6 +596,19 @@ impl McpServer {
 
 fn default_config_path() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".codesmith").join("mcp_server.toml"))
+}
+
+/// Drop the least-recently-used thread to make room under
+/// [`MAX_THREADS`].
+fn evict_lru_thread(threads: &mut HashMap<String, ThreadEntry>) {
+    let Some(lru_id) = threads
+        .iter()
+        .min_by_key(|(_, entry)| entry.last_used)
+        .map(|(id, _)| id.clone())
+    else {
+        return;
+    };
+    threads.remove(&lru_id);
 }
 
 /// Whether `name` (an exposed/public tool name) was approved out-of-band by
@@ -668,6 +774,26 @@ mod tests {
             )
             .expect("out-of-band approved tool must execute");
         assert_eq!(result["isError"], json!(false));
+    }
+
+    #[test]
+    fn message_without_method_gets_invalid_request_error() {
+        let (mut server, runtime, _dir) = approval_server(false);
+        let response = server
+            .handle_message(&runtime, json!({ "id": 7 }))
+            .expect("an invalid request must produce a response, not silence");
+        assert_eq!(response["id"], json!(7));
+        assert_eq!(response["error"]["code"], json!(-32600));
+    }
+
+    #[test]
+    fn message_without_id_and_method_gets_null_id_error() {
+        let (mut server, runtime, _dir) = approval_server(false);
+        let response = server
+            .handle_message(&runtime, json!({ "params": {} }))
+            .expect("an invalid request must produce a response, not silence");
+        assert_eq!(response["id"], json!(null));
+        assert_eq!(response["error"]["code"], json!(-32600));
     }
 
     #[test]

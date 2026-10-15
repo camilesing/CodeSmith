@@ -230,9 +230,26 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     })?;
     // Use parent directory so the rename is on the same filesystem.
     let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    // `NamedTempFile` is created 0600 on Unix, so persisting over an existing
+    // target would silently reset its permissions (a 0644 file drifts to 0600
+    // after one atomic write). Copy the target's mode onto the temp file
+    // before the rename; a missing target keeps the default 0600.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(path) {
+            let _ = tmp
+                .as_file()
+                .set_permissions(std::fs::Permissions::from_mode(
+                    meta.permissions().mode() & 0o7777,
+                ));
+        }
+    }
     std::io::Write::write_all(&mut tmp, contents)?;
     tmp.as_file().sync_all()?;
     tmp.persist(path)?;
+    // Make the rename itself durable (best-effort where dir fsync is
+    // unsupported).
     if let Ok(dir) = std::fs::File::open(parent) {
         let _ = dir.sync_all();
     }
@@ -537,7 +554,14 @@ pub fn url_encode(input: &str) -> String {
                 encoded.push(ch as char)
             }
             b' ' => encoded.push('+'),
-            _ => encoded.push_str(&format!("%{ch:02X}")),
+            // Only ever two uppercase hex digits — push them directly
+            // instead of allocating a fresh `String` per encoded byte.
+            _ => {
+                const HEX: &[u8; 16] = b"0123456789ABCDEF";
+                encoded.push('%');
+                encoded.push(HEX[(ch >> 4) as usize] as char);
+                encoded.push(HEX[(ch & 0xF) as usize] as char);
+            }
         }
     }
     encoded
@@ -1022,6 +1046,23 @@ mod atomic_write_tests {
         let content = fs::read_to_string(&path).expect("read");
         assert_eq!(content, "line 1\nline 2\n");
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_preserves_existing_file_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempdir().expect("tempdir");
+        let path = tmp.path().join("existing-mode.json");
+        fs::write(&path, b"old").expect("write old");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("chmod 0644");
+        write_atomic(&path, b"new").expect("write_atomic");
+        let mode = fs::metadata(&path).expect("metadata").permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o644,
+            "repeated writes must not drift permissions"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1298,6 +1339,7 @@ mod project_mapping_tests {
     // ===================================================================
 
     #[test]
+    #[ignore = "spawns the real system browser opener; run explicitly"]
     fn open_url_does_not_panic_on_valid_url() {
         // We can't open a browser in CI, but we can verify the function
         // doesn't panic and returns a Result (either Ok or Err with a

@@ -101,23 +101,34 @@ pub fn apply_to_config(config: &mut Config, definition: &PresetDefinitionToml) -
         }
     }
 
-    let index = config.index.get_or_insert_with(Default::default);
-    fill_bool(&mut index.enabled, definition.index_enabled, &mut deviated);
+    // Only materialize a config section when the preset actually defines
+    // one of its keys: `get_or_insert_with(Default::default)` on an unset
+    // section would turn `None` into `Some(empty)`, leaking empty tables
+    // into a re-persisted config.toml and defeating `is_some()`-based
+    // "did the user configure this?" checks.
+    if definition.index_enabled.is_some() {
+        let index = config.index.get_or_insert_with(Default::default);
+        fill_bool(&mut index.enabled, definition.index_enabled, &mut deviated);
+    }
 
-    let lsp = config.lsp.get_or_insert_with(Default::default);
-    fill_bool(&mut lsp.enabled, definition.lsp_enabled, &mut deviated);
-    fill_bool(
-        &mut lsp.include_warnings,
-        definition.lsp_include_warnings,
-        &mut deviated,
-    );
+    if definition.lsp_enabled.is_some() || definition.lsp_include_warnings.is_some() {
+        let lsp = config.lsp.get_or_insert_with(Default::default);
+        fill_bool(&mut lsp.enabled, definition.lsp_enabled, &mut deviated);
+        fill_bool(
+            &mut lsp.include_warnings,
+            definition.lsp_include_warnings,
+            &mut deviated,
+        );
+    }
 
-    let snapshots = config.snapshots.get_or_insert_with(Default::default);
-    fill_bool(
-        &mut snapshots.enabled,
-        definition.snapshots_enabled,
-        &mut deviated,
-    );
+    if definition.snapshots_enabled.is_some() {
+        let snapshots = config.snapshots.get_or_insert_with(Default::default);
+        fill_bool(
+            &mut snapshots.enabled,
+            definition.snapshots_enabled,
+            &mut deviated,
+        );
+    }
 
     // Resolve BOTH preset-side memory sources into one desired value
     // first (explicit keys override the derived level): feeding them
@@ -125,15 +136,22 @@ pub fn apply_to_config(config: &mut Config, definition: &PresetDefinitionToml) -
     // `memory_level` and `memory_kod_enabled` compare its own two keys
     // against each other, spuriously flagging `deviated` (mislabeling the
     // tier as diy) and letting the level silently win.
-    let derived = definition
-        .memory_level
-        .as_deref()
-        .and_then(MemoryLevel::from_setting)
-        .map(|parsed| match parsed {
-            MemoryLevel::Goldfish => (Some(false), Some(false)),
-            MemoryLevel::Notebook => (Some(true), Some(false)),
-            MemoryLevel::Elephant => (Some(true), Some(true)),
-        });
+    let derived = match definition.memory_level.as_deref() {
+        Some(level) => match MemoryLevel::from_setting(level) {
+            Some(parsed) => Some(match parsed {
+                MemoryLevel::Goldfish => (Some(false), Some(false)),
+                MemoryLevel::Notebook => (Some(true), Some(false)),
+                MemoryLevel::Elephant => (Some(true), Some(true)),
+            }),
+            None => {
+                // Same visibility as the other misconfiguration paths in
+                // this module (canonicalize/catalog warnings).
+                tracing::warn!(memory_level = %level, "invalid memory_level in preset; ignoring");
+                None
+            }
+        },
+        None => None,
+    };
     let (want_enabled, want_kod) = match derived {
         Some((enabled, kod)) => (
             definition.memory_enabled.or(enabled),
@@ -158,29 +176,37 @@ pub fn apply_to_config(config: &mut Config, definition: &PresetDefinitionToml) -
         &mut deviated,
     );
 
-    let capacity = config.capacity.get_or_insert_with(Default::default);
-    fill_bool(
-        &mut capacity.enabled,
-        definition.capacity_enabled,
-        &mut deviated,
-    );
+    if definition.capacity_enabled.is_some() {
+        let capacity = config.capacity.get_or_insert_with(Default::default);
+        fill_bool(
+            &mut capacity.enabled,
+            definition.capacity_enabled,
+            &mut deviated,
+        );
+    }
 
-    let auto = config.auto.get_or_insert_with(Default::default);
-    fill_bool(
-        &mut auto.cost_saving,
-        definition.auto_cost_saving,
-        &mut deviated,
-    );
+    if definition.auto_cost_saving.is_some() {
+        let auto = config.auto.get_or_insert_with(Default::default);
+        fill_bool(
+            &mut auto.cost_saving,
+            definition.auto_cost_saving,
+            &mut deviated,
+        );
+    }
 
-    let update = config.update.get_or_insert_with(Default::default);
-    fill_bool(
-        &mut update.check_for_updates,
-        definition.update_check,
-        &mut deviated,
-    );
+    if definition.update_check.is_some() {
+        let update = config.update.get_or_insert_with(Default::default);
+        fill_bool(
+            &mut update.check_for_updates,
+            definition.update_check,
+            &mut deviated,
+        );
+    }
 
-    let network = config.network.get_or_insert_with(Default::default);
-    fill_bool(&mut network.audit, definition.network_audit, &mut deviated);
+    if definition.network_audit.is_some() {
+        let network = config.network.get_or_insert_with(Default::default);
+        fill_bool(&mut network.audit, definition.network_audit, &mut deviated);
+    }
 
     fill_bool(
         &mut config.strict_tool_mode,
@@ -267,9 +293,20 @@ fn fold(config: &mut Config, loaded: codesmith_config::presets::LoadedPreset) ->
 /// The preset persisted by the last `/preset <name>` command (if any),
 /// for startup selection when neither the CLI nor config.toml chose one.
 pub fn persisted_selection() -> Option<String> {
-    crate::settings::Settings::load()
-        .ok()
-        .and_then(|settings| settings.active_preset)
+    let settings = match crate::settings::Settings::load() {
+        Ok(settings) => settings,
+        Err(err) => {
+            // A corrupt or unreadable settings file silently reset the
+            // persisted selection before; warn so the reset is visible.
+            tracing::warn!(
+                %err,
+                "could not load settings; persisted preset selection falls back to the default tier"
+            );
+            return None;
+        }
+    };
+    settings
+        .active_preset
         .map(|name| name.trim().to_string())
         .filter(|name| !name.is_empty())
 }
@@ -288,10 +325,17 @@ pub fn export_definition(
     let mut definition = base.cloned().unwrap_or_default();
     definition.name = Some(name.to_string());
     definition.app_mode = Some(app_mode.to_string());
-    definition.tools = Some(PresetToolsToml {
-        include: allowed_tools.map(<[String]>::to_vec),
-        exclude: blocked_tools.map(<[String]>::to_vec),
-    });
+    // Only overwrite the tool lists that have live values, and keep the
+    // base's `tools` untouched when neither is provided: unconditionally
+    // writing `Some(..)` discarded the active preset's include/exclude
+    // restrictions whenever the session tracked no tool lists.
+    if allowed_tools.is_some() || blocked_tools.is_some() {
+        let base_tools = definition.tools.take().unwrap_or_default();
+        definition.tools = Some(PresetToolsToml {
+            include: allowed_tools.map(<[String]>::to_vec).or(base_tools.include),
+            exclude: blocked_tools.map(<[String]>::to_vec).or(base_tools.exclude),
+        });
+    }
     definition
 }
 
@@ -340,6 +384,45 @@ pub fn describe(catalog: &PresetCatalog, active: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn export_definition_without_live_tool_lists_keeps_base_tools() {
+        let mut base = PresetDefinitionToml {
+            name: Some("all".to_string()),
+            ..PresetDefinitionToml::default()
+        };
+        base.tools = Some(PresetToolsToml {
+            include: Some(vec!["read_file".to_string()]),
+            exclude: Some(vec!["exec_shell".to_string()]),
+        });
+
+        let exported = export_definition(Some(&base), "agent", None, None, "snapshot");
+
+        // The base's restrictions survive when the session tracked no
+        // tool lists — the user still relies on them.
+        assert_eq!(
+            exported.tools, base.tools,
+            "export must not discard the base preset's tool lists"
+        );
+    }
+
+    #[test]
+    fn apply_to_config_does_not_materialize_unused_sections() {
+        let mut config = Config::default();
+        let definition = PresetDefinitionToml::default();
+
+        assert!(!apply_to_config(&mut config, &definition));
+        // Fill-if-unset must not conjure `Some(empty)` sections for keys
+        // neither the preset nor the user defines.
+        assert!(config.index.is_none());
+        assert!(config.lsp.is_none());
+        assert!(config.snapshots.is_none());
+        assert!(config.memory.is_none());
+        assert!(config.capacity.is_none());
+        assert!(config.auto.is_none());
+        assert!(config.update.is_none());
+        assert!(config.network.is_none());
+    }
 
     #[test]
     fn export_definition_overlays_live_dials_on_the_active_base() {
