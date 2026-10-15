@@ -8,8 +8,14 @@ use std::time::Instant;
 
 use crate::models::{ContentBlock, Message};
 
-/// Tool names whose results can be micro-compacted (content cleared).
-const MICRO_COMPACT_TOOL_NAMES: &[&str] = &[
+// Tool names whose results can be micro-compacted (content cleared).
+// The knobs below moved to the scriptable policy seam in 0.11.0 (builtin
+// `compact-policy` mod → `register_policy("compact-policy", #{...})`,
+// pre-0.11.0 values as compiled fallbacks). The engine (what to keep,
+// ordering, retries) stays here.
+
+/// Compiled fallback for the compactable-tool list (see `policy_read`).
+const DEFAULT_MICRO_COMPACT_TOOL_NAMES: &[&str] = &[
     "file_read",
     "exec_shell",
     "exec_shell_wait",
@@ -23,12 +29,49 @@ const MICRO_COMPACT_TOOL_NAMES: &[&str] = &[
     "edit_file",
 ];
 
-/// Placeholder text replacing cleared tool results.
-const CLEARED_PLACEHOLDER: &str = "[tool result cleared for context economy]";
+/// Compiled fallback for the placeholder text.
+const DEFAULT_CLEARED_PLACEHOLDER: &str = "[tool result cleared for context economy]";
+/// Compiled fallback for the time trigger (60-minute threshold).
+const DEFAULT_TIME_TRIGGER_GAP_SECS: u64 = 3600;
 
-/// Minimum time gap (seconds) since last assistant message to trigger
-/// time-based micro-compaction. Matches TS's 60-minute threshold.
-const TIME_TRIGGER_GAP_SECS: u64 = 3600;
+/// The effective compact-policy knobs (published policy → compiled
+/// fallbacks). Cached per call — callers read fields directly.
+pub(crate) fn policy_read() -> CompactPolicyKnobs {
+    CompactPolicyKnobs {
+        cache_trigger_threshold: codesmith_agent::policy::policy_usize(
+            codesmith_agent::policy::PolicyKind::CompactPolicy,
+            "cache_trigger_threshold",
+            32 * 1024,
+            10 * 1024 * 1024,
+        ),
+        time_trigger_gap_secs: codesmith_agent::policy::policy_usize(
+            codesmith_agent::policy::PolicyKind::CompactPolicy,
+            "time_trigger_gap_secs",
+            DEFAULT_TIME_TRIGGER_GAP_SECS as usize,
+            30 * 24 * 3600,
+        ) as u64,
+        micro_compactable_tools: codesmith_agent::policy::policy_string_list(
+            codesmith_agent::policy::PolicyKind::CompactPolicy,
+            "micro_compactable_tools",
+            DEFAULT_MICRO_COMPACT_TOOL_NAMES,
+            64,
+        ),
+        cleared_placeholder: codesmith_agent::policy::policy_string(
+            codesmith_agent::policy::PolicyKind::CompactPolicy,
+            "cleared_placeholder",
+            DEFAULT_CLEARED_PLACEHOLDER,
+            512,
+        ),
+    }
+}
+
+/// The compact-policy knobs (see `policy_read`).
+pub(crate) struct CompactPolicyKnobs {
+    pub cache_trigger_threshold: usize,
+    pub time_trigger_gap_secs: u64,
+    pub micro_compactable_tools: Vec<String>,
+    pub cleared_placeholder: String,
+}
 
 /// Per-session micro-compaction state.
 #[derive(Debug, Clone)]
@@ -47,16 +90,19 @@ impl Default for MicroCompactState {
         Self {
             last_assistant_message_at: None,
             bytes_cleared: 0,
-            // Default threshold: clear when accumulated tool results exceed 32KB.
-            // This is a conservative starting point; can be tuned per model.
-            cache_trigger_threshold: 32 * 1024,
+            // Policy-seeded default (builtin compact-policy mod; the
+            // compiled fallback matches — see policy_read).
+            cache_trigger_threshold: policy_read().cache_trigger_threshold,
         }
     }
 }
 
 /// Check whether a tool name is micro-compactable.
 pub fn is_micro_compactable_tool(name: &str) -> bool {
-    MICRO_COMPACT_TOOL_NAMES.contains(&name)
+    policy_read()
+        .micro_compactable_tools
+        .iter()
+        .any(|t| t == name)
 }
 
 /// Determine whether micro-compaction should be triggered.
@@ -77,7 +123,7 @@ pub fn should_trigger_micro_compact(
 
     // Time trigger: large gap since last assistant message means cache is stale.
     if let Some(last_at) = state.last_assistant_message_at
-        && last_at.elapsed().as_secs() >= TIME_TRIGGER_GAP_SECS
+        && last_at.elapsed().as_secs() >= policy_read().time_trigger_gap_secs
     {
         return true;
     }
@@ -161,6 +207,7 @@ fn collect_tool_use_names(messages: &[Message]) -> std::collections::HashMap<Str
 /// Returns the number of bytes cleared.
 pub fn micro_compact_messages(messages: &mut [Message], state: &mut MicroCompactState) -> usize {
     let tool_use_names = collect_tool_use_names(messages);
+    let knobs = policy_read();
     let _total_bytes_cleared: usize = 0;
     let mut bytes_cleared = 0usize;
 
@@ -180,17 +227,17 @@ pub fn micro_compact_messages(messages: &mut [Message], state: &mut MicroCompact
                     continue;
                 }
                 // Don't clear already-cleared results
-                if content == CLEARED_PLACEHOLDER {
+                if *content == knobs.cleared_placeholder {
                     continue;
                 }
 
                 let original_len = content.len();
-                if original_len <= CLEARED_PLACEHOLDER.len() {
+                if original_len <= knobs.cleared_placeholder.len() {
                     continue; // Too small to benefit from clearing
                 }
 
-                bytes_cleared += original_len.saturating_sub(CLEARED_PLACEHOLDER.len());
-                *content = CLEARED_PLACEHOLDER.to_string();
+                bytes_cleared += original_len.saturating_sub(knobs.cleared_placeholder.len());
+                *content = knobs.cleared_placeholder.clone();
                 *content_blocks = None;
             }
         }
@@ -203,6 +250,16 @@ pub fn micro_compact_messages(messages: &mut [Message], state: &mut MicroCompact
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The policy snapshot is process-global; tests in this module
+    /// serialize through this guard (publish/assert/clear as one section).
+    fn policy_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        match LOCK.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
     use serde_json::json;
 
     fn msg(role: &str, text: &str) -> Message {
@@ -241,6 +298,7 @@ mod tests {
 
     #[test]
     fn is_micro_compactable_tool_matches_known_tools() {
+        let _guard = policy_test_lock();
         assert!(is_micro_compactable_tool("file_read"));
         assert!(is_micro_compactable_tool("exec_shell"));
         assert!(is_micro_compactable_tool("grep"));
@@ -253,6 +311,7 @@ mod tests {
 
     #[test]
     fn should_trigger_returns_false_for_subagent() {
+        let _guard = policy_test_lock();
         let state = MicroCompactState::default();
         let messages = vec![msg("user", "test")];
         assert!(!should_trigger_micro_compact(&messages, &state, true));
@@ -260,15 +319,16 @@ mod tests {
 
     #[test]
     fn should_trigger_time_based() {
+        let _guard = policy_test_lock();
         let mut state = MicroCompactState::default();
         // Simulate 61 minutes since last assistant message. Subtracting a
         // large duration from `Instant::now()` panics when the monotonic
         // clock is younger than that gap — freshly booted CI VMs (Windows
         // runners boot per job) hit exactly this — so skip when
         // unrepresentable instead of panicking.
-        let Some(stale_at) =
-            Instant::now().checked_sub(std::time::Duration::from_secs(TIME_TRIGGER_GAP_SECS + 60))
-        else {
+        let Some(stale_at) = Instant::now().checked_sub(std::time::Duration::from_secs(
+            DEFAULT_TIME_TRIGGER_GAP_SECS + 60,
+        )) else {
             eprintln!("monotonic clock younger than simulated gap; skipping");
             return;
         };
@@ -279,6 +339,7 @@ mod tests {
 
     #[test]
     fn micro_compact_clears_compactable_tool_results() {
+        let _guard = policy_test_lock();
         let mut messages = vec![
             tool_use_msg("call-1", "file_read", json!({"path": "Cargo.toml"})),
             tool_result_msg("call-1", &"x".repeat(500)),
@@ -293,11 +354,12 @@ mod tests {
         let ContentBlock::ToolResult { content, .. } = &messages[1].content[0] else {
             panic!("expected tool result");
         };
-        assert_eq!(content, CLEARED_PLACEHOLDER);
+        assert_eq!(content, DEFAULT_CLEARED_PLACEHOLDER);
     }
 
     #[test]
     fn micro_compact_preserves_non_compactable_results() {
+        let _guard = policy_test_lock();
         let mut messages = vec![
             tool_use_msg("call-1", "agent_open", json!({"prompt": "test"})),
             tool_result_msg("call-1", "agent response content"),
@@ -316,6 +378,7 @@ mod tests {
 
     #[test]
     fn micro_compact_skips_small_results() {
+        let _guard = policy_test_lock();
         let mut messages = vec![
             tool_use_msg("call-1", "file_read", json!({"path": "a.rs"})),
             tool_result_msg("call-1", "ok"), // shorter than placeholder
@@ -329,14 +392,67 @@ mod tests {
 
     #[test]
     fn micro_compact_skips_already_cleared() {
+        let _guard = policy_test_lock();
         let mut messages = vec![
             tool_use_msg("call-1", "file_read", json!({"path": "a.rs"})),
-            tool_result_msg("call-1", CLEARED_PLACEHOLDER),
+            tool_result_msg("call-1", DEFAULT_CLEARED_PLACEHOLDER),
             msg("user", "question"),
         ];
         let mut state = MicroCompactState::default();
 
         let cleared = micro_compact_messages(&mut messages, &mut state);
         assert_eq!(cleared, 0);
+    }
+
+    #[test]
+    fn policy_override_changes_placeholder_and_tool_set() {
+        let _guard = policy_test_lock();
+        // Publish an override, assert behavior follows, clear (the
+        // snapshot is process-global — restore for the other tests).
+        use codesmith_agent::policy::{PolicyKind, clear_published_policies, publish_policies};
+        use std::collections::HashMap;
+        let mut set = HashMap::new();
+        set.insert(
+            PolicyKind::CompactPolicy,
+            serde_json::json!({
+                "cache_trigger_threshold": 1,
+                "micro_compactable_tools": ["custom_tool"],
+                "cleared_placeholder": "[gone]",
+            }),
+        );
+        publish_policies(set);
+
+        assert!(is_micro_compactable_tool("custom_tool"));
+        assert!(
+            !is_micro_compactable_tool("exec_shell"),
+            "default set replaced"
+        );
+        // Threshold 1 + any compactable bytes trips the cache trigger.
+        let state = MicroCompactState::default();
+        assert!(state.cache_trigger_threshold == 1);
+
+        // A custom_tool result is cleared to the custom placeholder.
+        let mut messages = vec![
+            tool_use_msg("t1", "custom_tool", serde_json::json!({})),
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: "x".repeat(100),
+                    is_error: None,
+                    content_blocks: None,
+                }],
+            },
+        ];
+        let mut st = MicroCompactState::default();
+        let cleared = micro_compact_messages(&mut messages, &mut st);
+        // The return is bytes cleared: 100 original − 6 for "[gone]".
+        assert_eq!(cleared, 94, "custom_tool result compacted");
+        let ContentBlock::ToolResult { content, .. } = &messages[1].content[0] else {
+            panic!("expected tool result");
+        };
+        assert_eq!(content, "[gone]");
+
+        clear_published_policies();
     }
 }

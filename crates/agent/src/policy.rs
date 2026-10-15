@@ -42,6 +42,10 @@ pub enum PolicyKind {
     /// `head_bytes`, `tail_bytes`, …) — slicing/spill/summary-line
     /// detection stay in Rust.
     ShellOutput,
+    /// Micro-compaction policy: trigger thresholds, the compactable-tool
+    /// list, the cleared-result placeholder. The compaction engine (what
+    /// to keep, ordering, retries) stays in Rust.
+    CompactPolicy,
 }
 
 impl PolicyKind {
@@ -52,6 +56,7 @@ impl PolicyKind {
         match self {
             Self::OutputDiff => "output-diff",
             Self::ShellOutput => "shell-output",
+            Self::CompactPolicy => "compact-policy",
         }
     }
 
@@ -62,13 +67,18 @@ impl PolicyKind {
         match name {
             "output-diff" => Some(Self::OutputDiff),
             "shell-output" => Some(Self::ShellOutput),
+            "compact-policy" => Some(Self::CompactPolicy),
             _ => None,
         }
     }
 
     /// Every defined kind, in declaration order (the builtin mod tier
     /// registers one entry per kind it owns).
-    pub const ALL: &'static [PolicyKind] = &[PolicyKind::OutputDiff, PolicyKind::ShellOutput];
+    pub const ALL: &'static [PolicyKind] = &[
+        PolicyKind::OutputDiff,
+        PolicyKind::ShellOutput,
+        PolicyKind::CompactPolicy,
+    ];
 }
 
 type PolicyMap = HashMap<PolicyKind, Value>;
@@ -153,6 +163,88 @@ pub fn policy_usize(kind: PolicyKind, field: &str, default: usize, max: usize) -
             default
         }
         None => default,
+    }
+}
+
+/// Read a `String` field of a published policy map with a default +
+/// length cap (same warn-and-fall-back posture as [`policy_usize`]).
+#[must_use]
+pub fn policy_string(kind: PolicyKind, field: &str, default: &str, max_chars: usize) -> String {
+    let Some(Value::Object(map)) = published_policy(kind) else {
+        return default.to_string();
+    };
+    match map.get(field) {
+        Some(Value::String(s)) if s.chars().count() <= max_chars => s.clone(),
+        Some(Value::String(too_long)) => {
+            tracing::warn!(
+                target: "codesmith_policy",
+                "policy {} field {field} ({} chars) exceeds {max_chars}; using default",
+                kind.kebab_name(),
+                too_long.chars().count()
+            );
+            default.to_string()
+        }
+        Some(other) => {
+            tracing::warn!(
+                target: "codesmith_policy",
+                "policy {} field {field} has non-string value {other}; using default",
+                kind.kebab_name()
+            );
+            default.to_string()
+        }
+        None => default.to_string(),
+    }
+}
+
+/// Read a string-array field of a published policy map with a default +
+/// entry cap. Non-string entries or a too-long list warn and fall back
+/// to the default wholesale (a policy list is tuning, not protocol).
+#[must_use]
+pub fn policy_string_list(
+    kind: PolicyKind,
+    field: &str,
+    default: &[&str],
+    max_entries: usize,
+) -> Vec<String> {
+    let Some(Value::Object(map)) = published_policy(kind) else {
+        return default.iter().map(|s| (*s).to_string()).collect();
+    };
+    match map.get(field) {
+        Some(Value::Array(items)) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                match item {
+                    Value::String(s) if out.len() < max_entries => out.push(s.clone()),
+                    Value::String(_) => {}
+                    other => {
+                        tracing::warn!(
+                            target: "codesmith_policy",
+                            "policy {} field {field} has a non-string entry {other}; using default",
+                            kind.kebab_name()
+                        );
+                        return default.iter().map(|s| (*s).to_string()).collect();
+                    }
+                }
+            }
+            if out.is_empty() {
+                tracing::warn!(
+                    target: "codesmith_policy",
+                    "policy {} field {field} is empty; using default",
+                    kind.kebab_name()
+                );
+                return default.iter().map(|s| (*s).to_string()).collect();
+            }
+            out
+        }
+        Some(other) => {
+            tracing::warn!(
+                target: "codesmith_policy",
+                "policy {} field {field} is not an array ({other}); using default",
+                kind.kebab_name()
+            );
+            default.iter().map(|s| (*s).to_string()).collect()
+        }
+        None => default.iter().map(|s| (*s).to_string()).collect(),
     }
 }
 
