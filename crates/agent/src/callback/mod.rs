@@ -27,6 +27,10 @@ pub enum StopReason {
     /// The step budget (`max_steps`) was exhausted mid-tool-loop.
     MaxSteps,
     /// The run aborted with an error.
+    ///
+    /// The payload is a display-only message (v1 simplification): hosts
+    /// should surface it verbatim, never parse it — the underlying error
+    /// kind/`source()` chain is not recoverable from the string.
     Error(String),
     /// The run was cancelled (user/external interruption). Distinct from
     /// [`StopReason::Error`] so the host can surface "cancelled" rather than
@@ -131,6 +135,16 @@ fn noop<'a>() -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
 /// The single lifetime `'a` ties `&self` and each borrowed argument together, so
 /// an impl may forward the request/response/content **by reference** (zero-copy)
 /// — the returned future borrows them for `'a`.
+///
+/// # Fault isolation
+///
+/// Hooks are awaited inline on the executor's task with no isolation and no
+/// error channel: a hook that hangs stalls the run, a hook that panics
+/// unwinds into the executor (aborting the run for every other observer),
+/// and hook failures — including an `on_complete(StopReason::Error(..))`
+/// that itself fails — are structurally unreportable. Containing a risky
+/// observer (external telemetry, a UI bridge) is the observer's job: wrap it
+/// in its own task/timeout before composing it into a [`CallbackSet`].
 pub trait Callback: Send + Sync {
     /// Fired just before the LLM stream request is issued.
     fn on_llm_start<'a>(
@@ -238,6 +252,11 @@ impl Callback for NoopCallback {}
 /// Fan-out [`Callback`]: forwards every hook to each member, in registration
 /// order. Use it when a host wants several observers (e.g. tracing + a UI
 /// bridge) on one executor. Forwards every argument **by reference** (no clone).
+///
+/// No fault isolation between members: each hook is awaited sequentially on
+/// the executor's task (see the trait-level contract), so one hanging member
+/// stalls every later member and the run, and one panicking member aborts
+/// the run for all — push only contained (spawn/timeout-wrapped) observers.
 #[derive(Default)]
 pub struct CallbackSet {
     callbacks: Vec<Arc<dyn Callback>>,

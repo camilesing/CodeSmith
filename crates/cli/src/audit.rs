@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use chrono::Utc;
 use serde_json::{Value, json};
 
-use crate::utils::{flush_and_sync, open_append};
+use crate::utils::open_append;
 
 /// Append an audit event to `~/.codesmith/audit.log`.
 ///
@@ -14,14 +14,13 @@ use crate::utils::{flush_and_sync, open_append};
 /// if audit persistence fails.
 pub fn log_sensitive_event(event: &str, details: Value) {
     if let Err(err) = append_event(event, details) {
-        crate::logging::warn(format!("audit log write failed: {err}"));
+        crate::logging::warn(format!("audit log write failed for event {event}: {err}"));
     }
 }
 
 fn append_event(event: &str, details: Value) -> anyhow::Result<()> {
     let path = default_audit_path()?;
-    let parent = path.parent().map(|p| p.to_path_buf());
-    if let Some(ref parent) = parent {
+    if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
         // The audit log records details of sensitive operations and
         // `open_append` creates the file 0600; the containing
@@ -36,8 +35,9 @@ fn append_event(event: &str, details: Value) -> anyhow::Result<()> {
             }
         }
     }
-    // Open for append with a BufWriter for buffered I/O, then flush + fsync
-    // after each event so the record is durably on disk.
+    // Open the append handle (owner-only on Unix via `open_append`), then
+    // write each event as one syscall and fsync so the record is durably
+    // on disk.
     let mut writer = open_append(&path)?;
     let record = json!({
         "ts": Utc::now().to_rfc3339(),
@@ -46,8 +46,17 @@ fn append_event(event: &str, details: Value) -> anyhow::Result<()> {
     });
     let line = serde_json::to_string(&record)?;
     use std::io::Write;
-    writeln!(writer, "{line}")?;
-    flush_and_sync(&mut writer)?;
+    // One write syscall for line + newline: under O_APPEND a single
+    // `write_all` keeps the record atomic in practice, so concurrent CLI
+    // processes cannot interleave a torn half-line into the audit trail.
+    // (`writeln!` on the BufWriter can flush mid-record whenever the line
+    // exceeds the buffer capacity.) Durability is unchanged — the fsync
+    // below covers the bytes that just went out.
+    let mut bytes = Vec::with_capacity(line.len() + 1);
+    bytes.extend_from_slice(line.as_bytes());
+    bytes.push(b'\n');
+    writer.get_mut().write_all(&bytes)?;
+    writer.get_mut().sync_all()?;
     Ok(())
 }
 

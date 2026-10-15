@@ -342,9 +342,15 @@ impl LspTransport for StdioLspTransport {
         // us with a separate timeout.
         let deadline = tokio::time::Instant::now() + wait;
         loop {
-            if let Some((items, version, doc_version)) = self.diagnostics_cache.get(&cache_key)
+            // Freshness probe first: `version_of` copies two scalars, so a
+            // wakeup for some OTHER file's publish does not clone this
+            // file's diagnostics; the cloning `get` runs only once the
+            // entry is known fresh (entries are only replaced, never
+            // removed, so the second read cannot miss).
+            if let Some((version, doc_version)) = self.diagnostics_cache.version_of(&cache_key)
                 && version > start_version
                 && doc_version.is_none_or(|dv| dv >= new_version)
+                && let Some((items, ..)) = self.diagnostics_cache.get(&cache_key)
             {
                 return Ok(items);
             }
@@ -391,6 +397,20 @@ struct DiagnosticsCache {
 }
 
 impl DiagnosticsCache {
+    /// Cheap freshness probe: the publish-counter and echoed document
+    /// versions for `path`, without cloning the diagnostics. The
+    /// `diagnostics_for` wait loop wakes on publishes for ANY file, so it
+    /// must not clone the `Vec<Diagnostic>` on every wakeup just to learn
+    /// the entry is stale — the cloning [`get`](Self::get) runs only once
+    /// the entry is known fresh.
+    fn version_of(&self, path: &Path) -> Option<(u64, Option<i64>)> {
+        self.inner
+            .read()
+            .expect("lsp diagnostics cache lock poisoned")
+            .get(path)
+            .map(|(_, version, doc_version)| (*version, *doc_version))
+    }
+
     fn get(&self, path: &Path) -> Option<CachedDiagnostics> {
         self.inner
             .read()
@@ -987,6 +1007,11 @@ mod tests {
         assert_eq!(doc_version, None, "null version means server omitted it");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].message, "first");
+        assert_eq!(
+            cache.version_of(&PathBuf::from("/tmp/my file.rs")),
+            Some((1, None)),
+            "the cheap probe reports the same freshness scalars as get"
+        );
 
         // Second publish replaces the entry and bumps the version tag.
         tx_inbound
@@ -1003,6 +1028,15 @@ mod tests {
         assert_eq!(version, 2);
         assert_eq!(doc_version, Some(2), "echoed document version is stored");
         assert_eq!(items[0].message, "second");
+        assert_eq!(
+            cache.version_of(&PathBuf::from("/tmp/my file.rs")),
+            Some((2, Some(2)))
+        );
+        assert_eq!(
+            cache.version_of(&PathBuf::from("/tmp/other.rs")),
+            None,
+            "a file with no cached publish probes as absent"
+        );
 
         drop(tx_inbound);
         let _ = task.await;

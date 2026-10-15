@@ -28,6 +28,13 @@ pub trait ChatHistory: Send + Sync {
     /// Append a message — an assistant turn or a tool-result user turn. The
     /// executor is responsible for the role/turn structure; the backing store
     /// only persists order.
+    ///
+    /// Infallible by contract: the trait returns `()`, so an implementor
+    /// backed by fallible storage (DB, session file) must buffer/retry
+    /// internally and may never fail or panic mid-turn — a silently dropped
+    /// message desynchronizes the transcript the executor sees from the
+    /// host's audited store. The same contract holds for
+    /// [`clear`](Self::clear) and [`replace_all`](Self::replace_all).
     fn push(&mut self, message: Message);
 
     /// Drop the entire transcript.

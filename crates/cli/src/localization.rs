@@ -50,7 +50,6 @@ impl Locale {
         }
     }
 
-    #[allow(dead_code)]
     pub fn spec(self) -> LocaleSpec {
         match self {
             Self::En => LocaleSpec {
@@ -96,7 +95,6 @@ impl Locale {
         }
     }
 
-    #[allow(dead_code)]
     pub fn shipped() -> &'static [Self] {
         &[Self::En, Self::ZhHans, Self::ZhHant, Self::Hi, Self::Es419]
     }
@@ -589,7 +587,30 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
 ];
 
 pub fn tr(locale: Locale, id: MessageId) -> &'static str {
-    fallback_translation(translation(locale, id), id)
+    // Follow the declarative `LocaleSpec::fallback` chain (zh-Hant →
+    // zh-Hans) before English, so a future locale whose spec declares a
+    // non-English fallback is honored automatically; the walk is bounded
+    // so a cyclic spec cannot loop.
+    let mut current = locale;
+    let mut candidate = translation(current, id);
+    for _ in 0..Locale::shipped().len() {
+        if candidate.is_some() {
+            break;
+        }
+        match locale_from_tag(current.spec().fallback) {
+            Some(next) => current = next,
+            None => break,
+        }
+        candidate = translation(current, id);
+    }
+    fallback_translation(candidate, id)
+}
+
+fn locale_from_tag(tag: &str) -> Option<Locale> {
+    Locale::shipped()
+        .iter()
+        .copied()
+        .find(|locale| locale.tag() == tag)
 }
 
 #[allow(dead_code)]
@@ -644,7 +665,11 @@ pub fn truncate_to_width(text: &str, max_width: usize) -> String {
         return text.to_string();
     }
 
-    let ellipsis_width = '…'.width().unwrap_or(1);
+    // U+2026 (…) is East-Asian Ambiguous: `width()` always reports 1,
+    // but CJK-configured terminals render it in two columns — exactly
+    // the locales this helper targets. Reserve the wider rendering so
+    // the column budget holds everywhere.
+    let ellipsis_width = 2;
     if max_width <= ellipsis_width {
         return "…".to_string();
     }
@@ -678,23 +703,27 @@ fn normalize_locale_input(input: &str) -> String {
 }
 
 fn parse_locale(value: &str) -> Option<Locale> {
-    if value == "c" || value == "posix" || value.starts_with("en") {
+    // Match whole `-`-separated subtags, never raw prefixes: prefix
+    // matching accepted unrelated ISO codes ("hil"/"hif" → Hindi) and
+    // typos ("español", "enjoy"), and `contains("-tw")` fired on any
+    // subtag merely ending in "-tw". Unsupported input must fall through
+    // to None and then the documented English fallback.
+    let is_language = |tag: &str| value.split('-').next() == Some(tag);
+    let has_subtag = |tag: &str| value.split('-').any(|part| part == tag);
+
+    if is_language("c") || is_language("posix") || is_language("en") {
         return Some(Locale::En);
     }
-    if value.starts_with("zh") {
-        if value.contains("hant")
-            || value.contains("-tw")
-            || value.contains("-hk")
-            || value.contains("-mo")
-        {
+    if is_language("zh") {
+        if has_subtag("hant") || has_subtag("tw") || has_subtag("hk") || has_subtag("mo") {
             return Some(Locale::ZhHant);
         }
         return Some(Locale::ZhHans);
     }
-    if value.starts_with("hi") {
+    if is_language("hi") {
         return Some(Locale::Hi);
     }
-    if value.starts_with("es") {
+    if is_language("es") {
         return Some(Locale::Es419);
     }
     None
@@ -1845,9 +1874,7 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         MessageId::CmdExtensionDescription => "Gestionar extensiones (list, install, reload)",
         MessageId::CmdPresetDescription => "Mostrar o cambiar el nivel de preset (export, off)",
         MessageId::CmdNetworkDescription => "Gestionar reglas de red permitidas y bloqueadas",
-        MessageId::CmdNoteDescription => {
-            "Agregar nota al archivo persistente (.codesmith/notes.md)"
-        }
+        MessageId::CmdNoteDescription => "Agregar, listar, editar o eliminar notas del workspace",
         MessageId::CmdProviderDescription => {
             "Cambiar o mostrar el backend LLM activo (deepseek | nvidia-nim | ollama)"
         }
@@ -1865,7 +1892,7 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
             "Ejecutar una revisión de código estructurada en un archivo, diff o PR"
         }
         MessageId::CmdRlmDescription => {
-            "Turno del Recursive Language Model (RLM) — guarda el prompt en un REPL Python y deja que el modelo escriba el código que lo procesa; usa `llm_query()` / `sub_rlm()` para llamadas a sub-LLMs."
+            "Abrir un contexto RLM persistente: /rlm [0-3] <archivo_o_texto>"
         }
         MessageId::CmdSaveDescription => "Guardar la sesión en archivo",
         MessageId::CmdNewDescription => "Iniciar una nueva sesión guardada",
@@ -2143,6 +2170,21 @@ mod tests {
         assert_eq!(normalize_configured_locale("hi_IN.UTF-8"), Some("hi"));
         assert_eq!(normalize_configured_locale("es"), Some("es-419"));
         assert_eq!(normalize_configured_locale("es-MX"), Some("es-419"));
+    }
+
+    #[test]
+    fn locale_parsing_requires_subtag_boundaries() {
+        // Unrelated ISO codes that merely share a prefix with a shipped
+        // language must not be silently mapped to it.
+        assert_eq!(normalize_configured_locale("hil"), None); // Hiligaynon
+        assert_eq!(normalize_configured_locale("hif-FJ"), None); // Fiji Hindi
+        // Neither may settings typos.
+        assert_eq!(normalize_configured_locale("español"), None);
+        assert_eq!(normalize_configured_locale("enjoy"), None);
+        // Well-formed subtag forms still resolve.
+        assert_eq!(normalize_configured_locale("hi-IN"), Some("hi"));
+        assert_eq!(normalize_configured_locale("zh-Hant-TW"), Some("zh-Hant"));
+        assert_eq!(normalize_configured_locale("es-419"), Some("es-419"));
     }
 
     #[test]

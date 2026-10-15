@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use codesmith_agent_runtime::host_services::HostServices;
+use codesmith_agent_runtime::host_services::{HostServices, ShellApi, SubAgentApi};
 
 // Explicit re-export of the engine items the TUI actually depends on. This
 // replaces an earlier `pub use ...::engine::*` glob: the lists below are the
@@ -187,12 +187,15 @@ pub struct EngineHandle {
 ///
 /// The engine holds this behind an `Arc<dyn HostServices>` trait object;
 /// `impl HostServices for EngineHost` lives in `engine/runtime_traits.rs`.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct EngineHost {
     /// Durable runtime services exposed to model-visible tools.
     pub runtime_services: RuntimeToolServices,
-    /// Hook executor for `pre_compact` (and future compaction-related) hooks.
-    pub hooks: Option<crate::hooks::HookExecutor>,
+    /// Hook executor for `pre_compact` (and future compaction-related)
+    /// hooks. Shared behind one `Arc` so `HostServices::hooks` clones the
+    /// pointer (a refcount bump), not the executor — every caller observes
+    /// the host's live executor rather than a diverging snapshot.
+    pub hooks: Option<Arc<crate::hooks::HookExecutor>>,
     /// Post-edit LSP diagnostics manager. Defaults to a disabled manager;
     /// `build_engine` replaces it with the config-resolved one.
     pub lsp_manager: std::sync::Arc<crate::lsp::LspManager>,
@@ -203,6 +206,15 @@ pub struct EngineHost {
     /// shell handle (TUI app); `None` for headless paths, which get a fresh
     /// manager bound to the configured workspace.
     pub shell_manager: Option<SharedShellManager>,
+    /// Pre-erased [`SubAgentApi`] view of `subagent_manager`, built once
+    /// (`Default` / `build_engine` — the only site that ever reassigns the
+    /// manager) so `HostServices::subagents` is a cheap refcount bump
+    /// instead of a fresh `Arc<SubAgentManagerHost>` allocation + vtable
+    /// erasure per call.
+    pub subagent_api: Arc<dyn SubAgentApi>,
+    /// Pre-erased [`ShellApi`] view of `shell_manager` (same rationale as
+    /// `subagent_api`); `Some` exactly when `shell_manager` is.
+    pub shell_api: Option<Arc<dyn ShellApi>>,
     /// Sub-agent process manager.
     pub subagent_manager: SharedSubAgentManager,
     /// Session-scoped workshop variable store (#548). `None` when no
@@ -239,8 +251,35 @@ pub struct EngineHost {
     pub approval_router: Option<std::sync::Arc<ApprovalRouter>>,
 }
 
+// Manual `Debug` (mirroring `RuntimeToolServices`): `subagent_api` /
+// `shell_api` are trait objects without `Debug` supertraits, so their
+// presence is rendered instead of their pointees.
+impl std::fmt::Debug for EngineHost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EngineHost")
+            .field("runtime_services", &self.runtime_services)
+            .field("hooks", &self.hooks)
+            .field("lsp_manager", &self.lsp_manager)
+            .field("seam_manager", &self.seam_manager)
+            .field("shell_manager", &self.shell_manager)
+            .field("subagent_manager", &self.subagent_manager)
+            .field("subagent_api", &true)
+            .field("shell_api", &self.shell_api.is_some())
+            .field("workshop_vars", &self.workshop_vars)
+            .field("utility_llm", &self.utility_llm)
+            .field("sandbox_backend", &self.sandbox_backend)
+            .field("extension_runner", &self.extension_runner)
+            .field("mod_reload", &self.mod_reload)
+            .field("tool_catalog", &self.tool_catalog)
+            .field("approval_router", &self.approval_router)
+            .finish()
+    }
+}
+
 impl Default for EngineHost {
     fn default() -> Self {
+        let subagent_manager =
+            new_shared_subagent_manager(std::path::PathBuf::new(), crate::config::MAX_SUBAGENTS);
         Self {
             runtime_services: RuntimeToolServices::default(),
             hooks: None,
@@ -251,10 +290,13 @@ impl Default for EngineHost {
             // `None` so `build_engine` creates a fresh manager bound to the
             // configured workspace.
             shell_manager: None,
-            subagent_manager: new_shared_subagent_manager(
-                std::path::PathBuf::new(),
-                crate::config::MAX_SUBAGENTS,
-            ),
+            // Pre-erased view of the throwaway manager above; `build_engine`
+            // refreshes it when it assigns the real one.
+            subagent_api: Arc::new(runtime_traits::SubAgentManagerHost(Arc::clone(
+                &subagent_manager,
+            ))),
+            shell_api: None,
+            subagent_manager,
             workshop_vars: None,
             utility_llm: None,
             sandbox_backend: None,
@@ -1333,8 +1375,16 @@ pub fn build_engine(
         runtime_traits::BgRegistryHost(bg_registry),
     ));
 
-    host.shell_manager = Some(shell_manager);
+    host.shell_manager = Some(shell_manager.clone());
     host.subagent_manager = subagent_manager;
+    // Refresh the pre-erased api views to mirror the managers assigned just
+    // above — `build_engine` is the only site that ever reassigns either.
+    host.subagent_api = Arc::new(runtime_traits::SubAgentManagerHost(Arc::clone(
+        &host.subagent_manager,
+    )));
+    host.shell_api = Some(Arc::new(crate::tools::shell::ShellManagerHost(
+        shell_manager,
+    )));
     host.workshop_vars = workshop_vars;
     host.utility_llm = utility_llm;
     host.sandbox_backend = sandbox_backend;

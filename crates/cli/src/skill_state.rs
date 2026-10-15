@@ -43,15 +43,22 @@ impl SkillStateStore {
     }
 
     pub fn load_from(path: PathBuf) -> Result<Self> {
-        if !path.exists() {
-            return Ok(Self {
-                path: Some(path),
-                disabled: BTreeSet::new(),
-            });
-        }
-
-        let raw = fs::read_to_string(&path)
-            .with_context(|| format!("read skill state at {}", path.display()))?;
+        // Read directly and classify NotFound rather than `exists()` then
+        // read: a file removed between the two calls — or a broken
+        // symlink, which `exists()` reports as missing — would surface as
+        // a hard error instead of the documented missing-file default.
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self {
+                    path: Some(path),
+                    disabled: BTreeSet::new(),
+                });
+            }
+            Err(err) => {
+                return Err(err).with_context(|| format!("read skill state at {}", path.display()));
+            }
+        };
         let parsed: OnDiskState = match toml::from_str(&raw) {
             Ok(v) => v,
             Err(err) => {
@@ -74,6 +81,14 @@ impl SkillStateStore {
         !self.disabled.contains(skill_name)
     }
 
+    /// Toggle a skill and persist the full `disabled` list.
+    ///
+    /// Single-writer assumption: within one process the store is guarded
+    /// by the owner's `Arc<Mutex<…>>`, but the persist is a whole-file
+    /// read-modify-write with no cross-process locking — two concurrent
+    /// `codesmith` processes sharing `$HOME` can lose one toggle
+    /// (last writer wins). Advisory file locking is needed before
+    /// multi-process operation is relied upon.
     pub fn set_enabled(&mut self, skill_name: &str, enabled: bool) -> Result<()> {
         let changed = if enabled {
             self.disabled.remove(skill_name)

@@ -273,7 +273,19 @@ fn sanitize_frontmatter_value(value: &str) -> String {
 }
 
 /// Append a pointer line to the MEMORY.md entrypoint.
+///
+/// The read-check-append dedup below is a check-then-act sequence: two
+/// parallel `remember` calls issuing the same pointer line (tool calls can
+/// run concurrently) would both pass the `contains` check and both append,
+/// leaving duplicate lines. A process-wide mutex makes the sequence atomic
+/// for in-process callers; parking on it is fine because the whole write
+/// already runs on the blocking pool.
 fn append_to_entrypoint(path: &std::path::Path, line: &str) -> std::io::Result<()> {
+    static ENTRYPOINT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = ENTRYPOINT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
     // Check if the line already exists (dedup pointer lines).
     if let Ok(existing) = std::fs::read_to_string(path)
         && existing.contains(line)
@@ -564,5 +576,25 @@ mod tests {
             1,
             "pointer line must contain exactly one link target: {entry}"
         );
+    }
+
+    #[test]
+    fn append_to_entrypoint_dedupes_repeated_pointer_lines() {
+        // The dedup check is serialized by ENTRYPOINT_LOCK so concurrent
+        // writers can't both pass it; repeated identical lines must land
+        // exactly once.
+        let tmp = tempdir().unwrap();
+        let entrypoint = tmp.path().join("MEMORY.md");
+        append_to_entrypoint(&entrypoint, "- [ptr](ptr.md) — desc").unwrap();
+        append_to_entrypoint(&entrypoint, "- [ptr](ptr.md) — desc").unwrap();
+        append_to_entrypoint(&entrypoint, "- [other](other.md) — desc").unwrap();
+
+        let entry = std::fs::read_to_string(&entrypoint).expect("MEMORY.md");
+        assert_eq!(
+            entry.matches("- [ptr](ptr.md)").count(),
+            1,
+            "identical pointer lines must be deduped: {entry}"
+        );
+        assert_eq!(entry.lines().count(), 2, "{entry}");
     }
 }

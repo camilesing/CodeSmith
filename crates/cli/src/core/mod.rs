@@ -8,6 +8,9 @@
 //! - `ops`: Operations submitted by the UI to the engine
 //! - `session`: Session state management
 //! - `turn`: Turn context and tracking
+//! - `capacity` / `capacity_memory`: Context-window capacity tracking
+//! - `coherence`: Conversation coherence checks
+//! - `tool_catalog`: Catalog of tools available to the engine
 
 // Engine code runs inside the TUI alt-screen — see `runtime_log` for why
 // raw stdio prints must not appear here. Use `tracing::*` instead.
@@ -23,5 +26,3 @@ pub mod ops;
 pub mod session;
 pub mod tool_catalog;
 pub mod turn;
-
-// Re-exports

@@ -145,6 +145,11 @@ impl ToolCatalogState {
     /// Swap in `snapshot`, returning the name diff against the previous
     /// baseline (`added`, `removed` — sorted) when it changed. A missing
     /// baseline (first build) only records: no diff, no event.
+    ///
+    /// The returned diff is the sole trigger for the `tools-change`
+    /// extension event, so ignoring it silently drops the event — hence
+    /// `#[must_use]` (matching `current`).
+    #[must_use]
     pub fn update(&self, snapshot: ToolCatalogSnapshot) -> Option<(Vec<String>, Vec<String>)> {
         let mut guard = self.inner.lock().expect("tool catalog baseline poisoned");
         let diff = guard.as_ref().and_then(|prev| diff_names(prev, &snapshot));
@@ -260,7 +265,9 @@ mod tests {
         let empty: std::collections::HashSet<String> = Default::default();
         let plugin: std::collections::HashSet<String> =
             ["mytool"].iter().map(|n| n.to_string()).collect();
-        state.update(ToolCatalogSnapshot::capture(
+        // First build only establishes the baseline; the (absent) diff is
+        // intentionally dropped — `#[must_use]` wants that said out loud.
+        let _ = state.update(ToolCatalogSnapshot::capture(
             &names, &empty, &empty, &empty, &empty,
         ));
         assert_eq!(

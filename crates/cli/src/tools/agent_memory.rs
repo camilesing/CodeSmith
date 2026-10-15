@@ -68,7 +68,11 @@ impl ToolSpec for AgentMemoryReadTool {
         let truncated = start_line.saturating_sub(1) + shown < total_lines;
         if total_lines <= 200 && contents.len() <= 16 * 1024 && start_line == 1 && max_lines >= 200
         {
-            return Ok(ToolResult::success(contents));
+            // Return `selected`, not the raw `contents`: `str::lines()`
+            // normalizes CRLF and drops the trailing newline, so the two
+            // branches must come from the same slicing to be byte-identical
+            // for a given file.
+            return Ok(ToolResult::success(selected));
         }
         Ok(ToolResult::success(format!(
             "<agent_memory_file path=\"{}\" total_lines=\"{}\" start_line=\"{}\" shown_lines=\"{}\" truncated=\"{}\">\n{}\n</agent_memory_file>",
@@ -112,17 +116,47 @@ impl ToolSpec for AgentMemoryWriteTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+        let memory_dir = agent_memory_dir(context)?;
         let path = resolve_agent_memory_tool_path(context, required_str(&input, "path")?)?;
         let content = required_str(&input, "content")?;
-        let prior = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+        // Directory creation + MEMORY.md seeding live with the mutating
+        // tools: `agent_memory_read` advertises ReadOnly and must resolve
+        // without side effects (a failed probe read used to leave a newly
+        // created dir/entrypoint behind).
+        ensure_agent_memory_dir(memory_dir).map_err(|err| {
+            ToolError::execution_failed(format!(
+                "failed to create agent memory dir {}: {err}",
+                memory_dir.display()
+            ))
+        })?;
+        // Only a missing file counts as "no prior content": swallowing
+        // permission/IO/UTF-8 errors here would render a misleading
+        // whole-file-added diff and hide the real failure.
+        let prior = match tokio::fs::read_to_string(&path).await {
+            Ok(prior) => prior,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(err) => {
+                return Err(ToolError::execution_failed(format!(
+                    "failed to read {}: {err}",
+                    path.display()
+                )));
+            }
+        };
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await.map_err(|err| {
                 ToolError::execution_failed(format!("failed to create {}: {err}", parent.display()))
             })?;
         }
-        crate::utils::write_atomic(&path, content.as_bytes()).map_err(|err| {
-            ToolError::execution_failed(format!("failed to write {}: {err}", path.display()))
-        })?;
+        // `write_atomic` fsyncs (NamedTempFile + persist) — synchronous
+        // disk I/O that belongs on the blocking pool, not the async worker.
+        let write_path = path.clone();
+        let bytes = content.as_bytes().to_vec();
+        tokio::task::spawn_blocking(move || crate::utils::write_atomic(&write_path, &bytes))
+            .await
+            .map_err(|err| ToolError::execution_failed(format!("write task failed: {err}")))?
+            .map_err(|err| {
+                ToolError::execution_failed(format!("failed to write {}: {err}", path.display()))
+            })?;
         let diff = make_unified_diff(&path.display().to_string(), &prior, content);
         let summary = format!(
             "Wrote {} bytes to agent memory file {}",
@@ -192,7 +226,17 @@ impl ToolSpec for AgentMemoryEditTool {
             )));
         }
         let updated = contents.replace(search, replace);
-        tokio::fs::write(&path, &updated).await.map_err(|err| {
+        // Atomic temp-file + rename (via spawn_blocking — the helper
+        // fsyncs): a crash or ENOSPC mid-write must not truncate the
+        // previously intact memory file.
+        let write_path = path.clone();
+        let updated_bytes = updated.as_bytes().to_vec();
+        tokio::task::spawn_blocking(move || {
+            crate::utils::write_atomic(&write_path, &updated_bytes)
+        })
+        .await
+        .map_err(|err| ToolError::execution_failed(format!("write task failed: {err}")))?
+        .map_err(|err| {
             ToolError::execution_failed(format!("failed to write {}: {err}", path.display()))
         })?;
         let diff = make_unified_diff(&path.display().to_string(), &contents, &updated);
@@ -209,19 +253,21 @@ impl ToolSpec for AgentMemoryEditTool {
     }
 }
 
+fn agent_memory_dir(context: &ToolContext) -> Result<&std::path::Path, ToolError> {
+    context.agent_memory_dir.as_deref().ok_or_else(|| {
+        ToolError::execution_failed("agent memory is not enabled for this sub-agent")
+    })
+}
+
+/// Resolve (but do not create) a scoped path inside the agent memory
+/// directory. Side-effect-free by design so the read-only tool can resolve
+/// without touching the filesystem — directory creation and MEMORY.md
+/// seeding belong to the mutating tools and sub-agent spawn.
 fn resolve_agent_memory_tool_path(
     context: &ToolContext,
     raw: &str,
 ) -> Result<std::path::PathBuf, ToolError> {
-    let memory_dir = context.agent_memory_dir.as_ref().ok_or_else(|| {
-        ToolError::execution_failed("agent memory is not enabled for this sub-agent")
-    })?;
-    ensure_agent_memory_dir(memory_dir).map_err(|err| {
-        ToolError::execution_failed(format!(
-            "failed to create agent memory dir {}: {err}",
-            memory_dir.display()
-        ))
-    })?;
+    let memory_dir = agent_memory_dir(context)?;
     scoped_path_within_memory(memory_dir, raw).map_err(ToolError::invalid_input)
 }
 

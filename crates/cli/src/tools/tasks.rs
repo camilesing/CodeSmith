@@ -380,15 +380,27 @@ impl ToolSpec for TaskStopTool {
             }
         }
 
-        if let Ok(result) = context.shell_manager.kill(target) {
-            return Ok(
-                ToolResult::success(format!("Stopped shell task: {target}")).with_metadata(json!({
-                    "target": target,
-                    "kind": "shell",
-                    "stopped": true,
-                    "result": result
-                })),
-            );
+        match context.shell_manager.kill(target) {
+            Ok(result) => {
+                return Ok(ToolResult::success(format!("Stopped shell task: {target}"))
+                    .with_metadata(json!({
+                        "target": target,
+                        "kind": "shell",
+                        "stopped": true,
+                        "result": result
+                    })));
+            }
+            // "Not found" is the expected miss — fall through to the
+            // durable-task cancel below. Any other failure (signal/IO
+            // problem, poisoned manager mutex) used to be silently
+            // discarded and reported as "No running task found", hiding
+            // the real reason the stop failed.
+            Err(err) if !is_shell_task_not_found(&err) => {
+                return Err(ToolError::execution_failed(format!(
+                    "failed to stop shell task '{target}': {err}"
+                )));
+            }
+            Err(_) => {}
         }
 
         if let Some(manager) = context.runtime.task_manager.as_ref()
@@ -738,6 +750,26 @@ impl ToolSpec for TaskShellWaitTool {
             .and_then(Value::as_u64)
             .unwrap_or_default();
         let command = optional_str(&input, "command").unwrap_or("(background shell)");
+        // Evidence fidelity: `task_shell_start` accepts an explicit cwd, and
+        // the wait result interleaves stdout/stderr (plus hints) into one
+        // blob — record the job's actual cwd and the split streams instead
+        // of the workspace and combined content, so `classify_gate_failure`
+        // sees real stderr. Best effort: if the job was reaped, fall back to
+        // the historical inputs.
+        let task_id = input
+            .get("task_id")
+            .or_else(|| input.get("id"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let (gate_cwd, gate_stdout, gate_stderr) = match context.shell_manager.inspect_job(task_id)
+        {
+            Ok(detail) => (detail.snapshot.cwd.clone(), detail.stdout, detail.stderr),
+            Err(_) => (
+                context.workspace.clone(),
+                String::new(),
+                result.content.clone(),
+            ),
+        };
         let log_path = write_runtime_artifact(context, "background_gate", &result.content)?;
         let gate_status = if exit_code == Some(0) {
             "passed"
@@ -750,15 +782,15 @@ impl ToolSpec for TaskShellWaitTool {
             id: format!("gate_{}", &Uuid::new_v4().to_string()[..8]),
             gate: gate.to_string(),
             command: command.to_string(),
-            cwd: context.workspace.clone(),
+            cwd: gate_cwd,
             exit_code,
             status: gate_status.to_string(),
             classification: classify_gate_failure(
                 gate,
                 gate_status,
                 status == "TimedOut",
-                &result.content,
-                "",
+                &gate_stderr,
+                &gate_stdout,
             ),
             duration_ms,
             summary: summarize(&result.content, MAX_SUMMARY_CHARS),
@@ -1179,6 +1211,13 @@ fn git_output(workspace: &Path, args: &[&str]) -> Result<String, ToolError> {
         )));
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
+}
+
+/// Whether a `ShellManagerApi::kill` error is its lookup miss ("Task {id}
+/// not found") rather than a real kill failure. The API is `anyhow`-typed,
+/// so the message is the only discriminator available.
+fn is_shell_task_not_found(err: &anyhow::Error) -> bool {
+    err.to_string().contains("not found")
 }
 
 fn classify_gate_failure(

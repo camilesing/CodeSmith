@@ -97,10 +97,19 @@ impl ToolSpec for LoadSkillTool {
         // same precedence, so the tool's lookup mirrors what the
         // system-prompt skills block already lists — the model never asks
         // for a name it can't find.
-        let mut registry = match context.skills_dir.as_deref() {
-            Some(dir) => discover_for_workspace_and_dir(&context.workspace, dir),
-            None => discover_in_workspace(&context.workspace),
-        };
+        //
+        // Discovery walks every candidate directory and parses every
+        // SKILL.md — synchronous filesystem work, so it rides the blocking
+        // pool (same convention as `list_dir` and the FS touches in
+        // `tools/mods.rs`) instead of the async worker.
+        let workspace = context.workspace.clone();
+        let skills_dir = context.skills_dir.clone();
+        let mut registry = tokio::task::spawn_blocking(move || match skills_dir.as_deref() {
+            Some(dir) => discover_for_workspace_and_dir(&workspace, dir),
+            None => discover_in_workspace(&workspace),
+        })
+        .await
+        .map_err(|e| ToolError::execution_failed(format!("skill discovery failed: {e}")))?;
         registry.merge_registered(&context.registered_skills);
         let Some(skill) = registry.get(name) else {
             let available: Vec<&str> = registry.list().iter().map(|s| s.name.as_str()).collect();
@@ -130,7 +139,10 @@ impl ToolSpec for LoadSkillTool {
         // holds on the tool path too. Fail-closed for mod skills: the
         // empty in-memory path never carries a `.trusted` marker.
         let gated_body = crate::skills::preprocess_skill_body_for_activation(skill);
-        let body = format_skill_body_with_body(skill, &gated_body);
+        // One `read_dir` pass feeds both the rendered body and the metadata
+        // (it used to be scanned twice per invocation).
+        let companions = collect_companion_files(skill);
+        let body = format_skill_body_with_body(skill, &gated_body, &companions);
         let source = skill.loaded_from.label(&skill.path);
         // `skill_path` stays a real filesystem path (empty for file-less
         // mod skills); the mod label lives in its own `skill_source` key so
@@ -151,8 +163,8 @@ impl ToolSpec for LoadSkillTool {
             "agent": skill.agent,
             "shell": skill.shell,
             "loaded_from": format!("{:?}", skill.loaded_from),
-            "companion_files": collect_companion_files(skill)
-                .into_iter()
+            "companion_files": companions
+                .iter()
                 .map(|p| p.display().to_string())
                 .collect::<Vec<String>>(),
         })))
@@ -168,7 +180,11 @@ impl ToolSpec for LoadSkillTool {
 /// `body` is the (possibly gated — see
 /// `skills::preprocess_skill_body_for_activation`) body to embed; the
 /// bare [`format_skill_body`] formats `skill.body` as-is.
-fn format_skill_body_with_body(skill: &Skill, body: &str) -> String {
+fn format_skill_body_with_body(
+    skill: &Skill,
+    body: &str,
+    companions: &[std::path::PathBuf],
+) -> String {
     let mut out = String::new();
     out.push_str(&format!("# Skill: {}\n\n", skill.name));
     if !skill.description.trim().is_empty() {
@@ -196,13 +212,12 @@ fn format_skill_body_with_body(skill: &Skill, body: &str) -> String {
     out.push_str(body.trim());
     out.push('\n');
 
-    let companions = collect_companion_files(skill);
     if !companions.is_empty() {
         out.push_str("\n## Companion files\n\n");
         out.push_str(
             "Sibling files in the skill directory. Use `read_file` to open them when the task requires.\n\n",
         );
-        for path in &companions {
+        for path in companions {
             out.push_str(&format!("- `{}`\n", path.display()));
         }
     }
@@ -213,11 +228,14 @@ fn format_skill_body_with_body(skill: &Skill, body: &str) -> String {
 /// convenience (production paths always pass a gated body).
 #[cfg(test)]
 fn format_skill_body(skill: &Skill) -> String {
-    format_skill_body_with_body(skill, &skill.body)
+    let companions = collect_companion_files(skill);
+    format_skill_body_with_body(skill, &skill.body, &companions)
 }
 
 /// List sibling files of `SKILL.md` in the skill's own directory.
-/// Skips the `SKILL.md` itself and any nested directories so the
+/// Skips the `SKILL.md` itself, any nested directories, and internal
+/// dotfile markers (e.g. the `.trusted` trust-gate marker — listing it
+/// would leak the trust-gating implementation into the prompt) so the
 /// listing stays focused on at-hand resources. Sorted lexically for
 /// deterministic output (matters for transcript diffing in tests).
 fn collect_companion_files(skill: &Skill) -> Vec<std::path::PathBuf> {
@@ -230,15 +248,23 @@ fn collect_companion_files(skill: &Skill) -> Vec<std::path::PathBuf> {
             .filter_map(|entry| {
                 let path = entry.path();
                 let is_file = entry.file_type().is_ok_and(|ft| ft.is_file());
-                let is_skill_md = path.file_name().and_then(|s| s.to_str()) == Some("SKILL.md");
-                if is_file && !is_skill_md {
+                let file_name = path.file_name().and_then(|s| s.to_str());
+                let is_internal = file_name.is_some_and(|s| s == "SKILL.md" || s.starts_with('.'));
+                if is_file && !is_internal {
                     Some(path)
                 } else {
                     None
                 }
             })
             .collect(),
-        Err(_) => Vec::new(),
+        // Don't conflate "no companions" with "couldn't check": a
+        // permission error or a removed directory is a different situation
+        // than an empty skill directory, so log it instead of silently
+        // reporting an empty list.
+        Err(err) => {
+            tracing::warn!(dir = %dir.display(), error = %err, "skill companion listing failed");
+            Vec::new()
+        }
     };
     entries.sort();
     entries
@@ -408,6 +434,9 @@ mod tests {
         .unwrap();
         fs::write(skill_dir.join("script.py"), "print('hi')").unwrap();
         fs::write(skill_dir.join("data.json"), "{}").unwrap();
+        // Internal trust-gate marker — a dotfile, must not leak into the
+        // model-visible companion listing.
+        fs::write(skill_dir.join(".trusted"), "").unwrap();
         // Nested directory — skipped by collect_companion_files.
         fs::create_dir_all(skill_dir.join("subdir")).unwrap();
 
@@ -479,11 +508,10 @@ mod tests {
             "Body content marker.",
         );
 
-        let mut context = ToolContext::new(workspace);
-        // The skill tool reads $HOME for the global default; pin it to a
-        // tempdir so the test is hermetic regardless of the host's
-        // ~/.codesmith/skills.
-        context.workspace = tmp.path().to_path_buf();
+        // NOTE: discovery also scans the host's ~/.agents/skills and
+        // ~/.codesmith/skills; workspace-first precedence keeps these
+        // assertions stable, but this test is not fully hermetic.
+        let context = ToolContext::new(workspace);
 
         let tool = LoadSkillTool;
         let result = tool

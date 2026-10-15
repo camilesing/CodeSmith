@@ -14,40 +14,6 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EvalShellPlatform {
-    Windows,
-    Unix,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct EvalShellInvocation {
-    program: &'static str,
-    args: Vec<String>,
-    raw_payload_on_windows: bool,
-}
-
-#[cfg(test)]
-fn eval_shell_invocation_for_platform(
-    command: &str,
-    platform: EvalShellPlatform,
-) -> EvalShellInvocation {
-    match platform {
-        EvalShellPlatform::Windows => EvalShellInvocation {
-            program: "cmd",
-            args: vec!["/C".to_string(), command.to_string()],
-            raw_payload_on_windows: true,
-        },
-        EvalShellPlatform::Unix => EvalShellInvocation {
-            program: "sh",
-            args: vec!["-c".to_string(), command.to_string()],
-            raw_payload_on_windows: false,
-        },
-    }
-}
-
 /// Representative tool steps covered by the evaluation harness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub enum ScenarioStepKind {
@@ -143,6 +109,12 @@ pub struct EvalHarnessConfig {
     /// The mock LLM client (`crate::llm_client::mock`) can replay these
     /// fixtures for deterministic offline tests. See
     /// `crates/tui/tests/README.md` for the full record/replay flow.
+    ///
+    /// The file is opened `create + append`, so the record dir must be
+    /// fresh (or the previous `<scenario>.jsonl` removed) for each
+    /// invocation — re-running with the same `--record <dir>` stacks the
+    /// records of multiple runs into one file, and the replay client would
+    /// then consume an interleaved sequence.
     pub record_dir: Option<PathBuf>,
 }
 
@@ -318,11 +290,16 @@ impl EvalHarness {
                     error: None,
                     output: Some(output.clone()),
                 });
-                if let Some(dir) = self.config.record_dir.as_deref() {
-                    let _ = record_fixture(
+                if let Some(dir) = self.config.record_dir.as_deref()
+                    && let Err(record_err) = record_fixture(
                         dir,
                         &self.config.scenario_name,
                         FixtureRecord::ok(kind, &output),
+                    )
+                {
+                    eprintln!(
+                        "warning: failed to record fixture for {}: {record_err}",
+                        kind.tool_name()
                     );
                 }
                 Some(value)
@@ -338,11 +315,16 @@ impl EvalHarness {
                     error: Some(err_str.clone()),
                     output: None,
                 });
-                if let Some(dir) = self.config.record_dir.as_deref() {
-                    let _ = record_fixture(
+                if let Some(dir) = self.config.record_dir.as_deref()
+                    && let Err(record_err) = record_fixture(
                         dir,
                         &self.config.scenario_name,
                         FixtureRecord::err(kind, &err_str),
+                    )
+                {
+                    eprintln!(
+                        "warning: failed to record fixture for {}: {record_err}",
+                        kind.tool_name()
                     );
                 }
                 None
@@ -404,8 +386,10 @@ impl FixtureRecord {
 }
 
 /// Append one fixture record to `<dir>/<scenario>.jsonl` (creating dir + file
-/// if missing). Best-effort: I/O errors are returned but generally ignored by
-/// the harness so a recording failure does not mask the run's primary result.
+/// if missing). Best-effort: I/O errors are returned but only warned about by
+/// the harness, so a recording failure does not mask the run's primary
+/// result — the operator opted into `--record`, so the lost fixture must at
+/// least be visible.
 pub fn record_fixture(dir: &Path, scenario_name: &str, record: FixtureRecord) -> Result<PathBuf> {
     fs::create_dir_all(dir)
         .with_context(|| format!("failed to create fixture dir: {}", dir.display()))?;
@@ -560,7 +544,13 @@ fn validate_outputs(
         Err(_) => return false,
     };
 
-    let search_ok = search_output.is_some_and(|s| s.contains("matches="));
+    // `matches=0` would pass a bare `contains` check and hide a search
+    // regression — the seeded workspace always contains the pattern, so
+    // require a non-zero count.
+    let search_ok = search_output.is_some_and(|s| match s.strip_prefix("matches=") {
+        Some(count) => count.parse::<usize>().is_ok_and(|n| n > 0),
+        None => false,
+    });
     let edit_ok = edit_output.is_some_and(|s| !s.is_empty()) && notes.contains("edited = true");
     let patch_ok = patch_output.is_some_and(|s| !s.is_empty())
         && notes.contains("todo: offline metrics (patched)");
@@ -696,8 +686,10 @@ fn apply_patch(root: &Path, patch: &str) -> Result<()> {
     let mut file_lines: Vec<String> = original.lines().map(|l| l.to_string()).collect();
 
     let mut cursor = 0usize;
+    let mut saw_end_marker = false;
     for raw_line in lines {
         if raw_line == "*** End Patch" {
+            saw_end_marker = true;
             break;
         }
         if raw_line.starts_with("*** ") {
@@ -726,6 +718,22 @@ fn apply_patch(root: &Path, patch: &str) -> Result<()> {
                 };
                 cursor = found + 1;
             }
+            // An empty line is an empty context line whose leading space
+            // was stripped (common in model-emitted patches) — match the
+            // next blank line in the target instead of rejecting it.
+            None => {
+                let Some(found) = file_lines[cursor..]
+                    .iter()
+                    .position(|line| line.is_empty())
+                    .map(|offset| cursor + offset)
+                else {
+                    return Err(anyhow!(
+                        "patch context not found in {}: <empty line>",
+                        file_path.display()
+                    ));
+                };
+                cursor = found + 1;
+            }
             Some('-') => {
                 if cursor >= file_lines.len() || file_lines[cursor] != content {
                     return Err(anyhow!(
@@ -742,6 +750,10 @@ fn apply_patch(root: &Path, patch: &str) -> Result<()> {
             }
             _ => return Err(anyhow!("unsupported patch line: {raw_line}")),
         }
+    }
+    if !saw_end_marker {
+        // A truncated patch must not be silently applied as if complete.
+        return Err(anyhow!("patch missing *** End Patch footer"));
     }
 
     let mut updated = file_lines.join("\n");
@@ -775,18 +787,63 @@ mod tests {
     use super::*;
 
     #[test]
-    fn eval_shell_invocation_preserves_quoted_payload_as_single_arg() {
+    fn real_shell_dispatcher_passes_quoted_payload_as_single_arg() {
+        // Assert on the real dispatcher (`crate::shell_dispatcher`), not a
+        // local replica of its dispatch table: the production path must
+        // keep the raw command — quotes included — as one argv entry, so
+        // payloads like `git commit -m "..."` reach the shell intact.
         let command = r#"git commit -m "feat: complete sub-pages""#;
+        let (program, args) =
+            crate::shell_dispatcher::global_dispatcher().build_command_parts(command);
 
-        let windows = eval_shell_invocation_for_platform(command, EvalShellPlatform::Windows);
-        assert_eq!(windows.program, "cmd");
-        assert_eq!(windows.args, vec!["/C".to_string(), command.to_string()]);
-        assert!(windows.raw_payload_on_windows);
+        assert!(!program.is_empty());
+        assert_eq!(args.last(), Some(&command.to_string()));
+    }
 
-        let unix = eval_shell_invocation_for_platform(command, EvalShellPlatform::Unix);
-        assert_eq!(unix.program, "sh");
-        assert_eq!(unix.args, vec!["-c".to_string(), command.to_string()]);
-        assert!(!unix.raw_payload_on_windows);
+    #[test]
+    fn apply_patch_treats_empty_line_as_empty_context() {
+        // Model-generated patches often lose the leading space of an empty
+        // context line; a blank patch line means "match a blank line in the
+        // target", not "unsupported patch line".
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("blank.txt"), "one\n\ntwo\n").unwrap();
+
+        let patch = "\
+*** Begin Patch
+*** Update File: blank.txt
+@@
+ one
+
+-two
++TWO
+*** End Patch";
+        apply_patch(tmp.path(), patch).expect("empty context line accepted");
+
+        let updated = std::fs::read_to_string(tmp.path().join("blank.txt")).unwrap();
+        assert_eq!(updated, "one\n\nTWO\n");
+    }
+
+    #[test]
+    fn apply_patch_rejects_missing_end_footer() {
+        // A truncated patch (footer lost) must fail instead of being
+        // partially applied and written to disk as if complete.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("notes.txt"), "status = \"draft\"\n").unwrap();
+
+        let patch = "\
+*** Begin Patch
+*** Update File: notes.txt
+@@
+-status = \"draft\"
++status = \"done\"
+";
+        assert!(
+            apply_patch(tmp.path(), patch).is_err(),
+            "patch without *** End Patch must be rejected"
+        );
+
+        let content = std::fs::read_to_string(tmp.path().join("notes.txt")).unwrap();
+        assert_eq!(content, "status = \"draft\"\n");
     }
 
     #[test]

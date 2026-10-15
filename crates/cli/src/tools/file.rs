@@ -105,12 +105,22 @@ impl ToolSpec for ReadFileTool {
             return read_pdf(&file_path, pages, context.cancel_token.clone()).await;
         }
         if is_image_for_ocr(&file_path) {
-            return read_image_via_ocr(&file_path, path_str);
+            return read_image_via_ocr(&file_path, path_str).await;
         }
 
-        let contents = fs::read_to_string(&file_path).map_err(|e| {
-            ToolError::execution_failed(format!("Failed to read {}: {}", file_path.display(), e))
-        })?;
+        // Whole-file read on the blocking pool — a large log/CSV must not
+        // stall the async worker (same convention as `list_dir`).
+        let read_path = file_path.clone();
+        let contents = tokio::task::spawn_blocking(move || fs::read_to_string(&read_path))
+            .await
+            .map_err(|e| ToolError::execution_failed(format!("read task failed: {e}")))?
+            .map_err(|e| {
+                ToolError::execution_failed(format!(
+                    "Failed to read {}: {}",
+                    file_path.display(),
+                    e
+                ))
+            })?;
 
         let total_lines = contents.lines().count();
         let total_bytes = contents.len();
@@ -126,24 +136,32 @@ impl ToolSpec for ReadFileTool {
             return Ok(ToolResult::success(contents));
         }
 
-        let start_line = match input.get("start_line").and_then(Value::as_u64) {
-            Some(0) => {
-                return Err(ToolError::invalid_input(
-                    "start_line must be 1-based and greater than 0".to_string(),
-                ));
-            }
-            Some(v) => v as usize,
+        // Reject non-positive AND non-integer values alike: `as_u64` mapped
+        // `-5` / `"3"` / floats to a silent default of 1, so the model got
+        // no signal that its paging request was ignored and could re-read
+        // the same window repeatedly.
+        let start_line = match input.get("start_line") {
             None => 1,
+            Some(v) => match v.as_i64() {
+                Some(n) if n > 0 => n as usize,
+                _ => {
+                    return Err(ToolError::invalid_input(
+                        "start_line must be a positive 1-based integer".to_string(),
+                    ));
+                }
+            },
         };
 
-        let max_lines = match input.get("max_lines").and_then(Value::as_u64) {
-            Some(0) => {
-                return Err(ToolError::invalid_input(
-                    "max_lines must be greater than 0".to_string(),
-                ));
-            }
-            Some(v) => std::cmp::min(v as usize, HARD_MAX_READ_LINES),
+        let max_lines = match input.get("max_lines") {
             None => DEFAULT_READ_LINES,
+            Some(v) => match v.as_i64() {
+                Some(n) if n > 0 => std::cmp::min(n as usize, HARD_MAX_READ_LINES),
+                _ => {
+                    return Err(ToolError::invalid_input(
+                        "max_lines must be a positive integer".to_string(),
+                    ));
+                }
+            },
         };
 
         // `start_line > total_lines` is not an error — it lets the model
@@ -211,8 +229,14 @@ impl ToolSpec for ReadFileTool {
     }
 }
 
-fn read_image_via_ocr(path: &Path, requested_path: &str) -> Result<ToolResult, ToolError> {
-    let text = crate::tools::image_ocr::ocr_image_path(path)?;
+async fn read_image_via_ocr(path: &Path, requested_path: &str) -> Result<ToolResult, ToolError> {
+    // Native Vision OCR and the tesseract subprocess are both potentially
+    // slow synchronous operations — keep them off the async worker.
+    let ocr_path = path.to_path_buf();
+    let text =
+        tokio::task::spawn_blocking(move || crate::tools::image_ocr::ocr_image_path(&ocr_path))
+            .await
+            .map_err(|e| ToolError::execution_failed(format!("ocr task failed: {e}")))??;
     Ok(ToolResult::success(format!(
         "<image_ocr path=\"{requested_path}\">\n{text}\n</image_ocr>"
     )))
@@ -343,14 +367,24 @@ async fn read_pdf(
     // papers, financial filings) can opt into the historical
     // `pdftotext -layout` route by setting
     // `prefer_external_pdftotext = true` in `~/.config/deepseek/settings.toml`.
-    let prefer_external = crate::settings::Settings::load()
-        .map(|s| s.prefer_external_pdftotext)
-        .unwrap_or(false);
+    //
+    // The settings read hits the config file synchronously — offload it to
+    // the blocking pool along with the CPU-heavy extraction below.
+    let prefer_external = tokio::task::spawn_blocking(|| {
+        crate::settings::Settings::load()
+            .map(|s| s.prefer_external_pdftotext)
+            .unwrap_or(false)
+    })
+    .await
+    .unwrap_or(false);
 
     if prefer_external {
         read_pdf_via_pdftotext(path, page_range, cancel_token).await
     } else {
-        read_pdf_via_pdf_extract(path, page_range)
+        let extract_path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || read_pdf_via_pdf_extract(&extract_path, page_range))
+            .await
+            .map_err(|e| ToolError::execution_failed(format!("pdf extraction task failed: {e}")))?
     }
 }
 
@@ -529,10 +563,19 @@ impl ToolSpec for WriteFileTool {
         let file_path = context.resolve_path(path_str)?;
 
         // Snapshot the existing contents (if any) before we overwrite — used
-        // to render an inline diff in the tool result.
+        // to render an inline diff in the tool result. Only a missing file
+        // maps to "no prior content": swallowing permission/IO/UTF-8 errors
+        // here would render a misleading whole-file-added diff and hide the
+        // real failure behind the subsequent overwrite.
         let existed_before = file_path.exists();
         let prior_contents = if existed_before {
-            fs::read_to_string(&file_path).unwrap_or_default()
+            fs::read_to_string(&file_path).map_err(|e| {
+                ToolError::execution_failed(format!(
+                    "Failed to read {}: {}",
+                    file_path.display(),
+                    e
+                ))
+            })?
         } else {
             String::new()
         };
@@ -564,7 +607,17 @@ impl ToolSpec for WriteFileTool {
             .as_ref()
             .map_or(file_content, |outcome| outcome.content.as_str());
 
-        fs::write(&file_path, final_content).map_err(|e| {
+        // Atomic temp-file + rename (the helper fsyncs, hence the blocking
+        // pool): a crash or ENOSPC mid-write must not truncate a previously
+        // intact file.
+        let write_path = file_path.clone();
+        let content_bytes = final_content.as_bytes().to_vec();
+        tokio::task::spawn_blocking(move || {
+            crate::utils::write_atomic(&write_path, &content_bytes)
+        })
+        .await
+        .map_err(|e| ToolError::execution_failed(format!("write task failed: {e}")))?
+        .map_err(|e| {
             ToolError::execution_failed(format!("Failed to write {}: {}", file_path.display(), e))
         })?;
 
@@ -738,9 +791,17 @@ impl ToolSpec for EditFileTool {
 
         let file_path = context.resolve_path(path_str)?;
 
-        let contents = fs::read_to_string(&file_path).map_err(|e| {
-            ToolError::execution_failed(format!("Failed to read {}: {}", file_path.display(), e))
-        })?;
+        let read_path = file_path.clone();
+        let contents = tokio::task::spawn_blocking(move || fs::read_to_string(&read_path))
+            .await
+            .map_err(|e| ToolError::execution_failed(format!("read task failed: {e}")))?
+            .map_err(|e| {
+                ToolError::execution_failed(format!(
+                    "Failed to read {}: {}",
+                    file_path.display(),
+                    e
+                ))
+            })?;
 
         let count = if anchor_mode {
             0 // unused in anchor mode
@@ -895,7 +956,16 @@ impl ToolSpec for EditFileTool {
             .as_ref()
             .map_or(updated.as_str(), |o| o.content.as_str());
 
-        fs::write(&file_path, final_updated).map_err(|e| {
+        // Atomic temp-file + rename on the blocking pool — never truncate
+        // in place (see WriteFileTool).
+        let write_path = file_path.clone();
+        let content_bytes = final_updated.as_bytes().to_vec();
+        tokio::task::spawn_blocking(move || {
+            crate::utils::write_atomic(&write_path, &content_bytes)
+        })
+        .await
+        .map_err(|e| ToolError::execution_failed(format!("write task failed: {e}")))?
+        .map_err(|e| {
             ToolError::execution_failed(format!("Failed to write {}: {}", file_path.display(), e))
         })?;
 
@@ -1326,6 +1396,13 @@ where
         }
         None => tokio::time::timeout(timeout, task).await,
     };
+    // Deliberate detach: on the cancel/timeout arms above the JoinHandle is
+    // dropped, leaving the scan running unobserved on the blocking pool (a
+    // dropped blocking task cannot be aborted). The result is no longer
+    // needed at that point, and the cooperative `check_list_dir_cancelled`
+    // checks inside `list_dir_entries` bound the leak between entries; the
+    // residual window is one stalled `read_dir`/`entry` syscall (e.g. a
+    // hung NFS/FUSE mount) holding a single blocking-pool thread.
 
     let joined = result.map_err(|_| list_dir_timeout(timeout))?;
     joined.map_err(|err| {
@@ -1597,6 +1674,36 @@ mod tests {
             .execute(json!({ "path": "any.txt", "max_lines": 0 }), &ctx)
             .await;
         assert!(zero_max.is_err(), "max_lines=0 must error");
+    }
+
+    #[tokio::test]
+    async fn read_file_rejects_non_positive_or_non_integer_range_values() {
+        // `-5`, strings, and floats used to fall through `as_u64` → silent
+        // default of 1; invalid paging input must surface instead.
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        fs::write(tmp.path().join("any.txt"), "x\n").expect("write");
+        let tool = ReadFileTool;
+        for bad_start in [json!(-5), json!("3"), json!(2.5)] {
+            let result = tool
+                .execute(json!({ "path": "any.txt", "start_line": bad_start }), &ctx)
+                .await;
+            assert!(result.is_err(), "start_line={bad_start} must error");
+        }
+        for bad_max in [json!(-1), json!("10"), json!(1.5)] {
+            let result = tool
+                .execute(json!({ "path": "any.txt", "max_lines": bad_max }), &ctx)
+                .await;
+            assert!(result.is_err(), "max_lines={bad_max} must error");
+        }
+        // Sanity: a valid explicit range still works.
+        let ok = tool
+            .execute(
+                json!({ "path": "any.txt", "start_line": 1, "max_lines": 1 }),
+                &ctx,
+            )
+            .await;
+        assert!(ok.is_ok(), "valid range must be accepted");
     }
 
     #[tokio::test]

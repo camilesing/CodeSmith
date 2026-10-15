@@ -226,69 +226,78 @@ project's own reference rather than inventing an API.
 5. Verify it: the project's own tests for mods, or a manual run through the
    documented activation path, and quote the output."#;
 
+/// The bundled skills table (`name`, `description`, body), in `/skills`
+/// order — the single source of truth shared by `registered()` and the
+/// tests below, so the registration and the test expectations cannot drift
+/// apart.
+const SKILLS: &[(&str, &str, &str)] = &[
+    (
+        "code-review",
+        "Review the current changes for correctness bugs (the /code-review workflow)",
+        CODE_REVIEW,
+    ),
+    (
+        "security-review",
+        "Review the current changes for security vulnerabilities",
+        SECURITY_REVIEW,
+    ),
+    (
+        "simplify",
+        "Review the changed code for simplification and apply what is safe",
+        SIMPLIFY,
+    ),
+    (
+        "run",
+        "Build and run this project to see the change working",
+        RUN,
+    ),
+    (
+        "verify-app",
+        "Verify a claim about the code by running the program and observing it",
+        VERIFY_APP,
+    ),
+    (
+        "batch",
+        "Plan a large change as parallel units and run one sub-agent per unit",
+        BATCH,
+    ),
+    (
+        "run-skill-generator",
+        "Teach /run and /verify how this project builds, starts, and is observed",
+        RUN_SKILL_GENERATOR,
+    ),
+    (
+        "update-config",
+        "Turn a settings request into the right config edit and apply it",
+        UPDATE_CONFIG,
+    ),
+    (
+        "deep-research",
+        "Answer a research question from cross-checked sources, with citations",
+        DEEP_RESEARCH,
+    ),
+    (
+        "plugin-authoring",
+        // Bridge both vocabularies: the skill is invoked as
+        // `plugin-authoring`, but the format it teaches is a "mod"
+        // everywhere else (docs/MODS.md, `SkillSource::Extension`).
+        "Write a mod (plugin) for CodeSmith, following docs/MODS.md",
+        PLUGIN_AUTHORING,
+    ),
+];
+
 /// The bundled skills, in `/skills` order.
 #[must_use]
 pub fn registered() -> Vec<Skill> {
-    [
-        (
-            "code-review",
-            "Review the current changes for correctness bugs (the /code-review workflow)",
-            CODE_REVIEW,
-        ),
-        (
-            "security-review",
-            "Review the current changes for security vulnerabilities",
-            SECURITY_REVIEW,
-        ),
-        (
-            "simplify",
-            "Review the changed code for simplification and apply what is safe",
-            SIMPLIFY,
-        ),
-        (
-            "run",
-            "Build and run this project to see the change working",
-            RUN,
-        ),
-        (
-            "verify-app",
-            "Verify a claim about the code by running the program and observing it",
-            VERIFY_APP,
-        ),
-        (
-            "batch",
-            "Plan a large change as parallel units and run one sub-agent per unit",
-            BATCH,
-        ),
-        (
-            "run-skill-generator",
-            "Teach /run and /verify how this project builds, starts, and is observed",
-            RUN_SKILL_GENERATOR,
-        ),
-        (
-            "update-config",
-            "Turn a settings request into the right config edit and apply it",
-            UPDATE_CONFIG,
-        ),
-        (
-            "deep-research",
-            "Answer a research question from cross-checked sources, with citations",
-            DEEP_RESEARCH,
-        ),
-        (
-            "plugin-authoring",
-            "Write a mod for CodeSmith, following docs/MODS.md",
-            PLUGIN_AUTHORING,
-        ),
-    ]
-    .into_iter()
-    .map(|(name, description, body)| {
-        let mut skill =
-            Skill::with_defaults(name.to_string(), description.to_string(), body.to_string());
-        skill.loaded_from = SkillSource::Bundled;
-        skill
-    })
-    .collect()
+    SKILLS
+        .iter()
+        .map(|&(name, description, body)| {
+            let mut skill =
+                Skill::with_defaults(name.to_string(), description.to_string(), body.to_string());
+            skill.loaded_from = SkillSource::Bundled;
+            skill
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -298,27 +307,26 @@ mod tests {
     #[test]
     fn bundled_skills_are_named_and_non_empty() {
         let skills = registered();
-        assert_eq!(skills.len(), 10);
-        for skill in &skills {
-            assert!(!skill.name.is_empty());
+        // Compare against the table itself — a magic `10` here would bless
+        // whatever set `registered()` happens to build.
+        assert_eq!(skills.len(), SKILLS.len());
+        for (skill, &(name, description, _body)) in skills.iter().zip(SKILLS) {
+            assert_eq!(skill.name, name);
+            assert_eq!(skill.description, description);
             assert!(
                 !skill.description.is_empty(),
-                "{} has no description for the /skills list",
-                skill.name
+                "{name} has no description for the /skills list"
             );
             assert!(
                 skill.body.len() > 200,
-                "{} body is too thin to steer a review",
-                skill.name
+                "{name} body is too thin to steer a review"
             );
             assert_eq!(skill.loaded_from, SkillSource::Bundled);
-            assert!(skill.user_invocable, "{} must be invocable", skill.name);
+            assert!(skill.user_invocable, "{name} must be invocable");
         }
         let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
-        assert!(names.contains(&"code-review"));
-        assert!(names.contains(&"verify-app"));
-        assert!(names.contains(&"batch"));
-        assert!(names.contains(&"update-config"));
-        assert!(names.contains(&"deep-research"));
+        for &(name, _, _) in SKILLS {
+            assert!(names.contains(&name), "{name} missing from registered()");
+        }
     }
 }

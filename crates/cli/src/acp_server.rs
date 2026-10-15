@@ -6,7 +6,8 @@
 //! mode.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -49,14 +50,19 @@ pub async fn run_acp_server(config: Config, model: String) -> Result<()> {
         };
 
         if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
-            let mut writer = writer.lock().await;
-            write_jsonrpc_error(
-                &mut *writer,
-                message.get("id").cloned(),
-                -32600,
-                "jsonrpc version must be 2.0",
-            )
-            .await?;
+            // JSON-RPC 2.0: a notification (no `id`) must never receive a
+            // reply — only the `-32700` parse-error case above may answer
+            // with a null id, because there the request id is undetectable.
+            if let Some(id) = message.get("id").cloned() {
+                let mut writer = writer.lock().await;
+                write_jsonrpc_error(
+                    &mut *writer,
+                    Some(id),
+                    -32600,
+                    "jsonrpc version must be 2.0",
+                )
+                .await?;
+            }
             continue;
         }
 
@@ -64,8 +70,10 @@ pub async fn run_acp_server(config: Config, model: String) -> Result<()> {
         let method = match message.get("method").and_then(Value::as_str) {
             Some(method) => method,
             None => {
-                let mut writer = writer.lock().await;
-                write_jsonrpc_error(&mut *writer, id, -32600, "missing method").await?;
+                if let Some(id) = id.clone() {
+                    let mut writer = writer.lock().await;
+                    write_jsonrpc_error(&mut *writer, Some(id), -32600, "missing method").await?;
+                }
                 continue;
             }
         };
@@ -88,8 +96,11 @@ pub async fn run_acp_server(config: Config, model: String) -> Result<()> {
                 break;
             }
             Err(err) => {
-                let mut writer = writer.lock().await;
-                write_jsonrpc_error(&mut *writer, id, err.code, err.message).await?;
+                // Notifications (no `id`) get no reply, per JSON-RPC 2.0.
+                if let Some(id) = id {
+                    let mut writer = writer.lock().await;
+                    write_jsonrpc_error(&mut *writer, Some(id), err.code, err.message).await?;
+                }
             }
         }
     }
@@ -100,12 +111,31 @@ pub async fn run_acp_server(config: Config, model: String) -> Result<()> {
 struct AcpServer {
     config: Config,
     model: String,
-    sessions: HashMap<String, AcpSession>,
+    sessions: Arc<Mutex<HashMap<String, AcpSession>>>,
 }
 
 struct AcpSession {
+    /// Creation stamp; the oldest session is evicted once the map grows
+    /// past `MAX_ACP_SESSIONS`.
+    created_at: Instant,
     /// In-flight prompt task for this session, if any.
     prompt_task: Option<tokio::task::AbortHandle>,
+    /// Completed turns (user prompt + assistant reply). Replayed as the
+    /// `messages` vector on the next `session/prompt` — the protocol's
+    /// stateful `sessionId` implies the editor conversation keeps its
+    /// context instead of restarting from zero each turn.
+    history: Vec<Message>,
+}
+
+/// Lock the session map, tolerating a poisoned lock: the map is only ever
+/// held for brief clone/insert critical sections, so a panic elsewhere
+/// must not take prompt history down with it.
+fn lock_sessions(
+    sessions: &Mutex<HashMap<String, AcpSession>>,
+) -> std::sync::MutexGuard<'_, HashMap<String, AcpSession>> {
+    sessions
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 enum AcpDispatch {
@@ -125,7 +155,7 @@ impl AcpServer {
         Self {
             config,
             model,
-            sessions: HashMap::new(),
+            sessions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -161,8 +191,28 @@ impl AcpServer {
 
     fn new_session(&mut self, _params: Value) -> std::result::Result<Value, AcpError> {
         let session_id = format!("codesmith-{}", uuid::Uuid::new_v4());
-        self.sessions
-            .insert(session_id.clone(), AcpSession { prompt_task: None });
+        let mut sessions = lock_sessions(&self.sessions);
+        // Bound the tracked-session count: evict the oldest beyond
+        // MAX_ACP_SESSIONS, aborting its in-flight prompt (if any) so it
+        // cannot write into a session that no longer exists.
+        if sessions.len() >= MAX_ACP_SESSIONS
+            && let Some(oldest) = sessions
+                .iter()
+                .min_by(|a, b| a.1.created_at.cmp(&b.1.created_at))
+                .map(|(id, _)| id.clone())
+            && let Some(session) = sessions.remove(&oldest)
+            && let Some(task) = session.prompt_task
+        {
+            task.abort();
+        }
+        sessions.insert(
+            session_id.clone(),
+            AcpSession {
+                created_at: Instant::now(),
+                prompt_task: None,
+                history: Vec::new(),
+            },
+        );
         Ok(json!({ "sessionId": session_id }))
     }
 
@@ -184,9 +234,15 @@ impl AcpServer {
             .and_then(Value::as_str)
             .ok_or_else(|| AcpError::invalid_params("sessionId is required"))?
             .to_string();
-        if !self.sessions.contains_key(&session_id) {
-            return Err(AcpError::invalid_params("unknown sessionId"));
-        }
+        // Snapshot the conversation so far under the lock; the prompt task
+        // appends its completed turn back into the map when the reply lands.
+        let history = {
+            let sessions = lock_sessions(&self.sessions);
+            match sessions.get(&session_id) {
+                Some(session) => session.history.clone(),
+                None => return Err(AcpError::invalid_params("unknown sessionId")),
+            }
+        };
         let prompt = extract_prompt_text(params.get("prompt"))
             .filter(|text| !text.trim().is_empty())
             .ok_or_else(|| AcpError::invalid_params("prompt must include text content"))?;
@@ -194,10 +250,19 @@ impl AcpServer {
         let config = self.config.clone();
         let model = self.model.clone();
         let task_session_id = session_id.clone();
+        let sessions = Arc::clone(&self.sessions);
         // One in-flight prompt per session: a new prompt supersedes (aborts)
         // any stale one still running.
         let task = tokio::spawn(async move {
-            let output = match run_prompt(&config, &model, &prompt).await {
+            let mut messages = history;
+            messages.push(Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: prompt.clone(),
+                    cache_control: None,
+                }],
+            });
+            let output = match run_prompt(&config, &model, &prompt, messages.clone()).await {
                 Ok(output) => output,
                 Err(err) => {
                     let mut writer = writer.lock().await;
@@ -205,6 +270,22 @@ impl AcpServer {
                     return;
                 }
             };
+            // Persist the completed turn so the next `session/prompt` on
+            // this session replays the conversation. A turn without a
+            // reply (aborted, empty) is left out entirely.
+            if !output.is_empty() {
+                messages.push(Message {
+                    role: "assistant".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: output.clone(),
+                        cache_control: None,
+                    }],
+                });
+                let mut sessions = lock_sessions(&sessions);
+                if let Some(session) = sessions.get_mut(&task_session_id) {
+                    session.history = messages;
+                }
+            }
             let mut writer = writer.lock().await;
             if !output.is_empty() {
                 let _ = write_session_update(&mut *writer, &task_session_id, output).await;
@@ -214,10 +295,11 @@ impl AcpServer {
                     .await;
             }
         });
-        if let Some(session) = self.sessions.get_mut(&session_id) {
-            if let Some(previous) = session.prompt_task.replace(task.abort_handle()) {
-                previous.abort();
-            }
+        let mut sessions = lock_sessions(&self.sessions);
+        if let Some(session) = sessions.get_mut(&session_id)
+            && let Some(previous) = session.prompt_task.replace(task.abort_handle())
+        {
+            previous.abort();
         }
         Ok(())
     }
@@ -225,7 +307,8 @@ impl AcpServer {
     /// Abort the in-flight prompt task for `session_id`, if any. Dropping
     /// the task's future cancels the awaited LLM call.
     fn cancel_session(&mut self, session_id: &str) {
-        if let Some(session) = self.sessions.get_mut(session_id)
+        let mut sessions = lock_sessions(&self.sessions);
+        if let Some(session) = sessions.get_mut(session_id)
             && let Some(task) = session.prompt_task.take()
         {
             task.abort();
@@ -233,7 +316,12 @@ impl AcpServer {
     }
 }
 
-async fn run_prompt(config: &Config, model: &str, prompt: &str) -> Result<String> {
+async fn run_prompt(
+    config: &Config,
+    model: &str,
+    prompt: &str,
+    messages: Vec<Message>,
+) -> Result<String> {
     // No ScopedCurrentDir: the guard mutated the PROCESS-wide cwd and
     // held that change across the awaited LLM calls, so any concurrent
     // runtime work resolving a relative path observed the wrong session
@@ -248,13 +336,7 @@ async fn run_prompt(config: &Config, model: &str, prompt: &str) -> Result<String
 
     let request = MessageRequest {
         model: route.model,
-        messages: vec![Message {
-            role: "user".to_string(),
-            content: vec![ContentBlock::Text {
-                text: prompt.to_string(),
-                cache_control: None,
-            }],
-        }],
+        messages,
         max_tokens: 4096,
         system: Some(SystemPrompt::Text(
             "You are a coding assistant inside an ACP-compatible editor. Give concise, actionable responses.".to_string(),

@@ -250,6 +250,14 @@ pub struct ExecPolicyEngine {
     /// Legacy flat lists kept for backward compatibility with `new()`.
     trusted_prefixes: Vec<String>,
     denied_prefixes: Vec<String>,
+    /// Merged trusted/denied prefixes across all layers plus the legacy
+    /// lists, precomputed at construction and on `add_ruleset` so `check()`
+    /// — which runs on every tool invocation — does not re-clone every rule
+    /// per call. `merged_denied_normalized` holds the whitespace- and
+    /// case-normalized form of each deny rule, parallel to `merged_denied`.
+    merged_trusted: Vec<String>,
+    merged_denied: Vec<String>,
+    merged_denied_normalized: Vec<String>,
     approved_for_session: HashSet<String>,
     /// Arity dictionary for command-prefix allow-rule matching.
     arity_dict: BashArityDict,
@@ -258,32 +266,56 @@ pub struct ExecPolicyEngine {
 impl ExecPolicyEngine {
     /// Legacy constructor: wraps the two vecs into a User-layer ruleset.
     pub fn new(trusted_prefixes: Vec<String>, denied_prefixes: Vec<String>) -> Self {
-        Self {
+        let mut engine = Self {
             rulesets: vec![],
             trusted_prefixes,
             denied_prefixes,
+            merged_trusted: vec![],
+            merged_denied: vec![],
+            merged_denied_normalized: vec![],
             approved_for_session: HashSet::new(),
             arity_dict: BashArityDict::new(),
-        }
+        };
+        engine.rebuild_merged_prefixes();
+        engine
     }
 
     /// Build an engine from explicit layered rulesets.
     /// Rulesets are sorted by layer priority on construction.
     pub fn with_rulesets(mut rulesets: Vec<Ruleset>) -> Self {
         rulesets.sort_by_key(|r| r.layer);
-        Self {
+        let mut engine = Self {
             rulesets,
             trusted_prefixes: vec![],
             denied_prefixes: vec![],
+            merged_trusted: vec![],
+            merged_denied: vec![],
+            merged_denied_normalized: vec![],
             approved_for_session: HashSet::new(),
             arity_dict: BashArityDict::new(),
-        }
+        };
+        engine.rebuild_merged_prefixes();
+        engine
     }
 
     /// Add a ruleset layer (re-sorts internally).
     pub fn add_ruleset(&mut self, ruleset: Ruleset) {
         self.rulesets.push(ruleset);
         self.rulesets.sort_by_key(|r| r.layer);
+        self.rebuild_merged_prefixes();
+    }
+
+    /// Recompute the merged/normalized prefix caches after any change to the
+    /// rulesets or legacy lists.
+    fn rebuild_merged_prefixes(&mut self) {
+        let (trusted, denied) = self.resolve_prefixes();
+        let denied_normalized = denied
+            .iter()
+            .map(|rule| normalize_command(rule))
+            .collect::<Vec<_>>();
+        self.merged_trusted = trusted;
+        self.merged_denied = denied;
+        self.merged_denied_normalized = denied_normalized;
     }
 
     /// Resolve the effective trusted/denied prefix sets by merging all rulesets.
@@ -357,16 +389,31 @@ impl ExecPolicyEngine {
     /// The evaluation order is: deny rules first (always win), then trusted prefix
     /// matching (arity-aware), then typed ask rules, and finally the approval mode.
     pub fn check(&self, ctx: ExecPolicyContext<'_>) -> Result<ExecPolicyDecision> {
-        let (trusted_prefixes, denied_prefixes) = self.resolve_prefixes();
         let segments = command_segments(ctx.command);
+        // Normalize each segment once instead of once per (rule, segment)
+        // pair; deny rules are already normalized in the merged cache. Skipped
+        // entirely when no deny rule exists.
+        let normalized_segments: Vec<String> = if self.merged_denied.is_empty() {
+            Vec::new()
+        } else {
+            segments
+                .iter()
+                .map(|segment| normalize_command(segment))
+                .collect()
+        };
         // Deny rules match ANY segment of a (possibly compound) command on a
         // whole-token prefix, so `true && rm -rf /` still hits a denied `rm`
         // while a denied `cat` no longer swallows `catalog`.
-        if let Some(rule) = denied_prefixes.iter().find(|rule| {
-            segments
-                .iter()
-                .any(|segment| deny_prefix_matches(rule, segment))
-        }) {
+        if let Some((rule, _)) = self
+            .merged_denied
+            .iter()
+            .zip(&self.merged_denied_normalized)
+            .find(|(_, normalized_rule)| {
+                normalized_segments
+                    .iter()
+                    .any(|segment| deny_prefix_matches_normalized(normalized_rule, segment))
+            })
+        {
             return Ok(ExecPolicyDecision {
                 allow: false,
                 requires_approval: false,
@@ -384,7 +431,7 @@ impl ExecPolicyEngine {
         let trusted_rule = if segments.len() > 1 {
             None
         } else {
-            trusted_prefixes
+            self.merged_trusted
                 .iter()
                 .find(|rule| self.arity_dict.allow_rule_matches(rule, ctx.command))
                 .cloned()
@@ -501,14 +548,18 @@ fn command_segments(command: &str) -> Vec<String> {
         .collect()
 }
 
-/// Deny-rule match against one command segment: whitespace-normalized,
-/// case-insensitive, whole-token prefix. Unlike the arity-aware allow
-/// matcher this never refuses to match (deny stays maximally strict), but
-/// it respects token boundaries — a denied `cat` does not block `catalog`.
-fn deny_prefix_matches(rule: &str, segment: &str) -> bool {
-    let rule = normalize_command(rule);
-    let segment = normalize_command(segment);
-    !rule.is_empty() && (segment == rule || segment.starts_with(&format!("{rule} ")))
+/// Deny-rule match of an already-normalized rule against an
+/// already-normalized segment: whitespace-normalized, case-insensitive,
+/// whole-token prefix. Unlike the arity-aware allow matcher this never
+/// refuses to match (deny stays maximally strict), but it respects token
+/// boundaries — a denied `cat` does not block `catalog`. Callers normalize
+/// each rule/segment once up front instead of per pair.
+fn deny_prefix_matches_normalized(rule: &str, segment: &str) -> bool {
+    !rule.is_empty()
+        && (segment == rule
+            || segment
+                .strip_prefix(rule)
+                .is_some_and(|rest| rest.starts_with(' ')))
 }
 
 fn first_token(command: &str) -> String {

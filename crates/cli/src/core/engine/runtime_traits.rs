@@ -39,7 +39,6 @@ use crate::cycle_manager::StructuredState;
 use crate::features::Feature;
 use crate::lsp::LspManager;
 use crate::seam_manager::SeamManager;
-use crate::tools::shell::ShellManagerHost;
 use crate::tools::subagent::{
     Mailbox, SharedSubAgentManager, SubAgentForkContext, SubAgentManager, SubAgentResult,
     SubAgentRuntime, SubAgentType, resolve_subagent_assignment_route,
@@ -113,18 +112,22 @@ impl HostServices for super::EngineHost {
     }
 
     fn subagents(&self) -> Arc<dyn SubAgentApi> {
-        Arc::new(SubAgentManagerHost(Arc::clone(&self.subagent_manager)))
+        // Pre-erased once in `Default` / `build_engine` — cloning the cached
+        // `Arc<dyn SubAgentApi>` is a cheap refcount bump (no per-call
+        // re-wrap), matching `lsp` / `bg_registry`.
+        Arc::clone(&self.subagent_api)
     }
 
     fn shell(&self) -> Arc<dyn ShellApi> {
-        Arc::new(ShellManagerHost(Arc::clone(
-            // `new_impl` always sets `shell_manager` to `Some` before the
-            // engine runs, so every `HostServices::shell` call (turn dispatch,
-            // sub-agent spawn, …) reaches a concrete handle here.
-            self.shell_manager
+        // Same pre-erasure as `subagents` above. `shell_api` is `Some`
+        // exactly when `shell_manager` is, and `new_impl` always sets it
+        // before the engine runs, so every `HostServices::shell` call
+        // (turn dispatch, sub-agent spawn, …) reaches the cached handle.
+        Arc::clone(
+            self.shell_api
                 .as_ref()
-                .expect("shell_manager is set by new_impl before run()"),
-        )))
+                .expect("shell_api is set by new_impl before run()"),
+        )
     }
 
     fn task_data_dir(&self) -> Option<PathBuf> {
@@ -132,12 +135,10 @@ impl HostServices for super::EngineHost {
     }
 
     fn hooks(&self) -> Option<Arc<dyn HookHost>> {
-        // Clone the owned `HookExecutor` and erase it behind `Arc<dyn HookHost>`
-        // so the engine body (and `CompactionEnhancements`) never name the
-        // concrete TUI type.
-        self.hooks
-            .clone()
-            .map(|h| -> Arc<dyn HookHost> { Arc::new(h) })
+        // The executor lives behind one shared `Arc` (see the field docs in
+        // `engine.rs`): cloning it is a refcount bump, and every caller
+        // observes the host's live executor instead of a diverging snapshot.
+        self.hooks.clone().map(|h| -> Arc<dyn HookHost> { h })
     }
 
     async fn spawn_subagent(
@@ -444,6 +445,24 @@ impl HostServices for super::EngineHost {
                             .with_cancel_token(cancel_token.clone());
                     }
                     builder = builder.with_subagent_tools(self.subagent_manager.clone(), rt);
+                } else {
+                    // Mirror the Agent-mode branch's diagnostics above: a
+                    // Coordinator turn without agent-spawn tools is quietly
+                    // broken, so make the misconfiguration observable
+                    // instead of silently falling through.
+                    if config.features.enabled(Feature::Subagents) {
+                        tracing::warn!(
+                            target: "codesmith_subagents",
+                            "coordinator mode: sub-agents enabled but no LLM client is bound — \
+                             this turn runs without agent_open/agent_eval/agent_close"
+                        );
+                    } else {
+                        tracing::warn!(
+                            target: "codesmith_subagents",
+                            "coordinator mode requires the subagents feature, but it is disabled \
+                             — this turn runs without agent-spawn tools"
+                        );
+                    }
                 }
                 // send_message — coordinator needs messaging but NOT
                 // team_create/team_delete.

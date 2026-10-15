@@ -84,7 +84,14 @@ impl HookEvent {
     /// fallback `{"type":"serialization_error"}` value is returned instead of
     /// panicking.
     pub fn to_json(&self) -> Value {
-        serde_json::to_value(self).unwrap_or_else(|_| json!({"type":"serialization_error"}))
+        serde_json::to_value(self).unwrap_or_else(|err| {
+            // Record the underlying cause before injecting the sentinel:
+            // otherwise the real event is lost with no signal in the
+            // logs/webhooks that consume it. (The crate deliberately has no
+            // tracing dependency, hence stderr.)
+            eprintln!("hook event serialization failed: {err}");
+            json!({"type":"serialization_error"})
+        })
     }
 }
 

@@ -72,7 +72,13 @@ pub fn parse_since(s: &str) -> Result<DateTime<Utc>> {
     let s = s.trim().to_ascii_lowercase();
     let s = s.strip_prefix("now-").unwrap_or(&s);
     let secs = parse_duration_secs(s)?;
-    Ok(Utc::now() - Duration::seconds(secs))
+    // `Duration::seconds` panics for out-of-range values; try_seconds
+    // plus checked subtraction keep an absurd cutoff error-reportable.
+    let duration = Duration::try_seconds(secs)
+        .ok_or_else(|| anyhow::anyhow!("duration {s:?} is out of range"))?;
+    Utc::now()
+        .checked_sub_signed(duration)
+        .ok_or_else(|| anyhow::anyhow!("duration {s:?} yields an unrepresentable cutoff"))
 }
 
 fn parse_duration_secs(s: &str) -> Result<i64> {
@@ -95,7 +101,13 @@ fn parse_duration_secs(s: &str) -> Result<i64> {
                     's' => 1,
                     _ => unreachable!(),
                 };
-                total += n * factor;
+                // Checked arithmetic: user-supplied components like
+                // `200000000000000d` must error, not panic (debug) or wrap
+                // to a bogus cutoff (release).
+                total = n
+                    .checked_mul(factor)
+                    .and_then(|scaled| total.checked_add(scaled))
+                    .ok_or_else(|| anyhow::anyhow!("duration {s:?} overflows"))?;
             }
             _ => anyhow::bail!("unrecognised character {ch:?} in duration {s:?}"),
         }
@@ -104,7 +116,9 @@ fn parse_duration_secs(s: &str) -> Result<i64> {
     if !num_buf.is_empty() {
         // Trailing bare number — treat as seconds.
         let n: i64 = num_buf.parse()?;
-        total += n;
+        total = total
+            .checked_add(n)
+            .ok_or_else(|| anyhow::anyhow!("duration {s:?} overflows"))?;
     }
 
     if total == 0 {
@@ -265,7 +279,10 @@ fn read_audit_log(path: &Path, since: Option<DateTime<Utc>>, rollup: &mut Rollup
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
         Err(e) => {
-            tracing::trace!(
+            // Non-NotFound read failures (e.g. permission denied) must be
+            // visible: at trace level they are usually filtered, making a
+            // permissions problem indistinguishable from "no data".
+            tracing::warn!(
                 "metrics: could not read audit log {}: {}",
                 path.display(),
                 e
@@ -295,7 +312,11 @@ fn read_audit_log(path: &Path, since: Option<DateTime<Utc>>, rollup: &mut Rollup
         if let Some(cutoff) = since {
             match ts {
                 Some(t) if t < cutoff => continue,
-                _ => {}
+                Some(_) => {}
+                // Undated events cannot be placed inside the window;
+                // exclude them rather than silently counting them in the
+                // rollup.
+                None => continue,
             }
         }
 
@@ -417,7 +438,7 @@ fn read_session_files(sessions_dir: &Path, since: Option<DateTime<Utc>>, rollup:
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
         Err(e) => {
-            tracing::trace!(
+            tracing::warn!(
                 "metrics: could not list sessions dir {}: {}",
                 sessions_dir.display(),
                 e
@@ -426,7 +447,17 @@ fn read_session_files(sessions_dir: &Path, since: Option<DateTime<Utc>>, rollup:
         }
     };
 
-    for entry in rd.flatten() {
+    for entry in rd {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                tracing::warn!(
+                    "metrics: unreadable entry in sessions dir {}: {err}",
+                    sessions_dir.display()
+                );
+                continue;
+            }
+        };
         let path = entry.path();
         // Only look at .json files directly in sessions/; skip sub-dirs.
         if path.is_dir() || path.extension().map(|e| e != "json").unwrap_or(true) {
@@ -440,7 +471,7 @@ fn read_session_file(path: &Path, since: Option<DateTime<Utc>>, rollup: &mut Rol
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
-            tracing::trace!(
+            tracing::warn!(
                 "metrics: could not read session file {}: {}",
                 path.display(),
                 e
@@ -466,6 +497,13 @@ fn read_session_file(path: &Path, since: Option<DateTime<Utc>>, rollup: &mut Rol
     rollup.parsed_lines += 1;
 
     // Session-level timestamp filter (check metadata.created_at or updated_at).
+    //
+    // Granularity limitation: the whole session is kept or dropped on its
+    // metadata timestamp — persisted session messages carry no
+    // per-message timestamps, so a recently-updated session contributes
+    // all of its (possibly old) tool calls, and a session without
+    // metadata timestamps always passes the cutoff. `--since` rollups
+    // therefore skew inclusive.
     let session_ts = v
         .pointer("/metadata/updated_at")
         .or_else(|| v.pointer("/metadata/created_at"))
@@ -591,7 +629,7 @@ fn read_runtime_events(events_dir: &Path, since: Option<DateTime<Utc>>, rollup: 
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
         Err(e) => {
-            tracing::trace!(
+            tracing::warn!(
                 "metrics: could not list events dir {}: {}",
                 events_dir.display(),
                 e
@@ -600,7 +638,17 @@ fn read_runtime_events(events_dir: &Path, since: Option<DateTime<Utc>>, rollup: 
         }
     };
 
-    for entry in rd.flatten() {
+    for entry in rd {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                tracing::warn!(
+                    "metrics: unreadable entry in events dir {}: {err}",
+                    events_dir.display()
+                );
+                continue;
+            }
+        };
         let path = entry.path();
         if path.extension().map(|e| e != "jsonl").unwrap_or(true) {
             continue;
@@ -613,7 +661,7 @@ fn read_events_jsonl(path: &Path, since: Option<DateTime<Utc>>, rollup: &mut Rol
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
-            tracing::trace!(
+            tracing::warn!(
                 "metrics: could not read events file {}: {}",
                 path.display(),
                 e
@@ -642,7 +690,11 @@ fn read_events_jsonl(path: &Path, since: Option<DateTime<Utc>>, rollup: &mut Rol
         if let Some(cutoff) = since {
             match ts {
                 Some(t) if t < cutoff => continue,
-                _ => {}
+                Some(_) => {}
+                // Undated events cannot be placed inside the window;
+                // exclude them rather than silently counting them in the
+                // rollup.
+                None => continue,
             }
         }
 
@@ -960,6 +1012,14 @@ mod tests {
         assert!(parse_since("").is_err());
     }
 
+    #[test]
+    fn parse_since_rejects_overflowing_and_out_of_range_durations() {
+        // Multiplied component overflows i64.
+        assert!(parse_since("200000000000000d").is_err());
+        // Fits i64 seconds but exceeds chrono's Duration range.
+        assert!(parse_since("10000000000000d").is_err());
+    }
+
     // ── fmt_num ──
 
     #[test]
@@ -1071,6 +1131,32 @@ mod tests {
         rollup.tool_mut("read_file").calls = 4_012;
         rollup.tool_mut("exec_shell").calls = 1_118;
         assert_eq!(rollup.total_tool_calls(), 5_130);
+    }
+
+    #[test]
+    fn audit_log_since_filter_excludes_undated_events() {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            tmp,
+            r#"{{"event":"credential.save","ts":"not-a-timestamp"}}"#
+        )
+        .unwrap();
+        writeln!(tmp, r#"{{"event":"credential.save"}}"#).unwrap();
+
+        // Events that cannot be dated cannot be placed inside the window:
+        // with a cutoff active they are excluded, not silently counted.
+        let cutoff: DateTime<Utc> = "2026-01-01T00:00:00Z".parse().unwrap();
+        let mut rollup = Rollup::default();
+        read_audit_log(tmp.path(), Some(cutoff), &mut rollup);
+        assert_eq!(rollup.parsed_lines, 0);
+        assert_eq!(rollup.credentials.saves, 0);
+
+        // Without a cutoff the same lines are tallied as before.
+        let mut rollup = Rollup::default();
+        read_audit_log(tmp.path(), None, &mut rollup);
+        assert_eq!(rollup.parsed_lines, 2);
+        assert_eq!(rollup.credentials.saves, 2);
     }
 
     /// Session files carry the workspace and model the digest tallies, so a
