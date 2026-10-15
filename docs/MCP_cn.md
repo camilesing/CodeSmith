@@ -197,6 +197,53 @@ codesmith mcp tools codesmith
 - `required`（布尔值，可选）：若该服务器无法初始化，则启动/连接校验失败。
 - `enabled_tools`（数组，可选）：该服务器的工具名允许列表。
 - `disabled_tools`（数组，可选）：在 `enabled_tools` 之后应用的拒绝列表。
+- `oauth`（对象，可选）：URL 服务器的 OAuth 设备流配置；见下文 [OAuth](#oauth) 一节。
+
+## OAuth
+
+需要用户 OAuth 的基于 URL 的 MCP 服务器（例如 GitHub）可以通过设备流授权，而不必把一个长期有效的 token 粘贴进 `headers`。
+
+在 `mcp.json` 的服务器条目中加一个 `oauth` 表：
+
+```jsonc
+{
+  "mcpServers": {
+    "github": {
+      "url": "https://api.githubcopilot.com/mcp/",
+      "oauth": {
+        "provider": "github",
+        "client_id": "<your OAuth app client id>",
+        "scopes": ["repo"]
+      }
+    }
+  }
+}
+```
+
+字段：
+
+- `provider`（字符串，必填）：`github` 会填入标准的 GitHub 设备码和 token 端点。任何其他值都被视为自定义 provider，需要显式给出 `device_code_url` 和 `token_url`。
+- `client_id`（字符串，必填）。
+- `scopes`（字符串数组，可选）：以空格拼接后作为设备流的 `scope` 参数。
+- `device_code_url` / `token_url`（字符串，可选）：非 GitHub provider 的自定义端点。
+
+然后授权一次：
+
+```console
+$ codesmith mcp auth github
+Authorization required for MCP server `github` (github).
+  1. Open:  https://github.com/login/device
+  2. Code:  ABCD-1234   (expires in 900s)
+Waiting for authorization…
+Authorization stored for MCP server `github`.
+```
+
+行为：
+
+- token 通过 `codesmith-secrets` 存储——系统密钥环可用时存入密钥环，否则回落到 `~/.codesmith/secrets/` 下的权限受控文件。它永远不会落进 `mcp.json`。
+- 连接时，存储的 token 会作为 `Authorization: Bearer` 头注入，除非 `headers` 已经带了该头。当服务器应答 401 时，HTTP 传输会通过 refresh-token 授权刷新一次。用户在 `headers.Authorization` 里配置的头永远优先，不会被覆盖。
+- stdio 服务器忽略 `oauth`——凭据请通过它们的 `env` 表传递。
+- 不在范围内：PKCE/重定向流和 client-credentials 授权。
 
 ## 特性开关
 

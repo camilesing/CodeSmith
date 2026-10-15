@@ -1039,8 +1039,16 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
     rust-analyzer、go → gopls、python → pyright、ts →
     typescript-language-server、java → jdtls 等）
 - `auto.*`（可选）：`--model auto` 路由器调优：
-  - `[auto].cost_saving`（布尔，默认 `false`）——让路由偏向
-    flash 级模型以节省成本
+  - `[auto].cost_saving`（布尔，默认 `false`）——完全的廉价路由选择
+    加入：路由分类器运行在 `[utility_model]` 便宜大脑上，不明确的请求
+    解析到 light 档。默认（`false`）保持强脑路由：由 provider 的
+    heavy 档做分类，不明确的请求解析到 heavy。
+  - `[auto].heavy_model` / `[auto].light_model`（字符串，可选）——
+    显式档位覆盖。在透传 provider（OpenAI 兼容网关、Ollama、自定义
+    端点）上路由器无法推断你的模型目录，会回落到你的主模型；把这两项
+    钉住，即可在你实际提供的两个具体模型之间路由。
+  - `[auto].router_model`（字符串，可选）——覆盖路由分类器本身。
+    默认：质量优先路由下取 heavy 档，省钱模式下取 `[utility_model]`。
 - `mods.*`（可选）：脚本 mod（Rhai）层控制——参见
   [MODS_cn.md](MODS_cn.md)：
   - `[mods].enabled`（布尔，默认 `true`）：控制整个脚本 mod 层
