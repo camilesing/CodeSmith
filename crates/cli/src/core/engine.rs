@@ -977,6 +977,10 @@ fn populate_extension_runtime(
                     ) {
                         Ok(rhai_mod) => match load_rt.block_on(runner_for_thread.load(&rhai_mod)) {
                             Ok(()) => {
+                                // Per-mod lifecycle — retain the compiled form
+                                // so a later single-mod unload replays this
+                                // mod without recompiling.
+                                runner_for_thread.retain_mod(Arc::new(rhai_mod));
                                 loaded_mods_cell.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                 audit_cell.lock().expect("audit cell poisoned").push(
                                     StartupAuditEntry::new(
@@ -1081,25 +1085,13 @@ pub fn reload_extension_runtime(
     mods_enabled: bool,
     shared_cancel_token: Arc<StdMutex<tokio_util::sync::CancellationToken>>,
 ) -> PopulateReport {
-    runner.clear_handlers();
-    // §F5d T3 — also clear tools/commands so the re-populate doesn't leave
-    // stale bindings (name-keyed maps; safe concurrent w/ in-flight turn).
-    runner.clear_tools();
-    runner.clear_commands();
-    // Route A — drop the generation's provider registration guards
-    // (un-register; safe concurrent w/ in-flight turn — an already-built
-    // client keeps its `Arc`).
-    runner.clear_providers();
-    // Route B — prompt sections are generation-scoped like providers.
-    runner.clear_prompt_sections();
-    // Route B — registered skills are generation-scoped the same way; the
-    // next catalogue render (prompt refresh) picks up the new generation's
-    // set.
-    runner.clear_skills();
-    // Session log folds — same generation scoping; the hub turns dirty and
-    // the engine refolds from the live transcript at the next turn start
-    // (after the new generation re-registers).
-    runner.clear_message_projections();
+    // Whole-layer reload: drop every bound registration (the runner's clear
+    // suite — handlers/tools/commands/providers/prompt sections/skills/
+    // message projections) AND the retained script-mod slots (the
+    // repopulate below re-compiles from disk and re-retains). See each
+    // clear_* method for the per-contribution concurrency reasoning.
+    runner.clear_bound_registrations();
+    runner.clear_mod_slots();
     // §F5d T4 — move the live dylib `Library`s into `pending_drop` (UI-thread
     // MOVE: `mem::take` under one lock, the `Library` stays alive). The engine
     // op-loop top then `drop_pending`s them at the one moment the main-thread

@@ -184,13 +184,13 @@ impl ToolSpec for ManageModsTool {
                 // Serialize with the /mods command path: each persist
                 // rewrites the whole state file, so unlocked racing
                 // mutations are last-writer-wins. The guard scopes to
-                // load→mutate→persist ONLY — reload re-acquires it at the
-                // activation-hash backfill inside populate (std Mutex is
-                // not reentrant; holding it across reload deadlocks). All
-                // of it is synchronous disk work (discovery scan +
-                // SHA-256) — off the tokio worker, like `reload_note`.
+                // load→mutate→persist ONLY — the per-mod load after it may
+                // re-acquire the guard at the activation-hash backfill
+                // (std Mutex is not reentrant). All of it is synchronous
+                // disk work — off the tokio worker, like the reload path.
                 let ws = workspace.clone();
                 let id_in = id.clone();
+                let reload_ctx = self.reload.clone();
                 let msg = tokio::task::spawn_blocking(move || {
                     let _guard = crate::mod_ops::mod_state_lock();
                     let mut state = crate::mod_state::ModStateStore::load_default()
@@ -199,13 +199,16 @@ impl ToolSpec for ManageModsTool {
                 })
                 .await
                 .map_err(|e| ToolError::execution_failed(format!("join: {e}")))??;
-                let reload_note = self.reload_note().await;
-                Ok(ToolResult::success(format!("{msg}\n{reload_note}")))
+                let note = self
+                    .per_mod_note(reload_ctx, workspace, &id, PerModTransition::Load)
+                    .await;
+                Ok(ToolResult::success(format!("{msg}\n{note}")))
             }
             "disable" | "enable" => {
                 require_id()?;
                 let id_in = id.clone();
                 let enable = action == "enable";
+                let reload_ctx = self.reload.clone();
                 let msg = tokio::task::spawn_blocking(move || {
                     let _guard = crate::mod_ops::mod_state_lock();
                     let mut state = crate::mod_state::ModStateStore::load_default()
@@ -215,13 +218,21 @@ impl ToolSpec for ManageModsTool {
                 })
                 .await
                 .map_err(|e| ToolError::execution_failed(format!("join: {e}")))??;
-                let reload_note = self.reload_note().await;
-                Ok(ToolResult::success(format!("{msg}\n{reload_note}")))
+                let transition = if enable {
+                    PerModTransition::Load
+                } else {
+                    PerModTransition::Unload
+                };
+                let note = self
+                    .per_mod_note(reload_ctx, workspace, &id, transition)
+                    .await;
+                Ok(ToolResult::success(format!("{msg}\n{note}")))
             }
             "remove" => {
                 require_id()?;
                 let ws = workspace.clone();
                 let id_in = id.clone();
+                let reload_ctx = self.reload.clone();
                 let msg = tokio::task::spawn_blocking(move || {
                     let _guard = crate::mod_ops::mod_state_lock();
                     let mut state = crate::mod_state::ModStateStore::load_default()
@@ -230,8 +241,10 @@ impl ToolSpec for ManageModsTool {
                 })
                 .await
                 .map_err(|e| ToolError::execution_failed(format!("join: {e}")))??;
-                let reload_note = self.reload_note().await;
-                Ok(ToolResult::success(format!("{msg}\n{reload_note}")))
+                let note = self
+                    .per_mod_note(reload_ctx, workspace, &id, PerModTransition::Unload)
+                    .await;
+                Ok(ToolResult::success(format!("{msg}\n{note}")))
             }
             "reload" => Ok(ToolResult::success(self.reload_note().await)),
             other => Err(ToolError::invalid_input(format!(
@@ -242,6 +255,33 @@ impl ToolSpec for ManageModsTool {
 }
 
 impl ManageModsTool {
+    /// Which single-mod runtime transition follows a persisted state
+    /// change (the per-mod counterpart of `reload_note`'s whole-layer
+    /// reload).
+    async fn per_mod_note(
+        &self,
+        reload_ctx: Option<mod_ops::ModReloadCtx>,
+        workspace: &std::path::Path,
+        id: &str,
+        transition: PerModTransition,
+    ) -> String {
+        let Some(ctx) = reload_ctx else {
+            return "No extension runner in this session; the change takes effect at the next session start."
+                .to_string();
+        };
+        let runner = ctx.runner;
+        let ws = workspace.to_path_buf();
+        let id_in = id.to_string();
+        // Synchronous disk work (discovery scan, SHA-256, Rhai
+        // compilation on load) — off the tokio worker, like `reload_note`.
+        tokio::task::spawn_blocking(move || match transition {
+            PerModTransition::Load => mod_ops::load_mod(&runner, &ws, &id_in, ctx.mods_enabled),
+            PerModTransition::Unload => mod_ops::unload_mod(&runner, &id_in),
+        })
+        .await
+        .unwrap_or_else(|e| format!("mod transition failed: {e}"))
+    }
+
     async fn reload_note(&self) -> String {
         match &self.reload {
             // mods_enabled captured at engine build (next to the runner) —
@@ -265,6 +305,16 @@ impl ManageModsTool {
                 .to_string(),
         }
     }
+}
+
+/// The single-mod runtime transition that follows a persisted state change
+/// in `manage_mods` — see [`ManageModsTool::per_mod_note`].
+#[derive(Clone, Copy)]
+enum PerModTransition {
+    /// Compile + bind + retain (activate / enable).
+    Load,
+    /// Evict the compiled form + replay survivors (disable / remove).
+    Unload,
 }
 
 /// Parse the `files` array into `(path, content)` pairs.

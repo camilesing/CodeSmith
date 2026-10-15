@@ -153,18 +153,27 @@ enum Action {
 async fn mutate(state: &ReplState, id: &str, action: Action) {
     let workspace = state.workspace.clone();
     let id = id.to_string();
+    let runner = state.extension_runner.clone();
+    let mods_enabled = state.config.mods_enabled();
+    // Computed before `action` moves into the persist closure below.
+    let load_after_persist = matches!(action, Action::Activate | Action::Enable);
+    // Clones for the persist closure; the originals stay for the per-mod
+    // transition note after it.
+    let ws_in = workspace.clone();
+    let id_in = id.clone();
     let result = tokio::task::spawn_blocking(move || {
         // Same protocol as the manage_mods tool: guard scopes to
-        // load→mutate→persist only — reload re-acquires the guard at the
-        // activation-hash backfill (std Mutex is not reentrant).
+        // load→mutate→persist only — the per-mod transition after it may
+        // re-acquire the guard at the activation-hash backfill (std Mutex
+        // is not reentrant).
         let _guard = crate::mod_ops::mod_state_lock();
         let mut store = crate::mod_state::ModStateStore::load_default()
             .map_err(|err| format!("load mod state: {err}"))?;
         match action {
-            Action::Activate => crate::mod_ops::activate(&workspace, &mut store, &id),
-            Action::Enable => crate::mod_ops::set_enabled(&mut store, &id, true),
-            Action::Disable => crate::mod_ops::set_enabled(&mut store, &id, false),
-            Action::Remove => crate::mod_ops::remove(&workspace, &mut store, &id),
+            Action::Activate => crate::mod_ops::activate(&ws_in, &mut store, &id_in),
+            Action::Enable => crate::mod_ops::set_enabled(&mut store, &id_in, true),
+            Action::Disable => crate::mod_ops::set_enabled(&mut store, &id_in, false),
+            Action::Remove => crate::mod_ops::remove(&ws_in, &mut store, &id_in),
         }
     })
     .await
@@ -172,10 +181,26 @@ async fn mutate(state: &ReplState, id: &str, action: Action) {
     match result {
         Ok(text) => {
             println!("{text}");
-            match reload_note(state).await {
-                Ok(text) => println!("{text}"),
-                Err(err) => println!("{} {err}", "✗".red()),
-            }
+            // Single-mod transition instead of a whole-layer reload:
+            // activate/enable compile + bind just this mod; disable/remove
+            // evict it and replay the survivors from their retained
+            // compiled forms.
+            let note = match runner {
+                Some(runner) => {
+                    tokio::task::spawn_blocking(move || {
+                        if load_after_persist {
+                            crate::mod_ops::load_mod(&runner, &workspace, &id, mods_enabled)
+                        } else {
+                            crate::mod_ops::unload_mod(&runner, &id)
+                        }
+                    })
+                    .await
+                    .unwrap_or_else(|err| format!("mod transition failed: {err}"))
+                }
+                None => "No extension runner in this session; the change takes effect at the next session start."
+                    .to_string(),
+            };
+            println!("{note}");
         }
         Err(err) => println!("{} {err}", "✗".red()),
     }
