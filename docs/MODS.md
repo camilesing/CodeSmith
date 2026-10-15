@@ -87,7 +87,7 @@ register_command("calls", "Show the tool-call count", |args, ctx| {
 
 **What you'll see**:
 
-- The `/calls` command registers, but slash commands registered by mods do not dispatch anywhere in the current build (see [EXTENSIONS.md](EXTENSIONS.md)) — typing `/calls` in the REPL falls through to the unknown-command arm. `message(...)` / `send(...)` become reachable when command dispatch lands; today the working readout is the model calling the `call_count` tool.
+- Typing `/calls some args` in the REPL dispatches through the extension runner: `message(...)` prints its text, `send(...)` submits it into the conversation. Mod commands sit between user commands and the built-in table (user commands shadow them; they shadow built-ins), appear in `/help` under "mod commands", and Tab completes their names live.
 - Now **edit `mod.rhai`, save, and reload** with `/mods reload`; it re-runs discovery, no re-approval for the same id. `/mods status` confirms which mods are loaded and the runner generation (`/mods list` shows per-mod activation state; the startup notice also lists discovered-but-not-activated mods). (The automatic file watcher and its `[mods] watch` switch were removed in 0.9.0; reloading is explicit.)
 
 You've now touched all four registration surfaces: event hooks, tools, commands, KV. The full `/mods` command set is `list` / `status` / `info <id>` / `activate <id>` / `enable|disable <id>` / `remove <id>` / `reload`; the model-facing `manage_mods` tool mirrors it with actions `list` / `write` / `activate` / `disable` / `enable` / `remove` / `reload`.
@@ -96,7 +96,7 @@ You've now touched all four registration surfaces: event hooks, tools, commands,
 
 ### Event hooks
 
-`on("<event>", |e, ctx| { ... })` — `e` is the event payload map (every payload carries `kind`), `ctx` is `#{cwd, mode, idle, generation}`; **ctx is optional** (`|e|` works). Event names are the kebab-case spelling of all 25 `ExtensionEventKind` variants:
+`on("<event>", |e, ctx| { ... })` — `e` is the event payload map (every payload carries `kind`), `ctx` is `#{cwd, mode, idle, generation}`; **ctx is optional** (`|e|` works). Event names are the kebab-case spelling of all 24 `ExtensionEventKind` variants:
 
 | Event | Payload fields |
 |---|---|
@@ -110,10 +110,16 @@ You've now touched all four registration surfaces: event hooks, tools, commands,
 | `assistant-stream` | `text` (one incremental chunk; fires per text delta, observe-only) |
 | `tool-execution-update` | `id`, `name`, `message` |
 | `tools-change` | `added`, `removed` (tool-name arrays) |
-| `project-trust` / `session-start` / `resources-discover` | `reason` |
+| `project-trust` / `session-start` | `reason` |
 | `agent-start` / `before-provider-headers` / `tool-execution-start` / `tool-execution-end` / `agent-end` / `agent-settled` / `session-before-switch` / `session-before-fork` / `session-shutdown` / `session-before-compact` / `session-compact` | (`kind` only) |
 
-Unwired events (host seam not yet connected) never fire: `tool-execution-update`, `resources-discover`, `session-before-fork`.
+Unwired event (host seam not yet connected) never fires: `tool-execution-update` — the tool
+contract is one-shot, so there is no host progress channel to bridge it to (see
+`callback_bridge.rs`); it fires when a streaming tool contract lands. `resources-discover`
+was removed in 0.11.0 (never had an emitter or a consumer). `session-before-fork` fires at
+every parent spawn (`agent_open` / `agent_spawn` / `subagent_run` / `delegate_to_agent`)
+before the child forks session state — `cancel()` vetoes the fork; grandchildren spawns are
+not vetoable (sub-agent registries attach no runner).
 
 `tool-result` payloads carry the canonical/rendered separation: `content` is the model-visible rendering; `canonical` is the structured machine-readable value of the same result (the `ToolResult::json` value, or what a tool attached via `with_canonical`). Read `canonical` instead of re-parsing `content` — prose-rendered results (`todo_add` prefixes a sentence before the JSON) are not parseable at all. Canonical is live-process only: the transcript persists the rendered `content`.
 

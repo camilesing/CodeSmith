@@ -3098,3 +3098,172 @@ fn plan_mode_child_asking_for_a_write_tool_fails_loudly() {
         "a read-only mode must refuse a requested write tool, not run with it dropped"
     );
 }
+
+// === session-before-fork veto ===============================================
+
+/// A minimal `ExtensionCommandContext` for binding the test runner.
+struct ForkCtx;
+#[async_trait::async_trait]
+impl codesmith_agent::extension::ExtensionContext for ForkCtx {
+    fn cwd(&self) -> &std::path::Path {
+        std::path::Path::new(".")
+    }
+    fn mode(&self) -> codesmith_agent::extension::ExtensionMode {
+        codesmith_agent::extension::ExtensionMode::Tui
+    }
+    fn is_idle(&self) -> bool {
+        true
+    }
+    fn signal(&self) -> tokio_util::sync::CancellationToken {
+        tokio_util::sync::CancellationToken::new()
+    }
+    fn generation(&self) -> u64 {
+        1
+    }
+}
+impl codesmith_agent::extension::ExtensionCommandContext for ForkCtx {}
+
+/// Records every event it sees; optionally cancels on `SessionBeforeFork`.
+struct ForkHandler {
+    seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    cancel_fork: bool,
+}
+#[async_trait::async_trait]
+impl codesmith_agent::extension::Handler for ForkHandler {
+    async fn handle(
+        &self,
+        event: &codesmith_agent::extension::ExtensionEvent,
+        _ctx: &dyn codesmith_agent::extension::ExtensionContext,
+    ) -> Result<
+        codesmith_agent::extension::HandlerOutcome,
+        codesmith_agent::extension::ExtensionError,
+    > {
+        self.seen
+            .lock()
+            .unwrap()
+            .push(format!("{:?}", event.kind()));
+        if self.cancel_fork
+            && matches!(
+                event.kind(),
+                codesmith_agent::extension::ExtensionEventKind::SessionBeforeFork
+            )
+        {
+            return Ok(codesmith_agent::extension::HandlerOutcome::Cancel {
+                reason: "no fork in tests".to_string(),
+            });
+        }
+        Ok(codesmith_agent::extension::HandlerOutcome::Continue)
+    }
+}
+
+struct ForkExt {
+    handler: std::sync::Arc<ForkHandler>,
+}
+#[async_trait::async_trait]
+impl codesmith_agent::extension::Extension for ForkExt {
+    fn metadata(&self) -> &codesmith_agent::extension::ExtensionMetadata {
+        static M: std::sync::OnceLock<codesmith_agent::extension::ExtensionMetadata> =
+            std::sync::OnceLock::new();
+        M.get_or_init(|| {
+            codesmith_agent::extension::ExtensionMetadata::from_strings(
+                "fork-veto-test".to_string(),
+                "fork-veto-test".to_string(),
+                "0.1.0".to_string(),
+            )
+        })
+    }
+    async fn configure(
+        &self,
+        api: &dyn codesmith_agent::extension::ExtensionApi,
+    ) -> Result<(), codesmith_agent::extension::ExtensionError> {
+        api.on(self.handler.clone())?;
+        Ok(())
+    }
+}
+
+async fn runner_with_fork_handler(
+    cancel_fork: bool,
+) -> (
+    std::sync::Arc<codesmith_extensions::ExtensionRunner>,
+    std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+) {
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let runner = std::sync::Arc::new(codesmith_extensions::ExtensionRunner::new());
+    let ext = ForkExt {
+        handler: std::sync::Arc::new(ForkHandler {
+            seen: seen.clone(),
+            cancel_fork,
+        }),
+    };
+    runner.load(&ext).await.expect("configure ForkExt");
+    runner.bind_core(std::sync::Arc::new(ForkCtx));
+    (runner, seen)
+}
+
+#[tokio::test]
+async fn session_before_fork_cancel_vetoes_agent_spawn() {
+    let (runner, seen) = runner_with_fork_handler(true).await;
+    let tmp = tempdir().expect("tempdir");
+    let mut runtime = stub_runtime();
+    runtime.context = ToolContext::new(tmp.path().to_path_buf());
+    let manager = Arc::new(tokio::sync::RwLock::new(SubAgentManager::new(
+        tmp.path().to_path_buf(),
+        4,
+    )));
+    let tool = AgentSpawnTool::new(manager, runtime).with_extension_runner(runner.clone());
+
+    let err = tool
+        .execute(
+            serde_json::json!({"prompt": "map the repo"}),
+            &ToolContext::new(tmp.path().to_path_buf()),
+        )
+        .await
+        .expect_err("Cancel must abort the spawn");
+    assert!(
+        err.to_string().contains("vetoed"),
+        "veto error surfaced: {err}"
+    );
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .any(|k| k.contains("SessionBeforeFork")),
+        "the fork seam fired: {:?}",
+        seen.lock().unwrap()
+    );
+}
+
+#[tokio::test]
+async fn session_before_fork_continue_proceeds_past_the_seam() {
+    // Continue (the default): the spawn runs its normal course — on the
+    // stub client it may fail later, but never with the veto error, and
+    // the seam was observed.
+    let (runner, seen) = runner_with_fork_handler(false).await;
+    let tmp = tempdir().expect("tempdir");
+    let mut runtime = stub_runtime();
+    runtime.context = ToolContext::new(tmp.path().to_path_buf());
+    let manager = Arc::new(tokio::sync::RwLock::new(SubAgentManager::new(
+        tmp.path().to_path_buf(),
+        4,
+    )));
+    let tool = AgentSpawnTool::new(manager, runtime).with_extension_runner(runner);
+
+    let outcome = tool
+        .execute(
+            serde_json::json!({"prompt": "map the repo"}),
+            &ToolContext::new(tmp.path().to_path_buf()),
+        )
+        .await;
+    assert!(
+        !matches!(&outcome, Err(e) if e.to_string().contains("vetoed")),
+        "no veto on Continue: {outcome:?}"
+    );
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .any(|k| k.contains("SessionBeforeFork")),
+        "the fork seam fired: {:?}",
+        seen.lock().unwrap()
+    );
+}

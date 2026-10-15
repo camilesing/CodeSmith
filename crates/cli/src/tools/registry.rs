@@ -669,6 +669,7 @@ impl ToolRegistryBuilder {
         allow_shell: bool,
         todo_list: super::todo::SharedTodoList,
         plan_state: super::plan::SharedPlanState,
+        extension_runner: Option<std::sync::Arc<codesmith_extensions::ExtensionRunner>>,
     ) -> Self {
         self.with_agent_tools(allow_shell)
             .with_todo_tool(todo_list)
@@ -676,7 +677,7 @@ impl ToolRegistryBuilder {
             .with_review_tool(client.clone(), model.clone())
             .with_rlm_tool(client, model)
             .with_recall_archive_tool()
-            .with_subagent_tools(manager, runtime)
+            .with_subagent_tools(manager, runtime, extension_runner)
     }
 
     /// Include the todo tool with a shared `TodoList`.
@@ -780,36 +781,47 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(ExitWorktreeTool::new(worktree_state)))
     }
 
-    /// Include sub-agent management tools.
+    /// Include sub-agent management tools. `extension_runner` wires the
+    /// `SessionBeforeFork` veto into the spawn-family tools (`None` in
+    /// sub-agent registries — grandchildren forks are not vetoable).
     #[must_use]
     pub fn with_subagent_tools(
         self,
         manager: super::subagent::SharedSubAgentManager,
         runtime: super::subagent::SubAgentRuntime,
+        extension_runner: Option<std::sync::Arc<codesmith_extensions::ExtensionRunner>>,
     ) -> Self {
         use super::subagent::{
             AgentCloseTool, AgentEvalTool, AgentOpenTool, AgentSpawnTool, SubagentRunTool,
             ToolAgentTool,
         };
 
-        self.with_tool(Arc::new(AgentOpenTool::new(
-            manager.clone(),
-            runtime.clone(),
-        )))
-        .with_tool(Arc::new(AgentSpawnTool::new(
-            manager.clone(),
-            runtime.clone(),
-        )))
-        .with_tool(Arc::new(AgentEvalTool::new(manager.clone())))
-        .with_tool(Arc::new(ToolAgentTool::new(
-            manager.clone(),
-            runtime.clone(),
-        )))
-        .with_tool(Arc::new(SubagentRunTool::new(
-            manager.clone(),
-            runtime.clone(),
-        )))
-        .with_tool(Arc::new(AgentCloseTool::new(manager)))
+        let spawn_runner = extension_runner.clone();
+        let open_runner = extension_runner.clone();
+        let run_runner = extension_runner;
+        let mut open = AgentOpenTool::new(manager.clone(), runtime.clone());
+        if let Some(r) = open_runner {
+            open = open.with_extension_runner(r);
+        }
+        let mut spawn = AgentSpawnTool::new(manager.clone(), runtime.clone());
+        if let Some(r) = spawn_runner {
+            spawn = spawn.with_extension_runner(r);
+        }
+        self.with_tool(std::sync::Arc::new(open))
+            .with_tool(std::sync::Arc::new(spawn))
+            .with_tool(std::sync::Arc::new(AgentEvalTool::new(manager.clone())))
+            .with_tool(std::sync::Arc::new(ToolAgentTool::new(
+                manager.clone(),
+                runtime.clone(),
+            )))
+            .with_tool(std::sync::Arc::new({
+                let mut run = SubagentRunTool::new(manager.clone(), runtime.clone());
+                if let Some(r) = run_runner {
+                    run = run.with_extension_runner(r);
+                }
+                run
+            }))
+            .with_tool(std::sync::Arc::new(AgentCloseTool::new(manager)))
     }
 
     /// Include Task V2 tools when a manager is available.

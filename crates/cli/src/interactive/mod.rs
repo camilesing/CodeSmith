@@ -1108,6 +1108,7 @@ fn build_editor(
     );
     editor.set_helper(Some(ReplHelper::new(
         commands::user_cmd_store::user_command_names(Some(&state.workspace)),
+        state.extension_runner.clone(),
         paths,
         bindings,
         Some(state.todos.clone()),

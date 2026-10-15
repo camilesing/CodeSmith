@@ -15,10 +15,10 @@ dylib 源（安装根）→ 与磁盘上的 `ExtensionStateStore` 对账（跳�
 `EngineHost::build_turn_dispatcher` 中的 `register_extension_tools`
 注册到每轮的 `ToolRegistry`，agent 循环将其视为普通的
 `ToolSpec`（仅限主轮；不会被子代理继承 —— 见
-[沙箱立场](#沙箱立场)）。扩展/mod 的**斜杠命令不会在 REPL 中分发**：
+[沙箱立场](#沙箱立场)）。扩展/mod 的**斜杠命令在 REPL 中分发**：
 `ExtensionRunner::try_dispatch_command`
-（`crates/extensions/src/runner.rs`）没有生产调用方 —— 在提示符处
-输入已注册的命令会落入行式 REPL 的未知命令分支。
+（`crates/extensions/src/runner.rs`）由行式 REPL 在用户命令之后、内建
+静态表之前调用 —— mod 命令可遮蔽内建命令，用户命令可遮蔽 mod 命令。
 
 每次 populate/reload 还会为每个发现的扩展/mod 收集一条结构化审计条目 —— `Loaded` / `Failed { 原始错误 }` / `PendingConsent` / `Disabled` / `TrustGated` —— 以启动被动通知、reload 消息与 `tracing` 汇总（有失败时）三个面呈现。mod.toml 校验为 schema 聚合式（错误带字段路径）。
 
@@ -214,7 +214,7 @@ inventory::submit! {
 - **`ExtensionCommandContext: ExtensionContext`** —— 交给命令处理器
   的严格子 trait；它不携带任何会话变更方法（这一拆分是为了类型
   安全）。
-- **`ExtensionEvent`** —— `#[non_exhaustive]`，25 个变体：
+- **`ExtensionEvent`** —— `#[non_exhaustive]`，24 个变体（`resources-discover` 已于 0.11.0 移除）：
   `SessionStart` / `TurnStart` / `ToolCall` / `ToolResult` / `TurnEnd` /
   `SessionShutdown` / `ProjectTrust` / `ResourcesDiscover` / `Input` /
   `BeforeAgentStart` / `AgentStart` / `BeforeProviderHeaders` /
@@ -242,8 +242,8 @@ inventory::submit! {
   扩展与 `ToolContext` 的约 30 个宿主耦合字段解耦。
 - **`CommandDefinition`** —— 扩展侧斜杠命令契约：
   `name / description / async run(ctx, args) -> CommandOutput`。运行时
-  查找是 `ExtensionRunner::try_dispatch_command`；它没有生产调用方，
-  因此已注册的命令在当前构建中不进入任何分发路径。
+  查找是 `ExtensionRunner::try_dispatch_command`，由 REPL 在用户命令
+  与内建静态表之间分发。
 - **`ExtensionError`** —— `StaleContext`（防护信号）+ `Config` /
   `Tool` / `Command` / `Conflict` / `Install` / `Load` / `Unimplemented`。
 

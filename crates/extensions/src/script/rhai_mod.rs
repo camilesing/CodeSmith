@@ -120,7 +120,6 @@ pub(crate) fn event_kind_from_name(name: &str) -> Option<ExtensionEventKind> {
     Some(match name {
         "project-trust" => ExtensionEventKind::ProjectTrust,
         "session-start" => ExtensionEventKind::SessionStart,
-        "resources-discover" => ExtensionEventKind::ResourcesDiscover,
         "input" => ExtensionEventKind::Input,
         "before-agent-start" => ExtensionEventKind::BeforeAgentStart,
         "agent-start" => ExtensionEventKind::AgentStart,
@@ -154,7 +153,6 @@ pub(crate) fn event_name_from_kind(kind: ExtensionEventKind) -> &'static str {
         ExtensionEventKind::AssistantStream => "assistant-stream",
         ExtensionEventKind::ProjectTrust => "project-trust",
         ExtensionEventKind::SessionStart => "session-start",
-        ExtensionEventKind::ResourcesDiscover => "resources-discover",
         ExtensionEventKind::Input => "input",
         ExtensionEventKind::BeforeAgentStart => "before-agent-start",
         ExtensionEventKind::AgentStart => "agent-start",
@@ -212,14 +210,6 @@ fn trust_reason(r: codesmith_agent::extension::TrustReason) -> &'static str {
     }
 }
 
-fn discover_reason(r: codesmith_agent::extension::DiscoverReason) -> &'static str {
-    match r {
-        codesmith_agent::extension::DiscoverReason::Startup => "startup",
-        codesmith_agent::extension::DiscoverReason::Manual => "manual",
-        codesmith_agent::extension::DiscoverReason::Reload => "reload",
-    }
-}
-
 fn mode_string(m: ExtensionMode) -> &'static str {
     match m {
         ExtensionMode::Tui => "tui",
@@ -272,9 +262,6 @@ pub(crate) fn event_to_dynamic(event: &ExtensionEvent) -> Dynamic {
         }
         ExtensionEvent::SessionStart { reason } => {
             vec![("reason", Dynamic::from(session_reason(*reason)))]
-        }
-        ExtensionEvent::ResourcesDiscover { reason } => {
-            vec![("reason", Dynamic::from(discover_reason(*reason)))]
         }
         ExtensionEvent::Input(e) => vec![("text", Dynamic::from(e.text.clone()))],
         ExtensionEvent::AssistantStream(e) => {
@@ -1874,11 +1861,10 @@ mod tests {
     }
 
     #[test]
-    fn event_kind_name_round_trips_all_25() {
+    fn event_kind_name_round_trips() {
         let kinds = [
             ExtensionEventKind::ProjectTrust,
             ExtensionEventKind::SessionStart,
-            ExtensionEventKind::ResourcesDiscover,
             ExtensionEventKind::Input,
             ExtensionEventKind::BeforeAgentStart,
             ExtensionEventKind::AgentStart,
@@ -1902,7 +1888,7 @@ mod tests {
             ExtensionEventKind::SessionCompact,
             ExtensionEventKind::ToolsChange,
         ];
-        assert_eq!(kinds.len(), 25);
+        assert_eq!(kinds.len(), 24);
         for kind in kinds {
             let name = event_name_from_kind(kind);
             assert_eq!(event_kind_from_name(name), Some(kind), "round-trip {name}");

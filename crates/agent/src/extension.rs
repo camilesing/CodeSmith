@@ -194,14 +194,6 @@ pub enum TrustReason {
     Untrusted,
 }
 
-/// Why a resource-discovery event fires. Mirrors pi-mono `DiscoverReason`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DiscoverReason {
-    Startup,
-    Manual,
-    Reload,
-}
-
 /// Payload for [`ExtensionEvent::Input`] — user input that may be intercepted
 /// or transformed. `text` is the actionable field: a handler returning
 /// [`HandlerOutcome::Transform`] with a modified `InputEvent` replaces the
@@ -256,7 +248,9 @@ pub struct ToolExecutionUpdateEvent {
 }
 
 /// Lifecycle events. §F1 minimal set (spec §10.1) + §F2a full set (spec
-/// §10.2 + §4): 25 variants total (23 §F2a + `AssistantStream` + `ToolsChange`), `#[non_exhaustive]` so future slices can
+/// §10.2 + §4): 24 variants total (23 §F2a + `AssistantStream` +
+/// `ToolsChange`, minus the removed `ResourcesDiscover`),
+/// `#[non_exhaustive]` so future slices can
 /// add variants without breaking downstream match arms. Handler dispatch is
 /// open (any `Handler` may subscribe to any variant via `on` /
 /// `on_variant`). Variant-specific outcome semantics are part of the
@@ -286,9 +280,6 @@ pub enum ExtensionEvent {
     // --- §F2a additions (spec §10.2 + §4) ---
     ProjectTrust {
         reason: TrustReason,
-    },
-    ResourcesDiscover {
-        reason: DiscoverReason,
     },
     Input(InputEvent),
     BeforeAgentStart(AgentStartEvent),
@@ -325,7 +316,6 @@ pub enum ExtensionEvent {
 pub enum ExtensionEventKind {
     ProjectTrust,
     SessionStart,
-    ResourcesDiscover,
     Input,
     BeforeAgentStart,
     AgentStart,
@@ -359,7 +349,6 @@ impl ExtensionEvent {
         match self {
             ExtensionEvent::ProjectTrust { .. } => ExtensionEventKind::ProjectTrust,
             ExtensionEvent::SessionStart { .. } => ExtensionEventKind::SessionStart,
-            ExtensionEvent::ResourcesDiscover { .. } => ExtensionEventKind::ResourcesDiscover,
             ExtensionEvent::Input(_) => ExtensionEventKind::Input,
             ExtensionEvent::BeforeAgentStart(_) => ExtensionEventKind::BeforeAgentStart,
             ExtensionEvent::AgentStart => ExtensionEventKind::AgentStart,
@@ -432,7 +421,6 @@ impl ExtensionEventKind {
             | ExtensionEventKind::SessionBeforeCompact => DispatchMode::CancelVeto,
             ExtensionEventKind::ProjectTrust
             | ExtensionEventKind::SessionStart
-            | ExtensionEventKind::ResourcesDiscover
             | ExtensionEventKind::AgentStart
             | ExtensionEventKind::TurnStart
             | ExtensionEventKind::BeforeProviderHeaders
@@ -1244,8 +1232,9 @@ mod tests {
     /// declared mode; the exhaustive `dispatch_mode` match makes a new
     /// variant a compile error without an arm, and this table makes
     /// CHANGING an existing kind's mode a test failure — the contract
-    /// cannot drift silently. 25 rows = the full §F2a set +
-    /// assistant-stream + tools-change.
+    /// cannot drift silently. 24 rows = the full §F2a set +
+    /// assistant-stream + tools-change (minus the removed
+    /// `ResourcesDiscover`).
     #[test]
     fn event_dispatch_contract_table() {
         use DispatchMode as M;
@@ -1265,7 +1254,6 @@ mod tests {
             (K::AssistantStream, M::Observe),
             (K::ProjectTrust, M::Observe),
             (K::SessionStart, M::Observe),
-            (K::ResourcesDiscover, M::Observe),
             (K::AgentStart, M::Observe),
             (K::TurnStart, M::Observe),
             (K::BeforeProviderHeaders, M::Observe),
@@ -1282,7 +1270,7 @@ mod tests {
         ];
         assert_eq!(
             contract.len(),
-            25,
+            24,
             "the full §F2a set + assistant-stream + tools-change"
         );
         for (kind, mode) in contract {
@@ -1499,7 +1487,6 @@ mod tests {
     #[test]
     fn f2a_payload_structs_construct_and_debug() {
         let _ = TrustReason::FirstLoad;
-        let _ = DiscoverReason::Startup;
         let input = InputEvent { text: "hi".into() };
         assert_eq!(input.text, "hi");
         let start = AgentStartEvent {
@@ -1537,12 +1524,6 @@ mod tests {
                     reason: SessionReason::Startup,
                 },
                 K::SessionStart,
-            ),
-            (
-                ExtensionEvent::ResourcesDiscover {
-                    reason: DiscoverReason::Startup,
-                },
-                K::ResourcesDiscover,
             ),
             (
                 ExtensionEvent::Input(InputEvent { text: "x".into() }),
@@ -1633,7 +1614,7 @@ mod tests {
                 K::ToolsChange,
             ),
         ];
-        assert_eq!(cases.len(), 25, "all variants covered");
+        assert_eq!(cases.len(), 24, "all variants covered");
         for (ev, kind) in cases {
             assert_eq!(ev.kind(), kind, "kind mismatch for {ev:?}");
         }

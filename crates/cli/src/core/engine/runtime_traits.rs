@@ -395,7 +395,11 @@ impl HostServices for super::EngineHost {
                     match runtime {
                         Some(runtime) => Some(
                             builder
-                                .with_subagent_tools(self.subagent_manager.clone(), runtime)
+                                .with_subagent_tools(
+                                    self.subagent_manager.clone(),
+                                    runtime,
+                                    self.extension_runner.clone(),
+                                )
                                 .build(tool_context),
                         ),
                         None => Some(builder.build(tool_context)),
@@ -444,7 +448,11 @@ impl HostServices for super::EngineHost {
                             .with_mailbox(mailbox.clone())
                             .with_cancel_token(cancel_token.clone());
                     }
-                    builder = builder.with_subagent_tools(self.subagent_manager.clone(), rt);
+                    builder = builder.with_subagent_tools(
+                        self.subagent_manager.clone(),
+                        rt,
+                        self.extension_runner.clone(),
+                    );
                 } else {
                     // Mirror the Agent-mode branch's diagnostics above: a
                     // Coordinator turn without agent-spawn tools is quietly

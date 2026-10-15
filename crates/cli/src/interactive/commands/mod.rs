@@ -57,6 +57,31 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
         return false;
     }
 
+    // Extension/mod commands sit between user commands and the built-in
+    // table (the layer order above): dispatched against the live runner,
+    // so a mod command activated this session works immediately. A name
+    // lookup first keeps a run() failure from falling through to the
+    // misleading "unknown command" arm.
+    if let Some(runner) = state.extension_runner.clone()
+        && runner.bound_command_names().iter().any(|n| n == command)
+    {
+        use codesmith_agent::extension::CommandOutput;
+        match runner.try_dispatch_command(command, &arg_str).await {
+            Some(CommandOutput::Message(text)) => {
+                println!("{text}");
+                return false;
+            }
+            Some(CommandOutput::SendMessage(text)) => {
+                let _ = super::submit(state, text).await;
+                return false;
+            }
+            None => {
+                println!("{} command /{command} failed — see the log", "✗".red());
+                return false;
+            }
+        }
+    }
+
     // Built-ins resolve through the registry: every name `/help` prints and
     // Tab completes is dispatchable, and a registered name with no arm below
     // is a compile error because this match is exhaustive over `Command`.
@@ -897,6 +922,20 @@ fn print_help(state: &ReplState) {
         println!("{}", "user commands (these shadow built-ins):".bold());
         for name in user {
             println!("  /{name}");
+        }
+    }
+    // Mod commands dispatch through the layer between user commands and
+    // the static table; listing them here keeps `/help` naming everything
+    // Tab completes.
+    if let Some(runner) = &state.extension_runner {
+        let mut mods = runner.bound_command_names();
+        if !mods.is_empty() {
+            mods.sort();
+            println!();
+            println!("{}", "mod commands (from script mods):".bold());
+            for name in mods {
+                println!("  /{name}");
+            }
         }
     }
 }
