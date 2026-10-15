@@ -673,8 +673,15 @@ impl StartupAuditEntry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditSource {
     CompiledIn,
-    Dylib { global: bool },
-    ScriptMod { global: bool },
+    Dylib {
+        global: bool,
+    },
+    ScriptMod {
+        global: bool,
+    },
+    /// Embedded builtin Rhai tier (default policies) — always loads, even
+    /// with `[mods] enabled = false`.
+    Builtin,
 }
 
 impl AuditSource {
@@ -684,6 +691,7 @@ impl AuditSource {
             Self::CompiledIn => "compiled-in".to_string(),
             Self::Dylib { global } => format!("dylib, {}", scope(global)),
             Self::ScriptMod { global } => format!("script mod, {}", scope(global)),
+            Self::Builtin => "builtin mod".to_string(),
         }
     }
 }
@@ -903,7 +911,13 @@ fn populate_extension_runtime(
     // Failed{original error}); pre-thread entries (Disabled / PendingConsent
     // / TrustGated) were pushed above.
     let audit_cell: &StdMutex<Vec<StartupAuditEntry>> = &StdMutex::new(audit);
-    if !enabled.is_empty() || !enabled_dylib.is_empty() || !mods_to_load.is_empty() {
+    // The builtin Rhai tier always loads (default policies — `[mods]
+    // enabled` gates user mods only), so the load thread always runs.
+    if !enabled.is_empty()
+        || !enabled_dylib.is_empty()
+        || !mods_to_load.is_empty()
+        || !codesmith_extensions::BUILTIN_MODS.is_empty()
+    {
         let runner_for_thread = runner.clone();
         std::thread::scope(|s| {
             s.spawn(move || {
@@ -911,6 +925,44 @@ fn populate_extension_runtime(
                     .enable_all()
                     .build()
                     .expect("extension load runtime");
+                // Builtin tier first — user mods load after it, so their
+                // policy registrations win the last-wins resolution.
+                for (id, result) in codesmith_extensions::load_builtin_mods(
+                    runner_for_thread.message_projection_hub(),
+                ) {
+                    match result {
+                        Ok(m) => match load_rt.block_on(runner_for_thread.load(&m)) {
+                            Ok(()) => {
+                                runner_for_thread.retain_mod(Arc::new(m));
+                                audit_cell.lock().expect("audit cell poisoned").push(
+                                    StartupAuditEntry::new(
+                                        id,
+                                        AuditSource::Builtin,
+                                        AuditStatus::Loaded,
+                                    ),
+                                );
+                            }
+                            Err(e) => audit_cell.lock().expect("audit cell poisoned").push(
+                                StartupAuditEntry::new(
+                                    id,
+                                    AuditSource::Builtin,
+                                    AuditStatus::Failed {
+                                        error: e.to_string(),
+                                    },
+                                ),
+                            ),
+                        },
+                        Err(e) => audit_cell.lock().expect("audit cell poisoned").push(
+                            StartupAuditEntry::new(
+                                id,
+                                AuditSource::Builtin,
+                                AuditStatus::Failed {
+                                    error: e.to_string(),
+                                },
+                            ),
+                        ),
+                    }
+                }
                 for reg in enabled {
                     let id = reg.metadata.id.to_string();
                     let ext = (reg.factory)();

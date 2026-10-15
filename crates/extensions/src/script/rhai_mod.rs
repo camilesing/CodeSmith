@@ -107,6 +107,13 @@ pub enum ScriptRegistration {
     /// `codesmith_agent::extension::GuardHandler` (label baked to the mod
     /// id; a returned string denies, anything else abstains).
     Guard { callback: rhai::FnPtr },
+    /// A data policy captured by the `register_policy(kind, config_map)`
+    /// native. Replayed at `configure` via `ExtensionApi::register_policy`;
+    /// last-wins by load order (a user mod overrides a builtin).
+    Policy {
+        kind: codesmith_agent::policy::PolicyKind,
+        config: serde_json::Value,
+    },
 }
 
 type RegistrationCell = Arc<Mutex<Vec<ScriptRegistration>>>;
@@ -773,6 +780,40 @@ fn register_natives(
         },
     );
 
+    // register_policy(kind, config_map) — the "policy in script, effects
+    // in host" surface: pure data knobs for a host mechanism (see
+    // `codesmith_agent::policy`). `register_policy("shell-output", #{
+    // max_output_size: 20000 })`. Unknown kind names fail the mod's load
+    // (fail loud); config values are validated by the owning mechanism at
+    // read time (bad values warn + fall back to compiled defaults).
+    let cell_policy = Arc::clone(cell);
+    engine.register_fn(
+        "register_policy",
+        move |kind: &str, config: rhai::Map| -> Result<(), Box<rhai::EvalAltResult>> {
+            let parsed = codesmith_agent::policy::PolicyKind::from_kebab_name(kind)
+                .ok_or_else(|| {
+                    script_error(format!(
+                        "register_policy(): unknown policy kind {kind:?} (known kinds: see docs/MODS.md)"
+                    ))
+                })?;
+            let value = dynamic_to_json(&rhai::Dynamic::from(config))
+                .map_err(|e| script_error(format!("register_policy(): config not JSON-compatible: {e}")))?;
+            if !value.is_object() {
+                return Err(script_error(
+                    "register_policy(): config must be a map (#{ ... })",
+                ));
+            }
+            cell_policy
+                .lock()
+                .expect("mod registration cell poisoned")
+                .push(ScriptRegistration::Policy {
+                    kind: parsed,
+                    config: value,
+                });
+            Ok(())
+        },
+    );
+
     // register_provider(spec_map) — route A: declarative provider alias.
     // `#{ id: "my-gw", kind: "openai", base_url: "...", default_model: "...",
     //    headers: #{ "X-Gateway": "acme" } }`.
@@ -1010,7 +1051,26 @@ impl RhaiMod {
                 discovered.entry_path.display()
             ))
         })?;
+        Self::load_source(
+            &discovered.id,
+            &discovered.name,
+            &discovered.version,
+            source,
+            kv,
+            hub,
+        )
+    }
 
+    /// Compile + run an in-memory source (the builtin-mod path — embedded
+    /// `include_str!` scripts never touch the disk).
+    pub fn load_source(
+        id: &str,
+        name: &str,
+        version: &str,
+        source: String,
+        kv: ModKvStore,
+        hub: codesmith_agent::extension::MessageProjectionHubArc,
+    ) -> Result<Self, ExtensionError> {
         let mut engine = rhai::Engine::new();
         engine
             .set_max_operations(MAX_OPERATIONS)
@@ -1022,22 +1082,22 @@ impl RhaiMod {
         // natives are registered: absence is the sandbox (plan §三.4).
 
         let cell: RegistrationCell = Arc::new(Mutex::new(Vec::new()));
-        register_natives(&mut engine, &kv, &cell, &discovered.id, hub);
+        register_natives(&mut engine, &kv, &cell, id, hub);
 
         let ast = engine
             .compile(&source)
-            .map_err(|e| ExtensionError::Load(format!("compile {}: {e}", discovered.id)))?;
+            .map_err(|e| ExtensionError::Load(format!("compile {}: {e}", id)))?;
         engine
             .run_ast(&ast)
-            .map_err(|e| ExtensionError::Load(format!("run {}: {e}", discovered.id)))?;
+            .map_err(|e| ExtensionError::Load(format!("run {}: {e}", id)))?;
 
         let registrations =
             std::mem::take(&mut *cell.lock().expect("mod registration cell poisoned"));
         Ok(Self {
             metadata: ExtensionMetadata::from_strings(
-                discovered.id.clone(),
-                discovered.name.clone(),
-                discovered.version.clone(),
+                id.to_string(),
+                name.to_string(),
+                version.to_string(),
             ),
             runtime: Arc::new(ScriptRuntime {
                 engine: Arc::new(engine),
@@ -1225,6 +1285,9 @@ impl Extension for RhaiMod {
                         )),
                     )?;
                 }
+                ScriptRegistration::Policy { kind, config } => {
+                    api.register_policy(*kind, config.clone())?;
+                }
             }
         }
         Ok(())
@@ -1301,6 +1364,7 @@ mod tests {
                     ScriptRegistration::Skill { name, .. } => format!("k:{name}"),
                     ScriptRegistration::MessageProjection { key, .. } => format!("m:{key}"),
                     ScriptRegistration::Guard { .. } => "g:guard".to_string(),
+                    ScriptRegistration::Policy { kind, .. } => format!("y:{:?}", kind),
                 })
                 .collect::<Vec<_>>()
         );
@@ -2334,5 +2398,118 @@ mod tests {
             input: serde_json::json!({ "command": "anything" }),
         })));
         assert!(matches!(out.outcome, HandlerOutcome::Continue));
+    }
+
+    struct PolicyCtx;
+    #[async_trait::async_trait]
+    impl codesmith_agent::extension::ExtensionContext for PolicyCtx {
+        fn cwd(&self) -> &std::path::Path {
+            std::path::Path::new(".")
+        }
+        fn mode(&self) -> codesmith_agent::extension::ExtensionMode {
+            codesmith_agent::extension::ExtensionMode::Tui
+        }
+        fn is_idle(&self) -> bool {
+            true
+        }
+        fn signal(&self) -> tokio_util::sync::CancellationToken {
+            tokio_util::sync::CancellationToken::new()
+        }
+        fn generation(&self) -> u64 {
+            1
+        }
+    }
+    impl codesmith_agent::extension::ExtensionCommandContext for PolicyCtx {}
+
+    #[test]
+    fn register_policy_captures_validates_and_flushes() {
+        let dir = TempDir::new().unwrap();
+        // Unknown kind fails the load (fail loud).
+        let bad = RhaiMod::load(
+            &discovered_for(
+                &dir,
+                "bad-policy",
+                r#"register_policy("no-such-kind", #{ x: 1 });"#,
+            ),
+            kv_for(&dir, "bad-policy"),
+            hub(),
+        );
+        assert!(bad.is_err(), "{bad:?}");
+
+        // Valid registration: captured at load, replayed at configure,
+        // flushed last-wins, published to the process-global snapshot.
+        let first = RhaiMod::load(
+            &discovered_for(
+                &dir,
+                "pol-a",
+                r#"register_policy("output-diff", #{ context_radius: 1 });"#,
+            ),
+            kv_for(&dir, "pol-a"),
+            hub(),
+        )
+        .unwrap();
+        let second = RhaiMod::load(
+            &discovered_for(
+                &dir,
+                "pol-b",
+                r#"register_policy("output-diff", #{ context_radius: 7 });"#,
+            ),
+            kv_for(&dir, "pol-b"),
+            hub(),
+        )
+        .unwrap();
+
+        let runner = crate::ExtensionRunner::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(runner.load(&first)).unwrap();
+        rt.block_on(runner.load(&second)).unwrap();
+        runner.bind_core(std::sync::Arc::new(PolicyCtx));
+
+        // Last-wins: pol-b loaded after pol-a.
+        assert_eq!(
+            runner.bound_policy(codesmith_agent::policy::PolicyKind::OutputDiff),
+            Some(serde_json::json!({"context_radius": 7}))
+        );
+        assert_eq!(
+            codesmith_agent::policy::published_policy(
+                codesmith_agent::policy::PolicyKind::OutputDiff
+            ),
+            Some(serde_json::json!({"context_radius": 7}))
+        );
+        runner.clear_policies();
+        assert!(
+            codesmith_agent::policy::published_policy(
+                codesmith_agent::policy::PolicyKind::OutputDiff
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn builtin_mods_compile_and_register_defaults() {
+        for (id, m) in crate::script::builtin::load_builtin_mods(hub()) {
+            let m = m.unwrap_or_else(|e| panic!("builtin {id} must compile: {e}"));
+            assert!(
+                !m.registrations().is_empty(),
+                "builtin {id} registers nothing"
+            );
+            for reg in m.registrations() {
+                assert!(
+                    matches!(reg, ScriptRegistration::Policy { .. }),
+                    "builtin {id} carries only policy registrations"
+                );
+            }
+        }
+        // The compiled-default view agrees with the builtin registration
+        // (drift guard shared with agent-runtime's output_policy tests).
+        let defaults = crate::script::builtin::builtin_policy_defaults();
+        let shell = defaults
+            .iter()
+            .find(|(k, _)| *k == codesmith_agent::policy::PolicyKind::ShellOutput)
+            .map(|(_, v)| v.clone())
+            .expect("builtin shell-output policy present");
+        assert_eq!(shell["max_output_size"], serde_json::json!(30_000));
+        assert_eq!(shell["head_bytes"], serde_json::json!(22_000));
+        assert_eq!(shell["tail_bytes"], serde_json::json!(8_000));
     }
 }

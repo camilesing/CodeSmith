@@ -65,6 +65,7 @@ pub mod extension;
 pub mod llm_client;
 pub mod memory;
 pub mod models;
+pub mod policy;
 pub mod provider;
 pub mod reasoning;
 pub mod retry;

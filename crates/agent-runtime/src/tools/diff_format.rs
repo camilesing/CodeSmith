@@ -11,12 +11,17 @@
 
 use similar::TextDiff;
 
+use super::output_policy::diff_context_radius;
+
 /// Build a unified diff between `old` and `new` keyed at `path`.
 ///
 /// Returns an empty string when the inputs are byte-identical so callers
 /// can skip the "no changes" header. The output uses git-style `--- a/...`
-/// / `+++ b/...` headers and three lines of context — matching the format
-/// the TUI's `diff_render::render_diff` already understands.
+/// / `+++ b/...` headers and three lines of context by default — matching
+/// the format the TUI's `diff_render::render_diff` already understands.
+/// The context radius is the scriptable policy knob
+/// (`register_policy("output-diff", #{context_radius: N})`); the diff
+/// algorithm and header escaping stay here.
 ///
 /// Layout contract: the first `@@` hunk header is always line 3 of the
 /// output; the TUI diff detector (#505) relies on that position.
@@ -30,7 +35,7 @@ pub fn make_unified_diff(path: &str, old: &str, new: &str) -> String {
     let b = format!("b/{header_path}");
     let diff = TextDiff::from_lines(old, new);
     diff.unified_diff()
-        .context_radius(3)
+        .context_radius(diff_context_radius())
         .header(&a, &b)
         .to_string()
 }

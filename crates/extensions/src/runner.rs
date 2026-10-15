@@ -145,6 +145,10 @@ pub(crate) struct Pending {
     pub prompt_sections: Vec<(String, String)>,
     pub skills: Vec<codesmith_agent::extension::SkillRegistration>,
     pub message_projections: Vec<PendingMessageProjection>,
+    /// `(kind, config)` pairs — data policies (see
+    /// [`codesmith_agent::policy`]); last-wins at flush by registration
+    /// order (builtin < global < project mods).
+    pub policies: Vec<(codesmith_agent::policy::PolicyKind, serde_json::Value)>,
 }
 
 /// A message projection queued by the stub `ExtensionApi`.
@@ -238,6 +242,12 @@ pub struct ExtensionRunner {
     /// `clear_message_projections` / reload drop the generation's entries
     /// (the engine refolds from the transcript on the next turn).
     message_projection_hub: codesmith_agent::extension::MessageProjectionHubArc,
+    /// Resolved data policies (kind → config), last-wins by registration
+    /// order at flush; published to the process-global snapshot
+    /// (`codesmith_agent::policy`) for the host's mechanism code to read.
+    /// Deliberately NOT first-wins: last-wins is what makes a user mod
+    /// override a builtin policy (load order: builtin < global < project).
+    policies: Mutex<HashMap<codesmith_agent::policy::PolicyKind, serde_json::Value>>,
     /// Per-mod lifecycle — retained script mods, in load order. Retention
     /// is what makes single-mod unload cheap: `unload_retained_mod` clears
     /// the bound registrations and replays the survivors from these slots
@@ -276,6 +286,7 @@ impl ExtensionRunner {
             message_projection_hub: codesmith_agent::extension::MessageProjectionHubArc::new(
                 codesmith_agent::extension::MessageProjectionHub::new(),
             ),
+            policies: Mutex::new(HashMap::new()),
             mod_slots: Mutex::new(Vec::new()),
             transition_lock: tokio::sync::Mutex::new(()),
         }
@@ -575,6 +586,18 @@ impl ExtensionRunner {
         self.clear_prompt_sections();
         self.clear_skills();
         self.clear_message_projections();
+        self.clear_policies();
+    }
+
+    /// Data policies — clear the runner's resolved set AND the published
+    /// process-global snapshot (the next flush republishes; mechanism code
+    /// reads compiled defaults in between).
+    pub fn clear_policies(&self) {
+        self.policies
+            .lock()
+            .expect("policies lock poisoned")
+            .clear();
+        codesmith_agent::policy::clear_published_policies();
     }
 
     /// Retain a loaded script mod for per-mod replay. Same-id retain
@@ -813,6 +836,16 @@ impl ExtensionRunner {
                 rejections.push(ExtensionError::Config(e));
             }
         }
+        // Data policies: last-wins by registration (drain) order — the
+        // load order builtin → global → project resolves overrides before
+        // the values are published.
+        {
+            let mut policies = self.policies.lock().expect("policies lock poisoned");
+            for (kind, config) in drained.policies {
+                policies.insert(kind, config);
+            }
+            codesmith_agent::policy::publish_policies(policies.clone());
+        }
         for pp in drained.providers {
             let id = pp.factory.id();
             let guard = self
@@ -970,6 +1003,22 @@ impl ExtensionRunner {
             .expect("context lock poisoned")
             .clone()
             .map(|ctx| -> Arc<dyn ExtensionContext> { ctx })
+    }
+
+    /// The resolved config for one policy kind (the flush-time winner).
+    /// Hosts normally read through the process-global snapshot
+    /// ([`codesmith_agent::policy::published_policy`]) instead — this is
+    /// the introspection/testing view.
+    #[must_use]
+    pub fn bound_policy(
+        &self,
+        kind: codesmith_agent::policy::PolicyKind,
+    ) -> Option<serde_json::Value> {
+        self.policies
+            .lock()
+            .expect("policies lock poisoned")
+            .get(&kind)
+            .cloned()
     }
 
     /// Names of bound commands (for `/extension list`, Task 8).

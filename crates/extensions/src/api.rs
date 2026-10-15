@@ -183,6 +183,24 @@ impl ExtensionApi for StubExtensionApi {
         );
         Ok(())
     }
+
+    fn register_policy(
+        &self,
+        kind: codesmith_agent::policy::PolicyKind,
+        config: serde_json::Value,
+    ) -> Result<(), ExtensionError> {
+        assert_live(&self.generation, self.captured_gen)?;
+        // A policy is data: require a JSON object so a malformed
+        // registration fails its load (fail loud), not at first read.
+        if !config.is_object() {
+            return Err(ExtensionError::Config(format!(
+                "policy {} config must be a JSON object, got {config}",
+                kind.kebab_name()
+            )));
+        }
+        self.pending.lock().unwrap().policies.push((kind, config));
+        Ok(())
+    }
 }
 
 /// Real api — live after `bind_core`; flushes registrations directly into

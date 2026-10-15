@@ -167,6 +167,41 @@ Transform mutable fields (one handler's rewrite is immediately visible to the ne
 | `register_guard(callback)` | Register a deny-only tool-call guard (see below) |
 | `register_message_projection(key, init, fold)` | Register a session-log fold the host maintains (see below) |
 | `projection_state(key)` | Read this mod's projection state (inside hooks/tools) |
+| `register_policy(kind, config)` | Override a host-mechanism policy (see below) |
+
+### Policies (route C — tune host mechanisms)
+
+```rhai
+register_policy("shell-output", #{
+    max_output_size: 20000,   // bytes before truncation
+    head_bytes: 15000,        // kept head when truncated
+    tail_bytes: 5000,         // kept tail when truncated
+});
+```
+
+A policy is **data, not code**: `kind` names a host mechanism seam, `config`
+is a map of its knobs; the mechanism (algorithm, spill writes, security
+guards) stays in Rust. This is the "policy in script, effects in host"
+split — the agent can read and retune these per workspace without a
+recompile.
+
+- Kinds: `output-diff` (`context_radius`), `shell-output`
+  (`max_output_size`, `head_bytes`, `tail_bytes`, `summary_max_lines`,
+  `summary_max_chars`, `preserved_summary_lines`, `preserved_line_bytes`,
+  `preserved_total_bytes`).
+- Resolution is **last-wins by load order** (builtin < global < project):
+  a user mod overrides the builtin default by registering the same kind —
+  deliberately unlike tools/commands, where the incumbent keeps the name.
+- Bad values (unknown field types, over-ceiling numbers, head+tail > max)
+  warn and fall back to the compiled defaults at read time — a mod bug
+  cannot brick the mechanism it tunes.
+- **Builtin tier**: the defaults themselves ship as embedded Rhai mods
+  (`builtin-output-diff`, `builtin-shell-output` — sources under
+  `crates/extensions/src/script/builtin/`). They always load (even with
+  `[mods] enabled = false`; the flag gates user mods only), skip
+  consent/hash gates (they ship in the binary), use ephemeral KV, and are
+  not listed by `/mods` (they are not discoverable ids — override by
+  registering the same policy kind, not by shadowing the id).
 
 ### Contributing a system-prompt section (route B)
 
