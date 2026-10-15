@@ -75,7 +75,7 @@ cargo install --path crates/cli --locked   # 提供 `codesmith`
 
 模型回答问题；智能体完成任务。CodeSmith 是两者之间的运行框架：一部宪法为每轮排出清晰的权威链（用户意图优先于陈旧指令，验证优先于自信），工具经审批门控并受操作系统级沙箱约束，每轮留下可回滚快照，最多 20 个子智能体并发运行。
 
-完整原理：[docs/HARNESS.md](docs/HARNESS.md)。
+完整原理：[docs/HARNESS_cn.md](docs/HARNESS_cn.md)。
 
 ## 快速开始
 
@@ -87,13 +87,25 @@ codesmith                                # 交互式 REPL
 
 模式：**Plan**（只读）/ **Agent**（默认，带审批门控）/ **YOLO**（自动批准）——[docs/PRESETS_cn.md](docs/PRESETS_cn.md) · 其他提供商：[docs/PROVIDERS_cn.md](docs/PROVIDERS_cn.md)
 
+## 一个键，四档预设
+
+不必为了得到想要的工具面去读上百个配置键——选一档即可。`preset` 是 config.toml 里的一个键，为工具面、思考深度、记忆持久化、子代理上限以及一组资源开关（代码索引、LSP 诊断、快照）统一设定基线。显式配置的键永远优先；偏离预设的地方会显示为 `diy`：
+
+```bash
+codesmith --preset simple    # Pi 式极简：9 个工具，无索引/LSP/记忆
+codesmith --preset all       # 稳定特性全开，20 个子代理
+codesmith preset show        # 档位矩阵 + 你当前生效的预设
+```
+
+内置四档渐进预设——`simple` / `middle`（*出厂默认*）/ `all` / `experiment`——外加 `plan` 工作流预设。你自己的预设放在 `~/.codesmith/presets/`，项目级预设放在 `.codesmith/presets/`——把项目级的提交进仓库，这就是分享方式。记忆也和其他旋钮一样可调：`goldfish`（无跨会话记忆）/ `notebook`（只保留你显式保存的）/ `elephant`（自动记忆，带预算与衰减）。完整 schema 与语义：[docs/PRESETS_cn.md](docs/PRESETS_cn.md)。
+
 ## 文档
 
-上手：[用户指南](docs/GUIDE_cn.md) · [预设与审批](docs/PRESETS_cn.md) · [技能](docs/SKILLS_cn.md) · [记忆](docs/MEMORY_cn.md) · [界面语言](docs/LOCALIZATION_cn.md) · [完整命令手册](docs/CLI.md)
+上手：[用户指南](docs/GUIDE_cn.md) · [预设与审批](docs/PRESETS_cn.md) · [技能](docs/SKILLS_cn.md) · [记忆](docs/MEMORY_cn.md) · [界面语言](docs/LOCALIZATION_cn.md) · [完整命令手册](docs/CLI_cn.md)
 
 配置：[配置参考](docs/CONFIGURATION_cn.md) · [提供商](docs/PROVIDERS_cn.md) · [安装](docs/INSTALL_cn.md) · [Docker](docs/DOCKER_cn.md)
 
-原理与扩展：[运行框架](docs/HARNESS.md) · [架构](docs/ARCHITECTURE_cn.md) · [设计细节](docs/DESIGN_INTERNALS.md) · [沙箱](docs/SANDBOX_cn.md) · [子智能体](docs/SUBAGENTS_cn.md) · [MCP](docs/MCP_cn.md) · [钩子](docs/HOOKS_cn.md) · [运行时 API 与 Zed ACP](docs/RUNTIME_API.md) · [运维手册](docs/OPERATIONS_RUNBOOK_cn.md) · [发布流程](docs/RELEASE_RUNBOOK_cn.md) · [更新日志](CHANGELOG.md)
+原理与扩展：[运行框架](docs/HARNESS_cn.md) · [架构](docs/ARCHITECTURE_cn.md) · [设计细节](docs/DESIGN_INTERNALS_cn.md) · [沙箱](docs/SANDBOX_cn.md) · [子智能体](docs/SUBAGENTS_cn.md) · [MCP](docs/MCP_cn.md) · [钩子](docs/HOOKS_cn.md) · [运行时 API 与 Zed ACP](docs/RUNTIME_API_cn.md) · [运维手册](docs/OPERATIONS_RUNBOOK_cn.md) · [发布流程](docs/RELEASE_RUNBOOK_cn.md) · [更新日志](CHANGELOG.md)
 
 ## 项目
 

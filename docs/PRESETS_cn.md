@@ -149,11 +149,54 @@ REPL 中最近一次选择的预设（持久化在 settings.toml）> 出厂默�
 快速的轻量档路径（DeepSeek 端点上的 `deepseek-v4-flash`）+ 关闭思考，在产品
 语言中称为 Fin。Fin 是快速工具调用、摘要和廉价子调用的接缝；它不会改变审批
 行为。模型路由由路由器而非 Fin 负责——路由分类器运行在最强档上（见
-PRESETS.md 的 Auto Model Routing 一节）。
+下文[自动模型路由](#自动模型路由)一节）。
 
 `/goal` 设置一个带可选 token 预算的会话目标，并将该目标作为 Work 上下文保持
 可见。它不会改变当前活跃的应用模式、审批模式或模型路由。它与 `--model auto`
 保持区分，后者只控制模型与思考选择。
+
+## 自动模型路由
+
+当你希望 codesmith 自行决定一轮对话需要多少模型与推理能力时，使用
+`codesmith --model auto` 或 `/model auto`。
+
+auto 模式同时控制两项设置：
+
+- 模型档位：`light`（快/便宜）或 `heavy`（最强）——会解析为你的 provider 下的具体模型 ID
+- 思考：`off`、`high` 或 `max`
+
+在真正的请求发出之前，应用会**在 provider 的最强档上**、以关闭思考的方式发起
+一次很小的路由调用。路由是整轮中杠杆最大的决策——一次误路由浪费的是整个请求
+——因此由最强的可用大脑、在一个刻意极小的输入（最近几行上下文）上做出。路由
+器查看最新请求，然后为真正的请求选择档位和思考级别。短小/简单的请求留在
+light 档、关闭思考；编码、调试、发布工作、架构、安全评审或不明确的多步任务
+则升到 heavy 档和/或更高的思考级别。
+
+档位解析因 provider 而异：在 DeepSeek 端点上，`light`/`heavy` 映射到
+`deepseek-v4-flash`/`deepseek-v4-pro`；在 OpenRouter 上映射到该 provider 的
+flash/pro 对；在透传 provider（OpenAI 兼容网关、Ollama、自定义端点）上回落到
+你配置的模型，除非你显式钉住它们：
+
+```toml
+[auto]
+# heavy_model = "your-strongest-model"
+# light_model = "your-cheapest-model"
+# router_model = "override the classifier brain itself"
+```
+
+`auto` 是 codesmith 的本地概念。上游 API 永远不会收到 `model: "auto"`；它收
+到的是为该轮选定的具体模型和思考设置。REPL 会显示选中的路由，成本核算记在实
+际运行的模型上。如果路由调用失败或返回无效答案，应用会回落到一个免费的本地
+启发式（它也会短路显而易见的情况，让琐碎请求从不为路由付费）。子代理的任务
+分配路由使用同一个强脑分类器和同一套档位词汇。
+
+`[auto] cost_saving = true` 会把整个路由器翻回最初的廉价优先设计：分类器运行
+在配置的 `[utility_model]`（便宜大脑）上，不明确的请求解析到 light 档。出厂预
+置默认关闭省钱模式（质量优先）；曾显式设置过 `auto.cost_saving` 的用户保留其
+取值。
+
+当你需要可重复的基准测试、严格的成本上限，或特定的 provider/模型映射时，请
+使用固定模型或固定思考级别。
 
 ## 兼容性说明
 
