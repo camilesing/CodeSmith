@@ -11,6 +11,8 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-15
+
 ### Added
 
 - **The REPL gained Claude Code's keyboard and command surface** — the
@@ -508,6 +510,7 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
   local skill registry.
 - npm installer package, Homebrew tap, Docker image, and Nix packaging.
 
-[Unreleased]: https://github.com/camilesing/CodeSmith/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/camilesing/CodeSmith/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/camilesing/CodeSmith/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/camilesing/CodeSmith/compare/v0.8.0...v0.9.0
 [0.1.0]: https://github.com/camilesing/CodeSmith/releases/tag/v0.1.0
