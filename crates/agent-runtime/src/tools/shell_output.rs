@@ -13,19 +13,13 @@
 
 use std::path::PathBuf;
 
-/// Maximum output size before truncation (30KB like Claude Code).
-const MAX_OUTPUT_SIZE: usize = 30_000;
-/// Head bytes preserved for large shell/test output. The matching tail budget
-/// keeps final errors and test summaries visible without a second command.
-const TRUNCATED_HEAD_BYTES: usize = 22_000;
-const TRUNCATED_TAIL_BYTES: usize = MAX_OUTPUT_SIZE - TRUNCATED_HEAD_BYTES;
-/// Limits for summary strings in tool metadata.
-const SUMMARY_MAX_LINES: usize = 3;
-const SUMMARY_MAX_CHARS: usize = 240;
-/// Maximum number of preserved high-signal lines extracted from the tail
-/// when output is truncated (#242). Bounded so the preserved summary
-/// itself can never blow up the context window.
-const MAX_PRESERVED_SUMMARY_LINES: usize = 80;
+use super::output_policy::shell_output;
+
+// The numeric knobs below moved to the scriptable policy seam in 0.11.0
+// (builtin `shell-output` mod → `register_policy("shell-output", #{...})`,
+// with the pre-0.11.0 values as compiled fallbacks —
+// `output_policy::ShellOutputPolicy::default`). The mechanism (slicing,
+// spill, summary-line detection) stays here.
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TruncationMeta {
@@ -48,13 +42,14 @@ pub struct ShellSpillInfo {
 }
 
 /// Whether a stream pair's FULL sizes warrant a spill: either stream alone
-/// exceeding the truncation budget ([`MAX_OUTPUT_SIZE`]) means truncation
+/// exceeding the truncation budget (`max_output_size`) means truncation
 /// discarded bytes on the combined model-visible view. Based on totals (not
 /// the per-call truncated flags) so polling paths whose accumulated slice is
 /// still small still spill when the task's full output is already large.
 #[must_use]
 pub fn needs_spill(stdout_total: usize, stderr_total: usize) -> bool {
-    stdout_total > MAX_OUTPUT_SIZE || stderr_total > MAX_OUTPUT_SIZE
+    let p = shell_output();
+    stdout_total > p.max_output_size || stderr_total > p.max_output_size
 }
 
 /// Persist the FULL pre-truncation shell output (stdout and stderr combined
@@ -119,8 +114,9 @@ pub fn spillover_footer(info: &ShellSpillInfo) -> String {
 }
 
 pub fn truncate_with_meta(output: &str) -> (String, TruncationMeta) {
+    let p = shell_output();
     let original_len = output.len();
-    if original_len <= MAX_OUTPUT_SIZE {
+    if original_len <= p.max_output_size {
         return (
             output.to_string(),
             TruncationMeta {
@@ -131,9 +127,8 @@ pub fn truncate_with_meta(output: &str) -> (String, TruncationMeta) {
         );
     }
 
-    let head_end = char_boundary_at_or_before(output, TRUNCATED_HEAD_BYTES);
-    let tail_start =
-        char_boundary_at_or_after(output, original_len.saturating_sub(TRUNCATED_TAIL_BYTES));
+    let head_end = char_boundary_at_or_before(output, p.head_bytes);
+    let tail_start = char_boundary_at_or_after(output, original_len.saturating_sub(p.tail_bytes));
     let head = &output[..head_end];
     let omitted_middle = &output[head_end..tail_start];
     let tail = &output[tail_start..];
@@ -171,19 +166,14 @@ pub fn truncate_with_meta(output: &str) -> (String, TruncationMeta) {
 /// otherwise be discarded by truncation. Recognises Cargo/rustc output,
 /// generic test framework summaries, panic markers, exit-status lines,
 /// and `Finished`/`running ...` markers. Returns at most
-/// `MAX_PRESERVED_SUMMARY_LINES` lines. High-signal lines (errors, panics,
+/// `preserved_summary_lines` lines. High-signal lines (errors, panics,
 /// test results, failures) are collected first so early build progress
 /// markers (`Compiling`/`Building`/`Running`/`Finished`/`running ...`)
 /// cannot exhaust the budget and crowd out later failures in the omitted
 /// middle (#242); remaining budget fills with progress lines. Oldest-first
 /// within each class.
 pub fn collect_summary_lines(text: &str) -> Vec<String> {
-    // Byte caps: a single huge line matching a broad substring ("FAIL"
-    // anywhere in a minified bundle or base64 blob) used to be preserved
-    // in full, blowing the context budget the line cap alone claims to
-    // bound.
-    const MAX_PRESERVED_LINE_BYTES: usize = 512;
-    const MAX_PRESERVED_TOTAL_BYTES: usize = 8_192;
+    let p = shell_output();
 
     fn is_progress_marker(trimmed: &str) -> bool {
         trimmed.starts_with("Finished")
@@ -208,12 +198,10 @@ pub fn collect_summary_lines(text: &str) -> Vec<String> {
     let mut preserved: Vec<String> = Vec::new();
     let mut total_bytes = 0usize;
     for line in high_signal.into_iter().chain(progress) {
-        if preserved.len() >= MAX_PRESERVED_SUMMARY_LINES
-            || total_bytes >= MAX_PRESERVED_TOTAL_BYTES
-        {
+        if preserved.len() >= p.preserved_summary_lines || total_bytes >= p.preserved_total_bytes {
             break;
         }
-        let cut = char_boundary_at_or_before(line, MAX_PRESERVED_LINE_BYTES);
+        let cut = char_boundary_at_or_before(line, p.preserved_line_bytes);
         total_bytes = total_bytes.saturating_add(cut);
         preserved.push(line[..cut].to_string());
     }
@@ -327,9 +315,10 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
 
 pub fn summarize_output(text: &str) -> String {
     let stripped = strip_truncation_note(text);
+    let p = shell_output();
     let summary = stripped
         .lines()
-        .take(SUMMARY_MAX_LINES)
+        .take(p.summary_max_lines)
         .collect::<Vec<_>>()
         .join("\n")
         .trim()
@@ -338,7 +327,7 @@ pub fn summarize_output(text: &str) -> String {
     if summary.is_empty() {
         String::new()
     } else {
-        truncate_chars(&summary, SUMMARY_MAX_CHARS)
+        truncate_chars(&summary, p.summary_max_chars)
     }
 }
 
@@ -436,13 +425,13 @@ mod tests {
 
     #[test]
     fn truncation_preserves_cargo_test_summary_lines_from_tail() {
-        let mut head = String::with_capacity(MAX_OUTPUT_SIZE + 4_000);
+        let mut head = String::with_capacity(shell_output().max_output_size + 4_000);
         head.push_str("running 5 tests\n");
         for i in 0..3_000 {
             head.push_str(&format!("test test::case_{i} ... ok\n"));
         }
         // Pad to force tail truncation
-        while head.len() < MAX_OUTPUT_SIZE {
+        while head.len() < shell_output().max_output_size {
             head.push_str("...padding line below threshold...\n");
         }
         head.push_str("\ntest result: ok. 1687 passed; 0 failed; 2 ignored\n");
@@ -463,8 +452,8 @@ mod tests {
 
     #[test]
     fn truncation_preserves_failure_lines_from_tail() {
-        let mut head = String::with_capacity(MAX_OUTPUT_SIZE + 1_000);
-        for _ in 0..MAX_OUTPUT_SIZE {
+        let mut head = String::with_capacity(shell_output().max_output_size + 1_000);
+        for _ in 0..shell_output().max_output_size {
             head.push('a');
         }
         head.push_str("\nfailures:\n  test::flaky_thing FAILED\n");
@@ -519,7 +508,7 @@ note: see help
     #[test]
     fn collect_summary_lines_prioritises_errors_over_progress_noise() {
         let mut body = String::new();
-        for _ in 0..(MAX_PRESERVED_SUMMARY_LINES + 10) {
+        for _ in 0..(shell_output().preserved_summary_lines + 10) {
             body.push_str("Compiling crate-dep v0.1.0\n");
         }
         body.push_str("error[E0432]: unresolved import `foo`\n");
@@ -536,7 +525,7 @@ note: see help
                 .any(|line| line.contains("test result: FAILED")),
             "a later test result must survive early progress noise: {preserved:?}"
         );
-        assert!(preserved.len() <= MAX_PRESERVED_SUMMARY_LINES);
+        assert!(preserved.len() <= shell_output().preserved_summary_lines);
         assert!(
             preserved
                 .iter()

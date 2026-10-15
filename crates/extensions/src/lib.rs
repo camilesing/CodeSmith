@@ -63,7 +63,8 @@ pub use loader::{LoadedDylib, load_dylib};
 pub use manifest::ExtensionManifest;
 pub use runner::{EmitOutcome, ExtensionRunner, UnloadModOutcome};
 pub use script::{
-    DiscoveredMod, ModKvStore, ModManifest, RhaiMod, apply_mod_trust_gate, discover_mods,
+    BUILTIN_MODS, BuiltinMod, DiscoveredMod, ModKvStore, ModManifest, RhaiMod,
+    apply_mod_trust_gate, builtin_policy_defaults, discover_mods, load_builtin_mods,
 };
 pub use state::HostExtensionContext;
 

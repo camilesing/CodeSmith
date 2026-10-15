@@ -163,6 +163,35 @@ Transform 可变字段（一个 handler 的改写对后续 handler 立即可见�
 | `register_guard(callback)` | 注册 deny-only 的工具调用守卫（见下） |
 | `register_message_projection(key, init, fold)` | 注册由宿主维护的会话日志折叠（见下） |
 | `projection_state(key)` | 读取本 mod 的投影状态（钩子/工具内可用） |
+| `register_policy(kind, config)` | 覆盖宿主机制策略（见下） |
+
+### 策略（路线 C —— 调优宿主机制）
+
+```rhai
+register_policy("shell-output", #{
+    max_output_size: 20000,   // 触发截断的字节数
+    head_bytes: 15000,        // 截断时保留的头部
+    tail_bytes: 5000,         // 截断时保留的尾部
+});
+```
+
+策略是**数据而非代码**：`kind` 指名一个宿主机制接缝，`config` 是它的
+参数表；机制本身（算法、溢写、安全守卫）留在 Rust。这就是"策略在脚本、
+效果在宿主"的切分——agent 无需重编译即可按工作区读取并调整这些行为。
+
+- 种类：`output-diff`（`context_radius`）、`shell-output`
+  （`max_output_size`、`head_bytes`、`tail_bytes`、`summary_max_lines`、
+  `summary_max_chars`、`preserved_summary_lines`、`preserved_line_bytes`、
+  `preserved_total_bytes`）。
+- 解析为**按装载顺序后写者胜**（内置 < 全局 < 项目）：用户 mod 注册同
+  种类即覆盖内置默认——与工具/命令的"先到者得"刻意不同。
+- 非法取值（字段类型错误、超上限、head+tail > max）在读取时告警并回退
+  到编译默认——mod 的 bug 不能瘫痪它所调优的机制。
+- **内置层**：默认值本身以内嵌 Rhai mod 发布（`builtin-output-diff`、
+  `builtin-shell-output` —— 源码在 `crates/extensions/src/script/builtin/`）。
+  它们始终装载（`[mods] enabled = false` 也只禁用户 mod）、跳过同意/哈希
+  门（随二进制发布）、使用临时 KV，且不出现在 `/mods` 列表（不是可发现
+  id —— 覆盖方式是注册同种类策略，而非遮蔽 id）。
 
 ### 贡献系统提示词分段（路线 B）
 

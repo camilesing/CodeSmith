@@ -271,6 +271,14 @@ impl HandleStore {
     }
 }
 
+/// Truncate `text` to at most `max_chars` Unicode scalar values.
+///
+/// Shared by [`HandleValue::repr_preview`] and the TUI-side projection
+/// helpers (re-exported through the TUI shim).
+pub fn truncate_chars(text: &str, max_chars: usize) -> String {
+    text.chars().take(max_chars).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,7 +288,7 @@ mod tests {
         let mut store = HandleStore::default();
         let first = store.insert_text("s", "h0", "first");
         for idx in 1..=MAX_HANDLE_ENTRIES {
-            store.insert_text("s", &format!("h{idx}"), "payload");
+            let _ = store.insert_text("s", format!("h{idx}"), "payload");
         }
         // `first` (oldest) was evicted; the newest insert is readable.
         assert!(store.get(&first).is_none());
@@ -300,11 +308,11 @@ mod tests {
     #[test]
     fn reinsert_refreshes_recency_and_accounting() {
         let mut store = HandleStore::default();
-        let old = store.insert_text("s", "a", &"x".repeat(50));
-        let _ = store.insert_text("s", "b", &"y".repeat(50));
+        let old = store.insert_text("s", "a", "x".repeat(50));
+        let _ = store.insert_text("s", "b", "y".repeat(50));
         // Re-insert "a": it is now the newest key and its old bytes are
         // retired from the budget.
-        let renewed = store.insert_text("s", "a", &"z".repeat(80));
+        let renewed = store.insert_text("s", "a", "z".repeat(80));
         assert_eq!(store.total_bytes, 50 + 80);
         assert_eq!(
             store.order.iter().filter(|k| k.name == "a").count(),
@@ -338,7 +346,7 @@ mod tests {
         let mut store = HandleStore::default();
         let chunk = "x".repeat(MAX_HANDLE_TOTAL_BYTES / 4 + 1);
         for idx in 0..8 {
-            store.insert_text("s", &format!("big{idx}"), chunk.clone());
+            let _ = store.insert_text("s", format!("big{idx}"), chunk.clone());
         }
         assert!(store.total_bytes <= MAX_HANDLE_TOTAL_BYTES + chunk.len());
         assert!(
@@ -346,12 +354,4 @@ mod tests {
             "byte budget must have evicted entries"
         );
     }
-}
-
-/// Truncate `text` to at most `max_chars` Unicode scalar values.
-///
-/// Shared by [`HandleValue::repr_preview`] and the TUI-side projection
-/// helpers (re-exported through the TUI shim).
-pub fn truncate_chars(text: &str, max_chars: usize) -> String {
-    text.chars().take(max_chars).collect()
 }

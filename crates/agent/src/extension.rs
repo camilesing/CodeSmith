@@ -789,6 +789,24 @@ pub trait ExtensionApi: Send + Sync {
             "message-projection registration not supported by this api".into(),
         ))
     }
+
+    /// Register a **policy** for a host-behavior seam ([`PolicyKind`]) —
+    /// the "policy in script, effects in host" surface. A policy is data:
+    /// `config` is a JSON map whose keys the owning mechanism validates
+    /// (bad values warn + fall back to compiled defaults at read time).
+    /// Registration is **last-wins by load order** (builtin mods < global
+    /// < project mods), so a user mod overrides a builtin policy by
+    /// registering the same kind — deliberately different from
+    /// tools/commands, where the incumbent keeps the name.
+    fn register_policy(
+        &self,
+        _kind: crate::policy::PolicyKind,
+        _config: Value,
+    ) -> Result<(), ExtensionError> {
+        Err(ExtensionError::Load(
+            "policy registration not supported by this api".into(),
+        ))
+    }
 }
 
 // === Message projections (session log folds) ===============================
