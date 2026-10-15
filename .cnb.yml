@@ -1,5 +1,7 @@
-# CNB is a one-way mirror from GitHub. Keep this file source-controlled here;
-# CNB-side edits will be overwritten by the GitHub -> CNB sync workflow.
+# CNB is a one-way mirror from GitHub. Keep this file source-controlled here.
+# There is no automated sync: the GitHub -> CNB sync workflow was removed (the
+# CNB_GIT_TOKEN secret was never configured), so the mirror updates only by
+# hand — see docs/RELEASE_RUNBOOK.md ("CNB Cool mirror").
 
 .feishu_bridge_tests: &feishu_bridge_tests
   name: feishu bridge tests

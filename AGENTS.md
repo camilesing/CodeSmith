@@ -75,12 +75,11 @@ prompt" is rung 2 with a name. Two corollaries earned here:
   Git operations, downloads, dependency installation, provider calls, or
   source/diff transmission. Record the missing external receipt and keep working
   locally.
-- Public name is **CodeSmith** (upstream: Codewhale). Compatibility
-  identifiers such as `codesmith`, `codesmith-tui`, protocol names, and
-  storage keys (`~/.codesmith/`) change only through an explicit migration.
 - Keep providers and models first-class and provider-neutral. `rig-core` is
   one swappable implementation behind `crates/agent`'s own `LlmClient` /
   `Tool` traits, not the framework vocabulary.
+- Compatibility identifiers (`codesmith`, protocol names, `~/.codesmith/`
+  storage keys) change only through an explicit migration.
 - Never rewrite published history, retag a release, force-push a shared ref, or
   publish without explicit authorization. Preserve human contributor credit.
 - **Model-visible means logged.** Anything that reaches a model request must be
@@ -111,23 +110,19 @@ prompt" is rung 2 with a name. Two corollaries earned here:
 An external contributor's branch goes stale because *we* land things, not
 because they did anything wrong. Treat their time as more expensive than ours.
 
-**The goal is the contributor's PR merging as itself.** Review it, help it
-rebase, or fix it on their branch — that is the default path. Closing their PR
-and re-landing the work as our own commit (`auto-close-harvested`) is the
-fallback for a branch that truly cannot merge in reasonable time; done
-casually it reads as taking the work even when credit is preserved.
-
+- The contributor's PR merging as itself is the goal: review it, help it
+  rebase, or fix it on their branch. Closing it to re-land the work as our own
+  commit (`auto-close-harvested`) is the fallback for a branch that truly
+  cannot merge in reasonable time — done casually it reads as taking the work
+  even when credit is preserved. Mechanics live in `CONTRIBUTING.md` ("How
+  Your Contribution Lands"); follow them, don't improvise.
 - **Never make a contributor rebase around our churn.** If their PR conflicts
   only because main moved, a maintainer resolves it.
-- Landing mechanics — direct merge vs. harvest, the contribution gate — are
-  documented in `CONTRIBUTING.md` ("How Your Contribution Lands"). Follow
-  them instead of improvising.
-- **Preserve credit in the mechanical sense, not just the polite one.** Commit
-  authorship and `Co-authored-by` trailers must use the contributor's own
-  GitHub-linked address — GitHub reads commit metadata for the contribution
-  graph, not prose credit or mailmap-style indirection. A harvested landing
-  carries `Harvested from PR #N by @handle` so `auto-close-harvested.yml`
-  closes their PR with credit.
+- **Credit is mechanical, not polite.** Commit authorship and
+  `Co-authored-by` trailers must use the contributor's own GitHub-linked
+  address — the contribution graph reads commit metadata, not prose credit or
+  mailmap-style indirection. A harvested landing carries `Harvested from
+  PR #N by @handle` so `auto-close-harvested.yml` closes their PR with credit.
 
 ## Merging under a gate
 
@@ -210,20 +205,19 @@ in an implementation crate, consumer — and lands in
   line alone.
 - A regression test has to be shown failing without the fix — a test that
   passes either way pins the implementation, not the defect.
-- Tests are selective evidence, not the specification. Do not add tests by
-  default. Add or retain one when it cheaply protects a high-risk behavior such
-  as safety, data integrity, protocol compatibility, or a reproduced regression.
+- Tests are selective evidence, not the specification — in what you write and
+  in what you run. Add or retain a test only when it cheaply protects a
+  high-risk behavior (safety, data integrity, protocol compatibility, a
+  reproduced regression); run the tests that cover the change, not the whole
+  suite, and do not repeat a check that already passed or rerun an unchanged
+  suite. Prefer focused compilation, a relevant existing check, and direct
+  product or manual evidence; a broad suite is for a genuine cross-cutting or
+  release risk. CI owns exhaustive coverage; a full local run is for CI
+  diagnosis or an irreducibly repository-wide change.
 - Rewrite or remove tests that duplicate coverage, freeze internals, overspecify
   copy or layout, preserve obsolete behavior, or cost more than the risk they
-  cover. Never weaken real safety or data-integrity behavior merely to make a
-  gate pass.
-- Match the evidence to the surface: run the tests that cover the change, not
-  the whole suite; do not repeat a check that already passed in order to
-  commit, and do not repeatedly rerun an unchanged suite. Prefer focused
-  compilation, a relevant existing check, and direct product or manual
-  evidence; run a broad suite only for a genuine cross-cutting or release
-  risk. CI owns exhaustive coverage; a full local run is for CI diagnosis or
-  an irreducibly repository-wide change.
+  cover. Never weaken real safety or data-integrity behavior merely to make
+  a gate pass.
 - **Batch edits; compile once.** `cargo check` and test builds on this
   workspace take minutes, so an edit→compile→edit loop spends most of its
   time waiting on the linker. Read precisely, write every edit a coherent
@@ -249,12 +243,9 @@ Edition 2024 (`let_chains` is used throughout); the toolchain is pinned in
 `rust-toolchain.toml`. Workspace default-members are `cli` and
 `app-server`, so a bare `cargo build` covers the user-facing binaries
 (the single `codesmith` binary lives in `crates/cli`; the ratatui TUI was
-removed in 0.9.0). CI lanes live
-in `.github/workflows/ci.yml`. The CNB mirror (`sync-cnb.yml`) was removed —
-it never ran successfully because the `CNB_GIT_TOKEN` secret was not
-configured. GitHub's test job skips its Linux steps (they were meant for the
-CNB lane), so re-enable them in `ci.yml` before relying on Linux test
-coverage. `.cnb.yml` stays source-controlled in case mirroring returns.
+removed in 0.9.0). CI lives in `.github/workflows/`; which lanes run where —
+including the stalled CNB mirror and the Linux-coverage gap it leaves — is
+owned by `docs/RELEASE_RUNBOOK.md` ("CNB Cool mirror"), not here.
 
 Report commands actually run and distinguish source, local tests, packaged
 artifacts, CI, and public release state. Describe the evidence actually needed
