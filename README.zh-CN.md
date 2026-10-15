@@ -7,7 +7,7 @@
 ➜  CodeSmith git:(main) ✗ codesmith
 CodeSmith 0.9.0 (4fe017cfcc60) — GLM5.3 · AGENT mode · preset middle
 workspace /Users/camile/Work/Rust/CodeSmith · /help lists commands (Tab completes, Shift+Tab cycles the mode) · ? shows the keyboard shortcuts · Ctrl+C cancels a turn
-● idle │ middle │ 🧭 0% (48/200k) │ 🚥agent │ 🤖0 │ GLM5.3 │ 🧠high │ v0.9.0 (4fe017cfcc60)
+● idle │ middle │ 🧭 0% (48/200k) │ 🚥agent │ 🤖0 │ GLM5.3 │ 🧠high
 ❯ 这是什么项目？
 这是 **CodeSmith** —— 一个面向开源权重模型的终端编码代理（terminal coding agent）。
 
