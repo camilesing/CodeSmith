@@ -1961,13 +1961,31 @@ pub fn new_shared_subagent_manager(workspace: PathBuf, max_agents: usize) -> Sha
 pub struct AgentOpenTool {
     manager: SharedSubAgentManager,
     runtime: SubAgentRuntime,
+    /// `SessionBeforeFork` emit (fork veto); forwarded to the spawn tool
+    /// this delegates to. `None` in sub-agent registries — known
+    /// limitation: only the parent's spawns are vetoable.
+    extension_runner: Option<std::sync::Arc<codesmith_extensions::ExtensionRunner>>,
 }
 
 impl AgentOpenTool {
     #[allow(dead_code)] // Registered by the adjacent v0.8.33 registry surface update.
     #[must_use]
     pub fn new(manager: SharedSubAgentManager, runtime: SubAgentRuntime) -> Self {
-        Self { manager, runtime }
+        Self {
+            manager,
+            runtime,
+            extension_runner: None,
+        }
+    }
+
+    /// Attach the extension runner (fork-veto emit).
+    #[must_use]
+    pub fn with_extension_runner(
+        mut self,
+        runner: std::sync::Arc<codesmith_extensions::ExtensionRunner>,
+    ) -> Self {
+        self.extension_runner = Some(runner);
+        self
     }
 }
 
@@ -2090,7 +2108,10 @@ impl ToolSpec for AgentOpenTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let spawn_tool = AgentSpawnTool::new(self.manager.clone(), self.runtime.clone());
+        let mut spawn_tool = AgentSpawnTool::new(self.manager.clone(), self.runtime.clone());
+        if let Some(runner) = self.extension_runner.clone() {
+            spawn_tool = spawn_tool.with_extension_runner(runner);
+        }
         let mut result = spawn_tool.execute(input, context).await?;
         // Program caller of a sibling tool: take the canonical value instead
         // of re-parsing the rendered content.
@@ -2239,6 +2260,8 @@ pub struct AgentSpawnTool {
     manager: SharedSubAgentManager,
     runtime: SubAgentRuntime,
     name: &'static str,
+    /// `SessionBeforeFork` emit (fork veto) — see [`AgentOpenTool`].
+    extension_runner: Option<std::sync::Arc<codesmith_extensions::ExtensionRunner>>,
 }
 
 impl AgentSpawnTool {
@@ -2259,7 +2282,18 @@ impl AgentSpawnTool {
             manager,
             runtime,
             name,
+            extension_runner: None,
         }
+    }
+
+    /// Attach the extension runner (`SessionBeforeFork` emit).
+    #[must_use]
+    pub fn with_extension_runner(
+        mut self,
+        runner: std::sync::Arc<codesmith_extensions::ExtensionRunner>,
+    ) -> Self {
+        self.extension_runner = Some(runner);
+        self
     }
 }
 
@@ -2383,6 +2417,25 @@ impl ToolSpec for AgentSpawnTool {
                  Increase via [runtime] max_spawn_depth in config.toml.",
                 self.runtime.spawn_depth, self.runtime.max_spawn_depth
             )));
+        }
+
+        // `SessionBeforeFork` — cancel-veto seam before the child forks
+        // session state (same idiom as `SessionBeforeCompact`): `Cancel`
+        // aborts the spawn with a model-visible error; everything else
+        // proceeds. Known limitation: sub-agent registries attach no
+        // runner, so grandchildren forks are not vetoable.
+        if let Some(runner) = &self.extension_runner {
+            let out = runner
+                .emit(codesmith_agent::extension::ExtensionEvent::SessionBeforeFork)
+                .await;
+            if matches!(
+                out.outcome,
+                codesmith_agent::extension::HandlerOutcome::Cancel { .. }
+            ) {
+                return Err(ToolError::execution_failed(
+                    "sub-agent fork vetoed by an extension (session-before-fork)",
+                ));
+            }
         }
 
         // Validate cwd if supplied: must canonicalize inside the parent
@@ -3106,12 +3159,28 @@ fn parse_run_request(input: &Value) -> Result<AgentRunRequest, ToolError> {
 pub struct SubagentRunTool {
     manager: SharedSubAgentManager,
     runtime: SubAgentRuntime,
+    /// `SessionBeforeFork` emit (fork veto) — see [`AgentOpenTool`].
+    extension_runner: Option<std::sync::Arc<codesmith_extensions::ExtensionRunner>>,
 }
 
 impl SubagentRunTool {
     #[must_use]
     pub fn new(manager: SharedSubAgentManager, runtime: SubAgentRuntime) -> Self {
-        Self { manager, runtime }
+        Self {
+            manager,
+            runtime,
+            extension_runner: None,
+        }
+    }
+
+    /// Attach the extension runner (`SessionBeforeFork` emit).
+    #[must_use]
+    pub fn with_extension_runner(
+        mut self,
+        runner: std::sync::Arc<codesmith_extensions::ExtensionRunner>,
+    ) -> Self {
+        self.extension_runner = Some(runner);
+        self
     }
 
     /// Validate cwd: must canonicalize inside the parent workspace, or inside a
@@ -3299,7 +3368,10 @@ impl SubagentRunTool {
             "role": request.assignment.role,
             "memory": request.memory,
         });
-        let spawn_tool = AgentSpawnTool::new(self.manager.clone(), self.runtime.clone());
+        let mut spawn_tool = AgentSpawnTool::new(self.manager.clone(), self.runtime.clone());
+        if let Some(runner) = self.extension_runner.clone() {
+            spawn_tool = spawn_tool.with_extension_runner(runner);
+        }
         spawn_tool.execute(spawn_input, context).await
     }
 }
@@ -3435,6 +3507,25 @@ impl ToolSpec for SubagentRunTool {
                  Increase via [runtime] max_spawn_depth in config.toml.",
                 self.runtime.spawn_depth, self.runtime.max_spawn_depth
             )));
+        }
+
+        // `SessionBeforeFork` — cancel-veto seam before the child forks
+        // session state (same idiom as `SessionBeforeCompact`): `Cancel`
+        // aborts the spawn with a model-visible error; everything else
+        // proceeds. Known limitation: sub-agent registries attach no
+        // runner, so grandchildren forks are not vetoable.
+        if let Some(runner) = &self.extension_runner {
+            let out = runner
+                .emit(codesmith_agent::extension::ExtensionEvent::SessionBeforeFork)
+                .await;
+            if matches!(
+                out.outcome,
+                codesmith_agent::extension::HandlerOutcome::Cancel { .. }
+            ) {
+                return Err(ToolError::execution_failed(
+                    "sub-agent fork vetoed by an extension (session-before-fork)",
+                ));
+            }
         }
 
         if request.run_in_background {
@@ -4296,6 +4387,8 @@ impl ToolSpec for AgentWaitTool {
 pub struct DelegateToAgentTool {
     manager: SharedSubAgentManager,
     runtime: SubAgentRuntime,
+    /// `SessionBeforeFork` emit (fork veto) — see [`AgentOpenTool`].
+    extension_runner: Option<std::sync::Arc<codesmith_extensions::ExtensionRunner>>,
 }
 
 impl DelegateToAgentTool {
@@ -4303,7 +4396,21 @@ impl DelegateToAgentTool {
     #[allow(dead_code)] // Legacy alias superseded by agent_open(fork_context=true).
     #[must_use]
     pub fn new(manager: SharedSubAgentManager, runtime: SubAgentRuntime) -> Self {
-        Self { manager, runtime }
+        Self {
+            manager,
+            runtime,
+            extension_runner: None,
+        }
+    }
+
+    /// Attach the extension runner (`SessionBeforeFork` emit).
+    #[must_use]
+    pub fn with_extension_runner(
+        mut self,
+        runner: std::sync::Arc<codesmith_extensions::ExtensionRunner>,
+    ) -> Self {
+        self.extension_runner = Some(runner);
+        self
     }
 }
 
@@ -4387,7 +4494,10 @@ impl ToolSpec for DelegateToAgentTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let spawn_tool = AgentSpawnTool::new(self.manager.clone(), self.runtime.clone());
+        let mut spawn_tool = AgentSpawnTool::new(self.manager.clone(), self.runtime.clone());
+        if let Some(runner) = self.extension_runner.clone() {
+            spawn_tool = spawn_tool.with_extension_runner(runner);
+        }
         let input = with_default_fork_context(input, true);
         let result = spawn_tool.execute(input, context).await?;
         Ok(wrap_with_deprecation_notice(
@@ -6486,6 +6596,9 @@ impl SubAgentToolRegistry {
             runtime.allow_shell,
             todo_list,
             plan_state,
+            // Children attach no runner: grandchildren forks are not
+            // vetoable (known limitation on `SessionBeforeFork`).
+            None,
         );
         if matches!(agent_type, SubAgentType::Team)
             && let Some(team_context) = context.runtime.team_context.clone()

@@ -28,11 +28,11 @@ Extension tools are wired live into the host per turn: they register
 into the per-turn `ToolRegistry` via `register_extension_tools` in
 `EngineHost::build_turn_dispatcher`, so the agent loop sees them as
 normal `ToolSpec`s (main-turn only; not inherited by sub-agents — see
-[Sandbox stance](#sandbox-stance)). Extension/mod **slash commands do
-not dispatch in the REPL**: `ExtensionRunner::try_dispatch_command`
-(`crates/extensions/src/runner.rs`) has no production caller — a
-registered command typed at the prompt falls through to the
-unknown-command arm of the line REPL.
+[Sandbox stance](#sandbox-stance)). Extension/mod **slash commands dispatch
+in the REPL**: `ExtensionRunner::try_dispatch_command`
+(`crates/extensions/src/runner.rs`) is called between user commands and
+the built-in static table — mod commands shadow built-ins, user commands
+shadow mod commands.
 
 Every populate/reload pass also collects one structured audit entry per
 discovered extension/mod — `Loaded` / `Failed { original error }` /
@@ -257,7 +257,7 @@ so a single crate gives them both the traits and the runtime helpers.
 - **`ExtensionCommandContext: ExtensionContext`** — strict sub-trait handed
   to command handlers; it carries no session-mutation methods (the split
   exists for type safety).
-- **`ExtensionEvent`** — `#[non_exhaustive]`, 25 variants:
+- **`ExtensionEvent`** — `#[non_exhaustive]`, 24 variants (`resources-discover` removed in 0.11.0):
   `SessionStart` / `TurnStart` / `ToolCall` / `ToolResult` / `TurnEnd` /
   `SessionShutdown` / `ProjectTrust` / `ResourcesDiscover` / `Input` /
   `BeforeAgentStart` / `AgentStart` / `BeforeProviderHeaders` /
@@ -288,9 +288,8 @@ so a single crate gives them both the traits and the runtime helpers.
   extensions decoupled from `ToolContext`'s ~30 host-coupled fields.
 - **`CommandDefinition`** — extension-side slash-command contract:
   `name / description / async run(ctx, args) -> CommandOutput`. The
-  runtime lookup is `ExtensionRunner::try_dispatch_command`; it has no
-  production caller, so a registered command does not dispatch anywhere
-  in the current build.
+  runtime lookup is `ExtensionRunner::try_dispatch_command`, dispatched
+  by the REPL between user commands and the built-in static table.
 - **`ExtensionError`** — `StaleContext` (the guard signal) + `Config` /
   `Tool` / `Command` / `Conflict` / `Install` / `Load` / `Unimplemented`.
 

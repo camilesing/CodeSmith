@@ -1603,6 +1603,30 @@ mod tests {
         assert!(after.is_empty(), "commands cleared: {after:?}");
     }
 
+    #[test]
+    fn try_dispatch_command_runs_bound_command() {
+        // The REPL's mod-command layer dispatches through this path: a
+        // bound command runs + returns its output; an unknown name is
+        // `None` so the caller falls through to the built-in table.
+        let runner = ExtensionRunner::new();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        rt.block_on(runner.load(&CmdExt)).expect("load CmdExt");
+        runner.bind_core(Arc::new(Ctx { generation: 1 }));
+
+        let out = rt
+            .block_on(runner.try_dispatch_command("clear_cmd_test", "hi"))
+            .expect("bound command dispatches");
+        match out {
+            CommandOutput::Message(m) => assert_eq!(m, "echo:hi"),
+            other => panic!("expected Message, got {other:?}"),
+        }
+        assert!(
+            rt.block_on(runner.try_dispatch_command("no-such", ""))
+                .is_none(),
+            "unknown command falls through as None"
+        );
+    }
+
     // === §F5d T4 — two-phase Library drain/drop ===========================
 
     /// §F5d T4 — the UI-thread MOVE (`drain_libraries_to_pending`) empties

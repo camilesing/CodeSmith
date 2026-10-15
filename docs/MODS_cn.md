@@ -86,7 +86,7 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 
 **预期效果**：
 
-- `/calls` 命令会完成注册，但 mod 注册的斜杠命令在当前构建中不会进入任何分发路径（见 [EXTENSIONS_cn.md](EXTENSIONS_cn.md)）——在 REPL 里敲 `/calls` 会落入未知命令分支。`message(...)` / `send(...)` 要等命令分发落地后才会被触发；眼下可行的验证方式是让模型调用 `call_count` 工具。
+- 在 REPL 里敲 `/calls some args` 即经扩展运行时分发：`message(...)` 直接打印文本，`send(...)` 将内容送入会话。mod 命令位于用户命令与内建表之间（用户命令可遮蔽它们，它们可遮蔽内建命令），`/help` 的 "mod commands" 节会列出，Tab 补全实时提供其名字。
 - 现在**改 `mod.rhai`、保存，然后重载**——`/mods reload` 会重新执行发现流程，同 id 免审批。`/mods status` 确认哪些 mod 已加载及运行时代数（`/mods list` 显示各 mod 的激活状态；启动提示也会列出已发现但未激活的 mod）。（自动文件 watcher 及其 `[mods] watch` 开关已在 0.9.0 移除，重载改为显式触发。）
 
 到此你已经用过全部四种注册面：事件钩子、工具、命令、KV。`/mods` 的完整命令集为 `list` / `status` / `info <id>` / `activate <id>` / `enable|disable <id>` / `remove <id>` / `reload`；模型侧 `manage_mods` 工具与之对应，动作为 `list` / `write` / `activate` / `disable` / `enable` / `remove` / `reload`。
@@ -95,7 +95,7 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 
 ### 事件钩子
 
-`on("<event>", |e, ctx| { ... })`——`e` 是事件 payload map（都带 `kind` 字段），`ctx` 是 `#{cwd, mode, idle, generation}`，**ctx 可省略**（写 `|e|` 即可）。事件名是 `ExtensionEventKind` 的 kebab-case 全量 25 种：
+`on("<event>", |e, ctx| { ... })`——`e` 是事件 payload map（都带 `kind` 字段），`ctx` 是 `#{cwd, mode, idle, generation}`，**ctx 可省略**（写 `|e|` 即可）。事件名是 `ExtensionEventKind` 的 kebab-case 全量 24 种：
 
 | 事件 | payload 字段 |
 |---|---|
@@ -109,10 +109,15 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 | `assistant-stream` | `text`（单个增量块；随文本 delta 逐次触发，仅观察） |
 | `tool-execution-update` | `id`、`name`、`message` |
 | `tools-change` | `added`、`removed`（工具名数组） |
-| `project-trust` / `session-start` / `resources-discover` | `reason` |
+| `project-trust` / `session-start` | `reason` |
 | `agent-start` / `before-provider-headers` / `tool-execution-start` / `tool-execution-end` / `agent-end` / `agent-settled` / `session-before-switch` / `session-before-fork` / `session-shutdown` / `session-before-compact` / `session-compact` | （仅 `kind`） |
 
-未接线事件（宿主 seam 尚未兑现）订阅不触发：`tool-execution-update`、`resources-discover`、`session-before-fork`。
+未接线事件（宿主 seam 尚未兑现）订阅不触发：`tool-execution-update`——工具契约是一次式的，
+没有可桥接的宿主进度通道（见 `callback_bridge.rs`）；待流式工具契约落地后触发。
+`resources-discover` 已在 0.11.0 移除（从未有发射方，也没有消费者）。
+`session-before-fork` 在父代理的每次 spawn（`agent_open` / `agent_spawn` / `subagent_run` /
+`delegate_to_agent`）fork 会话状态前触发——`cancel()` 否决该次 fork；孙代 spawn 不可否决
+（子代理注册表不挂 runner）。
 
 `tool-result` 载荷携带 canonical/rendered 分离：`content` 是模型可见的渲染文本；`canonical` 是同一结果的结构化机器可读值（`ToolResult::json` 的值，或工具经 `with_canonical` 附加的值）。请读 `canonical` 而不是重新解析 `content`——散文式渲染的结果（如 `todo_add` 在 JSON 前拼了一句提示）根本无法解析。canonical 仅存活于当前进程：转录持久化的是渲染后的 `content`。
 

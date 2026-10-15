@@ -54,6 +54,10 @@ pub struct ReplHelper {
     /// Names from `.codesmith/commands/*.md` (workspace, then user-global),
     /// loaded once when the REPL starts.
     user_commands: Vec<String>,
+    /// The extension runner, for live mod-command completion — mods
+    /// activate/disable mid-session, so their command names are snapshotted
+    /// per keystroke instead of once at startup.
+    extension_runner: Option<std::sync::Arc<codesmith_extensions::ExtensionRunner>>,
     /// `@path` candidates. Behind a `Mutex` because completion takes `&self`
     /// and the index rebuilds lazily; the lock is only ever held for one
     /// bounded lookup.
@@ -65,16 +69,28 @@ pub struct ReplHelper {
 impl ReplHelper {
     pub fn new(
         user_commands: Vec<String>,
+        extension_runner: Option<std::sync::Arc<codesmith_extensions::ExtensionRunner>>,
         paths: PathIndex,
         bindings: bindings::Shared,
         todos: Option<codesmith_agent_runtime::tool_state::todo::SharedTodoList>,
     ) -> Self {
         Self {
             user_commands,
+            extension_runner,
             paths: Mutex::new(paths),
             bindings,
             todos,
         }
+    }
+
+    /// User + live mod command names (mod commands dispatch between user
+    /// commands and the static table, so they complete too).
+    fn command_name_pool(&self) -> Vec<String> {
+        let mut names = self.user_commands.clone();
+        if let Some(runner) = &self.extension_runner {
+            names.extend(runner.bound_command_names());
+        }
+        names
     }
 
     /// Completion inside a `!` line: workspace paths first, then the `!`
@@ -177,7 +193,8 @@ impl Completer for ReplHelper {
         pos: usize,
         ctx: &Context<'_>,
     ) -> rustyline::Result<(usize, Vec<Pair>)> {
-        let (start, pairs) = complete_at(line, pos, &self.user_commands);
+        let pool = self.command_name_pool();
+        let (start, pairs) = complete_at(line, pos, &pool);
         if !pairs.is_empty() {
             return Ok((start, pairs));
         }
@@ -198,7 +215,8 @@ impl Hinter for ReplHelper {
         // Every keystroke passes through here before the line is redrawn:
         // this is where the shared cell keeps its copy of the buffer.
         Bindings::lock(&self.bindings).note_line(line);
-        hint_at(line, pos, &self.user_commands)
+        let pool = self.command_name_pool();
+        hint_at(line, pos, &pool)
             .or_else(|| self.mention_hint(line, pos))
             .or_else(|| self.status_hint(line))
     }
@@ -464,6 +482,7 @@ mod tests {
     fn helper(user_commands: Vec<String>) -> ReplHelper {
         ReplHelper::new(
             user_commands,
+            None,
             PathIndex::new(std::env::temp_dir(), 6, 128),
             Bindings::shared(),
             None,
@@ -562,6 +581,7 @@ mod tests {
         std::fs::write(dir.path().join("src/main.rs"), "").unwrap();
         let helper = ReplHelper::new(
             Vec::new(),
+            None,
             PathIndex::new(dir.path().to_path_buf(), 6, 128),
             Bindings::shared(),
             None,

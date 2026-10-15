@@ -1055,7 +1055,7 @@ fn print_agent_tool_catalog_metrics() {
         .with_rlm_tool(None, DEFAULT_TEXT_MODEL.to_string())
         .with_recall_archive_tool()
         .with_notify_tool()
-        .with_subagent_tools(manager, runtime)
+        .with_subagent_tools(manager, runtime, None)
         .build(context);
     let baseline_catalog = registry.to_api_tools_with_cache(true);
     let baseline_json = serde_json::to_vec(&baseline_catalog).expect("serialize baseline");
