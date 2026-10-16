@@ -16,7 +16,7 @@ pub fn set_verbose(enabled: bool) {
     VERBOSE.store(enabled, Ordering::SeqCst);
 }
 
-/// Capture the current verbose state so the TUI can restore it after
+/// Capture the current verbose state so the host can restore it after
 /// temporarily suppressing Windows alt-screen output.
 #[cfg(windows)]
 pub fn snapshot_verbose_state() {

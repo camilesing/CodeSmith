@@ -219,7 +219,9 @@ fn trust_reason(r: codesmith_agent::extension::TrustReason) -> &'static str {
 
 fn mode_string(m: ExtensionMode) -> &'static str {
     match m {
-        ExtensionMode::Tui => "tui",
+        // The retired TUI's name is the compatibility value for the
+        // interactive REPL: mods already compare `ctx.mode == "tui"`.
+        ExtensionMode::Interactive => "tui",
         ExtensionMode::Rpc => "rpc",
         ExtensionMode::Json => "json",
         ExtensionMode::Print => "print",
@@ -1413,7 +1415,7 @@ mod tests {
             std::path::Path::new(".")
         }
         fn mode(&self) -> codesmith_agent::extension::ExtensionMode {
-            codesmith_agent::extension::ExtensionMode::Tui
+            codesmith_agent::extension::ExtensionMode::Interactive
         }
         fn is_idle(&self) -> bool {
             true
@@ -1793,7 +1795,7 @@ mod tests {
                 std::path::Path::new(".")
             }
             fn mode(&self) -> codesmith_agent::extension::ExtensionMode {
-                codesmith_agent::extension::ExtensionMode::Tui
+                codesmith_agent::extension::ExtensionMode::Interactive
             }
             fn is_idle(&self) -> bool {
                 true
@@ -2199,7 +2201,7 @@ mod tests {
                 std::path::Path::new(".")
             }
             fn mode(&self) -> codesmith_agent::extension::ExtensionMode {
-                codesmith_agent::extension::ExtensionMode::Tui
+                codesmith_agent::extension::ExtensionMode::Interactive
             }
             fn is_idle(&self) -> bool {
                 true
@@ -2317,7 +2319,7 @@ mod tests {
                 std::path::Path::new(".")
             }
             fn mode(&self) -> codesmith_agent::extension::ExtensionMode {
-                codesmith_agent::extension::ExtensionMode::Tui
+                codesmith_agent::extension::ExtensionMode::Interactive
             }
             fn is_idle(&self) -> bool {
                 true
@@ -2379,7 +2381,7 @@ mod tests {
                 std::path::Path::new(".")
             }
             fn mode(&self) -> codesmith_agent::extension::ExtensionMode {
-                codesmith_agent::extension::ExtensionMode::Tui
+                codesmith_agent::extension::ExtensionMode::Interactive
             }
             fn is_idle(&self) -> bool {
                 true
@@ -2409,7 +2411,7 @@ mod tests {
             std::path::Path::new(".")
         }
         fn mode(&self) -> codesmith_agent::extension::ExtensionMode {
-            codesmith_agent::extension::ExtensionMode::Tui
+            codesmith_agent::extension::ExtensionMode::Interactive
         }
         fn is_idle(&self) -> bool {
             true

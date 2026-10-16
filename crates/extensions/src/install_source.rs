@@ -1374,7 +1374,7 @@ mod prebuilt_source_tests {
 
     #[test]
     fn prebuilt_no_checksum_proceeds() {
-        // absent checksum → fetch succeeds (tui warns after; source doesn't error)
+        // absent checksum → fetch succeeds (the CLI warns after; source doesn't error)
         let url = "https://x.example/y.dylib";
         let http = FakeHttpFetcher::new().with(url, b"dylib".to_vec());
         let src = PrebuiltDylibSource::new(url, None, Arc::new(http));

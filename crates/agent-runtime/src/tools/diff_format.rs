@@ -2,8 +2,8 @@
 //!
 //! `edit_file` and `write_file` capture the file contents before and after
 //! the mutation and emit a unified diff at the head of their `ToolResult`
-//! output. The TUI's `output_looks_like_diff` detector then routes the
-//! payload through `diff_render::render_diff`, which renders it with line
+//! output. The retired TUI's `output_looks_like_diff` detector then routed the
+//! payload through `diff_render::render_diff`, which rendered it with line
 //! numbers and coloured `+`/`-` gutters (#505).
 //!
 //! The diff is also a strict UX upgrade for the model — it sees exactly
@@ -18,13 +18,13 @@ use super::output_policy::diff_context_radius;
 /// Returns an empty string when the inputs are byte-identical so callers
 /// can skip the "no changes" header. The output uses git-style `--- a/...`
 /// / `+++ b/...` headers and three lines of context by default — matching
-/// the format the TUI's `diff_render::render_diff` already understands.
+/// the format the retired TUI's `diff_render::render_diff` understood.
 /// The context radius is the scriptable policy knob
 /// (`register_policy("output-diff", #{context_radius: N})`); the diff
 /// algorithm and header escaping stay here.
 ///
 /// Layout contract: the first `@@` hunk header is always line 3 of the
-/// output; the TUI diff detector (#505) relies on that position.
+/// output; the retired TUI's diff detector (#505) relied on that position.
 #[must_use]
 pub fn make_unified_diff(path: &str, old: &str, new: &str) -> String {
     if old == new {
@@ -136,17 +136,17 @@ mod tests {
         assert!(diff.contains("+beta"), "{diff}");
         assert!(diff.lines().any(|l| l.starts_with("@@")), "{diff}");
         // `similar` emits the git-style missing-newline hint after the
-        // unterminated change; the TUI renderer's diff gutter (#505) must
-        // tolerate it as a body line.
+        // unterminated change; the retired TUI renderer's diff gutter (#505)
+        // had to tolerate it as a body line.
         assert!(diff.contains("\\ No newline at end of file"), "{diff}");
     }
 
     #[test]
     fn diff_contains_hunk_header_so_tui_renders_it() {
         // Deterministic layout contract (#505): `--- a/...` (line 1),
-        // `+++ b/...` (line 2), first `@@` hunk header at line 3 — the TUI's
-        // output_looks_like_diff scans a 5-line window, so the header must
-        // stay at exactly this position.
+        // `+++ b/...` (line 2), first `@@` hunk header at line 3 — the retired
+        // TUI's output_looks_like_diff scanned a 5-line window, so the header
+        // must stay at exactly this position.
         let diff = make_unified_diff("foo.txt", "a\n", "b\n");
         let head: Vec<&str> = diff.lines().take(5).collect();
         assert_eq!(head.first().copied(), Some("--- a/foo.txt"), "{head:?}");

@@ -102,7 +102,7 @@ impl ToolSpec for NotifyTool {
 
         // Route through the host-injected `NotifierHost` rather than the
         // TUI's `tui::notifications::notify_done` directly — this keeps the
-        // tool portable across hosts (TUI today, app-server tomorrow). The
+        // tool portable across hosts (CLI today, app-server tomorrow). The
         // host resolves the terminal protocol (OSC 9 / BEL / MessageBeep)
         // and wraps for tmux; the "threshold = 0 so it always fires" and
         // the 1s elapsed gate that the TUI impl applied are host-side

@@ -99,7 +99,7 @@ mod tests {
         let shared = Arc::new(Mutex::new(CancellationToken::new()));
         let ctx = HostExtensionContext::new(
             PathBuf::from("."),
-            ExtensionMode::Tui,
+            ExtensionMode::Interactive,
             Arc::new(Mutex::new(true)),
             Arc::clone(&shared),
             Arc::new(AtomicU64::new(0)),

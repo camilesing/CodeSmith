@@ -1,14 +1,14 @@
 //! Re-export of [`codesmith_agent_runtime::cycle_manager`] (extracted in
-//! Phase 6 §6a) plus the TUI-local `StructuredState` capture/render helper.
+//! Phase 6 §6a) plus the CLI-local `StructuredState` capture/render helper.
 //!
 //! The canonical home for the cycle data types (`CycleConfig`,
 //! `CycleBriefing`, `CycleArchiveHeader`), the briefing pipeline
 //! (`produce_briefing` / `extract_carry_forward` / `build_seed_messages`), and
 //! the archive IO (`archive_cycle` / `open_archive`) is now the
 //! `codesmith-agent-runtime` crate. This shim keeps `crate::cycle_manager::*`
-//! paths in the TUI working. `StructuredState` stays here because its snapshot
+//! paths in the CLI working. `StructuredState` stays here because its snapshot
 //! sources (`SharedTodoList`, `SharedPlanState`, `SharedSubAgentManager`,
-//! `WorkingSet`) are still TUI-local.
+//! `WorkingSet`) are still CLI-local.
 
 use std::path::PathBuf;
 

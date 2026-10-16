@@ -153,7 +153,7 @@ impl KvInner {
 /// best-effort).
 ///
 /// The temp name carries the pid: a global mod's KV file is shared across
-/// concurrent sessions (two TUI windows, TUI + CLI), and a fixed sibling
+/// concurrent sessions (two REPL sessions, REPL + CLI), and a fixed sibling
 /// name would have one process rename the other's half-written content (or
 /// fail on ENOENT). The file is fsynced before the rename so a crash never
 /// leaves an empty file behind the (atomic) rename point.

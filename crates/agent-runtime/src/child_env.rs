@@ -162,7 +162,7 @@ fn is_allowed_parent_env_key(key: &OsStr) -> bool {
             // already loaded VsDevCmd / vcvars. Without these, `exec_shell`
             // can find `link.exe` via PATH but still fail to resolve
             // SDK/CRT libraries like `kernel32.lib`, so any model-driven
-            // `cargo build` from inside the TUI silently breaks on
+            // `cargo build` from inside the REPL silently breaks on
             // Windows installs that don't run inside a Developer Command
             // Prompt. Harvested from PR #1487.
             | "LIB"

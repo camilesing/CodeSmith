@@ -31,9 +31,9 @@ fn read_pipe(mut pipe: Option<impl Read>) -> String {
 }
 
 /// `.output()` waits for the child forever; if a regression makes `codesmith`
-/// open the interactive TUI instead of exiting, the test would hang until the
+/// open the interactive REPL instead of exiting, the test would hang until the
 /// CI job timeout. Spawn with piped stdio instead, poll `try_wait` under a
-/// deadline, and kill the child and fail with the captured stderr so a TUI
+/// deadline, and kill the child and fail with the captured stderr so a REPL
 /// regression surfaces as a fast, diagnosable failure.
 fn run_with_timeout(
     mut cmd: Command,
@@ -54,7 +54,7 @@ fn run_with_timeout(
                 child.wait().expect("reap codesmith");
                 let stderr = read_pipe(child.stderr.take());
                 panic!(
-                    "codesmith did not exit within {timeout:?} (interactive TUI regression?); stderr so far:\n{stderr}"
+                    "codesmith did not exit within {timeout:?} (interactive REPL regression?); stderr so far:\n{stderr}"
                 );
             }
             Err(e) => panic!("failed to wait for codesmith: {e}"),
@@ -66,7 +66,7 @@ fn run_with_timeout(
 }
 
 #[test]
-fn unknown_bare_word_fails_loud_without_opening_the_tui() {
+fn unknown_bare_word_fails_loud_without_opening_the_repl() {
     // Regression: before the guard, `codesmith docotr` spawned `codesmith-tui`
     // with `--prompt docotr` and opened an interactive session on the typo.
     let home = scratch_home();

@@ -166,7 +166,7 @@ fn union_legacy(set: &mut HashSet<String>, tools: Option<&crate::config::ToolsCo
 
 /// The session-level disabled set: the manifest plus the legacy entries.
 /// A malformed manifest propagates as an error (fail loud, with the file
-/// path) instead of a panic — the interactive TUI build path surfaces it
+/// path) instead of a panic — the interactive REPL build path surfaces it
 /// without tearing down the alternate screen.
 pub fn effective_disabled(
     tools: Option<&crate::config::ToolsConfig>,

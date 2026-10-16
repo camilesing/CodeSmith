@@ -41,7 +41,7 @@ fn default_timestamp() -> String {
 /// Idle reason variants — why a teammate went idle.
 ///
 /// Re-exported from `codesmith_agent_runtime::team::IdleReason` so the
-/// engine and TUI share the same dispatch taxonomy.
+/// engine and CLI share the same dispatch taxonomy.
 pub use codesmith_agent_runtime::team::IdleReason;
 
 /// Structured protocol messages carried inside TeammateMessage.text as JSON.

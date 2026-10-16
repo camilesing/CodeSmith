@@ -1,4 +1,4 @@
-//! Lightweight localization registry for high-visibility TUI strings.
+//! Lightweight localization registry for high-visibility UI strings.
 //!
 //! This intentionally covers UI chrome only. It does not change model prompts,
 //! model output language, provider behavior, or media payload semantics.

@@ -154,7 +154,7 @@ pub(crate) fn run_rlm_turn_inner(
 
 /// RLM turns are long-running background-style work. Do not kill the whole
 /// turn with the old fixed 180s wall-clock cap; per-request cancellation still
-/// comes from the parent turn token and the user can cancel from the TUI.
+/// comes from the parent turn token and the user can cancel from the REPL.
 fn turn_timeout() -> Option<Duration> {
     None
 }

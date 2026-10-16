@@ -1125,7 +1125,7 @@ mod tests {
             Path::new(".")
         }
         fn mode(&self) -> ExtensionMode {
-            ExtensionMode::Tui
+            ExtensionMode::Interactive
         }
         fn is_idle(&self) -> bool {
             true

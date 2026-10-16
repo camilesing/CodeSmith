@@ -6,7 +6,7 @@
 //! (`get_platform_sandbox` / `is_sandbox_available`), and the per-platform
 //! executors (seatbelt / landlock / bwrap / windows) now live in
 //! `codesmith_agent_runtime::sandbox`. This
-//! module keeps the TUI-local `backend` / `opensandbox` / `policy` /
+//! module keeps the CLI-local `backend` / `opensandbox` / `policy` /
 //! `runtime` submodules (which depend on `crate::config::Config` and
 //! `crate::command_safety`) and re-exports everything else so historical
 //! `crate::sandbox::*` paths keep resolving.

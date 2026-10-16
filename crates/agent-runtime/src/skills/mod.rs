@@ -1039,7 +1039,7 @@ fn render_skills_block(registry: &SkillRegistry) -> Option<String> {
     }
     // Mod-registered entries (SkillSource::Extension) have no on-disk
     // `SKILL.md`, so the usage footer must tell the model how to load
-    // those. `load_skill` is the TUI's skill tool — a cross-crate name
+    // those. `load_skill` is the CLI's skill tool — a cross-crate name
     // contract; if that tool is ever renamed, this text follows.
     let has_mod_skills = visible
         .iter()

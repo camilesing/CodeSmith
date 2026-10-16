@@ -17,7 +17,7 @@
 //! # Wiring
 //!
 //! Hosts wrap their resolved client: `CODESMITH_RECORD_LLM=<path>` (the
-//! TUI's `build_engine` honors it; opening the file fails loud). The
+//! CLI's `build_engine` honors it; opening the file fails loud). The
 //! wrapper sits at the client boundary, so every call served through the
 //! wrapped handle — including utility/seam/compaction calls that share it
 //! — is recorded. Known gap: a cross-provider `[utility_model]` client is
@@ -279,7 +279,7 @@ impl LlmClient for RecordingClient {
     // Forwarded, unrecorded: the recorder is a decorator and must not
     // disable capabilities the inner client supports. Before these
     // forwards, the trait defaults took over under CODESMITH_RECORD_LLM —
-    // silently breaking FIM completions (the TUI hands this same handle to
+    // silently breaking FIM completions (the CLI hands this same handle to
     // the FIM tool) and translation with errors that named the real
     // provider. Recording these calls can come later; the JSONL contract
     // only covers create_message/create_message_stream.

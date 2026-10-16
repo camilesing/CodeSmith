@@ -752,7 +752,7 @@ pub struct StdioTransport {
 
 /// How long `StdioTransport::shutdown` waits for the child to exit on SIGTERM
 /// before `kill_on_drop` fires SIGKILL. Tuned short so a hung MCP server
-/// can't stall TUI exit; well-behaved servers almost always exit within
+/// can't stall host exit; well-behaved servers almost always exit within
 /// a few hundred ms.
 const STDIO_SHUTDOWN_GRACE: Duration = Duration::from_millis(2_000);
 
@@ -3293,7 +3293,7 @@ impl McpPool {
     /// each stdio child and give them a short grace period before drop
     /// fires SIGKILL. Whalescale#420.
     ///
-    /// Call from the TUI exit path *before* dropping the pool to give
+    /// Call from the host exit path *before* dropping the pool to give
     /// MCP servers a chance to flush state. The fallback Drop on
     /// `StdioTransport` still sends SIGTERM if this never runs, so even
     /// abnormal exits avoid leaking PIDs without a signal.
@@ -3674,7 +3674,7 @@ fn snapshot_from_config(
 // === Helper Functions ===
 
 /// Format MCP tool result for display
-#[allow(dead_code)] // Will be used when MCP tool results are displayed in TUI
+#[allow(dead_code)] // Will be used when MCP tool results are displayed in the host UI
 pub fn format_tool_result(result: &serde_json::Value) -> String {
     let is_error = result
         .get("isError")

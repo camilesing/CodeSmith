@@ -1,5 +1,5 @@
 //! State types extracted from `crates/tui/src/tools/worktree/mod.rs`.
-//! Tool implementations stay in tui.
+//! Tool implementations stay in `codesmith-tool-impls`.
 
 use std::path::PathBuf;
 use std::sync::Arc;

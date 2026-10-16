@@ -1,10 +1,10 @@
 //! Heavy compaction engine: planning, summary generation, and the safe retry
 //! loop (`should_compact`, `plan_compaction`, `compact_messages_safe`,
 //! `create_summary`, `merge_system_prompts`). Moved here from
-//! `codesmith-tui::compaction`; the TUI keeps a re-export shim plus the test
-//! module, which relies on TUI-local `MockLlmClient` / `HookExecutor`.
+//! `codesmith-tui::compaction`; the CLI keeps a re-export shim plus the test
+//! module, which relies on CLI-local `MockLlmClient` / `HookExecutor`.
 //!
-//! Test-referenced helpers are `pub` (rather than `pub(crate)`) so the TUI test
+//! Test-referenced helpers are `pub` (rather than `pub(crate)`) so the CLI test
 //! module can still reach them through the re-export shim while the migration
 //! is in progress. This is transitional: once the engine body moves into this
 //! crate, the visibility can be tightened again.
@@ -829,7 +829,7 @@ pub struct CompactionEnhancements {
     /// `PreCompact` hook executor + context. `None` skips the hook. The
     /// executor is `Arc<dyn HookHost>` so the engine body can assemble this
     /// from a trait-erased host (`HostServices::hooks`) without naming the
-    /// concrete (TUI-local) `HookExecutor`.
+    /// concrete (CLI-local) `HookExecutor`.
     pub hooks: Option<(Arc<dyn HookHost>, HookContext)>,
     /// Session-memory sidecar. `None` skips session-memory-first.
     pub session_memory: Option<SessionMemorySidecar>,

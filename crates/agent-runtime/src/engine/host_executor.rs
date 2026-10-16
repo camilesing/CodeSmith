@@ -1882,7 +1882,7 @@ impl HostAgentExecutor {
     /// Shadow-mode prefix-cache stability check (P0-3). Compares the step's
     /// frozen prefix (system prompt + tool set, hashed by
     /// `prompt_zones::PinnedPrefix::freeze`) against the session-pinned
-    /// baseline; on drift, emits [`Event::PrefixCacheChange`] so the TUI
+    /// baseline; on drift, emits [`Event::PrefixCacheChange`] so the host UI
     /// can surface the cache invalidation. Observation only — the manager
     /// re-pins internally (measuring the *next* drift against the latest
     /// prefix), and nothing here blocks or rewrites the request: a detected
@@ -15910,7 +15910,7 @@ mod tests {
         runner.load(&RecExt { seen: seen.clone() }).await.unwrap();
         runner.bind_core(Arc::new(HostExtensionContext::new(
             PathBuf::from("/tmp/codesmith-test"),
-            ExtensionMode::Tui,
+            ExtensionMode::Interactive,
             Arc::new(Mutex::new(true)),
             Arc::new(Mutex::new(CancellationToken::new())),
             runner.generation_arc(),
@@ -15998,7 +15998,7 @@ mod tests {
                 ExtensionEvent::ToolResult(_) => "ToolResult",
                 ExtensionEvent::TurnEnd { .. } => "TurnEnd",
                 ExtensionEvent::AgentEnd => "AgentEnd",
-                // Engine-level (T5) / tui-level (T6) / compaction / update events
+                // Engine-level (T5) / host-level (T6) / compaction / update events
                 // don't fire in this minimal run — record nothing + Continue.
                 _ => return Ok(HandlerOutcome::Continue),
             };
@@ -16047,7 +16047,7 @@ mod tests {
             .unwrap();
         runner.bind_core(Arc::new(HostExtensionContext::new(
             PathBuf::from("/tmp/codesmith-test"),
-            ExtensionMode::Tui,
+            ExtensionMode::Interactive,
             Arc::new(Mutex::new(true)),
             Arc::new(Mutex::new(CancellationToken::new())),
             runner.generation_arc(),
@@ -16221,7 +16221,7 @@ mod tests {
         runner.load(&BlockToolCallExt).await.unwrap();
         runner.bind_core(Arc::new(HostExtensionContext::new(
             PathBuf::from("/tmp/codesmith-test"),
-            ExtensionMode::Tui,
+            ExtensionMode::Interactive,
             Arc::new(Mutex::new(true)),
             Arc::new(Mutex::new(CancellationToken::new())),
             runner.generation_arc(),
@@ -16291,7 +16291,7 @@ mod tests {
         runner.load(&TransformToolResultExt).await.unwrap();
         runner.bind_core(Arc::new(HostExtensionContext::new(
             PathBuf::from("/tmp/codesmith-test"),
-            ExtensionMode::Tui,
+            ExtensionMode::Interactive,
             Arc::new(Mutex::new(true)),
             Arc::new(Mutex::new(CancellationToken::new())),
             runner.generation_arc(),
@@ -16404,7 +16404,7 @@ mod tests {
         runner.load(&InjectSystemPromptExt).await.unwrap();
         runner.bind_core(Arc::new(HostExtensionContext::new(
             PathBuf::from("/tmp/codesmith-test"),
-            ExtensionMode::Tui,
+            ExtensionMode::Interactive,
             Arc::new(Mutex::new(true)),
             Arc::new(Mutex::new(CancellationToken::new())),
             runner.generation_arc(),
@@ -16530,7 +16530,7 @@ mod tests {
         runner.load(&RewriteProviderRequestExt).await.unwrap();
         runner.bind_core(Arc::new(HostExtensionContext::new(
             PathBuf::from("/tmp/codesmith-test"),
-            ExtensionMode::Tui,
+            ExtensionMode::Interactive,
             Arc::new(Mutex::new(true)),
             Arc::new(Mutex::new(CancellationToken::new())),
             runner.generation_arc(),
@@ -16655,7 +16655,7 @@ mod tests {
         runner.load(&RewriteInputExt).await.unwrap();
         runner.bind_core(Arc::new(HostExtensionContext::new(
             PathBuf::from("/tmp/codesmith-test"),
-            ExtensionMode::Tui,
+            ExtensionMode::Interactive,
             Arc::new(Mutex::new(true)),
             Arc::new(Mutex::new(CancellationToken::new())),
             runner.generation_arc(),
@@ -16782,7 +16782,7 @@ mod tests {
             .unwrap();
         runner.bind_core(Arc::new(HostExtensionContext::new(
             PathBuf::from("/tmp/codesmith-test"),
-            ExtensionMode::Tui,
+            ExtensionMode::Interactive,
             Arc::new(Mutex::new(true)),
             Arc::new(Mutex::new(CancellationToken::new())),
             runner.generation_arc(),
@@ -16878,7 +16878,7 @@ mod tests {
         runner.load(&CancelCompactExt).await.unwrap();
         runner.bind_core(Arc::new(HostExtensionContext::new(
             PathBuf::from("/tmp/codesmith-test"),
-            ExtensionMode::Tui,
+            ExtensionMode::Interactive,
             Arc::new(Mutex::new(true)),
             Arc::new(Mutex::new(CancellationToken::new())),
             runner.generation_arc(),
@@ -16992,7 +16992,7 @@ mod tests {
             .unwrap();
         runner.bind_core(Arc::new(HostExtensionContext::new(
             PathBuf::from("/tmp/codesmith-test"),
-            ExtensionMode::Tui,
+            ExtensionMode::Interactive,
             Arc::new(Mutex::new(true)),
             Arc::new(Mutex::new(CancellationToken::new())),
             runner.generation_arc(),
@@ -17105,7 +17105,7 @@ mod tests {
             .unwrap();
         runner.bind_core(Arc::new(HostExtensionContext::new(
             PathBuf::from("/tmp/codesmith-test"),
-            ExtensionMode::Tui,
+            ExtensionMode::Interactive,
             Arc::new(Mutex::new(true)),
             Arc::new(Mutex::new(CancellationToken::new())),
             runner.generation_arc(),
@@ -17142,11 +17142,10 @@ mod tests {
     /// session, distinct from the per-turn `Trusted`/`Untrusted` emits of
     /// §F2c T3. This test is additive to `f2c_project_trust_dispatches_reason`
     /// (which exercised `Trusted`→`Untrusted` only); it reuses the §F2c
-    /// recorder fixture. The host-wire e2e (the `ui.rs` emit firing through
-    /// `run_tui`) is deferred per the §F2b `SessionBeforeSwitch` precedent — it
-    /// needs an `EngineHost` + `run_tui`/`TrustDirectory` fixture
-    /// (TaskManager-class scaffolding); the emit mirrors the tested §F2c
-    /// per-turn pattern.
+    /// recorder fixture. A host-wire e2e for `FirstLoad` is moot: that
+    /// reason has had no live emit site since the TUI removal in 0.9.0 (see
+    /// the seam table in `docs/EXTENSIONS.md`); the emit mirrors the tested
+    /// §F2c per-turn pattern.
     #[tokio::test]
     async fn f5_project_trust_first_load_dispatches() {
         let runner = Arc::new(ExtensionRunner::new());
@@ -17157,7 +17156,7 @@ mod tests {
             .unwrap();
         runner.bind_core(Arc::new(HostExtensionContext::new(
             PathBuf::from("/tmp/codesmith-test"),
-            ExtensionMode::Tui,
+            ExtensionMode::Interactive,
             Arc::new(Mutex::new(true)),
             Arc::new(Mutex::new(CancellationToken::new())),
             runner.generation_arc(),

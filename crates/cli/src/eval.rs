@@ -107,8 +107,7 @@ pub struct EvalHarnessConfig {
     /// (e.g. `offline-tool-loop.jsonl`). Each line follows the schema:
     /// `{ "request": <step descriptor>, "response_events": [<events>] }`.
     /// The mock LLM client (`crate::llm_client::mock`) can replay these
-    /// fixtures for deterministic offline tests. See
-    /// `crates/tui/tests/README.md` for the full record/replay flow.
+    /// fixtures for deterministic offline tests.
     ///
     /// The file is opened `create + append`, so the record dir must be
     /// fresh (or the previous `<scenario>.jsonl` removed) for each

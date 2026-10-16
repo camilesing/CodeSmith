@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 /// Marker file recording that first-run onboarding completed.
 ///
 /// Deliberately `home_dir()/.codesmith/...` rather than the
-/// `CODESMITH_HOME`-aware config home: this is the exact path the TUI gate
+/// `CODESMITH_HOME`-aware config home: this is the exact path the CLI gate
 /// has always read, and the two binaries must agree on it bit-for-bit.
 pub fn default_marker_path() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".codesmith").join(".onboarded"))

@@ -39,7 +39,7 @@ use std::path::PathBuf;
 use anyhow::{Context as _, Result};
 use colored::Colorize;
 
-use crate::app_state::{InitialInput, ReasoningEffort, TuiOptions};
+use crate::app_state::{InitialInput, InteractiveOptions, ReasoningEffort};
 use crate::config::Config;
 use crate::core::engine::{EngineHost, spawn_engine};
 use crate::core::ops::Op;
@@ -53,7 +53,7 @@ const IMAGE_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
 
 pub async fn run_repl(
     config: &Config,
-    options: TuiOptions,
+    options: InteractiveOptions,
     telemetry_sink: codesmith_agent_runtime::telemetry::TelemetrySink,
 ) -> Result<()> {
     let mut state = ReplState::new(options.clone(), config);

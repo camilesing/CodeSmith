@@ -367,7 +367,7 @@ fn wrap_with_deprecation_notice(
 /// Sub-agent type identity, status, and assignment data types.
 ///
 /// Re-exported from `codesmith_agent_runtime::subagent` so the engine and
-/// TUI share the same sub-agent taxonomy.
+/// CLI share the same sub-agent taxonomy.
 pub use codesmith_agent_runtime::subagent::{
     DEFAULT_MAX_SPAWN_DEPTH, SubAgentAssignment, SubAgentCompletion, SubAgentStatus, SubAgentType,
 };
@@ -4029,7 +4029,7 @@ impl ToolSpec for AgentListTool {
     fn description(&self) -> &'static str {
         "List sub-agents from the current session with their status, type, assignment, steps, \
          and duration. Pass `include_archived=true` to also see agents that were spawned in a \
-         prior session (e.g. before the TUI restarted) and persisted on disk; those carry \
+         prior session (e.g. before the CLI restarted) and persisted on disk; those carry \
          `from_prior_session: true` in the result. Default is the current-session view because \
          prior-session agents almost never matter for the live turn."
     }
@@ -6944,7 +6944,7 @@ fn reject_subagent_terminal_takeover(name: &str, input: &Value) -> Result<()> {
     if wants_interactive_shell {
         return Err(anyhow!(
             "Sub-agents run in the background and cannot use exec_shell with interactive=true \
-             because that would take over the parent TUI terminal. Use non-interactive \
+             because that would take over the parent terminal. Use non-interactive \
              exec_shell, background=true, tty=true, or task_shell_start instead."
         ));
     }

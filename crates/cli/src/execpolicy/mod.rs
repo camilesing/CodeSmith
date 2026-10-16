@@ -3,6 +3,6 @@
 //! Canonical home is now `codesmith_agent_runtime`. This glob shim flattens
 //! the runtime module's public items (including public submodules) so
 //! `crate::execpolicy::<item>` and nested `crate::execpolicy::<sub>::…` paths
-//! in the TUI keep working until later steps rewire them onto the runtime
+//! in the CLI keep working until later steps rewire them onto the runtime
 //! crate directly.
 pub use codesmith_agent_runtime::execpolicy::*;

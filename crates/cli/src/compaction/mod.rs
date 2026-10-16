@@ -4,7 +4,7 @@
 //! loop) now lives in `codesmith_agent_runtime::compaction::compact`. This
 //! module is a thin re-export shim so historical `crate::compaction::<item>`
 //! paths keep resolving; it also owns the compaction *test* module (which
-//! depends on TUI-local `MockLlmClient` / `HookExecutor`).
+//! depends on CLI-local `MockLlmClient` / `HookExecutor`).
 
 // Re-export exactly what this crate consumes through `crate::compaction::<item>`
 // (engine config + token estimator + planner entry points). Upstream renames
@@ -277,7 +277,7 @@ mod tests {
 
     #[test]
     fn cache_aligned_summary_is_used_for_v4_scale_contexts() {
-        let messages = vec![msg("user", "Please edit crates/tui/src/compaction.rs")];
+        let messages = vec![msg("user", "Please edit crates/cli/src/compaction.rs")];
 
         assert!(should_use_cache_aligned_summary(
             "deepseek-v4-flash",
@@ -363,7 +363,7 @@ mod tests {
     #[test]
     fn cache_aligned_summary_request_preserves_message_prefix() {
         let messages = vec![
-            msg("user", "Please edit crates/tui/src/compaction.rs"),
+            msg("user", "Please edit crates/cli/src/compaction.rs"),
             msg("assistant", "I will inspect the file."),
         ];
         let limits = summary_input_limits_for_model("deepseek-v4-pro");

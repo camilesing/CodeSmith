@@ -1,7 +1,7 @@
 //! Resolved retry policy with exponential backoff.
 //!
 //! Extracted from `tui::config` in Phase 6 §6a so the `LlmClient` retry loop
-//! (now in [`crate::llm_client`]) can depend on it without a TUI dependency.
+//! (now in [`crate::llm_client`]) can depend on it without a host dependency.
 
 /// Hard safety ceiling on any computed backoff delay. A configured
 /// `max_delay` above this cap is clamped down to it: retry sleeps beyond

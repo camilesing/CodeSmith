@@ -40,7 +40,7 @@ pub use codesmith_agent_runtime::host_services::ShellManagerApi;
 // The concrete `ShellManager`, `BackgroundShell`, the `ShellManagerHost`
 // bridge, and the `ShellApi` / `ShellManagerApi` impls live in the runtime
 // crate's `shell_manager` module. The crossterm terminal controller and the
-// shared-shell-manager constructor that injects it stay in the TUI binary
+// shared-shell-manager constructor that injects it stay in the CLI binary
 // (so the runtime crate need not depend on crossterm). Historical
 // `crate::tools::shell::X` paths keep resolving via the re-exports below.
 pub use codesmith_agent_runtime::shell_manager::{
@@ -87,9 +87,9 @@ background: true, then poll with task_shell_wait or exec_shell_wait.";
 
 const MACOS_PROVENANCE_HINT: &str = "Docker buildx failed to update its activity file due to a macOS \
 com.apple.provenance restriction. Files created by Docker Desktop's signed process carry a \
-kernel-enforced provenance tag that blocks writes from child processes (including the TUI \
+kernel-enforced provenance tag that blocks writes from child processes (including the CLI \
 shell sandbox). Workarounds: (1) run the Docker build from a regular terminal outside the \
-TUI, or (2) disable BuildKit with DOCKER_BUILDKIT=0 (only works if your Dockerfiles do not \
+CLI, or (2) disable BuildKit with DOCKER_BUILDKIT=0 (only works if your Dockerfiles do not \
 use RUN --mount directives).";
 
 fn attach_cargo_failure_summary(

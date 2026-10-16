@@ -192,7 +192,7 @@ pub struct CapacityDecision {
 /// unlike `VerifyAndReplan`'s (slice 3a) — so the outcome is carried across via
 /// the executor's `pending_replay_outcome` slot. Lives in the public `capacity`
 /// module (like `CapacityDecision`) because it appears in `pub` signatures
-/// (`apply_verify_with_tool_replay`, `take_pending_replay_outcome`) and the tui
+/// (`apply_verify_with_tool_replay`, `take_pending_replay_outcome`) and the CLI
 /// engine tests construct it directly.
 #[derive(Debug, Clone)]
 pub struct ReplayOutcome {
@@ -238,7 +238,7 @@ pub struct ReplayOutcome {
 /// Lives in the public `capacity` module (like `ReplayOutcome` and
 /// `CapacityDecision`) because it appears in `pub` signatures
 /// (`apply_targeted_context_refresh`, `take_pending_targeted_refresh_outcome`)
-/// and the tui engine tests construct it directly.
+/// and the CLI engine tests construct it directly.
 #[derive(Debug, Clone)]
 pub struct TargetedRefreshOutcome {
     /// Whether the transcript was actually reduced (LLM compaction or
@@ -869,7 +869,7 @@ mod tests {
     /// observation cadence is high (50+ message turns × per-step calls). Adds
     /// no dev-deps; we measure with `Instant` and print rather than gating CI.
     // Perf bench prints per-call timing — runs in `cargo test`, never
-    // inside the TUI alt-screen.
+    // inside the interactive REPL.
     #[allow(clippy::print_stdout)]
     #[test]
     #[ignore]

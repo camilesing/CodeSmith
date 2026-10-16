@@ -1,5 +1,5 @@
 //! State types extracted from `crates/tui/src/tools/goal.rs`.
-//! Tool implementations stay in tui.
+//! Tool implementations stay in the CLI.
 
 use serde::Serialize;
 use std::sync::{Arc, Mutex};

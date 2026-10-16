@@ -1,13 +1,13 @@
 //! Host-services trait contracts for the engine.
 //!
 //! The engine core (once moved to `codesmith-agent-runtime`) must not depend
-//! on terminal-coupled service types — the TUI's `LspManager` (which drives
+//! on terminal-coupled service types — the CLI's `LspManager` (which drives
 //! LSP server processes), `SharedShellManager`, `SharedSubAgentManager`,
 //! `SharedBackgroundTaskRegistry`, `SeamManager`, etc. These stay in the CLI
 //! (or a future app-server host) and are injected behind the traits in this
 //! module.
 //!
-//! Today the TUI's concrete `EngineHost` struct implements [`HostServices`];
+//! Today the CLI's concrete `EngineHost` struct implements [`HostServices`];
 //! the engine body calls these trait methods on `self.host`. When the
 //! `Engine` struct moves to `codesmith-agent-runtime`, the `host` field
 //! becomes `Arc<dyn HostServices>` and the body code is unchanged.
@@ -57,7 +57,7 @@ use crate::working_set::WorkingSet;
 /// Terminal-agnostic LSP manager surface.
 ///
 /// The engine core queries post-edit diagnostics through this trait so it
-/// need not depend on the TUI's concrete `LspManager`. The two methods mirror
+/// need not depend on the CLI's concrete `LspManager`. The two methods mirror
 /// the inherent API used by the engine's `lsp_hooks` (`config().enabled` and
 /// `diagnostics_for`).
 #[async_trait::async_trait]
@@ -74,7 +74,7 @@ pub trait LspManagerApi: Send + Sync {
 /// Terminal-agnostic background-task registry surface.
 ///
 /// The engine core drives background shell/agent/dream lifecycle through
-/// this trait so it need not depend on the TUI's concrete
+/// this trait so it need not depend on the CLI's concrete
 /// `BackgroundTaskRegistry` (which bridges `ShellManager` /
 /// `SubAgentManager` / `TaskManager`). Each method acquires the registry
 /// lock internally and returns plain data types, so callers never hold a
@@ -129,9 +129,9 @@ pub trait BgRegistryApi: Send + Sync {
 /// Terminal-agnostic seam (layered-context) manager surface.
 ///
 /// The engine core queries the Flash seam manager through this trait so it
-/// need not depend on the TUI's concrete `SeamManager` (which drives the
+/// need not depend on the CLI's concrete `SeamManager` (which drives the
 /// compaction path). `enabled` replaces the `config().enabled` the engine
-/// used to read, so the `SeamConfig` struct can stay TUI-local.
+/// used to read, so the `SeamConfig` struct can stay CLI-local.
 #[async_trait::async_trait]
 pub trait SeamManagerApi: Send + Sync {
     /// Whether the layered-context manager is enabled.
@@ -187,7 +187,7 @@ pub trait SeamManagerApi: Send + Sync {
 /// Terminal-agnostic sub-agent manager surface.
 ///
 /// The engine core counts/lists/evicts sub-agents through this trait so it
-/// need not depend on the TUI's concrete `SubAgentManager` (which drives
+/// need not depend on the CLI's concrete `SubAgentManager` (which drives
 /// sub-agent lifecycle and persistence). Each method acquires the inner
 /// `RwLock` itself and returns plain data, so callers never hold a guard
 /// across an `Event`-channel await. Spawning — which assembles the
@@ -208,7 +208,7 @@ pub trait SubAgentApi: Send + Sync {
     async fn live_running_snapshots(&self) -> Vec<SubAgentResult>;
 }
 
-/// Portable shell-execution status. Mirrors the TUI's `ShellStatus`; the
+/// Portable shell-execution status. Mirrors `ShellStatus`; the
 /// `Running` variant is kept because backgrounded commands return immediately
 /// with a live process (and a task id).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -221,8 +221,8 @@ pub enum ShellExecStatus {
 }
 
 /// Portable shell-execution result. Carries the fields the engine body reads
-/// (task id, terminal status) plus the common output metadata. Mirrors the
-/// TUI's `ShellResult` minus truncation bookkeeping that only the shell tool
+/// (task id, terminal status) plus the common output metadata. Mirrors
+/// `ShellResult` minus truncation bookkeeping that only the shell tool
 /// surfaces.
 #[derive(Debug, Clone)]
 pub struct ShellExecResult {
@@ -244,7 +244,7 @@ pub struct ShellExecResult {
 /// Terminal-agnostic shell-manager surface.
 ///
 /// The engine core runs background shell commands through this trait so it
-/// need not depend on the TUI's concrete `ShellManager` (pty / process
+/// need not depend on the concrete `ShellManager` (pty / process
 /// management). `execute` is async: the host offloads its synchronous
 /// mutex/command core via `spawn_blocking`, so callers may await it directly
 /// on the async engine loop without stalling the executor.
@@ -266,7 +266,7 @@ pub trait ShellApi: Send + Sync {
 ///
 /// The `exec_shell` family of tools drives background/streaming shell jobs
 /// through this trait so `spec.rs` (and, downstream, `codesmith-tool-impls`)
-/// need not depend on the TUI's concrete `ShellManager` (pty / process /
+/// need not depend on the concrete `ShellManager` (pty / process /
 /// `SandboxManager` plumbing). Each method is synchronous: the host locks
 /// its `std::sync::Mutex` internally and returns before any await, matching
 /// the pre-trait `.lock().method()` call sites.
@@ -355,7 +355,7 @@ pub trait ShellManagerApi: Send + Sync {
 ///
 /// The `task_*` family of tools drives durable background tasks through this
 /// trait so `spec.rs` (and, downstream, `codesmith-tool-impls`) need not
-/// depend on the TUI's concrete `TaskManager`. `SharedTaskManager` is
+/// depend on the CLI's concrete `TaskManager`. `SharedTaskManager` is
 /// `Arc<TaskManager>` with interior `tokio::Mutex` state, so the trait is
 /// implemented directly for `TaskManager` (no bridge, no extra locking): async
 /// methods forward to the inherent async methods (which lock internally), and
@@ -395,7 +395,7 @@ pub trait TaskManagerHost: Send + Sync {
 ///
 /// The `automation_*` family of tools drives durable scheduled jobs through
 /// this trait so `spec.rs` (and, downstream, `codesmith-tool-impls`) need not
-/// depend on the TUI's concrete `AutomationManager`. `SharedAutomationManager`
+/// depend on the CLI's concrete `AutomationManager`. `SharedAutomationManager`
 /// is `Arc<Mutex<AutomationManager>>` (tokio `Mutex`), so a small bridge
 /// struct wraps the concrete handle and locks internally per call — matching
 /// the pre-trait `.lock().await.method()` call sites. `run_now` takes a
@@ -450,7 +450,7 @@ pub trait NotifierHost: Send + Sync {
 /// Host services injected into the engine.
 ///
 /// Each accessor returns a trait-erased view of a service that the engine
-/// body needs but whose concrete type lives in the host (TUI today). The
+/// body needs but whose concrete type lives in the host (CLI today). The
 /// trait is extended incrementally as more services are decoupled from the
 /// `Engine` struct (LSP first; background-task registry next; subagent
 /// manager, seam manager, shell, workshop to follow).
@@ -537,7 +537,7 @@ pub trait HostServices: Send + Sync {
     /// The poller watches the leader's team inbox and fans dispatches back
     /// into the engine op channel (`tx_op`). It is terminal-coupled (depends
     /// on the host's team protocol handlers / teammate mailbox infrastructure
-    /// which live in `codesmith-tui`), so the engine body spawns it through
+    /// which live in `codesmith-cli`), so the engine body spawns it through
     /// the host rather than naming the concrete `run_leader_inbox_poller`.
     /// The host owns the supervised spawn; `cancel_token` is a child of the
     /// engine's turn token so engine shutdown cancels the poller.
@@ -692,7 +692,7 @@ pub struct SubAgentSpawnResult {
 /// [`HostServices::capture_structured_state`].
 ///
 /// Every field is a portable (runtime-crate) type. The host renders the
-/// snapshot using its own `SubAgentManager` (the one TUI-local input) and
+/// snapshot using its own `SubAgentManager` (the one CLI-local input) and
 /// returns the rendered system block.
 pub struct StructuredStateRequest<'a> {
     /// Active mode label (e.g. `"agent"`).

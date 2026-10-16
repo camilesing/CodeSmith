@@ -1,5 +1,5 @@
 //! State types extracted from `crates/tui/src/tools/team/mod.rs`.
-//! Tool implementations stay in tui.
+//! Tool implementations stay in the CLI.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

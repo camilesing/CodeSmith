@@ -11,9 +11,9 @@
 //! it for resume, the SQLite store (`codesmith-state`) indexes it for
 //! queries, and projections fold from it at load.
 
-// Background-task runtime — runs alongside the TUI. Raw stdio prints
+// Background-task runtime — runs alongside the REPL. Raw stdio prints
 // here would still land in the alt-screen on whichever terminal the
-// foreground TUI happens to own. Route everything through `tracing::*`
+// foreground REPL happens to own. Route everything through `tracing::*`
 // instead — see `runtime_log` for the rationale.
 #![deny(clippy::print_stdout)]
 #![deny(clippy::print_stderr)]
@@ -815,7 +815,7 @@ impl RuntimeThreadManager {
     }
 
     /// Attach the durable task manager so model-visible task tools work inside
-    /// runtime thread turns as well as interactive TUI turns.
+    /// runtime thread turns as well as interactive REPL turns.
     pub fn attach_task_manager(&self, task_manager: crate::task_manager::SharedTaskManager) {
         if let Ok(mut slot) = self.task_manager.lock() {
             *slot = Some(task_manager);
@@ -3403,17 +3403,17 @@ fn tool_kind_for_name(name: &str) -> TurnItemKind {
 }
 
 /// One sub-agent rebind hint extracted from a thread's persisted event
-/// timeline (issue #128). When the TUI resumes a session that was
+/// timeline (issue #128). When the REPL resumes a session that was
 /// mid-fanout, the in-transcript card stack is empty — these hints let the
 /// UI know which agent_ids were live (or recently terminal) so it can
 /// reconstruct the matching `DelegateCard` / `FanoutCard` placeholders
 /// before fresh mailbox envelopes arrive on a re-attached engine.
 ///
-/// The helper is the testable contract here — actual TUI wire-up to the
+/// The helper is the testable contract here — actual REPL wire-up to the
 /// resume flow is a follow-up; the runtime API consumer (`runtime_api.rs`)
 /// can already call `resume_thread_with_agent_rebind` to drive it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // consumed by #128 follow-up TUI resume wiring; tested here.
+#[allow(dead_code)] // consumed by #128 follow-up REPL resume wiring; tested here.
 pub struct AgentRebindHint {
     pub agent_id: String,
     pub status: AgentRebindStatus,
@@ -5487,7 +5487,7 @@ mod tests {
     fn collect_agent_rebind_hints_resumes_a_mid_fanout_session() {
         // Mirror what runtime_threads persists during a real fanout: three
         // workers spawned, two finished, one still running when the session
-        // was killed. The TUI re-attach must rebuild placeholders for the
+        // was killed. The REPL re-attach must rebuild placeholders for the
         // running worker AND the two completed workers (the fanout card
         // tracks all of them so the dot-grid stays accurate post-resume).
         let events = vec![

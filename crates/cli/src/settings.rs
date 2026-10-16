@@ -1,9 +1,6 @@
 //! Settings system - Persistent user preferences
 //!
 //! Settings are stored at ~/.config/deepseek/settings.toml
-//!
-//! TUI-specific preferences (theme, keybinds, font_size) that survive project
-//! switches are stored separately at ~/.codesmith/tui.toml. See [`TuiPrefs`].
 
 use std::path::PathBuf;
 
@@ -98,7 +95,7 @@ pub struct Settings {
     /// `"dracula"`, `"gruvbox-dark"`. The `background_color` setting still
     /// overrides the surface color on top of the resolved theme.
     pub theme: String,
-    /// Optional main TUI background color as a 6-digit hex RGB value.
+    /// Optional main terminal background color as a 6-digit hex RGB value.
     pub background_color: Option<String>,
     /// Prompt-bar color (`/color`), one of the eight names Claude Code
     /// accepts. `None` follows the theme's accent.
@@ -146,7 +143,7 @@ pub struct Settings {
     pub default_provider: Option<String>,
     /// Default model to use
     pub default_model: Option<String>,
-    /// Default reasoning effort selected from the TUI model picker.
+    /// Default reasoning effort selected in the REPL.
     /// `None` falls back to `config.toml` and then the runtime default.
     pub reasoning_effort: Option<String>,
     /// Per-provider model overrides. Key is provider name (e.g. "openai"),
@@ -311,7 +308,7 @@ impl Settings {
         // SSH_CLIENT is exported by sshd for every TCP SSH session;
         // SSH_TTY is exported only for interactive PTY logins, so we
         // check both so non-PTY-allocating tools (rsync wrappers, etc.)
-        // still pick this up if they end up running the TUI.
+        // still pick this up if they end up running the REPL.
         let term_is_termius = std::env::var("TERM_PROGRAM").as_deref() == Ok("Termius");
         let in_ssh_session = std::env::var_os("SSH_CLIENT").is_some_and(|v| !v.is_empty())
             || std::env::var_os("SSH_TTY").is_some_and(|v| !v.is_empty());
@@ -494,7 +491,7 @@ impl Settings {
             ),
             (
                 "background_color",
-                "Main TUI background color: #RRGGBB or default",
+                "Main terminal background color: #RRGGBB or default",
             ),
             (
                 "composer_density",

@@ -131,7 +131,7 @@ pub struct BackgroundTaskNotification {
     pub duration_ms: Option<u64>,
 }
 
-/// Summary for task listing (TUI panel, /jobs command).
+/// Summary for task listing (REPL /jobs command).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackgroundTaskSummary {
     pub id: String,

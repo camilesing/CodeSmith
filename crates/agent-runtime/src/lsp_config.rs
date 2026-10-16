@@ -1,5 +1,5 @@
 //! `[lsp]` config schema extracted from `crates/tui/src/lsp/mod.rs` so
-//! `EngineConfig` can hold an `Option<LspConfig>` without a tui dependency.
+//! `EngineConfig` can hold an `Option<LspConfig>` without a host dependency.
 //!
 //! The resolve logic (`LspConfig::resolve_command`) lives here too because
 //! inherent impls must reside in the defining crate; it delegates to

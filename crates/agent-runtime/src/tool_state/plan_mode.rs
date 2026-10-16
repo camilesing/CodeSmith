@@ -1,5 +1,5 @@
 //! State types extracted from `crates/tui/src/tools/plan_mode.rs`.
-//! Tool implementations stay in tui.
+//! Tool implementations stay in `codesmith-tool-impls`.
 
 use std::sync::Arc;
 use tokio::sync::Mutex;

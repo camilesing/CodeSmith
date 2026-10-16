@@ -4,7 +4,7 @@
 //! The diagnostic value types (`Severity`, `Diagnostic`, `DiagnosticBlock`)
 //! and the pure renderers (`DiagnosticBlock::render`, `render_blocks`) are
 //! terminal-agnostic plain data, so they live in `codesmith-agent-runtime`.
-//! The TUI's `LspManager` (which drives LSP server processes) stays in this
+//! The CLI's `LspManager` (which drives LSP server processes) stays in this
 //! crate's `lsp` module (`lsp/mod.rs`) and is trait-erased for the engine
 //! via `LspManagerApi`.
 pub use codesmith_agent_runtime::lsp_diagnostics::{Diagnostic, DiagnosticBlock, Severity};

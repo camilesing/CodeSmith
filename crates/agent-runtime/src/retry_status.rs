@@ -3,11 +3,11 @@
 //! The engine's transparent stream-retry loop
 //! (`engine::turn::stream`) and the host-injected provider `on_retry`
 //! hook (`ProviderConfig.on_retry`) already time their waits and know
-//! the error category. This module gives the TUI a way
+//! the error category. This module gives the host UI a way
 //! to observe that state — `start`, `succeeded`, and `failed` flip a
 //! global `RetryState` that the footer / status panel reads each frame.
 //!
-//! Why a process-wide global: the user-facing TUI runs as one engine
+//! Why a process-wide global: the user-facing REPL runs as one engine
 //! per process, and the only retry state we want to surface is the one
 //! the user is staring at. Sub-agent retries in background tasks
 //! deliberately do **not** light up the foreground banner — they're

@@ -15,7 +15,7 @@
 //! `&mut self.session` borrow held by `SessionChatHistory`).
 //!
 //! All three functions are `pub(crate)` — they are an intra-`engine` concern,
-//! not part of the public `engine::` surface consumed by `codesmith-tui`.
+//! not part of the public `engine::` surface consumed by `codesmith-cli`.
 
 use std::path::Path;
 

@@ -548,7 +548,7 @@ mod tests {
     #[test]
     fn default_parse_tool_input_keeps_repair_ladder() {
         // The default wrapper must stay behavior-compatible with the
-        // pre-P0-2 ladder (tui engine tests pin this too).
+        // pre-P0-2 ladder (CLI engine tests pin this too).
         assert!(parse_tool_input(r#"{"a": 1,}"#).is_some());
         assert!(parse_tool_input(r#"{"a": 1"#).is_some());
     }

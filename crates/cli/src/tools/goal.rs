@@ -1,6 +1,6 @@
 //! Goal tools for the model-visible LLM-as-judge loop.
 //!
-//! The TUI already has a `/goal` command and passes its objective into the
+//! The REPL already has a `/goal` command and passes its objective into the
 //! engine prompt. This module keeps the runtime slice separate: a small
 //! session-scoped state object plus tools the model can use to inspect and
 //! close out that state.

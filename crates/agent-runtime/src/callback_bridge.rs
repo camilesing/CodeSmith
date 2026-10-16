@@ -123,7 +123,7 @@ struct BridgeState {
     /// already forwarded since the last `on_llm_start`. A transparent stream
     /// retry re-emits the same block announcements the failed attempt sent,
     /// and hosts treat each one as "start a new message/reasoning item" —
-    /// the duplicate would orphan the first item (e.g. the TUI leaves the
+    /// the duplicate would orphan the first item (e.g. the host UI leaves the
     /// replaced record `InProgress` forever). Suppressing the re-announcement
     /// makes the retry's deltas land in the item the first attempt opened.
     /// Keyed by (kind, wire block index); cleared per LLM step because each
@@ -1010,7 +1010,7 @@ mod tests {
     /// Block-lifecycle announcements dedup within one LLM step: a transparent
     /// stream retry re-emits `MessageStarted`/`ThinkingStarted` for blocks the
     /// failed attempt already announced, and hosts treat each one as "open a
-    /// new item" (the TUI would orphan the first record). Only the first
+    /// new item" (the host UI would orphan the first record). Only the first
     /// announcement per (kind, index) is forwarded; `on_llm_start` (fired
     /// once per step, retries stay inside) clears the dedup so the next
     /// step's index 0 flows again.
@@ -1328,7 +1328,7 @@ mod assistant_stream_tests {
             std::path::Path::new(".")
         }
         fn mode(&self) -> codesmith_agent::extension::ExtensionMode {
-            codesmith_agent::extension::ExtensionMode::Tui
+            codesmith_agent::extension::ExtensionMode::Interactive
         }
         fn is_idle(&self) -> bool {
             true

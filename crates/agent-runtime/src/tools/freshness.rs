@@ -217,7 +217,7 @@ enum FreshnessRole {
 /// Shell-family tool names that get the [`FreshnessRole::ShellProbe`]
 /// post-success drift probe. Kept in lockstep with the registered shell
 /// family (`ToolRegistryBuilder::with_shell_tools` /
-/// `with_runtime_task_shell_tools`); a tui-side test pins the two together
+/// `with_runtime_task_shell_tools`); a CLI-side test pins the two together
 /// so a rename or new variant can't silently no-op the probe.
 pub const SHELL_PROBE_TOOLS: &[&str] = &[
     "exec_shell",

@@ -51,7 +51,7 @@ pub struct RlmBridge {
 impl RlmBridge {
     /// Construct a bridge bound to `client` for servicing `llm_query` /
     /// `rlm_query` RPCs during one RLM turn. `pub` (not `pub(crate)`) so the
-    /// TUI-side `rlm` tool — which stays in `codesmith-tui` — can construct
+    /// tool-impls-side `rlm` tool — which stays in `codesmith-tool-impls` — can construct
     /// it across the crate boundary.
     pub fn new(client: Arc<dyn LlmClient>, child_model: String, depth_remaining: u32) -> Self {
         Self {
@@ -322,8 +322,8 @@ mod tests {
     use std::pin::Pin;
 
     // Minimal queue-driven `LlmClient` stub for the bridge tests. The real
-    // `MockLlmClient` lives in `codesmith-tui`'s test-only `llm_client::mock`
-    // module (which depends on TUI-local test types, so it can't be imported
+    // `MockLlmClient` lives in `codesmith-cli`'s test-only `llm_client::mock`
+    // module (which depends on CLI-local test types, so it can't be imported
     // from a downstream crate). The bridge only ever calls `create_message`,
     // so a tiny stub here is enough to keep these tests working after the
     // module migrated into `codesmith-agent-runtime`.

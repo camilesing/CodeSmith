@@ -1,9 +1,9 @@
 //! Output truncation and summarization helpers for shell tools.
 //!
 //! Terminal-agnostic pure-string processing: no `crossterm`, no terminal
-//! handles, no TUI state. Lives in the runtime crate so both the engine body
+//! handles, no host state. Lives in the runtime crate so both the engine body
 //! and downstream tool implementations can call `truncate_with_meta` /
-//! `summarize_output` without depending on the `codesmith-tui` binary.
+//! `summarize_output` without depending on the host binary.
 //!
 //! P0-2: truncation no longer silently discards the elided middle. Callers
 //! that feed a model-visible tool result use [`spill_full_shell_output`] to

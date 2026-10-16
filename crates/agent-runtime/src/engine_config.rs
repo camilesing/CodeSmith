@@ -5,7 +5,7 @@
 //! that already live in `codesmith-agent-runtime`; the heavy terminal-coupled
 //! runtime services (`RuntimeToolServices`) and `HookExecutor` are
 //! deliberately *not* stored here — they are host-injected by the embedding
-//! binary (the TUI today, via an `EngineHost`-style struct) so that this type
+//! binary (the CLI today, via an `EngineHost`-style struct) so that this type
 //! stays free of OS-bridging managers.
 
 use std::collections::{HashMap, HashSet};
@@ -22,10 +22,10 @@ use crate::config_types::{
 /// Default step budget for the engine's tool loop, consumed by the headless
 /// entry points (`run_exec_agent`, `run_team_teammate`) and by embedders
 /// starting from [`EngineConfig::default`]. It is NOT a repo-wide budget:
-/// the interactive TUI runs uncapped (`max_steps: u32::MAX` in `tui/ui.rs`),
+/// the interactive REPL runs uncapped (`max_steps: u32::MAX`),
 /// long-running automation threads stay tighter
-/// (`AUTOMATION_DEFAULT_MAX_STEPS = 100` in `tui::config`), and sub-agents
-/// carry their own spawn-budget default in `tui::tools::subagent` — hence
+/// (`AUTOMATION_DEFAULT_MAX_STEPS = 100` in the CLI config), and sub-agents
+/// carry their own spawn-budget default in the CLI's subagent tool — hence
 /// the specific name. The headless budget deliberately matches this default:
 /// an unattended `exec`/team run has no human to cut it short or resume it,
 /// so it gets the full engine budget rather than the tighter
@@ -304,7 +304,7 @@ pub struct EngineConfig {
     // Note: `runtime_services` (RuntimeToolServices) and `hooks`
     // (HookExecutor) are intentionally *not* stored on `EngineConfig` so it
     // stays portable to `codesmith-agent-runtime`. They are host-injected by
-    // the embedding binary (TUI `EngineHost`, future `Arc<dyn HostServices>`)
+    // the embedding binary (CLI `EngineHost`, future `Arc<dyn HostServices>`)
     // — see `host.runtime_services` and `host.hooks` in the engine.
 }
 

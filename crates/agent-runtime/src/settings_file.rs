@@ -98,7 +98,7 @@ impl Drop for SettingsFileLock {
 /// `toml_edit` so the edit is format-preserving: user comments, whitespace,
 /// and key order all survive untouched (`toml::to_string_pretty` would drop
 /// comments and re-sort keys). Writes atomically via a temp file + rename,
-/// like the TUI's `Settings::save`; it only ever touches the one key a
+/// like the CLI's `Settings::save`; it only ever touches the one key a
 /// first-run language choice contributes.
 pub fn write_settings_locale(tag: &str) -> Result<PathBuf> {
     let path = settings_file_path()?;

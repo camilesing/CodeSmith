@@ -1,8 +1,9 @@
 //! Shared state types for model-visible tools.
 //!
 //! State types (plain data structs + Shared* aliases) are extracted here
-//! so `EngineConfig` can reference them without a tui dependency. Tool
-//! implementations (`impl ToolSpec`) stay in tui.
+//! so `EngineConfig` can reference them without a host dependency. Tool
+//! implementations (`impl ToolSpec`) stay in the tool crates
+//! (`codesmith-tool-impls` / the CLI).
 
 pub mod goal;
 pub mod plan;

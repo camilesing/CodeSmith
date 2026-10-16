@@ -1,4 +1,4 @@
-//! Portable durable-task data types shared between the TUI `TaskManager`
+//! Portable durable-task data types shared between the CLI `TaskManager`
 //! and the `TaskManagerHost` trait in [`crate::host_services`].
 //!
 //! These are pure serde data with no terminal-coupled dependencies, so they

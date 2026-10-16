@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use codesmith_agent_runtime::telemetry::TelemetrySink;
 
-use crate::app_state::{AppMode, HuntState, ReasoningEffort, SessionState, TuiOptions};
+use crate::app_state::{AppMode, HuntState, InteractiveOptions, ReasoningEffort, SessionState};
 use crate::approval_grants::{ApprovalGrants, approvals_toml_path};
 use crate::compaction::CompactionConfig;
 use crate::config::{ApiProvider, Config};
@@ -215,8 +215,8 @@ pub struct ReplState {
 
 impl ReplState {
     /// Mirror of the retired `App::new`'s non-UI construction.
-    pub fn new(options: TuiOptions, config: &Config) -> Self {
-        let TuiOptions {
+    pub fn new(options: InteractiveOptions, config: &Config) -> Self {
+        let InteractiveOptions {
             model,
             workspace,
             config_path,

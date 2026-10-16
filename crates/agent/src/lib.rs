@@ -13,7 +13,7 @@
 //!   [`LlmError`], and the `with_retry` driver.
 //! - [`provider`] — the pluggability seam: [`provider::ProviderId`] (open
 //!   union of known + custom providers), [`provider::ProviderConfig`]
-//!   (neutral construction input, no TUI `Config` dependency),
+//!   (neutral construction input, no CLI `Config` dependency),
 //!   [`provider::ProviderFactory`] (build a client), and
 //!   [`provider::ProviderRegistry`] (resolve + build by id).
 //! - [`models`] — request/response wire types shared across providers.

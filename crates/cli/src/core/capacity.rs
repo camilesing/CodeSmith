@@ -3,7 +3,7 @@
 //! The types and logic live in the agent-runtime crate; this module
 //! re-exports them so existing `crate::core::capacity::` references keep
 //! resolving. The `from_app_config` constructor stays here as a free
-//! function because `crate::config::Config` is tui-side — an inherent `impl`
+//! function because `crate::config::Config` is cli-side — an inherent `impl`
 //! here would violate the orphan rule (`CapacityControllerConfig` is now
 //! defined in agent-runtime).
 
@@ -11,9 +11,9 @@ pub use codesmith_agent_runtime::capacity::*;
 
 /// Build effective capacity config from app config.
 ///
-/// Kept in tui as a free function: `Config` is defined in tui while
+/// Kept in the CLI as a free function: `Config` is defined in the CLI while
 /// `CapacityControllerConfig` is defined in agent-runtime, so an inherent
-/// `from_app_config` impl cannot live in tui (orphan rule).
+/// `from_app_config` impl cannot live in the CLI (orphan rule).
 #[must_use]
 pub fn capacity_controller_config_from_app(
     config: &crate::config::Config,

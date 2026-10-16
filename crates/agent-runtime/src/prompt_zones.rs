@@ -231,7 +231,7 @@ pub enum RebuildReason {
     VerifyAndReplanReset,
     /// `/edit` rollback of the last user exchange.
     EditRollback,
-    /// Session sync/restore (`Op::SyncSession`, TUI session load).
+    /// Session sync/restore (`Op::SyncSession`, REPL session load).
     SessionSync,
     /// Cycle-boundary transcript reseed (`build_seed_messages`).
     CycleReset,

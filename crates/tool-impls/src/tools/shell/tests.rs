@@ -57,7 +57,7 @@ impl Drop for EnvRestore {
 
 /// Construct a shared shell manager backed by the runtime's no-op terminal
 /// controller. Tests don't need crossterm raw-mode save/restore; the
-/// crossterm-backed constructor lives in the TUI binary.
+/// crossterm-backed constructor lives in the CLI binary.
 fn make_shared_shell_manager(workspace: std::path::PathBuf) -> SharedShellManager {
     use codesmith_agent_runtime::shell_manager::default_terminal_control;
     use std::sync::{Arc, Mutex};
@@ -69,7 +69,7 @@ fn make_shared_shell_manager(workspace: std::path::PathBuf) -> SharedShellManage
 
 /// Minimal [`SandboxBackend`] stub for approval-path tests that only need
 /// `context.sandbox_backend` to be `Some` — `exec` is never called.
-/// (The real `OpenSandboxBackend` lives in the TUI binary's `sandbox`
+/// (The real `OpenSandboxBackend` lives in the CLI binary's `sandbox`
 /// submodule and depends on `crate::config`, so it can't cross into the
 /// tool-impls crate.)
 #[derive(Debug)]

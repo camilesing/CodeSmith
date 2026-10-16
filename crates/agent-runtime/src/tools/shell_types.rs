@@ -8,8 +8,8 @@
 //! `ShellManager` (pty / process management) is trait-erased behind a
 //! `ShellManagerHost`.
 //!
-//! The concrete `ShellManager` stays in the host (TUI) and returns these
-//! portable types from its methods.
+//! The concrete `ShellManager` now lives in this crate's `shell_manager`
+//! module and returns these portable types from its methods.
 
 use std::path::PathBuf;
 

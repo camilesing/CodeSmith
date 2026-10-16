@@ -4,7 +4,7 @@
 //! `MessageSubmitOutcome`) and the [`HookHost`] abstraction were relocated
 //! here from the terminal binary's `hooks` module so the runtime can invoke lifecycle
 //! hooks without depending on the CLI's concrete `HookExecutor` (which spawns
-//! processes and reads the host `Config`). The TUI keeps its `HookExecutor`
+//! processes and reads the host `Config`). The CLI keeps its `HookExecutor`
 //! and implements [`HookHost`] for it; the runtime holds `Arc<dyn HookHost>`.
 
 use std::collections::HashMap;

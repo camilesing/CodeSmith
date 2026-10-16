@@ -1,6 +1,6 @@
 //! Model-visible tool implementations for CodeSmith.
 //!
-//! Tool implementations run inside the host's runtime (TUI alt-screen
+//! Tool implementations run inside the host's runtime (the interactive REPL
 //! today): raw `print!` / `eprintln!` corrupt the host's rendering (the
 //! #1085 "scroll demon"). Route output through `tracing_*` or the tool
 //! result instead. Note these clippy lints fire under `cargo clippy`,
@@ -16,8 +16,8 @@
 //! [`codesmith_agent_runtime`] for the `ToolSpec` / `ToolContext` /
 //! `ToolResult` contracts and the trait-erased runtime services (shell,
 //! task, automation, hook, notifier, background-task registry, …); it never
-//! depends on the TUI, so the engine closure stays portable across hosts
-//! (TUI today, app-server tomorrow).
+//! depends on the host crate, so the engine closure stays portable across hosts
+//! (CLI today, app-server tomorrow).
 //!
 //! # Safety posture
 //!

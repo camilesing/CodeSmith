@@ -2,7 +2,7 @@
 //!
 //! [`SubAgentType`], [`SubAgentStatus`], and [`SubAgentAssignment`] are shared
 //! between the engine and the CLI's sub-agent runtime, so they live here in the
-//! terminal-agnostic runtime. The TUI re-exports them at the historical
+//! terminal-agnostic runtime. The CLI re-exports them at the historical
 //! `crate::tools::subagent` path for backwards compatibility. The sub-agent
 //! *implementation* (spawn orchestration, context forking, result aggregation)
 //! still lives in the CLI for now.

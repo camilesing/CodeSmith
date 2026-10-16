@@ -13,7 +13,7 @@
 //!
 //! Terminal-agnostic (pure `std::collections::HashMap`); lives in the runtime
 //! crate so the `ShellManager` and any downstream tool implementation can call
-//! it without depending on the `codesmith-tui` binary.
+//! it without depending on the host binary.
 
 use std::collections::HashMap;
 

@@ -1,4 +1,4 @@
-//! Symbolic handle storage and bounded reads — TUI-side tool + helpers.
+//! Symbolic handle storage and bounded reads — tool impl + helpers.
 //!
 //! The portable data types (`SharedHandleStore`, `HandleStore`, `VarHandle`,
 //! …) live in `codesmith-agent-runtime::tools::handle`; this module

@@ -1,6 +1,6 @@
 //! Tool infrastructure: specs, registry, and shared utilities.
 //!
-//! Tool code runs inside the host's runtime (TUI alt-screen today): raw
+//! Tool code runs inside the host's runtime (the interactive REPL today): raw
 //! `print!` / `eprintln!` in tool infrastructure corrupts the host's
 //! rendering (#1085). Route output through `tracing_*` or the tool result
 //! instead. Fires under `cargo clippy`, not plain `cargo build`.
