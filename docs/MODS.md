@@ -117,9 +117,11 @@ Unwired event (host seam not yet connected) never fires: `tool-execution-update`
 contract is one-shot, so there is no host progress channel to bridge it to (see
 `callback_bridge.rs`); it fires when a streaming tool contract lands. `resources-discover`
 was removed in 0.11.0 (never had an emitter or a consumer). `session-before-fork` fires at
-every parent spawn (`agent_open` / `agent_spawn` / `subagent_run` / `delegate_to_agent`)
-before the child forks session state — `cancel()` vetoes the fork; grandchildren spawns are
-not vetoable (sub-agent registries attach no runner).
+every spawn — the spawn-family tools (`agent_open` / `agent_spawn` / `subagent_run` /
+`delegate_to_agent`) at every depth (the runner rides the sub-agent runtime, veto-only, so
+grandchildren forks are vetoable too) and the engine-internal spawn path — before the child
+forks session state; `cancel()` vetoes the fork. Sub-agent registries still never mount
+extension tools: the runner is carried for the veto alone.
 
 `tool-result` payloads carry the canonical/rendered separation: `content` is the model-visible rendering; `canonical` is the structured machine-readable value of the same result (the `ToolResult::json` value, or what a tool attached via `with_canonical`). Read `canonical` instead of re-parsing `content` — prose-rendered results (`todo_add` prefixes a sentence before the JSON) are not parseable at all. Canonical is live-process only: the transcript persists the rendered `content`.
 
@@ -245,8 +247,10 @@ persist a proven experiment through `write` + `activate`.
 - Lifetime: gone when the session ends (nothing is persisted, not even
   KV). `/mods reload` and `manage_mods action=reload` replay them after
   the disk tiers (retained compiled forms, no recompile). Not restored on
-  session resume. Child subagents see them (the spawn tool mounts the
-  runner); the grandchild limitation applies as usual.
+  session resume. Their policies apply process-wide (a sub-agent's
+  mechanisms read the same snapshot); their tools/commands never enter
+  sub-agent registries (built-in-only by design); the fork veto reaches
+  every generation.
 - The listing shows them as `session-* [session] — live (session-scoped,
   not persisted)`.
 

@@ -115,9 +115,10 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 未接线事件（宿主 seam 尚未兑现）订阅不触发：`tool-execution-update`——工具契约是一次式的，
 没有可桥接的宿主进度通道（见 `callback_bridge.rs`）；待流式工具契约落地后触发。
 `resources-discover` 已在 0.11.0 移除（从未有发射方，也没有消费者）。
-`session-before-fork` 在父代理的每次 spawn（`agent_open` / `agent_spawn` / `subagent_run` /
-`delegate_to_agent`）fork 会话状态前触发——`cancel()` 否决该次 fork；孙代 spawn 不可否决
-（子代理注册表不挂 runner）。
+`session-before-fork` 在每次 spawn 前触发——spawn 工具族（`agent_open` / `agent_spawn` /
+`subagent_run` / `delegate_to_agent`）在任意深度（runner 随子代理运行时仅作否决用途传递，
+故孙代 fork 同样可否决）以及引擎内部 spawn 路径——在 fork 会话状态前触发；`cancel()` 否决
+该次 fork。子代理注册表仍不挂任何扩展工具：runner 仅为否决而携带。
 
 `tool-result` 载荷携带 canonical/rendered 分离：`content` 是模型可见的渲染文本；`canonical` 是同一结果的结构化机器可读值（`ToolResult::json` 的值，或工具经 `with_canonical` 附加的值）。请读 `canonical` 而不是重新解析 `content`——散文式渲染的结果（如 `todo_add` 在 JSON 前拼了一句提示）根本无法解析。canonical 仅存活于当前进程：转录持久化的是渲染后的 `content`。
 
@@ -227,8 +228,9 @@ manage_mods {"action": "session_write", "id": "session-shell-tuning",
   （已解析策略节显示 `from session-*`）。
 - 生命周期：会话结束即消失（任何东西都不持久化，包括 KV）。`/mods
   reload` 与 `manage_mods action=reload` 会在磁盘层之后重放它们（保留的
-  编译形态，无重编译）。会话恢复不重建。第一代子代理可见（spawn 工具挂
-  runner）；孙代限制照旧。
+  编译形态，无重编译）。会话恢复不重建。其策略进程全局生效（子代理的
+  机制读同一快照）；其工具/命令不进入子代理注册表（设计上仅内建）；
+  fork 否决覆盖所有代际。
 - 列表显示为 `session-* [session] — live (session-scoped, not
   persisted)`。
 

@@ -169,6 +169,18 @@ impl HostServices for super::EngineHost {
                     },
                 })
                 .await;
+            // `SessionBeforeFork` — this engine-internal spawn path forks
+            // session state exactly like the spawn-family tools, so it
+            // runs the same cancel-veto seam on the same terms.
+            let out = runner
+                .emit(codesmith_agent::extension::ExtensionEvent::SessionBeforeFork)
+                .await;
+            if matches!(
+                out.outcome,
+                codesmith_agent::extension::HandlerOutcome::Cancel { .. }
+            ) {
+                anyhow::bail!("sub-agent fork vetoed by an extension (session-before-fork)");
+            }
         }
         let mut runtime = SubAgentRuntime::new(
             req.llm_client,
@@ -194,6 +206,7 @@ impl HostServices for super::EngineHost {
         // and the answer comes back through the same router the parent turn's
         // own approval gate waits on.
         .with_approval_router(self.approval_router.clone())
+        .with_extension_runner(self.extension_runner.clone())
         .background_runtime();
         let route =
             resolve_subagent_assignment_route(&runtime, None, req.prompt, &SubAgentType::General)
@@ -361,6 +374,7 @@ impl HostServices for super::EngineHost {
                         .with_inherit_full_registry(config.subagent_inherit_full_registry)
                         .with_capability_disabled_tools(config.disabled_tools.clone())
                         .with_mcp_pool(mcp_pool.clone())
+                        .with_extension_runner(self.extension_runner.clone())
                         .with_parent_completion_tx(req.tx_subagent_completion.clone());
                         if let Some(context) = fork_context_for_runtime.clone() {
                             rt = rt.with_fork_context(context);
@@ -439,6 +453,7 @@ impl HostServices for super::EngineHost {
                     .with_inherit_full_registry(config.subagent_inherit_full_registry)
                     .with_capability_disabled_tools(config.disabled_tools.clone())
                     .with_mcp_pool(mcp_pool.clone())
+                    .with_extension_runner(self.extension_runner.clone())
                     .with_parent_completion_tx(req.tx_subagent_completion.clone());
                     if let Some(context) = fork_context_for_runtime.clone() {
                         rt = rt.with_fork_context(context);
