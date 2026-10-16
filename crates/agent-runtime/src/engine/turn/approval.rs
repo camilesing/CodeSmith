@@ -44,18 +44,21 @@
 //!   checkpoint map in `turn::seams`.
 //! - **static-only approval derivation** — [`requires_approval`] checks
 //!   [`Tool::capabilities`] (`ExecutesCode` / `WritesFiles` /
-//!   `RequiresApproval`), mirroring `ToolSpec::approval_requirement()`'s default.
-//!   The per-input dynamic override (`ToolSpec::approval_requirement_for_input`,
+//!   `RequiresApproval`), mirroring `ToolSpec::approval_requirement()`'s default
+//!   derivation. The per-input dynamic override (`ToolSpec::approval_requirement_for_input`,
 //!   e.g. `exec_shell rm` ⇒ `Required` vs `exec_shell ls` ⇒ `Auto`) and any
 //!   `ToolSpec::approval_requirement()` overrides that declare none of these
 //!   capabilities are not visible from the framework `Tool` trait; they thread in
 //!   at the wire-in step when the executor consults a `ToolDispatcher`.
-//! - **`RetryWithPolicy` treated as `Approved`** — sandbox elevation needs
-//!   `ToolDispatcher::execute` with a `sandbox_override` (the host rebuilds the
-//!   tool context with elevated sandbox access), which the framework `Tool::run`
-//!   path doesn't carry (the `ToolSpecAdapter` runs with a fixed `ToolContext`).
-//!   The executor therefore runs the tool with the unchanged context on a
-//!   `RetryWithPolicy` decision; the elevation threads in at the wire-in step.
+//! - **one-shot sandbox elevation threads through the gate** — an approved
+//!   `RetryWithPolicy` decision returns the policy to the caller
+//!   ([`request_approval`] ⇒ `Ok(Some(policy))`), which re-dispatches the
+//!   tool through `ToolDispatcher::execute` with it as the `sandbox_override`.
+//!   That wire-in (the registry's override arm) rejects any policy that is
+//!   not a strict widening of the baseline, so a wider sandbox policy can
+//!   only ever take effect through this approved path — there is no bypass.
+//!   Without a dispatcher attached the elevation cannot thread in; the tool
+//!   runs with its fixed context (plain-approval semantics).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -157,12 +160,17 @@ pub(crate) fn approval_intent_summary(content: &[ContentBlock]) -> Option<String
 }
 
 impl HostAgentExecutor {
-    /// Per-tool approval gate (seam 3). Returns `Ok(())` to proceed with
+    /// Per-tool approval gate (seam 3). Returns `Ok(None)` to proceed with
     /// execution (the tool doesn't require approval, no approval channel was
     /// supplied, or the user approved) or `Err(denial_message)` to skip the
     /// tool and feed back a `permission_denied` error so the model can react
     /// (mirrors `handle_deepseek_turn`'s per-tool approval flow,
-    /// `handle_deepseek_turn`).
+    /// `handle_deepseek_turn`). `Ok(Some(policy))` is an approved one-shot
+    /// sandbox escalation: the caller must re-dispatch the tool through
+    /// `ToolDispatcher::execute` with the policy as its `sandbox_override`
+    /// — the single wire-in where a wider sandbox policy can take effect
+    /// (the registry rejects overrides that are not a strict widening of
+    /// the baseline, so the escalation cannot narrow or launder anything).
     ///
     /// The requirement is the per-input answer from the attached dispatcher
     /// (falling back to the static [`Tool::capabilities`] gate when it has no
@@ -180,9 +188,9 @@ impl HostAgentExecutor {
         input: &serde_json::Value,
         tool: &Arc<dyn Tool>,
         intent_summary: &Option<String>,
-    ) -> Result<(), String> {
+    ) -> Result<Option<crate::sandbox::SandboxPolicy>, String> {
         let Some(router) = &self.approval else {
-            return Ok(()); // no approval channel ⇒ gating disabled
+            return Ok(None); // no approval channel ⇒ gating disabled
         };
         // Path-access question (the user trusts, or refuses, an
         // out-of-workspace directory) instead of a bare refusal. The registry
@@ -204,7 +212,7 @@ impl HostAgentExecutor {
             &tool.capabilities(),
         );
         if !approval_required {
-            return Ok(()); // dispatcher said Auto, or static gate says no
+            return Ok(None); // dispatcher said Auto, or static gate says no
         }
         let is_read_only = tool.capabilities().contains(&ToolCapability::ReadOnly);
         // Emit the request so a host UI can prompt and resolve. The
@@ -264,7 +272,7 @@ impl HostAgentExecutor {
         match decision {
             ApprovalDecision::Approved { .. } => {
                 self.grant_escaped_path(escaped.as_ref());
-                Ok(())
+                Ok(None)
             }
             ApprovalDecision::Denied { .. } => Err(match escaped.as_ref() {
                 // The refusal is about one directory, and the model must not
@@ -277,13 +285,14 @@ impl HostAgentExecutor {
                 ),
                 None => format!("Tool '{name}' denied by user"),
             }),
-            // Sandbox elevation needs `ToolDispatcher::execute` with a
-            // `sandbox_override`, which the framework `Tool::run` path doesn't
-            // carry; treat as approved (run with the fixed context). By-design
-            // gap — threads in at the wire-in step.
-            ApprovalDecision::RetryWithPolicy { .. } => {
+            // An approved one-shot sandbox escalation: carry the policy back
+            // so the caller re-dispatches the tool through the dispatcher's
+            // override wire-in (see the module docs). Without a dispatcher
+            // the caller cannot thread it in and falls back to plain
+            // approval semantics.
+            ApprovalDecision::RetryWithPolicy { policy, .. } => {
                 self.grant_escaped_path(escaped.as_ref());
-                Ok(())
+                Ok(Some(policy))
             }
         }
     }

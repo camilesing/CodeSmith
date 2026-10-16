@@ -24,6 +24,8 @@
 //! or run correctly. Do not resurrect it without a maintained bindings
 //! crate (e.g. libseccomp) and real integration testing.
 
+#[cfg(target_os = "linux")]
+use anyhow::Context;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -66,7 +68,10 @@ impl Default for SandboxRuntimeConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            fail_if_unavailable: false,
+            // Fail-closed by default: a policy that demands confinement must
+            // refuse execution when no backend can enforce it, never silently
+            // run unconfined. `false` is the documented degraded opt-out.
+            fail_if_unavailable: true,
             enabled_platforms: Vec::new(),
             excluded_commands: Vec::new(),
             auto_allow_bash_if_sandboxed: false,
@@ -354,6 +359,60 @@ impl SandboxPolicy {
             self,
             SandboxPolicy::DangerFullAccess | SandboxPolicy::ExternalSandbox { .. }
         )
+    }
+
+    /// Whether `self` is strictly wider than `other`: it grants everything
+    /// `other` grants, never less, plus at least one more capability.
+    ///
+    /// This is the lattice the one-shot sandbox-elevation approval moves
+    /// along — the registry's override wire-in (fed by the approval gate's
+    /// `RetryWithPolicy` decision) rejects any override that is not a
+    /// strict widening of the baseline. `ExternalSandbox` is deliberately
+    /// not comparable (it delegates confinement to an outer sandbox rather
+    /// than widening local access), and nothing is wider than
+    /// `DangerFullAccess`.
+    #[must_use]
+    pub fn is_strict_widening_of(&self, other: &SandboxPolicy) -> bool {
+        match (self, other) {
+            // ExternalSandbox is excluded from every combination first: it
+            // delegates confinement to an outer sandbox and is not a rung
+            // on the local escalation ladder.
+            (SandboxPolicy::ExternalSandbox { .. }, _)
+            | (_, SandboxPolicy::ExternalSandbox { .. }) => false,
+            (SandboxPolicy::DangerFullAccess, SandboxPolicy::DangerFullAccess) => false,
+            (SandboxPolicy::DangerFullAccess, _) => true,
+            (_, SandboxPolicy::DangerFullAccess) => false,
+            (SandboxPolicy::WorkspaceWrite { .. }, SandboxPolicy::ReadOnly) => true,
+            (SandboxPolicy::ReadOnly, _) => false,
+            (
+                SandboxPolicy::WorkspaceWrite {
+                    writable_roots: new_roots,
+                    network_access: new_net,
+                    exclude_tmpdir: new_tmp,
+                    exclude_slash_tmp: new_slash,
+                },
+                SandboxPolicy::WorkspaceWrite {
+                    writable_roots: old_roots,
+                    network_access: old_net,
+                    exclude_tmpdir: old_tmp,
+                    exclude_slash_tmp: old_slash,
+                },
+            ) => {
+                // Never narrower in any dimension: writable roots only
+                // added, network only granted, temp-dir exclude flags
+                // (true = temp stays read-only) only cleared …
+                let roots_superset = old_roots.iter().all(|r| new_roots.contains(r));
+                let network_ok = *new_net || !*old_net;
+                let tmp_ok = !*new_tmp || *old_tmp;
+                let slash_ok = !*new_slash || *old_slash;
+                // … and strictly wider in at least one.
+                let strictly = new_roots.len() > old_roots.len()
+                    || (*new_net && !*old_net)
+                    || (*old_tmp && !*new_tmp)
+                    || (*old_slash && !*new_slash);
+                roots_superset && network_ok && tmp_ok && slash_ok && strictly
+            }
+        }
     }
 
     /// Get the list of writable roots for this policy.
@@ -816,10 +875,9 @@ impl std::fmt::Display for SandboxType {
 impl SandboxType {
     /// Whether this backend actually confines a locally spawned child today.
     ///
-    /// `LinuxLandlock` has no child-process enforcement wired (see
-    /// [`SandboxManager::prepare_landlock`]) and `Windows` has no helper at
-    /// all, so neither counts as isolation — callers deciding whether to
-    /// proceed must treat them the same as `None`.
+    /// `Windows` has no helper at all (`windows::is_available()` is false),
+    /// so it counts the same as `None` — callers deciding whether to proceed
+    /// must treat it accordingly.
     #[must_use]
     pub fn enforces_isolation(self) -> bool {
         match self {
@@ -829,7 +887,7 @@ impl SandboxType {
             #[cfg(target_os = "linux")]
             SandboxType::LinuxBwrap => true,
             #[cfg(target_os = "linux")]
-            SandboxType::LinuxLandlock => false,
+            SandboxType::LinuxLandlock => true,
             #[cfg(target_os = "windows")]
             SandboxType::Windows => false,
         }
@@ -859,6 +917,13 @@ pub struct ExecEnv {
 
     /// The original policy (for reference).
     pub policy: SandboxPolicy,
+
+    /// Prepared Landlock ruleset for Linux spawns: created and fully
+    /// populated with rules in the parent at `prepare` time, applied only
+    /// between fork and exec (`install_sandbox_preexec`). `None` when this
+    /// environment is not Landlock-confined.
+    #[cfg(target_os = "linux")]
+    pub(crate) landlock: Option<std::sync::Arc<landlock::LandlockSandbox>>,
 }
 
 impl ExecEnv {
@@ -1054,6 +1119,14 @@ impl SandboxManager {
         self.prefer_bwrap = prefer;
     }
 
+    /// Test seam: force `select_sandbox` to report no backend, so
+    /// platform-independent tests can exercise the unavailable/fail-closed
+    /// decision path (`decide_sandbox`) on any host.
+    #[cfg(test)]
+    pub(crate) fn force_no_backend(&mut self) {
+        self.forced_sandbox = Some(SandboxType::None);
+    }
+
     /// Check if sandboxing is available.
     pub fn is_available(&mut self) -> bool {
         if let Some(available) = self.sandbox_available {
@@ -1077,18 +1150,18 @@ impl SandboxManager {
             return forced;
         }
 
-        // Use platform default. On Linux, any available bwrap confinement
-        // wins: Landlock selection is strictly worse whenever bwrap is
-        // installed, because `prepare_landlock` is a documented passthrough
-        // (no child-process enforcement is wired) — falling through to it
-        // would execute "sandboxed-requested" commands fully unconfined
-        // while a working bwrap backend sits unused.
+        // Use platform default. On Linux, bwrap wins whenever installed: its
+        // mount-namespace isolation also denies network (Landlock here is
+        // filesystem-only) and keeps the protected control-plane subpaths
+        // read-only inside writable roots, which Landlock's rule-union
+        // semantics cannot express. Landlock (kernel 5.13+) is the enforcing
+        // fallback when bwrap is absent.
         #[cfg(target_os = "linux")]
         {
             if self.prefer_bwrap {
                 tracing::debug!(
-                    "prefer_bwrap is the default behavior since Landlock never enforces; \
-                     the setting is ignored"
+                    "prefer_bwrap is the default behavior: bwrap is selected automatically \
+                     whenever installed; the setting is ignored"
                 );
             }
             if bwrap::is_available() {
@@ -1102,24 +1175,27 @@ impl SandboxManager {
     ///
     /// This is the main entry point for sandboxing. It takes a command
     /// specification and returns the actual command to run, which may
-    /// include sandbox wrapper commands.
-    pub fn prepare(&self, spec: &CommandSpec) -> ExecEnv {
+    /// include sandbox wrapper commands. Fallible because the Linux
+    /// Landlock arm builds its ruleset here (in the parent, before any
+    /// fork): a sandbox that cannot be constructed must make the caller
+    /// refuse the spawn, not degrade into an unconfined run.
+    pub fn prepare(&self, spec: &CommandSpec) -> Result<ExecEnv> {
         let sandbox_type = self.select_sandbox(&spec.sandbox_policy);
 
         match sandbox_type {
-            SandboxType::None => Self::prepare_unsandboxed(spec),
+            SandboxType::None => Ok(Self::prepare_unsandboxed(spec)),
 
             #[cfg(target_os = "macos")]
-            SandboxType::MacosSeatbelt => Self::prepare_seatbelt(spec),
+            SandboxType::MacosSeatbelt => Ok(Self::prepare_seatbelt(spec)),
 
             #[cfg(target_os = "linux")]
             SandboxType::LinuxLandlock => self.prepare_landlock(spec),
 
             #[cfg(target_os = "linux")]
-            SandboxType::LinuxBwrap => Self::prepare_bwrap(spec),
+            SandboxType::LinuxBwrap => Ok(Self::prepare_bwrap(spec)),
 
             #[cfg(target_os = "windows")]
-            SandboxType::Windows => Self::prepare_windows(spec),
+            SandboxType::Windows => Ok(Self::prepare_windows(spec)),
         }
     }
 
@@ -1139,6 +1215,8 @@ impl SandboxManager {
             timeout: spec.timeout,
             sandbox_type: SandboxType::None,
             policy: spec.sandbox_policy.clone(),
+            #[cfg(target_os = "linux")]
+            landlock: None,
         }
     }
 
@@ -1187,22 +1265,42 @@ impl SandboxManager {
             timeout: spec.timeout,
             sandbox_type: SandboxType::LinuxBwrap,
             policy: spec.sandbox_policy.clone(),
+            landlock: None,
         }
     }
 
-    /// Prepare a Landlock-tagged execution environment (Linux).
+    /// Prepare a Landlock-confined execution environment (Linux).
     ///
-    /// Landlock has no child-process enforcement wired: rules would have to
-    /// be applied inside the child before exec, and that helper path does
-    /// not exist (see `landlock::LandlockSandbox`, which has no callers).
-    /// This arm therefore reports `SandboxType::None` — the command runs
-    /// unconfined and every consumer of the `ExecEnv` sees the truth. The
-    /// higher-level decision layer (`shell_manager::decide_sandbox`) already
-    /// refuses to mark Landlock effective.
+    /// Builds and fully populates the ruleset in the parent (full-disk
+    /// read/execute, `/dev/null`, the policy's writable roots — see
+    /// [`landlock::LandlockSandbox::from_policy`]) and carries it on the
+    /// [`ExecEnv`]; the spawn sites apply it between fork and exec via
+    /// `install_sandbox_preexec`. Failing here makes `prepare` return
+    /// `Err`, and the caller must refuse to spawn: a ruleset the kernel
+    /// will not accept must not degrade into an unconfined run.
     #[cfg(target_os = "linux")]
-    fn prepare_landlock(&self, spec: &CommandSpec) -> ExecEnv {
+    fn prepare_landlock(&self, spec: &CommandSpec) -> Result<ExecEnv> {
         let _ = self;
-        Self::prepare_unsandboxed(spec)
+        let sandbox = landlock::LandlockSandbox::from_policy(&spec.sandbox_policy, &spec.cwd)
+            .context(
+                "Landlock ruleset construction failed (policy paths rejected by the kernel)",
+            )?;
+
+        let mut command = vec![spec.program.clone()];
+        command.extend(spec.args.clone());
+
+        let mut env = spec.env.clone();
+        env.insert("DEEPSEEK_SANDBOX".to_string(), "landlock".to_string());
+
+        Ok(ExecEnv {
+            command,
+            cwd: spec.cwd.clone(),
+            env,
+            timeout: spec.timeout,
+            sandbox_type: SandboxType::LinuxLandlock,
+            policy: spec.sandbox_policy.clone(),
+            landlock: Some(std::sync::Arc::new(sandbox)),
+        })
     }
 
     /// Prepare a Windows execution environment.
@@ -1517,7 +1615,7 @@ mod tests {
         let spec = CommandSpec::shell("echo test", PathBuf::from("/tmp"), Duration::from_secs(30))
             .with_policy(SandboxPolicy::DangerFullAccess);
 
-        let env = manager.prepare(&spec);
+        let env = manager.prepare(&spec).expect("prepare");
         let dispatcher = crate::shell_dispatcher::global_dispatcher();
 
         assert_eq!(env.sandbox_type, SandboxType::None);
@@ -1570,6 +1668,8 @@ mod tests {
             timeout: Duration::from_secs(30),
             sandbox_type: SandboxType::None,
             policy: SandboxPolicy::default(),
+            #[cfg(target_os = "linux")]
+            landlock: None,
         };
 
         assert_eq!(env.program(), "sandbox-exec");
@@ -1668,7 +1768,7 @@ mod tests {
         let manager = SandboxManager::default();
         let spec = CommandSpec::shell("true", PathBuf::from("/tmp"), Duration::from_secs(5))
             .with_policy(SandboxPolicy::default());
-        let env = manager.prepare(&spec);
+        let env = manager.prepare(&spec).expect("prepare");
         #[cfg(target_os = "linux")]
         {
             let marker = env.env.get("DEEPSEEK_SANDBOX");
@@ -1682,7 +1782,7 @@ mod tests {
         let manager = SandboxManager::with_bwrap_preference(true);
         let spec = CommandSpec::shell("true", PathBuf::from("/tmp"), Duration::from_secs(5))
             .with_policy(SandboxPolicy::default());
-        let env = manager.prepare(&spec);
+        let env = manager.prepare(&spec).expect("prepare");
         #[cfg(target_os = "linux")]
         {
             if crate::sandbox::bwrap::is_available() {
@@ -1705,8 +1805,69 @@ mod tests {
         for policy in &policies {
             let spec = CommandSpec::shell("true", PathBuf::from("/tmp"), Duration::from_secs(5))
                 .with_policy(policy.clone());
-            let env = manager.prepare(&spec);
+            let env = manager.prepare(&spec).expect("prepare");
             assert_eq!(env.policy, *policy);
         }
+    }
+
+    #[test]
+    fn test_strict_widening_lattice() {
+        use SandboxPolicy as P;
+        let ro = P::ReadOnly;
+        let ww = P::default(); // workspace-write, no roots/network, tmp excluded
+        let dfa = P::DangerFullAccess;
+        let esa = P::ExternalSandbox {
+            network_access: true,
+        };
+
+        // The escalation ladder: read-only < workspace-write < full access.
+        assert!(ww.is_strict_widening_of(&ro));
+        assert!(dfa.is_strict_widening_of(&ro));
+        assert!(dfa.is_strict_widening_of(&ww));
+        // Never an "escalation" to the same or a narrower policy.
+        assert!(!ro.is_strict_widening_of(&ro));
+        assert!(!ww.is_strict_widening_of(&ww));
+        assert!(!dfa.is_strict_widening_of(&dfa));
+        assert!(!ro.is_strict_widening_of(&ww));
+        assert!(!ww.is_strict_widening_of(&dfa));
+        assert!(!ro.is_strict_widening_of(&dfa));
+        // ExternalSandbox delegates confinement; it is not a local widening.
+        assert!(!esa.is_strict_widening_of(&ro));
+        assert!(!dfa.is_strict_widening_of(&esa));
+        assert!(!esa.is_strict_widening_of(&dfa));
+
+        let add_root = P::workspace_with_roots(vec![PathBuf::from("/data")], false);
+        assert!(
+            add_root.is_strict_widening_of(&ww),
+            "adding a writable root widens"
+        );
+        assert!(!ww.is_strict_widening_of(&add_root));
+
+        let net = P::workspace_with_network();
+        assert!(net.is_strict_widening_of(&ww), "granting network widens");
+
+        let tmp_included = P::WorkspaceWrite {
+            writable_roots: vec![],
+            network_access: false,
+            exclude_tmpdir: false,
+            exclude_slash_tmp: false,
+        };
+        assert!(
+            tmp_included.is_strict_widening_of(&ww),
+            "clearing the temp-dir exclusion widens"
+        );
+        assert!(
+            !ww.is_strict_widening_of(&tmp_included),
+            "adding the temp-dir exclusion narrows"
+        );
+    }
+
+    #[test]
+    fn sandbox_runtime_config_defaults_to_fail_closed() {
+        let runtime = SandboxRuntimeConfig::default();
+        assert!(
+            runtime.fail_if_unavailable,
+            "the default posture must refuse when a sandbox-demanding policy cannot be enforced"
+        );
     }
 }

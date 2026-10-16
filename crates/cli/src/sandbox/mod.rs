@@ -17,6 +17,7 @@ pub mod policy;
 pub mod runtime;
 
 pub use codesmith_agent_runtime::sandbox::{CommandSpec, SandboxManager, get_platform_sandbox};
+pub use codesmith_agent_runtime::shell_manager::install_sandbox_preexec;
 pub use policy::SandboxPolicy;
 pub use runtime::{
     SandboxBackendKind, SandboxFilesystemConfig, SandboxNetworkConfig, SandboxRuntimeConfig,
