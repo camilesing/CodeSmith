@@ -298,34 +298,11 @@ eval、auth、config、model、thread、sandbox、app-server、mcp-server 和
 completion 都是同一个 `codesmith` 二进制文件的子命令；不带子命令运行
 `codesmith`（可选地带 `--prompt`）会启动交互式 REPL。
 
-### 启动更新检查
+### 更新
 
-默认情况下，REPL 会在启动时后台检查最新的稳定版 CodeSmith，并且仅当
-有更新的版本可用且官方发布资源完整时，才显示一条简短的 toast 提示。
-
-对于隔离网络（air-gapped）、企业代理或托管桌面环境，可以完全禁用
-启动检查：
-
-```toml
-[update]
-check_for_updates = false
-```
-
-要重定向启动检查，可将 `update_uri` 设置为返回 GitHub 兼容
-latest-release JSON 的内部端点。只包含 `tag_name` 字段的最小镜像元数据
-即可被接受；如果存在 `assets`，CodeSmith 会要求其与官方发布具有相同的
-已上传资源集合，然后才显示 toast。
-
-```toml
-[update]
-check_for_updates = true
-update_uri = "https://internal.mirror.example/codesmith/releases/latest"
-```
-
-当 `update_uri` 未设置时，启动检查会优先使用发布镜像环境变量（如
-`CODESMITH_RELEASE_BASE_URL`），然后才回退到官方 GitHub API 端点。
-如果已配置的 `update_uri` 无法获取或解析，并且设置了发布镜像环境
-变量，codesmith 会回退到该镜像而不是启动失败。
+CodeSmith 不会自行检查新版本；需要时运行 `codesmith update`
+（或 `codesmith update --check`）。`CODESMITH_RELEASE_BASE_URL`
+可让该命令指向发布镜像（见下文环境变量列表）。
 
 ## 配置档案（Profiles）
 
@@ -486,9 +463,7 @@ default_text_model = "codesmith-coder:1.3b"
 - `CODESMITH_TASKS_DIR`（运行时任务队列/产物存储，默认为
   `~/.codesmith/tasks`）
 - `CODESMITH_HOME`（覆盖基础数据目录；默认为 `~/.codesmith`）
-- `CODESMITH_RELEASE_BASE_URL`（发布资源镜像，供 `codesmith update`
-  以及 `[update].update_uri` 未设置时的 REPL 启动更新检查使用，
-  或在该配置的 URI 无法获取时作为回退）
+- `CODESMITH_RELEASE_BASE_URL`（发布资源镜像，供 `codesmith update` 使用）
 - `CODESMITH_AUTOMATIONS_DIR`（覆盖 automations 存储目录；默认使用
   `~/.codesmith/automations`）
 - `CODESMITH_CAPACITY_ENABLED`

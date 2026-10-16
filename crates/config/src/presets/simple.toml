@@ -1,7 +1,6 @@
 # Simple — Pi-style minimal. Minimal token/compute/disk footprint.
 # Small tool surface (9 core tools), thinking at medium, no index, no LSP,
-# no cross-session memory, no snapshots, no MCP, no web search, no
-# background update check.
+# no cross-session memory, no snapshots, no MCP, no web search.
 name = "simple"
 description = "Pi-style minimal: 9 core tools, thinking medium, no index/LSP/memory/snapshots/MCP/search."
 app_mode = "agent"
@@ -18,7 +17,6 @@ context_enabled = false
 context_project_pack = false
 capacity_enabled = false
 auto_cost_saving = false
-update_check = false
 network_audit = false
 strict_tool_mode = false
 

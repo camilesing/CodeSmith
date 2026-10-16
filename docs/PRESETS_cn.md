@@ -32,7 +32,7 @@ codesmith preset show         # 档位矩阵 + 你的生效预设
 
 | 档位 | 思考 | 工具 | 记忆 | 子代理 | 资源开关 |
 |---|---|---|---|---|---|
-| `simple` | medium | 仅核心文件 + shell（`tools.include`） | goldfish（无） | 关闭 | 索引/LSP/快照/记忆/更新检查/审计全关 |
+| `simple` | medium | 仅核心文件 + shell（`tools.include`） | goldfish（无） | 关闭 | 索引/LSP/快照/记忆/审计全关 |
 | `middle`（默认） | 继承 | 继承 | 继承 | 10 | 高价值低消耗组合开启（索引、LSP、快照、记忆、强脑自动路由）；实验性机制关闭 |
 | `all` | 继承 | 全量 | notebook（记忆开、KOD 关） | 20 | middle + LSP 警告；预览旗标仍关闭 |
 | `experiment` | 继承 | 全量 | elephant + Knowledge On Demand | 20 | 全部开启（视觉、agent teams、coordinator、上下文管理器、容量控制器、strict tool mode） |
@@ -52,7 +52,6 @@ codesmith preset show         # 档位矩阵 + 你的生效预设
 | `[context].enabled` | 关 | 关 | 关 | 开 |
 | `[capacity].enabled` | 关 | 关 | 关 | 开 |
 | `[auto].cost_saving` | 关 | 关 | 关 | 关 |
-| `[update].check_for_updates` | 关 | 开 | 开 | 开 |
 | `[network].audit` | 关 | 开 | 开 | 开 |
 | `strict_tool_mode` | 关 | 关 | 关 | 开 |
 | 特性：`subagents` / `web_search` / `mcp` | 关 | 开 | 开 | 开 |
@@ -93,7 +92,6 @@ context_enabled = false
 context_project_pack = false
 capacity_enabled = false
 auto_cost_saving = false
-update_check = false
 network_audit = false
 strict_tool_mode = false
 

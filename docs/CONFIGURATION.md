@@ -318,36 +318,12 @@ auth, config, model, thread, sandbox, app-server, mcp-server, and completion
 are all subcommands of the single `codesmith` binary; running `codesmith` with
 no subcommand (optionally with `--prompt`) starts the interactive REPL.
 
-### Startup Update Checks
+### Updates
 
-By default, the REPL starts a background check for the latest stable CodeSmith
-release and shows a short toast only when a newer release is available and the
-official release assets are complete.
-
-Disable the startup check entirely for air-gapped, corporate-proxy, or managed
-desktop environments:
-
-```toml
-[update]
-check_for_updates = false
-```
-
-To redirect the startup check, set `update_uri` to an internal endpoint that
-returns GitHub-compatible latest-release JSON. Minimal mirror metadata with a
-`tag_name` field is accepted; if `assets` are present, CodeSmith requires the
-same uploaded asset set as the official release before showing the toast.
-
-```toml
-[update]
-check_for_updates = true
-update_uri = "https://internal.mirror.example/codesmith/releases/latest"
-```
-
-When `update_uri` is not set, startup checks honor release mirror environment
-variables such as `CODESMITH_RELEASE_BASE_URL` before falling back to the
-official GitHub API endpoint. If a configured `update_uri` cannot be fetched or
-parsed and a release mirror env var is set, codesmith falls back to that mirror
-instead of failing startup.
+CodeSmith does not check for new releases on its own; run `codesmith update`
+(or `codesmith update --check`) when you want one. `CODESMITH_RELEASE_BASE_URL`
+points that command at a release mirror (see the environment variable list
+below).
 
 ## Profiles
 
@@ -510,9 +486,7 @@ Remaining app-level variables:
 - `CODESMITH_TASKS_DIR` (runtime task queue/artifact storage, default
   `~/.codesmith/tasks`)
 - `CODESMITH_HOME` (override the base data directory; defaults to `~/.codesmith`)
-- `CODESMITH_RELEASE_BASE_URL` (release asset mirror used by `codesmith update`
-  and by REPL startup update checks when `[update].update_uri` is not set, or as
-  a fallback when that configured URI cannot be fetched)
+- `CODESMITH_RELEASE_BASE_URL` (release asset mirror used by `codesmith update`)
 - `CODESMITH_AUTOMATIONS_DIR` (override the automations storage directory; uses
   `~/.codesmith/automations` by default)
 - `CODESMITH_CAPACITY_ENABLED`

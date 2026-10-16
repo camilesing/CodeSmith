@@ -194,15 +194,6 @@ pub fn apply_to_config(config: &mut Config, definition: &PresetDefinitionToml) -
         );
     }
 
-    if definition.update_check.is_some() {
-        let update = config.update.get_or_insert_with(Default::default);
-        fill_bool(
-            &mut update.check_for_updates,
-            definition.update_check,
-            &mut deviated,
-        );
-    }
-
     if definition.network_audit.is_some() {
         let network = config.network.get_or_insert_with(Default::default);
         fill_bool(&mut network.audit, definition.network_audit, &mut deviated);
@@ -420,7 +411,6 @@ mod tests {
         assert!(config.memory.is_none());
         assert!(config.capacity.is_none());
         assert!(config.auto.is_none());
-        assert!(config.update.is_none());
         assert!(config.network.is_none());
     }
 

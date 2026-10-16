@@ -37,7 +37,7 @@ Built-in tiers, progressive from lightest to heaviest:
 
 | Tier | Thinking | Tools | Memory | Sub-agents | Resource switches |
 |---|---|---|---|---|---|
-| `simple` | medium | core file + shell only (`tools.include`) | goldfish (none) | off | index/LSP/snapshots/memory/update check/audit off |
+| `simple` | medium | core file + shell only (`tools.include`) | goldfish (none) | off | index/LSP/snapshots/memory/audit off |
 | `middle` *(default)* | inherits | inherits | inherits | 10 | high-value low-cost set on (index, LSP, snapshots, memory, strong-brain auto router); experimental seams off |
 | `all` | inherits | full surface | notebook (memory on, KOD off) | 20 | middle + LSP warnings; preview flags still off |
 | `experiment` | inherits | full surface | elephant + Knowledge On Demand | 20 | everything on (vision, agent teams, coordinator, context manager, capacity controller, strict tool mode) |
@@ -58,7 +58,6 @@ effective values):
 | `[context].enabled` | off | off | off | on |
 | `[capacity].enabled` | off | off | off | on |
 | `[auto].cost_saving` | off | off | off | off |
-| `[update].check_for_updates` | off | on | on | on |
 | `[network].audit` | off | on | on | on |
 | `strict_tool_mode` | off | off | off | on |
 | features: `subagents` / `web_search` / `mcp` | off | on | on | on |
@@ -101,7 +100,6 @@ context_enabled = false
 context_project_pack = false
 capacity_enabled = false
 auto_cost_saving = false
-update_check = false
 network_audit = false
 strict_tool_mode = false
 

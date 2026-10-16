@@ -2364,11 +2364,6 @@ default_text_model = "{DEFAULT_DEEPSEEK_MODEL}"
 # "auto" | "off" | "low" | "medium" | "high" | "max"
 # In the REPL: /config reasoning_effort <off|low|medium|high|max>.
 reasoning_effort = "auto"
-
-# Startup update check
-[update]
-check_for_updates = true
-# update_uri = "https://internal.mirror.example/codesmith/releases/latest"
 "#
     );
     write_config_file_private(path, &content)?;
