@@ -12,6 +12,7 @@
 //!   writer (App-owned store) and the tool writer (disk-fresh store) can
 //!   never diverge. [`reload_mods`] likewise re-loads both stores from disk.
 
+use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 
@@ -90,8 +91,9 @@ impl PendingModInfo {
 }
 
 /// Reload context captured at engine build for the `manage_mods` tool
-/// (runner + workspace + the engine's shared cancel token — everything
-/// [`reload_mods`] needs). `None` for embeds/tests that skip the mod layer.
+/// (runner + workspace + the engine's shared cancel token + the
+/// session-mod registry — everything [`reload_mods`] needs). `None` for
+/// embeds/tests that skip the mod layer.
 #[derive(Clone)]
 pub struct ModReloadCtx {
     pub runner: Arc<ExtensionRunner>,
@@ -101,6 +103,9 @@ pub struct ModReloadCtx {
     /// a tool-triggered or watcher reload must not resurrect the mod layer
     /// against `[mods] enabled = false`.
     pub mods_enabled: bool,
+    /// Session-scoped ephemeral mods (see [`SessionMods`]) — shared by the
+    /// tool path, the approval classifier, and reload replay.
+    pub session_mods: Arc<SessionMods>,
 }
 
 impl std::fmt::Debug for ModReloadCtx {
@@ -109,6 +114,94 @@ impl std::fmt::Debug for ModReloadCtx {
             .field("workspace", &self.workspace)
             .field("runner_generation", &self.runner.generation())
             .finish()
+    }
+}
+
+/// Session-scoped ephemeral mods — the agent's no-disk experiment lane
+/// (`manage_mods` `session_write` / `session_remove`). Holds the retained
+/// compiled forms (a whole-layer reload replays them after the disk tiers
+/// repopulate, so `/mods reload` cannot silently kill an experiment) and
+/// the exact `(id, source)` pairs the user approved this session — an
+/// identical re-write skips re-approval, the session-scoped analogue of
+/// the disk tier's activation hash. Dies with the engine: nothing here is
+/// ever written to disk. Known limitation: not restored on session resume
+/// (the runner rebuild loads the disk tiers only).
+#[derive(Default)]
+pub struct SessionMods {
+    inner: StdMutex<SessionModsInner>,
+}
+
+#[derive(Default)]
+struct SessionModsInner {
+    /// Retained session mods in bind order; reload replays in this order
+    /// after the disk tiers, so last-wins keeps experiments on top.
+    mods: Vec<(String, Arc<RhaiMod>)>,
+    /// User-approved `(id, source)` this session. Survives removal —
+    /// re-binding identical content is the same consent decision.
+    approved: HashSet<(String, String)>,
+}
+
+impl SessionMods {
+    /// Whether this exact `(id, source)` is already user-approved this
+    /// session (the approval-classifier half of skip-reapproval).
+    pub fn is_approved(&self, id: &str, source: &str) -> bool {
+        self.inner
+            .lock()
+            .expect("session mods lock poisoned")
+            .approved
+            .contains(&(id.to_string(), source.to_string()))
+    }
+
+    /// Record a successful, user-approved bind.
+    fn record_approved(&self, id: &str, source: &str) {
+        self.inner
+            .lock()
+            .expect("session mods lock poisoned")
+            .approved
+            .insert((id.to_string(), source.to_string()));
+    }
+
+    /// Retain a bound session mod (same-id replaces in place, mirroring
+    /// the runner's slot semantics).
+    fn retain(&self, id: &str, m: Arc<RhaiMod>) {
+        let mut inner = self.inner.lock().expect("session mods lock poisoned");
+        match inner.mods.iter().position(|(sid, _)| sid == id) {
+            Some(i) => inner.mods[i] = (id.to_string(), m),
+            None => inner.mods.push((id.to_string(), m)),
+        }
+    }
+
+    fn contains_id(&self, id: &str) -> bool {
+        self.inner
+            .lock()
+            .expect("session mods lock poisoned")
+            .mods
+            .iter()
+            .any(|(sid, _)| sid == id)
+    }
+
+    /// Drop by id (true when one was present). The approved-content
+    /// record deliberately survives.
+    fn drop_id(&self, id: &str) -> bool {
+        let mut inner = self.inner.lock().expect("session mods lock poisoned");
+        match inner.mods.iter().position(|(sid, _)| sid == id) {
+            Some(i) => {
+                inner.mods.remove(i);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Snapshot for reload replay (bind order).
+    fn replay_list(&self) -> Vec<Arc<RhaiMod>> {
+        self.inner
+            .lock()
+            .expect("session mods lock poisoned")
+            .mods
+            .iter()
+            .map(|(_, m)| Arc::clone(m))
+            .collect()
     }
 }
 
@@ -195,7 +288,17 @@ pub fn list_mods(
 ) -> String {
     let policies = resolved_policies_section(runner);
     let mods = discover_workspace_mods(workspace);
-    if mods.is_empty() {
+    // Live session mods (the enforced `session-` prefix is the membership
+    // test — they never exist on disk).
+    let session_ids: Vec<String> = runner
+        .map(|r| {
+            r.retained_mod_ids()
+                .into_iter()
+                .filter(|id| id.starts_with("session-"))
+                .collect()
+        })
+        .unwrap_or_default();
+    if mods.is_empty() && session_ids.is_empty() {
         // The policy section still shows: the builtin tier resolves even
         // with zero user mods (the baseline a user mod overrides).
         return format!(
@@ -218,6 +321,11 @@ pub fn list_mods(
             m.version,
             if m.global { "global" } else { "project" },
             status
+        ));
+    }
+    for id in &session_ids {
+        out.push_str(&format!(
+            "  {id} [session] — live (session-scoped, not persisted)\n"
         ));
     }
     out.push_str("\nActivation is one-time per id (/mods activate <id> or approve manage_mods action=activate).");
@@ -455,6 +563,7 @@ pub fn reload_mods(
     workspace: &Path,
     shared_cancel_token: Arc<StdMutex<CancellationToken>>,
     mods_enabled: bool,
+    session_mods: &SessionMods,
 ) -> String {
     // Disk-fresh stores: the tool path may have mutated them since the App
     // copies were loaded. An unreadable store must NOT silently become an
@@ -510,6 +619,33 @@ pub fn reload_mods(
     if !failed.is_empty() {
         msg.push_str(&format!(" Failed: {}.", failed.join("; ")));
     }
+    // Session mods replay after the disk tiers: retained compiled forms,
+    // no recompile — a disk reload must not silently kill an experiment.
+    // Replay order = bind order, so last-wins keeps experiments above the
+    // disk registrations.
+    let replay = session_mods.replay_list();
+    let replayed = replay.len();
+    if replayed > 0 {
+        let runner_in = Arc::clone(runner);
+        let (errors, rejections) = drive_transition(async move {
+            let mut errors = Vec::new();
+            let mut rejections = Vec::new();
+            for m in replay {
+                match runner_in.bind_mod(m).await {
+                    Ok(rej) => rejections.extend(rej.into_iter().map(|e| e.to_string())),
+                    Err(e) => errors.push(e.to_string()),
+                }
+            }
+            (errors, rejections)
+        });
+        msg.push_str(&format!(" Session mods replayed: {replayed}."));
+        for e in errors {
+            msg.push_str(&format!(" Session replay failed: {e}"));
+        }
+        for r in rejections {
+            msg.push_str(&format!(" Rejected registration: {r}"));
+        }
+    }
     msg
 }
 
@@ -556,6 +692,107 @@ where
         });
         handle.join().expect("mod transition thread panicked")
     })
+}
+
+/// Bind one agent-authored session mod live — the experiment lane: no
+/// disk files, no activation state, ephemeral KV (the builtin tier's
+/// compile path with a runtime-provided source). The id must carry the
+/// `session-` prefix and must not collide with a discovered disk mod
+/// (session ids never shadow disk ids). A same-id rewrite unloads the
+/// incumbent first (the no-residue path). On success the exact
+/// `(id, source)` is recorded as approved — an identical re-write skips
+/// re-approval.
+pub fn session_write_mod(ctx: &ModReloadCtx, id: &str, source: &str) -> String {
+    if !ctx.mods_enabled {
+        return "Mod layer disabled ([mods] enabled = false) — session mods are user-class code; only the builtin tier is exempt.".to_string();
+    }
+    if !id.starts_with("session-") || !codesmith_agent_runtime::utils::is_safe_path_component(id) {
+        return format!(
+            "Session mod id {id:?} must start with 'session-' and use [a-zA-Z0-9._-] only."
+        );
+    }
+    if source.trim().is_empty() {
+        return "Session mod source is empty — nothing to bind.".to_string();
+    }
+    if discover_workspace_mods(&ctx.workspace)
+        .iter()
+        .any(|m| m.id == id)
+    {
+        return format!(
+            "Id '{id}' collides with a discovered disk mod — session ids must not shadow disk mods."
+        );
+    }
+    let rhai_mod = match RhaiMod::load_source(
+        id,
+        id,
+        "0.0.0-session",
+        source.to_string(),
+        ModKvStore::ephemeral(),
+        ctx.runner.message_projection_hub(),
+    ) {
+        Ok(m) => Arc::new(m),
+        Err(e) => return format!("Compile '{id}' failed, nothing bound: {e}"),
+    };
+    let replaced = ctx.session_mods.contains_id(id);
+    let runner = Arc::clone(&ctx.runner);
+    let to_bind = Arc::clone(&rhai_mod);
+    let id_owned = id.to_string();
+    let gen_before = ctx.runner.generation();
+    let (unload_out, bind_res) = drive_transition(async move {
+        // Same-id rewrite: the no-residue unload first (a no-op when the
+        // id has no live slot).
+        let out = runner.unload_retained_mod(&id_owned).await;
+        let res = runner.bind_mod(to_bind).await;
+        (out, res)
+    });
+    let mut msg = match bind_res {
+        Ok(rejections) => {
+            ctx.session_mods.retain(id, rhai_mod);
+            ctx.session_mods.record_approved(id, source);
+            let mut msg = format!(
+                "Loaded session mod '{id}' live (generation {gen_before} → {}); takes effect at the next turn boundary. Session-scoped: not persisted, gone when the session ends.",
+                ctx.runner.generation()
+            );
+            if replaced {
+                msg.push_str(" (replaced the previous binding of the same id)");
+            }
+            for r in rejections {
+                msg.push_str(&format!(" Rejected registration: {r}"));
+            }
+            msg
+        }
+        // The incumbent (if any) was already unloaded above — the
+        // registry entry goes with it, the experiment is dead either way.
+        Err(e) => {
+            ctx.session_mods.drop_id(id);
+            return format!("Bind '{id}' failed, nothing live: {e}");
+        }
+    };
+    for e in unload_out.errors {
+        msg.push_str(&format!(" Survivor re-registration error: {e}"));
+    }
+    msg
+}
+
+/// Unload one session mod (the `session_remove` action): the no-residue
+/// unload plus the registry drop. The approved-content record survives,
+/// so re-writing the identical source skips re-approval.
+pub fn session_remove_mod(ctx: &ModReloadCtx, id: &str) -> String {
+    if !ctx.session_mods.contains_id(id) {
+        return format!("No session mod with id '{id}' — manage_mods list shows what is live.");
+    }
+    let runner = Arc::clone(&ctx.runner);
+    let id_owned = id.to_string();
+    let outcome = drive_transition(async move { runner.unload_retained_mod(&id_owned).await });
+    ctx.session_mods.drop_id(id);
+    let mut msg = format!(
+        "Removed session mod '{id}' ({} survivor(s) re-registered); takes effect at the next turn boundary. An identical re-write needs no fresh approval.",
+        outcome.replayed
+    );
+    for e in outcome.errors {
+        msg.push_str(&format!(" Survivor re-registration error: {e}"));
+    }
+    msg
 }
 
 /// Load one activated mod live — the single-mod counterpart of
@@ -1097,6 +1334,233 @@ trust_level = "trusted"
             assert!(listing.contains("(from builtin-shell-output)"), "{listing}");
             assert!(!listing.contains("from pol-mod"), "{listing}");
         }
+    }
+
+    /// A session-lane reload ctx around a bound runner (mods layer on).
+    fn session_ctx(runner: &Arc<ExtensionRunner>, workspace: &Path) -> ModReloadCtx {
+        ModReloadCtx {
+            runner: Arc::clone(runner),
+            workspace: workspace.to_path_buf(),
+            shared_cancel_token: Arc::new(StdMutex::new(CancellationToken::new())),
+            mods_enabled: true,
+            session_mods: Arc::new(SessionMods::default()),
+        }
+    }
+
+    #[test]
+    fn session_mod_lifecycle_and_policy_source() {
+        let _env = crate::test_support::lock_test_env();
+        let dir = TempDir::new().unwrap();
+        let _home = ScopedHome::set_trusted(&dir, &dir.path().join("ws"));
+        let ws = workspace_in(&dir);
+        let runner = bound_runner(&ws);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        for (_, m) in codesmith_extensions::load_builtin_mods(runner.message_projection_hub()) {
+            let m = m.expect("builtin mod compiles");
+            rt.block_on(runner.bind_mod(Arc::new(m)))
+                .expect("bind builtin");
+        }
+        let ctx = session_ctx(&runner, &ws);
+        let src = r#"register_policy("shell-output", #{ max_output_size: 7000 });"#;
+
+        let note = session_write_mod(&ctx, "session-exp", src);
+        assert!(
+            note.contains("Loaded session mod 'session-exp' live"),
+            "{note}"
+        );
+        {
+            let _guard = mod_state_lock();
+            let state = ModStateStore::load_default().unwrap();
+            let listing = list_mods(&ws, &state, Some(&runner));
+            assert!(
+                listing.contains("session-exp [session] — live"),
+                "{listing}"
+            );
+            assert!(
+                listing.contains("shell-output = {\"max_output_size\":7000} (from session-exp)"),
+                "{listing}"
+            );
+        }
+
+        // Same-id rewrite with different content: no-residue replace,
+        // one listing entry, the new value wins.
+        let note = session_write_mod(
+            &ctx,
+            "session-exp",
+            r#"register_policy("shell-output", #{ max_output_size: 8000 });"#,
+        );
+        assert!(note.contains("replaced the previous binding"), "{note}");
+        {
+            let _guard = mod_state_lock();
+            let state = ModStateStore::load_default().unwrap();
+            let listing = list_mods(&ws, &state, Some(&runner));
+            assert!(
+                listing.contains("shell-output = {\"max_output_size\":8000} (from session-exp)"),
+                "{listing}"
+            );
+            assert_eq!(listing.matches("session-exp [session]").count(), 1);
+        }
+
+        // Removal: the listing falls back to the builtin id + default, no
+        // disk residue ever, and the approved-content memo survives (an
+        // identical re-write skips re-approval).
+        let note = session_remove_mod(&ctx, "session-exp");
+        assert!(note.contains("Removed session mod 'session-exp'"), "{note}");
+        assert!(ctx.session_mods.is_approved("session-exp", src));
+        assert!(
+            !ws.join(".codesmith")
+                .join("mods")
+                .join("session-exp")
+                .exists(),
+            "session mods must never touch disk"
+        );
+        {
+            let _guard = mod_state_lock();
+            let state = ModStateStore::load_default().unwrap();
+            let listing = list_mods(&ws, &state, Some(&runner));
+            assert!(listing.contains("(from builtin-shell-output)"), "{listing}");
+            assert!(!listing.contains("from session-exp"), "{listing}");
+        }
+    }
+
+    #[test]
+    fn reload_replays_session_mods() {
+        let _env = crate::test_support::lock_test_env();
+        let dir = TempDir::new().unwrap();
+        let _home = ScopedHome::set_trusted(&dir, &dir.path().join("ws"));
+        let ws = workspace_in(&dir);
+        let runner = bound_runner(&ws);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        for (_, m) in codesmith_extensions::load_builtin_mods(runner.message_projection_hub()) {
+            let m = m.expect("builtin mod compiles");
+            rt.block_on(runner.bind_mod(Arc::new(m)))
+                .expect("bind builtin");
+        }
+        let ctx = session_ctx(&runner, &ws);
+        let note = session_write_mod(
+            &ctx,
+            "session-keep",
+            r#"register_policy("output-diff", #{ context_radius: 9 });"#,
+        );
+        assert!(
+            note.contains("Loaded session mod 'session-keep' live"),
+            "{note}"
+        );
+
+        // Whole-layer reload from disk: the session experiment survives
+        // (retained compiled form replayed after the disk tiers).
+        let note = reload_mods(
+            &runner,
+            &ws,
+            Arc::new(StdMutex::new(CancellationToken::new())),
+            true,
+            &ctx.session_mods,
+        );
+        assert!(note.contains("Session mods replayed: 1"), "{note}");
+        let winner = runner
+            .resolved_policies()
+            .into_iter()
+            .find(|e| e.kind == codesmith_agent::policy::PolicyKind::OutputDiff);
+        assert_eq!(
+            winner.map(|e| (e.source, e.config)),
+            Some((
+                "session-keep".to_string(),
+                serde_json::json!({"context_radius": 9})
+            ))
+        );
+        assert!(
+            runner
+                .retained_mod_ids()
+                .contains(&"session-keep".to_string())
+        );
+
+        // And the replayed experiment is still removable.
+        let note = session_remove_mod(&ctx, "session-keep");
+        assert!(
+            note.contains("Removed session mod 'session-keep'"),
+            "{note}"
+        );
+    }
+
+    #[test]
+    fn session_write_rejects_bad_ids_collisions_and_disabled_layer() {
+        let _env = crate::test_support::lock_test_env();
+        let dir = TempDir::new().unwrap();
+        let _home = ScopedHome::set_trusted(&dir, &dir.path().join("ws"));
+        let ws = workspace_in(&dir);
+        let mods_root = ws.join(".codesmith").join("mods");
+        write_fixture_mod(&mods_root, "session-dup"); // a DISK mod with a session-y id
+        let runner = bound_runner(&ws);
+        let ctx = session_ctx(&runner, &ws);
+
+        let note = session_write_mod(&ctx, "no-prefix", r#"mod_log("x");"#);
+        assert!(note.contains("must start with 'session-'"), "{note}");
+        let note = session_write_mod(&ctx, "session-empty", "   ");
+        assert!(note.contains("source is empty"), "{note}");
+        let note = session_write_mod(&ctx, "session-dup", r#"mod_log("x");"#);
+        assert!(
+            note.contains("collides with a discovered disk mod"),
+            "{note}"
+        );
+        let note = session_remove_mod(&ctx, "session-ghost");
+        assert!(
+            note.contains("No session mod with id 'session-ghost'"),
+            "{note}"
+        );
+        let mut disabled = session_ctx(&runner, &ws);
+        disabled.mods_enabled = false;
+        let note = session_write_mod(&disabled, "session-x", r#"mod_log("x");"#);
+        assert!(note.contains("Mod layer disabled"), "{note}");
+    }
+
+    /// The tool's approval classifier is content-aware for session writes:
+    /// fresh content asks, an identical approved re-write doesn't, changed
+    /// content asks again (only a successful bind records the memo).
+    #[test]
+    fn session_write_approval_memoizes_identical_content() {
+        use codesmith_agent_runtime::tools::spec::ToolSpec as _;
+        let _env = crate::test_support::lock_test_env();
+        let dir = TempDir::new().unwrap();
+        let _home = ScopedHome::set_trusted(&dir, &dir.path().join("ws"));
+        let ws = workspace_in(&dir);
+        let runner = bound_runner(&ws);
+        let ctx = session_ctx(&runner, &ws);
+        let tool = crate::tools::mods::ManageModsTool {
+            reload: Some(ctx.clone()),
+        };
+        let tool_ctx = crate::tools::spec::ToolContext::new(ws.clone());
+        let input = serde_json::json!({
+            "action": "session_write",
+            "id": "session-approval",
+            "source": "mod_log(\"probe\");"
+        });
+
+        // Fresh content asks…
+        assert_eq!(
+            tool.approval_requirement_for_input(&input, &tool_ctx),
+            crate::tools::spec::ApprovalRequirement::Required
+        );
+        // …an identical approved re-write doesn't (the memo is recorded
+        // by the successful bind, driven through the real write path)…
+        let note = session_write_mod(&ctx, "session-approval", "mod_log(\"probe\");");
+        assert!(
+            note.contains("Loaded session mod 'session-approval' live"),
+            "{note}"
+        );
+        assert_eq!(
+            tool.approval_requirement_for_input(&input, &tool_ctx),
+            crate::tools::spec::ApprovalRequirement::Auto
+        );
+        // …and changed content asks again.
+        let changed = serde_json::json!({
+            "action": "session_write",
+            "id": "session-approval",
+            "source": "mod_log(\"changed\");"
+        });
+        assert_eq!(
+            tool.approval_requirement_for_input(&changed, &tool_ctx),
+            crate::tools::spec::ApprovalRequirement::Required
+        );
     }
 
     #[test]

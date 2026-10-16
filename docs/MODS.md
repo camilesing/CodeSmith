@@ -90,7 +90,7 @@ register_command("calls", "Show the tool-call count", |args, ctx| {
 - Typing `/calls some args` in the REPL dispatches through the extension runner: `message(...)` prints its text, `send(...)` submits it into the conversation. Mod commands sit between user commands and the built-in table (user commands shadow them; they shadow built-ins), appear in `/help` under "mod commands", and Tab completes their names live.
 - Now **edit `mod.rhai`, save, and reload** with `/mods reload`; it re-runs discovery, no re-approval for the same id. `/mods status` confirms which mods are loaded and the runner generation (`/mods list` shows per-mod activation state and the resolved policy layer; the startup notice also lists discovered-but-not-activated mods). (The automatic file watcher and its `[mods] watch` switch were removed in 0.9.0; reloading is explicit.)
 
-You've now touched all four registration surfaces: event hooks, tools, commands, KV. The full `/mods` command set is `list` / `status` / `info <id>` / `activate <id>` / `enable|disable <id>` / `remove <id>` / `reload`; the model-facing `manage_mods` tool mirrors it with actions `list` / `write` / `activate` / `disable` / `enable` / `remove` / `reload`.
+You've now touched all four registration surfaces: event hooks, tools, commands, KV. The full `/mods` command set is `list` / `status` / `info <id>` / `activate <id>` / `enable|disable <id>` / `remove <id>` / `reload`; the model-facing `manage_mods` tool mirrors it with actions `list` / `write` / `activate` / `disable` / `enable` / `remove` / `reload`, plus the session lane `session_write` / `session_remove` (ephemeral experiments — see below).
 
 ## Quick Reference
 
@@ -219,6 +219,36 @@ recompile.
   override by registering the same policy kind, not by shadowing the id;
   their ids appear only as sources in the resolved-policies section of
   `list`).
+
+### Session mods (ephemeral experiments)
+
+```
+manage_mods {"action": "session_write", "id": "session-shell-tuning",
+             "source": "register_policy(\"shell-output\", #{ max_output_size: 20000 });"}
+```
+
+`manage_mods` `session_write` binds an agent-authored experiment live from
+inline Rhai source — no files, no activation state, ephemeral KV (the
+builtin tier's compile path with a runtime-provided source). The loop it
+serves: try a mod/policy in this session, verify it via `list`, then
+persist a proven experiment through `write` + `activate`.
+
+- Ids must carry the `session-` prefix and must not collide with a
+  discovered disk mod; a same-id rewrite is a no-residue replace.
+- Consent: the first write of a given `(id, source)` asks for approval;
+  an **identical re-write this session skips the prompt** (the
+  session-scoped analogue of the activation hash) — any content change
+  asks again. `session_remove` always asks.
+- Position: session mods bind after the disk tiers, so their policy
+  registrations win last-wins over everything (the resolved-policies
+  section shows `from session-*`).
+- Lifetime: gone when the session ends (nothing is persisted, not even
+  KV). `/mods reload` and `manage_mods action=reload` replay them after
+  the disk tiers (retained compiled forms, no recompile). Not restored on
+  session resume. Child subagents see them (the spawn tool mounts the
+  runner); the grandchild limitation applies as usual.
+- The listing shows them as `session-* [session] — live (session-scoped,
+  not persisted)`.
 
 ### Contributing a system-prompt section (route B)
 

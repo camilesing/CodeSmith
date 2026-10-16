@@ -213,19 +213,23 @@ async fn mutate(state: &ReplState, id: &str, action: Action) {
 
 /// Reload the whole extension layer (compiled-in + dylib + mods) from
 /// disk-fresh state — shared with `/extension reload`. Unavailable when no
-/// runner is bound (embeds/tests).
+/// runner is bound (embeds/tests). Reads the engine's captured reload ctx
+/// (runner + token + `mods_enabled` + the session-mod registry) so the
+/// REPL reload shares the tool path's gating and replays session mods.
 pub(super) async fn reload_note(state: &ReplState) -> Result<String, String> {
-    let Some(runner) = state.extension_runner.clone() else {
-        return Err("Reload unavailable in this session (no bound extension runner); changes take effect on the next session start or /mods reload.".to_string());
-    };
     let Ok(engine) = state.engine() else {
         return Err("Reload unavailable in this session (engine not running).".to_string());
     };
-    let token = engine.cancel_token.clone();
-    let workspace = state.workspace.clone();
-    let mods_enabled = state.config.mods_enabled();
+    let Some(ctx) = engine.mod_reload.clone() else {
+        return Err("Reload unavailable in this session (no bound extension runner); changes take effect on the next session start or /mods reload.".to_string());
+    };
+    let runner = ctx.runner.clone();
+    let workspace = ctx.workspace.clone();
+    let token = ctx.shared_cancel_token.clone();
+    let mods_enabled = ctx.mods_enabled;
+    let session_mods = ctx.session_mods.clone();
     let note = tokio::task::spawn_blocking(move || {
-        crate::mod_ops::reload_mods(&runner, &workspace, token, mods_enabled)
+        crate::mod_ops::reload_mods(&runner, &workspace, token, mods_enabled, &session_mods)
     })
     .await
     .map_err(|err| format!("reload worker failed: {err}"))?;
