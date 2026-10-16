@@ -262,6 +262,17 @@ impl HostServices for super::EngineHost {
             req.cancel_token.clone(),
             req.runtime_ui,
         );
+        // Sub-agent runtimes take the context BEFORE the progress sink is
+        // attached: `tool-execution-update` is main-turn-only (sub-agent
+        // loops emit no extension events, and their registries stay
+        // extension-free — §4b).
+        let subagent_context = tool_context.clone();
+        let tool_context = tool_context.with_progress_sink(Some(Arc::new(
+            codesmith_agent_runtime::callback_bridge::RunnerProgressSink::new(
+                self.extension_runner.clone(),
+                Some(req.tx_event.clone()),
+            ),
+        )));
         // §F2c — `ProjectTrust`: the session's trust decision is known once the
         // tool context is built. Per-turn observe-only emit. `FirstLoad` (the
         // §F5 trust-prompt site) is not derivable per-turn; a handler wanting
@@ -355,7 +366,7 @@ impl HostServices for super::EngineHost {
                         let mut rt = SubAgentRuntime::new(
                             client,
                             session.model.clone(),
-                            tool_context.clone(),
+                            subagent_context.clone(),
                             // Plan mode has no shell at all; its children must
                             // not regain one through the sub-agent surface.
                             session.allow_shell && mode != AppMode::Plan,
@@ -431,7 +442,7 @@ impl HostServices for super::EngineHost {
                     let mut rt = SubAgentRuntime::new(
                         client,
                         session.model.clone(),
-                        tool_context.clone(),
+                        subagent_context.clone(),
                         // Inherit the session's shell gate rather than
                         // hard-coding it on: `set_mode` forces `allow_shell`
                         // on Coordinator entry (mirroring the Yolo branch),

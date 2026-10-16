@@ -28,7 +28,7 @@
 //! | `on_step`             | — (no step event variant)  | —                     |
 //! | `on_complete`         | — (`TurnComplete`³)         | —                     |
 //! | `on_stream_delta`     | `MessageDelta` / `ThinkingDelta` / `MessageStarted` / `ThinkingStarted` / `ThinkingComplete` / `MessageComplete` / `ToolCallStarted` | — |
-//! | `on_tool_progress`    | — (no streaming `Tool` contract⁴) | — |
+//! | `on_tool_progress`    | — (tool-side sink instead⁴) | — |
 //!
 //! ¹ `TurnStarted` only carries a turn id and is emitted by the engine caller,
 //!   not the executor loop. ² `MessageComplete` only carries a block index; the
@@ -36,11 +36,12 @@
 //!   index is owned by the stream-reduction code. ³ `TurnComplete` carries full
 //!   `usage` / `tool_catalog` / `base_url` the `Callback` does not have; the
 //!   engine caller emits it after the executor returns, so the bridge does not
-//!   duplicate it. ⁴ §F2c: `on_tool_progress` is the forward-looking API
-//!   surface for `ExtensionEvent::ToolExecutionUpdate`; the host has no
-//!   streaming `Tool` contract yet (`Tool::run` is one-shot), so there is no
-//!   host `Event` variant to bridge it to. A streaming `Tool` variant (§F-later)
-//!   would add one. ⁵ `on_llm_start` forwards the per-step `LlmRequest`
+//!   duplicate it. ⁴ `on_tool_progress` stays un-overridden: `Tool::run` is
+//!   one-shot, so nothing ever calls it. Mid-execution progress reaches the
+//!   host from the tool side instead — [`RunnerProgressSink`] (attached per
+//!   main turn as `ToolContext::progress`) forwards shell checkpoints as
+//!   `Event::ToolCallProgress` and emits `ExtensionEvent::ToolExecutionUpdate`
+//!   under the AssistantStream budget. ⁵ `on_llm_start` forwards the per-step `LlmRequest`
 //!   envelope summary (event-sourcing slice 5) and clears the
 //!   block-announcement dedup set: the executor fires it once per LLM step
 //!   (transparent stream retries happen inside a step), and a retry re-emits
@@ -153,6 +154,150 @@ const STREAM_DISPATCH_BUDGET_MS: u64 = 250;
 /// latency — the breaker also trips once the aggregate dispatch time
 /// exceeds this.
 const STREAM_DISPATCH_CUMULATIVE_BUDGET_MS: u64 = 1_000;
+
+/// Budgeted, detached, observe-only extension dispatch for hot-path
+/// emitters — the AssistantStream discipline, shared with the tool-progress
+/// sink. Runs `runner.emit(event)` on the blocking pool (a Rhai handler
+/// runs `handle()` to completion inside its first poll — no await point —
+/// so only an off-thread dispatch can be bounded) and awaits it under
+/// [`STREAM_DISPATCH_BUDGET_MS`]. A miss detaches the handler — it runs to
+/// completion off-thread with its outcome discarded, never cancelled
+/// mid-flight — and trips `warned`, the per-turn circuit breaker callers
+/// consult before dispatching again (a detached miss would otherwise hold a
+/// blocking-pool thread forever or cost the next emit its full budget);
+/// cumulative overshoot past [`STREAM_DISPATCH_CUMULATIVE_BUDGET_MS`],
+/// tracked in `spent_ms`, trips it too. Warns once per trip. No-op outside
+/// a tokio runtime (the callback surface is host-agnostic). `label` names
+/// the event in the warnings.
+pub(crate) async fn budgeted_observe_emit(
+    runner: Arc<codesmith_extensions::ExtensionRunner>,
+    event: codesmith_agent::extension::ExtensionEvent,
+    warned: &std::sync::atomic::AtomicBool,
+    spent_ms: &std::sync::atomic::AtomicU64,
+    label: &'static str,
+) {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    let started = std::time::Instant::now();
+    let dispatch = tokio::task::spawn_blocking(move || {
+        // On a budget miss the JoinHandle is dropped but this task keeps
+        // running; if the runtime shuts down while the parked `block_on`
+        // is still alive it panics — unobserved, and process-fatal under
+        // `panic = "abort"` release profiles. Contain it: the dispatch is
+        // observe-only, so a shutdown-time panic is swallowed.
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            handle.block_on(runner.emit(event))
+        }))
+    });
+    let warn_once = || !warned.swap(true, std::sync::atomic::Ordering::Relaxed);
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(STREAM_DISPATCH_BUDGET_MS),
+        dispatch,
+    )
+    .await
+    {
+        Ok(Ok(_)) => {
+            let spent = started.elapsed().as_millis() as u64;
+            let total = spent_ms
+                .fetch_add(spent, std::sync::atomic::Ordering::Relaxed)
+                .saturating_add(spent);
+            if total > STREAM_DISPATCH_CUMULATIVE_BUDGET_MS && warn_once() {
+                tracing::warn!(
+                    target: "codesmith_runtime::callback_bridge",
+                    "{label} handler dispatches consumed {total}ms cumulative \
+                     this turn (each under the {STREAM_DISPATCH_BUDGET_MS}ms \
+                     budget); later emits skip handler dispatch (logged once per turn)"
+                );
+            }
+        }
+        Ok(Err(join_err)) => {
+            // emit's catch_unwind normally contains handler panics, so a
+            // JoinError here is unexpected.
+            if warn_once() {
+                tracing::warn!(
+                    target: "codesmith_runtime::callback_bridge",
+                    "{label} dispatch task failed: {join_err}"
+                );
+            }
+        }
+        Err(_) => {
+            if warn_once() {
+                tracing::warn!(
+                    target: "codesmith_runtime::callback_bridge",
+                    "{label} handler dispatch exceeded {STREAM_DISPATCH_BUDGET_MS}ms; \
+                     detached — later emits skip handler dispatch this turn \
+                     (logged once per turn)"
+                );
+            }
+        }
+    }
+}
+
+/// The host side of `tool-execution-update`: the per-turn
+/// [`ToolProgressSink`](crate::tools::spec::ToolProgressSink) the engine
+/// attaches to the main turn's `ToolContext`. Each checkpoint (a) rides the
+/// UI channel as `Event::ToolCallProgress` — best-effort `try_send`; a full
+/// or closed channel drops the checkpoint, the final `ToolResult` still
+/// lands — and (b) reaches subscribed extension handlers through
+/// [`budgeted_observe_emit`] with its own per-turn breaker, so a slow
+/// handler costs a tool's poll loop at most one budget before checkpoints
+/// go silent for the turn. Observe-only end to end: nothing here can fail
+/// or alter the tool.
+pub struct RunnerProgressSink {
+    runner: Option<Arc<codesmith_extensions::ExtensionRunner>>,
+    tx: Option<mpsc::Sender<Event>>,
+    warned: std::sync::atomic::AtomicBool,
+    spent_ms: std::sync::atomic::AtomicU64,
+}
+
+impl RunnerProgressSink {
+    #[must_use]
+    pub fn new(
+        runner: Option<Arc<codesmith_extensions::ExtensionRunner>>,
+        tx: Option<mpsc::Sender<Event>>,
+    ) -> Self {
+        Self {
+            runner,
+            tx,
+            warned: std::sync::atomic::AtomicBool::new(false),
+            spent_ms: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::tools::spec::ToolProgressSink for RunnerProgressSink {
+    async fn progress(&self, id: &str, name: &str, message: &str) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.try_send(Event::ToolCallProgress {
+                id: id.to_string(),
+                output: message.to_string(),
+            });
+        }
+        if let Some(runner) = &self.runner
+            && runner
+                .has_handlers(codesmith_agent::extension::ExtensionEventKind::ToolExecutionUpdate)
+            && !self.warned.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            let event = codesmith_agent::extension::ExtensionEvent::ToolExecutionUpdate(
+                codesmith_agent::extension::ToolExecutionUpdateEvent {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    message: message.to_string(),
+                },
+            );
+            budgeted_observe_emit(
+                Arc::clone(runner),
+                event,
+                &self.warned,
+                &self.spent_ms,
+                "ToolExecutionUpdate",
+            )
+            .await;
+        }
+    }
+}
 
 /// A [`Callback`] that forwards tool-lifecycle hooks onto the host's
 /// `mpsc::Sender<Event>` UI channel and `HookHost` shell-hook surface.
@@ -431,103 +576,33 @@ impl Callback for CallbackBridge {
                 let _ = tx.send(event).await;
             }
             // Route B (streaming observation) — forward assistant TEXT
-            // deltas as `AssistantStream` (observe-only). Rhai script
-            // handlers run `handle()` to completion inside its first poll
-            // — there is no await point — so a wrapping timeout alone can
-            // never preempt them; the emit therefore runs on the blocking
-            // pool, awaited under the budget. Deltas stay ordered while
-            // handlers meet the budget (each emit is awaited before the
-            // next delta is dispatched); past a deadline the handler is
-            // detached — it runs to completion off-thread with its
-            // outcome discarded (observe-only) and may overlap later
-            // deltas' handlers, so no handler is ever cancelled
-            // mid-flight — and the budget flag trips a circuit breaker:
-            // later deltas this turn skip the clone + dispatch
-            // entirely, because a detached miss would otherwise hold a
-            // blocking-pool thread forever (hung handler) or cost the
-            // next delta its full budget (slow-but-completing handler).
-            // The pre-check also skips when nothing subscribes to
-            // AssistantStream (the common case on the token-streaming
-            // hot path). Thinking deltas stay UI-only for now.
+            // deltas as `AssistantStream` (observe-only) through
+            // `budgeted_observe_emit`: deltas stay ordered while handlers
+            // meet the budget (each emit is awaited before the next delta
+            // is dispatched); a miss detaches the handler and trips the
+            // per-turn breaker checked below, so later deltas skip the
+            // clone + dispatch entirely. The pre-check also skips when
+            // nothing subscribes to AssistantStream (the common case on
+            // the token-streaming hot path). Thinking deltas stay UI-only
+            // for now.
             if let (Some(runner), StreamDelta::Text { content, .. }) = (&extension, delta)
                 && runner
                     .has_handlers(codesmith_agent::extension::ExtensionEventKind::AssistantStream)
                 && !stream_warned.load(std::sync::atomic::Ordering::Relaxed)
             {
-                let runner = Arc::clone(runner);
                 let event = codesmith_agent::extension::ExtensionEvent::AssistantStream(
                     codesmith_agent::extension::AssistantStreamEvent {
                         text: content.clone(),
                     },
                 );
-                let Ok(handle) = tokio::runtime::Handle::try_current() else {
-                    // The boxed `on_stream_delta` future can be polled
-                    // outside a tokio runtime (the `Callback` trait is
-                    // host-agnostic); extension dispatch needs the handle,
-                    // so skip it instead of panicking from a library-side
-                    // callback. The UI event above has already been sent.
-                    return;
-                };
-                let started = std::time::Instant::now();
-                let dispatch = tokio::task::spawn_blocking(move || {
-                    // On a budget miss the JoinHandle is dropped but this
-                    // task keeps running; if the runtime shuts down while
-                    // the parked `block_on` is still alive it panics —
-                    // unobserved, and process-fatal under `panic = "abort"`
-                    // release profiles. Contain it: the dispatch is
-                    // observe-only, so a shutdown-time panic is swallowed.
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        handle.block_on(runner.emit(event))
-                    }))
-                });
-                let warn_once = || !stream_warned.swap(true, std::sync::atomic::Ordering::Relaxed);
-                match tokio::time::timeout(
-                    std::time::Duration::from_millis(STREAM_DISPATCH_BUDGET_MS),
-                    dispatch,
+                budgeted_observe_emit(
+                    Arc::clone(runner),
+                    event,
+                    &stream_warned,
+                    &stream_dispatch_spent_ms,
+                    "AssistantStream",
                 )
-                .await
-                {
-                    Ok(Ok(_)) => {
-                        // Trip on cumulative overshoot too: a handler that
-                        // consistently finishes *just under* the per-delta
-                        // budget never trips the miss path but still taxes
-                        // every remaining delta of the turn.
-                        let spent = started.elapsed().as_millis() as u64;
-                        let total = stream_dispatch_spent_ms
-                            .fetch_add(spent, std::sync::atomic::Ordering::Relaxed)
-                            .saturating_add(spent);
-                        if total > STREAM_DISPATCH_CUMULATIVE_BUDGET_MS && warn_once() {
-                            tracing::warn!(
-                                target: "codesmith_runtime::callback_bridge",
-                                "AssistantStream handler dispatches consumed \
-                                 {total}ms cumulative this turn (each under the \
-                                 {STREAM_DISPATCH_BUDGET_MS}ms budget); later \
-                                 deltas skip handler dispatch (logged once per turn)"
-                            );
-                        }
-                    }
-                    Ok(Err(join_err)) => {
-                        // emit's catch_unwind normally contains handler
-                        // panics, so a JoinError here is unexpected.
-                        if warn_once() {
-                            tracing::warn!(
-                                target: "codesmith_runtime::callback_bridge",
-                                "AssistantStream dispatch task failed: {join_err}"
-                            );
-                        }
-                    }
-                    Err(_) => {
-                        if warn_once() {
-                            tracing::warn!(
-                                target: "codesmith_runtime::callback_bridge",
-                                "AssistantStream handler dispatch exceeded \
-                                 {STREAM_DISPATCH_BUDGET_MS}ms; detached — later \
-                                 deltas skip handler dispatch this turn \
-                                 (logged once per turn)"
-                            );
-                        }
-                    }
-                }
+                .await;
             }
         })
     }
@@ -574,8 +649,8 @@ impl Callback for CallbackBridge {
     // (`on_llm_start` IS overridden above — as the per-step reset point for
     // the block-announcement dedup, and since event-sourcing slice 5 also
     // forwards the per-step `Event::LlmRequest` envelope summary.)
-    // `on_tool_progress` (§F2c) has no host `Event` variant — a streaming
-    // `Tool` contract would add one (§F-later); until then it stays unbridged.
+    // `on_tool_progress` stays unbridged by design: progress arrives from
+    // the tool side through `RunnerProgressSink`, not this trait method.
 }
 
 #[cfg(test)]
@@ -1301,6 +1376,79 @@ mod assistant_stream_tests {
 
         let got = seen.lock().unwrap().clone();
         assert_eq!(got, vec!["hel".to_string(), "lo".to_string()], "text only");
+    }
+
+    /// A handler that records ToolExecutionUpdate payloads.
+    struct RecordUpdate(Arc<Mutex<Vec<String>>>);
+    #[async_trait::async_trait]
+    impl codesmith_agent::extension::Handler for RecordUpdate {
+        async fn handle(
+            &self,
+            event: &codesmith_agent::extension::ExtensionEvent,
+            _ctx: &dyn codesmith_agent::extension::ExtensionContext,
+        ) -> Result<
+            codesmith_agent::extension::HandlerOutcome,
+            codesmith_agent::extension::ExtensionError,
+        > {
+            if let codesmith_agent::extension::ExtensionEvent::ToolExecutionUpdate(e) = event {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(format!("{}|{}|{}", e.id, e.name, e.message));
+            }
+            Ok(codesmith_agent::extension::HandlerOutcome::Continue)
+        }
+    }
+    struct UpdateExt(Arc<Mutex<Vec<String>>>);
+    #[async_trait::async_trait]
+    impl codesmith_agent::extension::Extension for UpdateExt {
+        fn metadata(&self) -> &codesmith_agent::extension::ExtensionMetadata {
+            static M: codesmith_agent::extension::ExtensionMetadata =
+                codesmith_agent::extension::ExtensionMetadata::new("update-ext");
+            &M
+        }
+        async fn configure(
+            &self,
+            api: &dyn codesmith_agent::extension::ExtensionApi,
+        ) -> Result<(), codesmith_agent::extension::ExtensionError> {
+            api.on_variant(
+                codesmith_agent::extension::ExtensionEventKind::ToolExecutionUpdate,
+                Arc::new(RecordUpdate(self.0.clone())),
+            )?;
+            Ok(())
+        }
+    }
+
+    /// `tool-execution-update` host side: one checkpoint rides the UI
+    /// channel as `ToolCallProgress` AND reaches a subscribed extension
+    /// handler with the full payload; a sink with neither is inert.
+    #[tokio::test]
+    async fn progress_sink_forwards_ui_event_and_emits_tool_execution_update() {
+        let runner = codesmith_extensions::ExtensionRunner::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        runner.load(&UpdateExt(seen.clone())).await.expect("load");
+        runner.bind_core(Arc::new(NoopCtx));
+        let (tx, mut rx) = mpsc::channel(8);
+        let sink = RunnerProgressSink::new(Some(Arc::new(runner)), Some(tx));
+
+        crate::tools::spec::ToolProgressSink::progress(&sink, "task-1", "exec_shell", "first\n")
+            .await;
+
+        match rx.try_recv() {
+            Ok(Event::ToolCallProgress { id, output }) => {
+                assert_eq!(id, "task-1");
+                assert_eq!(output, "first\n");
+            }
+            other => panic!("expected ToolCallProgress on the UI channel, got {other:?}"),
+        }
+        assert_eq!(
+            seen.lock().unwrap().clone(),
+            vec!["task-1|exec_shell|first\n".to_string()]
+        );
+
+        // Neither channel: nothing to do, nothing to fail.
+        let inert = RunnerProgressSink::new(None, None);
+        crate::tools::spec::ToolProgressSink::progress(&inert, "task-2", "exec_shell", "x").await;
     }
 
     /// Route B circuit breaker, tripped-state half: once the budget flag

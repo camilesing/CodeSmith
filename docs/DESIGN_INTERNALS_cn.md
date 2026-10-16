@@ -328,11 +328,11 @@ thinking-only / capacity / early-tool-start / subagent）请直接查看模块�
 `SessionBefore*` 处遵守 `Cancel`（跳过压缩/切换）；在
 `Input`/`BeforeAgentStart`/`BeforeProviderRequest`/`ToolResult` 处遵守
 `Transform`（改写可操作字段；`ToolResult` 把 emit→`on_tool_end`→传播到
-`outcomes[idx]` 的顺序重新安排）；错位的结果映射为 `Continue`。25 个事件
-中 20 个从生产接缝发射；未发射的五个是 `ToolExecutionUpdate`
-（`Callback::on_tool_progress` 接缝已存在，但宿主还没有其背后的流式
-`Tool` 契约）、`ProjectTrust`（仅由测试演练分发）、`ResourcesDiscover`、
-`SessionBeforeSwitch` 与 `SessionBeforeFork`（无运行时发射点）。
+`outcomes[idx]` 的顺序重新安排）；错位的结果映射为 `Continue`。24 种事件
+中 23 种从生产接缝发射（`ToolExecutionUpdate` 由 shell 工具的轮询循环经
+`ToolContext::progress` 发出，`SessionBeforeFork` 由每条 spawn 路径发出，
+`ProjectTrust` 每回合与每次子代理 spawn 发出）；唯一未发射的是
+`SessionBeforeSwitch`（无运行时发射点——见 `EXTENSIONS.md` 接缝表）。
 
 热重载经 `ExtensionRunner::clear_handlers` + `reload_extension_runtime`
 （clear→invalidate→discover→reconcile→load→bind_core）重新填充共享的
@@ -340,10 +340,8 @@ runner `Arc`；由 `manage_mods` 工具的 reload 动作触发，且由于 runne
 `Arc` 是共享的，REPL 的 `state.extension_runner` 与 Engine 的字段都会
 看到更新。
 
-尚未实现：`ToolExecutionUpdate`（尚无流式 `Tool` 契约）、无运行时
-发射点的 3 个宿主层接缝（`ProjectTrust` 同步上下文，仅由测试演练分发 /
-`ResourcesDiscover` 独立 MCP 进程 / `SessionBeforeFork` 死代码 fork 路
-径）、`EventBus` 实现、`registerProvider`、
+尚未实现：`SessionBeforeSwitch` 的发射点（进程内工作区切换随 TUI 在
+0.9.0 移除）、`EventBus` 实现、`registerProvider`、
 `registerShortcut`/`registerFlag`/渲染器、install-source 实现与 embed
 API。热加载永久排除；只有 install + reload。
 

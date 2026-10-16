@@ -216,7 +216,7 @@ inventory::submit! {
   安全）。
 - **`ExtensionEvent`** —— `#[non_exhaustive]`，24 个变体（`resources-discover` 已于 0.11.0 移除）：
   `SessionStart` / `TurnStart` / `ToolCall` / `ToolResult` / `TurnEnd` /
-  `SessionShutdown` / `ProjectTrust` / `ResourcesDiscover` / `Input` /
+  `SessionShutdown` / `ProjectTrust` / `Input` /
   `BeforeAgentStart` / `AgentStart` / `BeforeProviderHeaders` /
   `BeforeProviderRequest` / `AfterProviderResponse` /
   `AssistantStream` / `ToolExecutionStart` / `ToolExecutionUpdate` /
@@ -330,9 +330,8 @@ async fn configure(api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
 | `ProjectTrust` | `HostServices::build_turn_dispatcher`（`crates/cli/src/core/engine/runtime_traits.rs`；+ `spawn_subagent`）在 `build_tool_context_for` 之后（每轮 `Trusted`/`Untrusted`）；`FirstLoad` 当前无 emit 位点 —— onboarding 信任提示的发出随 TUI 在 0.9.0 移除 | observe | 来自 `session.trust_mode` 的每轮 `Trusted`/`Untrusted`；`FirstLoad` 为 onboarding 信任接受（`TrustReason::FirstLoad`）而定义，但已无活跃 emit 位点 —— 运行时 `trust_mode` 开关（`/trust on`）、YOLO 进入和持久化信任启动在每轮表现为 `Trusted`/`Untrusted`，而不是 `FirstLoad` |
 | `ToolsChange { added, removed }` | `HostServices::build_turn_dispatcher` 在所有选择源应用之后 | observe | 最终模型可见目录与上一主回合基线的差量；首次构建静默建立基线；子代理工具集不经过此接缝 |
 | `—`（dylib LOAD，不是事件） | `populate_extension_runtime`（`crates/cli/src/core/engine.rs`）在 `discover_static` 之后 | n/a（加载阶段） | `discover_dylib(&global_roots, &project_roots)` → `apply_trust_gate(discovered, !is_workspace_trusted(workspace))` 丢弃项目本地（`global == false`）→ `state.is_enabled` 对账 → 在 OS 线程加载运行时上执行 `ExtensionRunner::load_dylib`；重载经 `reload_extension_runtime`→`populate` 拾取。`ExtensionRunner.libraries` 持有 `Library` 句柄；运行时重载时它们 `drain_libraries_to_pending` 到 `pending_drop`（与各 clear 一并执行）+ 引擎 op-loop 在下一个轮边界对它们执行 `drop_pending`。经 `codesmith_register_extension` 实现 lockstep `*mut dyn Extension`。 |
-| `ResourcesDiscover` | —（无 emit 位点） | observe | 已定义但从不发出：唯一的进程内候选位点（`McpPool` 中 `list_mcp_resources` 伪工具的分发，`agent-runtime/src/mcp.rs`）已被 `ToolCall`/`ToolResult` 包夹 —— 在那里触发会与工具执行混淆，且 `DiscoverReason` 在那里没有干净的映射；没有持有 runner `Arc` 的专用 Startup/Manual/Reload 发现接缝（`crates/cli/src/mcp_server.rs` 的 stdio 位点是独立进程） |
-| `SessionBeforeFork` | —（无 emit 位点） | **Cancel** | 已定义但从不发出：进程内回退路径随 TUI 在 0.9.0 移除，真正的 fork 原语仅限测试（`fork_at_user_message`，`crates/cli/src/runtime_threads.rs`，无非测试调用方）或仅限 HTTP（`fork_thread`，runtime-api，无 runner 访问权）—— 把某个接缝接为 `SessionBeforeFork` 会把回退误标为分叉（创建新线程） |
-| `ToolExecutionUpdate` | —（无 emit 位点） | observe | 已定义但从不发出：`Tool::run` 是一次性的（`agent/src/tools/mod.rs`），因此没有可在执行中途挂钩的进度流。`on_tool_progress` `Callback` 钩子作为前瞻性 API 面存在；emit 位点等待流式 `Tool` 契约 |
+| `SessionBeforeFork` | spawn 工具族（`agent_open` / `agent_spawn` / `agent_run` / `delegate_to_agent`，任意深度——runner 以仅否决用途随 `SubAgentRuntime` 传递）+ `HostServices::spawn_subagent`（`crates/cli/src/tools/subagent/mod.rs`、`core/engine/runtime_traits.rs`） | **Cancel** | 在子代理 fork 会话状态前发出；`Cancel` 以模型可见错误中止该次 spawn |
+| `ToolExecutionUpdate` | `exec_shell`（前台）/ `exec_shell_wait` 轮询循环 → `ToolContext::progress` → `callback_bridge::RunnerProgressSink` | observe | 命令运行期间的节流检查点（间隔 ≥1s、仅有新输出时）：`id` = shell 任务 id，`message` = 自上一检查点以来的输出（尾部截至 4 KiB）；同一检查点以 `Event::ToolCallProgress` 到达 UI；按 AssistantStream 的预算/断路器派发；仅主回合；沙箱后端与交互式运行不报 |
 
 > `Transform` 载荷的可执行字段在完整处理器链运行之后才于接缝处应用
 > （因此来自处理器 N 的 `Transform` 会作为正在运行的事件对处理器
@@ -359,7 +358,8 @@ emit 位点）。
 
 扩展工具**仅限主轮，且是结构性的**：它们注册到宿主的每轮
 `ToolRegistry`（主 agent 轮），不会被子代理继承。这是结构性的，
-而非守卫：`SubAgentRuntime` 没有 `extension_runner` 字段 +
+而非守卫：`SubAgentRuntime.extension_runner` 仅作否决用途（`SessionBeforeFork`；
+没有任何代码从它读取工具）+
 `SubAgentToolRegistry::new` 会重建自己全新的内置 `ToolRegistry` ——
 因此无论 `inherit_full_registry` 如何，扩展工具都永远无法进入子代理
 的有效集合。不需要来源标记 / 强制子集 / 运行时子代理检查。
@@ -377,8 +377,7 @@ emit 位点）。
 
 - `ExtensionContext::abort() / shutdown() / compact() /
   get_context_usage()` 返回 `ExtensionError::Unimplemented`。
-- `ResourcesDiscover`、`SessionBeforeFork` 与 `ToolExecutionUpdate`
-  在契约中有定义，但没有宿主 emit 位点（理由见上文接缝表）。
+- `SessionBeforeSwitch` 在契约中有定义，但没有宿主 emit 位点（理由见上文接缝表）。
 - `EventBus`（`codesmith_extensions::EventBus`）是骨架 ——
   `subscribe`/`publish` 返回 `Unimplemented`；没有扩展到扩展的
   发布/订阅。

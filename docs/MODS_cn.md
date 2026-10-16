@@ -112,9 +112,12 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 | `project-trust` / `session-start` | `reason` |
 | `agent-start` / `before-provider-headers` / `tool-execution-start` / `tool-execution-end` / `agent-end` / `agent-settled` / `session-before-switch` / `session-before-fork` / `session-shutdown` / `session-before-compact` / `session-compact` | （仅 `kind`） |
 
-未接线事件（宿主 seam 尚未兑现）订阅不触发：`tool-execution-update`——工具契约是一次式的，
-没有可桥接的宿主进度通道（见 `callback_bridge.rs`）；待流式工具契约落地后触发。
-`resources-discover` 已在 0.11.0 移除（从未有发射方，也没有消费者）。
+`tool-execution-update` 由 shell 工具自己的轮询循环在命令持续运行时发射（`exec_shell`
+前台与 `exec_shell_wait`）：至多每秒一次、且仅当有新输出。`id` 是 shell 任务 id（工具
+不知道自己的 wire tool-call id——按 `name` + 时序关联）；`message` 是自上一检查点以来的
+输出（尾部截至 4 KiB；管理器给出截断摘录时取其尾部）。仅观察、仅主回合（子代理循环
+不发射扩展事件）；沙箱后端与交互式运行不报检查点。同一检查点也以 `ToolCallProgress`
+到达 UI。`resources-discover` 已在 0.11.0 移除（从未有发射方，也没有消费者）。
 `session-before-fork` 在每次 spawn 前触发——spawn 工具族（`agent_open` / `agent_spawn` /
 `subagent_run` / `delegate_to_agent`）在任意深度（runner 随子代理运行时仅作否决用途传递，
 故孙代 fork 同样可否决）以及引擎内部 spawn 路径——在 fork 会话状态前触发；`cancel()` 否决

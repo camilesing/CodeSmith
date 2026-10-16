@@ -157,6 +157,19 @@ pub enum SandboxPolicy {
 /// shared object rather than a per-context snapshot.
 pub type TrustedExternalPaths = Arc<std::sync::RwLock<Vec<PathBuf>>>;
 
+/// Where a long-running tool reports mid-execution progress — the host
+/// side of `tool-execution-update`. The engine attaches one per main turn
+/// ([`ToolContext::progress`]); tools call it from their own poll loops
+/// (shell checkpoints: new output since the previous checkpoint, throttled
+/// by the tool). Observe-only and best-effort: a sink never fails the tool,
+/// never changes its result, and bounds its own dispatch cost. `id` is the
+/// tool's execution handle (the shell task id — a tool does not know its
+/// wire tool-call id; handlers correlate by `name` + ordering).
+#[async_trait]
+pub trait ToolProgressSink: Send + Sync {
+    async fn progress(&self, id: &str, name: &str, message: &str);
+}
+
 /// Context passed to tools during execution.
 #[derive(Clone)]
 pub struct ToolContext {
@@ -231,6 +244,13 @@ pub struct ToolContext {
     /// Cancellation token for the active engine turn. Tools that may wait on
     /// external work should observe this so UI cancel can interrupt them.
     pub cancel_token: Option<CancellationToken>,
+    /// Progress sink for long-running tools (`tool-execution-update`):
+    /// shell checkpoints report new output here and the host routes it to
+    /// the UI (`Event::ToolCallProgress`) and the extension runner. `None`
+    /// (sub-agent contexts, embeds, tests) ⇒ no checkpoints. Main-turn-only
+    /// by construction — the engine attaches it after the sub-agent
+    /// runtime has taken its copy of the context.
+    pub progress: Option<Arc<dyn ToolProgressSink>>,
     /// Optional external sandbox backend for shell execution.
     /// When set, exec_shell routes commands through this instead of spawning
     /// a local process.
@@ -329,6 +349,7 @@ impl ToolContext {
             runtime: RuntimeToolServices::default(),
             session_objects: None,
             cancel_token: None,
+            progress: None,
             sandbox_backend: None,
             sandbox_runtime: SandboxRuntimeConfig::default(),
             memory_path: None,
@@ -422,6 +443,14 @@ impl ToolContext {
     #[must_use]
     pub fn with_cancel_token(mut self, cancel_token: CancellationToken) -> Self {
         self.cancel_token = Some(cancel_token);
+        self
+    }
+
+    /// Attach the progress sink long-running tools report through
+    /// (`tool-execution-update`). `None` keeps checkpoints off.
+    #[must_use]
+    pub fn with_progress_sink(mut self, sink: Option<Arc<dyn ToolProgressSink>>) -> Self {
+        self.progress = sink;
         self
     }
 

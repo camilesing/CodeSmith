@@ -621,7 +621,7 @@ fn register_natives(
                     Ok(())
                 }
                 None => Err(script_error(format!(
-                    "on(): unknown event name '{event}' (see docs/MODS.md for the 25 event names)"
+                    "on(): unknown event name '{event}' (see docs/MODS.md for the 24 event names)"
                 ))),
             }
         },

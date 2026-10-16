@@ -164,8 +164,10 @@ pub enum Event {
         input: Value,
     },
 
-    /// Tool execution progress (for long-running tools)
-    #[allow(dead_code)]
+    /// Tool execution progress for long-running tools: a checkpoint of new
+    /// output (`exec_shell` / `exec_shell_wait` while the command runs),
+    /// produced by `callback_bridge::RunnerProgressSink`. `id` is the shell
+    /// task id. Best-effort: a full UI channel drops it.
     ToolCallProgress { id: String, output: String },
 
     /// Tool call completed

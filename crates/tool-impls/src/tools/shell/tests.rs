@@ -840,6 +840,80 @@ async fn test_exec_shell_foreground_timeout_guides_background_rerun() {
     );
 }
 
+/// Output first, then keep running — so the foreground poll loop sees new
+/// output while the command is still `Running`.
+fn echo_then_sleep_command(message: &str, seconds: u64) -> String {
+    let dispatcher = codesmith_agent_runtime::shell_dispatcher::global_dispatcher();
+    if dispatcher.kind().is_powershell() {
+        return format!("echo {message}; Start-Sleep -Seconds {seconds}");
+    }
+    format!("{} && {}", echo_command(message), sleep_command(seconds))
+}
+
+/// Records every checkpoint a tool reports (`tool-execution-update`).
+struct RecordingSink(std::sync::Arc<Mutex<Vec<(String, String, String)>>>);
+#[async_trait::async_trait]
+impl codesmith_agent_runtime::tools::spec::ToolProgressSink for RecordingSink {
+    async fn progress(&self, id: &str, name: &str, message: &str) {
+        self.0
+            .lock()
+            .unwrap()
+            .push((id.to_string(), name.to_string(), message.to_string()));
+    }
+}
+
+/// A long-running foreground command reports its new output through the
+/// context's progress sink while it runs: the tool name rides along, the
+/// id is the shell task id, and the first checkpoint carries the output
+/// produced so far. No sink (`ToolContext::new`) ⇒ the loop is inert —
+/// every other shell test runs that way.
+#[tokio::test]
+async fn test_exec_shell_foreground_reports_progress_checkpoints() {
+    let tmp = tempdir().expect("tempdir");
+    let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let ctx = ToolContext::new(tmp.path())
+        .with_progress_sink(Some(std::sync::Arc::new(RecordingSink(seen.clone()))));
+    let tool = ExecShellTool;
+
+    let result = tool
+        .execute(
+            json!({
+                "command": echo_then_sleep_command("first", 2),
+                "timeout_ms": 20000
+            }),
+            &ctx,
+        )
+        .await
+        .expect("execute");
+    assert!(result.success, "{}", result.content);
+
+    let got = seen.lock().unwrap().clone();
+    assert!(
+        !got.is_empty(),
+        "at least one checkpoint while the command ran"
+    );
+    assert!(
+        got.iter()
+            .all(|(id, name, _)| name == "exec_shell" && !id.is_empty()),
+        "{got:?}"
+    );
+    assert!(
+        got.iter().any(|(_, _, message)| message.contains("first")),
+        "the checkpoint carries the output produced so far: {got:?}"
+    );
+}
+
+#[test]
+fn tail_capped_respects_char_boundaries() {
+    assert_eq!(tail_capped("abc", 10), "abc");
+    assert_eq!(tail_capped("abcdef", 3), "def");
+    // A cut that would land inside a multi-byte char moves forward to the
+    // next boundary instead of panicking.
+    let text = "ab€cd"; // '€' is 3 bytes at [2..5]
+    assert_eq!(tail_capped(text, 4), "cd");
+    assert_eq!(tail_capped(text, 5), "€cd");
+}
+
 #[tokio::test]
 async fn test_exec_shell_foreground_cancel_kills_process() {
     let tmp = tempdir().expect("tempdir");
