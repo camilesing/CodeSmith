@@ -113,10 +113,15 @@ You've now touched all four registration surfaces: event hooks, tools, commands,
 | `project-trust` / `session-start` | `reason` |
 | `agent-start` / `before-provider-headers` / `tool-execution-start` / `tool-execution-end` / `agent-end` / `agent-settled` / `session-before-switch` / `session-before-fork` / `session-shutdown` / `session-before-compact` / `session-compact` | (`kind` only) |
 
-Unwired event (host seam not yet connected) never fires: `tool-execution-update` — the tool
-contract is one-shot, so there is no host progress channel to bridge it to (see
-`callback_bridge.rs`); it fires when a streaming tool contract lands. `resources-discover`
-was removed in 0.11.0 (never had an emitter or a consumer). `session-before-fork` fires at
+`tool-execution-update` fires from the shell tools' own poll loops while a command keeps
+running (`exec_shell` foreground and `exec_shell_wait`): at most once per second and only
+when new output arrived. `id` is the shell task id (a tool does not know its wire tool-call
+id — correlate by `name` + ordering); `message` is the output since the previous checkpoint
+(tail-capped at 4 KiB; a truncated manager excerpt yields its tail). Observe-only, main turns
+only (sub-agent loops emit no extension events); sandboxed-backend and interactive runs
+report no checkpoints. The same checkpoint reaches the UI as `ToolCallProgress`.
+`resources-discover` was removed in 0.11.0 (never had an emitter or a consumer).
+`session-before-fork` fires at
 every spawn — the spawn-family tools (`agent_open` / `agent_spawn` / `subagent_run` /
 `delegate_to_agent`) at every depth (the runner rides the sub-agent runtime, veto-only, so
 grandchildren forks are vetoable too) and the engine-internal spawn path — before the child

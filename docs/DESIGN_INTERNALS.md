@@ -352,12 +352,12 @@ At the host seams, `EmitOutcome` is `#[must_use]` (forcing seam inspection):
 `SessionBefore*` skips compaction/switch, and `Transform` at
 `Input`/`BeforeAgentStart`/`BeforeProviderRequest`/`ToolResult` rewrites the
 actionable field (`ToolResult` reorders emit→`on_tool_end`→propagate to
-`outcomes[idx]`); out-of-place outcomes map to `Continue`. 20 of the 25
-events are emitted from production seams; the un-emitted five are
-`ToolExecutionUpdate` (the `Callback::on_tool_progress` seam exists, but
-the host has no streaming `Tool` contract behind it yet), `ProjectTrust`
-(dispatch exercised from tests only), `ResourcesDiscover`,
-`SessionBeforeSwitch`, and `SessionBeforeFork` (no runtime emitter).
+`outcomes[idx]`); out-of-place outcomes map to `Continue`. 23 of the 24
+event kinds are emitted from production seams (`ToolExecutionUpdate` from
+the shell tools' poll loops through `ToolContext::progress`,
+`SessionBeforeFork` from every spawn path, `ProjectTrust` per turn and per
+sub-agent spawn); the one un-emitted kind is `SessionBeforeSwitch` (no
+runtime emitter — see the seam table in `EXTENSIONS.md`).
 
 Live reload re-populates the shared runner `Arc` via
 `ExtensionRunner::clear_handlers` + `reload_extension_runtime`
@@ -366,10 +366,8 @@ tool's reload action triggers it, and because the runner `Arc` is shared,
 both the REPL's `state.extension_runner` and the Engine's field see the
 update.
 
-Not implemented yet: `ToolExecutionUpdate` (no streaming `Tool` contract
-yet), 3 host-level seams with no runtime emitter (`ProjectTrust` sync
-context, dispatch exercised from tests only / `ResourcesDiscover` separate
-MCP process / `SessionBeforeFork` dead-code fork path), the `EventBus`
+Not implemented yet: the `SessionBeforeSwitch` emitter (the in-process
+workspace switch went with the TUI in 0.9.0), the `EventBus`
 implementation, `registerProvider`, `registerShortcut`/`registerFlag`/
 renderers, install-source implementations, and the embed API. Hot-load is
 permanently out; install + reload only.

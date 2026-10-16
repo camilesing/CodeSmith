@@ -259,7 +259,7 @@ so a single crate gives them both the traits and the runtime helpers.
   exists for type safety).
 - **`ExtensionEvent`** — `#[non_exhaustive]`, 24 variants (`resources-discover` removed in 0.11.0):
   `SessionStart` / `TurnStart` / `ToolCall` / `ToolResult` / `TurnEnd` /
-  `SessionShutdown` / `ProjectTrust` / `ResourcesDiscover` / `Input` /
+  `SessionShutdown` / `ProjectTrust` / `Input` /
   `BeforeAgentStart` / `AgentStart` / `BeforeProviderHeaders` /
   `BeforeProviderRequest` / `AfterProviderResponse` /
   `AssistantStream` / `ToolExecutionStart` / `ToolExecutionUpdate` /
@@ -381,9 +381,8 @@ returns the wrong capability for its variant is a no-op, not an error.
 | `ProjectTrust` | `HostServices::build_turn_dispatcher` (`crates/cli/src/core/engine/runtime_traits.rs`; + `spawn_subagent`) after `build_tool_context_for` (per-turn `Trusted`/`Untrusted`); `FirstLoad` currently has no emit site — the onboarding trust-prompt emit went with the TUI in 0.9.0 | observe | per-turn `Trusted`/`Untrusted` from `session.trust_mode`; `FirstLoad` is defined for onboarding trust acceptance (`TrustReason::FirstLoad`) but has no live emit site — the runtime `trust_mode` toggle (`/trust on`), YOLO entry, and persisted-trust startup surface per-turn as `Trusted`/`Untrusted`, not `FirstLoad` |
 | `ToolsChange { added, removed }` | `HostServices::build_turn_dispatcher` after every selection source is applied | observe | diff of the final model-visible catalog vs the previous main-turn baseline; the first build establishes the baseline silently; sub-agent toolsets never reach this seam |
 | `—` (dylib LOAD, not an event) | `populate_extension_runtime` (`crates/cli/src/core/engine.rs`) after `discover_static` | n/a (load phase) | `discover_dylib(&global_roots, &project_roots)` → `apply_trust_gate(discovered, !is_workspace_trusted(workspace))` drops project-local (`global == false`) → `state.is_enabled` reconcile → `ExtensionRunner::load_dylib` on the OS-thread load runtime; reload picks up via `reload_extension_runtime`→`populate`. `ExtensionRunner.libraries` holds `Library` handles; on a runtime reload they `drain_libraries_to_pending` to `pending_drop` (alongside the clears) + the engine op-loop `drop_pending`s them at the next turn boundary. Lockstep `*mut dyn Extension` via `codesmith_register_extension`. |
-| `ResourcesDiscover` | — (no emit site) | observe | defined but never emitted: the only in-process candidate site (the `list_mcp_resources` pseudo-tool dispatch in `McpPool`, `agent-runtime/src/mcp.rs`) is already bracketed by `ToolCall`/`ToolResult` — firing `ResourcesDiscover` there would conflate with tool execution, and `DiscoverReason` has no clean mapping there; no dedicated Startup/Manual/Reload discover seam holds the runner `Arc` (the `crates/cli/src/mcp_server.rs` stdio site is a separate process) |
-| `SessionBeforeFork` | — (no emit site) | **Cancel** | defined but never emitted: the in-process backtrack path went with the TUI in 0.9.0, and genuine fork primitives are test-only (`fork_at_user_message`, `crates/cli/src/runtime_threads.rs`, no non-test callers) or HTTP-only (`fork_thread`, runtime-api, no runner access) — wiring a seam as `SessionBeforeFork` would mislabel a rewind as a fork (new-thread creation) |
-| `ToolExecutionUpdate` | — (no emit site) | observe | defined but never emitted: `Tool::run` is one-shot (`agent/src/tools/mod.rs`), so there is no mid-execution progress stream to hook. The `on_tool_progress` `Callback` hook exists as forward-looking API surface; the emit site awaits a streaming `Tool` contract |
+| `SessionBeforeFork` | spawn-family tools (`agent_open` / `agent_spawn` / `agent_run` / `delegate_to_agent`, every depth — the runner rides `SubAgentRuntime` veto-only) + `HostServices::spawn_subagent` (`crates/cli/src/tools/subagent/mod.rs`, `core/engine/runtime_traits.rs`) | **Cancel** | emitted before a child forks session state; `Cancel` aborts the spawn with a model-visible error |
+| `ToolExecutionUpdate` | `exec_shell` (foreground) / `exec_shell_wait` poll loops → `ToolContext::progress` → `callback_bridge::RunnerProgressSink` | observe | throttled checkpoints while a command runs (≥1s apart, new output only): `id` = shell task id, `message` = output since the previous checkpoint (tail-capped at 4 KiB); the same checkpoint rides the UI as `Event::ToolCallProgress`; dispatched under the AssistantStream budget/breaker; main turns only; sandboxed-backend and interactive runs report none |
 
 > The `Transform` payload's actionable field is applied at the seam AFTER
 > the full handler chain runs (so a `Transform` from handler N is visible
@@ -415,7 +414,8 @@ extensions are trusted by construction (they ship in the binary).
 Extension tools are **main-turn-only, structurally**: they are
 registered into the host's per-turn `ToolRegistry` (the main agent
 turn), NOT inherited by sub-agents. This is structural, not a guard:
-`SubAgentRuntime` has no `extension_runner` field +
+`SubAgentRuntime.extension_runner` is veto-only (`SessionBeforeFork`;
+nothing reads tools off it) +
 `SubAgentToolRegistry::new` rebuilds its own fresh built-in
 `ToolRegistry` — so ext tools can never reach a sub-agent's effective
 set, regardless of `inherit_full_registry`. No provenance marker /
@@ -436,9 +436,8 @@ so the invariant — not a Miri run — is the proof.
 
 - `ExtensionContext::abort() / shutdown() / compact() /
   get_context_usage()` return `ExtensionError::Unimplemented`.
-- `ResourcesDiscover`, `SessionBeforeFork`, and `ToolExecutionUpdate`
-  are defined in the contract but have no host emit site (rationale in
-  the seam table above).
+- `SessionBeforeSwitch` is defined in the contract but has no host emit
+  site (rationale in the seam table above).
 - `EventBus` (`codesmith_extensions::EventBus`) is a skeleton —
   `subscribe`/`publish` return `Unimplemented`; there is no
   extension-to-extension pub/sub.

@@ -303,6 +303,104 @@ fn apply_session_cwd_capture(
     None
 }
 
+/// How often a still-running `exec_shell` / `exec_shell_wait` reports a
+/// progress checkpoint (`tool-execution-update`).
+const PROGRESS_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(1);
+/// Upper bound on one checkpoint's message (a tail of the new output).
+const PROGRESS_MESSAGE_MAX_BYTES: usize = 4096;
+
+/// Throttled, new-output-only progress checkpoints for one long-running
+/// command, reported through [`ToolContext::progress`] when the host
+/// attached a sink (main turns only; `None` ⇒ inert). The payload id is the
+/// shell task id — a tool does not know its wire tool-call id — and
+/// `message` is the output produced since the previous checkpoint
+/// (tail-capped); when the manager hands back a truncated excerpt the
+/// message is that excerpt's tail instead. Known limitations: the
+/// sandboxed-backend and interactive paths report no checkpoints, and the
+/// terminal state is the `ToolResult`'s to report — no final checkpoint.
+struct ShellProgress<'a> {
+    task_id: &'a str,
+    tool: &'static str,
+    seen_stdout: usize,
+    seen_stderr: usize,
+    last_emit: Option<Instant>,
+}
+
+impl<'a> ShellProgress<'a> {
+    fn new(task_id: &'a str, tool: &'static str) -> Self {
+        Self {
+            task_id,
+            tool,
+            seen_stdout: 0,
+            seen_stderr: 0,
+            last_emit: None,
+        }
+    }
+
+    /// One poll iteration: emit when the ORIGINAL byte counts grew and the
+    /// interval has elapsed since the last checkpoint. `stdout` / `stderr`
+    /// are the manager's current views (complete streams unless
+    /// `truncated`, in which case they are head+tail excerpts).
+    async fn checkpoint(
+        &mut self,
+        context: &ToolContext,
+        stdout: &str,
+        stdout_len: usize,
+        stderr: &str,
+        stderr_len: usize,
+        truncated: bool,
+    ) {
+        let Some(sink) = context.progress.as_ref() else {
+            return;
+        };
+        if stdout_len == self.seen_stdout && stderr_len == self.seen_stderr {
+            return;
+        }
+        if self
+            .last_emit
+            .is_some_and(|t| t.elapsed() < PROGRESS_CHECKPOINT_INTERVAL)
+        {
+            return;
+        }
+        let message = if truncated {
+            // An excerpt's bytes no longer index the original stream; the
+            // tail is the most recent output we can still show.
+            tail_capped(
+                if stderr.is_empty() { stdout } else { stderr },
+                PROGRESS_MESSAGE_MAX_BYTES,
+            )
+            .to_string()
+        } else {
+            // Complete streams are append-only, and a previous length is a
+            // char boundary (the end of a previous complete string).
+            let new_stdout = stdout.get(self.seen_stdout..).unwrap_or(stdout);
+            let new_stderr = stderr.get(self.seen_stderr..).unwrap_or(stderr);
+            let joined = match (new_stdout.is_empty(), new_stderr.is_empty()) {
+                (false, false) => format!("{new_stdout}\n{new_stderr}"),
+                (false, true) => new_stdout.to_string(),
+                _ => new_stderr.to_string(),
+            };
+            tail_capped(&joined, PROGRESS_MESSAGE_MAX_BYTES).to_string()
+        };
+        sink.progress(self.task_id, self.tool, &message).await;
+        self.seen_stdout = stdout_len;
+        self.seen_stderr = stderr_len;
+        self.last_emit = Some(Instant::now());
+    }
+}
+
+/// The last `max` bytes of `text`, moved forward to a char boundary.
+fn tail_capped(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut start = text.len() - max;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    &text[start..]
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn execute_foreground_via_background(
     context: &ToolContext,
@@ -341,6 +439,7 @@ async fn execute_foreground_via_background(
     }
 
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let mut progress = ShellProgress::new(&task_id, "exec_shell");
     loop {
         if context
             .cancel_token
@@ -362,6 +461,17 @@ async fn execute_foreground_via_background(
         if snapshot.status != ShellStatus::Running {
             return Ok(snapshot);
         }
+
+        progress
+            .checkpoint(
+                context,
+                &snapshot.stdout,
+                snapshot.stdout_len,
+                &snapshot.stderr,
+                snapshot.stderr_len,
+                snapshot.stdout_truncated || snapshot.stderr_truncated,
+            )
+            .await;
 
         if Instant::now() >= deadline {
             let manager = &context.shell_manager;
@@ -1176,11 +1286,13 @@ async fn wait_for_shell_delta_cancellable(
     context: &ToolContext,
     task_id: &str,
     timeout_ms: u64,
+    tool_name: &'static str,
 ) -> Result<(ShellDeltaResult, bool), ToolError> {
     let timeout_ms = timeout_ms.clamp(1000, 600_000);
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut stdout_accum = String::new();
     let mut stderr_accum = String::new();
+    let mut progress = ShellProgress::new(task_id, tool_name);
 
     let (command, result, stdout_total_len, stderr_total_len) = loop {
         if context
@@ -1222,6 +1334,19 @@ async fn wait_for_shell_delta_cancellable(
         if status != ShellStatus::Running || Instant::now() >= deadline {
             break (command, delta.result, stdout_total_len, stderr_total_len);
         }
+
+        // The accumulators are complete, append-only streams by
+        // construction (deltas are appended as they arrive).
+        progress
+            .checkpoint(
+                context,
+                &stdout_accum,
+                stdout_accum.len(),
+                &stderr_accum,
+                stderr_accum.len(),
+                false,
+            )
+            .await;
 
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
@@ -1494,7 +1619,7 @@ impl ToolSpec for ShellWaitTool {
         let timeout_ms = optional_u64(&input, "timeout_ms", 30_000);
 
         let (delta, wait_canceled) = if wait {
-            wait_for_shell_delta_cancellable(context, task_id, timeout_ms).await?
+            wait_for_shell_delta_cancellable(context, task_id, timeout_ms, self.name).await?
         } else {
             let manager = &context.shell_manager;
             let delta = manager
