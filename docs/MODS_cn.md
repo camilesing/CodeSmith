@@ -89,7 +89,7 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 - 在 REPL 里敲 `/calls some args` 即经扩展运行时分发：`message(...)` 直接打印文本，`send(...)` 将内容送入会话。mod 命令位于用户命令与内建表之间（用户命令可遮蔽它们，它们可遮蔽内建命令），`/help` 的 "mod commands" 节会列出，Tab 补全实时提供其名字。
 - 现在**改 `mod.rhai`、保存，然后重载**——`/mods reload` 会重新执行发现流程，同 id 免审批。`/mods status` 确认哪些 mod 已加载及运行时代数（`/mods list` 显示各 mod 的激活状态与已解析策略层；启动提示也会列出已发现但未激活的 mod）。（自动文件 watcher 及其 `[mods] watch` 开关已在 0.9.0 移除，重载改为显式触发。）
 
-到此你已经用过全部四种注册面：事件钩子、工具、命令、KV。`/mods` 的完整命令集为 `list` / `status` / `info <id>` / `activate <id>` / `enable|disable <id>` / `remove <id>` / `reload`；模型侧 `manage_mods` 工具与之对应，动作为 `list` / `write` / `activate` / `disable` / `enable` / `remove` / `reload`。
+到此你已经用过全部四种注册面：事件钩子、工具、命令、KV。`/mods` 的完整命令集为 `list` / `status` / `info <id>` / `activate <id>` / `enable|disable <id>` / `remove <id>` / `reload`；模型侧 `manage_mods` 工具与之对应，动作为 `list` / `write` / `activate` / `disable` / `enable` / `remove` / `reload`，另有会话实验线 `session_write` / `session_remove`（见下文）。
 
 ## 速查
 
@@ -205,6 +205,32 @@ register_policy("shell-output", #{
   门（随二进制发布）、使用临时 KV，且不出现在 `/mods` 的 mod 列表（不是
   可发现 id —— 覆盖方式是注册同种类策略，而非遮蔽 id；其 id 仅作为
   `list` 已解析策略节的来源出现）。
+
+### 会话级临时 mod（当会话实验）
+
+```
+manage_mods {"action": "session_write", "id": "session-shell-tuning",
+             "source": "register_policy(\"shell-output\", #{ max_output_size: 20000 });"}
+```
+
+`manage_mods` 的 `session_write` 用内联 Rhai 源码直接绑定一个 agent 编写的
+实验 mod——不写文件、无激活状态、KV 临时（内置层的编译路径 + 运行时提供的
+源码）。它服务的闭环：本会话内试一个 mod/策略 → 用 `list` 验证 → 验证有效
+再经 `write` + `activate` 持久化。
+
+- id 必须带 `session-` 前缀、不得与磁盘发现的 mod 冲突；同 id 重写为无
+  残留替换。
+- 同意：同一 `(id, source)` 首次写入需审批；**本会话内完全相同的重写免
+  复审**（activation hash 的会话级类比）——内容一变重新询问。
+  `session_remove` 恒需审批。
+- 位置：session mod 绑定在磁盘层之后，其策略注册在后写者胜中压过一切
+  （已解析策略节显示 `from session-*`）。
+- 生命周期：会话结束即消失（任何东西都不持久化，包括 KV）。`/mods
+  reload` 与 `manage_mods action=reload` 会在磁盘层之后重放它们（保留的
+  编译形态，无重编译）。会话恢复不重建。第一代子代理可见（spawn 工具挂
+  runner）；孙代限制照旧。
+- 列表显示为 `session-* [session] — live (session-scoped, not
+  persisted)`。
 
 ### 贡献系统提示词分段（路线 B）
 

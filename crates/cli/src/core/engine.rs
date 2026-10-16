@@ -148,6 +148,14 @@ pub struct EngineHandle {
     /// extensions were built (embed path / pre-engine). Cloning the `Arc` is
     /// cheap; the runner itself is shared with the per-turn `HostAgentExecutor`.
     pub extension_runner: Option<Arc<codesmith_extensions::ExtensionRunner>>,
+    /// §F script mod layer — the engine's captured reload context (the
+    /// same `ModReloadCtx` the `manage_mods` tool reads per turn: runner +
+    /// workspace + cancel token + `mods_enabled` + the session-mod
+    /// registry). Surfaced so the REPL's `/mods reload` / `/extension
+    /// reload` share the tool path's gating and session-mod replay.
+    /// `None` when the mod layer was disabled at engine build; static
+    /// after build.
+    pub mod_reload: Option<crate::mod_ops::ModReloadCtx>,
     /// §F script mod layer — mods discovered at engine build that await
     /// first-activation consent (passive TUI notice; `/mods list` is the
     /// durable query). A snapshot: watcher/tool reloads surface their own
@@ -1211,6 +1219,7 @@ pub fn build_engine(
             workspace: config.workspace.clone(),
             shared_cancel_token: shared_cancel_token.clone(),
             mods_enabled,
+            session_mods: Arc::new(crate::mod_ops::SessionMods::default()),
         });
     }
 
@@ -1478,6 +1487,7 @@ pub fn build_engine(
         fact_ledger: engine.session.fact_ledger.clone(),
         recent_read_files: engine.session.recent_read_files.clone(),
         extension_runner: Some(extension_runner),
+        mod_reload: host_concrete.mod_reload.clone(),
         mods_pending: mods_report.pending_mods,
         mods_audit: mods_report.audit,
         tool_catalog: host_concrete.tool_catalog.clone(),
@@ -1675,6 +1685,7 @@ pub(crate) fn mock_engine_handle() -> MockEngineHandle {
         tx_user_input,
         tx_steer,
         extension_runner: None,
+        mod_reload: None,
         mods_pending: Vec::new(),
         mods_audit: Vec::new(),
         fact_ledger: Arc::new(StdMutex::new(Default::default())),

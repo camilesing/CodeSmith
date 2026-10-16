@@ -181,7 +181,7 @@ reload/reconnect。配置编辑会立即写入，但编辑后对模型可见的 
 | `project_map` | 高层级项目结构图：关键文件加树状视图。 |
 | `validate_data` | 校验来自内联输入或工作区文件的 JSON 或 TOML。 |
 | `load_skill` | 将技能的 SKILL.md 正文加伴随文件列表载入下一回合上下文——一次调用即可，无需对系统提示 `## Skills` 一节中的路径做 `read_file` + `list_dir`。 |
-| `manage_mods` | 列出、编写并激活 CodeSmith 脚本 mod（Rhai）；`list` 另附已解析策略层（种类 → 生效值 → 获胜 mod id）。仅在 mod 层可用时注册；激活与文件写入按动作审批。 |
+| `manage_mods` | 列出、编写并激活 CodeSmith 脚本 mod（Rhai）；`list` 另附已解析策略层（种类 → 生效值 → 获胜 mod id）；`session_write` 用内联源码绑定当会话的临时实验 mod（同内容重写免复审）。仅在 mod 层可用时注册；激活与文件写入按动作审批。 |
 | `request_user_input` | 向用户提出 1–3 个简短问题并返回其选择。 |
 | `revert_turn` | 把工作树回滚到某个较早回合之前的快照（`turn_offset` 从 1 起计，最多 50）；不改动对话历史。需要审批。 |
 | `notify` | 通过 `[notifications]` 配置管线发送单条桌面通知（OSC 9 / 终端响铃）。请节制使用。 |
