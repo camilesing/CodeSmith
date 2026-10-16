@@ -11,7 +11,9 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use codesmith_agent::policy::{PolicyKind, any_policies_published, policy_usize, publish_policies};
+use codesmith_agent::policy::{
+    PolicyKind, any_policies_published, policy_usize, policy_usize_map, publish_policies,
+};
 
 /// Compiled fallback for the diff context radius (the value the builtin
 /// `output-diff` mod also registers — `builtin/output_diff.rhai`).
@@ -160,6 +162,38 @@ pub fn shell_output() -> ShellOutputPolicy {
     p
 }
 
+/// Compiled fallback for the large-output routing threshold (the value
+/// the builtin `large-output-route` mod also registers —
+/// `builtin/large_output_route.rhai`; equals
+/// [`crate::config_types::DEFAULT_LARGE_OUTPUT_THRESHOLD_TOKENS`]).
+pub const DEFAULT_ROUTE_THRESHOLD_TOKENS: usize = 4_096;
+/// Upper bound for a routing threshold: above this a value means "route
+/// nothing ever" and falls back instead of silently disabling routing.
+const MAX_ROUTE_THRESHOLD_TOKENS: usize = 1_000_000;
+
+/// The effective large-output routing threshold for `tool_name` from the
+/// script tier alone (`per_tool` entry, else `threshold_tokens`). Explicit
+/// `[workshop]` TOML sits above this reader — `WorkshopConfig::
+/// threshold_for` layers its config over it, so config.toml values win
+/// and this supplies the default when TOML is silent. The workshop
+/// synthesis call (utility LLM, prompt defusing) is mechanism and stays
+/// in Rust.
+pub fn large_output_route_threshold(tool_name: &str) -> usize {
+    ensure_seeded();
+    let kind = PolicyKind::LargeOutputRoute;
+    policy_usize_map(kind, "per_tool", 64, MAX_ROUTE_THRESHOLD_TOKENS)
+        .as_ref()
+        .and_then(|m| m.get(tool_name).copied())
+        .unwrap_or_else(|| {
+            policy_usize(
+                kind,
+                "threshold_tokens",
+                DEFAULT_ROUTE_THRESHOLD_TOKENS,
+                MAX_ROUTE_THRESHOLD_TOKENS,
+            )
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,12 +228,20 @@ mod tests {
         assert_eq!(p.head_bytes, d.head_bytes);
         assert_eq!(p.tail_bytes, d.tail_bytes);
         assert_eq!(diff_context_radius(), DEFAULT_DIFF_CONTEXT_RADIUS);
+        assert_eq!(
+            large_output_route_threshold("read_file"),
+            DEFAULT_ROUTE_THRESHOLD_TOKENS
+        );
         clear_published_policies();
     }
 
     #[test]
     fn override_changes_and_bad_values_fall_back() {
         let _guard = policy_test_lock();
+        // Run the one-time builtin seed to completion before overriding:
+        // a seed that lands after an override would clobber it (the seed
+        // publishes the builtin defaults exactly once per process).
+        let _ = diff_context_radius();
         with_policy(PolicyKind::OutputDiff, json!({"context_radius": 5}));
         assert_eq!(diff_context_radius(), 5);
         with_policy(PolicyKind::OutputDiff, json!({"context_radius": 999_999}));
@@ -220,6 +262,55 @@ mod tests {
             shell_output().max_output_size,
             ShellOutputPolicy::default().max_output_size
         );
+        clear_published_policies();
+    }
+
+    #[test]
+    fn large_output_route_layers_under_explicit_toml() {
+        let _guard = policy_test_lock();
+        use crate::config_types::WorkshopConfig;
+        use crate::tools::large_output_router::{LargeOutputRouter, RouteDecision};
+        // Run the one-time builtin seed to completion before overriding,
+        // so this test is the only snapshot writer from here on (same
+        // posture as the test above).
+        let _ = large_output_route_threshold("seed-init");
+
+        // Script tier alone (TOML silent): global + per-tool entries apply.
+        with_policy(
+            PolicyKind::LargeOutputRoute,
+            json!({"threshold_tokens": 200, "per_tool": {"grep_files": 50}}),
+        );
+        let cfg = WorkshopConfig::default();
+        assert_eq!(cfg.threshold_for("read_file"), 200);
+        assert_eq!(cfg.threshold_for("grep_files"), 50);
+
+        // A bad per-tool entry is skipped; that tool falls to the global.
+        with_policy(
+            PolicyKind::LargeOutputRoute,
+            json!({"threshold_tokens": 200, "per_tool": {"grep_files": "lots"}}),
+        );
+        assert_eq!(cfg.threshold_for("grep_files"), 200);
+
+        // Explicit TOML wins over the whole script tier.
+        let toml_cfg = WorkshopConfig {
+            large_output_threshold_tokens: Some(2_000),
+            per_tool_thresholds: Some(HashMap::from([("grep_files".to_string(), 100)])),
+        };
+        assert_eq!(toml_cfg.threshold_for("read_file"), 2_000);
+        assert_eq!(toml_cfg.threshold_for("grep_files"), 100);
+
+        // Router-level: a low script threshold routes a medium result
+        // through the default (TOML-silent) config.
+        with_policy(
+            PolicyKind::LargeOutputRoute,
+            json!({"threshold_tokens": 100}),
+        );
+        let router = LargeOutputRouter::default();
+        let result = codesmith_tools::ToolResult::success("b".repeat(500));
+        assert!(matches!(
+            router.route("read_file", &result, false),
+            RouteDecision::Synthesise { .. }
+        ));
         clear_published_policies();
     }
 }

@@ -1175,7 +1175,9 @@ and the capacity controller remains disabled unless configured.
   bypasses routing):
   - `[workshop].large_output_threshold_tokens` (int, default `4096`)
   - `[workshop].per_tool_thresholds` — map of tool name → threshold
-    overriding the global value for that tool
+    overriding the global value for that tool. Explicit values here sit
+    above the scriptable `large-output-route` policy tier (see
+    `docs/MODS.md`); the policy supplies the default when TOML is silent.
 - `runtime_api.*` (optional): `serve --http` tuning. Currently only
   `[runtime_api].cors_origins` — additional allowed origins on top of the
   built-in `localhost:3000` / `localhost:1420` and `tauri://localhost`

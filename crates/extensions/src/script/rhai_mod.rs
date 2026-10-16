@@ -2525,5 +2525,12 @@ mod tests {
             compact["cleared_placeholder"],
             serde_json::json!("[tool result cleared for context economy]")
         );
+        let route = defaults
+            .iter()
+            .find(|(k, _)| *k == codesmith_agent::policy::PolicyKind::LargeOutputRoute)
+            .map(|(_, v)| v.clone())
+            .expect("builtin large-output-route policy present");
+        assert_eq!(route["threshold_tokens"], serde_json::json!(4_096));
+        assert_eq!(route["per_tool"], serde_json::json!({}));
     }
 }

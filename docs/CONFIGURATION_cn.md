@@ -1065,7 +1065,8 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   `raw = true` 可绕过路由）：
   - `[workshop].large_output_threshold_tokens`（整数，默认 `4096`）
   - `[workshop].per_tool_thresholds`——工具名 → 阈值的映射，为该
-    工具覆盖全局值
+    工具覆盖全局值。此处显式取值位于可脚本化的 `large-output-route`
+    策略层之上（见 `docs/MODS_cn.md`）；TOML 未设时由策略层提供默认值。
 - `runtime_api.*`（可选）：`serve --http` 调优。目前只有
   `[runtime_api].cors_origins`——在内置 `localhost:3000` /
   `localhost:1420` 和 `tauri://localhost` 开发默认值之上追加允许的
