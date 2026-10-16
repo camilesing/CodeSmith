@@ -89,6 +89,19 @@ impl PolicyKind {
     ];
 }
 
+/// One last-wins-resolved policy entry: the effective config plus the id
+/// of the mod whose registration won (`builtin-*` for the builtin tier).
+/// The runner's flush builds these and keeps them for the
+/// resolved-policy observability view; the process snapshot publishes
+/// only the kind → config half (mechanism readers stay source-agnostic).
+#[derive(Debug, Clone, PartialEq)]
+#[must_use]
+pub struct ResolvedPolicy {
+    pub kind: PolicyKind,
+    pub config: Value,
+    pub source: String,
+}
+
 type PolicyMap = HashMap<PolicyKind, Value>;
 
 /// The process-global resolved policy snapshot. Seeded by the runner at

@@ -87,7 +87,7 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 **预期效果**：
 
 - 在 REPL 里敲 `/calls some args` 即经扩展运行时分发：`message(...)` 直接打印文本，`send(...)` 将内容送入会话。mod 命令位于用户命令与内建表之间（用户命令可遮蔽它们，它们可遮蔽内建命令），`/help` 的 "mod commands" 节会列出，Tab 补全实时提供其名字。
-- 现在**改 `mod.rhai`、保存，然后重载**——`/mods reload` 会重新执行发现流程，同 id 免审批。`/mods status` 确认哪些 mod 已加载及运行时代数（`/mods list` 显示各 mod 的激活状态；启动提示也会列出已发现但未激活的 mod）。（自动文件 watcher 及其 `[mods] watch` 开关已在 0.9.0 移除，重载改为显式触发。）
+- 现在**改 `mod.rhai`、保存，然后重载**——`/mods reload` 会重新执行发现流程，同 id 免审批。`/mods status` 确认哪些 mod 已加载及运行时代数（`/mods list` 显示各 mod 的激活状态与已解析策略层；启动提示也会列出已发现但未激活的 mod）。（自动文件 watcher 及其 `[mods] watch` 开关已在 0.9.0 移除，重载改为显式触发。）
 
 到此你已经用过全部四种注册面：事件钩子、工具、命令、KV。`/mods` 的完整命令集为 `list` / `status` / `info <id>` / `activate <id>` / `enable|disable <id>` / `remove <id>` / `reload`；模型侧 `manage_mods` 工具与之对应，动作为 `list` / `write` / `activate` / `disable` / `enable` / `remove` / `reload`。
 
@@ -192,14 +192,19 @@ register_policy("shell-output", #{
   脚本层提供默认值）。
 - 解析为**按装载顺序后写者胜**（内置 < 全局 < 项目）：用户 mod 注册同
   种类即覆盖内置默认——与工具/命令的"先到者得"刻意不同。
+- **可观测**：`/mods list` 与 `manage_mods action=list` 末尾附带"已解析
+  策略"节——每个种类、其生效值、获胜 mod 的 id（内置条目显示
+  `builtin-*` id）。卸载/禁用获胜 mod 后该节实时回落到下一获胜者，
+  agent 可借此自证其策略覆盖。
 - 非法取值（字段类型错误、超上限、head+tail > max）在读取时告警并回退
   到编译默认——mod 的 bug 不能瘫痪它所调优的机制。
 - **内置层**：默认值本身以内嵌 Rhai mod 发布（`builtin-output-diff`、
   `builtin-shell-output`、`builtin-compact-policy`、
   `builtin-large-output-route` —— 源码在 `crates/extensions/src/script/builtin/`）。
   它们始终装载（`[mods] enabled = false` 也只禁用户 mod）、跳过同意/哈希
-  门（随二进制发布）、使用临时 KV，且不出现在 `/mods` 列表（不是可发现
-  id —— 覆盖方式是注册同种类策略，而非遮蔽 id）。
+  门（随二进制发布）、使用临时 KV，且不出现在 `/mods` 的 mod 列表（不是
+  可发现 id —— 覆盖方式是注册同种类策略，而非遮蔽 id；其 id 仅作为
+  `list` 已解析策略节的来源出现）。
 
 ### 贡献系统提示词分段（路线 B）
 

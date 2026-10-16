@@ -797,9 +797,13 @@ pub trait ExtensionApi: Send + Sync {
     /// Registration is **last-wins by load order** (builtin mods < global
     /// < project mods), so a user mod overrides a builtin policy by
     /// registering the same kind — deliberately different from
-    /// tools/commands, where the incumbent keeps the name.
+    /// tools/commands, where the incumbent keeps the name. `owner` is the
+    /// registering extension's own id — the script seam stamps it (a mod
+    /// cannot name another owner); it rides the resolved entry
+    /// ([`crate::policy::ResolvedPolicy`]) for the observability view.
     fn register_policy(
         &self,
+        _owner: String,
         _kind: crate::policy::PolicyKind,
         _config: Value,
     ) -> Result<(), ExtensionError> {

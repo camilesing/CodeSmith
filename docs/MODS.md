@@ -88,7 +88,7 @@ register_command("calls", "Show the tool-call count", |args, ctx| {
 **What you'll see**:
 
 - Typing `/calls some args` in the REPL dispatches through the extension runner: `message(...)` prints its text, `send(...)` submits it into the conversation. Mod commands sit between user commands and the built-in table (user commands shadow them; they shadow built-ins), appear in `/help` under "mod commands", and Tab completes their names live.
-- Now **edit `mod.rhai`, save, and reload** with `/mods reload`; it re-runs discovery, no re-approval for the same id. `/mods status` confirms which mods are loaded and the runner generation (`/mods list` shows per-mod activation state; the startup notice also lists discovered-but-not-activated mods). (The automatic file watcher and its `[mods] watch` switch were removed in 0.9.0; reloading is explicit.)
+- Now **edit `mod.rhai`, save, and reload** with `/mods reload`; it re-runs discovery, no re-approval for the same id. `/mods status` confirms which mods are loaded and the runner generation (`/mods list` shows per-mod activation state and the resolved policy layer; the startup notice also lists discovered-but-not-activated mods). (The automatic file watcher and its `[mods] watch` switch were removed in 0.9.0; reloading is explicit.)
 
 You've now touched all four registration surfaces: event hooks, tools, commands, KV. The full `/mods` command set is `list` / `status` / `info <id>` / `activate <id>` / `enable|disable <id>` / `remove <id>` / `reload`; the model-facing `manage_mods` tool mirrors it with actions `list` / `write` / `activate` / `disable` / `enable` / `remove` / `reload`.
 
@@ -201,6 +201,11 @@ recompile.
 - Resolution is **last-wins by load order** (builtin < global < project):
   a user mod overrides the builtin default by registering the same kind —
   deliberately unlike tools/commands, where the incumbent keeps the name.
+- **Observability**: `/mods list` and `manage_mods action=list` end with a
+  *resolved policies* section — each kind, its effective config, and the
+  winning mod's id (builtin entries show their `builtin-*` id). Unloading
+  or disabling the winning mod makes the section fall back live to the
+  next winner, so the agent can verify its own policy overrides.
 - Bad values (unknown field types, over-ceiling numbers, head+tail > max)
   warn and fall back to the compiled defaults at read time — a mod bug
   cannot brick the mechanism it tunes.
@@ -210,8 +215,10 @@ recompile.
   `crates/extensions/src/script/builtin/`). They always load (even with
   `[mods] enabled = false`; the flag gates user mods only), skip
   consent/hash gates (they ship in the binary), use ephemeral KV, and are
-  not listed by `/mods` (they are not discoverable ids — override by
-  registering the same policy kind, not by shadowing the id).
+  not listed by `/mods`'s mod list (they are not discoverable ids —
+  override by registering the same policy kind, not by shadowing the id;
+  their ids appear only as sources in the resolved-policies section of
+  `list`).
 
 ### Contributing a system-prompt section (route B)
 

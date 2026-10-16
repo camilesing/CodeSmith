@@ -190,7 +190,7 @@ Registered only when the `agent_teams` feature flag is enabled.
 | `project_map` | High-level project structure map: key files plus a tree view. |
 | `validate_data` | Validate JSON or TOML from inline input or a workspace file. |
 | `load_skill` | Load a skill's SKILL.md body plus companion file list into the next turn's context — one call instead of `read_file` + `list_dir` against the path in the system prompt's `## Skills` section. |
-| `manage_mods` | List, write, and activate CodeSmith script mods (Rhai). Registered only when the mod layer is live; activation and file writes are per-action approval-gated. |
+| `manage_mods` | List, write, and activate CodeSmith script mods (Rhai); `list` also shows the resolved policy layer (kind → effective value → winning mod id). Registered only when the mod layer is live; activation and file writes are per-action approval-gated. |
 | `request_user_input` | Ask the user 1–3 short questions and return their selections. |
 | `revert_turn` | Roll the working tree back to the snapshot taken before a recent turn (`turn_offset` 1-based, max 50); conversation history is untouched. Approval-required. |
 | `notify` | Fire a single desktop notification (OSC 9 / terminal bell) through the `[notifications]` config pipeline. Use sparingly. |

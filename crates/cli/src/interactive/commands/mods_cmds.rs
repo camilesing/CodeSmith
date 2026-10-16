@@ -53,10 +53,15 @@ pub async fn mods_command(state: &ReplState, arg: &str) {
 /// read through the same blocking worker.
 async fn listing(state: &ReplState) -> Result<String, String> {
     let workspace = state.workspace.clone();
+    let runner = state.extension_runner.clone();
     tokio::task::spawn_blocking(move || {
         let store = crate::mod_state::ModStateStore::load_default()
             .map_err(|err| format!("load mod state: {err}"))?;
-        Ok::<String, String>(crate::mod_ops::list_mods(&workspace, &store))
+        Ok::<String, String>(crate::mod_ops::list_mods(
+            &workspace,
+            &store,
+            runner.as_deref(),
+        ))
     })
     .await
     .unwrap_or_else(|err| Err(format!("list worker failed: {err}")))

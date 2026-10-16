@@ -145,10 +145,10 @@ pub(crate) struct Pending {
     pub prompt_sections: Vec<(String, String)>,
     pub skills: Vec<codesmith_agent::extension::SkillRegistration>,
     pub message_projections: Vec<PendingMessageProjection>,
-    /// `(kind, config)` pairs — data policies (see
-    /// [`codesmith_agent::policy`]); last-wins at flush by registration
-    /// order (builtin < global < project mods).
-    pub policies: Vec<(codesmith_agent::policy::PolicyKind, serde_json::Value)>,
+    /// Data policies (see [`codesmith_agent::policy`]); last-wins at
+    /// flush by registration order (builtin < global < project mods).
+    /// `source` is the registering mod's id, stamped at the replay seam.
+    pub policies: Vec<codesmith_agent::policy::ResolvedPolicy>,
 }
 
 /// A message projection queued by the stub `ExtensionApi`.
@@ -242,12 +242,16 @@ pub struct ExtensionRunner {
     /// `clear_message_projections` / reload drop the generation's entries
     /// (the engine refolds from the transcript on the next turn).
     message_projection_hub: codesmith_agent::extension::MessageProjectionHubArc,
-    /// Resolved data policies (kind → config), last-wins by registration
-    /// order at flush; published to the process-global snapshot
-    /// (`codesmith_agent::policy`) for the host's mechanism code to read.
+    /// Resolved data policies (kind → [`codesmith_agent::policy::ResolvedPolicy`]),
+    /// last-wins by registration order at flush; published to the
+    /// process-global snapshot (`codesmith_agent::policy`, source-stripped)
+    /// for the host's mechanism code to read. The source ids stay in this
+    /// map only — the resolved-policy observability view reads it.
     /// Deliberately NOT first-wins: last-wins is what makes a user mod
     /// override a builtin policy (load order: builtin < global < project).
-    policies: Mutex<HashMap<codesmith_agent::policy::PolicyKind, serde_json::Value>>,
+    policies: Mutex<
+        HashMap<codesmith_agent::policy::PolicyKind, codesmith_agent::policy::ResolvedPolicy>,
+    >,
     /// Per-mod lifecycle — retained script mods, in load order. Retention
     /// is what makes single-mod unload cheap: `unload_retained_mod` clears
     /// the bound registrations and replays the survivors from these slots
@@ -838,13 +842,20 @@ impl ExtensionRunner {
         }
         // Data policies: last-wins by registration (drain) order — the
         // load order builtin → global → project resolves overrides before
-        // the values are published.
+        // the values are published. The snapshot gets the source-stripped
+        // kind → config half; the source ids stay in the runner map for
+        // the resolved-policy view.
         {
             let mut policies = self.policies.lock().expect("policies lock poisoned");
-            for (kind, config) in drained.policies {
-                policies.insert(kind, config);
+            for entry in drained.policies {
+                policies.insert(entry.kind, entry);
             }
-            codesmith_agent::policy::publish_policies(policies.clone());
+            codesmith_agent::policy::publish_policies(
+                policies
+                    .iter()
+                    .map(|(kind, entry)| (*kind, entry.config.clone()))
+                    .collect(),
+            );
         }
         for pp in drained.providers {
             let id = pp.factory.id();
@@ -1018,7 +1029,23 @@ impl ExtensionRunner {
             .lock()
             .expect("policies lock poisoned")
             .get(&kind)
-            .cloned()
+            .map(|entry| entry.config.clone())
+    }
+
+    /// Every resolved policy (the flush-time winner per kind), in
+    /// [`codesmith_agent::policy::PolicyKind::ALL`] order — the
+    /// observability view behind `manage_mods list` / `/mods list`
+    /// (kind → effective config → winning mod id). Read-only; the change
+    /// surface stays mod load/unload. Known limitation: reads this
+    /// runner's map only — runner-less embeds (the host's `ensure_seeded`
+    /// path) resolve nothing here.
+    #[must_use]
+    pub fn resolved_policies(&self) -> Vec<codesmith_agent::policy::ResolvedPolicy> {
+        let policies = self.policies.lock().expect("policies lock poisoned");
+        codesmith_agent::policy::PolicyKind::ALL
+            .iter()
+            .filter_map(|kind| policies.get(kind).cloned())
+            .collect()
     }
 
     /// Names of bound commands (for `/extension list`, Task 8).

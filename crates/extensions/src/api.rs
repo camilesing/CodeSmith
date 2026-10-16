@@ -186,6 +186,7 @@ impl ExtensionApi for StubExtensionApi {
 
     fn register_policy(
         &self,
+        owner: String,
         kind: codesmith_agent::policy::PolicyKind,
         config: serde_json::Value,
     ) -> Result<(), ExtensionError> {
@@ -198,7 +199,15 @@ impl ExtensionApi for StubExtensionApi {
                 kind.kebab_name()
             )));
         }
-        self.pending.lock().unwrap().policies.push((kind, config));
+        self.pending
+            .lock()
+            .unwrap()
+            .policies
+            .push(codesmith_agent::policy::ResolvedPolicy {
+                kind,
+                config,
+                source: owner,
+            });
         Ok(())
     }
 }
