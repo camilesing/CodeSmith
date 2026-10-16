@@ -13,7 +13,7 @@ use serde_json::Value;
 
 /// Upper bound for every caller-supplied text field (question header, id,
 /// question body, option label, option description). Emptiness alone would
-/// let a degenerate multi-megabyte string through and blow up TUI rendering
+/// let a degenerate multi-megabyte string through and blow up REPL rendering
 /// of the prompt.
 const MAX_USER_INPUT_TEXT_CHARS: usize = 512;
 

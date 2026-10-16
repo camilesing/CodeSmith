@@ -3,7 +3,7 @@
 //! Large tool outputs are written under the owning session directory and saved
 //! sessions keep a durable metadata index for resume/listing flows.
 //
-// Physically migrated from `codesmith-tui`. The TUI keeps a glob re-export
+// Physically migrated from `codesmith-tui`. The CLI keeps a glob re-export
 // shim (`pub use codesmith_agent_runtime::artifacts::*;`) so historical
 // `crate::artifacts::<item>` paths keep resolving.
 //

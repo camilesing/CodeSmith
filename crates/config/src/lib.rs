@@ -496,7 +496,7 @@ pub struct ConfigToml {
     /// Structured sandbox controls shared with the terminal runtime.
     #[serde(default)]
     pub sandbox: Option<SandboxToml>,
-    /// Native tool catalog controls shared with `codesmith-tui`.
+    /// Native tool catalog controls shared with the CLI.
     #[serde(default)]
     pub tools: Option<ToolsToml>,
     #[serde(default)]

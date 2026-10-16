@@ -1,7 +1,7 @@
 //! Plan shared state.
 //!
 //! State types extracted from `crates/tui/src/tools/plan.rs`;
-//! the tool implementations stay in tui.
+//! the tool implementations stay in `codesmith-tool-impls`.
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;

@@ -1,11 +1,11 @@
-//! Portable automation data types shared between the TUI `AutomationManager`
+//! Portable automation data types shared between the CLI `AutomationManager`
 //! and the `AutomationManagerHost` trait in [`crate::host_services`].
 //!
 //! These are pure serde data with no terminal-coupled dependencies, so they
 //! live in the runtime crate to keep `spec.rs` / `tool-impls` free of the
 //! concrete `AutomationManager` (C4-3b.5a). The schedule-parsing logic
 //! (`AutomationSchedule`, `parse_rrule`, `next_after`) is scheduler-internal
-//! and stays in the TUI crate.
+//! and stays in the CLI crate.
 
 use std::path::PathBuf;
 

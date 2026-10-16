@@ -1,6 +1,6 @@
 //! Operations submitted by the UI to the core engine.
 //!
-//! These operations flow from the TUI to the engine via a channel,
+//! These operations flow from the host UI to the engine via a channel,
 //! allowing the UI to remain responsive while the engine processes requests.
 
 use crate::compaction::CompactionConfig;

@@ -78,7 +78,7 @@ const PRUNE_TARGET_MB: u64 = 400;
 /// on first use (2 GB of non-excluded content). Reports from users with
 /// multi-hundred-GB project directories — datasets, model weights,
 /// docker image dumps that fall outside the built-in excludes —
-/// surfaced that `git add -A` on first init would hang the TUI for
+/// surfaced that `git add -A` on first init would hang the host for
 /// minutes-to-hours while indexing the workspace. Snapshots are a
 /// rollback safety net, not a backup tool; bailing out on workspaces
 /// that big is the right tradeoff. Users with legitimate large

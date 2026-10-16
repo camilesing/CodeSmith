@@ -284,7 +284,7 @@ mod tests {
     use tempfile::tempdir;
 
     /// Resolve the checked-in OCR fixture path. The image lives at
-    /// `crates/tui/tests/fixtures/ocr_hello.png` (300x100 grayscale,
+    /// `crates/tool-impls/tests/fixtures/ocr_hello.png` (300x100 grayscale,
     /// "HELLO OCR" rendered in Helvetica) and is committed for the
     /// happy-path round-trip below.
     fn ocr_fixture_path() -> std::path::PathBuf {

@@ -8,7 +8,7 @@
 //! The portable request/output/kind types and the `SandboxBackend` trait now
 //! live in `codesmith-agent-runtime`'s `sandbox` module; this file re-exports
 //! them and keeps the config-driven `create_backend` factory, which references
-//! the TUI-local `Config` and `OpenSandboxBackend`.
+//! the CLI-local `Config` and `OpenSandboxBackend`.
 
 use anyhow::Result;
 

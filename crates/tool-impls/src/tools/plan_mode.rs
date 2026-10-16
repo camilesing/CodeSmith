@@ -268,7 +268,7 @@ impl ToolSpec for ExitPlanModeTool {
 ///
 /// This is the ONLY write-capable tool available during plan mode.
 /// It writes the plan content to disk AND updates the in-memory
-/// PlanState for TUI rendering.
+/// PlanState for REPL rendering.
 pub struct WritePlanFileTool {
     plan_mode_state: SharedPlanModeState,
     plan_state: SharedPlanState,
@@ -358,11 +358,11 @@ impl ToolSpec for WritePlanFileTool {
         // Release plan_mode_state before taking plan_state (lock order:
         // plan_mode_state → plan_state, never nested).
         drop(state);
-        // Also update in-memory PlanState for TUI rendering. Derive plan
+        // Also update in-memory PlanState for REPL rendering. Derive plan
         // steps from markdown headings (## / ### lines) OUTSIDE fenced code
         // blocks, preserving existing per-step statuses by text so a
         // rewrite does not reset in-progress/completed steps to pending.
-        // The sync always runs (even to an empty plan) so the TUI cannot
+        // The sync always runs (even to an empty plan) so the REPL cannot
         // keep showing a stale plan after the file on disk changed.
         let mut plan_state_guard = self.plan_state.lock().await;
         let existing: std::collections::HashMap<&str, crate::tools::plan::StepStatus> =

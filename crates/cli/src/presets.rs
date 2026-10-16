@@ -1,4 +1,4 @@
-//! Applying named configuration presets to the TUI.
+//! Applying named configuration presets to the CLI.
 //!
 //! A preset (see `codesmith_config::presets`) is a bundle of agent dials
 //! and resource-switch baselines. This module owns the *application* of a

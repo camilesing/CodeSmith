@@ -8,8 +8,8 @@
 //!
 //! This is the terminal-agnostic core: the `ToolRegistry` struct, its portable
 //! execution/catalogue methods, and the fail-closed construction chokepoint
-//! (`build_tool`). TUI-coupled concerns (the builder, plugin/override loading,
-//! the MCP adapter) live in `codesmith-tui`'s shim module.
+//! (`build_tool`). Host-coupled concerns (the builder, plugin/override loading,
+//! the MCP adapter) live in the CLI's shim module.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

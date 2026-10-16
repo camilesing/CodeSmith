@@ -3,7 +3,7 @@
 //! The portable policy data types (`SandboxPolicy`, `WritableRoot`) now live
 //! in `codesmith-agent-runtime`'s `sandbox` module so they can cross the
 //! `Arc<dyn HostServices>` boundary. This module re-exports them and keeps
-//! the safety-level → behavior mapping, which references the TUI-local
+//! the safety-level → behavior mapping, which references the CLI-local
 //! command-safety types. The mapping and `SandboxPolicyBehavior` have no
 //! production caller yet (#2186), so they are gated to the test build.
 

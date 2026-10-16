@@ -92,7 +92,7 @@ use codesmith_config::{FactoryBackend, ProvidersManifest};
 /// stub.
 ///
 /// Returns `&'static` so the sole production caller (`resolve_llm_client` in
-/// the tui engine) stops rebuilding the registry per request. To customize,
+/// the CLI engine) stops rebuilding the registry per request. To customize,
 /// clone the cached registry and [`ProviderRegistry::register`] on your own
 /// mutable copy.
 #[must_use]

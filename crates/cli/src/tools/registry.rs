@@ -4,7 +4,7 @@
 //! [`codesmith_agent_runtime::tools::registry`]: the portable `ToolRegistry`
 //! core, its portable methods, and the fail-closed construction helpers were
 //! physically migrated there (orphan rule: `ToolRegistry`'s inherent impls
-//! must live in the defining crate). What remains here is the TUI-coupled
+//! must live in the defining crate). What remains here is the CLI-coupled
 //! surface that the agent-runtime crate must not depend on:
 //!
 //! - `ToolRegistryBuilder` — wires concrete tool impls and an `LlmClientHandle`.
@@ -32,12 +32,12 @@ pub use codesmith_agent_runtime::tools::registry::{
     MAX_TOOL_NAME_LEN, is_valid_tool_name, sanitize_tool_name,
 };
 
-/// TUI-coupled plugin/override operations on a [`ToolRegistry`].
+/// CLI-coupled plugin/override operations on a [`ToolRegistry`].
 ///
 /// `apply_overrides` and `load_plugins` reach into `crate::config::ToolOverride`
-/// and `crate::tools::plugin`, which are TUI-only concerns, so they live behind
+/// and `crate::tools::plugin`, which are CLI-only concerns, so they live behind
 /// an extension trait rather than on the agent-runtime core type (whose crate
-/// must not depend on TUI config/plugin loading). Bring the trait into scope to
+/// must not depend on CLI config/plugin loading). Bring the trait into scope to
 /// call the methods: `use crate::tools::ToolRegistryPluginExt;`.
 pub trait ToolRegistryPluginExt {
     /// Apply config.toml tool overrides to this registry.

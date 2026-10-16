@@ -15,7 +15,7 @@
 //!
 //! These functions are keyed on a provider-name `&str` (e.g. `"openrouter"`,
 //! `"deepseek"`) — the same string `GenericShaper::new(name)` holds and
-//! `ApiProvider::as_str()` yields — rather than the TUI's `ApiProvider` enum,
+//! `ApiProvider::as_str()` yields — rather than agent-runtime's `ApiProvider` enum,
 //! so this crate stays off the `codesmith-agent-runtime` dep edge (ROADMAP §C6).
 
 use codesmith_agent::reasoning::{requires_reasoning_content, should_replay_reasoning_content};

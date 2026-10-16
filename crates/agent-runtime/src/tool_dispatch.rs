@@ -22,7 +22,7 @@ use crate::hooks::HookHost;
 ///
 /// Captured once per tool (not per call) so the engine can make approval and
 /// scheduling decisions without holding a `dyn ToolSpec` (which lives in the
-/// TUI crate alongside the fat `ToolContext`).
+/// tool-impls crate alongside the fat `ToolContext`).
 #[derive(Debug, Clone)]
 pub struct ToolMetadata {
     /// Canonical tool name.

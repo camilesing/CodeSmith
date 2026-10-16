@@ -2,8 +2,8 @@
 //!
 //! [`CompactionConfig`] and its supporting constants ([`DEFAULT_TEXT_MODEL`],
 //! [`MINIMUM_AUTO_COMPACTION_TOKENS`]) are shared between the engine and the
-//! TUI's compaction pipeline, so they live here in the terminal-agnostic
-//! runtime. The TUI re-exports them at the historical `crate::compaction` and
+//! CLI's compaction pipeline, so they live here in the terminal-agnostic
+//! runtime. The CLI re-exports them at the historical `crate::compaction` and
 //! `crate::config` paths for backwards compatibility.
 //!
 //! The compaction *state* submodules (`circuit_breaker`, `micro_compact`,
@@ -11,10 +11,10 @@
 //! [`post_compact_cleanup`] helper, the pure token-estimation helpers
 //! ([`estimate_tokens`] et al.), and the heavy compaction *implementation*
 //! ([`compact`] — summary building, `should_compact`, `compact_messages_safe`,
-//! `plan_compaction`, `merge_system_prompts`, etc.) all live here. The TUI
+//! `plan_compaction`, `merge_system_prompts`, etc.) all live here. The CLI
 //! re-exports these at the historical `crate::compaction` path for backwards
 //! compatibility and keeps the compaction test module, which depends on
-//! TUI-local `MockLlmClient` / `HookExecutor`.
+//! CLI-local `MockLlmClient` / `HookExecutor`.
 
 use crate::models::{
     CONSERVATIVE_ESTIMATE_DENOMINATOR, CONSERVATIVE_ESTIMATE_NUMERATOR, ContentBlock, Message,
@@ -32,15 +32,15 @@ pub mod responsive_compact;
 pub mod session_memory_compact;
 
 // Flatten the heavy compaction engine's public surface into the `compaction`
-// namespace so callers (and the TUI re-export shim) can reach
+// namespace so callers (and the CLI re-export shim) can reach
 // `compact_messages_safe` / `should_compact` / `plan_compaction` / etc.
 // unqualified, matching the historical `crate::compaction::<fn>` paths.
 pub use compact::*;
 
 /// Default text model used as a fallback when a caller does not supply one.
 ///
-/// Centralised here so that both the runtime and the TUI reference the same
-/// value; the TUI re-exports it from `crate::config` for backwards
+/// Centralised here so that both the runtime and the CLI reference the same
+/// value; the CLI re-exports it from `crate::config` for backwards
 /// compatibility.
 pub const DEFAULT_TEXT_MODEL: &str = "deepseek-v4-pro";
 
@@ -98,8 +98,8 @@ pub const MINIMUM_AUTO_COMPACTION_TOKENS: usize = 0;
 
 // === Token-estimation helpers (moved from tui compaction/mod.rs) ===
 //
-// Pure functions over API message types. Kept `pub` so the TUI's heavy
-// compaction engine can re-export and call them unqualified. All counting
+// Pure functions over API message types. Kept `pub` so the CLI's compaction
+// module can re-export and call them unqualified. All counting
 // routes through [`crate::tokenizer`] — the CJK-aware heuristic by
 // default, exact counts when a tokenizer.json was installed at startup.
 

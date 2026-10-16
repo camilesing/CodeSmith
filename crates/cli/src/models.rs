@@ -2,7 +2,7 @@
 //!
 //! The canonical home for API request/response models is now the
 //! `codesmith_agent` crate. This shim keeps `crate::models::<item>` paths in
-//! the TUI working; the explicit list below pins exactly which items this
+//! the CLI working; the explicit list below pins exactly which items this
 //! crate consumes, so upstream renames fail here instead of at distant call
 //! sites and the eventual removal is a mechanical check.
 // TODO(shim-removal): remove this shim once the remaining call sites are

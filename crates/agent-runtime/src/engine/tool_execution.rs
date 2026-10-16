@@ -10,14 +10,15 @@ use super::*;
 
 use crate::tool_dispatch::ToolDispatcher;
 
-/// RAII guard that pauses the TUI's terminal-state ownership for the duration
+/// RAII guard that pauses the host UI's terminal-state ownership for the duration
 /// of an interactive tool, then restores it on drop.
 ///
 /// Background: interactive tools (anything that needs the raw TTY — external
-/// editor, `exec_shell` with stdin, etc.) need the TUI to leave alt-screen,
+/// editor, `exec_shell` with stdin, etc.) need the host to leave alt-screen,
 /// disable raw mode, and release mouse capture so the child sees a normal
-/// terminal. The TUI listens for `Event::PauseEvents` / `Event::ResumeEvents`
-/// and runs `pause_terminal` / `resume_terminal` in response.
+/// terminal. The retired TUI listened for `Event::PauseEvents` /
+/// `Event::ResumeEvents` and ran `pause_terminal` / `resume_terminal` in
+/// response.
 ///
 /// Earlier code sent `PauseEvents` before tool execution and `ResumeEvents`
 /// after. That worked on the happy path, but if the tool's future was dropped
@@ -45,7 +46,7 @@ impl InteractiveTerminalGuard {
         if !interactive {
             return Self { tx: None };
         }
-        // Best-effort: if the receiver is gone the TUI has already shut down
+        // Best-effort: if the receiver is gone the host UI has already shut down
         // and there's nothing to restore. If the event is delivered, wait for
         // the UI to actually release the terminal before starting the child.
         let ack = Arc::new(tokio::sync::Notify::new());
@@ -286,7 +287,7 @@ impl Engine {
         // RAII pause/resume: ensures `Event::ResumeEvents` always fires on
         // drop, even if the tool future is cancelled mid-await. See
         // `InteractiveTerminalGuard` doc-comment for the regression this
-        // closes (parent terminal scrollback hijacking the TUI after a
+        // closes (parent terminal scrollback hijacking the host UI after a
         // cancelled interactive tool).
         let _terminal = InteractiveTerminalGuard::engage(tx_event, interactive).await;
 

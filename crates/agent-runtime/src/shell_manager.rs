@@ -8,12 +8,12 @@
 //! ## Terminal raw-mode trait-erasure
 //!
 //! `ShellManager`'s sandboxed sync/interactive exec paths must briefly
-//! release the host terminal from ratatui raw mode so the child can own the
+//! release the host terminal from raw mode so the child can own the
 //! tty (issue #1690). `crossterm` is a terminal-coupled dependency that this
 //! runtime crate deliberately does NOT pull in. To keep `ShellManager`
 //! portable while preserving that save/restore, the raw-mode toggle is
-//! abstracted behind the [`ShellTerminalControl`] trait: the TUI supplies a
-//! crossterm-backed implementation; non-TUI hosts (tests, app-server) use
+//! abstracted behind the [`ShellTerminalControl`] trait: the CLI supplies a
+//! crossterm-backed implementation; non-CLI hosts (tests, app-server) use
 //! [`NoopTerminalControl`] (raw mode is never enabled there, so the toggle
 //! is a no-op).
 
@@ -24,7 +24,7 @@
 // and supporting decision helpers. Physically migrated from the TUI's `tools::shell`
 // (C4-3b.7a.4.c) so the engine core can host shell execution without depending on the
 // terminal-coupled binary. crossterm raw-mode is trait-erased via `ShellTerminalControl`;
-// the TUI injects a crossterm impl, non-TUI hosts get `NoopTerminalControl`.
+// the CLI injects a crossterm impl, non-CLI hosts get `NoopTerminalControl`.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -55,7 +55,7 @@ use crate::tools::shell_types::{
 
 /// Terminal raw-mode control for shell execution.
 ///
-/// Implemented by the TUI (crossterm-backed) and by
+/// Implemented by the CLI (crossterm-backed) and by
 /// [`NoopTerminalControl`] for non-terminal hosts. See the module docs for
 /// the rationale.
 pub trait ShellTerminalControl: Send + Sync {
@@ -70,7 +70,7 @@ pub trait ShellTerminalControl: Send + Sync {
 
 /// No-op [`ShellTerminalControl`] for non-terminal hosts.
 ///
-/// Raw mode is never enabled outside the TUI, so every method is a no-op and
+/// Raw mode is never enabled outside the CLI, so every method is a no-op and
 /// [`raw_mode_enabled`](ShellTerminalControl::raw_mode_enabled) returns
 /// `false`.
 #[derive(Debug, Default, Clone, Copy)]
@@ -138,7 +138,7 @@ pub fn kill_process_group_of(pid: u32) -> std::io::Result<()> {
 
 /// Kill `child`'s whole process group (the child must have been spawned
 /// with `process_group(0)`), falling back to the direct child. ESRCH is
-/// tolerated — the group may already be gone. Public so the TUI hook
+/// tolerated — the group may already be gone. Public so the CLI hook
 /// executor can enforce its timeout against `sh -c` grandchildren too.
 #[cfg(unix)]
 pub fn kill_child_process_group(child: &mut Child) -> std::io::Result<()> {
@@ -165,10 +165,10 @@ pub fn kill_process_group_of_opt(pid: Option<u32>) {
 }
 
 /// Configure parent-death signaling so shell-spawned children are reaped when
-/// the TUI dies abnormally (#421). On Linux this installs
+/// the host dies abnormally (#421). On Linux this installs
 /// `PR_SET_PDEATHSIG(SIGTERM)` via `pre_exec` — the kernel then sends SIGTERM
 /// to the child the moment the parent process exits, even on SIGKILL of the
-/// TUI. The cancellation path already SIGKILLs the whole process group, so
+/// host. The cancellation path already SIGKILLs the whole process group, so
 /// this only fires when the parent dies without running its drop / cleanup
 /// code (panic during shutdown, OOM, hardware crash, etc.).
 ///
@@ -239,7 +239,7 @@ pub fn push_shell_args(cmd: &mut Command, _program: &str, args: &[String]) {
 fn install_parent_death_signal(_cmd: &mut Command) {
     // No kernel-level equivalent on macOS / Windows. The cooperative
     // cancellation + process_group SIGKILL path covers normal shutdown;
-    // abnormal exit (panic without unwind, SIGKILL of the TUI) can still
+    // abnormal exit (panic without unwind, SIGKILL of the host) can still
     // leak children on those platforms — tracked as a follow-up.
 }
 
@@ -776,8 +776,8 @@ pub struct ShellManager {
     sandbox_policy: ExecutionSandboxPolicy,
     sandbox_runtime: SandboxRuntimeConfig,
     foreground_background_requested: bool,
-    /// Terminal raw-mode controller. The TUI injects a crossterm-backed
-    /// implementation; non-TUI hosts (tests) get a no-op. Trait-erased so
+    /// Terminal raw-mode controller. The CLI injects a crossterm-backed
+    /// implementation; non-CLI hosts (tests) get a no-op. Trait-erased so
     /// `ShellManager` can live in the terminal-agnostic runtime crate.
     terminal: Arc<dyn ShellTerminalControl>,
 }
@@ -799,7 +799,7 @@ impl std::fmt::Debug for ShellManager {
 
 impl ShellManager {
     /// Create a new `ShellManager` with default (no sandbox) policy and a
-    /// no-op terminal controller (raw mode is never enabled outside the TUI).
+    /// no-op terminal controller (raw mode is never enabled outside the CLI).
     pub fn new(workspace: PathBuf) -> Self {
         Self {
             processes: HashMap::new(),
@@ -829,7 +829,7 @@ impl ShellManager {
     }
 
     /// Create a new `ShellManager` with an explicit terminal raw-mode
-    /// controller. The TUI uses this to inject its crossterm-backed
+    /// controller. The CLI uses this to inject its crossterm-backed
     /// implementation so sandboxed sync/interactive exec can save/restore
     /// raw mode around child spawn.
     pub fn with_terminal_control(
@@ -1205,8 +1205,8 @@ impl ShellManager {
 
         // Disable raw mode before spawn; restore only if raw mode was active
         // on entry (issue #1690). Trait-erased so `ShellManager` can live in
-        // the terminal-agnostic runtime crate; the TUI injects a crossterm
-        // implementation, non-TUI hosts get a no-op.
+        // the terminal-agnostic runtime crate; the CLI injects a crossterm
+        // implementation, non-CLI hosts get a no-op.
         let raw_mode_was_enabled = terminal.raw_mode_enabled();
         if raw_mode_was_enabled {
             terminal.disable_raw_mode();
@@ -1372,8 +1372,8 @@ impl ShellManager {
 
         // Disable raw mode before spawn; restore only if raw mode was active
         // on entry (issue #1690). Trait-erased so `ShellManager` can live in
-        // the terminal-agnostic runtime crate; the TUI injects a crossterm
-        // implementation, non-TUI hosts get a no-op.
+        // the terminal-agnostic runtime crate; the CLI injects a crossterm
+        // implementation, non-CLI hosts get a no-op.
         let raw_mode_was_enabled = terminal.raw_mode_enabled();
         if raw_mode_was_enabled {
             terminal.disable_raw_mode();
@@ -1828,7 +1828,7 @@ impl ShellManager {
         Err(anyhow!("Task {task_id} not found"))
     }
 
-    /// List all live and known-stale background shell jobs for the TUI.
+    /// List all live and known-stale background shell jobs for the host UI.
     pub fn list_jobs(&mut self) -> Vec<ShellJobSnapshot> {
         for shell in self.processes.values_mut() {
             shell.poll();
@@ -1871,7 +1871,7 @@ impl ShellManager {
                 exit_code: None,
                 elapsed_ms: 0,
                 stdout_tail: String::new(),
-                stderr_tail: "Process is no longer attached to this TUI session.".to_string(),
+                stderr_tail: "Process is no longer attached to this session.".to_string(),
                 stdout_len: 0,
                 stderr_len: 0,
                 stdin_available: false,
@@ -1956,7 +1956,7 @@ fn job_status_rank(status: &ShellStatus, stale: bool) -> u8 {
 /// Thread-safe wrapper for `ShellManager`
 pub type SharedShellManager = Arc<Mutex<ShellManager>>;
 
-/// Bridge the TUI's [`SharedShellManager`] onto the portable
+/// Bridge [`SharedShellManager`] onto the portable
 /// [`ShellManagerApi`] trait. A newtype is required (orphan rule); each
 /// method locks the inner `std::sync::Mutex` synchronously and delegates to
 /// the inherent [`ShellManager`] method — the pre-trait call sites did the
@@ -2126,10 +2126,10 @@ pub fn wrap_shell_manager(sm: SharedShellManager) -> Arc<dyn ShellManagerApi> {
 }
 
 /// Construct a new shared shell manager with default (no sandbox) policy and
-/// the no-op terminal controller (raw mode is never enabled outside the TUI).
+/// the no-op terminal controller (raw mode is never enabled outside the CLI).
 ///
 /// This is the portable default used by `ToolContext::new` in `spec.rs`. The
-/// TUI overrides it with a crossterm-backed controller via
+/// CLI overrides it with a crossterm-backed controller via
 /// [`ShellManager::with_terminal_control`] wherever interactive raw-mode
 /// save/restore around child spawn is required.
 pub fn new_shared_shell_manager(workspace: PathBuf) -> SharedShellManager {
@@ -2164,7 +2164,7 @@ impl ShellApi for ShellManagerHost {
     }
 }
 
-/// Convert the TUI-local [`ShellResult`] into the portable
+/// Convert [`ShellResult`] into the portable
 /// [`ShellExecResult`]. A free function (not `impl From`) because the orphan
 /// rule forbids `impl From<ShellResult> for ShellExecResult` from the TUI
 /// crate (both the trait and the target type are foreign).

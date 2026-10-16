@@ -223,7 +223,7 @@ pub fn notify_done(
     notify_done_to(method, in_tmux, msg, threshold, elapsed, &mut io::stdout());
 }
 
-/// TUI-side [`NotifierHost`] — delegates to the terminal-coupled
+/// CLI-side [`NotifierHost`] — delegates to the terminal-coupled
 /// [`notify_done`] free function above. Zero-state; `Arc`-shared so cloned
 /// tool contexts see one logical notifier. The host resolves the delivery
 /// protocol (`Method::Auto` → OSC 9 / BEL / macOS Notification Center / Kitty

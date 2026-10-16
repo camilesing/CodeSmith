@@ -1,11 +1,11 @@
-//! Tool and types for requesting user input via the TUI.
+//! Tool and types for requesting user input via the host UI.
 //!
 //! The shared data types ([`UserInputOption`], [`UserInputQuestion`],
 //! [`UserInputRequest`], [`UserInputAnswer`], [`UserInputResponse`]) now live
 //! in `codesmith_agent_runtime::user_input` and are re-exported here so that
 //! existing `crate::tools::user_input` references keep resolving. The
 //! [`RequestUserInputTool`] [`ToolSpec`](codesmith_agent_runtime::tools::spec::ToolSpec) implementation
-//! stays in the TUI because it is bound to the TUI-local tool trait.
+//! stays in this crate (`codesmith-tool-impls`).
 
 use async_trait::async_trait;
 use codesmith_agent_runtime::tools::spec::{

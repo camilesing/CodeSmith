@@ -367,7 +367,7 @@ mod tests {
         assert!(locale_reinforcement_preamble("fr-FR").is_none());
         assert!(locale_reinforcement_preamble("").is_none());
 
-        // zh-Hans (and the de-facto equivalents the TUI accepts) get a
+        // zh-Hans (and the de-facto equivalents the CLI accepts) get a
         // native-script preamble. The text must explicitly mention
         // `reasoning_content` (the V4 knob this is meant to steer) and
         // preserve tool-name immutability — those are the load-bearing

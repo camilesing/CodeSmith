@@ -8,7 +8,7 @@
 //! command safety).
 //!
 //! Migration status: modules are being moved here incrementally from the
-//! `codesmith-tui` binary crate. Until the migration completes, the TUI keeps
+//! `codesmith-tui` binary crate. Until the migration completes, the CLI keeps
 //! thin re-export shims (`pub use codesmith_agent_runtime::…`) so existing
 //! `use crate::<module>` paths keep resolving.
 

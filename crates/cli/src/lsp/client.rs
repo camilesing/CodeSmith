@@ -1046,7 +1046,7 @@ mod tests {
     /// initialize -> response -> initialized ordering and the cache-based
     /// `diagnostics_for` path. Ignored by default because it needs
     /// `rust-analyzer` on PATH and several seconds of startup; run manually
-    /// with `cargo test -p codesmith-tui --bin codesmith-tui lsp -- --ignored`.
+    /// with `cargo test -p codesmith-cli --bin codesmith lsp -- --ignored`.
     #[tokio::test]
     #[ignore = "requires rust-analyzer on PATH; run with -- --ignored"]
     async fn real_rust_analyzer_handshake_and_diagnostics() {

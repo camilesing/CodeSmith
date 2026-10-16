@@ -156,7 +156,7 @@ mod tests {
     fn ctx() -> Arc<dyn ExtensionContext> {
         Arc::new(HostExtensionContext::new(
             PathBuf::from("."),
-            ExtensionMode::Tui,
+            ExtensionMode::Interactive,
             Arc::new(std::sync::Mutex::new(true)),
             Arc::new(std::sync::Mutex::new(CancellationToken::new())),
             Arc::new(AtomicU64::new(0)),
@@ -214,7 +214,7 @@ mod tests {
                 std::path::Path::new(".")
             }
             fn mode(&self) -> ExtensionMode {
-                ExtensionMode::Tui
+                ExtensionMode::Interactive
             }
             fn is_idle(&self) -> bool {
                 true

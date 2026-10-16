@@ -13,7 +13,7 @@
 //!    pinned fingerprint before every request.
 //! 3. **Diagnoses** the cause of drift — did the system prompt change?
 //!    Did the tool set change? Both?
-//! 4. **Emits events** so the TUI can surface stability to the user.
+//! 4. **Emits events** so the host UI can surface stability to the user.
 //!
 //! ## Three-region model (from Reasonix)
 //!
@@ -71,9 +71,9 @@ impl PrefixChange {
         format!("prefix cache invalidated: {} changed", parts.join(" and "))
     }
 
-    /// Returns a short label for TUI chip display.
+    /// Returns a short label for UI display.
     #[must_use]
-    #[allow(dead_code)] // surfaced via tests; kept for future TUI chip use
+    #[allow(dead_code)] // surfaced via tests; kept for future UI use
     pub fn label(&self) -> &'static str {
         match (self.system_changed, self.tools_changed) {
             (true, true) => "sys+tools",
@@ -92,7 +92,7 @@ impl PrefixChange {
 ///
 /// The engine freezes one [`FrozenPrefix`] per step (via
 /// `prompt_zones::PinnedPrefix`) and calls [`check_and_update`](Self::check_and_update);
-/// drift emits [`crate::events::Event::PrefixCacheChange`] for the TUI.
+/// drift emits [`crate::events::Event::PrefixCacheChange`] for the host UI.
 #[derive(Debug, Clone)]
 pub struct PrefixStabilityManager {
     /// The pinned fingerprint from session start or last stabilization.

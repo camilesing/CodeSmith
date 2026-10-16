@@ -1,8 +1,8 @@
 //! Process hardening for Linux sandbox defense-in-depth (#2183).
 //!
-//! This module applies kernel-level restrictions to the codesmith-tui process
+//! This module applies kernel-level restrictions to the codesmith process
 //! itself. Unlike Landlock/seccomp which restrict child processes spawned for
-//! shell commands, these hardening measures protect the *parent* TUI process
+//! shell commands, these hardening measures protect the *parent* process
 //! from information leaks and privilege-escalation vectors.
 //!
 //! # Ordering constraints

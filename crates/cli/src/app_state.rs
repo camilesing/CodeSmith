@@ -40,7 +40,7 @@ pub struct TurnCacheRecord {
 /// Configuration required to bootstrap an interactive frontend session.
 #[derive(Clone)]
 #[allow(clippy::struct_excessive_bools)]
-pub struct TuiOptions {
+pub struct InteractiveOptions {
     pub model: String,
     pub workspace: PathBuf,
     pub config_path: Option<PathBuf>,

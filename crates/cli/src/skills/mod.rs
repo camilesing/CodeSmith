@@ -1,7 +1,7 @@
 //! Re-export of [`codesmith_agent_runtime::skills`] (Phase C6-1).
 //!
 //! Canonical home is now `codesmith_agent_runtime`. This shim keeps the
-//! `crate::skills::<item>` paths that remain in the TUI working; the
+//! `crate::skills::<item>` paths that remain in the CLI working; the
 //! explicit list below pins exactly which items this crate consumes, so
 //! upstream renames fail here instead of at distant call sites and the
 //! eventual removal is a mechanical check.

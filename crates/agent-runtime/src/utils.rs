@@ -21,7 +21,7 @@ use sha2::{Digest, Sha256};
 ///
 /// This was relocated from the TUI `config` module so that runtime
 /// modules (e.g. `mcp`) can resolve the home directory without depending
-/// on the TUI's `config` module; the TUI re-exports it as
+/// on the TUI's `config` module; the CLI re-exports it as
 /// `crate::config::effective_home_dir` for backwards compatibility.
 pub fn effective_home_dir() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("HOME") {
@@ -684,7 +684,7 @@ pub fn defuse_prompt_framing_tags(text: &str) -> String {
 }
 
 /// Render a path for **user-facing display** with the home directory
-/// contracted to `~`. Use this in the TUI, doctor/setup stdout, and any
+/// contracted to `~`. Use this in the REPL, doctor/setup stdout, and any
 /// other place a viewer might see the output (screenshot, video,
 /// pasted-into-issue help). On macOS/Linux the absolute path
 /// `/Users/<name>/...` or `/home/<name>/...` reveals the OS account name,

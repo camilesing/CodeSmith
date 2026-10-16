@@ -889,8 +889,8 @@ use codesmith_agent::extension::{
 
 /// Stub extension that registers a single tool named `fixture_echo` — the
 /// canonical ext-tool name (same name the fixture cdylib registers; the
-/// cdylib's path is only emitted by `codesmith-extensions/build.rs`, so tui
-/// can't load it directly — this stub is the closest feasible analog for the
+/// cdylib's path is only emitted by `codesmith-extensions/build.rs`, so the
+/// CLI can't load it directly — this stub is the closest feasible analog for the
 /// §4b regression). Used ONLY to put a concrete ext tool on a parent
 /// `ExtensionRunner` so the §4b test can assert it does NOT transit to a
 /// sub-agent built without that runner.
@@ -939,7 +939,7 @@ impl ExtensionContext for StubExtCtx {
         Path::new(".")
     }
     fn mode(&self) -> ExtensionMode {
-        ExtensionMode::Tui
+        ExtensionMode::Interactive
     }
     fn is_idle(&self) -> bool {
         true
@@ -973,7 +973,7 @@ impl ExtensionCommandContext for StubExtCtx {}
 #[test]
 fn subagent_ext_tool_excluded_from_effective_set() {
     // Parent HAS fixture_echo bound on its ExtensionRunner (stub ext — the
-    // fixture cdylib path isn't available to tui's build.rs, so the stub is
+    // fixture cdylib path isn't available to the CLI's build.rs, so the stub is
     // the closest feasible analog to "load fixture dylib").
     let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
     let rt = tokio::runtime::Runtime::new().expect("rt");
@@ -2159,7 +2159,7 @@ fn subagent_rejects_interactive_shell_terminal_takeover() {
 
     let msg = err.to_string();
     assert!(msg.contains("cannot use exec_shell with interactive=true"));
-    assert!(msg.contains("parent TUI terminal"));
+    assert!(msg.contains("parent terminal"));
 
     reject_subagent_terminal_takeover(
         "exec_shell",
@@ -3113,7 +3113,7 @@ impl codesmith_agent::extension::ExtensionContext for ForkCtx {
         std::path::Path::new(".")
     }
     fn mode(&self) -> codesmith_agent::extension::ExtensionMode {
-        codesmith_agent::extension::ExtensionMode::Tui
+        codesmith_agent::extension::ExtensionMode::Interactive
     }
     fn is_idle(&self) -> bool {
         true

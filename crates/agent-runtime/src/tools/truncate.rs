@@ -29,9 +29,9 @@
 //!   [`SPILLOVER_MAX_AGE`].
 //!
 //! UI-side rendering of the inline `full output: <path>` annotation
-//! is owned by `tui/history.rs::render_spillover_annotation`. The
-//! tool-details pager opens the spillover file when the user
-//! presses `Alt+V` (or plain `v` with empty composer) on a spilled
+//! was owned by `tui/history.rs::render_spillover_annotation` (retired with
+//! the TUI). Its tool-details pager opened the spillover file when the user
+//! pressed `Alt+V` (or plain `v` with empty composer) on a spilled
 //! tool cell.
 
 use std::fs;
@@ -219,7 +219,7 @@ pub fn write_spillover_parts(id: &str, parts: &[&str]) -> io::Result<PathBuf> {
 /// Drop spillover files older than `max_age`. Returns the number of
 /// files removed. Non-fatal: directory-missing returns 0; per-file
 /// errors are logged and skipped. Mirrors the workspace-snapshot prune
-/// step (see the TUI's `session_manager::prune_workspace_snapshots`).
+/// step (see the CLI's `session_manager::prune_workspace_snapshots`).
 pub fn prune_older_than(max_age: Duration) -> io::Result<usize> {
     let Some(root) = spillover_root() else {
         return Ok(0);

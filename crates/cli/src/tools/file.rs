@@ -298,7 +298,7 @@ fn parse_pages_arg(spec: &str) -> Option<(u32, u32)> {
     }
 }
 
-/// Clean PDF-extracted text for TUI display: collapse consecutive blank
+/// Clean PDF-extracted text for terminal display: collapse consecutive blank
 /// lines (more than 1 becomes 1), replace NUL bytes with U+FFFD, replace
 /// non-breaking spaces with regular spaces, and trim trailing whitespace
 /// on each line. Produces output that won't clutter the transcript with
@@ -1811,7 +1811,7 @@ mod tests {
     /// Sample PDF shipped with the repo for parity tests against the
     /// pure-Rust extractor. 38 pages, born-digital LaTeX (arXiv 2512.24601).
     /// Path is workspace-root-relative because the fixture lives outside
-    /// the tui crate.
+    /// the cli crate.
     const SAMPLE_PDF_PATH: &str = "../../docs/2512.24601v2.pdf";
 
     fn sample_pdf_present() -> bool {
@@ -1905,7 +1905,7 @@ mod tests {
             // skip — `cargo test` reports the same `ok` either way.
             return;
         }
-        // The fixture lives outside the tui crate, so we point ToolContext
+        // The fixture lives outside the cli crate, so we point ToolContext
         // at the workspace root and read by relative path. This exercises
         // the full ReadFileTool::execute → is_pdf → read_pdf dispatch on
         // the bundled extractor (no pdftotext required on the test host).

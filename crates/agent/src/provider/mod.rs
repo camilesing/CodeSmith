@@ -81,7 +81,7 @@ impl From<&str> for ProviderId {
 
 /// Neutral construction input for any provider. Carries exactly what a
 /// provider needs to build an [`LlmClientHandle`], with no dependency on the
-/// TUI `Config`. Built by the host (TUI/app-server) from its own config.
+/// CLI `Config`. Built by the host (CLI/app-server) from its own config.
 /// Host-injected retry-notification closure. Kept as a named alias so the
 /// `ProviderConfig.on_retry` field stays readable; providers compiled into
 /// `codesmith-providers` receive this without any terminal/UI coupling.
@@ -101,7 +101,7 @@ pub struct ProviderConfig {
     pub retry: RetryConfig,
     /// Extra HTTP headers (e.g. `X-Model-Provider-Id`).
     pub http_headers: HashMap<String, String>,
-    /// Optional retry-notification hook. Replaces the TUI's global
+    /// Optional retry-notification hook. Replaces the global
     /// `retry_status` UI: the host injects a closure, so a provider compiled
     /// into `codesmith-providers` stays free of terminal/UI coupling.
     pub on_retry: Option<RetryHook>,
@@ -112,7 +112,7 @@ pub struct ProviderConfig {
 /// A factory that builds an LLM client for a given provider.
 ///
 /// Implement this in `codesmith-providers` (or your own crate) to add a
-/// provider — no `codesmith-tui` dependency required. Register an
+/// provider — no `codesmith-cli` dependency required. Register an
 /// `Arc<dyn ProviderFactory>` into a [`ProviderRegistry`].
 pub trait ProviderFactory: Send + Sync {
     /// The provider this factory builds clients for.

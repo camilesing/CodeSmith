@@ -12,7 +12,7 @@
 //! - `coherence`: Conversation coherence checks
 //! - `tool_catalog`: Catalog of tools available to the engine
 
-// Engine code runs inside the TUI alt-screen — see `runtime_log` for why
+// Engine code runs inside the interactive REPL — see `runtime_log` for why
 // raw stdio prints must not appear here. Use `tracing::*` instead.
 #![deny(clippy::print_stdout)]
 #![deny(clippy::print_stderr)]

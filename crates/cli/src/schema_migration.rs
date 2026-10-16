@@ -1,6 +1,6 @@
 //! Schema migration framework for `~/.codesmith/` persisted records.
 //!
-//! Every persistence layer in `crates/tui/src/` (sessions, threads,
+//! Every persistence layer in `crates/cli/src/` (sessions, threads,
 //! tasks, automations, offline queue) gates `schema_version > CURRENT_*`
 //! to prevent silent truncation when an older binary tries to load a
 //! record from a newer one. What was missing — and what this module

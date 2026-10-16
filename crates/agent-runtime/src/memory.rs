@@ -8,7 +8,7 @@
 //!   wrap it in a `<user_memory>` block, and prepend it to the system
 //!   prompt alongside the existing `<project_instructions>` block.
 //! - **`# foo`** typed in the composer appends `foo` to the memory
-//!   file as a timestamped bullet — fast capture without leaving the TUI.
+//!   file as a timestamped bullet — fast capture without leaving the REPL.
 //! - **`/memory`** shows the resolved file path and current contents, and
 //!   **`/memory edit`** prints a copy-pasteable `$VISUAL` / `$EDITOR`
 //!   command for opening the file yourself.

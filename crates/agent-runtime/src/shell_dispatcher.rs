@@ -13,7 +13,7 @@
 //!    respected so quoted strings survive the spawn boundary intact.
 //!
 //! The terminal-coupled `run_foreground` (crossterm raw-mode save/restore)
-//! stays in the `codesmith-tui` binary crate; this module is terminal-agnostic
+//! stays in the `codesmith-cli` binary crate; this module is terminal-agnostic
 //! so it can live in the execution core.
 
 use std::fs::OpenOptions;

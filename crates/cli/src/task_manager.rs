@@ -1733,7 +1733,7 @@ mod tests {
                         "gate": {
                             "id": "gate_test",
                             "gate": "test",
-                            "command": "cargo test -p codesmith-tui --lib",
+                            "command": "cargo test -p codesmith-cli --lib",
                             "cwd": ".",
                             "exit_code": 0,
                             "status": "passed",

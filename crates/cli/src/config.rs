@@ -22,7 +22,7 @@ use crate::sandbox::{
 
 /// Hard cap on concurrent sub-agents. Re-exported from
 /// `codesmith_agent_runtime::config_types::MAX_SUBAGENTS` so the runtime,
-/// `codesmith-tool-impls`, and the TUI share one value. Distinct from
+/// `codesmith-tool-impls`, and the CLI share one value. Distinct from
 /// `DEFAULT_MAX_SUBAGENTS` (= 10), which is the value used when the user
 /// leaves `[subagents] max_concurrent` unset.
 pub use codesmith_agent_runtime::config_types::MAX_SUBAGENTS;
@@ -48,7 +48,7 @@ pub const MAX_STREAM_IDLE_RETRY_INCREMENT_SECS: u64 = 600;
 /// Default text model used as a fallback when a caller does not supply one.
 ///
 /// Re-exported from `codesmith_agent_runtime::compaction::DEFAULT_TEXT_MODEL`
-/// so the runtime and TUI share the same value.
+/// so the runtime and CLI share the same value.
 pub use codesmith_agent_runtime::compaction::DEFAULT_TEXT_MODEL;
 pub const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/beta";
 pub const DEFAULT_DEEPSEEK_FLASH_MODEL: &str = "deepseek-v4-flash";
@@ -636,7 +636,7 @@ fn heavy_model_for_provider(provider: ApiProvider) -> &'static str {
 /// Startup update-check configuration (`[update]` table in config.toml).
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 pub struct UpdateConfig {
-    /// When `Some(false)`, skip the TUI startup background update check
+    /// When `Some(false)`, skip the CLI startup background update check
     /// entirely. `None` inherits the active preset's baseline (default:
     /// check enabled).
     #[serde(default)]
@@ -772,8 +772,6 @@ pub struct Config {
     pub capacity: Option<CapacityConfig>,
     pub features: Option<FeaturesToml>,
 
-    /// TUI configuration (alternate screen, etc.)
-
     /// Lifecycle hooks configuration
     #[serde(default)]
     pub hooks: Option<HooksConfig>,
@@ -836,7 +834,7 @@ pub struct Config {
     #[serde(default)]
     pub auto: Option<AutoConfig>,
 
-    /// Startup update-check behavior. When absent, the TUI keeps the default
+    /// Startup update-check behavior. When absent, the CLI keeps the default
     /// fire-and-forget latest-release check.
     #[serde(default)]
     pub update: Option<UpdateConfig>,
@@ -946,7 +944,7 @@ pub struct DoctorToml {
 }
 
 /// `[network]` table — mirrors `codesmith_config::NetworkPolicyToml` so the live
-/// TUI runtime can construct a [`crate::network_policy::NetworkPolicy`]
+/// CLI runtime can construct a [`crate::network_policy::NetworkPolicy`]
 /// without reaching into the workspace config crate. See `config.example.toml`
 /// for documentation.
 #[derive(Debug, Clone, Deserialize)]
@@ -1134,7 +1132,7 @@ pub struct ProviderConfig {
 
 /// Runtime view of a single `[[providers.custom]]` entry (ROADMAP §D2).
 ///
-/// Mirrors [`codesmith_config::CustomProviderToml`] but lives in the TUI's own
+/// Mirrors [`codesmith_config::CustomProviderToml`] but lives in the CLI's own
 /// runtime `Config` schema. Each entry is self-contained (own base_url/model/
 /// credentials); the top-level `Config.custom_provider` selector picks one by
 /// `id`. Selection + resolution is handled by [`Config::custom_provider_entry`]
@@ -2887,7 +2885,7 @@ fn resolve_load_config_path(path: Option<PathBuf>) -> Option<PathBuf> {
 /// Create an inspectable config file on first interactive launch.
 ///
 /// The template and secure write live in `codesmith-config`
-/// (`ensure_config_file_at`); this wrapper keeps the TUI's config-path
+/// (`ensure_config_file_at`); this wrapper keeps the CLI's config-path
 /// resolution (explicit path → `$CODESMITH_CONFIG_PATH` → home).
 pub fn ensure_config_file_exists(path: Option<PathBuf>) -> Result<Option<PathBuf>> {
     let config_path = path
@@ -3491,7 +3489,7 @@ fn apply_env_overrides(config: &mut Config) {
     }
 
     // Tier selection via env (also how the `codesmith` facade forwards a
-    // `--preset` flag to the TUI). Applied before the preset layer runs,
+    // `--preset` flag to the CLI). Applied before the preset layer runs,
     // so the tier's fill-if-unset baselines are computed under this
     // selection. Empty values are a no-op, matching every other override.
     if let Ok(value) = app_env("PRESET") {
@@ -4976,7 +4974,7 @@ mod tests {
         );
     }
 
-    // §D2 slice 46 — `--custom-provider <id>` reaches the TUI via env.
+    // §D2 slice 46 — `--custom-provider <id>` reaches the CLI via env.
 
     #[test]
     fn apply_env_overrides_sets_custom_provider() {

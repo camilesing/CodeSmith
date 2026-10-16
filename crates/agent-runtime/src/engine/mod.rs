@@ -218,7 +218,7 @@ pub struct Engine {
     /// lifecycle tasks such as the team inbox poller watcher.
     pub(crate) tx_op: mpsc::Sender<Op>,
     /// Terminal-agnostic UI bridge (notifications + clipboard). Backed by
-    /// [`runtime_traits::TuiRuntimeUi`] here; the trait object keeps the
+    /// [`runtime_traits::ReplRuntimeUi`] here; the trait object keeps the
     /// engine core decoupled from concrete terminal services so it can later
     /// move to `codesmith-agent-runtime`.
     pub runtime_ui: Arc<dyn crate::runtime_ui::RuntimeUi>,
@@ -252,7 +252,7 @@ impl Engine {
     ///
     /// Relocated from `turn_loop.rs` in slice 49 §E (module convergence —
     /// that file was the retired engine turn loop's home and is now
-    /// deleted; this accessor is test-referenced from tui).
+    /// deleted; this accessor is test-referenced from the CLI).
     pub fn messages_with_turn_metadata(&self) -> Vec<Message> {
         self.session.messages.to_vec()
     }
@@ -3229,10 +3229,10 @@ impl Engine {
     ///
     /// This is the runtime-only constructor: host wiring, channel creation,
     /// system-prompt building, and LLM-client construction stay on the host
-    /// side (`build_engine` in `codesmith-tui`), which calls into here once
+    /// side (`build_engine` in `codesmith-cli`), which calls into here once
     /// the portable fields are ready. Keeping `Engine` construction split this
     /// way lets the runtime body live in `codesmith-agent-runtime` free of
-    /// TUI-concrete types (`Config`, `EngineHost`, …).
+    /// CLI-concrete types (`Config`, `EngineHost`, …).
     #[allow(clippy::too_many_arguments)]
     pub fn new_runtime(
         config: EngineConfig,
@@ -3401,7 +3401,7 @@ pub use context::{
 };
 // Items below use a private `use` (not `pub use`): they are referenced only
 // within the engine crate (intra-`engine` access via `super::`) and are not
-// part of the public `engine::` surface consumed by `codesmith-tui`. The TUI
+// part of the public `engine::` surface consumed by `codesmith-cli`. The CLI
 // bridge lists every item it depends on explicitly; anything not on that list
 // is kept private here. Private `use` bindings remain visible to this
 // module's descendants, so sibling submodules still resolve them via `super::`.

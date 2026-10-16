@@ -6,5 +6,5 @@
 //! override helpers (`set_test_artifact_sessions_root`,
 //! `TEST_ARTIFACT_SESSIONS_GUARD`) are compiled unconditionally in the runtime
 //! crate (see `codesmith_agent_runtime::test_support` for the same convention)
-//! so this re-export also reaches them from TUI test code.
+//! so this re-export also reaches them from CLI test code.
 pub use codesmith_agent_runtime::artifacts::*;

@@ -1,5 +1,5 @@
 //! State types extracted from `crates/tui/src/tools/task_v2.rs`.
-//! Tool implementations stay in tui.
+//! Tool implementations stay in the CLI.
 
 use chrono::{DateTime, Utc};
 use fd_lock::RwLock;

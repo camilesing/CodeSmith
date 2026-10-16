@@ -8,9 +8,8 @@
 //! This module hosts the portable data types ([`SharedHandleStore`],
 //! [`HandleStore`], [`VarHandle`], …) that `spec::RuntimeToolServices` and
 //! producer tools share across the crate boundary. The `HandleReadTool`
-//! `ToolSpec` implementation and the projection helpers stay in the TUI
-//! (they depend on `spec.rs` which has not yet migrated); they consume these
-//! types through the TUI shim re-export.
+//! `ToolSpec` implementation and the projection helpers stay in
+//! `codesmith-tool-impls`; they consume these types through its re-export.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -273,8 +272,8 @@ impl HandleStore {
 
 /// Truncate `text` to at most `max_chars` Unicode scalar values.
 ///
-/// Shared by [`HandleValue::repr_preview`] and the TUI-side projection
-/// helpers (re-exported through the TUI shim).
+/// Shared by [`HandleValue::repr_preview`] and the projection
+/// helpers in `codesmith-tool-impls`.
 pub fn truncate_chars(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
 }

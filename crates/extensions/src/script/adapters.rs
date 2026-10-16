@@ -268,7 +268,7 @@ mod tests {
             Path::new("/ws")
         }
         fn mode(&self) -> codesmith_agent::extension::ExtensionMode {
-            codesmith_agent::extension::ExtensionMode::Tui
+            codesmith_agent::extension::ExtensionMode::Interactive
         }
         fn is_idle(&self) -> bool {
             true

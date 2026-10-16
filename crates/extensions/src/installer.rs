@@ -1,7 +1,7 @@
 //! §F5c install orchestrator. Coordinates fetch → build → D8 temp-load
 //! `metadata()` for id/version → `Placer` (copies dylib) → write
-//! `extension.toml`. Pure: no state/config (those are tui-layer; R1 — this
-//! crate cannot depend on `codesmith-tui`'s `ExtensionStateStore` or
+//! `extension.toml`. Pure: no state/config (those are host-layer; R1 — this
+//! crate cannot depend on the CLI's `ExtensionStateStore` or
 //! `is_workspace_trusted`). The `Placer` is constructed inside `install()`
 //! after D8 yields the id (id is unknown until the built dylib's `metadata()`
 //! is read).
@@ -18,7 +18,7 @@ use crate::install_source::{
 /// Install result (§F5c). `id`/`version` come from D8 temp-loading the built
 /// dylib's `metadata()` (not Cargo.toml parsing). `provenance` is the
 /// source's normalized spec (e.g. `git:<url>[@<ref>]`). Trust-warn is the
-/// caller's job (tui command) — R1.
+/// caller's job (CLI command) — R1.
 #[derive(Debug, Clone)]
 pub struct InstallReport {
     pub id: String,
@@ -179,7 +179,7 @@ mod e2e_tests {
             Path::new(".")
         }
         fn mode(&self) -> ExtensionMode {
-            ExtensionMode::Tui
+            ExtensionMode::Interactive
         }
         fn is_idle(&self) -> bool {
             true
@@ -219,7 +219,7 @@ mod e2e_tests {
     /// fixture dylib) + real Placer + real manifest write → discover → load →
     /// `fixture_echo` bound. Proves the install pipeline end-to-end without a
     /// real `cargo build` (avoids target-dir lock / dep-tree rebuild). R5: no
-    /// state assertion (state is tui-side, unit-tested in T2).
+    /// state assertion (state is host-side, unit-tested in T2).
     ///
     /// Quarantined on Windows — see loader.rs `load_dylib_fixture_…` comment
     /// (fixture dylib unload races with parallel tests → STATUS_ACCESS_VIOLATION).

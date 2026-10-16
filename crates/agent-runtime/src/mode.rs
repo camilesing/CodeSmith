@@ -3,7 +3,7 @@
 //! These were relocated from the TUI (`tui::app::AppMode`,
 //! `tui::app::ReasoningEffort`, and `tui::approval::ApprovalMode`) so that
 //! the runtime can mode-switch toolsets and sandbox policy without depending
-//! on the terminal binary. The TUI re-exports them at their historical paths
+//! on the terminal binary. The CLI re-exports them at their historical paths
 //! for backwards compatibility.
 
 /// Supported application modes for the runtime.

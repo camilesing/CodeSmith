@@ -1,9 +1,9 @@
 //! Shared types for agent-team inbox dispatch.
 //!
 //! [`IdleReason`] and [`InboxDispatch`] are consumed by both the engine
-//! (which acts on dispatch items) and the TUI's inbox poller (which produces
+//! (which acts on dispatch items) and the CLI's inbox poller (which produces
 //! them), so they live here in the terminal-agnostic runtime rather than in
-//! the TUI. The TUI re-exports them at their historical
+//! the CLI. The CLI re-exports them at their historical
 //! `crate::tools::team` paths for backwards compatibility.
 
 pub mod team_file;

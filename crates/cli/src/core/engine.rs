@@ -3,7 +3,7 @@
 //! The `Engine` struct, its `impl` block, and the runtime submodules
 //! (turn loop, dispatch, streaming, …) live in `codesmith-agent-runtime`.
 //! This module re-exports them via a glob and supplies the terminal-coupled
-//! construction layer that stays in `codesmith-tui`:
+//! construction layer that stays in `codesmith-cli`:
 //!
 //! - [`EngineHost`] — concrete host services (`ShellManager`, `LspManager`,
 //!   `SubAgentManager`, …) the engine reaches through the `HostServices`
@@ -14,7 +14,7 @@
 //!   prompt, and the wired host, then calls `Engine::new_runtime`.
 //! - [`EngineConstruct`] — extension trait that restores the
 //!   `Engine::new` / `new_with_client` / `new_with_host` constructor API
-//!   the TUI (and its tests) call.
+//!   the CLI (and its tests) call.
 #![allow(dead_code)]
 
 use std::path::PathBuf;
@@ -25,15 +25,15 @@ use tokio_util::sync::CancellationToken;
 
 use codesmith_agent_runtime::host_services::{HostServices, ShellApi, SubAgentApi};
 
-// Explicit re-export of the engine items the TUI actually depends on. This
+// Explicit re-export of the engine items the CLI actually depends on. This
 // replaces an earlier `pub use ...::engine::*` glob: the lists below are the
-// auditable contract of what crosses the AR→TUI boundary. `use super::*` in
-// the TUI submodules below — and `use crate::core::engine::*` elsewhere in
-// the TUI — see exactly this surface (plus the local items defined further
+// auditable contract of what crosses the AR→CLI boundary. `use super::*` in
+// the CLI submodules below — and `use crate::core::engine::*` elsewhere in
+// the CLI — see exactly this surface (plus the local items defined further
 // down in this file). Grouped by the AR engine submodule each item is
 // re-exported from; keep it in sync with `crates/agent-runtime/src/engine/mod.rs`.
 
-// Production surface — referenced by non-test TUI code (this bridge, `handle`,
+// Production surface — referenced by non-test CLI code (this bridge, `handle`,
 // `runtime_traits`, `ui`, …). These items MUST stay `pub` in AR's engine
 // module (see C7-2).
 pub use codesmith_agent_runtime::engine::{
@@ -157,7 +157,7 @@ pub struct EngineHandle {
     /// after build.
     pub mod_reload: Option<crate::mod_ops::ModReloadCtx>,
     /// §F script mod layer — mods discovered at engine build that await
-    /// first-activation consent (passive TUI notice; `/mods list` is the
+    /// first-activation consent (passive REPL notice; `/mods list` is the
     /// durable query). A snapshot: watcher/tool reloads surface their own
     /// reports via logs + `/mods status`.
     pub mods_pending: Vec<crate::mod_ops::PendingModInfo>,
@@ -178,7 +178,7 @@ pub struct EngineHandle {
         Arc<StdMutex<std::collections::VecDeque<codesmith_agent_runtime::session::RecentReadFile>>>,
     /// Capability composition point — the main-turn tool-catalog baseline
     /// (the `tools-change` diff source; the `/tools` readout), shared from
-    /// `EngineHost` at build time so the TUI reads it without an engine
+    /// `EngineHost` at build time so the REPL reads it without an engine
     /// round-trip.
     pub tool_catalog: crate::core::tool_catalog::SharedToolCatalog,
 }
@@ -211,7 +211,7 @@ pub struct EngineHost {
     /// feature is disabled.
     pub seam_manager: Option<SeamManager>,
     /// Background shell process manager. `Some` when the caller shares its
-    /// shell handle (TUI app); `None` for headless paths, which get a fresh
+    /// shell handle (REPL); `None` for headless paths, which get a fresh
     /// manager bound to the configured workspace.
     pub shell_manager: Option<SharedShellManager>,
     /// Pre-erased [`SubAgentApi`] view of `subagent_manager`, built once
@@ -294,7 +294,7 @@ impl Default for EngineHost {
             lsp_manager: std::sync::Arc::new(crate::lsp::LspManager::disabled()),
             seam_manager: None,
             // `shell_manager` stays `None` here: callers that share their
-            // shell (TUI app) set `Some` explicitly; headless paths leave it
+            // shell (REPL) set `Some` explicitly; headless paths leave it
             // `None` so `build_engine` creates a fresh manager bound to the
             // configured workspace.
             shell_manager: None,
@@ -375,8 +375,8 @@ fn configure_plugin_tools(
 
 /// Recovery hint appended to auth errors when the rejected key came from an
 /// environment variable and no saved config key is present. Construction-side
-/// helper (takes the TUI `Config`); kept here because it names `ApiProvider`
-/// variants that are TUI-coupled.
+/// helper (takes the CLI `Config`); kept here because it names `ApiProvider`
+/// variants that are CLI-coupled.
 fn env_only_api_key_recovery_hint(api_config: &Config) -> Option<String> {
     if !crate::config::active_provider_uses_env_only_api_key(api_config) {
         return None;
@@ -416,7 +416,7 @@ fn env_only_api_key_recovery_hint(api_config: &Config) -> Option<String> {
 /// Resolve the LLM client for `api_config` through a [`ProviderRegistry`]
 /// seeded with the compiled-in rig-backed providers.
 ///
-/// Builds the neutral [`ProviderConfig`] from the TUI `Config`'s six
+/// Builds the neutral [`ProviderConfig`] from the CLI `Config`'s six
 /// construction fields, then delegates to `registry.build`. The engine never
 /// names a concrete client type — that is the pluggability seam this slice
 /// opens up.
@@ -614,7 +614,7 @@ pub(crate) fn resolve_seam_model_and_client(
 /// The async `Extension::configure` calls are driven on a fresh
 /// single-thread runtime spawned on a plain OS thread (see the inline
 /// rationale at step 3) rather than `tokio::task::block_in_place`: the
-/// latter is only valid inside a multi-thread runtime (the TUI's
+/// latter is only valid inside a multi-thread runtime (the CLI's
 /// `#[tokio::main]` is multi-thread so it works in prod, but
 /// `#[tokio::test]` defaults to `current_thread` and would panic), and
 /// creating + dropping a nested runtime from a runtime worker thread
@@ -645,7 +645,7 @@ fn build_extension_runtime(
 
 /// Result of a populate pass (§F script mod layer Phase B6): how many
 /// script mods loaded + which discovered mods await first-activation
-/// consent. The TUI surfaces `pending_mods` as a passive notice.
+/// consent. The REPL surfaces `pending_mods` as a passive notice.
 #[derive(Debug, Clone, Default)]
 pub struct PopulateReport {
     pub loaded_mods: usize,
@@ -907,7 +907,7 @@ fn populate_extension_runtime(
     //    runtime spawned on a plain OS thread: creating + dropping a tokio
     //    runtime from within another runtime's worker thread panics on
     //    shutdown (tokio blocking/shutdown.rs); and `tokio::task::block_in_place`
-    //    is only valid inside a multi-thread runtime (the TUI's
+    //    is only valid inside a multi-thread runtime (the CLI's
     //    `#[tokio::main]` is multi-thread so it works in prod, but
     //    `#[tokio::test]` defaults to `current_thread` and would panic). The
     //    spawned thread owns the runtime's lifetime cleanly; `std::thread::scope`
@@ -1098,7 +1098,7 @@ fn populate_extension_runtime(
     let idle = Arc::new(std::sync::Mutex::new(true));
     let ctx = Arc::new(codesmith_extensions::HostExtensionContext::new(
         workspace.to_path_buf(),
-        codesmith_agent::extension::ExtensionMode::Tui,
+        codesmith_agent::extension::ExtensionMode::Interactive,
         idle,
         shared_cancel_token,
         runner.generation_arc(),
@@ -1171,7 +1171,7 @@ pub fn reload_extension_runtime(
     )
 }
 
-/// Assemble an [`Engine`] from TUI-coupled construction state.
+/// Assemble an [`Engine`] from CLI-coupled construction state.
 ///
 /// Creates the op / event / approval / user-input / steer / subagent
 /// channels, resolves the LLM client, builds the system prompt, wires the
@@ -1204,7 +1204,7 @@ pub fn build_engine(
     // Layer 2: hand the engine's **shared** `cancel_token` `Arc` (not a
     // snapshot clone) so `ctx.signal()` reflects per-turn resets.
     // §F script mod layer — the populate report's pending list rides on the
-    // handle for the TUI's passive first-run notice.
+    // handle for the REPL's passive first-run notice.
     let mods_enabled = api_config.mods_enabled();
     let (extension_runner, mods_report) =
         build_extension_runtime(&config.workspace, mods_enabled, shared_cancel_token.clone());
@@ -1470,7 +1470,7 @@ pub fn build_engine(
         tool_exec_lock,
         capacity_controller,
         tx_op.clone(),
-        Arc::new(runtime_traits::TuiRuntimeUi),
+        Arc::new(runtime_traits::ReplRuntimeUi),
         Some(extension_runner.clone()),
     );
 
@@ -1502,8 +1502,8 @@ pub fn build_engine(
 /// `new_with_host` constructor API on the runtime-crate `Engine`.
 ///
 /// Once `Engine` moved to `codesmith-agent-runtime`, inherent `impl Engine`
-/// blocks can no longer live in `codesmith-tui` (orphan rule). The
-/// construction logic — which names TUI types (`Config`, `EngineHost`) — stays
+/// blocks can no longer live in `codesmith-cli` (orphan rule). The
+/// construction logic — which names CLI types (`Config`, `EngineHost`) — stays
 /// here as a local trait impl, which the orphan rule permits because the
 /// trait is local to this crate.
 pub trait EngineConstruct {
@@ -1542,7 +1542,7 @@ pub trait EngineConstruct {
     ///
     /// Replaces the removed `host_concrete: Arc<EngineHost>` field now that
     /// `Engine` lives in `codesmith-agent-runtime` and can no longer name the
-    /// concrete TUI host type. Production code reaches the host through
+    /// concrete CLI host type. Production code reaches the host through
     /// [`HostServices`]; only tests need the concrete view.
     fn host_concrete(&self) -> &EngineHost;
 }

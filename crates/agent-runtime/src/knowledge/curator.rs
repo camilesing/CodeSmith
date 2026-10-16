@@ -18,7 +18,7 @@
 //!    deleted; content deletions are semantic decisions for the human);
 //! 4. budget check against [`MAX_ENTRYPOINT_LINES`] / [`MAX_ENTRYPOINT_BYTES`].
 //!
-//! The LLM half (merge/description rewrite proposals) lives in the TUI
+//! The LLM half (merge/description rewrite proposals) lives in the CLI
 //! command; whatever it produces must pass [`validate_proposed_index`]
 //! before anyone writes it: every existing topic file still referenced
 //! exactly once, no unknown files introduced, pointer syntax intact,

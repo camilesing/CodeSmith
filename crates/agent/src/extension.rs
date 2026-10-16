@@ -444,7 +444,10 @@ impl ExtensionEventKind {
 /// The execution mode of the host. Mirrors pi-mono's `ExtensionContext.mode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExtensionMode {
-    Tui,
+    /// The interactive terminal REPL. Its mod-visible mode string stays
+    /// `"tui"` — the retired frontend's name, kept so existing mods'
+    /// `ctx.mode` checks keep working.
+    Interactive,
     Rpc,
     Json,
     Print,
@@ -508,7 +511,7 @@ pub trait ExtensionCommandContext: ExtensionContext {}
 // === Contribution contracts ===============================================
 
 /// The output a command handler returns. Framework-agnostic so
-/// `codesmith-extensions` stays decoupled from `codesmith-tui`; the tui
+/// `codesmith-extensions` stays decoupled from `codesmith-cli`; the CLI
 /// bridge (Task 8) maps `SendMessage` → `AppAction::SendMessage` and
 /// `Message` → `CommandResult::message`.
 #[derive(Debug, Clone)]
@@ -1330,7 +1333,7 @@ mod tests {
             &self.cwd
         }
         fn mode(&self) -> ExtensionMode {
-            ExtensionMode::Tui
+            ExtensionMode::Interactive
         }
         fn is_idle(&self) -> bool {
             true

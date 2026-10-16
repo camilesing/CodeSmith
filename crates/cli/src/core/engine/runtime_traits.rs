@@ -1,13 +1,13 @@
-//! TUI-side implementations of the agent-runtime trait contracts.
+//! CLI-side implementations of the agent-runtime trait contracts.
 //!
 //! `ToolDispatcher` is implemented for [`ToolRegistry`], delegating to its
 //! inherent methods and passing the registry's internal `ToolContext` to
-//! tools. [`TuiRuntimeUi`] implements [`RuntimeUi`] by calling the TUI's
+//! tools. [`ReplRuntimeUi`] implements [`RuntimeUi`] by calling the CLI's
 //! notification and clipboard free functions.
 //!
 //! These impls are the "bridge" that lets the engine core (once moved to
 //! `codesmith-agent-runtime`) invoke tools and UI side-effects through trait
-//! objects without depending on the concrete TUI types.
+//! objects without depending on the concrete CLI types.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -48,15 +48,15 @@ use crate::utils::spawn_supervised;
 
 /// Zero-sized runtime-UI bridge: resolves the clipboard-image directory the
 /// sandbox trusts. Constructed where the engine needs `Arc<dyn RuntimeUi>`.
-pub(crate) struct TuiRuntimeUi;
+pub(crate) struct ReplRuntimeUi;
 
-impl RuntimeUi for TuiRuntimeUi {
+impl RuntimeUi for ReplRuntimeUi {
     fn clipboard_images_dir(&self, workspace: &std::path::Path) -> PathBuf {
         crate::media::clipboard_images_dir(workspace)
     }
 }
 
-/// Bridge the TUI's concrete [`LspManager`] onto the engine-core trait
+/// Bridge the CLI's concrete [`LspManager`] onto the engine-core trait
 /// [`LspManagerApi`] by delegating to its inherent `config` /
 /// `diagnostics_for`. Uses fully-qualified call syntax so the trait method
 /// and the inherent method (same names) stay unambiguous.
@@ -71,7 +71,7 @@ impl LspManagerApi for LspManager {
     }
 }
 
-/// Bridge the TUI's concrete [`EngineHost`] onto the engine-core trait
+/// Bridge the CLI's concrete [`EngineHost`] onto the engine-core trait
 /// [`HostServices`]. The sync accessors (`lsp` / `bg_registry` / `seam`)
 /// return trait-erased views of services whose concrete types live in the
 /// host; the async [`HostServices::build_turn_dispatcher`] factory assembles
@@ -81,7 +81,7 @@ impl LspManagerApi for LspManager {
 /// catalog the streaming turn loop consumes. Keeping all of this here (the
 /// bridge file) means the `Engine` body — which moves to
 /// `codesmith-agent-runtime` in a later phase — only calls the trait method
-/// and stays free of these concrete TUI types.
+/// and stays free of these concrete CLI types.
 #[async_trait::async_trait]
 impl HostServices for super::EngineHost {
     fn lsp(&self) -> Arc<dyn LspManagerApi> {
@@ -679,9 +679,9 @@ pub(super) fn children_are_read_only_in(mode: AppMode) -> bool {
     matches!(mode, AppMode::Plan)
 }
 
-/// Bridge the TUI's concrete [`SeamManager`] onto the engine-core trait
+/// Bridge the CLI's concrete [`SeamManager`] onto the engine-core trait
 /// [`SeamManagerApi`] by delegating to its inherent API. `enabled` substitutes
-/// for the old `config().enabled` read so `SeamConfig` stays TUI-local.
+/// for the old `config().enabled` read so `SeamConfig` stays CLI-local.
 #[async_trait::async_trait]
 impl SeamManagerApi for SeamManager {
     fn enabled(&self) -> bool {
@@ -765,7 +765,7 @@ impl SeamManagerApi for SeamManager {
     }
 }
 
-/// Bridge the TUI's [`SharedBackgroundTaskRegistry`] onto the engine-core
+/// Bridge the CLI's [`SharedBackgroundTaskRegistry`] onto the engine-core
 /// trait [`BgRegistryApi`]. A newtype is required: the orphan rule forbids
 /// `impl`-ing a foreign trait for `Arc<Mutex<..>>`. Each method locks the
 /// inner registry and converts `BackgroundTaskState` results into the
@@ -854,7 +854,7 @@ impl BgRegistryApi for BgRegistryHost {
     }
 }
 
-/// Bridge the TUI's [`SharedSubAgentManager`] onto the engine-core trait
+/// Bridge the CLI's [`SharedSubAgentManager`] onto the engine-core trait
 /// [`SubAgentApi`]. A newtype is required (orphan rule forbids impl-ing a
 /// foreign trait for `Arc<RwLock<..>>`); each method locks the inner `RwLock`
 /// itself and fully-qualifies the inherent call so the trait method and the

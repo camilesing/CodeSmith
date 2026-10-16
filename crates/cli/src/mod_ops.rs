@@ -1224,7 +1224,7 @@ trust_level = "trusted"
         let runner = Arc::new(ExtensionRunner::new());
         let ctx = HostExtensionContext::new(
             workspace.to_path_buf(),
-            codesmith_agent::extension::ExtensionMode::Tui,
+            codesmith_agent::extension::ExtensionMode::Interactive,
             Arc::new(StdMutex::new(true)),
             Arc::new(StdMutex::new(CancellationToken::new())),
             runner.generation_arc(),

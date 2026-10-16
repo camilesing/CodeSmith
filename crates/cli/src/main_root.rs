@@ -977,11 +977,11 @@ pub(crate) async fn real_main() -> Result<()> {
     // toggled) leaves the user's shell receiving raw CSI sequences
     // like `^[[>5u` until they run `reset` (#1583).
     //
-    // Once the TUI's raw mode is engaged the terminal driver delivers
-    // Ctrl+C as the byte 0x03 rather than SIGINT, so the in-TUI key
+    // Once the REPL's raw mode is engaged the terminal driver delivers
+    // Ctrl+C as the byte 0x03 rather than SIGINT, so the in-REPL key
     // handler — not this handler — is what processes user interrupts
     // during normal operation. This handler exists for the gaps:
-    // pre-TUI subcommands (--version, doctor, login, …), the moments
+    // pre-REPL subcommands (--version, doctor, login, …), the moments
     // around enable_raw_mode / disable_raw_mode, the external-editor
     // suspend path, and SIGTERM / SIGHUP from the OS.
     spawn_signal_cleanup_task();
@@ -1264,7 +1264,7 @@ pub(crate) async fn real_main() -> Result<()> {
     let mut store = codesmith_config::ConfigStore::load(cli.config.clone())?;
     crate::onboarding::maybe_run(&mut store, &cli)?;
 
-    // Top-level prompt mode: submit the initial prompt, then keep the TUI alive
+    // Top-level prompt mode: submit the initial prompt, then keep the REPL alive
     // for follow-up messages. Use `codesmith exec` for explicit non-interactive
     // one-shot behavior (#2370).
     let config = load_config_from_cli(&cli)?;
@@ -1288,7 +1288,7 @@ pub(crate) async fn real_main() -> Result<()> {
         None
     };
 
-    // Default: Interactive TUI
+    // Default: Interactive REPL
     // --yolo starts in YOLO mode (shell + trust + auto-approve)
     run_interactive(&cli, &config, resume_session_id, None).await
 }
@@ -1789,7 +1789,7 @@ pub(crate) fn tools_example_script() -> &'static str {
      # name: example\n\
      # description: Print a confirmation that local tool discovery works\n\
      # usage: example [name]\n\
-     printf 'codesmith-tui local tool ok: %s\\n' \"${1:-world}\"\n"
+     printf 'codesmith local tool ok: %s\\n' \"${1:-world}\"\n"
 }
 
 pub(crate) fn init_tools_dir(
@@ -1909,7 +1909,7 @@ pub(crate) fn default_plugins_dir() -> PathBuf {
     codesmith_state_home_dir().join("plugins")
 }
 
-/// Default location for crash/offline-queue checkpoints managed by the TUI.
+/// Default location for crash/offline-queue checkpoints managed by the CLI.
 pub(crate) fn default_checkpoints_dir() -> PathBuf {
     codesmith_state_home_dir()
         .join("sessions")
@@ -2027,7 +2027,7 @@ pub(crate) fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> R
                 crate::utils::display_path(&skills_dir)
             );
         }
-        println!("    Next: run the TUI and use `/skills` then `/skill getting-started`.");
+        println!("    Next: run the REPL and use `/skills` then `/skill getting-started`.");
     }
 
     if run_tools {
@@ -3504,7 +3504,7 @@ pub(crate) fn run_doctor_json(
 
     // Memory feature state (#489). Operators ask "is memory on?" and
     // "where does it live?" — surface both here so the question can be
-    // answered without booting the TUI. Both inputs are checked: the
+    // answered without booting the REPL. Both inputs are checked: the
     // config flag and the env-var override that the runtime would
     // honour. (The dedicated `Config::memory_enabled()` accessor lives
     // on the memory-MVP branch (#518); this duplicates the same logic
@@ -4341,7 +4341,7 @@ Provide findings ordered by severity with file references, then open questions, 
 
 /// `codesmith pr <N>` (#451) — fetch a GitHub PR via `gh`, format
 /// title + body + diff as the composer's first message, and launch
-/// the interactive TUI. Falls back gracefully if `gh` is missing.
+/// the interactive REPL. Falls back gracefully if `gh` is missing.
 pub(crate) async fn run_pr(
     cli: &Cli,
     config: &Config,
@@ -5224,7 +5224,7 @@ pub(crate) fn recover_interrupted_checkpoint_for_resume(launch_workspace: &Path)
 
     let session_id = session.metadata.id.clone();
 
-    // Persist the checkpoint as a regular session so the TUI can load it by id.
+    // Persist the checkpoint as a regular session so the REPL can load it by id.
     if manager.save_session(&session).is_err() {
         return None;
     }
@@ -5239,7 +5239,7 @@ pub(crate) fn recover_interrupted_checkpoint_for_resume(launch_workspace: &Path)
 }
 
 /// Preserve an interrupted checkpoint on a normal fresh launch without
-/// attaching it to the new TUI instance. This keeps "open another codesmith in
+/// attaching it to the new REPL instance. This keeps "open another codesmith in
 /// the same folder" from re-entering the previous in-flight session while still
 /// leaving an explicit resume path.
 pub(crate) fn preserve_interrupted_checkpoint_for_explicit_resume(launch_workspace: &Path) {
@@ -5431,7 +5431,7 @@ pub(crate) async fn run_interactive(
     // starts from the user config's `telemetry` flag; the project-config
     // overlay is merged post-trust below and re-applied via `set_enabled` so
     // the durable flag honours the merged value. The sink is held for the
-    // function's lifetime; a clone is threaded into the engine in `run_tui`
+    // function's lifetime; a clone is threaded into the engine in `run_repl`
     // (Plan 06 / 6.1) so capacity events route here, and the `Arc`-shared
     // `AtomicBool` keeps this handle's `set_enabled` in sync with the
     // engine's view.
@@ -5486,7 +5486,7 @@ pub(crate) async fn run_interactive(
     }
     // Re-apply the `telemetry` flag from the merged (user + project) config so
     // the durable `enabled` state honours the project overlay (Plan 06 / 6.2).
-    // The sink is Arc-shared with the engine clone handed to `run_tui` below,
+    // The sink is Arc-shared with the engine clone handed to `run_repl` below,
     // so this flip propagates to capacity-event emission routing.
     telemetry_sink.set_enabled(config.telemetry_enabled());
 
@@ -5584,7 +5584,7 @@ pub(crate) async fn run_interactive(
         }
     }
 
-    let options = crate::app_state::TuiOptions {
+    let options = crate::app_state::InteractiveOptions {
         model,
         workspace,
         config_path: cli.config.clone(),
@@ -5961,7 +5961,7 @@ pub(crate) async fn run_exec_agent(
 
     // Provider-neutral automatic compaction is enabled by default so smaller
     // context providers compact before hard context-limit rejection. Users can
-    // still disable it through settings in the TUI path.
+    // still disable it through settings in the REPL path.
     let compaction = CompactionConfig {
         enabled: true,
         model: effective_model.clone(),

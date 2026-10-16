@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 // `ShellTerminalControl` is not re-exported by the tool-impls crate (only the
-// TUI's crossterm impl needs it), so import it directly. `ShellManager` and
+// CLI's crossterm impl needs it), so import it directly. `ShellManager` and
 // `SharedShellManager` come in via the glob re-export below.
 use codesmith_agent_runtime::shell_manager::ShellTerminalControl;
 
@@ -23,7 +23,7 @@ use codesmith_agent_runtime::shell_manager::ShellTerminalControl;
 // that historical `crate::tools::shell::X` paths keep resolving.
 pub use codesmith_tool_impls::tools::shell::*;
 
-/// crossterm-backed [`ShellTerminalControl`] for the TUI.
+/// crossterm-backed [`ShellTerminalControl`] for the CLI.
 ///
 /// Used by [`new_shared_shell_manager`] so `ShellManager`'s sandboxed
 /// sync/interactive exec paths can save/restore terminal raw mode around
@@ -42,14 +42,14 @@ impl ShellTerminalControl for CrosstermTerminalControl {
     }
 }
 
-/// Construct the TUI's crossterm-backed terminal controller for injection
+/// Construct the CLI's crossterm-backed terminal controller for injection
 /// into [`ShellManager::with_terminal_control`].
 fn crossterm_terminal_control() -> Arc<dyn ShellTerminalControl> {
     Arc::new(CrosstermTerminalControl)
 }
 
 /// Create a new shared shell manager with default sandbox policy and the
-/// TUI's crossterm-backed terminal raw-mode controller (so sandboxed
+/// CLI's crossterm-backed terminal raw-mode controller (so sandboxed
 /// sync/interactive exec saves/restores raw mode around child spawn).
 pub fn new_shared_shell_manager(workspace: PathBuf) -> SharedShellManager {
     Arc::new(Mutex::new(ShellManager::with_terminal_control(

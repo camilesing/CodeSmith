@@ -4262,7 +4262,7 @@ async fn narrow_window_model_answer_does_not_advance_a_cycle() {
 /// through the tightened automatic trigger and complete the turn without any
 /// request a real 128K provider would reject as prompt-too-long.
 ///
-/// The compaction threshold mirrors the TUI's production assembly
+/// The compaction threshold mirrors the production assembly
 /// (`compaction_threshold_for_model`), whose tightened small-window formula
 /// yields 63,333 raw tokens — below the preflight trip point, so clean
 /// auto-compaction runs before any budget gate or provider rejection.
@@ -4819,7 +4819,7 @@ async fn f2b_engine_emits_session_start_settled_shutdown() {
         let idle = Arc::new(std::sync::Mutex::new(true));
         let ctx = Arc::new(codesmith_extensions::HostExtensionContext::new(
             tmp.path().to_path_buf(),
-            codesmith_agent::extension::ExtensionMode::Tui,
+            codesmith_agent::extension::ExtensionMode::Interactive,
             idle,
             Arc::new(std::sync::Mutex::new(
                 tokio_util::sync::CancellationToken::new(),
@@ -4883,7 +4883,7 @@ async fn f2b_extension_reload_clears_and_rebinds_live() {
         .expect("load rec ext");
     runner.bind_core(Arc::new(codesmith_extensions::HostExtensionContext::new(
         workspace.clone(),
-        codesmith_agent::extension::ExtensionMode::Tui,
+        codesmith_agent::extension::ExtensionMode::Interactive,
         Arc::new(std::sync::Mutex::new(true)),
         Arc::new(std::sync::Mutex::new(
             tokio_util::sync::CancellationToken::new(),

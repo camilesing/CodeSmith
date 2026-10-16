@@ -13,7 +13,7 @@ use crate::tools::shell::wrap_shell_manager;
 use crate::tools::todo::SharedTodoList;
 
 // sandbox_policy_for_mode now lives in codesmith_agent_runtime::sandbox
-// (moved with its tests in Phase C6-2). Re-exported here so the TUI
+// (moved with its tests in Phase C6-2). Re-exported here so the CLI
 // construction fns below and historical call sites (engine.rs, ui.rs, and
 // the engine test module) keep resolving verbatim.
 pub(crate) use codesmith_agent_runtime::sandbox::sandbox_policy_for_mode;

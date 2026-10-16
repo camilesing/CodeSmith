@@ -4,7 +4,7 @@
 //! or `$CODESMITH_CONFIG_PATH`) and determine whether a given workspace is
 //! marked trusted in it. They were moved here from the TUI's `config.rs` so
 //! that terminal-agnostic modules (`project_context`) can perform trust
-//! checks without depending on the TUI. The TUI re-exports them at the
+//! checks without depending on the host. The CLI re-exports them at the
 //! historical `crate::config::` paths for backwards compatibility.
 
 use std::fs;
@@ -198,7 +198,7 @@ pub fn save_workspace_trust(workspace: &Path) -> Result<PathBuf> {
         .context("Failed to resolve config path: home directory not found.")?;
     ensure_parent_dir_private(&config_path)?;
 
-    // Serialize the read-modify-write against concurrent writers (the TUI
+    // Serialize the read-modify-write against concurrent writers (the REPL
     // and the CLI first-run wizard both land here) with an advisory lock
     // next to the config file; without it, two processes each merge into
     // their own stale snapshot and one side's unrelated fields are lost.
