@@ -54,6 +54,12 @@ pub const BUILTIN_MODS: &[BuiltinMod] = &[
         description: "Default micro-compaction policy (thresholds, tools, placeholder)",
         source: include_str!("builtin/compact_policy.rhai"),
     },
+    BuiltinMod {
+        id: "builtin-large-output-route",
+        version: "0.1.0",
+        description: "Default large-output routing policy (thresholds)",
+        source: include_str!("builtin/large_output_route.rhai"),
+    },
 ];
 
 /// Compile + run every builtin mod against the runner (used by the host's

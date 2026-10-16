@@ -46,6 +46,11 @@ pub enum PolicyKind {
     /// list, the cleared-result placeholder. The compaction engine (what
     /// to keep, ordering, retries) stays in Rust.
     CompactPolicy,
+    /// Large-output routing thresholds (`threshold_tokens`, `per_tool`) —
+    /// the workshop synthesis call and its security framing stay in Rust.
+    /// Explicit `[workshop]` TOML sits above this kind: config values
+    /// win, the script tier supplies the default when TOML is silent.
+    LargeOutputRoute,
 }
 
 impl PolicyKind {
@@ -57,6 +62,7 @@ impl PolicyKind {
             Self::OutputDiff => "output-diff",
             Self::ShellOutput => "shell-output",
             Self::CompactPolicy => "compact-policy",
+            Self::LargeOutputRoute => "large-output-route",
         }
     }
 
@@ -68,6 +74,7 @@ impl PolicyKind {
             "output-diff" => Some(Self::OutputDiff),
             "shell-output" => Some(Self::ShellOutput),
             "compact-policy" => Some(Self::CompactPolicy),
+            "large-output-route" => Some(Self::LargeOutputRoute),
             _ => None,
         }
     }
@@ -78,6 +85,7 @@ impl PolicyKind {
         PolicyKind::OutputDiff,
         PolicyKind::ShellOutput,
         PolicyKind::CompactPolicy,
+        PolicyKind::LargeOutputRoute,
     ];
 }
 
@@ -246,6 +254,60 @@ pub fn policy_string_list(
         }
         None => default.iter().map(|s| (*s).to_string()).collect(),
     }
+}
+
+/// Read a string→usize map field of a published policy map. Entries are
+/// independent overrides, so — unlike the wholesale fallback of
+/// [`policy_string_list`] — a bad entry (non-numeric value, over-ceiling
+/// number) is skipped with a warn and the rest of the map still applies.
+/// `None` when the kind has no registration or the field is absent.
+#[must_use]
+pub fn policy_usize_map(
+    kind: PolicyKind,
+    field: &str,
+    max_entries: usize,
+    max_value: usize,
+) -> Option<HashMap<String, usize>> {
+    let value = published_policy(kind)?;
+    let Value::Object(entries) = value.get(field)? else {
+        tracing::warn!(
+            target: "codesmith_policy",
+            "policy {} field {field} is not a map ({value}); ignoring it",
+            kind.kebab_name()
+        );
+        return None;
+    };
+    let mut out = HashMap::with_capacity(entries.len().min(max_entries));
+    for (tool, v) in entries {
+        if out.len() >= max_entries {
+            tracing::warn!(
+                target: "codesmith_policy",
+                "policy {} field {field} exceeds {max_entries} entries; ignoring the rest",
+                kind.kebab_name()
+            );
+            break;
+        }
+        match v.as_u64() {
+            Some(n) if (n as usize) <= max_value => {
+                out.insert(tool.clone(), n as usize);
+            }
+            Some(too_big) => {
+                tracing::warn!(
+                    target: "codesmith_policy",
+                    "policy {} field {field}[{tool}] = {too_big} exceeds {max_value}; skipping entry",
+                    kind.kebab_name()
+                );
+            }
+            None => {
+                tracing::warn!(
+                    target: "codesmith_policy",
+                    "policy {} field {field}[{tool}] is not a non-negative integer; skipping entry",
+                    kind.kebab_name()
+                );
+            }
+        }
+    }
+    Some(out)
 }
 
 #[cfg(test)]

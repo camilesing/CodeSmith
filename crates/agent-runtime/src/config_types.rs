@@ -142,7 +142,10 @@ pub struct WorkshopConfig {
 }
 
 impl WorkshopConfig {
-    /// Resolve the effective threshold for the given tool name.
+    /// Resolve the effective threshold for the given tool name. Explicit
+    /// `[workshop]` values win; when TOML is silent the scriptable policy
+    /// tier supplies the default (builtin `large-output-route` mod →
+    /// [`DEFAULT_LARGE_OUTPUT_THRESHOLD_TOKENS`]).
     #[must_use]
     pub fn threshold_for(&self, tool_name: &str) -> usize {
         if let Some(per_tool) = self.per_tool_thresholds.as_ref()
@@ -151,7 +154,7 @@ impl WorkshopConfig {
             return limit;
         }
         self.large_output_threshold_tokens
-            .unwrap_or(DEFAULT_LARGE_OUTPUT_THRESHOLD_TOKENS)
+            .unwrap_or_else(|| crate::tools::output_policy::large_output_route_threshold(tool_name))
     }
 }
 

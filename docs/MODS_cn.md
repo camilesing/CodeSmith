@@ -185,13 +185,18 @@ register_policy("shell-output", #{
   `preserved_total_bytes`）、`compact-policy`（`cache_trigger_threshold`、
   `time_trigger_gap_secs`、`micro_compactable_tools`、
   `cleared_placeholder` —— 压缩引擎本体留在 Rust；摘要提示词由多个会话
-  来源合并而成、并非单一模板，故不进此接缝）。
+  来源合并而成、并非单一模板，故不进此接缝）、`large-output-route`
+  （`threshold_tokens`、`per_tool` —— 路由决策；utility LLM 综合调用留在
+  Rust。显式 `[workshop]` TOML（`large_output_threshold_tokens` /
+  `per_tool_thresholds`）位于该种类之上：config 值优先，TOML 未设时由
+  脚本层提供默认值）。
 - 解析为**按装载顺序后写者胜**（内置 < 全局 < 项目）：用户 mod 注册同
   种类即覆盖内置默认——与工具/命令的"先到者得"刻意不同。
 - 非法取值（字段类型错误、超上限、head+tail > max）在读取时告警并回退
   到编译默认——mod 的 bug 不能瘫痪它所调优的机制。
 - **内置层**：默认值本身以内嵌 Rhai mod 发布（`builtin-output-diff`、
-  `builtin-shell-output`、`builtin-compact-policy` —— 源码在 `crates/extensions/src/script/builtin/`）。
+  `builtin-shell-output`、`builtin-compact-policy`、
+  `builtin-large-output-route` —— 源码在 `crates/extensions/src/script/builtin/`）。
   它们始终装载（`[mods] enabled = false` 也只禁用户 mod）、跳过同意/哈希
   门（随二进制发布）、使用临时 KV，且不出现在 `/mods` 列表（不是可发现
   id —— 覆盖方式是注册同种类策略，而非遮蔽 id）。
