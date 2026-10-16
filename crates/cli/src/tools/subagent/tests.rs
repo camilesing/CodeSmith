@@ -955,8 +955,8 @@ impl ExtensionCommandContext for StubExtCtx {}
 
 /// §F5d T4 §4b — a sub-agent never holds a dylib `Arc` across a turn boundary
 /// (it holds none at all). The exclusion is STRUCTURAL, not a guard:
-///   1. `SubAgentRuntime` has NO `extension_runner` field (subagent/mod.rs),
-///      so a sub-agent can never receive the parent's runner;
+///   1. `SubAgentRuntime.extension_runner` is veto-only (`SessionBeforeFork`
+///      emit from the spawn-family tools) — nothing reads tools off it;
 ///   2. `SubAgentToolRegistry::new` rebuilds its OWN fresh built-in
 ///      `ToolRegistry` via `with_full_agent_surface` — it neither clones the
 ///      parent's `ToolRegistry` `Arc`s nor wires extension-contributed tools
@@ -964,7 +964,8 @@ impl ExtensionCommandContext for StubExtCtx {}
 ///      a path the sub-agent never takes).
 ///
 /// So an ext tool bound on the parent's `ExtensionRunner` can NEVER reach a
-/// sub-agent's effective tool set, regardless of `inherit_full_registry`.
+/// sub-agent's effective tool set — even with that very runner attached to
+/// the child runtime — regardless of `inherit_full_registry`.
 ///
 /// EXPECTED GREEN. If Red, ext tools are leaking into sub-agents — STOP +
 /// report (do NOT add a provenance marker / force-subset / runtime guard; the
@@ -974,7 +975,7 @@ fn subagent_ext_tool_excluded_from_effective_set() {
     // Parent HAS fixture_echo bound on its ExtensionRunner (stub ext — the
     // fixture cdylib path isn't available to tui's build.rs, so the stub is
     // the closest feasible analog to "load fixture dylib").
-    let runner = codesmith_extensions::ExtensionRunner::new();
+    let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
     let rt = tokio::runtime::Runtime::new().expect("rt");
     rt.block_on(runner.load(&StubFixtureEchoExt))
         .expect("load stub ext");
@@ -995,8 +996,8 @@ fn subagent_ext_tool_excluded_from_effective_set() {
     let tmp = tempdir().expect("tempdir");
 
     // inherit_full_registry = false (default; restrictToSubset). The sub-agent
-    // is built WITHOUT the runner (SubAgentRuntime has no field for one).
-    let mut runtime = stub_runtime();
+    // runtime carries the parent's runner (veto-only) — still no ext tools.
+    let mut runtime = stub_runtime().with_extension_runner(Some(runner.clone()));
     runtime.context = ToolContext::new(tmp.path().to_path_buf());
     let registry = SubAgentToolRegistry::new(
         runtime,
@@ -1014,7 +1015,9 @@ fn subagent_ext_tool_excluded_from_effective_set() {
 
     // inherit_full_registry = true (legacy full inheritance) — the exclusion
     // is structural, so even full inheritance must not surface ext tools.
-    let mut runtime = stub_runtime().with_inherit_full_registry(true);
+    let mut runtime = stub_runtime()
+        .with_inherit_full_registry(true)
+        .with_extension_runner(Some(runner));
     runtime.context = ToolContext::new(tmp.path().to_path_buf());
     let registry = SubAgentToolRegistry::new(
         runtime,
@@ -2340,6 +2343,7 @@ fn stub_runtime() -> SubAgentRuntime {
         allow_shell: true,
         event_tx: None,
         approval_router: None,
+        extension_runner: None,
         manager: new_shared_subagent_manager(workspace, 5),
         spawn_depth: 0,
         max_spawn_depth: DEFAULT_MAX_SPAWN_DEPTH,
@@ -3264,6 +3268,54 @@ async fn session_before_fork_continue_proceeds_past_the_seam() {
             .iter()
             .any(|k| k.contains("SessionBeforeFork")),
         "the fork seam fired: {:?}",
+        seen.lock().unwrap()
+    );
+}
+
+/// The veto reaches every generation: a CHILD runtime (depth 1) derived
+/// through `child_runtime()` carries the runner, so the spawn tool inside
+/// the child's OWN registry — the grandchild fork — is vetoable too.
+#[tokio::test]
+async fn session_before_fork_cancel_vetoes_grandchild_spawn() {
+    let (runner, seen) = runner_with_fork_handler(true).await;
+    let tmp = tempdir().expect("tempdir");
+    let mut parent = stub_runtime().with_extension_runner(Some(runner));
+    parent.context = ToolContext::new(tmp.path().to_path_buf());
+    // `agent_spawn` is approval-Required; the child registry's gate needs
+    // the inherited auto-approve to reach the tool (and its veto seam).
+    parent.context.auto_approve = true;
+    let child = parent.child_runtime();
+    assert_eq!(child.spawn_depth, 1);
+    assert!(
+        child.extension_runner.is_some(),
+        "the runner rides child_runtime()"
+    );
+
+    let registry = SubAgentToolRegistry::new(
+        child,
+        SubAgentType::General,
+        None,
+        Arc::new(Mutex::new(TodoList::new())),
+        Arc::new(Mutex::new(PlanState::default())),
+    );
+    let err = registry
+        .execute(
+            "agent-child",
+            "agent_spawn",
+            serde_json::json!({"prompt": "fork a grandchild"}),
+        )
+        .await
+        .expect_err("Cancel must abort the grandchild spawn");
+    assert!(
+        err.to_string().contains("vetoed"),
+        "veto error surfaced: {err}"
+    );
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .any(|k| k.contains("SessionBeforeFork")),
+        "the fork seam fired from the child's registry: {:?}",
         seen.lock().unwrap()
     );
 }

@@ -584,6 +584,14 @@ pub struct SubAgentRuntime {
     /// tests) ⇒ the child cannot ask, and its out-of-workspace calls fail on
     /// their own path check as before.
     pub approval_router: Option<std::sync::Arc<crate::core::engine::ApprovalRouter>>,
+    /// The extension runner, carried for the `SessionBeforeFork` veto only:
+    /// the spawn-family tools of THIS agent's registry emit through it, so
+    /// every generation's forks are vetoable, not just the parent's.
+    /// Propagated verbatim to descendants. Deliberately NOT a tool source —
+    /// a sub-agent's registry never mounts extension tools (§4b structural
+    /// exclusion, see [`SubAgentToolRegistry::new`]). `None` for
+    /// embeds/tests.
+    pub extension_runner: Option<std::sync::Arc<codesmith_extensions::ExtensionRunner>>,
     /// Manager handle so children can recurse via `agent_spawn`. All agents
     /// at every depth share the same manager.
     pub manager: SharedSubAgentManager,
@@ -679,6 +687,7 @@ impl SubAgentRuntime {
             allow_shell,
             event_tx,
             approval_router: None,
+            extension_runner: None,
             manager,
             spawn_depth: 0,
             max_spawn_depth: DEFAULT_MAX_SPAWN_DEPTH,
@@ -713,6 +722,18 @@ impl SubAgentRuntime {
         router: Option<std::sync::Arc<crate::core::engine::ApprovalRouter>>,
     ) -> Self {
         self.approval_router = router;
+        self
+    }
+
+    /// Carry the extension runner for the `SessionBeforeFork` veto, so the
+    /// spawn tools in this agent's — and every descendant's — registry can
+    /// be vetoed. Veto-only: no extension tools are mounted from it.
+    #[must_use]
+    pub fn with_extension_runner(
+        mut self,
+        runner: Option<std::sync::Arc<codesmith_extensions::ExtensionRunner>>,
+    ) -> Self {
+        self.extension_runner = runner;
         self
     }
 
@@ -883,6 +904,7 @@ impl SubAgentRuntime {
             allow_shell: self.allow_shell,
             event_tx: self.event_tx.clone(),
             approval_router: self.approval_router.clone(),
+            extension_runner: self.extension_runner.clone(),
             manager: self.manager.clone(),
             spawn_depth: self.spawn_depth + 1,
             max_spawn_depth: self.max_spawn_depth,
@@ -1962,8 +1984,8 @@ pub struct AgentOpenTool {
     manager: SharedSubAgentManager,
     runtime: SubAgentRuntime,
     /// `SessionBeforeFork` emit (fork veto); forwarded to the spawn tool
-    /// this delegates to. `None` in sub-agent registries — known
-    /// limitation: only the parent's spawns are vetoable.
+    /// this delegates to. Rides the sub-agent runtime into child
+    /// registries, so every generation's spawns are vetoable.
     extension_runner: Option<std::sync::Arc<codesmith_extensions::ExtensionRunner>>,
 }
 
@@ -2422,8 +2444,8 @@ impl ToolSpec for AgentSpawnTool {
         // `SessionBeforeFork` — cancel-veto seam before the child forks
         // session state (same idiom as `SessionBeforeCompact`): `Cancel`
         // aborts the spawn with a model-visible error; everything else
-        // proceeds. Known limitation: sub-agent registries attach no
-        // runner, so grandchildren forks are not vetoable.
+        // proceeds. The runner rides the sub-agent runtime, so this fires
+        // at every generation — grandchildren forks are vetoable too.
         if let Some(runner) = &self.extension_runner {
             let out = runner
                 .emit(codesmith_agent::extension::ExtensionEvent::SessionBeforeFork)
@@ -3512,8 +3534,8 @@ impl ToolSpec for SubagentRunTool {
         // `SessionBeforeFork` — cancel-veto seam before the child forks
         // session state (same idiom as `SessionBeforeCompact`): `Cancel`
         // aborts the spawn with a model-visible error; everything else
-        // proceeds. Known limitation: sub-agent registries attach no
-        // runner, so grandchildren forks are not vetoable.
+        // proceeds. The runner rides the sub-agent runtime, so this fires
+        // at every generation — grandchildren forks are vetoable too.
         if let Some(runner) = &self.extension_runner {
             let out = runner
                 .emit(codesmith_agent::extension::ExtensionEvent::SessionBeforeFork)
@@ -6525,16 +6547,19 @@ impl SubAgentToolRegistry {
     /// §F5b/§F5d — build the sub-agent's OWN `ToolRegistry` fresh from the
     /// built-in agent surface ("the full agent surface — same as the
     /// parent's Agent mode"). The sub-agent does **not** clone the parent's
-    /// `ToolRegistry` `Arc`s and does **not** bind an `extension_runner`
-    /// (`SubAgentRuntime` has no such field, see [`SubAgentRuntime`]; only
-    /// `HostAgentExecutor` binds one). Consequently extension-contributed
-    /// dylib tools — which are registered only in
-    /// `EngineHost::build_turn_dispatcher` (§F5d T1) — can **never** reach a
-    /// sub-agent's effective tool set, regardless of `inherit_full_registry`.
+    /// `ToolRegistry` `Arc`s and never registers extension-contributed
+    /// tools — those are registered only in
+    /// `EngineHost::build_turn_dispatcher` (§F5d T1), a path the sub-agent
+    /// never takes. `runtime.extension_runner` is attached for the
+    /// `SessionBeforeFork` veto ONLY (every generation's spawns stay
+    /// vetoable); it is not a tool source here.
     ///
     /// §4b invariant: a sub-agent never holds a dylib `Arc` across a turn
-    /// boundary (it holds none at all). This needs **no runtime subagent-check
-    /// guard** — the exclusion is the structural precondition, not a guard.
+    /// boundary (it holds none at all — the veto-only runner holds no
+    /// dylib `Arc`s of its own; `drain_libraries_to_pending` empties the
+    /// runner's `Library` vec on reload, so a child cannot pin an unloaded
+    /// library either). This needs **no runtime subagent-check guard** —
+    /// the exclusion is the structural precondition, not a guard.
     /// The regression test `subagent_ext_tool_excluded_from_effective_set`
     /// locks this.
     fn new(
@@ -6596,9 +6621,10 @@ impl SubAgentToolRegistry {
             runtime.allow_shell,
             todo_list,
             plan_state,
-            // Children attach no runner: grandchildren forks are not
-            // vetoable (known limitation on `SessionBeforeFork`).
-            None,
+            // Veto-only: the child's own spawn-family tools emit
+            // `SessionBeforeFork` through it, so grandchildren forks are
+            // vetoable. No extension tools are mounted from it (§4b).
+            runtime.extension_runner.clone(),
         );
         if matches!(agent_type, SubAgentType::Team)
             && let Some(team_context) = context.runtime.team_context.clone()

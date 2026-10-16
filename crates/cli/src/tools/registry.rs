@@ -782,8 +782,9 @@ impl ToolRegistryBuilder {
     }
 
     /// Include sub-agent management tools. `extension_runner` wires the
-    /// `SessionBeforeFork` veto into the spawn-family tools (`None` in
-    /// sub-agent registries — grandchildren forks are not vetoable).
+    /// `SessionBeforeFork` veto into the spawn-family tools; sub-agent
+    /// registries pass their runtime's runner through, so grandchildren
+    /// forks are vetoable too (veto-only — no extension tools ride along).
     #[must_use]
     pub fn with_subagent_tools(
         self,
