@@ -7306,10 +7306,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn approval_retry_with_policy_treated_as_approved() {
-        // RetryWithPolicy carries a sandbox policy the framework `Tool::run` path
-        // can't honor; the by-design treatment is Approved (tool runs with the
-        // fixed context). Sandbox elevation threads in at the wire-in step.
+    async fn approval_retry_without_dispatcher_runs_with_unchanged_context() {
+        // `RetryWithPolicy` carries a sandbox policy that only the
+        // dispatcher's override wire-in can apply. With no dispatcher
+        // attached (embeds/tests), the elevation cannot thread in and the
+        // decision degrades to a plain approval: the tool runs with its
+        // fixed context. The wired path is covered by
+        // `approval_retry_with_policy_dispatches_via_wire_in_with_override`.
         let mut sess = fresh_session();
         let mut history = SessionChatHistory::new(&mut sess);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
@@ -7357,6 +7360,144 @@ mod tests {
     }
 
     // === per-input approval override (slice 20 §E) ========================
+
+    /// Dispatcher double for the one-shot sandbox-elevation wire-in: records
+    /// the `sandbox_override` it was executed with and returns a marker
+    /// result, so a test can prove an approved `RetryWithPolicy` decision
+    /// reached the dispatcher's override wire-in — the only path that can
+    /// apply a wider sandbox policy — and with exactly which policy.
+    struct ElevationRecordingDispatcher {
+        overrides: Arc<std::sync::Mutex<Vec<Option<serde_json::Value>>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolDispatcher for ElevationRecordingDispatcher {
+        fn has_tool(&self, _name: &str) -> bool {
+            true
+        }
+        fn resolve(&self, requested: &str) -> Option<String> {
+            Some(requested.to_string())
+        }
+        fn metadata(&self, _name: &str) -> Option<crate::tool_dispatch::ToolMetadata> {
+            None
+        }
+        fn is_destructive(&self, _name: &str, _input: &serde_json::Value) -> bool {
+            false
+        }
+        fn is_interactive(&self, _name: &str, _input: &serde_json::Value) -> bool {
+            false
+        }
+        fn approval_requirement_for(
+            &self,
+            _name: &str,
+            _input: &serde_json::Value,
+        ) -> Option<ApprovalRequirement> {
+            // No per-input opinion: the static WritesFiles capability gate
+            // fires, so the call reaches the approval channel.
+            None
+        }
+        fn escaped_path_for(
+            &self,
+            _name: &str,
+            _input: &serde_json::Value,
+        ) -> Option<std::path::PathBuf> {
+            None
+        }
+        fn grant_external_path(&self, _path: std::path::PathBuf) {}
+        fn validate_input(&self, _name: &str, _input: &serde_json::Value) -> Result<(), ToolError> {
+            Ok(())
+        }
+        fn to_api_tools(&self) -> Vec<crate::models::Tool> {
+            Vec::new()
+        }
+        fn to_api_tools_with_cache(&self, _enable_cache: bool) -> Vec<crate::models::Tool> {
+            Vec::new()
+        }
+        async fn execute(
+            &self,
+            _name: &str,
+            _input: serde_json::Value,
+            sandbox_override: Option<serde_json::Value>,
+        ) -> Result<ToolResult, ToolError> {
+            self.overrides
+                .lock()
+                .expect("elevation overrides poisoned")
+                .push(sandbox_override);
+            Ok(ToolResult::success("dispatched-via-wire-in"))
+        }
+        fn hook_host(&self) -> Option<Arc<dyn HookHost>> {
+            None
+        }
+    }
+
+    /// An approved one-shot sandbox elevation must reach the tool through the
+    /// dispatcher's `sandbox_override` wire-in, carrying exactly the approved
+    /// policy. Before the wire-in landed, `RetryWithPolicy` was treated as a
+    /// plain approval and the elevation silently never took effect.
+    #[tokio::test]
+    async fn approval_retry_with_policy_dispatches_via_wire_in_with_override() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let (tx_approval, rx_approval) = approval_channel();
+        tx_approval
+            .send(ApprovalDecision::RetryWithPolicy {
+                id: "call_1".to_string(),
+                policy: crate::sandbox::SandboxPolicy::DangerFullAccess,
+            })
+            .await
+            .unwrap();
+
+        let overrides = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mock = Arc::new(MockLlm::new(vec![write_call(), end_call()]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            write_tools(),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            Some(rx_approval),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_tool_dispatcher(Some(Arc::new(ElevationRecordingDispatcher {
+            overrides: Arc::clone(&overrides),
+        })));
+
+        let reason = executor
+            .run(&mut history, "please write the file".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        let recorded = overrides.lock().expect("overrides poisoned").clone();
+        assert_eq!(
+            recorded.len(),
+            1,
+            "the elevated retry must dispatch through the override wire-in exactly once"
+        );
+        let expected = serde_json::to_value(crate::sandbox::SandboxPolicy::DangerFullAccess)
+            .expect("serialize approved policy");
+        assert_eq!(
+            recorded[0],
+            Some(expected),
+            "the override carried must be exactly the approved policy"
+        );
+        match &sess.messages[2].content[0] {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
+                assert_eq!(content, "dispatched-via-wire-in");
+                assert_eq!(*is_error, Some(false));
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
 
     /// Override-**downgrade**: `ExecSpec` declares `ExecutesCode` (static gate
     /// ⇒ needs approval), but the dispatcher opines `Auto` for the (name, input)

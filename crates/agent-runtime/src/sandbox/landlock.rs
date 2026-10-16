@@ -27,7 +27,7 @@
 use super::SandboxPolicy;
 use std::ffi::CString;
 use std::os::fd::{AsRawFd, OwnedFd};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Check if Landlock is available on this system.
 pub fn is_available() -> bool {
@@ -74,8 +74,9 @@ pub fn get_abi_version() -> Option<i32> {
 }
 
 // Landlock syscall constants (not yet in libc crate). The access-right list
-// mirrors the kernel uapi; rights not consumed below stay as ABI reference
-// until child-process enforcement is wired (see `prepare_landlock`).
+// mirrors the kernel uapi; rights not folded into the READ/WRITE combinations
+// below stay as ABI reference (they are never granted by our rule
+// translation — see `from_policy`).
 #[cfg(target_os = "linux")]
 const LANDLOCK_CREATE_RULESET_VERSION: u32 = 1 << 0;
 
@@ -151,35 +152,53 @@ const LANDLOCK_RULE_PATH_BENEATH: u32 = 1;
 ///
 /// Crate-private by design: `apply()` irreversibly restricts the calling
 /// thread and everything it subsequently spawns, so the only legitimate
-/// call site is between fork and exec (a `pre_exec` closure). Keeping the
-/// surface crate-private prevents a caller from applying it to the
-/// long-lived agent runtime thread by mistake. It gains its first caller
-/// when rule wiring lands (see `from_policy`'s KNOWN LIMITATION).
+/// call site is between fork and exec — the `pre_exec` closure installed by
+/// `install_sandbox_preexec` (shell_manager) and reached through the
+/// `ExecEnv::landlock` handle built by `SandboxManager::prepare_landlock`.
+/// The ruleset is created and fully populated with rules in the parent by
+/// [`from_policy`](Self::from_policy); only `prctl` +
+/// `landlock_restrict_self` run post-fork, both async-signal-safe raw
+/// syscalls. Keeping the surface crate-private prevents a caller from
+/// applying it to the long-lived agent runtime thread by mistake.
 #[cfg(target_os = "linux")]
 pub(crate) struct LandlockSandbox {
     /// Owned descriptor: `Drop` closes it on every path — including the
     /// `try_from` error branch in the constructor — instead of relying on
     /// a manual `Drop` impl plus ad-hoc closes.
     ruleset_fd: std::os::fd::OwnedFd,
-    // Kept for introspection once Landlock enforcement is wired into command
-    // spawning; nothing reads it yet (see `prepare_landlock`).
-    #[allow(dead_code)]
-    policy: SandboxPolicy,
 }
 
 #[cfg(target_os = "linux")]
 impl LandlockSandbox {
-    /// Create a new Landlock sandbox from policy.
+    /// Create a new Landlock sandbox from policy, translating the policy
+    /// into path-beneath rules:
     ///
-    /// KNOWN LIMITATION — do not connect a caller yet: this creates the
-    /// ruleset with `handled_access_fs` set but ZERO path-beneath rules,
-    /// and never translates `policy` into them. Applying the result would
-    /// deny ALL handled access (including execute on the target binary
-    /// and the dynamic loader), bricking the process instead of enforcing
-    /// the policy. Rule wiring must land (policy paths + essential runtime
-    /// paths such as /usr, /lib, /etc/ld.so.cache, a writable tmp) before
-    /// this constructor gains its first caller.
-    pub(crate) fn from_policy(policy: &SandboxPolicy) -> std::io::Result<Self> {
+    /// - `/` gets read + execute: every policy grants full-disk read, and
+    ///   the child must be able to exec its own binary, the dynamic
+    ///   loader, and read `/etc/ld.so.cache` (this rule is what keeps the
+    ///   sandbox from bricking the process the old zero-rules draft would
+    ///   have produced).
+    /// - `/dev/null` gets write: shell redirections to `/dev/null` survive.
+    /// - each of the policy's writable roots
+    ///   ([`SandboxPolicy::get_writable_roots`], resolved against `cwd`)
+    ///   gets read + write.
+    ///
+    /// # Known limitations
+    ///
+    /// - **Network access is not restricted.** This backend handles
+    ///   filesystem rights only; a policy that denies network (e.g.
+    ///   `ReadOnly`) still allows it under Landlock. bwrap — selected
+    ///   automatically whenever installed — unshares the network
+    ///   namespace and enforces the denial.
+    /// - **Read-only subpaths inside a writable root are not expressible.**
+    ///   Landlock path-beneath rules only ever ADD access (rule union), so
+    ///   the protected control-plane subpaths
+    ///   ([`WritableRoot::read_only_subpaths`]) stay writable inside a
+    ///   workspace-writable root. Seatbelt and bwrap enforce them.
+    /// - Paths that do not exist are skipped (skip-missing semantics in
+    ///   `add_rule`); every other rule failure propagates, and the caller
+    ///   (`SandboxManager::prepare`) turns it into a refusal to spawn.
+    pub(crate) fn from_policy(policy: &SandboxPolicy, cwd: &Path) -> std::io::Result<Self> {
         // Determine what filesystem access to handle (restrict).
         // TRUNCATE (folded into LANDLOCK_ACCESS_FS_WRITE) requires ABI v3
         // (kernel 5.19+); on ABI v1/v2 kernels landlock_create_ruleset
@@ -217,12 +236,32 @@ impl LandlockSandbox {
             ))
         })?;
 
-        Ok(Self {
+        let sandbox = Self {
             // Takes ownership: any error past this point still drops (and
             // closes) the descriptor.
             ruleset_fd: std::os::fd::OwnedFd::from_raw_fd(ruleset_fd),
-            policy: policy.clone(),
-        })
+        };
+
+        // Full-disk read + execute for every policy, plus the write floor
+        // every shell-style child needs.
+        sandbox.allow_read(Path::new("/"))?;
+        sandbox.allow_write(Path::new("/dev/null"))?;
+
+        match policy {
+            SandboxPolicy::ReadOnly => {}
+            SandboxPolicy::WorkspaceWrite { .. } => {
+                for root in policy.get_writable_roots(cwd) {
+                    sandbox.allow_write(&root.root)?;
+                }
+            }
+            // Never selected for confinement (`should_sandbox()` is
+            // false); if a forced path reaches here anyway, keep the
+            // read-only floor rather than granting writes no rule set
+            // was derived for.
+            SandboxPolicy::DangerFullAccess | SandboxPolicy::ExternalSandbox { .. } => {}
+        }
+
+        Ok(sandbox)
     }
 
     /// Add a read-only rule for a path
@@ -394,5 +433,29 @@ mod tests {
             // SIGSYS death reported by a shell parent: 128 + 31.
             assert!(detect_denial(159, ""));
         }
+    }
+
+    /// Rule translation builds (and drops) a real ruleset on kernels that
+    /// expose Landlock. Kernel-behavior enforcement (a confined child
+    /// actually being denied) is NOT covered here — that evidence requires
+    /// a Linux environment running confined children.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn from_policy_builds_ruleset_when_landlock_available() {
+        if !is_available() {
+            // Kernel without Landlock: unavailability is the honest answer
+            // and `decide_sandbox` refuses sandboxed policies.
+            return;
+        }
+        let sandbox = LandlockSandbox::from_policy(&SandboxPolicy::ReadOnly, Path::new("/tmp"))
+            .expect("ruleset construction succeeds on an available kernel");
+        drop(sandbox);
+
+        let workspace = LandlockSandbox::from_policy(
+            &SandboxPolicy::workspace_with_roots(vec![PathBuf::from("/tmp")], false),
+            Path::new("/tmp"),
+        )
+        .expect("workspace-write rule translation succeeds");
+        drop(workspace);
     }
 }

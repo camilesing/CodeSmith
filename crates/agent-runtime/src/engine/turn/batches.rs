@@ -539,45 +539,82 @@ impl HostAgentExecutor {
                                     )
                                     .await
                                 {
-                                    Ok(()) => {
-                                        // Early-tool-start reuse (same shape
-                                        // as the parallel arm, but sequential).
-                                        // A call that needed approval never
-                                        // reuses the speculative result: it was
-                                        // produced before the user's answer —
-                                        // for an approved path, before the
-                                        // grant existed, so it could only fail.
-                                        // Aborting it (Drop) and running fresh
-                                        // is the point of the approval.
-                                        match early_for_plan[idx].take() {
-                                            Some(mut early)
-                                                if !plan.approval_required
-                                                    && early.name == plan.name
-                                                    && early.input == run_input =>
-                                            {
-                                                let handle = early
-                                                    .handle
-                                                    .take()
-                                                    .expect("handle present until consumed");
-                                                match handle.await {
-                                                    Ok(result) => (result, false),
-                                                    Err(join_err) => (
-                                                        Err(ToolError::execution_failed(format!(
-                                                            "Early tool execution task failed: {join_err}"
-                                                        ))),
-                                                        false,
-                                                    ),
+                                    Ok(elevation) => {
+                                        if let (Some(policy), Some(dispatcher)) =
+                                            (&elevation, self.tool_dispatcher.as_ref())
+                                        {
+                                            // An approved one-shot sandbox
+                                            // escalation re-dispatches through
+                                            // the dispatcher's override
+                                            // wire-in — the single path that
+                                            // can apply a wider policy (the
+                                            // registry rejects non-widening
+                                            // overrides there).
+                                            match serde_json::to_value(policy) {
+                                                Ok(override_value) => (
+                                                    dispatcher
+                                                        .execute(
+                                                            &plan.name,
+                                                            run_input.clone(),
+                                                            Some(override_value),
+                                                        )
+                                                        .await,
+                                                    false,
+                                                ),
+                                                Err(err) => (
+                                                    Err(ToolError::execution_failed(format!(
+                                                        "sandbox override serialization failed: {err}"
+                                                    ))),
+                                                    false,
+                                                ),
+                                            }
+                                        } else {
+                                            // Plain approval (or an elevation
+                                            // with no dispatcher attached —
+                                            // the override cannot thread in,
+                                            // so the fixed context runs).
+                                            //
+                                            // Early-tool-start reuse (same shape
+                                            // as the parallel arm, but sequential).
+                                            // A call that needed approval never
+                                            // reuses the speculative result: it was
+                                            // produced before the user's answer —
+                                            // for an approved path, before the
+                                            // grant existed, so it could only fail.
+                                            // Aborting it (Drop) and running fresh
+                                            // is the point of the approval.
+                                            match early_for_plan[idx].take() {
+                                                Some(mut early)
+                                                    if !plan.approval_required
+                                                        && early.name == plan.name
+                                                        && early.input == run_input =>
+                                                {
+                                                    let handle = early
+                                                        .handle
+                                                        .take()
+                                                        .expect("handle present until consumed");
+                                                    match handle.await {
+                                                        Ok(result) => (result, false),
+                                                        Err(join_err) => (
+                                                            Err(ToolError::execution_failed(
+                                                                format!(
+                                                                    "Early tool execution task failed: {join_err}"
+                                                                ),
+                                                            )),
+                                                            false,
+                                                        ),
+                                                    }
                                                 }
+                                                Some(_) => {
+                                                    // Args revised after the block
+                                                    // closed — can't reuse; the
+                                                    // dropped `EarlyToolTask` (Drop
+                                                    // aborts) cleans up the orphaned
+                                                    // speculative task.
+                                                    (tool.run(run_input.clone()).await, false)
+                                                }
+                                                None => (tool.run(run_input.clone()).await, false),
                                             }
-                                            Some(_) => {
-                                                // Args revised after the block
-                                                // closed — can't reuse; the
-                                                // dropped `EarlyToolTask` (Drop
-                                                // aborts) cleans up the orphaned
-                                                // speculative task.
-                                                (tool.run(run_input.clone()).await, false)
-                                            }
-                                            None => (tool.run(run_input.clone()).await, false),
                                         }
                                     }
                                     Err(denial) => {

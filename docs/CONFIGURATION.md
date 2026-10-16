@@ -837,13 +837,19 @@ and the capacity controller remains disabled unless configured.
   Platform support is not identical. macOS uses Seatbelt for policy
   enforcement. Linux selects bubblewrap whenever the `bubblewrap`
   package is installed (the `prefer_bwrap` key is deprecated and
-  ignored), falling back to the Landlock path otherwise. Windows does
+  ignored), falling back to the enforcing Landlock backend otherwise
+  (kernel 5.13+, filesystem-only — see [SANDBOX.md](SANDBOX.md)). Windows does
   not currently advertise an OS
   sandbox; the planned Windows helper contract starts with process-tree
   containment only and must not be described as read-only filesystem isolation,
   workspace-write enforcement, network blocking, registry isolation, or
-  AppContainer isolation until those are implemented. Advanced sandbox controls
-  can be set under `[sandbox]`: `enabled`, `fail_if_unavailable`,
+  AppContainer isolation until those are implemented — until then a
+  sandbox-demanding policy on Windows is refused (`SANDBOX_UNAVAILABLE`)
+  under the default fail-closed posture. Advanced sandbox controls
+  can be set under `[sandbox]`: `enabled`, `fail_if_unavailable`
+  (default `true` — refuse when a sandbox-demanding policy cannot be
+  enforced; `false` runs unconfined as a degraded, explicitly-opted-out
+  fallback),
   `enabled_platforms`, `excluded_commands`, `auto_allow_bash_if_sandboxed`,
   plus `[sandbox.filesystem]` and `[sandbox.network]` tables
   (`prefer_bwrap` is deprecated and ignored).

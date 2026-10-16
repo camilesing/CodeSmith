@@ -9,11 +9,11 @@ CodeSmith 执行由 AI 推理派生的 shell 命令。沙箱模块限制这些�
 | 机制 | 平台 | 类型 | 状态 |
 |---|---|---|---|
 | Seatbelt | macOS | 强制访问控制 | 已强制执行 |
-| Landlock | Linux | 文件系统访问控制 | 未强制执行（仅检测） |
+| Landlock | Linux | 文件系统访问控制 | 已强制执行（内核 5.13+，仅文件系统） |
 | seccomp BPF | Linux | 系统调用过滤 | 已移除 |
 | 进程加固 | Linux | 内核 prctl / rlimit | 存在但未被调用 |
 | Bubblewrap (bwrap) | Linux | 命名空间隔离 | 安装即强制执行 |
-| Windows 沙箱 | Windows | — | 未实现（存根） |
+| Windows 沙箱 | Windows | — | 未实现（存根）；失败关闭拒绝 |
 
 ## 威胁模型：每一层针对什么
 
@@ -41,24 +41,36 @@ CodeSmith 执行由 AI 推理派生的 shell 命令。沙箱模块限制这些�
 
 ### 2. Landlock（Linux，内核 5.13+）
 
-**状态：** 未强制执行。规则集应用代码存在，但未接入子进程强制执行
-路径：`prepare_landlock` 是有文档记录的透传，返回 `SandboxType::None`；
-`LinuxLandlock.enforces_isolation()` 返回 false；`decide_sandbox` 会把
-Landlock 选择报告为不可用。只有下面的拒绝检测模式是实际生效的。
+**状态：** 已强制执行。`prepare_landlock` 在父进程侧构建规则集（把
+策略翻译为 path-beneath 规则）并随 `ExecEnv` 携带；每个
+`std::process::Command` 派发点在 fork 与 exec 之间应用它
+（`install_sandbox_preexec`，一个执行 `PR_SET_NO_NEW_PRIVS` +
+`landlock_restrict_self` 的 `pre_exec` 闭包）。`enforces_isolation()`
+返回 true，`decide_sandbox` 将 Landlock 选择标记为强制执行。
 
-**规则集代码限制什么：**
-- 将文件系统访问限制在一个路径白名单内
+**规则翻译：**
+- `/` 获得读 + 执行（所有策略都授予全盘读；子进程可执行自身二进制
+  与加载器）
+- `/dev/null` 获得写（shell 重定向可用）
+- 每个策略可写根获得读 + 写
 - 处理：`EXECUTE`、`READ_FILE`、`READ_DIR`、`WRITE_FILE`、
   `REMOVE_DIR`、`REMOVE_FILE`、`MAKE_DIR`、`MAKE_REG`、`MAKE_SYM`、
   `TRUNCATE`
 
 **防御什么：**
-- 读取工作区之外的文件（例如 `/etc/passwd`、`~/.ssh`）
-- 写入系统目录（`/usr`、`/bin`、`/lib`）
-- 在受保护位置创建或删除文件
+- 写入系统目录（`/usr`、`/bin`、`/lib`、`/etc`）
+- 在可写根之外创建、删除或截断文件（只读策略没有任何可写根）
 
-**不防御什么：**
-- 网络访问（Landlock 只管文件系统）
+**不防御什么（已知局限）：**
+- 网络访问——此处的 Landlock 只处理文件系统权限；拒绝网络的策略
+  （如 `read-only`）在该后端下仍允许网络。bwrap（安装即自动选用）
+  会 unshare 网络命名空间并强制执行拒绝。
+- 可写根内的只读子路径——Landlock 规则只会增加权限，受保护的控制面
+  路径（`.codesmith`、`AGENTS.md` 等）在工作区可写根内保持可写。
+  Seatbelt 与 bwrap 会强制执行它们。
+- PTY（`tty: true`）派发——PTY 派发路径没有 pre-exec 钩子，因此
+  Landlock 约束的 TTY 请求会被拒绝（`SANDBOX_UNAVAILABLE`），并给出
+  补救建议（不带 tty 重跑或安装 bubblewrap），而不是无约束地派发。
 - 进程检查
 - 读取已被映射的文件（Landlock 在 `open()` 时生效）
 
@@ -74,12 +86,12 @@ Landlock 选择报告为不可用。只有下面的拒绝检测模式是实际�
 
 ### 4. Bubblewrap / bwrap（Linux，可选）
 
-**何时运行：** 只要 `/usr/bin/bwrap` 存在就会运行——bwrap 无条件赢得
-Linux 后端选择，因为 Landlock 路径当前不做任何强制（`prepare_landlock`
-是有文档记录的透传），真正的 bwrap 约束优于退化为无沙箱执行。旧版
-顶层 `prefer_bwrap` 键与 `[sandbox] prefer_bwrap` 因此已废弃并被忽略。
-作为
-子命令的外层包装运行。
+**何时运行：** 只要 `/usr/bin/bwrap` 存在就会运行——bwrap 赢得 Linux
+后端选择，因为其命名空间隔离额外拒绝网络（此处的 Landlock 仅文件
+系统），并把可写根内的受保护控制面子路径保持只读，而 Landlock 的
+规则并集语义表达不了这一点。旧版顶层 `prefer_bwrap` 键与
+`[sandbox] prefer_bwrap` 因此已废弃并被忽略。作为子命令的外层包装
+运行。
 
 **做什么：**
 - 用 `--unshare-all` 创建新的挂载命名空间
@@ -106,11 +118,11 @@ Linux 后端选择，因为 Landlock 路径当前不做任何强制（`prepare_l
 
 CodeSmith 不会内置（vendor）bwrap。
 
-**回退：** 若未安装 bwrap，Landlock 后端会被报告为不可用——命令将
-不加沙箱运行，因为 Landlock 当前不做任何强制。设置
-`[sandbox] fail_if_unavailable = true`（或
-`CODESMITH_SANDBOX_FAIL_IF_UNAVAILABLE=true`）可在请求的沙箱后端
-不可用时选择失败关闭（fail closed），而不是不加沙箱继续运行。
+**回退：** 若未安装 bwrap，Landlock（内核 5.13+）是强制执行后端——
+仅文件系统，见上面的已知局限。若两者都不存在，决策默认失败关闭
+（见[失败关闭语义](#失败关闭语义)）；`[sandbox] fail_if_unavailable
+= false`（或 `CODESMITH_SANDBOX_FAIL_IF_UNAVAILABLE=false`）是显式的
+降级选择，命令将无约束运行。
 
 ### 5. Seatbelt（macOS）
 
@@ -136,26 +148,58 @@ permitted`、`sandbox-exec`、`deny(` 和 `Sandbox: `。（`file-write` 和
 ### 6. Windows——未实现
 
 CodeSmith 不提供进程内 Windows 沙箱。`windows.rs` 是一个存根：
-`is_available()` 返回 false，`prepare_windows` 直接放行为无沙箱执行。
-不存在任何 Job Object、内存上限或受限令牌代码。未来的 Windows 支持
-必须通过专用辅助进程提供带 Job Object 和
+`is_available()` 返回 false，不存在任何 Job Object、内存上限或受限
+令牌代码。**Windows 上沙箱策略不被强制执行**：要求约束的策略会被
+决策为 `SANDBOX_UNAVAILABLE`，且在默认失败关闭姿态下命令被拒绝
+（可诊断、指明替代方案），而非静默无约束运行。Windows 当前的逃生
+通道：在配置中禁用沙箱（`[sandbox] enabled = false`）、显式设置
+`fail_if_unavailable = false`（降级：命令无约束运行）、或使用无约束
+模式。未来的 Windows 支持必须通过专用辅助进程提供带 Job Object 和
 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的进程树遏制，并且在文件系统、
 网络、注册表或 AppContainer 隔离真正实现并单独测试之前，不得宣称
 这些保证。
 
+## 失败关闭语义
+
+要求约束的沙箱策略（`read-only`、`workspace-write`）是一个安全声明
+而不是愿望：当平台上没有任何后端能强制执行它时，CodeSmith 拒绝运行
+该命令。拒绝是可诊断的——理由携带 `SANDBOX_UNAVAILABLE` 标记、平台
+缺什么、以及替代方案（安装可强制执行的后端；通过 `[sandbox] enabled
+= false` 或 `fail_if_unavailable = false` 显式退出；或使用无约束
+模式）。显式的配置选择（`enabled = false`、`excluded_commands`）会
+记录在每个结果上，但绝不会在强制执行后端缺席时静默替代为无约束
+运行。
+
+`fail_if_unavailable` 默认为 `true`。设置为 `false` 恢复旧的
+无约束运行回退——拒绝理由仍保留在结果记录上
+（`sandbox_unavailable_reason`、`sandbox_effective = false`），降级
+运行绝不会被误报为已沙箱化。
+
+## 一次性沙箱升级走审批
+
+严格更宽的一次性沙箱策略（例如以 `danger-full-access` 重试被阻断的
+命令）只能通过审批门生效：宿主发送携带该策略的
+`ApprovalDecision::RetryWithPolicy`，回合循环经 dispatcher 的
+`sandbox_override` 接线点重新派发工具。该接线点拒绝任何不是当前
+基线**严格更宽**的策略（`ReadOnly < WorkspaceWrite < DangerFullAccess`；
+增加可写根/网络或放开临时目录排除是放宽；没有任何策略比
+`DangerFullAccess` 更宽；`ExternalSandbox` 不可比较），因此更宽的
+策略无法经由其他路径生效，"升级"也不可能变窄。
+
 ## 纵深防御
 
-在 Linux 上，bwrap 的命名空间隔离是当前唯一的强制执行层，且仅在
-bwrap 已安装时生效。prctl/rlimit 进程加固模块和 Landlock 规则集代码
-存在于代码库中但未接入强制执行路径，seccomp 过滤器已移除：
+Linux 上两个本地后端都强制执行——bwrap（挂载命名空间）在已安装时，
+Landlock（文件系统规则，内核 5.13+）作为后备。prctl/rlimit 进程
+加固模块存在于代码库但未接入启动流程，seccomp 过滤器已移除：
 
 ```
-bwrap (namespace isolation)  ← Linux 唯一的强制执行层（已安装时）
+bwrap (namespaces + network + subpaths)  ← 优先，已安装时
+Landlock (filesystem-only)               ← 强制执行后备，内核 5.13+
 ```
 
-Linux 上未安装 bwrap 时，本地没有任何强制执行后端：`decide_sandbox`
-报告不可用，命令将不加沙箱运行，除非 `[sandbox] fail_if_unavailable
-= true` 使其失败关闭。在 macOS 上，强制执行层是 Seatbelt。
+Linux 上两者都不可用——或 Windows 上不存在辅助程序——时，
+`decide_sandbox` 报告不可用，命令在默认失败关闭姿态下被拒绝。
+在 macOS 上，强制执行层是 Seatbelt。
 
 ## 配置
 
@@ -174,7 +218,7 @@ sandbox_mode = "workspace-write"  # read-only | workspace-write | danger-full-ac
 # the legacy flat keys above.
 [sandbox]
 enabled = true
-fail_if_unavailable = false       # true = fail closed instead of unsandboxed fallback
+fail_if_unavailable = true        # 默认：要求约束的策略无法强制执行时拒绝（SANDBOX_UNAVAILABLE）；false = 无约束运行（降级）
 enabled_platforms = ["macos", "linux"]
 excluded_commands = []            # program names or command prefixes
 auto_allow_bash_if_sandboxed = true
@@ -259,12 +303,14 @@ sandbox_api_key = "YOUR_API_KEY"
 
 ### 平台特定缺口
 
-- **Linux：** bubblewrap 在已安装时提供命名空间视图；未安装时本地
-  没有任何强制执行后端，除非配置失败关闭，否则命令不加沙箱运行。
-  主机允许列表网络策略不在本地强制执行。
+- **Linux：** 未安装 bubblewrap 时，Landlock 仅强制执行文件系统访问
+  ——网络不受限制，受保护的控制面子路径在可写根内保持可写；PTY
+  派发被拒绝而非无约束运行。两者都没有时，要求沙箱的命令被拒绝
+  （失败关闭默认）。主机允许列表网络策略不在本地强制执行。
 - **macOS：** Seatbelt 配置文件在运行时生成。配置不当的配置文件
   可能过于宽松。
-- **Windows：** 未实现任何沙箱；命令不加沙箱运行。
+- **Windows：** 未实现任何沙箱；要求沙箱的命令在默认失败关闭姿态下
+  被拒绝（见第 6 节）。
 
 ## 相关
 

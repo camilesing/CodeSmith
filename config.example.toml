@@ -276,12 +276,14 @@ max_subagents = 10 # optional (1-20)
 # ─────────────────────────────────────────────────────────────────────────────────
 # Every key is optional; these tables layer on top of the flat
 # sandbox_mode / prefer_bwrap keys above. See docs/SANDBOX.md for platform
-# details (macOS Seatbelt, Linux Landlock + seccomp, Windows Job Object,
-# bubblewrap) and denial metadata.
+# details (macOS Seatbelt, Linux Landlock/bubblewrap, Windows stub +
+# fail-closed refusal) and denial metadata.
 #
 # [sandbox]
 # enabled = true                     # master switch for OS-level sandboxing
-# fail_if_unavailable = false        # true = fail closed instead of unsandboxed fallback
+# fail_if_unavailable = true         # default: refuse (SANDBOX_UNAVAILABLE) when a
+#                                    # sandbox-demanding policy cannot be enforced;
+#                                    # false = run unconfined (degraded, explicit opt-out)
 # enabled_platforms = ["macos", "linux"]
 # excluded_commands = []             # program names or command prefixes never sandboxed
 # auto_allow_bash_if_sandboxed = true  # skip the approval prompt for shell calls

@@ -349,6 +349,68 @@ fn apply_shell_result_decision_metadata(result: &mut ShellResult, decision: &San
     result.sandbox_fail_closed = decision.sandbox_fail_closed;
 }
 
+/// A `ShellResult` for a command refused before spawn: the policy demanded
+/// confinement that could not be delivered (decision-level refusal or
+/// Landlock ruleset construction failure). Diagnosable through stderr and
+/// the decision metadata; never a silent unconfined run.
+fn sandbox_refusal_result(decision: &SandboxDecision, detail: String) -> ShellResult {
+    let stderr_len = detail.len();
+    let mut result = ShellResult {
+        task_id: None,
+        status: ShellStatus::Failed,
+        exit_code: None,
+        stdout: String::new(),
+        stderr: detail,
+        duration_ms: 0,
+        stdout_len: 0,
+        stderr_len,
+        stdout_omitted: 0,
+        stderr_omitted: 0,
+        stdout_truncated: false,
+        stderr_truncated: false,
+        sandboxed: false,
+        sandbox_type: None,
+        sandbox_denied: true,
+        sandbox_requested: false,
+        sandbox_effective: false,
+        sandbox_backend: None,
+        sandbox_unavailable_reason: None,
+        sandbox_fallback_allowed: false,
+        sandbox_excluded_command: None,
+        sandbox_fail_closed: false,
+    };
+    apply_shell_result_decision_metadata(&mut result, decision);
+    result
+}
+
+/// Apply the in-child half of an [`ExecEnv`]: a Landlock-confined
+/// environment installs its `pre_exec` hook here so the (already-built)
+/// ruleset is applied between fork and exec. Every other backend is
+/// argv-wrapped by `SandboxManager::prepare` and needs no in-child step —
+/// this is a no-op for them. Public so the CLI `sandbox run` subcommand
+/// applies the same hook at its own spawn site.
+#[cfg(target_os = "linux")]
+pub fn install_sandbox_preexec(exec_env: &ExecEnv, cmd: &mut Command) {
+    if exec_env.sandbox_type == SandboxType::LinuxLandlock
+        && let Some(sandbox) = exec_env.landlock.clone()
+    {
+        // SAFETY: the closure runs in the child between fork and exec and
+        // only invokes `prctl(PR_SET_NO_NEW_PRIVS)` +
+        // `landlock_restrict_self` — raw syscalls with a stack-captured fd,
+        // no allocation, no parent-state access (same posture as
+        // `install_parent_death_signal`). The ruleset itself was created
+        // and populated with rules in the parent at `prepare` time.
+        unsafe {
+            cmd.pre_exec(move || sandbox.apply());
+        }
+    }
+}
+
+/// Non-Linux platforms have no in-child sandbox step (Seatbelt and bwrap
+/// are argv wrappers applied by `SandboxManager::prepare`).
+#[cfg(not(target_os = "linux"))]
+pub fn install_sandbox_preexec(_exec_env: &ExecEnv, _cmd: &mut Command) {}
+
 /// A background shell process being tracked
 pub struct BackgroundShell {
     pub id: String,
@@ -699,7 +761,9 @@ fn sandbox_unavailable_reason(prefer_bwrap: bool) -> String {
             return "bubblewrap was requested but /usr/bin/bwrap is unavailable".to_string();
         }
         if !crate::sandbox::landlock::is_available() && !crate::sandbox::bwrap::is_available() {
-            return "no Linux sandbox backend is available (Landlock or bubblewrap)".to_string();
+            return "no Linux sandbox backend is available (install bubblewrap, e.g. \
+                    'apt install bubblewrap', or run a Landlock-capable kernel, 5.13+)"
+                .to_string();
         }
     }
     #[cfg(target_os = "windows")]
@@ -715,6 +779,32 @@ fn sandbox_unavailable_reason(prefer_bwrap: bool) -> String {
         return "no sandbox backend is available on this platform".to_string();
     }
     "sandbox backend is unavailable".to_string()
+}
+
+/// Compose the refusal (or explicitly-allowed fallback) reason for a policy
+/// that demands confinement no backend on this platform can enforce.
+/// Aligned with dsh's `SANDBOX_UNAVAILABLE` error contract: diagnosable,
+/// and naming the alternative modes instead of silently running unconfined.
+fn sandbox_refusal_reason(
+    policy: &ExecutionSandboxPolicy,
+    detail: &str,
+    fail_closed: bool,
+) -> String {
+    if fail_closed {
+        format!(
+            "SANDBOX_UNAVAILABLE: policy '{}' requires confinement but {detail}; refusing to \
+             run the command unconfined. Install an enforcing backend, or opt out explicitly: \
+             [sandbox] enabled = false, or [sandbox] fail_if_unavailable = false",
+            policy.name()
+        )
+    } else {
+        format!(
+            "SANDBOX_UNAVAILABLE: policy '{}' requires confinement but {detail}; running \
+             unconfined only because fail_if_unavailable = false is set explicitly. Install an \
+             enforcing backend or disable the sandbox deliberately",
+            policy.name()
+        )
+    }
 }
 
 pub fn decide_sandbox(
@@ -750,16 +840,11 @@ pub fn decide_sandbox(
     if matches!(sandbox_type, SandboxType::None) {
         return crate::sandbox::SandboxDecision::unavailable(
             policy,
-            sandbox_unavailable_reason(runtime.prefer_bwrap),
-            runtime.fail_if_unavailable,
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    if matches!(sandbox_type, SandboxType::LinuxLandlock) {
-        return crate::sandbox::SandboxDecision::unavailable(
-            policy,
-            "Linux Landlock helper is not wired for child-process enforcement; enable prefer_bwrap or configure an external sandbox backend",
+            sandbox_refusal_reason(
+                policy,
+                &sandbox_unavailable_reason(runtime.prefer_bwrap),
+                runtime.fail_if_unavailable,
+            ),
             runtime.fail_if_unavailable,
         );
     }
@@ -1002,39 +1087,41 @@ impl ShellManager {
             &spec.program,
         );
         if !decision.allows_execution() {
-            return Ok(ShellResult {
-                task_id: None,
-                status: ShellStatus::Failed,
-                exit_code: None,
-                stdout: String::new(),
-                stderr: decision
+            return Ok(sandbox_refusal_result(
+                &decision,
+                decision
                     .sandbox_unavailable_reason
                     .clone()
                     .unwrap_or_else(|| "sandbox unavailable".to_string()),
-                duration_ms: 0,
-                stdout_len: 0,
-                stderr_len: decision
-                    .sandbox_unavailable_reason
-                    .as_ref()
-                    .map_or(0, String::len),
-                stdout_omitted: 0,
-                stderr_omitted: 0,
-                stdout_truncated: false,
-                stderr_truncated: false,
-                sandboxed: false,
-                sandbox_type: None,
-                sandbox_denied: true,
-                sandbox_requested: decision.sandbox_requested,
-                sandbox_effective: decision.sandbox_effective,
-                sandbox_backend: decision.sandbox_backend.clone(),
-                sandbox_unavailable_reason: decision.sandbox_unavailable_reason.clone(),
-                sandbox_fallback_allowed: decision.sandbox_fallback_allowed,
-                sandbox_excluded_command: decision.sandbox_excluded_command.clone(),
-                sandbox_fail_closed: decision.sandbox_fail_closed,
-            });
+            ));
         }
+        let mut decision = decision;
         let exec_env = if decision.sandbox_effective {
-            self.sandbox_manager.prepare(&spec)
+            match self.sandbox_manager.prepare(&spec) {
+                Ok(exec_env) => exec_env,
+                Err(e) => {
+                    let reason = sandbox_refusal_reason(
+                        &policy,
+                        &format!("the sandbox backend failed to prepare: {e:#}"),
+                        self.sandbox_runtime.fail_if_unavailable,
+                    );
+                    decision.sandbox_effective = false;
+                    decision.sandbox_unavailable_reason = Some(reason.clone());
+                    if self.sandbox_runtime.fail_if_unavailable {
+                        // Fail closed: a ruleset the kernel rejects must not
+                        // degrade into an unconfined spawn.
+                        decision.sandbox_fail_closed = true;
+                        return Ok(sandbox_refusal_result(&decision, reason));
+                    }
+                    // Explicit fail-open opt-out: the refusal reason stays on
+                    // the record while the command runs unconfined — the
+                    // decision never claims enforcement it did not deliver.
+                    tracing::warn!(
+                        "sandbox prepare failed; running unconfined per fail_if_unavailable = false: {e:#}"
+                    );
+                    SandboxManager::prepare_unsandboxed_for_fallback(&spec)
+                }
+            }
         } else {
             SandboxManager::prepare_unsandboxed_for_fallback(&spec)
         };
@@ -1120,39 +1207,41 @@ impl ShellManager {
             &spec.program,
         );
         if !decision.allows_execution() {
-            return Ok(ShellResult {
-                task_id: None,
-                status: ShellStatus::Failed,
-                exit_code: None,
-                stdout: String::new(),
-                stderr: decision
+            return Ok(sandbox_refusal_result(
+                &decision,
+                decision
                     .sandbox_unavailable_reason
                     .clone()
                     .unwrap_or_else(|| "sandbox unavailable".to_string()),
-                duration_ms: 0,
-                stdout_len: 0,
-                stderr_len: decision
-                    .sandbox_unavailable_reason
-                    .as_ref()
-                    .map_or(0, String::len),
-                stdout_omitted: 0,
-                stderr_omitted: 0,
-                stdout_truncated: false,
-                stderr_truncated: false,
-                sandboxed: false,
-                sandbox_type: None,
-                sandbox_denied: true,
-                sandbox_requested: decision.sandbox_requested,
-                sandbox_effective: decision.sandbox_effective,
-                sandbox_backend: decision.sandbox_backend.clone(),
-                sandbox_unavailable_reason: decision.sandbox_unavailable_reason.clone(),
-                sandbox_fallback_allowed: decision.sandbox_fallback_allowed,
-                sandbox_excluded_command: decision.sandbox_excluded_command.clone(),
-                sandbox_fail_closed: decision.sandbox_fail_closed,
-            });
+            ));
         }
+        let mut decision = decision;
         let exec_env = if decision.sandbox_effective {
-            self.sandbox_manager.prepare(&spec)
+            match self.sandbox_manager.prepare(&spec) {
+                Ok(exec_env) => exec_env,
+                Err(e) => {
+                    let reason = sandbox_refusal_reason(
+                        &policy,
+                        &format!("the sandbox backend failed to prepare: {e:#}"),
+                        self.sandbox_runtime.fail_if_unavailable,
+                    );
+                    decision.sandbox_effective = false;
+                    decision.sandbox_unavailable_reason = Some(reason.clone());
+                    if self.sandbox_runtime.fail_if_unavailable {
+                        // Fail closed: a ruleset the kernel rejects must not
+                        // degrade into an unconfined spawn.
+                        decision.sandbox_fail_closed = true;
+                        return Ok(sandbox_refusal_result(&decision, reason));
+                    }
+                    // Explicit fail-open opt-out: the refusal reason stays on
+                    // the record while the command runs unconfined — the
+                    // decision never claims enforcement it did not deliver.
+                    tracing::warn!(
+                        "sandbox prepare failed; running unconfined per fail_if_unavailable = false: {e:#}"
+                    );
+                    SandboxManager::prepare_unsandboxed_for_fallback(&spec)
+                }
+            }
         } else {
             SandboxManager::prepare_unsandboxed_for_fallback(&spec)
         };
@@ -1196,6 +1285,7 @@ impl ShellManager {
             cmd.process_group(0);
         }
         install_parent_death_signal(&mut cmd);
+        install_sandbox_preexec(exec_env, &mut cmd);
 
         if stdin_data.is_some() {
             cmd.stdin(Stdio::piped());
@@ -1369,6 +1459,7 @@ impl ShellManager {
             cmd.process_group(0);
         }
         install_parent_death_signal(&mut cmd);
+        install_sandbox_preexec(exec_env, &mut cmd);
 
         // Disable raw mode before spawn; restore only if raw mode was active
         // on entry (issue #1690). Trait-erased so `ShellManager` can live in
@@ -1479,6 +1570,23 @@ impl ShellManager {
         let sandbox_type = exec_env.sandbox_type;
         let sandboxed = decision.sandbox_effective;
 
+        #[cfg(target_os = "linux")]
+        if tty && exec_env.sandbox_type == SandboxType::LinuxLandlock {
+            // portable-pty's `CommandBuilder` has no pre-exec hook, so the
+            // Landlock ruleset cannot be applied to a PTY spawn. Refuse with
+            // the remedy instead of spawning unconfined while the decision
+            // claims enforcement.
+            let reason = "SANDBOX_UNAVAILABLE: the Landlock backend cannot confine PTY \
+                          (tty) spawns — no pre-exec hook exists in the PTY spawn path; \
+                          rerun without tty or install bubblewrap"
+                .to_string();
+            let mut refused = decision.clone();
+            refused.sandbox_effective = false;
+            refused.sandbox_fail_closed = true;
+            refused.sandbox_unavailable_reason = Some(reason.clone());
+            return Ok(sandbox_refusal_result(&refused, reason));
+        }
+
         // Build the command from ExecEnv
         let program = exec_env.program();
         let args = exec_env.args();
@@ -1542,6 +1650,7 @@ impl ShellManager {
                 cmd.process_group(0);
             }
             install_parent_death_signal(&mut cmd);
+            install_sandbox_preexec(exec_env, &mut cmd);
 
             child_env::apply_to_command(&mut cmd, child_env::string_map_env(&exec_env.env));
 
@@ -2182,5 +2291,75 @@ fn shell_exec_result_from(r: ShellResult) -> ShellExecResult {
         stdout: r.stdout,
         stderr: r.stderr,
         duration_ms: r.duration_ms,
+    }
+}
+
+#[cfg(test)]
+mod decide_sandbox_tests {
+    use super::decide_sandbox;
+    use crate::sandbox::{
+        SandboxManager, SandboxPolicy as ExecutionSandboxPolicy, SandboxRuntimeConfig,
+    };
+
+    /// A policy that demands confinement, combined with a platform that
+    /// cannot enforce any sandbox backend, must REFUSE execution
+    /// (fail-closed) with a diagnosable `SANDBOX_UNAVAILABLE` reason that
+    /// names the alternatives — never silently run the command unconfined.
+    /// Regression guard: the pre-fix default (`fail_if_unavailable = false`)
+    /// let exactly this case execute unconfined.
+    #[test]
+    fn sandbox_fail_closed_when_policy_requires_confinement_but_no_backend_enforces() {
+        let mut manager = SandboxManager::new();
+        manager.force_no_backend();
+        let runtime = SandboxRuntimeConfig::default();
+
+        let decision = decide_sandbox(
+            &manager,
+            &runtime,
+            &ExecutionSandboxPolicy::ReadOnly,
+            "ls -la",
+            "ls",
+        );
+
+        assert!(
+            decision.sandbox_requested,
+            "read-only policy demands confinement"
+        );
+        assert!(!decision.sandbox_effective);
+        assert!(
+            decision.sandbox_fail_closed,
+            "policy demands confinement + no enforcing backend must refuse, not fall back"
+        );
+        assert!(!decision.allows_execution());
+        let reason = decision.sandbox_unavailable_reason.as_deref().unwrap_or("");
+        assert!(
+            reason.contains("SANDBOX_UNAVAILABLE"),
+            "reason must be diagnosable as SANDBOX_UNAVAILABLE, got: {reason}"
+        );
+    }
+
+    /// The documented degraded escape hatch: an explicit
+    /// `fail_if_unavailable = false` keeps the run-unconfined fallback.
+    #[test]
+    fn sandbox_fail_open_only_with_explicit_opt_out() {
+        let mut manager = SandboxManager::new();
+        manager.force_no_backend();
+        let runtime = SandboxRuntimeConfig {
+            fail_if_unavailable: false,
+            ..SandboxRuntimeConfig::default()
+        };
+
+        let decision = decide_sandbox(
+            &manager,
+            &runtime,
+            &ExecutionSandboxPolicy::ReadOnly,
+            "ls -la",
+            "ls",
+        );
+
+        assert!(!decision.sandbox_effective);
+        assert!(!decision.sandbox_fail_closed);
+        assert!(decision.sandbox_fallback_allowed);
+        assert!(decision.allows_execution());
     }
 }

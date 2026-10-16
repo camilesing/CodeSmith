@@ -771,10 +771,15 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
 - `sandbox_mode`（字符串，可选）：`read-only`、`workspace-write`、`danger-full-access`、`external-sandbox`。
   各平台的支持并不相同。macOS 使用 Seatbelt 进行策略执行。Linux 在
   安装了 `bubblewrap` 软件包时总是选择 bubblewrap（`prefer_bwrap` 键
-  已废弃并被忽略），否则回退到 Landlock 路径。Windows 目前没有 OS 沙箱；计划中的 Windows 辅助程序契约仅从
+  已废弃并被忽略），否则回退到强制执行的 Landlock 后端（内核 5.13+，
+  仅文件系统——见 [SANDBOX_cn.md](SANDBOX_cn.md)）。Windows 目前没有 OS 沙箱；计划中的 Windows 辅助程序契约仅从
   进程树隔离开始，在实现之前不得将其描述为只读文件系统隔离、工作区
-  写入强制、网络阻断、注册表隔离或 AppContainer 隔离。高级沙箱控件
-  可在 `[sandbox]` 下设置：`enabled`、`fail_if_unavailable`、
+  写入强制、网络阻断、注册表隔离或 AppContainer 隔离——在那之前，
+  Windows 上要求沙箱的策略在默认失败关闭姿态下被拒绝
+  （`SANDBOX_UNAVAILABLE`）。高级沙箱控件
+  可在 `[sandbox]` 下设置：`enabled`、`fail_if_unavailable`
+  （默认 `true`——要求沙箱的策略无法强制执行时拒绝；`false` 为
+  显式选择的降级回退，命令无约束运行）、
   `enabled_platforms`、`excluded_commands`、`auto_allow_bash_if_sandboxed`，
   以及 `[sandbox.filesystem]` 和 `[sandbox.network]` 表（`prefer_bwrap`
   已废弃并被忽略）。

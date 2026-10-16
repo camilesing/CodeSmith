@@ -201,8 +201,8 @@ Chat Completions 驱动 turn。
 
 - **`crates/agent-runtime/src/sandbox/`** - 平台沙箱强制执行辅助程序（经 `crates/cli/src/sandbox/` 重导出）
   - `seatbelt.rs` - macOS Seatbelt profile 生成（已启用）
-  - `landlock.rs` - Linux Landlock 规则集应用（规则集代码存在，但未接入子进程强制执行：`prepare_landlock` 为直通路径，`enforces_isolation()` 返回 `false`）
-  - `windows.rs` - Windows 沙箱辅助程序契约桩（不宣传任何进程内 Windows 沙箱）
+  - `landlock.rs` - Linux Landlock 规则集应用（已强制执行：规则集由 `prepare_landlock` 在父进程构建，经 `install_sandbox_preexec` 在 fork 与 exec 之间应用；仅文件系统——见其已知局限）
+  - `windows.rs` - Windows 沙箱辅助程序契约桩（不宣传任何进程内 Windows 沙箱；要求沙箱的策略以 `SANDBOX_UNAVAILABLE` 失败关闭）
   - `bwrap.rs` / `process_hardening.rs` - 可选 bubblewrap 直通；`PR_SET_DUMPABLE`/核心转储加固
 - **`crates/cli/src/sandbox/`** - 宿主侧沙箱策略准备和拒绝报告（`mod.rs`、`policy.rs`、`runtime.rs`、外部 OpenSandbox 的 `backend.rs`、`opensandbox.rs`）
 
@@ -326,9 +326,10 @@ command = "echo 'Running tool: $TOOL_NAME'"
 2. **工具安全**：非 YOLO 模式要求对破坏性操作进行审批，包括有副作用的 MCP 工具
 3. **可扩展性**：MCP、技能和钩子允许在不修改代码的情况下进行定制
 4. **跨平台**：核心在 Linux/macOS/Windows 上工作。操作系统级沙箱在
-   macOS（Seatbelt）强制执行，在 Linux 上经 bubblewrap（已安装时）强制执行；
-   Landlock 规则集代码未接入子进程强制执行，不存在 seccomp 过滤器，
-   Windows 不提供沙箱（平台矩阵见 `docs/SANDBOX.md`）。
+   macOS（Seatbelt）强制执行，在 Linux 上经 bubblewrap（已安装时）或
+   Landlock（仅文件系统）强制执行；不存在 seccomp 过滤器，Windows 不
+   提供沙箱——无法强制执行的要求沙箱策略在默认失败关闭姿态下被拒绝
+   （`SANDBOX_UNAVAILABLE`）（平台矩阵见 `docs/SANDBOX.md`）。
 5. **最小依赖**：精心选择依赖以保证构建速度
 6. **本地优先的运行时 API**：HTTP/SSE 端点面向受信任的 localhost 访问，目前由 `crates/cli` 运行时提供
 

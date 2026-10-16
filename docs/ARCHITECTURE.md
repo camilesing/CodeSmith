@@ -206,8 +206,8 @@ live there).
 
 - **`crates/agent-runtime/src/sandbox/`** - Platform sandbox enforcement helpers (re-exported through `crates/cli/src/sandbox/`)
   - `seatbelt.rs` - macOS Seatbelt profile generation (enforced)
-  - `landlock.rs` - Linux Landlock ruleset application (ruleset code present but not wired for child-process enforcement: `prepare_landlock` is a passthrough and `enforces_isolation()` reports `false`)
-  - `windows.rs` - Windows sandbox helper contract stub (no in-process Windows sandbox is advertised)
+  - `landlock.rs` - Linux Landlock ruleset application (enforced: ruleset built in the parent by `prepare_landlock`, applied between fork and exec via `install_sandbox_preexec`; filesystem-only — see its known limitations)
+  - `windows.rs` - Windows sandbox helper contract stub (no in-process Windows sandbox is advertised; sandbox-demanding policies fail closed with `SANDBOX_UNAVAILABLE`)
   - `bwrap.rs` / `process_hardening.rs` - optional bubblewrap passthrough; `PR_SET_DUMPABLE`/core-dump hardening
 - **`crates/cli/src/sandbox/`** - Host-side sandbox policy preparation and denial reporting (`mod.rs`, `policy.rs`, `runtime.rs`, `backend.rs` for external OpenSandbox, `opensandbox.rs`)
 
@@ -332,9 +332,11 @@ command = "echo 'Running tool: $TOOL_NAME'"
 3. **Extensibility**: MCP, skills, and hooks allow customization without code changes
 4. **Cross-platform**: Core works on Linux/macOS/Windows. OS-level sandboxing
    is enforced on macOS (Seatbelt) and on Linux via bubblewrap when
-   installed; the Landlock ruleset code is not wired for child-process
-   enforcement, no seccomp filter exists, and no Windows sandbox is
-   advertised (see `docs/SANDBOX.md` for the platform matrix).
+   installed or Landlock (filesystem-only) otherwise; no seccomp filter
+   exists, and no Windows sandbox is advertised — a sandbox-demanding
+   policy that cannot be enforced is refused (`SANDBOX_UNAVAILABLE`) under
+   the default fail-closed posture (see `docs/SANDBOX.md` for the platform
+   matrix).
 5. **Minimal dependencies**: Careful dependency selection for build speed
 6. **Local-first runtime API**: HTTP/SSE endpoints are intended for trusted localhost access and are served by the `crates/cli` runtime today
 7. **Three-zone prompt contract**: every request is divided into a

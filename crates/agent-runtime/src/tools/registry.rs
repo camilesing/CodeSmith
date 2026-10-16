@@ -732,7 +732,37 @@ impl ToolDispatcher for ToolRegistry {
         let context_override = match sandbox_override {
             None => None,
             Some(v) => match serde_json::from_value::<crate::sandbox::SandboxPolicy>(v) {
-                Ok(policy) => Some(self.context().clone().with_elevated_sandbox_policy(policy)),
+                Ok(policy) => {
+                    // The dispatcher contract (see `ToolDispatcher::execute`)
+                    // requires aborting on override deserialization failure —
+                    // falling back to the default (typically less strict)
+                    // policy would silently degrade sandboxing. The same
+                    // discipline bounds WHAT may override: one-shot overrides
+                    // only ever escalate. A policy that is not strictly wider
+                    // than the current baseline is refused loud, so the only
+                    // way a wider sandbox policy takes effect is an approved
+                    // escalation through this wire-in (fed by the approval
+                    // gate's `RetryWithPolicy` decision).
+                    let baseline = self
+                        .context()
+                        .elevated_sandbox_policy
+                        .clone()
+                        .unwrap_or_default();
+                    if !policy.is_strict_widening_of(&baseline) {
+                        tracing::warn!(
+                            override_policy = policy.name(),
+                            baseline = baseline.name(),
+                            "sandbox override rejected: not strictly wider than the baseline"
+                        );
+                        return Err(ToolError::invalid_input(format!(
+                            "sandbox override rejected: policy '{}' is not strictly wider than \
+                             the current '{}'; one-shot overrides may only escalate",
+                            policy.name(),
+                            baseline.name()
+                        )));
+                    }
+                    Some(self.context().clone().with_elevated_sandbox_policy(policy))
+                }
                 Err(e) => {
                     // The dispatcher contract (see `ToolDispatcher::execute`)
                     // requires aborting on override deserialization failure —
@@ -978,5 +1008,89 @@ mod tests {
             result.content.contains("output truncated"),
             "a failing synthesis must fall back to the preview, not the error"
         );
+    }
+
+    /// Probe tool that echoes the effective sandbox policy name from its
+    /// `ToolContext`, so tests can observe which policy a dispatch ran under.
+    struct PolicyProbeTool;
+
+    #[async_trait::async_trait]
+    impl ToolSpec for PolicyProbeTool {
+        fn name(&self) -> &str {
+            "policy_probe"
+        }
+        fn description(&self) -> &str {
+            "echoes the context sandbox policy for override tests"
+        }
+        fn input_schema(&self) -> Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+        async fn execute(
+            &self,
+            _input: Value,
+            context: &ToolContext,
+        ) -> Result<ToolResult, crate::tools::spec::ToolError> {
+            let name = context
+                .elevated_sandbox_policy
+                .as_ref()
+                .map(|p| p.name().to_string())
+                .unwrap_or_else(|| "none".to_string());
+            Ok(ToolResult::success(name))
+        }
+    }
+
+    fn probe_registry() -> ToolRegistry {
+        let context = ToolContext::new(std::path::PathBuf::from("/tmp/ws"))
+            .with_elevated_sandbox_policy(crate::sandbox::SandboxPolicy::ReadOnly);
+        let mut registry = ToolRegistry::new(context);
+        registry.register(Arc::new(PolicyProbeTool));
+        registry
+    }
+
+    /// A one-shot sandbox override that is not STRICTLY wider than the
+    /// baseline policy must be refused at the wire-in — silently re-applying
+    /// a narrower/equal policy (or letting a host "escalate" sideways) would
+    /// degrade sandboxing or launder a non-escalation through the override
+    /// channel.
+    #[tokio::test]
+    async fn sandbox_override_rejects_non_widening_policy() {
+        let registry = probe_registry();
+
+        let err = crate::tool_dispatch::ToolDispatcher::execute(
+            &registry,
+            "policy_probe",
+            serde_json::json!({}),
+            // Same policy as the baseline: not strictly wider.
+            Some(serde_json::json!({"type": "read-only"})),
+        )
+        .await
+        .expect_err("a non-widening override must be rejected at the wire-in");
+
+        assert!(
+            err.to_string().contains("strictly wider"),
+            "refusal must be diagnosable about the widening requirement: {err}"
+        );
+    }
+
+    /// A strictly wider override dispatches and the tool observes the
+    /// elevated policy on its context.
+    #[tokio::test]
+    async fn sandbox_override_widening_runs_under_elevated_policy() {
+        let registry = probe_registry();
+
+        let result = crate::tool_dispatch::ToolDispatcher::execute(
+            &registry,
+            "policy_probe",
+            serde_json::json!({}),
+            Some(serde_json::json!({"type": "danger-full-access"})),
+        )
+        .await
+        .expect("a strictly wider override dispatches");
+
+        assert_eq!(result.content, "danger-full-access");
+        assert!(result.success);
     }
 }

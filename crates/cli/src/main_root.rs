@@ -5001,14 +5001,13 @@ pub(crate) fn run_sandbox_command(command: SandboxCommand) -> Result<()> {
     let manager = SandboxManager::new();
     // Fail closed: `sandbox run` exists to confine the command, so refuse to
     // spawn when the selected backend cannot actually enforce isolation.
-    // Landlock has no child-process enforcement wired and `None` means no
-    // backend at all — either way the command would run fully unconfined.
-    // Known platform consequence (intended): `SandboxType::Windows` never
-    // enforces isolation and Linux-without-bubblewrap falls back to
-    // Landlock (non-enforcing), so a policy-bearing `sandbox run` always
-    // fails on those hosts — degraded confinement is the interactive
-    // engine's posture ("commands run best-effort" in doctor), not this
-    // subcommand's.
+    // On Linux both backends enforce (bwrap via mount namespaces, Landlock
+    // via a pre-exec ruleset on kernels 5.13+); `None` means no backend at
+    // all — the command would run fully unconfined. Known platform
+    // consequence (intended): `SandboxType::Windows` never enforces
+    // isolation, so a policy-bearing `sandbox run` always fails there —
+    // degraded confinement is the interactive engine's opt-in
+    // (`fail_if_unavailable = false`), not this subcommand's.
     let selected = manager.select_sandbox(&spec.sandbox_policy);
     if spec.sandbox_policy.should_sandbox() && !selected.enforces_isolation() {
         // The remediation hint is platform-aware — "install bubblewrap" is
@@ -5024,13 +5023,16 @@ pub(crate) fn run_sandbox_command(command: SandboxCommand) -> Result<()> {
              does not require sandboxing"
         );
     }
-    let exec_env = manager.prepare(&spec);
+    let exec_env = manager
+        .prepare(&spec)
+        .map_err(|e| anyhow::anyhow!("sandbox preparation failed: {e:#}"))?;
 
     let mut cmd = Command::new(exec_env.program());
     cmd.args(exec_env.args())
         .current_dir(&exec_env.cwd)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    crate::sandbox::install_sandbox_preexec(&exec_env, &mut cmd);
     child_env::apply_to_command(&mut cmd, child_env::string_map_env(&exec_env.env));
 
     let mut child = cmd

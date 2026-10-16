@@ -9,6 +9,18 @@
 //! claim read-only filesystem isolation, workspace-write enforcement, network
 //! blocking, registry isolation, or AppContainer-level isolation until those
 //! guarantees are implemented and tested separately.
+//!
+//! # Known limitation
+//!
+//! **Windows sandbox policy is not enforced.** `is_available()` is `false`,
+//! so a policy that demands confinement (read-only, workspace-write) is
+//! decided `SANDBOX_UNAVAILABLE` by `shell_manager::decide_sandbox`; with
+//! the default fail-closed posture such commands are refused (diagnosable,
+//! naming the alternatives) rather than silently run unconfined. Escape
+//! hatches on Windows today: disable the sandbox in config
+//! (`[sandbox] enabled = false`), set `fail_if_unavailable = false`
+//! explicitly (degraded, commands run unconfined), or run in an unconfined
+//! mode (e.g. YOLO).
 
 use std::path::Path;
 
