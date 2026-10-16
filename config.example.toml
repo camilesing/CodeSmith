@@ -90,8 +90,7 @@ default_text_model = "deepseek-v4-pro"
 # "high"   — reasoning_effort = high (DeepSeek default)
 # "max"    — reasoning_effort = max (deepest reasoning)
 #
-# Shift+Tab in the TUI cycles between off / high / max. The header shows the
-# current tier as a ⚡ chip.
+# `/effort off|low|medium|high|max|auto` switches the tier in the REPL.
 reasoning_effort = "max"
 
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -140,10 +139,10 @@ memory_path = "~/.codesmith/memory.md"
 #
 # Inline system_prompt wins over system_prompt_file; append sections still
 # render after the override. Prefer instructions + append_system_prompt.
-# Run /system in the TUI to inspect the final assembled prompt.
+# Run /system in the REPL to inspect the final assembled prompt.
 
 # ─────────────────────────────────────────────────────────────────────────────────
-# User memory (#489) — default ON. When enabled, the TUI reads memory_path on
+# User memory (#489) — default ON. When enabled, CodeSmith reads memory_path on
 # startup and injects its contents into the system prompt as a
 # <user_memory> block, intercepts `# foo` typed in the composer to append
 # the line as a timestamped bullet, and registers a `remember` tool the
@@ -539,7 +538,7 @@ max_subagents = 10 # optional (1-20)
 # ─────────────────────────────────────────────────────────────────────────────────
 # Network Policy (#135)
 # ─────────────────────────────────────────────────────────────────────────────────
-# Per-domain allow/deny rules for outbound network calls made by the TUI's
+# Per-domain allow/deny rules for outbound network calls made by CodeSmith's
 # tools (`fetch_url`, `web_search`) and the MCP HTTP transport. Stdio MCP
 # servers and direct LLM API calls are unaffected.
 #
@@ -587,9 +586,6 @@ max_subagents = 10 # optional (1-20)
 # registry_url = "https://raw.githubusercontent.com/camilesing/codesmith-skills/main/index.json"
 # max_install_size_bytes = 5_242_880
 
-# ─────────────────────────────────────────────────────────────────────────────────
-# TUI
-# ─────────────────────────────────────────────────────────────────────────────────
 # ─────────────────────────────────────────────────────────────────────────────────
 # Feature Flags
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -850,7 +846,7 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # ─────────────────────────────────────────────────────────────────────────────────
 # Workspace Snapshots (#137)
 # ─────────────────────────────────────────────────────────────────────────────────
-# Each turn the TUI takes a `pre-turn:<seq>` and `post-turn:<seq>` snapshot of
+# Each turn CodeSmith takes a `pre-turn:<seq>` and `post-turn:<seq>` snapshot of
 # your workspace into a side-git repo at:
 #
 #     ~/.codesmith/snapshots/<project_hash>/<worktree_hash>/.git
@@ -872,7 +868,7 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 #                         # (v0.8.32). Default 2 GB protects against running
 #                         # codesmith in directories with hundreds of GB
 #                         # of datasets / model weights / docker dumps where
-#                         # `git add -A` would hang the TUI for hours. Set
+#                         # `git add -A` would hang the session for hours. Set
 #                         # to 0 to disable the cap (v0.8.31 behaviour);
 #                         # raise to a higher number for legitimate large
 #                         # monorepos.
