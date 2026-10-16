@@ -572,8 +572,6 @@ mod tests {
         );
     }
 
-    /// Verify binary prefix detection for dispatcher vs TUI binary.
-
     #[test]
     fn update_targets_skip_missing_sibling() {
         let dir = tempfile::TempDir::new().unwrap();

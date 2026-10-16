@@ -530,9 +530,6 @@ Remaining app-level variables:
 - `CODESMITH_CAPACITY_PRIOR_V4_PRO`
 - `CODESMITH_CAPACITY_PRIOR_V4_FLASH`
 - `CODESMITH_CAPACITY_PRIOR_FALLBACK`
-- `NO_ANIMATIONS` (`1|true|yes|on` forces `low_motion = true` and
-  `fancy_animations = false` at startup, regardless of the saved
-  settings).
 - `SSL_CERT_FILE` — corporate-proxy / TLS-inspecting MITM users
   point this at a PEM bundle (or single DER cert) and the cert(s)
   get added alongside the platform's system trust store. Failures
@@ -703,8 +700,7 @@ available. You can inspect or update these from the REPL with
 Common settings keys:
 
 The line-based REPL renders with your terminal's own colors and a fixed
-status line; appearance keys such as `theme`, `background_color`, and
-`sidebar_focus` are still parsed and stored for a fullscreen frontend.
+status line; `theme` and `prompt_color` only pick the accent.
 
 - `theme` (`terminal`, `system`, `dark`, `light`, `grayscale`,
   `catppuccin-mocha`, `tokyo-night`, `dracula`, `gruvbox-dark`, `claude`,
@@ -725,9 +721,6 @@ status line; appearance keys such as `theme`, `background_color`, and
   by the arity dictionary (`"git status"` covers `git status -s`, not
   `git push`).
 - `auto_compact` (on/off, default on)
-- `paste_burst_detection` (on/off, default on): fallback rapid-key paste
-  detection for terminals that do not emit bracketed-paste events. This is
-  independent of terminal bracketed-paste mode.
 - `mention_menu_limit` (integer, default `128`): maximum number of
   `@`-mention completion candidates kept from the workspace index. The `Tab`
   candidate list pages through them by terminal height.
@@ -743,7 +736,6 @@ status line; appearance keys such as `theme`, `background_color`, and
   language is preserved. Security warnings and destructive-operation notices
   automatically switch back to full clarity. Toggle via `/config is_simple on`;
   applies from the next turn.
-- `show_tool_details` (on/off)
 - `locale` (`auto`, `en`, `zh-Hans`, `zh-Hant`, `hi`, `es-419`; default `auto`): UI chrome
   locale. `auto` checks `LC_ALL`, `LC_MESSAGES`, then `LANG`; unsupported or
   missing locales fall back to English. The runtime also exposes the resolved
@@ -751,18 +743,7 @@ status line; appearance keys such as `theme`, `background_color`, and
   and replies when the latest user message is ambiguous. Clear user language
   still takes priority; Chinese turns should produce Chinese `reasoning_content`
   and Chinese final replies even when the resolved locale is English.
-- `background_color` (`#RRGGBB`, `RRGGBB`, or `default`): optional background
-  color applied to main UI surfaces while preserving panel contrast.
-- `cost_currency` (`usd`, `cny`; default `usd`): currency used by `/cost`,
-  `/tokens`, and cost displays. The
-  aliases `rmb` and `yuan` normalize to `cny`.
 - `default_mode` (agent, plan, yolo; legacy `normal` is accepted and normalized to `agent`)
-- `sidebar_focus` (`auto`, `work`, `tasks`, `agents`, `context`, `hidden`; default
-  `auto`): selects the right sidebar focus. `auto` prioritizes Work, Tasks,
-  Agents, then optional Context, and uses Work as the single quiet empty state.
-  `hidden` disables the right sidebar entirely so raw terminal selection cannot
-  cross from the transcript into sidebar borders. Legacy `plan` and `todos`
-  values are accepted and normalized to `work`.
 - `max_input_history` (number of submitted input history entries to save,
   default `500`). History is kept **per workspace**
   (`~/.codesmith/history/<workspace>`); the pre-upgrade single-file history at

@@ -3671,39 +3671,6 @@ fn snapshot_from_config(
     }
 }
 
-// === Helper Functions ===
-
-/// Format MCP tool result for display
-#[allow(dead_code)] // Will be used when MCP tool results are displayed in the host UI
-pub fn format_tool_result(result: &serde_json::Value) -> String {
-    let is_error = result
-        .get("isError")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-
-    let content = result
-        .get("content")
-        .and_then(|v| v.as_array())
-        .map_or_else(
-            || serde_json::to_string_pretty(result).unwrap_or_default(),
-            |arr| {
-                arr.iter()
-                    .filter_map(|item| match item.get("type")?.as_str()? {
-                        "text" => item.get("text")?.as_str().map(String::from),
-                        other => Some(format!("[{other} content]")),
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            },
-        );
-
-    if is_error {
-        format!("Error: {content}")
-    } else {
-        content
-    }
-}
-
 // === Unit Tests ===
 
 #[cfg(test)]
@@ -4240,42 +4207,6 @@ mod tests {
         assert!(McpPool::is_mcp_tool("read_mcp_resource"));
         assert!(!McpPool::is_mcp_tool("read_file"));
         assert!(!McpPool::is_mcp_tool("exec_shell"));
-    }
-
-    #[test]
-    fn test_format_tool_result_text() {
-        let result = serde_json::json!({
-            "content": [
-                {"type": "text", "text": "Hello, world!"}
-            ]
-        });
-        assert_eq!(format_tool_result(&result), "Hello, world!");
-    }
-
-    #[test]
-    fn test_format_tool_result_error() {
-        let result = serde_json::json!({
-            "isError": true,
-            "content": [
-                {"type": "text", "text": "Something went wrong"}
-            ]
-        });
-        assert_eq!(format_tool_result(&result), "Error: Something went wrong");
-    }
-
-    #[test]
-    fn test_format_tool_result_multiple_content() {
-        let result = serde_json::json!({
-            "content": [
-                {"type": "text", "text": "Line 1"},
-                {"type": "text", "text": "Line 2"},
-                {"type": "image", "data": "base64..."}
-            ]
-        });
-        let formatted = format_tool_result(&result);
-        assert!(formatted.contains("Line 1"));
-        assert!(formatted.contains("Line 2"));
-        assert!(formatted.contains("[image content]"));
     }
 
     struct ScriptedValueTransport {

@@ -1508,7 +1508,6 @@ impl Engine {
                     tool_exec_lock,
                     supports_parallel,
                     interactive,
-                    self.tx_event.clone(),
                     candidate.name.clone(),
                     candidate.input.clone(),
                     tool_registry,

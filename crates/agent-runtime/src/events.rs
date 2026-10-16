@@ -3,7 +3,7 @@
 //! These events flow from the engine to the frontend via a channel,
 //! enabling non-blocking, real-time updates.
 
-use std::{path::PathBuf, sync::Arc};
+use std::path::PathBuf;
 
 use serde_json::Value;
 
@@ -355,16 +355,6 @@ pub enum Event {
 
     /// Status message for UI display
     Status { message: String },
-
-    /// Pause terminal input events (for interactive subprocesses).
-    PauseEvents {
-        /// Optional one-shot notification fired after the UI has actually
-        /// released the terminal to the child process.
-        ack: Option<Arc<tokio::sync::Notify>>,
-    },
-
-    /// Resume terminal input events after subprocess completion
-    ResumeEvents,
 
     /// Request user approval for a tool call
     ApprovalRequired {

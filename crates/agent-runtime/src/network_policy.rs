@@ -349,10 +349,9 @@ impl NetworkAuditor {
             return;
         }
         if let Err(err) = self.try_record(host, tool, decision_label) {
-            // Routed through tracing so it lands in
-            // `~/.codesmith/logs/tui-YYYY-MM-DD.log` rather than the
-            // alt-screen — see `runtime_log` for the scroll-demon
-            // rationale.
+            // Routed through `tracing` (observed only when a subscriber is
+            // installed) rather than `eprintln!`, so a failed audit write
+            // never interleaves with the REPL transcript.
             tracing::warn!(target: "network_policy", ?err, host, tool, "network audit write failed");
         }
     }

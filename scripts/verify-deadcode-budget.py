@@ -25,7 +25,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-BUDGET = 320
+BUDGET = 316
 # Whitespace-tolerant: `allow( dead_code )` and attribute lists must count
 # too, otherwise the ratchet can be dodged purely by reformatting. (Wrapped
 # cfg_attr spellings that split `allow(` and `dead_code` across lines remain

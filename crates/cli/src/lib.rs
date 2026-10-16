@@ -391,7 +391,7 @@ pub(crate) fn is_single_bare_word<S: AsRef<std::ffi::OsStr>>(argv: &[S]) -> bool
 }
 
 /// clap's own `unrecognized subcommand` usage error (exit code 2) carrying the
-/// two ways out: `-p` for a one-word prompt, `run` for a TUI-only subcommand.
+/// two ways out: `-p` to send the word as a prompt, `--help` for the command list.
 ///
 /// Built through the context path rather than `Command::error`, because a raw
 /// message is rendered as-is and would drop the `tip:` lines; the context
@@ -1868,6 +1868,33 @@ mod tests {
         assert!(
             err.to_string().contains("cannot be used with"),
             "unexpected: {err}"
+        );
+    }
+
+    #[test]
+    fn custom_provider_flag_reaches_config_and_fails_loud_on_unknown_id() {
+        // Before the fold in `load_config_from_cli_with_exec_model` the flag
+        // parsed and was dropped, so an unknown id loaded a config silently.
+        let _guard = crate::test_support::lock_test_env();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            "[[providers.custom]]\nid = \"other\"\nbase_url = \"https://gateway.example/v1\"\n",
+        )
+        .expect("write config");
+        let cli = parse_ok(&[
+            "codesmith",
+            "--config",
+            config_path.to_str().expect("utf8 path"),
+            "--custom-provider",
+            "acme",
+        ]);
+        let err = main_root::load_config_from_cli(&cli).expect_err("unknown custom id must fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("custom_provider 'acme' has no matching [[providers.custom]] entry"),
+            "unexpected error: {msg}"
         );
     }
 

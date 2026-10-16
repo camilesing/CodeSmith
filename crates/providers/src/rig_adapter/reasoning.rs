@@ -1,8 +1,8 @@
 //! DeepSeek thinking-mode reasoning protocol quirks for the rig-backed
 //! OpenAI / openai-compat factories — the provider-aware wrapper and the
-//! per-provider `reasoning_effort` translation, ported from the hand-written
-//! TUI client so the rig adapter reaches behavioural parity without the
-//! host's concrete client.
+//! per-provider `reasoning_effort` translation, ported from the retired
+//! hand-written client so the rig adapter reaches behavioural parity without
+//! the host's concrete client.
 //!
 //! The base model-name predicates (`requires_reasoning_content`,
 //! `should_replay_reasoning_content`, `has_deepseek_r_series_marker`) were

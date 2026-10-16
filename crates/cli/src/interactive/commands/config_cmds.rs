@@ -425,7 +425,6 @@ pub fn lsp(state: &ReplState) {
     }
 }
 
-/// `/theme` — theming is a TUI concept; the REPL inherits terminal colors.
 /// `/keybindings` — the prompt-time key table. Read-only: the bindings are
 /// compiled in (see `interactive::bindings` for what is and is not
 /// rebindable).

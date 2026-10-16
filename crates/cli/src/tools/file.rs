@@ -2027,8 +2027,8 @@ mod tests {
             .expect("execute");
 
         assert!(result.success);
-        // New file → "Created …" summary; the unified diff above the summary
-        // primes the TUI's diff-aware renderer (#505).
+        // New file → "Created …" summary; the unified diff lands above the
+        // summary (the #505 output contract).
         assert!(result.content.contains("Created"), "{}", result.content);
         assert!(result.content.contains("--- a/"), "{}", result.content);
         assert!(
@@ -2295,7 +2295,7 @@ mod tests {
                 .contains("Replaced 2 occurrences (replace_all)")
         );
         // Inline diff (#505) — the unified diff lands above the summary
-        // line so the TUI's diff-aware renderer kicks in.
+        // line (the output contract the file tools keep).
         assert!(result.content.contains("--- a/"), "{}", result.content);
         assert!(
             result.content.contains("-hello world hello"),
