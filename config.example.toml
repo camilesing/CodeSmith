@@ -95,22 +95,6 @@ default_text_model = "deepseek-v4-pro"
 reasoning_effort = "max"
 
 # ─────────────────────────────────────────────────────────────────────────────────
-# Cost Display
-# ─────────────────────────────────────────────────────────────────────────────────
-# Display estimated usage in USD or CNY. Aliases `yuan` and `rmb` normalize to `cny`.
-cost_currency = "usd" # usd | cny
-
-# ─────────────────────────────────────────────────────────────────────────────────
-# Startup update check
-# ─────────────────────────────────────────────────────────────────────────────────
-# The TUI checks for newer CodeSmith releases in the background at startup.
-# Set check_for_updates = false in managed or air-gapped environments.
-# update_uri may point at a GitHub-compatible latest-release JSON endpoint.
-[update]
-check_for_updates = true
-# update_uri = "https://internal.mirror.example/codesmith/releases/latest"
-
-# ─────────────────────────────────────────────────────────────────────────────────
 # Paths
 # ─────────────────────────────────────────────────────────────────────────────────
 # New installs write product state under ~/.codesmith/. Existing ~/.codesmith/

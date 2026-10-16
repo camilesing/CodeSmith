@@ -800,20 +800,6 @@ pub enum Personality {
 }
 
 impl Personality {
-    /// Resolve from the `calm_mode` settings flag.
-    /// When `calm_mode` is true → Calm; when false → Playful (future).
-    /// For now, always returns Calm — Playful is wired but opt-in.
-    #[must_use]
-    pub fn from_settings(calm_mode: bool) -> Self {
-        if calm_mode {
-            Self::Calm
-        } else {
-            // Future: when playful mode is exposed in settings, return Playful here.
-            // For now, calm is the only default.
-            Self::Calm
-        }
-    }
-
     /// Parse the `personality` config key value. Case-insensitive;
     /// accepts `"calm"` and `"playful"`.
     pub fn parse(value: &str) -> Result<Self, String> {

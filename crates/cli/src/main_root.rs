@@ -3245,55 +3245,6 @@ pub(crate) async fn run_doctor(
         }
     }
 
-    // Terminal-quirk overrides currently active. Mirrors the env
-    // signals checked by `Settings::apply_env_overrides` so users
-    // can see at a glance which a11y/compat overrides fired.
-    println!();
-    println!("{}", "Terminal Quirks:".bold());
-    let term_program = std::env::var("TERM_PROGRAM").unwrap_or_default();
-    let term_program_lc = term_program.to_ascii_lowercase();
-    let mut any_quirk = false;
-    if matches!(term_program.as_str(), "vscode" | "ghostty") {
-        println!(
-            "  {} TERM_PROGRAM={} → low_motion + fancy_animations=false (auto)",
-            "•".truecolor(sky_r, sky_g, sky_b),
-            term_program
-        );
-        any_quirk = true;
-    }
-    if term_program == "Termius"
-        || std::env::var_os("SSH_CLIENT").is_some_and(|v| !v.is_empty())
-        || std::env::var_os("SSH_TTY").is_some_and(|v| !v.is_empty())
-    {
-        println!(
-            "  {} SSH/Termius session → low_motion + fancy_animations=false (auto, #1433)",
-            "•".truecolor(sky_r, sky_g, sky_b)
-        );
-        any_quirk = true;
-    }
-    if term_program_lc.contains("ptyxis")
-        || std::env::var_os("PTYXIS_VERSION").is_some_and(|v| !v.is_empty())
-    {
-        println!(
-            "  {} Ptyxis detected → synchronized_output=off (auto, v0.8.31)",
-            "•".truecolor(sky_r, sky_g, sky_b)
-        );
-        any_quirk = true;
-    }
-    if crate::settings::detected_legacy_windows_console_host() {
-        println!(
-            "  {} legacy Windows console host → low_motion + fancy_animations=false + synchronized_output=off (auto)",
-            "•".truecolor(sky_r, sky_g, sky_b)
-        );
-        any_quirk = true;
-    }
-    if !any_quirk {
-        println!(
-            "  {} no env-driven terminal-quirk overrides active",
-            "·".dimmed()
-        );
-    }
-
     // Platform and sandbox checks
     println!();
     println!("{}", "Platform:".bold());
@@ -4140,6 +4091,18 @@ pub(crate) fn load_config_from_cli_with_exec_model(
         .filter(|model| !model.trim().is_empty())
     {
         config.set_explicit_model_override(model);
+    }
+    // Top-level `--custom-provider <id>`: the same fold `Config::load`
+    // performs for the `CODESMITH_CUSTOM_PROVIDER` handoff. `validate` runs
+    // again so a bad id fails loud here instead of being silently dropped.
+    if let Some(id) = cli
+        .custom_provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        config.custom_provider = Some(id.to_string());
+        config.validate()?;
     }
     config.require_explicit_model_on_custom_gateway(exec_model)?;
     cli.feature_toggles.apply(&mut config)?;
@@ -6198,8 +6161,7 @@ pub(crate) async fn run_exec_agent(
                 println!();
             }
             Event::ThinkingDelta { .. } => {
-                // Exec stream-json intentionally omits reasoning deltas; the
-                // TUI transcript retains its existing Activity Detail surface.
+                // Exec stream-json intentionally omits reasoning deltas.
             }
             Event::ToolCallStarted { id, name, input } => {
                 if output_format == ExecOutputFormat::StreamJson {

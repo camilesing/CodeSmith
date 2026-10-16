@@ -70,18 +70,6 @@ impl PrefixChange {
         }
         format!("prefix cache invalidated: {} changed", parts.join(" and "))
     }
-
-    /// Returns a short label for UI display.
-    #[must_use]
-    #[allow(dead_code)] // surfaced via tests; kept for future UI use
-    pub fn label(&self) -> &'static str {
-        match (self.system_changed, self.tools_changed) {
-            (true, true) => "sys+tools",
-            (true, false) => "sys",
-            (false, true) => "tools",
-            (false, false) => "prefix",
-        }
-    }
 }
 
 /// Monitors and manages prefix-cache stability across turns.
@@ -390,7 +378,6 @@ mod tests {
             change.description(),
             "prefix cache invalidated: system prompt changed"
         );
-        assert_eq!(change.label(), "sys");
     }
 
     #[test]

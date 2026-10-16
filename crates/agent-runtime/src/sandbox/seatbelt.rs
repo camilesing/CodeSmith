@@ -221,7 +221,7 @@ fn generate_policy(policy: &SandboxPolicy, ctx: &ProfileContext) -> String {
     // Cargo home (#558): cargo build/test/publish reach into ~/.cargo/registry
     // and ~/.cargo/git for crate metadata, downloaded tarballs, and unpacked
     // sources. Sandboxed workspace-write was previously rejecting these,
-    // making `cargo publish` unrunnable from inside the TUI's shell tool.
+    // making `cargo publish` unrunnable from inside the shell tool.
     // Read access is always allowed; write access is granted whenever the
     // policy allows any write at all (the registry caches need to be
     // mutable for `cargo build` to populate them on a cache miss). Skipped

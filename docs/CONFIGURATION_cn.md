@@ -506,8 +506,6 @@ default_text_model = "codesmith-coder:1.3b"
 - `CODESMITH_CAPACITY_PRIOR_V4_PRO`
 - `CODESMITH_CAPACITY_PRIOR_V4_FLASH`
 - `CODESMITH_CAPACITY_PRIOR_FALLBACK`
-- `NO_ANIMATIONS`（`1|true|yes|on` 会在启动时强制 `low_motion = true` 和
-  `fancy_animations = false`，无论已保存的设置如何）。
 - `SSL_CERT_FILE` — 企业代理 / TLS 检测 MITM 用户将其指向一个
   PEM 捆绑包（或单个 DER 证书），这些证书会被添加到平台系统信任库
   旁边。失败会记录警告并继续——现有的系统根证书仍然适用。
@@ -657,9 +655,8 @@ codesmith 还将用户偏好存储在：
 
 常用设置键：
 
-基于行的 REPL 使用终端自身的颜色和固定的状态行渲染；`theme`、
-`background_color`、`sidebar_focus` 等外观键仍会被解析并保存（供
-全屏前端使用）。
+基于行的 REPL 使用终端自身的颜色和固定的状态行渲染；`theme` 和
+`prompt_color` 只决定强调色。
 
 - `theme`（`terminal`、`system`、`dark`、`light`、`grayscale`、
   `catppuccin-mocha`、`tokyo-night`、`dracula`、`gruvbox-dark`、`claude`、
@@ -676,9 +673,6 @@ codesmith 还将用户偏好存储在：
   `~/.codesmith/approvals.toml`。条目按 arity 词典匹配
   （`"git status"` 覆盖 `git status -s`，不覆盖 `git push`）。
 - `auto_compact`（开/关，默认开）
-- `paste_burst_detection`（开/关，默认开）：为不发出括号粘贴
-  （bracketed-paste）事件的终端提供回退的快速按键粘贴检测。这与
-  终端的括号粘贴模式无关。
 - `mention_menu_limit`（整数，默认 `128`）：输入框渲染可见窗口之前
   保留的 `@`-提及弹出候选的最大数量。可见行数仍取决于终端高度。
 - `mention_walk_depth`（整数，默认 `6`）：`@`-提及补全遍历的最大
@@ -690,25 +684,13 @@ codesmith 还将用户偏好存储在：
   保持字节级精确，并保留用户的语言。安全警告和破坏性操作通知会自动
   切换回完全清晰的表达。通过 `/config is_simple on` 切换；从下一轮
   开始生效。
-- `show_tool_details`（开/关）
 - `locale`（`auto`、`en`、`zh-Hans`、`zh-Hant`、`hi`、`es-419`；默认 `auto`）：
   UI 界面语言。`auto` 依次检查 `LC_ALL`、`LC_MESSAGES`、`LANG`；
   不支持或缺失的语言回退为英语。运行时还会把解析出的语言写入系统
   提示词，作为 V4 推理和回复在最新用户消息有歧义时的回退自然语言。
   明确的用户语言仍然优先；即使解析出的语言是英语，中文对话也应当
   产生中文 `reasoning_content` 和中文最终回复。
-- `background_color`（`#RRGGBB`、`RRGGBB` 或 `default`）：可选的
-  主背景色，应用于主要 UI 表面，同时保持
-  面板对比度。
-- `cost_currency`（`usd`、`cny`；默认 `usd`）：`/cost`、
-  `/tokens` 以及成本显示使用的货币。别名 `rmb` 和
-  `yuan` 会归一化为 `cny`。
 - `default_mode`（agent、plan、yolo；接受旧版 `normal` 并归一化为 `agent`）
-- `sidebar_focus`（`auto`、`work`、`tasks`、`agents`、`context`、
-  `hidden`；默认 `auto`）：选择右侧边栏的焦点。`auto` 依次优先
-  Work、Tasks、Agents，然后是可选的 Context，并将 Work 用作唯一的
-  安静空状态。`hidden` 完全禁用右侧边栏，使原生终端选区无法从会话
-  记录跨入边栏边框。接受旧版 `plan` 和 `todos` 值并归一化为 `work`。
 - `respond_to_shell_commands`（on/off，默认 on）：`!命令`（shell 模式）
   是否启动一轮、让模型基于命令输出作答。`off` 只把这次运行记进对话，不询问模型。
 - `prompt_color`（`red`、`blue`、`green`、`yellow`、`purple`、`orange`、

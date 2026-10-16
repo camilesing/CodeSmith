@@ -33,9 +33,9 @@ use codesmith_secrets::Secrets;
 use crate::main_root::Cli;
 use crate::{PROVIDER_LIST, provider_env_value, provider_slot, write_provider_api_key_to_keyring};
 
-/// Language options for the first question. Mirrors the TUI wizard's
-/// `LANGUAGE_OPTIONS`: `auto` defers to `LC_ALL` / `LANG` and is still the
-/// persisted tag.
+/// Language options for the first question. Carried over from the retired
+/// TUI wizard's `LANGUAGE_OPTIONS`: `auto` defers to `LC_ALL` / `LANG` and is
+/// still the persisted tag.
 const LANGUAGE_OPTIONS: [&str; 6] = ["auto", "en", "zh-Hans", "zh-Hant", "hi", "es-419"];
 
 /// Run the CLI onboarding wizard when first-run onboarding is due.
@@ -439,7 +439,7 @@ fn provider_toml_field(provider: ProviderKind) -> &'static str {
     }
 }
 
-// ── Input validation (mirrors the TUI onboarding rules) ───────────────
+// ── Input validation (carried over from the retired TUI wizard) ────────
 
 /// Result of inspecting a text field entered during onboarding (an API key, a
 /// custom endpoint URL).

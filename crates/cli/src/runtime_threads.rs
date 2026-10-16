@@ -1343,7 +1343,7 @@ impl RuntimeThreadManager {
     /// Errors:
     /// - `depth_from_tail` exceeds the number of user turns
     /// - source thread not found
-    #[allow(dead_code)] // exposed for the runtime/HTTP fork-on-backtrack path; the in-TUI Esc-Esc flow trims `App` state directly. Issue #133.
+    #[allow(dead_code)] // kept for the runtime/HTTP fork-on-backtrack path (issue #133); no in-process caller since the TUI's Esc-Esc flow was retired.
     pub async fn fork_at_user_message(
         &self,
         id: &str,

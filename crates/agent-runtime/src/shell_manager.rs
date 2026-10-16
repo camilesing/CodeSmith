@@ -575,7 +575,7 @@ impl BackgroundShell {
         // entire accumulated stdout/stderr for display purposes.  full_output
         // is O(total_bytes_written), which caused the ShellManager mutex to be
         // held for an arbitrarily long time during list_jobs() calls from the
-        // TUI event loop — freezing input handling on long automation runs.
+        // host event loop — freezing input handling on long automation runs.
         let (stdout_len, stdout_tail) = tail_from_buffer(&self.stdout_buffer, 1200);
         let (stderr_len, stderr_tail) = self
             .stderr_buffer

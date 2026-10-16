@@ -4,123 +4,11 @@
 //! parallel-tool fanout out of `engine.rs`; the turn loop still owns planning,
 //! approval, and how tool results are written back into session state.
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use super::*;
 
 use crate::tool_dispatch::ToolDispatcher;
-
-/// RAII guard that pauses the host UI's terminal-state ownership for the duration
-/// of an interactive tool, then restores it on drop.
-///
-/// Background: interactive tools (anything that needs the raw TTY — external
-/// editor, `exec_shell` with stdin, etc.) need the host to leave alt-screen,
-/// disable raw mode, and release mouse capture so the child sees a normal
-/// terminal. The retired TUI listened for `Event::PauseEvents` /
-/// `Event::ResumeEvents` and ran `pause_terminal` / `resume_terminal` in
-/// response.
-///
-/// Earlier code sent `PauseEvents` before tool execution and `ResumeEvents`
-/// after. That worked on the happy path, but if the tool's future was dropped
-/// — Ctrl+C cancellation, sub-agent abort, parent task cancelled while the
-/// tool was awaiting — the second `await` never reached and `ResumeEvents`
-/// was never sent. It also let interactive children start before the UI had
-/// actually left alt-screen/raw mode. Both failures strand the TUI in a
-/// regular shell scrollback: the parent shell scrollbar takes over, mouse
-/// wheel scrolls the host terminal instead of the transcript, and the TUI
-/// renders at the bottom of cooked-mode output.
-///
-/// `Drop` runs synchronously and can't await, so we first use `try_send` on a
-/// **clone of the event channel** to push `ResumeEvents` non-blockingly. If the
-/// channel is full we enqueue the resume on the active Tokio runtime instead of
-/// dropping it; otherwise a burst of engine events can strand the UI in the
-/// paused terminal state.
-pub struct InteractiveTerminalGuard {
-    tx: Option<mpsc::Sender<Event>>,
-}
-
-impl InteractiveTerminalGuard {
-    /// Send `PauseEvents` and arm the guard. If `interactive` is false the
-    /// guard is a no-op — `Drop` will skip the resume.
-    pub async fn engage(tx: mpsc::Sender<Event>, interactive: bool) -> Self {
-        if !interactive {
-            return Self { tx: None };
-        }
-        // Best-effort: if the receiver is gone the host UI has already shut down
-        // and there's nothing to restore. If the event is delivered, wait for
-        // the UI to actually release the terminal before starting the child.
-        let ack = Arc::new(tokio::sync::Notify::new());
-        match tx
-            .send(Event::PauseEvents {
-                ack: Some(ack.clone()),
-            })
-            .await
-        {
-            Ok(()) => {
-                if tokio::time::timeout(Duration::from_millis(750), ack.notified())
-                    .await
-                    .is_err()
-                {
-                    tracing::warn!(
-                        target: "engine.tool_execution",
-                        "InteractiveTerminalGuard: timed out waiting for terminal pause ack; \
-                         continuing with interactive tool"
-                    );
-                }
-            }
-            Err(err) => {
-                tracing::debug!(
-                    target: "engine.tool_execution",
-                    ?err,
-                    "InteractiveTerminalGuard: event channel closed before PauseEvents"
-                );
-            }
-        }
-        Self { tx: Some(tx) }
-    }
-}
-
-impl Drop for InteractiveTerminalGuard {
-    fn drop(&mut self) {
-        if let Some(tx) = self.tx.take() {
-            match tx.try_send(Event::ResumeEvents) {
-                Ok(()) => {}
-                Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
-                    match tokio::runtime::Handle::try_current() {
-                        Ok(handle) => {
-                            handle.spawn(async move {
-                                if let Err(err) = tx.send(event).await {
-                                    tracing::warn!(
-                                        target: "engine.tool_execution",
-                                        ?err,
-                                        "InteractiveTerminalGuard: async send(ResumeEvents) failed; \
-                                         terminal may stay in paused state until the next \
-                                         pause/resume cycle"
-                                    );
-                                }
-                            });
-                        }
-                        Err(err) => {
-                            tracing::warn!(
-                                target: "engine.tool_execution",
-                                ?err,
-                                "InteractiveTerminalGuard: event channel full and no Tokio runtime \
-                                 available to queue ResumeEvents; terminal may stay paused until \
-                                 the next pause/resume cycle"
-                            );
-                        }
-                    }
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                    tracing::debug!(
-                        target: "engine.tool_execution",
-                        "InteractiveTerminalGuard: event channel closed before ResumeEvents"
-                    );
-                }
-            }
-        }
-    }
-}
 
 impl Engine {
     pub async fn execute_mcp_tool_with_pool(
@@ -195,14 +83,12 @@ impl Engine {
 
             let registry_ref = registry;
             let lock = tool_exec_lock.clone();
-            let tx_event = self.tx_event.clone();
             let mcp_pool = mcp_pool.clone();
             tasks.push(async move {
                 let result = Engine::execute_tool_with_lock(
                     lock,
                     true,
                     false,
-                    tx_event,
                     tool_name.clone(),
                     tool_input.clone(),
                     Some(registry_ref),
@@ -250,7 +136,6 @@ impl Engine {
         lock: Arc<RwLock<()>>,
         supports_parallel: bool,
         interactive: bool,
-        tx_event: mpsc::Sender<Event>,
         tool_name: String,
         tool_input: serde_json::Value,
         registry: Option<&dyn ToolDispatcher>,
@@ -283,13 +168,6 @@ impl Engine {
         } else {
             ToolExecGuard::Write(lock.write().await)
         };
-
-        // RAII pause/resume: ensures `Event::ResumeEvents` always fires on
-        // drop, even if the tool future is cancelled mid-await. See
-        // `InteractiveTerminalGuard` doc-comment for the regression this
-        // closes (parent terminal scrollback hijacking the host UI after a
-        // cancelled interactive tool).
-        let _terminal = InteractiveTerminalGuard::engage(tx_event, interactive).await;
 
         let outcome = if McpPool::is_mcp_tool(&tool_name) {
             if let Some(pool) = mcp_pool {
@@ -342,57 +220,5 @@ impl Engine {
             }
         }
         outcome
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Duration;
-
-    #[tokio::test]
-    async fn terminal_guard_queues_resume_when_event_channel_is_full() {
-        let (tx, mut rx) = mpsc::channel(1);
-        tx.try_send(Event::status("filler")).expect("fill channel");
-
-        drop(InteractiveTerminalGuard { tx: Some(tx) });
-
-        assert!(matches!(rx.recv().await, Some(Event::Status { .. })));
-        let resumed = tokio::time::timeout(Duration::from_secs(1), rx.recv())
-            .await
-            .expect("queued resume event")
-            .expect("event channel still open");
-        assert!(matches!(resumed, Event::ResumeEvents));
-    }
-
-    #[tokio::test]
-    async fn terminal_guard_waits_for_pause_ack_before_returning() {
-        let (tx, mut rx) = mpsc::channel(4);
-        let task = tokio::spawn(InteractiveTerminalGuard::engage(tx, true));
-
-        let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
-            .await
-            .expect("pause event")
-            .expect("event channel still open");
-        let ack = match event {
-            Event::PauseEvents { ack: Some(ack) } => ack,
-            other => panic!("expected PauseEvents with ack, got {other:?}"),
-        };
-
-        tokio::task::yield_now().await;
-        assert!(!task.is_finished(), "guard returned before pause ack");
-
-        ack.notify_one();
-        let guard = tokio::time::timeout(Duration::from_secs(1), task)
-            .await
-            .expect("guard returned after ack")
-            .expect("guard task joined");
-
-        drop(guard);
-        let resumed = tokio::time::timeout(Duration::from_secs(1), rx.recv())
-            .await
-            .expect("resume event")
-            .expect("event channel still open");
-        assert!(matches!(resumed, Event::ResumeEvents));
     }
 }

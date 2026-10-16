@@ -690,9 +690,7 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                 carry_composer_out(state, &mut view);
                 return Ok(PumpExit::TurnDone);
             }
-            Event::PauseEvents { .. }
-            | Event::ResumeEvents
-            | Event::CycleAdvanced { .. }
+            Event::CycleAdvanced { .. }
             | Event::CoherenceState { .. }
             | Event::CapacityDecision { .. }
             | Event::CapacityIntervention { .. }
