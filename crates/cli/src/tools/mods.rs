@@ -42,6 +42,7 @@ impl ToolSpec for ManageModsTool {
         "Manage CodeSmith script mods (Rhai): list discovered mods, write a new mod's files \
          (mod.toml + mod.rhai), activate a discovered mod (one-time user consent; hooks/tools/commands \
          go live immediately after), disable/enable, remove, or reload the mod layer. \
+         `list` also shows the resolved policy layer (each kind's effective value and the winning mod id). \
          Mods persist across sessions; activation and file writes require user approval."
     }
 
@@ -146,12 +147,15 @@ impl ToolSpec for ManageModsTool {
         match action {
             "list" => {
                 // Disk-bound (state load + recursive discovery scan) — keep
-                // it off the tokio worker, like `reload_note` does.
+                // it off the tokio worker, like `reload_note` does. The
+                // policy section is runner-memory only (mutex + clone) and
+                // rides the same blocking closure.
                 let ws = workspace.clone();
+                let runner = self.reload.as_ref().map(|r| Arc::clone(&r.runner));
                 let listing = tokio::task::spawn_blocking(move || {
                     let state = crate::mod_state::ModStateStore::load_default()
                         .map_err(|e| ToolError::not_available(format!("load mod state: {e}")))?;
-                    Ok::<String, ToolError>(mod_ops::list_mods(&ws, &state))
+                    Ok::<String, ToolError>(mod_ops::list_mods(&ws, &state, runner.as_deref()))
                 })
                 .await
                 .map_err(|e| ToolError::execution_failed(format!("join: {e}")))??;

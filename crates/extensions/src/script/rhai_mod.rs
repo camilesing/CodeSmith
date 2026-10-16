@@ -1286,7 +1286,9 @@ impl Extension for RhaiMod {
                     )?;
                 }
                 ScriptRegistration::Policy { kind, config } => {
-                    api.register_policy(*kind, config.clone())?;
+                    // Self-stamped owner (same rule as skills) rides the
+                    // resolved entry for the policy observability view.
+                    api.register_policy(self.metadata.id.to_string(), *kind, config.clone())?;
                 }
             }
         }
@@ -2421,8 +2423,23 @@ mod tests {
     }
     impl codesmith_agent::extension::ExtensionCommandContext for PolicyCtx {}
 
+    /// The process-global policy snapshot is shared by every runner in
+    /// this test binary (each flush publishes the whole map); the tests
+    /// that assert exact snapshot contents serialize through this guard
+    /// (same posture as agent-runtime's `output_policy.rs` tests). Runner
+    /// handler tests elsewhere still flush unguarded — the same exposure
+    /// as before this lock existed.
+    fn policy_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        match LOCK.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
     #[test]
     fn register_policy_captures_validates_and_flushes() {
+        let _guard = policy_test_lock();
         let dir = TempDir::new().unwrap();
         // Unknown kind fails the load (fail loud).
         let bad = RhaiMod::load(
@@ -2483,6 +2500,122 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    /// Unloading a mod that registered policy overrides leaves no residue:
+    /// the process snapshot falls back per kind (builtin default for a
+    /// kind only the unloaded mod touched; a survivor's override still
+    /// effective for shared kinds), and the resolved-policy view's source
+    /// falls back to the builtin id.
+    #[test]
+    fn unload_policy_mod_falls_back_and_survivor_overrides_stay() {
+        let _guard = policy_test_lock();
+        let dir = TempDir::new().unwrap();
+        // pol-a overrides output-diff + compact-policy; pol-b overrides
+        // output-diff (last-wins over pol-a) + shell-output.
+        let a = RhaiMod::load(
+            &discovered_for(
+                &dir,
+                "pol-a",
+                r#"register_policy("output-diff", #{ context_radius: 5 });
+                   register_policy("compact-policy", #{ cache_trigger_threshold: 1024 });"#,
+            ),
+            kv_for(&dir, "pol-a"),
+            hub(),
+        )
+        .unwrap();
+        let b = RhaiMod::load(
+            &discovered_for(
+                &dir,
+                "pol-b",
+                r#"register_policy("output-diff", #{ context_radius: 7 });
+                   register_policy("shell-output", #{ max_output_size: 9000 });"#,
+            ),
+            kv_for(&dir, "pol-b"),
+            hub(),
+        )
+        .unwrap();
+
+        let runner = crate::ExtensionRunner::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        runner.bind_core(std::sync::Arc::new(PolicyCtx));
+        // Builtin tier first — the baseline the fallbacks must land on.
+        for (_, m) in crate::script::builtin::load_builtin_mods(hub()) {
+            let m = m.expect("builtin mod compiles");
+            rt.block_on(runner.bind_mod(std::sync::Arc::new(m)))
+                .expect("bind builtin");
+        }
+        rt.block_on(runner.bind_mod(std::sync::Arc::new(a)))
+            .expect("bind pol-a");
+        rt.block_on(runner.bind_mod(std::sync::Arc::new(b)))
+            .expect("bind pol-b");
+
+        // Pre-unload winners (ALL order): output-diff → pol-b (last-wins
+        // over pol-a), shell-output → pol-b, compact-policy → pol-a,
+        // untouched kind → its builtin.
+        let sources: Vec<(&'static str, String)> = runner
+            .resolved_policies()
+            .iter()
+            .map(|entry| (entry.kind.kebab_name(), entry.source.clone()))
+            .collect();
+        assert_eq!(
+            sources,
+            vec![
+                ("output-diff", "pol-b".to_string()),
+                ("shell-output", "pol-b".to_string()),
+                ("compact-policy", "pol-a".to_string()),
+                (
+                    "large-output-route",
+                    "builtin-large-output-route".to_string()
+                ),
+            ]
+        );
+        assert_eq!(
+            codesmith_agent::policy::published_policy(
+                codesmith_agent::policy::PolicyKind::OutputDiff
+            ),
+            Some(serde_json::json!({"context_radius": 7}))
+        );
+
+        // Unload pol-a: snapshot falls back per kind, survivors stay.
+        let outcome = rt.block_on(runner.unload_retained_mod("pol-a"));
+        assert!(outcome.evicted, "{outcome:?}");
+        assert_eq!(outcome.replayed, 5, "{outcome:?}"); // 4 builtins + pol-b
+        assert!(outcome.errors.is_empty(), "{outcome:?}");
+        // Survivor's override still effective (not fallen back to builtin).
+        assert_eq!(
+            codesmith_agent::policy::published_policy(
+                codesmith_agent::policy::PolicyKind::OutputDiff
+            ),
+            Some(serde_json::json!({"context_radius": 7}))
+        );
+        assert_eq!(
+            codesmith_agent::policy::published_policy(
+                codesmith_agent::policy::PolicyKind::ShellOutput
+            ),
+            Some(serde_json::json!({"max_output_size": 9000}))
+        );
+        // pol-a-only kind falls back to the builtin default (drift guard:
+        // compare against the embedded tier, not a hardcoded copy).
+        let builtin_compact = crate::script::builtin::builtin_policy_defaults()
+            .into_iter()
+            .find(|(kind, _)| *kind == codesmith_agent::policy::PolicyKind::CompactPolicy)
+            .map(|(_, config)| config);
+        assert_eq!(
+            codesmith_agent::policy::published_policy(
+                codesmith_agent::policy::PolicyKind::CompactPolicy
+            ),
+            builtin_compact
+        );
+        // The view's source falls back to the builtin id too.
+        let compact_source = runner
+            .resolved_policies()
+            .into_iter()
+            .find(|entry| entry.kind == codesmith_agent::policy::PolicyKind::CompactPolicy)
+            .map(|entry| entry.source);
+        assert_eq!(compact_source, Some("builtin-compact-policy".to_string()));
+
+        runner.clear_policies();
     }
 
     #[test]

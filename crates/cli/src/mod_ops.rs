@@ -161,11 +161,46 @@ pub(crate) fn classify_mod(state: &ModStateStore, m: &DiscoveredMod) -> ModListS
     }
 }
 
-/// `/mods list` — every discovered mod with its activation state.
-pub fn list_mods(workspace: &Path, state: &ModStateStore) -> String {
+/// The resolved-policy section appended to both list surfaces
+/// (`manage_mods list` and `/mods list` share this copy): each kind, its
+/// effective config, and the winning mod's id. Runner memory only —
+/// mutex + clone, no disk access. Empty when no runner is live or
+/// nothing resolved (embeds/tests that skip the mod layer).
+fn resolved_policies_section(runner: Option<&ExtensionRunner>) -> String {
+    let Some(runner) = runner else {
+        return String::new();
+    };
+    let resolved = runner.resolved_policies();
+    if resolved.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("\n\nResolved policies (last-wins: builtin < global < project):\n");
+    for entry in resolved {
+        out.push_str(&format!(
+            "  {} = {} (from {})\n",
+            entry.kind.kebab_name(),
+            entry.config,
+            entry.source
+        ));
+    }
+    out
+}
+
+/// `/mods list` — every discovered mod with its activation state, plus
+/// the resolved policy layer (effective config + winning mod per kind).
+pub fn list_mods(
+    workspace: &Path,
+    state: &ModStateStore,
+    runner: Option<&ExtensionRunner>,
+) -> String {
+    let policies = resolved_policies_section(runner);
     let mods = discover_workspace_mods(workspace);
     if mods.is_empty() {
-        return "No script mods discovered. Install one under ~/.codesmith/mods/<id>/ or <workspace>/.codesmith/mods/<id>/ (mod.toml + mod.rhai), or ask the agent to write one via manage_mods.".to_string();
+        // The policy section still shows: the builtin tier resolves even
+        // with zero user mods (the baseline a user mod overrides).
+        return format!(
+            "No script mods discovered. Install one under ~/.codesmith/mods/<id>/ or <workspace>/.codesmith/mods/<id>/ (mod.toml + mod.rhai), or ask the agent to write one via manage_mods.{policies}"
+        );
     }
     let mut out = String::from("Script mods:\n");
     for m in &mods {
@@ -186,6 +221,7 @@ pub fn list_mods(workspace: &Path, state: &ModStateStore) -> String {
         ));
     }
     out.push_str("\nActivation is one-time per id (/mods activate <id> or approve manage_mods action=activate).");
+    out.push_str(&policies);
     out
 }
 
@@ -932,6 +968,18 @@ trust_level = "trusted"
         dir
     }
 
+    /// A fixture mod whose entry registers one shell-output policy
+    /// override (the seam the listing test below observes).
+    fn write_policy_fixture_mod(root: &Path, id: &str) -> PathBuf {
+        let dir = write_fixture_mod(root, id);
+        std::fs::write(
+            dir.join("mod.rhai"),
+            r#"register_policy("shell-output", #{ max_output_size: 9000 });"#,
+        )
+        .unwrap();
+        dir
+    }
+
     /// A runner bound against the real host context (the engine-build
     /// wiring, minus the engine).
     fn bound_runner(workspace: &Path) -> Arc<ExtensionRunner> {
@@ -994,6 +1042,61 @@ trust_level = "trusted"
         let note = load_mod(&runner, &ws, "mod-a", true);
         assert!(note.contains("Loaded mod 'mod-a' live"), "{note}");
         assert_eq!(tools(&runner), vec!["tool-a", "tool-b"]);
+    }
+
+    /// `list_mods` shows the resolved-policy layer — kind → effective
+    /// value → winning mod id — and falls back live to the builtin id +
+    /// builtin default after the overriding mod unloads.
+    #[test]
+    fn list_mods_shows_resolved_policies_and_falls_back_on_unload() {
+        let _env = crate::test_support::lock_test_env();
+        let dir = TempDir::new().unwrap();
+        let _home = ScopedHome::set_trusted(&dir, &dir.path().join("ws"));
+        let ws = workspace_in(&dir);
+        let mods_root = ws.join(".codesmith").join("mods");
+        write_policy_fixture_mod(&mods_root, "pol-mod");
+        {
+            let _guard = mod_state_lock();
+            let mut state = ModStateStore::load_default().unwrap();
+            activate(&ws, &mut state, "pol-mod").unwrap();
+        }
+
+        let runner = bound_runner(&ws);
+        // Mirror the engine's populate order: builtin tier first, so the
+        // user mod wins last-wins and the builtin default is what the
+        // listing falls back to.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        for (_, m) in codesmith_extensions::load_builtin_mods(runner.message_projection_hub()) {
+            let m = m.expect("builtin mod compiles");
+            rt.block_on(runner.bind_mod(Arc::new(m)))
+                .expect("bind builtin");
+        }
+        let note = load_mod(&runner, &ws, "pol-mod", true);
+        assert!(note.contains("Loaded mod 'pol-mod' live"), "{note}");
+
+        {
+            let _guard = mod_state_lock();
+            let state = ModStateStore::load_default().unwrap();
+            let listing = list_mods(&ws, &state, Some(&runner));
+            assert!(listing.contains("Resolved policies"), "{listing}");
+            assert!(
+                listing.contains("shell-output = {\"max_output_size\":9000} (from pol-mod)"),
+                "{listing}"
+            );
+            assert!(listing.contains("(from builtin-output-diff)"), "{listing}");
+        }
+
+        // Unload (what disable/remove drive): the listing falls back to
+        // the builtin id + builtin default live.
+        let note = unload_mod(&runner, "pol-mod");
+        assert!(note.contains("Unloaded mod 'pol-mod'"), "{note}");
+        {
+            let _guard = mod_state_lock();
+            let state = ModStateStore::load_default().unwrap();
+            let listing = list_mods(&ws, &state, Some(&runner));
+            assert!(listing.contains("(from builtin-shell-output)"), "{listing}");
+            assert!(!listing.contains("from pol-mod"), "{listing}");
+        }
     }
 
     #[test]
