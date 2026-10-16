@@ -633,19 +633,6 @@ fn heavy_model_for_provider(provider: ApiProvider) -> &'static str {
     }
 }
 
-/// Startup update-check configuration (`[update]` table in config.toml).
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
-pub struct UpdateConfig {
-    /// When `Some(false)`, skip the CLI startup background update check
-    /// entirely. `None` inherits the active preset's baseline (default:
-    /// check enabled).
-    #[serde(default)]
-    pub check_for_updates: Option<bool>,
-    /// Optional GitHub-compatible latest-release JSON endpoint.
-    #[serde(default)]
-    pub update_uri: Option<String>,
-}
-
 /// Resolved CLI configuration, including defaults and environment overrides.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Config {
@@ -833,11 +820,6 @@ pub struct Config {
     /// keeps its existing balanced behaviour.
     #[serde(default)]
     pub auto: Option<AutoConfig>,
-
-    /// Startup update-check behavior. When absent, the CLI keeps the default
-    /// fire-and-forget latest-release check.
-    #[serde(default)]
-    pub update: Option<UpdateConfig>,
 
     /// Post-edit LSP diagnostics injection (#136). When absent, the engine
     /// applies the defaults documented in [`LspConfigToml`].
@@ -3972,7 +3954,6 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         index: override_cfg.index.or(base.index),
         memory: override_cfg.memory.or(base.memory),
         auto: override_cfg.auto.or(base.auto),
-        update: override_cfg.update.or(base.update),
         lsp: override_cfg.lsp.or(base.lsp),
         context: ContextConfig {
             enabled: override_cfg.context.enabled.or(base.context.enabled),

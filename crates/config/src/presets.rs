@@ -238,9 +238,6 @@ pub struct PresetDefinitionToml {
     /// model for ambiguous requests.
     #[serde(default)]
     pub auto_cost_saving: Option<bool>,
-    /// `[update] check_for_updates` — startup background update check.
-    #[serde(default)]
-    pub update_check: Option<bool>,
     /// `[network] audit` — one audit-log line per outbound network call.
     #[serde(default)]
     pub network_audit: Option<bool>,
@@ -266,7 +263,6 @@ impl PresetDefinitionToml {
             ("[context].enabled", self.context_enabled),
             ("[capacity].enabled", self.capacity_enabled),
             ("[auto].cost_saving", self.auto_cost_saving),
-            ("[update].check_for_updates", self.update_check),
             ("[network].audit", self.network_audit),
             ("strict_tool_mode", self.strict_tool_mode),
         ]
@@ -662,7 +658,6 @@ mod tests {
         assert_eq!(simple.max_subagents, Some(0));
         assert!(simple.tools.as_ref().unwrap().include.is_some());
         assert_eq!(simple.index_enabled, Some(false));
-        assert_eq!(simple.update_check, Some(false));
 
         let middle = &catalog.get("middle").unwrap().definition;
         assert_eq!(middle.app_mode, None);

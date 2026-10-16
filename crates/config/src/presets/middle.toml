@@ -8,7 +8,7 @@
 # the key is the top-level auto_cost_saving). Keep `description` below in
 # sync with this posture.
 name = "middle"
-description = "Factory default: high-value features on (memory, index, LSP, snapshots, sub-agents, web search, MCP, project context pack) with the quality-first strong-brain auto router; background update check and network audit on; context manager, capacity, KOD, vision, agent teams, and coordinator stay off."
+description = "Factory default: high-value features on (memory, index, LSP, snapshots, sub-agents, web search, MCP, project context pack) with the quality-first strong-brain auto router; network audit on; context manager, capacity, KOD, vision, agent teams, and coordinator stay off."
 max_subagents = 10
 index_enabled = true
 lsp_enabled = true
@@ -20,7 +20,6 @@ context_enabled = false
 context_project_pack = true
 capacity_enabled = false
 auto_cost_saving = false
-update_check = true
 network_audit = true
 strict_tool_mode = false
 
