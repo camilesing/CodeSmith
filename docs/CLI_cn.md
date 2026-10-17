@@ -50,7 +50,12 @@ prompt 的入口有两个：
 
 在 REPL 内，`/help` 是斜杠命令的实时清单——输入 `/` 会显示命令数量，
 `Tab` 补全命令名（多个匹配时连按两次列出候选），光标后的暗色文字预览匹配命令
-的作用。`/plan`、`/agent`、`/yolo` 分别是对应 `/mode` 取值的快捷方式，也可以在提示符下按 `Shift+Tab` 循环这些模式（`agent → plan → yolo`，实验性 `coordinator_mode` 功能开启时再加 `coordinator`）。
+的作用。`/plan`、`/agent`、`/yolo` 分别是对应 `/mode` 取值的快捷方式，也可以在提示符下按 `Shift+Tab` 循环这些模式（`agent → plan → yolo`，实验性 `coordinator_mode` 功能开启时再加 `coordinator`）。命令按
+用户自定义（`.codesmith/commands/*.md`）> mod 注册 > 内建的层序分派；
+内建命令可以不删实现地关掉：config.toml 的 `[commands] disabled = [...]`
+会让这些名字从分派、`/help` 与补全中消失（未知名称令启动大声失败），
+mod 侧也可在运行期用 `disable_command(name)` 达到同样效果——两种情况下
+同名的用户命令或 mod 命令都继续可用。
 
 键盘与交互细节（提示符按键、回合中的 composer、vim 模式、shell 模式）见
 [KEYBINDINGS_cn.md](KEYBINDINGS_cn.md)；在空提示符下按 `?` 会打印同一张表。

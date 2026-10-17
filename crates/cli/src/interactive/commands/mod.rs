@@ -1434,4 +1434,51 @@ mod tests {
         let err = canonicalize_disabled(&["nope".to_string()]).unwrap_err();
         assert!(err.contains("nope"), "{err}");
     }
+
+    /// Dispatch-level integration for the builtin-disable seam: a disabled
+    /// builtin refuses to run (the same seam `/help` and completion filter
+    /// on) while an enabled one still dispatches. `/yolo` is the probe
+    /// because its effect (`set_mode`) is directly observable on
+    /// `ReplState`.
+    #[tokio::test]
+    async fn dispatch_refuses_a_disabled_builtin() {
+        fn options() -> crate::app_state::InteractiveOptions {
+            crate::app_state::InteractiveOptions {
+                model: "test-model".to_string(),
+                workspace: std::env::temp_dir(),
+                config_path: None,
+                config_profile: None,
+                allow_shell: false,
+                max_subagents: 2,
+                skills_dir: std::env::temp_dir(),
+                memory_path: std::env::temp_dir().join("memory.md"),
+                mcp_config_path: std::env::temp_dir().join("mcp.json"),
+                use_memory: false,
+                start_in_agent_mode: true,
+                yolo: false,
+                resume_session_id: None,
+                initial_input: None,
+            }
+        }
+        let config = crate::config::Config::default();
+
+        let mut state = ReplState::new(options(), &config);
+        state.disabled_commands = vec!["yolo".to_string()];
+        let before = state.mode;
+        dispatch(&mut state, "/yolo").await;
+        assert_ne!(
+            state.mode,
+            AppMode::Yolo,
+            "the disabled builtin must not run"
+        );
+        assert_eq!(state.mode, before, "nothing else ran either");
+
+        let mut state = ReplState::new(options(), &config);
+        dispatch(&mut state, "/yolo").await;
+        assert_eq!(
+            state.mode,
+            AppMode::Yolo,
+            "control: the enabled builtin still dispatches"
+        );
+    }
 }
