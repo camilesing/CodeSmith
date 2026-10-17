@@ -154,6 +154,7 @@ pub fn build_bwrap_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sandbox::SandboxPolicy;
 
     #[test]
     fn test_is_available_does_not_panic() {
@@ -168,7 +169,7 @@ mod tests {
             cwd,
             "sh",
             &["-c".to_string(), "echo hi".to_string()],
-            &super::SandboxPolicy::WorkspaceWrite {
+            &SandboxPolicy::WorkspaceWrite {
                 writable_roots: vec![],
                 network_access: false,
                 exclude_tmpdir: true,
@@ -185,19 +186,19 @@ mod tests {
         // Host /dev, /proc and /sys must be overridden after the root bind.
         let ro_bind_root = cmd
             .windows(3)
-            .position(|w| w == &["--ro-bind".to_string(), "/".to_string(), "/".to_string()])
+            .position(|w| w == ["--ro-bind".to_string(), "/".to_string(), "/".to_string()])
             .expect("root ro-bind");
         let dev_at = cmd
             .windows(2)
-            .position(|w| w == &["--dev".to_string(), "/dev".to_string()])
+            .position(|w| w == ["--dev".to_string(), "/dev".to_string()])
             .expect("--dev /dev");
         let proc_at = cmd
             .windows(2)
-            .position(|w| w == &["--proc".to_string(), "/proc".to_string()])
+            .position(|w| w == ["--proc".to_string(), "/proc".to_string()])
             .expect("--proc /proc");
         let sys_at = cmd
             .windows(2)
-            .position(|w| w == &["--dir".to_string(), "/sys".to_string()])
+            .position(|w| w == ["--dir".to_string(), "/sys".to_string()])
             .expect("--dir /sys");
         assert!(dev_at > ro_bind_root);
         assert!(proc_at > ro_bind_root);
@@ -226,7 +227,7 @@ mod tests {
             cwd,
             "sh",
             &["-c".to_string(), "curl example.com".to_string()],
-            &super::SandboxPolicy::WorkspaceWrite {
+            &SandboxPolicy::WorkspaceWrite {
                 writable_roots: vec![],
                 network_access: true,
                 exclude_tmpdir: true,
