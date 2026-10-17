@@ -66,7 +66,7 @@ same frontmatter `name`, the first match wins.
 | 6 | workspace | `<workspace>/.codesmith/skills` |
 | 7 | global | `~/.agents/skills` |
 | 8 | global | `~/.claude/skills` |
-| 9 | global | `~/.codesmith/skills` |
+| 9 | global | `~/.codesmith/skills` (`$CODESMITH_HOME/skills` when the override is set) |
 
 The cross-tool locations (`.agents`, `.opencode`, `.claude`, `.cursor`) mean
 skills you already maintain for other agents are reused as-is — no
