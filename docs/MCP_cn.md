@@ -191,13 +191,80 @@ codesmith mcp tools codesmith
 - `url`（字符串，可选）：远程 MCP 服务器的基础 URL。基于 URL 的服务器默认使用 Streamable HTTP，并在服务器拒绝 Streamable HTTP 时回落到旧版 SSE。
 - `transport`（字符串，可选）：对 `url` 服务器的显式传输覆盖。支持的值：`http` / `streamable` / `streamable-http`（默认）、`sse`、`sse-ide`、`ws` / `websocket`、`ws-ide` / `websocket-ide`。对必须从端点发现开始的旧版 SSE 端点使用 `sse` 或 `sse-ide`，对 WebSocket MCP 端点使用 `ws` / `ws-ide`。
 - `headers`（对象，可选）：随发往该服务器的每个请求附带的额外 HTTP 头（例如 `Authorization: Bearer ...`）。只有 HTTP 传输会使用它；stdio 服务器会忽略它。头键名和值按原样传递（不做环境变量替换），并以明文存储在 `mcp.json` 中——请像对待任何其他含密钥的配置一样谨慎对待该文件。
-- `connect_timeout`、`execute_timeout`、`read_timeout`（秒，可选）
+- `connect_timeout`、`execute_timeout`、`read_timeout`（秒，可选）：各自约束什么见下文[远程传输（HTTP）](#远程传输http)。
 - `disabled`（布尔值，可选）
 - `enabled`（布尔值，可选，默认 `true`）
 - `required`（布尔值，可选）：若该服务器无法初始化，则启动/连接校验失败。
 - `enabled_tools`（数组，可选）：该服务器的工具名允许列表。
 - `disabled_tools`（数组，可选）：在 `enabled_tools` 之后应用的拒绝列表。
 - `oauth`（对象，可选）：URL 服务器的 OAuth 设备流配置；见下文 [OAuth](#oauth) 一节。
+
+## 远程传输（HTTP）
+
+带 `url` 的服务器条目默认通过 MCP Streamable HTTP 访问，除非 `transport`
+另有指定。一个完整的远程条目：
+
+```json
+{
+  "servers": {
+    "docs": {
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer <token>" },
+      "connect_timeout": 10,
+      "execute_timeout": 60,
+      "read_timeout": 120
+    }
+  }
+}
+```
+
+### Streamable HTTP
+
+- 每条 JSON-RPC 消息是一次对该 URL 的 `POST`，携带
+  `Accept: application/json, text/event-stream`。服务器以纯 JSON 响应体或
+  SSE 事件流应答；对通知的应答是 `202`。
+- SSE 响应按**增量**解码：事件随字节到达即可用——被拆分或粘连的 TCP
+  分片、一个流里的多个事件都会被正确重组——因此服务器在最终结果之前
+  先流式推送进度通知时，调用不会被卡到响应体结束。
+- **会话 ID。** 服务器在 `initialize` 响应（或在尽力而为的 `GET` 预检上，
+  面向要求每个请求都带会话的服务器）返回的 `Mcp-Session-Id` 会被捕获，
+  并作为请求头在之后的每个请求上回带。
+- **旧版 SSE 回退。** 若服务器以 404/405/406/415/501 拒绝该 `POST`，
+  客户端切换到旧版 SSE 传输（在长连 `GET` 上做端点发现，消息 `POST` 到
+  发现的端点）。对只支持旧版 SSE 的服务器设 `transport = "sse"` 跳过协商，
+  WebSocket 端点用 `"ws"`。
+
+### 超时
+
+- `connect_timeout` 约束 TCP 连接与握手（`initialize` + 工具/资源/提示词
+  发现），以及旧版 SSE 的 GET + 端点发现阶段。
+- `execute_timeout` 端到端约束每次工具调用（请求发出到响应收到）。
+- `read_timeout` 约束任一 HTTP 流上字节之间的空闲间隔——Streamable HTTP
+  响应流与旧版 SSE `GET` 流同样适用。持续送出字节的流可以自由地活过
+  `connect_timeout`；沉默的对端会在 `read_timeout` 后被切断。
+
+### 断线与重试
+
+- **会话过期**（HTTP 404、JSON-RPC 错误 `-32001`，或响应体提到
+  "expired/invalid session"）：丢弃缓存的会话 ID、重建连接，并把工具调用
+  重试**一次**。
+- **长连流被切断**（旧版 SSE `GET` 或 WebSocket 关闭）：下次调用时同样做
+  一次重连并重试。后台不会主动重连；重连在下次使用时惰性发生。
+- **Streamable HTTP 流在响应到达前结束**：调用以可诊断的错误失败，且
+  **不**重试——服务器已经收到请求、可能已执行了工具，自动重放可能让副作用
+  翻倍。若确认安全，可手动重新发起调用。
+- **401**：一次凭据刷新（已存储的 OAuth token，或 Claude.ai 刷新命令）加
+  一次重试。持续的认证失败会被缓存 15 分钟，REPL 会显示登录提示而不是
+  每回合重试。
+
+### 局限
+
+- 不会打开独立的服务器到客户端 `GET` 流：不支持服务器发起的请求
+  （sampling、roots 等）。随响应流到达的通知会被解码后忽略。
+- 空闲流在 `read_timeout` 后被切断；若服务器在没有 SSE keep-alive 的情况下
+  把响应流挂起超过该时长，下次调用会触发一次重连。
+- 在事件中途被截断的响应按宽松方式解析：被切断的尾部表现为 JSON-RPC
+  解码错误，而不是专门的截断错误。
 
 ## OAuth
 

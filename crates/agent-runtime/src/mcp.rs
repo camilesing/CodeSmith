@@ -4,6 +4,63 @@
 //! - Connection pooling for server reuse
 //! - Automatic tool discovery via `tools/list`
 //! - Configurable timeouts per-server and globally
+//!
+//! # Transport semantics (URL-based servers)
+//!
+//! URL-based servers speak Streamable HTTP by default (see
+//! [`McpTransportKind`]): each JSON-RPC message is one `POST` with
+//! `Accept: application/json, text/event-stream`; the server answers with
+//! either a plain JSON body or an SSE stream. SSE-framed responses are
+//! decoded **incrementally** by [`StreamableHttpTransport`] — events become
+//! available as chunks arrive (split and coalesced TCP segments, multiple
+//! events per stream), before the response body completes. A best-effort
+//! `GET` preflight captures an early `Mcp-Session-Id`; otherwise the
+//! session ID from the `initialize` response is captured and replayed as
+//! the `Mcp-Session-Id` header on every subsequent request. Servers that
+//! reject Streamable HTTP with a known incompatible status
+//! (404/405/406/415/501) fall back to the legacy SSE transport (endpoint
+//! discovery + long-lived GET stream). An explicit `transport = "sse"` /
+//! `"ws"` config bypasses the negotiation.
+//!
+//! # Disconnect semantics
+//!
+//! - **Stale session** (HTTP 404, JSON-RPC error -32001, or a body
+//!   mentioning an expired/invalid session): the transport clears its
+//!   cached session ID and fails the call with a diagnosable error;
+//!   `McpPool::call_tool` drops the connection, reconnects, and retries
+//!   the call **once**.
+//! - **Long-lived stream cut** (legacy SSE GET dies, WebSocket closed):
+//!   diagnosable error, same once-only reconnect-and-retry via the pool.
+//! - **Streamable HTTP stream ended without the awaited response**: a
+//!   diagnosable error that is *not* retried — the server already received
+//!   the POST and may have executed the tool, so an automatic replay could
+//!   double a side effect. The user can re-issue the call.
+//! - **Auth failures** (401/403): one refresh (Claude.ai command or the
+//!   stored OAuth token) and one retry; persistent failures are cached as
+//!   needs-auth so callers surface a login hint instead of hammering the
+//!   server.
+//! - Reconnection is lazy: nothing reconnects in the background; the next
+//!   `get_or_connect` after a failure builds a fresh connection.
+//!
+//! # Known limitations
+//!
+//! - **No standalone GET SSE stream.** The Streamable HTTP spec allows a
+//!   client to open a long-lived GET stream for server-initiated requests
+//!   (sampling, roots, …). We do not: `McpConnection::recv` correlates
+//!   responses to our own request IDs and has no dispatch path for
+//!   server-initiated messages, so such a stream would only collect
+//!   messages to discard. The GET preflight reads headers only;
+//!   server-to-client notifications that ride a POST response stream are
+//!   decoded and then skipped by the ID-correlation loop.
+//! - `read_timeout` bounds inter-chunk idle on every HTTP stream
+//!   (including the legacy SSE GET): a silent peer is cut after
+//!   `read_timeout` (120s default), never kept alive forever. Servers
+//!   holding an idle stream open without SSE keep-alives will see
+//!   periodic reconnects.
+//! - A response body truncated mid-event is recovered leniently: the
+//!   trailing partial block is parsed like a complete one when the stream
+//!   ends, so a cut tail surfaces downstream as a JSON-RPC decode error
+//!   rather than a dedicated truncation error.
 
 // `libc::kill` (best-effort SIGTERM of spawned MCP servers) is an inherent
 // `unsafe` call. The runtime crate is otherwise `unsafe_code`-denied, so this
@@ -931,6 +988,12 @@ struct StreamableHttpTransport {
     /// an `oauth` config entry.
     oauth: Option<OAuthState>,
     pending_messages: VecDeque<Vec<u8>>,
+    /// Live reader for the most recent `text/event-stream` POST response,
+    /// delivering decoded events as chunks arrive (see
+    /// [`read_sse_response_stream`]). `None` once the stream ended or was
+    /// absorbed into `pending_messages` by the next `send`.
+    receiver:
+        Option<tokio::sync::mpsc::UnboundedReceiver<std::result::Result<Vec<u8>, anyhow::Error>>>,
     /// Per-spec MCP session identifier returned by the server in the
     /// first response (typically the `initialize` response). Attached
     /// as the `Mcp-Session-Id` header on every subsequent outbound
@@ -1126,25 +1189,8 @@ impl SseTransport {
             let s = String::from_utf8_lossy(&chunk);
             buffer.push_str(&s);
 
-            while let Some((pos, separator_len)) = find_sse_event_separator(&buffer) {
-                let event_block = buffer[..pos].to_string();
-                buffer = buffer[pos + separator_len..].to_string();
-
-                let mut event_type = "message";
-                let mut data = String::new();
-
-                for line in event_block.lines() {
-                    if let Some(value) = sse_field_value(line, "event:") {
-                        event_type = value;
-                    } else if let Some(value) = sse_field_value(line, "data:") {
-                        if !data.is_empty() {
-                            data.push('\n');
-                        }
-                        data.push_str(value);
-                    }
-                }
-
-                match event_type {
+            for (event_type, data) in take_complete_sse_blocks(&mut buffer) {
+                match event_type.as_str() {
                     "endpoint" => {
                         let _ = tx.send(SseInbound::Endpoint(data));
                     }
@@ -1374,6 +1420,7 @@ impl StreamableHttpTransport {
             headers,
             oauth,
             pending_messages: VecDeque::new(),
+            receiver: None,
             session_id: None,
         }
     }
@@ -1394,7 +1441,31 @@ impl StreamableHttpTransport {
         false
     }
 
+    /// Retire the previous response stream before issuing a new request:
+    /// any events it already delivered are appended to `pending_messages`
+    /// in order. Stream errors are swallowed at debug level — by the time
+    /// a new `send` runs, the request that opened the stream already got
+    /// its response (or was fire-and-forget, e.g.
+    /// `notifications/initialized`), so a trailing error carries no
+    /// decision for the caller.
+    fn absorb_open_stream(&mut self) {
+        let Some(mut receiver) = self.receiver.take() else {
+            return;
+        };
+        while let Ok(item) = receiver.try_recv() {
+            match item {
+                Ok(msg) => self.pending_messages.push_back(msg),
+                Err(err) => tracing::debug!(
+                    target: "mcp",
+                    error = %err,
+                    "prior streamable HTTP response stream ended with an error after use"
+                ),
+            }
+        }
+    }
+
     async fn send(&mut self, msg: Vec<u8>) -> std::result::Result<(), StreamableSendError> {
+        self.absorb_open_stream();
         let response = self.send_once(msg.clone()).await?;
         let status = response.status();
         if !status.is_success() && self.refresh_auth_headers(status).await {
@@ -1485,32 +1556,66 @@ impl StreamableHttpTransport {
             .get(CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
+        // SSE-framed responses are consumed incrementally: `send` returns
+        // once the headers are validated, and decoded events become
+        // available to `recv` as chunks arrive — a server that holds the
+        // stream open (progress notifications before the final response)
+        // no longer stalls the caller until the body completes.
+        let is_event_stream = content_type
+            .as_deref()
+            .map(|value| value.to_ascii_lowercase().contains("text/event-stream"))
+            .unwrap_or(false);
+        if is_event_stream {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            tokio::spawn(read_sse_response_stream(response, tx));
+            self.receiver = Some(rx);
+            return Ok(());
+        }
         let body = response
             .text()
             .await
             .map_err(|err| StreamableSendError::Other(err.into()))?;
-        self.store_response_body(content_type.as_deref(), &body)
+        self.store_response_body(&body)
             .map_err(StreamableSendError::Other)
     }
 
     async fn recv(&mut self) -> Result<Vec<u8>> {
-        self.pending_messages
-            .pop_front()
-            .context("MCP Streamable HTTP response queue is empty")
+        loop {
+            if let Some(msg) = self.pending_messages.pop_front() {
+                return Ok(msg);
+            }
+            let Some(receiver) = self.receiver.as_mut() else {
+                anyhow::bail!(
+                    "MCP Streamable HTTP response stream ended without the awaited message (url={})",
+                    mask_url_secrets(&self.url)
+                );
+            };
+            match receiver.recv().await {
+                Some(Ok(msg)) => return Ok(msg),
+                Some(Err(err)) => {
+                    self.receiver = None;
+                    return Err(err);
+                }
+                None => {
+                    // Stream ended cleanly — drop it and re-check the
+                    // pending queue once before failing.
+                    self.receiver = None;
+                }
+            }
+        }
     }
 
-    fn store_response_body(&mut self, content_type: Option<&str>, body: &str) -> Result<()> {
+    fn store_response_body(&mut self, body: &str) -> Result<()> {
         if body.trim().is_empty() {
             return Ok(());
         }
 
-        let is_event_stream = content_type
-            .map(|value| value.to_ascii_lowercase().contains("text/event-stream"))
-            .unwrap_or(false)
-            || body.trim_start().starts_with("event:")
-            || body.trim_start().starts_with("data:");
-
-        if is_event_stream {
+        // Some servers omit Content-Type on SSE responses; recognize the
+        // framing by prefix. This branch only sees complete bodies — the
+        // header-driven path streams incrementally in `handle_response`.
+        let looks_like_sse =
+            body.trim_start().starts_with("event:") || body.trim_start().starts_with("data:");
+        if looks_like_sse {
             for msg in parse_sse_message_data(body) {
                 self.pending_messages.push_back(msg);
             }
@@ -1519,6 +1624,53 @@ impl StreamableHttpTransport {
 
         self.pending_messages.push_back(body.as_bytes().to_vec());
         Ok(())
+    }
+}
+
+/// Incrementally decode a `text/event-stream` POST response, forwarding
+/// complete `message` events to `tx` as chunks arrive. Half-packets and
+/// coalesced chunks are reassembled by the shared SSE block decoder. When
+/// the stream ends, a trailing block the server never terminated is still
+/// delivered (matching the lenient complete-body parse), so a truncated
+/// tail surfaces downstream as a JSON-RPC decode error rather than being
+/// dropped. The task exits when the body ends, the read times out
+/// (client `read_timeout`), or the receiver is dropped.
+async fn read_sse_response_stream(
+    response: reqwest::Response,
+    tx: tokio::sync::mpsc::UnboundedSender<std::result::Result<Vec<u8>, anyhow::Error>>,
+) {
+    let display_url = mask_url_secrets(response.url().as_str());
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    loop {
+        match stream.next().await {
+            Some(Ok(chunk)) => {
+                buffer.push_str(&String::from_utf8_lossy(&chunk));
+                for (event_type, data) in take_complete_sse_blocks(&mut buffer) {
+                    if event_type == "message"
+                        && !data.trim().is_empty()
+                        && tx.send(Ok(data.into_bytes())).is_err()
+                    {
+                        return; // transport retired this stream
+                    }
+                }
+            }
+            Some(Err(err)) => {
+                let _ = tx.send(Err(anyhow::anyhow!(
+                    "MCP Streamable HTTP response stream read error (url={display_url}): {err}"
+                )));
+                return;
+            }
+            None => {
+                if !buffer.trim().is_empty() {
+                    let (event_type, data) = parse_sse_block(&buffer);
+                    if event_type == "message" && !data.trim().is_empty() {
+                        let _ = tx.send(Ok(data.into_bytes()));
+                    }
+                }
+                return;
+            }
+        }
     }
 }
 
@@ -1589,33 +1741,54 @@ fn is_mcp_stale_session_error(err: &anyhow::Error) -> bool {
         || is_mcp_stale_session_body(&err)
 }
 
-fn parse_sse_message_data(body: &str) -> Vec<Vec<u8>> {
-    let normalized = body.replace("\r\n", "\n");
-    let mut messages = Vec::new();
-
-    for block in normalized.split("\n\n") {
-        let mut event_type = "message";
-        let mut data = String::new();
-
-        for line in block.lines() {
-            if let Some(value) = sse_field_value(line, "event:") {
-                event_type = value;
-            } else if let Some(value) = sse_field_value(line, "data:") {
-                if !data.is_empty() {
-                    data.push('\n');
-                }
-                data.push_str(value);
+/// Parse one SSE event block (the lines between two event separators) into
+/// `(event_type, data)`. Multi-line `data:` fields join with `\n` per the
+/// SSE spec; unknown fields (including `:` comment lines) are ignored.
+fn parse_sse_block(block: &str) -> (String, String) {
+    let mut event_type = "message".to_string();
+    let mut data = String::new();
+    for line in block.lines() {
+        if let Some(value) = sse_field_value(line, "event:") {
+            event_type = value.to_string();
+        } else if let Some(value) = sse_field_value(line, "data:") {
+            if !data.is_empty() {
+                data.push('\n');
             }
+            data.push_str(value);
         }
-
-        if event_type != "message" || data.trim().is_empty() {
-            continue;
-        }
-
-        messages.push(data.trim().as_bytes().to_vec());
     }
+    (event_type, data)
+}
 
-    messages
+/// Split complete SSE event blocks off the front of `buffer`, leaving any
+/// trailing partial block in place for the next chunk. This is the shared
+/// incremental-decode step for every SSE consumer in this module (the
+/// legacy SSE GET loop and the Streamable HTTP POST response reader), so
+/// half-packets, coalesced chunks, and multiple events per chunk decode
+/// identically everywhere.
+fn take_complete_sse_blocks(buffer: &mut String) -> Vec<(String, String)> {
+    let mut blocks = Vec::new();
+    while let Some((pos, separator_len)) = find_sse_event_separator(buffer) {
+        let block = buffer[..pos].to_string();
+        buffer.drain(..pos + separator_len);
+        blocks.push(parse_sse_block(&block));
+    }
+    blocks
+}
+
+fn parse_sse_message_data(body: &str) -> Vec<Vec<u8>> {
+    let mut buffer = body.replace("\r\n", "\n");
+    let mut events = take_complete_sse_blocks(&mut buffer);
+    // A body whose final event was never terminated still counts — matches
+    // the lenient tail handling of the incremental reader.
+    if !buffer.trim().is_empty() {
+        events.push(parse_sse_block(&buffer));
+    }
+    events
+        .into_iter()
+        .filter(|(event_type, data)| event_type == "message" && !data.trim().is_empty())
+        .map(|(_, data)| data.trim().as_bytes().to_vec())
+        .collect()
 }
 
 fn find_sse_event_separator(buffer: &str) -> Option<(usize, usize)> {
@@ -1782,6 +1955,7 @@ impl McpConnection {
         network_policy: Option<&NetworkPolicyDecider>,
     ) -> Result<Self> {
         let connect_timeout_secs = config.effective_connect_timeout(global_timeouts);
+        let read_timeout_secs = config.effective_read_timeout(global_timeouts);
         let cancel_token = tokio_util::sync::CancellationToken::new();
 
         let transport: Box<dyn McpTransport> = if let Some(url) = &config.url {
@@ -1814,8 +1988,14 @@ impl McpConnection {
             // local Clash / Shadowsocks tunnel, etc. previously had MCP
             // HTTP traffic bypass the proxy entirely while every other
             // tool on the box (curl, npm, …) used it.
-            let mut client_builder =
-                reqwest::Client::builder().timeout(Duration::from_secs(connect_timeout_secs));
+            let mut client_builder = reqwest::Client::builder()
+                // The request deadline is NOT the connect timeout:
+                // Streamable HTTP response streams (and the legacy SSE GET)
+                // legitimately outlive `connect_timeout`, so only the TCP
+                // connect phase is bounded by it; inter-chunk idle on any
+                // HTTP stream is bounded by `read_timeout` instead.
+                .connect_timeout(Duration::from_secs(connect_timeout_secs))
+                .read_timeout(Duration::from_secs(read_timeout_secs));
             let env_proxy_url = std::env::var("HTTPS_PROXY")
                 .or_else(|_| std::env::var("https_proxy"))
                 .or_else(|_| std::env::var("HTTP_PROXY"))
@@ -1886,7 +2066,12 @@ impl McpConnection {
             if kind.is_websocket() {
                 Box::new(WebSocketTransport::connect(url.clone(), connect_headers.clone()).await?)
             } else if kind.is_sse() {
-                Box::new(
+                // Bound the connect phase (GET + endpoint discovery) at
+                // connect_timeout: the client's read_timeout no longer
+                // caps it tightly now that total timeouts are gone, and a
+                // silent legacy-SSE server should fail at startup speed.
+                let sse = tokio::time::timeout(
+                    Duration::from_secs(connect_timeout_secs),
                     SseTransport::connect(
                         client,
                         url.clone(),
@@ -1894,9 +2079,11 @@ impl McpConnection {
                         cancel_token.clone(),
                         Duration::from_secs(connect_timeout_secs),
                         oauth_state.clone(),
-                    )
-                    .await?,
+                    ),
                 )
+                .await
+                .context("MCP SSE connect timed out")??;
+                Box::new(sse)
             } else {
                 let mut http = HttpTransport::new(
                     client,
@@ -2304,22 +2491,26 @@ impl McpConnection {
         }
 
         let call_id = self.next_id();
-        self.send(serde_json::json!({
+        let request = serde_json::json!({
             "jsonrpc": "2.0",
             "id": &call_id,
             "method": method,
             "params": params
-        }))
-        .await?;
-
-        let response = tokio::time::timeout(Duration::from_secs(timeout_secs), self.recv(call_id))
-            .await
-            .with_context(|| {
-                format!(
-                    "MCP method '{}' on server '{}' timed out after {}s",
-                    method, self.name, timeout_secs
-                )
-            })??;
+        });
+        // The execute timeout bounds the whole method call — send included —
+        // so a server that accepts the POST but never answers fails at
+        // execute_timeout, not at the (possibly much longer) read timeout.
+        let response = tokio::time::timeout(Duration::from_secs(timeout_secs), async {
+            self.send(request).await?;
+            self.recv(call_id).await
+        })
+        .await
+        .with_context(|| {
+            format!(
+                "MCP method '{}' on server '{}' timed out after {}s",
+                method, self.name, timeout_secs
+            )
+        })??;
 
         if let Some(error) = response.get("error") {
             return Err(anyhow::anyhow!(
@@ -4904,6 +5095,55 @@ mod tests {
     }
 
     #[test]
+    fn take_complete_sse_blocks_reassembles_split_and_coalesced_events() {
+        // Chunks split mid-field ("event: mes" + "sage"), mid-event
+        // ("da" + "ta:"), and mid-separator ("\r\n\r" + "\n"), with two
+        // events coalesced into one late chunk.
+        let mut buffer = String::new();
+        let mut events = Vec::new();
+        for piece in [
+            "event: mes",
+            "sage\r\nda",
+            "ta: {\"a\":1}",
+            "\r\n\r",
+            "\nevent: message\r\ndata: {\"b\":2}\r\n\r\n",
+        ] {
+            buffer.push_str(piece);
+            events.extend(take_complete_sse_blocks(&mut buffer));
+        }
+        assert_eq!(buffer, "", "no partial block may remain");
+        assert_eq!(
+            events,
+            vec![
+                ("message".to_string(), "{\"a\":1}".to_string()),
+                ("message".to_string(), "{\"b\":2}".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn byte_by_byte_sse_feed_matches_complete_body_parse() {
+        // Feeding the stream one character at a time is the worst-case
+        // half-packet pattern; it must decode exactly like parsing the
+        // complete body in one shot.
+        let body = ": keepalive comment\r\n\r\nevent: message\r\ndata: {\"id\":1}\r\n\r\nevent: message\ndata: {\"a\":\ndata: 1}\n\n";
+        let expected = parse_sse_message_data(body);
+        assert_eq!(expected.len(), 2);
+
+        let mut buffer = String::new();
+        let mut got = Vec::new();
+        for ch in body.chars() {
+            buffer.push(ch);
+            for (event_type, data) in take_complete_sse_blocks(&mut buffer) {
+                if event_type == "message" && !data.trim().is_empty() {
+                    got.push(data.trim().as_bytes().to_vec());
+                }
+            }
+        }
+        assert_eq!(got, expected);
+    }
+
+    #[test]
     fn response_id_matches_string_and_numeric_echoes() {
         assert!(response_id_matches(Some(&serde_json::json!("1")), "1"));
         assert!(response_id_matches(Some(&serde_json::json!(1)), "1"));
@@ -4943,7 +5183,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "flaky: requires a live TCP listener and is sensitive to port allocation races"]
     async fn mcp_connection_supports_streamable_http_event_stream_responses() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::{TcpListener, TcpStream};
@@ -4982,8 +5221,12 @@ mod tests {
 
         async fn write_json_sse(socket: &mut TcpStream, response: serde_json::Value) {
             let body = format!("event: message\ndata: {response}\n\n");
+            // `Connection: close` matters: the per-connection task ends (and
+            // the socket closes) right after writing, and a pooled reuse of
+            // that dying connection is exactly the flake this test was
+            // ignored for (see the stale-session fixture fix in ef835379).
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{}",
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
                 body.len(),
                 body
             );
@@ -5011,7 +5254,9 @@ mod tests {
 
                     if method == "notifications/initialized" {
                         socket
-                            .write_all(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n")
+                            .write_all(
+                                b"HTTP/1.1 202 Accepted\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+                            )
                             .await
                             .unwrap();
                         return;
@@ -5083,6 +5328,267 @@ mod tests {
         assert_eq!(conn.tools()[0].name, "read_wiki_structure");
 
         server.abort();
+    }
+
+    /// `(method, Mcp-Session-Id)` of one fixture-observed request.
+    type RecordedRequest = (String, Option<String>);
+
+    /// Shared fixture for the incremental-decode tests: a minimal Streamable
+    /// HTTP MCP server on a raw loopback socket. Every JSON-RPC response is
+    /// delivered as an SSE stream written in 7-byte pieces, and each response
+    /// stream is then held open forever (the per-connection task parks
+    /// instead of closing) — so the client can only progress if it decodes
+    /// events as chunks arrive rather than waiting for the body to complete.
+    /// `stall_tools_call_response` inserts a mid-response gap after the
+    /// response headers for `tools/call`. Returns the recorded
+    /// `(method, Mcp-Session-Id)` pair of every request the fixture saw.
+    async fn spawn_open_stream_sse_fixture(
+        listener: tokio::net::TcpListener,
+        stall_tools_call_response: Duration,
+    ) -> Arc<Mutex<Vec<RecordedRequest>>> {
+        use tokio::io::AsyncWriteExt;
+
+        let seen: Arc<Mutex<Vec<RecordedRequest>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen_server = Arc::clone(&seen);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let seen = Arc::clone(&seen_server);
+                let stall = stall_tools_call_response;
+                tokio::spawn(async move {
+                    let Ok(request) = read_http_request(&mut socket).await else {
+                        return;
+                    };
+                    let head = request.split("\r\n\r\n").next().unwrap_or("");
+                    let session = head.lines().find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("mcp-session-id")
+                            .then(|| value.trim().to_string())
+                    });
+                    let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+                    let method = if head.starts_with("GET ") {
+                        "GET".to_string()
+                    } else {
+                        serde_json::from_str::<serde_json::Value>(body)
+                            .ok()
+                            .and_then(|value| {
+                                value
+                                    .get("method")
+                                    .and_then(|m| m.as_str())
+                                    .map(str::to_string)
+                            })
+                            .unwrap_or_default()
+                    };
+                    seen.lock().unwrap().push((method.clone(), session));
+
+                    if method == "GET" {
+                        socket
+                            .write_all(
+                                b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            )
+                            .await
+                            .unwrap();
+                        return;
+                    }
+                    if method == "notifications/initialized" {
+                        socket
+                            .write_all(
+                                b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            )
+                            .await
+                            .unwrap();
+                        return;
+                    }
+
+                    let id = serde_json::from_str::<serde_json::Value>(body)
+                        .ok()
+                        .and_then(|value| value.get("id").cloned())
+                        .unwrap_or_else(|| serde_json::json!("0"));
+                    let result = match method.as_str() {
+                        "initialize" => serde_json::json!({
+                            "protocolVersion": "2024-11-05",
+                            "serverInfo": {"name": "incremental-sse", "version": "1.0"},
+                            "capabilities": {"tools": {}, "resources": {}, "prompts": {}}
+                        }),
+                        "tools/list" => serde_json::json!({
+                            "tools": [{
+                                "name": "echo",
+                                "description": "echo",
+                                "inputSchema": {"type": "object"}
+                            }]
+                        }),
+                        "resources/list" => serde_json::json!({"resources": []}),
+                        "resources/templates/list" => serde_json::json!({"resourceTemplates": []}),
+                        "prompts/list" => serde_json::json!({"prompts": []}),
+                        "tools/call" => serde_json::json!({
+                            "content": [{"type": "text", "text": "called"}]
+                        }),
+                        other => panic!("unexpected method: {other}"),
+                    };
+
+                    // No Content-Length and no terminal close: the body ends
+                    // only when this task is torn down at test end.
+                    let mut head_out = String::from(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n",
+                    );
+                    if method == "initialize" {
+                        head_out.push_str("Mcp-Session-Id: sess-incr-1\r\n");
+                    }
+                    head_out.push_str("\r\n");
+                    socket.write_all(head_out.as_bytes()).await.unwrap();
+
+                    if method == "tools/call" && !stall.is_zero() {
+                        tokio::time::sleep(stall).await;
+                    }
+
+                    let mut stream_text = String::new();
+                    if method == "tools/call" {
+                        // Multi-event body: a notification before the
+                        // response event exercises coalesced events in one
+                        // stream (the client must skip the first).
+                        stream_text.push_str(
+                            "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{\"progress\":1}}\r\n\r\n",
+                        );
+                    }
+                    let payload = serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result});
+                    stream_text.push_str(&format!("event: message\r\ndata: {payload}\r\n\r\n"));
+                    for piece in stream_text.as_bytes().chunks(7) {
+                        socket.write_all(piece).await.unwrap();
+                        tokio::task::yield_now().await;
+                    }
+
+                    // Hold the response stream open: the body never completes
+                    // while the client lives, so a transport that waits for
+                    // the full body would stall until its timeout fires.
+                    std::future::pending::<()>().await;
+                });
+            }
+        });
+        seen
+    }
+
+    /// Regression (TODO-30): Streamable HTTP POST responses must be decoded
+    /// incrementally. The fixture writes SSE events in 7-byte pieces and
+    /// parks every response stream open — the handshake, discovery, and tool
+    /// call can only complete if events are consumed as chunks arrive,
+    /// before the body ends. Also pins: the session ID from the initialize
+    /// response is replayed on later POSTs, and multi-event streams
+    /// (notification + response) are split correctly.
+    #[tokio::test]
+    async fn streamable_http_post_sse_events_arrive_incrementally() {
+        let _lock = lock_mcp_loopback_tests().await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = spawn_open_stream_sse_fixture(listener, Duration::ZERO).await;
+
+        let config = McpServerConfig {
+            command: None,
+            args: vec![],
+            env: HashMap::new(),
+            url: Some(format!("http://{addr}/mcp")),
+            transport: None,
+            connect_timeout: Some(2),
+            execute_timeout: Some(5),
+            read_timeout: None,
+            disabled: false,
+            enabled: true,
+            required: false,
+            enabled_tools: Vec::new(),
+            disabled_tools: Vec::new(),
+            headers: HashMap::new(),
+            oauth: None,
+        };
+
+        let mut conn = McpConnection::connect_with_policy(
+            "incremental".to_string(),
+            config,
+            &McpTimeouts::default(),
+            None,
+        )
+        .await
+        .expect("connect must complete while response streams stay open");
+
+        assert_eq!(conn.state(), ConnectionState::Ready);
+        assert_eq!(conn.tools().len(), 1);
+        assert_eq!(conn.tools()[0].name, "echo");
+
+        let result = conn
+            .call_tool("echo", serde_json::json!({"x": 1}), 5)
+            .await
+            .expect("tool call must decode the response event mid-stream");
+        assert_eq!(result["content"][0]["text"], "called");
+
+        let recorded = seen.lock().unwrap().clone();
+        let sessions_for = |method: &str| -> Vec<Option<String>> {
+            recorded
+                .iter()
+                .filter(|(m, _)| m == method)
+                .map(|(_, s)| s.clone())
+                .collect()
+        };
+        // The initialize POST carries no session yet; later POSTs replay the
+        // one the initialize response provided.
+        assert_eq!(sessions_for("initialize"), vec![None]);
+        assert!(
+            !sessions_for("tools/list").is_empty()
+                && sessions_for("tools/list")
+                    .iter()
+                    .all(|s| s.as_deref() == Some("sess-incr-1"))
+        );
+        assert!(
+            !sessions_for("tools/call").is_empty()
+                && sessions_for("tools/call")
+                    .iter()
+                    .all(|s| s.as_deref() == Some("sess-incr-1"))
+        );
+    }
+
+    /// Regression (TODO-30): the HTTP request deadline must not be the
+    /// connect timeout. A tools/call response whose event bytes arrive 1.5s
+    /// after the headers (mid-body gap) must succeed even with
+    /// `connect_timeout = 1`; only a silent peer (no bytes within
+    /// `read_timeout`) is a timeout. The old client-wide total timeout
+    /// killed this request once connect_timeout elapsed.
+    #[tokio::test]
+    async fn streamable_http_read_timeout_allows_slow_response_bodies() {
+        let _lock = lock_mcp_loopback_tests().await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _seen = spawn_open_stream_sse_fixture(listener, Duration::from_millis(1500)).await;
+
+        let config = McpServerConfig {
+            command: None,
+            args: vec![],
+            env: HashMap::new(),
+            url: Some(format!("http://{addr}/mcp")),
+            transport: None,
+            connect_timeout: Some(1),
+            execute_timeout: Some(10),
+            read_timeout: None,
+            disabled: false,
+            enabled: true,
+            required: false,
+            enabled_tools: Vec::new(),
+            disabled_tools: Vec::new(),
+            headers: HashMap::new(),
+            oauth: None,
+        };
+
+        let mut conn = McpConnection::connect_with_policy(
+            "slow-body".to_string(),
+            config,
+            &McpTimeouts::default(),
+            None,
+        )
+        .await
+        .expect("connect must succeed");
+        let result = conn
+            .call_tool("echo", serde_json::json!({}), 10)
+            .await
+            .expect("slow response body must not be killed by the connect timeout");
+        assert_eq!(result["content"][0]["text"], "called");
     }
 
     #[test]

@@ -201,13 +201,91 @@ Per-server settings:
 - `url` (string, optional): base URL of a remote MCP server. URL-based servers use Streamable HTTP by default and fall back to legacy SSE when the server rejects Streamable HTTP.
 - `transport` (string, optional): explicit transport override for `url` servers. Supported values: `http` / `streamable` / `streamable-http` (default), `sse`, `sse-ide`, `ws` / `websocket`, `ws-ide` / `websocket-ide`. Use `sse` or `sse-ide` for legacy SSE endpoints that must start with endpoint discovery, and `ws` / `ws-ide` for WebSocket MCP endpoints.
 - `headers` (object, optional): extra HTTP headers sent with every request to this server (e.g. `Authorization: Bearer ...`). Only the HTTP transports honor this; stdio servers ignore it. Header keys and values are passed through as-is (no environment-variable substitution) and are stored in plain text in `mcp.json` — treat the file with the same care as any other secret-bearing config.
-- `connect_timeout`, `execute_timeout`, `read_timeout` (seconds, optional)
+- `connect_timeout`, `execute_timeout`, `read_timeout` (seconds, optional): see [Remote Transports](#remote-transports-http) for what each one bounds.
 - `disabled` (bool, optional)
 - `enabled` (bool, optional, default `true`)
 - `required` (bool, optional): startup/connect validation fails if this server cannot initialize.
 - `enabled_tools` (array, optional): allowlist of tool names for this server.
 - `disabled_tools` (array, optional): denylist applied after `enabled_tools`.
 - `oauth` (object, optional): OAuth device-flow configuration for URL servers; see [OAuth](#oauth) below.
+
+## Remote Transports (HTTP)
+
+A `url` server entry is reached over MCP Streamable HTTP unless `transport`
+says otherwise. A complete remote entry:
+
+```json
+{
+  "servers": {
+    "docs": {
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer <token>" },
+      "connect_timeout": 10,
+      "execute_timeout": 60,
+      "read_timeout": 120
+    }
+  }
+}
+```
+
+### Streamable HTTP
+
+- Every JSON-RPC message is one `POST` to the URL with
+  `Accept: application/json, text/event-stream`. The server answers with a
+  plain JSON body or an SSE stream; responses to notifications are `202`.
+- SSE responses are decoded **incrementally**: events become available as
+  bytes arrive — split or coalesced TCP segments and several events per
+  stream are reassembled — so a server that streams progress notifications
+  before the final result does not stall the call until the body ends.
+- **Session ID.** The `Mcp-Session-Id` the server returns on the
+  `initialize` response (or on a best-effort `GET` preflight, for servers
+  that demand a session on every request) is captured and replayed as a
+  header on every later request.
+- **Legacy SSE fallback.** If the server rejects the `POST` with
+  404/405/406/415/501, the client switches to the legacy SSE transport
+  (endpoint discovery over a long-lived `GET`, messages `POST`ed to the
+  discovered endpoint). Set `transport = "sse"` to skip the negotiation for
+  servers that only speak legacy SSE, or `"ws"` for WebSocket endpoints.
+
+### Timeouts
+
+- `connect_timeout` bounds the TCP connect and the handshake
+  (`initialize` + tool/resource/prompt discovery), and the GET + endpoint
+  discovery phase of legacy SSE.
+- `execute_timeout` bounds each tool call end to end (request sent and
+  response received).
+- `read_timeout` bounds the idle gap between bytes on any HTTP stream —
+  the Streamable HTTP response stream and the legacy SSE `GET` stream
+  alike. A stream that keeps delivering bytes can outlive `connect_timeout`
+  freely; a peer that goes silent is cut after `read_timeout`.
+
+### Disconnects and retries
+
+- **Expired session** (HTTP 404, JSON-RPC error `-32001`, or an
+  "expired/invalid session" body): the cached session ID is dropped, the
+  connection is rebuilt, and the tool call is retried **once**.
+- **Long-lived stream cut** (legacy SSE `GET` or WebSocket closed): same
+  single reconnect-and-retry on the next call. Nothing reconnects in the
+  background; reconnection happens lazily on the next use.
+- **Streamable HTTP stream ended without the response**: the call fails
+  with a diagnosable error and is **not** retried — the server already
+  received the request and may have run the tool, so an automatic replay
+  could double a side effect. Re-issue the call if that is safe.
+- **401**: one credential refresh (stored OAuth token, or the Claude.ai
+  refresh command) and one retry. Persistent auth failures are cached for
+  15 minutes so the REPL shows a login hint instead of re-trying every
+  turn.
+
+### Limitations
+
+- No standalone server-to-client `GET` stream is opened: server-initiated
+  requests (sampling, roots, …) are not supported. Notifications that
+  arrive on a response stream are decoded and ignored.
+- Idle streams are cut after `read_timeout`; a server that holds a
+  response stream open without SSE keep-alives for longer than that sees a
+  reconnect on the next call.
+- A response truncated mid-event is parsed leniently: a cut tail surfaces
+  as a JSON-RPC decode error rather than a dedicated truncation error.
 
 ## OAuth
 
