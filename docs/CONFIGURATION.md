@@ -1066,7 +1066,10 @@ and the capacity controller remains disabled unless configured.
     tokenizer with e.g.
     `huggingface-cli download deepseek-ai/DeepSeek-V3 tokenizer.json --local-dir ~/.codesmith/tokenizers`
     and point `tokenizer_path` at the downloaded file.
-- `retry.*` (optional): retry/backoff settings for API requests:
+- `retry.*` (optional): retry/backoff settings for API requests. Applies to
+  non-streaming model calls (compaction summaries, utility assists, in-process
+  sub-agent steps) via the retrying client decorator; streaming retries are
+  owned by the engine's transparent stream retry with their own fixed budget:
   - `[retry].enabled` (bool, default `true`)
   - `[retry].max_retries` (int, default `3`)
   - `[retry].initial_delay` (float seconds, default `1.0`)

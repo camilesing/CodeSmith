@@ -246,7 +246,6 @@ mod tests {
             default_model: String::from("mock-model"),
             retry: RetryConfig::disabled(),
             http_headers: HashMap::new(),
-            on_retry: None,
         }
     }
 

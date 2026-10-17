@@ -962,7 +962,9 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
     tokenizer：
     `huggingface-cli download deepseek-ai/DeepSeek-V3 tokenizer.json --local-dir ~/.codesmith/tokenizers`
     然后把 `tokenizer_path` 指向下载的文件。
-- `retry.*`（可选）：API 请求的重试/退避设置：
+- `retry.*`（可选）：API 请求的重试/退避设置。作用于非流式模型调用
+  （压缩摘要、utility 辅助、进程内子代理步骤），经重试客户端装饰器
+  生效；流式重试由引擎的透明流重试持有独立的固定预算：
   - `[retry].enabled`（布尔，默认 `true`）
   - `[retry].max_retries`（整数，默认 `3`）
   - `[retry].initial_delay`（浮点秒数，默认 `1.0`）
