@@ -339,9 +339,11 @@ impl EvalHarness {
 //     { "request": { "step": "list_dir", "kind": "List" },
 //       "response_events": [{ "type": "ok", "output": "…" }] }
 //
-// The mock LLM client replays these fixtures via
-// `MockLlmClient::push_message_response` (or the streaming variant) by mapping
-// each `response_events` array onto a canned `Vec<StreamEvent>`.
+// These fixtures record TOOL-step outcomes, not model I/O — they do not feed
+// `MockLlmClient`. LLM replay has its own recording format
+// (`codesmith_agent::llm_client::record_replay::RecordLine`, driven by
+// CODESMITH_RECORD_LLM); conflating the two domains would replay a tool
+// output as an assistant turn.
 //
 // This format is intentionally minimal — additional fields (timing, model,
 // usage) can be added without breaking older fixtures because each line is a

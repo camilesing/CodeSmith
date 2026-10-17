@@ -1376,7 +1376,14 @@ pub fn build_engine(
 
     // Resolve the optional [utility_model] once. Seam defaults below and the
     // workshop synthesis handle both consume it.
-    let utility_llm = resolve_utility_llm(api_config, llm_client.as_ref());
+    let utility_llm = resolve_utility_llm(api_config, llm_client.as_ref()).map(|mut utility| {
+        // Same recording path as the main client: a cross-provider
+        // `[utility_model]` handle gets its own recorder (append mode;
+        // whole-line writes keep the shared JSONL parseable), so
+        // multi-model sessions record completely.
+        utility.client = wrap_with_recording(utility.client);
+        utility
+    });
 
     // Create Flash seam manager for layered context (#159). An explicit
     // `[context] seam_model` always wins (and keeps the main client — the id
