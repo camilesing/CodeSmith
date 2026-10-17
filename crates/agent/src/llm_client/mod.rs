@@ -46,6 +46,7 @@ pub type StreamEventBox =
 pub type LlmClientHandle = Arc<dyn LlmClient>;
 
 pub mod record_replay;
+pub mod retrying;
 
 /// Unified interface for LLM providers.
 ///
@@ -358,6 +359,12 @@ impl From<serde_json::Error> for LlmError {
 
 // === RetryConfig - Exponential Backoff Configuration ===
 
+/// Hard safety ceiling on any computed backoff delay. A configured
+/// `max_delay` above this cap is clamped down to it: retry sleeps beyond
+/// five minutes are almost certainly a misconfiguration, and the caller's
+/// total-timeout budget (if any) should be the real wall-clock bound.
+const HARD_DELAY_CAP_SECS: f64 = 300.0;
+
 /// Configuration for retry behavior with exponential backoff.
 ///
 /// This struct controls how retries are performed:
@@ -498,7 +505,15 @@ impl RetryConfig {
     pub fn delay_for_attempt(&self, attempt: u32) -> Duration {
         let exponent = i32::try_from(attempt).unwrap_or(i32::MAX);
         let base_delay = self.initial_delay * self.exponential_base.powi(exponent);
-        let capped_delay = base_delay.min(self.max_delay);
+        // `min`/`max` (unlike `clamp`) drop NaN operands, so a misconfigured
+        // NaN policy degrades to a bounded delay instead of panicking
+        // `Duration::from_secs_f64`. The hard cap keeps a huge configured
+        // `max_delay` from parking the client between attempts.
+        #[allow(clippy::manual_clamp)] // NaN-dropping min/max is intentional, see above
+        let capped_delay = base_delay
+            .min(self.max_delay)
+            .min(HARD_DELAY_CAP_SECS)
+            .max(0.0);
 
         let final_delay = if self.jitter {
             // Add random jitter to prevent thundering herd problem
@@ -722,16 +737,6 @@ where
     })
 }
 
-/// Simplified version of `with_retry` without callback
-#[allow(dead_code)] // Convenience wrapper for with_retry
-pub async fn with_retry_simple<F, Fut, T>(config: &RetryConfig, operation: F) -> RetryResult<T>
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = Result<T, LlmError>>,
-{
-    with_retry(config, operation, None).await
-}
-
 // === Utility Functions ===
 
 /// Upper bound for a `Retry-After`-derived delay. A server sending a
@@ -852,6 +857,38 @@ mod tests {
         // 1.0 * 2^3 = 8.0, but capped at 5.0
         let d3 = config.delay_for_attempt(3);
         assert_eq!(d3, Duration::from_secs_f64(5.0));
+    }
+
+    #[test]
+    fn nan_config_degrades_to_bounded_delay() {
+        let config = RetryConfig {
+            initial_delay: f64::NAN,
+            max_delay: f64::NAN,
+            exponential_base: f64::NAN,
+            jitter: false,
+            ..RetryConfig::default()
+        };
+        for attempt in 0..=3 {
+            let secs = config.delay_for_attempt(attempt).as_secs_f64();
+            assert!(secs.is_finite() && (0.0..=300.0).contains(&secs));
+        }
+    }
+
+    #[test]
+    fn negative_misconfiguration_clamps_to_zero() {
+        let config = RetryConfig {
+            initial_delay: -5.0,
+            max_delay: -1.0,
+            jitter: false,
+            ..RetryConfig::default()
+        };
+        assert_eq!(config.delay_for_attempt(0), Duration::ZERO);
+    }
+
+    #[test]
+    fn huge_max_delay_hits_hard_cap() {
+        let config = RetryConfig::new().with_jitter(false).with_max_delay(1.0e9);
+        assert_eq!(config.delay_for_attempt(30), Duration::from_secs_f64(300.0));
     }
 
     #[test]

@@ -28,11 +28,10 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock, Weak};
-use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
 
-use crate::llm_client::{LlmClientHandle, LlmError, RetryConfig};
+use crate::llm_client::{LlmClientHandle, RetryConfig};
 use codesmith_config::ProviderKind;
 
 // === ProviderId ===
@@ -80,13 +79,8 @@ impl From<&str> for ProviderId {
 // === ProviderConfig ===
 
 /// Neutral construction input for any provider. Carries exactly what a
-/// provider needs to build an [`LlmClientHandle`], with no dependency on the
-/// CLI `Config`. Built by the host (CLI/app-server) from its own config.
-/// Host-injected retry-notification closure. Kept as a named alias so the
-/// `ProviderConfig.on_retry` field stays readable; providers compiled into
-/// `codesmith-providers` receive this without any terminal/UI coupling.
-pub type RetryHook = Arc<dyn Fn(&LlmError, u32, Duration) + Send + Sync>;
-
+/// provider needs to build an [`LlmClientHandle`], with no dependency on
+/// the CLI `Config`. Built by the host (CLI/app-server) from its own config.
 #[derive(Clone)]
 pub struct ProviderConfig {
     /// Which provider this config is for.
@@ -101,10 +95,6 @@ pub struct ProviderConfig {
     pub retry: RetryConfig,
     /// Extra HTTP headers (e.g. `X-Model-Provider-Id`).
     pub http_headers: HashMap<String, String>,
-    /// Optional retry-notification hook. Replaces the global
-    /// `retry_status` UI: the host injects a closure, so a provider compiled
-    /// into `codesmith-providers` stays free of terminal/UI coupling.
-    pub on_retry: Option<RetryHook>,
 }
 
 // === ProviderFactory ===
@@ -574,7 +564,6 @@ mod tests {
             default_model: String::from("m"),
             retry: RetryConfig::disabled(),
             http_headers: std::collections::HashMap::new(),
-            on_retry: None,
         }
     }
 

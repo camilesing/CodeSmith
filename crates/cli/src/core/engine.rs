@@ -484,11 +484,25 @@ pub(crate) fn resolve_llm_client(api_config: &Config) -> anyhow::Result<LlmClien
         default_model: api_config.default_model(),
         retry: codesmith_agent::llm_client::RetryConfig::from(api_config.retry_policy()),
         http_headers: api_config.http_headers(),
-        on_retry: None,
     };
     // Route A — build through the shared registry so extension-registered
     // providers (registered since process start) are selectable by id.
-    shared_providers().build(&cfg)
+    let client = shared_providers().build(&cfg)?;
+    // Non-streaming calls (compaction summaries, sub-agent steps, utility
+    // assists) get the configured `[retry]` policy here; streaming stays
+    // un-wrapped because the engine's transparent stream retry owns it.
+    Ok(retry_wrap(client, cfg.retry))
+}
+
+/// Wrap `client` so `create_message` retries per `retry`. Streaming and the
+/// capability endpoints are forwarded untouched.
+fn retry_wrap(
+    client: LlmClientHandle,
+    retry: codesmith_agent::llm_client::RetryConfig,
+) -> LlmClientHandle {
+    Arc::new(codesmith_agent::llm_client::retrying::RetryingClient::new(
+        client, retry,
+    ))
 }
 
 /// Resolve the optional `[utility_model]` into a ready-to-use handle.
@@ -547,11 +561,10 @@ pub(crate) fn resolve_utility_llm(
         default_model: utility.model.clone(),
         retry: codesmith_agent::llm_client::RetryConfig::from(api_config.retry_policy()),
         http_headers: api_config.http_headers(),
-        on_retry: None,
     };
     match shared_providers().build(&cfg) {
         Ok(client) => Some(UtilityLlm {
-            client,
+            client: retry_wrap(client, cfg.retry),
             model: utility.model,
         }),
         Err(err) => {

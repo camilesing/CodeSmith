@@ -1898,7 +1898,6 @@ mod tests {
                 default_model: "unused".into(),
                 retry: RetryConfig::disabled(),
                 http_headers: std::collections::HashMap::new(),
-                on_retry: None,
             })
             .expect("alias builds through the target factory");
         assert_eq!(
