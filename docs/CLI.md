@@ -271,6 +271,13 @@ id in metadata, and opens that fork so you can explore an alternate direction
 without polluting the original path. The session picker and `codesmith sessions`
 mark forked sessions with their parent id.
 
+Resuming is interruption-safe: a session saved with a turn interrupted
+mid-tool (Ctrl-C, crash between a tool call and its result) loads with a
+`TOOL_OUTCOME_UNKNOWN` terminator closing each unanswered call, so the
+resumed transcript still satisfies provider tool-call pairing. Unknown
+content-block types written by a newer CodeSmith build are ignored at load
+instead of failing the whole session.
+
 Inside the REPL, `/undo` drops the last exchange from the transcript and
 `/retry` drops it and re-sends the same user message. `revert_turn` is a
 separate workspace rollback tool: it restores files

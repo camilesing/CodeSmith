@@ -549,6 +549,62 @@ pub fn enforce_tool_call_pairs(messages: &[Message], pinned_indices: &mut BTreeS
     }
 }
 
+/// Tool-call ids in `messages` that have no matching `tool_result` anywhere
+/// in the slice, in first-appearance order (duplicates collapse to the
+/// first). Order-agnostic on purpose: a terminator appended at the tail
+/// (crash-repair) answers a call recorded mid-transcript just as well.
+/// Shared by the session-load repair vocabulary and the balance predicate.
+#[must_use]
+pub fn unanswered_tool_use_ids(messages: &[Message]) -> Vec<String> {
+    let mut calls: Vec<String> = Vec::new();
+    let mut answered: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for message in messages {
+        for block in &message.content {
+            match block {
+                ContentBlock::ToolUse { id, .. } => {
+                    if !calls.iter().any(|c| c == id) && !answered.contains(id) {
+                        calls.push(id.clone());
+                    }
+                }
+                ContentBlock::ToolResult { tool_use_id, .. } => {
+                    answered.insert(tool_use_id.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+    calls.retain(|id| !answered.contains(id));
+    calls
+}
+
+/// Whether every `tool_use` in `messages` is answered by a `tool_result`
+/// and no `tool_result` orphans a missing call — the pairing invariant a
+/// provider-acceptable transcript (and every compaction cut) must hold
+/// (dsh `toolPairingBalanced` counterpart). Compaction paths enforce this
+/// via [`enforce_tool_call_pairs`]; the session-load repair enforces it by
+/// appending `TOOL_OUTCOME_UNKNOWN` terminators. This predicate is the
+/// shared post-condition both are checked against.
+#[must_use]
+pub fn tool_call_pairs_balanced(messages: &[Message]) -> bool {
+    if !unanswered_tool_use_ids(messages).is_empty() {
+        return false;
+    }
+    let mut calls: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for message in messages {
+        for block in &message.content {
+            if let ContentBlock::ToolUse { id, .. } = block {
+                calls.insert(id.clone());
+            }
+        }
+    }
+    messages.iter().all(|message| {
+        message.content.iter().all(|block| match block {
+            ContentBlock::ToolResult { tool_use_id, .. } => calls.contains(tool_use_id),
+            _ => true,
+        })
+    })
+}
+
 pub fn should_compact(
     messages: &[Message],
     config: &CompactionConfig,
@@ -2035,6 +2091,183 @@ mod anchored_estimate_tests {
         assert_eq!(
             estimate_input_tokens_anchored(&messages, None, Some(&anchor)),
             estimate_input_tokens_conservative(&messages, None)
+        );
+    }
+}
+
+#[cfg(test)]
+mod tool_pairing_balance_tests {
+    use super::{
+        enforce_tool_call_pairs, plan_compaction, tool_call_pairs_balanced, unanswered_tool_use_ids,
+    };
+    use crate::models::{ContentBlock, Message};
+    use std::collections::BTreeSet;
+
+    fn call(id: &str) -> ContentBlock {
+        ContentBlock::ToolUse {
+            id: id.to_string(),
+            name: "exec_shell".to_string(),
+            input: serde_json::json!({"command": "true"}),
+            caller: None,
+        }
+    }
+
+    fn result(id: &str) -> ContentBlock {
+        ContentBlock::ToolResult {
+            tool_use_id: id.to_string(),
+            content: "ok".to_string(),
+            is_error: Some(false),
+            content_blocks: None,
+        }
+    }
+
+    fn text(role: &str, body: &str) -> Message {
+        Message {
+            role: role.to_string(),
+            content: vec![ContentBlock::Text {
+                text: body.to_string(),
+                cache_control: None,
+            }],
+        }
+    }
+
+    fn assistant_call(id: &str) -> Message {
+        Message {
+            role: "assistant".to_string(),
+            content: vec![call(id)],
+        }
+    }
+
+    fn user_result(id: &str) -> Message {
+        Message {
+            role: "user".to_string(),
+            content: vec![result(id)],
+        }
+    }
+
+    #[test]
+    fn balanced_predicate_detects_both_break_directions() {
+        let balanced = vec![text("user", "go"), assistant_call("c1"), user_result("c1")];
+        assert!(tool_call_pairs_balanced(&balanced));
+
+        // Dangling call (interrupted turn) — unbalanced, and the id is
+        // reported so a repair can close exactly it.
+        let dangling = vec![text("user", "go"), assistant_call("c1")];
+        assert!(!tool_call_pairs_balanced(&dangling));
+        assert_eq!(unanswered_tool_use_ids(&dangling), vec!["c1".to_string()]);
+
+        // Orphan result (call compacted away) — also unbalanced.
+        let orphan = vec![text("user", "go"), user_result("c1")];
+        assert!(!tool_call_pairs_balanced(&orphan));
+        assert!(unanswered_tool_use_ids(&orphan).is_empty());
+    }
+
+    #[test]
+    fn order_agnostic_answer_allows_tail_terminators() {
+        // A crash-repair terminator appended at the transcript tail must
+        // count as answering a call recorded mid-transcript.
+        let repaired = vec![
+            text("user", "go"),
+            assistant_call("c1"),
+            text("user", "(interrupted)"),
+            user_result("c1"),
+        ];
+        assert!(tool_call_pairs_balanced(&repaired));
+    }
+
+    /// Compaction cut-point property (dsh `toolPairingBalanced`
+    /// counterpart): after the planner pins its keep-set and
+    /// `enforce_tool_call_pairs` fixes the pin boundaries, the retained
+    /// slice must be pair-balanced — a cut may never strand a call or a
+    /// result on one side of the boundary without its counterpart.
+    #[test]
+    fn compaction_keep_set_is_pair_balanced() {
+        let messages = vec![
+            text("user", "long first turn that pins nothing by itself"),
+            assistant_call("c1"),
+            user_result("c1"),
+            assistant_call("c2"),
+            // c2's result straddles what a naive pivot would cut between.
+            user_result("c2"),
+            text("user", "recent query about the workspace paths"),
+            assistant_call("c3"),
+            // c3 never answered — a dangling tail must survive compaction
+            // decisions without the ENFORCER inventing a result for it
+            // (dangling calls are the repair vocabulary's job, and the
+            // keep-set must still not orphan answered results).
+            text("user", "wrap up"),
+        ];
+
+        let mut pinned: BTreeSet<usize> = BTreeSet::new();
+        // Pin a set that initially severs c2 (result pinned, call not) and
+        // includes the dangling c3 call — the shapes enforce_tool_call_pairs
+        // exists to fix.
+        pinned.insert(3);
+        pinned.insert(4);
+        pinned.insert(6);
+        enforce_tool_call_pairs(&messages, &mut pinned);
+
+        let kept: Vec<&Message> = pinned.iter().map(|idx| &messages[*idx]).collect();
+        let kept_owned: Vec<Message> = kept.into_iter().cloned().collect();
+        // Dangling c3 may legitimately remain in the kept slice (it was
+        // dangling in the source); every ANSWERED pair in the kept slice
+        // must be complete — no orphan results, no newly stranded calls
+        // that had results available in the source.
+        assert!(
+            unanswered_tool_use_ids(&kept_owned)
+                .iter()
+                .all(|id| id == "c3"),
+            "only the source-dangling call may stay unanswered in the keep-set: {:?}",
+            unanswered_tool_use_ids(&kept_owned)
+        );
+        let mut calls: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for message in &kept_owned {
+            for block in &message.content {
+                if let ContentBlock::ToolUse { id, .. } = block {
+                    calls.insert(id);
+                }
+            }
+        }
+        assert!(
+            kept_owned.iter().all(|m| m.content.iter().all(|b| match b {
+                ContentBlock::ToolResult { tool_use_id, .. } =>
+                    calls.contains(tool_use_id.as_str()),
+                _ => true,
+            })),
+            "no orphan tool_result in the keep-set"
+        );
+    }
+
+    /// The full planner path (pin + enforce) on a pair-laden transcript
+    /// yields a balanced retained slice when the source itself is balanced.
+    #[test]
+    fn plan_compaction_retains_balanced_slice_from_balanced_source() {
+        let messages = vec![
+            text("user", "please analyze the workspace and fix the build"),
+            assistant_call("c1"),
+            user_result("c1"),
+            assistant_call("c2"),
+            user_result("c2"),
+            text("user", "now check the workspace tests again please"),
+            assistant_call("c3"),
+            user_result("c3"),
+        ];
+
+        let plan = plan_compaction(
+            &messages, None, // workspace
+            3,    // keep_recent
+            None, // external_pins
+            None, // external_working_set_paths
+        );
+        let kept: Vec<Message> = plan
+            .pinned_indices
+            .iter()
+            .map(|idx| messages[*idx].clone())
+            .collect();
+        assert!(
+            tool_call_pairs_balanced(&kept),
+            "planner keep-set must be pair-balanced, pinned={:?}",
+            plan.pinned_indices
         );
     }
 }
