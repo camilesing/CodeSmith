@@ -1,5 +1,10 @@
 //! `MockLlmClient` — a queue-driven `LlmClient` implementation for tests.
 //!
+//! Lives behind the `test-support` feature (on for `cfg(test)` in this
+//! crate; downstream crates enable the feature on their dev-dependency)
+//! so both in-crate unit tests and cross-crate integration tests can
+//! mock at the `LlmClient` trait boundary.
+//!
 //! This client implements the [`LlmClient`](super::LlmClient) trait by replaying a
 //! pre-loaded queue of canned responses (one per turn). It captures every
 //! request the runtime sends so tests can assert on the outgoing payload —
@@ -55,7 +60,7 @@ use crate::models::{
     Usage,
 };
 
-use super::{LlmClient, StreamEventBox};
+use codesmith_agent::llm_client::{LlmClient, StreamEventBox};
 
 /// A pre-recorded "turn" the mock will replay on the next streaming call.
 ///
@@ -200,7 +205,7 @@ impl MockLlmClient {
             .cloned()
     }
 
-    pub(crate) fn record_request(&self, request: &MessageRequest) {
+    pub fn record_request(&self, request: &MessageRequest) {
         self.captured_requests
             .lock()
             .expect("MockLlmClient.captured_requests mutex poisoned")

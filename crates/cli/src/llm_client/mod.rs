@@ -2,11 +2,11 @@
 //!
 //! The canonical home for the `LlmClient` trait, `RetryConfig`, and the
 //! `with_retry` helper is now the `codesmith_agent` crate. The test-only
-//! [`mock`] module stays in the CLI — dependencies are not built with
-//! `cfg(test)`, so `MockLlmClient` cannot live in a downstream crate. It
-//! implements the re-exported `LlmClient` trait via this shim.
+//! [`mock`] module re-exports the shared `MockLlmClient` from
+//! `codesmith_agent_runtime::test_support` (test-support feature on the
+//! dev-dependency).
 
 pub use codesmith_agent::llm_client::*;
 
 #[cfg(test)]
-pub mod mock;
+pub use codesmith_agent_runtime::test_support::mock_llm as mock;
