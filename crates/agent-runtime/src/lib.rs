@@ -23,11 +23,11 @@
 // without hard-coding `codesmith_agent::` paths.
 pub use codesmith_agent::{llm_client, models, retry};
 
-/// Serialize tests that publish/read the process-global policy snapshot
-/// (`codesmith_agent::policy::publish_policies` replaces the whole map, so
-/// a publish in one module's tests races another's). Modules expose their
-/// own `policy_test_lock()` delegating here — the per-module locks this
-/// replaces were a latent cross-module flake.
+/// Serialize tests that publish/read the ambient (process-default)
+/// policy store (`codesmith_agent::policy::publish_policies` replaces
+/// the whole map, so a publish in one module's tests races another's).
+/// Modules expose their own `policy_test_lock()` delegating here — the
+/// per-module locks this replaces were a latent cross-module flake.
 #[cfg(test)]
 pub(crate) fn policy_test_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

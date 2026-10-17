@@ -275,9 +275,10 @@ manage_mods {"action": "session_write", "id": "session-shell-tuning",
   （已解析策略节显示 `from session-*`）。
 - 生命周期：会话结束即消失（任何东西都不持久化，包括 KV）。`/mods
   reload` 与 `manage_mods action=reload` 会在磁盘层之后重放它们（保留的
-  编译形态，无重编译）。会话恢复不重建。其策略进程全局生效（子代理的
-  机制读同一快照）；其工具/命令不进入子代理注册表（设计上仅内建）；
-  fork 否决覆盖所有代际。
+  编译形态，无重编译）。会话恢复不重建。其策略按引擎隔离：本引擎的每个
+  turn——包括子代理的机制——读同一 store，同进程的其他引擎各读各的；单引
+  擎的 CLI 把自己的 store 注册为进程默认，因此引擎外的工具函数也能读到；
+  其工具/命令不进入子代理注册表（设计上仅内建）；fork 否决覆盖所有代际。
 - 列表显示为 `session-* [session] — live (session-scoped, not
   persisted)`。
 

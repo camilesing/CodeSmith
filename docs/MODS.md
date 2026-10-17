@@ -303,8 +303,11 @@ persist a proven experiment through `write` + `activate`.
 - Lifetime: gone when the session ends (nothing is persisted, not even
   KV). `/mods reload` and `manage_mods action=reload` replay them after
   the disk tiers (retained compiled forms, no recompile). Not restored on
-  session resume. Their policies apply process-wide (a sub-agent's
-  mechanisms read the same snapshot); their tools/commands never enter
+  session resume. Their policies are engine-scoped: every turn of this
+  engine — including its sub-agents' mechanisms — reads the same store,
+  while another engine in the same process keeps its own set; the
+  single-engine CLI registers its store process-wide, so scope-less
+  utilities see it too; their tools/commands never enter
   sub-agent registries (built-in-only by design); the fork veto reaches
   every generation.
 - The listing shows them as `session-* [session] — live (session-scoped,

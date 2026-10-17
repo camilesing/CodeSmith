@@ -448,9 +448,21 @@ impl Engine {
         format!("{message}\n\n{hint}")
     }
 
-    /// Run the engine event loop
+    /// Run the engine event loop, with this session's policy store
+    /// ([`crate::session::Session::policies`]) entered as the ambient
+    /// scope — every policy read the turn awaits (tool-result
+    /// formatting, compaction, working set) resolves this engine's set
+    /// instead of a process-global one (the `retry_status` global→handle
+    /// move, applied to the policy seam).
+    pub async fn run(self) {
+        let policies = self.session.policies.clone();
+        policies.scope(self.run_inner()).await
+    }
+
+    /// The engine event loop body, run inside [`Self::run`]'s policy
+    /// scope.
     #[allow(clippy::too_many_lines)]
-    pub async fn run(mut self) {
+    async fn run_inner(mut self) {
         // Spawn background task poller — polls registry every 2s for status
         // changes, stalls, and completion notifications.
         {
