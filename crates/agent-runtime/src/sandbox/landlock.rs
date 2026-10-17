@@ -26,8 +26,8 @@
 
 use super::SandboxPolicy;
 use std::ffi::CString;
-use std::os::fd::{AsRawFd, OwnedFd};
-use std::path::{Path, PathBuf};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::path::Path;
 
 /// Check if Landlock is available on this system.
 pub fn is_available() -> bool {
@@ -120,6 +120,16 @@ const LANDLOCK_ACCESS_FS_TRUNCATE: u64 = 1 << 14;
 #[cfg(target_os = "linux")]
 const LANDLOCK_ACCESS_FS_READ: u64 = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR;
 
+/// Rights a rule may carry when its parent path is a file: the kernel
+/// rejects any directory-scoped right (READ_DIR, REMOVE_DIR, MAKE_*,
+/// REFER) on a non-directory parent fd with EINVAL — and `/dev/null`, the
+/// mandatory write floor of every policy, is a file.
+#[cfg(target_os = "linux")]
+const LANDLOCK_ACCESS_FS_FILE_RULES: u64 = LANDLOCK_ACCESS_FS_EXECUTE
+    | LANDLOCK_ACCESS_FS_WRITE_FILE
+    | LANDLOCK_ACCESS_FS_READ_FILE
+    | LANDLOCK_ACCESS_FS_TRUNCATE;
+
 #[cfg(target_os = "linux")]
 const LANDLOCK_ACCESS_FS_WRITE: u64 = LANDLOCK_ACCESS_FS_WRITE_FILE
     | LANDLOCK_ACCESS_FS_REMOVE_DIR
@@ -161,11 +171,18 @@ const LANDLOCK_RULE_PATH_BENEATH: u32 = 1;
 /// syscalls. Keeping the surface crate-private prevents a caller from
 /// applying it to the long-lived agent runtime thread by mistake.
 #[cfg(target_os = "linux")]
+#[derive(Debug)]
 pub(crate) struct LandlockSandbox {
     /// Owned descriptor: `Drop` closes it on every path — including the
     /// `try_from` error branch in the constructor — instead of relying on
     /// a manual `Drop` impl plus ad-hoc closes.
-    ruleset_fd: std::os::fd::OwnedFd,
+    ruleset_fd: OwnedFd,
+    /// Access mask for write rules: READ | EXECUTE | the ABI-masked WRITE
+    /// set. `landlock_add_rule` requires `allowed_access` to be a subset of
+    /// the ruleset's `handled_access_fs` (EINVAL otherwise), so the rule
+    /// mask must be derived from the same ABI-masked set the ruleset was
+    /// created with — never the raw `LANDLOCK_ACCESS_FS_WRITE` constant.
+    write_rule_access: u64,
 }
 
 #[cfg(target_os = "linux")]
@@ -201,15 +218,16 @@ impl LandlockSandbox {
     pub(crate) fn from_policy(policy: &SandboxPolicy, cwd: &Path) -> std::io::Result<Self> {
         // Determine what filesystem access to handle (restrict).
         // TRUNCATE (folded into LANDLOCK_ACCESS_FS_WRITE) requires ABI v3
-        // (kernel 5.19+); on ABI v1/v2 kernels landlock_create_ruleset
+        // (kernel 6.2+); on ABI v1/v2 kernels landlock_create_ruleset
         // returns EINVAL and the whole sandbox becomes unavailable. Mask
         // it off there — unhandled rights are simply unrestricted, which
-        // is the documented best-effort approach.
-        let mut handled_access =
-            LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ | LANDLOCK_ACCESS_FS_WRITE;
+        // is the documented best-effort approach. The same masked set must
+        // flow into every rule's allowed_access (see `write_rule_access`).
+        let mut handled_write = LANDLOCK_ACCESS_FS_WRITE;
         if get_abi_version().unwrap_or(0) < 3 {
-            handled_access &= !LANDLOCK_ACCESS_FS_TRUNCATE;
+            handled_write &= !LANDLOCK_ACCESS_FS_TRUNCATE;
         }
+        let handled_access = LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ | handled_write;
 
         let attr = LandlockRulesetAttr {
             handled_access_fs: handled_access,
@@ -239,7 +257,10 @@ impl LandlockSandbox {
         let sandbox = Self {
             // Takes ownership: any error past this point still drops (and
             // closes) the descriptor.
-            ruleset_fd: std::os::fd::OwnedFd::from_raw_fd(ruleset_fd),
+            // Safety: `ruleset_fd` is a fresh, owned descriptor returned by
+            // the syscall above with no other owner.
+            ruleset_fd: unsafe { OwnedFd::from_raw_fd(ruleset_fd) },
+            write_rule_access: LANDLOCK_ACCESS_FS_READ | LANDLOCK_ACCESS_FS_EXECUTE | handled_write,
         };
 
         // Full-disk read + execute for every policy, plus the write floor
@@ -271,10 +292,7 @@ impl LandlockSandbox {
 
     /// Add a read-write rule for a path
     pub(crate) fn allow_write(&self, path: &Path) -> std::io::Result<()> {
-        self.add_rule(
-            path,
-            LANDLOCK_ACCESS_FS_READ | LANDLOCK_ACCESS_FS_WRITE | LANDLOCK_ACCESS_FS_EXECUTE,
-        )
+        self.add_rule(path, self.write_rule_access)
     }
 
     /// Add a path rule to the ruleset
@@ -300,6 +318,25 @@ impl LandlockSandbox {
             // with no diagnostic.
             return Err(err);
         }
+
+        // Directory-scoped rights are only valid on directory parents; the
+        // kernel answers a file parent carrying them with EINVAL.
+        // Safety: `fd` is a valid open descriptor; `stat` is a POD buffer
+        // that outlives the call.
+        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+        if unsafe { libc::fstat(fd, &mut stat) } < 0 {
+            let err = std::io::Error::last_os_error();
+            // Safety: `fd` is a valid file descriptor from libc::open.
+            unsafe {
+                libc::close(fd);
+            }
+            return Err(err);
+        }
+        let access = if stat.st_mode & libc::S_IFMT == libc::S_IFDIR {
+            access
+        } else {
+            access & LANDLOCK_ACCESS_FS_FILE_RULES
+        };
 
         let attr = LandlockPathBeneathAttr {
             allowed_access: access,
@@ -360,11 +397,6 @@ impl LandlockSandbox {
     }
 }
 
-#[cfg(target_os = "linux")]
-/// `Drop` for the `OwnedFd` ruleset descriptor closes it on every path;
-/// no manual impl is needed (and none could cover error returns inside
-/// the constructor the way `OwnedFd` does).
-
 /// Detect if a failure was caused by Landlock or seccomp denial.
 ///
 /// Checks both Landlock-specific patterns (EACCES/EPERM) and seccomp-specific
@@ -409,6 +441,7 @@ pub fn detect_denial(_exit_code: i32, _stderr: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn test_is_available() {
