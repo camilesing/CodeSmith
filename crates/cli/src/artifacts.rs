@@ -7,4 +7,5 @@
 //! `TEST_ARTIFACT_SESSIONS_GUARD`) are compiled unconditionally in the runtime
 //! crate (see `codesmith_agent_runtime::test_support` for the same convention)
 //! so this re-export also reaches them from CLI test code.
+#[allow(unused_imports)] // reaches CLI test code (see doc); no non-test reference remains
 pub use codesmith_agent_runtime::artifacts::*;

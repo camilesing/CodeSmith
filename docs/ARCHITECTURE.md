@@ -27,6 +27,21 @@ Current boundary note (v0.9.0):
 seam's triple — a new capability lands all three roles in the same
 change, and every `ExtensionEventKind` declares its dispatch mode
 (`dispatch_mode()`, pinned by a contract test).
+- **Session persistence seam.** Durable session records (`SavedSession`),
+  the format-governance decode pipeline (schema gate, adjacent in-memory
+  migrations, unknown-block tolerance, interrupted-turn repair), and the
+  `SessionStore` seam live in `agent-runtime/src/session_store.rs`; the
+  file provider (`FileSessionStore`, one JSON file per session +
+  crash checkpoints) lives in the same module — provider-in-framework by
+  the `FileKeyringStore` precedent. Consumers: the CLI REPL resume flow
+  and the runtime API's session endpoints (dyn-dispatched). Known
+  limitation: single writer per session; the app-server thread runtime
+  keeps its own store (`codesmith-state`) as a query index and does not
+  persist REPL sessions — extending resume there means consuming this
+  seam, not building a third format (a `ThreadResumeParams.session_id`
+  extension was considered and dropped: the CLI runtime API already
+  serves resume-from-session, and core/app-server have no
+  agent-runtime edge today).
 - **Plugin tiers (declared).** Pluggability rides the single `Extension`
   contract (`crates/agent/src/extension.rs`) + `ExtensionRunner` — four
   tiers: user Rhai mods (`~/.codesmith/mods/`, consent-gated), the

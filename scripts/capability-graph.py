@@ -43,6 +43,7 @@ SEAMS = [
     "LlmClient",
     "ProviderFactory",
     "SandboxBackend",
+    "SessionStore",
     "ToolDefinition",
 ]
 
