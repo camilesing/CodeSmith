@@ -5,4 +5,4 @@
 //! should import from the runtime crate directly.
 // TODO(shim-removal): remove this shim once the remaining call sites are
 // rewired onto `codesmith_agent_runtime::cost_status` directly.
-pub use codesmith_agent_runtime::cost_status::report;
+pub use codesmith_agent_runtime::cost_status::{drain, report};
