@@ -94,6 +94,7 @@ pub mod sandbox;
 pub mod sanitization;
 pub mod session;
 pub mod session_history;
+pub mod session_store;
 pub mod settings_file;
 pub mod shell_dispatcher;
 pub mod shell_manager;

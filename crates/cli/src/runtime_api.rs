@@ -41,7 +41,7 @@ use crate::runtime_threads::{
     ThreadDetail, ThreadListFilter, ThreadRecord, TurnItemKind, TurnRecord, UpdateThreadRequest,
     UsageGroupBy,
 };
-use crate::session_manager::{SavedSession, SessionManager, SessionMetadata, default_sessions_dir};
+use crate::session_manager::{SavedSession, SessionMetadata, default_sessions_dir};
 use crate::skill_state::SkillStateStore;
 use crate::task_manager::{
     NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig, TaskRecord, TaskSummary,
@@ -55,7 +55,9 @@ pub struct RuntimeApiState {
     task_manager: SharedTaskManager,
     runtime_threads: SharedRuntimeThreadManager,
     cors_origins: Vec<String>,
-    sessions_dir: PathBuf,
+    /// Shared session store (opened once; the per-endpoint
+    /// `SessionManager::new` reopened the directory on every request).
+    sessions: std::sync::Arc<crate::session_manager::SessionManager>,
     mcp_config_path: PathBuf,
     automations: SharedAutomationManager,
     runtime_token: Option<String>,
@@ -447,13 +449,20 @@ pub async fn run_http_server(
         );
         SkillStateStore::default()
     });
+    let sessions = std::sync::Arc::new(
+        crate::session_manager::SessionManager::new(sessions_dir.clone()).unwrap_or_else(|err| {
+            // Fail loud beats serving endpoints that would each fail at
+            // open time anyway — same error, earlier, once.
+            panic!("runtime API: cannot open sessions directory: {err}")
+        }),
+    );
     let state = RuntimeApiState {
         config: config.clone(),
         workspace,
         task_manager,
         runtime_threads,
         cors_origins: options.cors_origins.clone(),
-        sessions_dir,
+        sessions,
         mcp_config_path: config.mcp_config_path(),
         automations,
         runtime_token: runtime_token.clone(),
@@ -785,15 +794,17 @@ async fn list_sessions(
     State(state): State<RuntimeApiState>,
     Query(query): Query<SessionsQuery>,
 ) -> Result<Json<SessionsResponse>, ApiError> {
-    let manager = SessionManager::new(state.sessions_dir.clone())
-        .map_err(|e| ApiError::internal(format!("Failed to open sessions dir: {e}")))?;
+    let manager = &state.sessions;
     let mut sessions = if let Some(search) = query.search {
         manager
             .search_sessions(&search)
             .map_err(|e| ApiError::internal(format!("Failed to search sessions: {e}")))?
     } else {
-        manager
-            .list_sessions()
+        use codesmith_agent_runtime::session_store::SessionStore;
+        let store: std::sync::Arc<dyn SessionStore> = state.sessions.clone();
+        store
+            .list()
+            .await
             .map_err(|e| ApiError::internal(format!("Failed to list sessions: {e}")))?
     };
     let limit = query.limit.unwrap_or(50).clamp(1, 500);
@@ -805,11 +816,12 @@ async fn get_session(
     State(state): State<RuntimeApiState>,
     Path(id): Path<String>,
 ) -> Result<Json<SessionDetailResponse>, ApiError> {
-    let manager = SessionManager::new(state.sessions_dir.clone())
-        .map_err(|e| ApiError::internal(format!("Failed to open sessions dir: {e}")))?;
-    let session = manager
-        .load_session(&id)
-        .map_err(|e| map_session_err(&id, e, "read"))?;
+    use codesmith_agent_runtime::session_store::SessionStore;
+    let store: std::sync::Arc<dyn SessionStore> = state.sessions.clone();
+    let session = store
+        .load(&id)
+        .await
+        .map_err(|e| map_session_store_err(&id, &e, "read"))?;
     Ok(Json(session_to_detail(session)))
 }
 
@@ -818,11 +830,14 @@ async fn resume_session_thread(
     Path(id): Path<String>,
     Json(req): Json<ResumeSessionRequest>,
 ) -> Result<(StatusCode, Json<ResumeSessionResponse>), ApiError> {
-    let manager = SessionManager::new(state.sessions_dir.clone())
-        .map_err(|e| ApiError::internal(format!("Failed to open sessions dir: {e}")))?;
-    let session = manager
-        .load_session(&id)
-        .map_err(|e| map_session_err(&id, e, "read"))?;
+    // The resume path consumes the SessionStore seam: dyn-dispatched load
+    // through the trait, not the concrete file type.
+    use codesmith_agent_runtime::session_store::SessionStore;
+    let store: std::sync::Arc<dyn SessionStore> = state.sessions.clone();
+    let session = store
+        .load(&id)
+        .await
+        .map_err(|e| map_session_store_err(&id, &e, "read"))?;
 
     let model = req.model.unwrap_or_else(|| session.metadata.model.clone());
     let mode = req.mode.unwrap_or_else(|| {
@@ -876,11 +891,12 @@ async fn delete_session(
     State(state): State<RuntimeApiState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let manager = SessionManager::new(state.sessions_dir.clone())
-        .map_err(|e| ApiError::internal(format!("Failed to open sessions dir: {e}")))?;
-    manager
-        .delete_session(&id)
-        .map_err(|e| map_session_err(&id, e, "delete"))?;
+    use codesmith_agent_runtime::session_store::SessionStore;
+    let store: std::sync::Arc<dyn SessionStore> = state.sessions.clone();
+    store
+        .delete(&id)
+        .await
+        .map_err(|e| map_session_store_err(&id, &e, "delete"))?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -949,13 +965,24 @@ fn session_to_detail(session: SavedSession) -> SessionDetailResponse {
     }
 }
 
-fn map_session_err(id: &str, err: std::io::Error, action: &str) -> ApiError {
-    match err.kind() {
-        std::io::ErrorKind::NotFound => ApiError::not_found(format!("Session '{id}' not found")),
-        std::io::ErrorKind::InvalidData => {
+/// [`map_session_err`] for `SessionStore` (anyhow-typed) results: the file
+/// provider's io error rides the chain, so kind classification still works.
+fn map_session_store_err(id: &str, err: &anyhow::Error, action: &str) -> ApiError {
+    let io_kind = err
+        .downcast_ref::<std::io::Error>()
+        .map(|io| io.kind())
+        .or_else(|| {
+            err.chain()
+                .find_map(|cause| cause.downcast_ref::<std::io::Error>().map(|io| io.kind()))
+        });
+    match io_kind {
+        Some(std::io::ErrorKind::NotFound) => {
+            ApiError::not_found(format!("Session '{id}' not found"))
+        }
+        Some(std::io::ErrorKind::InvalidData) => {
             ApiError::bad_request(format!("Failed to parse session '{id}': {err}"))
         }
-        std::io::ErrorKind::InvalidInput => {
+        Some(std::io::ErrorKind::InvalidInput) => {
             ApiError::bad_request(format!("Invalid session id '{id}'"))
         }
         _ => ApiError::internal(format!("Failed to {action} session '{id}': {err}")),
@@ -2497,7 +2524,9 @@ mod tests {
             task_manager: manager,
             runtime_threads: runtime_threads.clone(),
             cors_origins: Vec::new(),
-            sessions_dir,
+            sessions: std::sync::Arc::new(
+                crate::session_manager::SessionManager::new(sessions_dir.clone())?,
+            ),
             mcp_config_path: root.join("mcp.json"),
             automations,
             runtime_token,
