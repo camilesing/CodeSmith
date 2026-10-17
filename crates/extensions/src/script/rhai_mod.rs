@@ -121,6 +121,11 @@ pub enum ScriptRegistration {
         kind: codesmith_agent::policy::PolicyKind,
         config: serde_json::Value,
     },
+    /// A builtin-command disable captured by the `disable_command(name)`
+    /// native. Replayed at `configure` via `ExtensionApi::disable_command`;
+    /// cleared with the generation's other bound registrations (a
+    /// disabled-then-unloaded mod stops disabling).
+    DisableCommand { name: String },
 }
 
 type RegistrationCell = Arc<Mutex<Vec<ScriptRegistration>>>;
@@ -697,6 +702,30 @@ fn register_natives(
         },
     );
 
+    // disable_command(name) — suppress a builtin slash command. Disabling
+    // targets the builtin layer only: user commands and mod-registered
+    // commands of the same name still dispatch (layering user > mod >
+    // builtin). The name is stored opaquely here; the host resolves it
+    // against its builtin table and warns on unknowns.
+    let cell_disable = Arc::clone(cell);
+    engine.register_fn(
+        "disable_command",
+        move |name: &str| -> Result<(), Box<rhai::EvalAltResult>> {
+            if !valid_tool_name(name) {
+                return Err(script_error(format!(
+                    "disable_command(): command name {name:?} must match [a-zA-Z0-9_-] and be 1-64 chars"
+                )));
+            }
+            cell_disable
+                .lock()
+                .expect("mod registration cell poisoned")
+                .push(ScriptRegistration::DisableCommand {
+                    name: name.to_string(),
+                });
+            Ok(())
+        },
+    );
+
     // register_prompt_section(id, text) — route B: append a named,
     // append-only section to the base system prompt. Sections register at
     // mod load and are session-stable (prefix-cache discipline); an
@@ -1186,6 +1215,9 @@ impl Extension for RhaiMod {
                 ScriptRegistration::PromptSection { id, text } => {
                     api.register_prompt_section(id.clone(), text.clone())?;
                 }
+                ScriptRegistration::DisableCommand { name } => {
+                    api.disable_command(name.clone())?;
+                }
                 ScriptRegistration::Skill {
                     name,
                     description,
@@ -1376,6 +1408,7 @@ mod tests {
                     ScriptRegistration::MessageProjection { key, .. } => format!("m:{key}"),
                     ScriptRegistration::Guard { .. } => "g:guard".to_string(),
                     ScriptRegistration::Policy { kind, .. } => format!("y:{:?}", kind),
+                    ScriptRegistration::DisableCommand { name } => format!("d:{name}"),
                 })
                 .collect::<Vec<_>>()
         );
@@ -1411,6 +1444,21 @@ mod tests {
             hub(),
         );
         assert!(matches!(m, Err(ExtensionError::Load(_))), "got {m:?}");
+    }
+
+    #[test]
+    fn load_captures_disable_command() {
+        let dir = TempDir::new().unwrap();
+        let m = RhaiMod::load(
+            &discovered_for(&dir, "disabler", r#"disable_command("model");"#),
+            kv_for(&dir, "disabler"),
+            hub(),
+        )
+        .expect("load");
+        assert!(matches!(
+            m.registrations.as_slice(),
+            [ScriptRegistration::DisableCommand { name }] if name == "model"
+        ));
     }
 
     // === Per-mod lifecycle (retain / evict / replay) =======================

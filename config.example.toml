@@ -1071,11 +1071,23 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # or <workspace>/.codesmith/mods/<id>/ (project), each with a mod.toml +
 # mod.rhai. First activation requires one-time user consent (/mods activate
 # or approving a manage_mods action=activate call); same-id reloads are
-# free. Saves to disk are hot-reloaded at the next quiet moment.
+# free. Edits are picked up by an explicit /mods reload (the file watcher
+# was removed in 0.9.0).
 #
 # [mods]
-# enabled = true   # master switch: discovery, manage_mods tool, watcher
-# watch = true     # hot-reload file watcher only (500ms debounce, 1s cooldown)
+# enabled = true   # master switch: discovery, manage_mods tool
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Built-in slash commands (optional)
+# ─────────────────────────────────────────────────────────────────────────────────
+# Hide built-in REPL commands without removing their implementations: the
+# disabled names stop dispatching, disappear from /help, and leave Tab
+# completion. User commands and mod commands of the same name still work —
+# the disable targets the built-in layer only. Unknown names fail REPL
+# startup loudly.
+#
+# [commands]
+# disabled = ["deepseek", "set"]   # canonical names or aliases
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Scheduled automations (optional)

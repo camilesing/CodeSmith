@@ -1105,6 +1105,18 @@ fn populate_extension_runtime(
         runner.generation_arc(),
     ));
     runner.bind_core(ctx);
+    // Mod-registered builtin disables: the framework stores names opaquely;
+    // warn on names the host's builtin table does not know (script-bug
+    // posture — warn + no-op, mirroring bad policy knobs, not a load
+    // failure).
+    for name in runner.disabled_builtin_commands() {
+        if crate::interactive::commands::registry::Command::resolve(&name).is_none() {
+            tracing::warn!(
+                target: "codesmith_mods",
+                "mod disabled unknown command {name:?} — no built-in matches; ignored"
+            );
+        }
+    }
     // Discipline 5 — collect the audit, keep a stable order, and leave one
     // structured summary line when anything failed (per-failure warns are
     // already logged above; this is the count + call to action).

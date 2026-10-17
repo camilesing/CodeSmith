@@ -1144,6 +1144,13 @@ and the capacity controller remains disabled unless configured.
   [MODS.md](MODS.md):
   - `[mods].enabled` (bool, default `true`): gates the whole script-mod layer
     (discovery, the `manage_mods` tool)
+- `commands.*` (optional): built-in slash-command controls:
+  - `[commands].disabled` (string list, default empty) — canonical names
+    (or aliases) of built-in REPL commands to hide. Dispatch, `/help`, and
+    Tab completion all skip them; user commands
+    (`.codesmith/commands/*.md`) and mod commands of the same name still
+    work — the disable targets the built-in layer only. An unknown name
+    fails REPL startup loudly.
 - `automations.*` (optional): bounds for scheduled automation runs
   (`/automations`). Scheduled runs are unattended — nobody is watching to
   interrupt a runaway loop — so they are capped below the interactive

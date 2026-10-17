@@ -1033,6 +1033,11 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   [MODS_cn.md](MODS_cn.md)：
   - `[mods].enabled`（布尔，默认 `true`）：控制整个脚本 mod 层
     （发现、`manage_mods` 工具）
+- `commands.*`（可选）：内建斜杠命令控制：
+  - `[commands].disabled`（字符串列表，默认为空）——要隐藏的内建
+    REPL 命令的规范名（或别名）。分派、`/help` 与 Tab 补全都跳过
+    它们；同名用户命令（`.codesmith/commands/*.md`）与 mod 命令仍然
+    可用——禁用只作用于内建层。未知名称会让 REPL 启动大声失败。
 - `automations.*`（可选）：计划自动化运行（`/automations`）的边界。
   计划运行无人值守——没有人盯着去打断失控循环——因此上限低于
   交互式引擎默认值：

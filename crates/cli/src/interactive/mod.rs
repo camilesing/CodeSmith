@@ -59,6 +59,18 @@ pub async fn run_repl(
     let mut state = ReplState::new(options.clone(), config);
     state.telemetry_sink = Some(telemetry_sink);
 
+    // `[commands] disabled` — resolve against the builtin table now and
+    // fail loud on an unknown name (a typo'd entry would otherwise
+    // silently disable nothing). Mod-sourced disables are read live off
+    // the runner, not snapshotted here.
+    let disabled_entries = config
+        .commands
+        .as_ref()
+        .and_then(|commands| commands.disabled.clone())
+        .unwrap_or_default();
+    state.disabled_commands = commands::canonicalize_disabled(&disabled_entries)
+        .map_err(|message| anyhow::anyhow!(message))?;
+
     // Named preset layer (mirrors the retired run_tui startup dial).
     state.apply_preset_at_startup(config.preset.as_deref().unwrap_or("middle"));
 
@@ -1108,6 +1120,7 @@ fn build_editor(
     );
     editor.set_helper(Some(ReplHelper::new(
         commands::user_cmd_store::user_command_names(Some(&state.workspace)),
+        state.disabled_commands.clone(),
         state.extension_runner.clone(),
         paths,
         bindings,

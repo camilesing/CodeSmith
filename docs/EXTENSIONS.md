@@ -49,6 +49,13 @@ Everything an extension can register, and what the host does with it:
 - **Tools + slash commands** — `register_tool(Box<dyn ToolDefinition>)` /
   `register_command(Box<dyn CommandDefinition>)`; wired live per turn
   (main-turn only) as described above.
+- **Builtin-command disables (`disable_command`)** — suppress a built-in
+  slash command's row (dispatch, `/help`, and Tab completion skip it)
+  without providing a replacement; user commands and mod-registered
+  commands of the same name still dispatch (user > mod > builtin). The
+  framework stores names opaquely — the host resolves them against its
+  builtin table and warns on unknowns. Cleared with the generation's other
+  bound registrations on reload.
 - **Providers (Rust shape: `register_provider`)** — a full
   `Arc<dyn ProviderFactory>` flushed into the
   `codesmith_agent::provider::SharedProviderRegistry` the host resolves

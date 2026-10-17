@@ -192,6 +192,7 @@ Transform 可变字段（一个 handler 的改写对后续 handler 立即可见�
 | `register_message_projection(key, init, fold)` | 注册由宿主维护的会话日志折叠（见下） |
 | `projection_state(key)` | 读取本 mod 的投影状态（钩子/工具内可用） |
 | `register_policy(kind, config)` | 覆盖宿主机制策略（见下） |
+| `disable_command(name)` | 停用一个内建斜杠命令（见下） |
 
 ### 策略（路线 C —— 调优宿主机制）
 
@@ -233,6 +234,22 @@ register_policy("shell-output", #{
   门（随二进制发布）、使用临时 KV，且不出现在 `/mods` 的 mod 列表（不是
   可发现 id —— 覆盖方式是注册同种类策略，而非遮蔽 id；其 id 仅作为
   `list` 已解析策略节的来源出现）。
+
+### 停用一个内建斜杠命令
+
+```rhai
+disable_command("model");
+```
+
+停用会隐藏**内建**命令的表项——分派、`/help` 与 Tab 补全都跳过它
+——这样 mod 无需提供替代实现即可退役一个内建命令。同名的用户命令与
+mod 注册命令仍然可用（user > mod > builtin 层序不变）。宿主会按其内建
+表解析名称（规范名与别名均可）；未知名称警告并空操作（target
+`codesmith_mods`——脚本缺陷走警告姿态，与坏策略旋钮一致）。停用随该
+generation 的其他绑定注册一并清除：`/mods reload`、`disable`、
+`remove` 会从幸存 mod 重新推导。配置侧的等价物是 config.toml 的
+`[commands] disabled = [...]`（那里的未知名称会让 REPL 启动大声失败
+——用户手写的配置走大声姿态，脚本缺陷走警告）。
 
 ### 会话级临时 mod（当会话实验）
 

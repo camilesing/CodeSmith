@@ -202,6 +202,7 @@ Transform mutable fields (one handler's rewrite is immediately visible to the ne
 | `register_message_projection(key, init, fold)` | Register a session-log fold the host maintains (see below) |
 | `projection_state(key)` | Read this mod's projection state (inside hooks/tools) |
 | `register_policy(kind, config)` | Override a host-mechanism policy (see below) |
+| `disable_command(name)` | Suppress a built-in slash command (see below) |
 
 ### Policies (route C — tune host mechanisms)
 
@@ -253,6 +254,25 @@ recompile.
   override by registering the same policy kind, not by shadowing the id;
   their ids appear only as sources in the resolved-policies section of
   `list`).
+
+### Disabling a built-in slash command
+
+```rhai
+disable_command("model");
+```
+
+Disabling suppresses a **built-in** command's row — dispatch, `/help`, and
+Tab completion all skip it — so a mod can retire a built-in without
+shadowing it with a replacement. User commands and mod-registered commands
+of the same name still dispatch (the user > mod > builtin layering is
+unchanged). The host resolves the name against its builtin table (canonical
+names and aliases); an unknown name warns and no-ops (`codesmith_mods`
+target — the script-bug posture, same as a bad policy knob). Disables clear
+with the generation's other bound registrations: `/mods reload`,
+`disable`, and `remove` re-derive them from the surviving mods. The
+config-side equivalent is `[commands] disabled = [...]` in config.toml
+(unknown names there fail REPL startup loudly — user-authored config gets
+the loud posture, script bugs get the warn).
 
 ### Session mods (ephemeral experiments)
 

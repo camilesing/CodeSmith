@@ -739,6 +739,14 @@ pub struct Config {
     /// Documented in `config.example.toml` + `docs/MODS.md`.
     #[serde(default)]
     pub mods: Option<ModsConfig>,
+    /// Built-in slash-command controls (`[commands] disabled`): canonical
+    /// names or aliases of builtin commands to hide — dispatch, `/help`,
+    /// and Tab completion all skip them, while user commands and mod
+    /// commands of the same name still work. Validated against the builtin
+    /// table at REPL start (an unknown name fails loud). Documented in
+    /// `config.example.toml` + `docs/CLI.md`.
+    #[serde(default)]
+    pub commands: Option<CommandsConfig>,
     /// Bounds for scheduled automation runs (`[automations] max_steps`).
     /// Defaults to [`AUTOMATION_DEFAULT_MAX_STEPS`] — see
     /// [`AutomationsConfig`].
@@ -1054,6 +1062,13 @@ impl Config {
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 pub struct ModsConfig {
     pub enabled: Option<bool>,
+}
+
+/// `[commands]` table — built-in slash-command controls.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct CommandsConfig {
+    /// Builtin command names (or aliases) to disable.
+    pub disabled: Option<Vec<String>>,
 }
 
 /// Default step cap per turn for scheduled (unattended) automation runs.
@@ -3960,6 +3975,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         // `[mods] enabled = false` on any profile/managed-override merge,
         // silently re-enabling the script-mod layer.
         mods: override_cfg.mods.or(base.mods),
+        commands: override_cfg.commands.or(base.commands),
         automations: override_cfg.automations.or(base.automations),
         provider: override_cfg.provider.or(base.provider),
         custom_provider: override_cfg.custom_provider.or(base.custom_provider),
