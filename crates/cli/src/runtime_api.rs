@@ -2524,9 +2524,9 @@ mod tests {
             task_manager: manager,
             runtime_threads: runtime_threads.clone(),
             cors_origins: Vec::new(),
-            sessions: std::sync::Arc::new(
-                crate::session_manager::SessionManager::new(sessions_dir.clone())?,
-            ),
+            sessions: std::sync::Arc::new(crate::session_manager::SessionManager::new(
+                sessions_dir.clone(),
+            )?),
             mcp_config_path: root.join("mcp.json"),
             automations,
             runtime_token,
