@@ -5984,9 +5984,9 @@ pub(crate) async fn run_exec_agent(
         worktree_state: crate::tools::worktree::new_shared_worktree_session_state(),
         // A headless child inherits its parent's remaining spawn budget via
         // the environment (see `tools::subagent::headless`); a top-level run
-        // gets the full default.
+        // gets the configured `[runtime] max_spawn_depth` default.
         max_spawn_depth: crate::tools::subagent::headless::inherited_spawn_budget()?
-            .unwrap_or(crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH),
+            .unwrap_or(config.max_spawn_depth()),
         network_policy,
         snapshots_enabled: config.snapshots_config().is_enabled(),
         snapshots_max_workspace_bytes: config
@@ -6593,9 +6593,9 @@ pub(crate) async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -
         worktree_state: crate::tools::worktree::new_shared_worktree_session_state(),
         // A headless child inherits its parent's remaining spawn budget via
         // the environment (see `tools::subagent::headless`); a top-level run
-        // gets the full default.
+        // gets the configured `[runtime] max_spawn_depth` default.
         max_spawn_depth: crate::tools::subagent::headless::inherited_spawn_budget()?
-            .unwrap_or(crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH),
+            .unwrap_or(config.max_spawn_depth()),
         network_policy,
         snapshots_enabled: config.snapshots_config().is_enabled(),
         snapshots_max_workspace_bytes: config

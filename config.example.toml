@@ -271,6 +271,12 @@ max_subagents = 10 # optional (1-20)
 # worker = "deepseek-v4-pro"
 # explore = "deepseek-v4-flash"
 
+# Engine recursion limits ([runtime]).
+# [runtime]
+# max_spawn_depth = 3 # spawn rejected when spawn_depth + 1 > max (0 disables
+#                     # spawning entirely; headless children inherit the
+#                     # remaining budget across the process boundary)
+
 # Optional managed policy paths (defaults to /etc/codesmith/*.toml on unix):
 # managed_config_path = "/etc/codesmith/managed_config.toml"
 # requirements_path = "/etc/codesmith/requirements.toml"

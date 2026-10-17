@@ -27,7 +27,7 @@ use crate::settings::Settings;
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager, wrap_shell_manager};
 use crate::tools::spec::RuntimeToolServices;
-use crate::tools::subagent::{DEFAULT_MAX_SPAWN_DEPTH, SubAgentResult};
+use crate::tools::subagent::SubAgentResult;
 use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
 use codesmith_agent_runtime::mode::ApprovalMode;
 use codesmith_config::presets::PresetCatalog;
@@ -717,7 +717,7 @@ pub fn build_engine_config(state: &ReplState, config: &Config) -> anyhow::Result
             state.hunt.verdict == crate::app_state::HuntVerdict::Hunted,
         ),
         worktree_state: crate::tools::worktree::new_shared_worktree_session_state(),
-        max_spawn_depth: DEFAULT_MAX_SPAWN_DEPTH,
+        max_spawn_depth: config.max_spawn_depth(),
         allowed_tools: state.active_allowed_tools.clone(),
         blocked_tools: state.active_blocked_tools.clone().unwrap_or_default(),
         network_policy: Some(config.network_policy_decider()),
