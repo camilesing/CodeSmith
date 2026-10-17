@@ -783,6 +783,7 @@ name = "codesmith-agent-runtime"
 version = "0.10.0"
 dependencies = [
  "anyhow",
+ "async-stream",
  "async-trait",
  "chrono",
  "clap",

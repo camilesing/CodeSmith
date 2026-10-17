@@ -7,6 +7,9 @@
 //! mutation is serialised by [`lock_test_env`]'s process-wide mutex.
 #![allow(unsafe_code)] // env-var mutation (2024-edition set_var/remove_var) guarded by lock_test_env
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod mock_llm;
+
 use std::ffi::{OsStr, OsString};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
