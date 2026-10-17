@@ -36,7 +36,7 @@ repository = "https://github.com/camilesing/CodeSmith"
 
 [workspace.dependencies]
 anyhow = "1.0.100"
-base64 = "0.22.1"
+base64 = "0.23.1"
 bytes = "1"
 async-trait = "0.1.89"
 axum = { version = "0.8.5", features = ["json"] }
@@ -67,7 +67,7 @@ codesmith-secrets = { path = "crates/secrets", version = "0.10.0" }
 codesmith-state = { path = "crates/state", version = "0.10.0" }
 codesmith-tools = { path = "crates/tools", version = "0.10.0" }
 codesmith-tool-impls = { path = "crates/tool-impls", version = "0.10.0" }
-dirs = "6.0.0"
+dirs = "7.0.0"
 # Test-fixture dylib (publish = false): hoisted so the extensions dev-dep
 # inherits like every other internal path dep; carries no version pin.
 extensions-fixture-dylib = { path = "crates/extensions-fixture-dylib" }
@@ -84,8 +84,8 @@ rhai = { version = "1.26", features = ["sync", "serde"] }
 # unifies with the workspace `reqwest 0.13.x` (Cargo merges features into one
 # build). `derive` is off — CodeSmith keeps its own `Tool`/`LlmClient` traits
 # (Strategy A: rig is one swappable impl, not the framework vocabulary).
-rig-core = { version = "0.39", default-features = false, features = ["reqwest", "rustls"] }
-rusqlite = { version = "0.32.1", features = ["bundled"] }
+rig-core = { version = "0.42", default-features = false, features = ["reqwest", "rustls"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 # `rc` (Arc<T>/Rc<T> impls) is deliberately NOT workspace-wide: it is a
 # footgun outside the crate whose types were audited for deep immutability
 # (see codesmith-tools, which opts in locally for
@@ -95,11 +95,11 @@ serde_json = "1.0.149"
 semver = "1.0.28"
 thiserror = "2.0"
 tokio = { version = "1.49.0", features = ["full"] }
-toml = "0.9.7"
+toml = "1.0.6"
 # Format-preserving TOML editing (comments/whitespace/key order survive a
 # single-key rewrite, e.g. settings_file's locale write).
-toml_edit = "0.23"
-sha2 = "0.10"
+toml_edit = "0.25"
+sha2 = "0.11"
 ignore = "0.4"
 # ripgrep engine crates: `grep_files` walks with `ignore` and matches with
 # `grep-regex`/`grep-matcher` so tool search gets ripgrep semantics
@@ -109,7 +109,7 @@ grep-matcher = "0.1"
 # tree-sitter: grammars bundle their own C sources and depend only on the
 # stable `tree-sitter-language` ABI crate, so grammar versions float
 # independently of the core crate pinned here.
-tree-sitter = "0.25"
+tree-sitter = "0.26"
 # Bash grammar doubles as the command-analysis parser for the approval
 # gate (agent-runtime `bash_ast`), not just code retrieval — keep it a
 # non-optional dependency there.
@@ -122,7 +122,7 @@ tree-sitter-go = "0.25"
 tempfile = "3.16"
 tokio-util = "0.7.16"
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.7", features = ["cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 unicode-normalization = "0.1"
