@@ -84,9 +84,9 @@ pub fn spillover_root() -> Option<PathBuf> {
         return Some(root);
     }
 
-    let home = dirs::home_dir()?;
-    let primary = home.join(".codesmith").join(SPILLOVER_DIR_NAME);
-    let legacy = home.join(".codesmith").join(SPILLOVER_DIR_NAME);
+    let home = codesmith_config::codesmith_home().ok()?;
+    let primary = home.join(SPILLOVER_DIR_NAME);
+    let legacy = home.join(SPILLOVER_DIR_NAME);
     if primary.exists() || !legacy.exists() {
         return Some(primary);
     }

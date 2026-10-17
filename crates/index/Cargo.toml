@@ -13,6 +13,7 @@ description = "Pluggable per-workspace code index: symbol index, file inventory 
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
+codesmith-config.workspace = true
 codesmith-tools.workspace = true
 dirs.workspace = true
 ignore.workspace = true

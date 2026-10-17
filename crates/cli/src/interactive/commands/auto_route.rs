@@ -12,7 +12,7 @@ use std::time::Duration;
 use anyhow::Result;
 
 use crate::app_state::ReasoningEffort;
-use crate::config::{effective_home_dir, expand_path};
+use crate::config::expand_path;
 use crate::models::{ContentBlock, Message, MessageRequest, MessageResponse, SystemPrompt};
 
 pub fn persist_root_string_key(
@@ -61,9 +61,9 @@ pub(crate) fn config_toml_path(config_path: Option<&Path>) -> anyhow::Result<Pat
             return Ok(PathBuf::from(trimmed));
         }
     }
-    let home =
-        effective_home_dir().context("failed to resolve home directory for config.toml path")?;
-    Ok(home.join(".codesmith").join("config.toml"))
+    let home = codesmith_config::codesmith_home()
+        .context("failed to resolve CodeSmith home directory for config.toml path")?;
+    Ok(home.join("config.toml"))
 }
 
 /// Deterministic tier-level heuristic for callers that resolve the tier

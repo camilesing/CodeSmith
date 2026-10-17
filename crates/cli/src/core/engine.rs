@@ -782,8 +782,9 @@ fn populate_extension_runtime(
     // (!global) sources when the workspace is not trusted (Model A — consume
     // FirstLoad's persisted-trust flip via is_workspace_trusted). Discovery is
     // trust-agnostic; the gate is the host's concern.
-    let global_dir =
-        crate::config::effective_home_dir().map(|home| home.join(".codesmith").join("extensions"));
+    let global_dir = codesmith_config::codesmith_home()
+        .ok()
+        .map(|home| home.join("extensions"));
     let project_dir = workspace.join(".codesmith").join("extensions");
     let project_trusted = crate::config::is_workspace_trusted(workspace);
     let global_roots: Vec<std::path::PathBuf> = global_dir.into_iter().collect();
@@ -1415,7 +1416,7 @@ pub fn build_engine(
     let bg_registry_shell = shell_manager.clone();
     let bg_registry_agent = subagent_manager.clone();
     let bg_data_dir =
-        dirs::home_dir().map_or_else(|| PathBuf::from(".codesmith"), |h| h.join(".codesmith"));
+        codesmith_config::codesmith_home().unwrap_or_else(|_| PathBuf::from(".codesmith"));
     let bg_registry = std::sync::Arc::new(tokio::sync::Mutex::new(
         crate::background_task::BackgroundTaskRegistry::new(
             bg_registry_shell,

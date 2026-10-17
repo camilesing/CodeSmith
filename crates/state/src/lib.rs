@@ -1207,7 +1207,7 @@ fn default_state_db_path() -> PathBuf {
             return PathBuf::from(trimmed).join("state.db");
         }
     }
-    resolve_state_db_path(dirs::home_dir())
+    resolve_state_db_path(codesmith_config::codesmith_home().ok())
 }
 
 /// Resolve `~/.codesmith/state.db`, falling back to a relative path when the

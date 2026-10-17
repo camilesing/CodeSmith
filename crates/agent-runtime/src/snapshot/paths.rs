@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 /// snapshots cross-worktree if they want, but the `worktree_hash` keeps
 /// commits isolated by default.
 pub fn snapshot_dir_for(workspace: &Path) -> PathBuf {
-    snapshot_dir_with_home(workspace, dirs::home_dir())
+    snapshot_dir_with_home(workspace, codesmith_config::codesmith_home().ok())
 }
 
 /// Same as [`snapshot_dir_for`] but with an injectable home directory.

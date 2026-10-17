@@ -53,8 +53,9 @@ pub async fn extension_command(state: &ReplState, arg: &str) {
 /// (`<workspace>/.codesmith/extensions`) dylib roots — mirrors the engine's
 /// discovery paths (core/engine.rs).
 fn extension_roots(workspace: &std::path::Path) -> (Vec<PathBuf>, PathBuf) {
-    let global =
-        crate::config::effective_home_dir().map(|home| home.join(".codesmith").join("extensions"));
+    let global = codesmith_config::codesmith_home()
+        .ok()
+        .map(|home| home.join("extensions"));
     (
         global.into_iter().collect(),
         workspace.join(".codesmith").join("extensions"),
