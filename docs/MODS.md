@@ -232,7 +232,11 @@ recompile.
   decision; the utility-LLM synthesis call stays in Rust. Explicit
   `[workshop]` TOML (`large_output_threshold_tokens` /
   `per_tool_thresholds`) sits above this kind: config values win, the
-  script tier supplies the default when TOML is silent).
+  script tier supplies the default when TOML is silent),
+  `working-set` (`recent_read_file_limit`,
+  `recent_read_file_snippet_chars` — the recent-read-files window the
+  session retains so compacted-away reads stay available; the retention
+  mechanics stay in Rust).
 - Resolution is **last-wins by load order** (builtin < global < project):
   a user mod overrides the builtin default by registering the same kind —
   deliberately unlike tools/commands, where the incumbent keeps the name.
@@ -246,7 +250,7 @@ recompile.
   cannot brick the mechanism it tunes.
 - **Builtin tier**: the defaults themselves ship as embedded Rhai mods
   (`builtin-output-diff`, `builtin-shell-output`, `builtin-compact-policy`,
-  `builtin-large-output-route` — sources under
+  `builtin-large-output-route`, `builtin-working-set` — sources under
   `crates/extensions/src/script/builtin/`). They always load (even with
   `[mods] enabled = false`; the flag gates user mods only), skip
   consent/hash gates (they ship in the binary), use ephemeral KV, and are

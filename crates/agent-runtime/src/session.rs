@@ -22,6 +22,34 @@ use std::sync::{Arc, Mutex as StdMutex};
 
 const RECENT_READ_FILE_LIMIT: usize = 12;
 const RECENT_READ_FILE_SNIPPET_CHARS: usize = 1_200;
+/// Hard ceilings for the working-set policy knobs (a bad value falls back
+/// to the compiled default instead of unbounding the model-visible
+/// window).
+const MAX_RECENT_READ_FILES: usize = 64;
+const MAX_RECENT_READ_SNIPPET_CHARS: usize = 32_768;
+
+/// The effective recent-read-files window size — policy `working-set`,
+/// compiled constant as the fallback (the builtin `working-set` mod
+/// registers the same number).
+fn recent_read_file_limit() -> usize {
+    codesmith_agent::policy::policy_usize(
+        codesmith_agent::policy::PolicyKind::WorkingSet,
+        "recent_read_file_limit",
+        RECENT_READ_FILE_LIMIT,
+        MAX_RECENT_READ_FILES,
+    )
+}
+
+/// The effective preview snippet size for a retained read (same policy
+/// kind and fallback posture as [`recent_read_file_limit`]).
+fn recent_read_file_snippet_chars() -> usize {
+    codesmith_agent::policy::policy_usize(
+        codesmith_agent::policy::PolicyKind::WorkingSet,
+        "recent_read_file_snippet_chars",
+        RECENT_READ_FILE_SNIPPET_CHARS,
+        MAX_RECENT_READ_SNIPPET_CHARS,
+    )
+}
 
 /// Bounded snapshot of successful `read_file` tool outputs that may be lost
 /// when old tool-result messages are compacted away.
@@ -302,7 +330,8 @@ impl Session {
 }
 
 /// Shared implementation: dedup by `path`, push back a capped preview, trim to
-/// [`RECENT_READ_FILE_LIMIT`]. Both [`Session::record_read_file_result`] and
+/// the effective working-set window ([`recent_read_file_limit`]). Both
+/// [`Session::record_read_file_result`] and
 /// the framework-core `ReinjectProbe::record_read_file_result` call this so
 /// the observe logic has a single source (lifted now rather than duplicated —
 /// same precedent as `edit_file_paths` / `summarize_subagents`).
@@ -321,7 +350,7 @@ pub(crate) fn record_read_file_result_into(
         return;
     };
     let sanitized = crate::sanitization::partially_sanitize_unicode(output_for_context);
-    let preview = summarize_chars(&sanitized, RECENT_READ_FILE_SNIPPET_CHARS);
+    let preview = summarize_chars(&sanitized, recent_read_file_snippet_chars());
     let mut files = files.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(existing) = files.iter().position(|entry| entry.path == path) {
         files.remove(existing);
@@ -331,7 +360,7 @@ pub(crate) fn record_read_file_result_into(
         input: input.clone(),
         output_preview: preview,
     });
-    while files.len() > RECENT_READ_FILE_LIMIT {
+    while files.len() > recent_read_file_limit() {
         files.pop_front();
     }
 }
@@ -441,6 +470,9 @@ mod tests {
         use codesmith_agent::models::{ContentBlock, Message};
         use serde_json::json;
 
+        // Reads policy-derived behavior; serialize against the module's
+        // policy-publishing test (the snapshot is process-global).
+        let _guard = policy_test_lock();
         let tool_use = |id: &str, name: &str, input: serde_json::Value| ContentBlock::ToolUse {
             id: id.to_string(),
             name: name.to_string(),
@@ -577,6 +609,9 @@ mod tests {
 
     #[test]
     fn record_read_file_result_tracks_latest_entry_by_path() {
+        // Reads policy-derived behavior; serialize against the module's
+        // policy-publishing test (the snapshot is process-global).
+        let _guard = policy_test_lock();
         let mut session = Session::new(
             "test-model".to_string(),
             std::path::PathBuf::from("/tmp/workspace"),
@@ -626,6 +661,9 @@ mod tests {
 
     #[test]
     fn record_read_file_result_bounds_and_truncates_recent_files() {
+        // Reads policy-derived behavior; serialize against the module's
+        // policy-publishing test (the snapshot is process-global).
+        let _guard = policy_test_lock();
         let mut session = Session::new(
             "test-model".to_string(),
             std::path::PathBuf::from("/tmp/workspace"),
@@ -652,6 +690,58 @@ mod tests {
             RECENT_READ_FILE_SNIPPET_CHARS
         );
         assert!(files.back().unwrap().output_preview.ends_with("..."));
+    }
+
+    /// The policy snapshot is process-global; policy tests in this module
+    /// serialize through this guard (publish/assert/clear as one critical
+    /// section) — same lock as `output_policy`'s tests.
+    fn policy_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::policy_test_lock()
+    }
+
+    #[test]
+    fn working_set_policy_overrides_the_recent_read_window() {
+        let _guard = policy_test_lock();
+        use codesmith_agent::policy::{PolicyKind, clear_published_policies, publish_policies};
+        // Drift guard first: the builtin mod's registration and the
+        // compiled fallbacks must agree (mirrors output_policy's check).
+        publish_policies(
+            codesmith_extensions::builtin_policy_defaults()
+                .into_iter()
+                .collect::<std::collections::HashMap<PolicyKind, serde_json::Value>>(),
+        );
+        assert_eq!(recent_read_file_limit(), RECENT_READ_FILE_LIMIT);
+        assert_eq!(
+            recent_read_file_snippet_chars(),
+            RECENT_READ_FILE_SNIPPET_CHARS
+        );
+
+        let mut set = std::collections::HashMap::new();
+        set.insert(
+            PolicyKind::WorkingSet,
+            serde_json::json!({
+                "recent_read_file_limit": 2,
+                "recent_read_file_snippet_chars": 10,
+            }),
+        );
+        publish_policies(set);
+
+        let mut session = new_test_session();
+        for index in 0..4 {
+            session.record_read_file_result(
+                &serde_json::json!({"path": format!("src/f{index}.rs")}),
+                "0123456789abcdefghij",
+            );
+        }
+        let files = session.recent_read_files.lock().unwrap();
+        assert_eq!(files.len(), 2, "window follows the policy limit");
+        assert_eq!(files.back().unwrap().path, "src/f3.rs");
+        assert_eq!(
+            files.back().unwrap().output_preview.chars().count(),
+            10,
+            "preview follows the policy snippet size"
+        );
+        clear_published_policies();
     }
 
     fn new_test_session() -> Session {

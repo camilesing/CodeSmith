@@ -60,6 +60,12 @@ pub const BUILTIN_MODS: &[BuiltinMod] = &[
         description: "Default large-output routing policy (thresholds)",
         source: include_str!("builtin/large_output_route.rhai"),
     },
+    BuiltinMod {
+        id: "builtin-working-set",
+        version: "0.1.0",
+        description: "Default working-set policy (recent-read window + preview size)",
+        source: include_str!("builtin/working_set.rhai"),
+    },
 ];
 
 /// Compile + run every builtin mod against the runner (used by the host's

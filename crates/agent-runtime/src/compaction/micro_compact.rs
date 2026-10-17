@@ -254,11 +254,7 @@ mod tests {
     /// The policy snapshot is process-global; tests in this module
     /// serialize through this guard (publish/assert/clear as one section).
     fn policy_test_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        match LOCK.lock() {
-            Ok(g) => g,
-            Err(poisoned) => poisoned.into_inner(),
-        }
+        crate::policy_test_lock()
     }
     use serde_json::json;
 
