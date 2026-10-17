@@ -33,8 +33,9 @@ pub struct ModPaths {
 
 pub fn mod_paths(workspace: &Path) -> ModPaths {
     ModPaths {
-        global_root: crate::config::effective_home_dir()
-            .map(|home| home.join(".codesmith").join("mods")),
+        global_root: codesmith_config::codesmith_home()
+            .ok()
+            .map(|home| home.join("mods")),
         project_root: workspace.join(".codesmith").join("mods"),
     }
 }
@@ -987,6 +988,23 @@ trust_level = "trusted"
         let ws = dir.path().join("ws");
         std::fs::create_dir_all(ws.join(".codesmith").join("mods")).unwrap();
         ws
+    }
+
+    #[test]
+    fn mod_paths_global_root_follows_codesmith_home() {
+        let _env = crate::test_support::lock_test_env();
+        let dir = TempDir::new().unwrap();
+        let _guard = codesmith_agent_runtime::test_support::EnvVarGuard::set(
+            "CODESMITH_HOME",
+            dir.path().as_os_str(),
+        );
+        let paths = mod_paths(Path::new("/ws"));
+        assert_eq!(
+            paths.global_root,
+            Some(dir.path().join("mods")),
+            "the global mods root is base-data-directory content and must \
+             follow the documented CODESMITH_HOME override"
+        );
     }
 
     #[test]

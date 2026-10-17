@@ -2948,7 +2948,9 @@ fn default_managed_config_path() -> Option<PathBuf> {
     }
     #[cfg(not(unix))]
     {
-        effective_home_dir().map(|home| home.join(".codesmith").join("managed_config.toml"))
+        codesmith_config::codesmith_home()
+            .ok()
+            .map(|home| home.join("managed_config.toml"))
     }
 }
 
@@ -2959,24 +2961,34 @@ fn default_requirements_path() -> Option<PathBuf> {
     }
     #[cfg(not(unix))]
     {
-        effective_home_dir().map(|home| home.join(".codesmith").join("requirements.toml"))
+        codesmith_config::codesmith_home()
+            .ok()
+            .map(|home| home.join("requirements.toml"))
     }
 }
 
 fn default_skills_dir() -> Option<PathBuf> {
-    effective_home_dir().map(|home| home.join(".codesmith").join("skills"))
+    codesmith_config::codesmith_home()
+        .ok()
+        .map(|home| home.join("skills"))
 }
 
 fn default_mcp_config_path() -> Option<PathBuf> {
-    effective_home_dir().map(|home| home.join(".codesmith").join("mcp.json"))
+    codesmith_config::codesmith_home()
+        .ok()
+        .map(|home| home.join("mcp.json"))
 }
 
 fn default_notes_path() -> Option<PathBuf> {
-    effective_home_dir().map(|home| home.join(".codesmith").join("notes.txt"))
+    codesmith_config::codesmith_home()
+        .ok()
+        .map(|home| home.join("notes.txt"))
 }
 
 fn default_memory_path() -> Option<PathBuf> {
-    effective_home_dir().map(|home| home.join(".codesmith").join("memory.md"))
+    codesmith_config::codesmith_home()
+        .ok()
+        .map(|home| home.join("memory.md"))
 }
 
 // === Environment Overrides ===
@@ -6212,6 +6224,37 @@ api_key = "old-openrouter-key"
             "CODESMITH_HOME is the documented base-data-directory override; \
              Config::load must read its config.toml, not the real ~/.codesmith one"
         );
+    }
+
+    #[test]
+    fn home_data_defaults_follow_codesmith_home() {
+        let _lock = lock_test_env();
+        let prev_home = env::var_os("CODESMITH_HOME");
+        let scratch = tempfile::tempdir().expect("scratch CODESMITH_HOME");
+        unsafe { env::set_var("CODESMITH_HOME", scratch.path()) };
+
+        let config = Config::default();
+        let resolved = [
+            config.skills_dir(),
+            config.mcp_config_path(),
+            config.notes_path(),
+            config.memory_path(),
+        ];
+
+        unsafe { EnvGuard::restore_var("CODESMITH_HOME", prev_home) };
+        let expected = [
+            scratch.path().join("skills"),
+            scratch.path().join("mcp.json"),
+            scratch.path().join("notes.txt"),
+            scratch.path().join("memory.md"),
+        ];
+        for (got, want) in resolved.iter().zip(&expected) {
+            assert_eq!(
+                got, want,
+                "home-dir defaults are base-data-directory contents and must \
+                 follow the documented CODESMITH_HOME override"
+            );
+        }
     }
 
     #[test]

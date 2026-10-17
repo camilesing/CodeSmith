@@ -2642,8 +2642,9 @@ fn now_millis() -> u64 {
 }
 
 fn default_mcp_auth_cache_path() -> Option<PathBuf> {
-    crate::utils::effective_home_dir()
-        .map(|home| home.join(".codesmith").join("mcp-needs-auth-cache.json"))
+    codesmith_config::codesmith_home()
+        .ok()
+        .map(|home| home.join("mcp-needs-auth-cache.json"))
 }
 
 impl McpAuthCache {
@@ -3941,6 +3942,20 @@ mod tests {
             buf.extend_from_slice(&chunk[..n]);
         }
         Ok(String::from_utf8_lossy(&buf[..total.min(buf.len())]).into_owned())
+    }
+
+    #[test]
+    fn default_mcp_auth_cache_path_follows_codesmith_home() {
+        let _env = crate::test_support::lock_test_env();
+        let scratch = tempfile::tempdir().expect("scratch CODESMITH_HOME");
+        let _guard =
+            crate::test_support::EnvVarGuard::set("CODESMITH_HOME", scratch.path().as_os_str());
+        assert_eq!(
+            default_mcp_auth_cache_path(),
+            Some(scratch.path().join("mcp-needs-auth-cache.json")),
+            "the auth cache is base-data-directory content and must follow \
+             the documented CODESMITH_HOME override"
+        );
     }
 
     #[test]

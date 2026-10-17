@@ -595,7 +595,9 @@ impl McpServer {
 }
 
 fn default_config_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".codesmith").join("mcp_server.toml"))
+    codesmith_config::codesmith_home()
+        .ok()
+        .map(|home| home.join("mcp_server.toml"))
 }
 
 /// Drop the least-recently-used thread to make room under

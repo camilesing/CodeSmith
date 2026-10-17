@@ -50,8 +50,10 @@ fn commands_dirs(workspace: Option<&Path>) -> Vec<PathBuf> {
 
 /// Path to the global user commands directory: `~/.codesmith/commands/`.
 fn global_commands_dir() -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
-    home.join(".codesmith").join("commands")
+    codesmith_config::codesmith_home()
+        .ok()
+        .map(|home| home.join("commands"))
+        .unwrap_or_else(|| PathBuf::from("~/.codesmith/commands"))
 }
 
 /// Scan a single commands directory for `.md` files and return

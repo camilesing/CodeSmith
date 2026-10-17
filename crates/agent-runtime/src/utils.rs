@@ -441,10 +441,13 @@ fn write_panic_dump(
     location: &std::panic::Location<'_>,
     message: &str,
 ) -> std::io::Result<()> {
-    let home = effective_home_dir().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, "home directory not found")
+    let home = codesmith_config::codesmith_home().map_err(|err| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("CodeSmith home directory not found: {err}"),
+        )
     })?;
-    let crash_dir = home.join(".codesmith").join("crashes");
+    let crash_dir = home.join("crashes");
     let _ = std::fs::create_dir_all(&crash_dir);
     write_panic_dump_to(&crash_dir, name, location, message)
 }

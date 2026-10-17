@@ -335,11 +335,8 @@ impl NetworkAuditor {
     /// home directory can't be resolved.
     #[must_use]
     pub fn default_path(enabled: bool) -> Option<Self> {
-        let home = dirs::home_dir()?;
-        Some(Self::new(
-            home.join(".codesmith").join("audit.log"),
-            enabled,
-        ))
+        let home = codesmith_config::codesmith_home().ok()?;
+        Some(Self::new(home.join("audit.log"), enabled))
     }
 
     /// Append one line. Best-effort: errors are logged via `eprintln!` but

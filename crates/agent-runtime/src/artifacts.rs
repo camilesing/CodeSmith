@@ -107,8 +107,8 @@ fn artifact_sessions_root() -> Option<PathBuf> {
         return Some(root);
     }
 
-    let home = dirs::home_dir()?;
-    Some(home.join(".codesmith").join("sessions"))
+    let home = codesmith_config::codesmith_home().ok()?;
+    Some(home.join("sessions"))
 }
 
 /// Test-session-root override. `#[doc(hidden)]`: compiled unconditionally

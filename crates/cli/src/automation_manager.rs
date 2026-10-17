@@ -791,8 +791,9 @@ pub fn default_automations_dir() -> PathBuf {
             return PathBuf::from(trimmed);
         }
     }
-    dirs::home_dir()
-        .map(|home| home.join(".codesmith").join("automations"))
+    codesmith_config::codesmith_home()
+        .ok()
+        .map(|home| home.join("automations"))
         .unwrap_or_else(|| PathBuf::from(".codesmith").join("automations"))
 }
 

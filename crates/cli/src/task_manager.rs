@@ -1506,7 +1506,8 @@ pub fn default_tasks_dir() -> PathBuf {
     if let Some(path) = codesmith_config::codesmith_env("TASKS_DIR") {
         return PathBuf::from(path);
     }
-    dirs::home_dir()
+    codesmith_config::codesmith_home()
+        .ok()
         .map(|home| default_tasks_dir_for_home(&home))
         .unwrap_or_else(|| PathBuf::from(".codesmith").join("tasks"))
 }

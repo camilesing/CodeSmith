@@ -100,8 +100,9 @@ fn redact_sensitive_keys(value: Value) -> Value {
 }
 
 fn default_audit_path() -> anyhow::Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("home directory not found"))?;
-    Ok(home.join(".codesmith").join("audit.log"))
+    let home = codesmith_config::codesmith_home()
+        .map_err(|err| anyhow::anyhow!("CodeSmith home directory not found: {err}"))?;
+    Ok(home.join("audit.log"))
 }
 
 #[cfg(test)]

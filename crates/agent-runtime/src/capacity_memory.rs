@@ -55,8 +55,8 @@ fn capacity_memory_dirs() -> Vec<PathBuf> {
     }
 
     let mut dirs = Vec::new();
-    if let Some(home) = dirs::home_dir() {
-        dirs.push(home.join(".codesmith").join("memory"));
+    if let Ok(home) = codesmith_config::codesmith_home() {
+        dirs.push(home.join("memory"));
     }
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));

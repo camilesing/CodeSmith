@@ -956,8 +956,8 @@ pub(crate) async fn real_main() -> Result<()> {
             .unwrap_or_else(|| "unknown".to_string());
         tracing::error!(target: "panic", "Process panicked at {location}: {msg}");
         // Write crash dump best-effort
-        if let Some(home) = dirs::home_dir() {
-            let crash_dir = home.join(".codesmith").join("crashes");
+        if let Ok(home) = codesmith_config::codesmith_home() {
+            let crash_dir = home.join("crashes");
             let _ = std::fs::create_dir_all(&crash_dir);
             use chrono::Utc;
             let ts = Utc::now().format("%Y%m%dT%H%M%S%.3fZ");

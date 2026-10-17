@@ -117,7 +117,8 @@ impl IndexStore {
     /// Open the default on-disk location for `workspace_root`:
     /// `~/.codesmith/index/<workspace_hash>/index.db`.
     pub fn open_default(workspace_root: &Path) -> Result<Self> {
-        let home = dirs::home_dir().context("cannot resolve home directory for index storage")?;
+        let home = codesmith_config::codesmith_home()
+            .context("cannot resolve CodeSmith home for index storage")?;
         let db_path = home
             .join(".codesmith")
             .join("index")

@@ -1015,6 +1015,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "codesmith-config",
  "codesmith-index",
  "codesmith-tools",
  "dirs",
@@ -1101,6 +1102,7 @@ version = "0.10.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "codesmith-config",
  "dirs",
  "rusqlite",
  "serde",
