@@ -6,6 +6,36 @@
 //! `crate::tools::subagent` path for backwards compatibility. The sub-agent
 //! *implementation* (spawn orchestration, context forking, result aggregation)
 //! still lives in the CLI for now.
+//!
+//! # External sub-agent seam (capability triple)
+//!
+//! [`ExternalSubagentProvider`] is the *definition* role of the seam that lets
+//! a child run **out of process**: a provider receives an
+//! [`ExternalSubagentRequest`] (type, assignment, rendered prompts, model,
+//! workspace, spawn-depth budget, approval posture) and returns an
+//! [`ExternalSubagentOutcome`] that the consumer maps onto [`SubAgentResult`].
+//! The first provider is the CLI's own headless binary (`codesmith exec
+//! --json`, `crates/cli/src/tools/subagent/headless.rs`); the consumer is the
+//! CLI spawn path (`run_subagent_task`), selected by
+//! `[subagents] external_provider`. ACP / Codex / Claude Code providers are
+//! deliberate future slots of this seam, not built.
+//!
+//! What an external child does **not** get — known limitations, each either
+//! enforced or made loud by the consumer:
+//! - a forked parent context (`fork_context` is rejected at spawn: the request
+//!   prefix cannot cross a process boundary);
+//! - follow-up input via `agent_send_input` (the input channel is closed, so
+//!   the send fails instead of queueing silently);
+//! - shared in-process state — team mailboxes, task lists, agent-memory
+//!   directories — so `Team` / `CoordinatorWorker` children always stay
+//!   in-process, and a headless child's memory writes are not propagated
+//!   (its memory *prompt* still rides the system prompt);
+//! - approval authority beyond the parent's own: `auto_approve` is forwarded
+//!   as a ceiling and never raised.
+//!
+//! The spawn-depth budget *is* inherited: the child enforces
+//! `max_spawn_depth - spawn_depth` locally, so recursion stays bounded across
+//! process hops exactly as it is in-process.
 
 use std::fmt;
 use std::path::PathBuf;
@@ -522,3 +552,62 @@ impl ContextPatch {
 /// Default cap on sub-agent recursion depth. Override via
 /// `[runtime] max_spawn_depth = N` in `~/.codesmith/config.toml`.
 pub const DEFAULT_MAX_SPAWN_DEPTH: u32 = 3;
+
+/// One child run handed to an [`ExternalSubagentProvider`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExternalSubagentRequest {
+    pub agent_id: String,
+    pub agent_type: SubAgentType,
+    pub assignment: SubAgentAssignment,
+    /// Role instruction — the same text the in-process path installs as the
+    /// child's system prompt (type intro + output format + role + memory).
+    pub system_prompt: String,
+    /// The rendered objective: what an in-process child sees as its first
+    /// user message.
+    pub prompt: String,
+    /// Model the parent resolved for this child. `None` lets the provider
+    /// (or the child binary's own config) pick.
+    pub model: Option<String>,
+    pub workspace: PathBuf,
+    /// The child's depth in the global spawn tree and the inherited cap. A
+    /// provider must hand both to the child so it enforces the same budget an
+    /// in-process child would (`spawn_depth + 1 > max_spawn_depth` rejects).
+    pub spawn_depth: u32,
+    pub max_spawn_depth: u32,
+    /// Whether the parent runs with auto-approval. This is a ceiling: a
+    /// provider must never grant the child more approval authority than the
+    /// parent has.
+    pub auto_approve: bool,
+}
+
+/// What an [`ExternalSubagentProvider`] reports back for one child run.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExternalSubagentOutcome {
+    pub status: SubAgentStatus,
+    /// The child's final answer (becomes `SubAgentResult::result`).
+    pub output: String,
+    /// Tool calls the child made, when the provider can count them.
+    pub steps_taken: u32,
+    /// Model the child actually ran with, when the provider knows it.
+    pub model: Option<String>,
+}
+
+/// Definition role of the external sub-agent seam: run one child somewhere
+/// other than the parent's process. Implementations own the transport (a
+/// subprocess, an RPC, …) and the mapping of its result onto
+/// [`ExternalSubagentOutcome`]; the consumer owns bookkeeping (manager
+/// state, completion sentinels, hooks) exactly as for an in-process child.
+/// Dropping the `run` future is the cancellation path — an implementation
+/// must tear down whatever it started (e.g. `kill_on_drop` on a child
+/// process).
+#[async_trait::async_trait]
+pub trait ExternalSubagentProvider: Send + Sync {
+    /// Stable provider name for config, logs, and errors (e.g. `"headless"`).
+    fn name(&self) -> &'static str;
+
+    /// Run one child to completion.
+    async fn run(
+        &self,
+        request: ExternalSubagentRequest,
+    ) -> anyhow::Result<ExternalSubagentOutcome>;
+}

@@ -33,6 +33,7 @@ SEAMS = [
     "ChatHistory",
     "CommandDefinition",
     "Extension",
+    "ExternalSubagentProvider",
     "Handler",
     "HostServices",
     "IndexBackend",

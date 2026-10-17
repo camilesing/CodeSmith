@@ -34,6 +34,7 @@ change, and every `ExtensionEventKind` declares its dispatch mode
   (`crates/agent-runtime/src/engine/lsp_hooks.rs` + `engine/turn/postprocess.rs`), providing inline diagnostics after every edit_file/apply_patch/write_file.
 - The orchestration surface is persistent sub-agent sessions (`agent_open` / `agent_eval` / `agent_close`) and persistent RLM sessions (`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close`).
   No model-visible swarm tool remains in the active codebase.
+- Sub-agents run in-process by default; the **external sub-agent seam** lets a child run out of process without changing the model-visible surface. Definition: `ExternalSubagentProvider` (+ request/outcome types) in `crates/agent-runtime/src/subagent.rs`; first provider: the headless self-provider in `crates/cli/src/tools/subagent/headless.rs` (each non-team child becomes a `codesmith exec --json` subprocess, with the spawn-depth budget inherited through `CODESMITH_SUBAGENT_DEPTH` / `CODESMITH_MAX_SPAWN_DEPTH`); consumer: the CLI spawn path (`run_subagent_task`), selected by `[subagents] external_provider`. Forked contexts, `agent_send_input`, and team/coordinator children stay in-process by design (documented on the seam). ACP / Codex / Claude Code providers are future slots of this seam, not built.
 
 ## High-Level Overview
 

@@ -551,6 +551,13 @@ pub struct SubagentsConfig {
     /// unrestricted full inheritance for flows that relied on the old default.
     #[serde(default)]
     pub inherit_full_registry: Option<bool>,
+    /// Out-of-process sub-agent provider. Unset (default) runs children
+    /// in-process; `"headless"` runs each non-team child as a
+    /// `codesmith exec --json` subprocess of this binary (see
+    /// `tools::subagent::headless`). Unknown names are rejected at config
+    /// load.
+    #[serde(default)]
+    pub external_provider: Option<String>,
 }
 
 /// `[auto]` table — knobs for the `--model auto` / `/model auto` router.
@@ -1492,6 +1499,14 @@ impl Config {
             && key.trim().is_empty()
         {
             anyhow::bail!("api_key cannot be empty string");
+        }
+        if let Some(name) = self.subagent_external_provider()
+            && !crate::tools::subagent::headless::is_known_external_provider(name)
+        {
+            anyhow::bail!(
+                "Unknown [subagents] external_provider '{name}'; supported: {} (unset = in-process sub-agents)",
+                crate::tools::subagent::headless::KNOWN_EXTERNAL_PROVIDERS.join(", ")
+            );
         }
         if let Some(features) = &self.features {
             for key in features.entries.keys() {
@@ -2690,6 +2705,19 @@ impl Config {
             .as_ref()
             .and_then(|cfg| cfg.inherit_full_registry)
             .unwrap_or(false)
+    }
+
+    /// Raw `[subagents] external_provider` name, trimmed; `None` = in-process
+    /// sub-agents. Resolved into a provider object by
+    /// `tools::subagent::headless::provider_from_config` at engine
+    /// construction and validated at config load.
+    #[must_use]
+    pub fn subagent_external_provider(&self) -> Option<&str> {
+        self.subagents
+            .as_ref()
+            .and_then(|cfg| cfg.external_provider.as_deref())
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
     }
 
     /// Raw sub-agent model override map. Values are validated at spawn time

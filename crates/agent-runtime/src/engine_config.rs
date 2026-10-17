@@ -10,6 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::capacity::CapacityControllerConfig;
@@ -50,7 +51,7 @@ use crate::prompt_sources::{InstructionSource, PromptAppendSource};
 use crate::sandbox::SandboxRuntimeConfig;
 use crate::skills;
 use crate::snapshot::DEFAULT_MAX_WORKSPACE_BYTES_FOR_SNAPSHOT;
-use crate::subagent::DEFAULT_MAX_SPAWN_DEPTH;
+use crate::subagent::{DEFAULT_MAX_SPAWN_DEPTH, ExternalSubagentProvider};
 use crate::telemetry::TelemetrySink;
 use crate::tool_state::goal::{SharedGoalState, new_shared_goal_state};
 use crate::tool_state::plan::{SharedPlanState, new_shared_plan_state};
@@ -271,6 +272,12 @@ pub struct EngineConfig {
     /// `[subagents] inherit_full_registry` and threaded onto every
     /// `SubAgentRuntime` the engine builds.
     pub subagent_inherit_full_registry: bool,
+    /// External sub-agent provider (`[subagents] external_provider`). `None`
+    /// (default) runs children in-process. Carried as the seam's trait object
+    /// so the engine host — an implementation crate — injects the provider it
+    /// owns while the kernel only sees the definition
+    /// (`crate::subagent::ExternalSubagentProvider`).
+    pub subagent_external_provider: Option<Arc<dyn ExternalSubagentProvider>>,
     /// Native tools that should stay in the model-visible catalog even when
     /// they are outside the small default core surface (#2076).
     pub tools_always_load: HashSet<String>,
@@ -390,6 +397,7 @@ impl Default for EngineConfig {
             ),
             result_claim_verifier: true,
             subagent_inherit_full_registry: false,
+            subagent_external_provider: None,
             tools_always_load: HashSet::new(),
             prefer_bwrap: false,
             sandbox_runtime: SandboxRuntimeConfig::default(),

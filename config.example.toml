@@ -256,6 +256,10 @@ max_subagents = 10 # optional (1-20)
 #                                # subset of the parent's effective tools
 #                                # (restrictToSubset); true restores the legacy
 #                                # v0.6.6 full-inheritance behavior.
+# external_provider = "headless" # unset (default) = in-process sub-agents;
+#                                # "headless" runs each non-team child as a
+#                                # `codesmith exec --json` subprocess (depth
+#                                # budget inherited, fork_context rejected).
 # Per-role/per-type model defaults; explicit `model` values on agent_open win:
 # default_model = "deepseek-v4-pro"
 # worker_model = "deepseek-v4-pro"

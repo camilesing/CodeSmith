@@ -838,8 +838,8 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   角色/类型的模型默认值。显式工具 `model` 值优先，其次是角色/类型
   覆盖，再次是父运行时模型。支持的便捷键有 `default_model`、
   `worker_model`、`explorer_model`、`awaiter_model`、`review_model`、
-  `custom_model`、`max_concurrent`、`api_timeout_secs` 和
-  `inherit_full_registry`。`[subagents] max_concurrent` 值会覆盖顶层
+  `custom_model`、`max_concurrent`、`api_timeout_secs`、
+  `inherit_full_registry` 和 `external_provider`。`[subagents] max_concurrent` 值会覆盖顶层
   `max_subagents`，同样钳制在 `1..=20`；`[subagents] api_timeout_secs`
   控制子代理模型调用的每步 API 超时，钳制在 `1..=1800`，为 `0` 或
   未设置时保持旧版 120 秒默认值。
@@ -850,7 +850,18 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   完整工具面。顶层 General 子代理仍获得完整工具面（其父代理不受
   限制），因此递归生成得以保留。设为 `true` 可恢复旧版 v0.6.6 的
   行为：无论父代理的有效集合如何，每个子代理都继承完整的代理
-  工具面。`[subagents.models]` 接受小写的角色或类型键，如 `worker`、
+  工具面。`[subagents] external_provider`（字符串，可选，默认未设置）
+  让子代理在进程外运行。未设置时子代理留在进程内。`"headless"` 把每个
+  非 team 子代理作为同一二进制的 `codesmith exec --json` 子进程运行：
+  角色指令经 `--append-system-prompt` 传入，父代理的模型与工作区被转发，
+  `--auto` 仅在父代理本身自动审批时传递，剩余的 spawn 深度预算经
+  `CODESMITH_SUBAGENT_DEPTH` / `CODESMITH_MAX_SPAWN_DEPTH` 继承，因此递归
+  在跨进程时仍受限。容量（`max_concurrent`）不变地生效。进程外不支持、
+  因而被拒绝或留在进程内的：`fork_context`（spawn 时拒绝）、
+  `agent_send_input`（失败——子进程无法接收后续输入）、以及 `team` /
+  `coordinator_worker` 子代理（始终进程内；它们共享进程内状态）。未知的
+  provider 名在配置加载时被拒绝。单个 headless 子代理的运行超时固定为
+  30 分钟。`[subagents.models]` 接受小写的角色或类型键，如 `worker`、
   `explorer`、`general`、`explore`、`plan` 和 `review`。值必须归一化
   为受支持的 DeepSeek 模型 id，代理才能被生成。
 - `skills_dir`（字符串，可选）：默认为 `~/.codesmith/skills`（每个
