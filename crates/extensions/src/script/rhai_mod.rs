@@ -2625,6 +2625,7 @@ mod tests {
                     "large-output-route",
                     "builtin-large-output-route".to_string()
                 ),
+                ("working-set", "builtin-working-set".to_string()),
             ]
         );
         assert_eq!(
@@ -2637,7 +2638,7 @@ mod tests {
         // Unload pol-a: snapshot falls back per kind, survivors stay.
         let outcome = rt.block_on(runner.unload_retained_mod("pol-a"));
         assert!(outcome.evicted, "{outcome:?}");
-        assert_eq!(outcome.replayed, 5, "{outcome:?}"); // 4 builtins + pol-b
+        assert_eq!(outcome.replayed, 6, "{outcome:?}"); // 5 builtins + pol-b
         assert!(outcome.errors.is_empty(), "{outcome:?}");
         // Survivor's override still effective (not fallen back to builtin).
         assert_eq!(
