@@ -265,7 +265,6 @@ mod rig_registry_tests {
             default_model: String::from("m"),
             retry: RetryConfig::disabled(),
             http_headers: HashMap::new(),
-            on_retry: None,
         }
     }
 
@@ -350,7 +349,6 @@ mod manifest_tests {
             default_model: String::from("m"),
             retry: RetryConfig::disabled(),
             http_headers: HashMap::new(),
-            on_retry: None,
         }
     }
 
@@ -496,7 +494,6 @@ mod manifest_default_tests {
             default_model: String::new(),
             retry: RetryConfig::disabled(),
             http_headers: HashMap::new(),
-            on_retry: None,
         }
     }
 
@@ -559,7 +556,6 @@ mod manifest_default_tests {
             default_model: String::from("custom-model"),
             retry: RetryConfig::disabled(),
             http_headers: HashMap::new(),
-            on_retry: None,
         };
         let handle = factory.build(&cfg).expect("build should succeed");
         assert_eq!(handle.base_url(), "https://custom.example/v1");
