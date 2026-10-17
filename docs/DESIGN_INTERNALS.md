@@ -308,8 +308,8 @@ three-layer split applies:
 - **Runtime** (`codesmith-extensions`): `ExtensionRunner` (best-effort event
   fan-out, `Arc<AtomicU64>` stale-context guard,
   two-phase stub→real `ExtensionApi`), `inventory`-based static discovery
-  (`discover_static`), `EventBus` skeleton, install-source traits
-  (implementations are planned).
+  (`discover_static`), install-source traits (implementations are planned;
+  the former `EventBus` skeleton was deleted with zero consumers).
 - **Adapters** (`codesmith-agent-runtime`): `ExtensionToolSpecAdapter`
   wraps a `Box<dyn ToolDefinition>` into a `ToolSpec` so the agent loop
   sees a normal tool (mirrors `ToolSpecAdapter`); `HostAgentExecutor` holds
@@ -367,10 +367,11 @@ both the REPL's `state.extension_runner` and the Engine's field see the
 update.
 
 Not implemented yet: the `SessionBeforeSwitch` emitter (the in-process
-workspace switch went with the TUI in 0.9.0), the `EventBus`
-implementation, `registerProvider`, `registerShortcut`/`registerFlag`/
-renderers, install-source implementations, and the embed API. Hot-load is
-permanently out; install + reload only.
+workspace switch went with the TUI in 0.9.0), `registerProvider`,
+`registerShortcut`/`registerFlag`/
+renderers, install-source implementations, and the embed API. Extension-to-
+extension pub/sub is not planned — its §F3 `EventBus` skeleton was deleted
+with zero consumers. Hot-load is permanently out; install + reload only.
 
 ## What is wired today
 

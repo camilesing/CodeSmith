@@ -14,9 +14,10 @@
 //! `ExtensionCommandContext`, the minimal `ExtensionEvent` set (6 variants;
 //! `#[non_exhaustive]`), the `Handler` observer trait, and the
 //! `ToolDefinition` / `CommandDefinition` contribution contracts. The full
-//! ~30-event lifecycle + cancel/transform/block chains + EventBus impl +
-//! dylib loading + install-source impls are deferred to §F2–§F8
-//! (ROADMAP §F).
+//! ~30-event lifecycle + cancel/transform/block chains + dylib loading +
+//! install-source impls are deferred to §F2–§F8 (ROADMAP §F). Extension-to-
+//! extension pub/sub (the former §F3 EventBus skeleton) was deleted with
+//! zero consumers; it returns only when an extension actually needs it.
 //!
 //! ## Style note
 //!

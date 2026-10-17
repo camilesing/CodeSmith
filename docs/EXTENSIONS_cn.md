@@ -383,9 +383,10 @@ emit 位点）。
 - `ExtensionContext::abort() / shutdown() / compact() /
   get_context_usage()` 返回 `ExtensionError::Unimplemented`。
 - `SessionBeforeSwitch` 在契约中有定义，但没有宿主 emit 位点（理由见上文接缝表）。
-- `EventBus`（`codesmith_extensions::EventBus`）是骨架 ——
-  `subscribe`/`publish` 返回 `Unimplemented`；没有扩展到扩展的
-  发布/订阅。
+- 没有扩展到扩展的发布/订阅。原 §F3 的 `EventBus` 骨架
+  （`subscribe`/`publish` 返回 `Unimplemented`）已在零消费者时删除 ——
+  它在运行时困住调用者而不提供任何能力。只有当某个扩展真正需要
+  扩展间通信时，才按该需求重新设计并回归。
 - `ExtensionApi` 没有渲染器、快捷方式或标志注册面。
 - `AssistantStream` 只携带文本增量 —— thinking 增量保持仅 UI。
 - 能力清单每进程读取一次；修改需要重启。
