@@ -950,6 +950,16 @@ and the capacity controller remains disabled unless configured.
   `coordinator_worker` children (always in-process; they share in-process
   state). Unknown provider names are rejected at config load. The run
   timeout for one headless child is fixed at 30 minutes.
+  `"acp"` delegates each non-team child run to an external
+  Agent-Client-Protocol stdio agent configured under `[subagents.acp]`:
+  `command` (string, required) is the executable to spawn, `args`
+  (array, optional) its static arguments, `env` (table, optional) extra
+  environment variables layered over the parent's, and `timeout_secs`
+  (integer, optional, default 1800) the per-run timeout. The child runs in
+  the assignment's workspace; the role instruction is folded into the
+  prompt (ACP baseline has no system-prompt field), mid-run progress does
+  not stream back, and the child's own model/step count are unobservable
+  (reported as the parent's model / 0 steps).
   `[subagents.models]` accepts lower-case role or type keys such as `worker`,
   `explorer`, `general`, `explore`, `plan`, and `review`. Values must normalize
   to a supported DeepSeek model id before an agent is spawned.

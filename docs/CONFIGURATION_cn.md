@@ -861,7 +861,14 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   `agent_send_input`（失败——子进程无法接收后续输入）、以及 `team` /
   `coordinator_worker` 子代理（始终进程内；它们共享进程内状态）。未知的
   provider 名在配置加载时被拒绝。单个 headless 子代理的运行超时固定为
-  30 分钟。`[subagents.models]` 接受小写的角色或类型键，如 `worker`、
+  30 分钟。`"acp"` 把每个非 team 子代理的运行委派给一个由
+  `[subagents.acp]` 配置的外部 Agent-Client-Protocol stdio 代理：
+  `command`（字符串，必填）是要派生的可执行文件，`args`（数组，可选）
+  是其静态参数，`env`（表，可选）是在父进程环境之上叠加的额外环境
+  变量，`timeout_secs`（整数，可选，默认 1800）是单次运行的超时。
+  子代理在任务工作区内运行；角色指令被折叠进 prompt（ACP 基线没有
+  system-prompt 字段），运行中进度不会回流，子代理自身的模型与步数
+  不可观测（按父代理模型 / 0 步上报）。`[subagents.models]` 接受小写的角色或类型键，如 `worker`、
   `explorer`、`general`、`explore`、`plan` 和 `review`。值必须归一化
   为受支持的 DeepSeek 模型 id，代理才能被生成。
 - `runtime.*`（可选）：引擎递归限制。`runtime.max_spawn_depth`（整数，

@@ -55,7 +55,8 @@ pub const DEFAULT_EXTERNAL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 pub const HEADLESS_PROVIDER_NAME: &str = "headless";
 /// The `[subagents] external_provider` values this build knows how to build.
-pub const KNOWN_EXTERNAL_PROVIDERS: &[&str] = &[HEADLESS_PROVIDER_NAME];
+pub const KNOWN_EXTERNAL_PROVIDERS: &[&str] =
+    &[HEADLESS_PROVIDER_NAME, super::acp::ACP_PROVIDER_NAME];
 
 /// Whether `name` is a provider this build can construct.
 #[must_use]
@@ -72,6 +73,9 @@ pub fn provider_from_config(config: &Config) -> Result<Option<Arc<dyn ExternalSu
     };
     match name.trim() {
         HEADLESS_PROVIDER_NAME => Ok(Some(Arc::new(HeadlessSelfProvider::from_current_exe()?))),
+        super::acp::ACP_PROVIDER_NAME => Ok(Some(Arc::new(
+            super::acp::AcpSubagentProvider::from_config(config)?,
+        ))),
         other => bail!(
             "Unknown [subagents] external_provider '{other}'; supported: {} (unset = in-process sub-agents)",
             KNOWN_EXTERNAL_PROVIDERS.join(", ")
@@ -558,12 +562,12 @@ mod tests {
 
         assert!(provider_from_config(&config(None)).unwrap().is_none());
 
-        let unknown = match provider_from_config(&config(Some("acp"))) {
+        let unknown = match provider_from_config(&config(Some("nonsense"))) {
             Err(err) => err,
             Ok(_) => panic!("an unknown provider name must be rejected"),
         };
         assert!(
-            format!("{unknown:#}").contains("Unknown [subagents] external_provider 'acp'"),
+            format!("{unknown:#}").contains("Unknown [subagents] external_provider 'nonsense'"),
             "{unknown:#}"
         );
 
@@ -571,5 +575,27 @@ mod tests {
             .unwrap()
             .expect("headless resolves to a provider");
         assert_eq!(headless.name(), "headless");
+
+        // `acp` resolves once the [subagents.acp] command is configured…
+        let mut acp_config = config(Some("acp"));
+        acp_config.subagents.as_mut().unwrap().acp =
+            Some(crate::config::AcpSubagentConfig {
+                command: "/bin/echo".to_string(),
+                ..crate::config::AcpSubagentConfig::default()
+            });
+        let acp = provider_from_config(&acp_config)
+            .unwrap()
+            .expect("acp resolves to a provider with a command");
+        assert_eq!(acp.name(), "acp");
+
+        // …and fails loud without one.
+        let missing = match provider_from_config(&config(Some("acp"))) {
+            Err(err) => err,
+            Ok(_) => panic!("acp without an [subagents.acp] table must be rejected"),
+        };
+        assert!(
+            format!("{missing:#}").contains("requires an [subagents.acp]"),
+            "{missing:#}"
+        );
     }
 }
