@@ -1218,6 +1218,16 @@ fn apply_turn_accounting(
         state.session.session_cost_cny += cost.cny;
     }
 
+    // Background LLM cost accrued since the last turn (compaction summaries,
+    // seam recompaction, cycle briefings — #526). The REPL is the pool's one
+    // draining consumer; the background bucket keeps it distinguishable from
+    // per-turn accrual in the saved session's cost snapshot.
+    let background = crate::cost_status::drain();
+    if background.is_positive() {
+        state.session.subagent_cost += background.usd;
+        state.session.subagent_cost_cny += background.cny;
+    }
+
     if let Some(error) = error
         && status != TurnOutcomeStatus::Completed
     {
