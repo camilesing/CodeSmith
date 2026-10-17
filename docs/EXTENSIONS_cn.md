@@ -28,6 +28,11 @@ dylib 源（安装根）→ 与磁盘上的 `ExtensionStateStore` 对账（跳�
 
 - **工具 + 斜杠命令** —— `register_tool(Box<dyn ToolDefinition>)` /
   `register_command(Box<dyn CommandDefinition>)`；按上文所述按轮实时接线（仅限主轮）。
+- **内建命令停用（`disable_command`）** —— 隐藏一个内建斜杠命令的
+  表项（分派、`/help`、Tab 补全全部跳过）而不提供替代实现；同名的
+  用户命令与 mod 注册命令仍然可用（user > mod > builtin）。框架对
+  名称不透明存储——由宿主按其内建表解析并对未知名称告警。随该
+  generation 的其他绑定注册在 reload 时一并清除。
 - **Provider（Rust 形态：`register_provider`）** —— 完整的
   `Arc<dyn ProviderFactory>`，汇入宿主解析客户端所用的
   `codesmith_agent::provider::SharedProviderRegistry`。注册会写日志

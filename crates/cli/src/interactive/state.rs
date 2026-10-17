@@ -198,6 +198,10 @@ pub struct ReplState {
     pub settings: Settings,
     /// Bound extension runner surfaced from the engine spawn.
     pub extension_runner: Option<Arc<codesmith_extensions::ExtensionRunner>>,
+    /// Canonical names of builtin commands disabled via `[commands]
+    /// disabled` (validated + resolved once at REPL start; mod-sourced
+    /// disables are read live off the runner).
+    pub disabled_commands: Vec<String>,
     /// Tool-catalog baseline shared from the engine (the `/tools` readout).
     pub tool_catalog: Option<crate::core::tool_catalog::SharedToolCatalog>,
     /// The live session's fact ledger (engine-shared `Arc`).
@@ -390,6 +394,7 @@ impl ReplState {
             config: config.clone(),
             settings,
             extension_runner: None,
+            disabled_commands: Vec::new(),
             tool_catalog: None,
             fact_ledger: None,
             recent_read_files: None,

@@ -54,6 +54,10 @@ pub struct ReplHelper {
     /// Names from `.codesmith/commands/*.md` (workspace, then user-global),
     /// loaded once when the REPL starts.
     user_commands: Vec<String>,
+    /// Canonical builtin names disabled via `[commands] disabled`
+    /// (snapshotted once at REPL start). Mod-sourced disables are read
+    /// live off the runner — see [`Self::disabled_builtin_names`].
+    disabled: Vec<String>,
     /// The extension runner, for live mod-command completion — mods
     /// activate/disable mid-session, so their command names are snapshotted
     /// per keystroke instead of once at startup.
@@ -69,6 +73,7 @@ pub struct ReplHelper {
 impl ReplHelper {
     pub fn new(
         user_commands: Vec<String>,
+        disabled: Vec<String>,
         extension_runner: Option<std::sync::Arc<codesmith_extensions::ExtensionRunner>>,
         paths: PathIndex,
         bindings: bindings::Shared,
@@ -76,6 +81,7 @@ impl ReplHelper {
     ) -> Self {
         Self {
             user_commands,
+            disabled,
             extension_runner,
             paths: Mutex::new(paths),
             bindings,
@@ -89,6 +95,17 @@ impl ReplHelper {
         let mut names = self.user_commands.clone();
         if let Some(runner) = &self.extension_runner {
             names.extend(runner.bound_command_names());
+        }
+        names
+    }
+
+    /// Builtin names disabled right now: the config snapshot plus live mod
+    /// registrations (mods activate/disable mid-session, the same reasoning
+    /// as mod-command completion).
+    fn disabled_builtin_names(&self) -> Vec<String> {
+        let mut names = self.disabled.clone();
+        if let Some(runner) = &self.extension_runner {
+            names.extend(runner.disabled_builtin_commands());
         }
         names
     }
@@ -194,7 +211,8 @@ impl Completer for ReplHelper {
         ctx: &Context<'_>,
     ) -> rustyline::Result<(usize, Vec<Pair>)> {
         let pool = self.command_name_pool();
-        let (start, pairs) = complete_at(line, pos, &pool);
+        let disabled = self.disabled_builtin_names();
+        let (start, pairs) = complete_at(line, pos, &pool, &disabled);
         if !pairs.is_empty() {
             return Ok((start, pairs));
         }
@@ -216,7 +234,8 @@ impl Hinter for ReplHelper {
         // this is where the shared cell keeps its copy of the buffer.
         Bindings::lock(&self.bindings).note_line(line);
         let pool = self.command_name_pool();
-        hint_at(line, pos, &pool)
+        let disabled = self.disabled_builtin_names();
+        hint_at(line, pos, &pool, &disabled)
             .or_else(|| self.mention_hint(line, pos))
             .or_else(|| self.status_hint(line))
     }
@@ -319,10 +338,13 @@ fn arg_vocab(command: &str) -> Vec<&'static str> {
 }
 
 /// Command-name candidates for `partial` (the text after the `/`).
-fn command_candidates(partial: &str, user_cmds: &[String]) -> Vec<String> {
+/// Disabled builtins are skipped; user and mod commands are not affected
+/// by disables (they shadow the builtin layer, they are not it).
+fn command_candidates(partial: &str, user_cmds: &[String], disabled: &[String]) -> Vec<String> {
     let mut names: Vec<String> = Command::ALL
         .iter()
         .map(|info| info.name)
+        .filter(|name| !disabled.iter().any(|d| d.as_str() == *name))
         .chain(user_cmds.iter().map(String::as_str))
         .filter(|name| name.starts_with(partial))
         .map(|name| format!("/{name}"))
@@ -339,11 +361,16 @@ fn command_candidates(partial: &str, user_cmds: &[String]) -> Vec<String> {
 /// of the prompt or after a space mid-prompt, which is Claude Code's rule
 /// (a slash inside a path such as `/tmp/notes.md` matches no command and so
 /// opens no list).
-pub(crate) fn complete_at(line: &str, pos: usize, user_cmds: &[String]) -> (usize, Vec<Pair>) {
+pub(crate) fn complete_at(
+    line: &str,
+    pos: usize,
+    user_cmds: &[String],
+    disabled: &[String],
+) -> (usize, Vec<Pair>) {
     let (start, word) = word_at(line, pos);
 
     if let Some(partial) = word.strip_prefix('/') {
-        let names = command_candidates(partial, user_cmds);
+        let names = command_candidates(partial, user_cmds, disabled);
         let unique = names.len() == 1;
         let candidates = names
             .into_iter()
@@ -423,12 +450,18 @@ fn shell_history_candidates(ctx: &Context<'_>, partial: &str) -> Vec<Pair> {
 
 /// The dim inline hint rendered after the cursor, or `None` when the line
 /// carries nothing to say (plain prompts are never annotated).
-pub(crate) fn hint_at(line: &str, pos: usize, user_cmds: &[String]) -> Option<String> {
+pub(crate) fn hint_at(
+    line: &str,
+    pos: usize,
+    user_cmds: &[String],
+    disabled: &[String],
+) -> Option<String> {
     let (start, word) = word_at(line, pos);
 
     if let Some(partial) = word.strip_prefix('/') {
         let builtin: Vec<&CommandInfo> = Command::ALL
             .iter()
+            .filter(|info| !disabled.iter().any(|d| *d == info.name))
             .filter(|info| info.name.starts_with(partial))
             .collect();
         let user: Vec<&str> = user_cmds
@@ -482,6 +515,7 @@ mod tests {
     fn helper(user_commands: Vec<String>) -> ReplHelper {
         ReplHelper::new(
             user_commands,
+            Vec::new(),
             None,
             PathIndex::new(std::env::temp_dir(), 6, 128),
             Bindings::shared(),
@@ -491,13 +525,13 @@ mod tests {
 
     #[test]
     fn completes_command_names_after_a_slash() {
-        let (start, pairs) = complete_at("/mo", 3, &[]);
+        let (start, pairs) = complete_at("/mo", 3, &[], &[]);
         assert_eq!(start, 0);
         assert_eq!(displays(&pairs), ["/mode", "/model", "/models", "/mods"]);
         // Many matches: the word is left as typed, no trailing space.
         assert_eq!(pairs[0].replacement, "/mode");
 
-        let (start, pairs) = complete_at("/models", 7, &[]);
+        let (start, pairs) = complete_at("/models", 7, &[], &[]);
         assert_eq!(start, 0);
         assert_eq!(pairs[0].replacement, "/models ");
     }
@@ -505,7 +539,7 @@ mod tests {
     #[test]
     fn completes_loaded_user_commands() {
         let user = vec!["zz-deploy".to_string()];
-        let (_, pairs) = complete_at("/zz", 3, &user);
+        let (_, pairs) = complete_at("/zz", 3, &user, &[]);
         assert_eq!(displays(&pairs), ["/zz-deploy"]);
         assert_eq!(pairs[0].replacement, "/zz-deploy ");
     }
@@ -514,25 +548,25 @@ mod tests {
     fn completes_a_command_mid_prompt() {
         // Claude Code's rule: `/` after a space, name prefix only.
         let line = "run the tests, then /com";
-        let (start, pairs) = complete_at(line, line.len(), &[]);
+        let (start, pairs) = complete_at(line, line.len(), &[], &[]);
         assert_eq!(start, "run the tests, then ".len());
         assert_eq!(displays(&pairs), ["/compact"]);
         assert_eq!(pairs[0].replacement, "/compact ");
 
         // A path that is not a command keeps no list open.
         let line = "look at /tmp/notes.md";
-        let (_, pairs) = complete_at(line, line.len(), &[]);
+        let (_, pairs) = complete_at(line, line.len(), &[], &[]);
         assert!(pairs.is_empty(), "{:?}", displays(&pairs));
 
         // Several matches mid-prompt leave the word for the list.
         let line = "then /mo";
-        let (_, pairs) = complete_at(line, line.len(), &[]);
+        let (_, pairs) = complete_at(line, line.len(), &[], &[]);
         assert_eq!(displays(&pairs), ["/mode", "/model", "/models", "/mods"]);
     }
 
     #[test]
     fn completes_only_closed_argument_vocabularies() {
-        let (start, pairs) = complete_at("/mode ", 6, &[]);
+        let (start, pairs) = complete_at("/mode ", 6, &[], &[]);
         assert_eq!(start, 6);
         assert_eq!(
             displays(&pairs),
@@ -540,38 +574,70 @@ mod tests {
             "offered in the documented order"
         );
 
-        let (_, pairs) = complete_at("/model ", 7, &[]);
+        let (_, pairs) = complete_at("/model ", 7, &[], &[]);
         assert!(pairs.is_empty(), "live model names need the network");
 
         // The vocabularies come from the registry's `args` column.
-        let (_, pairs) = complete_at("/trust ad", 9, &[]);
+        let (_, pairs) = complete_at("/trust ad", 9, &[], &[]);
         assert_eq!(displays(&pairs), ["add"]);
     }
 
     #[test]
     fn leaves_plain_text_alone() {
-        assert!(complete_at("hello ", 6, &[]).1.is_empty());
-        assert!(complete_at("/mode plan extra", 16, &[]).1.is_empty());
-        assert!(hint_at("hello world", 11, &[]).is_none());
+        assert!(complete_at("hello ", 6, &[], &[]).1.is_empty());
+        assert!(complete_at("/mode plan extra", 16, &[], &[]).1.is_empty());
+        assert!(hint_at("hello world", 11, &[], &[]).is_none());
     }
 
     #[test]
     fn hint_ghosts_a_unique_match_and_counts_many() {
-        assert_eq!(hint_at("/hel", 4, &[]).as_deref(), Some("p — this list"));
-        assert_eq!(hint_at("/mode p", 7, &[]).as_deref(), Some("lan"));
         assert_eq!(
-            hint_at("/", 1, &[]).as_deref(),
+            hint_at("/hel", 4, &[], &[]).as_deref(),
+            Some("p — this list")
+        );
+        assert_eq!(hint_at("/mode p", 7, &[], &[]).as_deref(), Some("lan"));
+        assert_eq!(
+            hint_at("/", 1, &[], &[]).as_deref(),
             Some(format!("  {} matches · Tab Tab lists all", Command::ALL.len()).as_str())
         );
         assert_eq!(
-            hint_at("/zzz", 4, &[]).as_deref(),
+            hint_at("/zzz", 4, &[], &[]).as_deref(),
             Some("  no command matches — /help lists what exists")
         );
         // Mid-prompt hints follow the same policy.
         assert_eq!(
-            hint_at("then /hel", 9, &[]).as_deref(),
+            hint_at("then /hel", 9, &[], &[]).as_deref(),
             Some("p — this list")
         );
+    }
+
+    #[test]
+    fn disabled_builtins_leave_completion_and_hints() {
+        let disabled = vec!["model".to_string(), "recap".to_string()];
+        let (_, pairs) = complete_at("/mo", 3, &[], &disabled);
+        assert_eq!(
+            displays(&pairs),
+            ["/mode", "/models", "/mods"],
+            "disabled builtins are not candidates"
+        );
+        // /model itself is gone, so the unique-match ghost falls through to
+        // /models (its own ghost text) instead of /model's.
+        assert_eq!(
+            hint_at("/model", 6, &[], &disabled).as_deref(),
+            Some("s — list live models from the active endpoint")
+        );
+        // A prefix only the disabled command matches: nothing offered, the
+        // same hint as an unknown word.
+        let (_, pairs) = complete_at("/rec", 4, &[], &disabled);
+        assert!(pairs.is_empty(), "{:?}", displays(&pairs));
+        assert_eq!(
+            hint_at("/recap", 6, &[], &disabled).as_deref(),
+            Some("  no command matches — /help lists what exists")
+        );
+        // User commands of the same name are a different layer — unaffected.
+        let user = vec!["model".to_string()];
+        let (_, pairs) = complete_at("/mod", 4, &user, &disabled);
+        assert_eq!(displays(&pairs), ["/mode", "/model", "/models", "/mods"]);
     }
 
     #[test]
@@ -580,6 +646,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("src/nested")).unwrap();
         std::fs::write(dir.path().join("src/main.rs"), "").unwrap();
         let helper = ReplHelper::new(
+            Vec::new(),
             Vec::new(),
             None,
             PathIndex::new(dir.path().to_path_buf(), 6, 128),

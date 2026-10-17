@@ -814,6 +814,22 @@ pub trait ExtensionApi: Send + Sync {
             "policy registration not supported by this api".into(),
         ))
     }
+
+    /// Disable a **built-in slash command** by name (the host resolves
+    /// aliases). The REPL layers user > mod > builtin; this removes the
+    /// builtin row so an extension can suppress a built-in without
+    /// shadowing it with a replacement of its own — user commands and
+    /// mod-registered commands of the same name still dispatch. The
+    /// generation's disables clear on reload (surviving mods re-register).
+    ///
+    /// Default: hosts that do not support it get a loud error, keeping the
+    /// trait implementable (source- and binary-compatible) for api surfaces
+    /// that predate this method.
+    fn disable_command(&self, _name: String) -> Result<(), ExtensionError> {
+        Err(ExtensionError::Load(
+            "command disabling not supported by this api".into(),
+        ))
+    }
 }
 
 // === Message projections (session log folds) ===============================

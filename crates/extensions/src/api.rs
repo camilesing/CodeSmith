@@ -86,6 +86,20 @@ impl ExtensionApi for StubExtensionApi {
             .push(crate::runner::PendingCommand { command });
         Ok(())
     }
+    fn disable_command(&self, name: String) -> Result<(), ExtensionError> {
+        assert_live(&self.generation, self.captured_gen)?;
+        // The framework stores the name opaquely; the host resolves it
+        // against its builtin table (warn + no-op on an unknown name — the
+        // script-bug posture, mirroring bad policy knobs). Only an empty
+        // name fails the load here.
+        if name.trim().is_empty() {
+            return Err(ExtensionError::Config(
+                "disable_command(): name must be a built-in command name".into(),
+            ));
+        }
+        self.pending.lock().unwrap().disabled_commands.push(name);
+        Ok(())
+    }
     fn on(&self, handler: Arc<dyn Handler>) -> Result<(), ExtensionError> {
         assert_live(&self.generation, self.captured_gen)?;
         self.pending

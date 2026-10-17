@@ -93,6 +93,17 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
         );
         return false;
     };
+    // The builtin layer's disable seam: config (`[commands] disabled`) or
+    // a live mod registration (`disable_command`). Reached only after the
+    // user/mod layers above, so disabling targets the builtin row alone.
+    if builtin_disabled(state, info) {
+        println!(
+            "{} /{} is disabled — [commands] disabled in config.toml or a mod's disable_command",
+            "✗".red(),
+            info.name
+        );
+        return false;
+    }
     match info.command {
         Command::Help => {
             print_help(state);
@@ -793,6 +804,44 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
     }
 }
 
+/// Resolve the `[commands] disabled` config entries to canonical builtin
+/// names, or fail loud naming the entries that match no builtin (a typo'd
+/// disable would otherwise silently disable nothing). Aliases resolve to
+/// their canonical name; duplicates collapse.
+pub fn canonicalize_disabled(entries: &[String]) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    for entry in entries {
+        match Command::resolve(entry) {
+            Some(info) => {
+                let name = info.name.to_string();
+                if !out.contains(&name) {
+                    out.push(name);
+                }
+            }
+            None => {
+                return Err(format!(
+                    "[commands] disabled: {entry:?} matches no built-in command \
+                     (canonical names and aliases; /help lists them)"
+                ));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Whether the builtin row is disabled right now — by config
+/// (`[commands] disabled`, canonicalized at REPL start) or by a live mod
+/// (`disable_command`; cleared and re-derived on reload/unload). The user
+/// and mod layers dispatch before this check, so a same-named user or mod
+/// command still works: disabling targets the builtin row alone.
+fn builtin_disabled(state: &ReplState, info: &registry::CommandInfo) -> bool {
+    state.disabled_commands.iter().any(|name| name == info.name)
+        || state
+            .extension_runner
+            .as_ref()
+            .is_some_and(|runner| runner.is_builtin_command_disabled(info.name))
+}
+
 /// Whether an argument string asks to persist (`--save` / `-s`).
 fn has_save_flag(arg: &str) -> bool {
     arg.split_whitespace()
@@ -892,10 +941,14 @@ fn print_help(state: &ReplState) {
         "{}",
         "commands (Tab completes these names; Shift+Tab cycles the run mode):".bold()
     );
+    let disabled_count = registry::Command::ALL
+        .iter()
+        .filter(|info| builtin_disabled(state, info))
+        .count();
     for group in registry::Group::ALL {
         let rows: Vec<&registry::CommandInfo> = registry::Command::ALL
             .iter()
-            .filter(|info| info.group == *group)
+            .filter(|info| info.group == *group && !builtin_disabled(state, info))
             .collect();
         if rows.is_empty() {
             continue;
@@ -915,6 +968,14 @@ fn print_help(state: &ReplState) {
                 println!("    {}", info.help.dimmed());
             }
         }
+    }
+    if disabled_count > 0 {
+        println!();
+        println!(
+            "{}",
+            format!("{disabled_count} command(s) disabled ([commands] disabled in config.toml or a mod's disable_command)")
+                .dimmed()
+        );
     }
     let user = user_cmd_store::user_command_names(Some(&state.workspace));
     if !user.is_empty() {
@@ -1352,5 +1413,25 @@ fn cmd_logout(_state: &mut ReplState) {
             );
         }
         Err(err) => println!("{} logout failed: {err}", "✗".red()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `[commands] disabled` entries canonicalize (aliases resolve to the
+    /// canonical name, duplicates collapse) or fail loud naming the
+    /// unknown entry — the config side of the builtin-disable seam.
+    #[test]
+    fn disabled_entries_canonicalize_or_fail_loud() {
+        let entries: Vec<String> = ["cost".into(), "stats".into(), "model".into()].to_vec();
+        assert_eq!(
+            canonicalize_disabled(&entries).unwrap(),
+            ["usage", "model"],
+            "cost/stats are aliases of usage; the duplicate collapses"
+        );
+        let err = canonicalize_disabled(&["nope".to_string()]).unwrap_err();
+        assert!(err.contains("nope"), "{err}");
     }
 }

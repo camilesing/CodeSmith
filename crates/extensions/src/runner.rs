@@ -12,7 +12,7 @@
 //! handler call behind `catch_unwind` (§8.3 — one panicking handler cannot
 //! tear down the agent loop).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -149,6 +149,9 @@ pub(crate) struct Pending {
     /// flush by registration order (builtin < global < project mods).
     /// `source` is the registering mod's id, stamped at the replay seam.
     pub policies: Vec<codesmith_agent::policy::ResolvedPolicy>,
+    /// Builtin command names the stub `ExtensionApi`'s `disable_command`
+    /// queued during `configure`, awaiting the `bind_core` flush.
+    pub disabled_commands: Vec<String>,
 }
 
 /// A message projection queued by the stub `ExtensionApi`.
@@ -188,6 +191,11 @@ pub struct ExtensionRunner {
     /// `ExtensionToolSpecAdapter` to wrap.
     tools: Mutex<HashMap<String, Arc<dyn ToolDefinition>>>,
     commands: Mutex<HashMap<String, Arc<dyn CommandDefinition>>>,
+    /// Bound at `bind_core` — builtin command names disabled by this
+    /// generation's extensions (`disable_command`; the "suppress a
+    /// builtin" contribution). The framework stores names opaquely — the
+    /// host resolves them against its builtin table and warns on unknowns.
+    disabled_builtin_commands: Mutex<HashSet<String>>,
     /// Bound at `bind_core` — the flushed handlers, each carrying its variant
     /// filter (`None` = subscribe-to-all via `on`; `Some(kind)` = per-variant
     /// via `on_variant`). T8's `emit` filters on this before dispatch.
@@ -280,6 +288,7 @@ impl ExtensionRunner {
             context: Mutex::new(None),
             tools: Mutex::new(HashMap::new()),
             commands: Mutex::new(HashMap::new()),
+            disabled_builtin_commands: Mutex::new(HashSet::new()),
             handlers: Mutex::new(Vec::new()),
             libraries: Mutex::new(Vec::new()),
             pending_drop: Mutex::new(Vec::new()),
@@ -346,6 +355,16 @@ impl ExtensionRunner {
         self.commands
             .lock()
             .expect("commands lock poisoned")
+            .clear();
+    }
+
+    /// Clear the generation's builtin-command disables. Called with the
+    /// other bound registrations on reload; the surviving mods' replays
+    /// re-derive the set, so a disabled-then-unloaded mod stops disabling.
+    pub fn clear_disabled_commands(&self) {
+        self.disabled_builtin_commands
+            .lock()
+            .expect("disabled commands lock poisoned")
             .clear();
     }
 
@@ -586,6 +605,7 @@ impl ExtensionRunner {
         self.clear_handlers();
         self.clear_tools();
         self.clear_commands();
+        self.clear_disabled_commands();
         self.clear_providers();
         self.clear_prompt_sections();
         self.clear_skills();
@@ -800,6 +820,15 @@ impl ExtensionRunner {
             let name = pc.command.name().to_string();
             let arc: Arc<dyn CommandDefinition> = Arc::from(pc.command);
             self.commands.lock().unwrap().entry(name).or_insert(arc);
+        }
+        {
+            let mut disabled = self
+                .disabled_builtin_commands
+                .lock()
+                .expect("disabled commands lock poisoned");
+            for name in drained.disabled_commands {
+                disabled.insert(name);
+            }
         }
         {
             let mut handlers = self.handlers.lock().unwrap();
@@ -1051,6 +1080,28 @@ impl ExtensionRunner {
     /// Names of bound commands (for `/extension list`, Task 8).
     pub fn bound_command_names(&self) -> Vec<String> {
         self.commands.lock().unwrap().keys().cloned().collect()
+    }
+
+    /// Whether a builtin command name is disabled by a bound extension
+    /// registration. Unknown names simply never match — the host resolves
+    /// them against its builtin table and warns at populate.
+    #[must_use]
+    pub fn is_builtin_command_disabled(&self, name: &str) -> bool {
+        self.disabled_builtin_commands
+            .lock()
+            .expect("disabled commands lock poisoned")
+            .contains(name)
+    }
+
+    /// The builtin command names disabled by bound extensions (host-side
+    /// validation + observability).
+    pub fn disabled_builtin_commands(&self) -> Vec<String> {
+        self.disabled_builtin_commands
+            .lock()
+            .expect("disabled commands lock poisoned")
+            .iter()
+            .cloned()
+            .collect()
     }
 }
 
@@ -1607,6 +1658,33 @@ mod tests {
                 .iter()
                 .any(|(n, _)| n == "fixture_echo"),
             "fixture_echo re-bound after reload"
+        );
+    }
+
+    // === disable_command (builtin suppression) ==============================
+
+    /// The stub→flush→clear round-trip for `disable_command`: queued at
+    /// `configure`, live after `bind_core`, cleared with the generation's
+    /// other bound registrations (a surviving mod's replay re-adds its own).
+    #[test]
+    fn disable_command_flushes_and_clears() {
+        let runner = crate::ExtensionRunner::new();
+        let stub = crate::api::StubExtensionApi::new(
+            runner.generation_arc(),
+            runner.pending.clone(),
+            codesmith_agent::provider::SharedProviderRegistry::new(),
+        );
+        stub.disable_command("model".into()).expect("queue");
+        assert!(
+            !runner.is_builtin_command_disabled("model"),
+            "not live before bind_core"
+        );
+        runner.bind_core(Arc::new(Ctx { generation: 1 }));
+        assert!(runner.is_builtin_command_disabled("model"));
+        runner.clear_disabled_commands();
+        assert!(
+            !runner.is_builtin_command_disabled("model"),
+            "cleared with the generation's registrations"
         );
     }
 
