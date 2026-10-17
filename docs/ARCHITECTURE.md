@@ -307,6 +307,13 @@ ordinary durable tasks.
 
 ## Extension Points
 
+Everything pluggable rides the `Extension` contract in one of four tiers
+(user Rhai mods, the builtin Rhai tier, compiled-in Rust extensions,
+installed Rust dylibs) — the per-surface map of which tier fits which
+contribution, and what stays core by contract, lives in
+[MODS.md](MODS.md) ("Which tier when"). The Rust-side authoring guide is
+[EXTENSIONS.md](EXTENSIONS.md).
+
 ### Adding a New Tool
 
 1. Create handler in `tools/`
@@ -341,7 +348,9 @@ command = "echo 'Running tool: $TOOL_NAME'"
 
 1. **Streaming-first**: All LLM responses stream for responsiveness
 2. **Tool safety**: Non-YOLO mode requires approval for destructive operations, including side-effectful MCP tools
-3. **Extensibility**: MCP, skills, and hooks allow customization without code changes
+3. **Extensibility**: Rhai mods, Rust extensions (compiled-in or dylib),
+   MCP, skills, and hooks allow customization without code changes — the
+   plugin-tier map in [MODS.md](MODS.md) says which surface goes where
 4. **Cross-platform**: Core works on Linux/macOS/Windows. OS-level sandboxing
    is enforced on macOS (Seatbelt) and on Linux via bubblewrap when
    installed or Landlock (filesystem-only) otherwise; no seccomp filter

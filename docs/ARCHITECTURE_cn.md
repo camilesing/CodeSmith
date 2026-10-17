@@ -300,6 +300,11 @@ Chat Completions 驱动 turn。
 
 ## 扩展点
 
+所有可插拔能力都经 `Extension` 契约落在四层之一（用户 Rhai mod、内建
+Rhai 层、编译内置 Rust 扩展、安装的 Rust dylib）——哪个表面适配哪一层、
+哪些按契约留在核心，逐表面地图见 [MODS_cn.md](MODS_cn.md)（"该用哪
+一层"）。Rust 侧的编写指南是 [EXTENSIONS_cn.md](EXTENSIONS_cn.md)。
+
 ### 添加新工具
 
 1. 在 `tools/` 中创建处理器
@@ -334,7 +339,7 @@ command = "echo 'Running tool: $TOOL_NAME'"
 
 1. **流式优先**：所有 LLM 响应以流式传输以保证响应速度
 2. **工具安全**：非 YOLO 模式要求对破坏性操作进行审批，包括有副作用的 MCP 工具
-3. **可扩展性**：MCP、技能和钩子允许在不修改代码的情况下进行定制
+3. **可扩展性**：Rhai mod、Rust 扩展（编译内置或 dylib）、MCP、技能和钩子允许在不修改代码的情况下进行定制——插件分层地图见 [MODS_cn.md](MODS_cn.md)
 4. **跨平台**：核心在 Linux/macOS/Windows 上工作。操作系统级沙箱在
    macOS（Seatbelt）强制执行，在 Linux 上经 bubblewrap（已安装时）或
    Landlock（仅文件系统）强制执行；不存在 seccomp 过滤器，Windows 不
