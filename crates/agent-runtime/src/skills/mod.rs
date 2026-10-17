@@ -847,7 +847,10 @@ pub fn resolve_skills_dir(workspace: &Path) -> PathBuf {
 /// 6. `<workspace>/.codesmith/skills` — CodeSmith workspace skills.
 /// 7. [`agents_global_skills_dir`] — agentskills.io global.
 /// 8. [`claude_global_skills_dir`] — Claude-ecosystem global (#902).
-/// 9. `~/.codesmith/skills` — CodeSmith global, primary install target.
+/// 9. `<codesmith_home>/skills` — CodeSmith global, primary install
+///    target, resolved via `codesmith_config::codesmith_home()`
+///    (`$CODESMITH_HOME/skills` when the documented override is set,
+///    else `~/.codesmith/skills`).
 ///
 /// Only directories that exist on disk are returned — callers don't
 /// need to filter further. Returns an empty vec when nothing is
@@ -861,10 +864,25 @@ pub fn resolve_skills_dir(workspace: &Path) -> PathBuf {
 #[must_use]
 pub fn skills_directories(workspace: &Path) -> Vec<PathBuf> {
     let home = dirs::home_dir();
-    skills_directories_with_home(workspace, home.as_deref())
+    let codesmith_home = codesmith_config::codesmith_home().ok();
+    skills_directories_with_home(workspace, home.as_deref(), codesmith_home.as_deref())
 }
 
-fn skills_directories_with_home(workspace: &Path, home_dir: Option<&Path>) -> Vec<PathBuf> {
+/// Split home sources (TODO-36): `home_dir` feeds only the third-party
+/// global roots (`~/.agents/skills`, `~/.claude/skills`), which belong to
+/// the real `$HOME`; the CodeSmith global root arrives pre-resolved in
+/// `codesmith_home_dir` from [`skills_directories`], which honours the
+/// documented `CODESMITH_HOME` override via
+/// `codesmith_config::codesmith_home()`. Both sources are explicit
+/// parameters (rather than env reads inside this seam) so tests stay
+/// deterministic without process-env locking; moving the `.codesmith`
+/// push out to the public entry instead was rejected because the
+/// `#[cfg(test)]` discovery helper would then have to re-derive it.
+fn skills_directories_with_home(
+    workspace: &Path,
+    home_dir: Option<&Path>,
+    codesmith_home_dir: Option<&Path>,
+) -> Vec<PathBuf> {
     let mut candidates = vec![
         workspace.join(".agents").join("skills"),
         workspace.join("skills"),
@@ -876,7 +894,9 @@ fn skills_directories_with_home(workspace: &Path, home_dir: Option<&Path>) -> Ve
     if let Some(home) = home_dir {
         candidates.push(home.join(".agents").join("skills"));
         candidates.push(home.join(".claude").join("skills"));
-        candidates.push(home.join(".codesmith").join("skills"));
+    }
+    if let Some(codesmith_home) = codesmith_home_dir {
+        candidates.push(codesmith_home.join("skills"));
     }
     existing_skill_dirs(candidates)
 }
@@ -959,7 +979,12 @@ fn discover_for_workspace_and_dir_with_home(
     skills_dir: &Path,
     home_dir: Option<&Path>,
 ) -> SkillRegistry {
-    let dirs = skills_directories_with_home(workspace, home_dir);
+    // Test seam: derive the CodeSmith root from the same scratch home,
+    // mirroring the default layout (CODESMITH_HOME unset). The
+    // CODESMITH_HOME-vs-$HOME split itself is pinned at the public entry
+    // by `skills_directories_splits_codesmith_home_from_third_party_home`.
+    let codesmith_root = home_dir.map(|home| home.join(".codesmith"));
+    let dirs = skills_directories_with_home(workspace, home_dir, codesmith_root.as_deref());
     discover_for_workspace_dirs_and_dir(dirs, skills_dir)
 }
 
@@ -1200,10 +1225,11 @@ mod tests {
     #[test]
     fn discovery_candidates_skip_world_writable_tmp_when_home_is_unresolvable() {
         // The candidate set feeds the system-prompt catalogue: with no home
-        // directory, /tmp/codesmith/skills must NOT appear — any local user
-        // could plant a SKILL.md (and a .trusted marker) there.
+        // directory at all (neither third-party nor CodeSmith root),
+        // /tmp/codesmith/skills must NOT appear — any local user could
+        // plant a SKILL.md (and a .trusted marker) there.
         let workspace = std::path::Path::new("/nonexistent-workspace-for-test");
-        let dirs = super::skills_directories_with_home(workspace, None);
+        let dirs = super::skills_directories_with_home(workspace, None, None);
         assert!(
             !dirs.iter().any(|d| d.starts_with("/tmp")),
             "/tmp must never feed discovery, got {dirs:?}"
@@ -1581,6 +1607,57 @@ mod tests {
             dirs.get(idx),
             Some(&cursor),
             "cursor must come after claude"
+        );
+    }
+
+    /// TODO-36: the CodeSmith global candidate follows the documented
+    /// `CODESMITH_HOME` override while third-party global candidates stay
+    /// on the real `$HOME`. Unix-gated: it pins `dirs::home_dir()` through
+    /// `$HOME`, which is only the resolution source on unix.
+    #[cfg(unix)]
+    #[test]
+    fn skills_directories_splits_codesmith_home_from_third_party_home() {
+        let tmpdir = TempDir::new().unwrap();
+        let scratch_home = tmpdir.path().join("home");
+        let scratch_codesmith = tmpdir.path().join("cs-home");
+        let claude_global = scratch_home.join(".claude").join("skills");
+        let legacy = scratch_home.join(".codesmith").join("skills");
+        let ours = scratch_codesmith.join("skills");
+        std::fs::create_dir_all(&claude_global).unwrap();
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::create_dir_all(&ours).unwrap();
+        let workspace = tmpdir.path().join("workspace"); // never created
+
+        let _env = crate::test_support::lock_test_env();
+        let _home = crate::test_support::EnvVarGuard::set("HOME", &scratch_home);
+        let _codesmith =
+            crate::test_support::EnvVarGuard::set("CODESMITH_HOME", &scratch_codesmith);
+        let dirs = super::skills_directories(&workspace);
+
+        assert!(
+            dirs.contains(&ours),
+            "$CODESMITH_HOME/skills must be a discovery candidate, got {dirs:?}"
+        );
+        assert!(
+            dirs.contains(&claude_global),
+            "~/.claude/skills must still follow the real $HOME, got {dirs:?}"
+        );
+        assert!(
+            !dirs.contains(&legacy),
+            "legacy $HOME/.codesmith/skills must not feed discovery once \
+             CODESMITH_HOME is set, got {dirs:?}"
+        );
+        let claude_idx = dirs
+            .iter()
+            .position(|d| d == &claude_global)
+            .expect("claude global present (asserted above)");
+        let ours_idx = dirs
+            .iter()
+            .position(|d| d == &ours)
+            .expect("codesmith-home global present (asserted above)");
+        assert!(
+            claude_idx < ours_idx,
+            "global precedence must stay .agents → .claude → .codesmith, got {dirs:?}"
         );
     }
 
