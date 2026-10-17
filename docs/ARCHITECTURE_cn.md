@@ -23,6 +23,18 @@
   三件套——新能力须在同一变更中落齐三个角色；每个
   `ExtensionEventKind` 声明分发模式（`dispatch_mode()`，由契约测试
   锁定）。
+- **会话持久化接缝。** 持久会话记录（`SavedSession`）、格式治理解码
+  管线（schema 门禁、相邻内存迁移、未知块容忍、中断回合修复）与
+  `SessionStore` 接缝位于 `agent-runtime/src/session_store.rs`；文件
+  提供者（`FileSessionStore`，每会话一个 JSON 文件 + 崩溃检查点）同
+  模块——按 `FileKeyringStore` 先例允许提供者留在框架 crate。消费者：
+  CLI REPL 恢复流程与 runtime API 的会话端点（dyn 分发）。已知限制：
+  每会话单写者；app-server 线程运行时保留自己的存储
+  （`codesmith-state`）作为查询索引，不持久化 REPL 会话——在那里扩展
+  恢复能力应消费本接缝，而不是再造第三种格式（曾考虑
+  `ThreadResumeParams.session_id` 扩展并已放弃：CLI runtime API 已提供
+  从保存会话恢复的能力，且 core/app-server 目前没有对 agent-runtime 的
+  依赖边）。
 - **插件分层（已声明）。** 可插拔性统一走 `Extension` 契约
   （`crates/agent/src/extension.rs`）+ `ExtensionRunner`——共四层：用户
   Rhai mod（`~/.codesmith/mods/`，consent 门控）、内建 Rhai 层（内嵌脚本
