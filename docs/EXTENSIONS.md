@@ -447,9 +447,11 @@ so the invariant — not a Miri run — is the proof.
   get_context_usage()` return `ExtensionError::Unimplemented`.
 - `SessionBeforeSwitch` is defined in the contract but has no host emit
   site (rationale in the seam table above).
-- `EventBus` (`codesmith_extensions::EventBus`) is a skeleton —
-  `subscribe`/`publish` return `Unimplemented`; there is no
-  extension-to-extension pub/sub.
+- There is no extension-to-extension pub/sub. The former §F3 `EventBus`
+  skeleton (`subscribe`/`publish` returning `Unimplemented`) was deleted
+  with zero consumers — it trapped callers at runtime without serving any.
+  It returns only when an extension actually needs inter-extension
+  messaging, designed against that need.
 - The `ExtensionApi` has no renderer, shortcut, or flag registration
   surface.
 - `AssistantStream` carries text deltas only — thinking deltas stay

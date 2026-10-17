@@ -412,10 +412,10 @@ was removed — the line-REPL has no `tui.toml` keymap surface, and
 
 - The dylib-loading and events/handler-chains/live-reload phases are
   complete. Remaining phases are
-  on-demand (no spec/plan yet): the **EventBus** real impl
-  (`crates/extensions/src/bus.rs` `subscribe`/`publish` currently return
-  `ExtensionError::Unimplemented`), **registerProvider**,
-  **Renderers**, **Shortcut + Flag**, and the **Embedding API**. Hot-load is
+  on-demand (no spec/plan yet): **registerProvider**,
+  **Renderers**, **Shortcut + Flag**, and the **Embedding API**. The
+  **EventBus** skeleton was deleted with zero consumers; inter-extension
+  pub/sub returns only against a real need. Hot-load is
   permanently out. Flaky-test baselines recorded
   there: `streamable_http` (agent-runtime) and `runtime_api` (cli) —
   pre-existing, isolate-rerun if they fire.
