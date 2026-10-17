@@ -72,6 +72,7 @@ use crate::tools::team::{
 use crate::tools::todo::{SharedTodoList, TodoList};
 use crate::utils::spawn_supervised;
 
+pub mod acp;
 pub mod headless;
 pub mod mailbox;
 #[allow(unused_imports)]
