@@ -27,7 +27,7 @@ Rust dylib——而"可插拔"的含义是*在运行期经其中一层注册*，
 |---|---|---|---|---|
 | 事件钩子、工具守卫 | ✓ `on` / `register_guard` | — | ✓ | 按卸载/加载粒度为 mod；钩子错误 fail open |
 | 模型可见工具 | ✓ `register_tool`（纯逻辑——无 fs/net 原生函数） | ✓（可脚本化的默认值） | ✓（完整 IO/异步） | 所有层都仅限主轮 |
-| 斜杠命令 | ✓ `register_command`（遮蔽内建） | — | ✓ | 层序 user > mod > builtin |
+| 斜杠命令 | ✓ `register_command`（遮蔽内建）/ `disable_command`（退役内建） | — | ✓ | 层序 user > mod > builtin |
 | Provider | 仅别名（`register_provider`） | — | ✓ 完整 `ProviderFactory` | 脚本无法实现 `LlmClient`（无异步/网络） |
 | 提示词分段、技能 | ✓ `register_prompt_section` / `register_skill` | ✓（默认值） | ✓ | 遵守前缀缓存纪律 |
 | 策略（宿主机制旋钮） | ✓ `register_policy`（last-wins） | ✓——默认值本身就是内建 mod | ✓ | 数据而非代码；`/mods list` 显示解析结果 |

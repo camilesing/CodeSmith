@@ -55,7 +55,13 @@ reports how many exist, `Tab` completes the name (press it twice to list the
 matches), and the dim text after the cursor previews what the match does. `/plan`,
 `/agent`, and `/yolo` are shortcuts for the matching `/mode` value — or cycle
 them with `Shift+Tab` at the prompt (`agent → plan → yolo`, plus `coordinator`
-while the experimental `coordinator_mode` feature is enabled).
+while the experimental `coordinator_mode` feature is enabled). Commands layer
+user-defined (`.codesmith/commands/*.md`) over mod-registered over built-in,
+and a built-in can be turned off without removing its implementation:
+`[commands] disabled = [...]` in config.toml hides those names from
+dispatch, `/help`, and completion (unknown names fail startup loudly), and a
+mod can do the same at runtime with `disable_command(name)` — same-named
+user or mod commands keep working in both cases.
 
 Keyboard and interaction details — prompt keys, the mid-turn composer, vim
 mode, shell mode — live in [KEYBINDINGS.md](KEYBINDINGS.md); `?` on an empty

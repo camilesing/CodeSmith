@@ -28,7 +28,7 @@ wired into the binary at compile time. Which tier fits a given surface:
 |---|---|---|---|---|
 | Event hooks, tool guards | ✓ `on` / `register_guard` | — | ✓ | load/unload per mod; hook errors fail open |
 | Model-visible tools | ✓ `register_tool` (pure logic — no fs/net natives) | ✓ (scriptable defaults) | ✓ (full IO/async) | main-turn only, all tiers |
-| Slash commands | ✓ `register_command` (shadows built-ins) | — | ✓ | layering user > mod > builtin |
+| Slash commands | ✓ `register_command` (shadows built-ins) / `disable_command` (retires one) | — | ✓ | layering user > mod > builtin |
 | Providers | alias only (`register_provider`) | — | ✓ full `ProviderFactory` | a script cannot implement `LlmClient` (no async/net) |
 | Prompt sections, skills | ✓ `register_prompt_section` / `register_skill` | ✓ (defaults) | ✓ | prefix-cache discipline applies |
 | Policies (host-mechanism knobs) | ✓ `register_policy` (last-wins) | ✓ — the defaults ship as builtin mods | ✓ | data, not code; `/mods list` shows resolution |
