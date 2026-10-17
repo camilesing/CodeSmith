@@ -554,10 +554,34 @@ pub struct SubagentsConfig {
     /// Out-of-process sub-agent provider. Unset (default) runs children
     /// in-process; `"headless"` runs each non-team child as a
     /// `codesmith exec --json` subprocess of this binary (see
-    /// `tools::subagent::headless`). Unknown names are rejected at config
-    /// load.
+    /// `tools::subagent::headless`); `"acp"` delegates each run to an
+    /// Agent-Client-Protocol stdio agent configured under
+    /// `[subagents.acp]` (see `tools::subagent::acp`). Unknown names are
+    /// rejected at config load.
     #[serde(default)]
     pub external_provider: Option<String>,
+    /// `[subagents.acp]` — process + protocol knobs for
+    /// `external_provider = "acp"`.
+    #[serde(default)]
+    pub acp: Option<AcpSubagentConfig>,
+}
+
+/// `[subagents.acp]` — how to spawn and bound the ACP child agent.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct AcpSubagentConfig {
+    /// Executable to spawn (required for the `acp` provider).
+    #[serde(default)]
+    pub command: String,
+    /// Static arguments for `command`.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Extra environment variables layered over the parent's environment.
+    #[serde(default)]
+    pub env: std::collections::HashMap<String, String>,
+    /// Child-run timeout in seconds. Unset uses 1800 (30 min, matching the
+    /// headless provider); values below 1 clamp to 1.
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
 }
 
 /// `[runtime]` table — engine-wide limits shared by every engine root
@@ -1542,6 +1566,18 @@ impl Config {
             anyhow::bail!(
                 "Unknown [subagents] external_provider '{name}'; supported: {} (unset = in-process sub-agents)",
                 crate::tools::subagent::headless::KNOWN_EXTERNAL_PROVIDERS.join(", ")
+            );
+        }
+        if self.subagent_external_provider() == Some(crate::tools::subagent::acp::ACP_PROVIDER_NAME)
+            && self
+                .subagents
+                .as_ref()
+                .and_then(|subagents| subagents.acp.as_ref())
+                .map(|acp| acp.command.trim().is_empty())
+                .unwrap_or(true)
+        {
+            anyhow::bail!(
+                "[subagents] external_provider = \"acp\" requires [subagents.acp] command = \"<executable>\""
             );
         }
         if let Some(features) = &self.features {
