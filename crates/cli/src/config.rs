@@ -560,6 +560,22 @@ pub struct SubagentsConfig {
     pub external_provider: Option<String>,
 }
 
+/// `[runtime]` table — engine-wide limits shared by every engine root
+/// (REPL, `exec`, automation threads). The sub-agent depth-gate error
+/// ("Increase via [runtime] max_spawn_depth in config.toml") points here.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct RuntimeConfig {
+    /// Maximum sub-agent spawn depth across the whole spawn tree
+    /// (`spawn_depth + 1 > max_spawn_depth` rejects). Unset falls back to
+    /// [`crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH`] (3); `0`
+    /// disables sub-agent spawning entirely. A headless child inherits the
+    /// *remaining* budget through `CODESMITH_SUBAGENT_DEPTH` /
+    /// `CODESMITH_MAX_SPAWN_DEPTH`, which takes precedence over this value
+    /// inside the child.
+    #[serde(default)]
+    pub max_spawn_depth: Option<u32>,
+}
+
 /// `[auto]` table — knobs for the `--model auto` / `/model auto` router.
 ///
 /// `cost_saving` (#1207): the full cheap-routing opt-in. When `true`, the
@@ -840,6 +856,11 @@ pub struct Config {
     /// Sub-agent model overrides.
     #[serde(default)]
     pub subagents: Option<SubagentsConfig>,
+
+    /// Engine recursion limits (`[runtime]` table). When absent, the
+    /// documented defaults apply.
+    #[serde(default)]
+    pub runtime: Option<RuntimeConfig>,
 
     /// Runtime API server tuning (`codesmith serve --http`). Currently only
     /// hosts the CORS allow-list extension (whalescale#255 / #561). When the
@@ -2616,6 +2637,17 @@ impl Config {
         }
     }
 
+    /// Resolved maximum sub-agent spawn depth. Reads `[runtime]
+    /// max_spawn_depth`; unset falls back to `DEFAULT_MAX_SPAWN_DEPTH` (3).
+    /// `0` is honored — it disables sub-agent spawning entirely.
+    #[must_use]
+    pub fn max_spawn_depth(&self) -> u32 {
+        self.runtime
+            .as_ref()
+            .and_then(|runtime| runtime.max_spawn_depth)
+            .unwrap_or(crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH)
+    }
+
     /// Resolved per-step DeepSeek API timeout for sub-agents, in seconds.
     ///
     /// Reads `[subagents] api_timeout_secs` and clamps to
@@ -4016,6 +4048,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
                 .or(base.context.tokenizer_path),
         },
         subagents: override_cfg.subagents.or(base.subagents),
+        runtime: override_cfg.runtime.or(base.runtime),
         strict_tool_mode: override_cfg.strict_tool_mode.or(base.strict_tool_mode),
         runtime_api: override_cfg.runtime_api.or(base.runtime_api),
         workshop: override_cfg.workshop.or(base.workshop),
@@ -5484,6 +5517,45 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(high.max_subagents(), MAX_SUBAGENTS);
+    }
+
+    #[test]
+    fn max_spawn_depth_defaults_to_three_and_honors_runtime_table() {
+        assert_eq!(
+            Config::default().max_spawn_depth(),
+            crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH
+        );
+        assert_eq!(crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH, 3);
+
+        let with = |max| Config {
+            runtime: Some(RuntimeConfig {
+                max_spawn_depth: Some(max),
+            }),
+            ..Config::default()
+        };
+        // `0` is honored: it disables sub-agent spawning (the depth gate
+        // rejects `spawn_depth + 1 > 0` at every level).
+        assert_eq!(with(0).max_spawn_depth(), 0);
+        assert_eq!(with(1).max_spawn_depth(), 1);
+        assert_eq!(with(9).max_spawn_depth(), 9);
+        // Absent table entry keeps the default.
+        assert_eq!(
+            Config {
+                runtime: Some(RuntimeConfig::default()),
+                ..Config::default()
+            }
+            .max_spawn_depth(),
+            3
+        );
+
+        let parsed: Config = toml::from_str("[runtime]\nmax_spawn_depth = 1\n").unwrap();
+        assert_eq!(parsed.max_spawn_depth(), 1);
+        // The real load path goes through ConfigFile's flatten — the table
+        // must survive that hop too.
+        let parsed: ConfigFile = toml::from_str("[runtime]\nmax_spawn_depth = 0\n").unwrap();
+        assert_eq!(parsed.base.max_spawn_depth(), 0);
+        // A negative value fails loud at load, not silently at spawn time.
+        assert!(toml::from_str::<Config>("[runtime]\nmax_spawn_depth = -1\n").is_err());
     }
 
     #[test]

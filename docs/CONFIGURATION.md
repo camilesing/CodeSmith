@@ -953,6 +953,15 @@ and the capacity controller remains disabled unless configured.
   `[subagents.models]` accepts lower-case role or type keys such as `worker`,
   `explorer`, `general`, `explore`, `plan`, and `review`. Values must normalize
   to a supported DeepSeek model id before an agent is spawned.
+- `runtime.*` (optional): engine recursion limits. `runtime.max_spawn_depth`
+  (integer, optional, default 3) caps the sub-agent spawn tree — a spawn is
+  rejected when `spawn_depth + 1 > max_spawn_depth`, and the rejection
+  message the CLI prints points at this key. `0` disables sub-agent spawning
+  entirely. The cap applies to the REPL, `exec`, and automation threads;
+  headless children (`[subagents] external_provider = "headless"`) inherit
+  the *remaining* budget via `CODESMITH_SUBAGENT_DEPTH` /
+  `CODESMITH_MAX_SPAWN_DEPTH`, which takes precedence over this value inside
+  the child.
 - `skills_dir` (string, optional): defaults to `~/.codesmith/skills` (each skill is
   a directory containing `SKILL.md`). Workspace-local `.agents/skills` or
   `./skills` are preferred when present; the runtime also discovers global

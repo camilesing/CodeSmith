@@ -864,6 +864,13 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   30 分钟。`[subagents.models]` 接受小写的角色或类型键，如 `worker`、
   `explorer`、`general`、`explore`、`plan` 和 `review`。值必须归一化
   为受支持的 DeepSeek 模型 id，代理才能被生成。
+- `runtime.*`（可选）：引擎递归限制。`runtime.max_spawn_depth`（整数，
+  可选，默认 3）封顶子代理派生树——`spawn_depth + 1 > max_spawn_depth`
+  时拒绝派生，CLI 打印的拒绝消息即指向此键。`0` 完全禁用子代理派生。
+  该上限作用于 REPL、`exec` 与自动化线程；headless 子代理
+  （`[subagents] external_provider = "headless"`）通过
+  `CODESMITH_SUBAGENT_DEPTH` / `CODESMITH_MAX_SPAWN_DEPTH` 继承*剩余*预算，
+  子进程内该继承值优先于本配置。
 - `skills_dir`（字符串，可选）：默认为 `~/.codesmith/skills`（每个
   skill 是一个包含 `SKILL.md` 的目录）。如果存在工作区本地的
   `.agents/skills` 或 `./skills` 则优先使用；运行时还会发现全局的
