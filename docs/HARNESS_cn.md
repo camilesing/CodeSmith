@@ -46,20 +46,32 @@ rust-analyzer 类型错误、沙箱拒绝 —— 这些都会作为纠正向量�
 ## 录制与重放模型调用
 
 设置 `CODESMITH_RECORD_LLM=<path.jsonl>` 会把解析出的 LLM 客户端包进
-一个录制器：通过该客户端服务的每一个模型调用（包括共用它的实用模型、
-接缝和压缩调用）都会追加一行 JSONL —— 完整的请求信封与实际发出时
+一个录制器：通过该客户端服务的每一个模型调用（包括共用它的接缝和
+压缩调用）都会追加一行 JSONL —— 完整的请求信封与实际发出时
 完全一致（经过每个扩展变换之后：消息、系统提示词、完整的工具
-schema、采样参数），外加流式响应事件或非流式响应。已知缺口：跨
-provider 的 `[utility_model]` 客户端单独构建，不会被录制。对于被录制
-的会话，任何历史 provider 请求都是日志的纯函数。无效路径会让启动
-当场报错中止。
+schema、采样参数），外加流式响应事件或非流式响应。跨 provider 的
+`[utility_model]` 客户端在同一路径上有自己的录制器（append 模式；
+整行写入保证交错后的文件仍可解析），因此多模型会话能完整录制。
+对于被录制的会话，任何历史 provider 请求都是日志的纯函数。无效路径
+会让启动当场报错中止。
 
-`ReplayClient::load(path)`（位于 `codesmith-agent` 的
+`ReplayClient::load(path)` / `ReplayClient::load_with_mode(path, mode)`
+（位于 `codesmith-agent` 的
 `llm_client::record_replay`）把录制的事件通过真实的 turn 循环喂回去 ——
-无密钥、无网络的回归测试。重放是严格的 FIFO（不做请求匹配；重试的
-调用会额外消耗一行），并逐字重放流，包括缺失终止 `message_stop` 的
+无密钥、无网络的回归测试。两种匹配模式：
+
+- `ReplayMode::Strict`（默认）：FIFO，每次调用一行 —— 单模型会话与
+  回归钉定的字节级确定性重放。
+- `ReplayMode::ByModel`：弹出第一条录制模型与外发请求匹配的行 ——
+  混合主模型与实用模型的录制不再受两个调用位之间不确定性交错的
+  影响。
+
+重放逐字重放流，包括缺失终止 `message_stop` 的
 情况（引擎将其视为断连，与原始运行的处理完全一致）。引擎测试
-`record_then_replay_round_trip` 是现成的工作示例。Fixture 包含完整的
+`record_then_replay_round_trip` 是现成的工作示例；`crates/cli/tests/
+fixtures/llm/` 存放由 `golden_fixture_*` 引擎测试驱动的已提交金样本
+套件 —— 录制真实会话、脱敏、提交 JSONL，并扩展 `run_golden_fixture`
+调用即可新增用例。Fixture 包含完整的
 模型 I/O —— 绝不要提交含密钥的 fixture。
 
 ### Provider 调试标志（opt-in，默认关闭）

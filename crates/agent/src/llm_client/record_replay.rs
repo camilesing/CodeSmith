@@ -19,18 +19,29 @@
 //! Hosts wrap their resolved client: `CODESMITH_RECORD_LLM=<path>` (the
 //! CLI's `build_engine` honors it; opening the file fails loud). The
 //! wrapper sits at the client boundary, so every call served through the
-//! wrapped handle — including utility/seam/compaction calls that share it
-//! — is recorded. Known gap: a cross-provider `[utility_model]` client is
-//! built separately and remains unwrapped, so recordings of sessions that
-//! exercise it are incomplete.
+//! wrapped handle — including seam/compaction calls that share it — is
+//! recorded. A cross-provider `[utility_model]` client gets its own
+//! recorder on the same path (append mode; whole-line writes keep the
+//! interleaved file parseable), so multi-model sessions record
+//! completely.
+//!
+//! # Replay matching modes
+//!
+//! [`ReplayMode::Strict`] is the default: FIFO, one line per call, byte-
+//! deterministic — right for single-model sessions and regression pins.
+//! [`ReplayMode::ByModel`] buckets by the recorded model id and pops the
+//! first line whose model matches the outgoing request's (empty request
+//! model falls back to FIFO): recordings that mix main + utility models
+//! replay regardless of the nondeterministic interleaving between the two
+//! call sites. Known limitation: two same-model clients (main + a
+//! same-model utility override) are indistinguishable — use Strict there.
 //!
 //! # Known limitations
 //!
-//! - Replay is strict FIFO: each `create_message_stream`/`create_message`
-//!   consumes the next line; it does not match requests. Failed calls are
-//!   recorded too (an `error` outcome) and replay returns the same
-//!   failure, so a live run's transparent retries line up with their
-//!   recorded counterparts.
+//! - Replay does not match full requests in either mode — only call order
+//!   (Strict) or model id (ByModel). Failed calls are recorded too (an
+//!   `error` outcome) and replay returns the same failure, so a live run's
+//!   transparent retries line up with their recorded counterparts.
 //! - A recorded stream replays verbatim, including a missing terminal
 //!   `MessageStop` (the engine treats that as a disconnect, exactly like
 //!   the original run). Unlike the test mock, replay never auto-appends.
@@ -459,19 +470,39 @@ impl Drop for TeeState {
 
 // === ReplayClient ===========================================================
 
-/// Replays a recording file through the real turn loop: strict FIFO, one
-/// line per call, no request matching (see the module docs). Loading fails
-/// loud — a malformed line names its number.
+/// How [`ReplayClient`] matches an outgoing call to a recorded line.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ReplayMode {
+    /// Strict FIFO, one line per call — byte-deterministic replay for
+    /// single-model sessions and regression pins. The default.
+    #[default]
+    Strict,
+    /// Pop the first line whose recorded model matches the outgoing
+    /// request's model (empty request model falls back to FIFO). Survives
+    /// nondeterministic interleaving between main- and utility-model call
+    /// sites; two same-model clients are indistinguishable.
+    ByModel,
+}
+
+/// Replays a recording file through the real turn loop (see the module
+/// docs). Loading fails loud — a malformed line names its number.
 pub struct ReplayClient {
     lines: Mutex<VecDeque<RecordLine>>,
+    mode: ReplayMode,
     model: String,
     base_url: String,
     calls: std::sync::atomic::AtomicUsize,
 }
 
 impl ReplayClient {
-    /// Load a recording produced by [`RecordingClient`].
+    /// Load a recording produced by [`RecordingClient`] in the default
+    /// [`ReplayMode::Strict`].
     pub fn load(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        Self::load_with_mode(path, ReplayMode::Strict)
+    }
+
+    /// Load a recording with an explicit matching mode.
+    pub fn load_with_mode(path: impl AsRef<std::path::Path>, mode: ReplayMode) -> Result<Self> {
         let text = std::fs::read_to_string(path.as_ref())
             .map_err(|e| anyhow!("replay fixture {}: {e}", path.as_ref().display()))?;
         let mut lines = VecDeque::new();
@@ -509,6 +540,7 @@ impl ReplayClient {
         let base_url = lines[0].base_url.clone();
         Ok(Self {
             lines: Mutex::new(lines),
+            mode,
             model,
             base_url,
             calls: std::sync::atomic::AtomicUsize::new(0),
@@ -520,15 +552,31 @@ impl ReplayClient {
         self.lines.lock().map(|l| l.len()).unwrap_or(0)
     }
 
-    fn pop_line(&self, call: &str) -> Result<RecordLine> {
+    fn pop_line_for(&self, call: &str, wanted_model: Option<&str>) -> Result<RecordLine> {
         let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-        self.lines
+        let mut lines = self
+            .lines
             .lock()
-            .map_err(|_| anyhow!("replay queue poisoned"))?
-            .pop_front()
-            .ok_or_else(|| {
-                anyhow!("ReplayClient: fixture exhausted at {call} (call #{n}); record more turns")
-            })
+            .map_err(|_| anyhow!("replay queue poisoned"))?;
+        // ByModel with a known target: remove the first line whose
+        // recorded model matches. Strict (or an empty request model, which
+        // cannot discriminate buckets): pop the head.
+        if self.mode == ReplayMode::ByModel
+            && let Some(wanted) = wanted_model
+            && !wanted.is_empty()
+        {
+            if let Some(pos) = lines.iter().position(|l| l.model == wanted) {
+                return Ok(lines.remove(pos).expect("position just observed"));
+            }
+            let available: Vec<String> = lines.iter().map(|l| l.model.clone()).collect();
+            return Err(anyhow!(
+                "ReplayClient: no recorded line for model {wanted:?} at {call} (call #{n}); \
+                 remaining models: {available:?} — record more turns"
+            ));
+        }
+        lines.pop_front().ok_or_else(|| {
+            anyhow!("ReplayClient: fixture exhausted at {call} (call #{n}); record more turns")
+        })
     }
 }
 
@@ -543,14 +591,14 @@ impl LlmClient for ReplayClient {
 
     fn create_message(
         &self,
-        _request: MessageRequest,
+        request: MessageRequest,
     ) -> Pin<Box<dyn Future<Output = Result<MessageResponse>> + Send + '_>> {
         Box::pin(async move {
             // Pop at first poll, not at call time: every other LlmClient
             // impl is lazy, and a future built then dropped unpolled (a
             // losing select! branch, a timeout kill) must not silently
             // consume a fixture line.
-            let line = self.pop_line("create_message")?;
+            let line = self.pop_line_for("create_message", Some(&request.model))?;
             match line.outcome {
                 RecordOutcome::Message { response_message } => Ok(*response_message),
                 RecordOutcome::Stream { response_events } => {
@@ -565,11 +613,11 @@ impl LlmClient for ReplayClient {
 
     fn create_message_stream(
         &self,
-        _request: MessageRequest,
+        request: MessageRequest,
     ) -> Pin<Box<dyn Future<Output = Result<StreamEventBox>> + Send + '_>> {
         Box::pin(async move {
             // Lazy for the same reason as `create_message`.
-            let line = self.pop_line("create_message_stream")?;
+            let line = self.pop_line_for("create_message_stream", Some(&request.model))?;
             match line.outcome {
                 RecordOutcome::Stream { response_events } => {
                     let s = futures_util::stream::iter(response_events.into_iter().map(Ok));
@@ -1164,5 +1212,134 @@ mod tests {
             other => panic!("expected error outcome, got {other:?}"),
         }
         let _ = std::fs::remove_file(&path);
+    }
+
+    // === ReplayMode::ByModel ================================================
+
+    fn text_response_line(model: &str, text: &str) -> RecordLine {
+        RecordLine {
+            version: RECORD_VERSION,
+            provider: "mock".into(),
+            model: model.into(),
+            base_url: String::new(),
+            request: MessageRequest {
+                model: model.into(),
+                messages: Vec::new(),
+                max_tokens: 8,
+                system: None,
+                tools: None,
+                tool_choice: None,
+                metadata: None,
+                thinking: None,
+                reasoning_effort: None,
+                stream: None,
+                temperature: None,
+                top_p: None,
+            },
+            outcome: RecordOutcome::Message {
+                response_message: Box::new(MessageResponse {
+                    id: format!("msg_{text}"),
+                    r#type: "message".into(),
+                    role: "assistant".into(),
+                    content: vec![ContentBlock::Text {
+                        text: text.into(),
+                        cache_control: None,
+                    }],
+                    model: model.into(),
+                    stop_reason: Some("end_turn".into()),
+                    stop_sequence: None,
+                    container: None,
+                    usage: Usage::default(),
+                }),
+            },
+        }
+    }
+
+    fn write_by_model_fixture(path: &std::path::Path, lines: &[RecordLine]) {
+        let mut text = String::new();
+        for line in lines {
+            text.push_str(&serde_json::to_string(line).expect("serialize line"));
+            text.push('\n');
+        }
+        std::fs::write(path, text).expect("write fixture");
+    }
+
+    fn model_request(model: &str) -> MessageRequest {
+        MessageRequest {
+            model: model.into(),
+            messages: Vec::new(),
+            max_tokens: 8,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: None,
+            stream: None,
+            temperature: None,
+            top_p: None,
+        }
+    }
+
+    async fn drained_text(client: &ReplayClient, model: &str) -> String {
+        let response = client
+            .create_message(model_request(model))
+            .await
+            .expect("replayed response");
+        match response.content.first() {
+            Some(ContentBlock::Text { text, .. }) => text.clone(),
+            other => panic!("expected text block, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn by_model_mode_survives_interleaving() {
+        // Recorded order: a1, b1, a2. A multi-model session interleaves the
+        // two call sites nondeterministically; ByModel must serve each
+        // request from its own model's subsequence in recorded order.
+        let path = temp_recording_path("by_model_interleave");
+        write_by_model_fixture(
+            &path,
+            &[
+                text_response_line("main-model", "a1"),
+                text_response_line("util-model", "b1"),
+                text_response_line("main-model", "a2"),
+            ],
+        );
+        let replay = ReplayClient::load_with_mode(&path, ReplayMode::ByModel).expect("load");
+        assert_eq!(drained_text(&replay, "util-model").await, "b1");
+        assert_eq!(drained_text(&replay, "main-model").await, "a1");
+        assert_eq!(drained_text(&replay, "main-model").await, "a2");
+        assert_eq!(replay.remaining(), 0);
+    }
+
+    #[tokio::test]
+    async fn by_model_empty_request_model_falls_back_to_fifo() {
+        let path = temp_recording_path("by_model_fifo");
+        write_by_model_fixture(
+            &path,
+            &[
+                text_response_line("main-model", "a1"),
+                text_response_line("util-model", "b1"),
+            ],
+        );
+        let replay = ReplayClient::load_with_mode(&path, ReplayMode::ByModel).expect("load");
+        // An empty model cannot discriminate buckets — head-of-queue wins.
+        assert_eq!(drained_text(&replay, "").await, "a1");
+        assert_eq!(drained_text(&replay, "util-model").await, "b1");
+    }
+
+    #[tokio::test]
+    async fn by_model_missing_model_names_alternatives() {
+        let path = temp_recording_path("by_model_missing");
+        write_by_model_fixture(&path, &[text_response_line("main-model", "a1")]);
+        let replay = ReplayClient::load_with_mode(&path, ReplayMode::ByModel).expect("load");
+        let err = replay
+            .create_message(model_request("other-model"))
+            .await
+            .expect_err("no recorded line for that model");
+        let msg = err.to_string();
+        assert!(msg.contains("other-model"), "names the wanted model: {msg}");
+        assert!(msg.contains("main-model"), "names alternatives: {msg}");
     }
 }
