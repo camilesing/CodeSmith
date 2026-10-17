@@ -56,23 +56,36 @@ drift to self-correct.
 
 Set `CODESMITH_RECORD_LLM=<path.jsonl>` to wrap the resolved LLM client in a
 recorder: every model call served through that client (including
-utility-model, seam, and compaction calls that share it) appends one JSONL
+seam and compaction calls that share it) appends one JSONL
 line — the full request envelope exactly as sent
 (after every extension transform: messages, system prompt, the complete
 tool schema, sampling parameters) plus the streamed response events or the
-non-streaming response. Known gap: a cross-provider `[utility_model]`
-client is built separately and is not recorded. For the recorded session,
-any historical provider
+non-streaming response. A cross-provider `[utility_model]` client gets its
+own recorder on the same path (append mode; whole-line writes keep the
+interleaved file parseable), so multi-model sessions record completely.
+For the recorded session, any historical provider
 request is a pure function of the log. A bad path aborts startup loudly.
 
-`ReplayClient::load(path)` (in `codesmith-agent`, `llm_client::record_replay`)
+`ReplayClient::load(path)` / `ReplayClient::load_with_mode(path, mode)`
+(in `codesmith-agent`, `llm_client::record_replay`)
 feeds the recorded events back through the real turn loop — keyless,
-networkless regression tests. Replay is strict FIFO (no request matching;
-retried calls consume an extra line) and replays streams verbatim, including
+networkless regression tests. Two matching modes:
+
+- `ReplayMode::Strict` (default): FIFO, one line per call — byte-
+  deterministic replay for single-model sessions and regression pins.
+- `ReplayMode::ByModel`: pops the first line whose recorded model matches
+  the outgoing request's — recordings that mix main + utility models
+  replay regardless of the nondeterministic interleaving between the two
+  call sites.
+
+Replay replays streams verbatim, including
 a missing terminal `message_stop` (the engine treats that as a disconnect,
 exactly like the original run). The engine test
-`record_then_replay_round_trip` is the working example. Fixtures contain
-full model I/O — never commit ones with secrets.
+`record_then_replay_round_trip` is the working example, and
+`crates/cli/tests/fixtures/llm/` holds the committed golden suite driven
+by the `golden_fixture_*` engine tests — record a real session, redact,
+commit the JSONL, and extend `run_golden_fixture` calls to add a case.
+Fixtures contain full model I/O — never commit ones with secrets.
 
 ### Provider debug flags (opt-in, off by default)
 

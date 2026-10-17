@@ -4149,6 +4149,82 @@ async fn record_then_replay_round_trip() {
     );
 }
 
+// === Golden replay fixtures ================================================
+
+/// Directory of committed, redacted replay fixtures (RecordLine JSONL).
+fn golden_fixture_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/llm")
+}
+
+/// Drive the REAL engine over a committed fixture file and return the
+/// streamed text per turn. This is the keyless golden suite: no mock, no
+/// network — the recorded envelope is the entire model world, so any
+/// drift in the turn loop's request/response handling surfaces as a
+/// fixture mismatch instead of silence.
+async fn run_golden_fixture(name: &str, sends: &[&str]) -> Vec<String> {
+    use codesmith_agent::llm_client::record_replay::{ReplayClient, ReplayMode};
+
+    let path = golden_fixture_dir().join(name);
+    let replay = ReplayClient::load_with_mode(&path, ReplayMode::Strict)
+        .unwrap_or_else(|e| panic!("golden fixture {name} loads: {e}"));
+    let replay = std::sync::Arc::new(replay);
+    let tmp = tempdir().expect("tempdir");
+    let config = test_engine_config(tmp.path());
+    let (engine, handle) = Engine::new_with_client(config, &Config::default(), replay.clone());
+    tokio::spawn(async move { engine.run().await });
+
+    let mut texts = Vec::new();
+    for send in sends {
+        handle.send(make_send_op(send)).await.expect("send op");
+        let events = collect_until_turn_complete(&handle).await;
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                Event::TurnComplete {
+                    status: TurnOutcomeStatus::Completed,
+                    ..
+                }
+            )),
+            "golden fixture {name}: turn for {send:?} must complete"
+        );
+        texts.push(
+            events
+                .iter()
+                .filter_map(|e| match e {
+                    Event::MessageDelta { content, .. } => Some(content.clone()),
+                    _ => None,
+                })
+                .collect::<String>(),
+        );
+    }
+    assert_eq!(
+        replay.remaining(),
+        0,
+        "golden fixture {name}: every recorded line must be consumed"
+    );
+    texts
+}
+
+#[tokio::test]
+async fn golden_fixture_simple_text_turn_replays() {
+    let _guard = lock_test_env();
+    let texts = run_golden_fixture("strict_simple_text_turn.jsonl", &["hello"]).await;
+    assert_eq!(texts, vec!["Golden replay: one.".to_string()]);
+}
+
+#[tokio::test]
+async fn golden_fixture_two_turns_replay_in_fifo_order() {
+    let _guard = lock_test_env();
+    let texts = run_golden_fixture("strict_two_turn_fifo.jsonl", &["first", "second"]).await;
+    assert_eq!(
+        texts,
+        vec![
+            "Golden turn one.".to_string(),
+            "Golden turn two.".to_string(),
+        ]
+    );
+}
+
 // === Test 1: Simple text turn ===============================================
 
 #[tokio::test]
