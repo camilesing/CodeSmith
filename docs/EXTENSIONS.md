@@ -155,10 +155,11 @@ Runtime reload mechanics (shared by `/extension reload`, `/mods reload`,
 and the `manage_mods` tool — `crates/cli/src/mod_ops.rs` →
 `reload_extension_runtime`, `crates/cli/src/core/engine.rs`):
 
-- It re-populates the **shared runner `Arc`**: `clear_handlers` →
-  `clear_tools` → `clear_commands` → `clear_providers` (drops
-  registration guards) → `clear_prompt_sections` → `clear_skills` →
-  `clear_message_projections` → `drain_libraries_to_pending` →
+- It re-populates the **shared runner `Arc`**: the runner's clear suite
+  (`clear_bound_registrations`: handlers, tools, commands, disabled
+  builtin commands, providers (drops registration guards), prompt
+  sections, skills, message projections, policies) →
+  `drain_libraries_to_pending` →
   `invalidate` (bump generation) → discover (static + dylib) → reconcile
   against state → `load` each → `bind_core` (fresh
   `HostExtensionContext`). Both `App.extension_runner` and the engine's
