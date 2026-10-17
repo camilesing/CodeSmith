@@ -15,6 +15,34 @@
 //! (the fact ledger, whose source messages compaction may drop) snapshots.
 //! The transcript remains the authority — a damaged snapshot field
 //! degrades one field, not the session.
+//!
+//! ## Format governance (dev-plan TODO-29)
+//!
+//! The persisted shape carries a monotonic [`CURRENT_SESSION_SCHEMA_VERSION`]
+//! in its header (`schema_version`). Doctrine (dsh `SESSION_FORMAT_VERSION`):
+//! migrations are **adjacent** (v n → v n+1 only) and run **in memory at
+//! load** ([`migrate_session_format`]) — committed session files on disk are
+//! never rewritten by a migration; a newer-than-supported version refuses
+//! loud instead of being silently misread; an absent version field is the
+//! oldest shape (defaults to v1).
+//!
+//! Unknown content-block types written by a newer build are ignored
+//! (dropped with a log line) at load — envelope-level `ignorable`
+//! semantics, so an old reader never crashes on a new file. Known block
+//! types stay strictly validated: a malformed known block fails the load
+//! loud. Known limitation: unknown blocks are dropped, not round-tripped —
+//! a closed Rust enum cannot faithfully carry them; if lossless
+//! preservation is ever needed, add a raw-payload variant then.
+//!
+//! Interrupted turns (assistant `tool_use` with no recorded `tool_result` —
+//! Ctrl-C mid-tool, a crash between call and result) are repaired at load
+//! with `TOOL_OUTCOME_UNKNOWN` terminators
+//! ([`repair_interrupted_tool_calls`]) so the resumed transcript satisfies
+//! provider tool_call/tool_result pairing. Known limitation: the snapshot
+//! records no dispatch state, so `TOOL_NOT_STARTED` (interrupted before
+//! dispatch) cannot be distinguished from `TOOL_OUTCOME_UNKNOWN` (dispatched,
+//! result lost) — the conservative `TOOL_OUTCOME_UNKNOWN` is always used;
+//! `TOOL_NOT_STARTED` stays reserved for a future dispatch ledger.
 
 use crate::artifacts::ArtifactRecord;
 use crate::models::{ContentBlock, Message, SystemPrompt};
@@ -28,10 +56,122 @@ use uuid::Uuid;
 
 /// Maximum number of sessions to retain
 const MAX_SESSIONS: usize = 50;
+
+/// Persisted session format version. Monotonic: bump only with an adjacent
+/// migration in [`migrate_session_format`]; never rewrite committed session
+/// files on disk — migrations run in memory at load.
 const CURRENT_SESSION_SCHEMA_VERSION: u32 = 1;
 
 const fn default_session_schema_version() -> u32 {
     CURRENT_SESSION_SCHEMA_VERSION
+}
+
+/// Content-block `type` tags this build understands. Must mirror the
+/// `ContentBlock` enum in `codesmith_agent::models`; the sync is pinned by
+/// `known_block_types_cover_every_content_block_variant`. A block whose
+/// `type` is a string outside this set is dropped (with a log line) at load.
+const KNOWN_CONTENT_BLOCK_TYPES: &[&str] = &[
+    "text",
+    "image",
+    "thinking",
+    "tool_use",
+    "tool_result",
+    "server_tool_use",
+    "tool_search_tool_result",
+    "code_execution_tool_result",
+];
+
+/// Drop unknown content-block types from a parsed session record
+/// (envelope-level `ignorable` semantics). Blocks with a missing or
+/// non-string `type` are KEPT so strict deserialization fails loud on
+/// malformed known-shape corruption instead of silently swallowing it.
+/// Returns the number of dropped blocks.
+fn sanitize_unknown_content_blocks(value: &mut serde_json::Value) -> usize {
+    let Some(messages) = value.get_mut("messages").and_then(|m| m.as_array_mut()) else {
+        return 0;
+    };
+    let mut dropped = 0usize;
+    for message in messages {
+        let Some(content) = message.get_mut("content").and_then(|c| c.as_array_mut()) else {
+            continue;
+        };
+        content.retain(|block| {
+            let known = match block.get("type") {
+                Some(tag) if tag.is_string() => tag
+                    .as_str()
+                    .is_some_and(|tag| KNOWN_CONTENT_BLOCK_TYPES.contains(&tag)),
+                // Missing / non-string tag: malformed, not "newer format" —
+                // keep it and let `from_value` fail loud.
+                _ => true,
+            };
+            if !known {
+                dropped += 1;
+                tracing::warn!(
+                    target: "codesmith::session",
+                    block_type = block
+                        .get("type")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("<non-string>"),
+                    "dropping unknown content block type (session written by a newer build)"
+                );
+            }
+            known
+        });
+    }
+    dropped
+}
+
+/// Adjacent in-memory migration chain for the persisted session format.
+/// The caller has already gated `schema_version <=
+/// CURRENT_SESSION_SCHEMA_VERSION`; each arm bumps exactly +1 and the next
+/// arm runs, so any historical version reaches current through adjacent
+/// steps only. With only v1 on disk the chain is empty — v2+ migrations
+/// slot in as new arms here.
+fn migrate_session_format(session: &mut SavedSession) {
+    match session.schema_version {
+        1 => {}
+        other => {
+            // Unreachable behind the caller's version gate; stay loud rather
+            // than silently pretending an unknown version is current.
+            tracing::warn!(
+                target: "codesmith::session",
+                version = other,
+                "session schema version has no migration entry; loading as-is"
+            );
+        }
+    }
+}
+
+/// Crash-repair vocabulary (dev-plan TODO-29): close tool calls whose turn
+/// was interrupted before the result was recorded by appending one user
+/// message carrying a `TOOL_OUTCOME_UNKNOWN` `tool_result` terminator per
+/// dangling call, so the resumed transcript satisfies provider
+/// tool_call/tool_result pairing. Idempotent by construction — a terminator
+/// answers its call, so a repaired-and-resaved session repairs to nothing.
+/// Returns the repaired call ids (empty when the transcript was already
+/// balanced).
+pub(crate) fn repair_interrupted_tool_calls(session: &mut SavedSession) -> Vec<String> {
+    let dangling =
+        codesmith_agent_runtime::compaction::compact::unanswered_tool_use_ids(&session.messages);
+    if dangling.is_empty() {
+        return dangling;
+    }
+    let content: Vec<ContentBlock> = dangling
+        .iter()
+        .map(|id| ContentBlock::ToolResult {
+            tool_use_id: id.clone(),
+            content: "TOOL_OUTCOME_UNKNOWN: the turn was interrupted before this \
+                      tool call's result was recorded (session-repair)"
+                .to_string(),
+            is_error: Some(true),
+            content_blocks: None,
+        })
+        .collect();
+    session.messages.push(Message {
+        role: "user".to_string(),
+        content,
+    });
+    dangling
 }
 
 fn normalize_managed_dir(path: PathBuf) -> std::io::Result<PathBuf> {
@@ -322,19 +462,7 @@ impl SessionManager {
             return Ok(None);
         }
         let content = fs::read_to_string(&path)?;
-        let mut session: SavedSession = serde_json::from_str(&content)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        if session.schema_version > CURRENT_SESSION_SCHEMA_VERSION {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "Checkpoint schema v{} is newer than supported v{}",
-                    session.schema_version, CURRENT_SESSION_SCHEMA_VERSION
-                ),
-            ));
-        }
-        session.system_prompt = strip_legacy_truncation_note(session.system_prompt);
-        Ok(Some(session))
+        Ok(Some(Self::decode_session(&content)?))
     }
 
     /// Clear any crash-recovery checkpoint.
@@ -351,7 +479,20 @@ impl SessionManager {
         let path = self.validated_session_path(id)?;
 
         let content = fs::read_to_string(&path)?;
-        let mut session: SavedSession = serde_json::from_str(&content)
+        Self::decode_session(&content)
+    }
+
+    /// Decode one persisted session record through the format-governance
+    /// pipeline (see the module docs): tolerate unknown content-block types
+    /// (dropped, diagnosable), gate the schema version, run the adjacent
+    /// migration chain, then apply the interrupted-turn repair vocabulary.
+    /// Both load paths (`load_session`, `load_checkpoint`) go through here
+    /// so no consumer can bypass governance.
+    fn decode_session(content: &str) -> std::io::Result<SavedSession> {
+        let mut value: serde_json::Value = serde_json::from_str(content)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        sanitize_unknown_content_blocks(&mut value);
+        let mut session: SavedSession = serde_json::from_value(value)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         if session.schema_version > CURRENT_SESSION_SCHEMA_VERSION {
             return Err(std::io::Error::new(
@@ -362,9 +503,16 @@ impl SessionManager {
                 ),
             ));
         }
-
+        migrate_session_format(&mut session);
         session.system_prompt = strip_legacy_truncation_note(session.system_prompt);
-
+        let repaired = repair_interrupted_tool_calls(&mut session);
+        if !repaired.is_empty() {
+            tracing::info!(
+                target: "codesmith::session",
+                repaired = ?repaired,
+                "closed interrupted tool calls with TOOL_OUTCOME_UNKNOWN terminators"
+            );
+        }
         Ok(session)
     }
 
@@ -1970,5 +2118,301 @@ mod tests {
             checkpoint_file.exists(),
             "checkpoint file should be untouched"
         );
+    }
+
+    // === format governance (dev-plan TODO-29) =============================
+
+    /// Raw minimal session JSON with the given `messages` array verbatim —
+    /// for fixtures the typed API cannot express (unknown block types,
+    /// absent version field).
+    fn write_raw_session_record(dir: &Path, id: &str, messages_json: &str, extra_top_level: &str) {
+        let raw = format!(
+            r#"{{
+                "metadata": {{
+                    "id": "{id}", "title": "t", "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z", "message_count": 1,
+                    "total_tokens": 0, "model": "m", "workspace": "/tmp"
+                }},
+                "messages": {messages_json}{extra_top_level}
+            }}"#
+        );
+        fs::write(dir.join(format!("{id}.json")), raw).expect("write raw session");
+    }
+
+    fn dangling_tool_call_messages() -> Vec<Message> {
+        vec![
+            make_test_message("user", "run the thing"),
+            Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::ToolUse {
+                    id: "call_dangling".to_string(),
+                    name: "exec_shell".to_string(),
+                    input: serde_json::json!({"command": "sleep 9999"}),
+                    caller: None,
+                }],
+            },
+            make_test_message("user", "(interrupted)"),
+        ]
+    }
+
+    /// Regression guard for the crash-repair vocabulary: a session persisted
+    /// with an interrupted turn (assistant `tool_use` with no `tool_result`)
+    /// must load WITH a `TOOL_OUTCOME_UNKNOWN` terminator closing the
+    /// dangling call — otherwise the resumed transcript violates provider
+    /// tool_call/tool_result pairing and the next request is rejected.
+    #[test]
+    fn load_session_repairs_interrupted_tool_calls() {
+        let tmp = tempdir().expect("tempdir");
+        let manager = SessionManager::new(tmp.path().join("sessions")).expect("new");
+
+        let session = create_saved_session(
+            &dangling_tool_call_messages(),
+            "test-model",
+            tmp.path(),
+            0,
+            None,
+        );
+        let id = session.metadata.id.clone();
+        manager.save_session(&session).expect("save");
+
+        let loaded = manager.load_session(&id).expect("load");
+        assert!(
+            loaded
+                .messages
+                .iter()
+                .any(|m| m.content.iter().any(|b| matches!(
+                    b,
+                    ContentBlock::ToolResult {
+                        tool_use_id, content, is_error, ..
+                    } if tool_use_id == "call_dangling"
+                        && content.contains("TOOL_OUTCOME_UNKNOWN")
+                        && *is_error == Some(true)
+                ))),
+            "dangling tool call must gain a TOOL_OUTCOME_UNKNOWN terminator: {:?}",
+            loaded.messages
+        );
+        assert!(
+            codesmith_agent_runtime::compaction::compact::tool_call_pairs_balanced(
+                &loaded.messages
+            ),
+            "repaired transcript must be pair-balanced"
+        );
+
+        // Idempotence: re-saving the repaired session and reloading must not
+        // stack a second terminator for the same call.
+        manager.save_session(&loaded).expect("resave");
+        let reloaded = manager.load_session(&id).expect("reload");
+        let terminators = reloaded
+            .messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter(|b| {
+                matches!(
+                    b,
+                    ContentBlock::ToolResult { content, .. } if content.contains("TOOL_OUTCOME_UNKNOWN")
+                )
+            })
+            .count();
+        assert_eq!(terminators, 1, "repair must be idempotent");
+    }
+
+    /// The same repair vocabulary applies to the crash-recovery checkpoint
+    /// (the `--continue` path).
+    #[test]
+    fn load_checkpoint_repairs_interrupted_tool_calls() {
+        let tmp = tempdir().expect("tempdir");
+        let manager = SessionManager::new(tmp.path().join("sessions")).expect("new");
+
+        let session = create_saved_session(
+            &dangling_tool_call_messages(),
+            "test-model",
+            tmp.path(),
+            0,
+            None,
+        );
+        manager.save_checkpoint(&session).expect("save checkpoint");
+
+        let loaded = manager
+            .load_checkpoint()
+            .expect("load checkpoint")
+            .expect("checkpoint present");
+        assert!(
+            loaded.messages.iter().any(|m| {
+                m.content.iter().any(|b| matches!(
+                b,
+                ContentBlock::ToolResult { tool_use_id, content, .. }
+                    if tool_use_id == "call_dangling" && content.contains("TOOL_OUTCOME_UNKNOWN")
+            ))
+            }),
+            "checkpoint repair must close the dangling call"
+        );
+    }
+
+    /// Regression guard for unknown-event tolerance (envelope-level
+    /// `ignorable`): a session file written by a NEWER CodeSmith carrying an
+    /// unknown content-block type must not fail the whole load — the unknown
+    /// block is dropped (diagnosably) and the known blocks survive. Known
+    /// block types stay strictly validated: a malformed known block still
+    /// fails loud.
+    #[test]
+    fn load_session_tolerates_unknown_content_block_types() {
+        let tmp = tempdir().expect("tempdir");
+        let dir = tmp.path().join("sessions");
+        fs::create_dir_all(&dir).expect("mkdir");
+        write_raw_session_record(
+            &dir,
+            "future-block",
+            r#"[
+                { "role": "user", "content": [
+                    { "type": "text", "text": "hello" },
+                    { "type": "future_block", "payload": { "x": 1 } }
+                ]}
+            ]"#,
+            r#", "schema_version": 1"#,
+        );
+
+        let manager = SessionManager::new(dir).expect("new");
+        let loaded = manager
+            .load_session("future-block")
+            .expect("an unknown block type from a newer format must not kill the load");
+        assert_eq!(loaded.messages.len(), 1);
+        assert_eq!(
+            loaded.messages[0].content.len(),
+            1,
+            "unknown block dropped, known block kept"
+        );
+        assert!(matches!(
+            &loaded.messages[0].content[0],
+            ContentBlock::Text { text, .. } if text == "hello"
+        ));
+    }
+
+    /// Version contract pins: the format version is a monotonic constant
+    /// that lives in the persisted header; absent means the oldest shape
+    /// (defaults to 1); newer-than-supported refuses loud (never silently
+    /// misreads).
+    #[test]
+    fn saved_session_serializes_version_into_persistent_header() {
+        let session = create_saved_session(
+            &[make_test_message("user", "hi")],
+            "m",
+            Path::new("/tmp"),
+            0,
+            None,
+        );
+        let json = serde_json::to_string(&session).expect("serialize");
+        assert!(
+            json.contains(&format!(
+                "\"schema_version\":{CURRENT_SESSION_SCHEMA_VERSION}"
+            )),
+            "version constant must be serialized into the persisted header: {json}"
+        );
+    }
+
+    #[test]
+    fn load_session_defaults_absent_schema_version_to_one() {
+        let tmp = tempdir().expect("tempdir");
+        let dir = tmp.path().join("sessions");
+        fs::create_dir_all(&dir).expect("mkdir");
+        write_raw_session_record(
+            &dir,
+            "no-version",
+            r#"[{ "role": "user", "content": [{ "type": "text", "text": "hi" }] }]"#,
+            "",
+        );
+
+        let manager = SessionManager::new(dir).expect("new");
+        let loaded = manager.load_session("no-version").expect("load");
+        assert_eq!(
+            loaded.schema_version, 1,
+            "absent version field = oldest shape (v1)"
+        );
+    }
+
+    #[test]
+    fn load_session_rejects_newer_schema_loudly() {
+        let tmp = tempdir().expect("tempdir");
+        let dir = tmp.path().join("sessions");
+        fs::create_dir_all(&dir).expect("mkdir");
+        write_raw_session_record(
+            &dir,
+            "newer-version",
+            r#"[{ "role": "user", "content": [{ "type": "text", "text": "hi" }] }]"#,
+            r#", "schema_version": 99"#,
+        );
+
+        let manager = SessionManager::new(dir).expect("new");
+        let err = manager
+            .load_session("newer-version")
+            .expect_err("newer-than-supported schema must refuse");
+        assert!(
+            err.to_string().contains("newer"),
+            "refusal must be diagnosable about the version gap: {err}"
+        );
+    }
+
+    /// Sync pin: every `ContentBlock` variant's serialized `type` tag must be
+    /// in `KNOWN_CONTENT_BLOCK_TYPES` — a new variant added to the enum
+    /// without extending the set would make older builds drop the newer
+    /// build's own blocks at load.
+    #[test]
+    fn known_block_types_cover_every_content_block_variant() {
+        fn tag_of(block: &ContentBlock) -> String {
+            serde_json::to_value(block)
+                .expect("serialize block")
+                .get("type")
+                .and_then(|t| t.as_str())
+                .expect("tagged enum carries a type tag")
+                .to_string()
+        }
+        let now = chrono::Utc::now().to_rfc3339();
+        let blocks = vec![
+            ContentBlock::Text {
+                text: "t".into(),
+                cache_control: None,
+            },
+            ContentBlock::Image {
+                source: codesmith_agent::models::ImageSource::Base64 {
+                    media_type: "image/png".into(),
+                    data: "x".into(),
+                },
+            },
+            ContentBlock::Thinking {
+                thinking: "th".into(),
+            },
+            ContentBlock::ToolUse {
+                id: "c".into(),
+                name: "n".into(),
+                input: serde_json::json!({}),
+                caller: None,
+            },
+            ContentBlock::ToolResult {
+                tool_use_id: "c".into(),
+                content: "r".into(),
+                is_error: None,
+                content_blocks: None,
+            },
+            ContentBlock::ServerToolUse {
+                id: "s".into(),
+                name: "n".into(),
+                input: serde_json::json!({}),
+            },
+            ContentBlock::ToolSearchToolResult {
+                tool_use_id: "c".into(),
+                content: serde_json::json!({}),
+            },
+            ContentBlock::CodeExecutionToolResult {
+                tool_use_id: "c".into(),
+                content: serde_json::json!({}),
+            },
+        ];
+        let _ = now;
+        for block in &blocks {
+            let tag = tag_of(block);
+            assert!(
+                KNOWN_CONTENT_BLOCK_TYPES.contains(&tag.as_str()),
+                "ContentBlock tag '{tag}' missing from KNOWN_CONTENT_BLOCK_TYPES"
+            );
+        }
     }
 }
