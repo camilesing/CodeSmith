@@ -2,7 +2,7 @@
 
 CodeSmith 扩展是编译内置或从安装根以 dylib 加载的模块，它们向 agent 循环贡献**工具**、**斜杠命令**与**生命周期事件处理器**，并通过同一注册面贡献 **provider**、**提示词分段**、**技能**、**消息投影**与**工具守卫**。扩展是一个工厂（`impl Extension`），在 `configure` 期间向 `ExtensionApi` 注册自己的贡献项。
 
-> **脚本 Mod。** 同一 `Extension` 契约也由 Rhai 脚本 **Mod** 实现（`~/.codesmith/mods/<id>/mod.toml` + `mod.rhai`）—— 无需编译 Rust 即可获得钩子、工具、斜杠命令与持久 KV，首次激活门控并支持热重载。它们运行在本文档描述的同一套 runner / 接缝 / 重载机制之上。作者指南：[MODS_cn.md](MODS_cn.md)。
+> **脚本 Mod。** 同一 `Extension` 契约也由 Rhai 脚本 **Mod** 实现（`~/.codesmith/mods/<id>/mod.toml` + `mod.rhai`）—— 无需编译 Rust 即可获得钩子、工具、斜杠命令与持久 KV，首次激活门控并支持热重载。它们运行在本文档描述的同一套 runner / 接缝 / 重载机制之上。作者指南：[MODS_cn.md](MODS_cn.md)——其中含"该用哪一层"的逐表面地图（Rhai mod / 内建 Rhai / Rust 扩展）。
 
 宿主在引擎构建时（`build_extension_runtime()`，位于
 `crates/cli/src/core/engine.rs`）组装扩展运行时，并在每次运行时重载

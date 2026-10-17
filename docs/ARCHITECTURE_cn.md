@@ -23,6 +23,15 @@
   三件套——新能力须在同一变更中落齐三个角色；每个
   `ExtensionEventKind` 声明分发模式（`dispatch_mode()`，由契约测试
   锁定）。
+- **插件分层（已声明）。** 可插拔性统一走 `Extension` 契约
+  （`crates/agent/src/extension.rs`）+ `ExtensionRunner`——共四层：用户
+  Rhai mod（`~/.codesmith/mods/`，consent 门控）、内建 Rhai 层（内嵌脚本
+  默认值，`crates/extensions/src/script/builtin.rs`）、编译内置 Rust 扩展
+  （`inventory`）、安装的 Rust dylib（`/extension install` + reload）。
+  新的可插拔行为落在其中一层上——逻辑/数据用 Rhai，异步/IO 用 Rust
+  扩展——而不是新开一个编译期接线点。turn 循环、唯一的 `BASE_PROMPT` 与
+  子代理工具注册表是契约声明的核心，不做插件化（逐表面地图见
+  MODS_cn.md"该用哪一层"）。
 - `crates/cli`（包 `codesmith-cli`，二进制 `codesmith`）是活跃的终端用户运行时：既承载无头（headless）子命令，也承载基于行的交互式 REPL 前端（`crates/cli/src/interactive/` —— ratatui TUI 已在 v0.9.0 移除），并负责运行时 API、任务管理器和工具注册表接线。Agent 执行引擎本身（turn 循环、压缩、沙箱辅助程序、提示词）现在位于 `crates/agent-runtime`；`crates/cli/src/core/` 是一个薄的重导出 + 构造桥接层（`engine.rs` 定义 `EngineHost`/`build_engine`）。
 - 其他工作区 crate 正在逐步拆分，但它们尚不是唯一的运行时事实来源。
 - 启动信任边界的细节记录在 `docs/STARTUP_TRUST_BOUNDARY_AUDIT.md` 中；该审计是信任前与信任后初始化跟进事项的当前参考。
