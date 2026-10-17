@@ -87,7 +87,7 @@ codesmith doctor --json
 | `mcp.present` | bool | Whether MCP config exists |
 | `mcp.servers` | array | Per-server health: `{name, enabled, status, detail}` |
 | `skills.selected` | string | Resolved skills directory |
-| `skills.global.path` / `.present` / `.count` | — | CodeSmith global skills dir (`~/.codesmith/skills`, with legacy `~/.codesmith/skills` support) |
+| `skills.global.path` / `.present` / `.count` | — | CodeSmith global skills dir (default `~/.codesmith/skills`; follows `CODESMITH_HOME` when set) |
 | `skills.agents.path` / `.present` / `.count` | — | Workspace `.agents/skills/` dir |
 | `skills.agents_global.path` / `.present` / `.count` | — | agentskills.io global skills dir (`~/.agents/skills`) |
 | `skills.local.path` / `.present` / `.count` | — | `skills/` dir |

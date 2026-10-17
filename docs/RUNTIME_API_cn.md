@@ -87,7 +87,7 @@ codesmith doctor --json
 | `mcp.present` | bool | MCP 配置是否存在 |
 | `mcp.servers` | array | 每个服务器的健康状态：`{name, enabled, status, detail}` |
 | `skills.selected` | string | 已解析的技能目录 |
-| `skills.global.path` / `.present` / `.count` | — | CodeSmith 全局技能目录（`~/.codesmith/skills`，支持旧版 `~/.codesmith/skills`） |
+| `skills.global.path` / `.present` / `.count` | — | CodeSmith 全局技能目录（默认 `~/.codesmith/skills`；设置 `CODESMITH_HOME` 时随其重定位） |
 | `skills.agents.path` / `.present` / `.count` | — | 工作区 `.agents/skills/` 目录 |
 | `skills.agents_global.path` / `.present` / `.count` | — | agentskills.io 全局技能目录（`~/.agents/skills`） |
 | `skills.local.path` / `.present` / `.count` | — | `skills/` 目录 |
