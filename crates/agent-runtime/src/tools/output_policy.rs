@@ -2,18 +2,16 @@
 //! shell-output truncation). Mechanisms stay here in Rust; the knobs come
 //! from the scriptable policy seam ([`codesmith_agent::policy`]).
 //!
-//! Resolution order at read time: published policy (the runner flushed
-//! builtin + user mods, last-wins) → compiled defaults (below). In a
-//! runner-less context (embeds, unit tests) nothing has flushed, so the
-//! first read seeds the process-global snapshot from the embedded builtin
-//! tier — one implementation of the defaults, two materialization paths.
+//! Resolution order at read time: ambient policy store (the engine's
+//! scope; the runner flushed builtin + user mods into it, last-wins) →
+//! compiled defaults (below). In a runner-less context (embeds, unit
+//! tests) nothing has flushed, so the first read seeds the ambient store
+//! from the embedded builtin tier — one implementation of the defaults,
+//! two materialization paths.
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
 
-use codesmith_agent::policy::{
-    PolicyKind, any_policies_published, policy_usize, policy_usize_map, publish_policies,
-};
+use codesmith_agent::policy::{PolicyKind, PolicyStore, policy_usize, policy_usize_map};
 
 /// Compiled fallback for the diff context radius (the value the builtin
 /// `output-diff` mod also registers — `builtin/output_diff.rhai`).
@@ -65,21 +63,17 @@ const SHELL_OUTPUT_CEILINGS: ShellOutputPolicy = ShellOutputPolicy {
     preserved_total_bytes: 131_072,
 };
 
-/// Seed the process-global policy snapshot from the embedded builtin tier
-/// when nothing was flushed (runner-less contexts). Idempotent; same
-/// process-wide data, so a benign race is harmless.
+/// Seed the ambient policy store from the embedded builtin tier when
+/// nothing was flushed (runner-less contexts). Per-store seeding — each
+/// engine's store materializes the defaults independently, and an
+/// explicit clear stays cleared until the next flush. Idempotent; a
+/// benign race seeds the same defaults twice.
 fn ensure_seeded() {
-    static SEED: OnceLock<()> = OnceLock::new();
-    SEED.get_or_init(|| {
-        if any_policies_published() {
-            return;
-        }
-        publish_policies(
-            codesmith_extensions::builtin_policy_defaults()
-                .into_iter()
-                .collect::<HashMap<PolicyKind, serde_json::Value>>(),
-        );
-    });
+    PolicyStore::ambient().seed_if_empty(
+        codesmith_extensions::builtin_policy_defaults()
+            .into_iter()
+            .collect::<HashMap<PolicyKind, serde_json::Value>>(),
+    );
 }
 
 /// The effective diff context radius.
@@ -197,7 +191,7 @@ pub fn large_output_route_threshold(tool_name: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codesmith_agent::policy::clear_published_policies;
+    use codesmith_agent::policy::{clear_published_policies, publish_policies};
     use serde_json::json;
 
     /// The snapshot is process-global; tests in this module serialize
@@ -234,9 +228,8 @@ mod tests {
     #[test]
     fn override_changes_and_bad_values_fall_back() {
         let _guard = policy_test_lock();
-        // Run the one-time builtin seed to completion before overriding:
-        // a seed that lands after an override would clobber it (the seed
-        // publishes the builtin defaults exactly once per process).
+        // `with_policy` replaces the whole map, so the per-read seed never
+        // races an override (it only fills an empty store).
         let _ = diff_context_radius();
         with_policy(PolicyKind::OutputDiff, json!({"context_radius": 5}));
         assert_eq!(diff_context_radius(), 5);
@@ -266,9 +259,8 @@ mod tests {
         let _guard = policy_test_lock();
         use crate::config_types::WorkshopConfig;
         use crate::tools::large_output_router::{LargeOutputRouter, RouteDecision};
-        // Run the one-time builtin seed to completion before overriding,
-        // so this test is the only snapshot writer from here on (same
-        // posture as the test above).
+        // Prime the ambient (process-default) store so `with_policy`
+        // below is the only writer from here on.
         let _ = large_output_route_threshold("seed-init");
 
         // Script tier alone (TOML silent): global + per-tool entries apply.

@@ -1289,6 +1289,15 @@ pub fn build_engine(
         config.notes_path.clone(),
         config.mcp_config_path.clone(),
     );
+    // Single-engine-per-process host: the engine's policy store IS the
+    // process-default store, so scope-less paths (/memory consolidate,
+    // embeds, tests) read the same set the engine scopes its turns with —
+    // exactly the pre-scoping process-wide behaviour. The runner's
+    // process-default sink is the same store, so its flushes land here
+    // without an explicit bind. A multi-engine host instead keeps each
+    // session's fresh private store and binds each runner to it
+    // (`ExtensionRunner::bind_policy_store`).
+    session.policies = codesmith_agent::policy::PolicyStore::process_default();
     // Set up stable system prompt with project context (default to agent mode).
     let (user_memory_block, knowledge_prompt_block) = if config.kod_enabled {
         let kod_block = crate::memory::compose_kod_block(&config.memory_dir);

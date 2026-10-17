@@ -251,15 +251,21 @@ pub struct ExtensionRunner {
     /// (the engine refolds from the transcript on the next turn).
     message_projection_hub: codesmith_agent::extension::MessageProjectionHubArc,
     /// Resolved data policies (kind → [`codesmith_agent::policy::ResolvedPolicy`]),
-    /// last-wins by registration order at flush; published to the
-    /// process-global snapshot (`codesmith_agent::policy`, source-stripped)
-    /// for the host's mechanism code to read. The source ids stay in this
-    /// map only — the resolved-policy observability view reads it.
+    /// last-wins by registration order at flush; published to the bound
+    /// engine-scoped store (`policy_sink` below, source-stripped) for the
+    /// host's mechanism code to read. The source ids stay in this map
+    /// only — the resolved-policy observability view reads it.
     /// Deliberately NOT first-wins: last-wins is what makes a user mod
     /// override a builtin policy (load order: builtin < global < project).
     policies: Mutex<
         HashMap<codesmith_agent::policy::PolicyKind, codesmith_agent::policy::ResolvedPolicy>,
     >,
+    /// The store the flush publishes into and the reload clear empties
+    /// — the engine's [`PolicyStore`] when a host binds one via
+    /// [`bind_policy_store`](Self::bind_policy_store). Defaults to the
+    /// process-default store, so a standalone runner (tests, embeds
+    /// without an engine) keeps the pre-scoping process-wide behaviour.
+    policy_sink: Mutex<codesmith_agent::policy::PolicyStore>,
     /// Per-mod lifecycle — retained script mods, in load order. Retention
     /// is what makes single-mod unload cheap: `unload_retained_mod` clears
     /// the bound registrations and replays the survivors from these slots
@@ -300,6 +306,7 @@ impl ExtensionRunner {
                 codesmith_agent::extension::MessageProjectionHub::new(),
             ),
             policies: Mutex::new(HashMap::new()),
+            policy_sink: Mutex::new(codesmith_agent::policy::PolicyStore::process_default()),
             mod_slots: Mutex::new(Vec::new()),
             transition_lock: tokio::sync::Mutex::new(()),
         }
@@ -613,15 +620,27 @@ impl ExtensionRunner {
         self.clear_policies();
     }
 
-    /// Data policies — clear the runner's resolved set AND the published
-    /// process-global snapshot (the next flush republishes; mechanism code
-    /// reads compiled defaults in between).
+    /// Point the flush/clear at `store` — the engine host binds the
+    /// session's [`PolicyStore`](codesmith_agent::policy::PolicyStore) so
+    /// this runner's resolved set lands in that engine's scope (the
+    /// un-bound default is the process-default store). Call before the
+    /// first bind/flush of a generation.
+    pub fn bind_policy_store(&self, store: codesmith_agent::policy::PolicyStore) {
+        *self.policy_sink.lock().expect("policy sink lock poisoned") = store;
+    }
+
+    /// Data policies — clear the runner's resolved set AND the bound
+    /// store (the next flush republishes; mechanism code reads compiled
+    /// defaults in between).
     pub fn clear_policies(&self) {
         self.policies
             .lock()
             .expect("policies lock poisoned")
             .clear();
-        codesmith_agent::policy::clear_published_policies();
+        self.policy_sink
+            .lock()
+            .expect("policy sink lock poisoned")
+            .clear();
     }
 
     /// Retain a loaded script mod for per-mod replay. Same-id retain
@@ -871,20 +890,23 @@ impl ExtensionRunner {
         }
         // Data policies: last-wins by registration (drain) order — the
         // load order builtin → global → project resolves overrides before
-        // the values are published. The snapshot gets the source-stripped
-        // kind → config half; the source ids stay in the runner map for
-        // the resolved-policy view.
+        // the values are published. The bound store gets the
+        // source-stripped kind → config half; the source ids stay in the
+        // runner map for the resolved-policy view.
         {
             let mut policies = self.policies.lock().expect("policies lock poisoned");
             for entry in drained.policies {
                 policies.insert(entry.kind, entry);
             }
-            codesmith_agent::policy::publish_policies(
-                policies
-                    .iter()
-                    .map(|(kind, entry)| (*kind, entry.config.clone()))
-                    .collect(),
-            );
+            self.policy_sink
+                .lock()
+                .expect("policy sink lock poisoned")
+                .publish(
+                    policies
+                        .iter()
+                        .map(|(kind, entry)| (*kind, entry.config.clone()))
+                        .collect(),
+                );
         }
         for pp in drained.providers {
             let id = pp.factory.id();
@@ -1046,7 +1068,7 @@ impl ExtensionRunner {
     }
 
     /// The resolved config for one policy kind (the flush-time winner).
-    /// Hosts normally read through the process-global snapshot
+    /// Hosts normally read through the ambient policy store
     /// ([`codesmith_agent::policy::published_policy`]) instead — this is
     /// the introspection/testing view.
     #[must_use]
