@@ -118,10 +118,10 @@ config.toml 的 `[tools].overrides <name> = { type = "disabled" }` 形态
 工具共用 —— `crates/cli/src/mod_ops.rs` →
 `reload_extension_runtime`，`crates/cli/src/core/engine.rs`）：
 
-- 它会重新填充**共享的 runner `Arc`**：`clear_handlers` → `clear_tools` →
-  `clear_commands` → `clear_providers`（丢弃注册 guard）→
-  `clear_prompt_sections` → `clear_skills` →
-  `clear_message_projections` → `drain_libraries_to_pending` →
+- 它会重新填充**共享的 runner `Arc`**：先执行 runner 的清除套件
+  （`clear_bound_registrations`：handlers、tools、commands、已停用的
+  内建命令、providers（丢弃注册 guard）、prompt sections、skills、
+  消息投影、policies）→ `drain_libraries_to_pending` →
   `invalidate`（递增 generation）→ 发现（静态 + dylib）→ 与状态对账 →
   逐个 `load` → `bind_core`（全新的 `HostExtensionContext`）。
   `App.extension_runner` 和 Engine 的字段都会实时更新（没有 `Arc`
