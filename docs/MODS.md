@@ -15,6 +15,33 @@ on("tool-call", |e| {
 
 > Need file/network access or the full Rust ecosystem? That's the other path — Rust extensions (dylib), see [EXTENSIONS.md](EXTENSIONS.md). Both ride the same assembly line; this guide covers Rhai Mods only. 中文版：[MODS_cn.md](MODS_cn.md).
 
+## Which tier when (the pluggable-surface map)
+
+Everything pluggable rides one contract: `Extension`
+(`crates/agent/src/extension.rs`) + the `ExtensionRunner` assembly line.
+Four tiers implement it — user Rhai mods, the builtin Rhai tier (embedded
+script defaults), compiled-in Rust extensions, and installed Rust dylibs —
+and "pluggable" means *registered through one of them at runtime*, not
+wired into the binary at compile time. Which tier fits a given surface:
+
+| Surface | Rhai mod | Builtin Rhai tier | Rust extension | Notes |
+|---|---|---|---|---|
+| Event hooks, tool guards | ✓ `on` / `register_guard` | — | ✓ | load/unload per mod; hook errors fail open |
+| Model-visible tools | ✓ `register_tool` (pure logic — no fs/net natives) | ✓ (scriptable defaults) | ✓ (full IO/async) | main-turn only, all tiers |
+| Slash commands | ✓ `register_command` (shadows built-ins) | — | ✓ | layering user > mod > builtin |
+| Providers | alias only (`register_provider`) | — | ✓ full `ProviderFactory` | a script cannot implement `LlmClient` (no async/net) |
+| Prompt sections, skills | ✓ `register_prompt_section` / `register_skill` | ✓ (defaults) | ✓ | prefix-cache discipline applies |
+| Policies (host-mechanism knobs) | ✓ `register_policy` (last-wins) | ✓ — the defaults ship as builtin mods | ✓ | data, not code; `/mods list` shows resolution |
+| Turn loop, compaction algorithm, `BASE_PROMPT`, sub-agent tool registries | — | — | — | core by declared contract (one turn loop, sole base prompt, built-in-only sub-agent registries) |
+
+Rule of thumb: **logic and data → Rhai** (no recompile, consent-gated,
+sandboxed by the absence of I/O natives); **async, filesystem, network, or
+full-ecosystem work → a Rust extension** (dylib install +
+`/extension reload`); **a new default for an existing host mechanism →
+the builtin Rhai tier** (ships in the binary, user mods override by
+kind). This split is the declared architecture: new pluggable work lands
+on one of these tiers instead of adding another compile-time wiring site.
+
 ## Five-Minute Quick Start
 
 ### Step 1: Create the directory, write two files

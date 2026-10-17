@@ -27,6 +27,17 @@ Current boundary note (v0.9.0):
 seam's triple — a new capability lands all three roles in the same
 change, and every `ExtensionEventKind` declares its dispatch mode
 (`dispatch_mode()`, pinned by a contract test).
+- **Plugin tiers (declared).** Pluggability rides the single `Extension`
+  contract (`crates/agent/src/extension.rs`) + `ExtensionRunner` — four
+  tiers: user Rhai mods (`~/.codesmith/mods/`, consent-gated), the
+  builtin Rhai tier (embedded script defaults,
+  `crates/extensions/src/script/builtin.rs`), compiled-in Rust
+  extensions (`inventory`), and installed Rust dylibs
+  (`/extension install` + reload). New pluggable behavior lands on one
+  of these tiers — logic/data in Rhai, async/IO in a Rust extension —
+  rather than a fresh compile-time wiring site. The turn loop, the sole
+  `BASE_PROMPT`, and sub-agent tool registries are core by contract, not
+  plugins (per-surface map: MODS.md "Which tier when").
 - `crates/cli` (package `codesmith-cli`, binary `codesmith`) is the live end-user runtime: it hosts both the headless subcommands and the line-based interactive REPL frontend (`crates/cli/src/interactive/` — the ratatui TUI was removed in v0.9.0), plus the runtime API, task manager, and tool registry wiring. The agent execution engine itself (turn loop, compaction, sandbox helpers, prompts) now lives in `crates/agent-runtime`; `crates/cli/src/core/` is a thin re-export + construction bridge (`engine.rs` defines `EngineHost`/`build_engine`).
 - Other workspace crates are being split out incrementally, but they are not yet the sole runtime source of truth.
 - Startup trust-boundary details are tracked in `docs/STARTUP_TRUST_BOUNDARY_AUDIT.md`; that audit is the current reference for pre-trust versus post-trust initialization follow-ups.

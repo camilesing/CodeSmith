@@ -15,6 +15,13 @@
 //! included);
 //! `serde_json::Value` fields (`ToolCall.input`, provider `messages`) go
 //! through `rhai::serde::to_dynamic` / `from_dynamic`.
+//!
+//! Known limitations (by design, not accident): callbacks are synchronous
+//! `FnPtr` calls run inline inside the async adapter methods — no await
+//! points, and no wall-clock timeout for ordinary emits (only the
+//! hot-path events carry a dispatch budget, in `callback_bridge`); the
+//! engine registers no fs/net/process natives, so a script mod cannot do
+//! I/O — absence is the sandbox.
 
 use std::sync::{Arc, Mutex};
 

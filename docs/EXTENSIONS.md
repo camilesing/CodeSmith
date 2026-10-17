@@ -13,7 +13,8 @@ contributions against an `ExtensionApi`.
 > hooks, tools, slash commands and persistent KV without compiling Rust,
 > first-activation-gated and hot-reloaded. They ride the exact runner /
 > seam / reload machinery documented here. Author guide:
-> [MODS.md](MODS.md).
+> [MODS.md](MODS.md) — including the per-surface map of which tier
+> (Rhai mod / builtin Rhai / Rust extension) fits which contribution.
 
 The host assembles the extension runtime at engine build
 (`build_extension_runtime()`, `crates/cli/src/core/engine.rs`) and again

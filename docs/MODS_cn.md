@@ -15,6 +15,30 @@ on("tool-call", |e| {
 
 > 需要文件/网络访问或任意 Rust 生态能力？那是另一条路——Rust 扩展（dylib），见 [EXTENSIONS_cn.md](EXTENSIONS_cn.md)。两者共享同一套装配线，本教程只讲 Rhai Mods。English version: [MODS.md](MODS.md)。
 
+## 该用哪一层（可插拔表面地图）
+
+所有可插拔能力都走同一个契约：`Extension`
+（`crates/agent/src/extension.rs`）+ `ExtensionRunner` 装配线。实现它的有四层
+——用户 Rhai mod、内建 Rhai 层（内嵌脚本默认值）、编译内置 Rust 扩展、安装的
+Rust dylib——而"可插拔"的含义是*在运行期经其中一层注册*，而不是编译期焊死在
+二进制里。各表面适配哪一层：
+
+| 表面 | Rhai mod | 内建 Rhai 层 | Rust 扩展 | 备注 |
+|---|---|---|---|---|
+| 事件钩子、工具守卫 | ✓ `on` / `register_guard` | — | ✓ | 按卸载/加载粒度为 mod；钩子错误 fail open |
+| 模型可见工具 | ✓ `register_tool`（纯逻辑——无 fs/net 原生函数） | ✓（可脚本化的默认值） | ✓（完整 IO/异步） | 所有层都仅限主轮 |
+| 斜杠命令 | ✓ `register_command`（遮蔽内建） | — | ✓ | 层序 user > mod > builtin |
+| Provider | 仅别名（`register_provider`） | — | ✓ 完整 `ProviderFactory` | 脚本无法实现 `LlmClient`（无异步/网络） |
+| 提示词分段、技能 | ✓ `register_prompt_section` / `register_skill` | ✓（默认值） | ✓ | 遵守前缀缓存纪律 |
+| 策略（宿主机制旋钮） | ✓ `register_policy`（last-wins） | ✓——默认值本身就是内建 mod | ✓ | 数据而非代码；`/mods list` 显示解析结果 |
+| turn 循环、压缩算法、`BASE_PROMPT`、子代理工具注册表 | — | — | — | 契约声明的核心（唯一 turn 循环、唯一基础提示词、子代理注册表仅内建） |
+
+经验法则：**逻辑与数据 → Rhai**（免重编译、consent 门控、以"无 I/O 原生
+函数"为沙箱）；**异步、文件、网络或完整生态 → Rust 扩展**（dylib 安装 +
+`/extension reload`）；**为既有宿主机制提供新默认值 → 内建 Rhai 层**（随
+二进制分发，用户 mod 按种类覆盖）。这一分层是声明式架构：新的可插拔工作
+落在其中一层上，而不是新增一个编译期接线点。
+
 ## 五分钟上手
 
 ### 第 1 步：建目录，写两个文件
