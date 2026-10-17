@@ -201,6 +201,16 @@ pub struct Session {
     pub circuit_breaker: CompactionCircuitBreaker,
     /// Responsive compact state (consecutive overflow tracking).
     pub responsive_compact_state: ResponsiveCompactState,
+    /// This engine's resolved-policy set (the scriptable policy seam,
+    /// `codesmith_agent::policy`). The engine enters it as the ambient
+    /// scope for its turns, and the extension runner publishes the
+    /// last-wins flush into it — so a process hosting several engines
+    /// reads each engine's own set (see the policy module's scoping
+    /// note). Fresh and private by default; the single-engine CLI host
+    /// re-points it at the process-default store so scope-less paths
+    /// see the same set. Shares through `Clone` like the `Arc`-guarded
+    /// probes above (a clone observes the same policy generation).
+    pub policies: codesmith_agent::policy::PolicyStore,
 }
 
 /// Cumulative usage statistics for a session.
@@ -289,6 +299,7 @@ impl Session {
             session_memory_compact_config: SessionMemoryCompactConfig::default(),
             circuit_breaker: CompactionCircuitBreaker::new(),
             responsive_compact_state: ResponsiveCompactState::new(),
+            policies: codesmith_agent::policy::PolicyStore::new(),
         }
     }
 
