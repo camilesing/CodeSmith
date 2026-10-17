@@ -6190,6 +6190,31 @@ api_key = "old-openrouter-key"
     }
 
     #[test]
+    fn resolve_load_config_path_honors_codesmith_home() {
+        let _lock = lock_test_env();
+        let prev_home = env::var_os("CODESMITH_HOME");
+        let prev_config_path = env::var_os("CODESMITH_CONFIG_PATH");
+        let scratch = tempfile::tempdir().expect("scratch CODESMITH_HOME");
+        unsafe {
+            env::remove_var("CODESMITH_CONFIG_PATH");
+            env::set_var("CODESMITH_HOME", scratch.path());
+        }
+
+        let resolved = resolve_load_config_path(None);
+
+        unsafe {
+            EnvGuard::restore_var("CODESMITH_HOME", prev_home);
+            EnvGuard::restore_var("CODESMITH_CONFIG_PATH", prev_config_path);
+        }
+        assert_eq!(
+            resolved,
+            Some(scratch.path().join("config.toml")),
+            "CODESMITH_HOME is the documented base-data-directory override; \
+             Config::load must read its config.toml, not the real ~/.codesmith one"
+        );
+    }
+
+    #[test]
     fn codesmith_config_path_env_overrides_default() -> Result<()> {
         let _lock = lock_test_env();
         let prev_codesmith = env::var_os("CODESMITH_CONFIG_PATH");
