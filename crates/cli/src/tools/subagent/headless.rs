@@ -578,11 +578,10 @@ mod tests {
 
         // `acp` resolves once the [subagents.acp] command is configured…
         let mut acp_config = config(Some("acp"));
-        acp_config.subagents.as_mut().unwrap().acp =
-            Some(crate::config::AcpSubagentConfig {
-                command: "/bin/echo".to_string(),
-                ..crate::config::AcpSubagentConfig::default()
-            });
+        acp_config.subagents.as_mut().unwrap().acp = Some(crate::config::AcpSubagentConfig {
+            command: "/bin/echo".to_string(),
+            ..crate::config::AcpSubagentConfig::default()
+        });
         let acp = provider_from_config(&acp_config)
             .unwrap()
             .expect("acp resolves to a provider with a command");
