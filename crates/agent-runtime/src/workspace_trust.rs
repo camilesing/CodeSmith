@@ -83,9 +83,15 @@ pub fn default_config_path() -> Option<PathBuf> {
     env_config_path().or_else(home_config_path)
 }
 
-/// Home-directory config path (`~/.codesmith/config.toml`).
+/// Home-directory config path (`~/.codesmith/config.toml`), honoring the
+/// documented `CODESMITH_HOME` base-directory override (CONFIGURATION.md:
+/// "override the base data directory"). Delegating to
+/// `codesmith_config::default_config_path` keeps the engine's config load,
+/// the workspace-trust store (`is_workspace_trusted` /
+/// `save_workspace_trust`), and the `codesmith config` facade resolving the
+/// same file instead of splitting between `$CODESMITH_HOME` and `$HOME`.
 pub fn home_config_path() -> Option<PathBuf> {
-    effective_home_dir().map(|home| home.join(".codesmith").join("config.toml"))
+    codesmith_config::default_config_path().ok()
 }
 
 /// Config path overridden via the `CODESMITH_CONFIG_PATH` environment variable.
@@ -295,7 +301,7 @@ fn tighten_dir_mode_best_effort(dir: &Path) {
 
 #[cfg(test)]
 mod tests {
-    use super::expand_path;
+    use super::{expand_path, home_config_path};
 
     #[cfg(not(windows))]
     #[test]
@@ -304,5 +310,20 @@ mod tests {
         // relative path, not `$HOME/foo`, and must survive expansion
         // untouched so trust-key comparisons don't silently miss.
         assert_eq!(expand_path(r"~\foo").to_str(), Some(r"~\foo"));
+    }
+
+    #[test]
+    fn home_config_path_honors_codesmith_home_override() {
+        let _env = crate::test_support::lock_test_env();
+        let scratch = tempfile::tempdir().expect("scratch CODESMITH_HOME");
+        let _guard =
+            crate::test_support::EnvVarGuard::set("CODESMITH_HOME", scratch.path().as_os_str());
+
+        assert_eq!(
+            home_config_path(),
+            Some(scratch.path().join("config.toml")),
+            "CODESMITH_HOME is the documented base-data-directory override \
+             (CONFIGURATION.md); the config file must resolve under it"
+        );
     }
 }
