@@ -921,8 +921,8 @@ and the capacity controller remains disabled unless configured.
   related persistent sub-agent sessions. Explicit tool `model` values win, then role/type
   overrides, then the parent runtime model. Supported convenience keys are
   `default_model`, `worker_model`, `explorer_model`, `awaiter_model`,
-  `review_model`, `custom_model`, `max_concurrent`, `api_timeout_secs`, and
-  `inherit_full_registry`. The
+  `review_model`, `custom_model`, `max_concurrent`, `api_timeout_secs`,
+  `inherit_full_registry`, and `external_provider`. The
   `[subagents] max_concurrent` value overrides top-level `max_subagents` and is
   also clamped to `1..=20`; `[subagents] api_timeout_secs` controls the
   per-step API timeout for sub-agent model calls and is clamped to `1..=1800`,
@@ -936,6 +936,20 @@ and the capacity controller remains disabled unless configured.
   is unrestricted), so recursive spawning is preserved. Set `true` to restore
   the legacy v0.6.6 behavior where every child inherits the full agent surface
   regardless of the parent's effective set.
+  `[subagents] external_provider` (string, optional, default unset) runs
+  sub-agents out of process. Unset keeps children in-process. `"headless"`
+  runs each non-team child as a `codesmith exec --json` subprocess of the
+  same binary: the role instruction rides `--append-system-prompt`, the
+  parent's model and workspace are forwarded, `--auto` is passed only when
+  the parent itself is auto-approved, and the remaining spawn-depth budget is
+  inherited through `CODESMITH_SUBAGENT_DEPTH` / `CODESMITH_MAX_SPAWN_DEPTH`
+  so recursion stays bounded across processes. Capacity (`max_concurrent`)
+  applies unchanged. Not supported out of process and therefore rejected or
+  kept in-process: `fork_context` (rejected at spawn), `agent_send_input`
+  (fails — the child cannot take follow-up input), and `team` /
+  `coordinator_worker` children (always in-process; they share in-process
+  state). Unknown provider names are rejected at config load. The run
+  timeout for one headless child is fixed at 30 minutes.
   `[subagents.models]` accepts lower-case role or type keys such as `worker`,
   `explorer`, `general`, `explore`, `plan`, and `review`. Values must normalize
   to a supported DeepSeek model id before an agent is spawned.

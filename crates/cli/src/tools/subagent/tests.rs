@@ -2357,6 +2357,7 @@ fn stub_runtime() -> SubAgentRuntime {
         children_read_only: false,
         child_subset_basis: None,
         capability_disabled_tools: std::collections::HashSet::new(),
+        external_provider: None,
     }
 }
 
@@ -3318,4 +3319,277 @@ async fn session_before_fork_cancel_vetoes_grandchild_spawn() {
         "the fork seam fired from the child's registry: {:?}",
         seen.lock().unwrap()
     );
+}
+
+// === External sub-agent provider (seam consumer) ===
+
+/// Mock provider: records every request, optionally blocks on a gate (so a
+/// test can hold an agent slot open), and returns a canned outcome.
+struct MockExternalProvider {
+    seen: std::sync::Mutex<Vec<ExternalSubagentRequest>>,
+    outcome: std::result::Result<ExternalSubagentOutcome, String>,
+    gate: Option<Arc<tokio::sync::Notify>>,
+}
+
+impl MockExternalProvider {
+    fn completed(output: &str, steps: u32) -> Self {
+        Self {
+            seen: std::sync::Mutex::new(Vec::new()),
+            outcome: Ok(ExternalSubagentOutcome {
+                status: SubAgentStatus::Completed,
+                output: output.to_string(),
+                steps_taken: steps,
+                model: Some("deepseek-v4-flash".to_string()),
+            }),
+            gate: None,
+        }
+    }
+
+    fn failing(message: &str) -> Self {
+        Self {
+            seen: std::sync::Mutex::new(Vec::new()),
+            outcome: Err(message.to_string()),
+            gate: None,
+        }
+    }
+
+    fn gated(mut self, gate: Arc<tokio::sync::Notify>) -> Self {
+        self.gate = Some(gate);
+        self
+    }
+}
+
+#[async_trait]
+impl ExternalSubagentProvider for MockExternalProvider {
+    fn name(&self) -> &'static str {
+        "mock"
+    }
+
+    async fn run(
+        &self,
+        request: ExternalSubagentRequest,
+    ) -> anyhow::Result<ExternalSubagentOutcome> {
+        self.seen.lock().unwrap().push(request);
+        if let Some(gate) = &self.gate {
+            gate.notified().await;
+        }
+        self.outcome
+            .clone()
+            .map_err(|message| anyhow::anyhow!(message))
+    }
+}
+
+/// Poll the manager until the agent reaches a terminal state (bounded).
+async fn wait_until_terminal(
+    manager_handle: &SharedSubAgentManager,
+    agent_id: &str,
+) -> SubAgentResult {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let snapshot = {
+            let manager = manager_handle.read().await;
+            manager.get_result(agent_id).expect("agent exists")
+        };
+        if snapshot.status != SubAgentStatus::Running {
+            return snapshot;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "agent {agent_id} never reached a terminal state"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+fn runtime_with_external_provider(provider: Arc<dyn ExternalSubagentProvider>) -> SubAgentRuntime {
+    let mut runtime = stub_runtime().background_runtime();
+    runtime.external_provider = Some(provider);
+    runtime
+}
+
+#[tokio::test]
+async fn external_provider_result_lands_in_manager() {
+    let provider = Arc::new(MockExternalProvider::completed("external says hi", 4));
+    let runtime = runtime_with_external_provider(provider.clone());
+    let manager_handle = runtime.manager.clone();
+
+    let snapshot = {
+        let mut manager = manager_handle.write().await;
+        manager
+            .spawn_background_with_assignment(
+                manager_handle.clone(),
+                runtime.clone(),
+                SubAgentType::Explore,
+                "map the repo".to_string(),
+                SubAgentAssignment::new("map the repo".to_string(), Some("scout".to_string())),
+                None,
+            )
+            .expect("spawn should be accepted")
+    };
+
+    let result = wait_until_terminal(&manager_handle, &snapshot.agent_id).await;
+    assert_eq!(result.status, SubAgentStatus::Completed);
+    assert_eq!(result.result.as_deref(), Some("external says hi"));
+    assert_eq!(result.steps_taken, 4);
+    assert_eq!(result.context_mode, "fresh");
+
+    let seen = provider.seen.lock().unwrap();
+    assert_eq!(seen.len(), 1, "provider must be invoked exactly once");
+    let request = &seen[0];
+    assert_eq!(request.agent_id, snapshot.agent_id);
+    // background_runtime() of a depth-0 stub is the child's own depth.
+    assert_eq!(request.spawn_depth, 1);
+    assert_eq!(request.max_spawn_depth, runtime.max_spawn_depth);
+    assert!(
+        request.system_prompt.contains("exploration sub-agent"),
+        "role instruction must ride the request"
+    );
+    assert!(request.prompt.contains("map the repo"));
+    assert_eq!(request.workspace, runtime.context.workspace);
+    assert!(!request.auto_approve, "stub context is not auto-approved");
+}
+
+#[tokio::test]
+async fn external_provider_failure_marks_agent_failed() {
+    let provider = Arc::new(MockExternalProvider::failing("child exploded"));
+    let runtime = runtime_with_external_provider(provider.clone());
+    let manager_handle = runtime.manager.clone();
+
+    let snapshot = {
+        let mut manager = manager_handle.write().await;
+        manager
+            .spawn_background_with_assignment(
+                manager_handle.clone(),
+                runtime,
+                SubAgentType::General,
+                "do the thing".to_string(),
+                SubAgentAssignment::new("do the thing".to_string(), None),
+                None,
+            )
+            .expect("spawn should be accepted")
+    };
+
+    let result = wait_until_terminal(&manager_handle, &snapshot.agent_id).await;
+    let SubAgentStatus::Failed(error) = result.status else {
+        panic!("expected failure, got {:?}", result.status);
+    };
+    assert!(error.contains("mock"), "{error}");
+    assert!(error.contains("child exploded"), "{error}");
+}
+
+#[tokio::test]
+async fn external_provider_respects_capacity_limit() {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let provider = Arc::new(MockExternalProvider::completed("held", 0).gated(gate.clone()));
+    let mut runtime = stub_runtime();
+    runtime.manager = new_shared_subagent_manager(std::env::temp_dir(), 1);
+    let mut runtime = runtime.background_runtime();
+    runtime.external_provider = Some(provider.clone());
+    let manager_handle = runtime.manager.clone();
+
+    let first = {
+        let mut manager = manager_handle.write().await;
+        manager
+            .spawn_background_with_assignment(
+                manager_handle.clone(),
+                runtime.clone(),
+                SubAgentType::General,
+                "first".to_string(),
+                SubAgentAssignment::new("first".to_string(), None),
+                None,
+            )
+            .expect("first spawn fills the single slot")
+    };
+
+    let second = {
+        let mut manager = manager_handle.write().await;
+        manager.spawn_background_with_assignment(
+            manager_handle.clone(),
+            runtime.clone(),
+            SubAgentType::General,
+            "second".to_string(),
+            SubAgentAssignment::new("second".to_string(), None),
+            None,
+        )
+    };
+    let err = second.expect_err("capacity limit must reject the second spawn");
+    assert!(
+        err.to_string().contains("Sub-agent limit reached"),
+        "{err:#}"
+    );
+
+    gate.notify_one();
+    let result = wait_until_terminal(&manager_handle, &first.agent_id).await;
+    assert_eq!(result.status, SubAgentStatus::Completed);
+    assert_eq!(
+        provider.seen.lock().unwrap().len(),
+        1,
+        "only the admitted spawn may reach the provider"
+    );
+
+    let third = {
+        let mut manager = manager_handle.write().await;
+        manager.spawn_background_with_assignment(
+            manager_handle.clone(),
+            runtime,
+            SubAgentType::General,
+            "third".to_string(),
+            SubAgentAssignment::new("third".to_string(), None),
+            None,
+        )
+    };
+    third.expect("slot freed after completion must accept a new spawn");
+}
+
+#[tokio::test]
+async fn external_provider_rejects_fork_context_at_spawn() {
+    let provider = Arc::new(MockExternalProvider::completed("unused", 0));
+    let runtime = runtime_with_external_provider(provider.clone());
+    let manager_handle = runtime.manager.clone();
+
+    let mut manager = manager_handle.write().await;
+    let err = manager
+        .spawn_background_with_assignment_options(
+            manager_handle.clone(),
+            runtime,
+            SubAgentType::General,
+            "forked task".to_string(),
+            SubAgentAssignment::new("forked task".to_string(), None),
+            None,
+            SubAgentSpawnOptions {
+                fork_context: true,
+                ..SubAgentSpawnOptions::default()
+            },
+        )
+        .expect_err("fork_context must be rejected before the provider runs");
+    assert!(
+        err.to_string().contains("fork_context is not supported"),
+        "{err:#}"
+    );
+    assert!(
+        provider.seen.lock().unwrap().is_empty(),
+        "provider must not run for a rejected spawn"
+    );
+}
+
+#[test]
+fn team_children_bypass_external_provider() {
+    let provider = Arc::new(MockExternalProvider::completed("unused", 0));
+    let runtime = runtime_with_external_provider(provider);
+
+    assert!(external_provider_for(&runtime, &SubAgentType::General).is_some());
+    assert!(external_provider_for(&runtime, &SubAgentType::Explore).is_some());
+    assert!(external_provider_for(&runtime, &SubAgentType::Team).is_none());
+    assert!(
+        external_provider_for(&runtime, &SubAgentType::CoordinatorWorker).is_none(),
+        "coordinator workers share in-process state and stay in-process"
+    );
+}
+
+#[test]
+fn child_runtime_propagates_external_provider() {
+    let provider: Arc<dyn ExternalSubagentProvider> =
+        Arc::new(MockExternalProvider::completed("unused", 0));
+    let runtime = runtime_with_external_provider(provider);
+    assert!(runtime.child_runtime().external_provider.is_some());
 }

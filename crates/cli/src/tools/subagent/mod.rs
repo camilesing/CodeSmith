@@ -72,6 +72,7 @@ use crate::tools::team::{
 use crate::tools::todo::{SharedTodoList, TodoList};
 use crate::utils::spawn_supervised;
 
+pub mod headless;
 pub mod mailbox;
 #[allow(unused_imports)]
 pub use mailbox::{Mailbox, MailboxEnvelope, MailboxMessage, MailboxReceiver};
@@ -369,7 +370,8 @@ fn wrap_with_deprecation_notice(
 /// Re-exported from `codesmith_agent_runtime::subagent` so the engine and
 /// CLI share the same sub-agent taxonomy.
 pub use codesmith_agent_runtime::subagent::{
-    DEFAULT_MAX_SPAWN_DEPTH, SubAgentAssignment, SubAgentCompletion, SubAgentStatus, SubAgentType,
+    DEFAULT_MAX_SPAWN_DEPTH, ExternalSubagentOutcome, ExternalSubagentProvider,
+    ExternalSubagentRequest, SubAgentAssignment, SubAgentCompletion, SubAgentStatus, SubAgentType,
 };
 
 /// Snapshot of sub-agent state for tool results.
@@ -659,6 +661,11 @@ pub struct SubAgentRuntime {
     /// resurrect a tool the user deliberately disabled for the session.
     /// Empty = no manifest restrictions (tests / legacy callers).
     pub capability_disabled_tools: std::collections::HashSet<String>,
+    /// Out-of-process sub-agent provider (`[subagents] external_provider`).
+    /// `None` runs children in-process. When set, every non-team child of
+    /// this runtime is dispatched through it (see [`external_provider_for`]);
+    /// propagated verbatim to descendants.
+    pub external_provider: Option<Arc<dyn ExternalSubagentProvider>>,
 }
 
 impl SubAgentRuntime {
@@ -701,7 +708,19 @@ impl SubAgentRuntime {
             children_read_only: false,
             child_subset_basis: None,
             capability_disabled_tools: std::collections::HashSet::new(),
+            external_provider: None,
         }
+    }
+
+    /// Dispatch this runtime's children through an out-of-process provider
+    /// (`[subagents] external_provider`). `None` keeps the in-process default.
+    #[must_use]
+    pub fn with_external_provider(
+        mut self,
+        provider: Option<Arc<dyn ExternalSubagentProvider>>,
+    ) -> Self {
+        self.external_provider = provider;
+        self
     }
 
     /// Attach an MCP pool so the subagent can execute MCP tools.
@@ -925,6 +944,7 @@ impl SubAgentRuntime {
             // `build_allowed_tools` intersected it.
             child_subset_basis: self.child_subset_basis.clone(),
             capability_disabled_tools: self.capability_disabled_tools.clone(),
+            external_provider: self.external_provider.clone(),
         }
     }
 
@@ -1338,6 +1358,19 @@ impl SubAgentManager {
                 "Sub-agent limit reached (max {}, running {}). Cancel, close, or wait for an existing agent to finish. Consider issuing multiple tool calls in one turn (the dispatcher runs them in parallel) for parallel one-shot work.",
                 self.max_agents,
                 self.running_count()
+            ));
+        }
+
+        // A forked parent context cannot cross a process boundary; reject at
+        // spawn so the caller sees it immediately instead of a failed agent.
+        if options.fork_context
+            && let Some(provider) = external_provider_for(&runtime, &agent_type)
+        {
+            return Err(anyhow!(
+                "fork_context is not supported by the external sub-agent provider '{}': a forked \
+                 parent context cannot cross the process boundary. Spawn without fork_context, or \
+                 unset [subagents] external_provider to run children in-process.",
+                provider.name()
             ));
         }
 
@@ -4721,20 +4754,41 @@ struct SubAgentTask {
 
 #[allow(clippy::too_many_lines)]
 async fn run_subagent_task(task: SubAgentTask) {
-    let result = run_subagent(
-        &task.runtime,
-        task.agent_id.clone(),
-        task.agent_type,
-        task.prompt,
-        task.assignment,
-        task.allowed_tools,
-        task.fork_context,
-        task.agent_memory,
-        task.started_at,
-        task.max_steps,
-        task.input_rx,
-    )
-    .await;
+    let result = match external_provider_for(&task.runtime, &task.agent_type) {
+        Some(provider) => {
+            // Close the input channel up front: an out-of-process child
+            // cannot take follow-up input, so `agent_send_input` fails
+            // loudly instead of queueing messages nobody reads.
+            drop(task.input_rx);
+            run_external_subagent(
+                &task.runtime,
+                provider,
+                task.agent_id.clone(),
+                task.agent_type,
+                task.prompt,
+                task.assignment,
+                task.agent_memory,
+                task.started_at,
+            )
+            .await
+        }
+        None => {
+            run_subagent(
+                &task.runtime,
+                task.agent_id.clone(),
+                task.agent_type,
+                task.prompt,
+                task.assignment,
+                task.allowed_tools,
+                task.fork_context,
+                task.agent_memory,
+                task.started_at,
+                task.max_steps,
+                task.input_rx,
+            )
+            .await
+        }
+    };
 
     // Emit BOTH a human-friendly summary (rendered in the parent's
     // sidebar / cell) AND a structured sentinel the model can recognize
@@ -4890,6 +4944,89 @@ async fn insert_subagent_full_transcript_handle(
     });
     let mut store = runtime.context.runtime.handle_store.lock().await;
     store.insert_json(format!("agent:{agent_id}"), "full_transcript", payload)
+}
+
+/// The provider a child of this runtime is dispatched through, if any.
+/// `Team` and `CoordinatorWorker` children always run in-process: they share
+/// in-process state (team mailbox, task list) that cannot cross a process
+/// boundary.
+fn external_provider_for(
+    runtime: &SubAgentRuntime,
+    agent_type: &SubAgentType,
+) -> Option<Arc<dyn ExternalSubagentProvider>> {
+    if matches!(
+        agent_type,
+        SubAgentType::Team | SubAgentType::CoordinatorWorker
+    ) {
+        return None;
+    }
+    runtime.external_provider.clone()
+}
+
+/// Run one child through an [`ExternalSubagentProvider`] and shape its
+/// outcome like an in-process result. The request carries the same system
+/// prompt and rendered objective the in-process path would install, the
+/// child's depth and cap so the recursion budget is enforced across the hop,
+/// and the parent's approval posture as a ceiling.
+#[allow(clippy::too_many_arguments)]
+async fn run_external_subagent(
+    runtime: &SubAgentRuntime,
+    provider: Arc<dyn ExternalSubagentProvider>,
+    agent_id: String,
+    agent_type: SubAgentType,
+    prompt: String,
+    assignment: SubAgentAssignment,
+    agent_memory: Option<ResolvedAgentMemory>,
+    started_at: Instant,
+) -> Result<SubAgentResult> {
+    let request = ExternalSubagentRequest {
+        agent_id: agent_id.clone(),
+        agent_type: agent_type.clone(),
+        assignment: assignment.clone(),
+        system_prompt: build_subagent_system_prompt(
+            &agent_type,
+            &assignment,
+            agent_memory.as_ref(),
+        ),
+        prompt: build_assignment_prompt(&prompt, &assignment, &agent_type),
+        model: Some(runtime.model.clone()).filter(|model| !model.trim().is_empty()),
+        workspace: runtime.context.workspace.clone(),
+        spawn_depth: runtime.spawn_depth,
+        max_spawn_depth: runtime.max_spawn_depth,
+        auto_approve: runtime.context.auto_approve,
+    };
+    tracing::debug!(
+        target: "subagent",
+        agent_id = %agent_id,
+        provider = provider.name(),
+        depth = runtime.spawn_depth,
+        "dispatching sub-agent to external provider"
+    );
+    // Flatten the provider's error chain into the message: the manager records
+    // `Display` of the failure, which would otherwise drop the root cause.
+    let outcome = provider.run(request).await.map_err(|err| {
+        anyhow!(
+            "external sub-agent provider '{}' failed for {agent_id}: {err:#}",
+            provider.name()
+        )
+    })?;
+    let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+    Ok(SubAgentResult {
+        name: agent_id.clone(),
+        agent_id,
+        context_mode: "fresh".to_string(),
+        fork_context: false,
+        agent_type,
+        assignment,
+        model: outcome.model.unwrap_or_else(|| runtime.model.clone()),
+        nickname: None,
+        status: outcome.status,
+        agent_memory: agent_memory.as_ref().map(AgentMemoryMetadata::from),
+        result: Some(outcome.output),
+        steps_taken: outcome.steps_taken,
+        duration_ms,
+        from_prior_session: false,
+    })
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]

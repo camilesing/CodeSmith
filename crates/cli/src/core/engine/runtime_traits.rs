@@ -200,6 +200,7 @@ impl HostServices for super::EngineHost {
         .with_max_spawn_depth(req.config.max_spawn_depth)
         .with_step_api_timeout(req.config.subagent_api_timeout)
         .with_inherit_full_registry(req.config.subagent_inherit_full_registry)
+        .with_external_provider(req.config.subagent_external_provider.clone())
         .with_capability_disabled_tools(req.config.disabled_tools.clone())
         .with_mcp_pool(req.mcp_pool)
         // A child's path-access questions surface in the UI that spawned it,
@@ -383,6 +384,7 @@ impl HostServices for super::EngineHost {
                         .with_max_spawn_depth(config.max_spawn_depth)
                         .with_step_api_timeout(config.subagent_api_timeout)
                         .with_inherit_full_registry(config.subagent_inherit_full_registry)
+                        .with_external_provider(config.subagent_external_provider.clone())
                         .with_capability_disabled_tools(config.disabled_tools.clone())
                         .with_mcp_pool(mcp_pool.clone())
                         .with_extension_runner(self.extension_runner.clone())
@@ -462,6 +464,7 @@ impl HostServices for super::EngineHost {
                     .with_max_spawn_depth(config.max_spawn_depth)
                     .with_step_api_timeout(config.subagent_api_timeout)
                     .with_inherit_full_registry(config.subagent_inherit_full_registry)
+                    .with_external_provider(config.subagent_external_provider.clone())
                     .with_capability_disabled_tools(config.disabled_tools.clone())
                     .with_mcp_pool(mcp_pool.clone())
                     .with_extension_runner(self.extension_runner.clone())

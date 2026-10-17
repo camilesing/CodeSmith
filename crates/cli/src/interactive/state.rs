@@ -739,6 +739,7 @@ pub fn build_engine_config(state: &ReplState, config: &Config) -> anyhow::Result
         ),
         result_claim_verifier: config.result_claim_verifier(),
         subagent_inherit_full_registry: config.subagent_inherit_full_registry(),
+        subagent_external_provider: crate::tools::subagent::headless::provider_from_config(config)?,
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
         sandbox_runtime: config.sandbox_runtime_config(),
         memory_enabled: config.memory_enabled(),

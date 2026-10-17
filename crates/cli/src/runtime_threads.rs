@@ -2116,6 +2116,9 @@ impl RuntimeThreadManager {
             ),
             result_claim_verifier: self.config.result_claim_verifier(),
             subagent_inherit_full_registry: self.config.subagent_inherit_full_registry(),
+            subagent_external_provider: crate::tools::subagent::headless::provider_from_config(
+                &self.config,
+            )?,
             prefer_bwrap: self.config.prefer_bwrap.unwrap_or(false),
             sandbox_runtime: self.config.sandbox_runtime_config(),
             memory_enabled: self.config.memory_enabled(),

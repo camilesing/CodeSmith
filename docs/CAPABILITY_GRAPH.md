@@ -18,6 +18,7 @@ explaining.
 | `ChatHistory` | `agent` | `agent`, `agent-runtime` | `agent`, `agent-runtime` |
 | `CommandDefinition` | `agent` | `agent`, `extensions` | `agent`, `extensions` |
 | `Extension` | `agent` | `agent-runtime`, `cli`, `extensions`, `extensions-fixture-dylib` | `extensions`, `extensions-fixture-dylib` |
+| `ExternalSubagentProvider` | `agent-runtime` | `cli` | `agent-runtime`, `cli` |
 | `Handler` | `agent` | `agent`, `agent-runtime`, `extensions`, `extensions-fixture-dylib` | `agent`, `extensions` |
 | `HostServices` | `agent-runtime` | `cli` | `agent-runtime`, `cli` |
 | `IndexBackend` | `index` | `index` | `index` |

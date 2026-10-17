@@ -30,6 +30,7 @@
   （`crates/agent-runtime/src/engine/lsp_hooks.rs` + `engine/turn/postprocess.rs`），在每次 edit_file/apply_patch/write_file 之后提供内联诊断。
 - 编排面是持久子代理会话（`agent_open` / `agent_eval` / `agent_close`）和持久 RLM 会话（`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close`）。
   活跃代码库中不再保留任何模型可见的 swarm 工具。
+- 子代理默认在进程内运行；**外部子代理接缝**让子代理在进程外运行而不改变模型可见面。定义：`crates/agent-runtime/src/subagent.rs` 中的 `ExternalSubagentProvider`（及请求/结果类型）；首个 provider：`crates/cli/src/tools/subagent/headless.rs` 的自身 headless provider（每个非 team 子代理变成一个 `codesmith exec --json` 子进程，spawn 深度预算经 `CODESMITH_SUBAGENT_DEPTH` / `CODESMITH_MAX_SPAWN_DEPTH` 继承）；消费者：CLI 的 spawn 路径（`run_subagent_task`），由 `[subagents] external_provider` 选用。fork 上下文、`agent_send_input` 以及 team/coordinator 子代理按设计留在进程内（接缝定义处有文档）。ACP / Codex / Claude Code provider 是该接缝的未来槽位，未建。
 
 ## 高层概览
 
