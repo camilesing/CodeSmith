@@ -11,6 +11,7 @@ description = "Unified agent execution core (engine, turn loop, compaction, sand
 
 [dependencies]
 anyhow.workspace = true
+async-stream = { version = "0.3.6", optional = true }
 async-trait.workspace = true
 chrono.workspace = true
 clap.workspace = true
@@ -67,6 +68,9 @@ pretty_assertions = "1.4"
 tiny_http = "0.12"
 
 [features]
+# Mock LLM client for cross-crate integration tests; in-crate unit tests
+# get it via cfg(test). Never enabled for production artifacts.
+test-support = ["dep:async-stream"]
 # Real tokenizer support (HuggingFace `tokenizers`, BPE/Unigram via
 # tokenizer.json files). Off by default for the portable core; hosts that
 # want exact token counts (`[context].tokenizer_path`) enable this feature.

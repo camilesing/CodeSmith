@@ -15,6 +15,5 @@ pub use codesmith_agent::models::{
 // (llm_client::mock, config tests, runtime_api tests, engine tests).
 #[cfg(test)]
 pub use codesmith_agent::models::{
-    ContentBlockStart, DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS, Delta,
-    LEGACY_MODEL_CONTEXT_WINDOW_TOKENS, MessageDelta, StreamEvent, ToolCaller,
+    DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS, LEGACY_MODEL_CONTEXT_WINDOW_TOKENS, ToolCaller,
 };

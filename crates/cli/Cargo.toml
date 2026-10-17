@@ -81,6 +81,9 @@ wait-timeout = "0.2"
 zeroize = "1.8.2"
 
 [dev-dependencies]
+# Enables agent-runtime's test-support mock module for this crate's unit
+# and integration tests.
+codesmith-agent-runtime = { workspace = true, features = ["test-support"] }
 pretty_assertions = "1.4"
 wiremock = "0.6"
 
