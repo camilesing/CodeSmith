@@ -51,6 +51,10 @@ pub enum PolicyKind {
     /// Explicit `[workshop]` TOML sits above this kind: config values
     /// win, the script tier supplies the default when TOML is silent.
     LargeOutputRoute,
+    /// Working-set sizing: the recent-read-files window the session
+    /// keeps (`recent_read_file_limit`, `recent_read_file_snippet_chars`)
+    /// — retention mechanics (dedup, ordering, eviction) stay in Rust.
+    WorkingSet,
 }
 
 impl PolicyKind {
@@ -63,6 +67,7 @@ impl PolicyKind {
             Self::ShellOutput => "shell-output",
             Self::CompactPolicy => "compact-policy",
             Self::LargeOutputRoute => "large-output-route",
+            Self::WorkingSet => "working-set",
         }
     }
 
@@ -75,6 +80,7 @@ impl PolicyKind {
             "shell-output" => Some(Self::ShellOutput),
             "compact-policy" => Some(Self::CompactPolicy),
             "large-output-route" => Some(Self::LargeOutputRoute),
+            "working-set" => Some(Self::WorkingSet),
             _ => None,
         }
     }
@@ -86,6 +92,7 @@ impl PolicyKind {
         PolicyKind::ShellOutput,
         PolicyKind::CompactPolicy,
         PolicyKind::LargeOutputRoute,
+        PolicyKind::WorkingSet,
     ];
 }
 

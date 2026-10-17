@@ -203,11 +203,7 @@ mod tests {
     /// The snapshot is process-global; tests in this module serialize
     /// through this guard (publish/read/clear as one critical section).
     fn policy_test_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        match LOCK.lock() {
-            Ok(g) => g,
-            Err(poisoned) => poisoned.into_inner(),
-        }
+        crate::policy_test_lock()
     }
 
     fn with_policy(kind: PolicyKind, value: serde_json::Value) {
