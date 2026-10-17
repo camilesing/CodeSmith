@@ -64,6 +64,10 @@ proc-macro2 = { version = "1", optional = true, features = ["span-locations"] }
 tokenizers = { version = "0.23.1", default-features = false, features = ["fancy-regex"], optional = true }
 
 [dev-dependencies]
+# mock_llm (test_support) compiles under plain cfg(test) too; without
+# this the un-featured `cargo test -p codesmith-agent-runtime --lib`
+# cannot resolve `async_stream` (CI's --all-features masked it).
+async-stream = { version = "0.3.6" }
 pretty_assertions = "1.4"
 tiny_http = "0.12"
 
