@@ -362,11 +362,10 @@ composer 文本；PTY dump 中出现任一信号即说明 bug 触发。
 ### 扩展系统交接（源自已删除的 `docs/superpowers/todo.md`）
 
 - dylib 加载与事件/handler 链/热重载阶段已完成。其余阶段按需启动（尚无
-  spec/plan）：**EventBus**
-  真实现（`crates/extensions/src/bus.rs` 的 `subscribe`/`publish`
-  目前返回 `ExtensionError::Unimplemented`）、**registerProvider**、
+  spec/plan）：**registerProvider**、
   **Renderers**、**Shortcut + Flag**、**Embedding API**。
-  热加载永久移除。该文件记录的 flaky 测试基线：
+  **EventBus** 骨架已在零消费者时删除；扩展间发布/订阅只在出现真实
+  需求时回归。热加载永久移除。该文件记录的 flaky 测试基线：
   `streamable_http`（agent-runtime）与 `runtime_api`（cli）——均为既有
   状态，触发时隔离重跑。
 

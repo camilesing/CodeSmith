@@ -10,7 +10,6 @@
 //!   command dispatch lookup.
 //! - [`inventory`]-based static discovery (phase 1; spec §7.1) —
 //!   [`ExtensionRegistration`] / [`discover_static`].
-//! - [`EventBus`] skeleton (spec §10.1; full impl is §F3).
 //! - install-source abstraction **traits** only (impls defer to §F5) —
 //!   [`ExtensionSource`] / [`ExtensionBuilder`] / [`ExtensionPlacer`].
 //!
@@ -23,7 +22,6 @@
 //!
 //! - [`runner`] — `ExtensionRunner` (Task 3)
 //! - [`api`] — `ExtensionApi` stub + real impls (Task 3)
-//! - [`bus`] — `EventBus` skeleton (Task 3)
 //! - [`state`] — `HostExtensionContext` (Task 3)
 //! - [`discovery`] — `inventory` static discovery (Task 4)
 //! - [`install_source`] — install-source traits (Task 4)
@@ -33,7 +31,6 @@
 //! glob re-export are present so the crate compiles cleanly.
 
 pub mod api;
-pub mod bus;
 pub mod discovery;
 pub mod install_source;
 pub mod installer;
@@ -49,7 +46,6 @@ mod test_support;
 
 // Slice-1 runtime re-exports.
 pub use api::{RealExtensionApi, StubExtensionApi};
-pub use bus::EventBus;
 pub use discovery::{
     DiscoveredSource, ExtensionRegistration, apply_trust_gate, discover_dylib, discover_static,
 };

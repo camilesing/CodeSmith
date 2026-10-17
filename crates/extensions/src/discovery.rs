@@ -62,7 +62,8 @@ pub(crate) fn default_dylib_filename(id: &str) -> String {
 /// manifest dir (containing `extension.toml`), or a bare `.dylib`/`.so`/`.dll`
 /// file. Dedups by canonicalized `dylib_path` so a source reached via two
 /// roots loads once. Best-effort: malformed manifests / unreadable dirs are
-/// skipped (§F5c will surface these via the EventBus).
+/// skipped (surfacing them to extensions would need a notification
+/// channel this crate deliberately does not ship).
 pub fn discover_dylib(
     global_roots: &[PathBuf],
     project_roots: &[PathBuf],

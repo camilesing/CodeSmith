@@ -286,8 +286,8 @@ thinking-only / capacity / early-tool-start / subagent）请直接查看模块�
 - **运行时**（`codesmith-extensions`）：`ExtensionRunner`（尽力而为的
   事件扇出、`Arc<AtomicU64>` 陈旧上下文守卫、两阶段
   stub→real `ExtensionApi`）、基于 `inventory` 的静态发现
-  （`discover_static`）、`EventBus` 骨架、install-source
-  trait（实现已在规划中）。
+  （`discover_static`）、install-source trait（实现已在规划中；原
+  `EventBus` 骨架已在零消费者时删除）。
 - **适配器**（`codesmith-agent-runtime`）：`ExtensionToolSpecAdapter` 把
   一个 `Box<dyn ToolDefinition>` 包装成 `ToolSpec`，让 agent 循环看到的
   是一个普通工具（镜像 `ToolSpecAdapter`）；`HostAgentExecutor` 持有
@@ -341,9 +341,10 @@ runner `Arc`；由 `manage_mods` 工具的 reload 动作触发，且由于 runne
 看到更新。
 
 尚未实现：`SessionBeforeSwitch` 的发射点（进程内工作区切换随 TUI 在
-0.9.0 移除）、`EventBus` 实现、`registerProvider`、
+0.9.0 移除）、`registerProvider`、
 `registerShortcut`/`registerFlag`/渲染器、install-source 实现与 embed
-API。热加载永久排除；只有 install + reload。
+API。扩展间发布/订阅不在计划内 —— 其 §F3 `EventBus` 骨架已在零消费者时
+删除。热加载永久排除；只有 install + reload。
 
 ## 当前已接线的内容
 
