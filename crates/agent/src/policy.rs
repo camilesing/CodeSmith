@@ -37,6 +37,23 @@
 //! scope — they read the process default — and a multi-engine host that
 //! builds child engines must hand each child the parent's
 //! [`PolicyStore`] explicitly (construction does not inherit it).
+//! Audited 2026-10-18: no spawn reachable from `Engine::run`
+//! ambient-reads a store today, so no re-entry wrapper exists. The one
+//! spawn on the tool-execution path — the speculative early-tool-start
+//! in `engine/turn/stream.rs` — runs only read-only / non-network /
+//! non-approval specs, and none of those reads policy (read tools cap
+//! output with compiled constants; working-set recording happens
+//! engine-side after the tool returns; large-output routing sits on the
+//! dispatcher path, not the ToolSet-adapter path the spawn uses);
+//! shell-output truncation runs inline on the turn's task on every
+//! live path (the `spawn_blocking` shell wrappers that would lose the
+//! scope serve only the never-sent `Op::StartBackgroundShell` and the
+//! interactive start, whose output is truncated by later inline
+//! polls); and Rhai handlers have no runtime policy-read API (only
+//! `register_policy`), so the blocking-pool emit/hook dispatches read
+//! nothing. If a read-only spec ever starts reading policy, re-enter
+//! the scope at that spawn: capture `PolicyStore::ambient()` before it
+//! and wrap the spawned future in `.scope()`.
 
 use std::collections::HashMap;
 use std::future::Future;
