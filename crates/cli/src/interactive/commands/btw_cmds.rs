@@ -128,6 +128,10 @@ mod tests {
 
     #[test]
     fn the_record_path_lands_in_the_codesmith_home() {
+        // `record_path()` resolves `codesmith_home()` from the process env;
+        // other tests retarget `CODESMITH_HOME` under the env lock, so this
+        // reader holds it too or the full-suite parallel run races.
+        let _guard = crate::test_support::lock_test_env();
         // Resolvable on any machine with a home directory; the command says
         // so out loud when it is not.
         if let Some(path) = record_path() {
