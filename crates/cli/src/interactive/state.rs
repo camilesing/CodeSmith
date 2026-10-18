@@ -107,6 +107,12 @@ pub struct ReplState {
     /// completes; and the context-window budget
     /// (`effective_model_for_budget`) stays keyed on the requested id.
     pub reported_model: Option<String>,
+    /// Failed-attempt bookkeeping accumulated from `Event::TurnComplete`
+    /// (round-3 TODO-42): summary records of this session's failed model
+    /// rounds. Persisted onto `SavedSession::failed_attempts` at the turn
+    /// boundary and re-adopted on resume/`/load`. Log-only — never part of
+    /// `api_messages` or any model request.
+    pub failed_attempts: Vec<codesmith_agent_runtime::session_store::AttemptRecord>,
     pub api_provider: ApiProvider,
     pub model_ids_passthrough: bool,
     pub reasoning_effort: ReasoningEffort,
@@ -327,6 +333,7 @@ impl ReplState {
             auto_model,
             last_effective_model: None,
             reported_model: None,
+            failed_attempts: Vec::new(),
             api_provider: provider,
             model_ids_passthrough,
             reasoning_effort,
@@ -815,6 +822,10 @@ pub async fn resume_session(
     );
     state.session.last_tool_catalog = saved.last_tool_catalog.clone();
     state.session.last_base_url = saved.last_base_url.clone();
+    // Round-3 TODO-42 — failed-attempt bookkeeping survives resume: re-adopt
+    // the persisted records so the next turn-boundary save keeps them
+    // (otherwise every resume+save cycle silently dropped the history).
+    state.failed_attempts = saved.failed_attempts.clone();
     restore_engine_backed_session_state(state, &saved).await;
     let engine = state.engine()?;
     engine
@@ -1009,6 +1020,7 @@ mod restore_tests {
             fact_ledger: None,
             context_references: Vec::new(),
             artifacts: Vec::new(),
+            failed_attempts: Vec::new(),
         };
         restore_engine_backed_session_state(&mut state, &saved).await;
 

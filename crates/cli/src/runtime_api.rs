@@ -2317,6 +2317,7 @@ mod tests {
             system_prompt: None,
             context_references: Vec::new(),
             artifacts: Vec::new(),
+            failed_attempts: Vec::new(),
         }
     }
 
@@ -3040,6 +3041,7 @@ mod tests {
                                 tool_catalog: None,
                                 base_url: None,
                                 reported_model: None,
+                                failed_attempts: Vec::new(),
                             })
                             .await;
                     }
@@ -3056,6 +3058,7 @@ mod tests {
                                 tool_catalog: None,
                                 base_url: None,
                                 reported_model: None,
+                                failed_attempts: Vec::new(),
                             })
                             .await;
                     }
@@ -3215,6 +3218,7 @@ mod tests {
                     tool_catalog: None,
                     base_url: None,
                     reported_model: None,
+                    failed_attempts: Vec::new(),
                 })
                 .await;
         });
@@ -3350,6 +3354,7 @@ mod tests {
                     tool_catalog: None,
                     base_url: None,
                     reported_model: None,
+                    failed_attempts: Vec::new(),
                 })
                 .await;
         });
@@ -3572,6 +3577,7 @@ mod tests {
                     tool_catalog: None,
                     base_url: None,
                     reported_model: None,
+                    failed_attempts: Vec::new(),
                 })
                 .await;
         });

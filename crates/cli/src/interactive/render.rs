@@ -652,6 +652,7 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                 tool_catalog,
                 base_url,
                 reported_model,
+                failed_attempts,
             } => {
                 view.clear_live();
                 // Snapshot the per-turn figures before the accounting pass
@@ -664,6 +665,11 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                     .map(|started| started.elapsed().as_secs_f64())
                     .unwrap_or_default();
                 let turn_error = error.clone();
+                // Round-3 TODO-42 — log-only bookkeeping: fold this turn's
+                // failed model rounds into the session accumulator BEFORE
+                // the turn-boundary persist below copies it onto
+                // `SavedSession`. Never enters `api_messages`.
+                state.failed_attempts.extend(failed_attempts);
                 apply_turn_accounting(
                     state,
                     usage,
@@ -1082,6 +1088,9 @@ fn saved_session_from_state(state: &ReplState) -> Option<crate::session_manager:
     // Keep the persisted record in agreement with state: the `MessageStart`
     // model name alongside the requested id.
     session.metadata.reported_model = state.reported_model.clone();
+    // Round-3 TODO-42 — failed-attempt bookkeeping rides the session record
+    // (log-only; the constructor starts it empty, state owns the accumulate).
+    session.failed_attempts = state.failed_attempts.clone();
     Some(session)
 }
 
@@ -1511,6 +1520,54 @@ async fn handle_elevation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_repl_state() -> ReplState {
+        let options = crate::app_state::InteractiveOptions {
+            model: "test-model".to_string(),
+            workspace: std::env::temp_dir(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            max_subagents: 2,
+            skills_dir: std::env::temp_dir(),
+            memory_path: std::env::temp_dir().join("memory.md"),
+            mcp_config_path: std::env::temp_dir().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+        };
+        ReplState::new(options, &crate::config::Config::default())
+    }
+
+    /// Round-3 TODO-42 — the turn-boundary persist copies the session's
+    /// failed-attempt accumulator onto `SavedSession::failed_attempts`
+    /// (log-only; never part of `api_messages`).
+    #[test]
+    fn saved_session_from_state_carries_failed_attempts() {
+        let _lock = crate::test_support::lock_test_env();
+        let mut state = test_repl_state();
+        state.api_messages = vec![crate::models::Message {
+            role: "user".to_string(),
+            content: vec![crate::models::ContentBlock::Text {
+                text: "hello".to_string(),
+                cache_control: None,
+            }],
+        }];
+        state.failed_attempts = vec![codesmith_agent_runtime::session_store::AttemptRecord {
+            turn_id: "t-1".to_string(),
+            step: 1,
+            error_category: "authentication".to_string(),
+            error_message: "401 unauthorized".to_string(),
+            transparent_retries: 0,
+            partial_content: false,
+            duration_ms: 12,
+        }];
+        let session = saved_session_from_state(&state).expect("session builds");
+        assert_eq!(session.failed_attempts, state.failed_attempts);
+        assert_eq!(session.messages.len(), 1);
+    }
 
     #[test]
     fn composer_edits_on_char_boundaries() {

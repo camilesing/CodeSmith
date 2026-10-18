@@ -3107,6 +3107,9 @@ impl RuntimeThreadManager {
                     // REPL-display data (status-bar model label); the
                     // runtime turn record does not carry it.
                     reported_model: _,
+                    // REPL-persist bookkeeping (SavedSession); the runtime
+                    // turn record does not carry it.
+                    failed_attempts: _,
                 } => {
                     turn_usage = Some(usage);
                     // Event-sourcing slice 2 — stop dropping the envelope:
@@ -4004,6 +4007,7 @@ mod tests {
                         tool_catalog: None,
                         base_url: None,
                         reported_model: None,
+                        failed_attempts: Vec::new(),
                     })
                     .await;
             }
@@ -4299,6 +4303,7 @@ mod tests {
                         tool_catalog: None,
                         base_url: None,
                         reported_model: None,
+                        failed_attempts: Vec::new(),
                     })
                     .await;
                 if turn_index >= 2 {
@@ -4539,6 +4544,7 @@ mod tests {
                 tool_catalog: None,
                 base_url: None,
                 reported_model: None,
+                failed_attempts: Vec::new(),
             })
             .await?;
 
@@ -4638,6 +4644,7 @@ mod tests {
                 tool_catalog: None,
                 base_url: None,
                 reported_model: None,
+                failed_attempts: Vec::new(),
             })
             .await?;
         Ok(())
@@ -4719,6 +4726,7 @@ mod tests {
                 tool_catalog: None,
                 base_url: None,
                 reported_model: None,
+                failed_attempts: Vec::new(),
             })
             .await?;
         Ok(())
@@ -4785,6 +4793,7 @@ mod tests {
                 tool_catalog: None,
                 base_url: None,
                 reported_model: None,
+                failed_attempts: Vec::new(),
             })
             .await?;
 
@@ -4916,6 +4925,7 @@ mod tests {
                 tool_catalog: None,
                 base_url: None,
                 reported_model: None,
+                failed_attempts: Vec::new(),
             })
             .await?;
         Ok(())
@@ -4999,6 +5009,7 @@ mod tests {
                 tool_catalog: None,
                 base_url: None,
                 reported_model: None,
+                failed_attempts: Vec::new(),
             })
             .await?;
 
@@ -5063,6 +5074,7 @@ mod tests {
                         tool_catalog: None,
                         base_url: None,
                         reported_model: None,
+                        failed_attempts: Vec::new(),
                     })
                     .await;
             }
@@ -5176,6 +5188,7 @@ mod tests {
                                 tool_catalog: None,
                                 base_url: None,
                                 reported_model: None,
+                                failed_attempts: Vec::new(),
                             })
                             .await;
                     }
@@ -5209,6 +5222,7 @@ mod tests {
                                 tool_catalog: None,
                                 base_url: None,
                                 reported_model: None,
+                                failed_attempts: Vec::new(),
                             })
                             .await;
                     }

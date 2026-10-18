@@ -946,6 +946,9 @@ impl HostAgentExecutor {
         // Accumulated quota-wall hold time for this request (env-gated; stays
         // zero unless CODESMITH_RATE_LIMIT_HOLD_SECS is set).
         let mut rate_limit_held = std::time::Duration::ZERO;
+        // Round-3 TODO-42 — wall-clock anchor for the failed-attempt record
+        // written at this round's failure exits (retries included).
+        let attempt_started = std::time::Instant::now();
         loop {
             // Adaptive idle window: a provider silence gap that outlasts the
             // base watchdog would kill every fixed-window retry in the exact
@@ -1023,6 +1026,14 @@ impl HostAgentExecutor {
                             self.emit_status("Request cancelled".to_string()).await;
                             return Ok(StreamRoundOutcome::Interrupted);
                         }
+                        self.record_failed_attempt(
+                            step,
+                            &classify_error_message(&message),
+                            message.clone(),
+                            *stream_retry_attempts,
+                            false,
+                            attempt_started,
+                        );
                         return Err(anyhow::anyhow!(message));
                     }
                 }
@@ -1076,6 +1087,16 @@ impl HostAgentExecutor {
                     // output; retrying would double-bill and lose the partial
                     // turn). Reset the budget so a bad prior step doesn't
                     // carry over (mirrors `handle_deepseek_turn`).
+                    // Round-3 TODO-42 — record the failed round BEFORE the
+                    // budget reset so the retries it spent survive.
+                    self.record_failed_attempt(
+                        step,
+                        &classify_error_message(&error),
+                        error.clone(),
+                        *stream_retry_attempts,
+                        true,
+                        attempt_started,
+                    );
                     if *stream_retry_attempts > 0 {
                         crate::retry_status::succeeded();
                     }
@@ -1138,6 +1159,14 @@ impl HostAgentExecutor {
                             *stream_retry_attempts = 0;
                             return Ok(StreamRoundOutcome::RecoveredContextOverflow);
                         }
+                        self.record_failed_attempt(
+                            step,
+                            &category,
+                            error.clone(),
+                            *stream_retry_attempts,
+                            false,
+                            attempt_started,
+                        );
                         return Err(anyhow::anyhow!(
                             "stream failed with non-retryable error ({category}): {error}"
                         ));
@@ -1146,6 +1175,14 @@ impl HostAgentExecutor {
                         category,
                         ErrorCategory::Authentication | ErrorCategory::Authorization
                     ) {
+                        self.record_failed_attempt(
+                            step,
+                            &category,
+                            error.clone(),
+                            *stream_retry_attempts,
+                            false,
+                            attempt_started,
+                        );
                         return Err(anyhow::anyhow!(
                             "stream failed with non-retryable error ({category}): {error}"
                         ));
@@ -1215,6 +1252,14 @@ impl HostAgentExecutor {
                     crate::retry_status::failed(format!(
                         "stream failed ({category}); {MAX_TRANSPARENT_STREAM_RETRIES} retries exhausted"
                     ));
+                    self.record_failed_attempt(
+                        step,
+                        &category,
+                        error.clone(),
+                        *stream_retry_attempts,
+                        false,
+                        attempt_started,
+                    );
                     return Err(anyhow::anyhow!(error));
                 }
             }
@@ -2069,5 +2114,113 @@ mod tests {
                 "wording drifted off the retryable Network category: {message}"
             );
         }
+    }
+
+    // === Round-3 TODO-42 — failed-attempt bookkeeping =========================
+    //
+    // Every failed exit of `stream_with_transparent_retry` must leave a
+    // summary record on the executor (harvested by the engine onto
+    // `Event::TurnComplete`, persisted by the REPL onto `SavedSession`).
+    // `turn_id` stays empty here by contract — the engine stamps it at the
+    // end-of-turn harvest (pinned by the cli engine-level test).
+    use crate::engine::streaming::MAX_TRANSPARENT_STREAM_RETRIES;
+
+    /// An Empty stream whose transparent retries exhaust (Network class)
+    /// fails the turn with exactly one record carrying the retries spent.
+    #[tokio::test]
+    async fn failed_attempt_recorded_when_retries_exhausted() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let rounds = (0..=MAX_TRANSPARENT_STREAM_RETRIES)
+            .map(|_| MockRound::EventsThenErr(Vec::new(), "connection reset by peer".into()))
+            .collect::<Vec<_>>();
+        let mock = std::sync::Arc::new(RetryMockLlm::new(rounds));
+        let executor = stream_test_executor(&mock, codesmith_agent::tools::ToolSet::new());
+
+        let result = executor.run(&mut history, "go".to_string()).await;
+        assert!(result.is_err(), "exhausted retries must fail the turn");
+        assert_eq!(
+            mock.call_counts().len() as u32,
+            MAX_TRANSPARENT_STREAM_RETRIES + 1,
+            "first attempt + every transparent retry"
+        );
+
+        let records = executor.take_failed_attempts();
+        assert_eq!(records.len(), 1, "one record for the failed round");
+        let record = &records[0];
+        assert_eq!(record.error_category, "network");
+        assert_eq!(
+            record.transparent_retries, MAX_TRANSPARENT_STREAM_RETRIES,
+            "the record carries the retries the round spent before dying"
+        );
+        assert!(!record.partial_content);
+        assert_eq!(record.step, 0, "first step of the turn (0-based)");
+        assert!(record.error_message.contains("connection reset"));
+        assert!(
+            record.turn_id.is_empty(),
+            "the engine stamps the turn id at harvest, not the executor"
+        );
+    }
+
+    /// A deterministic auth rejection (Authentication class) hard-fails after
+    /// a single attempt with a record showing zero retries spent.
+    #[tokio::test]
+    async fn auth_failure_recorded_without_retry_burn() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let mock = std::sync::Arc::new(RetryMockLlm::new(vec![MockRound::EventsThenErr(
+            Vec::new(),
+            "401 unauthorized: invalid api key".into(),
+        )]));
+        let executor = stream_test_executor(&mock, codesmith_agent::tools::ToolSet::new());
+
+        let result = executor.run(&mut history, "go".to_string()).await;
+        assert!(result.is_err(), "auth failures are non-retryable");
+        assert_eq!(
+            mock.call_counts().len(),
+            1,
+            "no retry on a deterministic error"
+        );
+
+        let records = executor.take_failed_attempts();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].error_category, "authentication");
+        assert_eq!(records[0].transparent_retries, 0);
+        assert!(!records[0].partial_content);
+    }
+
+    /// A stream death after billed output surfaces as partial content AND
+    /// leaves a record marked `partial_content = true` (the turn itself
+    /// succeeds — the record is log-only bookkeeping, not a failure signal).
+    #[tokio::test]
+    async fn partial_failure_recorded_as_partial_attempt() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let died_after_start_payload = vec![
+            message_start_with_usage(100),
+            StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlockStart::Text {
+                    text: "partial words".to_string(),
+                },
+            },
+        ];
+        let mock = std::sync::Arc::new(RetryMockLlm::new(vec![
+            MockRound::EventsThenErr(died_after_start_payload, "connection reset".into()),
+            MockRound::Events(usage_round(200, 60)),
+        ]));
+        let executor = stream_test_executor(&mock, codesmith_agent::tools::ToolSet::new());
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("billed partial content must surface, not fail the turn");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        let records = executor.take_failed_attempts();
+        assert_eq!(records.len(), 1, "the surfaced partial round is recorded");
+        assert!(records[0].partial_content);
+        assert_eq!(records[0].error_category, "network");
+        assert_eq!(records[0].transparent_retries, 0);
     }
 }

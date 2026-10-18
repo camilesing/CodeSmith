@@ -1140,6 +1140,7 @@ impl Engine {
                     tool_catalog: None,
                     base_url: None,
                     reported_model: turn.reported_model.clone(),
+                    failed_attempts: Vec::new(),
                 })
                 .await;
             return;
@@ -1474,6 +1475,15 @@ impl Engine {
         // requested id — see `ReplState::reported_model`); flows into
         // `Event::TurnComplete.reported_model`.
         turn.reported_model = executor.take_reported_model();
+        // Round-3 TODO-42 — failed-attempt bookkeeping: harvest the turn's
+        // failed model rounds (stamping each with the engine turn id the UI
+        // saw in `TurnStarted`) onto `Event::TurnComplete`; the REPL persists
+        // them onto `SavedSession::failed_attempts`. Log-only — the records
+        // never re-enter a model request.
+        let mut failed_attempts = executor.take_failed_attempts();
+        for record in &mut failed_attempts {
+            record.turn_id.clone_from(&turn.id);
+        }
         // Slice 25a/25c §E: apply the deferred compaction closure. The
         // executor recorded two post-`run` signals during `run`:
         //   • `summary_prompt` (25a) — from the full-compact arms of
@@ -1675,6 +1685,7 @@ impl Engine {
                 tool_catalog: tool_catalog_for_event,
                 base_url: base_url_for_event,
                 reported_model: turn.reported_model,
+                failed_attempts,
             })
             .await;
 
@@ -1823,6 +1834,7 @@ impl Engine {
                     tool_catalog: None,
                     base_url: None,
                     reported_model: None,
+                    failed_attempts: Vec::new(),
                 })
                 .await;
             return;
@@ -1917,6 +1929,7 @@ impl Engine {
                 tool_catalog: None,
                 base_url: None,
                 reported_model: None,
+                failed_attempts: Vec::new(),
             })
             .await;
     }
@@ -1952,6 +1965,7 @@ impl Engine {
                         tool_catalog: None,
                         base_url: None,
                         reported_model: None,
+                        failed_attempts: Vec::new(),
                     })
                     .await;
                 return;
@@ -1970,6 +1984,7 @@ impl Engine {
                         tool_catalog: None,
                         base_url: None,
                         reported_model: None,
+                        failed_attempts: Vec::new(),
                     })
                     .await;
                 return;
@@ -1994,6 +2009,7 @@ impl Engine {
                     tool_catalog: None,
                     base_url: None,
                     reported_model: None,
+                    failed_attempts: Vec::new(),
                 })
                 .await;
             return;
@@ -2018,6 +2034,7 @@ impl Engine {
                     tool_catalog: None,
                     base_url: None,
                     reported_model: None,
+                    failed_attempts: Vec::new(),
                 })
                 .await;
             return;
@@ -2052,6 +2069,7 @@ impl Engine {
                 tool_catalog: None,
                 base_url: None,
                 reported_model: None,
+                failed_attempts: Vec::new(),
             })
             .await;
     }
@@ -2161,6 +2179,7 @@ impl Engine {
                     tool_catalog: None,
                     base_url: None,
                     reported_model: None,
+                    failed_attempts: Vec::new(),
                 })
                 .await;
             return;
@@ -2218,6 +2237,7 @@ impl Engine {
                 tool_catalog: None,
                 base_url: None,
                 reported_model: None,
+                failed_attempts: Vec::new(),
             })
             .await;
     }
