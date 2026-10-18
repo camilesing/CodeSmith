@@ -1085,6 +1085,15 @@ pub struct HostAgentExecutor {
     pub(crate) tool_durations:
         Option<Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>>,
 
+    /// Session id for spillover artifacts written at the Phase-4 transcript
+    /// chokepoint (round-4 TODO-44). `None` (default; embeds/tests that skip
+    /// [`Self::with_session_id`]) ⇒ an oversized successful tool result uses
+    /// the legacy plain spill (`tool_outputs/<tool-id>.txt` + head/footer);
+    /// `Some` (production wire-in passes `session.id`) ⇒ the full
+    /// `apply_spillover_with_artifact` variant also writes the session
+    /// artifact and the model sees an `[artifact: …]` reference block.
+    pub(crate) session_id: Option<String>,
+
     /// Deliverables watchdog (W2 P1-1). `None` (default; embeds/tests) ⇒ no
     /// periodic disk checks. When `Some`, [`run_inner`]'s pre-request seam
     /// checks the deliverable paths every
@@ -1482,6 +1491,7 @@ impl HostAgentExecutor {
             prefix_stability: None,
             result_verifications: None,
             tool_durations: None,
+            session_id: None,
             deliverables: None,
         }
     }
@@ -1653,6 +1663,21 @@ impl HostAgentExecutor {
         durations: Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>,
     ) -> Self {
         self.tool_durations = Some(durations);
+        self
+    }
+
+    /// Opt into session-scoped spillover artifacts (round-4 TODO-44). The
+    /// production wire-in calls this with `Some(session.id.clone())` so an
+    /// oversized successful tool result spilled at the Phase-4 transcript
+    /// chokepoint (`turn::batches`) also lands under
+    /// `~/.codesmith/sessions/<sid>/artifacts/` and the model sees an
+    /// `[artifact: …]` reference block. `None` (embeds/tests that skip it)
+    /// keeps the legacy plain variant — `tool_outputs/<tool-id>.txt` plus a
+    /// head + retrieval footer; `retrieve_tool_result ref=<tool-id>` still
+    /// works. Consumes and returns `self` (builder).
+    #[must_use]
+    pub fn with_session_id(mut self, session_id: Option<String>) -> Self {
+        self.session_id = session_id;
         self
     }
 
@@ -17477,5 +17502,364 @@ mod tests {
         .expect("hold must not hang when children vanish without a sentinel");
         assert_eq!(outcome.expect("run"), StopReason::NoToolCalls);
         let _ = workspace_stamp;
+    }
+
+    // === TODO-44 (round 4): engine-path spillover =========================
+
+    /// Restore guard for the process-global spillover / artifact test roots
+    /// (same pattern as the truncate.rs `with_test_home` helper and the
+    /// tool-impls retrieval tests — engine tests reach the same statics
+    /// through the chokepoint call under test).
+    struct SpillRootsGuard {
+        prior_spill: Option<PathBuf>,
+        prior_artifacts: Option<PathBuf>,
+    }
+
+    impl Drop for SpillRootsGuard {
+        fn drop(&mut self) {
+            crate::tools::truncate::set_test_spillover_root(self.prior_spill.take());
+            crate::artifacts::set_test_artifact_sessions_root(self.prior_artifacts.take());
+        }
+    }
+
+    fn set_spill_roots(spill_root: PathBuf, sessions_root: PathBuf) -> SpillRootsGuard {
+        SpillRootsGuard {
+            prior_spill: crate::tools::truncate::set_test_spillover_root(Some(spill_root)),
+            prior_artifacts: crate::artifacts::set_test_artifact_sessions_root(Some(sessions_root)),
+        }
+    }
+
+    /// A read-only tool whose result body is oversized (over
+    /// `SPILLOVER_THRESHOLD_BYTES`) regardless of input — the shape the
+    /// transcript chokepoint must spill to disk.
+    struct BigOutputSpec {
+        body: String,
+        success: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolSpec for BigOutputSpec {
+        fn name(&self) -> &str {
+            "bigout"
+        }
+        fn description(&self) -> &str {
+            "Returns a fixed body."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult {
+                canonical: None,
+                content: self.body.clone(),
+                success: self.success,
+                metadata: None,
+            })
+        }
+    }
+
+    /// TODO-44 regression: a successful tool result over
+    /// `SPILLOVER_THRESHOLD_BYTES` must spill the full body to disk at the
+    /// transcript chokepoint and feed the model a bounded head plus a
+    /// retrieval pointer. Proven failing on the pre-fix baseline (the §E
+    /// refactor had dropped the engine-side `apply_spillover` call: no spill
+    /// file, full 200 KiB body inline in the transcript).
+    #[allow(clippy::await_holding_lock)] // the spillover-root guard must cover the whole run
+    #[tokio::test]
+    async fn oversized_tool_result_spills_at_transcript_chokepoint() {
+        let _lock = crate::tools::truncate::TEST_SPILLOVER_GUARD
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let tmp = tempdir().expect("tempdir");
+        let spill_root = tmp.path().join("tool_outputs");
+        let _guard = set_spill_roots(spill_root.clone(), tmp.path().join("sessions"));
+
+        let body = "Q".repeat(200 * 1024);
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(BigOutputSpec {
+            body: body.clone(),
+            success: true,
+        }));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> =
+            Arc::new(CallbackBridge::new(None, None, test_template()));
+
+        let mut call1 = text_block(0, "get big");
+        call1.extend(tool_use_block(1, "t1", "bigout", "{}"));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![call1, call2])),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // Full body on disk under the spillover root, keyed by tool-call id
+        // (this is the file `retrieve_tool_result ref=t1` reads back).
+        let spilled = spill_root.join("t1.txt");
+        assert!(spilled.is_file(), "spill file missing: {spilled:?}");
+        assert_eq!(std::fs::read_to_string(&spilled).unwrap(), body);
+
+        // Transcript got a bounded view + retrieval pointer, not the body.
+        match &sess.messages[2].content[0] {
+            ContentBlock::ToolResult { content, .. } => {
+                assert!(
+                    content.contains("Output truncated:"),
+                    "footer missing: {}",
+                    &content[content.len().saturating_sub(300)..]
+                );
+                assert!(content.contains("retrieve_tool_result ref=t1"));
+                assert!(content.len() < body.len());
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    /// TODO-44: with a session id threaded in at construction
+    /// (`.with_session_id`, the production wire-in), the spill additionally
+    /// writes the session artifact and the transcript block becomes the
+    /// `[artifact: …]` reference instead of the head/footer form.
+    #[allow(clippy::await_holding_lock)] // the spillover-root guard must cover the whole run
+    #[tokio::test]
+    async fn oversized_tool_result_with_session_id_writes_artifact_ref() {
+        let _lock = crate::tools::truncate::TEST_SPILLOVER_GUARD
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let tmp = tempdir().expect("tempdir");
+        let spill_root = tmp.path().join("tool_outputs");
+        let _guard = set_spill_roots(spill_root.clone(), tmp.path().join("sessions"));
+
+        let body = "R".repeat(150 * 1024);
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(BigOutputSpec {
+            body: body.clone(),
+            success: true,
+        }));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> =
+            Arc::new(CallbackBridge::new(None, None, test_template()));
+
+        let mut call1 = text_block(0, "get big");
+        call1.extend(tool_use_block(1, "t1", "bigout", "{}"));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![call1, call2])),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_session_id(Some("session-x".to_string()));
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // Session artifact carries the full body.
+        let artifact = tmp
+            .path()
+            .join("sessions")
+            .join("session-x")
+            .join("artifacts")
+            .join("art_t1.txt");
+        assert!(artifact.is_file(), "session artifact missing: {artifact:?}");
+        assert_eq!(std::fs::read_to_string(&artifact).unwrap(), body);
+
+        // The home-level spill is still written so the legacy
+        // `retrieve_tool_result ref=t1` form keeps working.
+        assert!(
+            spill_root.join("t1.txt").is_file(),
+            "legacy home-level spill missing"
+        );
+
+        // Transcript carries the artifact reference block.
+        match &sess.messages[2].content[0] {
+            ContentBlock::ToolResult { content, .. } => {
+                assert!(content.starts_with("[artifact: bigout]"), "got: {content}");
+                assert!(content.contains("id:           art_t1"));
+                assert!(content.contains("tool_call_id: t1"));
+                assert!(content.contains("retrieve_tool_result ref=art_t1"));
+                assert!(!content.contains("Output truncated:"));
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    /// TODO-44 guard: a sub-threshold successful result passes through the
+    /// chokepoint unchanged — no spill file, exact content, no metadata.
+    #[allow(clippy::await_holding_lock)] // the spillover-root guard must cover the whole run
+    #[tokio::test]
+    async fn small_tool_result_passes_through_without_spill() {
+        let _lock = crate::tools::truncate::TEST_SPILLOVER_GUARD
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let tmp = tempdir().expect("tempdir");
+        let spill_root = tmp.path().join("tool_outputs");
+        let _guard = set_spill_roots(spill_root.clone(), tmp.path().join("sessions"));
+
+        let body = "tiny body — nowhere near the threshold".to_string();
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(BigOutputSpec {
+            body: body.clone(),
+            success: true,
+        }));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> =
+            Arc::new(CallbackBridge::new(None, None, test_template()));
+
+        let mut call1 = text_block(0, "get small");
+        call1.extend(tool_use_block(1, "t1", "bigout", "{}"));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![call1, call2])),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        assert!(
+            !spill_root.join("t1.txt").exists(),
+            "small result must not spill"
+        );
+        match &sess.messages[2].content[0] {
+            ContentBlock::ToolResult { content, .. } => {
+                assert_eq!(content, &body);
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    /// TODO-44 guard: an oversized FAILED result passes through whole —
+    /// truncating an error would hide it from the model's reasoning.
+    #[allow(clippy::await_holding_lock)] // the spillover-root guard must cover the whole run
+    #[tokio::test]
+    async fn oversized_error_result_passes_through_without_spill() {
+        let _lock = crate::tools::truncate::TEST_SPILLOVER_GUARD
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let tmp = tempdir().expect("tempdir");
+        let spill_root = tmp.path().join("tool_outputs");
+        let _guard = set_spill_roots(spill_root.clone(), tmp.path().join("sessions"));
+
+        let body = "E".repeat(200 * 1024);
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(BigOutputSpec {
+            body: body.clone(),
+            success: false,
+        }));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> =
+            Arc::new(CallbackBridge::new(None, None, test_template()));
+
+        let mut call1 = text_block(0, "get big error");
+        call1.extend(tool_use_block(1, "t1", "bigout", "{}"));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![call1, call2])),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_session_id(Some("session-x".to_string()));
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        assert!(
+            !spill_root.join("t1.txt").exists(),
+            "error result must not spill"
+        );
+        match &sess.messages[2].content[0] {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
+                assert_eq!(content, &body);
+                assert_eq!(*is_error, Some(true));
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
     }
 }

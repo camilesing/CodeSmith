@@ -1444,6 +1444,11 @@ impl Engine {
         // P3-8 replay cost bound: per-tool-call durations recorded at the
         // transcript chokepoint, read by the post-turn claim verifier.
         .with_tool_durations(Arc::clone(&self.tool_durations))
+        // Round-4 TODO-44: session id for spillover artifacts written at the
+        // transcript chokepoint (`turn::batches`) — `Some` restores the full
+        // `apply_spillover_with_artifact` variant (session artifact +
+        // `[artifact: …]` reference block).
+        .with_session_id(Some(self.session.id.clone()))
         // W2 P1-1: the engine-held deliverables probe (see the lazy init
         // above) — clone shares the re-note schedule across turns.
         .with_deliverables(self.deliverables_probe.clone());

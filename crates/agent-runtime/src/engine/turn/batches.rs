@@ -697,11 +697,11 @@ impl HostAgentExecutor {
         // w.r.t. the prior sequential loop (the loop-guard's failure halt is
         // checked at the (4) seam below, after the tool loop, so deferring
         // `record_outcome` to this pass does not change the halt decision).
-        let ordered: Vec<DispatchedTool> = outcomes
+        let mut ordered: Vec<DispatchedTool> = outcomes
             .into_iter()
             .map(|o| o.expect("every plan slot filled by the batch dispatch"))
             .collect();
-        for o in &ordered {
+        for o in &mut ordered {
             let blocked = o.blocked;
             // loop-guard: track consecutive failures of this tool (warn at
             // 3, halt at 8). A guard-blocked call records no outcome — it
@@ -763,6 +763,40 @@ impl HostAgentExecutor {
                     .lock()
                     .expect("tool_durations poisoned")
                     .insert(o.id.clone(), ms);
+            }
+            // Round-4 TODO-44: spill an oversized successful result before it
+            // enters the transcript — the engine-side call the §E refactor
+            // dropped and `truncate.rs` had kept promising. Runs after
+            // read-file observe / duration recording (they see the original
+            // result) and before the content is pushed, so the model receives
+            // a bounded head plus a retrieval pointer while the full body
+            // lands on disk (`tool_outputs/<tool-id>.txt`, plus a session
+            // artifact when a session id was threaded in at construction —
+            // see `with_session_id`). Error results and sub-threshold results
+            // are untouched; a disk failure degrades to passing the original
+            // content through (never fails the tool call). Not a substitute
+            // for the `large_output_router`: the router summarizes inside
+            // tool execution (workshop-gated) and consumes the oversized
+            // body, while spillover runs engine-side afterwards on whatever
+            // the tool returned and preserves the original bytes.
+            if let Ok(r) = &mut o.result
+                && r.success
+            {
+                let spilled = match self.session_id.as_deref() {
+                    Some(session_id) => crate::tools::truncate::apply_spillover_with_artifact(
+                        r, &o.id, &o.name, session_id,
+                    ),
+                    None => crate::tools::truncate::apply_spillover(r, &o.id),
+                };
+                if let Some(path) = spilled {
+                    tracing::info!(
+                        target: "spillover",
+                        tool = %o.name,
+                        id = %o.id,
+                        path = %path.display(),
+                        "oversized tool result spilled at the transcript chokepoint"
+                    );
+                }
             }
             let (content_str, is_error) = match &o.result {
                 Ok(r) => (

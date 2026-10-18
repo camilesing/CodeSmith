@@ -21,12 +21,34 @@
 //!
 //! ## Live callers
 //!
-//! * [`apply_spillover`] — invoked from the engine's tool-execution
-//!   path (`host_executor.rs`) so any successful tool result over
-//!   [`SPILLOVER_THRESHOLD_BYTES`] spills to disk and the model
-//!   receives a [`SPILLOVER_HEAD_BYTES`] head plus a pointer footer.
+//! * [`apply_spillover`] / [`apply_spillover_with_artifact`] — invoked
+//!   from the engine's tool-execution path: the Phase-4 transcript
+//!   chokepoint in `engine/turn/batches.rs` (restored by round-4 TODO-44;
+//!   the §E refactor had dropped the call, leaving this promise stale).
+//!   Any successful tool result over [`SPILLOVER_THRESHOLD_BYTES`]
+//!   spills to disk and the model receives a [`SPILLOVER_HEAD_BYTES`]
+//!   head plus a pointer footer — or, when the executor carries a
+//!   session id (`.with_session_id`, production wire-in), the artifact
+//!   reference block from `apply_spillover_with_artifact`.
 //! * Boot prune in `main.rs` deletes files older than
 //!   [`SPILLOVER_MAX_AGE`].
+//!
+//! ## Known limitations
+//!
+//! * The engine chokepoint is not a substitute for the
+//!   `large_output_router`: the router summarizes an oversized result
+//!   inside tool execution (workshop-gated) and consumes the body, while
+//!   spillover runs engine-side afterwards, on whatever the tool
+//!   returned, and preserves the original bytes. Order in practice is
+//!   router-then-spill — a routed result is a summary and normally under
+//!   the threshold; it spills only if it still exceeds it.
+//! * Shell results arrive pre-truncated to the `shell-output` policy
+//!   budget (30 KB inline), well under [`SPILLOVER_THRESHOLD_BYTES`], so
+//!   the shell family's own spill (`shell_output.rs`) remains its writer.
+//! * The `tool.spillover` audit event from the #500 polish is not
+//!   restored — the chokepoint logs a `tracing` INFO (target
+//!   `spillover`) instead; the audit face today is
+//!   `cli/src/audit.rs::log_sensitive_event` only.
 //!
 //! UI-side rendering of the inline `full output: <path>` annotation
 //! was owned by `tui/history.rs::render_spillover_annotation` (retired with
@@ -317,7 +339,6 @@ pub const SPILLOVER_HEAD_BYTES: usize = 32 * 1024;
 /// Error results (`success == false`) are skipped: error messages
 /// are typically short, and turning them into a "see file" pointer
 /// would just hide the error from the model's reasoning.
-#[allow(dead_code)]
 pub fn apply_spillover(result: &mut ToolResult, tool_id: &str) -> Option<PathBuf> {
     apply_spillover_inner(result, tool_id, None)
 }
