@@ -38,6 +38,9 @@ fn build_saved_session(state: &ReplState) -> crate::session_manager::SavedSessio
         Some(state.mode.label()),
     );
     sync_cost_to_metadata(state, &mut session.metadata);
+    // Round-3 TODO-42 — failed-attempt bookkeeping rides the explicit save
+    // too, so `/save` and the turn-boundary autosave persist the same record.
+    session.failed_attempts = state.failed_attempts.clone();
     session
 }
 
@@ -380,6 +383,9 @@ async fn adopt_loaded_session(
     state.session.last_reasoning_replay_tokens = None;
     state.current_session_id = Some(session.metadata.id.clone());
     state.system_prompt = session.system_prompt.map(SystemPrompt::Text);
+    // Round-3 TODO-42 — adopted sessions keep their failed-attempt records,
+    // so a `/load` + save cycle does not silently drop them.
+    state.failed_attempts = session.failed_attempts.clone();
     if let Ok(engine) = state.engine() {
         let _ = engine
             .send(Op::SyncSession {
@@ -639,5 +645,91 @@ pub fn rename(state: &mut ReplState, arg: Option<&str>) {
     match manager.save_session(&session) {
         Ok(_) => println!("session renamed to \"{new_title}\""),
         Err(e) => println!("{} could not save session: {e}", "✗".red()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // The env lock spans the async body by the same convention as the
+    // engine tests (core/engine/tests.rs header): the guard is deliberately
+    // held across await points on the current-thread runtime.
+    #![allow(clippy::await_holding_lock)]
+
+    use super::*;
+
+    fn test_repl_state() -> ReplState {
+        let options = crate::app_state::InteractiveOptions {
+            model: "test-model".to_string(),
+            workspace: std::env::temp_dir(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            max_subagents: 2,
+            skills_dir: std::env::temp_dir(),
+            memory_path: std::env::temp_dir().join("memory.md"),
+            mcp_config_path: std::env::temp_dir().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+        };
+        ReplState::new(options, &crate::config::Config::default())
+    }
+
+    fn saved_with_failed_attempt() -> crate::session_manager::SavedSession {
+        let mut session = crate::session_manager::SavedSession {
+            schema_version: 1,
+            metadata: codesmith_agent_runtime::session_store::SessionMetadata {
+                id: "sess-load".to_string(),
+                title: "load adoption".to_string(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+                message_count: 0,
+                total_tokens: 0,
+                model: "test-model".to_string(),
+                reported_model: None,
+                workspace: std::env::temp_dir(),
+                mode: None,
+                cost: Default::default(),
+                parent_session_id: None,
+                forked_from_message_count: None,
+                cumulative_turn_secs: 0,
+            },
+            messages: Vec::new(),
+            system_prompt: None,
+            last_tool_catalog: None,
+            last_base_url: None,
+            fact_ledger: None,
+            context_references: Vec::new(),
+            artifacts: Vec::new(),
+            failed_attempts: Vec::new(),
+        };
+        session.failed_attempts = vec![codesmith_agent_runtime::session_store::AttemptRecord {
+            turn_id: "t-9".to_string(),
+            step: 3,
+            error_category: "network".to_string(),
+            error_message: "connection reset by peer".to_string(),
+            transparent_retries: 3,
+            partial_content: false,
+            duration_ms: 880,
+        }];
+        session
+    }
+
+    /// Round-3 TODO-42 — `/load` adopts the saved session's failed-attempt
+    /// records, so a load + save cycle keeps them (the same one-line
+    /// adoption `resume_session` performs at startup).
+    #[tokio::test]
+    async fn load_adopts_failed_attempt_records() {
+        let _lock = crate::test_support::lock_test_env();
+        let mut state = test_repl_state();
+        adopt_loaded_session(&mut state, saved_with_failed_attempt()).await;
+        assert_eq!(
+            state.failed_attempts.len(),
+            1,
+            "loading a session must adopt its failed-attempt records"
+        );
+        assert_eq!(state.failed_attempts[0].turn_id, "t-9");
     }
 }

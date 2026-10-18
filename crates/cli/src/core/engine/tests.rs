@@ -4155,6 +4155,51 @@ async fn collect_until_turn_complete(handle: &EngineHandle) -> Vec<Event> {
     events
 }
 
+/// Round-3 TODO-42 — a turn whose model round hard-fails carries the
+/// failed-attempt record on `Event::TurnComplete`, stamped with the turn id
+/// the UI saw in `TurnStarted` (the REPL persists the record onto
+/// `SavedSession::failed_attempts`; it never enters the transcript). The
+/// empty-queue mock error carries no taxonomy keyword, so the record
+/// classifies as `internal`.
+#[tokio::test]
+async fn failed_turn_reports_attempt_record_on_turn_complete() {
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    let (handle, _mock) = spawn_engine_with_mock(
+        test_engine_config(tmp.path()),
+        MockLlmClient::new(Vec::new()),
+    );
+    handle.send(make_send_op("hello")).await.expect("send op");
+    let events = collect_until_turn_complete(&handle).await;
+
+    let started_id = events
+        .iter()
+        .find_map(|event| match event {
+            Event::TurnStarted { turn_id } => Some(turn_id.clone()),
+            _ => None,
+        })
+        .expect("TurnStarted precedes the failed turn's completion");
+    let record = events
+        .iter()
+        .find_map(|event| match event {
+            Event::TurnComplete {
+                status: TurnOutcomeStatus::Failed,
+                failed_attempts,
+                ..
+            } if !failed_attempts.is_empty() => Some(failed_attempts[0].clone()),
+            _ => None,
+        })
+        .expect("failed TurnComplete carries the failed-attempt record");
+    assert_eq!(
+        record.turn_id, started_id,
+        "the engine stamps the record with the TurnStarted id"
+    );
+    assert_eq!(record.error_category, "internal");
+    assert_eq!(record.step, 0, "first step of the turn (0-based)");
+    assert!(!record.partial_content);
+    assert!(!record.error_message.is_empty());
+}
+
 // === Record → replay round trip (dev plan capability 1+2) ==================
 
 /// The keyless-replay proof: a recording made against a mock client is a

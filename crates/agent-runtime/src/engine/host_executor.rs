@@ -1247,6 +1247,18 @@ pub struct HostAgentExecutor {
     /// `await`.
     reported_model: std::sync::Mutex<Option<String>>,
 
+    /// Failed-attempt bookkeeping (round-3 TODO-42): summary records of this
+    /// turn's model rounds that died without usable content or surfaced
+    /// billed partial content, written at the failure exits of
+    /// [`stream_with_transparent_retry`](Self::stream_with_transparent_retry).
+    /// The host reads them back via
+    /// [`HostAgentExecutor::take_failed_attempts`] after `run` returns and
+    /// surfaces them on [`Event::TurnComplete`]; the REPL persists them onto
+    /// `SavedSession`. Log-only — never enters the transcript or a model
+    /// request. `std::sync::Mutex` for the same reason as
+    /// [`Self::usage`]: synchronous pushes, never held across an `await`.
+    failed_attempts: std::sync::Mutex<Vec<crate::session_store::AttemptRecord>>,
+
     /// `result.summary_prompt` from `run_compaction` / `recover_context_overflow`
     /// (slice 25a §E) — accumulated across a turn's compactions via
     /// [`crate::compaction::merge_system_prompts`] (mirrors production's
@@ -1453,6 +1465,7 @@ impl HostAgentExecutor {
             reinject: None,
             usage: std::sync::Mutex::new(Usage::default()),
             reported_model: std::sync::Mutex::new(None),
+            failed_attempts: std::sync::Mutex::new(Vec::new()),
             pending_compaction_summary: std::sync::Mutex::new(None),
             pending_post_compact_cleanup: std::sync::Mutex::new(false),
             capacity_gate: None,
@@ -1678,6 +1691,52 @@ impl HostAgentExecutor {
             .reported_model
             .lock()
             .expect("reported_model mutex poisoned") = Some(model);
+    }
+
+    /// Read back the failed-attempt records accumulated by this turn's model
+    /// rounds (round-3 TODO-42). The host calls this after `run` returns,
+    /// stamps each record with the engine turn id, and surfaces them on
+    /// [`Event::TurnComplete`]; the REPL persists them onto `SavedSession`.
+    /// Mirrors the [`take_usage`] read-back pattern (fresh executor per turn,
+    /// so no cross-turn leakage).
+    ///
+    /// [`take_usage`]: HostAgentExecutor::take_usage
+    #[must_use]
+    pub fn take_failed_attempts(&self) -> Vec<crate::session_store::AttemptRecord> {
+        std::mem::take(
+            &mut *self
+                .failed_attempts
+                .lock()
+                .expect("failed_attempts mutex poisoned"),
+        )
+    }
+
+    /// Record one failed model round (round-3 TODO-42). Called from the
+    /// failure exits of [`stream_with_transparent_retry`](Self::stream_with_transparent_retry)
+    /// (`turn/stream` submodule, hence `pub(crate)`). `turn_id` is left
+    /// empty here — the engine stamps it at the end-of-turn harvest, so the
+    /// record carries the id the UI saw in `Event::TurnStarted`.
+    pub(crate) fn record_failed_attempt(
+        &self,
+        step: u32,
+        category: &crate::error_taxonomy::ErrorCategory,
+        message: String,
+        transparent_retries: u32,
+        partial_content: bool,
+        started: std::time::Instant,
+    ) {
+        self.failed_attempts
+            .lock()
+            .expect("failed_attempts mutex poisoned")
+            .push(crate::session_store::AttemptRecord {
+                turn_id: String::new(),
+                step,
+                error_category: category.to_string(),
+                error_message: message,
+                transparent_retries,
+                partial_content,
+                duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            });
     }
 
     /// Read back the accumulated compaction `summary_prompt` recorded by

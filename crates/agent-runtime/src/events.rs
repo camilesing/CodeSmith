@@ -201,6 +201,12 @@ pub enum Event {
         /// none. In practice it repeats the requested id; a gateway alias is
         /// labelled through `[providers.<id>] display_model`.
         reported_model: Option<String>,
+        /// Failed-attempt records produced by this turn's model rounds
+        /// (round-3 TODO-42) — log-only bookkeeping the REPL persists onto
+        /// `SavedSession::failed_attempts`; never enters a model request.
+        /// Empty for turn completions without a failing model round
+        /// (compaction commands, early config failures, synthesized events).
+        failed_attempts: Vec<crate::session_store::AttemptRecord>,
     },
 
     /// Context compaction started.

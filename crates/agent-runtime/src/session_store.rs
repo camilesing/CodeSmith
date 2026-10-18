@@ -334,6 +334,38 @@ impl SessionMetadata {
     }
 }
 
+/// Summary-level record of one failed model attempt in a turn (round-3
+/// TODO-42): a stream round that died without usable content (transparent
+/// retries exhausted, deterministic auth/invalid-input rejection, pre-stream
+/// hard fail) or surfaced billed partial content. Log-only bookkeeping —
+/// persisted on [`SavedSession::failed_attempts`] so a restart can answer
+/// "which turns failed, why, how many retries"; never enters the transcript
+/// or a model request (the dsh `assistant/attempt` contract, summary level).
+///
+/// Known limitations: summary only — no per-stream events (stream-level
+/// detail belongs to the opt-in record/replay path); only the main-session
+/// executor records attempts (sub-agent, compaction-command and hunt flows
+/// emit `TurnComplete` without records); the one-shot `exec` path receives
+/// the records on the event but does not persist them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AttemptRecord {
+    /// Engine-minted turn id (matches `Event::TurnStarted`); stamped by the
+    /// engine at the end-of-turn harvest, not by the executor.
+    pub turn_id: String,
+    /// 0-based step index within the turn (one model request per step).
+    pub step: u32,
+    /// Error-taxonomy label (`ErrorCategory` display string, e.g. "network").
+    pub error_category: String,
+    /// The failed round's terminal error message.
+    pub error_message: String,
+    /// Transparent retries spent before the round gave up.
+    pub transparent_retries: u32,
+    /// Whether the failed round surfaced billed partial content (no retry).
+    pub partial_content: bool,
+    /// Wall-clock duration of the failed round, retries included (ms).
+    pub duration_ms: u64,
+}
+
 /// A saved session containing full conversation history
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedSession {
@@ -367,6 +399,12 @@ pub struct SavedSession {
     /// Artifact contents are stored in the session-owned artifact directory.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<ArtifactRecord>,
+    /// Failed-attempt bookkeeping (round-3 TODO-42): summary records of this
+    /// session's model rounds that failed. Log-only — never part of the
+    /// transcript or any model request. Empty on sessions saved before the
+    /// field existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed_attempts: Vec<AttemptRecord>,
 }
 
 /// File-backed [`SessionStore`] provider: one pretty-JSON
@@ -1019,6 +1057,7 @@ pub fn create_saved_session_with_id_and_mode(
         system_prompt: system_prompt_to_string(system_prompt),
         context_references: Vec::new(),
         artifacts: Vec::new(),
+        failed_attempts: Vec::new(),
     }
 }
 
@@ -1304,6 +1343,49 @@ mod tests {
         assert!(parsed.last_tool_catalog.is_none());
         assert!(parsed.last_base_url.is_none());
         assert!(parsed.fact_ledger.is_none());
+        assert!(
+            parsed.failed_attempts.is_empty(),
+            "sessions saved before the failed-attempt field load with no records"
+        );
+    }
+
+    /// Round-3 TODO-42 — failed-attempt records survive a save/load
+    /// round-trip, and the field is omitted (not `[]`) when empty, so the
+    /// persisted shape stays identical to pre-TODO-42 sessions.
+    #[test]
+    fn failed_attempts_round_trip_and_empty_omission() {
+        let record = AttemptRecord {
+            turn_id: "t-1".to_string(),
+            step: 2,
+            error_category: "network".to_string(),
+            error_message: "connection reset by peer".to_string(),
+            transparent_retries: 3,
+            partial_content: false,
+            duration_ms: 421,
+        };
+        let mut session = create_saved_session(
+            &[make_test_message("user", "hello")],
+            "m",
+            std::path::Path::new("/tmp"),
+            0,
+            None,
+        );
+        session.failed_attempts.push(record.clone());
+        let json = serde_json::to_value(&session).expect("serialize");
+        let records = json
+            .get("failed_attempts")
+            .and_then(|v| v.as_array())
+            .expect("records serialize");
+        assert_eq!(records.len(), 1);
+        let back: SavedSession = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back.failed_attempts, vec![record]);
+
+        session.failed_attempts.clear();
+        let empty_json = serde_json::to_value(&session).expect("serialize");
+        assert!(
+            empty_json.get("failed_attempts").is_none(),
+            "empty records must be omitted, keeping the legacy JSON shape"
+        );
     }
 
     fn make_test_message(role: &str, text: &str) -> Message {
@@ -1347,6 +1429,7 @@ mod tests {
             system_prompt: None,
             context_references: Vec::new(),
             artifacts: Vec::new(),
+            failed_attempts: Vec::new(),
         };
         manager.save_session(&session).expect("save");
     }
@@ -1382,6 +1465,7 @@ mod tests {
             system_prompt: None,
             context_references: Vec::new(),
             artifacts: Vec::new(),
+            failed_attempts: Vec::new(),
         };
         manager.save_session(&session).expect("save empty");
     }
