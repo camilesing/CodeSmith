@@ -815,7 +815,7 @@ pub async fn resume_session(
     );
     state.session.last_tool_catalog = saved.last_tool_catalog.clone();
     state.session.last_base_url = saved.last_base_url.clone();
-    restore_engine_backed_session_state(state, &saved);
+    restore_engine_backed_session_state(state, &saved).await;
     let engine = state.engine()?;
     engine
         .send(Op::SyncSession {
@@ -835,11 +835,36 @@ pub async fn resume_session(
 }
 
 /// Port of `restore_engine_backed_session_state` (tui/ui.rs): rebuild the
-/// engine-side working set and fact ledger from the resumed messages.
-fn restore_engine_backed_session_state(
+/// REPL-side projections from the resumed messages.
+///
+/// Restore checklist for the resume path (this runs *before* `Op::SyncSession`):
+/// - todo list / plan state — fold rebuild here (round-3 TODO-38; the Arcs
+///   live on `ReplState` and are shared with `EngineConfig`, so the next
+///   turn's tools see the restored state);
+/// - recent read files — fold rebuild into the engine surface;
+/// - fact ledger — snapshot restore (non-foldable once compaction drops the
+///   source messages: foldable state becomes a projection, non-foldable a
+///   snapshot);
+/// - working set + canonical capacity state — engine-side, rebuilt by the
+///   `Op::SyncSession` handler that follows this call.
+///
+/// Known limitation: every rebuild is an O(transcript) full fold; incremental
+/// projection checkpoints are deliberately not built (round-3 plan §2.1) —
+/// revisit only if long-session resume cost is observed as a problem.
+async fn restore_engine_backed_session_state(
     state: &mut ReplState,
     session: &crate::session_manager::SavedSession,
 ) {
+    // todo/plan: fold rebuilds from the resumed transcript. Not gated on the
+    // engine — the shared Arcs outlive any single engine instance.
+    *state.todos.lock().await =
+        codesmith_agent_runtime::tool_state::todo::TodoList::rebuild_from_messages(
+            &state.api_messages,
+        );
+    *state.plan_state.lock().await =
+        codesmith_agent_runtime::tool_state::plan::PlanState::rebuild_from_messages(
+            &state.api_messages,
+        );
     if let Some(files) = state
         .engine
         .as_ref()
@@ -858,5 +883,147 @@ fn restore_engine_backed_session_state(
     {
         let mut guard = ledger.lock().unwrap_or_else(|e| e.into_inner());
         *guard = session.fact_ledger.clone().unwrap_or_default();
+    }
+}
+
+#[cfg(test)]
+mod restore_tests {
+    // The env lock spans the async body by the same convention as the
+    // engine tests (core/engine/tests.rs header): the guard is deliberately
+    // held across await points on the current-thread runtime.
+    #![allow(clippy::await_holding_lock)]
+
+    use super::*;
+
+    /// Regression (round-3 TODO-38): resuming a session must rebuild the
+    /// todo/plan projections from the transcript. The original wiring lived
+    /// in the retired tui crate's `apply_loaded_session`; the REPL port
+    /// (`restore_engine_backed_session_state`) only carried over
+    /// recent_read_files and fact_ledger, so resume silently started the
+    /// todo list and plan from empty. The Arcs restored here are the same
+    /// ones `ReplState` shares with `EngineConfig` (see `EngineConfig`
+    /// construction), so the next turn's tools see the rebuilt state.
+    #[tokio::test]
+    async fn resume_restore_rebuilds_todo_and_plan_projections() {
+        let _lock = crate::test_support::lock_test_env();
+        fn options() -> crate::app_state::InteractiveOptions {
+            crate::app_state::InteractiveOptions {
+                model: "test-model".to_string(),
+                workspace: std::env::temp_dir(),
+                config_path: None,
+                config_profile: None,
+                allow_shell: false,
+                max_subagents: 2,
+                skills_dir: std::env::temp_dir(),
+                memory_path: std::env::temp_dir().join("memory.md"),
+                mcp_config_path: std::env::temp_dir().join("mcp.json"),
+                use_memory: false,
+                start_in_agent_mode: true,
+                yolo: false,
+                resume_session_id: None,
+                initial_input: None,
+            }
+        }
+        fn tool_result(id: &str) -> codesmith_agent::models::ContentBlock {
+            codesmith_agent::models::ContentBlock::ToolResult {
+                tool_use_id: id.to_string(),
+                content: "ok".to_string(),
+                is_error: Some(false),
+                content_blocks: None,
+            }
+        }
+        // Transcript with executed todo_write + update_plan calls: each
+        // ToolUse is paired with a non-error ToolResult, which is what
+        // `executed_tool_call_ids` (the fold's execution gate) requires.
+        let messages = vec![
+            codesmith_agent::models::Message {
+                role: "assistant".to_string(),
+                content: vec![codesmith_agent::models::ContentBlock::ToolUse {
+                    id: "t1".to_string(),
+                    name: "todo_write".to_string(),
+                    input: serde_json::json!({
+                        "todos": [
+                            {"content": "wire the restore", "status": "in_progress"},
+                            {"content": "verify the fold", "status": "pending"}
+                        ]
+                    }),
+                    caller: None,
+                }],
+            },
+            codesmith_agent::models::Message {
+                role: "user".to_string(),
+                content: vec![tool_result("t1")],
+            },
+            codesmith_agent::models::Message {
+                role: "assistant".to_string(),
+                content: vec![codesmith_agent::models::ContentBlock::ToolUse {
+                    id: "p1".to_string(),
+                    name: "update_plan".to_string(),
+                    input: serde_json::json!({
+                        "explanation": "resume keeps the plan",
+                        "plan": [
+                            {"step": "restore projections", "status": "completed"},
+                            {"step": "run the suite", "status": "pending"}
+                        ]
+                    }),
+                    caller: None,
+                }],
+            },
+            codesmith_agent::models::Message {
+                role: "user".to_string(),
+                content: vec![tool_result("p1")],
+            },
+        ];
+
+        let config = crate::config::Config::default();
+        let mut state = ReplState::new(options(), &config);
+        state.adopt_saved_session(
+            "sess-restore",
+            messages.clone(),
+            None,
+            "test-model".to_string(),
+        );
+        let saved = crate::session_manager::SavedSession {
+            // v1 — matches the private CURRENT_SESSION_SCHEMA_VERSION.
+            schema_version: 1,
+            metadata: codesmith_agent_runtime::session_store::SessionMetadata {
+                id: "sess-restore".to_string(),
+                title: "restore regression".to_string(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+                message_count: messages.len(),
+                total_tokens: 0,
+                model: "test-model".to_string(),
+                reported_model: None,
+                workspace: std::env::temp_dir(),
+                mode: None,
+                cost: Default::default(),
+                parent_session_id: None,
+                forked_from_message_count: None,
+                cumulative_turn_secs: 0,
+            },
+            messages,
+            system_prompt: None,
+            last_tool_catalog: None,
+            last_base_url: None,
+            fact_ledger: None,
+            context_references: Vec::new(),
+            artifacts: Vec::new(),
+        };
+        restore_engine_backed_session_state(&mut state, &saved).await;
+
+        let todos = state.todos.lock().await;
+        assert_eq!(
+            todos.snapshot().items.len(),
+            2,
+            "resume must rebuild the todo list from the transcript"
+        );
+        drop(todos);
+        let plan = state.plan_state.lock().await;
+        assert_eq!(
+            plan.steps().len(),
+            2,
+            "resume must rebuild the plan state from the transcript"
+        );
     }
 }
