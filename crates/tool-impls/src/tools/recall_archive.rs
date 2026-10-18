@@ -31,7 +31,9 @@ use codesmith_agent_runtime::tools::spec::{
 
 const DEFAULT_MAX_RESULTS: usize = 3;
 const HARD_MAX_RESULTS: usize = 10;
-const CONTEXT_WINDOW_CHARS: usize = 240;
+/// Excerpt window shared with the cross-session search tool (round-3
+/// TODO-43) — both tools quote the same shape of hit context.
+pub(crate) const CONTEXT_WINDOW_CHARS: usize = 240;
 
 /// BM25 hyper-parameters. Standard defaults from the literature.
 const K1: f64 = 1.5;
@@ -282,8 +284,10 @@ fn load_messages(
     Ok((docs, skipped))
 }
 
-/// Concatenate all text-bearing content blocks of a message.
-fn message_text(message: &Message) -> String {
+/// Concatenate all text-bearing content blocks of a message. Shared with
+/// the cross-session search tool (round-3 TODO-43) — both scan `Message`
+/// transcripts and must extract the same text.
+pub(crate) fn message_text(message: &Message) -> String {
     let mut out = String::new();
     let mut push = |s: &str| {
         if !out.is_empty() {
@@ -321,8 +325,9 @@ fn message_text(message: &Message) -> String {
 }
 
 /// Lower-case, split on non-alphanumerics, drop short tokens. Same recipe as
-/// most lightweight BM25 implementations.
-fn tokenize(text: &str) -> Vec<String> {
+/// most lightweight BM25 implementations. Shared with the cross-session
+/// search tool (round-3 TODO-43).
+pub(crate) fn tokenize(text: &str) -> Vec<String> {
     text.to_ascii_lowercase()
         .split(|c: char| !c.is_alphanumeric())
         .filter(|s| s.len() >= 2)
@@ -330,20 +335,28 @@ fn tokenize(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Score documents against a query using BM25, return the top-N.
-fn score_bm25(docs: &[ArchivedDoc], query_tokens: &[String], max_results: usize) -> Vec<RecallHit> {
+/// BM25-rank a corpus of pre-tokenized documents against a query. Returns
+/// `(document index, score)` pairs, score-descending, zero-score documents
+/// dropped, truncated to `max_results`. The generic ranking core shared by
+/// `recall_archive` and the cross-session search tool (round-3 TODO-43) —
+/// callers map indices to their own hit shapes and cut excerpts.
+pub(crate) fn bm25_rank(
+    docs: &[&[String]],
+    query_tokens: &[String],
+    max_results: usize,
+) -> Vec<(usize, f64)> {
     if docs.is_empty() || query_tokens.is_empty() {
         return Vec::new();
     }
 
     let n = docs.len() as f64;
-    let avgdl: f64 = docs.iter().map(|d| d.tokens.len() as f64).sum::<f64>() / n.max(1.0);
+    let avgdl: f64 = docs.iter().map(|d| d.len() as f64).sum::<f64>() / n.max(1.0);
 
     let term_counts: Vec<HashMap<&str, u32>> = docs
         .iter()
-        .map(|d| {
+        .map(|tokens| {
             let mut counts: HashMap<&str, u32> = HashMap::new();
-            for token in &d.tokens {
+            for token in *tokens {
                 *counts.entry(token.as_str()).or_insert(0) += 1;
             }
             counts
@@ -360,13 +373,14 @@ fn score_bm25(docs: &[ArchivedDoc], query_tokens: &[String], max_results: usize)
         df.insert(token.as_str(), count);
     }
 
-    let mut scored: Vec<(f64, &ArchivedDoc)> = docs
+    let mut scored: Vec<(f64, usize)> = docs
         .iter()
         .zip(&term_counts)
-        .map(|(doc, counts)| {
+        .enumerate()
+        .map(|(idx, (tokens, counts))| {
             (
-                bm25_doc_score(counts, doc.tokens.len(), query_tokens, &df, n, avgdl),
-                doc,
+                bm25_doc_score(counts, tokens.len(), query_tokens, &df, n, avgdl),
+                idx,
             )
         })
         .filter(|(score, _)| *score > 0.0)
@@ -377,12 +391,24 @@ fn score_bm25(docs: &[ArchivedDoc], query_tokens: &[String], max_results: usize)
 
     scored
         .into_iter()
-        .map(|(score, doc)| RecallHit {
-            cycle: doc.cycle,
-            message_index: doc.message_index,
-            role: doc.role.clone(),
-            score: round_score(score),
-            excerpt: best_window(&doc.text, query_tokens, CONTEXT_WINDOW_CHARS),
+        .map(|(score, idx)| (idx, score))
+        .collect()
+}
+
+/// Score documents against a query using BM25, return the top-N.
+fn score_bm25(docs: &[ArchivedDoc], query_tokens: &[String], max_results: usize) -> Vec<RecallHit> {
+    let token_sets: Vec<&[String]> = docs.iter().map(|d| d.tokens.as_slice()).collect();
+    bm25_rank(&token_sets, query_tokens, max_results)
+        .into_iter()
+        .map(|(idx, score)| {
+            let doc = &docs[idx];
+            RecallHit {
+                cycle: doc.cycle,
+                message_index: doc.message_index,
+                role: doc.role.clone(),
+                score: round_score(score),
+                excerpt: best_window(&doc.text, query_tokens, CONTEXT_WINDOW_CHARS),
+            }
         })
         .collect()
 }
@@ -413,14 +439,17 @@ fn bm25_doc_score(
     score
 }
 
-fn round_score(score: f64) -> f64 {
+/// Round a BM25 score for presentation. Shared with the cross-session
+/// search tool (round-3 TODO-43).
+pub(crate) fn round_score(score: f64) -> f64 {
     (score * 1000.0).round() / 1000.0
 }
 
 /// Find the substring of `text` of at most `window_chars` characters that
 /// contains the densest cluster of query tokens. Returns it with `…` markers
 /// when truncated. Falls back to a head-of-text excerpt when no tokens hit.
-fn best_window(text: &str, query_tokens: &[String], window_chars: usize) -> String {
+/// Shared with the cross-session search tool (round-3 TODO-43).
+pub(crate) fn best_window(text: &str, query_tokens: &[String], window_chars: usize) -> String {
     let lower = text.to_ascii_lowercase();
     let mut hit_positions: Vec<usize> = Vec::new();
     for token in query_tokens {

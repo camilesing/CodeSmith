@@ -238,8 +238,12 @@ pub(super) fn build_turn_tool_registry_builder_for(
             .with_parallel_tool();
     }
 
-    // User input and recall archive are needed for all modes.
-    builder = builder.with_user_input_tool().with_recall_archive_tool();
+    // User input, recall archive, and cross-session content search
+    // (round-3 TODO-43) are needed for all modes.
+    builder = builder
+        .with_user_input_tool()
+        .with_recall_archive_tool()
+        .with_session_search_tool();
 
     // SlopLedger: plan gets read-only, agent/yolo get the full set.
     // Coordinator skips slop_ledger entirely — it has no direct tools.

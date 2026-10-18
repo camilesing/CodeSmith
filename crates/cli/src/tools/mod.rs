@@ -48,6 +48,7 @@ pub use codesmith_tool_impls::tools::remember;
 pub use codesmith_tool_impls::tools::revert_turn;
 pub use codesmith_tool_impls::tools::review;
 pub use codesmith_tool_impls::tools::rlm;
+pub use codesmith_tool_impls::tools::session_search;
 pub mod schema_sanitize;
 pub use codesmith_tool_impls::tools::search;
 pub use codesmith_tool_impls::tools::symbols;

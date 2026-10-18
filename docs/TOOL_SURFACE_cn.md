@@ -164,6 +164,7 @@ reload/reconnect。配置编辑会立即写入，但编辑后对模型可见的 
 |---|---|
 | `review` | 对文件、git diff 或 GitHub pull request 运行结构化代码审查。 |
 | `recall_archive` | 在先前的上下文周期中搜索当前简报里没有的内容。请节制使用——频繁召回说明简报太稀疏。 |
+| `search_sessions` | 按内容(BM25)搜索本工作区的历史会话转录,返回带会话 id 与标题的匹配摘录。懒扫描、无索引;仅限同工作区会话。 |
 | `knowledge_recall` | 按关键字搜索 Knowledge On Demand 记忆文件。仅在启用 KoD 时注册。 |
 
 ### 文档与媒体

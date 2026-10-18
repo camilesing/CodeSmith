@@ -4155,6 +4155,34 @@ async fn collect_until_turn_complete(handle: &EngineHandle) -> Vec<Event> {
     events
 }
 
+/// Round-3 TODO-43 — the model-visible tool catalog includes the
+/// cross-session content search tool (`search_sessions`), registered for
+/// every mode by the per-turn tool setup (lazy scan over saved session
+/// transcripts, workspace-scoped).
+#[tokio::test]
+async fn model_tool_catalog_includes_session_search() {
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    let mock = MockLlmClient::new(vec![canned::simple_text_turn("ok")]);
+    let (handle, _m) = spawn_engine_with_mock(test_engine_config(tmp.path()), mock);
+    handle.send(make_send_op("hello")).await.expect("send op");
+    let events = collect_until_turn_complete(&handle).await;
+    let catalog = events
+        .iter()
+        .find_map(|event| match event {
+            Event::TurnComplete {
+                tool_catalog: Some(catalog),
+                ..
+            } => Some(catalog.clone()),
+            _ => None,
+        })
+        .expect("TurnComplete carries the turn's tool catalog");
+    assert!(
+        catalog.iter().any(|tool| tool.name == "search_sessions"),
+        "the model-visible catalog must include the cross-session content search tool"
+    );
+}
+
 /// Round-3 TODO-42 — a turn whose model round hard-fails carries the
 /// failed-attempt record on `Event::TurnComplete`, stamped with the turn id
 /// the UI saw in `TurnStarted` (the REPL persists the record onto

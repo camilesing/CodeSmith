@@ -173,6 +173,7 @@ Registered only when the `agent_teams` feature flag is enabled.
 |---|---|
 | `review` | Run a structured code review for a file, git diff, or GitHub pull request. |
 | `recall_archive` | Search prior context cycles for content not in the current briefing. Use sparingly — frequent recalls mean the briefing was too sparse. |
+| `search_sessions` | Search past session transcripts in this workspace by content (BM25), returning matching excerpts with session id and title. Lazy scan — no index; same-workspace sessions only. |
 | `knowledge_recall` | Search Knowledge On Demand memory files by keyword. Registered only when KoD is enabled. |
 
 ### Documents and media
