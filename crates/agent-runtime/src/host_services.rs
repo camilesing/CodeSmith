@@ -68,6 +68,22 @@ pub trait LspManagerApi: Send + Sync {
     /// the LSP server is unavailable or reports nothing — failure is silent
     /// by design so a crashing LSP never blocks the agent.
     async fn diagnostics_for(&self, file: &Path, edit_seq: u64) -> Option<DiagnosticBlock>;
+
+    /// Issue one read-only navigation request (`textDocument/definition`,
+    /// `textDocument/references`, `textDocument/hover`) against the LSP
+    /// server for `file`'s language, syncing `file`'s document
+    /// (didOpen/didChange) first (round-4 TODO-45). `params` carries the
+    /// request position in LSP wire form (0-based); the implementation fills
+    /// in `textDocument.uri`. Returns `None` when navigation is unavailable —
+    /// LSP disabled, no server for the language, the file unreadable, or the
+    /// request failed/timed out — and `Some(value)` for any server answer
+    /// (`null` / an empty array are valid answers, not unavailability).
+    async fn navigation_request(
+        &self,
+        file: &Path,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Option<serde_json::Value>;
 }
 
 /// Terminal-agnostic background-task registry surface.

@@ -4610,6 +4610,14 @@ mod tests {
                 .push((file.to_path_buf(), edit_seq));
             self.diagnostics.clone()
         }
+        async fn navigation_request(
+            &self,
+            _file: &Path,
+            _method: &str,
+            _params: serde_json::Value,
+        ) -> Option<serde_json::Value> {
+            None
+        }
     }
 
     /// A `SubAgentApi` test double with a configurable sequence of

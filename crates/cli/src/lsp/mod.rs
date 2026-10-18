@@ -36,6 +36,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde_json::{Value, json};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::timeout;
 
@@ -187,6 +188,72 @@ impl LspManager {
         }
     }
 
+    /// Read-only navigation request (round-4 TODO-45): sync `file`'s
+    /// document (didOpen/didChange) and issue one JSON-RPC request
+    /// (`textDocument/definition` / `references` / `hover`). `params`
+    /// carries the request position in wire form; the document URI is
+    /// filled in here (URI encoding is transport-side knowledge). Returns
+    /// `None` when unavailable — disabled, unknown language, unreadable
+    /// file, no server, or the request failed/timed out — and
+    /// `Some(result)` for any server answer.
+    ///
+    /// Known limitation: every call re-syncs the document (a didChange with
+    /// the full text once the file was opened) — correctness over
+    /// bandwidth; see `lsp_navigate`'s known-limitations note.
+    pub async fn navigation_request(
+        &self,
+        file: &Path,
+        method: &str,
+        params: Value,
+    ) -> Option<Value> {
+        if !self.config.enabled {
+            return None;
+        }
+        let lang = registry::detect_language(file);
+        if lang == Language::Other {
+            return None;
+        }
+
+        let text = match tokio::fs::read_to_string(file).await {
+            Ok(text) => text,
+            Err(err) => {
+                tracing::debug!(?err, file = %file.display(), "lsp: read file failed");
+                return None;
+            }
+        };
+
+        let transport = self.transport_for(lang).await?;
+
+        // didOpen-on-demand: a zero-wait diagnostics call performs the
+        // didOpen/didChange document sync through the transport's single
+        // document-sync path and returns before waiting (the wait loop's
+        // first deadline check breaks out immediately).
+        if let Err(err) = transport.diagnostics_for(file, &text, Duration::ZERO).await {
+            tracing::debug!(?err, file = %file.display(), "lsp: document sync failed");
+            return None;
+        }
+
+        // Fill in the document URI the caller cannot build.
+        let mut params = params;
+        let obj = params.as_object_mut()?;
+        let text_document = obj
+            .entry("textDocument")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()?;
+        text_document.insert(
+            "uri".to_string(),
+            Value::String(client::uri_from_path(file)),
+        );
+
+        match transport.request(method, params).await {
+            Ok(result) => Some(result),
+            Err(err) => {
+                tracing::debug!(?err, method, file = %file.display(), "lsp: navigation request failed");
+                None
+            }
+        }
+    }
+
     /// Resolve (and lazily spawn) the transport for `lang`. Tests can
     /// short-circuit this via `install_test_transport` (cfg-test only).
     async fn transport_for(&self, lang: Language) -> Option<Arc<dyn LspTransport>> {
@@ -270,13 +337,17 @@ impl LspManager {
 pub(crate) mod tests {
     use super::*;
     use async_trait::async_trait;
+    use std::collections::VecDeque;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Fake transport: returns a fixed list of diagnostics. Used by
     /// integration tests so we never spawn a real LSP server in CI.
+    /// `navigation_request` tests script the generic-request path through
+    /// `with_responses` (popped in order; an empty queue fails).
     pub(crate) struct FakeTransport {
         items: Vec<Diagnostic>,
         calls: AtomicUsize,
+        responses: AsyncMutex<VecDeque<Result<Value, anyhow::Error>>>,
     }
 
     impl FakeTransport {
@@ -284,6 +355,18 @@ pub(crate) mod tests {
             Self {
                 items,
                 calls: AtomicUsize::new(0),
+                responses: AsyncMutex::new(VecDeque::new()),
+            }
+        }
+
+        pub(crate) fn with_responses(
+            items: Vec<Diagnostic>,
+            responses: Vec<Result<Value, anyhow::Error>>,
+        ) -> Self {
+            Self {
+                items,
+                calls: AtomicUsize::new(0),
+                responses: AsyncMutex::new(VecDeque::from(responses)),
             }
         }
 
@@ -302,6 +385,15 @@ pub(crate) mod tests {
         ) -> anyhow::Result<Vec<Diagnostic>> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             Ok(self.items.clone())
+        }
+
+        async fn request(&self, method: &str, _params: Value) -> anyhow::Result<Value> {
+            match self.responses.lock().await.pop_front() {
+                Some(response) => response,
+                None => Err(anyhow::anyhow!(
+                    "fake transport: no scripted response for `{method}`"
+                )),
+            }
         }
 
         async fn shutdown(&self) {}
@@ -503,5 +595,150 @@ pub(crate) mod tests {
         let cfg = LspConfig::default();
         let (cmd, _) = cfg.resolve_command(Language::Rust).unwrap();
         assert_eq!(cmd, "rust-analyzer");
+    }
+
+    // === round-4 TODO-45: navigation_request =================================
+
+    #[tokio::test]
+    async fn navigation_request_returns_none_when_disabled() {
+        let mgr = LspManager::new(
+            LspConfig {
+                enabled: false,
+                ..LspConfig::default()
+            },
+            PathBuf::from("/tmp"),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("foo.rs");
+        tokio::fs::write(&path, b"fn main() {}").await.unwrap();
+        assert!(
+            mgr.navigation_request(&path, "textDocument/hover", json!({}))
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn navigation_request_returns_none_for_unknown_language() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = LspManager::new(LspConfig::default(), dir.path().to_path_buf());
+        let path = dir.path().join("notes.txt");
+        tokio::fs::write(&path, b"hi").await.unwrap();
+        assert!(
+            mgr.navigation_request(&path, "textDocument/hover", json!({}))
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn navigation_request_syncs_document_and_returns_scripted_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = LspManager::new(LspConfig::default(), dir.path().to_path_buf());
+        let path = dir.path().join("foo.rs");
+        tokio::fs::write(&path, b"fn main() {}").await.unwrap();
+
+        let fake = Arc::new(FakeTransport::with_responses(
+            Vec::new(),
+            vec![Ok(json!([
+                { "uri": "file:///elsewhere/bar.rs", "range": {
+                    "start": { "line": 3, "character": 4 },
+                    "end": { "line": 3, "character": 9 }
+                }}
+            ]))],
+        ));
+        mgr.install_test_transport(Language::Rust, fake.clone())
+            .await;
+
+        let result = mgr
+            .navigation_request(
+                &path,
+                "textDocument/definition",
+                json!({ "position": { "line": 0, "character": 3 } }),
+            )
+            .await
+            .expect("scripted response surfaces");
+        assert_eq!(result[0]["uri"], json!("file:///elsewhere/bar.rs"));
+        // The zero-wait diagnostics call performed the document sync.
+        assert_eq!(fake.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn navigation_request_fills_document_uri_into_params() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = LspManager::new(LspConfig::default(), dir.path().to_path_buf());
+        let path = dir.path().join("foo.rs");
+        tokio::fs::write(&path, b"fn main() {}").await.unwrap();
+
+        // Capture the params the transport actually received by bouncing
+        // them back through the scripted response.
+        let captured: Arc<AsyncMutex<Vec<Value>>> = Arc::new(AsyncMutex::new(Vec::new()));
+        struct CapturingTransport {
+            captured: Arc<AsyncMutex<Vec<Value>>>,
+        }
+        #[async_trait]
+        impl LspTransport for CapturingTransport {
+            async fn diagnostics_for(
+                &self,
+                _path: &Path,
+                _text: &str,
+                _wait: Duration,
+            ) -> anyhow::Result<Vec<Diagnostic>> {
+                Ok(Vec::new())
+            }
+            async fn request(&self, _method: &str, params: Value) -> anyhow::Result<Value> {
+                self.captured.lock().await.push(params);
+                Ok(Value::Null)
+            }
+            async fn shutdown(&self) {}
+        }
+        mgr.install_test_transport(
+            Language::Rust,
+            Arc::new(CapturingTransport {
+                captured: captured.clone(),
+            }),
+        )
+        .await;
+
+        let result = mgr
+            .navigation_request(
+                &path,
+                "textDocument/hover",
+                json!({ "position": { "line": 0, "character": 0 } }),
+            )
+            .await
+            .expect("null is a server answer, not unavailability");
+        assert!(result.is_null());
+
+        let params = captured.lock().await.pop().expect("request captured");
+        let uri = params["textDocument"]["uri"].as_str().expect("uri filled");
+        assert!(
+            uri.starts_with("file://"),
+            "uri filled by the manager: {uri}"
+        );
+        assert!(uri.ends_with("foo.rs"), "uri names the file: {uri}");
+    }
+
+    #[tokio::test]
+    async fn navigation_request_maps_transport_error_to_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = LspManager::new(LspConfig::default(), dir.path().to_path_buf());
+        let path = dir.path().join("foo.rs");
+        tokio::fs::write(&path, b"fn main() {}").await.unwrap();
+
+        mgr.install_test_transport(
+            Language::Rust,
+            Arc::new(FakeTransport::with_responses(
+                Vec::new(),
+                vec![Err(anyhow::anyhow!("server exploded"))],
+            )),
+        )
+        .await;
+
+        assert!(
+            mgr.navigation_request(&path, "textDocument/definition", json!({}))
+                .await
+                .is_none()
+        );
     }
 }

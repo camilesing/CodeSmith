@@ -38,6 +38,7 @@ chosen over the available shell equivalent. Companion to `crates/agent-runtime/s
 | `file_search` | Fuzzy-match filenames (not contents). Use when you know roughly the name. |
 | `symbol_search` | Search the persistent workspace symbol index (functions, structs, traits, classes, …) by name substring. Indexed, so faster and more precise than `grep_files` for "where is X defined?". Registered only when the session enabled the code index. |
 | `find_references` | Definition sites plus every lexical occurrence of an exact symbol name, via the same persistent code index. Faster than repeated `grep_files` on large repos. |
+| `lsp_navigate` | Type-aware definition / references / hover at a 1-based position via the session's LSP server — resolves the symbol at a call site (trait methods, re-exports) more precisely than the name-based `symbol_search`. Fails closed when LSP is disabled or no server exists for the language. |
 | `web_search` | DuckDuckGo by default with Bing fallback; Bing, Tavily, Bocha, Metaso, and Baidu are selectable in config. Ranked snippets + `ref_id` for citation. |
 | `fetch_url` | Direct HTTP GET on a known URL. Faster than `web_search` when the link is already known. HTML stripped to text by default. |
 | `web.run` | Browse the web (search/open/click/find/screenshot/image_query) and return structured results with `ref_id`s for citations. |

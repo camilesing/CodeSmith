@@ -57,8 +57,9 @@ impl RuntimeUi for ReplRuntimeUi {
 
 /// Bridge the CLI's concrete [`LspManager`] onto the engine-core trait
 /// [`LspManagerApi`] by delegating to its inherent `config` /
-/// `diagnostics_for`. Uses fully-qualified call syntax so the trait method
-/// and the inherent method (same names) stay unambiguous.
+/// `diagnostics_for` / `navigation_request`. Uses fully-qualified call
+/// syntax so the trait method and the inherent method (same names) stay
+/// unambiguous.
 #[async_trait::async_trait]
 impl LspManagerApi for LspManager {
     fn config(&self) -> &LspConfig {
@@ -67,6 +68,15 @@ impl LspManagerApi for LspManager {
 
     async fn diagnostics_for(&self, file: &Path, edit_seq: u64) -> Option<DiagnosticBlock> {
         LspManager::diagnostics_for(self, file, edit_seq).await
+    }
+
+    async fn navigation_request(
+        &self,
+        file: &Path,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Option<serde_json::Value> {
+        LspManager::navigation_request(self, file, method, params).await
     }
 }
 

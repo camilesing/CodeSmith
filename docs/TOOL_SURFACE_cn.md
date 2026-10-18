@@ -31,6 +31,7 @@
 | `file_search` | 对文件名（而非内容）做模糊匹配。当你大致知道名字时使用。 |
 | `symbol_search` | 按名称子串搜索持久的工作区符号索引（函数、结构体、trait、类等）。有索引，对"X 定义在哪"这类问题比 `grep_files` 更快更精确。仅在会话启用代码索引时注册。 |
 | `find_references` | 借助同一持久代码索引，返回精确符号名的定义位置及全部词法出现处。比在大仓库上反复 `grep_files` 更快。 |
+| `lsp_navigate` | 通过会话的 LSP 服务器做类型感知的 definition / references / hover（1-based 行列定位）——对调用点符号（trait 方法、re-export）的解析比按名搜索的 `symbol_search` 更精确。LSP 未启用或无该语言服务器时 fail-closed。 |
 | `web_search` | 默认 DuckDuckGo，Bing 兜底；可在配置中选择 Bing、Tavily、Bocha、Metaso 和 Baidu。返回排序后的摘要片段 + 用于引用的 `ref_id`。 |
 | `fetch_url` | 对已知 URL 直接发起 HTTP GET。当链接已知时比 `web_search` 更快。默认将 HTML 剥离为纯文本。 |
 | `web.run` | 浏览网页（search/open/click/find/screenshot/image_query），返回带 `ref_id`（用于引用）的结构化结果。 |

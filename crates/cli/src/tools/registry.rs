@@ -525,6 +525,17 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(SessionSearchTool))
     }
 
+    /// Include the `lsp_navigate` tool — type-aware definition/references/
+    /// hover through the session's LSP server (round-4 TODO-45). Registered
+    /// unconditionally like the index tools: it fails closed at runtime when
+    /// LSP is disabled or no server exists for the file's language, and the
+    /// catalog entry itself is a session constant (no prefix-cache churn).
+    #[must_use]
+    pub fn with_lsp_navigation_tool(self) -> Self {
+        use super::lsp_navigate::LspNavigateTool;
+        self.with_tool(Arc::new(LspNavigateTool))
+    }
+
     /// Include note tool.
     #[must_use]
     pub fn with_note_tool(self) -> Self {
@@ -686,6 +697,7 @@ impl ToolRegistryBuilder {
             .with_rlm_tool(client, model)
             .with_recall_archive_tool()
             .with_session_search_tool()
+            .with_lsp_navigation_tool()
             .with_subagent_tools(manager, runtime, extension_runner)
     }
 
