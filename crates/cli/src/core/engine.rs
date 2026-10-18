@@ -257,6 +257,15 @@ pub struct EngineHost {
     /// hosts built outside `build_engine` (embeds/tests) — their children
     /// then have no approval channel and simply refuse, as before.
     pub approval_router: Option<std::sync::Arc<ApprovalRouter>>,
+    /// Engine-scoped policy store for this engine's session and its
+    /// runner's flush sink. `None` (the default) keeps the single-engine
+    /// contract: the engine's store IS the process default, so scope-less
+    /// paths (/memory consolidate, embeds, tests) read the same set the
+    /// engine scopes its turns with. A host that builds several engines
+    /// hands each one a fresh private store here so one engine's policy
+    /// flush cannot clobber another's — the runtime-thread manager (HTTP
+    /// API threads, automations) does.
+    pub policy_store: Option<codesmith_agent::policy::PolicyStore>,
 }
 
 // Manual `Debug` (mirroring `RuntimeToolServices`): `subagent_api` /
@@ -280,6 +289,7 @@ impl std::fmt::Debug for EngineHost {
             .field("mod_reload", &self.mod_reload)
             .field("tool_catalog", &self.tool_catalog)
             .field("approval_router", &self.approval_router)
+            .field("policy_store", &self.policy_store)
             .finish()
     }
 }
@@ -312,6 +322,7 @@ impl Default for EngineHost {
             mod_reload: None,
             tool_catalog: Default::default(),
             approval_router: None,
+            policy_store: None,
         }
     }
 }
@@ -637,12 +648,16 @@ fn build_extension_runtime(
     workspace: &std::path::Path,
     mods_enabled: bool,
     shared_cancel_token: Arc<StdMutex<tokio_util::sync::CancellationToken>>,
+    policy_store: &codesmith_agent::policy::PolicyStore,
 ) -> (Arc<codesmith_extensions::ExtensionRunner>, PopulateReport) {
     let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
     // Route A — the runner's provider flush target is the same shared
     // registry `resolve_llm_client` builds through, so extension-registered
     // providers are visible to every resolution path.
     runner.attach_shared_providers(shared_providers().clone());
+    // The engine's policy sink, bound before populate so the first
+    // generation's flush already lands in this engine's store.
+    runner.bind_policy_store(policy_store.clone());
     let state = crate::extension_state::ExtensionStateStore::load_default().unwrap_or_default();
     let mod_state = crate::mod_state::ModStateStore::load_default().unwrap_or_default();
     let report = populate_extension_runtime(
@@ -1232,8 +1247,23 @@ pub fn build_engine(
     // §F script mod layer — the populate report's pending list rides on the
     // handle for the REPL's passive first-run notice.
     let mods_enabled = api_config.mods_enabled();
-    let (extension_runner, mods_report) =
-        build_extension_runtime(&config.workspace, mods_enabled, shared_cancel_token.clone());
+    // Engine-scoped policy store: the host's private store when it hands
+    // one in (a multi-engine host — the runtime-thread manager — keeps each
+    // engine's set private so one engine's flush cannot clobber another's),
+    // else the process default — the single-engine contract, where the
+    // engine's store IS the process default so scope-less paths (/memory
+    // consolidate, embeds, tests) read the same set the engine scopes its
+    // turns with, exactly the pre-scoping behaviour.
+    let policy_store = host
+        .policy_store
+        .take()
+        .unwrap_or_else(codesmith_agent::policy::PolicyStore::process_default);
+    let (extension_runner, mods_report) = build_extension_runtime(
+        &config.workspace,
+        mods_enabled,
+        shared_cancel_token.clone(),
+        &policy_store,
+    );
     // §F2c — surface the runner on `EngineHost` too so `HostServices`
     // (`build_turn_dispatcher` / `spawn_subagent`) can emit `ProjectTrust`
     // without going through the `Engine`.
@@ -1289,15 +1319,9 @@ pub fn build_engine(
         config.notes_path.clone(),
         config.mcp_config_path.clone(),
     );
-    // Single-engine-per-process host: the engine's policy store IS the
-    // process-default store, so scope-less paths (/memory consolidate,
-    // embeds, tests) read the same set the engine scopes its turns with —
-    // exactly the pre-scoping process-wide behaviour. The runner's
-    // process-default sink is the same store, so its flushes land here
-    // without an explicit bind. A multi-engine host instead keeps each
-    // session's fresh private store and binds each runner to it
-    // (`ExtensionRunner::bind_policy_store`).
-    session.policies = codesmith_agent::policy::PolicyStore::process_default();
+    // The session carries the store chosen above; `Engine::run` enters it
+    // as the ambient scope for every turn.
+    session.policies = policy_store;
     // Set up stable system prompt with project context (default to agent mode).
     let (user_memory_block, knowledge_prompt_block) = if config.kod_enabled {
         let kod_block = crate::memory::compose_kod_block(&config.memory_dir);

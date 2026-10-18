@@ -112,6 +112,46 @@ fn build_engine_with_capacity(capacity: CapacityControllerConfig) -> Engine {
     engine
 }
 
+/// Engine-scoped policy store wiring (`EngineHost.policy_store`): the
+/// session's store AND the bound runner's flush sink must both be the
+/// host-handed store — left on the process default, one thread engine's
+/// policy flush would clobber every other engine's set (the defect the
+/// store scoping fixes; the runtime-thread manager passes a private store
+/// per engine).
+#[test]
+fn host_policy_store_wires_session_and_runner_sink() {
+    use codesmith_agent::policy::{PolicyKind, PolicyStore};
+
+    // `build_engine`'s populate reads env-scoped extension/mod state, so
+    // this test serializes with the other env-touching engine tests.
+    let _guard = lock_test_env();
+    let private = PolicyStore::new();
+    let host = EngineHost {
+        policy_store: Some(private.clone()),
+        ..Default::default()
+    };
+    let (engine, handle) = Engine::new_with_host(EngineConfig::default(), &Config::default(), host);
+
+    // Session wiring: a publish through the host's handle is what the
+    // engine's session reads (42 matches no builtin or compiled default).
+    let mut set = HashMap::new();
+    set.insert(PolicyKind::OutputDiff, json!({"context_radius": 42}));
+    private.publish(set);
+    assert_eq!(
+        engine.session.policies.get(PolicyKind::OutputDiff),
+        Some(json!({"context_radius": 42}))
+    );
+
+    // Runner-sink wiring: the runner's clear empties the host's store
+    // (`clear_policies` clears the runner map and the bound sink).
+    handle
+        .extension_runner
+        .as_ref()
+        .expect("build_engine binds the runner on the handle")
+        .clear_policies();
+    assert_eq!(private.get(PolicyKind::OutputDiff), None);
+}
+
 /// Plan 06 / 6.1: an `Engine` whose `EngineConfig.telemetry_sink` is set must
 /// route `CapacityDecision` events to the local jsonl sink (the core emission
 /// routing deliverable). The sink is `Arc`-shared, so the clone handed to the
