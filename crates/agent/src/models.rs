@@ -125,6 +125,13 @@ impl ImageSource {
 /// without reading pixel data.
 pub const IMAGE_BLOCK_ESTIMATED_TOKENS: usize = 1_200;
 
+/// File extensions the provider layer can serialize into the wire
+/// `image_url` form. Anything else (tif, ppm, video containers, …) has no
+/// wire representation and is dropped at request-build time, so user-facing
+/// intake (`/attach`, `@path`) must reject those up front — a pinned test in
+/// the providers adapter keeps this list and the encoder in lockstep.
+pub const WIRE_IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
+
 /// A single content block inside a message.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(tag = "type")]
