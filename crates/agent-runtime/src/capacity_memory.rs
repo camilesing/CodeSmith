@@ -59,6 +59,11 @@ fn capacity_memory_dirs() -> Vec<PathBuf> {
         dirs.push(home.join("memory"));
     }
 
+    // Deliberately the process launch directory, not the session cwd: this
+    // free-fn build path has no workspace on hand, and capacity memory is a
+    // best-effort hint store (the canonical record lives under
+    // `codesmith_home()`). Threading the session workspace through the load
+    // path is the fix shape if this ever needs session scoping.
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     dirs.push(cwd.join(".codesmith").join("memory"));
 

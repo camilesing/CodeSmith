@@ -107,6 +107,9 @@ impl TeammateSpawnSpec {
             agent_type: "team".to_string(),
             prompt: String::new(),
             model: None,
+            // Launch-directory default: `new()` has no workspace on hand;
+            // callers with better context set `cwd` explicitly after
+            // construction.
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             allowed_tools: None,
             permission_mode: PermissionMode::Ask,
