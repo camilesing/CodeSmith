@@ -120,31 +120,15 @@ pub enum Op {
     Shutdown,
 
     // === Background Task Operations ===
-    /// Cancel a background task by unified id.
-    #[allow(dead_code)]
-    CancelBackgroundTask { id: String },
-
-    /// Stop every tracked background task (shell jobs and sub-agents alike),
-    /// reporting the count on the status channel. Backs the REPL's
+    /// Stop every tracked background task (registered sub-agent and dream
+    /// tasks), reporting the count on the status channel. Backs the REPL's
     /// Ctrl+X Ctrl+K, which Claude Code documents as "stop all running
-    /// background subagents".
+    /// background subagents". Shell jobs are not registry tasks — they live
+    /// in the shell manager (`/jobs` lists them directly).
     CancelAllBackgroundTasks,
 
-    /// List all background tasks across all subsystems.
-    #[allow(dead_code)]
-    ListBackgroundTasks,
-
-    /// Poll a specific background task for incremental output.
-    #[allow(dead_code)]
-    PollBackgroundTask { id: String },
-
     /// Background the currently foreground shell task.
-    #[allow(dead_code)]
     BackgroundCurrentShell,
-
-    /// Background all foreground tasks.
-    #[allow(dead_code)]
-    BackgroundAll,
 
     /// Trigger a memory consolidation (dream) task.
     #[allow(dead_code)]

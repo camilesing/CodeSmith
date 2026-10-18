@@ -1,13 +1,21 @@
-//! Unified background task registry bridging ShellManager, SubAgentManager,
-//! and TaskManager into a single lifecycle surface.
+//! Unified background task registry for sub-agent and dream lifecycle.
 //!
-//! Mirrors Claude Code's background task layer (Task.ts, framework.ts,
-//! LocalShellTask.tsx, DreamTask.ts, LocalAgentTask.tsx) adapted to Rust.
+//! The registry tracks background sub-agents and dream (memory-consolidation)
+//! tasks, polls their source subsystem, and queues completion notifications
+//! for the engine to inject.
+//!
+//! Shell jobs are deliberately not registry tasks: since the
+//! `register_shell_task` bridge was removed (with the never-sent
+//! `Op::StartBackgroundShell`), background shells live entirely in the shell
+//! manager — `/jobs` lists them, `exec_shell background=true` and
+//! `task_shell_start` start them, and Ctrl+B detaches a foreground shell
+//! through the flag this registry forwards (`background_all`). The registry
+//! keeps the shell-manager handle only for that flag. Durable tasks were
+//! never registered either; both regain registry integration only if a
+//! registration path returns.
 
 mod agent_bridge;
 mod dream_task;
-mod output;
-mod shell_bridge;
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -15,18 +23,14 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-use crate::task_manager::SharedTaskManager;
 use crate::tools::shell::SharedShellManager;
 use crate::tools::subagent::{SharedSubAgentManager, SubAgentType};
 
 pub use codesmith_agent_runtime::background_task::*;
 pub use codesmith_agent_runtime::host_services::BgRegistryApi;
-pub use output::BackgroundTaskOutputManager;
-pub use shell_bridge::default_stall_patterns;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -35,19 +39,10 @@ pub use shell_bridge::default_stall_patterns;
 /// Task-specific extension data — mirrors Claude Code's per-type state fields.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BackgroundTaskExtension {
-    Shell {
-        command: String,
-        cwd: PathBuf,
-        exit_code: Option<i32>,
-    },
     Agent {
         agent_type: SubAgentType,
         model: String,
         steps_taken: u32,
-    },
-    Durable {
-        thread_id: Option<String>,
-        turn_id: Option<String>,
     },
     Dream {
         consolidation_round: u32,
@@ -64,28 +59,15 @@ pub struct BackgroundTaskState {
     pub description: String,
     pub started_at: DateTime<Utc>,
     pub ended_at: Option<DateTime<Utc>>,
-    /// Path to output file on disk (for shell/durable tasks).
-    pub output_file: Option<PathBuf>,
-    /// Byte offset into output_file already consumed by UI.
-    pub output_offset: usize,
     /// Whether user has been notified of completion.
     /// Terminal tasks are evicted once notified.
     pub notified: bool,
     /// Task-specific extension data.
     pub extension: BackgroundTaskExtension,
-    /// Error message if status is Failed/Killed/Stalled.
+    /// Error message if status is Failed/Killed.
     pub error: Option<String>,
     /// Reference to originating subsystem's internal id.
     pub source_id: String,
-}
-
-/// Stall detection pattern for shell output.
-pub struct StallPattern {
-    /// Regex pattern to match in shell output indicating interactive prompt.
-    pub pattern: Regex,
-    /// Human-readable description of what the stall means.
-    #[allow(dead_code)]
-    pub description: String,
 }
 
 impl From<&BackgroundTaskState> for BackgroundTaskSummary {
@@ -113,38 +95,26 @@ impl From<&BackgroundTaskState> for BackgroundTaskSummary {
 
 pub type SharedBackgroundTaskRegistry = Arc<Mutex<BackgroundTaskRegistry>>;
 
-/// Unified background task registry bridging ShellManager, SubAgentManager,
-/// and TaskManager. Does NOT replace the existing managers — it wraps them
-/// and translates lifecycle events into engine-level events.
+/// Unified background task registry bridging SubAgentManager (and the dream
+/// skeleton). Does NOT replace the manager — it wraps it and translates
+/// lifecycle events into engine-level events.
 pub struct BackgroundTaskRegistry {
     tasks: HashMap<String, BackgroundTaskState>,
+    /// Held only to forward the foreground-shell detach flag (Ctrl+B).
     shell_manager: SharedShellManager,
     subagent_manager: SharedSubAgentManager,
-    task_manager: Option<SharedTaskManager>,
     /// Completed task ids waiting for notification injection.
     pending_notifications: VecDeque<String>,
-    /// Stall detection patterns for shell commands.
-    stall_patterns: &'static [StallPattern],
-    /// Output manager for disk-based output with offset tracking.
-    output_mgr: BackgroundTaskOutputManager,
 }
 
 impl BackgroundTaskRegistry {
-    /// Create a new registry bridging the three subsystems.
-    pub fn new(
-        shell_manager: SharedShellManager,
-        subagent_manager: SharedSubAgentManager,
-        task_manager: Option<SharedTaskManager>,
-        data_dir: PathBuf,
-    ) -> Self {
+    /// Create a new registry bridging the tracked subsystems.
+    pub fn new(shell_manager: SharedShellManager, subagent_manager: SharedSubAgentManager) -> Self {
         Self {
             tasks: HashMap::new(),
             shell_manager,
             subagent_manager,
-            task_manager,
             pending_notifications: VecDeque::new(),
-            stall_patterns: default_stall_patterns(),
-            output_mgr: BackgroundTaskOutputManager::new(data_dir),
         }
     }
 
@@ -165,8 +135,6 @@ impl BackgroundTaskRegistry {
             description,
             started_at: Utc::now(),
             ended_at: None,
-            output_file: None,
-            output_offset: 0,
             notified: false,
             extension: BackgroundTaskExtension::Agent {
                 agent_type,
@@ -190,8 +158,6 @@ impl BackgroundTaskRegistry {
             description: "dreaming".to_string(),
             started_at: Utc::now(),
             ended_at: None,
-            output_file: None,
-            output_offset: 0,
             notified: false,
             extension: BackgroundTaskExtension::Dream {
                 consolidation_round: 0,
@@ -204,13 +170,14 @@ impl BackgroundTaskRegistry {
         state
     }
 
-    /// Update a single task's status.
+    /// Update a single task's status. Returns the new status when the state
+    /// moved (and queued a completion notification for terminal states).
     pub fn update_task_status(
         &mut self,
         id: &str,
         new_status: BackgroundTaskStatus,
         error: Option<String>,
-    ) -> Option<BackgroundTaskPollResult> {
+    ) -> Option<BackgroundTaskStatus> {
         let state = self.tasks.get_mut(id)?;
         let old_status = state.status;
         if old_status == new_status && error.is_none() {
@@ -227,13 +194,7 @@ impl BackgroundTaskRegistry {
             self.pending_notifications.push_back(id.to_string());
         }
 
-        Some(BackgroundTaskPollResult {
-            task_id: id.to_string(),
-            old_status,
-            new_status,
-            output_delta: None,
-            stall_detected: new_status == BackgroundTaskStatus::Stalled,
-        })
+        Some(new_status)
     }
 
     /// Cancel a background task by delegating to the source subsystem.
@@ -245,24 +206,10 @@ impl BackgroundTaskRegistry {
             .clone();
 
         match state.task_type {
-            BackgroundTaskType::Shell => {
-                // ShellManager uses std::sync::Mutex
-                let mut mgr = self
-                    .shell_manager
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("shell manager mutex poisoned"))?;
-                mgr.kill(&state.source_id)?;
-            }
             BackgroundTaskType::Agent => {
                 // SubAgentManager uses tokio::sync::RwLock
                 let mut mgr = self.subagent_manager.write().await;
                 mgr.cancel(&state.source_id)?;
-            }
-            BackgroundTaskType::Durable => {
-                // TaskManager has internal async mutex
-                if let Some(tm) = &self.task_manager {
-                    tm.cancel_task(&state.source_id).await?;
-                }
             }
             BackgroundTaskType::Dream => {
                 // Dream tasks don't delegate — just mark cancelled
@@ -273,35 +220,15 @@ impl BackgroundTaskRegistry {
         Ok(())
     }
 
-    /// Background all foreground shell tasks.
-    ///
-    /// Only flags ShellManager to detach its foreground shell(s) on their
-    /// next poll; the detached job is NOT registered here (the registry
-    /// never sees it — registration would have to happen where
-    /// ShellManager consumes the flag). The returned states are the
-    /// already-registered running shell tasks.
-    pub fn background_all(&mut self) -> Vec<BackgroundTaskState> {
-        // Request ShellManager to background all foreground shells
-        {
-            let mut mgr = self
-                .shell_manager
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            mgr.request_foreground_background();
-        }
-
-        // Collect currently running shell tasks
-        self.tasks
-            .values()
-            .filter(|s| {
-                s.task_type == BackgroundTaskType::Shell
-                    && matches!(
-                        s.status,
-                        BackgroundTaskStatus::Running | BackgroundTaskStatus::Stalled
-                    )
-            })
-            .cloned()
-            .collect()
+    /// Ask the shell manager to detach its foreground shell(s) on their next
+    /// poll (Ctrl+B). The detached jobs are shell-manager jobs, not registry
+    /// tasks — the registry never sees them.
+    pub fn background_all(&mut self) {
+        let mut mgr = self
+            .shell_manager
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        mgr.request_foreground_background();
     }
 
     /// Evict terminal tasks that have been notified.
@@ -314,29 +241,7 @@ impl BackgroundTaskRegistry {
         }
         for id in to_remove {
             self.tasks.remove(&id);
-            self.output_mgr.remove_output(&id).ok();
         }
-    }
-
-    /// Read incremental output from a task's output file starting at
-    /// stored offset. Updates offset after reading.
-    pub fn read_output_delta(&mut self, id: &str) -> Option<String> {
-        let state = self.tasks.get_mut(id)?;
-        let output_file = state.output_file.as_ref()?;
-        let offset = state.output_offset;
-
-        let (content, new_offset) = match self.output_mgr.read_from_offset(output_file, offset) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(task_id = %id, error = %e, "failed to read background task output");
-                return None;
-            }
-        };
-
-        if new_offset > offset {
-            state.output_offset = new_offset;
-        }
-        Some(content)
     }
 
     /// Return pending notification messages ready for injection.
@@ -375,84 +280,9 @@ impl BackgroundTaskRegistry {
         self.tasks.get(id).cloned()
     }
 
-    /// Poll all running tasks, update status from source subsystems,
-    /// detect stalls, and generate completion notifications.
-    pub async fn poll_tasks(&mut self) -> Vec<BackgroundTaskPollResult> {
-        let mut results = Vec::new();
-
-        // Poll shell tasks — ShellManager uses std::sync::Mutex
-        let shell_ids: Vec<(String, String)> = self
-            .tasks
-            .iter()
-            .filter(|(_, s)| {
-                s.task_type == BackgroundTaskType::Shell
-                    && matches!(
-                        s.status,
-                        BackgroundTaskStatus::Running | BackgroundTaskStatus::Stalled
-                    )
-            })
-            .map(|(id, s)| (id.clone(), s.source_id.clone()))
-            .collect();
-
-        for (bg_id, shell_id) in shell_ids {
-            // Scope the lock so it drops before we mutate self
-            let poll_info: Option<(BackgroundTaskStatus, Option<String>, String, Option<i32>)> = {
-                let mut mgr = self
-                    .shell_manager
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                match mgr.inspect_job(&shell_id) {
-                    Ok(detail) => {
-                        let tail = detail.snapshot.stdout_tail.clone();
-                        let status: BackgroundTaskStatus = detail.snapshot.status.into();
-                        let exit_code = detail.snapshot.exit_code;
-                        // mgr drops here at scope end
-                        Some((status, None, tail, exit_code))
-                    }
-                    Err(err) => Some((
-                        BackgroundTaskStatus::Failed,
-                        Some(format!("shell job lost: {err}")),
-                        String::new(),
-                        None,
-                    )),
-                }
-            };
-
-            let Some((new_status, mut error, tail, exit_code_val)) = poll_info else {
-                continue;
-            };
-            {
-                // Check stall first (only if still Running)
-                if new_status == BackgroundTaskStatus::Running && self.looks_like_prompt(&tail) {
-                    if let Some(r) = self.update_task_status(
-                        &bg_id,
-                        BackgroundTaskStatus::Stalled,
-                        Some("Interactive prompt detected".to_string()),
-                    ) {
-                        results.push(r);
-                    }
-                    continue;
-                }
-                // Update extension with exit_code
-                if let Some(state) = self.tasks.get_mut(&bg_id)
-                    && let BackgroundTaskExtension::Shell {
-                        ref mut exit_code, ..
-                    } = state.extension
-                {
-                    *exit_code = exit_code_val;
-                }
-                if new_status == BackgroundTaskStatus::Failed && error.is_none() {
-                    error = Some(match exit_code_val {
-                        Some(code) => format!("exit code {code}"),
-                        None => "unknown exit code".to_string(),
-                    });
-                }
-                if let Some(r) = self.update_task_status(&bg_id, new_status, error) {
-                    results.push(r);
-                }
-            }
-        }
-
+    /// Poll all running tasks, update status from the source subsystem, and
+    /// queue completion notifications for terminal transitions.
+    pub async fn poll_tasks(&mut self) {
         // Poll agent tasks — SubAgentManager uses tokio::sync::RwLock
         let agent_ids: Vec<(String, String)> = self
             .tasks
@@ -488,22 +318,9 @@ impl BackgroundTaskRegistry {
                 {
                     *steps_taken = steps_taken_val;
                 }
-                if let Some(r) = self.update_task_status(&bg_id, new_status, error) {
-                    results.push(r);
-                }
+                self.update_task_status(&bg_id, new_status, error);
             }
         }
-
-        // Durable tasks are not polled yet: nothing registers them (no
-        // `register_durable_task` exists), so they cannot enter the registry.
-        // Polling lands together with durable task registration.
-
-        results
-    }
-
-    /// Check if the tail of shell output looks like an interactive prompt.
-    fn looks_like_prompt(&self, tail: &str) -> bool {
-        shell_bridge::looks_like_prompt(tail, self.stall_patterns)
     }
 }
 
@@ -531,7 +348,7 @@ mod tests {
         let agents = Arc::new(tokio::sync::RwLock::new(
             crate::tools::subagent::SubAgentManager::new(PathBuf::from("."), 1),
         ));
-        BackgroundTaskRegistry::new(shell, agents, None, std::env::temp_dir())
+        BackgroundTaskRegistry::new(shell, agents)
     }
 
     #[test]
