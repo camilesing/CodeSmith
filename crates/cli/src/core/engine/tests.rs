@@ -28,7 +28,7 @@ use super::{
 };
 use crate::config::{ApiProvider, DEFAULT_TEXT_MODEL, UtilityModelConfig};
 use crate::models::{ContentBlock, Message, SystemBlock, SystemPrompt, Tool, ToolCaller};
-use crate::test_support::lock_test_env;
+use crate::test_support::{HermeticEnv, lock_test_env};
 use crate::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs, new_shared_plan_state};
 use crate::tools::spec::{ToolCapability, ToolError, ToolResult};
 use crate::tools::todo::{TodoStatus, new_shared_todo_list};
@@ -124,7 +124,7 @@ fn host_policy_store_wires_session_and_runner_sink() {
 
     // `build_engine`'s populate reads env-scoped extension/mod state, so
     // this test serializes with the other env-touching engine tests.
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let private = PolicyStore::new();
     let host = EngineHost {
         policy_store: Some(private.clone()),
@@ -158,7 +158,7 @@ fn host_policy_store_wires_session_and_runner_sink() {
 /// engine writes through the same `attached`/`enabled` state the host holds.
 #[tokio::test]
 async fn capacity_decision_routes_to_telemetry_sink() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let tmp = tempdir().expect("tempdir");
     let sink_path = tmp.path().join("events.jsonl");
     let sink = TelemetrySink::new_skeleton(true, Some(sink_path.clone()));
@@ -218,7 +218,7 @@ async fn capacity_decision_routes_to_telemetry_sink() {
 
 #[test]
 fn env_only_auth_error_gets_recovery_hint() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let _env = ScopedDeepSeekApiKey::set("stale-env-key");
     let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
 
@@ -233,7 +233,7 @@ fn env_only_auth_error_gets_recovery_hint() {
 
 #[test]
 fn config_auth_error_does_not_blame_env() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let _env = ScopedDeepSeekApiKey::set("stale-env-key");
     let cfg = Config {
         api_key: Some("fresh-config-key".to_string()),
@@ -604,7 +604,7 @@ fn api_tool(name: &str) -> Tool {
 
 #[test]
 fn engine_handle_cancel_tracks_latest_turn_token() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let (mut engine, handle) = Engine::new(EngineConfig::default(), &Config::default());
     let stale_token = engine.cancel_token.clone();
 
@@ -618,7 +618,7 @@ fn engine_handle_cancel_tracks_latest_turn_token() {
 
 #[test]
 fn engine_initial_prompt_includes_configured_goal() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let config = EngineConfig {
         goal_objective: Some("Fix goal handoff".to_string()),
         ..Default::default()
@@ -648,7 +648,7 @@ fn engine_initial_prompt_includes_configured_goal() {
 
 #[test]
 fn refresh_system_prompt_uses_runtime_goal_state() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let (mut engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
     {
         let mut goal = engine.config.goal_state.lock().expect("goal lock");
@@ -984,7 +984,7 @@ fn model_tool_catalog_applies_native_and_mcp_deferral() {
 
 #[test]
 fn agent_catalog_keeps_edit_file_loaded_when_fuzz_is_omitted() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
     let registry = engine
         .build_turn_tool_registry_builder(
@@ -1313,7 +1313,7 @@ fn model_tool_catalog_deduplicates_with_native_priority() {
 
 #[test]
 fn deferred_tool_preflight_loads_edit_schema_without_executing_bad_aliases() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
     let registry = engine
         .build_turn_tool_registry_builder(
@@ -1367,7 +1367,7 @@ fn deferred_tool_preflight_loads_edit_schema_without_executing_bad_aliases() {
 
 #[test]
 fn deferred_tool_preflight_guides_checklist_update_list_replacement() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
     let registry = engine
         .build_turn_tool_registry_builder(
@@ -1430,7 +1430,7 @@ fn deferred_tool_preflight_skips_already_active_tools() {
 
 #[test]
 fn turn_tool_registry_builder_keeps_plan_mode_read_only_for_files() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
     let registry = engine
         .build_turn_tool_registry_builder(
@@ -1511,7 +1511,7 @@ fn plan_mode_children_are_read_only_and_agent_mode_children_are_not() {
 
 #[test]
 fn parent_turn_registry_includes_recall_archive_for_investigative_modes() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
 
     for mode in [AppMode::Plan, AppMode::Agent, AppMode::Yolo] {
@@ -1532,7 +1532,7 @@ fn parent_turn_registry_includes_recall_archive_for_investigative_modes() {
 
 #[test]
 fn parent_turn_registry_includes_goal_tools_for_all_modes() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
 
     for mode in [AppMode::Plan, AppMode::Agent, AppMode::Yolo] {
@@ -1555,7 +1555,7 @@ fn parent_turn_registry_includes_goal_tools_for_all_modes() {
 
 #[test]
 fn agent_mode_can_build_auto_approved_tool_context() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
 
     assert!(
@@ -1569,7 +1569,7 @@ fn agent_mode_can_build_auto_approved_tool_context() {
 
 #[test]
 fn agent_and_yolo_modes_elevate_shell_sandbox_to_allow_network() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     // Regression for #273: the seatbelt-default policy denies all outbound
     // network (including DNS), which broke `curl`, `yt-dlp`, package managers,
     // and similar shell commands in Agent mode. Elevation must include
@@ -1671,7 +1671,7 @@ fn sandbox_policy_for_mode_returns_correct_policy_per_mode() {
 
 #[tokio::test]
 async fn session_update_preserves_reasoning_tool_only_turn() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let (mut engine, handle) = Engine::new(EngineConfig::default(), &Config::default());
     let assistant = Message {
         role: "assistant".to_string(),
@@ -1703,7 +1703,7 @@ async fn session_update_preserves_reasoning_tool_only_turn() {
 
 #[tokio::test]
 async fn reinject_compaction_attachments_appends_plan_todo_and_read_file_reminders() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let (mut engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
     {
         let mut plan_state = engine.config.plan_state.lock().await;
@@ -1754,7 +1754,7 @@ async fn reinject_compaction_attachments_appends_plan_todo_and_read_file_reminde
 
 #[tokio::test]
 async fn reinject_compaction_attachments_includes_live_subagents() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let (mut engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
     let assignment = crate::tools::subagent::SubAgentAssignment {
         objective: "Inspect context management".to_string(),
@@ -1793,7 +1793,7 @@ async fn reinject_compaction_attachments_includes_live_subagents() {
 
 #[tokio::test]
 async fn reinject_compaction_attachments_skips_messages_that_exceed_budget() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let (mut engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
     {
         let mut plan_state = engine.config.plan_state.lock().await;
@@ -1817,7 +1817,7 @@ async fn reinject_compaction_attachments_skips_messages_that_exceed_budget() {
 
 #[tokio::test]
 async fn reinject_compaction_attachments_prepends_turn_meta_block() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     // Slice 24 §E: re-inject messages now carry a leading `<turn_meta>` block
     // (date / model route / working-set summary / conditional skills), giving
     // the model orientation immediately post-compaction — consistent with the
@@ -1872,7 +1872,7 @@ async fn reinject_compaction_attachments_prepends_turn_meta_block() {
 
 #[tokio::test]
 async fn reinject_compaction_attachments_turn_meta_reflects_working_set() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     // Slice 24 §E: the <turn_meta> block prepended to a re-inject message
     // re-reads the working-set summary at enrich-time, so a just-observed path
     // surfaces in the re-inject's leading block (matching the user-message
@@ -1923,7 +1923,7 @@ async fn reinject_compaction_attachments_turn_meta_reflects_working_set() {
 
 #[tokio::test]
 async fn reinject_compaction_attachments_dedup_still_works_with_enrichment() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     // Slice 24 §E regression guard: the byte-stable <turn_meta> block
     // (working-set summary_block is byte-stable; date + model route stable
     // within a session; enrich-only means no observe between calls) keeps the
@@ -2177,7 +2177,7 @@ fn subagent_results_are_summarized_before_parent_context_insertion() {
 
 #[test]
 fn refresh_system_prompt_leaves_working_set_out_of_system_prompt() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let tmp = tempdir().expect("tempdir");
     fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
     fs::write(tmp.path().join("src/lib.rs"), "pub fn sample() {}").expect("write");
@@ -2210,7 +2210,7 @@ fn refresh_system_prompt_leaves_working_set_out_of_system_prompt() {
 
 #[test]
 fn working_set_reaches_model_as_turn_metadata() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let tmp = tempdir().expect("tempdir");
     fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
     fs::write(tmp.path().join("src/lib.rs"), "pub fn sample() {}").expect("write");
@@ -2245,7 +2245,7 @@ fn working_set_reaches_model_as_turn_metadata() {
 
 #[test]
 fn turn_metadata_includes_current_local_date_without_working_set() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let tmp = tempdir().expect("tempdir");
     let config = EngineConfig {
         workspace: tmp.path().to_path_buf(),
@@ -2271,7 +2271,7 @@ fn turn_metadata_includes_current_local_date_without_working_set() {
 
 #[test]
 fn turn_metadata_includes_auto_model_route() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let tmp = tempdir().expect("tempdir");
     let config = EngineConfig {
         workspace: tmp.path().to_path_buf(),
@@ -2298,7 +2298,7 @@ fn turn_metadata_includes_auto_model_route() {
 
 #[test]
 fn user_text_message_keeps_current_turn_input_after_turn_metadata() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let tmp = tempdir().expect("tempdir");
     let config = EngineConfig {
         workspace: tmp.path().to_path_buf(),
@@ -2326,7 +2326,7 @@ fn user_text_message_keeps_current_turn_input_after_turn_metadata() {
 
 #[test]
 fn messages_with_turn_metadata_preserves_stored_messages_for_prefix_cache() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let tmp = tempdir().expect("tempdir");
     fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
     fs::write(tmp.path().join("src/lib.rs"), "pub fn sample() {}").expect("write");
@@ -2375,7 +2375,7 @@ fn messages_with_turn_metadata_preserves_stored_messages_for_prefix_cache() {
 /// to tool-result messages at request time.
 #[test]
 fn turn_metadata_skips_tool_result_messages() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let tmp = tempdir().expect("tempdir");
     fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
     fs::write(tmp.path().join("src/lib.rs"), "pub fn sample() {}").expect("write");
@@ -2444,7 +2444,7 @@ fn turn_metadata_skips_tool_result_messages() {
 /// surfaces again on the next stored user-text message.
 #[test]
 fn turn_metadata_skips_when_only_tool_results_trail() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let tmp = tempdir().expect("tempdir");
     fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
     fs::write(tmp.path().join("src/lib.rs"), "pub fn sample() {}").expect("write");
@@ -2489,7 +2489,7 @@ fn turn_metadata_skips_when_only_tool_results_trail() {
 
 #[test]
 fn refresh_system_prompt_is_noop_when_unchanged() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let tmp = tempdir().expect("tempdir");
     let config = EngineConfig {
         workspace: tmp.path().to_path_buf(),
@@ -2508,7 +2508,7 @@ fn refresh_system_prompt_is_noop_when_unchanged() {
 
 #[test]
 fn engine_prompt_respects_hidden_thinking_config() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let tmp = tempdir().expect("tempdir");
     let config = EngineConfig {
         workspace: tmp.path().to_path_buf(),
@@ -2538,7 +2538,7 @@ fn sync_runtime_system_prompt_override(engine: &mut Engine, system_prompt: Syste
 
 #[test]
 fn text_system_prompt_override_via_runtime_sync_survives_refresh() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let tmp = tempdir().expect("tempdir");
     let config = EngineConfig {
         workspace: tmp.path().to_path_buf(),
@@ -2556,7 +2556,7 @@ fn text_system_prompt_override_via_runtime_sync_survives_refresh() {
 
 #[test]
 fn blocks_system_prompt_override_via_runtime_sync_survives_mode_change_refresh() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let tmp = tempdir().expect("tempdir");
     let config = EngineConfig {
         workspace: tmp.path().to_path_buf(),
@@ -2578,7 +2578,7 @@ fn blocks_system_prompt_override_via_runtime_sync_survives_mode_change_refresh()
 
 #[test]
 fn compaction_summary_stays_in_stable_system_prompt() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let tmp = tempdir().expect("tempdir");
     fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
     fs::write(tmp.path().join("src/main.rs"), "fn main() {}").expect("write");
@@ -2617,7 +2617,7 @@ fn compaction_summary_stays_in_stable_system_prompt() {
 
 #[tokio::test]
 async fn pre_request_refresh_skips_compaction_below_normal_threshold() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let capacity = CapacityControllerConfig {
         enabled: true,
         low_risk_max: 0.0,
@@ -2663,7 +2663,7 @@ async fn pre_request_refresh_skips_compaction_below_normal_threshold() {
 
 #[tokio::test]
 async fn pre_request_refresh_invoked_when_medium_risk() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let capacity = CapacityControllerConfig {
         enabled: true,
         low_risk_max: 0.0,
@@ -2711,7 +2711,7 @@ async fn pre_request_refresh_invoked_when_medium_risk() {
 
 #[tokio::test]
 async fn post_tool_replay_invoked_when_high_non_severe_risk() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let tmp = tempdir().expect("tempdir");
     fs::write(tmp.path().join("sample.txt"), "hello replay").expect("write");
 
@@ -2779,7 +2779,7 @@ async fn post_tool_replay_invoked_when_high_non_severe_risk() {
 
 #[tokio::test]
 async fn error_escalation_triggers_replan_when_severe_or_repeated_failures() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let _env_lock = CAPACITY_MEMORY_ENV_LOCK.lock().await;
     let tmp = tempdir().expect("tempdir");
     let _env = ScopedCapacityMemoryDir::set(tmp.path());
@@ -2845,7 +2845,7 @@ async fn error_escalation_triggers_replan_when_severe_or_repeated_failures() {
 /// Power users can still opt in via `capacity.enabled = true`.
 #[tokio::test]
 async fn capacity_disabled_by_default_keeps_messages_intact() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let _env_lock = CAPACITY_MEMORY_ENV_LOCK.lock().await;
     let tmp = tempdir().expect("tempdir");
     let _env = ScopedCapacityMemoryDir::set(tmp.path());
@@ -2900,7 +2900,7 @@ async fn capacity_disabled_by_default_keeps_messages_intact() {
 /// post-`run` path preserves the grown transcript.
 #[tokio::test]
 async fn apply_verify_and_replan_skip_transcript_preserves_messages() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let _env_lock = CAPACITY_MEMORY_ENV_LOCK.lock().await;
     let tmp = tempdir().expect("tempdir");
     let _env = ScopedCapacityMemoryDir::set(tmp.path());
@@ -2979,7 +2979,7 @@ async fn apply_verify_and_replan_skip_transcript_preserves_messages() {
 /// `apply_verify_and_replan_skip_transcript_preserves_messages`).
 #[tokio::test]
 async fn apply_verify_with_tool_replay_skip_transcript_uses_outcome() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let _env_lock = CAPACITY_MEMORY_ENV_LOCK.lock().await;
     let tmp = tempdir().expect("tempdir");
     let _env = ScopedCapacityMemoryDir::set(tmp.path());
@@ -3094,7 +3094,7 @@ async fn apply_verify_with_tool_replay_skip_transcript_uses_outcome() {
 /// `apply_verify_with_tool_replay_skip_transcript_uses_outcome`).
 #[tokio::test]
 async fn apply_targeted_context_refresh_skip_transcript_uses_outcome() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let _env_lock = CAPACITY_MEMORY_ENV_LOCK.lock().await;
     let tmp = tempdir().expect("tempdir");
     let _env = ScopedCapacityMemoryDir::set(tmp.path());
@@ -3164,7 +3164,7 @@ async fn apply_targeted_context_refresh_skip_transcript_uses_outcome() {
 
 #[tokio::test]
 async fn controller_disabled_keeps_behavior_unchanged() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let capacity = CapacityControllerConfig {
         enabled: false,
         ..Default::default()
@@ -3952,7 +3952,7 @@ fn parse_patch_paths_skips_dev_null() {
 
 #[tokio::test]
 async fn post_edit_hook_injects_diagnostics_message_before_next_request() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     use crate::lsp::{Diagnostic, Language, Severity};
     use std::sync::Arc;
 
@@ -4017,7 +4017,7 @@ async fn post_edit_hook_injects_diagnostics_message_before_next_request() {
 
 #[tokio::test]
 async fn post_edit_hook_is_silent_when_lsp_disabled() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let tmp = tempdir().expect("tempdir");
     let workspace = tmp.path().to_path_buf();
     let target = workspace.join("src").join("main.rs");
@@ -4046,7 +4046,7 @@ async fn post_edit_hook_is_silent_when_lsp_disabled() {
 
 #[tokio::test]
 async fn post_edit_hook_skips_unknown_tool_names() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     use crate::lsp::{Diagnostic, Language, Severity};
     use std::sync::Arc;
 
@@ -4153,7 +4153,7 @@ async fn collect_until_turn_complete(handle: &EngineHandle) -> Vec<Event> {
 async fn record_then_replay_round_trip() {
     use codesmith_agent::llm_client::record_replay::{RecordLine, RecordingClient, ReplayClient};
 
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let tmp = tempdir().expect("tempdir");
     let recording_path = tmp.path().join("turns.jsonl");
 
@@ -4290,14 +4290,14 @@ async fn run_golden_fixture(name: &str, sends: &[&str]) -> Vec<String> {
 
 #[tokio::test]
 async fn golden_fixture_simple_text_turn_replays() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let texts = run_golden_fixture("strict_simple_text_turn.jsonl", &["hello"]).await;
     assert_eq!(texts, vec!["Golden replay: one.".to_string()]);
 }
 
 #[tokio::test]
 async fn golden_fixture_two_turns_replay_in_fifo_order() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let texts = run_golden_fixture("strict_two_turn_fifo.jsonl", &["first", "second"]).await;
     assert_eq!(
         texts,
@@ -4312,7 +4312,7 @@ async fn golden_fixture_two_turns_replay_in_fifo_order() {
 
 #[tokio::test]
 async fn engine_injects_mock_client_and_completes_text_turn() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let tmp = tempdir().expect("tempdir");
 
     let turn = vec![canned::simple_text_turn("Hello from mock!")];
@@ -4365,7 +4365,7 @@ async fn engine_injects_mock_client_and_completes_text_turn() {
 #[tokio::test]
 async fn narrow_window_model_answer_does_not_advance_a_cycle() {
     const MODEL: &str = "claude-sonnet-4-5";
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let tmp = tempdir().expect("tempdir");
 
     let mock = MockLlmClient::new(vec![canned::simple_text_turn("2")]).with_model(MODEL);
@@ -4427,7 +4427,7 @@ async fn narrow_window_model_answer_does_not_advance_a_cycle() {
 /// auto-compaction runs before any budget gate or provider rejection.
 #[tokio::test]
 async fn engine_128k_window_long_session_compacts_without_prompt_too_long() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let tmp = tempdir().expect("tempdir");
 
     let threshold = crate::models::compaction_threshold_for_model("test-128k");
@@ -4560,7 +4560,7 @@ async fn engine_128k_window_long_session_compacts_without_prompt_too_long() {
 
 #[tokio::test]
 async fn engine_tool_call_round_trip_with_mock_client() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let tmp = tempdir().expect("tempdir");
 
     // Create a file that read_file will find.
@@ -4718,7 +4718,7 @@ fn make_send_op_allow_shell(content: &str) -> Op {
 
 #[tokio::test]
 async fn result_verifier_gates_approval_required_replays_and_injects_verdict() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let tmp = tempdir().expect("tempdir");
 
     // `cargo test --help` is prefix-eligible ("cargo test") and
@@ -4799,7 +4799,7 @@ async fn result_verifier_gates_approval_required_replays_and_injects_verdict() {
 
 #[tokio::test]
 async fn result_verifier_flags_unsubstantiated_claim() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let tmp = tempdir().expect("tempdir");
 
     // A claim with zero tool calls behind it — the no-re-run signal.
@@ -4854,7 +4854,7 @@ async fn result_verifier_flags_unsubstantiated_claim() {
 
 #[tokio::test]
 async fn result_verifier_disabled_by_config_skips_check() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let tmp = tempdir().expect("tempdir");
 
     let turn1 = canned::simple_text_turn("所有测试通过。");
@@ -4952,7 +4952,7 @@ impl codesmith_agent::extension::Extension for EngineLifecycleRecExt {
 /// `SessionStart` → `AgentSettled` → `SessionShutdown`, in order.
 #[tokio::test]
 async fn f2b_engine_emits_session_start_settled_shutdown() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let tmp = tempdir().expect("tempdir");
 
     let turn = vec![canned::simple_text_turn("Hello from mock!")];
@@ -5022,7 +5022,7 @@ async fn f2b_engine_emits_session_start_settled_shutdown() {
 
 #[tokio::test]
 async fn f2b_extension_reload_clears_and_rebinds_live() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let tmp = tempdir().expect("tempdir");
     let workspace = tmp.path().to_path_buf();
 
@@ -5403,7 +5403,7 @@ async fn mods_populate_audits_broken_mod_as_failed_with_original_error() {
 
 #[tokio::test]
 async fn engine_capacity_controller_decides_compaction_for_loaded_session() {
-    let _guard = lock_test_env();
+    let _env = HermeticEnv::new();
     let _cap_lock = CAPACITY_MEMORY_ENV_LOCK.lock().await;
     let tmp = tempdir().expect("tempdir");
     let cap_dir = tmp.path().join("capacity_mem");
