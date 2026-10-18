@@ -326,7 +326,20 @@ async fn await_response(reader: &mut ChildLines, id: u64) -> Result<Value> {
 }
 
 fn is_response_for(value: &Value, id: u64) -> bool {
-    value.get("method").is_none() && value.get("id") == Some(&json!(id))
+    if value.get("method").is_some() {
+        return false;
+    }
+    match value.get("id") {
+        Some(Value::Number(n)) => n.as_u64() == Some(id),
+        // This repo's own --acp server stringifies numeric ids (Zed
+        // compat, `acp_server::jsonrpc_response_id`); accept both the
+        // raw and the stringified spelling so a codesmith child answers
+        // as readily as any other ACP agent. Caught by the real-binary
+        // e2e (`tests/acp_subagent_exec.rs`), which hung to the
+        // provider timeout before this branch existed.
+        Some(Value::String(s)) => s == &id.to_string(),
+        _ => false,
+    }
 }
 
 /// Extract an `agent_message_chunk` text from a `session/update`
@@ -467,6 +480,22 @@ mod tests {
         assert!(
             AcpSubagentProvider::new("  ".to_string(), Vec::new(), HashMap::new(), None).is_err()
         );
+    }
+
+    /// The repo's own --acp server stringifies numeric ids (Zed compat);
+    /// the client must match both spellings or every response is missed
+    /// and the run hangs to the timeout (pinned live by
+    /// `tests/acp_subagent_exec.rs`).
+    #[test]
+    fn response_matching_accepts_raw_and_stringified_ids() {
+        let numeric = json!({"jsonrpc": "2.0", "id": 1, "result": {}});
+        let stringified = json!({"jsonrpc": "2.0", "id": "1", "result": {}});
+        let other_id = json!({"jsonrpc": "2.0", "id": "2", "result": {}});
+        let notification = json!({"jsonrpc": "2.0", "method": "session/update"});
+        assert!(is_response_for(&numeric, 1));
+        assert!(is_response_for(&stringified, 1));
+        assert!(!is_response_for(&other_id, 1));
+        assert!(!is_response_for(&notification, 1));
     }
 
     #[test]
