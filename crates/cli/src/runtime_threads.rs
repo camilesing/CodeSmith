@@ -2159,6 +2159,11 @@ impl RuntimeThreadManager {
             crate::core::engine::EngineHost {
                 runtime_services,
                 hooks: None,
+                // One engine per thread, one private policy store per
+                // engine: a thread's mod-policy flush must not clobber
+                // another thread's set. The process default stays whatever
+                // a single-engine host, if any, published.
+                policy_store: Some(codesmith_agent::policy::PolicyStore::new()),
                 ..Default::default()
             },
         );
