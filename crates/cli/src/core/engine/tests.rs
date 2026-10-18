@@ -3,6 +3,18 @@
 // the guard is deliberately held across await points. These tests run on
 // `#[tokio::test]`'s current-thread runtime, so no other task polled on that
 // thread can contend for the std mutex while it is held.
+//
+// Non-engine families stay on bare `lock_test_env` by audit (2026-10-18,
+// `codesmith_home()` trace: env-gated, thread-attributed, removed after the
+// run): the resolve_llm_client / resolve_utility_llm / seam_resolution /
+// effective_max_output_tokens / context_budget families never resolve
+// `codesmith_home()` at all — in-memory `Config`, compiled-in provider
+// catalog and model tables, env reads only — so there is no real-home
+// write-back to scope away. The `mods_*` family does resolve it (30
+// resolutions, every one landing in the test's own `ScopedHome` tempdir) and
+// keeps its §F `ScopedHome` fixture rather than `HermeticEnv`: a scoped
+// `CODESMITH_HOME` outranks the fixture's `$HOME` and would hide the mod
+// tree the test plants there.
 #![allow(clippy::await_holding_lock)]
 
 use crate::core::capacity::{
