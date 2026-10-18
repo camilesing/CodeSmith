@@ -121,7 +121,7 @@ pub(crate) struct RegisteredHandler {
 /// returns them + proves the chain in isolation).
 ///
 /// `#[must_use]` (§F2b) so the host can't silently drop an outcome at a
-/// transform/block seam — observe-only sites bind `let _ =`, actionable seams
+/// transform/block seam — emit-only sites bind `let _ =`, actionable seams
 /// bind `let out =` and inspect `out.outcome` / `out.event`.
 #[derive(Debug, Clone)]
 #[must_use]

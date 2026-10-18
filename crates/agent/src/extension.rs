@@ -19,6 +19,22 @@
 //! extension pub/sub (the former §F3 EventBus skeleton) was deleted with
 //! zero consumers; it returns only when an extension actually needs it.
 //!
+//! ## Dispatch vocabulary (DSH alignment)
+//!
+//! [`DispatchMode`] names its three states after the deepseek-harness
+//! (DSH) extension model — `Emit` (broadcast, advisory outcomes),
+//! `Serial` (ordered listeners, veto short-circuits), `Waterfall
+//! { can_deny }` (transform fold, optionally deny) — so both frameworks
+//! share one vocabulary for the same dispatch semantics.
+//!
+//! Known limitations (deliberate, not gaps to fill silently): CodeSmith
+//! does not adopt DSH's "everything is a plugin" kernel — the kernel
+//! (single turn loop, provider registry, session log) stays compile-time
+//! assembled, and the extension surface is a seam onto that kernel, not
+//! its composition mechanism. And `Waterfall` is a fold chain (each
+//! handler's `Transform` is visible to the next), not DSH's
+//! `next()`-wrapping around-dispatch; no around form exists.
+//!
 //! ## Style note
 //!
 //! The existing `Tool` / `Callback` / `AgentExecutor` traits in this crate
@@ -221,7 +237,7 @@ pub struct BeforeProviderRequestEvent {
     pub messages: Value,
 }
 
-/// Payload for [`ExtensionEvent::AfterProviderResponse`]. Observe-only.
+/// Payload for [`ExtensionEvent::AfterProviderResponse`]. Emit-only.
 #[derive(Debug, Clone)]
 pub struct AfterProviderResponseEvent {
     pub response: Value,
@@ -229,7 +245,7 @@ pub struct AfterProviderResponseEvent {
 
 /// Payload for [`ExtensionEvent::AssistantStream`] (streaming
 /// observation, route B): one incremental assistant **text** chunk as the
-/// wire stream yields it. Observe-only; handlers must be cheap. The host
+/// wire stream yields it. Emit-only; handlers must be cheap. The host
 /// dispatches each delta's emit off-thread under a wall-clock budget: a
 /// handler that exceeds the budget is detached — it runs to completion
 /// with its outcome discarded and is never cancelled mid-flight — and
@@ -240,7 +256,7 @@ pub struct AssistantStreamEvent {
     pub text: String,
 }
 
-/// Payload for [`ExtensionEvent::ToolExecutionUpdate`]. Observe-only progress.
+/// Payload for [`ExtensionEvent::ToolExecutionUpdate`]. Emit-only progress.
 #[derive(Debug, Clone)]
 pub struct ToolExecutionUpdateEvent {
     pub id: String,
@@ -257,10 +273,10 @@ pub struct ToolExecutionUpdateEvent {
 /// `on_variant`). Variant-specific outcome semantics are part of the
 /// contract and live with the kinds:
 /// [`ExtensionEventKind::dispatch_mode`](ExtensionEventKind::dispatch_mode)
-/// (discipline 3 — the `SessionBefore*` seams cancel-veto; `ToolCall`
-/// transform-and-deny — input rewrite or monotonic deny; `Input` /
-/// `BeforeAgentStart` / `BeforeProviderRequest` / `ToolResult`
-/// transform-chain; the rest observe-serial).
+/// (discipline 3 — the `SessionBefore*` seams are `Serial` (cancel
+/// veto); `ToolCall` is a denying `Waterfall` — input rewrite or
+/// monotonic deny; `Input` / `BeforeAgentStart` / `BeforeProviderRequest`
+/// / `ToolResult` are non-denying `Waterfall`s; the rest `Emit`).
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum ExtensionEvent {
@@ -302,7 +318,7 @@ pub enum ExtensionEvent {
     /// The model-visible tool catalog changed between main turns. Emitted
     /// at the dispatcher-build chokepoint after every selection source has
     /// been applied; `added`/`removed` are tool names (sorted, possibly
-    /// empty on one side). Observe-only.
+    /// empty on one side). Emit-only.
     ToolsChange {
         added: Vec<String>,
         removed: Vec<String>,
@@ -382,25 +398,35 @@ impl ExtensionEvent {
 /// [`HandlerOutcome`]s the host honors — part of the event's contract, not
 /// an implementation detail of a seam (discipline 3: the dispatch mode is
 /// declared with the event). See [`ExtensionEventKind::dispatch_mode`].
+///
+/// Three states named after the DSH (deepseek-harness) dispatch model,
+/// which this contract aligns with: `Emit` = DSH emit, `Serial` = DSH
+/// serial, `Waterfall` = DSH waterfall.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum DispatchMode {
-    /// Observe-serial: handlers run in subscription order; outcomes are
-    /// advisory — `Transform`/`Cancel`/`Block` are ignored at these seams.
-    Observe,
-    /// Transform-chain: each handler's `Transform` folds into the running
-    /// event (immediately visible to the next handler); the terminal
-    /// actionable field is applied to the host operation.
-    TransformChain,
-    /// Short-circuit veto: a handler's `Cancel` aborts the pending host
-    /// operation (the `SessionBefore*` seams).
-    CancelVeto,
-    /// Transform-chain with deny (the `ToolCall` seam): handlers may
-    /// rewrite the actionable field (`input` — chain continues, visible to
-    /// the next handler) or deny the call outright (`Block`
-    /// short-circuits; the deny is monotonic — no later handler can flip
-    /// it, the chain has already stopped).
-    TransformAndDeny,
+    /// DSH **emit** — broadcast: handlers run in subscription order and
+    /// outcomes are advisory — `Transform`/`Cancel`/`Block` are ignored
+    /// at these seams.
+    Emit,
+    /// DSH **serial** — ordered listeners with veto: handlers run in
+    /// subscription order; a handler's `Cancel` aborts the pending host
+    /// operation and short-circuits the chain (the `SessionBefore*`
+    /// seams).
+    Serial,
+    /// DSH **waterfall** — transform fold: each handler's `Transform`
+    /// folds into the running event (immediately visible to the next
+    /// handler); the terminal actionable field is applied to the host
+    /// operation. `can_deny: true` additionally honors `Block` — a
+    /// handler may deny the operation outright; the deny is monotonic, no
+    /// later handler can flip it (the chain has already stopped). Known
+    /// limitation: a fold chain, not DSH's `next()`-wrapping
+    /// around-dispatch — no around form exists.
+    Waterfall {
+        /// Whether `Block` is honored at this seam: deny the operation
+        /// outright, short-circuiting the fold (the `ToolCall` seam).
+        can_deny: bool,
+    },
 }
 
 impl ExtensionEventKind {
@@ -415,11 +441,11 @@ impl ExtensionEventKind {
             ExtensionEventKind::Input
             | ExtensionEventKind::BeforeAgentStart
             | ExtensionEventKind::BeforeProviderRequest
-            | ExtensionEventKind::ToolResult => DispatchMode::TransformChain,
-            ExtensionEventKind::ToolCall => DispatchMode::TransformAndDeny,
+            | ExtensionEventKind::ToolResult => DispatchMode::Waterfall { can_deny: false },
+            ExtensionEventKind::ToolCall => DispatchMode::Waterfall { can_deny: true },
             ExtensionEventKind::SessionBeforeSwitch
             | ExtensionEventKind::SessionBeforeFork
-            | ExtensionEventKind::SessionBeforeCompact => DispatchMode::CancelVeto,
+            | ExtensionEventKind::SessionBeforeCompact => DispatchMode::Serial,
             ExtensionEventKind::ProjectTrust
             | ExtensionEventKind::SessionStart
             | ExtensionEventKind::AgentStart
@@ -435,7 +461,7 @@ impl ExtensionEventKind {
             | ExtensionEventKind::AgentSettled
             | ExtensionEventKind::SessionShutdown
             | ExtensionEventKind::SessionCompact
-            | ExtensionEventKind::ToolsChange => DispatchMode::Observe,
+            | ExtensionEventKind::ToolsChange => DispatchMode::Emit,
         }
     }
 }
@@ -563,20 +589,23 @@ pub trait CommandDefinition: Send + Sync {
 
 /// What a [`Handler`] returns. Drives the cross-handler chain in
 /// [`ExtensionRunner::emit`](codesmith_extensions::ExtensionRunner::emit)
-/// (spec §4: "一个 handler 的修改对下一个可见"):
+/// (spec §4: "一个 handler 的修改对下一个可见"). Which outcomes the host
+/// honors is the event's
+/// [`dispatch mode`](ExtensionEventKind::dispatch_mode) — the three DSH
+/// states:
 ///
 /// - `Continue` — no change; proceed to the next handler.
-/// - `Cancel { reason }` — abort the surrounding operation. Only meaningful
-///   for `SessionBefore*` variants (spec §4); ignored (treated as `Continue`)
-///   at non-cancel-capable seams so a stray `Cancel` cannot break unrelated
-///   flows.
-/// - `Block { reason }` — prevent the operation. Only meaningful for
-///   `ToolCall`; ignored at non-block-capable seams.
+/// - `Cancel { reason }` — abort the surrounding operation. Honored only
+///   at `Serial` seams (the `SessionBefore*` variants, spec §4); ignored
+///   (treated as `Continue`) elsewhere so a stray `Cancel` cannot break
+///   unrelated flows.
+/// - `Block { reason }` — prevent the operation. Honored only at a
+///   denying `Waterfall` seam (`ToolCall`); ignored elsewhere.
 /// - `Transform(event)` — replace the running event with `event` for
-///   subsequent handlers AND (at transform-capable seams) apply `event`'s
-///   actionable field to the live operation. Only meaningful for `Input` /
-///   `BeforeAgentStart` / `BeforeProviderRequest` / `ToolResult`; ignored
-///   elsewhere.
+///   subsequent handlers AND (at `Waterfall` seams) apply `event`'s
+///   actionable field to the live operation. Honored at the `Waterfall`
+///   seams — `Input` / `BeforeAgentStart` / `BeforeProviderRequest` /
+///   `ToolCall` / `ToolResult`; ignored at `Emit`/`Serial` seams.
 ///
 /// The terminal [`codesmith_extensions::EmitOutcome::outcome`] is never
 /// `Transform` — a transform is folded into the running event and the chain
@@ -1282,33 +1311,34 @@ mod tests {
         use DispatchMode as M;
         use ExtensionEventKind as K;
         let contract: &[(K, M)] = &[
-            // Transform-chain (actionable field folds through the chain).
-            (K::Input, M::TransformChain),
-            (K::BeforeAgentStart, M::TransformChain),
-            (K::BeforeProviderRequest, M::TransformChain),
-            (K::ToolResult, M::TransformChain),
-            // Short-circuit.
-            (K::ToolCall, M::TransformAndDeny),
-            (K::SessionBeforeSwitch, M::CancelVeto),
-            (K::SessionBeforeFork, M::CancelVeto),
-            (K::SessionBeforeCompact, M::CancelVeto),
-            // Observe-serial (outcomes advisory).
-            (K::AssistantStream, M::Observe),
-            (K::ProjectTrust, M::Observe),
-            (K::SessionStart, M::Observe),
-            (K::AgentStart, M::Observe),
-            (K::TurnStart, M::Observe),
-            (K::BeforeProviderHeaders, M::Observe),
-            (K::AfterProviderResponse, M::Observe),
-            (K::ToolExecutionStart, M::Observe),
-            (K::ToolExecutionUpdate, M::Observe),
-            (K::ToolExecutionEnd, M::Observe),
-            (K::TurnEnd, M::Observe),
-            (K::AgentEnd, M::Observe),
-            (K::AgentSettled, M::Observe),
-            (K::SessionShutdown, M::Observe),
-            (K::SessionCompact, M::Observe),
-            (K::ToolsChange, M::Observe),
+            // Waterfall (actionable field folds through the chain).
+            (K::Input, M::Waterfall { can_deny: false }),
+            (K::BeforeAgentStart, M::Waterfall { can_deny: false }),
+            (K::BeforeProviderRequest, M::Waterfall { can_deny: false }),
+            (K::ToolResult, M::Waterfall { can_deny: false }),
+            // Denying waterfall (fold + monotonic deny).
+            (K::ToolCall, M::Waterfall { can_deny: true }),
+            // Serial (ordered listeners; veto short-circuits).
+            (K::SessionBeforeSwitch, M::Serial),
+            (K::SessionBeforeFork, M::Serial),
+            (K::SessionBeforeCompact, M::Serial),
+            // Emit (broadcast; outcomes advisory).
+            (K::AssistantStream, M::Emit),
+            (K::ProjectTrust, M::Emit),
+            (K::SessionStart, M::Emit),
+            (K::AgentStart, M::Emit),
+            (K::TurnStart, M::Emit),
+            (K::BeforeProviderHeaders, M::Emit),
+            (K::AfterProviderResponse, M::Emit),
+            (K::ToolExecutionStart, M::Emit),
+            (K::ToolExecutionUpdate, M::Emit),
+            (K::ToolExecutionEnd, M::Emit),
+            (K::TurnEnd, M::Emit),
+            (K::AgentEnd, M::Emit),
+            (K::AgentSettled, M::Emit),
+            (K::SessionShutdown, M::Emit),
+            (K::SessionCompact, M::Emit),
+            (K::ToolsChange, M::Emit),
         ];
         assert_eq!(
             contract.len(),

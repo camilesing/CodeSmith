@@ -547,7 +547,7 @@ impl Engine {
         }
 
         // §F2b T5 — `SessionStart` brackets the session lifecycle (fires
-        // once at engine entry, before the op loop). Observe-only.
+        // once at engine entry, before the op loop). Emit-only.
         if let Some(runner) = &self.extension_runner {
             let _ = runner
                 .emit(codesmith_agent::extension::ExtensionEvent::SessionStart {
@@ -886,7 +886,7 @@ impl Engine {
             guard.shutdown_all().await;
         }
         // §F2b T5 — `SessionShutdown` brackets the session lifecycle (fires
-        // once at engine exit, after the op loop + MCP shutdown). Observe-only.
+        // once at engine exit, after the op loop + MCP shutdown). Emit-only.
         if let Some(runner) = &self.extension_runner {
             let _ = runner
                 .emit(codesmith_agent::extension::ExtensionEvent::SessionShutdown)
@@ -1619,7 +1619,7 @@ impl Engine {
         }
         // §F2b T5 — `AgentSettled` fires after the post-run drain (compaction
         // merge + capacity-decision apply) completes — the engine has settled
-        // the agent's run results. Observe-only.
+        // the agent's run results. Emit-only.
         if let Some(runner) = &self.extension_runner {
             let _ = runner
                 .emit(codesmith_agent::extension::ExtensionEvent::AgentSettled)

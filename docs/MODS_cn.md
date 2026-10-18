@@ -130,7 +130,7 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 | `tool-call` | `id`、`name`、`input`（JSON 值） |
 | `tool-result` | `id`、`name`、`content`、`success`、`is_error`、`canonical`（JSON 值，工具未产出时为 `()`） |
 | `turn-start` / `turn-end` | `turn_id`；`turn-end` 另有 `reason` |
-| `assistant-stream` | `text`（单个增量块；随文本 delta 逐次触发，仅观察） |
+| `assistant-stream` | `text`（单个增量块；随文本 delta 逐次触发，仅 emit） |
 | `tool-execution-update` | `id`、`name`、`message` |
 | `tools-change` | `added`、`removed`（工具名数组） |
 | `project-trust` / `session-start` | `reason` |
@@ -139,7 +139,7 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 `tool-execution-update` 由 shell 工具自己的轮询循环在命令持续运行时发射（`exec_shell`
 前台与 `exec_shell_wait`）：至多每秒一次、且仅当有新输出。`id` 是 shell 任务 id（工具
 不知道自己的 wire tool-call id——按 `name` + 时序关联）；`message` 是自上一检查点以来的
-输出（尾部截至 4 KiB；管理器给出截断摘录时取其尾部）。仅观察、仅主回合（子代理循环
+输出（尾部截至 4 KiB；管理器给出截断摘录时取其尾部）。仅 emit、仅主回合（子代理循环
 不发射扩展事件）；沙箱后端与交互式运行不报检查点。同一检查点也以 `ToolCallProgress`
 到达 UI。`resources-discover` 已在 0.11.0 移除（从未有发射方，也没有消费者）。
 `session-before-fork` 在每次 spawn 前触发——spawn 工具族（`agent_open` / `agent_spawn` /
@@ -151,12 +151,13 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 
 `tools-change` 在回合边界触发：当编译后的模型可见目录相对上一主回合发生变化（模式切换、mod 重载、选择变更）。首回合只建立基线、不触发；sub-agent 工具集不会触发；没有读取当前目录的 API——事件只携带差量。`/tools` 按来源（builtin / plugin / extension / mcp）分组展示当前基线。
 
-分发模式是每个事件契约的一部分（`ExtensionEventKind::dispatch_mode`，由契约测试锁定）：
+分发模式是每个事件契约的一部分（`ExtensionEventKind::dispatch_mode`，由契约测试锁定）
+—— 三态命名对齐 DSH（deepseek-harness）模型：**waterfall**、**serial**、**emit**：
 
-- **transform-chain**：`input`、`before-agent-start`、`before-provider-request`、`tool-result` —— transform 逐个折叠、后续 handler 可见、终值作用于宿主操作
-- **transform + deny**：`tool-call` —— 改写调用 `input`（改写后的输入才是审批与实际执行的输入，也是入档输入），或 `block(reason)` 拒绝（单调——后续 handler 不可翻转）
-- **cancel veto**：`session-before-switch`、`session-before-fork`、`session-before-compact`
-- **observe**（outcomes 仅供参考）：其余全部，含 `assistant-stream`（随文本 delta 逐次触发——handler 须轻量）与 `tools-change`（回合分发收口的目录差量）
+- **waterfall**：`input`、`before-agent-start`、`before-provider-request`、`tool-result` —— transform 逐个折叠、后续 handler 可见、终值作用于宿主操作
+- **waterfall + deny**：`tool-call` —— 改写调用 `input`（改写后的输入才是审批与实际执行的输入，也是入档输入），或 `block(reason)` 拒绝（单调——后续 handler 不可翻转）
+- **serial**：`session-before-switch`、`session-before-fork`、`session-before-compact`
+- **emit**（outcomes 仅供参考）：其余全部，含 `assistant-stream`（随文本 delta 逐次触发——handler 须轻量）与 `tools-change`（回合分发收口的目录差量）
 
 ### 钩子返回值 → HandlerOutcome
 
