@@ -4423,6 +4423,65 @@ async fn engine_turn_transcript_carries_exactly_one_user_message() {
     );
 }
 
+/// Round-3 TODO-40: after `Op::SyncSession` moves the workspace (the `/cd`
+/// path), the session cwd must follow immediately — not one turn later — and
+/// the next turn's `<turn_meta>` must carry the model-visible working
+/// directory line showing the NEW directory.
+#[tokio::test]
+async fn sync_session_moves_cwd_into_next_turn_meta() {
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    let other = tempdir().expect("second workspace");
+
+    let mock = MockLlmClient::new(vec![canned::simple_text_turn("ok")]);
+    let config = test_engine_config(tmp.path());
+    let (handle, _mock_arc) = spawn_engine_with_mock(config, mock);
+
+    handle
+        .send(Op::SyncSession {
+            session_id: None,
+            messages: Vec::new(),
+            system_prompt: None,
+            system_prompt_override: false,
+            model: "mock-model".to_string(),
+            workspace: other.path().to_path_buf(),
+        })
+        .await
+        .expect("sync op");
+
+    handle.send(make_send_op("hello")).await.expect("send op");
+    let events = collect_until_turn_complete(&handle).await;
+
+    let snapshot = events
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            Event::SessionUpdated { messages, .. } => Some(messages.clone()),
+            _ => None,
+        })
+        .expect("a SessionUpdated snapshot after the turn");
+    let turn_meta = snapshot
+        .iter()
+        .find(|m| m.role == "user")
+        .and_then(|m| {
+            m.content.iter().find_map(|b| match b {
+                ContentBlock::Text { text, .. } if text.contains("<turn_meta>") => {
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+        })
+        .expect("turn_meta block in the first user message");
+    assert!(
+        turn_meta.contains("Working directory:"),
+        "turn_meta must carry the model-visible working directory: {turn_meta}"
+    );
+    assert!(
+        turn_meta.contains(&other.path().display().to_string()),
+        "after a workspace sync the working-directory line must show the NEW directory: {turn_meta}"
+    );
+}
+
 // === Cycle-trigger regression: window smaller than the flat reserve ========
 
 /// A model whose context window is smaller than the flat turn-response

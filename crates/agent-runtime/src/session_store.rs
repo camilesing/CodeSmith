@@ -201,6 +201,9 @@ fn normalize_managed_dir(path: PathBuf) -> std::io::Result<PathBuf> {
     if path.is_absolute() {
         return Ok(path);
     }
+    // Relative managed paths resolve against the process launch directory —
+    // config-load semantics (like a relative --config argument), not session
+    // cwd semantics.
     std::env::current_dir().map(|cwd| cwd.join(path))
 }
 

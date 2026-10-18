@@ -22,6 +22,8 @@ pub fn settings_file_path() -> Result<PathBuf> {
             let p = crate::workspace_trust::expand_path(config_path);
             let dir = match p.parent() {
                 Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+                // A bare-filename CONFIG_PATH resolves against the process
+                // launch directory (relative-argument semantics).
                 _ => std::env::current_dir()
                     .context("Failed to resolve current directory for settings path")?,
             };

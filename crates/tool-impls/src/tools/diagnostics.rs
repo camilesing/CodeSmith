@@ -3,7 +3,6 @@
 //! This tool gathers lightweight, best-effort environment information without
 //! failing hard when optional commands are unavailable.
 
-use std::env;
 use std::path::Path;
 use std::process::Command;
 
@@ -80,10 +79,11 @@ impl ToolSpec for DiagnosticsTool {
     async fn execute(&self, _input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let workspace_root = context.workspace.display().to_string();
 
-        let (current_dir, current_dir_error) = match env::current_dir() {
-            Ok(dir) => (Some(dir.display().to_string()), None),
-            Err(err) => (None, Some(err.to_string())),
-        };
+        // The session's effective cwd (the per-turn ToolContext binding that
+        // follows cd captures / /cd / worktree), not the process launch
+        // directory — the model asked where the session is, not where the
+        // binary was started.
+        let (current_dir, current_dir_error) = (Some(context.cwd.display().to_string()), None);
 
         let git = probe_git(&context.workspace);
         let sandbox_type =

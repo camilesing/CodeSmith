@@ -1048,7 +1048,7 @@ impl Command {
             args: &[],
             aliases: &["cwd"],
             group: Group::Session,
-            help: "show the workspace (switching needs a restart)",
+            help: "show the workspace (switch live via /cd)",
         },
         CommandInfo {
             command: Command::Translate,

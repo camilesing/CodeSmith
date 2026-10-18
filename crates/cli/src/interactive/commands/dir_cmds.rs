@@ -10,7 +10,8 @@
 //!   subtree, or a path the workspace trust record covers (`/trust add`).
 //!   Anything else is refused with the exact `/trust add` line to run —
 //!   moving the session is not a way to acquire file access to an untrusted
-//!   tree.
+//!   tree. Mods get a veto over the move via the `session-before-switch`
+//!   event (CancelVeto — the only trigger point for that event).
 //! - `/add-dir` adds a directory to that same trust record, which is what
 //!   makes it usable both as a `/cd` target and as an out-of-workspace path
 //!   for file tools.
@@ -104,6 +105,23 @@ pub async fn cd(state: &mut ReplState, argument: &str) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // `session-before-switch` (CancelVeto): mods get a veto over directory
+    // switches — the event's documented contract, wired here at its only
+    // trigger point. A Cancel keeps the session where it is.
+    if let Some(runner) = &state.extension_runner {
+        let out = runner
+            .emit(codesmith_agent::extension::ExtensionEvent::SessionBeforeSwitch)
+            .await;
+        if let codesmith_agent::extension::HandlerOutcome::Cancel { reason } = out.outcome {
+            println!(
+                "{} switch to {} vetoed by a mod: {reason}",
+                "✗".red(),
+                target.display()
+            );
+            return Ok(());
+        }
+    }
+
     state.workspace = target.clone();
     // Re-root the engine with the conversation intact: the same sync
     // `/resume` uses, which is what makes relative tool paths resolve from
@@ -174,6 +192,11 @@ pub fn add_dir(state: &ReplState, argument: &str) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    // The env lock spans the async body by the same convention as the
+    // engine tests (core/engine/tests.rs header): the guard is deliberately
+    // held across await points on the current-thread runtime.
+    #![allow(clippy::await_holding_lock)]
+
     use super::*;
 
     #[test]
@@ -212,5 +235,86 @@ mod tests {
             cd_allowed(dir.path(), &nested),
             "a subdirectory needs no trust"
         );
+    }
+
+    /// Round-3 TODO-40: `/cd` consults the extension runner; a mod's
+    /// `session-before-switch` Cancel veto keeps the session in the old
+    /// workspace. Baseline: the switch went through without asking mods.
+    #[tokio::test]
+    async fn cd_is_vetoable_by_a_mod() {
+        use std::sync::{Arc, Mutex as StdMutex};
+
+        use codesmith_extensions::{ExtensionRunner, HostExtensionContext, ModKvStore, RhaiMod};
+        use tokio_util::sync::CancellationToken;
+
+        let _lock = crate::test_support::lock_test_env();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let child = dir.path().join("child");
+        std::fs::create_dir(&child).expect("mkdir");
+        let root = dir.path().canonicalize().expect("canonical root");
+        let child_canon = child.canonicalize().expect("canonical child");
+
+        fn options(workspace: std::path::PathBuf) -> crate::app_state::InteractiveOptions {
+            crate::app_state::InteractiveOptions {
+                model: "test-model".to_string(),
+                workspace,
+                config_path: None,
+                config_profile: None,
+                allow_shell: false,
+                max_subagents: 2,
+                skills_dir: std::env::temp_dir(),
+                memory_path: std::env::temp_dir().join("memory.md"),
+                mcp_config_path: std::env::temp_dir().join("mcp.json"),
+                use_memory: false,
+                start_in_agent_mode: true,
+                yolo: false,
+                resume_session_id: None,
+                initial_input: None,
+            }
+        }
+
+        // A bound runner with one live mod whose handler vetoes the switch.
+        let runner = Arc::new(ExtensionRunner::new());
+        let ctx = HostExtensionContext::new(
+            root.clone(),
+            codesmith_agent::extension::ExtensionMode::Interactive,
+            Arc::new(StdMutex::new(true)),
+            Arc::new(StdMutex::new(CancellationToken::new())),
+            runner.generation_arc(),
+        );
+        runner.bind_core(Arc::new(ctx));
+        let veto_mod = RhaiMod::load_source(
+            "veto-switch",
+            "veto-switch",
+            "0.0.0",
+            r#"on("session-before-switch", |e| cancel("stay in the workspace"));"#.to_string(),
+            ModKvStore::ephemeral(),
+            runner.message_projection_hub(),
+        )
+        .expect("veto mod compiles");
+        runner
+            .bind_mod(Arc::new(veto_mod))
+            .await
+            .expect("veto mod binds");
+
+        let config = crate::config::Config::default();
+        let mut state = ReplState::new(options(root.clone()), &config);
+        state.extension_runner = Some(runner);
+        super::cd(&mut state, child_canon.to_str().expect("utf8"))
+            .await
+            .expect("cd runs");
+        assert_eq!(
+            state.workspace, root,
+            "a mod veto must keep the session in the old workspace"
+        );
+
+        // Control: without a runner the move proceeds (no engine attached —
+        // the "could not be re-synced" warning path; the workspace still
+        // moves).
+        let mut state = ReplState::new(options(root.clone()), &config);
+        super::cd(&mut state, child_canon.to_str().expect("utf8"))
+            .await
+            .expect("cd runs");
+        assert_eq!(state.workspace, child_canon, "control: the move proceeds");
     }
 }

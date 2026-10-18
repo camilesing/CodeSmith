@@ -2,10 +2,18 @@
 //!
 //! Production wraps mid-turn injected messages (steer input, LSP diagnostics
 //! flush, compaction attachment re-inject) in a `<turn_meta>` block carrying
-//! the current date, the auto-routed model / reasoning-effort (when
-//! auto-routing), the working-set summary, and the matched conditional-skills
-//! block. The block is the first `ContentBlock` of the `user` message so the
-//! model sees the context before the injected text. Historically these lived as `&self Engine` methods reading
+//! the current date, the session's effective working directory, the
+//! auto-routed model / reasoning-effort (when auto-routing), the working-set
+//! summary, and the matched conditional-skills block. The block is the first
+//! `ContentBlock` of the `user` message so the model sees the context before
+//! the injected text.
+//!
+//! Cache effect: the block lives inside per-turn user-message content —
+//! append-only history, never spliced into the session-pinned prefix cache
+//! (the working-directory line follows `Session::cwd`, so a `cd` shows up on
+//! the next turn's block without invalidating any prefix).
+//!
+//! Historically these lived as `&self Engine` methods reading
 //! `self.session.working_set` + `self.config.*`; this module lifts the bodies
 //! into free functions taking explicit parameters so two callers share one
 //! source: the `Engine` wrapper methods (which lock the now-`Arc<Mutex>`
@@ -82,9 +90,11 @@ pub(crate) fn conditional_skills_block(
 /// summary + conditional skills at call time (faithful to production, which
 /// re-reads on every wrap so a just-observed steer's paths surface in the
 /// next block).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn turn_metadata_block(
     working_set: &WorkingSet,
     workspace: &Path,
+    cwd: &Path,
     skills_dir: &Path,
     routed_model: &str,
     auto_model: bool,
@@ -99,7 +109,15 @@ pub(crate) fn turn_metadata_block(
 
     let conditional_skills = conditional_skills_block(working_set, workspace, skills_dir);
 
-    let mut lines = vec![format!("Current local date: {today}")];
+    let mut lines = vec![
+        format!("Current local date: {today}"),
+        // The session's effective working directory (follows `Session::cwd`,
+        // so `cd` captures, `/cd` and worktree switches all surface here).
+        format!(
+            "Working directory: {}",
+            defuse_closing_tag(&cwd.display().to_string(), TURN_META_TAG)
+        ),
+    ];
     if auto_model {
         lines.push(format!("Auto model route: {routed_model}"));
     }
@@ -135,6 +153,7 @@ pub(crate) fn turn_metadata_block(
 pub(crate) fn user_text_message_with_turn_metadata(
     working_set: &WorkingSet,
     workspace: &Path,
+    cwd: &Path,
     skills_dir: &Path,
     text: String,
     routed_model: &str,
@@ -148,6 +167,7 @@ pub(crate) fn user_text_message_with_turn_metadata(
             turn_metadata_block(
                 working_set,
                 workspace,
+                cwd,
                 skills_dir,
                 routed_model,
                 auto_model,

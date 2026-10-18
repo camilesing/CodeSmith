@@ -737,6 +737,18 @@ impl Engine {
                     self.session.workspace = workspace.clone();
                     self.config.model.clone_from(&self.session.model);
                     self.config.workspace = workspace.clone();
+                    // The workspace moved: the session's effective cwd must
+                    // follow it now, not one turn later. Mirrors the
+                    // post-turn fold (worktree active → worktree path, else
+                    // the workspace root) so `/cd` takes effect on the very
+                    // next turn.
+                    {
+                        let wt_state = self.config.worktree_state.lock().unwrap();
+                        self.session.cwd = match (&wt_state.active, &wt_state.worktree_path) {
+                            (true, Some(wt)) => wt.clone(),
+                            (true, None) | (false, _) => workspace.clone(),
+                        };
+                    }
                     let ctx = crate::project_context::load_project_context_with_parents(&workspace);
                     self.session.project_context = if ctx.has_instructions() {
                         Some(ctx)
@@ -1004,6 +1016,7 @@ impl Engine {
         turn_meta::turn_metadata_block(
             &working_set,
             &self.config.workspace,
+            &self.session.cwd,
             &self.config.skills_dir,
             routed_model,
             auto_model,
@@ -1316,6 +1329,7 @@ impl Engine {
         let turn_meta_probe = TurnMetaProbe::new(
             Arc::clone(&self.session.working_set),
             self.session.workspace.clone(),
+            self.session.cwd.clone(),
             self.config.skills_dir.clone(),
             self.session.model.clone(),
             self.session.auto_model,
@@ -2732,7 +2746,11 @@ impl Engine {
             .capture_structured_state(StructuredStateRequest {
                 mode_label: mode.label(),
                 workspace: self.config.workspace.clone(),
-                cwd: std::env::current_dir().ok(),
+                // The session's effective cwd (cd captures / /cd / worktree),
+                // not the process launch directory — this text is
+                // model-visible and must match where tools actually resolve
+                // relative paths.
+                cwd: Some(self.session.cwd.clone()),
                 working_set: &ws_snapshot,
                 todos: &self.config.todos,
                 plan_state: &self.config.plan_state,
@@ -2827,7 +2845,9 @@ impl Engine {
                     .capture_structured_state(StructuredStateRequest {
                         mode_label: mode.label(),
                         workspace: self.config.workspace.clone(),
-                        cwd: std::env::current_dir().ok(),
+                        // Session cwd, not the process launch directory —
+                        // the briefing text is model-visible state.
+                        cwd: Some(self.session.cwd.clone()),
                         working_set: &ws_snapshot,
                         todos: &self.config.todos,
                         plan_state: &self.config.plan_state,

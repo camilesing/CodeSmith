@@ -914,6 +914,10 @@ fn accumulate_cleared_facts(
 pub struct TurnMetaProbe {
     working_set: Arc<std::sync::Mutex<WorkingSet>>,
     workspace: PathBuf,
+    /// Session cwd at executor-build time. `Session::cwd` only changes at
+    /// the post-turn fold / `Op::SyncSession` / creation — never during a
+    /// run — so a snapshot is faithful for the life of the probe.
+    cwd: PathBuf,
     skills_dir: PathBuf,
     model: String,
     auto_model: bool,
@@ -928,9 +932,11 @@ impl TurnMetaProbe {
     /// the routed `model` param), matching production's session-model variant
     /// of `user_text_message_with_turn_metadata`.
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         working_set: Arc<std::sync::Mutex<WorkingSet>>,
         workspace: PathBuf,
+        cwd: PathBuf,
         skills_dir: PathBuf,
         model: String,
         auto_model: bool,
@@ -940,6 +946,7 @@ impl TurnMetaProbe {
         Self {
             working_set,
             workspace,
+            cwd,
             skills_dir,
             model,
             auto_model,
@@ -972,6 +979,7 @@ impl TurnMetaProbe {
         super::turn_meta::user_text_message_with_turn_metadata(
             &working_set,
             &self.workspace,
+            &self.cwd,
             &self.skills_dir,
             text,
             &self.model,
@@ -992,6 +1000,7 @@ impl TurnMetaProbe {
         super::turn_meta::turn_metadata_block(
             &working_set,
             &self.workspace,
+            &self.cwd,
             &self.skills_dir,
             &self.model,
             self.auto_model,
@@ -15332,6 +15341,7 @@ mod tests {
         TurnMetaProbe::new(
             Arc::clone(&sess.working_set),
             sess.workspace.clone(),
+            sess.cwd.clone(),
             PathBuf::from("/nonexistent-codesmith-skills-test"),
             sess.model.clone(),
             sess.auto_model,

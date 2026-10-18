@@ -448,7 +448,7 @@ pub fn profile(state: &ReplState, arg: Option<&str>) {
     );
 }
 
-/// `/workspace [path]` — switching needs an engine rebuild.
+/// `/workspace [path]` — show the workspace; switching is live via `/cd`.
 pub fn workspace(state: &ReplState, arg: Option<&str>) {
     let Some(raw) = arg.map(str::trim).filter(|path| !path.is_empty()) else {
         println!("current workspace: {}", state.workspace.display());
@@ -477,8 +477,7 @@ pub fn workspace(state: &ReplState, arg: Option<&str>) {
     println!(
         "{}",
         format!(
-            "workspace switches need a restart: cd {} && codesmith (or codesmith --workspace {})",
-            candidate.display(),
+            "use /cd {} to move this session there (live; restart only to load the new directory's project config and AGENTS.md)",
             candidate.display()
         )
         .dimmed()
