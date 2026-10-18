@@ -542,10 +542,11 @@ impl ToolContext {
         }
     }
 
-    /// Attach an LSP manager so that edit tools can auto-inject diagnostics
-    /// into their results after a successful file modification (#428).
+    /// Attach an LSP manager so that read-only navigation (`lsp_navigate`,
+    /// round-4 TODO-45) can issue definition/references/hover requests
+    /// through it. Attached unconditionally by the host (a disabled manager
+    /// fails closed at runtime).
     #[must_use]
-    #[allow(dead_code)]
     pub fn with_lsp_manager(mut self, manager: Arc<dyn LspManagerApi>) -> Self {
         self.lsp_manager = Some(manager);
         self

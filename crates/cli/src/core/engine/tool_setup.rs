@@ -132,6 +132,14 @@ pub(super) fn build_tool_context_for(
         ctx = ctx.with_utility_llm(utility);
     }
 
+    // Wire the LSP manager (round-4 TODO-45): the read-only `lsp_navigate`
+    // tool issues definition/references/hover requests through it. Edit
+    // tools keep using the engine-side LspProbe for post-edit diagnostics,
+    // so attaching the manager here changes nothing for them. Attached
+    // unconditionally — the host holds a `disabled()` fallback when LSP is
+    // off and the tool fails closed at runtime instead.
+    ctx = ctx.with_lsp_manager(host.lsp_manager.clone());
+
     // Wire the large-output router (#548). Only attaches when the
     // [workshop] config table is present; sub-agents don't inherit the
     // router (their ToolContext is built separately) to prevent recursive
@@ -238,12 +246,14 @@ pub(super) fn build_turn_tool_registry_builder_for(
             .with_parallel_tool();
     }
 
-    // User input, recall archive, and cross-session content search
-    // (round-3 TODO-43) are needed for all modes.
+    // User input, recall archive, cross-session content search
+    // (round-3 TODO-43), and type-aware LSP navigation (round-4 TODO-45)
+    // are needed for all modes.
     builder = builder
         .with_user_input_tool()
         .with_recall_archive_tool()
-        .with_session_search_tool();
+        .with_session_search_tool()
+        .with_lsp_navigation_tool();
 
     // SlopLedger: plan gets read-only, agent/yolo get the full set.
     // Coordinator skips slop_ledger entirely — it has no direct tools.

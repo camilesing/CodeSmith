@@ -49,6 +49,12 @@ use crate::utils::spawn_supervised;
 /// keeping startup bounded — a wedged server cannot hang us forever.
 const INIT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Bound on one [`LspTransport::request`] call's wait for its response
+/// (round-4 TODO-45). Generous for cold-start servers — rust-analyzer's
+/// first navigation query after spawn can take seconds — while keeping a
+/// wedged server from hanging the turn.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// Upper bound on the reader's accumulated buffer when no parseable frame
 /// header sits at its start (a server banner or non-LSP garbage on stdout).
 /// Exceeding it with nothing parseable fails the reader closed instead of
@@ -69,6 +75,12 @@ pub trait LspTransport: Send + Sync {
         text: &str,
         wait: Duration,
     ) -> Result<Vec<Diagnostic>>;
+
+    /// Send one JSON-RPC request and return its `result` value (round-4
+    /// TODO-45 — the generic request path behind the manager's read-only
+    /// navigation operations). Fails on a transport error, a timeout, or a
+    /// JSON-RPC `error` object in the response.
+    async fn request(&self, method: &str, params: Value) -> Result<Value>;
 
     /// Best-effort shutdown. Called via `LspManager::shutdown_all`.
     #[allow(dead_code)]
@@ -96,10 +108,13 @@ pub struct StdioLspTransport {
     /// (different files, same transport) no longer serialize on a shared
     /// receiver mutex.
     diagnostics_version: watch::Receiver<u64>,
-    /// Monotonic request id counter. Reserved for future LSP request/reply
-    /// methods (workspace symbol queries, etc.).
-    #[allow(dead_code)]
+    /// Monotonic request id counter, allocated per [`LspTransport::request`]
+    /// call (the `initialize` handshake reserved id 1).
     next_id: AsyncMutex<i64>,
+    /// Pending reply slots keyed by request id, shared with the dispatcher
+    /// task (sole router of inbound responses). A `request` call registers
+    /// its oneshot here before sending so a fast server cannot beat us.
+    pending: Arc<AsyncMutex<HashMap<i64, oneshot::Sender<Value>>>>,
     /// Language id passed in `textDocument/didOpen` (e.g. "rust").
     language_id: &'static str,
     /// Track which files we have opened so the second touch sends
@@ -149,7 +164,10 @@ impl StdioLspTransport {
         let (tx_inbound, rx_inbound) = mpsc::channel::<Value>(64);
         let diagnostics_cache = Arc::new(DiagnosticsCache::default());
         let (version_tx, diagnostics_version) = watch::channel(0u64);
-
+        // Pending reply slots, shared with the dispatcher task below and
+        // held on the transport for `LspTransport::request`.
+        let pending: Arc<AsyncMutex<HashMap<i64, oneshot::Sender<Value>>>> =
+            Arc::new(AsyncMutex::new(HashMap::new()));
         // Writer task: drain outbound channel, frame with Content-Length, write to stdin.
         spawn_supervised(
             "lsp-writer",
@@ -172,8 +190,6 @@ impl StdioLspTransport {
         // Inbound dispatcher: routes notifications into the diagnostics cache
         // (bumping the publish counter) and replies into a pending-request
         // slot keyed by request id.
-        let pending: Arc<AsyncMutex<HashMap<i64, oneshot::Sender<Value>>>> =
-            Arc::new(AsyncMutex::new(HashMap::new()));
         spawn_supervised(
             "lsp-dispatcher",
             std::panic::Location::caller(),
@@ -264,6 +280,7 @@ impl StdioLspTransport {
             diagnostics_cache,
             diagnostics_version,
             next_id: AsyncMutex::new(2),
+            pending,
             language_id: language.language_id(),
             opened: AsyncMutex::new(HashMap::new()),
         })
@@ -370,6 +387,47 @@ impl LspTransport for StdioLspTransport {
         // No fresh publish within the window: report "no diagnostics this
         // turn" (same contract as before the cache refactor).
         Ok(Vec::new())
+    }
+
+    async fn request(&self, method: &str, params: Value) -> Result<Value> {
+        let id = {
+            let mut next = self.next_id.lock().await;
+            let id = *next;
+            *next += 1;
+            id
+        };
+        // Register the reply slot BEFORE sending so a fast server cannot
+        // beat us to the dispatcher (same ordering as the initialize
+        // handshake).
+        let (tx, rx) = oneshot::channel::<Value>();
+        self.pending.lock().await.insert(id, tx);
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params
+        });
+        if send_message(&self.tx_outbound, &payload).await.is_err() {
+            self.pending.lock().await.remove(&id);
+            return Err(anyhow!("LSP outbound channel closed during `{method}`"));
+        }
+        let response = match timeout(REQUEST_TIMEOUT, rx).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(_)) => return Err(anyhow!("LSP transport closed during `{method}`")),
+            Err(_) => {
+                // Drop the stale slot so a very late response finds nothing.
+                self.pending.lock().await.remove(&id);
+                return Err(anyhow!("LSP request `{method}` timed out"));
+            }
+        };
+        if let Some(error) = response.get("error") {
+            let message = error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown error");
+            return Err(anyhow!("LSP request `{method}` failed: {message}"));
+        }
+        Ok(response.get("result").cloned().unwrap_or(Value::Null))
     }
 
     async fn shutdown(&self) {
@@ -647,7 +705,7 @@ fn strip_windows_verbatim(text: &str) -> std::borrow::Cow<'_, str> {
 /// `\\?\` verbatim prefix stripped and separators normalized to `/`
 /// (`file:///C:/…`); on Unix a backslash is a legal filename character and
 /// stays percent-encoded as-is.
-fn uri_from_path(path: &Path) -> String {
+pub(crate) fn uri_from_path(path: &Path) -> String {
     let canonical = canonicalize_best_effort(path);
     let lossy = canonical.to_string_lossy();
     let text = strip_windows_verbatim(&lossy);

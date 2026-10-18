@@ -26,6 +26,7 @@ pub mod git_history;
 pub mod handle;
 pub mod image_ocr;
 pub mod knowledge_recall;
+pub mod lsp_navigate;
 pub mod notify;
 pub mod pandoc;
 pub mod parallel;
