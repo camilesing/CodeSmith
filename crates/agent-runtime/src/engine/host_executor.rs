@@ -2917,14 +2917,21 @@ impl HostAgentExecutor {
             }
         }
 
-        // Seed the transcript with the user turn.
-        history.push(Message {
-            role: "user".to_string(),
-            content: vec![ContentBlock::Text {
-                text: user_text,
-                cache_control: None,
-            }],
-        });
+        // Seed the transcript with the user turn. Empty `user_text` means
+        // the host already pushed its own enriched user message (the engine
+        // pre-pushes turn_meta + working-set context before invoking the
+        // executor) — seeding here too would append an empty-text user
+        // message to the transcript, the session file, and the next model
+        // request.
+        if !user_text.is_empty() {
+            history.push(Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: user_text,
+                    cache_control: None,
+                }],
+            });
+        }
         if let Some(runner) = &extension {
             let _ = runner
                 .emit(codesmith_agent::extension::ExtensionEvent::TurnStart {

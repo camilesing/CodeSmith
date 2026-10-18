@@ -128,14 +128,19 @@ impl DefaultAgentExecutor {
         let system = self.config.system.clone();
         let temperature = self.config.temperature;
 
-        // Seed the transcript with the user turn.
-        history.push(Message {
-            role: "user".to_string(),
-            content: vec![ContentBlock::Text {
-                text: user_text,
-                cache_control: None,
-            }],
-        });
+        // Seed the transcript with the user turn. Empty `user_text` means
+        // the host already pushed its own user message — seeding here too
+        // would append an empty-text user message to the transcript and the
+        // next model request (same guard as HostAgentExecutor).
+        if !user_text.is_empty() {
+            history.push(Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: user_text,
+                    cache_control: None,
+                }],
+            });
+        }
 
         let mut step: u32 = 0;
         loop {

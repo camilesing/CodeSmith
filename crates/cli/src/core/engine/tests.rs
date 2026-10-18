@@ -4363,6 +4363,66 @@ async fn engine_injects_mock_client_and_completes_text_turn() {
     assert_eq!(mock_arc.call_count(), 1);
 }
 
+/// Round-3 TODO-39: the host pre-pushes the turn_meta-enriched user message
+/// before invoking the executor with empty `user_text`, so the executor's
+/// seed push must be guarded (`if !user_text.is_empty()` — the contract the
+/// `handle_send_message` comment states). Without the guard every production
+/// turn appends a second, empty-text user message to the transcript, the
+/// session file, and the next model request.
+#[tokio::test]
+async fn engine_turn_transcript_carries_exactly_one_user_message() {
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+
+    let mock = MockLlmClient::new(vec![canned::simple_text_turn("ok")]);
+    let config = test_engine_config(tmp.path());
+    let (handle, _mock_arc) = spawn_engine_with_mock(config, mock);
+
+    handle.send(make_send_op("hello")).await.expect("send op");
+    let events = collect_until_turn_complete(&handle).await;
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            Event::TurnComplete {
+                status: TurnOutcomeStatus::Completed,
+                ..
+            }
+        )),
+        "expected TurnComplete::Completed"
+    );
+
+    // The last SessionUpdated snapshot carries the full transcript after
+    // the assistant message landed.
+    let snapshot = events
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            Event::SessionUpdated { messages, .. } => Some(messages.clone()),
+            _ => None,
+        })
+        .expect("at least one SessionUpdated snapshot");
+    let user_roles: Vec<String> = snapshot
+        .iter()
+        .filter(|m| m.role == "user")
+        .map(|m| {
+            format!(
+                "blocks={} text_empty={}",
+                m.content.len(),
+                m.content.iter().any(|b| matches!(
+                    b,
+                    ContentBlock::Text { text, .. } if text.is_empty()
+                ))
+            )
+        })
+        .collect();
+    assert_eq!(
+        user_roles.len(),
+        1,
+        "one turn must seed exactly one user message; got {user_roles:?}"
+    );
+}
+
 // === Cycle-trigger regression: window smaller than the flat reserve ========
 
 /// A model whose context window is smaller than the flat turn-response
