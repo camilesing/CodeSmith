@@ -39,6 +39,7 @@ pub mod revert_turn;
 pub mod review;
 pub mod rlm;
 pub mod search;
+pub mod session_search;
 pub mod shell;
 pub mod symbols;
 pub mod test_runner;

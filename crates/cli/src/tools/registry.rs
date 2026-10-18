@@ -517,6 +517,14 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(RecallArchiveTool))
     }
 
+    /// Include the `search_sessions` tool — cross-session content search
+    /// over saved session transcripts, workspace-scoped (round-3 TODO-43).
+    #[must_use]
+    pub fn with_session_search_tool(self) -> Self {
+        use super::session_search::SessionSearchTool;
+        self.with_tool(Arc::new(SessionSearchTool))
+    }
+
     /// Include note tool.
     #[must_use]
     pub fn with_note_tool(self) -> Self {
@@ -677,6 +685,7 @@ impl ToolRegistryBuilder {
             .with_review_tool(client.clone(), model.clone())
             .with_rlm_tool(client, model)
             .with_recall_archive_tool()
+            .with_session_search_tool()
             .with_subagent_tools(manager, runtime, extension_runner)
     }
 
