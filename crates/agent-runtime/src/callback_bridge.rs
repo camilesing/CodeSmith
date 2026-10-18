@@ -155,7 +155,7 @@ const STREAM_DISPATCH_BUDGET_MS: u64 = 250;
 /// exceeds this.
 const STREAM_DISPATCH_CUMULATIVE_BUDGET_MS: u64 = 1_000;
 
-/// Budgeted, detached, observe-only extension dispatch for hot-path
+/// Budgeted, detached, emit-only extension dispatch for hot-path
 /// emitters — the AssistantStream discipline, shared with the tool-progress
 /// sink. Runs `runner.emit(event)` on the blocking pool (a Rhai handler
 /// runs `handle()` to completion inside its first poll — no await point —
@@ -185,7 +185,7 @@ pub(crate) async fn budgeted_observe_emit(
         // running; if the runtime shuts down while the parked `block_on`
         // is still alive it panics — unobserved, and process-fatal under
         // `panic = "abort"` release profiles. Contain it: the dispatch is
-        // observe-only, so a shutdown-time panic is swallowed.
+        // emit-only, so a shutdown-time panic is swallowed.
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             handle.block_on(runner.emit(event))
         }))
@@ -242,7 +242,7 @@ pub(crate) async fn budgeted_observe_emit(
 /// lands — and (b) reaches subscribed extension handlers through
 /// [`budgeted_observe_emit`] with its own per-turn breaker, so a slow
 /// handler costs a tool's poll loop at most one budget before checkpoints
-/// go silent for the turn. Observe-only end to end: nothing here can fail
+/// go silent for the turn. Emit-only end to end: nothing here can fail
 /// or alter the tool.
 pub struct RunnerProgressSink {
     runner: Option<Arc<codesmith_extensions::ExtensionRunner>>,
@@ -576,7 +576,7 @@ impl Callback for CallbackBridge {
                 let _ = tx.send(event).await;
             }
             // Route B (streaming observation) — forward assistant TEXT
-            // deltas as `AssistantStream` (observe-only) through
+            // deltas as `AssistantStream` (emit-only) through
             // `budgeted_observe_emit`: deltas stay ordered while handlers
             // meet the budget (each emit is awaited before the next delta
             // is dispatched); a miss detaches the handler and trips the

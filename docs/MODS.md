@@ -134,7 +134,7 @@ You've now touched all four registration surfaces: event hooks, tools, commands,
 | `tool-call` | `id`, `name`, `input` (JSON value) |
 | `tool-result` | `id`, `name`, `content`, `success`, `is_error`, `canonical` (JSON value, `()` when the tool produced none) |
 | `turn-start` / `turn-end` | `turn_id`; `turn-end` also `reason` |
-| `assistant-stream` | `text` (one incremental chunk; fires per text delta, observe-only) |
+| `assistant-stream` | `text` (one incremental chunk; fires per text delta, emit-only) |
 | `tool-execution-update` | `id`, `name`, `message` |
 | `tools-change` | `added`, `removed` (tool-name arrays) |
 | `project-trust` / `session-start` | `reason` |
@@ -144,7 +144,7 @@ You've now touched all four registration surfaces: event hooks, tools, commands,
 running (`exec_shell` foreground and `exec_shell_wait`): at most once per second and only
 when new output arrived. `id` is the shell task id (a tool does not know its wire tool-call
 id — correlate by `name` + ordering); `message` is the output since the previous checkpoint
-(tail-capped at 4 KiB; a truncated manager excerpt yields its tail). Observe-only, main turns
+(tail-capped at 4 KiB; a truncated manager excerpt yields its tail). Emit-only, main turns
 only (sub-agent loops emit no extension events); sandboxed-backend and interactive runs
 report no checkpoints. The same checkpoint reaches the UI as `ToolCallProgress`.
 `resources-discover` was removed in 0.11.0 (never had an emitter or a consumer).
@@ -160,12 +160,13 @@ extension tools: the runner is carried for the veto alone.
 `tools-change` fires at the turn boundary when the compiled model-visible catalog changed since the previous main turn (mode switch, mod reload, selection change). The first turn establishes the baseline silently; sub-agent toolsets never trigger it, and there is no API to read the current catalog — the event carries the diff only. `/tools` renders the current baseline grouped by origin (builtin / plugin / extension / mcp).
 
 Dispatch modes are part of each event's contract (`ExtensionEventKind::dispatch_mode`,
-checked by a contract test):
+checked by a contract test) — three states named after the DSH (deepseek-harness)
+model: **waterfall**, **serial**, **emit**:
 
-- **transform-chain**: `input`, `before-agent-start`, `before-provider-request`, `tool-result` — each transform folds in, the next handler sees it, the final field applies
-- **transform + deny**: `tool-call` — rewrite the call's `input` (the rewritten input is what approval gates and what runs, and it is the recorded input) or `block(reason)` to deny (monotonic — no later handler can flip it)
-- **cancel veto**: `session-before-switch`, `session-before-fork`, `session-before-compact`
-- **observe** (outcomes advisory): everything else, including `assistant-stream` (fires per text delta — keep handlers cheap) and `tools-change` (catalog diff at the turn-dispatch chokepoint)
+- **waterfall**: `input`, `before-agent-start`, `before-provider-request`, `tool-result` — each transform folds in, the next handler sees it, the final field applies
+- **waterfall + deny**: `tool-call` — rewrite the call's `input` (the rewritten input is what approval gates and what runs, and it is the recorded input) or `block(reason)` to deny (monotonic — no later handler can flip it)
+- **serial**: `session-before-switch`, `session-before-fork`, `session-before-compact`
+- **emit** (outcomes advisory): everything else, including `assistant-stream` (fires per text delta — keep handlers cheap) and `tools-change` (catalog diff at the turn-dispatch chokepoint)
 
 ### Hook return value → HandlerOutcome
 

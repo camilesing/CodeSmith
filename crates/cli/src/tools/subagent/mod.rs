@@ -2475,7 +2475,7 @@ impl ToolSpec for AgentSpawnTool {
             )));
         }
 
-        // `SessionBeforeFork` — cancel-veto seam before the child forks
+        // `SessionBeforeFork` — serial (veto) seam before the child forks
         // session state (same idiom as `SessionBeforeCompact`): `Cancel`
         // aborts the spawn with a model-visible error; everything else
         // proceeds. The runner rides the sub-agent runtime, so this fires
@@ -3565,7 +3565,7 @@ impl ToolSpec for SubagentRunTool {
             )));
         }
 
-        // `SessionBeforeFork` — cancel-veto seam before the child forks
+        // `SessionBeforeFork` — serial (veto) seam before the child forks
         // session state (same idiom as `SessionBeforeCompact`): `Cancel`
         // aborts the spawn with a model-visible error; everything else
         // proceeds. The runner rides the sub-agent runtime, so this fires

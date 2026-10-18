@@ -11,7 +11,7 @@
 //!   Anything else is refused with the exact `/trust add` line to run —
 //!   moving the session is not a way to acquire file access to an untrusted
 //!   tree. Mods get a veto over the move via the `session-before-switch`
-//!   event (CancelVeto — the only trigger point for that event).
+//!   event (Serial dispatch — the only trigger point for that event).
 //! - `/add-dir` adds a directory to that same trust record, which is what
 //!   makes it usable both as a `/cd` target and as an out-of-workspace path
 //!   for file tools.
@@ -105,7 +105,7 @@ pub async fn cd(state: &mut ReplState, argument: &str) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // `session-before-switch` (CancelVeto): mods get a veto over directory
+    // `session-before-switch` (Serial): mods get a veto over directory
     // switches — the event's documented contract, wired here at its only
     // trigger point. A Cancel keeps the session where it is.
     if let Some(runner) = &state.extension_runner {

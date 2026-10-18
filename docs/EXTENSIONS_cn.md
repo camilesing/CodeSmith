@@ -71,7 +71,7 @@ dylib 源（安装根）→ 与磁盘上的 `ExtensionStateStore` 对账（跳�
 ### 工具目录：`ToolsChange` + 能力清单
 
 回合分发器将编译后的模型可见目录与上一主回合基线做差量（来源分类
-快照见 `cli/src/core/tool_catalog.rs`），发出仅观察的
+快照见 `cli/src/core/tool_catalog.rs`），发出仅 emit 的
 `ToolsChange { added, removed }`；`/tools` 按来源分组展示当前基线。
 首次构建静默建立基线；子代理工具集走独立路径（`spawn_subagent`），
 不会让基线来回翻转。
@@ -291,52 +291,61 @@ async fn configure(api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
 }
 ```
 
-## 分发契约 + 宿主接缝映射
+## 分发三态（DSH 对齐）+ 宿主接缝映射
 
-每个 `ExtensionEventKind` 声明自己的分发模式（`dispatch_mode()`）：
-**observe**（结果仅具参考性，被忽略）、**transform-chain**
-（`Input`/`BeforeAgentStart`/`BeforeProviderRequest`/`ToolResult`）、
-**cancel-veto**（`SessionBefore*` 接缝）或 **transform-and-deny**
-（`ToolCall`：handler 可改写调用 `input` —— 改写后的输入才是审批、
-执行与入档的输入 —— 或直接拒绝；拒绝是单调的）。该匹配与 `kind()`
-同为穷尽匹配，并由 `event_dispatch_contract_table` 测试锁定，声明的
-契约不会无声漂移。能力图谱（`docs/CAPABILITY_GRAPH.md`，由
+每个 `ExtensionEventKind` 声明自己的分发模式（`dispatch_mode()`）
+—— 三态之一，命名对齐 deepseek-harness（DSH）扩展模型，两个框架
+共用一套词汇：
+
+| CodeSmith `DispatchMode` | DSH 术语 | 语义 |
+|---|---|---|
+| `Emit` | emit | 广播：handler 按订阅顺序运行，结果仅具参考性（`Transform`/`Cancel`/`Block` 被忽略） |
+| `Serial` | serial | 带否决的有序监听：`Cancel` 中止待定的宿主操作并短路链（`SessionBefore*` 接缝） |
+| `Waterfall { can_deny: false }` | waterfall | transform 折叠：每个 handler 的 `Transform` 折入运行中的事件（对下一个 handler 可见）；终值作用于接缝（`Input`、`BeforeAgentStart`、`BeforeProviderRequest`、`ToolResult`） |
+| `Waterfall { can_deny: true }` | waterfall + deny | 折叠外加 `Block`：handler 可改写调用 `input` —— 改写后的输入才是审批、执行与入档的输入 —— 或直接拒绝；拒绝是单调的（`ToolCall`） |
+
+该匹配与 `kind()` 同为穷尽匹配，并由 `event_dispatch_contract_table`
+测试锁定，声明的契约不会无声漂移。CodeSmith **不**采纳 DSH 的
+"一切皆插件"内核 —— 内核（turn loop、provider 注册表、会话日志）保持
+编译期装配；对齐的只是分发词汇。`Waterfall` 也不是 DSH 那样以
+`next()` 包裹操作的 around-dispatch —— 它是折叠链，每个 transform
+对下一个 handler 可见。能力图谱（`docs/CAPABILITY_GRAPH.md`，由
 `scripts/capability-graph.py` 生成、CI 校验）列出每个接缝的
 定义/提供者/消费者三件套。
 
 `EmitOutcome` 是 `#[must_use]`，因此每个 emit 点都会绑定结果
-（仅观察接缝使用 `let _ =`；能力接缝检查 `out.outcome` /
+（emit 接缝使用 `let _ =`；能力接缝检查 `out.outcome` /
 `out.event`）。不合时宜的结果（例如在 `TurnEnd` 处 `Block`）会被
 忽略 —— 按 `Continue` 处理 —— 因此为其变体返回错误能力的处理器是
 无操作（no-op），而不是错误。
 
 | 变体 | Emit 位置 | 遵守的结果 | 效果 |
 |---|---|---|---|
-| `SessionStart { reason }` | `engine/mod.rs` op-loop 之前 | observe | — |
-| `SessionShutdown` | `engine/mod.rs` MCP 关闭之后 | observe | — |
-| `TurnStart` | `host_executor` 轮入口 | observe | — |
-| `TurnEnd` | `host_executor` 轮退出（被中断 + 无工具调用） | observe | — |
+| `SessionStart { reason }` | `engine/mod.rs` op-loop 之前 | emit | — |
+| `SessionShutdown` | `engine/mod.rs` MCP 关闭之后 | emit | — |
+| `TurnStart` | `host_executor` 轮入口 | emit | — |
+| `TurnEnd` | `host_executor` 轮退出（被中断 + 无工具调用） | emit | — |
 | `Input(InputEvent)` | `host_executor::run_inner`（用户轮种子） | **Transform** | 重写已提交的 `text` |
 | `BeforeAgentStart(AgentStartEvent)` | `host_executor::run_inner` 顶部 | **Transform** | 注入 `inject_message`（history push）+ 若设置了 `system_prompt` 则覆盖 |
-| `AgentStart` | `host_executor::run_inner`（观察） | observe | — |
-| `BeforeProviderHeaders` | `host_executor` 在构建 `request` 之前 | observe | — |
+| `AgentStart` | `host_executor::run_inner`（emit） | emit | — |
+| `BeforeProviderHeaders` | `host_executor` 在构建 `request` 之前 | emit | — |
 | `BeforeProviderRequest(BeforeProviderRequestEvent)` | `host_executor` 在 `request` 构建后、流式开始前 | **Transform** | 重写 `request.messages` |
-| `AfterProviderResponse(AfterProviderResponseEvent)` | `host_executor` `Content` 分支在 `accumulate_usage` 之后 | observe | — |
-| `AssistantStream(AssistantStreamEvent)` | 回调桥流式增量路径（`agent-runtime/src/callback_bridge.rs`） | observe | 每个线上增量一个 assistant **文本**块；分发在离线程执行，受每增量 250 ms + 每轮累计 1 s 预算约束 —— 超预算的处理器被脱离（运行至完成、结果被丢弃、从不在执行中途被取消），该轮后续增量跳过分发；无订阅者时完全不分发；thinking 增量保持仅 UI |
+| `AfterProviderResponse(AfterProviderResponseEvent)` | `host_executor` `Content` 分支在 `accumulate_usage` 之后 | emit | — |
+| `AssistantStream(AssistantStreamEvent)` | 回调桥流式增量路径（`agent-runtime/src/callback_bridge.rs`） | emit | 每个线上增量一个 assistant **文本**块；分发在离线程执行，受每增量 250 ms + 每轮累计 1 s 预算约束 —— 超预算的处理器被脱离（运行至完成、结果被丢弃、从不在执行中途被取消），该轮后续增量跳过分发；无订阅者时完全不分发；thinking 增量保持仅 UI |
 | `ToolCall(ToolCallEvent)` | `host_executor` 并行 + 串行工具分发 | **Transform + Block** | handler 可改写调用 `input` 或拒绝它。`Block` 跳过审批 + `tool.run` → `Err(ToolError::permission_denied(reason))`，`blocked = true`。在并行批中，改写后的输入必须重新分类为自动批准，否则调用在该处被阻断 —— 改写无法把未批准的输入偷运过免审批批；模型可重新发起调用以走串行审批门。`on_tool_start` 与审计记录看到的是改写后的输入 |
 | `ToolResult(ToolResultEvent)` | `host_executor` 并行 + 串行，emit 重排到 `on_tool_end` 之前 | **Transform** | 替换结果；`on_tool_end` + 下游 `outcomes[idx].result` 看到的是变换后的结果。`ToolResult` 携带 canonical/rendered 分离：`content` 是模型可见渲染，`canonical` 是结构化机器值（仅存活于当前进程，不随转录持久化）—— 改写 `content` 不得改写 `canonical` |
-| `ToolExecutionStart` | `host_executor` 工具闭包（`tool.run` 之前） | observe | — |
-| `ToolExecutionEnd` | `host_executor` 工具闭包（`tool.run` 之后） | observe | — |
-| `AgentEnd` | `host_executor::run_inner` 每个 `return Ok(...)` | observe | — |
-| `AgentSettled` | `engine/mod.rs` 运行后排空（容量应用之后） | observe | — |
+| `ToolExecutionStart` | `host_executor` 工具闭包（`tool.run` 之前） | emit | — |
+| `ToolExecutionEnd` | `host_executor` 工具闭包（`tool.run` 之后） | emit | — |
+| `AgentEnd` | `host_executor::run_inner` 每个 `return Ok(...)` | emit | — |
+| `AgentSettled` | `engine/mod.rs` 运行后排空（容量应用之后） | emit | — |
 | `SessionBeforeCompact` | `host_executor::run_compaction` 在 `should_compact` 门控之后 | **Cancel** | 跳过压缩（`return`） |
-| `SessionCompact` | `host_executor::run_compaction` 在摘要应用之后 | observe | — |
+| `SessionCompact` | `host_executor::run_compaction` 在摘要应用之后 | emit | — |
 | `SessionBeforeSwitch` | —（无 emit 位点） | **Cancel** | 能力保留但当前从不发出：进程内工作区切换随 TUI 在 0.9.0 移除（`/workspace` 改为提示重启） |
-| `ProjectTrust` | `HostServices::build_turn_dispatcher`（`crates/cli/src/core/engine/runtime_traits.rs`；+ `spawn_subagent`）在 `build_tool_context_for` 之后（每轮 `Trusted`/`Untrusted`）；`FirstLoad` 当前无 emit 位点 —— onboarding 信任提示的发出随 TUI 在 0.9.0 移除 | observe | 来自 `session.trust_mode` 的每轮 `Trusted`/`Untrusted`；`FirstLoad` 为 onboarding 信任接受（`TrustReason::FirstLoad`）而定义，但已无活跃 emit 位点 —— 运行时 `trust_mode` 开关（`/trust on`）、YOLO 进入和持久化信任启动在每轮表现为 `Trusted`/`Untrusted`，而不是 `FirstLoad` |
-| `ToolsChange { added, removed }` | `HostServices::build_turn_dispatcher` 在所有选择源应用之后 | observe | 最终模型可见目录与上一主回合基线的差量；首次构建静默建立基线；子代理工具集不经过此接缝 |
+| `ProjectTrust` | `HostServices::build_turn_dispatcher`（`crates/cli/src/core/engine/runtime_traits.rs`；+ `spawn_subagent`）在 `build_tool_context_for` 之后（每轮 `Trusted`/`Untrusted`）；`FirstLoad` 当前无 emit 位点 —— onboarding 信任提示的发出随 TUI 在 0.9.0 移除 | emit | 来自 `session.trust_mode` 的每轮 `Trusted`/`Untrusted`；`FirstLoad` 为 onboarding 信任接受（`TrustReason::FirstLoad`）而定义，但已无活跃 emit 位点 —— 运行时 `trust_mode` 开关（`/trust on`）、YOLO 进入和持久化信任启动在每轮表现为 `Trusted`/`Untrusted`，而不是 `FirstLoad` |
+| `ToolsChange { added, removed }` | `HostServices::build_turn_dispatcher` 在所有选择源应用之后 | emit | 最终模型可见目录与上一主回合基线的差量；首次构建静默建立基线；子代理工具集不经过此接缝 |
 | `—`（dylib LOAD，不是事件） | `populate_extension_runtime`（`crates/cli/src/core/engine.rs`）在 `discover_static` 之后 | n/a（加载阶段） | `discover_dylib(&global_roots, &project_roots)` → `apply_trust_gate(discovered, !is_workspace_trusted(workspace))` 丢弃项目本地（`global == false`）→ `state.is_enabled` 对账 → 在 OS 线程加载运行时上执行 `ExtensionRunner::load_dylib`；重载经 `reload_extension_runtime`→`populate` 拾取。`ExtensionRunner.libraries` 持有 `Library` 句柄；运行时重载时它们 `drain_libraries_to_pending` 到 `pending_drop`（与各 clear 一并执行）+ 引擎 op-loop 在下一个轮边界对它们执行 `drop_pending`。经 `codesmith_register_extension` 实现 lockstep `*mut dyn Extension`。 |
 | `SessionBeforeFork` | spawn 工具族（`agent_open` / `agent_spawn` / `agent_run` / `delegate_to_agent`，任意深度——runner 以仅否决用途随 `SubAgentRuntime` 传递）+ `HostServices::spawn_subagent`（`crates/cli/src/tools/subagent/mod.rs`、`core/engine/runtime_traits.rs`） | **Cancel** | 在子代理 fork 会话状态前发出；`Cancel` 以模型可见错误中止该次 spawn |
-| `ToolExecutionUpdate` | `exec_shell`（前台）/ `exec_shell_wait` 轮询循环 → `ToolContext::progress` → `callback_bridge::RunnerProgressSink` | observe | 命令运行期间的节流检查点（间隔 ≥1s、仅有新输出时）：`id` = shell 任务 id，`message` = 自上一检查点以来的输出（尾部截至 4 KiB）；同一检查点以 `Event::ToolCallProgress` 到达 UI；按 AssistantStream 的预算/断路器派发；仅主回合；沙箱后端与交互式运行不报 |
+| `ToolExecutionUpdate` | `exec_shell`（前台）/ `exec_shell_wait` 轮询循环 → `ToolContext::progress` → `callback_bridge::RunnerProgressSink` | emit | 命令运行期间的节流检查点（间隔 ≥1s、仅有新输出时）：`id` = shell 任务 id，`message` = 自上一检查点以来的输出（尾部截至 4 KiB）；同一检查点以 `Event::ToolCallProgress` 到达 UI；按 AssistantStream 的预算/断路器派发；仅主回合；沙箱后端与交互式运行不报 |
 
 > `Transform` 载荷的可执行字段在完整处理器链运行之后才于接缝处应用
 > （因此来自处理器 N 的 `Transform` 会作为正在运行的事件对处理器
@@ -351,7 +360,7 @@ CodeSmith **不**对扩展做沙箱隔离。扩展与 agent 循环运行在同�
 拥有完整的宿主访问权 —— **信任其来源**。对于不受信任的扩展，请将
 整个 CodeSmith 进程容器化。项目本地 dylib 安装在首次加载前要求工作区
 受信任（见上文信任门）；`ProjectTrust` 的每轮 emit 是扩展处理器看到的
-会话信任状态的仅观察信号（`FirstLoad` 自 0.9.0 移除 TUI 后已无活跃
+会话信任状态的仅 emit 信号（`FirstLoad` 自 0.9.0 移除 TUI 后已无活跃
 emit 位点）。
 
 扩展安装期间的 `cargo build` 会运行源码的 `build.rs` ——

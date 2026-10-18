@@ -168,7 +168,7 @@ impl HostServices for super::EngineHost {
                 .await;
             // `SessionBeforeFork` — this engine-internal spawn path forks
             // session state exactly like the spawn-family tools, so it
-            // runs the same cancel-veto seam on the same terms.
+            // runs the same serial (veto) seam on the same terms.
             let out = runner
                 .emit(codesmith_agent::extension::ExtensionEvent::SessionBeforeFork)
                 .await;
@@ -272,7 +272,7 @@ impl HostServices for super::EngineHost {
             ),
         )));
         // §F2c — `ProjectTrust`: the session's trust decision is known once the
-        // tool context is built. Per-turn observe-only emit. `FirstLoad` (the
+        // tool context is built. Per-turn emit-only dispatch. `FirstLoad` (the
         // §F5 trust-prompt site) is not derivable per-turn; a handler wanting
         // once-per-session should dedup on the first `Trusted`/`Untrusted`.
         if let Some(runner) = &self.extension_runner {
@@ -586,7 +586,7 @@ impl HostServices for super::EngineHost {
         // Capability composition point (tools-change): diff the final
         // model-visible catalog — after every selection source has been
         // applied — against the previous main-turn baseline and notify
-        // (observe-only) when it changed. The first build establishes the
+        // (emit-only) when it changed. The first build establishes the
         // baseline silently; sub-agent toolsets build on a separate path
         // (`spawn_subagent`) and never reach here, so the baseline cannot
         // flap between main and sub catalogs.

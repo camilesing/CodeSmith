@@ -588,7 +588,7 @@ pub(crate) fn merge_transform(
                 HandlerOutcome::Continue
             }
         }
-        // Observe-only / non-transformable seams: ignore the transform.
+        // Emit/Serial seams are non-transformable: ignore the transform.
         _ => HandlerOutcome::Continue,
     }
 }
