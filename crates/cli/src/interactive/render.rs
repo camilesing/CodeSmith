@@ -699,11 +699,7 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
             | Event::ResultVerification { .. }
             | Event::TranscriptRebuilt { .. }
             | Event::BackgroundTaskStarted { .. }
-            | Event::BackgroundTaskProgress { .. }
-            | Event::BackgroundTaskComplete { .. }
-            | Event::BackgroundTaskFailed { .. }
-            | Event::BackgroundTaskNotification { .. }
-            | Event::BackgroundTaskList { .. } => {}
+            | Event::BackgroundTaskNotification { .. } => {}
         }
     }
 }

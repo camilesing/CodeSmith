@@ -1473,16 +1473,10 @@ pub fn build_engine(
         })
         .map(std::sync::Arc::from);
 
-    let bg_registry_shell = shell_manager.clone();
-    let bg_registry_agent = subagent_manager.clone();
-    let bg_data_dir =
-        codesmith_config::codesmith_home().unwrap_or_else(|_| PathBuf::from(".codesmith"));
     let bg_registry = std::sync::Arc::new(tokio::sync::Mutex::new(
         crate::background_task::BackgroundTaskRegistry::new(
-            bg_registry_shell,
-            bg_registry_agent,
-            None,
-            bg_data_dir,
+            shell_manager.clone(),
+            subagent_manager.clone(),
         ),
     ));
     host.runtime_services.background_task_registry = Some(std::sync::Arc::new(

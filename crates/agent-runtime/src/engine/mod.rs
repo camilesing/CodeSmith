@@ -463,7 +463,7 @@ impl Engine {
     #[allow(clippy::too_many_lines)]
     async fn run_inner(mut self) {
         // Spawn background task poller — polls registry every 2s for status
-        // changes, stalls, and completion notifications.
+        // changes and completion notifications.
         {
             let bg_registry = self.host.bg_registry();
             let tx_event = self.tx_event.clone();
@@ -479,31 +479,10 @@ impl Engine {
                             break;
                         }
                         // `poll_once` does poll + drain + evict under one
-                        // registry lock and hands back the results so we can
-                        // emit events without holding the lock across the
-                        // `Event`-channel awaits.
-                        let snapshot = bg_registry.poll_once().await;
-                        for result in snapshot.results {
-                            if result.stall_detected {
-                                let _ = tx_event
-                                    .send(Event::BackgroundTaskProgress {
-                                        id: result.task_id.clone(),
-                                        output_delta: result
-                                            .output_delta
-                                            .clone()
-                                            .unwrap_or_default(),
-                                        stall_detected: true,
-                                    })
-                                    .await;
-                            }
-                            if result.old_status != result.new_status
-                                && result.new_status.is_terminal()
-                            {
-                                // Terminal transition — notification will be drained below
-                            }
-                        }
-                        // Drain notifications and emit as events
-                        for notification in snapshot.notifications {
+                        // registry lock and hands back the notifications so
+                        // we can emit events without holding the lock across
+                        // the `Event`-channel awaits.
+                        for notification in bg_registry.poll_once().await {
                             let _ = tx_event
                                 .send(Event::BackgroundTaskNotification { notification })
                                 .await;
@@ -833,34 +812,6 @@ impl Engine {
                 }
 
                 // Background task operations.
-                #[allow(dead_code)]
-                Op::CancelBackgroundTask { id } => {
-                    let result = self.host.bg_registry().cancel_task(&id).await;
-                    match result {
-                        Ok(()) => {
-                            let _ = self
-                                .tx_event
-                                .send(Event::status(format!("Cancelled background task {id}")))
-                                .await;
-                        }
-                        Err(err) => {
-                            let _ = self
-                                .tx_event
-                                .send(Event::error(ErrorEnvelope::transient(format!(
-                                    "Failed to cancel background task {id}: {err}"
-                                ))))
-                                .await;
-                        }
-                    }
-                }
-                #[allow(dead_code)]
-                Op::ListBackgroundTasks => {
-                    let tasks = self.host.bg_registry().list_tasks().await;
-                    let _ = self
-                        .tx_event
-                        .send(Event::BackgroundTaskList { tasks })
-                        .await;
-                }
                 Op::CancelAllBackgroundTasks => {
                     let tasks = self.host.bg_registry().list_tasks().await;
                     let mut stopped = 0usize;
@@ -876,40 +827,13 @@ impl Engine {
                     };
                     let _ = self.tx_event.send(Event::status(message)).await;
                 }
-                #[allow(dead_code)]
-                Op::PollBackgroundTask { id } => {
-                    let delta = self.host.bg_registry().read_output_delta(&id).await;
-                    if let Some(output_delta) = delta.filter(|delta| !delta.is_empty()) {
-                        let _ = self
-                            .tx_event
-                            .send(Event::BackgroundTaskProgress {
-                                id,
-                                output_delta,
-                                stall_detected: false,
-                            })
-                            .await;
-                    }
-                }
-                #[allow(dead_code)]
                 Op::BackgroundCurrentShell => {
-                    let tasks = self.host.bg_registry().background_all().await;
+                    self.host.bg_registry().background_all().await;
                     let _ = self
                         .tx_event
-                        .send(Event::status(format!(
-                            "Requested backgrounding for {} shell task(s)",
-                            tasks.len()
-                        )))
-                        .await;
-                }
-                #[allow(dead_code)]
-                Op::BackgroundAll => {
-                    let tasks = self.host.bg_registry().background_all().await;
-                    let _ = self
-                        .tx_event
-                        .send(Event::status(format!(
-                            "Requested backgrounding for {} shell task(s)",
-                            tasks.len()
-                        )))
+                        .send(Event::status(
+                            "Requested backgrounding for foreground shell task(s)",
+                        ))
                         .await;
                 }
                 #[allow(dead_code)]

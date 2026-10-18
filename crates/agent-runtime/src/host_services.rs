@@ -27,8 +27,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::background_task::{
-    BackgroundTaskPollResult, BackgroundTaskPollSnapshot, BackgroundTaskStatus,
-    BackgroundTaskSummary,
+    BackgroundTaskNotification, BackgroundTaskStatus, BackgroundTaskSummary,
 };
 use crate::engine_config::EngineConfig;
 use crate::events::Event;
@@ -73,12 +72,12 @@ pub trait LspManagerApi: Send + Sync {
 
 /// Terminal-agnostic background-task registry surface.
 ///
-/// The engine core drives background shell/agent/dream lifecycle through
-/// this trait so it need not depend on the CLI's concrete
-/// `BackgroundTaskRegistry` (which bridges `ShellManager` /
-/// `SubAgentManager` / `TaskManager`). Each method acquires the registry
-/// lock internally and returns plain data types, so callers never hold a
-/// guard across `Event`-channel awaits.
+/// The engine core drives background agent/dream lifecycle through this
+/// trait so it need not depend on the CLI's concrete
+/// `BackgroundTaskRegistry` (which bridges `SubAgentManager` and holds the
+/// foreground-shell detach flag for the shell manager). Each method acquires
+/// the registry lock internally and returns plain data types, so callers
+/// never hold a guard across `Event`-channel awaits.
 #[async_trait::async_trait]
 pub trait BgRegistryApi: Send + Sync {
     /// Register a background sub-agent task; returns the summary used to emit
@@ -92,30 +91,29 @@ pub trait BgRegistryApi: Send + Sync {
     ) -> BackgroundTaskSummary;
     /// Cancel a background task by id.
     async fn cancel_task(&self, id: &str) -> anyhow::Result<()>;
-    /// Snapshot of all tracked tasks (for `/jobs` / `BackgroundTaskList`).
+    /// Snapshot of all tracked tasks.
     async fn list_tasks(&self) -> Vec<BackgroundTaskSummary>;
-    /// Look up a tracked task by exact id; `None` when no task matches. Mirrors
-    /// `BackgroundTaskRegistry::get_task` (returns the portable summary).
+    /// Look up a tracked task by exact id; `None` when no task matches.
+    /// Mirrors `BackgroundTaskRegistry::get_task` (returns the portable
+    /// summary).
     async fn get_task(&self, id: &str) -> Option<BackgroundTaskSummary>;
-    /// Bytes of output produced since the last read for `id`, if any.
-    async fn read_output_delta(&self, id: &str) -> Option<String>;
-    /// Request backgrounding for every live shell task; returns the tasks
-    /// backgrounded.
-    async fn background_all(&self) -> Vec<BackgroundTaskSummary>;
+    /// Ask the shell manager to detach its foreground shell(s) on their next
+    /// poll (Ctrl+B). Detached jobs are not registry tasks.
+    async fn background_all(&self);
     /// Register a dream/memory-consolidation task; returns its summary.
     async fn register_dream_task(&self, memory_path: PathBuf) -> BackgroundTaskSummary;
-    /// Force a status transition; returns a poll result if the state moved.
+    /// Force a status transition; returns the new status if the state moved.
     async fn update_task_status(
         &self,
         id: &str,
         new_status: BackgroundTaskStatus,
         error: Option<String>,
-    ) -> Option<BackgroundTaskPollResult>;
+    ) -> Option<BackgroundTaskStatus>;
     /// Atomically poll all tasks, drain pending notifications, and evict
-    /// notified terminal tasks. Returns the poll results and notifications
-    /// produced during this pass so the host poller can emit them as events
-    /// without holding the registry lock.
-    async fn poll_once(&self) -> BackgroundTaskPollSnapshot;
+    /// notified terminal tasks. Returns the notifications produced during
+    /// this pass so the host poller can emit them as events without holding
+    /// the registry lock.
+    async fn poll_once(&self) -> Vec<BackgroundTaskNotification>;
 }
 
 /// Terminal-agnostic seam (layered-context) manager surface.

@@ -7,9 +7,7 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
-use crate::background_task::{
-    BackgroundTaskNotification, BackgroundTaskSummary, BackgroundTaskType,
-};
+use crate::background_task::{BackgroundTaskNotification, BackgroundTaskType};
 use crate::coherence::CoherenceState;
 use crate::error_taxonomy::ErrorEnvelope;
 use crate::models::{Message, SystemPrompt, Tool, Usage};
@@ -485,44 +483,12 @@ pub enum Event {
         description: String,
     },
 
-    /// Incremental output from a background task.
-    #[allow(dead_code)]
-    BackgroundTaskProgress {
-        id: String,
-        output_delta: String,
-        /// True if a stall was detected on this progress update.
-        stall_detected: bool,
-    },
-
-    /// A background task completed successfully.
-    #[allow(dead_code)]
-    BackgroundTaskComplete {
-        id: String,
-        task_type: BackgroundTaskType,
-        description: String,
-        result_summary: Option<String>,
-        duration_ms: Option<u64>,
-    },
-
-    /// A background task failed or was killed.
-    #[allow(dead_code)]
-    BackgroundTaskFailed {
-        id: String,
-        task_type: BackgroundTaskType,
-        description: String,
-        error: String,
-    },
-
     /// Background task notification ready for injection into
     /// the conversation as a synthetic message.
     #[allow(dead_code)]
     BackgroundTaskNotification {
         notification: BackgroundTaskNotification,
     },
-
-    /// Background task listing result.
-    #[allow(dead_code)]
-    BackgroundTaskList { tasks: Vec<BackgroundTaskSummary> },
 }
 
 impl Event {

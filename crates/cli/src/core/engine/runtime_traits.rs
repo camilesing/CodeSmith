@@ -14,8 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use codesmith_agent_runtime::background_task::{
-    BackgroundTaskPollResult, BackgroundTaskPollSnapshot, BackgroundTaskStatus,
-    BackgroundTaskSummary,
+    BackgroundTaskNotification, BackgroundTaskStatus, BackgroundTaskSummary,
 };
 use codesmith_agent_runtime::hooks::HookHost;
 use codesmith_agent_runtime::host_services::{
@@ -793,17 +792,9 @@ impl BgRegistryApi for BgRegistryHost {
         g.get_task(id).map(|s| BackgroundTaskSummary::from(&s))
     }
 
-    async fn read_output_delta(&self, id: &str) -> Option<String> {
+    async fn background_all(&self) {
         let mut g = self.0.lock().await;
-        g.read_output_delta(id)
-    }
-
-    async fn background_all(&self) -> Vec<BackgroundTaskSummary> {
-        let mut g = self.0.lock().await;
-        g.background_all()
-            .iter()
-            .map(BackgroundTaskSummary::from)
-            .collect()
+        g.background_all();
     }
 
     async fn register_dream_task(&self, memory_path: PathBuf) -> BackgroundTaskSummary {
@@ -816,22 +807,19 @@ impl BgRegistryApi for BgRegistryHost {
         id: &str,
         new_status: BackgroundTaskStatus,
         error: Option<String>,
-    ) -> Option<BackgroundTaskPollResult> {
+    ) -> Option<BackgroundTaskStatus> {
         let mut g = self.0.lock().await;
         g.update_task_status(id, new_status, error)
     }
 
-    async fn poll_once(&self) -> BackgroundTaskPollSnapshot {
+    async fn poll_once(&self) -> Vec<BackgroundTaskNotification> {
         // One locked pass: poll, drain notifications, evict notified tasks.
         // Mirrors the previous poller loop's lock granularity exactly.
         let mut g = self.0.lock().await;
-        let results = g.poll_tasks().await;
+        g.poll_tasks().await;
         let notifications = g.drain_notifications();
         g.evict_notified();
-        BackgroundTaskPollSnapshot {
-            results,
-            notifications,
-        }
+        notifications
     }
 }
 
