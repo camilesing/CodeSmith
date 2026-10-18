@@ -130,6 +130,36 @@ impl ScopedCodeSmithHome {
     }
 }
 
+/// Acquire the process-wide env lock and scope `CODESMITH_HOME` to a fresh
+/// tempdir in one guard, so engine construction resolves no real-home state:
+/// the mods global root, the mod/extension state stores, and plugin tools
+/// all resolve through `codesmith_home()`, which `CODESMITH_HOME` overrides.
+///
+/// Field order is load-bearing — `_home` drops first and restores the env
+/// var while `_lock` is still held. Does not touch `HOME` itself; tests that
+/// exercise raw `$HOME` resolution keep `lock_test_env` plus their own
+/// `HOME` guard.
+pub struct HermeticEnv {
+    _home: ScopedCodeSmithHome,
+    _lock: MutexGuard<'static, ()>,
+}
+
+impl Default for HermeticEnv {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HermeticEnv {
+    pub fn new() -> Self {
+        let _lock = lock_test_env();
+        Self {
+            _home: ScopedCodeSmithHome::new(),
+            _lock,
+        }
+    }
+}
+
 /// Assert two strings are byte-identical, panicking with a windowed diff
 /// around the first divergence when they aren't. Used by the prefix-cache
 /// stability harness (#263, #280) to pin construction surfaces that land in
