@@ -148,41 +148,6 @@ impl BackgroundTaskRegistry {
         }
     }
 
-    /// Register a shell command as a background task.
-    pub fn register_shell_task(
-        &mut self,
-        shell_id: String,
-        command: String,
-        cwd: PathBuf,
-    ) -> BackgroundTaskState {
-        let id = format!("bg_shell_{}", &uuid::Uuid::new_v4().to_string()[..8]);
-        let output_file = self
-            .output_mgr
-            .output_path_for(&id)
-            .expect("generated bg_shell id is a safe path component");
-        let description = summarize_command(&command, 80);
-        let state = BackgroundTaskState {
-            id: id.clone(),
-            task_type: BackgroundTaskType::Shell,
-            status: BackgroundTaskStatus::Running,
-            description,
-            started_at: Utc::now(),
-            ended_at: None,
-            output_file: Some(output_file),
-            output_offset: 0,
-            notified: false,
-            extension: BackgroundTaskExtension::Shell {
-                command,
-                cwd,
-                exit_code: None,
-            },
-            error: None,
-            source_id: shell_id,
-        };
-        self.tasks.insert(id, state.clone());
-        state
-    }
-
     /// Register a sub-agent as a background task.
     pub fn register_agent_task(
         &mut self,
@@ -546,14 +511,6 @@ impl BackgroundTaskRegistry {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn summarize_command(cmd: &str, max_len: usize) -> String {
-    if cmd.chars().count() <= max_len {
-        cmd.to_string()
-    } else {
-        format!("{}…", truncate_chars(cmd, max_len))
-    }
-}
-
 fn summarize_prompt(prompt: &str, max_len: usize) -> String {
     let first_line = prompt.lines().next().unwrap_or("");
     if first_line.chars().count() <= max_len {
@@ -607,19 +564,6 @@ mod tests {
     }
 
     #[test]
-    fn summarize_command_short_command_unchanged() {
-        assert_eq!(summarize_command("ls", 80), "ls");
-    }
-
-    #[test]
-    fn summarize_command_long_command_truncated() {
-        let long = "a".repeat(100);
-        let result = summarize_command(&long, 50);
-        assert!(result.len() <= 53); // 50 chars + "…" (may be multi-byte)
-        assert!(result.ends_with('…'));
-    }
-
-    #[test]
     fn summarize_prompt_uses_first_line() {
         let multi = "first line\nsecond line";
         assert_eq!(summarize_prompt(multi, 80), "first line");
@@ -629,15 +573,6 @@ mod tests {
     fn summarize_prompt_truncates_long_first_line() {
         let long = "b".repeat(100);
         let result = summarize_prompt(&long, 50);
-        assert!(result.ends_with('…'));
-    }
-
-    #[test]
-    fn summarize_command_multibyte_boundary_no_panic() {
-        // Truncation points used to fall inside multi-byte chars and panic.
-        let cjk = "检查".repeat(50);
-        let result = summarize_command(&cjk, 5);
-        assert_eq!(result.chars().count(), 6); // 5 chars + ellipsis
         assert!(result.ends_with('…'));
     }
 

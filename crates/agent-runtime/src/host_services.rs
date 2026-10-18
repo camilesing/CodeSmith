@@ -81,14 +81,6 @@ pub trait LspManagerApi: Send + Sync {
 /// guard across `Event`-channel awaits.
 #[async_trait::async_trait]
 pub trait BgRegistryApi: Send + Sync {
-    /// Register a background shell task; returns the summary used to emit
-    /// `BackgroundTaskStarted`.
-    async fn register_shell_task(
-        &self,
-        shell_id: String,
-        command: String,
-        cwd: PathBuf,
-    ) -> BackgroundTaskSummary;
     /// Register a background sub-agent task; returns the summary used to emit
     /// `BackgroundTaskStarted`. Mirrors `BackgroundTaskRegistry::register_agent_task`.
     async fn register_agent_task(
@@ -208,60 +200,6 @@ pub trait SubAgentApi: Send + Sync {
     async fn live_running_snapshots(&self) -> Vec<SubAgentResult>;
 }
 
-/// Portable shell-execution status. Mirrors `ShellStatus`; the
-/// `Running` variant is kept because backgrounded commands return immediately
-/// with a live process (and a task id).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ShellExecStatus {
-    Running,
-    Completed,
-    Failed,
-    Killed,
-    TimedOut,
-}
-
-/// Portable shell-execution result. Carries the fields the engine body reads
-/// (task id, terminal status) plus the common output metadata. Mirrors
-/// `ShellResult` minus truncation bookkeeping that only the shell tool
-/// surfaces.
-#[derive(Debug, Clone)]
-pub struct ShellExecResult {
-    /// Backgrounded-task id, when `background` was requested and the command
-    /// detached successfully.
-    pub task_id: Option<String>,
-    /// Terminal (or `Running`) status of the command.
-    pub status: ShellExecStatus,
-    /// Process exit code, when available.
-    pub exit_code: Option<i32>,
-    /// Captured stdout.
-    pub stdout: String,
-    /// Captured stderr.
-    pub stderr: String,
-    /// Wall-clock duration in milliseconds.
-    pub duration_ms: u64,
-}
-
-/// Terminal-agnostic shell-manager surface.
-///
-/// The engine core runs background shell commands through this trait so it
-/// need not depend on the concrete `ShellManager` (pty / process
-/// management). `execute` is async: the host offloads its synchronous
-/// mutex/command core via `spawn_blocking`, so callers may await it directly
-/// on the async engine loop without stalling the executor.
-#[async_trait::async_trait]
-pub trait ShellApi: Send + Sync {
-    /// Execute a shell command. `background = true` requests a detached
-    /// background task (the result then carries a `task_id` and a `Running`
-    /// status). Mirrors `ShellManager::execute`.
-    async fn execute(
-        &self,
-        command: &str,
-        working_dir: Option<&str>,
-        timeout_ms: u64,
-        background: bool,
-    ) -> anyhow::Result<ShellExecResult>;
-}
-
 /// Terminal-agnostic shell-manager surface for tool implementations.
 ///
 /// The `exec_shell` family of tools drives background/streaming shell jobs
@@ -270,10 +208,6 @@ pub trait ShellApi: Send + Sync {
 /// `SandboxManager` plumbing). Each method is synchronous: the host locks
 /// its `std::sync::Mutex` internally and returns before any await, matching
 /// the pre-trait `.lock().method()` call sites.
-///
-/// This is the tool-facing *rich* surface (returning `ShellResult` /
-/// `ShellDeltaResult`); the engine-core's simpler [`ShellApi`] is a separate,
-/// smaller trait that returns the reduced [`ShellExecResult`].
 pub trait ShellManagerApi: Send + Sync {
     /// Clear any pending foreground→background detach request before a new
     /// foreground exec starts.
@@ -476,9 +410,6 @@ pub trait HostServices: Send + Sync {
     /// engine's turn loop can count running sub-agents without naming the
     /// concrete `SubAgentManager`.
     fn subagents(&self) -> Arc<dyn SubAgentApi>;
-
-    /// Shell-manager surface for background shell execution.
-    fn shell(&self) -> Arc<dyn ShellApi>;
 
     /// Durable on-disk data directory for tasks that persist state between
     /// turns (e.g. dream/memory-consolidation task output). `None` when no

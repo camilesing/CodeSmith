@@ -20,7 +20,7 @@
 #![allow(unsafe_code)] // libc::kill / libc::prctl in kill_child_process_group / install_parent_death_signal
 
 // Concrete shell-process manager (pty / process / sandbox plumbing), background
-// process management, the `ShellManagerHost` bridge onto `ShellManagerApi` / `ShellApi`,
+// process management, the `ShellManagerHost` bridge onto `ShellManagerApi`,
 // and supporting decision helpers. Physically migrated from the TUI's `tools::shell`
 // (C4-3b.7a.4.c) so the engine core can host shell execution without depending on the
 // terminal-coupled binary. crossterm raw-mode is trait-erased via `ShellTerminalControl`;
@@ -42,7 +42,7 @@ use wait_timeout::ChildExt;
 use std::os::unix::process::CommandExt;
 
 use crate::child_env;
-use crate::host_services::{ShellApi, ShellExecResult, ShellExecStatus, ShellManagerApi};
+use crate::host_services::ShellManagerApi;
 use crate::sandbox::{
     CommandSpec, ExecEnv, SandboxDecision, SandboxManager, SandboxPolicy as ExecutionSandboxPolicy,
     SandboxRuntimeConfig, SandboxType,
@@ -2243,55 +2243,6 @@ pub fn wrap_shell_manager(sm: SharedShellManager) -> Arc<dyn ShellManagerApi> {
 /// save/restore around child spawn is required.
 pub fn new_shared_shell_manager(workspace: PathBuf) -> SharedShellManager {
     Arc::new(Mutex::new(ShellManager::new(workspace)))
-}
-
-#[async_trait::async_trait]
-impl ShellApi for ShellManagerHost {
-    async fn execute(
-        &self,
-        command: &str,
-        working_dir: Option<&str>,
-        timeout_ms: u64,
-        background: bool,
-    ) -> anyhow::Result<ShellExecResult> {
-        let command = command.to_string();
-        let working_dir = working_dir.map(str::to_string);
-        let shared = Arc::clone(&self.0);
-        tokio::task::spawn_blocking(move || {
-            let mut shell = shared.lock().unwrap_or_else(|p| p.into_inner());
-            ShellManager::execute(
-                &mut shell,
-                &command,
-                working_dir.as_deref(),
-                timeout_ms,
-                background,
-            )
-        })
-        .await
-        .map_err(|e| anyhow!("shell execute blocking task failed: {e}"))?
-        .map(shell_exec_result_from)
-    }
-}
-
-/// Convert [`ShellResult`] into the portable
-/// [`ShellExecResult`]. A free function (not `impl From`) because the orphan
-/// rule forbids `impl From<ShellResult> for ShellExecResult` from the TUI
-/// crate (both the trait and the target type are foreign).
-fn shell_exec_result_from(r: ShellResult) -> ShellExecResult {
-    ShellExecResult {
-        task_id: r.task_id,
-        status: match r.status {
-            ShellStatus::Running => ShellExecStatus::Running,
-            ShellStatus::Completed => ShellExecStatus::Completed,
-            ShellStatus::Failed => ShellExecStatus::Failed,
-            ShellStatus::Killed => ShellExecStatus::Killed,
-            ShellStatus::TimedOut => ShellExecStatus::TimedOut,
-        },
-        exit_code: r.exit_code,
-        stdout: r.stdout,
-        stderr: r.stderr,
-        duration_ms: r.duration_ms,
-    }
 }
 
 #[cfg(test)]

@@ -19,7 +19,7 @@ use codesmith_agent_runtime::background_task::{
 };
 use codesmith_agent_runtime::hooks::HookHost;
 use codesmith_agent_runtime::host_services::{
-    BgRegistryApi, HostServices, LspManagerApi, SeamManagerApi, ShellApi, SpawnSubAgentRequest,
+    BgRegistryApi, HostServices, LspManagerApi, SeamManagerApi, SpawnSubAgentRequest,
     StructuredStateRequest, SubAgentApi, SubAgentSpawnResult, TurnDispatchPlan,
     TurnDispatchRequest,
 };
@@ -116,18 +116,6 @@ impl HostServices for super::EngineHost {
         // `Arc<dyn SubAgentApi>` is a cheap refcount bump (no per-call
         // re-wrap), matching `lsp` / `bg_registry`.
         Arc::clone(&self.subagent_api)
-    }
-
-    fn shell(&self) -> Arc<dyn ShellApi> {
-        // Same pre-erasure as `subagents` above. `shell_api` is `Some`
-        // exactly when `shell_manager` is, and `new_impl` always sets it
-        // before the engine runs, so every `HostServices::shell` call
-        // (turn dispatch, sub-agent spawn, …) reaches the cached handle.
-        Arc::clone(
-            self.shell_api
-                .as_ref()
-                .expect("shell_api is set by new_impl before run()"),
-        )
     }
 
     fn task_data_dir(&self) -> Option<PathBuf> {
@@ -779,16 +767,6 @@ pub(crate) struct BgRegistryHost(pub SharedBackgroundTaskRegistry);
 
 #[async_trait::async_trait]
 impl BgRegistryApi for BgRegistryHost {
-    async fn register_shell_task(
-        &self,
-        shell_id: String,
-        command: String,
-        cwd: PathBuf,
-    ) -> BackgroundTaskSummary {
-        let mut g = self.0.lock().await;
-        BackgroundTaskSummary::from(&g.register_shell_task(shell_id, command, cwd))
-    }
-
     async fn register_agent_task(
         &self,
         agent_id: String,

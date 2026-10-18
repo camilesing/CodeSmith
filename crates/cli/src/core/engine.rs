@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use codesmith_agent_runtime::host_services::{HostServices, ShellApi, SubAgentApi};
+use codesmith_agent_runtime::host_services::{HostServices, SubAgentApi};
 
 // Explicit re-export of the engine items the CLI actually depends on. This
 // replaces an earlier `pub use ...::engine::*` glob: the lists below are the
@@ -220,9 +220,6 @@ pub struct EngineHost {
     /// instead of a fresh `Arc<SubAgentManagerHost>` allocation + vtable
     /// erasure per call.
     pub subagent_api: Arc<dyn SubAgentApi>,
-    /// Pre-erased [`ShellApi`] view of `shell_manager` (same rationale as
-    /// `subagent_api`); `Some` exactly when `shell_manager` is.
-    pub shell_api: Option<Arc<dyn ShellApi>>,
     /// Sub-agent process manager.
     pub subagent_manager: SharedSubAgentManager,
     /// Session-scoped workshop variable store (#548). `None` when no
@@ -281,7 +278,6 @@ impl std::fmt::Debug for EngineHost {
             .field("shell_manager", &self.shell_manager)
             .field("subagent_manager", &self.subagent_manager)
             .field("subagent_api", &true)
-            .field("shell_api", &self.shell_api.is_some())
             .field("workshop_vars", &self.workshop_vars)
             .field("utility_llm", &self.utility_llm)
             .field("sandbox_backend", &self.sandbox_backend)
@@ -313,7 +309,6 @@ impl Default for EngineHost {
             subagent_api: Arc::new(runtime_traits::SubAgentManagerHost(Arc::clone(
                 &subagent_manager,
             ))),
-            shell_api: None,
             subagent_manager,
             workshop_vars: None,
             utility_llm: None,
@@ -1496,13 +1491,10 @@ pub fn build_engine(
 
     host.shell_manager = Some(shell_manager.clone());
     host.subagent_manager = subagent_manager;
-    // Refresh the pre-erased api views to mirror the managers assigned just
-    // above — `build_engine` is the only site that ever reassigns either.
+    // Refresh the pre-erased api view to mirror the manager assigned just
+    // above — `build_engine` is the only site that ever reassigns it.
     host.subagent_api = Arc::new(runtime_traits::SubAgentManagerHost(Arc::clone(
         &host.subagent_manager,
-    )));
-    host.shell_api = Some(Arc::new(crate::tools::shell::ShellManagerHost(
-        shell_manager,
     )));
     host.workshop_vars = workshop_vars;
     host.utility_llm = utility_llm;
