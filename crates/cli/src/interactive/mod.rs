@@ -48,8 +48,9 @@ use bindings::{Action, Bind, Bindings, KeyHandler, Shared as SharedBindings};
 use completion::ReplHelper;
 use state::ReplState;
 
-/// Image extensions accepted for `@path` attachments in the composer.
-const IMAGE_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
+/// Image extensions accepted for `@path` attachments in the composer — the
+/// single wire-representable set (see `WIRE_IMAGE_EXTENSIONS`).
+const IMAGE_EXTENSIONS: &[&str] = codesmith_agent::models::WIRE_IMAGE_EXTENSIONS;
 
 pub async fn run_repl(
     config: &Config,

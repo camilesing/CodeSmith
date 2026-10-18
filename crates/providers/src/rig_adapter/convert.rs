@@ -453,4 +453,24 @@ mod tests {
                 .all(|item| matches!(item, UserContent::Text(_)))
         );
     }
+
+    /// Round-3 TODO-41: the encoder and the shared `WIRE_IMAGE_EXTENSIONS`
+    /// constant (which user-facing intake — `/attach`, `@path` — rejects on)
+    /// must stay in lockstep: every listed extension encodes, and a sample
+    /// of unlisted ones (tif, ppm, video containers) do not.
+    #[test]
+    fn encoder_accepts_exactly_the_wire_image_extensions() {
+        for ext in codesmith_agent::models::WIRE_IMAGE_EXTENSIONS {
+            assert!(
+                super::image_media_type_from_path(&PathBuf::from(format!("file.{ext}"))).is_some(),
+                "WIRE_IMAGE_EXTENSIONS lists .{ext} but the encoder drops it"
+            );
+        }
+        for ext in ["tif", "tiff", "ppm", "bmp", "mp4", "mov", "mkv"] {
+            assert!(
+                super::image_media_type_from_path(&PathBuf::from(format!("file.{ext}"))).is_none(),
+                ".{ext} must stay unlisted — the wire layer has no image_url form for it"
+            );
+        }
+    }
 }

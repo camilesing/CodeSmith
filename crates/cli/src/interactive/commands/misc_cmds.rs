@@ -649,10 +649,18 @@ pub fn note(state: &ReplState, content: Option<&str>) {
     }
 }
 
-/// `/attach <media path>` — queue an image/video for the next message.
+/// `/attach <image path>` — queue an image for the next message.
+///
+/// Only the wire-representable image types (`WIRE_IMAGE_EXTENSIONS`) are
+/// accepted: the request builder drops anything else without a trace, so
+/// rejecting here is the loud-failure point. Video containers have no wire
+/// representation on the OpenAI-compatible `image_url` form. A
+/// content-addressed attachment store (dsh `attachment` shape) is
+/// deliberately not built — no second consuming surface exists; the
+/// File-path `ImageSource` form is the primary shape.
 pub fn attach(state: &mut ReplState, arg: Option<&str>) {
     let Some(raw_path) = arg.map(str::trim).filter(|value| !value.is_empty()) else {
-        println!("{} usage: /attach <image-or-video-path>", "✗".red());
+        println!("{} usage: /attach <image-path>", "✗".red());
         return;
     };
     let path = std::path::PathBuf::from(raw_path);
@@ -674,28 +682,11 @@ pub fn attach(state: &mut ReplState, arg: Option<&str>) {
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase())
         .unwrap_or_default();
-    let is_media = matches!(
-        ext.as_str(),
-        "png"
-            | "jpg"
-            | "jpeg"
-            | "gif"
-            | "webp"
-            | "bmp"
-            | "tif"
-            | "tiff"
-            | "ppm"
-            | "mp4"
-            | "mov"
-            | "m4v"
-            | "webm"
-            | "avi"
-            | "mkv"
-    );
-    if !is_media {
+    if !codesmith_agent::models::WIRE_IMAGE_EXTENSIONS.contains(&ext.as_str()) {
         println!(
-            "{} unsupported attachment type — /attach is for image/video paths; use @path in the message for text files",
-            "✗".red()
+            "{} unsupported attachment type .{ext} — providers can only carry {} on the wire (video has no wire representation; text files go in the message as @path)",
+            "✗".red(),
+            codesmith_agent::models::WIRE_IMAGE_EXTENSIONS.join("/")
         );
         return;
     }
@@ -1306,7 +1297,55 @@ pub(crate) fn quick_memory_entry(line: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{changelog_sections, quick_memory_entry};
+    use super::{ReplState, attach, changelog_sections, quick_memory_entry};
+
+    /// Round-3 TODO-41: `/attach` must reject media the wire layer cannot
+    /// represent (video containers, tif, ppm, …) up front — the request
+    /// builder silently drops such blocks, so accepting them told the user
+    /// the model saw something it never did. Baseline: an .mp4 was queued.
+    #[test]
+    fn attach_rejects_wire_unrepresentable_media() {
+        let _lock = crate::test_support::lock_test_env();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mp4 = dir.path().join("clip.mp4");
+        std::fs::write(&mp4, b"x").expect("write");
+        let png = dir.path().join("shot.png");
+        std::fs::write(&png, b"x").expect("write");
+
+        fn options(workspace: std::path::PathBuf) -> crate::app_state::InteractiveOptions {
+            crate::app_state::InteractiveOptions {
+                model: "test-model".to_string(),
+                workspace,
+                config_path: None,
+                config_profile: None,
+                allow_shell: false,
+                max_subagents: 2,
+                skills_dir: std::env::temp_dir(),
+                memory_path: std::env::temp_dir().join("memory.md"),
+                mcp_config_path: std::env::temp_dir().join("mcp.json"),
+                use_memory: false,
+                start_in_agent_mode: true,
+                yolo: false,
+                resume_session_id: None,
+                initial_input: None,
+            }
+        }
+        let config = crate::config::Config::default();
+
+        let mut state = ReplState::new(options(dir.path().to_path_buf()), &config);
+        attach(&mut state, Some(mp4.to_str().expect("utf8")));
+        assert!(
+            state.pending_attachments.is_empty(),
+            "mp4 must be rejected at /attach — the wire layer would silently drop it"
+        );
+
+        attach(&mut state, Some(png.to_str().expect("utf8")));
+        assert_eq!(
+            state.pending_attachments.len(),
+            1,
+            "png is wire-representable and must queue"
+        );
+    }
 
     #[test]
     fn quick_memory_entry_intercepts_single_hash_only() {
