@@ -46,10 +46,11 @@
 //! engine-side after the tool returns; large-output routing sits on the
 //! dispatcher path, not the ToolSet-adapter path the spawn uses);
 //! shell-output truncation runs inline on the turn's task on every
-//! live path (the `spawn_blocking` shell wrappers that would lose the
-//! scope serve only the never-sent `Op::StartBackgroundShell` and the
-//! interactive start, whose output is truncated by later inline
-//! polls); and Rhai handlers have no runtime policy-read API (only
+//! live path (of the `spawn_blocking` shell wrappers that would lose
+//! the scope, the one serving the never-sent `Op::StartBackgroundShell`
+//! was deleted with that op; the interactive start remains, and its
+//! output is truncated by later inline polls); and Rhai handlers have
+//! no runtime policy-read API (only
 //! `register_policy`), so the blocking-pool emit/hook dispatches read
 //! nothing. If a read-only spec ever starts reading policy, re-enter
 //! the scope at that spawn: capture `PolicyStore::ambient()` before it

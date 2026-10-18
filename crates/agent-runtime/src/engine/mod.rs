@@ -72,13 +72,12 @@ pub use crate::engine_config::EngineConfig;
 
 /// Host-services trait in scope so the engine body can call
 /// `self.host.lsp()` / `self.host.bg_registry()` / `self.host.subagents()`
-/// / `self.host.shell()` etc. (impl lives in `runtime_traits`).
+/// etc. (impl lives in `runtime_traits`).
 /// `TurnDispatchRequest` is the portable contract for the per-turn
 /// tool-dispatcher factory; `SpawnSubAgentRequest` / `StructuredStateRequest`
-/// for the spawn / cycle-state factories; `ShellExecStatus` for comparing a
-/// background shell's terminal status.
+/// for the spawn / cycle-state factories.
 use crate::host_services::{
-    HostServices, ShellExecStatus, SpawnSubAgentRequest, StructuredStateRequest, TurnDispatchPlan,
+    HostServices, SpawnSubAgentRequest, StructuredStateRequest, TurnDispatchPlan,
     TurnDispatchRequest,
 };
 
@@ -834,60 +833,6 @@ impl Engine {
                 }
 
                 // Background task operations.
-                #[allow(dead_code)]
-                Op::StartBackgroundShell {
-                    command,
-                    cwd,
-                    timeout_secs,
-                } => {
-                    let timeout_ms = timeout_secs.unwrap_or(600).saturating_mul(1_000);
-                    let cwd_str = cwd.as_ref().map(|path| path.to_string_lossy().to_string());
-                    let result = self
-                        .host
-                        .shell()
-                        .execute(&command, cwd_str.as_deref(), timeout_ms, true)
-                        .await;
-                    match result {
-                        Ok(shell_result) => {
-                            if let Some(shell_id) = shell_result.task_id.clone() {
-                                let cwd = cwd.unwrap_or_else(|| self.session.cwd.clone());
-                                let task = self
-                                    .host
-                                    .bg_registry()
-                                    .register_shell_task(shell_id, command, cwd)
-                                    .await;
-                                let _ = self
-                                    .tx_event
-                                    .send(Event::BackgroundTaskStarted {
-                                        id: task.id,
-                                        task_type: task.task_type,
-                                        description: task.description,
-                                    })
-                                    .await;
-                            } else {
-                                let status = if shell_result.status == ShellExecStatus::Completed {
-                                    "completed"
-                                } else {
-                                    "failed"
-                                };
-                                let _ = self
-                                    .tx_event
-                                    .send(Event::status(format!(
-                                        "Background shell {status} without task id"
-                                    )))
-                                    .await;
-                            }
-                        }
-                        Err(err) => {
-                            let _ = self
-                                .tx_event
-                                .send(Event::error(ErrorEnvelope::fatal(format!(
-                                    "Failed to start background shell: {err}"
-                                ))))
-                                .await;
-                        }
-                    }
-                }
                 #[allow(dead_code)]
                 Op::CancelBackgroundTask { id } => {
                     let result = self.host.bg_registry().cancel_task(&id).await;

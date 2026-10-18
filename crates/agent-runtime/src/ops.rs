@@ -120,14 +120,6 @@ pub enum Op {
     Shutdown,
 
     // === Background Task Operations ===
-    /// Start a shell command in background.
-    #[allow(dead_code)]
-    StartBackgroundShell {
-        command: String,
-        cwd: Option<PathBuf>,
-        timeout_secs: Option<u64>,
-    },
-
     /// Cancel a background task by unified id.
     #[allow(dead_code)]
     CancelBackgroundTask { id: String },
