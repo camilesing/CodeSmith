@@ -64,6 +64,10 @@ Use clear, descriptive commit messages following conventional commits:
 
 Example: `feat: add doctor subcommand for system diagnostics`
 
+Keep the whole message — subject plus body — within 200 characters. Detailed
+evidence (test output, file lists) belongs in the PR description, not the
+commit.
+
 When a commit harvests code from a community PR (see "How Your Contribution
 Lands" below), include a `Harvested from PR #N by @author` line in the commit
 body. An auto-close workflow watches for this pattern and closes the
