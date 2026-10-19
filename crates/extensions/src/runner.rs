@@ -29,6 +29,11 @@ use crate::api::StubExtensionApi;
 /// `bind_core` flush into the host `ToolRegistry`.
 pub(crate) struct PendingTool {
     pub tool: Box<dyn ToolDefinition>,
+    /// DSH registration scope — keyed `(scope, name)` at flush, so a
+    /// `Global` and an `AgentType(id)` registration of the same name
+    /// coexist (the scoped one shadows the global one in that type's
+    /// catalog view).
+    pub scope: Scope,
 }
 
 /// Route B — prompt-section limit (fail loud beyond, at registration).
@@ -97,21 +102,58 @@ pub(crate) struct PendingCommand {
     pub command: Box<dyn CommandDefinition>,
 }
 
+/// DSH tool restriction — shared validation (stub-time and live
+/// registration paths): a usable scope + at least one non-blank tool
+/// name, none blank.
+pub(crate) fn validate_tool_restriction(
+    scope: &Scope,
+    names: &[String],
+) -> Result<(), ExtensionError> {
+    scope.validate()?;
+    if names.is_empty() {
+        return Err(ExtensionError::Config(
+            "restrict_tools(): names must name at least one tool".into(),
+        ));
+    }
+    if names.iter().any(|n| n.trim().is_empty()) {
+        return Err(ExtensionError::Config(
+            "restrict_tools(): names must be non-empty tool names".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// A handler subscribed during `configure`, with its variant filter
 /// (`None` = subscribe-to-all via `on`; `Some(kind)` = per-variant via
-/// `on_variant`). §F2a.
+/// `on_variant`) and its registration scope (`Global` for the plain forms;
+/// `AgentType(id)` via `on_variant_scoped` — dispatched only at that
+/// scope). §F2a.
 pub(crate) struct PendingHandler {
     pub handler: Arc<dyn Handler>,
     pub kind_filter: Option<ExtensionEventKind>,
+    pub scope: Scope,
 }
 
-/// A bound handler + its variant filter (None = subscribe-to-all). §F2a T7
-/// makes `ExtensionRunner::handlers` a `Vec<RegisteredHandler>`; `bind_core`
-/// drains `PendingHandler` into this (carrying `kind_filter` through).
+/// A bound handler + its variant filter (None = subscribe-to-all) and
+/// registration scope (DSH alignment: an `AgentType(id)` handler receives
+/// only `emit_scoped` dispatches at its scope; `emit` is Global). §F2a T7
+/// makes `ExtensionRunner::handlers` a `Vec<RegisteredHandler>`;
+/// `bind_core` drains `PendingHandler` into this (carrying both fields
+/// through).
 #[derive(Clone)]
 pub(crate) struct RegisteredHandler {
     pub handler: Arc<dyn Handler>,
     pub kind_filter: Option<ExtensionEventKind>,
+    pub scope: Scope,
+}
+
+/// A deny-only tool restriction (DSH `ToolRestriction`, deny side only):
+/// `denied` names are pruned from the **global** extension-tool layer for
+/// every view `scope` covers. Never prunes scoped registrations. Used
+/// both as the pending queue entry and the bound storage shape.
+pub(crate) struct ToolRestriction {
+    pub scope: Scope,
+    pub denied: Vec<String>,
 }
 
 /// The result of [`ExtensionRunner::emit`]: the final (possibly transformed)
@@ -155,6 +197,9 @@ pub(crate) struct Pending {
     /// Builtin command names the stub `ExtensionApi`'s `disable_command`
     /// queued during `configure`, awaiting the `bind_core` flush.
     pub disabled_commands: Vec<String>,
+    /// DSH tool restrictions queued by the stub `ExtensionApi`, awaiting
+    /// the `bind_core` flush (deny-only; see [`ToolRestriction`]).
+    pub tool_restrictions: Vec<ToolRestriction>,
 }
 
 /// A message projection queued by the stub `ExtensionApi`.
@@ -177,6 +222,10 @@ pub struct UnloadModOutcome {
     pub errors: Vec<String>,
 }
 
+/// The bound tool registry's storage shape: `(scope, name)` → definition
+/// (DSH registration scope — see [`ExtensionRunner::bound_tools_scoped`]).
+pub(crate) type BoundToolMap = HashMap<(Scope, String), Arc<dyn ToolDefinition>>;
+
 /// The host runtime. Constructed by [`ExtensionRunner::new`] +
 /// [`ExtensionRunner::load`](Self::load) (runs each extension's `configure`
 /// against a **stub** api), then [`ExtensionRunner::bind_core`](Self::bind_core)
@@ -190,9 +239,17 @@ pub struct ExtensionRunner {
     /// handlers get the exact type they expect; event handlers receive
     /// `&dyn ExtensionContext` via stable trait-upcasting (Rust 1.86+).
     context: Mutex<Option<Arc<dyn ExtensionCommandContext>>>,
-    /// Bound at `bind_core` — the flushed tools (name → def), for the host's
-    /// `ExtensionToolSpecAdapter` to wrap.
-    tools: Mutex<HashMap<String, Arc<dyn ToolDefinition>>>,
+    /// Bound at `bind_core` — the flushed tools, keyed `(scope, name)`
+    /// (DSH registration scope): first-wins per key, so a `Global` and an
+    /// `AgentType(id)` tool of the same name coexist and the scoped one
+    /// shadows the global one in that type's catalog view. Hosts resolve
+    /// a view via [`bound_tools_scoped`](Self::bound_tools_scoped) —
+    /// [`bound_tools`](Self::bound_tools) is the `Global` view.
+    tools: Mutex<BoundToolMap>,
+    /// Bound at `bind_core` — deny-only tool restrictions (DSH
+    /// `ToolRestriction`), intersecting; cleared with the other bound
+    /// registrations on reload.
+    tool_restrictions: Mutex<Vec<ToolRestriction>>,
     commands: Mutex<HashMap<String, Arc<dyn CommandDefinition>>>,
     /// Bound at `bind_core` — builtin command names disabled by this
     /// generation's extensions (`disable_command`; the "suppress a
@@ -302,6 +359,7 @@ impl ExtensionRunner {
             pending: Arc::new(Mutex::new(Pending::default())),
             context: Mutex::new(None),
             tools: Mutex::new(HashMap::new()),
+            tool_restrictions: Mutex::new(Vec::new()),
             commands: Mutex::new(HashMap::new()),
             disabled_builtin_commands: Mutex::new(HashSet::new()),
             handlers: Mutex::new(Vec::new()),
@@ -386,6 +444,31 @@ impl ExtensionRunner {
     /// rebuild. Called from `reload_extension_runtime` before re-populate.
     pub fn clear_tools(&self) {
         self.tools.lock().expect("tools lock poisoned").clear();
+    }
+
+    /// DSH tool restriction — append a deny-only name list for `scope`
+    /// (live path; the `bind_core` flush routes queued entries through
+    /// here so stub-time and flush-time validation agree). Entries
+    /// intersect; nothing re-admits a denied name. Fails loud on a blank
+    /// scope id or a blank tool name.
+    pub fn restrict_tools(&self, scope: Scope, names: Vec<String>) -> Result<(), ExtensionError> {
+        validate_tool_restriction(&scope, &names)?;
+        let denied: Vec<String> = names.into_iter().map(|n| n.trim().to_string()).collect();
+        self.tool_restrictions
+            .lock()
+            .expect("tool restrictions lock poisoned")
+            .push(ToolRestriction { scope, denied });
+        Ok(())
+    }
+
+    /// Clear the generation's tool restrictions (reload drops them with
+    /// the other bound registrations; surviving mods' replays re-derive
+    /// the set).
+    pub fn clear_tool_restrictions(&self) {
+        self.tool_restrictions
+            .lock()
+            .expect("tool restrictions lock poisoned")
+            .clear();
     }
 
     /// §F5d — clear all bound **commands** (name→`CommandDefinition` map). Same
@@ -637,14 +720,16 @@ impl ExtensionRunner {
     // === Per-mod lifecycle (single-mod load/unload, manual boundary) =======
 
     /// The bound-registration clear suite the whole-layer reload spells
-    /// out: handlers, tools, commands, providers, prompt sections, skills,
-    /// message projections. NOT the dylib two-phase unload — that stays
+    /// out: handlers, tools, tool restrictions, commands, providers,
+    /// prompt sections, skills, message projections. NOT the dylib
+    /// two-phase unload — that stays
     /// [`drain_libraries_to_pending`](Self::drain_libraries_to_pending) +
     /// [`drop_pending`](Self::drop_pending).
     pub fn clear_bound_registrations(&self) {
         self.clear_handlers();
         self.clear_around_tools();
         self.clear_tools();
+        self.clear_tool_restrictions();
         self.clear_commands();
         self.clear_disabled_commands();
         self.clear_providers();
@@ -863,11 +948,26 @@ impl ExtensionRunner {
         };
         let mut rejections = Vec::new();
         for pt in drained.tools {
+            let scope = pt.scope;
             let name = pt.tool.name().to_string();
             let arc: Arc<dyn ToolDefinition> = Arc::from(pt.tool);
-            // First-wins, matching the documented slice-1 conflict policy:
-            // plain `insert` replaces and silently yields last-wins.
-            self.tools.lock().unwrap().entry(name).or_insert(arc);
+            // First-wins per (scope, name), matching the documented
+            // slice-1 conflict policy: plain `insert` replaces and
+            // silently yields last-wins.
+            self.tools
+                .lock()
+                .unwrap()
+                .entry((scope, name))
+                .or_insert(arc);
+        }
+        for restriction in drained.tool_restrictions {
+            if let Err(e) = self.restrict_tools(restriction.scope, restriction.denied) {
+                tracing::warn!(
+                    target: "codesmith_extensions",
+                    "tool restriction rejected at bind: {e}"
+                );
+                rejections.push(e);
+            }
         }
         for pc in drained.commands {
             let name = pc.command.name().to_string();
@@ -889,6 +989,7 @@ impl ExtensionRunner {
                 handlers.push(RegisteredHandler {
                     handler: ph.handler,
                     kind_filter: ph.kind_filter,
+                    scope: ph.scope,
                 });
             }
         }
@@ -967,21 +1068,37 @@ impl ExtensionRunner {
     }
 
     /// Cheap pre-check for hot-path emitters: whether any bound handler
-    /// would receive `kind` (`None` kind_filter = subscribe-to-all, so it
-    /// counts). Racy with reload by design — it mirrors the snapshot
-    /// `emit` itself takes under the same lock and is only ever used to
-    /// skip dispatch, never to change emit semantics.
+    /// would receive `kind` at the **Global** scope (the main turn's
+    /// dispatch scope; `None` kind_filter = subscribe-to-all, so it
+    /// counts). Agent-type-scoped handlers do not count — they receive
+    /// only `emit_scoped` dispatches at their own scope, never the main
+    /// turn's events. Racy with reload by design — it mirrors the
+    /// snapshot `emit` itself takes under the same lock and is only ever
+    /// used to skip dispatch, never to change emit semantics.
     #[must_use]
     pub fn has_handlers(&self, kind: ExtensionEventKind) -> bool {
-        self.handlers
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|rh| rh.kind_filter.is_none() || rh.kind_filter == Some(kind))
+        self.handlers.lock().unwrap().iter().any(|rh| {
+            rh.scope.is_global() && (rh.kind_filter.is_none() || rh.kind_filter == Some(kind))
+        })
     }
 
     /// Emit `event` to every bound handler whose variant filter matches,
-    /// chaining transforms (spec §4: "一个 handler 的修改对下一个可见").
+    /// at the **Global** scope — the main turn's dispatch entry point.
+    /// Agent-type-scoped handlers never receive these emissions (see
+    /// [`emit_scoped`](Self::emit_scoped)). Behavior otherwise as
+    /// documented on `emit_scoped`.
+    pub async fn emit(&self, event: ExtensionEvent) -> EmitOutcome {
+        self.emit_scoped(Scope::Global, event).await
+    }
+
+    /// Emit `event` at an explicit registration scope (DSH per-agent
+    /// dispatch): handlers registered at `Global` always receive the
+    /// event; a handler registered at `AgentType(id)` receives it only
+    /// when `scope` is that same type. The main-turn sites call
+    /// [`emit`](Self::emit) (Global); a sub-agent loop that binds the
+    /// runner (iteration 5b) dispatches with its own agent type.
+    ///
+    /// Chains transforms (spec §4: "一个 handler 的修改对下一个可见").
     /// Returns [`EmitOutcome`] — the final (possibly transformed) event +
     /// the terminal outcome (`Continue` / `Cancel` / `Block`). Each handler
     /// call is wrapped in `catch_unwind` (§8.3) so a panicking handler cannot
@@ -992,7 +1109,7 @@ impl ExtensionRunner {
     /// running event and the chain continues with the next handler.
     /// No-op (returns the input event + `Continue`) if `bind_core` has not
     /// run.
-    pub async fn emit(&self, event: ExtensionEvent) -> EmitOutcome {
+    pub async fn emit_scoped(&self, scope: Scope, event: ExtensionEvent) -> EmitOutcome {
         let ctx = match self.context.lock().unwrap().clone() {
             Some(ctx) => ctx,
             None => {
@@ -1010,6 +1127,7 @@ impl ExtensionRunner {
             .lock()
             .unwrap()
             .iter()
+            .filter(|rh| rh.scope.covers(&scope))
             .filter(|rh| rh.kind_filter.is_none() || rh.kind_filter == Some(kind))
             .cloned()
             .collect();
@@ -1090,16 +1208,60 @@ impl ExtensionRunner {
         }
     }
 
-    /// Snapshot of bound tools (name → def) for the host's
-    /// `ExtensionToolSpecAdapter` to wrap + register into `ToolRegistry`
-    /// (Task 5/9).
+    /// Snapshot of the **Global** extension-tool view (name → def, sorted
+    /// by name) for the host's `ExtensionToolSpecAdapter` to wrap +
+    /// register into `ToolRegistry` (Task 5/9). This is what the main
+    /// turn's `register_extension_tools` mounts: agent-type-scoped tools
+    /// never appear here, and a `Global` restrict entry prunes its names.
     pub fn bound_tools(&self) -> Vec<(String, Arc<dyn ToolDefinition>)> {
-        self.tools
+        self.bound_tools_scoped(&Scope::Global)
+    }
+
+    /// The extension-tool view for `scope` (DSH `ToolView` derivation):
+    /// the `Global` registrations — minus every restriction whose scope
+    /// covers `scope` — overlaid by `scope`'s own registrations when it is
+    /// an agent type (same name ⇒ the scoped tool shadows the global
+    /// one). Sorted by name. Restrictions never prune scoped
+    /// registrations (what an agent type declares for itself cannot be
+    /// voted away by a deployment restriction), and they apply only to
+    /// the extension layer's own tools — builtins are not the extension
+    /// layer's to prune.
+    ///
+    /// Known limitation: no production site resolves an `AgentType` view
+    /// yet — sub-agent registries bind no extension runner as a tool
+    /// source (§F5d structural exclusion; iteration 5b lifts it). The
+    /// derivation is the seam that consumer wires.
+    #[must_use]
+    pub fn bound_tools_scoped(&self, scope: &Scope) -> Vec<(String, Arc<dyn ToolDefinition>)> {
+        let denied: HashSet<String> = self
+            .tool_restrictions
             .lock()
-            .unwrap()
+            .expect("tool restrictions lock poisoned")
             .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect()
+            .filter(|r| r.scope.covers(scope))
+            .flat_map(|r| r.denied.iter().cloned())
+            .collect();
+        let tools = self.tools.lock().expect("tools lock poisoned");
+        let mut view: HashMap<String, Arc<dyn ToolDefinition>> = HashMap::new();
+        // Global layer first (restrictions prune it); the scope's own
+        // registrations overlay it when the view is an agent type — the
+        // Global view has no overlay of its own (its layer IS the base,
+        // and re-inserting it would bypass the restriction filter).
+        for ((tool_scope, name), tool) in tools.iter() {
+            if tool_scope.is_global() && !denied.contains(name) {
+                view.insert(name.clone(), Arc::clone(tool));
+            }
+        }
+        if let Scope::AgentType(_) = scope {
+            for ((tool_scope, name), tool) in tools.iter() {
+                if tool_scope == scope {
+                    view.insert(name.clone(), Arc::clone(tool));
+                }
+            }
+        }
+        let mut out: Vec<(String, Arc<dyn ToolDefinition>)> = view.into_iter().collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
     }
 
     /// §F5d — bound `ExtensionContext` for the host's `ExtensionToolSpecAdapter`
@@ -2255,6 +2417,259 @@ mod tests {
                 .shared_providers()
                 .resolve(&codesmith_agent::provider::ProviderId::from("acme-llm"))
                 .is_none()
+        );
+    }
+
+    // === DSH registration scope (5a): views, restrict, dispatch filter ====
+
+    #[test]
+    fn restrict_tools_validation_fails_loud() {
+        let runner = ExtensionRunner::new();
+        assert!(
+            runner.restrict_tools(Scope::Global, Vec::new()).is_err(),
+            "empty name list rejected"
+        );
+        assert!(
+            runner
+                .restrict_tools(Scope::Global, vec!["  ".into()])
+                .is_err(),
+            "blank names rejected"
+        );
+        assert!(
+            runner
+                .restrict_tools(Scope::AgentType("   ".into()), vec!["t".into()])
+                .is_err(),
+            "blank scope id rejected"
+        );
+        runner
+            .restrict_tools(Scope::Global, vec!["web_fetch".into()])
+            .expect("a usable restriction registers");
+    }
+
+    /// A tool whose description tags its origin, so scoped-shadow
+    /// assertions can pin WHICH registration a view resolved.
+    struct TaggedTool(&'static str, &'static str);
+    #[async_trait::async_trait]
+    impl ToolDefinition for TaggedTool {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn description(&self) -> &str {
+            self.1
+        }
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<ToolResult, ExtensionError> {
+            Ok(ToolResult::success(self.1))
+        }
+    }
+
+    struct ScopedRegistrationExt;
+    #[async_trait::async_trait]
+    impl Extension for ScopedRegistrationExt {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("scoped-reg");
+            &M
+        }
+        async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+            api.register_tool(Box::new(TaggedTool("shared", "global-variant")))?;
+            api.register_tool(Box::new(TaggedTool("pruned_everywhere", "global")))?;
+            api.register_tool_scoped(
+                Scope::AgentType("explore".into()),
+                Box::new(TaggedTool("shared", "explore-variant")),
+            )?;
+            api.register_tool_scoped(
+                Scope::AgentType("explore".into()),
+                Box::new(TaggedTool("explore_only", "explore")),
+            )?;
+            api.restrict_tools(Scope::Global, vec!["pruned_everywhere".into()])?;
+            Ok(())
+        }
+    }
+
+    fn scoped_reg_runner() -> ExtensionRunner {
+        let runner = ExtensionRunner::new();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        rt.block_on(runner.load(&ScopedRegistrationExt))
+            .expect("load");
+        runner.bind_core(Arc::new(Ctx { generation: 1 }));
+        runner
+    }
+
+    #[test]
+    fn scoped_tool_views_shadow_and_restrict_at_flush() {
+        let runner = scoped_reg_runner();
+        let names = |v: Vec<(String, Arc<dyn ToolDefinition>)>| -> Vec<String> {
+            v.into_iter().map(|(n, _)| n).collect()
+        };
+
+        // Global view (main turn): scoped tools never leak in, the global
+        // restriction prunes, and the global variant of `shared` survives.
+        let global = names(runner.bound_tools());
+        assert!(global.contains(&"shared".to_string()));
+        assert!(!global.contains(&"explore_only".to_string()), "{global:?}");
+        assert!(
+            !global.contains(&"pruned_everywhere".to_string()),
+            "global restriction prunes the global view: {global:?}"
+        );
+        let shared_global = runner
+            .bound_tools()
+            .into_iter()
+            .find(|(n, _)| n == "shared")
+            .unwrap();
+        assert_eq!(shared_global.1.description(), "global-variant");
+
+        // Explore view: scoped shadow wins the shared name, explore-only
+        // tools appear, and the Global restriction covers this view too.
+        let explore = runner.bound_tools_scoped(&Scope::AgentType("explore".to_string()));
+        let explore_names = names(explore.clone());
+        assert!(
+            explore_names.contains(&"explore_only".to_string()),
+            "{explore_names:?}"
+        );
+        assert!(
+            !explore_names.contains(&"pruned_everywhere".to_string()),
+            "a Global restriction covers every view: {explore_names:?}"
+        );
+        let shared_explore = explore.into_iter().find(|(n, _)| n == "shared").unwrap();
+        assert_eq!(
+            shared_explore.1.description(),
+            "explore-variant",
+            "the scoped registration shadows the global one in its own view"
+        );
+
+        // A different agent type sees the global view shape (no explore
+        // tools, restriction still applies).
+        let general = names(runner.bound_tools_scoped(&Scope::AgentType("general".to_string())));
+        assert!(
+            !general.contains(&"explore_only".to_string()),
+            "{general:?}"
+        );
+        assert!(general.contains(&"shared".to_string()));
+
+        // Reload clear drops scoped tools and restrictions together.
+        runner.clear_bound_registrations();
+        assert!(runner.bound_tools().is_empty());
+        assert!(
+            runner
+                .bound_tools_scoped(&Scope::AgentType("explore".to_string()))
+                .is_empty()
+        );
+    }
+
+    struct ScopeProbeHandler {
+        seen: Arc<Mutex<Vec<&'static str>>>,
+        label: &'static str,
+    }
+    #[async_trait::async_trait]
+    impl Handler for ScopeProbeHandler {
+        async fn handle(
+            &self,
+            _event: &ExtensionEvent,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<HandlerOutcome, ExtensionError> {
+            self.seen.lock().unwrap().push(self.label);
+            Ok(HandlerOutcome::Continue)
+        }
+    }
+
+    #[test]
+    fn emit_scope_filters_handler_dispatch() {
+        struct ScopedHandlersExt {
+            seen: Arc<Mutex<Vec<&'static str>>>,
+        }
+        #[async_trait::async_trait]
+        impl Extension for ScopedHandlersExt {
+            fn metadata(&self) -> &ExtensionMetadata {
+                static M: ExtensionMetadata = ExtensionMetadata::new("scoped-handlers");
+                &M
+            }
+            async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+                api.on_variant(
+                    ExtensionEventKind::TurnStart,
+                    Arc::new(ScopeProbeHandler {
+                        seen: self.seen.clone(),
+                        label: "global",
+                    }),
+                )?;
+                api.on_variant_scoped(
+                    ExtensionEventKind::TurnStart,
+                    Scope::AgentType("explore".into()),
+                    Arc::new(ScopeProbeHandler {
+                        seen: self.seen.clone(),
+                        label: "explore",
+                    }),
+                )?;
+                Ok(())
+            }
+        }
+
+        let runner = ExtensionRunner::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        rt.block_on(runner.load(&ScopedHandlersExt { seen: seen.clone() }))
+            .expect("load");
+        runner.bind_core(Arc::new(Ctx { generation: 1 }));
+        let turn_start = || ExtensionEvent::TurnStart {
+            turn_id: "t1".into(),
+        };
+
+        // Main-turn emit (Global): only the global handler runs — an
+        // agent-scoped handler never receives another scope's events.
+        let _ = rt.block_on(runner.emit(turn_start()));
+        assert_eq!(*seen.lock().unwrap(), vec!["global"]);
+
+        // Scoped emit at the matching type: BOTH run (a global handler
+        // covers every scope; the explore handler finally receives its
+        // own scope's dispatch).
+        let _ = rt.block_on(runner.emit_scoped(Scope::AgentType("explore".into()), turn_start()));
+        assert_eq!(*seen.lock().unwrap(), vec!["global", "global", "explore"]);
+
+        // Scoped emit at a NON-matching type: the explore handler stays
+        // silent.
+        let _ = rt.block_on(runner.emit_scoped(Scope::AgentType("general".into()), turn_start()));
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["global", "global", "explore", "global"]
+        );
+    }
+
+    #[test]
+    fn has_handlers_counts_global_scope_only() {
+        struct ScopedOnlyExt {
+            seen: Arc<Mutex<Vec<&'static str>>>,
+        }
+        #[async_trait::async_trait]
+        impl Extension for ScopedOnlyExt {
+            fn metadata(&self) -> &ExtensionMetadata {
+                static M: ExtensionMetadata = ExtensionMetadata::new("scoped-only");
+                &M
+            }
+            async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+                api.on_variant_scoped(
+                    ExtensionEventKind::TurnStart,
+                    Scope::AgentType("explore".into()),
+                    Arc::new(ScopeProbeHandler {
+                        seen: self.seen.clone(),
+                        label: "explore",
+                    }),
+                )?;
+                Ok(())
+            }
+        }
+        let runner = ExtensionRunner::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        rt.block_on(runner.load(&ScopedOnlyExt { seen }))
+            .expect("load");
+        runner.bind_core(Arc::new(Ctx { generation: 1 }));
+        // The hot-path pre-check mirrors emit (Global): a scoped-only
+        // subscription does not make the main turn dispatch.
+        assert!(
+            !runner.has_handlers(ExtensionEventKind::TurnStart),
+            "scoped-only handlers do not count for the Global pre-check"
         );
     }
 }

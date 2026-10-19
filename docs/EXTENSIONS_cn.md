@@ -211,7 +211,9 @@ inventory::submit! {
   `on(Arc<dyn Handler>)`（订阅所有事件）/
   `on_variant(ExtensionEventKind, Arc<dyn Handler>)`（仅订阅一个变体
   —— runner 在分发前按 `event.kind()` 过滤按变体处理器）+ 用于过期
-  上下文防护的 `generation() -> u64`，以及上文的路线 A/B 注册项。
+  上下文防护的 `generation() -> u64`，以及上文的路线 A/B 注册项和
+  带作用域的变体（`register_tool_scoped` / `on_variant_scoped` /
+  `restrict_tools`——见[注册作用域](#注册作用域dsh-对齐)）。
 - **`ExtensionContext`** —— 交给处理器的以读为主的宿主状态：
   `cwd() / mode() / is_idle() / signal() / generation()` 为真实实现；
   `abort() / shutdown() / compact() / get_context_usage()` 返回
@@ -303,6 +305,43 @@ async fn configure(api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
     Ok(())
 }
 ```
+
+## 注册作用域（DSH 对齐）
+
+注册携带一个**作用域**——DSH 的按 agent 作用域键，收敛为两个状态：
+`Scope::Global`（默认；所有普通 `register_tool` / `on` / `on_variant`
+都用它）与 `Scope::AgentType(id)`（子代理类型字符串：`general`、
+`explore`、`implementer`……）。存在三个带作用域的注册方法：
+
+- **`register_tool_scoped(scope, tool)`** —— 面向一个作用域的工具。
+  `AgentType(id)` 工具在该 agent 类型的目录视图里**遮蔽**同名的
+  global 工具，且绝不进入 global（主轮）视图。
+- **`on_variant_scoped(kind, scope, handler)`** —— 面向一个作用域的
+  按变体处理器。它只接收在该作用域分发的事件
+  （`ExtensionRunner::emit_scoped`）；主轮的 `emit`（Global）永远不会
+  触达它。没有带作用域的订阅所有事件形态——请按变体注册。
+- **`restrict_tools(scope, names)`** —— **deny-only** 名单，为
+  `scope` 覆盖的视图剪掉*global* 扩展工具层（`Global` 条目剪掉每个
+  视图包括主轮；`AgentType(id)` 条目只剪该类型的视图）。构造上就是
+  单调的，与 `GuardHandler` 给执行时拒绝的棘轮相同：没有 allow 形态、
+  条目相交、没有任何东西能重新放行被拒名字。restrictions 不会剪
+  scoped 注册（agent 类型为自己声明的东西不能被部署限制投票否决
+  ——DSH："restrictions do not affect scoped registrations"），并且
+  它们只剪扩展层自己的工具——按名字拒绝内建工具是 `GuardHandler`
+  （执行时拒绝）或配置 `disabled_tools` 的领域。
+
+视图推导（`ExtensionRunner::bound_tools_scoped(&scope)`，按名排序）：
+global 注册减去所有覆盖该视图的 restriction，然后——对 `AgentType`
+视图——把该类型自己的注册叠加上去（同名 ⇒ scoped 胜）。
+`bound_tools()` 即 `Global` 视图；主轮的 `register_extension_tools`
+解析的正是它，所以 scoped 工具与被全局拒绝的名字永远不会出现在
+主目录里。
+
+已知限制：子代理注册表尚未把 extension runner 绑定为工具源——
+§F5d 结构性排除仍然成立（两阶段 dylib drop 的安全论证依赖"主轮
+executor 是 turn 间唯一在飞的 dylib `Arc` 持有者"），因此今天没有
+生产站点解析 `AgentType` 视图或分发 `emit_scoped`；带作用域的注册面
+也未向脚本 mod 开放。按名字拒绝内建工具不是这份名单的职责（见上）。
 
 ## 分发三态（DSH 对齐）+ 宿主接缝映射
 
