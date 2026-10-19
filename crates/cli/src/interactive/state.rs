@@ -827,6 +827,17 @@ pub async fn resume_session(
     // (otherwise every resume+save cycle silently dropped the history).
     state.failed_attempts = saved.failed_attempts.clone();
     restore_engine_backed_session_state(state, &saved).await;
+    // Round-7 TODO-48 — undelivered queued input rides the resume: the
+    // journal was written the moment each message was queued and survives
+    // crashes that lose the in-memory queue.
+    let restored = crate::interactive::inbox_journal::adopt_for_resume(
+        state,
+        manager.sessions_dir(),
+        &saved_id,
+    );
+    if restored > 0 {
+        println!("⏸ restored {restored} queued message(s) from the inbox journal");
+    }
     let engine = state.engine()?;
     engine
         .send(Op::SyncSession {
@@ -914,6 +925,53 @@ mod restore_tests {
     /// todo list and plan from empty. The Arcs restored here are the same
     /// ones `ReplState` shares with `EngineConfig` (see `EngineConfig`
     /// construction), so the next turn's tools see the rebuilt state.
+    /// Round-7 TODO-48 — resuming a session adopts its inbox journal: text
+    /// queued mid-turn before a crash reappears in the queue. Baseline
+    /// (pre-fix) the journal file existed but nothing read it, so the queue
+    /// resumed empty.
+    #[test]
+    fn adopt_for_resume_seeds_the_queue_from_the_journal() {
+        let _lock = crate::test_support::lock_test_env();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let journal =
+            crate::interactive::inbox_journal::InboxJournal::for_session(tmp.path(), "sess-inbox")
+                .expect("journal");
+        journal.append("still undelivered").unwrap();
+        journal.append("second in line").unwrap();
+
+        let config = crate::config::Config::default();
+        let options = crate::app_state::InteractiveOptions {
+            model: "test-model".to_string(),
+            workspace: std::env::temp_dir(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            max_subagents: 2,
+            skills_dir: std::env::temp_dir(),
+            memory_path: std::env::temp_dir().join("memory.md"),
+            mcp_config_path: std::env::temp_dir().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+        };
+        let mut state = ReplState::new(options, &config);
+        let restored = crate::interactive::inbox_journal::adopt_for_resume(
+            &mut state,
+            tmp.path(),
+            "sess-inbox",
+        );
+        assert_eq!(restored, 2, "both journal entries are adopted");
+        assert_eq!(
+            state.queued_messages,
+            vec![
+                "still undelivered".to_string(),
+                "second in line".to_string()
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn resume_restore_rebuilds_todo_and_plan_projections() {
         let _lock = crate::test_support::lock_test_env();

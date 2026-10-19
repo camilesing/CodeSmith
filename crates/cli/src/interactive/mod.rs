@@ -24,6 +24,7 @@
 pub mod bindings;
 pub mod commands;
 pub mod completion;
+pub mod inbox_journal;
 pub mod keys;
 pub mod path_index;
 pub mod render;
@@ -167,6 +168,18 @@ pub async fn run_repl(
     // Session resume.
     if let Some(resume_id) = options.resume_session_id.as_deref() {
         state::resume_session(&mut state, resume_id).await?;
+    }
+
+    // Round-7 TODO-48 — harvest orphan inbox journals: queued input from a
+    // session that crashed before its first persist is offered into this
+    // session's queue; journals whose session file is long gone are dropped.
+    let harvested = inbox_journal::harvest_orphans_at_default_location(&mut state);
+    if harvested > 0 {
+        println!(
+            "{}",
+            format!("⏸ recovered {harvested} undelivered message(s) from a previous session")
+                .dimmed()
+        );
     }
 
     // `[sandbox] auto_allow` is the user's standing decision: merge it into
