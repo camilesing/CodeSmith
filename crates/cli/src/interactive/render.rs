@@ -632,7 +632,21 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
             } => {
                 state.api_messages = messages;
                 state.system_prompt = system_prompt;
-                state.current_session_id = Some(session_id);
+                // Round-7 TODO-48 — the queue's journal may be keyed by an
+                // id the REPL minted before the engine reported this one;
+                // follow the id so journal and session file stay paired.
+                let previous_session_id = state.current_session_id.replace(session_id.clone());
+                if previous_session_id
+                    .as_deref()
+                    .is_some_and(|previous| previous != session_id)
+                    && let Ok(manager) = crate::session_manager::SessionManager::default_location()
+                {
+                    super::inbox_journal::rekey(
+                        manager.sessions_dir(),
+                        previous_session_id.as_deref().unwrap_or_default(),
+                        &session_id,
+                    );
+                }
                 if state.auto_model && model != "auto" {
                     state.last_effective_model = Some(model.clone());
                 }
@@ -803,11 +817,21 @@ async fn handle_turn_key(
                 "{}",
                 queued_line(&text, state.queued_messages.len()).dimmed()
             );
+            // Round-7 TODO-48 — queue text is durable the moment it is
+            // queued (after clear_live, so the failure warning can never
+            // share a row with the live region).
+            super::inbox_journal::journal_enqueue(state, &text);
         }
         TurnKey::SendNow => {
             let text = view.composer.take();
             if !text.trim().is_empty() {
-                state.queued_messages.push(text);
+                state.queued_messages.push(text.clone());
+                view.clear_live();
+                // Round-7 TODO-48 — durable before the flush tries to
+                // deliver it: the entry outlives the steer attempt (a
+                // failed steer re-queues the text) and is dropped only when
+                // the turn that consumed it persists.
+                super::inbox_journal::journal_enqueue(state, &text);
             }
             flush_queue_into_turn(state, view, engine).await;
         }
@@ -1041,6 +1065,10 @@ fn persist_session_turn_boundary(state: &mut ReplState) {
     // Adopt the id so subsequent turns update the same session file
     // instead of minting a new one per turn.
     state.current_session_id = Some(session.metadata.id.clone());
+    // Round-7 TODO-48 — the finished turn is now the durable record, so the
+    // inbox journal mirrors the live queue again: entries the turn consumed
+    // are dropped, anything still queued survives the next crash.
+    super::inbox_journal::mirror_after_persist(state, manager.sessions_dir());
     // The turn is over and the regular session file is now the durable
     // record, so the in-flight crash-recovery checkpoint is redundant.
     let _ = manager.clear_checkpoint();
@@ -1539,6 +1567,132 @@ mod tests {
             initial_input: None,
         };
         ReplState::new(options, &crate::config::Config::default())
+    }
+
+    /// Redirect HOME (and USERPROFILE) for tests that go through
+    /// `SessionManager::default_location()`; the env lock serializes them.
+    fn with_home<T>(home: &std::path::Path, f: impl FnOnce() -> T) -> T {
+        let prev_home = std::env::var_os("HOME");
+        let prev_userprofile = std::env::var_os("USERPROFILE");
+        unsafe {
+            std::env::set_var("HOME", home);
+            std::env::set_var("USERPROFILE", home);
+        }
+        let result = f();
+        unsafe {
+            match prev_home {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+            match prev_userprofile {
+                Some(value) => std::env::set_var("USERPROFILE", value),
+                None => std::env::remove_var("USERPROFILE"),
+            }
+        }
+        result
+    }
+
+    /// Round-7 TODO-48 — the turn-boundary persist re-mirrors the inbox
+    /// journal: entries the finished turn consumed are dropped (they are now
+    /// durable in the session file), anything still queued survives the next
+    /// crash.
+    #[test]
+    fn turn_boundary_persist_mirrors_inbox_journal() {
+        let _lock = crate::test_support::lock_test_env();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        with_home(&home, || {
+            let manager =
+                crate::session_manager::SessionManager::default_location().expect("manager");
+            let sessions_dir = manager.sessions_dir().to_path_buf();
+
+            let mut state = test_repl_state();
+            state.api_messages = vec![crate::models::Message {
+                role: "user".to_string(),
+                content: vec![crate::models::ContentBlock::Text {
+                    text: "hello".to_string(),
+                    cache_control: None,
+                }],
+            }];
+            state.current_session_id = Some("sess-mirror".to_string());
+            let journal = crate::interactive::inbox_journal::InboxJournal::for_session(
+                &sessions_dir,
+                "sess-mirror",
+            )
+            .expect("journal");
+            journal.append("consumed by the finished turn").unwrap();
+            state.queued_messages = vec!["still queued".to_string()];
+
+            persist_session_turn_boundary(&mut state);
+
+            let contents = journal.load();
+            assert_eq!(
+                contents.entries,
+                vec!["still queued".to_string()],
+                "the persist must drop consumed entries and keep queued ones"
+            );
+            assert_eq!(contents.corrupt, 0);
+        });
+    }
+
+    /// Round-7 TODO-48 — startup harvest: a recent orphan journal (its
+    /// session crashed before the first persist) seeds the fresh queue and
+    /// is re-journaled under the live session id; a stale orphan is just
+    /// deleted.
+    #[test]
+    fn harvest_orphans_seeds_queue_and_rejournals() {
+        let _lock = crate::test_support::lock_test_env();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        with_home(&home, || {
+            let manager =
+                crate::session_manager::SessionManager::default_location().expect("manager");
+            let sessions_dir = manager.sessions_dir().to_path_buf();
+
+            let orphan = crate::interactive::inbox_journal::InboxJournal::for_session(
+                &sessions_dir,
+                "dead-session",
+            )
+            .expect("journal");
+            orphan.append("typed during the crash").unwrap();
+            let stale = crate::interactive::inbox_journal::InboxJournal::for_session(
+                &sessions_dir,
+                "old-session",
+            )
+            .expect("journal");
+            stale.append("long gone").unwrap();
+            let stale_path = sessions_dir.join("old-session.inbox.jsonl");
+            std::fs::File::options()
+                .write(true)
+                .open(&stale_path)
+                .unwrap()
+                .set_modified(
+                    std::time::SystemTime::now() - std::time::Duration::from_secs(25 * 3600),
+                )
+                .unwrap();
+
+            let mut state = test_repl_state();
+            let harvested =
+                crate::interactive::inbox_journal::harvest_orphans_at_default_location(&mut state);
+            assert_eq!(harvested, 1, "only the fresh orphan is harvested");
+            assert_eq!(
+                state.queued_messages,
+                vec!["typed during the crash".to_string()]
+            );
+            assert!(!sessions_dir.join("dead-session.inbox.jsonl").exists());
+            assert!(!stale_path.exists(), "the stale orphan is deleted");
+            let new_id = state.current_session_id.as_deref().expect("id minted");
+            let rejournaled =
+                crate::interactive::inbox_journal::InboxJournal::for_session(&sessions_dir, new_id)
+                    .expect("journal");
+            assert_eq!(
+                rejournaled.load().entries,
+                vec!["typed during the crash".to_string()],
+                "harvested text is re-journaled under the live session id"
+            );
+        });
     }
 
     /// Round-3 TODO-42 — the turn-boundary persist copies the session's

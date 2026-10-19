@@ -897,6 +897,9 @@ async fn delete_session(
         .delete(&id)
         .await
         .map_err(|e| map_session_store_err(&id, &e, "delete"))?;
+    // Round-7 TODO-48 — the session's inbox journal dies with the session
+    // (best-effort here; the REPL startup sweep is the backstop).
+    crate::interactive::inbox_journal::remove_at_default_location(&id);
     Ok(StatusCode::NO_CONTENT)
 }
 
