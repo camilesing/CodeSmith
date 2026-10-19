@@ -26,7 +26,7 @@ wired into the binary at compile time. Which tier fits a given surface:
 
 | Surface | Rhai mod | Builtin Rhai tier | Rust extension | Notes |
 |---|---|---|---|---|
-| Event hooks, tool guards | ✓ `on` / `register_guard` | — | ✓ | load/unload per mod; hook errors fail open |
+| Event hooks, tool guards | ✓ `on` / `on_event` / `register_guard` | — | ✓ | load/unload per mod; hook errors fail open |
 | Model-visible tools | ✓ `register_tool` (pure logic — no fs/net natives) | ✓ (scriptable defaults) | ✓ (full IO/async) | sub-agents mount script/compiled-in tools; dylib-origin Rust tools stay main-turn only (5b tiering) |
 | Slash commands | ✓ `register_command` (shadows built-ins) / `disable_command` (retires one) | — | ✓ | layering user > mod > builtin |
 | Providers | alias only (`register_provider`) | — | ✓ full `ProviderFactory` | a script cannot implement `LlmClient` (no async/net) |
@@ -174,6 +174,32 @@ model: **waterfall**, **serial**, **emit**:
 - **serial**: `session-before-switch`, `session-before-fork`, `session-before-compact`, `turn-stopping` (inverted: `cancel(reason)` continues the turn — the note steers it)
 - **emit** (outcomes advisory): everything else, including `assistant-stream` (fires per text delta — keep handlers cheap) and `tools-change` (catalog diff at the turn-dispatch chokepoint)
 
+#### `on_event` — the DSH-aligned listener/veto form
+
+`on_event("<event>", |e, ctx| { ... })` takes the same callback shape as
+`on` (same payloads, same optional `ctx`, same control values) but accepts
+only **emit** and **serial** events — the DSH-portable subset. A waterfall
+event (`input`, `before-agent-start`, `before-provider-request`,
+`tool-result`, `tool-call`, `provider-request-error`) fails the mod's
+**load** with an error naming the kind: its transform chain belongs to
+`on()`, its deny floor to `register_guard`. At emit kinds every return
+value is advisory; at serial kinds `cancel(reason)` is the veto. Use
+`on_event` when a mod only listens or vetoes — such a mod maps 1:1 onto
+DSH's emit/serial model; use `on()` for the full CodeSmith surface
+(waterfall transforms included — a deliberate superset beyond the DSH
+script surface).
+
+Scope: `on_event` registrations are global-scope, script-origin — a
+global registration covers every dispatch scope, but sub-agent loops
+(5b) dispatch only `tool-call`/`tool-result` at their scope (both
+waterfall, both rejected here), so in practice an `on_event` callback
+observes main-turn events. There is no `on_event_scoped` — scripts do
+not see registration scopes (a compiled-in extension can register
+`on_variant_scoped`). Around-execute and `ask` have no script form in
+any channel (async / UI decision channel — see
+[EXTENSIONS.md](EXTENSIONS.md); there is no `ask()` control value, so a
+script can never produce an `Ask` outcome).
+
 ### Hook return value → HandlerOutcome
 
 | Script returns | HandlerOutcome | Effective seams |
@@ -207,6 +233,7 @@ Transform mutable fields (one handler's rewrite is immediately visible to the ne
 | `register_prompt_section(id, text)` | Append a named section to the base system prompt (see below) |
 | `register_skill(spec)` | Contribute an in-memory skill to the session catalogue (see below) |
 | `register_guard(callback)` | Register a deny-only tool-call guard (see below) |
+| `on_event(kind, callback)` | Register a DSH-aligned hook — emit/serial events only (waterfall kinds fail the load; see above) |
 | `register_message_projection(key, init, fold)` | Register a session-log fold the host maintains (see below) |
 | `projection_state(key)` | Read this mod's projection state (inside hooks/tools) |
 | `register_policy(kind, config)` | Override a host-mechanism policy (see below) |
@@ -379,9 +406,9 @@ the blocked result is attributed (`guard (mod: <mod-id>): <reason>`). Use
 you need a policy floor. A guard whose script errors abstains with a
 `tracing` warn (same fail-open policy as handler errors). Guards evaluate
 at the tool-call seam (before approval — a denied call is never dispatched,
-so no approval path can flip it), cover main-turn calls only (sub-agent
-registries bind no extension runner), and reload clears the generation's
-guards.
+so no approval path can flip it), gate sub-agent tool calls too (5b: child
+loops dispatch `tool-call` at their agent-type scope and script-origin
+handlers ride along), and reload clears the generation's guards.
 
 ### Registering a message projection (session log folds)
 

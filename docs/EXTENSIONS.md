@@ -96,9 +96,12 @@ Everything an extension can register, and what the host does with it:
   string denies the call (attributed `guard (mod: <id>)`), anything else
   abstains. There is no allow or transform vocabulary, so a denial is
   monotonic by construction (block short-circuits the chain). Guards
-  evaluate pre-approval at the seam and cover main-turn calls only; a
-  script error abstains with a warn.
-- **Event handlers (`on` / `on_variant`)** — see
+  evaluate pre-approval at the seam and gate sub-agent tool calls too
+  (5b: child loops dispatch `ToolCall` at their agent-type scope;
+  script-origin handlers ride along); a script error abstains with a warn.
+- **Event handlers (`on` / `on_variant`; Rhai shapes: `on(event, cb)` for
+  any kind, `on_event(kind, cb)` for the DSH-aligned emit/serial subset —
+  a waterfall kind fails the mod's load)** — see
   [Handlers](#handlers-outcomes--per-variant-subscription).
 
 ### Tool catalog: `ToolsChange` + the capability manifest
@@ -447,6 +450,15 @@ definition/provider/consumer triple.
 `TurnEnd`) is ignored — treated as `Continue` — so a handler that
 returns the wrong capability for its variant is a no-op, not an error.
 
+The Rhai bridge: script mods register emit listeners and serial vetoes
+with `on_event(kind, callback)` — the gate is `dispatch_mode()` itself,
+so a waterfall kind fails the mod's load pointing at `on()` (the
+pre-alignment full surface, waterfall transforms included — a deliberate
+CodeSmith superset) or `register_guard` (the deny floor). Around-dispatch
+and `Ask` have no script form in any channel (async / UI decision
+channel; no `ask()` control value exists, so a script can never produce
+an `Ask` outcome).
+
 ### Around-dispatch (DSH tools/execute)
 
 The `next()`-wrapping form exists only for tool execution, as the
@@ -553,6 +565,10 @@ so the invariant — not a Miri run — is the proof.
   script mods get neither (async / UI decision channel); see
   `docs/MODS.md`. Around-chain results count toward the loop-guard
   failure escalation, unlike `Block` interventions.
+- The script-side DSH surface is `on_event` (emit/serial kinds only) +
+  `register_guard`; waterfall participation from scripts stays on the
+  older `on()` full surface, and scripts see no registration scopes (no
+  `on_event_scoped`).
 - There is no extension-to-extension pub/sub. The former §F3 `EventBus`
   skeleton (`subscribe`/`publish` returning `Unimplemented`) was deleted
   with zero consumers — it trapped callers at runtime without serving any.
