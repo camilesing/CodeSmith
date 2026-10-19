@@ -34,7 +34,14 @@
 //! its composition mechanism. `Waterfall` remains a fold chain (each
 //! handler's `Transform` is visible to the next); DSH's `next()`-wrapping
 //! around-dispatch exists only for tool execution — [`AroundToolHandler`]
-//! — not as a general event form.
+//! — not as a general event form. Registration scopes ([`Scope`]) exist
+//! on the registration surface and in the runner's view derivation, but
+//! sub-agent registries bind no extension runner as a tool source yet
+//! (§F5d structural exclusion — the two-phase dylib drop's safety
+//! argument relies on the main-turn executor being the only in-flight
+//! dylib `Arc` holder between turns; a detached background child mounting
+//! extension tools would break it), so no production emit site or catalog
+//! build resolves an `AgentType` view today.
 //!
 //! ## Style note
 //!
@@ -925,6 +932,74 @@ pub fn wrap_tool_dispatch<'a>(
     next
 }
 
+// === Registration scope (DSH alignment) ===================================
+
+/// Where a registration applies — the DSH per-agent scope key, reduced to
+/// CodeSmith's two states. Every registration method has a `Global`
+/// default (the plain `register_tool` / `on` / `on_variant` forms); the
+/// `*_scoped` variants name an explicit scope.
+///
+/// Scope resolution rules (DSH `ToolLayer` alignment):
+/// - A **tool** registered for `AgentType(id)` shadows a same-name global
+///   tool in that agent type's catalog view; the global view (the main
+///   turn) never sees it.
+/// - A **handler** registered for `AgentType(id)` receives only events
+///   dispatched at that scope ([`ExtensionRunner::emit_scoped`]); the
+///   main turn's `emit` (Global) never reaches it.
+/// - A **restrict entry** (`restrict_tools`) prunes the *global* tool
+///   layer for the views its scope covers — deny-only, and it never prunes
+///   scoped registrations (what an agent type declares for itself cannot
+///   be voted away by a deployment restriction; DSH: "restrictions do not
+///   affect scoped registrations").
+///
+/// `AgentType` ids are sub-agent type strings (`SubAgentType::as_str()`:
+/// `general`, `explore`, `implementer`, …) — opaque at this layer; the
+/// host resolves them against its sub-agent type table. Known
+/// limitations: no scoped variants of `on` (subscribe-all — register
+/// per-variant instead) or `register_around_tool` (the around chain is
+/// main-turn-only today); script mods do not see scopes.
+///
+/// [`ExtensionRunner::emit_scoped`]: codesmith_extensions::ExtensionRunner::emit_scoped
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Scope {
+    /// Applies everywhere: global views and every agent-type view.
+    Global,
+    /// Applies to one sub-agent type's registry/catalog/events only.
+    AgentType(String),
+}
+
+impl Scope {
+    /// Whether this is the [`Scope::Global`] default.
+    #[must_use]
+    pub fn is_global(&self) -> bool {
+        matches!(self, Scope::Global)
+    }
+
+    /// Whether a registration made at `self` applies to a view / dispatch
+    /// at `scope`: a global registration covers every scope; an agent-type
+    /// registration covers only its own. This is the one predicate behind
+    /// both catalog-view derivation and handler dispatch filtering.
+    #[must_use]
+    pub fn covers(&self, scope: &Scope) -> bool {
+        self == &Scope::Global || self == scope
+    }
+
+    /// Fail-loud validation shared by the scoped registration surfaces: an
+    /// `AgentType` id must be non-empty (trimmed). Whitespace-only ids are
+    /// how a typo'd format string would otherwise register silently.
+    pub fn validate(&self) -> Result<(), ExtensionError> {
+        if let Scope::AgentType(id) = self
+            && id.trim().is_empty()
+        {
+            return Err(ExtensionError::Config(
+                "AgentType scope id must be a non-empty sub-agent type string".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 // === ExtensionApi (registration surface, two-phase) =======================
 
 /// The imperative registration surface an [`Extension::configure`] receives.
@@ -951,6 +1026,65 @@ pub trait ExtensionApi: Send + Sync {
         kind: ExtensionEventKind,
         handler: Arc<dyn Handler>,
     ) -> Result<(), ExtensionError>;
+
+    /// DSH registration scope — register a tool for one scope. A
+    /// `Scope::AgentType(id)` tool shadows a same-name global tool in that
+    /// agent type's catalog view and never enters the global (main-turn)
+    /// view; `Scope::Global` is equivalent to
+    /// [`register_tool`](Self::register_tool).
+    ///
+    /// Default: hosts that do not support scoped registration get a loud
+    /// error, keeping the trait implementable (source- and
+    /// binary-compatible) for api surfaces that predate this method.
+    fn register_tool_scoped(
+        &self,
+        _scope: Scope,
+        _tool: Box<dyn ToolDefinition>,
+    ) -> Result<(), ExtensionError> {
+        Err(ExtensionError::Load(
+            "scoped tool registration not supported by this api".into(),
+        ))
+    }
+
+    /// DSH registration scope — subscribe `handler` to a single event
+    /// variant **at a scope**. A `Scope::AgentType(id)` handler receives
+    /// only events dispatched at that scope (`emit_scoped`); the main
+    /// turn's `emit` (Global) never reaches it. `Scope::Global` is
+    /// equivalent to [`on_variant`](Self::on_variant). No scoped
+    /// subscribe-all form exists — register per-variant.
+    ///
+    /// Default: hosts that do not support scoped registration get a loud
+    /// error (same posture as [`register_tool_scoped`](Self::register_tool_scoped)).
+    fn on_variant_scoped(
+        &self,
+        _kind: ExtensionEventKind,
+        _scope: Scope,
+        _handler: Arc<dyn Handler>,
+    ) -> Result<(), ExtensionError> {
+        Err(ExtensionError::Load(
+            "scoped handler registration not supported by this api".into(),
+        ))
+    }
+
+    /// DSH tool restriction — a **deny-only** name list that prunes the
+    /// *global* extension-tool layer for the views `scope` covers (a
+    /// `Global` entry prunes every view including the main turn; an
+    /// `AgentType(id)` entry prunes that type's view only). Monotonic by
+    /// construction, the same ratchet [`GuardHandler`] gives execution-time
+    /// deny: there is no allow form, nothing can re-admit a denied name,
+    /// and entries intersect. Restrictions never prune scoped
+    /// registrations (see [`Scope`]). They prune only the extension
+    /// layer's own tools — denying a builtin is [`GuardHandler`]
+    /// (execution-time deny) or config `disabled_tools` territory, not
+    /// this list.
+    ///
+    /// Default: hosts that do not support tool restrictions get a loud
+    /// error (same posture as [`register_tool_scoped`](Self::register_tool_scoped)).
+    fn restrict_tools(&self, _scope: Scope, _names: Vec<String>) -> Result<(), ExtensionError> {
+        Err(ExtensionError::Load(
+            "tool restriction not supported by this api".into(),
+        ))
+    }
 
     /// DSH around-dispatch — register a handler that wraps every tool
     /// execution (the `next()` chain; see [`AroundToolHandler`]).
@@ -2272,6 +2406,40 @@ mod tests {
             .block_on(h.handle(&guard_call_event("exec_shell", "ls"), &TestContext::new()))
             .unwrap();
         assert!(matches!(out, HandlerOutcome::Continue));
+    }
+
+    // === Registration scope (DSH alignment) =============================
+
+    #[test]
+    fn scope_covers_matrix() {
+        let g = Scope::Global;
+        let explore = Scope::AgentType("explore".into());
+        let general = Scope::AgentType("general".into());
+        // A global registration covers every view/dispatch scope.
+        assert!(g.covers(&g));
+        assert!(g.covers(&explore));
+        assert!(g.covers(&general));
+        // An agent-type registration covers only its own scope.
+        assert!(
+            !explore.covers(&g),
+            "scoped registrations never leak into the global view"
+        );
+        assert!(explore.covers(&explore));
+        assert!(!explore.covers(&general));
+        assert!(g.is_global());
+        assert!(!explore.is_global());
+    }
+
+    #[test]
+    fn scope_validation_rejects_blank_agent_type_ids() {
+        assert!(Scope::Global.validate().is_ok());
+        assert!(Scope::AgentType("explore".into()).validate().is_ok());
+        for bad in ["", "  ", "\t"] {
+            assert!(
+                Scope::AgentType(bad.into()).validate().is_err(),
+                "blank id {bad:?} must fail loud"
+            );
+        }
     }
 
     // === Around-dispatch (DSH tools/execute) =============================

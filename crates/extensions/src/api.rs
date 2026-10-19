@@ -74,7 +74,24 @@ impl ExtensionApi for StubExtensionApi {
             .lock()
             .unwrap()
             .tools
-            .push(crate::runner::PendingTool { tool });
+            .push(crate::runner::PendingTool {
+                tool,
+                scope: Scope::Global,
+            });
+        Ok(())
+    }
+    fn register_tool_scoped(
+        &self,
+        scope: Scope,
+        tool: Box<dyn ToolDefinition>,
+    ) -> Result<(), ExtensionError> {
+        assert_live(&self.generation, self.captured_gen)?;
+        scope.validate()?;
+        self.pending
+            .lock()
+            .unwrap()
+            .tools
+            .push(crate::runner::PendingTool { tool, scope });
         Ok(())
     }
     fn register_command(&self, command: Box<dyn CommandDefinition>) -> Result<(), ExtensionError> {
@@ -109,6 +126,7 @@ impl ExtensionApi for StubExtensionApi {
             .push(crate::runner::PendingHandler {
                 handler,
                 kind_filter: None,
+                scope: Scope::Global,
             });
         Ok(())
     }
@@ -125,6 +143,41 @@ impl ExtensionApi for StubExtensionApi {
             .push(crate::runner::PendingHandler {
                 handler,
                 kind_filter: Some(kind),
+                scope: Scope::Global,
+            });
+        Ok(())
+    }
+    fn on_variant_scoped(
+        &self,
+        kind: ExtensionEventKind,
+        scope: Scope,
+        handler: Arc<dyn Handler>,
+    ) -> Result<(), ExtensionError> {
+        assert_live(&self.generation, self.captured_gen)?;
+        scope.validate()?;
+        self.pending
+            .lock()
+            .unwrap()
+            .handlers
+            .push(crate::runner::PendingHandler {
+                handler,
+                kind_filter: Some(kind),
+                scope,
+            });
+        Ok(())
+    }
+    fn restrict_tools(&self, scope: Scope, names: Vec<String>) -> Result<(), ExtensionError> {
+        assert_live(&self.generation, self.captured_gen)?;
+        // Validate against the runner's rules now so a bad restriction
+        // fails its load (fail loud), not at the next catalog build.
+        crate::runner::validate_tool_restriction(&scope, &names)?;
+        self.pending
+            .lock()
+            .unwrap()
+            .tool_restrictions
+            .push(crate::runner::ToolRestriction {
+                scope,
+                denied: names,
             });
         Ok(())
     }
@@ -238,11 +291,15 @@ impl ExtensionApi for StubExtensionApi {
 /// the bound runner registries. Slice 1: defined but not constructed (the
 /// primary path is stub + flush). §F2 constructs it for extensions that
 /// retain a long-lived `Arc<dyn ExtensionApi>` (lazy registration).
+/// The scoped registration surface (`register_tool_scoped` /
+/// `on_variant_scoped` / `restrict_tools`) is NOT implemented here — it
+/// inherits the trait's loud default errors (zero consumers; same posture
+/// as iteration 4's `register_around_tool`) until one shows up.
 #[allow(dead_code)]
 pub struct RealExtensionApi {
     generation: Arc<AtomicU64>,
     captured_gen: u64,
-    tools: Arc<Mutex<HashMap<String, Arc<dyn ToolDefinition>>>>,
+    tools: Arc<Mutex<crate::runner::BoundToolMap>>,
     commands: Arc<Mutex<HashMap<String, Arc<dyn CommandDefinition>>>>,
     handlers: Arc<Mutex<Vec<crate::runner::RegisteredHandler>>>,
     /// Route A — live registrations (drop = un-register) + the shared
@@ -265,7 +322,7 @@ impl RealExtensionApi {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         generation: Arc<AtomicU64>,
-        tools: Arc<Mutex<HashMap<String, Arc<dyn ToolDefinition>>>>,
+        tools: Arc<Mutex<crate::runner::BoundToolMap>>,
         commands: Arc<Mutex<HashMap<String, Arc<dyn CommandDefinition>>>>,
         handlers: Arc<Mutex<Vec<crate::runner::RegisteredHandler>>>,
         providers: Arc<Mutex<Vec<ProviderRegistration>>>,
@@ -302,7 +359,7 @@ impl ExtensionApi for RealExtensionApi {
         self.tools
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(name, arc);
+            .insert((Scope::Global, name), arc);
         Ok(())
     }
     fn register_command(&self, command: Box<dyn CommandDefinition>) -> Result<(), ExtensionError> {
@@ -323,6 +380,7 @@ impl ExtensionApi for RealExtensionApi {
             .push(crate::runner::RegisteredHandler {
                 handler,
                 kind_filter: None,
+                scope: Scope::Global,
             });
         Ok(())
     }
@@ -338,6 +396,7 @@ impl ExtensionApi for RealExtensionApi {
             .push(crate::runner::RegisteredHandler {
                 handler,
                 kind_filter: Some(kind),
+                scope: Scope::Global,
             });
         Ok(())
     }

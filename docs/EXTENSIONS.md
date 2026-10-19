@@ -258,7 +258,10 @@ so a single crate gives them both the traits and the runtime helpers.
   `on_variant(ExtensionEventKind, Arc<dyn Handler>)` (subscribe to ONE
   variant only — the runner filters per-variant handlers by
   `event.kind()` before dispatch) + `generation() -> u64` for the
-  stale-context guard, plus the route-A/B registrations above.
+  stale-context guard, plus the route-A/B registrations above and the
+  scoped variants (`register_tool_scoped` / `on_variant_scoped` /
+  `restrict_tools` — see
+  [Registration scopes](#registration-scopes-dsh-alignment)).
 - **`ExtensionContext`** — read-mostly host state handed to handlers:
   `cwd() / mode() / is_idle() / signal() / generation()` are live;
   `abort() / shutdown() / compact() / get_context_usage()` return
@@ -363,6 +366,49 @@ async fn configure(api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
     Ok(())
 }
 ```
+
+## Registration scopes (DSH alignment)
+
+Registrations carry a **scope** — the DSH per-agent scope key, reduced to
+two states: `Scope::Global` (the default; what every plain
+`register_tool` / `on` / `on_variant` uses) and
+`Scope::AgentType(id)` (a sub-agent type string: `general`, `explore`,
+`implementer`, …). Three scoped registration methods exist:
+
+- **`register_tool_scoped(scope, tool)`** — a tool for one scope. An
+  `AgentType(id)` tool **shadows** a same-name global tool in that agent
+  type's catalog view and never enters the global (main-turn) view.
+- **`on_variant_scoped(kind, scope, handler)`** — a per-variant handler
+  for one scope. It receives only events dispatched at that scope
+  (`ExtensionRunner::emit_scoped`); the main turn's `emit` (Global) never
+  reaches it. No scoped subscribe-all form — register per-variant.
+- **`restrict_tools(scope, names)`** — a **deny-only** name list that
+  prunes the *global* extension-tool layer for the views `scope` covers
+  (a `Global` entry prunes every view including the main turn; an
+  `AgentType(id)` entry prunes that type's view only). Monotonic by
+  construction, the same ratchet `GuardHandler` gives execution-time
+  deny: there is no allow form, entries intersect, and nothing re-admits
+  a denied name. Restrictions never prune scoped registrations (what an
+  agent type declares for itself cannot be voted away by a deployment
+  restriction — DSH: "restrictions do not affect scoped registrations"),
+  and they prune only the extension layer's own tools — denying a builtin
+  is `GuardHandler` (execution-time deny) or config `disabled_tools`
+  territory.
+
+View derivation (`ExtensionRunner::bound_tools_scoped(&scope)`, sorted by
+name): the global registrations minus every covering restriction, then —
+for an `AgentType` view — that type's own registrations overlaid on top
+(same name ⇒ scoped wins). `bound_tools()` is the `Global` view; the
+main turn's `register_extension_tools` resolves exactly that, so scoped
+tools and globally restricted names never appear in the main catalog.
+
+Known limitations: sub-agent registries bind no extension runner as a
+tool source yet — the §F5d structural exclusion stands (the two-phase
+dylib drop's safety argument relies on the main-turn executor being the
+only in-flight dylib `Arc` holder between turns), so no production site
+resolves an `AgentType` view or dispatches `emit_scoped` today; the
+scoped surface is also not offered to script mods. Denying a builtin by
+name is not this list's job (see above).
 
 ## Dispatch three-states (DSH alignment) + host seam mapping
 

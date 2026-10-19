@@ -87,6 +87,14 @@ impl ToolSpec for ExtensionToolSpecAdapter {
 /// each wrapped in an [`ExtensionToolSpecAdapter`]. Called from
 /// `EngineHost::build_turn_dispatcher` after plugin-tools are configured.
 ///
+/// Registration scopes (DSH alignment): this resolves the runner's
+/// **Global** view ([`ExtensionRunner::bound_tools`]) — an
+/// agent-type-scoped tool registration never enters the main-turn
+/// catalog (it shadows its global namesake only in that agent type's
+/// view, [`ExtensionRunner::bound_tools_scoped`]), and a `Global`
+/// `restrict_tools` entry prunes its names here. A sub-agent registry
+/// that binds the runner resolves its own view instead (iteration 5b).
+///
 /// Per-turn rebuild → no persistent host holder; clearing `runner.tools[id]`
 /// before the next turn's call suffices. Ext tools are **main-turn-only**:
 /// they are NOT added to any subagent's tool-subset basis (§4b — subagents
@@ -259,5 +267,141 @@ mod tests {
         let mut registry = ToolRegistry::new(ToolContext::new("."));
         register_extension_tools(&mut registry, &runner);
         assert!(!registry.contains("echo_ext"));
+    }
+
+    // === DSH registration scope — main-turn catalog resolves the Global view
+
+    /// A fixture tool carrying `(name, tag)` so same-name registrations
+    /// under different scopes are distinguishable by `description()`.
+    struct NamedTool(&'static str, &'static str);
+    #[async_trait]
+    impl ToolDefinition for NamedTool {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn description(&self) -> &str {
+            self.1
+        }
+        async fn execute(
+            &self,
+            _input: Value,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<ToolResult, codesmith_agent::extension::ExtensionError> {
+            Ok(ToolResult::success(self.1))
+        }
+    }
+
+    struct ScopedExt;
+    #[async_trait]
+    impl Extension for ScopedExt {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("scopedext");
+            &M
+        }
+        async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+            use codesmith_agent::extension::Scope;
+            // Global + explore-scoped registrations of the SAME name — the
+            // scoped one must shadow only the explore view, never the
+            // main-turn Global view.
+            api.register_tool(Box::new(NamedTool("shared_name", "global-variant")))?;
+            api.register_tool_scoped(
+                Scope::AgentType("explore".into()),
+                Box::new(NamedTool("shared_name", "explore-variant")),
+            )?;
+            // Explore-only tool — invisible to the main turn.
+            api.register_tool_scoped(
+                Scope::AgentType("explore".into()),
+                Box::new(NamedTool("explore_only", "explore fixture")),
+            )?;
+            // Global tool, then globally denied — pruned from the main
+            // catalog at build time (the model never sees it).
+            api.register_tool(Box::new(NamedTool("denied_global", "denied fixture")))?;
+            api.restrict_tools(Scope::Global, vec!["denied_global".into()])?;
+            // Global tool denied for explore only — stays in the main turn.
+            api.register_tool(Box::new(NamedTool(
+                "explore_denied",
+                "explore-denied fixture",
+            )))?;
+            api.restrict_tools(
+                Scope::AgentType("explore".into()),
+                vec!["explore_denied".into()],
+            )?;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn register_extension_tools_resolves_the_global_view() {
+        let runner = ExtensionRunner::new();
+        runner.load(&ScopedExt).await.expect("load ScopedExt");
+        runner.bind_core(ctx_cmd());
+
+        let mut registry = ToolRegistry::new(ToolContext::new("."));
+        register_extension_tools(&mut registry, &runner);
+
+        // The GLOBAL registration of shared_name is what mounts (the
+        // explore-scoped shadow stays out of the main turn)…
+        assert!(
+            registry.contains("shared_name"),
+            "global shared_name mounts"
+        );
+        // …explore-only tools never enter the main catalog…
+        assert!(
+            !registry.contains("explore_only"),
+            "agent-type-scoped tools stay out of the main-turn catalog"
+        );
+        // …a Global restriction prunes its names from the main catalog…
+        assert!(
+            !registry.contains("denied_global"),
+            "globally restricted tools are pruned at catalog build"
+        );
+        // …and an agent-type restriction does not reach the main turn.
+        assert!(
+            registry.contains("explore_denied"),
+            "an AgentType-scoped restriction never prunes the Global view"
+        );
+    }
+
+    #[tokio::test]
+    async fn scoped_tool_view_shadows_global_for_that_agent_type() {
+        let runner = ExtensionRunner::new();
+        runner.load(&ScopedExt).await.expect("load ScopedExt");
+        runner.bind_core(ctx_cmd());
+
+        // The explore view: explore_only present, explore_denied pruned
+        // (agent-scoped restriction), shared_name resolved to the SCOPED
+        // registration (description pins which variant surfaced) and
+        // denied_global pruned there too (Global restrictions cover every
+        // view).
+        let explore = runner.bound_tools_scoped(&codesmith_agent::extension::Scope::AgentType(
+            "explore".into(),
+        ));
+        let names: Vec<&str> = explore.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"explore_only"), "explore view: {names:?}");
+        assert!(
+            !names.contains(&"explore_denied"),
+            "agent-scoped restriction prunes the explore view: {names:?}"
+        );
+        assert!(
+            !names.contains(&"denied_global"),
+            "global restriction covers the explore view too: {names:?}"
+        );
+        let shared = explore
+            .iter()
+            .find(|(n, _)| n == "shared_name")
+            .expect("shared_name present in the explore view");
+        assert_eq!(
+            shared.1.description(),
+            "explore-variant",
+            "the scoped registration shadows the global one in its own view"
+        );
+        // …and the Global view keeps the global variant (no leak in the
+        // other direction).
+        let global_view = runner.bound_tools();
+        let global_shared = global_view
+            .iter()
+            .find(|(n, _)| n == "shared_name")
+            .expect("shared_name present in the global view");
+        assert_eq!(global_shared.1.description(), "global-variant");
     }
 }

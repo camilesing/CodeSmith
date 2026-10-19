@@ -1182,10 +1182,11 @@ pub fn reload_extension_runtime(
     shared_cancel_token: Arc<StdMutex<tokio_util::sync::CancellationToken>>,
 ) -> PopulateReport {
     // Whole-layer reload: drop every bound registration (the runner's clear
-    // suite — handlers/tools/commands/providers/prompt sections/skills/
-    // message projections) AND the retained script-mod slots (the
-    // repopulate below re-compiles from disk and re-retains). See each
-    // clear_* method for the per-contribution concurrency reasoning.
+    // suite — handlers/tools/tool restrictions/commands/providers/prompt
+    // sections/skills/message projections) AND the retained script-mod
+    // slots (the repopulate below re-compiles from disk and re-retains).
+    // See each clear_* method for the per-contribution concurrency
+    // reasoning.
     runner.clear_bound_registrations();
     runner.clear_mod_slots();
     // §F5d T4 — move the live dylib `Library`s into `pending_drop` (UI-thread
