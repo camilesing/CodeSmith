@@ -128,8 +128,8 @@ pub(crate) struct RegisteredHandler {
 pub struct EmitOutcome {
     /// The event after all handlers (possibly transformed by `Transform`).
     pub event: ExtensionEvent,
-    /// Terminal outcome: `Continue` if no handler short-circuited; `Cancel`
-    /// or `Block` if one did. Never `Transform` (folds into `event`).
+    /// Terminal outcome: `Continue` if no handler short-circuited; `Cancel`,
+    /// `Block`, or `Ask` if one did. Never `Transform` (folds into `event`).
     pub outcome: HandlerOutcome,
 }
 
@@ -141,6 +141,9 @@ pub(crate) struct Pending {
     pub tools: Vec<PendingTool>,
     pub commands: Vec<PendingCommand>,
     pub handlers: Vec<PendingHandler>,
+    /// DSH around-dispatch registrations (tools/execute) queued by the
+    /// stub `ExtensionApi`, awaiting the `bind_core` flush.
+    pub around_tools: Vec<Arc<dyn AroundToolHandler>>,
     pub providers: Vec<PendingProvider>,
     pub prompt_sections: Vec<(String, String)>,
     pub skills: Vec<codesmith_agent::extension::SkillRegistration>,
@@ -200,6 +203,12 @@ pub struct ExtensionRunner {
     /// filter (`None` = subscribe-to-all via `on`; `Some(kind)` = per-variant
     /// via `on_variant`). T8's `emit` filters on this before dispatch.
     handlers: Mutex<Vec<RegisteredHandler>>,
+    /// Bound at `bind_core` — the flushed around-dispatch handlers
+    /// (DSH tools/execute), in registration order (outermost first). The
+    /// engine snapshots them per tool phase via
+    /// [`around_tool_handlers`](Self::around_tool_handlers) and composes
+    /// the `next()` chain; `clear_around_tools` / reload drop them.
+    around_tools: Mutex<Vec<Arc<dyn AroundToolHandler>>>,
     /// §F5b — loaded dylib `Library` handles. Pushed by `load_dylib`. On
     /// reload, [`drain_libraries_to_pending`](Self::drain_libraries_to_pending)
     /// (§F5d T4) MOVES these to `pending_drop` (the `Library` stays alive —
@@ -296,6 +305,7 @@ impl ExtensionRunner {
             commands: Mutex::new(HashMap::new()),
             disabled_builtin_commands: Mutex::new(HashSet::new()),
             handlers: Mutex::new(Vec::new()),
+            around_tools: Mutex::new(Vec::new()),
             libraries: Mutex::new(Vec::new()),
             pending_drop: Mutex::new(Vec::new()),
             shared: Mutex::new(SharedProviderRegistry::new()),
@@ -334,7 +344,7 @@ impl ExtensionRunner {
 
     /// Clear all bound handlers (§F2b T7 live reload). Called by
     /// [`reload_extension_runtime`](crate::reload_extension_runtime) BEFORE
-    /// re-discovery so re-binding doesn't duplicate handlers — `bind_core`'s
+    /// re-discovery so re-binding wouldn't duplicate handlers — `bind_core`'s
     /// drain appends to `handlers`, it doesn't replace. A runtime lifecycle
     /// method; does NOT change the §F2a contract (`HandlerOutcome`/`EmitOutcome`
     /// /`on_variant`/`catch_unwind` stay stable).
@@ -343,6 +353,29 @@ impl ExtensionRunner {
             .lock()
             .expect("handlers lock poisoned")
             .clear();
+    }
+
+    /// Clear the generation's around-dispatch registrations (DSH
+    /// tools/execute). Same reload lifecycle as [`clear_handlers`]; safe
+    /// while an in-flight turn holds a snapshot — each handler is
+    /// refcounted (`Arc`) and the engine composed its chain at dispatch
+    /// time.
+    pub fn clear_around_tools(&self) {
+        self.around_tools
+            .lock()
+            .expect("around-tools lock poisoned")
+            .clear();
+    }
+
+    /// Snapshot the bound around-dispatch handlers in registration order
+    /// (outermost first). The engine reads this once per tool phase; an
+    /// empty snapshot leaves the dispatch path untouched.
+    #[must_use]
+    pub fn around_tool_handlers(&self) -> Vec<Arc<dyn AroundToolHandler>> {
+        self.around_tools
+            .lock()
+            .expect("around-tools lock poisoned")
+            .clone()
     }
 
     /// §F5d — clear all bound **tools** (name→`Arc<dyn ToolDefinition>` map).
@@ -610,6 +643,7 @@ impl ExtensionRunner {
     /// [`drop_pending`](Self::drop_pending).
     pub fn clear_bound_registrations(&self) {
         self.clear_handlers();
+        self.clear_around_tools();
         self.clear_tools();
         self.clear_commands();
         self.clear_disabled_commands();
@@ -858,6 +892,13 @@ impl ExtensionRunner {
                 });
             }
         }
+        {
+            let mut around = self
+                .around_tools
+                .lock()
+                .expect("around-tools lock poisoned");
+            around.extend(drained.around_tools);
+        }
         for (id, text) in drained.prompt_sections {
             if let Err(e) = self.register_prompt_section(id, text) {
                 tracing::warn!(
@@ -1010,7 +1051,14 @@ impl ExtensionRunner {
                     event = new_event;
                     continue;
                 }
-                // Cancel / Block short-circuit the chain.
+                // Cancel / Block short-circuit the chain. Ask does too —
+                // the host honors it only at the ToolCall seam (approval
+                // routing); at any other seam it is ignored like an
+                // out-of-place Block, but the chain still stops.
+                Ok(Ok(a @ HandlerOutcome::Ask { .. })) => {
+                    outcome = a;
+                    break;
+                }
                 Ok(Ok(c @ HandlerOutcome::Cancel { .. })) => {
                     outcome = c;
                     break;

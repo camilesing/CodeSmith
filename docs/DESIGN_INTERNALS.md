@@ -351,10 +351,16 @@ At the host seams, `EmitOutcome` is `#[must_use]` (forcing seam inspection):
 `Block` at `ToolCall` skips dispatch (permission-denied), `Cancel` at
 `SessionBefore*` skips compaction/switch, `Cancel` at `TurnStopping` steers
 (the inverted serial read — the note resumes the turn, capped at 3 steers
-per turn by the loop guard), and `Transform` at
+per turn by the loop guard), `Ask` at `ToolCall` routes the call through
+the approval decision channel regardless of classification (fail-closed:
+no channel ⇒ denied), and `Transform` at
 `Input`/`BeforeAgentStart`/`BeforeProviderRequest`/`ToolResult` rewrites the
 actionable field (`ToolResult` reorders emit→`on_tool_end`→propagate to
-`outcomes[idx]`); out-of-place outcomes map to `Continue`. 25 of the 26
+`outcomes[idx]`); out-of-place outcomes map to `Continue`. Beside the
+outcome chain, `AroundToolHandler` (`ExtensionApi::register_around_tool`)
+composes a DSH `next()`-wrapping chain around both tool-dispatch arms'
+terminals in `turn::batches` (parallel early-reuse/run and serial
+approval/run) — a handler that never awaits `next` vetoes. 25 of the 26
 event kinds are emitted from production seams (`ToolExecutionUpdate` from
 the shell tools' poll loops through `ToolContext::progress`,
 `SessionBeforeFork` from every spawn path, `ProjectTrust` per turn and per

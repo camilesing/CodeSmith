@@ -189,7 +189,57 @@ impl HostAgentExecutor {
         tool: &Arc<dyn Tool>,
         intent_summary: &Option<String>,
     ) -> Result<Option<crate::sandbox::SandboxPolicy>, String> {
+        self.approval_gate(tool_id, name, input, tool, intent_summary, None)
+            .await
+    }
+
+    /// [`request_approval`] with the gate FORCED — the extension `Ask`
+    /// outcome at the `ToolCall` seam routes here. Two differences from
+    /// the plain gate: the `approval_required` predicate is skipped (the
+    /// handler asked, so the user is asked — even for a call statically
+    /// classified as approval-free), and a missing approval channel is
+    /// **fail-closed**: the call is denied, never silently allowed (the
+    /// plain gate's no-channel `Ok(None)` would void the handler's ask).
+    /// The ask `reason` is logged; the approval event itself carries the
+    /// tool + input as usual (the reason is not surfaced on the event —
+    /// known limitation).
+    pub(crate) async fn request_approval_forced(
+        &self,
+        tool_id: &str,
+        name: &str,
+        input: &serde_json::Value,
+        tool: &Arc<dyn Tool>,
+        intent_summary: &Option<String>,
+        ask_reason: &str,
+    ) -> Result<Option<crate::sandbox::SandboxPolicy>, String> {
+        self.approval_gate(tool_id, name, input, tool, intent_summary, Some(ask_reason))
+            .await
+    }
+
+    /// The gate both public forms share; `force_ask` carries the `Ask`
+    /// reason when the user must be asked regardless of classification
+    /// (and fail-closed on a missing channel).
+    async fn approval_gate(
+        &self,
+        tool_id: &str,
+        name: &str,
+        input: &serde_json::Value,
+        tool: &Arc<dyn Tool>,
+        intent_summary: &Option<String>,
+        force_ask: Option<&str>,
+    ) -> Result<Option<crate::sandbox::SandboxPolicy>, String> {
         let Some(router) = &self.approval else {
+            if let Some(reason) = force_ask {
+                tracing::warn!(
+                    target: "codesmith_agent_runtime::engine",
+                    "extension Ask for '{name}' denied fail-closed (no approval channel): \
+                     {reason}"
+                );
+                return Err(format!(
+                    "An extension requested user approval for tool '{name}' but no approval \
+                     channel is attached — the call was denied (fail-closed)."
+                ));
+            }
             return Ok(None); // no approval channel ⇒ gating disabled
         };
         // Path-access question (the user trusts, or refuses, an
@@ -211,7 +261,7 @@ impl HostAgentExecutor {
             input,
             &tool.capabilities(),
         );
-        if !approval_required {
+        if !approval_required && force_ask.is_none() {
             return Ok(None); // dispatcher said Auto, or static gate says no
         }
         let is_read_only = tool.capabilities().contains(&ToolCapability::ReadOnly);

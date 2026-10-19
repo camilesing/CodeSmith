@@ -128,6 +128,14 @@ impl ExtensionApi for StubExtensionApi {
             });
         Ok(())
     }
+    fn register_around_tool(
+        &self,
+        handler: Arc<dyn codesmith_agent::extension::AroundToolHandler>,
+    ) -> Result<(), ExtensionError> {
+        assert_live(&self.generation, self.captured_gen)?;
+        self.pending.lock().unwrap().around_tools.push(handler);
+        Ok(())
+    }
     fn register_provider(&self, factory: Arc<dyn ProviderFactory>) -> Result<(), ExtensionError> {
         assert_live(&self.generation, self.captured_gen)?;
         self.pending
