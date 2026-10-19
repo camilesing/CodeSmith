@@ -669,6 +669,23 @@ impl FileSessionStore {
         if session_dir.exists() {
             fs::remove_dir_all(session_dir)?;
         }
+        // The REPL's inbox journal `<id>.inbox.jsonl` (TODO-48) dies with
+        // its session — every delete path (MAX_SESSIONS eviction, prune,
+        // explicit delete) funnels here, and an explicit delete must not
+        // leave a journal the startup sweep would later harvest. Best-effort:
+        // the REPL startup sweep stays the backstop for one that will not
+        // remove.
+        let journal = self.sessions_dir.join(format!("{}.inbox.jsonl", id.trim()));
+        if let Err(err) = fs::remove_file(&journal)
+            && err.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(
+                target: "session",
+                id = %id.trim(),
+                %err,
+                "failed to remove the inbox journal for a deleted session"
+            );
+        }
         Ok(())
     }
 
@@ -1795,6 +1812,31 @@ mod tests {
 
         assert!(!sessions_dir.join(format!("{session_id}.json")).exists());
         assert!(!sessions_dir.join(&session_id).exists());
+    }
+
+    #[test]
+    fn delete_session_removes_inbox_journal() {
+        let tmp = tempdir().expect("tempdir");
+        let sessions_dir = tmp.path().join("sessions");
+        let manager = FileSessionStore::new(sessions_dir.clone()).expect("new");
+
+        let session = create_saved_session(
+            &[make_test_message("user", "queued-then-deleted")],
+            "test-model",
+            tmp.path(),
+            100,
+            None,
+        );
+        let session_id = session.metadata.id.clone();
+        // The journal is written straight to disk (TODO-43 precedent): the
+        // store must clean its sibling whatever wrote it.
+        let journal = sessions_dir.join(format!("{session_id}.inbox.jsonl"));
+        fs::write(&journal, "{\"content\":\"queued\",\"enqueued_at\":0}\n").expect("journal");
+
+        manager.save_session(&session).expect("save");
+        manager.delete_session(&session_id).expect("delete");
+
+        assert!(!journal.exists());
     }
 
     #[test]
