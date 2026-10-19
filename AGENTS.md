@@ -71,6 +71,12 @@ prompt" is rung 2 with a name. Two corollaries earned here:
   A fresh worktree is for conflicting, dirty, stale, or independent lanes,
   not for parallel agents on the same lane. Local commit
   permission never implies push, merge, tag, release, or deploy permission.
+- **A commit message is at most 200 characters, subject and body together**
+  (credit trailers — `Co-authored-by`, `Harvested from PR #N` — are not
+  counted and are never cut to fit). Conventional format, `type(scope): what
+  changed`. Name the change and the one fact that lets a reader trust it; the
+  full receipt — test result lines, counts, file lists — goes in the PR body
+  or the turn report, not the message.
 - When the task is local-only, stay fully offline: no browsing, GitHub or remote
   Git operations, downloads, dependency installation, provider calls, or
   source/diff transmission. Record the missing external receipt and keep working
@@ -93,7 +99,7 @@ prompt" is rung 2 with a name. Two corollaries earned here:
   short known-limitations note in the owning module. A stated limit stops the
   next reader from assuming a capability that was never built.
 - **Agents do not comment on issues or PRs** (founder, 2026-09-22). Spend the
-  time on code: evidence goes in the commit message and PR body, claims go in
+  time on code: evidence goes in the PR body, claims go in
   Linear. Do not reply to review bots or post status, "superseded", or
   "for the record" notes. The one exception is closing or superseding a human
   contributor's PR or issue: one sentence saying why, with the link. The PR and
