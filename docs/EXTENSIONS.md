@@ -266,7 +266,7 @@ so a single crate gives them both the traits and the runtime helpers.
 - **`ExtensionCommandContext: ExtensionContext`** — strict sub-trait handed
   to command handlers; it carries no session-mutation methods (the split
   exists for type safety).
-- **`ExtensionEvent`** — `#[non_exhaustive]`, 25 variants (`resources-discover` removed in 0.11.0; `provider-request-error` added with the DSH retry waterfall):
+- **`ExtensionEvent`** — `#[non_exhaustive]`, 26 variants (`resources-discover` removed in 0.11.0; `provider-request-error` added with the DSH retry waterfall; `turn-stopping` with the DSH serial steer):
   `SessionStart` / `TurnStart` / `ToolCall` / `ToolResult` / `TurnEnd` /
   `SessionShutdown` / `ProjectTrust` / `Input` /
   `BeforeAgentStart` / `AgentStart` / `BeforeProviderHeaders` /
@@ -274,14 +274,17 @@ so a single crate gives them both the traits and the runtime helpers.
   `AssistantStream` / `ToolExecutionStart` / `ToolExecutionUpdate` /
   `ToolExecutionEnd` / `AgentEnd` / `AgentSettled` /
   `SessionBeforeSwitch` / `SessionBeforeFork` / `SessionBeforeCompact` /
-  `SessionCompact` / `ToolsChange`. `ExtensionEvent::kind()` maps each
+  `SessionCompact` / `ToolsChange` / `TurnStopping`. `ExtensionEvent::kind()` maps each
   variant to an `ExtensionEventKind` discriminant for per-variant
   dispatch.
 - **`Handler`** — outcome-returning:
   `async fn handle(&self, event: &ExtensionEvent, ctx: &dyn ExtensionContext)
   -> Result<HandlerOutcome, ExtensionError>`. Returns `Continue` (no
   change; proceed), `Cancel { reason }` (abort the surrounding operation
-  — only meaningful for `SessionBefore*` variants), `Block { reason }`
+  — only meaningful for `SessionBefore*` variants and `TurnStopping`,
+  where the inverted reading applies: the surrounding operation IS the
+  stop, so `Cancel` continues the turn and `reason` becomes the steer
+  note appended as a user message), `Block { reason }`
   (prevent the operation — only meaningful for `ToolCall`), or
   `Transform(ExtensionEvent)` (replace the running event for subsequent
   handlers AND apply its actionable field at transform-capable seams —
@@ -354,7 +357,7 @@ vocabulary:
 | CodeSmith `DispatchMode` | DSH term | Semantics |
 |---|---|---|
 | `Emit` | emit | broadcast: handlers run in subscription order, outcomes are advisory (`Transform`/`Cancel`/`Block` ignored) |
-| `Serial` | serial | ordered listeners with veto: a `Cancel` aborts the pending host operation and short-circuits the chain (`SessionBefore*` seams) |
+| `Serial` | serial | ordered listeners with veto: a `Cancel` aborts the pending host operation and short-circuits the chain (`SessionBefore*` seams; `TurnStopping` — where the pending operation is the stop itself, so `Cancel { reason }` continues the turn: the steer, `reason` becoming the model-visible note) |
 | `Waterfall { can_deny: false }` | waterfall | transform fold: each handler's `Transform` folds into the running event (visible to the next handler); the terminal field applies at the seam (`Input`, `BeforeAgentStart`, `BeforeProviderRequest`, `ToolResult`) |
 | `Waterfall { can_deny: true }` | waterfall + deny | the fold plus `Block`: a handler may rewrite the event's actionable field (`ToolCall`: the call's `input` — the rewritten input is what approval gates, what runs, and what is recorded; `ProviderRequestError`: the retry `plan`) or deny the operation outright; the deny is monotonic (`ToolCall`, `ProviderRequestError`) |
 
@@ -381,6 +384,7 @@ returns the wrong capability for its variant is a no-op, not an error.
 | `SessionShutdown` | `engine/mod.rs` post-MCP-shutdown | emit | — |
 | `TurnStart` | `host_executor` turn entry | emit | — |
 | `TurnEnd` | `host_executor` turn exit (interrupted + no-tool-calls) | emit | — |
+| `TurnStopping(TurnStoppingEvent)` | `host_executor` no-tool-calls arm — after the steer flush + sub-agent drain resume branches, before the terminal path | **Cancel** | the DSH turn-stopping serial steer: asked before the turn ends on `NoToolCalls`; `Continue` (or no handler) abstains — the default stop; the first `Cancel { reason }` steers — `reason` is appended verbatim as a `user`-role message (model-visible ⇒ session-recorded; append-only, prefix cache untouched) and the turn resumes on a fresh step. Steers are capped at 3 per turn by the loop guard — a capped steer is dropped (`tracing` warn, no note) and the turn ends. `reason` is why the turn would end (`no-tool-calls` at the only emit site); the `MaxSteps`/`Interrupted`/`Error` terminal paths do not ask |
 | `Input(InputEvent)` | `host_executor::run_inner` (user-turn seed) | **Transform** | rewrites the submitted `text` |
 | `BeforeAgentStart(AgentStartEvent)` | `host_executor::run_inner` top | **Transform** | injects `inject_message` (history push) + overrides `system_prompt` if set |
 | `AgentStart` | `host_executor::run_inner` (emit) | emit | — |
@@ -458,6 +462,10 @@ so the invariant — not a Miri run — is the proof.
   get_context_usage()` return `ExtensionError::Unimplemented`.
 - `SessionBeforeSwitch` is defined in the contract but has no host emit
   site (rationale in the seam table above).
+- `TurnStopping` steers are capped at 3 per turn (loop guard); only the
+  `NoToolCalls` termination asks — `MaxSteps` / `Interrupted` / `Error`
+  terminal paths do not consult extensions, and a capped steer's note is
+  dropped, not appended.
 - There is no extension-to-extension pub/sub. The former §F3 `EventBus`
   skeleton (`subscribe`/`publish` returning `Unimplemented`) was deleted
   with zero consumers — it trapped callers at runtime without serving any.

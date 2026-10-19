@@ -219,7 +219,7 @@ inventory::submit! {
 - **`ExtensionCommandContext: ExtensionContext`** —— 交给命令处理器
   的严格子 trait；它不携带任何会话变更方法（这一拆分是为了类型
   安全）。
-- **`ExtensionEvent`** —— `#[non_exhaustive]`，25 个变体（`resources-discover` 已于 0.11.0 移除；`provider-request-error` 随 DSH 重试瀑布加入）：
+- **`ExtensionEvent`** —— `#[non_exhaustive]`，26 个变体（`resources-discover` 已于 0.11.0 移除；`provider-request-error` 随 DSH 重试瀑布加入；`turn-stopping` 随 DSH 串行 steer 加入）：
   `SessionStart` / `TurnStart` / `ToolCall` / `ToolResult` / `TurnEnd` /
   `SessionShutdown` / `ProjectTrust` / `Input` /
   `BeforeAgentStart` / `AgentStart` / `BeforeProviderHeaders` /
@@ -227,13 +227,15 @@ inventory::submit! {
   `AssistantStream` / `ToolExecutionStart` / `ToolExecutionUpdate` /
   `ToolExecutionEnd` / `AgentEnd` / `AgentSettled` /
   `SessionBeforeSwitch` / `SessionBeforeFork` / `SessionBeforeCompact` /
-  `SessionCompact` / `ToolsChange`。`ExtensionEvent::kind()` 将每个
+  `SessionCompact` / `ToolsChange` / `TurnStopping`。`ExtensionEvent::kind()` 将每个
   变体映射到一个 `ExtensionEventKind` 判别值，用于按变体分发。
 - **`Handler`** —— 返回结果：
   `async fn handle(&self, event: &ExtensionEvent, ctx: &dyn ExtensionContext)
   -> Result<HandlerOutcome, ExtensionError>`。返回 `Continue`（无变化；
   继续）、`Cancel { reason }`（中止周围的操作 —— 仅对 `SessionBefore*`
-  变体有意义）、`Block { reason }`（阻止操作 —— 仅对 `ToolCall` 有
+  变体与 `TurnStopping` 有意义，后者是倒置读法：周围的操作就是"停止
+  轮"，所以 `Cancel` 让轮继续，`reason` 成为追加为 user 消息的 steer
+  提示）、`Block { reason }`（阻止操作 —— 仅对 `ToolCall` 有
   意义）或 `Transform(ExtensionEvent)`（替换正在运行的事件供后续
   处理器使用，并在具备变换能力的接缝处应用其可执行字段 ——
   `Input`/`BeforeAgentStart`/`BeforeProviderRequest`/`ToolCall`/
@@ -300,7 +302,7 @@ async fn configure(api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
 | CodeSmith `DispatchMode` | DSH 术语 | 语义 |
 |---|---|---|
 | `Emit` | emit | 广播：handler 按订阅顺序运行，结果仅具参考性（`Transform`/`Cancel`/`Block` 被忽略） |
-| `Serial` | serial | 带否决的有序监听：`Cancel` 中止待定的宿主操作并短路链（`SessionBefore*` 接缝） |
+| `Serial` | serial | 带否决的有序监听：`Cancel` 中止待定的宿主操作并短路链（`SessionBefore*` 接缝；`TurnStopping` —— 待定操作就是"停止轮"本身，故 `Cancel { reason }` 让轮继续，即 steer，`reason` 成为模型可见的提示） |
 | `Waterfall { can_deny: false }` | waterfall | transform 折叠：每个 handler 的 `Transform` 折入运行中的事件（对下一个 handler 可见）；终值作用于接缝（`Input`、`BeforeAgentStart`、`BeforeProviderRequest`、`ToolResult`） |
 | `Waterfall { can_deny: true }` | waterfall + deny | 折叠外加 `Block`：handler 可改写事件的可操作字段（`ToolCall`：调用 `input` —— 改写后的输入才是审批、执行与入档的输入；`ProviderRequestError`：重试 `plan`），或直接拒绝操作；拒绝是单调的（`ToolCall`、`ProviderRequestError`） |
 
@@ -325,6 +327,7 @@ async fn configure(api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
 | `SessionShutdown` | `engine/mod.rs` MCP 关闭之后 | emit | — |
 | `TurnStart` | `host_executor` 轮入口 | emit | — |
 | `TurnEnd` | `host_executor` 轮退出（被中断 + 无工具调用） | emit | — |
+| `TurnStopping(TurnStoppingEvent)` | `host_executor` 无工具调用分支 —— 在 steer 冲刷 + 子代理回收的续轮分支之后、终态路径之前 | **Cancel** | DSH turn-stopping 串行 steer：轮即将以 `NoToolCalls` 结束时先问扩展；`Continue`（或无 handler）弃权 —— 默认停止；首个 `Cancel { reason }` steer —— `reason` 原样追加为 `user` 角色消息（模型可见 ⇒ 会话天然记录；只追加，前缀缓存不动），轮在新步上继续。steer 每轮上限 3 次（loop guard）—— 到顶的 steer 被丢弃（`tracing` warn，不追加提示），轮照常结束。`reason` 是轮即将结束的原因（唯一 emit 位点处为 `no-tool-calls`）；`MaxSteps`/`Interrupted`/`Error` 终态路径不询问 |
 | `Input(InputEvent)` | `host_executor::run_inner`（用户轮种子） | **Transform** | 重写已提交的 `text` |
 | `BeforeAgentStart(AgentStartEvent)` | `host_executor::run_inner` 顶部 | **Transform** | 注入 `inject_message`（history push）+ 若设置了 `system_prompt` 则覆盖 |
 | `AgentStart` | `host_executor::run_inner`（emit） | emit | — |
@@ -393,6 +396,9 @@ emit 位点）。
 - `ExtensionContext::abort() / shutdown() / compact() /
   get_context_usage()` 返回 `ExtensionError::Unimplemented`。
 - `SessionBeforeSwitch` 在契约中有定义，但没有宿主 emit 位点（理由见上文接缝表）。
+- `TurnStopping` 的 steer 每轮上限 3 次（loop guard）；只有 `NoToolCalls`
+  终止会询问 —— `MaxSteps` / `Interrupted` / `Error` 终态路径不咨询扩展，
+  且到顶被丢弃的 steer 提示不追加进会话。
 - 没有扩展到扩展的发布/订阅。原 §F3 的 `EventBus` 骨架
   （`subscribe`/`publish` 返回 `Unimplemented`）已在零消费者时删除 ——
   它在运行时困住调用者而不提供任何能力。只有当某个扩展真正需要

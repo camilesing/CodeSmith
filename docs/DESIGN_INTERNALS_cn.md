@@ -316,7 +316,7 @@ thinking-only / capacity / early-tool-start / subagent）请直接查看模块�
               codesmith_cli (build_extension_runtime + StateStore + manage_mods reload)
 ```
 
-契约与运行时核心携带完整的 25 变体 `ExtensionEvent` 集合 +
+契约与运行时核心携带完整的 26 变体 `ExtensionEvent` 集合 +
 `ExtensionEventKind`/`kind()`、`HandlerOutcome`
 （`Continue`/`Cancel`/`Block`/`Transform`）跨处理器链（`Handler::handle`
 返回 `Result<HandlerOutcome, _>`）、逐变体的 `ExtensionApi::on_variant`
@@ -325,13 +325,16 @@ thinking-only / capacity / early-tool-start / subagent）请直接查看模块�
 
 在宿主接缝处，`EmitOutcome` 带 `#[must_use]`（强制检查接缝返回值）；
 在 `ToolCall` 处遵守 `Block`（跳过分发 → permission-denied）；在
-`SessionBefore*` 处遵守 `Cancel`（跳过压缩/切换）；在
+`SessionBefore*` 处遵守 `Cancel`（跳过压缩/切换）；在 `TurnStopping`
+处遵守 `Cancel`（倒置的 serial 读法——提示使轮继续，loop guard 限每轮
+steer 至多 3 次）；在
 `Input`/`BeforeAgentStart`/`BeforeProviderRequest`/`ToolResult` 处遵守
 `Transform`（改写可操作字段；`ToolResult` 把 emit→`on_tool_end`→传播到
-`outcomes[idx]` 的顺序重新安排）；错位的结果映射为 `Continue`。25 种事件
-中 24 种从生产接缝发射（`ToolExecutionUpdate` 由 shell 工具的轮询循环经
+`outcomes[idx]` 的顺序重新安排）；错位的结果映射为 `Continue`。26 种事件
+中 25 种从生产接缝发射（`ToolExecutionUpdate` 由 shell 工具的轮询循环经
 `ToolContext::progress` 发出，`SessionBeforeFork` 由每条 spawn 路径发出，
-`ProjectTrust` 每回合与每次子代理 spawn 发出）；唯一未发射的是
+`ProjectTrust` 每回合与每次子代理 spawn 发出，`TurnStopping` 由
+host_executor 的无工具调用分支发出）；唯一未发射的是
 `SessionBeforeSwitch`（无运行时发射点——见 `EXTENSIONS.md` 接缝表）。
 
 热重载经 `ExtensionRunner::clear_handlers` + `reload_extension_runtime`

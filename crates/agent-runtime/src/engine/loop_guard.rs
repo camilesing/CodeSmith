@@ -10,6 +10,12 @@ use serde_json::Value;
 const IDENTICAL_CALL_BLOCK_THRESHOLD: u32 = 3;
 const FAILURE_WARN_THRESHOLD: u32 = 3;
 const FAILURE_HALT_THRESHOLD: u32 = 8;
+/// Per-turn cap on extension turn-steers (`TurnStopping` `Cancel`s): each
+/// steer resumes the turn with a full extra model round, so an
+/// always-steer handler must not be able to spin the turn. The `max_steps`
+/// bound also covers the resume loop; this cap is tighter and observable
+/// (the engine logs the denied steer).
+pub(crate) const MAX_TURN_STEERS: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttemptDecision {
@@ -28,6 +34,7 @@ pub enum OutcomeDecision {
 pub struct LoopGuard {
     call_counts: HashMap<(String, u64), u32>,
     failure_counts: HashMap<String, u32>,
+    turn_steers: u32,
 }
 
 impl LoopGuard {
@@ -62,6 +69,16 @@ impl LoopGuard {
             ));
         }
         OutcomeDecision::Continue
+    }
+
+    /// Record one extension turn-steer (a `TurnStopping` `Cancel` the host
+    /// is about to honor) and decide whether the turn may resume on it:
+    /// `true` while under the [`MAX_TURN_STEERS`] cap, `false` once it is
+    /// exhausted (the caller drops the steer and takes the default
+    /// terminal path). Counted per turn — the guard is per-run.
+    pub fn record_turn_steer(&mut self) -> bool {
+        self.turn_steers = self.turn_steers.saturating_add(1);
+        self.turn_steers <= MAX_TURN_STEERS
     }
 }
 
@@ -218,5 +235,21 @@ mod tests {
             guard.record_attempt("read_file", &json!({"path": "a", "offset": 0})),
             AttemptDecision::Block(_)
         ));
+    }
+
+    #[test]
+    fn turn_steers_are_capped_per_turn() {
+        let mut guard = LoopGuard::default();
+        for i in 1..=MAX_TURN_STEERS {
+            assert!(
+                guard.record_turn_steer(),
+                "steer {i} of {MAX_TURN_STEERS} must be allowed"
+            );
+        }
+        assert!(
+            !guard.record_turn_steer(),
+            "the steer past the cap must be denied"
+        );
+        assert!(!guard.record_turn_steer(), "and every one after it");
     }
 }

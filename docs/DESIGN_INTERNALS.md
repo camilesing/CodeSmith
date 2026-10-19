@@ -340,7 +340,7 @@ bind_core → emit path.
               codesmith_cli (build_extension_runtime + StateStore + manage_mods reload)
 ```
 
-The contract and runtime core carry the full 25-variant `ExtensionEvent` set
+The contract and runtime core carry the full 26-variant `ExtensionEvent` set
 plus `ExtensionEventKind`/`kind()`, the `HandlerOutcome`
 (`Continue`/`Cancel`/`Block`/`Transform`) cross-handler chain
 (`Handler::handle` returns `Result<HandlerOutcome, _>`), per-variant
@@ -349,14 +349,17 @@ plus `ExtensionEventKind`/`kind()`, the `HandlerOutcome`
 
 At the host seams, `EmitOutcome` is `#[must_use]` (forcing seam inspection):
 `Block` at `ToolCall` skips dispatch (permission-denied), `Cancel` at
-`SessionBefore*` skips compaction/switch, and `Transform` at
+`SessionBefore*` skips compaction/switch, `Cancel` at `TurnStopping` steers
+(the inverted serial read — the note resumes the turn, capped at 3 steers
+per turn by the loop guard), and `Transform` at
 `Input`/`BeforeAgentStart`/`BeforeProviderRequest`/`ToolResult` rewrites the
 actionable field (`ToolResult` reorders emit→`on_tool_end`→propagate to
-`outcomes[idx]`); out-of-place outcomes map to `Continue`. 24 of the 25
+`outcomes[idx]`); out-of-place outcomes map to `Continue`. 25 of the 26
 event kinds are emitted from production seams (`ToolExecutionUpdate` from
 the shell tools' poll loops through `ToolContext::progress`,
 `SessionBeforeFork` from every spawn path, `ProjectTrust` per turn and per
-sub-agent spawn); the one un-emitted kind is `SessionBeforeSwitch` (no
+sub-agent spawn, `TurnStopping` from the host_executor no-tool-calls arm);
+the one un-emitted kind is `SessionBeforeSwitch` (no
 runtime emitter — see the seam table in `EXTENSIONS.md`).
 
 Live reload re-populates the shared runner `Arc` via

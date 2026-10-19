@@ -119,7 +119,7 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 
 ### 事件钩子
 
-`on("<event>", |e, ctx| { ... })`——`e` 是事件 payload map（都带 `kind` 字段），`ctx` 是 `#{cwd, mode, idle, generation}`（`mode` 在交互终端 REPL 下为 `"tui"`——沿用已移除前端的名字以保兼容——其余为 `"rpc"` / `"json"` / `"print"`），**ctx 可省略**（写 `|e|` 即可）。事件名是 `ExtensionEventKind` 的 kebab-case 全量 25 种：
+`on("<event>", |e, ctx| { ... })`——`e` 是事件 payload map（都带 `kind` 字段），`ctx` 是 `#{cwd, mode, idle, generation}`（`mode` 在交互终端 REPL 下为 `"tui"`——沿用已移除前端的名字以保兼容——其余为 `"rpc"` / `"json"` / `"print"`），**ctx 可省略**（写 `|e|` 即可）。事件名是 `ExtensionEventKind` 的 kebab-case 全量 26 种：
 
 | 事件 | payload 字段 |
 |---|---|
@@ -132,6 +132,7 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 | `tool-call` | `id`、`name`、`input`（JSON 值） |
 | `tool-result` | `id`、`name`、`content`、`success`、`is_error`、`canonical`（JSON 值，工具未产出时为 `()`） |
 | `turn-start` / `turn-end` | `turn_id`；`turn-end` 另有 `reason` |
+| `turn-stopping` | `reason`（轮即将结束的原因——唯一 emit 位点处为 `no-tool-calls`）；在轮因无工具调用而结束前发出；`cancel("提示")` 即 steer——提示追加为 user 消息并续轮（每轮上限 3 次） |
 | `assistant-stream` | `text`（单个增量块；随文本 delta 逐次触发，仅 emit） |
 | `tool-execution-update` | `id`、`name`、`message` |
 | `tools-change` | `added`、`removed`（工具名数组） |
@@ -158,7 +159,7 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 
 - **waterfall**：`input`、`before-agent-start`、`before-provider-request`、`tool-result` —— transform 逐个折叠、后续 handler 可见、终值作用于宿主操作
 - **waterfall + deny**：`tool-call` —— 改写调用 `input`（改写后的输入才是审批与实际执行的输入，也是入档输入），或 `block(reason)` 拒绝（单调——后续 handler 不可翻转）；`provider-request-error` —— 改写重试 `plan`，或 `block(reason)` 放弃
-- **serial**：`session-before-switch`、`session-before-fork`、`session-before-compact`
+- **serial**：`session-before-switch`、`session-before-fork`、`session-before-compact`、`turn-stopping`（倒置：`cancel(reason)` 让轮继续——提示即 steer）
 - **emit**（outcomes 仅供参考）：其余全部，含 `assistant-stream`（随文本 delta 逐次触发——handler 须轻量）与 `tools-change`（回合分发收口的目录差量）
 
 ### 钩子返回值 → HandlerOutcome
@@ -167,7 +168,7 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 |---|---|---|
 | `proceed()` 或 `()` | `Continue` | 全部 |
 | `block(reason)` | `Block`（越权 seam 忽略） | `tool-call`、`provider-request-error` |
-| `cancel(reason)` | `Cancel`（越权 seam 忽略） | `session-before-*` |
+| `cancel(reason)` | `Cancel`（越权 seam 忽略） | `session-before-*`、`turn-stopping`（steer 让轮继续） |
 | `transform(#{...})` | `Transform`（合并可变字段后继续链） | 见下 |
 
 Transform 可变字段（一个 handler 的改写对后续 handler 立即可见）：
