@@ -64,8 +64,12 @@ dylib 源（安装根）→ 与磁盘上的 `ExtensionStateStore` 对账（跳�
   包在 `ToolCall` 接缝上的 deny-only 闭包：返回字符串即拒绝该调用
   （归因 `guard (mod: <id>)`），返回其他任何值则弃权。没有 allow 或
   transform 词汇，拒绝由构造保证单调（block 短路整条链）。守卫在接缝
-  处、审批之前评估，仅覆盖主回合调用；脚本出错则弃权并打 warn。
-- **事件处理器（`on` / `on_variant`）** —— 见
+  处、审批之前评估，同样把关子代理工具调用（5b：子代理循环按其
+  agent 类型作用域分发 `ToolCall`；script 来源的处理器一并覆盖）；
+  脚本出错则弃权并打 warn。
+- **事件处理器（`on` / `on_variant`；Rhai 形态：任意 kind 用
+  `on(event, cb)`，DSH 对齐的 emit/serial 子集用 `on_event(kind, cb)`
+  ——waterfall kind 会让 mod 加载失败）** —— 见
   [处理器](#处理器结果--按变体订阅)。
 
 ### 工具目录：`ToolsChange` + 能力清单
@@ -375,6 +379,13 @@ provider 级事件保持仅主轮。带作用域的注册面也未向脚本 mod 
 忽略 —— 按 `Continue` 处理 —— 因此为其变体返回错误能力的处理器是
 无操作（no-op），而不是错误。
 
+Rhai 桥：脚本 mod 用 `on_event(kind, callback)` 注册 emit 监听与
+serial 否决——门禁就是 `dispatch_mode()` 本身，waterfall kind 会让
+mod 加载失败并指向 `on()`（对齐前的全量表面，含 waterfall
+transform——刻意保留的 CodeSmith 超集）或 `register_guard`（拒绝
+底线）。around-dispatch 与 `Ask` 在任何通道都没有脚本形态（异步 /
+UI 决策通道；不存在 `ask()` 控制值，脚本永远产生不了 `Ask` 结果）。
+
 ### Around-dispatch（DSH tools/execute）
 
 `next()` 包裹形式仅存在于工具执行，即 `AroundToolHandler` trait（经
@@ -467,6 +478,9 @@ agent 类型的视图，它会过滤掉 **dylib 来源**工具——detached 后
 - `AroundToolHandler` 与 `Ask` 仅是编译扩展面 —— 脚本 mod 两者皆不可用
   （异步 / UI 决策通道）；见 `docs/MODS.md`。around 链结果计入 loop guard
   失败升级，不同于 `Block` 干预。
+- 脚本侧的 DSH 表面是 `on_event`（仅 emit/serial kind）+
+  `register_guard`；脚本的 waterfall 参与留在更早的 `on()` 全量表面，
+  且脚本看不到注册作用域（没有 `on_event_scoped`）。
 - 没有扩展到扩展的发布/订阅。原 §F3 的 `EventBus` 骨架
   （`subscribe`/`publish` 返回 `Unimplemented`）已在零消费者时删除 ——
   它在运行时困住调用者而不提供任何能力。只有当某个扩展真正需要

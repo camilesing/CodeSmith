@@ -1,8 +1,9 @@
 //! `RhaiMod` — a script mod as an [`Extension`](codesmith_agent::extension::Extension).
 //!
 //! Construction = compile + run the top-level script once against an
-//! `Engine` whose natives capture `on` / `register_tool` / `register_command`
-//! registrations into a shared cell; [`RhaiMod::configure`] then replays the
+//! `Engine` whose natives capture `on` / `on_event` / `register_tool` /
+//! `register_command` registrations into a shared cell;
+//! [`RhaiMod::configure`] then replays the
 //! captured registrations against the runner's `ExtensionApi`. The `Engine`
 //! and the compiled `AST` are shared (via `Arc`) with the emitted
 //! `ScriptHandler` / `ScriptToolDefinition` / `ScriptCommandDefinition`
@@ -21,15 +22,21 @@
 //! points, and no wall-clock timeout for ordinary emits (only the
 //! hot-path events carry a dispatch budget, in `callback_bridge`); the
 //! engine registers no fs/net/process natives, so a script mod cannot do
-//! I/O — absence is the sandbox.
+//! I/O — absence is the sandbox. `on_event` is the DSH-aligned subset
+//! (Emit/Serial kinds; a waterfall kind fails the mod's load at capture —
+//! its transforms stay on `on()`, its deny floor on `register_guard`);
+//! around-dispatch and `Ask` have no script form at all (async / UI
+//! decision channel, and no `ask()` control value exists); scripts see
+//! no registration scopes — `on_event` always registers Global (no
+//! `on_event_scoped`).
 
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use codesmith_agent::extension::{
-    AgentStartEvent, Extension, ExtensionApi, ExtensionContext, ExtensionError, ExtensionEvent,
-    ExtensionEventKind, ExtensionMetadata, ExtensionMode, InputEvent, ProviderFailure,
-    ProviderRequestErrorEvent, RetryPlan, ToolCallEvent, ToolResultEvent,
+    AgentStartEvent, DispatchMode, Extension, ExtensionApi, ExtensionContext, ExtensionError,
+    ExtensionEvent, ExtensionEventKind, ExtensionMetadata, ExtensionMode, InputEvent,
+    ProviderFailure, ProviderRequestErrorEvent, RetryPlan, ToolCallEvent, ToolResultEvent,
 };
 use codesmith_agent::provider::ProviderId;
 use codesmith_tools::{ToolError, ToolResult};
@@ -707,6 +714,38 @@ fn register_natives(
                     "on(): unknown event name '{event}' (see docs/MODS.md for the 26 event names)"
                 ))),
             }
+        },
+    );
+
+    // on_event(kind, callback) — the DSH-aligned registration: emit
+    // listeners and serial vetoes only. The gate reads the contract
+    // (`ExtensionEventKind::dispatch_mode`), so a waterfall kind fails
+    // the mod's load here — its transform fold is the `on()` surface,
+    // its deny floor is `register_guard`; on_event is the DSH-portable
+    // subset, not a second waterfall channel. The registration itself is
+    // identical to `on`: same Handler cell entry, same `on_variant`
+    // replay (Script origin, Global scope stamped by the load path).
+    let cell_on_event = Arc::clone(cell);
+    engine.register_fn(
+        "on_event",
+        move |event: &str, callback: rhai::FnPtr| -> Result<(), Box<rhai::EvalAltResult>> {
+            let kind = event_kind_from_name(event).ok_or_else(|| {
+                script_error(format!(
+                    "on_event(): unknown event name '{event}' (see docs/MODS.md for the 26 event names)"
+                ))
+            })?;
+            if matches!(kind.dispatch_mode(), DispatchMode::Waterfall { .. }) {
+                return Err(script_error(format!(
+                    "on_event(): '{event}' dispatches waterfall — waterfall seams are not open \
+                     to on_event (use on() for the transform chain, register_guard for \
+                     deny-only tool policy)"
+                )));
+            }
+            cell_on_event
+                .lock()
+                .expect("mod registration cell poisoned")
+                .push(ScriptRegistration::Handler { kind, callback });
+            Ok(())
         },
     );
 
@@ -1498,6 +1537,139 @@ mod tests {
         assert!(matches!(m, Err(ExtensionError::Load(_))), "got {m:?}");
         let msg = m.unwrap_err().to_string();
         assert!(msg.contains("no-such-event"), "{msg}");
+    }
+
+    // === on_event (DSH-aligned Emit/Serial registration) ====================
+
+    /// An Emit-kind on_event callback runs at dispatch: the hook records
+    /// the payload into the mod's KV, which outlives the runner. Without
+    /// the native, the script fails its load (`on_event` not found).
+    #[test]
+    fn on_event_emit_kind_callback_fires() {
+        let dir = TempDir::new().unwrap();
+        let m = RhaiMod::load(
+            &discovered_for(
+                &dir,
+                "emit-listener",
+                r#"on_event("turn-end", |e| { mod_state_set("saw", e.turn_id); });"#,
+            ),
+            kv_for(&dir, "emit-listener"),
+            hub(),
+        )
+        .expect("load");
+        let runner = crate::ExtensionRunner::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(runner.load(&m)).expect("configure");
+        runner.bind_core(Arc::new(PerModCtx));
+        let out = rt.block_on(runner.emit(ExtensionEvent::TurnEnd {
+            turn_id: "t9".into(),
+            reason: codesmith_agent::extension::TurnEndReason::NoToolCalls,
+        }));
+        // Emit seam: outcomes are advisory — the chain reports Continue.
+        assert!(matches!(
+            out.outcome,
+            codesmith_agent::extension::HandlerOutcome::Continue
+        ));
+        assert_eq!(
+            ModKvStore::new(dir.path().join("global-emit-listener.json")).get("saw"),
+            Some(serde_json::json!("t9"))
+        );
+    }
+
+    /// A Serial-kind on_event veto short-circuits the chain — the
+    /// runner-level half of the turn-stopping / session-before-* steer.
+    #[test]
+    fn on_event_serial_kind_cancel_vetoes() {
+        let dir = TempDir::new().unwrap();
+        let m = RhaiMod::load(
+            &discovered_for(
+                &dir,
+                "fork-vetoer",
+                r#"on_event("session-before-fork", |e| { cancel("fork disabled by policy") });"#,
+            ),
+            kv_for(&dir, "fork-vetoer"),
+            hub(),
+        )
+        .expect("load");
+        let runner = crate::ExtensionRunner::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(runner.load(&m)).expect("configure");
+        runner.bind_core(Arc::new(PerModCtx));
+        let out = rt.block_on(runner.emit(ExtensionEvent::SessionBeforeFork));
+        match out.outcome {
+            codesmith_agent::extension::HandlerOutcome::Cancel { reason } => {
+                assert_eq!(reason, "fork disabled by policy");
+            }
+            other => panic!("expected Cancel, got {other:?}"),
+        }
+    }
+
+    /// Every waterfall kind (both `can_deny` arms) is rejected at capture
+    /// — the mod fails its load naming the kind. Unknown names fail the
+    /// same way `on()` does.
+    #[test]
+    fn on_event_rejects_waterfall_kinds_at_registration() {
+        for event in [
+            "input",
+            "before-agent-start",
+            "before-provider-request",
+            "tool-result",
+            "tool-call",
+            "provider-request-error",
+        ] {
+            let dir = TempDir::new().unwrap();
+            let script = format!(r#"on_event("{event}", |e| {{ proceed() }});"#);
+            let m = RhaiMod::load(
+                &discovered_for(&dir, "wf", &script),
+                kv_for(&dir, "wf"),
+                hub(),
+            );
+            let msg = m
+                .expect_err("waterfall kind must fail the load")
+                .to_string();
+            assert!(msg.contains("waterfall"), "{event}: {msg}");
+            assert!(msg.contains(event), "{event}: {msg}");
+        }
+        let dir = TempDir::new().unwrap();
+        let m = RhaiMod::load(
+            &discovered_for(
+                &dir,
+                "wf",
+                r#"on_event("no-such-event", |e| { proceed() });"#,
+            ),
+            kv_for(&dir, "wf"),
+            hub(),
+        );
+        assert!(m.is_err());
+    }
+
+    /// Default equivalence: with no extensions loaded, serial and
+    /// waterfall dispatches keep their default outcomes — the on_event
+    /// surface adds a registration path, not a default behavior.
+    #[test]
+    fn on_event_surface_changes_no_extension_defaults() {
+        let runner = crate::ExtensionRunner::new();
+        runner.bind_core(Arc::new(PerModCtx));
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let vetoable = rt.block_on(runner.emit(ExtensionEvent::SessionBeforeFork));
+        assert!(matches!(
+            vetoable.outcome,
+            codesmith_agent::extension::HandlerOutcome::Continue
+        ));
+        let call = ExtensionEvent::ToolCall(ToolCallEvent {
+            id: "c1".into(),
+            name: "exec_shell".into(),
+            input: serde_json::json!({ "command": "ls" }),
+        });
+        let out = rt.block_on(runner.emit(call));
+        assert!(matches!(
+            out.outcome,
+            codesmith_agent::extension::HandlerOutcome::Continue
+        ));
+        match out.event {
+            ExtensionEvent::ToolCall(e) => assert_eq!(e.input["command"], "ls"),
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
     }
 
     #[test]

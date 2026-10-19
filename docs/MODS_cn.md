@@ -25,7 +25,7 @@ Rust dylib——而"可插拔"的含义是*在运行期经其中一层注册*，
 
 | 表面 | Rhai mod | 内建 Rhai 层 | Rust 扩展 | 备注 |
 |---|---|---|---|---|
-| 事件钩子、工具守卫 | ✓ `on` / `register_guard` | — | ✓ | 按卸载/加载粒度为 mod；钩子错误 fail open |
+| 事件钩子、工具守卫 | ✓ `on` / `on_event` / `register_guard` | — | ✓ | 按卸载/加载粒度为 mod；钩子错误 fail open |
 | 模型可见工具 | ✓ `register_tool`（纯逻辑——无 fs/net 原生函数） | ✓（可脚本化的默认值） | ✓（完整 IO/异步） | 子代理可挂载 script/compiled-in 工具；dylib 来源的 Rust 工具保持仅主轮（5b 分层） |
 | 斜杠命令 | ✓ `register_command`（遮蔽内建）/ `disable_command`（退役内建） | — | ✓ | 层序 user > mod > builtin |
 | Provider | 仅别名（`register_provider`） | — | ✓ 完整 `ProviderFactory` | 脚本无法实现 `LlmClient`（无异步/网络） |
@@ -165,6 +165,28 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 - **serial**：`session-before-switch`、`session-before-fork`、`session-before-compact`、`turn-stopping`（倒置：`cancel(reason)` 让轮继续——提示即 steer）
 - **emit**（outcomes 仅供参考）：其余全部，含 `assistant-stream`（随文本 delta 逐次触发——handler 须轻量）与 `tools-change`（回合分发收口的目录差量）
 
+#### `on_event` —— DSH 对齐的监听/否决形态
+
+`on_event("<event>", |e, ctx| { ... })` 的回调形态与 `on` 完全相同
+（同样的 payload、同样可省略的 `ctx`、同样的控制值），但只接受 **emit**
+与 **serial** 事件——可直迁 DSH 的子集。waterfall 事件（`input`、
+`before-agent-start`、`before-provider-request`、`tool-result`、
+`tool-call`、`provider-request-error`）会让 mod **加载失败**，错误点名
+该事件：它的 transform 链属于 `on()`，拒绝底线属于 `register_guard`。
+emit 事件下一切返回值仅具参考性；serial 事件下 `cancel(reason)` 即否决。
+只监听或只否决的 mod 用 `on_event`——这样的 mod 与 DSH 的 emit/serial
+模型一一对应；需要完整 CodeSmith 表面（含 waterfall transform——刻意
+超出 DSH 脚本面的超集）时用 `on()`。
+
+作用域：`on_event` 注册是 global 作用域、script 来源——global 注册覆盖
+所有分发作用域，但子代理循环（5b）只在自己的作用域分发
+`tool-call`/`tool-result`（均为 waterfall、均在此被拒），因此实践中
+`on_event` 回调观察到的是主轮事件。没有 `on_event_scoped`——脚本看不到
+注册作用域（编译内置扩展可注册 `on_variant_scoped`）。around-execute 与
+`ask` 在任何通道都没有脚本形态（异步 / UI 决策通道——见
+[EXTENSIONS_cn.md](EXTENSIONS_cn.md)；不存在 `ask()` 控制值，脚本永远
+产生不了 `Ask` 结果）。
+
 ### 钩子返回值 → HandlerOutcome
 
 | 脚本返回 | HandlerOutcome | 生效 seam |
@@ -197,6 +219,7 @@ Transform 可变字段（一个 handler 的改写对后续 handler 立即可见�
 | `register_prompt_section(id, text)` | 向基础系统提示词追加命名分段（见下） |
 | `register_skill(spec)` | 向会话技能目录贡献一个内存技能（见下） |
 | `register_guard(callback)` | 注册 deny-only 的工具调用守卫（见下） |
+| `on_event(kind, callback)` | 注册 DSH 对齐的钩子——仅 emit/serial 事件（waterfall 事件导致加载失败；见上） |
 | `register_message_projection(key, init, fold)` | 注册由宿主维护的会话日志折叠（见下） |
 | `projection_state(key)` | 读取本 mod 的投影状态（钩子/工具内可用） |
 | `register_policy(kind, config)` | 覆盖宿主机制策略（见下） |
@@ -339,8 +362,9 @@ register_guard(|e| {
 被拒结果带归因（`guard (mod: <mod-id>): <理由>`）。需要改写输入用
 `on("tool-call", ...)`；需要策略底线用守卫。守卫脚本出错则弃权并打
 `tracing` warn（与 handler 错误同款 fail-open 策略）。守卫在 tool-call
-接缝处评估（审批之前——被拒调用根本不会派发，审批路径无从翻转）；仅覆盖
-主回合调用（子代理注册表不绑 extension runner）；reload 清除该 generation
+接缝处评估（审批之前——被拒调用根本不会派发，审批路径无从翻转），同样
+把关子代理工具调用（5b：子代理循环按其 agent 类型作用域分发
+`tool-call`，script 来源的处理器一并覆盖）；reload 清除该 generation
 的全部守卫。
 
 ### 注册消息投影（会话日志折叠）
