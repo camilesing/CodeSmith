@@ -31,9 +31,10 @@
 //! does not adopt DSH's "everything is a plugin" kernel — the kernel
 //! (single turn loop, provider registry, session log) stays compile-time
 //! assembled, and the extension surface is a seam onto that kernel, not
-//! its composition mechanism. And `Waterfall` is a fold chain (each
-//! handler's `Transform` is visible to the next), not DSH's
-//! `next()`-wrapping around-dispatch; no around form exists.
+//! its composition mechanism. `Waterfall` remains a fold chain (each
+//! handler's `Transform` is visible to the next); DSH's `next()`-wrapping
+//! around-dispatch exists only for tool execution — [`AroundToolHandler`]
+//! — not as a general event form.
 //!
 //! ## Style note
 //!
@@ -47,7 +48,9 @@
 //! (`async-trait`, `tokio-util`); both are workspace staples.
 
 use std::borrow::Cow;
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -538,9 +541,10 @@ pub enum DispatchMode {
     /// handler); the terminal actionable field is applied to the host
     /// operation. `can_deny: true` additionally honors `Block` — a
     /// handler may deny the operation outright; the deny is monotonic, no
-    /// later handler can flip it (the chain has already stopped). Known
-    /// limitation: a fold chain, not DSH's `next()`-wrapping
-    /// around-dispatch — no around form exists.
+    /// later handler can flip it (the chain has already stopped). The
+    /// fold stays a fold — DSH's `next()`-wrapping around-dispatch exists
+    /// separately for tool execution ([`AroundToolHandler`]); no event
+    /// kind dispatches around-style.
     Waterfall {
         /// Whether `Block` is honored at this seam: deny the operation
         /// outright, short-circuiting the fold (the `ToolCall` seam).
@@ -728,6 +732,15 @@ pub trait CommandDefinition: Send + Sync {
 ///   [`TurnStoppingEvent`]).
 /// - `Block { reason }` — prevent the operation. Honored only at a
 ///   denying `Waterfall` seam (`ToolCall`); ignored elsewhere.
+/// - `Ask { reason }` — route the operation through the host's approval
+///   decision channel before it proceeds. Honored only at the denying
+///   `ToolCall` waterfall: the call is user-gated regardless of its
+///   static approval classification (an asked parallel-batch call is
+///   gated inline before dispatch), and **fail-closed** — with no
+///   approval channel attached the call is DENIED and the reason fed
+///   back as a permission error, never silently allowed. Like `Block`,
+///   it short-circuits the handler chain (the first `Ask` decides) and
+///   is ignored (treated as `Continue`) at every other seam.
 /// - `Transform(event)` — replace the running event with `event` for
 ///   subsequent handlers AND (at `Waterfall` seams) apply `event`'s
 ///   actionable field to the live operation. Honored at the `Waterfall`
@@ -737,7 +750,7 @@ pub trait CommandDefinition: Send + Sync {
 /// The terminal [`codesmith_extensions::EmitOutcome::outcome`] is never
 /// `Transform` — a transform is folded into the running event and the chain
 /// continues; the terminal is `Continue` unless a handler short-circuits
-/// with `Cancel`/`Block`.
+/// with `Cancel`/`Block`/`Ask`.
 #[derive(Debug, Clone)]
 pub enum HandlerOutcome {
     Continue,
@@ -745,6 +758,12 @@ pub enum HandlerOutcome {
         reason: String,
     },
     Block {
+        reason: String,
+    },
+    /// User-decision request — honored only at the denying `ToolCall`
+    /// waterfall (approval-channel routing, fail-closed); see the variant
+    /// list above.
+    Ask {
         reason: String,
     },
     /// Invariant: the replacement event MUST carry the same
@@ -847,6 +866,65 @@ impl Handler for GuardHandler {
     }
 }
 
+// === Around-dispatch (DSH tools/execute) ==================================
+
+/// The boxed continuation an [`AroundToolHandler`] receives: awaiting it
+/// runs the next around handler, or — after the last one — the host's
+/// dispatch (approval gate included on the serial path). Never awaiting
+/// it is the veto.
+pub type ToolCallNext<'a> =
+    Pin<Box<dyn Future<Output = Result<ToolResult, ToolError>> + Send + 'a>>;
+
+/// DSH-style around-dispatch for tool execution ("waterfall with next"):
+/// `call` receives the tool call and `next`, and may inspect, wrap, defer,
+/// or veto the execution by never awaiting `next`. Handlers compose in
+/// registration order — the first registered is outermost; the last one's
+/// `next` is the host's dispatch. This is deliberately NOT a
+/// [`Handler`]-outcome form: the `next()` wrap cannot be expressed as a
+/// fold, so it is a separate registration
+/// ([`ExtensionApi::register_around_tool`]) with its own dispatch shape.
+///
+/// Veto vocabulary: return `Err(ToolError::permission_denied(reason))` —
+/// the same feedback shape an approval denial produces, so the model sees
+/// one denial vocabulary (the result feeds back through the existing
+/// tool-result path).
+///
+/// Known limitations: results from the around chain are execution results
+/// — they count toward the loop-guard failure escalation, unlike a
+/// `Block` intervention at the `ToolCall` seam (a veto is the handler's
+/// own decision; a veto-happy handler tripping the guard is the guard
+/// working); the chain wraps the host dispatch INCLUDING the approval
+/// gate on the serial path (a veto skips the question); and the seam is
+/// not offered to script mods (async boundary — see `docs/MODS.md`).
+#[async_trait]
+pub trait AroundToolHandler: Send + Sync {
+    async fn call(
+        &self,
+        call: ToolCallEvent,
+        next: ToolCallNext<'_>,
+    ) -> Result<ToolResult, ToolError>;
+}
+
+/// Compose `handlers` (registration order, outermost first) around
+/// `terminal` (the host's dispatch): each layer's `next` is the boxed
+/// future of the layers below. The chain runs outermost-first; a handler
+/// that never awaits its `next` vetoes — the layers below never run.
+#[must_use]
+pub fn wrap_tool_dispatch<'a>(
+    handlers: &[Arc<dyn AroundToolHandler>],
+    call: ToolCallEvent,
+    terminal: ToolCallNext<'a>,
+) -> ToolCallNext<'a> {
+    let mut next = terminal;
+    for handler in handlers.iter().rev() {
+        let handler = Arc::clone(handler);
+        let call = call.clone();
+        let inner = next;
+        next = Box::pin(async move { handler.call(call, inner).await });
+    }
+    next
+}
+
 // === ExtensionApi (registration surface, two-phase) =======================
 
 /// The imperative registration surface an [`Extension::configure`] receives.
@@ -873,6 +951,24 @@ pub trait ExtensionApi: Send + Sync {
         kind: ExtensionEventKind,
         handler: Arc<dyn Handler>,
     ) -> Result<(), ExtensionError>;
+
+    /// DSH around-dispatch — register a handler that wraps every tool
+    /// execution (the `next()` chain; see [`AroundToolHandler`]).
+    /// Registration order composes outermost-first; reload clears the
+    /// generation's registrations with the other bound registrations.
+    /// Not offered to script mods (async seam).
+    ///
+    /// Default: hosts that do not support it get a loud error, keeping
+    /// the trait implementable (source- and binary-compatible) for api
+    /// surfaces that predate this method.
+    fn register_around_tool(
+        &self,
+        _handler: Arc<dyn AroundToolHandler>,
+    ) -> Result<(), ExtensionError> {
+        Err(ExtensionError::Load(
+            "around-tool registration not supported by this api".into(),
+        ))
+    }
 
     /// Route A — register (or replace) a provider factory, keyed by its
     /// [`ProviderFactory::id`]. The runner owns the resulting registration
@@ -1895,8 +1991,11 @@ mod tests {
         let b = HandlerOutcome::Block {
             reason: "denied".into(),
         };
+        let a = HandlerOutcome::Ask {
+            reason: "confirm?".into(),
+        };
         let t = HandlerOutcome::Transform(ExtensionEvent::SessionShutdown);
-        let _ = format!("{c:?} {b:?} {t:?}");
+        let _ = format!("{c:?} {b:?} {a:?} {t:?}");
     }
 
     #[test]
@@ -2173,5 +2272,106 @@ mod tests {
             .block_on(h.handle(&guard_call_event("exec_shell", "ls"), &TestContext::new()))
             .unwrap();
         assert!(matches!(out, HandlerOutcome::Continue));
+    }
+
+    // === Around-dispatch (DSH tools/execute) =============================
+
+    /// An around handler that records its visit, optionally vetoes, and
+    /// otherwise stamps its label through the result.
+    struct RecordingAround {
+        label: &'static str,
+        seen: Arc<Mutex<Vec<&'static str>>>,
+        veto: bool,
+    }
+
+    impl RecordingAround {
+        fn passthrough(label: &'static str, seen: &Arc<Mutex<Vec<&'static str>>>) -> Arc<Self> {
+            Arc::new(Self {
+                label,
+                seen: Arc::clone(seen),
+                veto: false,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl AroundToolHandler for RecordingAround {
+        async fn call(
+            &self,
+            _call: ToolCallEvent,
+            next: ToolCallNext<'_>,
+        ) -> Result<ToolResult, ToolError> {
+            self.seen.lock().unwrap().push(self.label);
+            if self.veto {
+                return Err(ToolError::permission_denied(format!(
+                    "{}: not on my watch",
+                    self.label
+                )));
+            }
+            let mut result = next.await?;
+            result.content = format!("{}|{}", self.label, result.content);
+            Ok(result)
+        }
+    }
+
+    fn around_call_event() -> ToolCallEvent {
+        ToolCallEvent {
+            id: "c1".to_string(),
+            name: "echo".to_string(),
+            input: json!({}),
+        }
+    }
+
+    fn terminal() -> ToolCallNext<'static> {
+        Box::pin(async { Ok(ToolResult::success("base")) })
+    }
+
+    #[test]
+    fn around_chain_runs_outermost_first_and_stamps_through() {
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let seen: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let handlers: Vec<Arc<dyn AroundToolHandler>> = vec![
+            RecordingAround::passthrough("outer", &seen),
+            RecordingAround::passthrough("inner", &seen),
+        ];
+        let out = rt.block_on(wrap_tool_dispatch(
+            &handlers,
+            around_call_event(),
+            terminal(),
+        ));
+        let result = out.expect("pass-through chain reaches the terminal");
+        assert_eq!(result.content, "outer|inner|base");
+        assert_eq!(*seen.lock().unwrap(), vec!["outer", "inner"]);
+    }
+
+    #[test]
+    fn around_veto_never_invokes_next() {
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let seen: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let vetoing = Arc::new(RecordingAround {
+            label: "outer",
+            seen: Arc::clone(&seen),
+            veto: true,
+        });
+        let handlers: Vec<Arc<dyn AroundToolHandler>> = vec![
+            vetoing as Arc<dyn AroundToolHandler>,
+            RecordingAround::passthrough("inner", &seen),
+        ];
+        let err = rt
+            .block_on(wrap_tool_dispatch(
+                &handlers,
+                around_call_event(),
+                terminal(),
+            ))
+            .expect_err("a veto must surface as an Err");
+        assert!(
+            err.to_string().contains("not on my watch"),
+            "permission-denied veto: {err}"
+        );
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["outer"],
+            "the inner handler + terminal never run past a veto"
+        );
     }
 }

@@ -4054,8 +4054,9 @@ mod tests {
     // §F1 — extension seam test imports.
     use async_trait::async_trait;
     use codesmith_agent::extension::{
-        Extension, ExtensionApi, ExtensionContext, ExtensionError, ExtensionEvent,
-        ExtensionMetadata, ExtensionMode, Handler, HandlerOutcome, TrustReason,
+        AroundToolHandler, Extension, ExtensionApi, ExtensionContext, ExtensionError,
+        ExtensionEvent, ExtensionMetadata, ExtensionMode, Handler, HandlerOutcome, ToolCallEvent,
+        ToolCallNext, TrustReason,
     };
     use codesmith_extensions::{ExtensionRunner, HostExtensionContext};
 
@@ -16294,6 +16295,408 @@ mod tests {
             vec!["TurnStart", "ToolCall", "ToolResult", "TurnEnd"],
             "bound runner must observe the full minimal lifecycle"
         );
+    }
+
+    // === Iteration 4 — around-dispatch + Ask (DSH tool-chain sites) =========
+
+    /// An around handler that optionally vetoes and otherwise stamps its
+    /// label through the result, recording the calls it saw.
+    struct StampAround {
+        seen: Arc<Mutex<Vec<String>>>,
+        veto: bool,
+    }
+
+    #[async_trait]
+    impl AroundToolHandler for StampAround {
+        async fn call(
+            &self,
+            call: ToolCallEvent,
+            next: ToolCallNext<'_>,
+        ) -> Result<codesmith_agent::tools::ToolResult, codesmith_agent::tools::ToolError> {
+            self.seen.lock().unwrap().push(call.name.clone());
+            if self.veto {
+                return Err(codesmith_agent::tools::ToolError::permission_denied(
+                    "around: not on my watch",
+                ));
+            }
+            let mut result = next.await?;
+            result.content = format!("around|{}", result.content);
+            Ok(result)
+        }
+    }
+
+    /// A `ToolCall` handler answering with a fixed outcome (records asks).
+    struct AskHandler {
+        asked: Arc<Mutex<Vec<String>>>,
+        outcome: fn() -> HandlerOutcome,
+    }
+
+    #[async_trait]
+    impl Handler for AskHandler {
+        async fn handle(
+            &self,
+            event: &ExtensionEvent,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<HandlerOutcome, ExtensionError> {
+            if let ExtensionEvent::ToolCall(e) = event {
+                self.asked.lock().unwrap().push(e.name.to_string());
+                Ok((self.outcome)())
+            } else {
+                Ok(HandlerOutcome::Continue)
+            }
+        }
+    }
+
+    /// An extension whose `configure` registers one around handler and/or
+    /// one `ToolCall` handler (the Ask path).
+    struct ToolChainExt {
+        around: Option<Arc<StampAround>>,
+        ask: Option<Arc<AskHandler>>,
+    }
+
+    #[async_trait]
+    impl Extension for ToolChainExt {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("tool-chain");
+            &M
+        }
+        async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+            if let Some(around) = &self.around {
+                api.register_around_tool(around.clone())?;
+            }
+            if let Some(ask) = &self.ask {
+                api.on_variant(
+                    codesmith_agent::extension::ExtensionEventKind::ToolCall,
+                    ask.clone(),
+                )?;
+            }
+            Ok(())
+        }
+    }
+
+    async fn tool_chain_runner(ext: ToolChainExt) -> Arc<ExtensionRunner> {
+        let runner = Arc::new(ExtensionRunner::new());
+        runner.load(&ext).await.unwrap();
+        runner.bind_core(Arc::new(HostExtensionContext::new(
+            PathBuf::from("/tmp/codesmith-test"),
+            ExtensionMode::Interactive,
+            Arc::new(Mutex::new(true)),
+            Arc::new(Mutex::new(CancellationToken::new())),
+            runner.generation_arc(),
+        )));
+        runner
+    }
+
+    /// echo round (id `t1`) + clean end round.
+    fn echo_and_end_rounds() -> (Vec<StreamEvent>, Vec<StreamEvent>) {
+        let mut call1 = text_block(0, "let me echo");
+        call1.extend(tool_use_block(1, "t1", "echo", r#"{"text":"world"}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+        (call1, call2)
+    }
+
+    /// A pass-through around handler observes the call and stamps the
+    /// result — the tool still runs and the turn completes exactly as the
+    /// no-extension path would (modulo the stamp).
+    #[tokio::test]
+    async fn around_passthrough_stamps_result_and_observes_call() {
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let runner = tool_chain_runner(ToolChainExt {
+            around: Some(Arc::new(StampAround {
+                seen: seen.clone(),
+                veto: false,
+            })),
+            ask: None,
+        })
+        .await;
+        let (call1, call2) = echo_and_end_rounds();
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EchoSpec));
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![call1, call2])),
+            Arc::new(registry.to_framework_tool_set()),
+            Arc::new(codesmith_agent::callback::NoopCallback),
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_extension_runner(Some(runner.clone()));
+
+        let reason = executor
+            .run(&mut history, "echo world".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // The around stamp rode through the parallel dispatch into the
+        // transcript's tool result.
+        match &sess.messages[2].content[0] {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
+                assert!(
+                    content.contains("around|"),
+                    "the around stamp rode through: {content}"
+                );
+                assert!(
+                    content.ends_with("|world"),
+                    "the tool ran (workspace-stamped echo): {content}"
+                );
+                assert_eq!(*is_error, Some(false));
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+        // The handler observed the call before dispatch.
+        assert_eq!(*seen.lock().unwrap(), vec!["echo"]);
+    }
+
+    /// An around veto never invokes `next`: the tool does not run, and a
+    /// permission-denied error feeds back through the tool-result path.
+    #[tokio::test]
+    async fn around_veto_denies_without_execution() {
+        let runner = tool_chain_runner(ToolChainExt {
+            around: Some(Arc::new(StampAround {
+                seen: Arc::new(Mutex::new(Vec::new())),
+                veto: true,
+            })),
+            ask: None,
+        })
+        .await;
+        let (call1, call2) = echo_and_end_rounds();
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EchoSpec));
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![call1, call2])),
+            Arc::new(registry.to_framework_tool_set()),
+            Arc::new(codesmith_agent::callback::NoopCallback),
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_extension_runner(Some(runner));
+
+        let reason = executor
+            .run(&mut history, "echo world".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        match &sess.messages[2].content[0] {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
+                assert!(
+                    content.contains("not on my watch"),
+                    "veto denial feeds back: {content}"
+                );
+                assert!(!content.contains("echo:world"), "the tool never ran");
+                assert_eq!(*is_error, Some(true));
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    /// `Ask` on a parallel-batch (read-only) call with NO approval channel
+    /// is fail-closed: the call is denied and never dispatched.
+    #[tokio::test]
+    async fn ask_fail_closed_without_channel_denies_parallel_call() {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let runner = tool_chain_runner(ToolChainExt {
+            around: None,
+            ask: Some(Arc::new(AskHandler {
+                asked: asked.clone(),
+                outcome: || HandlerOutcome::Ask {
+                    reason: "user should confirm".into(),
+                },
+            })),
+        })
+        .await;
+        let (call1, call2) = echo_and_end_rounds();
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EchoSpec));
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![call1, call2])),
+            Arc::new(registry.to_framework_tool_set()),
+            Arc::new(codesmith_agent::callback::NoopCallback),
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_extension_runner(Some(runner));
+
+        let reason = executor
+            .run(&mut history, "echo world".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        match &sess.messages[2].content[0] {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
+                assert!(
+                    content.contains("fail-closed"),
+                    "the denial names the fail-closed gate: {content}"
+                );
+                assert!(!content.contains("echo:world"), "the tool never ran");
+                assert_eq!(*is_error, Some(true));
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+        assert_eq!(*asked.lock().unwrap(), vec!["echo"]);
+    }
+
+    /// `Ask` on a parallel-batch call WITH a channel routes to the user:
+    /// approved ⇒ the tool runs (inline gate, then normal dispatch).
+    #[tokio::test]
+    async fn ask_approved_runs_parallel_call() {
+        let (tx_approval, rx_approval) = approval_channel();
+        tx_approval
+            .send(ApprovalDecision::Approved {
+                id: "t1".to_string(),
+            })
+            .await
+            .unwrap();
+        let runner = tool_chain_runner(ToolChainExt {
+            around: None,
+            ask: Some(Arc::new(AskHandler {
+                asked: Arc::new(Mutex::new(Vec::new())),
+                outcome: || HandlerOutcome::Ask {
+                    reason: "user should confirm".into(),
+                },
+            })),
+        })
+        .await;
+        let (call1, call2) = echo_and_end_rounds();
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(EchoSpec));
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![call1, call2])),
+            Arc::new(registry.to_framework_tool_set()),
+            Arc::new(codesmith_agent::callback::NoopCallback),
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            Some(rx_approval),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_extension_runner(Some(runner));
+
+        let reason = executor
+            .run(&mut history, "echo world".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        match &sess.messages[2].content[0] {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
+                assert!(
+                    content.ends_with("|world"),
+                    "the approved ask ran the tool: {content}"
+                );
+                assert_eq!(*is_error, Some(false));
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    /// `Ask` on a serial (approval-classified) call forces the gate the
+    /// same way the static classification does: denied ⇒ permission error,
+    /// the tool never runs.
+    #[tokio::test]
+    async fn ask_denied_on_serial_call_skips_execution() {
+        let (tx_approval, rx_approval) = approval_channel();
+        tx_approval
+            .send(ApprovalDecision::Denied {
+                id: "call_1".to_string(),
+            })
+            .await
+            .unwrap();
+        let runner = tool_chain_runner(ToolChainExt {
+            around: None,
+            ask: Some(Arc::new(AskHandler {
+                asked: Arc::new(Mutex::new(Vec::new())),
+                outcome: || HandlerOutcome::Ask {
+                    reason: "user should confirm".into(),
+                },
+            })),
+        })
+        .await;
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![write_call(), end_call()])),
+            write_tools(),
+            Arc::new(codesmith_agent::callback::NoopCallback),
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            Some(rx_approval),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_extension_runner(Some(runner));
+
+        let reason = executor
+            .run(&mut history, "please write the file".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        match &sess.messages[2].content[0] {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
+                assert!(
+                    content.contains("denied by user"),
+                    "ask denial feeds back: {content}"
+                );
+                assert!(!content.contains("wrote:"), "the tool never ran");
+                assert_eq!(*is_error, Some(true));
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
     }
 
     // === §F2b T4 — full e2e round-trip (ordered host lifecycle) ================

@@ -327,10 +327,15 @@ thinking-only / capacity / early-tool-start / subagent）请直接查看模块�
 在 `ToolCall` 处遵守 `Block`（跳过分发 → permission-denied）；在
 `SessionBefore*` 处遵守 `Cancel`（跳过压缩/切换）；在 `TurnStopping`
 处遵守 `Cancel`（倒置的 serial 读法——提示使轮继续，loop guard 限每轮
-steer 至多 3 次）；在
+steer 至多 3 次）；在 `ToolCall` 处还遵守 `Ask`（无视分类把调用路由到
+审批决策通道，fail-closed：无通道 ⇒ 拒绝）；在
 `Input`/`BeforeAgentStart`/`BeforeProviderRequest`/`ToolResult` 处遵守
 `Transform`（改写可操作字段；`ToolResult` 把 emit→`on_tool_end`→传播到
-`outcomes[idx]` 的顺序重新安排）；错位的结果映射为 `Continue`。26 种事件
+`outcomes[idx]` 的顺序重新安排）；错位的结果映射为 `Continue`。在结果
+链之外，`AroundToolHandler`（`ExtensionApi::register_around_tool`）在
+`turn::batches` 两条工具分发臂的终端之外组合 DSH 式 `next()` 包裹链
+（并行的"复用早启/新跑"与串行的"审批/执行"）—— 从不 `await next` 的
+handler 即否决。26 种事件
 中 25 种从生产接缝发射（`ToolExecutionUpdate` 由 shell 工具的轮询循环经
 `ToolContext::progress` 发出，`SessionBeforeFork` 由每条 spawn 路径发出，
 `ProjectTrust` 每回合与每次子代理 spawn 发出，`TurnStopping` 由

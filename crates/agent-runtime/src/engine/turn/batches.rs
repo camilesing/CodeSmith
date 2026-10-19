@@ -22,6 +22,7 @@ use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
 
 use codesmith_agent::callback::Callback;
+use codesmith_agent::extension::{ToolCallEvent, ToolCallNext, wrap_tool_dispatch};
 use codesmith_agent::memory::ChatHistory;
 use codesmith_agent::models::{ContentBlock, Message};
 use codesmith_agent::tools::{Tool, ToolCapability, ToolError, ToolResult, ToolSet};
@@ -137,6 +138,15 @@ impl HostAgentExecutor {
     ) -> Option<String> {
         let mut loop_guard_halt: Option<String> = None;
         let n = tool_uses.len();
+        // DSH around-dispatch (tools/execute): the generation's around
+        // handlers wrap the dispatch terminal in BOTH arms below. An empty
+        // snapshot (no runner / none registered) leaves the dispatch path
+        // untouched — no-extension parity is structural, not a flag.
+        let around_handlers: Vec<Arc<dyn codesmith_agent::extension::AroundToolHandler>> =
+            extension
+                .as_ref()
+                .map(|runner| runner.around_tool_handlers())
+                .unwrap_or_default();
 
         // P0-2 truncation classification — computed once for the whole turn:
         // a stop reason that says the output limit was hit (minus the
@@ -268,6 +278,68 @@ impl HostAgentExecutor {
                                 out.outcome
                             {
                                 ext_blocks.insert(plan.index, reason);
+                            } else if let codesmith_agent::extension::HandlerOutcome::Ask {
+                                reason,
+                            } = out.outcome
+                            {
+                                // Iteration 4 — an asked call leaves the
+                                // approval-free batch semantics: the user is
+                                // asked NOW (this pre-dispatch loop is
+                                // sequential; the futures spawn after). A
+                                // denial records like a block — an
+                                // intervention (the tool never runs, no
+                                // failure-escalation count). The ask targets
+                                // the folded terminal input (a pre-Ask
+                                // transform rides along as the rewrite).
+                                let ask_input = match &out.event {
+                                    codesmith_agent::extension::ExtensionEvent::ToolCall(e)
+                                        if e.input != plan.input =>
+                                    {
+                                        let rewritten = e.input.clone();
+                                        tracing::info!(
+                                            target: "codesmith_extensions",
+                                            "tool-call input rewritten by extension: {} ({})",
+                                            plan.name,
+                                            plan.id
+                                        );
+                                        ext_rewrites.insert(plan.index, rewritten.clone());
+                                        rewritten
+                                    }
+                                    _ => plan.input.clone(),
+                                };
+                                let tool = tool_for_plan[plan.index]
+                                    .clone()
+                                    .expect("parallel-safe plan has a registered read-only tool");
+                                match self
+                                    .request_approval_forced(
+                                        &plan.id,
+                                        &plan.name,
+                                        &ask_input,
+                                        &tool,
+                                        intent_summary,
+                                        &reason,
+                                    )
+                                    .await
+                                {
+                                    // Approved (or an escalation the parallel
+                                    // batch cannot thread — it logs and runs
+                                    // with the fixed context, plain-approval
+                                    // semantics, same fallback as a missing
+                                    // dispatcher).
+                                    Ok(maybe_policy) => {
+                                        if maybe_policy.is_some() {
+                                            tracing::warn!(
+                                                target: "codesmith_agent_runtime::engine",
+                                                "approval escalation on an asked parallel-batch \
+                                                 call cannot thread into the concurrent batch; \
+                                                 running with the fixed context"
+                                            );
+                                        }
+                                    }
+                                    Err(denial) => {
+                                        ext_blocks.insert(plan.index, denial);
+                                    }
+                                }
                             } else if let codesmith_agent::extension::ExtensionEvent::ToolCall(e) =
                                 out.event
                                 && e.input != plan.input
@@ -337,6 +409,9 @@ impl HostAgentExecutor {
                             .cloned()
                             .unwrap_or_else(|| plan.input.clone());
                         let index = plan.index;
+                        // Iteration 4 — the per-future around snapshot (DSH
+                        // tools/execute); `Arc` clones only.
+                        let around = around_handlers.clone();
                         futs.push(Box::pin(async move {
                             let blocked = guard.is_some() || ext_block_reason.is_some();
                             let result = if let Some(g) = guard {
@@ -365,31 +440,50 @@ impl HostAgentExecutor {
                                         )
                                         .await;
                                 }
-                                let r = match early {
-                                    Some(mut early)
-                                        if early.name == name
-                                            && early.input == input =>
-                                    {
-                                        let handle = early
-                                            .handle
-                                            .take()
-                                            .expect("handle present until consumed");
-                                        match handle.await {
-                                            Ok(result) => result,
-                                            Err(join_err) => Err(ToolError::execution_failed(
-                                                format!(
-                                                    "Early tool execution task failed: {join_err}"
-                                                ),
-                                            )),
+                                // Iteration 4 — the around chain wraps the
+                                // dispatch terminal (early reuse or a fresh
+                                // run), outermost-first; an empty chain
+                                // awaits the terminal directly
+                                // (no-extension parity).
+                                let call = ToolCallEvent {
+                                    id: id.clone(),
+                                    name: name.clone(),
+                                    input: input.clone(),
+                                };
+                                let terminal_name = name.clone();
+                                let terminal_input = input.clone();
+                                let terminal: ToolCallNext = Box::pin(async move {
+                                    match early {
+                                        Some(mut early)
+                                            if early.name == terminal_name
+                                                && early.input == terminal_input =>
+                                        {
+                                            let handle = early
+                                                .handle
+                                                .take()
+                                                .expect("handle present until consumed");
+                                            match handle.await {
+                                                Ok(result) => result,
+                                                Err(join_err) => Err(ToolError::execution_failed(
+                                                    format!(
+                                                        "Early tool execution task failed: {join_err}"
+                                                    ),
+                                                )),
+                                            }
                                         }
+                                        Some(_) => {
+                                            // Args revised after the block closed
+                                            // — the dropped `EarlyToolTask` (Drop
+                                            // aborts) cleans up the orphaned task.
+                                            tool.run(terminal_input.clone()).await
+                                        }
+                                        None => tool.run(terminal_input.clone()).await,
                                     }
-                                    Some(_) => {
-                                        // Args revised after the block closed
-                                        // — the dropped `EarlyToolTask` (Drop
-                                        // aborts) cleans up the orphaned task.
-                                        tool.run(input.clone()).await
-                                    }
-                                    None => tool.run(input.clone()).await,
+                                });
+                                let r = if around.is_empty() {
+                                    terminal.await
+                                } else {
+                                    wrap_tool_dispatch(&around, call, terminal).await
                                 };
                                 if let Some(runner) = &ext {
                                     let _ = runner
@@ -466,6 +560,9 @@ impl HostAgentExecutor {
                     // rewritten `input` replaces the call's input for
                     // approval + execution (what runs is what was gated).
                     let mut ext_input: Option<serde_json::Value> = None;
+                    // Iteration 4 — an `Ask` at this seam forces the approval
+                    // gate below (fail-closed when no channel is attached).
+                    let mut ext_ask: Option<String> = None;
                     let ext_blocked_reason: Option<String> = if let Some(runner) = &extension {
                         let out = runner
                             .emit(codesmith_agent::extension::ExtensionEvent::ToolCall(
@@ -481,6 +578,11 @@ impl HostAgentExecutor {
                         {
                             Some(reason)
                         } else {
+                            if let codesmith_agent::extension::HandlerOutcome::Ask { reason } =
+                                out.outcome
+                            {
+                                ext_ask = Some(reason);
+                            }
                             if let codesmith_agent::extension::ExtensionEvent::ToolCall(e) =
                                 out.event
                                 && e.input != plan.input
@@ -527,119 +629,159 @@ impl HostAgentExecutor {
                                 )
                                 .await;
                         }
-                        let r = match &tool_for_plan[idx] {
-                            Some(tool) => {
-                                match self
-                                    .request_approval(
-                                        &plan.id,
-                                        &plan.name,
-                                        &run_input,
-                                        tool,
-                                        intent_summary,
-                                    )
-                                    .await
-                                {
-                                    Ok(elevation) => {
-                                        if let (Some(policy), Some(dispatcher)) =
-                                            (&elevation, self.tool_dispatcher.as_ref())
-                                        {
-                                            // An approved one-shot sandbox
-                                            // escalation re-dispatches through
-                                            // the dispatcher's override
-                                            // wire-in — the single path that
-                                            // can apply a wider policy (the
-                                            // registry rejects non-widening
-                                            // overrides there).
-                                            match serde_json::to_value(policy) {
-                                                Ok(override_value) => (
-                                                    dispatcher
-                                                        .execute(
-                                                            &plan.name,
-                                                            run_input.clone(),
-                                                            Some(override_value),
-                                                        )
-                                                        .await,
-                                                    false,
-                                                ),
-                                                Err(err) => (
-                                                    Err(ToolError::execution_failed(format!(
-                                                        "sandbox override serialization failed: {err}"
-                                                    ))),
-                                                    false,
-                                                ),
-                                            }
-                                        } else {
-                                            // Plain approval (or an elevation
-                                            // with no dispatcher attached —
-                                            // the override cannot thread in,
-                                            // so the fixed context runs).
-                                            //
-                                            // Early-tool-start reuse (same shape
-                                            // as the parallel arm, but sequential).
-                                            // A call that needed approval never
-                                            // reuses the speculative result: it was
-                                            // produced before the user's answer —
-                                            // for an approved path, before the
-                                            // grant existed, so it could only fail.
-                                            // Aborting it (Drop) and running fresh
-                                            // is the point of the approval.
-                                            match early_for_plan[idx].take() {
-                                                Some(mut early)
-                                                    if !plan.approval_required
-                                                        && early.name == plan.name
-                                                        && early.input == run_input =>
-                                                {
-                                                    let handle = early
-                                                        .handle
-                                                        .take()
-                                                        .expect("handle present until consumed");
-                                                    match handle.await {
-                                                        Ok(result) => (result, false),
-                                                        Err(join_err) => (
-                                                            Err(ToolError::execution_failed(
-                                                                format!(
-                                                                    "Early tool execution task failed: {join_err}"
-                                                                ),
-                                                            )),
-                                                            false,
-                                                        ),
+                        // Iteration 4 — the around chain (DSH tools/execute)
+                        // wraps the serial dispatch terminal: the approval
+                        // gate + run, i.e. the whole execution transaction (a
+                        // veto skips the question too). An `Ask` forces the
+                        // gate inside the terminal (fail-closed on a missing
+                        // channel); an empty chain awaits the terminal
+                        // directly (no-extension parity).
+                        let tool = tool_for_plan[idx].clone();
+                        let early = early_for_plan[idx].take();
+                        let ext_ask = ext_ask.clone();
+                        let run_input_terminal = run_input.clone();
+                        // Borrow `plan` for the terminal: `async move`
+                        // otherwise moves the used field paths, and the
+                        // `call`/`DispatchedTool` constructions after the
+                        // block still read them.
+                        let plan = &plan;
+                        let terminal: ToolCallNext = Box::pin(async move {
+                            match tool {
+                                Some(tool) => {
+                                    let approval = match &ext_ask {
+                                        Some(reason) => {
+                                            self.request_approval_forced(
+                                                &plan.id,
+                                                &plan.name,
+                                                &run_input_terminal,
+                                                &tool,
+                                                intent_summary,
+                                                reason,
+                                            )
+                                            .await
+                                        }
+                                        None => {
+                                            self.request_approval(
+                                                &plan.id,
+                                                &plan.name,
+                                                &run_input_terminal,
+                                                &tool,
+                                                intent_summary,
+                                            )
+                                            .await
+                                        }
+                                    };
+                                    match approval {
+                                        Ok(elevation) => {
+                                            if let (Some(policy), Some(dispatcher)) =
+                                                (&elevation, self.tool_dispatcher.as_ref())
+                                            {
+                                                // An approved one-shot sandbox
+                                                // escalation re-dispatches through
+                                                // the dispatcher's override
+                                                // wire-in — the single path that
+                                                // can apply a wider policy (the
+                                                // registry rejects non-widening
+                                                // overrides there).
+                                                match serde_json::to_value(policy) {
+                                                    Ok(override_value) => {
+                                                        dispatcher
+                                                            .execute(
+                                                                &plan.name,
+                                                                run_input_terminal.clone(),
+                                                                Some(override_value),
+                                                            )
+                                                            .await
+                                                    }
+                                                    Err(err) => {
+                                                        Err(ToolError::execution_failed(format!(
+                                                            "sandbox override serialization failed: {err}"
+                                                        )))
                                                     }
                                                 }
-                                                Some(_) => {
-                                                    // Args revised after the block
-                                                    // closed — can't reuse; the
-                                                    // dropped `EarlyToolTask` (Drop
-                                                    // aborts) cleans up the orphaned
-                                                    // speculative task.
-                                                    (tool.run(run_input.clone()).await, false)
+                                            } else {
+                                                // Plain approval (or an elevation
+                                                // with no dispatcher attached —
+                                                // the override cannot thread in,
+                                                // so the fixed context runs).
+                                                //
+                                                // Early-tool-start reuse (same shape
+                                                // as the parallel arm, but sequential).
+                                                // A call that needed approval never
+                                                // reuses the speculative result: it was
+                                                // produced before the user's answer —
+                                                // for an approved path, before the
+                                                // grant existed, so it could only fail.
+                                                // Aborting it (Drop) and running fresh
+                                                // is the point of the approval.
+                                                match early {
+                                                    Some(mut early)
+                                                        if !plan.approval_required
+                                                            && early.name == plan.name
+                                                            && early.input
+                                                                == run_input_terminal =>
+                                                    {
+                                                        let handle = early.handle.take().expect(
+                                                            "handle present until consumed",
+                                                        );
+                                                        match handle.await {
+                                                            Ok(result) => result,
+                                                            Err(join_err) => {
+                                                                Err(ToolError::execution_failed(
+                                                                    format!(
+                                                                        "Early tool execution task failed: {join_err}"
+                                                                    ),
+                                                                ))
+                                                            }
+                                                        }
+                                                    }
+                                                    Some(_) => {
+                                                        // Args revised after the block
+                                                        // closed — can't reuse; the
+                                                        // dropped `EarlyToolTask` (Drop
+                                                        // aborts) cleans up the orphaned
+                                                        // speculative task.
+                                                        tool.run(run_input_terminal.clone()).await
+                                                    }
+                                                    None => {
+                                                        tool.run(run_input_terminal.clone()).await
+                                                    }
                                                 }
-                                                None => (tool.run(run_input.clone()).await, false),
                                             }
                                         }
-                                    }
-                                    Err(denial) => {
-                                        // Approval denied — abort any
-                                        // speculative task (defensive:
-                                        // early-start-safe tools don't
-                                        // require approval, so this path has
-                                        // none, but `Drop` is cheap).
-                                        early_for_plan[idx].take();
-                                        (Err(ToolError::permission_denied(denial)), false)
+                                        Err(denial) => {
+                                            // Approval denied — the owned
+                                            // speculative task drops + aborts
+                                            // (defensive: early-start-safe
+                                            // tools don't require approval),
+                                            // and the denial feeds back so
+                                            // the model can react (the turn
+                                            // continues).
+                                            Err(ToolError::permission_denied(denial))
+                                        }
                                     }
                                 }
-                            }
-                            None => {
-                                // No tool registered — abort any speculative
-                                // task (`reduce_stream` only spawns for
-                                // registered tools, so this is defensive).
-                                early_for_plan[idx].take();
-                                (
+                                None => {
+                                    // No tool registered — the owned
+                                    // speculative task drops + aborts
+                                    // (`reduce_stream` only spawns for
+                                    // registered tools, so this is
+                                    // defensive).
                                     Err(ToolError::NotAvailable {
                                         message: format!("no tool named '{}'", plan.name),
-                                    }),
-                                    false,
-                                )
+                                    })
+                                }
                             }
+                        });
+                        let call = ToolCallEvent {
+                            id: plan.id.clone(),
+                            name: plan.name.clone(),
+                            input: run_input.clone(),
+                        };
+                        let r = if around_handlers.is_empty() {
+                            terminal.await
+                        } else {
+                            wrap_tool_dispatch(&around_handlers, call, terminal).await
                         };
                         // §F2b T3 — ToolExecutionEnd brackets the
                         // serial dispatch.
@@ -648,7 +790,7 @@ impl HostAgentExecutor {
                                 .emit(codesmith_agent::extension::ExtensionEvent::ToolExecutionEnd)
                                 .await;
                         }
-                        r
+                        (r, false)
                     };
                     // §F2b T1 — honor `Transform` at `ToolResult`: emit
                     // BEFORE `on_tool_end` so the callback + downstream

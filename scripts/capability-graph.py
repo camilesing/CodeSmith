@@ -30,6 +30,7 @@ OUT_PATH = REPO_ROOT / "docs" / "CAPABILITY_GRAPH.md"
 # the discipline-2 admission check); the script fills in the roles.
 SEAMS = [
     "AgentExecutor",
+    "AroundToolHandler",
     "ChatHistory",
     "CommandDefinition",
     "Extension",

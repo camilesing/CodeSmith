@@ -15,6 +15,7 @@ explaining.
 | Seam trait | Definition | Providers | Consumers (`dyn` use) |
 |---|---|---|---|
 | `AgentExecutor` | `agent` | `agent`, `agent-runtime` | `—` |
+| `AroundToolHandler` | `agent` | `agent`, `agent-runtime` | `agent`, `extensions` |
 | `ChatHistory` | `agent` | `agent`, `agent-runtime` | `agent`, `agent-runtime` |
 | `CommandDefinition` | `agent` | `agent`, `extensions` | `agent`, `extensions` |
 | `Extension` | `agent` | `agent-runtime`, `cli`, `extensions`, `extensions-fixture-dylib` | `extensions`, `extensions-fixture-dylib` |

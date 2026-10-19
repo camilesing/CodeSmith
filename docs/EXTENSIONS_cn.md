@@ -235,14 +235,25 @@ inventory::submit! {
   继续）、`Cancel { reason }`（中止周围的操作 —— 仅对 `SessionBefore*`
   变体与 `TurnStopping` 有意义，后者是倒置读法：周围的操作就是"停止
   轮"，所以 `Cancel` 让轮继续，`reason` 成为追加为 user 消息的 steer
-  提示）、`Block { reason }`（阻止操作 —— 仅对 `ToolCall` 有
-  意义）或 `Transform(ExtensionEvent)`（替换正在运行的事件供后续
+  提示）、`Block { reason }`（阻止操作 —— 仅对 `ToolCall` 与
+  `ProviderRequestError` 有意义）、`Ask { reason }`（把操作路由到宿主
+  审批通道 —— 仅对 `ToolCall` 有意义；**fail-closed**：无通道 ⇒ 调用
+  被拒绝，绝不静默放行）或 `Transform(ExtensionEvent)`（替换正在运行的事件供后续
   处理器使用，并在具备变换能力的接缝处应用其可执行字段 ——
   `Input`/`BeforeAgentStart`/`BeforeProviderRequest`/`ToolCall`/
   `ToolResult`）。变体特定语义由宿主在每个接缝处强制执行；不合时宜
   的结果（例如在 `TurnEnd` 处 `Block`）会被忽略（按 `Continue`
   处理）。`emit` 按注册顺序链接处理器，因此 `Transform` 对下一个
-  处理器可见；`Cancel`/`Block` 短路。
+  处理器可见；`Cancel`/`Block`/`Ask` 短路。
+- **`AroundToolHandler`** —— DSH around-dispatch（tools/execute）：
+  `async fn call(&self, call: ToolCallEvent, next: ToolCallNext<'_>) ->
+  Result<ToolResult, ToolError>`。经 `ExtensionApi::register_around_tool`
+  注册；handler 按注册顺序组合（最外层在前），包裹**两条**分发臂 ——
+  并行与串行 —— 包住整个执行事务（串行臂的审批门也在内，因此否决
+  连问题一起跳过）。从不 `await next` 即否决；否决词汇是
+  `Err(ToolError::permission_denied(reason))`，与审批拒绝同一反馈形状。
+  around 链的结果是执行结果：计入 loop guard 失败升级（不同于 `Block`
+  干预）。不对脚本 mod 开放（异步接缝——见 `docs/MODS.md`）。
 - **`ToolDefinition`** —— 扩展侧工具契约：`name / description /
   input_schema / capabilities / async execute(input, ctx)`。`execute`
   接收一个 `ExtensionContext`（而不是宿主的 `ToolContext`）—— 使
@@ -304,14 +315,15 @@ async fn configure(api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
 | `Emit` | emit | 广播：handler 按订阅顺序运行，结果仅具参考性（`Transform`/`Cancel`/`Block` 被忽略） |
 | `Serial` | serial | 带否决的有序监听：`Cancel` 中止待定的宿主操作并短路链（`SessionBefore*` 接缝；`TurnStopping` —— 待定操作就是"停止轮"本身，故 `Cancel { reason }` 让轮继续，即 steer，`reason` 成为模型可见的提示） |
 | `Waterfall { can_deny: false }` | waterfall | transform 折叠：每个 handler 的 `Transform` 折入运行中的事件（对下一个 handler 可见）；终值作用于接缝（`Input`、`BeforeAgentStart`、`BeforeProviderRequest`、`ToolResult`） |
-| `Waterfall { can_deny: true }` | waterfall + deny | 折叠外加 `Block`：handler 可改写事件的可操作字段（`ToolCall`：调用 `input` —— 改写后的输入才是审批、执行与入档的输入；`ProviderRequestError`：重试 `plan`），或直接拒绝操作；拒绝是单调的（`ToolCall`、`ProviderRequestError`） |
+| `Waterfall { can_deny: true }` | waterfall + deny | 折叠外加 `Block`：handler 可改写事件的可操作字段（`ToolCall`：调用 `input` —— 改写后的输入才是审批、执行与入档的输入；`ProviderRequestError`：重试 `plan`），或直接拒绝操作；拒绝是单调的（`ToolCall`、`ProviderRequestError`）。在 `ToolCall` 处折叠额外遵守 `Ask { reason }` —— 审批通道路由，fail-closed（见接缝表） |
 
 该匹配与 `kind()` 同为穷尽匹配，并由 `event_dispatch_contract_table`
 测试锁定，声明的契约不会无声漂移。CodeSmith **不**采纳 DSH 的
 "一切皆插件"内核 —— 内核（turn loop、provider 注册表、会话日志）保持
 编译期装配；对齐的只是分发词汇。`Waterfall` 也不是 DSH 那样以
-`next()` 包裹操作的 around-dispatch —— 它是折叠链，每个 transform
-对下一个 handler 可见。能力图谱（`docs/CAPABILITY_GRAPH.md`，由
+`next()` 包裹操作的 around-dispatch —— 它保持折叠链，每个 transform
+对下一个 handler 可见；`next()` 包裹形式仅存在于工具执行
+（`AroundToolHandler`，见下节）。能力图谱（`docs/CAPABILITY_GRAPH.md`，由
 `scripts/capability-graph.py` 生成、CI 校验）列出每个接缝的
 定义/提供者/消费者三件套。
 
@@ -320,6 +332,16 @@ async fn configure(api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
 `out.event`）。不合时宜的结果（例如在 `TurnEnd` 处 `Block`）会被
 忽略 —— 按 `Continue` 处理 —— 因此为其变体返回错误能力的处理器是
 无操作（no-op），而不是错误。
+
+### Around-dispatch（DSH tools/execute）
+
+`next()` 包裹形式仅存在于工具执行，即 `AroundToolHandler` trait（经
+`ExtensionApi::register_around_tool` 注册）—— 它刻意不是一种
+`DispatchMode`：包裹无法表达为折叠。`wrap_tool_dispatch` 按注册顺序
+（最外层在前）把链组合在 `turn::batches` 两条臂的分发终端之外 ——
+并行臂的"复用早启或新跑"，串行臂的"审批门加执行"。从不 `await next`
+即否决。DSH 的 `tools/execute` 中间件与此接缝同词汇；上面的
+`Waterfall` 折叠保持折叠。
 
 | 变体 | Emit 位置 | 遵守的结果 | 效果 |
 |---|---|---|---|
@@ -336,8 +358,8 @@ async fn configure(api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
 | `AfterProviderResponse(AfterProviderResponseEvent)` | `host_executor` `Content` 分支在 `accumulate_usage` 之后 | emit | payload = 组装后的 `MessageResponse` 序列化（流式合成：`id` 为空 —— 归约器拿不到 wire 响应对象；`content`/`stop_reason`/`usage` 来自流归约） |
 | `ProviderRequestError(ProviderRequestErrorEvent)` | `stream_with_transparent_retry` `Empty` 分支，每次重试决策前 | **Transform + Block** | DSH request-error 瀑布，在透明重试守卫内部问询：`Continue` 保持默认策略（有界重试；限流退避）；`Transform` 改写 `plan` —— `Retry { delay_ms }` 改写退避（钳制 5 分钟）或在默认预算耗尽后强制重试（强制重试上限 6 次）；`Block` 放弃并让失败上浮。`failure` 携带分类类别（snake_case）+ 原始消息；`attempt` 是 1 起始的失败尝试序号。重试不进模型上下文 —— 扩展决策由 `tracing` 记录 |
 | `AssistantStream(AssistantStreamEvent)` | 回调桥流式增量路径（`agent-runtime/src/callback_bridge.rs`） | emit | 每个线上增量一个 assistant **文本**块；分发在离线程执行，受每增量 250 ms + 每轮累计 1 s 预算约束 —— 超预算的处理器被脱离（运行至完成、结果被丢弃、从不在执行中途被取消），该轮后续增量跳过分发；无订阅者时完全不分发；thinking 增量保持仅 UI |
-| `ToolCall(ToolCallEvent)` | `host_executor` 并行 + 串行工具分发 | **Transform + Block** | handler 可改写调用 `input` 或拒绝它。`Block` 跳过审批 + `tool.run` → `Err(ToolError::permission_denied(reason))`，`blocked = true`。在并行批中，改写后的输入必须重新分类为自动批准，否则调用在该处被阻断 —— 改写无法把未批准的输入偷运过免审批批；模型可重新发起调用以走串行审批门。`on_tool_start` 与审计记录看到的是改写后的输入 |
-| `ToolResult(ToolResultEvent)` | `host_executor` 并行 + 串行，emit 重排到 `on_tool_end` 之前 | **Transform** | 替换结果；`on_tool_end` + 下游 `outcomes[idx].result` 看到的是变换后的结果。`ToolResult` 携带 canonical/rendered 分离：`content` 是模型可见渲染，`canonical` 是结构化机器值（仅存活于当前进程，不随转录持久化）—— 改写 `content` 不得改写 `canonical` |
+| `ToolCall(ToolCallEvent)` | `host_executor` 并行 + 串行工具分发 | **Transform + Block + Ask** | handler 可改写调用 `input`、拒绝它或询问用户。`Block` 跳过审批 + `tool.run` → `Err(ToolError::permission_denied(reason))`，`blocked = true`。`Ask { reason }` 把调用路由到审批决策通道，无视其静态分类 —— 串行臂强制走门（fail-closed：无通道 ⇒ 拒绝）；并行臂在批的顺序化预分发循环里就地询问（只读调用变成用户把关），拒绝按 block 记录，批准的升级策略记日志并按固定上下文运行。在并行批中，改写后的输入必须重新分类为自动批准，否则调用在该处被阻断 —— 改写无法把未批准的输入偷运过免审批批；模型可重新发起调用以走串行审批门。`on_tool_start` 与审计记录看到的是改写后的输入。around-dispatch（`AroundToolHandler`）包裹两条臂的分发终端 —— 见上节 |
+| `ToolResult(ToolResultEvent)` | `host_executor` 并行 + 串行，emit 重排到 `on_tool_end` 之前 | **Transform** | 替换结果；`on_tool_end` + 下游 `outcomes[idx].result` 看到的是变换后的结果。这就是 DSH post-execute 的 accept/replace 等价物 —— `Continue` 接受、`Transform` 替换（执行后不存在拒绝；拒绝用 `ToolCall` 接缝）。`ToolResult` 携带 canonical/rendered 分离：`content` 是模型可见渲染，`canonical` 是结构化机器值（仅存活于当前进程，不随转录持久化）—— 改写 `content` 不得改写 `canonical` |
 | `ToolExecutionStart` | `host_executor` 工具闭包（`tool.run` 之前） | emit | — |
 | `ToolExecutionEnd` | `host_executor` 工具闭包（`tool.run` 之后） | emit | — |
 | `AgentEnd` | `host_executor::run_inner` 每个 `return Ok(...)` | emit | — |
@@ -399,6 +421,9 @@ emit 位点）。
 - `TurnStopping` 的 steer 每轮上限 3 次（loop guard）；只有 `NoToolCalls`
   终止会询问 —— `MaxSteps` / `Interrupted` / `Error` 终态路径不咨询扩展，
   且到顶被丢弃的 steer 提示不追加进会话。
+- `AroundToolHandler` 与 `Ask` 仅是编译扩展面 —— 脚本 mod 两者皆不可用
+  （异步 / UI 决策通道）；见 `docs/MODS.md`。around 链结果计入 loop guard
+  失败升级，不同于 `Block` 干预。
 - 没有扩展到扩展的发布/订阅。原 §F3 的 `EventBus` 骨架
   （`subscribe`/`publish` 返回 `Unimplemented`）已在零消费者时删除 ——
   它在运行时困住调用者而不提供任何能力。只有当某个扩展真正需要
