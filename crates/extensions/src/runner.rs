@@ -25,6 +25,35 @@ use libloading::Library;
 
 use crate::api::StubExtensionApi;
 
+/// Which load path contributed a registration — the §F5d unload-safety
+/// tier. Dylib-origin registrations carry code that lives in a
+/// `libloading::Library` the runner may `dlclose` on reload (two-phase
+/// drop); a detached background sub-agent can outlive that moment, so
+/// dylib-origin tools/handlers are **main-turn-only** (see
+/// [`ExtensionRunner::mountable_tools_for_subagents`] and the
+/// `emit_scoped` origin filter). Script and compiled-in registrations
+/// hold statically linked code (or retained script ASTs) and scope
+/// everywhere. Stamped by [`ExtensionRunner::load_as`] at load time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistrationOrigin {
+    /// An `inventory`-discovered extension compiled into the binary.
+    CompiledIn,
+    /// A Rhai script mod (builtin tier or user mod) — adapter-owned code.
+    Script,
+    /// An installed Rust dylib — unloadable, hence main-turn-only.
+    Dylib,
+}
+
+impl RegistrationOrigin {
+    /// Whether registrations of this origin must stay out of sub-agent
+    /// registries and sub-agent-scoped dispatch (the §F5d T4 safety
+    /// rule).
+    #[must_use]
+    pub fn is_dylib(&self) -> bool {
+        matches!(self, RegistrationOrigin::Dylib)
+    }
+}
+
 /// A tool queued by the stub `ExtensionApi` during `configure`, awaiting
 /// `bind_core` flush into the host `ToolRegistry`.
 pub(crate) struct PendingTool {
@@ -34,6 +63,8 @@ pub(crate) struct PendingTool {
     /// coexist (the scoped one shadows the global one in that type's
     /// catalog view).
     pub scope: Scope,
+    /// Which load path contributed this tool (§F5d unload-safety tier).
+    pub origin: RegistrationOrigin,
 }
 
 /// Route B — prompt-section limit (fail loud beyond, at registration).
@@ -125,26 +156,29 @@ pub(crate) fn validate_tool_restriction(
 
 /// A handler subscribed during `configure`, with its variant filter
 /// (`None` = subscribe-to-all via `on`; `Some(kind)` = per-variant via
-/// `on_variant`) and its registration scope (`Global` for the plain forms;
+/// `on_variant`), its registration scope (`Global` for the plain forms;
 /// `AgentType(id)` via `on_variant_scoped` — dispatched only at that
-/// scope). §F2a.
+/// scope), and its origin (§F5d unload-safety tier). §F2a.
 pub(crate) struct PendingHandler {
     pub handler: Arc<dyn Handler>,
     pub kind_filter: Option<ExtensionEventKind>,
     pub scope: Scope,
+    pub origin: RegistrationOrigin,
 }
 
-/// A bound handler + its variant filter (None = subscribe-to-all) and
+/// A bound handler + its variant filter (None = subscribe-to-all),
 /// registration scope (DSH alignment: an `AgentType(id)` handler receives
-/// only `emit_scoped` dispatches at its scope; `emit` is Global). §F2a T7
-/// makes `ExtensionRunner::handlers` a `Vec<RegisteredHandler>`;
-/// `bind_core` drains `PendingHandler` into this (carrying both fields
-/// through).
+/// only `emit_scoped` dispatches at its scope; `emit` is Global), and
+/// origin (a `Dylib` handler is skipped at agent-type scopes — §F5d
+/// unload safety). §F2a T7 makes `ExtensionRunner::handlers` a
+/// `Vec<RegisteredHandler>`; `bind_core` drains `PendingHandler` into
+/// this (carrying all fields through).
 #[derive(Clone)]
 pub(crate) struct RegisteredHandler {
     pub handler: Arc<dyn Handler>,
     pub kind_filter: Option<ExtensionEventKind>,
     pub scope: Scope,
+    pub origin: RegistrationOrigin,
 }
 
 /// A deny-only tool restriction (DSH `ToolRestriction`, deny side only):
@@ -222,9 +256,17 @@ pub struct UnloadModOutcome {
     pub errors: Vec<String>,
 }
 
-/// The bound tool registry's storage shape: `(scope, name)` → definition
+/// One bound tool: the definition plus the load-path origin that governs
+/// whether it may mount into a sub-agent registry (§F5d unload-safety
+/// tier — see [`RegistrationOrigin`]).
+pub(crate) struct BoundTool {
+    pub def: Arc<dyn ToolDefinition>,
+    pub origin: RegistrationOrigin,
+}
+
+/// The bound tool registry's storage shape: `(scope, name)` → bound tool
 /// (DSH registration scope — see [`ExtensionRunner::bound_tools_scoped`]).
-pub(crate) type BoundToolMap = HashMap<(Scope, String), Arc<dyn ToolDefinition>>;
+pub(crate) type BoundToolMap = HashMap<(Scope, String), BoundTool>;
 
 /// The host runtime. Constructed by [`ExtensionRunner::new`] +
 /// [`ExtensionRunner::load`](Self::load) (runs each extension's `configure`
@@ -825,7 +867,7 @@ impl ExtensionRunner {
         m: Arc<crate::script::rhai_mod::RhaiMod>,
     ) -> Result<Vec<ExtensionError>, ExtensionError> {
         let _guard = self.transition_lock.lock().await;
-        self.load(&*m).await?;
+        self.load_as(&*m, RegistrationOrigin::Script).await?;
         let rejections = self.flush_pending()?;
         self.retain_mod(m);
         self.invalidate();
@@ -859,7 +901,7 @@ impl ExtensionRunner {
         let mut replayed = 0usize;
         for m in slots {
             let mid = m.metadata().id.to_string();
-            match self.load(&*m).await {
+            match self.load_as(&*m, RegistrationOrigin::Script).await {
                 Ok(()) => replayed += 1,
                 Err(e) => errors.push(format!("re-register mod {mid}: {e}")),
             }
@@ -875,27 +917,52 @@ impl ExtensionRunner {
         }
     }
 
-    /// Load + configure one extension against a **stub** api. Registrations
+    /// Load + configure one extension against a **stub** api, stamped as a
+    /// compiled-in contribution (the `inventory` tier). Registrations
     /// queue into `pending_*`. Called by `build_extension_runtime` (Task 9)
     /// for each discovered extension, BEFORE `bind_core`.
     pub async fn load(&self, ext: &dyn Extension) -> Result<(), ExtensionError> {
+        self.load_as(ext, RegistrationOrigin::CompiledIn).await
+    }
+
+    /// `load` with an explicit contribution origin (§F5d unload-safety
+    /// tier): the script-mod paths stamp [`RegistrationOrigin::Script`],
+    /// [`load_dylib`](Self::load_dylib) stamps
+    /// [`RegistrationOrigin::Dylib`]. The stub api carries the stamp onto
+    /// every queued registration, and dylib-origin *scoped* registrations
+    /// are rejected outright (a scoped tool/handler exists to serve
+    /// sub-agent registries and sub-agent-scoped dispatch — exactly the
+    /// surfaces dylib contributions cannot reach; failing the load beats a
+    /// registration that can never fire).
+    pub async fn load_as(
+        &self,
+        ext: &dyn Extension,
+        origin: RegistrationOrigin,
+    ) -> Result<(), ExtensionError> {
         let shared = self
             .shared
             .lock()
             .expect("shared provider registry lock poisoned")
             .clone();
-        let stub = StubExtensionApi::new(self.generation.clone(), self.pending.clone(), shared);
+        let stub = StubExtensionApi::new(
+            self.generation.clone(),
+            self.pending.clone(),
+            shared,
+            origin,
+        );
         ext.configure(&stub).await
     }
 
     /// §F5b — load a dylib extension (spec §F5b / §7.2). Opens the library,
     /// calls its `codesmith_register_extension`, pushes the `Library` into
     /// `libraries` (must outlive registered contributions' vtables; reload
-    /// does not clear — Q1), then runs `configure` via [`load`](Self::load).
-    /// The `Extension` Box is dropped after `configure` (registered
-    /// contributions are self-contained owned trait objects; vtables live in
-    /// the kept `Library`). Lockstep (§8.2) assumed. Mirrors the static
-    /// `load` path.
+    /// does not clear — Q1), then runs `configure` via
+    /// [`load_as`](Self::load_as) stamped
+    /// [`RegistrationOrigin::Dylib`] — the unload-safety tier that keeps
+    /// dylib contributions main-turn-only. The `Extension` Box is dropped
+    /// after `configure` (registered contributions are self-contained
+    /// owned trait objects; vtables live in the kept `Library`). Lockstep
+    /// (§8.2) assumed. Mirrors the static `load` path.
     pub async fn load_dylib(&self, path: &Path) -> Result<(), ExtensionError> {
         let mut loaded = crate::loader::load_dylib(path)?;
         let extension = loaded.take_extension();
@@ -904,7 +971,7 @@ impl ExtensionRunner {
             .expect("libraries lock poisoned")
             .push(loaded.into_library());
         match extension {
-            Some(extension) => self.load(&*extension).await,
+            Some(extension) => self.load_as(&*extension, RegistrationOrigin::Dylib).await,
             None => Ok(()),
         }
     }
@@ -948,9 +1015,12 @@ impl ExtensionRunner {
         };
         let mut rejections = Vec::new();
         for pt in drained.tools {
-            let scope = pt.scope;
+            let (scope, origin) = (pt.scope, pt.origin);
             let name = pt.tool.name().to_string();
-            let arc: Arc<dyn ToolDefinition> = Arc::from(pt.tool);
+            let bound = BoundTool {
+                def: Arc::from(pt.tool),
+                origin,
+            };
             // First-wins per (scope, name), matching the documented
             // slice-1 conflict policy: plain `insert` replaces and
             // silently yields last-wins.
@@ -958,7 +1028,7 @@ impl ExtensionRunner {
                 .lock()
                 .unwrap()
                 .entry((scope, name))
-                .or_insert(arc);
+                .or_insert(bound);
         }
         for restriction in drained.tool_restrictions {
             if let Err(e) = self.restrict_tools(restriction.scope, restriction.denied) {
@@ -990,6 +1060,7 @@ impl ExtensionRunner {
                     handler: ph.handler,
                     kind_filter: ph.kind_filter,
                     scope: ph.scope,
+                    origin: ph.origin,
                 });
             }
         }
@@ -1095,8 +1166,11 @@ impl ExtensionRunner {
     /// dispatch): handlers registered at `Global` always receive the
     /// event; a handler registered at `AgentType(id)` receives it only
     /// when `scope` is that same type. The main-turn sites call
-    /// [`emit`](Self::emit) (Global); a sub-agent loop that binds the
-    /// runner (iteration 5b) dispatches with its own agent type.
+    /// [`emit`](Self::emit) (Global); a sub-agent loop dispatches with
+    /// its own agent type. At agent-type scopes, dylib-origin handlers
+    /// are skipped (§F5d unload safety: a detached background child can
+    /// outlive a reload's two-phase `Library` drop, so dylib code never
+    /// runs from a sub-agent dispatch).
     ///
     /// Chains transforms (spec §4: "一个 handler 的修改对下一个可见").
     /// Returns [`EmitOutcome`] — the final (possibly transformed) event +
@@ -1122,11 +1196,13 @@ impl ExtensionRunner {
         // Snapshot the matching handlers under a short lock; dispatch outside
         // the lock so a long-running handler doesn't hold it.
         let kind = event.kind();
+        let dylib_excluded = !scope.is_global();
         let matching: Vec<RegisteredHandler> = self
             .handlers
             .lock()
             .unwrap()
             .iter()
+            .filter(|rh| !(dylib_excluded && rh.origin.is_dylib()))
             .filter(|rh| rh.scope.covers(&scope))
             .filter(|rh| rh.kind_filter.is_none() || rh.kind_filter == Some(kind))
             .cloned()
@@ -1226,13 +1302,39 @@ impl ExtensionRunner {
     /// voted away by a deployment restriction), and they apply only to
     /// the extension layer's own tools — builtins are not the extension
     /// layer's to prune.
-    ///
-    /// Known limitation: no production site resolves an `AgentType` view
-    /// yet — sub-agent registries bind no extension runner as a tool
-    /// source (§F5d structural exclusion; iteration 5b lifts it). The
-    /// derivation is the seam that consumer wires.
     #[must_use]
     pub fn bound_tools_scoped(&self, scope: &Scope) -> Vec<(String, Arc<dyn ToolDefinition>)> {
+        self.tool_view(scope, true)
+    }
+
+    /// The extension-tool view a **sub-agent registry** may mount (5b):
+    /// [`bound_tools_scoped`](Self::bound_tools_scoped) for `scope` minus
+    /// dylib-origin tools. A detached background sub-agent (an
+    /// `agent_open` session) can outlive a reload's two-phase `Library`
+    /// drop — §F5d T4's safety argument covers the main-turn executor,
+    /// the only in-flight dylib `Arc` holder between turns — so dylib
+    /// contributions stay main-turn-only; script/compiled-in
+    /// contributions (statically linked code, retained script ASTs)
+    /// mount safely. A dylib cannot even register scoped tools (the
+    /// stub rejects them at load), so the filter here only ever drops
+    /// *global* dylib tools out of the agent-type view.
+    #[must_use]
+    pub fn mountable_tools_for_subagents(
+        &self,
+        scope: &Scope,
+    ) -> Vec<(String, Arc<dyn ToolDefinition>)> {
+        self.tool_view(scope, false)
+    }
+
+    /// Shared view derivation: the global layer (minus covering
+    /// restrictions, optionally minus dylib-origin tools) overlaid by
+    /// `scope`'s own registrations when it is an agent type. Sorted by
+    /// name.
+    fn tool_view(
+        &self,
+        scope: &Scope,
+        include_dylib: bool,
+    ) -> Vec<(String, Arc<dyn ToolDefinition>)> {
         let denied: HashSet<String> = self
             .tool_restrictions
             .lock()
@@ -1242,20 +1344,21 @@ impl ExtensionRunner {
             .flat_map(|r| r.denied.iter().cloned())
             .collect();
         let tools = self.tools.lock().expect("tools lock poisoned");
+        let admits = |tool: &BoundTool| include_dylib || !tool.origin.is_dylib();
         let mut view: HashMap<String, Arc<dyn ToolDefinition>> = HashMap::new();
         // Global layer first (restrictions prune it); the scope's own
         // registrations overlay it when the view is an agent type — the
         // Global view has no overlay of its own (its layer IS the base,
         // and re-inserting it would bypass the restriction filter).
         for ((tool_scope, name), tool) in tools.iter() {
-            if tool_scope.is_global() && !denied.contains(name) {
-                view.insert(name.clone(), Arc::clone(tool));
+            if tool_scope.is_global() && admits(tool) && !denied.contains(name) {
+                view.insert(name.clone(), Arc::clone(&tool.def));
             }
         }
         if let Scope::AgentType(_) = scope {
             for ((tool_scope, name), tool) in tools.iter() {
-                if tool_scope == scope {
-                    view.insert(name.clone(), Arc::clone(tool));
+                if tool_scope == scope && admits(tool) {
+                    view.insert(name.clone(), Arc::clone(&tool.def));
                 }
             }
         }
@@ -1905,6 +2008,7 @@ mod tests {
             runner.generation_arc(),
             runner.pending.clone(),
             codesmith_agent::provider::SharedProviderRegistry::new(),
+            RegistrationOrigin::CompiledIn,
         );
         stub.disable_command("model".into()).expect("queue");
         assert!(
@@ -2670,6 +2774,154 @@ mod tests {
         assert!(
             !runner.has_handlers(ExtensionEventKind::TurnStart),
             "scoped-only handlers do not count for the Global pre-check"
+        );
+    }
+
+    // === 5b origin tiering (§F5d unload safety) ==========================
+
+    #[test]
+    fn dylib_scoped_registrations_are_rejected_at_load() {
+        struct ScopedDylibExt;
+        #[async_trait::async_trait]
+        impl Extension for ScopedDylibExt {
+            fn metadata(&self) -> &ExtensionMetadata {
+                static M: ExtensionMetadata = ExtensionMetadata::new("scoped-dylib");
+                &M
+            }
+            async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+                api.register_tool_scoped(
+                    Scope::AgentType("explore".into()),
+                    Box::new(TaggedTool("never_mounts", "dylib")),
+                )?;
+                Ok(())
+            }
+        }
+        let runner = ExtensionRunner::new();
+        let err = tokio::runtime::Runtime::new()
+            .expect("rt")
+            .block_on(runner.load_as(&ScopedDylibExt, RegistrationOrigin::Dylib))
+            .expect_err("a dylib cannot register scoped tools");
+        assert!(
+            err.to_string().contains("dylib"),
+            "the error names the tier: {err}"
+        );
+
+        struct ScopedDylibHandlerExt {
+            seen: Arc<Mutex<Vec<&'static str>>>,
+        }
+        #[async_trait::async_trait]
+        impl Extension for ScopedDylibHandlerExt {
+            fn metadata(&self) -> &ExtensionMetadata {
+                static M: ExtensionMetadata = ExtensionMetadata::new("scoped-dylib-handler");
+                &M
+            }
+            async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+                api.on_variant_scoped(
+                    ExtensionEventKind::TurnStart,
+                    Scope::AgentType("explore".into()),
+                    Arc::new(ScopeProbeHandler {
+                        seen: self.seen.clone(),
+                        label: "never_fires",
+                    }),
+                )?;
+                Ok(())
+            }
+        }
+        let runner = ExtensionRunner::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let err = tokio::runtime::Runtime::new()
+            .expect("rt")
+            .block_on(runner.load_as(&ScopedDylibHandlerExt { seen }, RegistrationOrigin::Dylib))
+            .expect_err("a dylib cannot register scoped handlers");
+        assert!(
+            err.to_string().contains("dylib"),
+            "the error names the tier: {err}"
+        );
+    }
+
+    #[test]
+    fn dylib_tools_and_handlers_stay_main_turn_only() {
+        // One dylib-stamped ext (a Global tool + a Global handler) and one
+        // compiled-in ext (same shapes) — the tier must keep only the
+        // dylib half out of sub-agent surfaces.
+        struct MixedExt {
+            seen: Arc<Mutex<Vec<&'static str>>>,
+            label: &'static str,
+        }
+        #[async_trait::async_trait]
+        impl Extension for MixedExt {
+            fn metadata(&self) -> &ExtensionMetadata {
+                static M: ExtensionMetadata = ExtensionMetadata::new("mixed-tier");
+                &M
+            }
+            async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+                api.register_tool(Box::new(TaggedTool(
+                    Box::leak(format!("{}_tool", self.label).into_boxed_str()),
+                    self.label,
+                )))?;
+                api.on_variant(
+                    ExtensionEventKind::TurnStart,
+                    Arc::new(ScopeProbeHandler {
+                        seen: self.seen.clone(),
+                        label: Box::leak(format!("{}_handler", self.label).into_boxed_str()),
+                    }),
+                )?;
+                Ok(())
+            }
+        }
+        let runner = ExtensionRunner::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        rt.block_on(runner.load(&MixedExt {
+            seen: seen.clone(),
+            label: "compiled",
+        }))
+        .expect("load compiled-in");
+        rt.block_on(runner.load_as(
+            &MixedExt {
+                seen: seen.clone(),
+                label: "dylib",
+            },
+            RegistrationOrigin::Dylib,
+        ))
+        .expect("load dylib-stamped");
+        runner.bind_core(Arc::new(Ctx { generation: 1 }));
+
+        // Tools: the Global view carries both; the sub-agent-mountable
+        // view drops the dylib one.
+        let global: Vec<String> = runner.bound_tools().into_iter().map(|(n, _)| n).collect();
+        assert!(global.contains(&"compiled_tool".to_string()));
+        assert!(global.contains(&"dylib_tool".to_string()));
+        let mountable: Vec<String> = runner
+            .mountable_tools_for_subagents(&Scope::AgentType("general".to_string()))
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert!(
+            mountable.contains(&"compiled_tool".to_string()),
+            "{mountable:?}"
+        );
+        assert!(
+            !mountable.contains(&"dylib_tool".to_string()),
+            "dylib-origin tools never mount in sub-agent registries: {mountable:?}"
+        );
+
+        // Handlers: the main turn (Global emit) runs both; an agent-type
+        // scoped emit runs only the compiled-in one.
+        let turn_start = || ExtensionEvent::TurnStart {
+            turn_id: "t1".into(),
+        };
+        let _ = rt.block_on(runner.emit(turn_start()));
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["compiled_handler", "dylib_handler"]
+        );
+        let _ =
+            rt.block_on(runner.emit_scoped(Scope::AgentType("general".to_string()), turn_start()));
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["compiled_handler", "dylib_handler", "compiled_handler"],
+            "the dylib-origin handler is skipped at agent-type scopes"
         );
     }
 }

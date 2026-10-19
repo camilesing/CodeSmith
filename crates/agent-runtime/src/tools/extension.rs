@@ -93,13 +93,14 @@ impl ToolSpec for ExtensionToolSpecAdapter {
 /// catalog (it shadows its global namesake only in that agent type's
 /// view, [`ExtensionRunner::bound_tools_scoped`]), and a `Global`
 /// `restrict_tools` entry prunes its names here. A sub-agent registry
-/// that binds the runner resolves its own view instead (iteration 5b).
+/// resolves its own view via
+/// [`register_extension_tools_scoped`] instead (5b).
 ///
 /// Per-turn rebuild → no persistent host holder; clearing `runner.tools[id]`
-/// before the next turn's call suffices. Ext tools are **main-turn-only**:
-/// they are NOT added to any subagent's tool-subset basis (§4b — subagents
-/// build their own fresh built-in-only `ToolRegistry` and never hold dylib
-/// `Arc`s; the exclusion is structural, not a runtime guard).
+/// before the next turn's call suffices. Ext tools mounted here are
+/// **main-turn** contributions; which origins may reach a sub-agent
+/// registry is the §F5d unload-safety tier's business (see
+/// [`register_extension_tools_scoped`]).
 ///
 /// Torn-read note: `bound_context()` and `bound_tools()` lock the runner's
 /// context and tools registries separately (no atomic snapshot —
@@ -113,6 +114,35 @@ pub fn register_extension_tools(registry: &mut ToolRegistry, runner: &ExtensionR
         return;
     };
     for (_name, tool) in runner.bound_tools() {
+        let adapter = ExtensionToolSpecAdapter::new(tool, ctx.clone());
+        registry.register(Arc::new(adapter));
+    }
+}
+
+/// 5b — mount the **sub-agent view** of extension tools into a child's
+/// fresh `ToolRegistry`: [`ExtensionRunner::mountable_tools_for_subagents`]
+/// for `scope` (the child's agent type) — the scope's view minus
+/// dylib-origin tools (§F5d unload safety: a detached background child
+/// can outlive a reload's two-phase `Library` drop, so dylib
+/// contributions stay main-turn-only). Called from
+/// `SubAgentToolRegistry::new` right after the built-in surface builds,
+/// BEFORE the capability-manifest removal and the read-only narrowing —
+/// so a disabled name prunes ext tools too (origin-agnostic removal),
+/// and an extension tool declaring the `ReadOnly` capability joins an
+/// explore child's read-only surface automatically.
+///
+/// ToolsChange note: the main-turn baseline/diff seam never sees child
+/// catalogs (they build on this separate path), so a scoped tool that
+/// only exists in agent-type views does not flap the main-turn diff.
+pub fn register_extension_tools_scoped(
+    registry: &mut ToolRegistry,
+    runner: &ExtensionRunner,
+    scope: &codesmith_agent::extension::Scope,
+) {
+    let Some(ctx) = runner.bound_context() else {
+        return;
+    };
+    for (_name, tool) in runner.mountable_tools_for_subagents(scope) {
         let adapter = ExtensionToolSpecAdapter::new(tool, ctx.clone());
         registry.register(Arc::new(adapter));
     }

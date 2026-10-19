@@ -587,13 +587,14 @@ pub struct SubAgentRuntime {
     /// tests) ⇒ the child cannot ask, and its out-of-workspace calls fail on
     /// their own path check as before.
     pub approval_router: Option<std::sync::Arc<crate::core::engine::ApprovalRouter>>,
-    /// The extension runner, carried for the `SessionBeforeFork` veto only:
-    /// the spawn-family tools of THIS agent's registry emit through it, so
-    /// every generation's forks are vetoable, not just the parent's.
-    /// Propagated verbatim to descendants. Deliberately NOT a tool source —
-    /// a sub-agent's registry never mounts extension tools (§4b structural
-    /// exclusion, see [`SubAgentToolRegistry::new`]). `None` for
-    /// embeds/tests.
+    /// The extension runner, carried for the `SessionBeforeFork` veto AND
+    /// (5b) as the sub-agent registry's extension-tool source: the spawn
+    /// tools of THIS agent's registry emit through it, so every
+    /// generation's forks are vetoable, and `SubAgentToolRegistry::new`
+    /// resolves the agent-type view of extension tools off it (script /
+    /// compiled-in origins only — dylib contributions stay main-turn-only,
+    /// §F5d unload safety). Propagated verbatim to descendants. `None`
+    /// for embeds/tests.
     pub extension_runner: Option<std::sync::Arc<codesmith_extensions::ExtensionRunner>>,
     /// Manager handle so children can recurse via `agent_spawn`. All agents
     /// at every depth share the same manager.
@@ -745,9 +746,12 @@ impl SubAgentRuntime {
         self
     }
 
-    /// Carry the extension runner for the `SessionBeforeFork` veto, so the
-    /// spawn tools in this agent's — and every descendant's — registry can
-    /// be vetoed. Veto-only: no extension tools are mounted from it.
+    /// Carry the extension runner: the spawn tools in this agent's — and
+    /// every descendant's — registry emit `SessionBeforeFork` through it
+    /// (veto), `SubAgentToolRegistry::new` resolves this child type's
+    /// extension-tool view off it (5b; script/compiled-in origins only),
+    /// and the child loop dispatches `ToolCall`/`ToolResult` at this
+    /// child's agent-type scope through it (5b).
     #[must_use]
     pub fn with_extension_runner(
         mut self,
@@ -5117,6 +5121,13 @@ async fn run_subagent(
     let mut steps = 0;
     let mut final_result: Option<String> = None;
     let mut pending_inputs: VecDeque<SubAgentInput> = VecDeque::new();
+    // 5b — the extension dispatch scope for this child's whole run: its
+    // own agent type. Agent-type-scoped handlers receive only this
+    // child's events; Global (script/compiled-in) handlers receive them
+    // too; dylib-origin handlers are skipped (§F5d unload safety — see
+    // `ExtensionRunner::emit_scoped`).
+    let ext_runner = runtime.extension_runner.clone();
+    let ext_scope = codesmith_agent::extension::Scope::AgentType(agent_type.as_str().to_string());
 
     for _step in 0..max_steps {
         // Cooperative cancellation: bail if this session's token was cancelled
@@ -5341,28 +5352,104 @@ async fn run_subagent(
                     step: steps,
                 });
             }
-            let result = match tokio::time::timeout(TOOL_TIMEOUT, async {
-                tool_registry
-                    .execute(&agent_id, &tool_name, tool_input)
-                    .await
-            })
-            .await
-            {
-                Ok(Ok(output)) => output,
-                Ok(Err(e)) => format!("Error: {e}"),
-                Err(_) => format!("Error: Tool {tool_name} timed out"),
+            // 5b — dispatch the call through the extension runner at this
+            // child's scope (the denying `ToolCall` waterfall): `Block`
+            // denies the call, `Ask` fails closed (a child attaches no
+            // approval ask channel — path asks are a different,
+            // host-owned flow — so an asked call is denied, never
+            // silently run), and a `Transform`'s rewritten input is what
+            // executes and what the transcript records (model-visible ⇒
+            // session-recorded via the child transcript below).
+            let mut call = codesmith_agent::extension::ToolCallEvent {
+                id: tool_id.clone(),
+                name: tool_name.clone(),
+                input: tool_input,
             };
-            let tool_ok = !result.starts_with("Error:");
+            let mut denied: Option<String> = None;
+            if let Some(runner) = ext_runner.as_ref() {
+                let out = runner
+                    .emit_scoped(
+                        ext_scope.clone(),
+                        codesmith_agent::extension::ExtensionEvent::ToolCall(call.clone()),
+                    )
+                    .await;
+                if let codesmith_agent::extension::ExtensionEvent::ToolCall(tc) = out.event {
+                    call = tc;
+                }
+                match out.outcome {
+                    codesmith_agent::extension::HandlerOutcome::Block { reason } => {
+                        denied = Some(reason);
+                    }
+                    codesmith_agent::extension::HandlerOutcome::Ask { reason } => {
+                        denied = Some(format!(
+                            "approval requested by an extension, but no ask channel is \
+                             available in sub-agents: {reason}"
+                        ));
+                    }
+                    // `Continue` proceeds; a stray `Cancel` is ignored at a
+                    // Waterfall seam (the dispatch contract).
+                    _ => {}
+                }
+            }
+            let exec_name = call.name.clone();
+            let mut result = match denied {
+                Some(reason) => format!("Error: {reason}"),
+                None => match tokio::time::timeout(TOOL_TIMEOUT, async {
+                    tool_registry
+                        .execute(&agent_id, &call.name, call.input)
+                        .await
+                })
+                .await
+                {
+                    Ok(Ok(output)) => output,
+                    Ok(Err(e)) => format!("Error: {e}"),
+                    Err(_) => format!("Error: Tool {exec_name} timed out"),
+                },
+            };
+            let mut tool_ok = !result.starts_with("Error:");
+            // 5b — the result rides back through the `ToolResult`
+            // waterfall (non-denying): a `Transform` may rewrite the
+            // model-visible content, and the final content is what the
+            // transcript records.
+            if let Some(runner) = ext_runner.as_ref() {
+                let event = codesmith_agent::extension::ToolResultEvent {
+                    id: tool_id.clone(),
+                    name: exec_name.clone(),
+                    result: if tool_ok {
+                        Ok(ToolResult::success(result.clone()))
+                    } else {
+                        Err(ToolError::execution_failed(result.clone()))
+                    },
+                };
+                let out = runner
+                    .emit_scoped(
+                        ext_scope.clone(),
+                        codesmith_agent::extension::ExtensionEvent::ToolResult(event),
+                    )
+                    .await;
+                if let codesmith_agent::extension::ExtensionEvent::ToolResult(tr) = out.event {
+                    match tr.result {
+                        Ok(r) => {
+                            result = r.content;
+                            tool_ok = r.success;
+                        }
+                        Err(e) => {
+                            result = format!("Error: {e}");
+                            tool_ok = false;
+                        }
+                    }
+                }
+            }
             emit_agent_progress(
                 runtime.event_tx.as_ref(),
                 runtime.mailbox.as_ref(),
                 &agent_id,
-                format!("step {steps}/{max_steps}: finished tool '{tool_name}'"),
+                format!("step {steps}/{max_steps}: finished tool '{exec_name}'"),
             );
             if let Some(mb) = runtime.mailbox.as_ref() {
                 let _ = mb.send(MailboxMessage::ToolCallCompleted {
                     agent_id: agent_id.clone(),
-                    tool_name: tool_name.clone(),
+                    tool_name: exec_name.clone(),
                     step: steps,
                     ok: tool_ok,
                 });
@@ -6685,21 +6772,21 @@ impl SubAgentToolRegistry {
     /// §F5b/§F5d — build the sub-agent's OWN `ToolRegistry` fresh from the
     /// built-in agent surface ("the full agent surface — same as the
     /// parent's Agent mode"). The sub-agent does **not** clone the parent's
-    /// `ToolRegistry` `Arc`s and never registers extension-contributed
-    /// tools — those are registered only in
-    /// `EngineHost::build_turn_dispatcher` (§F5d T1), a path the sub-agent
-    /// never takes. `runtime.extension_runner` is attached for the
-    /// `SessionBeforeFork` veto ONLY (every generation's spawns stay
-    /// vetoable); it is not a tool source here.
+    /// `ToolRegistry` `Arc`s. Since 5b it mounts this agent type's
+    /// **extension-tool view** off `runtime.extension_runner`
+    /// ([`register_extension_tools_scoped`]): global + `AgentType(as_str)`
+    /// registrations, minus restrictions, minus dylib-origin tools.
     ///
-    /// §4b invariant: a sub-agent never holds a dylib `Arc` across a turn
-    /// boundary (it holds none at all — the veto-only runner holds no
-    /// dylib `Arc`s of its own; `drain_libraries_to_pending` empties the
-    /// runner's `Library` vec on reload, so a child cannot pin an unloaded
-    /// library either). This needs **no runtime subagent-check guard** —
-    /// the exclusion is the structural precondition, not a guard.
-    /// The regression test `subagent_ext_tool_excluded_from_effective_set`
-    /// locks this.
+    /// §4b invariant (5b restatement): a sub-agent still never holds a
+    /// dylib `Arc`. That exclusion is now per-ORIGIN, not per-surface —
+    /// dylib registrations are filtered here
+    /// ([`ExtensionRunner::mountable_tools_for_subagents`]) and skipped by
+    /// the child loop's scoped dispatch, because a detached background
+    /// child can outlive a reload's two-phase `Library` drop (§F5d T4's
+    /// safety argument covers the main-turn executor only). Script /
+    /// compiled-in contributions hold statically linked code or retained
+    /// ASTs and mount freely. The regression test
+    /// `subagent_ext_tool_origin_tiering` locks this.
     fn new(
         mut runtime: SubAgentRuntime,
         agent_type: SubAgentType,
@@ -6759,9 +6846,10 @@ impl SubAgentToolRegistry {
             runtime.allow_shell,
             todo_list,
             plan_state,
-            // Veto-only: the child's own spawn-family tools emit
-            // `SessionBeforeFork` through it, so grandchildren forks are
-            // vetoable. No extension tools are mounted from it (§4b).
+            // The child's own spawn-family tools emit `SessionBeforeFork`
+            // through it, so grandchildren forks stay vetoable. (This
+            // builder slot is the veto carrier; the ext-tool mount happens
+            // after `build()` below — 5b.)
             runtime.extension_runner.clone(),
         );
         if matches!(agent_type, SubAgentType::Team)
@@ -6779,12 +6867,23 @@ impl SubAgentToolRegistry {
         // clone) as the grant target for an approved path.
         let ask_context = context.clone();
         let mut registry = registry.build(context);
+        // 5b — mount this agent type's extension-tool view (global ∪
+        // scoped overlay, minus restrictions, minus dylib-origin tools).
+        // BEFORE the capability-manifest removal and read-only narrowing
+        // below, so those origin-agnostic filters govern ext tools too.
+        if let Some(runner) = runtime.extension_runner.as_ref() {
+            codesmith_agent_runtime::tools::extension::register_extension_tools_scoped(
+                &mut registry,
+                runner,
+                &codesmith_agent::extension::Scope::AgentType(agent_type.as_str().to_string()),
+            );
+        }
         // Capability manifest (composition layer, slice 2b): the same
         // session-level selection the main turn applies in
         // `build_turn_dispatcher`. Registry-level removal keeps it
-        // origin-agnostic — builtins and MCP adapters live in this map
-        // (plugin/extension tools are structurally absent from this fresh
-        // build) — and makes a disabled tool neither visible
+        // origin-agnostic — builtins, MCP adapters, and the extension
+        // tools mounted just above all live in this map — and makes a
+        // disabled tool neither visible
         // (`tools_for_model`) nor executable (`execute`).
         for name in &capability_disabled {
             if registry.remove_tool(name) {

@@ -27,7 +27,7 @@ wired into the binary at compile time. Which tier fits a given surface:
 | Surface | Rhai mod | Builtin Rhai tier | Rust extension | Notes |
 |---|---|---|---|---|
 | Event hooks, tool guards | ✓ `on` / `register_guard` | — | ✓ | load/unload per mod; hook errors fail open |
-| Model-visible tools | ✓ `register_tool` (pure logic — no fs/net natives) | ✓ (scriptable defaults) | ✓ (full IO/async) | main-turn only, all tiers |
+| Model-visible tools | ✓ `register_tool` (pure logic — no fs/net natives) | ✓ (scriptable defaults) | ✓ (full IO/async) | sub-agents mount script/compiled-in tools; dylib-origin Rust tools stay main-turn only (5b tiering) |
 | Slash commands | ✓ `register_command` (shadows built-ins) / `disable_command` (retires one) | — | ✓ | layering user > mod > builtin |
 | Providers | alias only (`register_provider`) | — | ✓ full `ProviderFactory` | a script cannot implement `LlmClient` (no async/net) |
 | Prompt sections, skills | ✓ `register_prompt_section` / `register_skill` | ✓ (defaults) | ✓ | prefix-cache discipline applies |
@@ -148,15 +148,18 @@ running (`exec_shell` foreground and `exec_shell_wait`): at most once per second
 when new output arrived. `id` is the shell task id (a tool does not know its wire tool-call
 id — correlate by `name` + ordering); `message` is the output since the previous checkpoint
 (tail-capped at 4 KiB; a truncated manager excerpt yields its tail). Emit-only, main turns
-only (sub-agent loops emit no extension events); sandboxed-backend and interactive runs
+only (the sub-agent progress sink stays unwired — 5b gave sub-agent loops
+`tool-call`/`tool-result` only); sandboxed-backend and interactive runs
 report no checkpoints. The same checkpoint reaches the UI as `ToolCallProgress`.
 `resources-discover` was removed in 0.11.0 (never had an emitter or a consumer).
 `session-before-fork` fires at
 every spawn — the spawn-family tools (`agent_open` / `agent_spawn` / `subagent_run` /
-`delegate_to_agent`) at every depth (the runner rides the sub-agent runtime, veto-only, so
+`delegate_to_agent`) at every depth (the runner rides the sub-agent runtime, so
 grandchildren forks are vetoable too) and the engine-internal spawn path — before the child
-forks session state; `cancel()` vetoes the fork. Sub-agent registries still never mount
-extension tools: the runner is carried for the veto alone.
+forks session state; `cancel()` vetoes the fork. Since 5b the runner is more than the veto
+carrier on the child side: sub-agent registries mount the child type's extension-tool view
+(script/compiled-in origins only — a mod's guard therefore also gates sub-agent tool calls),
+and sub-agent loops dispatch `tool-call`/`tool-result` at their agent-type scope.
 
 `tool-result` payloads carry the canonical/rendered separation: `content` is the model-visible rendering; `canonical` is the structured machine-readable value of the same result (the `ToolResult::json` value, or what a tool attached via `with_canonical`). Read `canonical` instead of re-parsing `content` — prose-rendered results (`todo_add` prefixes a sentence before the JSON) are not parseable at all. Canonical is live-process only: the transcript persists the rendered `content`.
 
@@ -467,7 +470,7 @@ rejection. A mod whose manifest fails validation is skipped at discovery
 - **Single-mod load/unload**: `activate` / `enable` compile + bind just that mod; `disable` / `remove` evict only its compiled form and re-register the survivors from their retained compiled ASTs — no recompile of other mods, no whole-layer reload. Each transition bumps the runner generation once, and registration changes still take effect at the next turn boundary (the `tools-change` discipline is unchanged). `/mods reload` (and `manage_mods(action="reload")`) stays the whole-layer path: re-discovery, re-consent checks, fresh compiles. Unload reclaims the compiled engine + AST only — the mod's KV file persists by design (it is the mod's opt-in store).
 - **Let the agent write mods for you**: just ask ("write me a mod that blocks git push") — the model writes files via the `manage_mods` tool (`write`) and requests your approval to activate (`activate`).
 - **Mod writes follow workspace trust, both roots**: an untrusted workspace discovers no project mods, and `manage_mods` refuses to write mods into it — project root *and* the global `~/.codesmith/mods` (a global write would install code that loads in every workspace, including other untrusted ones, so the trust signal must not be bypassable via the `global` flag). Trust the workspace first, then write.
-- **Known boundaries**: mod tools, like Rust-extension tools, are main-turn only (sub-agents structurally never see them); network install sources (git clone into the mods dir) are out of MVP scope.
+- **Known boundaries**: mod (script) tools and compiled-in Rust-extension tools mount in sub-agents too (5b); dylib-origin Rust-extension tools stay main-turn only (unload safety). Network install sources (git clone into the mods dir) are out of MVP scope.
 
 ## Configuration
 

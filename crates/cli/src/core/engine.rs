@@ -959,11 +959,17 @@ fn populate_extension_runtime(
                     .expect("extension load runtime");
                 // Builtin tier first — user mods load after it, so their
                 // policy registrations win the last-wins resolution.
+                // Script origin: these registrations hold retained script
+                // ASTs (§F5d unload-safety tier — they may scope into
+                // sub-agent registries; dylib contributions may not).
                 for (id, result) in codesmith_extensions::load_builtin_mods(
                     runner_for_thread.message_projection_hub(),
                 ) {
                     match result {
-                        Ok(m) => match load_rt.block_on(runner_for_thread.load(&m)) {
+                        Ok(m) => match load_rt.block_on(
+                            runner_for_thread
+                                .load_as(&m, codesmith_extensions::RegistrationOrigin::Script),
+                        ) {
                             Ok(()) => {
                                 runner_for_thread.retain_mod(Arc::new(m));
                                 audit_cell.lock().expect("audit cell poisoned").push(
@@ -1059,38 +1065,44 @@ fn populate_extension_runtime(
                         mods_kv_dir.as_deref(),
                         runner_for_thread.message_projection_hub(),
                     ) {
-                        Ok(rhai_mod) => match load_rt.block_on(runner_for_thread.load(&rhai_mod)) {
-                            Ok(()) => {
-                                // Per-mod lifecycle — retain the compiled form
-                                // so a later single-mod unload replays this
-                                // mod without recompiling.
-                                runner_for_thread.retain_mod(Arc::new(rhai_mod));
-                                loaded_mods_cell.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                audit_cell.lock().expect("audit cell poisoned").push(
-                                    StartupAuditEntry::new(
-                                        id,
-                                        AuditSource::ScriptMod { global },
-                                        AuditStatus::Loaded,
-                                    ),
-                                );
+                        Ok(rhai_mod) => {
+                            match load_rt.block_on(runner_for_thread.load_as(
+                                &rhai_mod,
+                                codesmith_extensions::RegistrationOrigin::Script,
+                            )) {
+                                Ok(()) => {
+                                    // Per-mod lifecycle — retain the compiled form
+                                    // so a later single-mod unload replays this
+                                    // mod without recompiling.
+                                    runner_for_thread.retain_mod(Arc::new(rhai_mod));
+                                    loaded_mods_cell
+                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    audit_cell.lock().expect("audit cell poisoned").push(
+                                        StartupAuditEntry::new(
+                                            id,
+                                            AuditSource::ScriptMod { global },
+                                            AuditStatus::Loaded,
+                                        ),
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        target: "codesmith_mods",
+                                        "configure mod {}: {e}",
+                                        id
+                                    );
+                                    audit_cell.lock().expect("audit cell poisoned").push(
+                                        StartupAuditEntry::new(
+                                            id,
+                                            AuditSource::ScriptMod { global },
+                                            AuditStatus::Failed {
+                                                error: e.to_string(),
+                                            },
+                                        ),
+                                    );
+                                }
                             }
-                            Err(e) => {
-                                tracing::warn!(
-                                    target: "codesmith_mods",
-                                    "configure mod {}: {e}",
-                                    id
-                                );
-                                audit_cell.lock().expect("audit cell poisoned").push(
-                                    StartupAuditEntry::new(
-                                        id,
-                                        AuditSource::ScriptMod { global },
-                                        AuditStatus::Failed {
-                                            error: e.to_string(),
-                                        },
-                                    ),
-                                );
-                            }
-                        },
+                        }
                         Err(e) => {
                             tracing::warn!(
                                 target: "codesmith_mods",

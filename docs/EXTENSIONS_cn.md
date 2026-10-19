@@ -14,7 +14,7 @@ dylib 源（安装根）→ 与磁盘上的 `ExtensionStateStore` 对账（跳�
 扩展工具按轮实时接入宿主：通过
 `EngineHost::build_turn_dispatcher` 中的 `register_extension_tools`
 注册到每轮的 `ToolRegistry`，agent 循环将其视为普通的
-`ToolSpec`（仅限主轮；不会被子代理继承 —— 见
+`ToolSpec`（对子代理按来源分层 —— 见
 [沙箱立场](#沙箱立场)）。扩展/mod 的**斜杠命令在 REPL 中分发**：
 `ExtensionRunner::try_dispatch_command`
 （`crates/extensions/src/runner.rs`）由行式 REPL 在用户命令之后、内建
@@ -337,11 +337,14 @@ global 注册减去所有覆盖该视图的 restriction，然后——对 `Agent
 解析的正是它，所以 scoped 工具与被全局拒绝的名字永远不会出现在
 主目录里。
 
-已知限制：子代理注册表尚未把 extension runner 绑定为工具源——
-§F5d 结构性排除仍然成立（两阶段 dylib drop 的安全论证依赖"主轮
-executor 是 turn 间唯一在飞的 dylib `Arc` 持有者"），因此今天没有
-生产站点解析 `AgentType` 视图或分发 `emit_scoped`；带作用域的注册面
-也未向脚本 mod 开放。按名字拒绝内建工具不是这份名单的职责（见上）。
+已知限制：注册作用域按**来源分层**解析（5b）——子代理注册表只挂载
+script/compiled-in 扩展工具，子代理循环只在自己作用域分发
+script/compiled-in 处理器，因为 detached 后台子代理（`agent_open` 会话）
+可能活得比一次 reload 的两阶段 dylib drop 更久，所以 dylib 贡献保持仅
+主轮（dylib 甚至无法注册 scoped 工具/处理器——加载直接失败报错）。
+子代理循环只在自己作用域发射 `ToolCall` / `ToolResult`；轮级与
+provider 级事件保持仅主轮。带作用域的注册面也未向脚本 mod 开放。按名字
+拒绝内建工具不是这份名单的职责（见上）。
 
 ## 分发三态（DSH 对齐）+ 宿主接缝映射
 
@@ -397,8 +400,8 @@ executor 是 turn 间唯一在飞的 dylib `Arc` 持有者"），因此今天没
 | `AfterProviderResponse(AfterProviderResponseEvent)` | `host_executor` `Content` 分支在 `accumulate_usage` 之后 | emit | payload = 组装后的 `MessageResponse` 序列化（流式合成：`id` 为空 —— 归约器拿不到 wire 响应对象；`content`/`stop_reason`/`usage` 来自流归约） |
 | `ProviderRequestError(ProviderRequestErrorEvent)` | `stream_with_transparent_retry` `Empty` 分支，每次重试决策前 | **Transform + Block** | DSH request-error 瀑布，在透明重试守卫内部问询：`Continue` 保持默认策略（有界重试；限流退避）；`Transform` 改写 `plan` —— `Retry { delay_ms }` 改写退避（钳制 5 分钟）或在默认预算耗尽后强制重试（强制重试上限 6 次）；`Block` 放弃并让失败上浮。`failure` 携带分类类别（snake_case）+ 原始消息；`attempt` 是 1 起始的失败尝试序号。重试不进模型上下文 —— 扩展决策由 `tracing` 记录 |
 | `AssistantStream(AssistantStreamEvent)` | 回调桥流式增量路径（`agent-runtime/src/callback_bridge.rs`） | emit | 每个线上增量一个 assistant **文本**块；分发在离线程执行，受每增量 250 ms + 每轮累计 1 s 预算约束 —— 超预算的处理器被脱离（运行至完成、结果被丢弃、从不在执行中途被取消），该轮后续增量跳过分发；无订阅者时完全不分发；thinking 增量保持仅 UI |
-| `ToolCall(ToolCallEvent)` | `host_executor` 并行 + 串行工具分发 | **Transform + Block + Ask** | handler 可改写调用 `input`、拒绝它或询问用户。`Block` 跳过审批 + `tool.run` → `Err(ToolError::permission_denied(reason))`，`blocked = true`。`Ask { reason }` 把调用路由到审批决策通道，无视其静态分类 —— 串行臂强制走门（fail-closed：无通道 ⇒ 拒绝）；并行臂在批的顺序化预分发循环里就地询问（只读调用变成用户把关），拒绝按 block 记录，批准的升级策略记日志并按固定上下文运行。在并行批中，改写后的输入必须重新分类为自动批准，否则调用在该处被阻断 —— 改写无法把未批准的输入偷运过免审批批；模型可重新发起调用以走串行审批门。`on_tool_start` 与审计记录看到的是改写后的输入。around-dispatch（`AroundToolHandler`）包裹两条臂的分发终端 —— 见上节 |
-| `ToolResult(ToolResultEvent)` | `host_executor` 并行 + 串行，emit 重排到 `on_tool_end` 之前 | **Transform** | 替换结果；`on_tool_end` + 下游 `outcomes[idx].result` 看到的是变换后的结果。这就是 DSH post-execute 的 accept/replace 等价物 —— `Continue` 接受、`Transform` 替换（执行后不存在拒绝；拒绝用 `ToolCall` 接缝）。`ToolResult` 携带 canonical/rendered 分离：`content` 是模型可见渲染，`canonical` 是结构化机器值（仅存活于当前进程，不随转录持久化）—— 改写 `content` 不得改写 `canonical` |
+| `ToolCall(ToolCallEvent)` | `host_executor` 并行 + 串行工具分发 + **子代理循环**（5b：子代理每次工具调用都按其 `AgentType` 作用域分发——仅 script/compiled-in 处理器，dylib 处理器被跳过） | **Transform + Block + Ask** | handler 可改写调用 `input`、拒绝它或询问用户。`Block` 跳过审批 + `tool.run` → `Err(ToolError::permission_denied(reason))`，`blocked = true`。`Ask { reason }` 把调用路由到审批决策通道，无视其静态分类 —— 串行臂强制走门（fail-closed：无通道 ⇒ 拒绝）；并行臂在批的顺序化预分发循环里就地询问（只读调用变成用户把关），拒绝按 block 记录，批准的升级策略记日志并按固定上下文运行。在并行批中，改写后的输入必须重新分类为自动批准，否则调用在该处被阻断 —— 改写无法把未批准的输入偷运过免审批批；模型可重新发起调用以走串行审批门。`on_tool_start` 与审计记录看到的是改写后的输入。around-dispatch（`AroundToolHandler`）包裹两条臂的分发终端 —— 见上节。子代理循环中：`Block` 拒绝（错误字符串结果），`Ask` fail-closed（子代理不挂审批询问通道——拒绝并把理由回传），transform 改写后的输入才是执行与子代理转录记录的输入 |
+| `ToolResult(ToolResultEvent)` | `host_executor` 并行 + 串行，emit 重排到 `on_tool_end` 之前 + **子代理循环**（5b：子代理每次工具执行之后，按其作用域——终值内容即子代理转录记录的内容） | **Transform** | 替换结果；`on_tool_end` + 下游 `outcomes[idx].result` 看到的是变换后的结果。这就是 DSH post-execute 的 accept/replace 等价物 —— `Continue` 接受、`Transform` 替换（执行后不存在拒绝；拒绝用 `ToolCall` 接缝）。`ToolResult` 携带 canonical/rendered 分离：`content` 是模型可见渲染，`canonical` 是结构化机器值（仅存活于当前进程，不随转录持久化）—— 改写 `content` 不得改写 `canonical` |
 | `ToolExecutionStart` | `host_executor` 工具闭包（`tool.run` 之前） | emit | — |
 | `ToolExecutionEnd` | `host_executor` 工具闭包（`tool.run` 之后） | emit | — |
 | `AgentEnd` | `host_executor::run_inner` 每个 `return Ok(...)` | emit | — |
@@ -409,7 +412,7 @@ executor 是 turn 间唯一在飞的 dylib `Arc` 持有者"），因此今天没
 | `ProjectTrust` | `HostServices::build_turn_dispatcher`（`crates/cli/src/core/engine/runtime_traits.rs`；+ `spawn_subagent`）在 `build_tool_context_for` 之后（每轮 `Trusted`/`Untrusted`）；`FirstLoad` 当前无 emit 位点 —— onboarding 信任提示的发出随 TUI 在 0.9.0 移除 | emit | 来自 `session.trust_mode` 的每轮 `Trusted`/`Untrusted`；`FirstLoad` 为 onboarding 信任接受（`TrustReason::FirstLoad`）而定义，但已无活跃 emit 位点 —— 运行时 `trust_mode` 开关（`/trust on`）、YOLO 进入和持久化信任启动在每轮表现为 `Trusted`/`Untrusted`，而不是 `FirstLoad` |
 | `ToolsChange { added, removed }` | `HostServices::build_turn_dispatcher` 在所有选择源应用之后 | emit | 最终模型可见目录与上一主回合基线的差量；首次构建静默建立基线；子代理工具集不经过此接缝 |
 | `—`（dylib LOAD，不是事件） | `populate_extension_runtime`（`crates/cli/src/core/engine.rs`）在 `discover_static` 之后 | n/a（加载阶段） | `discover_dylib(&global_roots, &project_roots)` → `apply_trust_gate(discovered, !is_workspace_trusted(workspace))` 丢弃项目本地（`global == false`）→ `state.is_enabled` 对账 → 在 OS 线程加载运行时上执行 `ExtensionRunner::load_dylib`；重载经 `reload_extension_runtime`→`populate` 拾取。`ExtensionRunner.libraries` 持有 `Library` 句柄；运行时重载时它们 `drain_libraries_to_pending` 到 `pending_drop`（与各 clear 一并执行）+ 引擎 op-loop 在下一个轮边界对它们执行 `drop_pending`。经 `codesmith_register_extension` 实现 lockstep `*mut dyn Extension`。 |
-| `SessionBeforeFork` | spawn 工具族（`agent_open` / `agent_spawn` / `agent_run` / `delegate_to_agent`，任意深度——runner 以仅否决用途随 `SubAgentRuntime` 传递）+ `HostServices::spawn_subagent`（`crates/cli/src/tools/subagent/mod.rs`、`core/engine/runtime_traits.rs`） | **Cancel** | 在子代理 fork 会话状态前发出；`Cancel` 以模型可见错误中止该次 spawn |
+| `SessionBeforeFork` | spawn 工具族（`agent_open` / `agent_spawn` / `agent_run` / `delegate_to_agent`，任意深度——runner 随 `SubAgentRuntime` 传递，孙代 fork 也可否决）+ `HostServices::spawn_subagent`（`crates/cli/src/tools/subagent/mod.rs`、`core/engine/runtime_traits.rs`） | **Cancel** | 在子代理 fork 会话状态前发出；`Cancel` 以模型可见错误中止该次 spawn |
 | `ToolExecutionUpdate` | `exec_shell`（前台）/ `exec_shell_wait` 轮询循环 → `ToolContext::progress` → `callback_bridge::RunnerProgressSink` | emit | 命令运行期间的节流检查点（间隔 ≥1s、仅有新输出时）：`id` = shell 任务 id，`message` = 自上一检查点以来的输出（尾部截至 4 KiB）；同一检查点以 `Event::ToolCallProgress` 到达 UI；按 AssistantStream 的预算/断路器派发；仅主回合；沙箱后端与交互式运行不报 |
 
 > `Transform` 载荷的可执行字段在完整处理器链运行之后才于接缝处应用
@@ -435,13 +438,14 @@ emit 位点）。
 访问权 —— 信任其来源；对不受信任的来源请容器化。编译内置的扩展在
 构造上就是可信的（它们随二进制发布）。
 
-扩展工具**仅限主轮，且是结构性的**：它们注册到宿主的每轮
-`ToolRegistry`（主 agent 轮），不会被子代理继承。这是结构性的，
-而非守卫：`SubAgentRuntime.extension_runner` 仅作否决用途（`SessionBeforeFork`；
-没有任何代码从它读取工具）+
-`SubAgentToolRegistry::new` 会重建自己全新的内置 `ToolRegistry` ——
-因此无论 `inherit_full_registry` 如何，扩展工具都永远无法进入子代理
-的有效集合。不需要来源标记 / 强制子集 / 运行时子代理检查。
+扩展工具**按来源分层**（5b）：主轮不问来源挂载 Global 视图；子代理
+注册表通过 `ExtensionRunner::mountable_tools_for_subagents` 解析自己
+agent 类型的视图，它会过滤掉 **dylib 来源**工具——detached 后台子代理
+（`agent_open` 会话）可能活得比一次 reload 的两阶段 `Library` drop
+更久，因此 dylib `Arc` 永不跨入子代理（§F5d T4 安全不变量，按来源而非
+按表面重述）。script/compiled-in 扩展工具可自由挂载进子代理；能力清单
+移除与 read-only 收窄像治理其他工具一样治理它们（扩展工具声明
+`ReadOnly` 能力即可加入 explore 子代理的表面）。
 
 安全卸载依赖两阶段 `Library` drop：UI 线程上的重载将孤儿 `Library`
 移动到 `pending_drop`（`drain_libraries_to_pending`）；引擎 op-loop

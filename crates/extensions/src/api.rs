@@ -21,7 +21,7 @@ use codesmith_agent::provider::{
     ProviderAlias, ProviderFactory, ProviderRegistration, SharedProviderRegistry,
 };
 
-use crate::runner::Pending;
+use crate::runner::{Pending, RegistrationOrigin};
 
 /// Return `Ok(())` if the runtime generation still matches `captured`, else
 /// `StaleContext`. The stable stale-context guard (spec §7.3).
@@ -42,6 +42,9 @@ pub struct StubExtensionApi {
     /// Route A — the runner's shared provider registry, for building
     /// aliasing factories (see `register_provider_alias`).
     shared: SharedProviderRegistry,
+    /// The load-path stamp (§F5d unload-safety tier) carried onto every
+    /// queued registration.
+    origin: RegistrationOrigin,
 }
 
 impl StubExtensionApi {
@@ -52,6 +55,7 @@ impl StubExtensionApi {
         generation: Arc<AtomicU64>,
         pending: Arc<Mutex<Pending>>,
         shared: SharedProviderRegistry,
+        origin: RegistrationOrigin,
     ) -> Self {
         let captured_gen = generation.load(Ordering::Acquire);
         Self {
@@ -59,8 +63,22 @@ impl StubExtensionApi {
             captured_gen,
             pending,
             shared,
+            origin,
         }
     }
+}
+
+/// A dylib-origin extension cannot reach sub-agent surfaces (its
+/// registrations are main-turn-only, §F5d unload safety), so a *scoped*
+/// registration from one would never fire — reject it at load (fail loud).
+fn reject_dylib_scoped(origin: RegistrationOrigin, what: &str) -> Result<(), ExtensionError> {
+    if origin.is_dylib() {
+        return Err(ExtensionError::Load(format!(
+            "a dylib extension cannot register scoped {what}: scoped registrations serve \
+             sub-agent surfaces, which dylib contributions cannot reach (unload safety)"
+        )));
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -77,6 +95,7 @@ impl ExtensionApi for StubExtensionApi {
             .push(crate::runner::PendingTool {
                 tool,
                 scope: Scope::Global,
+                origin: self.origin,
             });
         Ok(())
     }
@@ -87,11 +106,16 @@ impl ExtensionApi for StubExtensionApi {
     ) -> Result<(), ExtensionError> {
         assert_live(&self.generation, self.captured_gen)?;
         scope.validate()?;
+        reject_dylib_scoped(self.origin, "tools")?;
         self.pending
             .lock()
             .unwrap()
             .tools
-            .push(crate::runner::PendingTool { tool, scope });
+            .push(crate::runner::PendingTool {
+                tool,
+                scope,
+                origin: self.origin,
+            });
         Ok(())
     }
     fn register_command(&self, command: Box<dyn CommandDefinition>) -> Result<(), ExtensionError> {
@@ -127,6 +151,7 @@ impl ExtensionApi for StubExtensionApi {
                 handler,
                 kind_filter: None,
                 scope: Scope::Global,
+                origin: self.origin,
             });
         Ok(())
     }
@@ -144,6 +169,7 @@ impl ExtensionApi for StubExtensionApi {
                 handler,
                 kind_filter: Some(kind),
                 scope: Scope::Global,
+                origin: self.origin,
             });
         Ok(())
     }
@@ -155,6 +181,7 @@ impl ExtensionApi for StubExtensionApi {
     ) -> Result<(), ExtensionError> {
         assert_live(&self.generation, self.captured_gen)?;
         scope.validate()?;
+        reject_dylib_scoped(self.origin, "handlers")?;
         self.pending
             .lock()
             .unwrap()
@@ -163,6 +190,7 @@ impl ExtensionApi for StubExtensionApi {
                 handler,
                 kind_filter: Some(kind),
                 scope,
+                origin: self.origin,
             });
         Ok(())
     }
@@ -355,11 +383,16 @@ impl ExtensionApi for RealExtensionApi {
     fn register_tool(&self, tool: Box<dyn ToolDefinition>) -> Result<(), ExtensionError> {
         assert_live(&self.generation, self.captured_gen)?;
         let name = tool.name().to_string();
-        let arc: Arc<dyn ToolDefinition> = Arc::from(tool);
+        let bound = crate::runner::BoundTool {
+            def: Arc::from(tool),
+            // The real api carries no load-path stamp (never constructed
+            // today); compiled-in is the safe default.
+            origin: RegistrationOrigin::CompiledIn,
+        };
         self.tools
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert((Scope::Global, name), arc);
+            .insert((Scope::Global, name), bound);
         Ok(())
     }
     fn register_command(&self, command: Box<dyn CommandDefinition>) -> Result<(), ExtensionError> {
@@ -381,6 +414,9 @@ impl ExtensionApi for RealExtensionApi {
                 handler,
                 kind_filter: None,
                 scope: Scope::Global,
+                // The real api carries no load-path stamp (it is never
+                // constructed today); compiled-in is the safe default.
+                origin: RegistrationOrigin::CompiledIn,
             });
         Ok(())
     }
@@ -397,6 +433,7 @@ impl ExtensionApi for RealExtensionApi {
                 handler,
                 kind_filter: Some(kind),
                 scope: Scope::Global,
+                origin: RegistrationOrigin::CompiledIn,
             });
         Ok(())
     }
@@ -474,8 +511,12 @@ mod tests {
     async fn stub_after_invalidate_returns_stale_context() {
         let generation = Arc::new(AtomicU64::new(0));
         let pending = Arc::new(Mutex::new(Pending::default()));
-        let stub =
-            StubExtensionApi::new(generation.clone(), pending, SharedProviderRegistry::new());
+        let stub = StubExtensionApi::new(
+            generation.clone(),
+            pending,
+            SharedProviderRegistry::new(),
+            crate::runner::RegistrationOrigin::CompiledIn,
+        );
         generation.fetch_add(1, Ordering::AcqRel);
         struct Nop;
         #[async_trait]
@@ -501,6 +542,7 @@ mod tests {
             generation.clone(),
             pending.clone(),
             SharedProviderRegistry::new(),
+            crate::runner::RegistrationOrigin::CompiledIn,
         );
         struct Nop;
         #[async_trait]
