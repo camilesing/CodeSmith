@@ -21,7 +21,9 @@ use codesmith_agent::llm_client::LlmClientHandle;
 use codesmith_agent::provider::{ProviderConfig, ProviderFactory, ProviderId};
 use rig_core::providers::openai;
 
-use crate::rig_adapter::{GenericShaper, H2FallbackClient, RigLlmClient, build_header_map};
+use crate::rig_adapter::{
+    GenericShaper, H2FallbackClient, RigLlmClient, build_header_map, header_pairs,
+};
 
 /// Factory for a single OpenAI-compatible builtin provider kind. Identical
 /// construction for every kind; only the `id` (for registry resolution),
@@ -115,6 +117,6 @@ impl ProviderFactory for OpenAiCompatFactory {
             None,
             None,
         );
-        Ok(Arc::new(adapter) as LlmClientHandle)
+        Ok(Arc::new(adapter.with_headers(header_pairs(&cfg.http_headers))) as LlmClientHandle)
     }
 }

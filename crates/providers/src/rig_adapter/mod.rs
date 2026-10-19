@@ -89,6 +89,20 @@ pub(crate) fn build_header_map(
     map
 }
 
+/// The extra headers as sorted `(name, value)` pairs — the
+/// [`LlmClient::request_headers`] observation surface (same source map as
+/// [`build_header_map`]; sorted for a stable payload).
+pub(crate) fn header_pairs(
+    headers: &std::collections::HashMap<String, String>,
+) -> Vec<(String, String)> {
+    let mut pairs: Vec<(String, String)> = headers
+        .iter()
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
+    pairs.sort();
+    pairs
+}
+
 /// An LLM client that satisfies CodeSmith's `LlmClient` contract by delegating
 /// chat completions / streaming to a rig `CompletionClient`.
 ///
@@ -104,6 +118,10 @@ pub(crate) struct RigLlmClient<C, S> {
     base_url: String,
     api_key: Option<String>,
     http: Option<reqwest::Client>,
+    /// The provider's configured extra headers, kept for the
+    /// [`LlmClient::request_headers`] observation surface (the headers
+    /// themselves ride via rig's client builder).
+    extra_headers: Vec<(String, String)>,
 }
 
 impl<C, S> RigLlmClient<C, S> {
@@ -124,7 +142,16 @@ impl<C, S> RigLlmClient<C, S> {
             base_url,
             api_key,
             http,
+            extra_headers: Vec::new(),
         }
+    }
+
+    /// Stash the extra headers for [`LlmClient::request_headers`]
+    /// (chainable; factories pass [`header_pairs`] of the same map they
+    /// built the wire headers from).
+    pub(crate) fn with_headers(mut self, headers: Vec<(String, String)>) -> Self {
+        self.extra_headers = headers;
+        self
     }
 }
 
@@ -239,6 +266,10 @@ where
 
     fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    fn request_headers(&self) -> Vec<(String, String)> {
+        self.extra_headers.clone()
     }
 
     fn create_message(

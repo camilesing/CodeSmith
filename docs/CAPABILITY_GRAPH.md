@@ -19,7 +19,7 @@ explaining.
 | `CommandDefinition` | `agent` | `agent`, `extensions` | `agent`, `extensions` |
 | `Extension` | `agent` | `agent-runtime`, `cli`, `extensions`, `extensions-fixture-dylib` | `extensions`, `extensions-fixture-dylib` |
 | `ExternalSubagentProvider` | `agent-runtime` | `cli` | `agent-runtime`, `cli` |
-| `Handler` | `agent` | `agent`, `agent-runtime`, `extensions`, `extensions-fixture-dylib` | `agent`, `extensions` |
+| `Handler` | `agent` | `agent`, `agent-runtime`, `extensions`, `extensions-fixture-dylib` | `agent`, `agent-runtime`, `extensions` |
 | `HostServices` | `agent-runtime` | `cli` | `agent-runtime`, `cli` |
 | `IndexBackend` | `index` | `index` | `index` |
 | `IndexBackendFactory` | `index` | `index` | `index` |

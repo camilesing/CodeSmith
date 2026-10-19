@@ -130,6 +130,10 @@ impl LlmClient for RetryingClient {
         self.inner.base_url()
     }
 
+    fn request_headers(&self) -> Vec<(String, String)> {
+        self.inner.request_headers()
+    }
+
     fn health_check(&self) -> Pin<Box<dyn Future<Output = Result<bool>> + Send + '_>> {
         self.inner.health_check()
     }

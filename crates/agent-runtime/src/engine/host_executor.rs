@@ -1366,8 +1366,9 @@ pub struct HostAgentExecutor {
     /// §F1 — extension runtime probe. `None` ⇒ extension events are no-ops
     /// (embeds/tests skip via `with_extension_runner`). When bound, `emit`
     /// calls fan out best-effort to registered `Handler`s at the lifecycle
-    /// seams inside `run_inner`.
-    extension: Option<Arc<codesmith_extensions::ExtensionRunner>>,
+    /// seams inside `run_inner` and the transparent-retry guard's
+    /// `ProviderRequestError` question (turn/stream.rs).
+    pub(crate) extension: Option<Arc<codesmith_extensions::ExtensionRunner>>,
 
     /// Idle watchdog for the streaming connection (P0-1). When `Some(d)`,
     /// [`reduce_stream`](Self::reduce_stream) aborts a stream that produces no
@@ -3266,11 +3267,28 @@ impl HostAgentExecutor {
             // step that first carries it. Emits `Event::PrefixCacheChange`
             // on drift; no-op unless the production wire-in bound the probe.
             self.observe_prefix_stability(&frozen_prefix).await;
-            // §F2b T2 — BeforeProviderHeaders (observe) fires before the
-            // request is assembled.
+            // §F2b T2 — BeforeProviderHeaders (Emit-only) fires before the
+            // request is assembled. The payload is the provider client's
+            // extra HTTP headers with credential-bearing values masked
+            // (the transport's auth headers never leave the client).
             if let Some(runner) = &extension {
+                let headers: serde_json::Map<String, serde_json::Value> = client
+                    .request_headers()
+                    .into_iter()
+                    .map(|(name, value)| {
+                        let masked =
+                            codesmith_agent::extension::mask_sensitive_header(&name, &value);
+                        (name, serde_json::Value::String(masked))
+                    })
+                    .collect();
                 let _ = runner
-                    .emit(codesmith_agent::extension::ExtensionEvent::BeforeProviderHeaders)
+                    .emit(
+                        codesmith_agent::extension::ExtensionEvent::BeforeProviderHeaders(
+                            codesmith_agent::extension::BeforeProviderHeadersEvent {
+                                headers: serde_json::Value::Object(headers),
+                            },
+                        ),
+                    )
                     .await;
             }
             // The per-step `MessageRequest` is assembled through the
@@ -3393,13 +3411,29 @@ impl HostAgentExecutor {
                     // (`turn.add_usage(&usage)`) used to do inline; the host
                     // now reads it back via `take_usage` after `run` returns.
                     self.accumulate_usage(&usage);
-                    // §F2b T2 — AfterProviderResponse (observe).
+                    // §F2b T2 — AfterProviderResponse (Emit-only). The
+                    // payload is the assembled `MessageResponse`. Known
+                    // limitation: the streaming path has no wire response
+                    // object, so `id` is empty and the fields come from the
+                    // stream reduction (content / stop_reason / usage).
                     if let Some(runner) = &extension {
+                        let response = codesmith_agent::models::MessageResponse {
+                            id: String::new(),
+                            r#type: "message".to_string(),
+                            role: "assistant".to_string(),
+                            content: content.clone(),
+                            model: client.model().to_string(),
+                            stop_reason: stop_reason.clone(),
+                            stop_sequence: None,
+                            container: None,
+                            usage: usage.clone(),
+                        };
                         let _ = runner
                             .emit(
                                 codesmith_agent::extension::ExtensionEvent::AfterProviderResponse(
                                     codesmith_agent::extension::AfterProviderResponseEvent {
-                                        response: serde_json::Value::Null,
+                                        response: serde_json::to_value(&response)
+                                            .unwrap_or(serde_json::Value::Null),
                                     },
                                 ),
                             )
@@ -16239,7 +16273,7 @@ mod tests {
                 ExtensionEvent::BeforeAgentStart(_) => "BeforeAgentStart",
                 ExtensionEvent::AgentStart => "AgentStart",
                 ExtensionEvent::TurnStart { .. } => "TurnStart",
-                ExtensionEvent::BeforeProviderHeaders => "BeforeProviderHeaders",
+                ExtensionEvent::BeforeProviderHeaders(_) => "BeforeProviderHeaders",
                 ExtensionEvent::BeforeProviderRequest(_) => "BeforeProviderRequest",
                 ExtensionEvent::AfterProviderResponse(_) => "AfterProviderResponse",
                 ExtensionEvent::ToolCall(_) => "ToolCall",

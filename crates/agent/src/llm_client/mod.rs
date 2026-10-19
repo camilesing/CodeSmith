@@ -126,6 +126,16 @@ pub trait LlmClient: Send + Sync {
         ""
     }
 
+    /// The extra HTTP headers this client rides on every request,
+    /// `(name, value)` pairs in configuration order. Observation-only
+    /// surface for the engine's `BeforeProviderHeaders` extension seam;
+    /// the transport's auth headers (built from the api key) are not
+    /// included — they never leave the client. Default: none (mocks,
+    /// record/replay).
+    fn request_headers(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
     /// List available models (provider-specific).
     /// A provider that exposes a model catalog overrides this; the default
     /// returns empty.

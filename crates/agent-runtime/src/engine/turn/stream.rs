@@ -128,6 +128,19 @@ use crate::error_taxonomy::{ErrorCategory, classify_error_message};
 /// than a header-derived one.
 const RATE_LIMIT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Cap on retries an extension FORCED past the default transparent-retry
+/// budget (a `ProviderRequestError` `Transform` rewriting `GiveUp` to
+/// `Retry`). Guards against a handler that always rewrites to `Retry` and
+/// would otherwise spin the round forever — the user's cancel token stays
+/// the only other exit.
+const MAX_EXTENSION_RETRY_OVERRIDES: u32 = 6;
+
+/// Upper bound on an extension-supplied retry delay (the `Retry { delay_ms }`
+/// a handler writes). A typo'd delay must not park the turn for hours; the
+/// clamp matches the spirit of `llm_client`'s 5-minute `HARD_DELAY_CAP_SECS`
+/// backoff ceiling. The sleep stays cancel-aware either way.
+const MAX_EXTENSION_RETRY_DELAY_MS: u64 = 300_000;
+
 /// Total per-request wait budget for quota walls, gated by
 /// `CODESMITH_RATE_LIMIT_HOLD_SECS` (unset/0 ⇒ disabled — the pre-existing
 /// fail-fast behavior). Read once per process; benchmark harnesses set this so
@@ -946,6 +959,10 @@ impl HostAgentExecutor {
         // Accumulated quota-wall hold time for this request (env-gated; stays
         // zero unless CODESMITH_RATE_LIMIT_HOLD_SECS is set).
         let mut rate_limit_held = std::time::Duration::ZERO;
+        // Extension-forced retries past the default budget this round (see
+        // the Empty arm's retry decision; bounded by
+        // MAX_EXTENSION_RETRY_OVERRIDES).
+        let mut extension_retry_overrides: u32 = 0;
         // Round-3 TODO-42 — wall-clock anchor for the failed-attempt record
         // written at this round's failure exits (retries included).
         let attempt_started = std::time::Instant::now();
@@ -1189,16 +1206,105 @@ impl HostAgentExecutor {
                     }
                     // Stream died before any committed content — safe to
                     // retry transparently (no output billed, nothing shown).
-                    if *stream_retry_attempts < MAX_TRANSPARENT_STREAM_RETRIES {
+                    // The extension question (DSH request-error waterfall)
+                    // sits INSIDE the guard: the default policy is computed
+                    // first, then a handler may rewrite the plan
+                    // (`Transform`) or give up (`Block`); with no handler
+                    // bound — or all-`Continue` — the guard degrades to
+                    // exactly the default policy. No dual path.
+                    use codesmith_agent::extension::{HandlerOutcome, RetryPlan};
+                    let default_retry = *stream_retry_attempts < MAX_TRANSPARENT_STREAM_RETRIES;
+                    // Rate-limited: brief backoff so the retry doesn't
+                    // hammer a provider that just asked us to slow down.
+                    // Retry-After headers are stringified by the time the
+                    // error reaches the engine, so this is a fixed delay.
+                    let default_delay_ms = if category == ErrorCategory::RateLimit {
+                        RATE_LIMIT_RETRY_DELAY.as_millis()
+                    } else {
+                        0
+                    };
+                    let default_plan = if default_retry {
+                        RetryPlan::Retry {
+                            delay_ms: u64::try_from(default_delay_ms).unwrap_or(u64::MAX),
+                        }
+                    } else {
+                        RetryPlan::GiveUp
+                    };
+                    let mut plan = default_plan.clone();
+                    if let Some(runner) = &self.extension {
+                        let out = runner
+                            .emit(
+                                codesmith_agent::extension::ExtensionEvent::ProviderRequestError(
+                                    codesmith_agent::extension::ProviderRequestErrorEvent {
+                                        failure: codesmith_agent::extension::ProviderFailure {
+                                            category: category.to_string(),
+                                            message: error.clone(),
+                                        },
+                                        attempt: stream_retry_attempts.saturating_add(1),
+                                        plan: default_plan,
+                                    },
+                                ),
+                            )
+                            .await;
+                        match out.outcome {
+                            HandlerOutcome::Block { reason } => {
+                                tracing::info!(
+                                    target: "codesmith_agent_runtime::engine",
+                                    "extension gave up retrying provider request: {reason}"
+                                );
+                                plan = RetryPlan::GiveUp;
+                            }
+                            // `Transform` is folded into the running event by
+                            // the chain — the terminal outcome stays
+                            // `Continue`, so the rewritten plan is read from
+                            // `out.event`. A stray `Cancel` (ignored at a
+                            // denying Waterfall) reads the running event's
+                            // plan, which is the default (or an earlier
+                            // handler's already-visible fold).
+                            _ => {
+                                if let codesmith_agent::extension::ExtensionEvent::ProviderRequestError(e) = out.event
+                                {
+                                    plan = e.plan;
+                                }
+                            }
+                        }
+                    }
+                    // A forced retry (default was GiveUp, handler said
+                    // Retry) is capped: a handler that always rewrites to
+                    // Retry must not spin the round forever.
+                    let forced = !default_retry && matches!(plan, RetryPlan::Retry { .. });
+                    let retry_now = match plan {
+                        RetryPlan::GiveUp => false,
+                        RetryPlan::Retry { .. } if !forced => true,
+                        RetryPlan::Retry { .. } => {
+                            extension_retry_overrides = extension_retry_overrides.saturating_add(1);
+                            if extension_retry_overrides > MAX_EXTENSION_RETRY_OVERRIDES {
+                                tracing::warn!(
+                                    target: "codesmith_agent_runtime::engine",
+                                    "extension retry overrides capped at \
+                                     {MAX_EXTENSION_RETRY_OVERRIDES}; surfacing the failure"
+                                );
+                                false
+                            } else {
+                                true
+                            }
+                        }
+                    };
+                    if retry_now {
+                        let delay = match plan {
+                            RetryPlan::Retry { delay_ms } => std::time::Duration::from_millis(
+                                delay_ms.min(MAX_EXTENSION_RETRY_DELAY_MS),
+                            ),
+                            // `retry_now` is only set for `Retry`.
+                            RetryPlan::GiveUp => std::time::Duration::ZERO,
+                        };
                         *stream_retry_attempts = stream_retry_attempts.saturating_add(1);
-                        // Rate-limited: brief backoff so the retry doesn't
-                        // hammer a provider that just asked us to slow down.
-                        // Retry-After headers are stringified by the time the
-                        // error reaches the engine, so this is a fixed delay.
-                        let (delay, reason) = if category == ErrorCategory::RateLimit {
-                            (RATE_LIMIT_RETRY_DELAY, "rate limited")
+                        let reason = if forced {
+                            "extension retry plan"
+                        } else if category == ErrorCategory::RateLimit {
+                            "rate limited"
                         } else {
-                            (std::time::Duration::ZERO, "stream interrupted")
+                            "stream interrupted"
                         };
                         // Structured retry surface for the footer (P0-3):
                         // attempt number + countdown deadline + short reason.
@@ -1219,11 +1325,19 @@ impl HostAgentExecutor {
                                 }
                             }
                         }
-                        self.emit_status(format!(
-                            "Connection interrupted; retrying ({}/{MAX_TRANSPARENT_STREAM_RETRIES})",
-                            *stream_retry_attempts,
-                        ))
-                        .await;
+                        if forced {
+                            self.emit_status(format!(
+                                "Connection interrupted; retrying (attempt {}, extension plan)",
+                                *stream_retry_attempts,
+                            ))
+                            .await;
+                        } else {
+                            self.emit_status(format!(
+                                "Connection interrupted; retrying ({}/{MAX_TRANSPARENT_STREAM_RETRIES})",
+                                *stream_retry_attempts,
+                            ))
+                            .await;
+                        }
                         continue;
                     }
                     // Budget exhausted → surface the failure, unless the env
@@ -1992,6 +2106,223 @@ mod tests {
             .expect("transient 503 must retry, not hard-fail");
         assert_eq!(reason, StopReason::NoToolCalls);
         assert_eq!(mock.call_counts().len(), 2, "initial attempt + one retry");
+    }
+
+    // === Provider-request-error waterfall (DSH request-error seam) ==========
+    //
+    // The extension question sits INSIDE the transparent-retry guard: the
+    // default policy is computed first, a handler may rewrite the plan or
+    // give up, and an abstaining (or absent) handler must leave the
+    // pre-seam behavior byte-identical.
+
+    use codesmith_agent::extension::{
+        Extension as RetryPlanExtTrait, ExtensionApi, ExtensionContext, ExtensionError,
+        ExtensionEvent as RetryPlanEvent, ExtensionMetadata, Handler, HandlerOutcome,
+        ProviderRequestErrorEvent, RetryPlan,
+    };
+    use codesmith_extensions::{ExtensionRunner, HostExtensionContext};
+
+    /// A `ProviderRequestError` handler that records each payload it is
+    /// asked about (`(category, attempt, default-plan-is-retry)`) and
+    /// answers through `decide`.
+    struct RetryPlanHandler {
+        seen: std::sync::Arc<std::sync::Mutex<Vec<(String, u32, bool)>>>,
+        decide: fn(&ProviderRequestErrorEvent) -> HandlerOutcome,
+    }
+
+    #[async_trait::async_trait]
+    impl Handler for RetryPlanHandler {
+        async fn handle(
+            &self,
+            event: &RetryPlanEvent,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<HandlerOutcome, ExtensionError> {
+            if let RetryPlanEvent::ProviderRequestError(e) = event {
+                self.seen.lock().unwrap().push((
+                    e.failure.category.clone(),
+                    e.attempt,
+                    matches!(e.plan, RetryPlan::Retry { .. }),
+                ));
+                Ok((self.decide)(e))
+            } else {
+                Ok(HandlerOutcome::Continue)
+            }
+        }
+    }
+
+    /// Registers one handler for every event (the runner's per-variant
+    /// filtering is not needed — the handler itself only answers
+    /// `ProviderRequestError`).
+    struct RetryPlanExt {
+        handler: std::sync::Arc<dyn Handler>,
+    }
+
+    #[async_trait::async_trait]
+    impl RetryPlanExtTrait for RetryPlanExt {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("retry-plan");
+            &M
+        }
+        async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+            api.on(self.handler.clone())?;
+            Ok(())
+        }
+    }
+
+    /// A runner with `handler` bound against a host context (mirrors the
+    /// host_executor §F1 binding test).
+    async fn retry_plan_runner(
+        handler: std::sync::Arc<dyn Handler>,
+    ) -> std::sync::Arc<ExtensionRunner> {
+        let runner = ExtensionRunner::new();
+        runner.load(&RetryPlanExt { handler }).await.unwrap();
+        runner.bind_core(std::sync::Arc::new(HostExtensionContext::new(
+            std::path::PathBuf::from("/tmp/codesmith-test"),
+            codesmith_agent::extension::ExtensionMode::Interactive,
+            std::sync::Arc::new(std::sync::Mutex::new(true)),
+            std::sync::Arc::new(std::sync::Mutex::new(
+                tokio_util::sync::CancellationToken::new(),
+            )),
+            runner.generation_arc(),
+        )));
+        std::sync::Arc::new(runner)
+    }
+
+    async fn retry_plan_executor(
+        mock: &std::sync::Arc<RetryMockLlm>,
+        runner: std::sync::Arc<ExtensionRunner>,
+    ) -> HostAgentExecutor {
+        stream_test_executor(mock, codesmith_agent::tools::ToolSet::new())
+            .with_extension_runner(Some(runner))
+    }
+
+    /// An Empty-classified 503 round (state category, zero default delay).
+    fn state_fail_round() -> MockRound {
+        MockRound::EventsThenErr(
+            vec![message_start_with_usage(100)],
+            "HTTP status server error (503 Service Unavailable)".into(),
+        )
+    }
+
+    /// Parity: a bound runner whose handler abstains (`Continue`) keeps the
+    /// default retry policy — MAX_TRANSPARENT_STREAM_RETRIES retries then
+    /// success, the no-extension behavior — while the handler observes
+    /// every question with the correct payload (category, 1-based attempt,
+    /// default `Retry` plan).
+    #[tokio::test]
+    async fn provider_request_error_abstaining_handler_keeps_default_policy() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let mock = std::sync::Arc::new(RetryMockLlm::new(vec![
+            state_fail_round(),
+            state_fail_round(),
+            state_fail_round(),
+            MockRound::Events(usage_round(200, 60)),
+        ]));
+        let seen: std::sync::Arc<std::sync::Mutex<Vec<(String, u32, bool)>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let handler: std::sync::Arc<dyn Handler> = std::sync::Arc::new(RetryPlanHandler {
+            seen: seen.clone(),
+            decide: |_| HandlerOutcome::Continue,
+        });
+        let runner = retry_plan_runner(handler).await;
+        let executor = retry_plan_executor(&mock, runner).await;
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("abstaining handler must leave the default retry-to-success path");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(
+            mock.call_counts().len(),
+            4,
+            "initial + 3 default retries (no-extension parity)"
+        );
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                ("network".to_string(), 1, true),
+                ("network".to_string(), 2, true),
+                ("network".to_string(), 3, true),
+            ],
+            "asked once per failed attempt; 503 classifies as network; default plan is Retry (delay 0)"
+        );
+    }
+
+    /// `Block` gives up: the provider error surfaces after exactly ONE
+    /// attempt — no retry, and the would-be retry round is never requested.
+    #[tokio::test]
+    async fn provider_request_error_block_stops_retrying() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let mock = std::sync::Arc::new(RetryMockLlm::new(vec![
+            state_fail_round(),
+            // Would-be retry round — must never be requested.
+            MockRound::Events(usage_round(200, 60)),
+        ]));
+        let handler: std::sync::Arc<dyn Handler> = std::sync::Arc::new(RetryPlanHandler {
+            seen: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            decide: |_| HandlerOutcome::Block {
+                reason: "quota spent".into(),
+            },
+        });
+        let runner = retry_plan_runner(handler).await;
+        let executor = retry_plan_executor(&mock, runner).await;
+
+        let err = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect_err("Block must give up, not retry");
+        assert!(
+            err.to_string().contains("503"),
+            "the provider error surfaces: {err}"
+        );
+        assert_eq!(mock.call_counts().len(), 1, "no retry after Block");
+    }
+
+    /// A handler that always rewrites the plan to `Retry` is capped: the
+    /// default budget (3) plus MAX_EXTENSION_RETRY_OVERRIDES (6) forced
+    /// retries — 10 calls total — then the failure surfaces (delay 0 keeps
+    /// the test fast).
+    #[tokio::test]
+    async fn provider_request_error_forced_retries_are_capped() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let mock = std::sync::Arc::new(RetryMockLlm::new(
+            (0..10).map(|_| state_fail_round()).collect(),
+        ));
+        let force = |e: &ProviderRequestErrorEvent| {
+            HandlerOutcome::Transform(RetryPlanEvent::ProviderRequestError(
+                ProviderRequestErrorEvent {
+                    failure: codesmith_agent::extension::ProviderFailure {
+                        category: e.failure.category.clone(),
+                        message: e.failure.message.clone(),
+                    },
+                    attempt: e.attempt,
+                    plan: RetryPlan::Retry { delay_ms: 0 },
+                },
+            ))
+        };
+        let handler: std::sync::Arc<dyn Handler> = std::sync::Arc::new(RetryPlanHandler {
+            seen: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            decide: force,
+        });
+        let runner = retry_plan_runner(handler).await;
+        let executor = retry_plan_executor(&mock, runner).await;
+
+        let err = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect_err("forced retries must be capped, not spin forever");
+        assert!(
+            err.to_string().contains("503"),
+            "the provider error surfaces: {err}"
+        );
+        assert_eq!(
+            mock.call_counts().len(),
+            10,
+            "1 initial + 3 default retries + 6 forced overrides"
+        );
     }
 
     /// An in-band context-length rejection arriving MID-stream (gateways can

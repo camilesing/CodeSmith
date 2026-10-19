@@ -266,7 +266,7 @@ so a single crate gives them both the traits and the runtime helpers.
 - **`ExtensionCommandContext: ExtensionContext`** — strict sub-trait handed
   to command handlers; it carries no session-mutation methods (the split
   exists for type safety).
-- **`ExtensionEvent`** — `#[non_exhaustive]`, 24 variants (`resources-discover` removed in 0.11.0):
+- **`ExtensionEvent`** — `#[non_exhaustive]`, 25 variants (`resources-discover` removed in 0.11.0; `provider-request-error` added with the DSH retry waterfall):
   `SessionStart` / `TurnStart` / `ToolCall` / `ToolResult` / `TurnEnd` /
   `SessionShutdown` / `ProjectTrust` / `Input` /
   `BeforeAgentStart` / `AgentStart` / `BeforeProviderHeaders` /
@@ -356,7 +356,7 @@ vocabulary:
 | `Emit` | emit | broadcast: handlers run in subscription order, outcomes are advisory (`Transform`/`Cancel`/`Block` ignored) |
 | `Serial` | serial | ordered listeners with veto: a `Cancel` aborts the pending host operation and short-circuits the chain (`SessionBefore*` seams) |
 | `Waterfall { can_deny: false }` | waterfall | transform fold: each handler's `Transform` folds into the running event (visible to the next handler); the terminal field applies at the seam (`Input`, `BeforeAgentStart`, `BeforeProviderRequest`, `ToolResult`) |
-| `Waterfall { can_deny: true }` | waterfall + deny | the fold plus `Block`: a handler may rewrite the call's `input` — the rewritten input is what approval gates, what runs, and what is recorded — or deny it outright; the deny is monotonic (`ToolCall`) |
+| `Waterfall { can_deny: true }` | waterfall + deny | the fold plus `Block`: a handler may rewrite the event's actionable field (`ToolCall`: the call's `input` — the rewritten input is what approval gates, what runs, and what is recorded; `ProviderRequestError`: the retry `plan`) or deny the operation outright; the deny is monotonic (`ToolCall`, `ProviderRequestError`) |
 
 The match is exhaustive like `kind()` and pinned by the
 `event_dispatch_contract_table` test, so the declared contract cannot
@@ -384,9 +384,10 @@ returns the wrong capability for its variant is a no-op, not an error.
 | `Input(InputEvent)` | `host_executor::run_inner` (user-turn seed) | **Transform** | rewrites the submitted `text` |
 | `BeforeAgentStart(AgentStartEvent)` | `host_executor::run_inner` top | **Transform** | injects `inject_message` (history push) + overrides `system_prompt` if set |
 | `AgentStart` | `host_executor::run_inner` (emit) | emit | — |
-| `BeforeProviderHeaders` | `host_executor` before `request` build | emit | — |
+| `BeforeProviderHeaders(BeforeProviderHeadersEvent)` | `host_executor` before `request` build | emit | payload = the provider client's extra HTTP headers as a JSON object, credential-bearing values masked; the transport's auth headers (from the api key) are not listed — they never leave the client |
 | `BeforeProviderRequest(BeforeProviderRequestEvent)` | `host_executor` after `request` built, before stream | **Transform** | rewrites `request.messages` |
-| `AfterProviderResponse(AfterProviderResponseEvent)` | `host_executor` `Content` arm after `accumulate_usage` | emit | — |
+| `AfterProviderResponse(AfterProviderResponseEvent)` | `host_executor` `Content` arm after `accumulate_usage` | emit | payload = the assembled `MessageResponse` serialized (streaming synthesis: `id` is empty — no wire response object reaches the reducer; `content`/`stop_reason`/`usage` come from the stream reduction) |
+| `ProviderRequestError(ProviderRequestErrorEvent)` | `stream_with_transparent_retry` `Empty` arm, before each retry decision | **Transform + Block** | the DSH request-error waterfall, asked inside the transparent-retry guard: `Continue` keeps the default policy (bounded retries; rate-limit backoff); `Transform` rewrites `plan` — `Retry { delay_ms }` overrides the backoff (clamped to 5 min) or forces a retry past the default budget (forced retries capped at 6); `Block` gives up and surfaces the failure. `failure` carries the classified category (snake_case) + raw message; `attempt` is the 1-based failing-attempt number. Retries never enter the model context — `tracing` records the extension decisions |
 | `AssistantStream(AssistantStreamEvent)` | callback-bridge stream-delta path (`agent-runtime/src/callback_bridge.rs`) | emit | one incremental assistant **text** chunk per wire delta; dispatch runs off-thread under a 250 ms per-delta + 1 s cumulative-per-turn budget — an over-budget handler is detached (runs to completion, outcome discarded, never cancelled mid-flight) and later deltas that turn skip dispatch; no dispatch at all when nothing subscribes; thinking deltas stay UI-only |
 | `ToolCall(ToolCallEvent)` | `host_executor` parallel + serial tool dispatch | **Transform + Block** | a handler may rewrite the call's `input` or deny it. `Block` skips approval + `tool.run` → `Err(ToolError::permission_denied(reason))`, `blocked = true`. In the parallel batch a rewritten input must re-classify as auto-approved or the call is blocked there — a rewrite cannot smuggle a non-approved input through the approval-free batch; the model can re-issue the call to route it through the serial approval gate. `on_tool_start` and the audit record see the rewritten input |
 | `ToolResult(ToolResultEvent)` | `host_executor` parallel + serial, emit reordered BEFORE `on_tool_end` | **Transform** | replaces the result; `on_tool_end` + downstream `outcomes[idx].result` see the transformed result. `ToolResult` carries a canonical/rendered split: `content` is the model-visible rendering, `canonical` the structured machine value (live-process only, not persisted in the transcript) — rewriting `content` must not rewrite `canonical` |
