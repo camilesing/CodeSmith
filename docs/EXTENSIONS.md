@@ -496,7 +496,7 @@ arm's approval-gate-plus-run. Never awaiting `next` vetoes. The DSH
 | `AgentSettled` | `engine/mod.rs` post-run drain (after capacity apply) | emit | — |
 | `SessionBeforeCompact` | `host_executor::run_compaction` after `should_compact` gate | **Cancel** | skips compaction (`return`) |
 | `SessionCompact` | `host_executor::run_compaction` after summary applied | emit | — |
-| `SessionBeforeSwitch` | — (no emit site) | **Cancel** | capability retained but currently never emitted: the in-process workspace switch went with the TUI in 0.9.0 (`/workspace` requires a restart instead) |
+| `SessionBeforeSwitch` | `/cd` REPL command (`crates/cli/src/interactive/commands/dir_cmds.rs`) — its only trigger point, after the `cd_allowed` trust check, before the workspace assignment + `Op::SyncSession` re-root | **Cancel** | a mod veto keeps the session in the previous directory (the reason prints to the user, attributed to the mod); `Continue` (or no handler) lets the switch proceed |
 | `ProjectTrust` | `HostServices::build_turn_dispatcher` (`crates/cli/src/core/engine/runtime_traits.rs`; + `spawn_subagent`) after `build_tool_context_for` (per-turn `Trusted`/`Untrusted`); `FirstLoad` currently has no emit site — the onboarding trust-prompt emit went with the TUI in 0.9.0 | emit | per-turn `Trusted`/`Untrusted` from `session.trust_mode`; `FirstLoad` is defined for onboarding trust acceptance (`TrustReason::FirstLoad`) but has no live emit site — the runtime `trust_mode` toggle (`/trust on`), YOLO entry, and persisted-trust startup surface per-turn as `Trusted`/`Untrusted`, not `FirstLoad` |
 | `ToolsChange { added, removed }` | `HostServices::build_turn_dispatcher` after every selection source is applied | emit | diff of the final model-visible catalog vs the previous main-turn baseline; the first build establishes the baseline silently; sub-agent toolsets never reach this seam |
 | `—` (dylib LOAD, not an event) | `populate_extension_runtime` (`crates/cli/src/core/engine.rs`) after `discover_static` | n/a (load phase) | `discover_dylib(&global_roots, &project_roots)` → `apply_trust_gate(discovered, !is_workspace_trusted(workspace))` drops project-local (`global == false`) → `state.is_enabled` reconcile → `ExtensionRunner::load_dylib` on the OS-thread load runtime; reload picks up via `reload_extension_runtime`→`populate`. `ExtensionRunner.libraries` holds `Library` handles; on a runtime reload they `drain_libraries_to_pending` to `pending_drop` (alongside the clears) + the engine op-loop `drop_pending`s them at the next turn boundary. Lockstep `*mut dyn Extension` via `codesmith_register_extension`. |
@@ -557,8 +557,6 @@ so the invariant — not a Miri run — is the proof.
 
 - `ExtensionContext::abort() / shutdown() / compact() /
   get_context_usage()` return `ExtensionError::Unimplemented`.
-- `SessionBeforeSwitch` is defined in the contract but has no host emit
-  site (rationale in the seam table above).
 - `TurnStopping` steers are capped at 3 per turn (loop guard); only the
   `NoToolCalls` termination asks — `MaxSteps` / `Interrupted` / `Error`
   terminal paths do not consult extensions, and a capped steer's note is
