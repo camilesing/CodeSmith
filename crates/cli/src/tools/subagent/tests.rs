@@ -953,50 +953,167 @@ impl ExtensionContext for StubExtCtx {
 }
 impl ExtensionCommandContext for StubExtCtx {}
 
-/// §F5d T4 §4b — a sub-agent never holds a dylib `Arc` across a turn boundary
-/// (it holds none at all). The exclusion is STRUCTURAL, not a guard:
-///   1. `SubAgentRuntime.extension_runner` is veto-only (`SessionBeforeFork`
-///      emit from the spawn-family tools) — nothing reads tools off it;
-///   2. `SubAgentToolRegistry::new` rebuilds its OWN fresh built-in
-///      `ToolRegistry` via `with_full_agent_surface` — it neither clones the
-///      parent's `ToolRegistry` `Arc`s nor wires extension-contributed tools
-///      (those are added ONLY in `EngineHost::build_turn_dispatcher`, §F5d T1,
-///      a path the sub-agent never takes).
+/// §F5d T4 §4b → 5b restatement — a sub-agent never holds a dylib `Arc`.
+/// The exclusion is now per-ORIGIN, not per-surface:
+///   1. `SubAgentToolRegistry::new` mounts the child type's extension-tool
+///      view via `register_extension_tools_scoped`, which resolves
+///      `ExtensionRunner::mountable_tools_for_subagents` — dylib-origin
+///      tools are filtered out there (a detached background child can
+///      outlive a reload's two-phase `Library` drop; §F5d T4's safety
+///      argument covers the main-turn executor only);
+///   2. script/compiled-in origins hold statically linked code or retained
+///      script ASTs and mount freely.
 ///
-/// So an ext tool bound on the parent's `ExtensionRunner` can NEVER reach a
-/// sub-agent's effective tool set — even with that very runner attached to
-/// the child runtime — regardless of `inherit_full_registry`.
+/// So a dylib-origin ext tool NEVER reaches a sub-agent's effective set —
+/// even with that very runner attached to the child runtime — regardless
+/// of `inherit_full_registry`; a compiled-in ext tool DOES mount (the
+/// blanket exclusion was the pre-5b contract this test used to pin).
 ///
-/// EXPECTED GREEN. If Red, ext tools are leaking into sub-agents — STOP +
-/// report (do NOT add a provenance marker / force-subset / runtime guard; the
-/// spec's resolution is structural exclusion, not a guard).
+/// EXPECTED GREEN. If the dylib half goes Red, dylib `Arc`s are leaking
+/// into sub-agents — STOP + report.
 #[test]
-fn subagent_ext_tool_excluded_from_effective_set() {
-    // Parent HAS fixture_echo bound on its ExtensionRunner (stub ext — the
-    // fixture cdylib path isn't available to the CLI's build.rs, so the stub is
-    // the closest feasible analog to "load fixture dylib").
+fn subagent_ext_tool_origin_tiering() {
     let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
     let rt = tokio::runtime::Runtime::new().expect("rt");
+    // A compiled-in contribution (plain `load` stamps CompiledIn)…
     rt.block_on(runner.load(&StubFixtureEchoExt))
-        .expect("load stub ext");
+        .expect("load compiled-in stub");
+    // …and a dylib-stamped contribution (same shape, no real dylib needed:
+    // the origin stamp is what the tier keys on).
+    rt.block_on(runner.load_as(
+        &StubDylibEchoExt,
+        codesmith_extensions::RegistrationOrigin::Dylib,
+    ))
+    .expect("load dylib-stamped stub");
     runner.bind_core(Arc::new(StubExtCtx));
+    // Precondition: BOTH are bound on the Global view (the main turn sees
+    // them equally — tiering only applies to sub-agent surfaces).
+    let global: Vec<String> = runner.bound_tools().into_iter().map(|(n, _)| n).collect();
     assert!(
-        runner
-            .bound_tools()
-            .iter()
-            .any(|(n, _)| n == "fixture_echo"),
-        "fixture_echo IS bound on the parent runner (precondition): {:?}",
-        runner
-            .bound_tools()
-            .iter()
-            .map(|(n, _)| n)
-            .collect::<Vec<_>>()
+        global.contains(&"fixture_echo".to_string()) && global.contains(&"dylib_echo".to_string()),
+        "both stubs bound on the parent runner (precondition): {global:?}"
     );
 
     let tmp = tempdir().expect("tempdir");
 
-    // inherit_full_registry = false (default; restrictToSubset). The sub-agent
-    // runtime carries the parent's runner (veto-only) — still no ext tools.
+    // Both inheritance modes: compiled-in mounts, dylib stays out.
+    for inherit in [false, true] {
+        let mut runtime = stub_runtime()
+            .with_inherit_full_registry(inherit)
+            .with_extension_runner(Some(runner.clone()));
+        runtime.context = ToolContext::new(tmp.path().to_path_buf());
+        let registry = SubAgentToolRegistry::new(
+            runtime,
+            SubAgentType::General,
+            None,
+            Arc::new(Mutex::new(TodoList::new())),
+            Arc::new(Mutex::new(PlanState::default())),
+        );
+        let tools = registry.tools_for_model(&SubAgentType::General);
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            names.contains(&"fixture_echo"),
+            "compiled-in ext tool mounts in the child (inherit={inherit}): {names:?}"
+        );
+        assert!(
+            !names.contains(&"dylib_echo"),
+            "dylib-origin ext tool stays main-turn-only (inherit={inherit}): {names:?}"
+        );
+    }
+}
+
+/// A dylib-stamped stub registering `dylib_echo` — the tier fixture for
+/// `subagent_ext_tool_origin_tiering` (the origin stamp is the whole
+/// difference from `StubFixtureEchoExt`).
+struct StubDylibEchoExt;
+
+#[async_trait]
+impl Extension for StubDylibEchoExt {
+    fn metadata(&self) -> &ExtensionMetadata {
+        static M: ExtensionMetadata = ExtensionMetadata::new("stub-dylib-echo");
+        &M
+    }
+    async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+        struct DylibEcho;
+        #[async_trait]
+        impl ToolDefinition for DylibEcho {
+            fn name(&self) -> &str {
+                "dylib_echo"
+            }
+            fn description(&self) -> &str {
+                "Dylib-stamped fixture echo tool."
+            }
+            async fn execute(
+                &self,
+                _input: Value,
+                _ctx: &dyn ExtensionContext,
+            ) -> Result<ToolResult, ExtensionError> {
+                Ok(ToolResult::success("stub"))
+            }
+        }
+        api.register_tool(Box::new(DylibEcho))?;
+        Ok(())
+    }
+}
+
+/// 5b — scoped registrations resolve per agent type in the child registry:
+/// a `Global` tool mounts for every type, an `AgentType("explore")` tool
+/// mounts only for explore children (shadowing a same-name global
+/// registration there), and the explore read-only narrowing admits ext
+/// tools through their declared `ReadOnly` capability.
+#[test]
+fn subagent_scoped_ext_tool_resolves_per_agent_type() {
+    struct ReadOnlyTool(&'static str, &'static str);
+    #[async_trait]
+    impl ToolDefinition for ReadOnlyTool {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn description(&self) -> &str {
+            self.1
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+        async fn execute(
+            &self,
+            _input: Value,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<ToolResult, ExtensionError> {
+            Ok(ToolResult::success(self.1))
+        }
+    }
+    struct ScopedToolsExt;
+    #[async_trait]
+    impl Extension for ScopedToolsExt {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("stub-scoped-tools");
+            &M
+        }
+        async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+            use codesmith_agent::extension::Scope;
+            api.register_tool(Box::new(ReadOnlyTool("shared_ext", "global-variant")))?;
+            api.register_tool_scoped(
+                Scope::AgentType("explore".into()),
+                Box::new(ReadOnlyTool("shared_ext", "explore-variant")),
+            )?;
+            api.register_tool_scoped(
+                Scope::AgentType("explore".into()),
+                Box::new(ReadOnlyTool("explore_ext", "explore fixture")),
+            )?;
+            Ok(())
+        }
+    }
+
+    let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
+    let rt = tokio::runtime::Runtime::new().expect("rt");
+    rt.block_on(runner.load(&ScopedToolsExt))
+        .expect("load scoped stub");
+    runner.bind_core(Arc::new(StubExtCtx));
+
+    let tmp = tempdir().expect("tempdir");
+
+    // General child: the global variant mounts; explore-scoped tools do not.
     let mut runtime = stub_runtime().with_extension_runner(Some(runner.clone()));
     runtime.context = ToolContext::new(tmp.path().to_path_buf());
     let registry = SubAgentToolRegistry::new(
@@ -1006,31 +1123,56 @@ fn subagent_ext_tool_excluded_from_effective_set() {
         Arc::new(Mutex::new(TodoList::new())),
         Arc::new(Mutex::new(PlanState::default())),
     );
-    let tools = registry.tools_for_model(&SubAgentType::General);
+    let names: Vec<String> = registry
+        .tools_for_model(&SubAgentType::General)
+        .into_iter()
+        .map(|t| t.name)
+        .collect();
     assert!(
-        !tools.iter().any(|t| t.name == "fixture_echo"),
-        "fixture_echo must NOT transit to sub-agent (inherit=false): {:?}",
-        tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>()
+        names.contains(&"shared_ext".to_string()),
+        "global ext tool mounts for general: {names:?}"
+    );
+    assert!(
+        !names.contains(&"explore_ext".to_string()),
+        "explore-scoped tool stays out of a general child: {names:?}"
+    );
+    assert_eq!(
+        registry.registry.get("shared_ext").unwrap().description(),
+        "global-variant",
+        "the general child resolves the global registration"
     );
 
-    // inherit_full_registry = true (legacy full inheritance) — the exclusion
-    // is structural, so even full inheritance must not surface ext tools.
-    let mut runtime = stub_runtime()
-        .with_inherit_full_registry(true)
-        .with_extension_runner(Some(runner));
+    // Explore child: the scoped shadow wins the shared name, the
+    // explore-only tool appears (ReadOnly capability admits both through
+    // the read-only narrowing), and same-name resolution picks the
+    // scoped registration.
+    let mut runtime = stub_runtime().with_extension_runner(Some(runner));
     runtime.context = ToolContext::new(tmp.path().to_path_buf());
     let registry = SubAgentToolRegistry::new(
         runtime,
-        SubAgentType::General,
+        SubAgentType::Explore,
         None,
         Arc::new(Mutex::new(TodoList::new())),
         Arc::new(Mutex::new(PlanState::default())),
     );
-    let tools = registry.tools_for_model(&SubAgentType::General);
+    let names: Vec<String> = registry
+        .tools_for_model(&SubAgentType::Explore)
+        .into_iter()
+        .map(|t| t.name)
+        .collect();
     assert!(
-        !tools.iter().any(|t| t.name == "fixture_echo"),
-        "fixture_echo must NOT transit to sub-agent even with inherit_full_registry=true (structural): {:?}",
-        tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>()
+        names.contains(&"explore_ext".to_string()),
+        "explore-scoped tool mounts for an explore child: {names:?}"
+    );
+    assert!(
+        names.contains(&"shared_ext".to_string()),
+        "global ext tool survives the read-only narrowing via its ReadOnly \
+         capability: {names:?}"
+    );
+    assert_eq!(
+        registry.registry.get("shared_ext").unwrap().description(),
+        "explore-variant",
+        "the scoped registration shadows the global one in its own view"
     );
 }
 

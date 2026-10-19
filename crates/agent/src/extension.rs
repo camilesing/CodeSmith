@@ -34,14 +34,14 @@
 //! its composition mechanism. `Waterfall` remains a fold chain (each
 //! handler's `Transform` is visible to the next); DSH's `next()`-wrapping
 //! around-dispatch exists only for tool execution — [`AroundToolHandler`]
-//! — not as a general event form. Registration scopes ([`Scope`]) exist
-//! on the registration surface and in the runner's view derivation, but
-//! sub-agent registries bind no extension runner as a tool source yet
-//! (§F5d structural exclusion — the two-phase dylib drop's safety
-//! argument relies on the main-turn executor being the only in-flight
-//! dylib `Arc` holder between turns; a detached background child mounting
-//! extension tools would break it), so no production emit site or catalog
-//! build resolves an `AgentType` view today.
+//! — not as a general event form. Registration scopes ([`Scope`]) are
+//! resolved per origin tier: sub-agent registries mount only script /
+//! compiled-in extension tools, and sub-agent loops dispatch only script /
+//! compiled-in handlers at their scope (a detached background child can
+//! outlive a reload's two-phase dylib drop, so dylib contributions stay
+//! main-turn-only; a dylib cannot register scoped tools/handlers at all).
+//! Sub-agent loops emit only `ToolCall` / `ToolResult` at their scope —
+//! turn-level and provider-level events stay main-turn-only.
 //!
 //! ## Style note
 //!
@@ -820,8 +820,12 @@ pub type ToolGuardFn = Arc<dyn Fn(&ToolCallEvent) -> Option<String> + Send + Syn
 ///   is never dispatched, so no approval path observes or flips it; there
 ///   is no post-approval evaluation point (CodeSmith has no execution path
 ///   that bypasses the seam, so the deny-only floor is equivalent).
-/// - Main-turn calls only: sub-agent registries bind no extension runner
-///   (§F5d structural exclusion), so their executions pass no guard.
+/// - Main turns and sub-agent loops both evaluate guards: a sub-agent's
+///   loop dispatches `ToolCall` at its agent-type scope, so a `Global`
+///   guard gates child calls too (5b). Origin caveat: a guard registered
+///   by a **dylib** extension stays main-turn-only (§F5d unload safety —
+///   sub-agent-scoped dispatch skips dylib-origin handlers); script and
+///   compiled-in guards gate every scope.
 /// - A guard closure that panics abstains (fail-open); the panic is caught
 ///   and logged here, so containment does not depend on the emit seam
 ///   (same isolation policy as the message-projection fold path).

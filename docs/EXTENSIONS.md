@@ -28,7 +28,7 @@ runner fans lifecycle events to registered handlers.
 Extension tools are wired live into the host per turn: they register
 into the per-turn `ToolRegistry` via `register_extension_tools` in
 `EngineHost::build_turn_dispatcher`, so the agent loop sees them as
-normal `ToolSpec`s (main-turn only; not inherited by sub-agents — see
+normal `ToolSpec`s (origin-tiered for sub-agents — see
 [Sandbox stance](#sandbox-stance)). Extension/mod **slash commands dispatch
 in the REPL**: `ExtensionRunner::try_dispatch_command`
 (`crates/extensions/src/runner.rs`) is called between user commands and
@@ -402,13 +402,17 @@ for an `AgentType` view — that type's own registrations overlaid on top
 main turn's `register_extension_tools` resolves exactly that, so scoped
 tools and globally restricted names never appear in the main catalog.
 
-Known limitations: sub-agent registries bind no extension runner as a
-tool source yet — the §F5d structural exclusion stands (the two-phase
-dylib drop's safety argument relies on the main-turn executor being the
-only in-flight dylib `Arc` holder between turns), so no production site
-resolves an `AgentType` view or dispatches `emit_scoped` today; the
-scoped surface is also not offered to script mods. Denying a builtin by
-name is not this list's job (see above).
+Known limitations: registration scopes are resolved **per origin tier**
+(5b) — sub-agent registries mount only script/compiled-in extension
+tools and sub-agent loops dispatch only script/compiled-in handlers at
+their scope, because a detached background sub-agent (an `agent_open`
+session) can outlive a reload's two-phase dylib drop, so dylib
+contributions stay main-turn-only (a dylib cannot even register scoped
+tools/handlers — the load fails loud). Sub-agent loops emit only
+`ToolCall` / `ToolResult` at their scope; turn-level and provider-level
+events stay main-turn-only. The scoped surface is also not offered to
+script mods. Denying a builtin by name is not this list's job (see
+above).
 
 ## Dispatch three-states (DSH alignment) + host seam mapping
 
@@ -470,8 +474,8 @@ arm's approval-gate-plus-run. Never awaiting `next` vetoes. The DSH
 | `AfterProviderResponse(AfterProviderResponseEvent)` | `host_executor` `Content` arm after `accumulate_usage` | emit | payload = the assembled `MessageResponse` serialized (streaming synthesis: `id` is empty — no wire response object reaches the reducer; `content`/`stop_reason`/`usage` come from the stream reduction) |
 | `ProviderRequestError(ProviderRequestErrorEvent)` | `stream_with_transparent_retry` `Empty` arm, before each retry decision | **Transform + Block** | the DSH request-error waterfall, asked inside the transparent-retry guard: `Continue` keeps the default policy (bounded retries; rate-limit backoff); `Transform` rewrites `plan` — `Retry { delay_ms }` overrides the backoff (clamped to 5 min) or forces a retry past the default budget (forced retries capped at 6); `Block` gives up and surfaces the failure. `failure` carries the classified category (snake_case) + raw message; `attempt` is the 1-based failing-attempt number. Retries never enter the model context — `tracing` records the extension decisions |
 | `AssistantStream(AssistantStreamEvent)` | callback-bridge stream-delta path (`agent-runtime/src/callback_bridge.rs`) | emit | one incremental assistant **text** chunk per wire delta; dispatch runs off-thread under a 250 ms per-delta + 1 s cumulative-per-turn budget — an over-budget handler is detached (runs to completion, outcome discarded, never cancelled mid-flight) and later deltas that turn skip dispatch; no dispatch at all when nothing subscribes; thinking deltas stay UI-only |
-| `ToolCall(ToolCallEvent)` | `host_executor` parallel + serial tool dispatch | **Transform + Block + Ask** | a handler may rewrite the call's `input`, deny it, or ask the user. `Block` skips approval + `tool.run` → `Err(ToolError::permission_denied(reason))`, `blocked = true`. `Ask { reason }` routes the call through the approval decision channel regardless of its static classification — on the serial arm it forces the gate (fail-closed: no channel ⇒ denied); on the parallel arm the batch's sequential pre-dispatch loop asks inline (a read-only call becomes user-gated), a denial records like a block and an approved escalation logs + runs with the fixed context. In the parallel batch a rewritten input must re-classify as auto-approved or the call is blocked there — a rewrite cannot smuggle a non-approved input through the approval-free batch; the model can re-issue the call to route it through the serial approval gate. `on_tool_start` and the audit record see the rewritten input. Around-dispatch (`AroundToolHandler`) wraps the dispatch terminal of both arms — see the section above |
-| `ToolResult(ToolResultEvent)` | `host_executor` parallel + serial, emit reordered BEFORE `on_tool_end` | **Transform** | replaces the result; `on_tool_end` + downstream `outcomes[idx].result` see the transformed result. This is the DSH post-execute accept/replace equivalent — `Continue` accepts, `Transform` replaces (a deny does not exist post-execution; use the `ToolCall` seam). `ToolResult` carries a canonical/rendered split: `content` is the model-visible rendering, `canonical` the structured machine value (live-process only, not persisted in the transcript) — rewriting `content` must not rewrite `canonical` |
+| `ToolCall(ToolCallEvent)` | `host_executor` parallel + serial tool dispatch + **sub-agent loops** (5b: every child tool call dispatches at the child's `AgentType` scope — script/compiled-in handlers only, dylib handlers skipped) | **Transform + Block + Ask** | a handler may rewrite the call's `input`, deny it, or ask the user. `Block` skips approval + `tool.run` → `Err(ToolError::permission_denied(reason))`, `blocked = true`. `Ask { reason }` routes the call through the approval decision channel regardless of its static classification — on the serial arm it forces the gate (fail-closed: no channel ⇒ denied); on the parallel arm the batch's sequential pre-dispatch loop asks inline (a read-only call becomes user-gated), a denial records like a block and an approved escalation logs + runs with the fixed context. In the parallel batch a rewritten input must re-classify as auto-approved or the call is blocked there — a rewrite cannot smuggle a non-approved input through the approval-free batch; the model can re-issue the call to route it through the serial approval gate. `on_tool_start` and the audit record see the rewritten input. Around-dispatch (`AroundToolHandler`) wraps the dispatch terminal of both arms — see the section above. In a sub-agent loop: `Block` denies (error-string result), `Ask` fails closed (the child attaches no approval ask channel — denied, reason fed back), a transform's rewritten input is what executes and what the child transcript records |
+| `ToolResult(ToolResultEvent)` | `host_executor` parallel + serial, emit reordered BEFORE `on_tool_end` + **sub-agent loops** (5b: after each child tool execution, at the child's scope — the final content is what the child transcript records) | **Transform** | replaces the result; `on_tool_end` + downstream `outcomes[idx].result` see the transformed result. This is the DSH post-execute accept/replace equivalent — `Continue` accepts, `Transform` replaces (a deny does not exist post-execution; use the `ToolCall` seam). `ToolResult` carries a canonical/rendered split: `content` is the model-visible rendering, `canonical` the structured machine value (live-process only, not persisted in the transcript) — rewriting `content` must not rewrite `canonical` |
 | `ToolExecutionStart` | `host_executor` tool closure (before `tool.run`) | emit | — |
 | `ToolExecutionEnd` | `host_executor` tool closure (after `tool.run`) | emit | — |
 | `AgentEnd` | `host_executor::run_inner` each `return Ok(...)` | emit | — |
@@ -482,7 +486,7 @@ arm's approval-gate-plus-run. Never awaiting `next` vetoes. The DSH
 | `ProjectTrust` | `HostServices::build_turn_dispatcher` (`crates/cli/src/core/engine/runtime_traits.rs`; + `spawn_subagent`) after `build_tool_context_for` (per-turn `Trusted`/`Untrusted`); `FirstLoad` currently has no emit site — the onboarding trust-prompt emit went with the TUI in 0.9.0 | emit | per-turn `Trusted`/`Untrusted` from `session.trust_mode`; `FirstLoad` is defined for onboarding trust acceptance (`TrustReason::FirstLoad`) but has no live emit site — the runtime `trust_mode` toggle (`/trust on`), YOLO entry, and persisted-trust startup surface per-turn as `Trusted`/`Untrusted`, not `FirstLoad` |
 | `ToolsChange { added, removed }` | `HostServices::build_turn_dispatcher` after every selection source is applied | emit | diff of the final model-visible catalog vs the previous main-turn baseline; the first build establishes the baseline silently; sub-agent toolsets never reach this seam |
 | `—` (dylib LOAD, not an event) | `populate_extension_runtime` (`crates/cli/src/core/engine.rs`) after `discover_static` | n/a (load phase) | `discover_dylib(&global_roots, &project_roots)` → `apply_trust_gate(discovered, !is_workspace_trusted(workspace))` drops project-local (`global == false`) → `state.is_enabled` reconcile → `ExtensionRunner::load_dylib` on the OS-thread load runtime; reload picks up via `reload_extension_runtime`→`populate`. `ExtensionRunner.libraries` holds `Library` handles; on a runtime reload they `drain_libraries_to_pending` to `pending_drop` (alongside the clears) + the engine op-loop `drop_pending`s them at the next turn boundary. Lockstep `*mut dyn Extension` via `codesmith_register_extension`. |
-| `SessionBeforeFork` | spawn-family tools (`agent_open` / `agent_spawn` / `agent_run` / `delegate_to_agent`, every depth — the runner rides `SubAgentRuntime` veto-only) + `HostServices::spawn_subagent` (`crates/cli/src/tools/subagent/mod.rs`, `core/engine/runtime_traits.rs`) | **Cancel** | emitted before a child forks session state; `Cancel` aborts the spawn with a model-visible error |
+| `SessionBeforeFork` | spawn-family tools (`agent_open` / `agent_spawn` / `agent_run` / `delegate_to_agent`, every depth — the runner rides `SubAgentRuntime`, so grandchildren forks are vetoable too) + `HostServices::spawn_subagent` (`crates/cli/src/tools/subagent/mod.rs`, `core/engine/runtime_traits.rs`) | **Cancel** | emitted before a child forks session state; `Cancel` aborts the spawn with a model-visible error |
 | `ToolExecutionUpdate` | `exec_shell` (foreground) / `exec_shell_wait` poll loops → `ToolContext::progress` → `callback_bridge::RunnerProgressSink` | emit | throttled checkpoints while a command runs (≥1s apart, new output only): `id` = shell task id, `message` = output since the previous checkpoint (tail-capped at 4 KiB); the same checkpoint rides the UI as `Event::ToolCallProgress`; dispatched under the AssistantStream budget/breaker; main turns only; sandboxed-backend and interactive runs report none |
 
 > The `Transform` payload's actionable field is applied at the seam AFTER
@@ -512,15 +516,17 @@ is trusted). A loaded dylib runs in-process with full host access —
 trust the source; containerize for untrusted sources. Compiled-in
 extensions are trusted by construction (they ship in the binary).
 
-Extension tools are **main-turn-only, structurally**: they are
-registered into the host's per-turn `ToolRegistry` (the main agent
-turn), NOT inherited by sub-agents. This is structural, not a guard:
-`SubAgentRuntime.extension_runner` is veto-only (`SessionBeforeFork`;
-nothing reads tools off it) +
-`SubAgentToolRegistry::new` rebuilds its own fresh built-in
-`ToolRegistry` — so ext tools can never reach a sub-agent's effective
-set, regardless of `inherit_full_registry`. No provenance marker /
-force-subset / runtime subagent-check is needed.
+Extension tools are **origin-tiered** (5b): the main turn mounts the
+Global view regardless of origin; a sub-agent registry mounts its agent
+type's view through
+`ExtensionRunner::mountable_tools_for_subagents`, which filters out
+**dylib-origin** tools — a detached background sub-agent (an
+`agent_open` session) can outlive a reload's two-phase `Library` drop,
+so dylib `Arc`s never cross into a child (the §F5d T4 safety invariant,
+restated per-origin instead of per-surface). Script/compiled-in ext
+tools mount in children freely; the capability-manifest removal and the
+read-only narrowing govern them like any other tool (an ext tool joins
+an explore child's surface by declaring the `ReadOnly` capability).
 
 Safe unload rests on a two-phase `Library` drop: reload on the UI
 thread MOVES orphaned `Library`s to `pending_drop`

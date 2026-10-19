@@ -55,12 +55,14 @@ change, and every `ExtensionEventKind` declares its dispatch mode
   a scoped tool shadows its global namesake in that agent type's catalog
   view (`ExtensionRunner::bound_tools_scoped`), a deny-only
   `restrict_tools` list prunes the extension layer's global tools per
-  view, and the main-turn catalog (`register_extension_tools`) resolves
-  the Global view. The turn loop, the sole
-  `BASE_PROMPT`, and sub-agent tool registries are core by contract, not
-  plugins (per-surface map: MODS.md "Which tier when"); sub-agent
-  registries bind no extension runner as a tool source yet (§F5d
-  structural exclusion — see EXTENSIONS.md "Registration scopes").
+  view, the main-turn catalog (`register_extension_tools`) resolves the
+  Global view, and sub-agent registries resolve their own view per
+  origin tier (5b: script/compiled-in tools mount in children, dylib
+  tools stay main-turn-only — a detached background child can outlive a
+  reload's two-phase dylib drop). The turn loop, the sole
+  `BASE_PROMPT`, and sub-agent tool registries' built-in surface are
+  core by contract, not plugins (per-surface map: MODS.md "Which tier
+  when").
 - `crates/cli` (package `codesmith-cli`, binary `codesmith`) is the live end-user runtime: it hosts both the headless subcommands and the line-based interactive REPL frontend (`crates/cli/src/interactive/` — the ratatui TUI was removed in v0.9.0), plus the runtime API, task manager, and tool registry wiring. The agent execution engine itself (turn loop, compaction, sandbox helpers, prompts) now lives in `crates/agent-runtime`; `crates/cli/src/core/` is a thin re-export + construction bridge (`engine.rs` defines `EngineHost`/`build_engine`).
 - Other workspace crates are being split out incrementally, but they are not yet the sole runtime source of truth.
 - Startup trust-boundary details are tracked in `docs/STARTUP_TRUST_BOUNDARY_AUDIT.md`; that audit is the current reference for pre-trust versus post-trust initialization follow-ups.

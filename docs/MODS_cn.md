@@ -26,7 +26,7 @@ Rust dylib——而"可插拔"的含义是*在运行期经其中一层注册*，
 | 表面 | Rhai mod | 内建 Rhai 层 | Rust 扩展 | 备注 |
 |---|---|---|---|---|
 | 事件钩子、工具守卫 | ✓ `on` / `register_guard` | — | ✓ | 按卸载/加载粒度为 mod；钩子错误 fail open |
-| 模型可见工具 | ✓ `register_tool`（纯逻辑——无 fs/net 原生函数） | ✓（可脚本化的默认值） | ✓（完整 IO/异步） | 所有层都仅限主轮 |
+| 模型可见工具 | ✓ `register_tool`（纯逻辑——无 fs/net 原生函数） | ✓（可脚本化的默认值） | ✓（完整 IO/异步） | 子代理可挂载 script/compiled-in 工具；dylib 来源的 Rust 工具保持仅主轮（5b 分层） |
 | 斜杠命令 | ✓ `register_command`（遮蔽内建）/ `disable_command`（退役内建） | — | ✓ | 层序 user > mod > builtin |
 | Provider | 仅别名（`register_provider`） | — | ✓ 完整 `ProviderFactory` | 脚本无法实现 `LlmClient`（无异步/网络） |
 | 提示词分段、技能 | ✓ `register_prompt_section` / `register_skill` | ✓（默认值） | ✓ | 遵守前缀缓存纪律 |
@@ -142,13 +142,16 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 `tool-execution-update` 由 shell 工具自己的轮询循环在命令持续运行时发射（`exec_shell`
 前台与 `exec_shell_wait`）：至多每秒一次、且仅当有新输出。`id` 是 shell 任务 id（工具
 不知道自己的 wire tool-call id——按 `name` + 时序关联）；`message` 是自上一检查点以来的
-输出（尾部截至 4 KiB；管理器给出截断摘录时取其尾部）。仅 emit、仅主回合（子代理循环
-不发射扩展事件）；沙箱后端与交互式运行不报检查点。同一检查点也以 `ToolCallProgress`
+输出（尾部截至 4 KiB；管理器给出截断摘录时取其尾部）。仅 emit、仅主回合（子代理的
+进度汇未接线——5b 只给了子代理循环 `tool-call`/`tool-result`）；沙箱后端与交互式运行
+不报检查点。同一检查点也以 `ToolCallProgress`
 到达 UI。`resources-discover` 已在 0.11.0 移除（从未有发射方，也没有消费者）。
 `session-before-fork` 在每次 spawn 前触发——spawn 工具族（`agent_open` / `agent_spawn` /
-`subagent_run` / `delegate_to_agent`）在任意深度（runner 随子代理运行时仅作否决用途传递，
+`subagent_run` / `delegate_to_agent`）在任意深度（runner 随子代理运行时传递，
 故孙代 fork 同样可否决）以及引擎内部 spawn 路径——在 fork 会话状态前触发；`cancel()` 否决
-该次 fork。子代理注册表仍不挂任何扩展工具：runner 仅为否决而携带。
+该次 fork。自 5b 起，runner 在子代理侧不再只是否决载体：子代理注册表会挂载该子代理类型
+的扩展工具视图（仅 script/compiled-in 来源——因此 mod 的 guard 同样把关子代理工具
+调用），子代理循环也按其 agent 类型作用域分发 `tool-call`/`tool-result`。
 
 `tool-result` 载荷携带 canonical/rendered 分离：`content` 是模型可见的渲染文本；`canonical` 是同一结果的结构化机器可读值（`ToolResult::json` 的值，或工具经 `with_canonical` 附加的值）。请读 `canonical` 而不是重新解析 `content`——散文式渲染的结果（如 `todo_add` 在 JSON 前拼了一句提示）根本无法解析。canonical 仅存活于当前进程：转录持久化的是渲染后的 `content`。
 
@@ -417,7 +420,7 @@ mod 在发现阶段即被跳过（日志有告警），不会进入激活流程�
 - **单 mod 装卸**：`activate` / `enable` 只编译并绑定这一个 mod；`disable` / `remove` 只驱逐它的编译产物，幸存 mod 从各自保留的已编译 AST 重新注册——不重编译其它 mod、不做整层重载。每次转换将 runner 世代号加一，注册变化仍在下一轮边界生效（`tools-change` 纪律不变）。`/mods reload`（及 `manage_mods(action="reload")`）仍是整层路径：重新发现、重新校验同意、全新编译。卸载只回收编译后的引擎与 AST——mod 的 KV 文件按设计持久保留（它是 mod 显式选择的状态存储）。
 - **让智能体代写**：直接说"帮我写一个 mod，拦截 git push"——模型会经 `manage_mods` 工具写文件（`write`）并请求你审批激活（`activate`）。
 - **mod 写入遵循 workspace trust，两个根都管**：未信任工作区不发现项目 mod，`manage_mods` 也拒绝在其中写 mod——项目根与全局 `~/.codesmith/mods` 一视同仁（全局写入会安装加载到所有工作区（包括其它未信任工作区）的代码，信任信号不能被 `global` 标志绕过）。先信任工作区，再写入。
-- **已知边界**：mod 工具与 Rust 扩展工具同为"主 turn 独占"（子代理结构性不可见）；网络安装源（git clone 到 mods 目录）不在 MVP。
+- **已知边界**：mod（script）工具与编译内置的 Rust 扩展工具自 5b 起也可挂载进子代理；dylib 来源的 Rust 扩展工具保持仅主轮（卸载安全）。网络安装源（git clone 到 mods 目录）不在 MVP。
 
 ## 配置
 
