@@ -412,8 +412,10 @@ their scope, because a detached background sub-agent (an `agent_open`
 session) can outlive a reload's two-phase dylib drop, so dylib
 contributions stay main-turn-only (a dylib cannot even register scoped
 tools/handlers — the load fails loud). Sub-agent loops emit only
-`ToolCall` / `ToolResult` at their scope; turn-level and provider-level
-events stay main-turn-only. The scoped surface is also not offered to
+`ToolCall` / `ToolResult` at their scope (and the depth ≥ 1
+`SessionBeforeFork` fork veto dispatches at the child's scope too — the
+same dylib-safety rule); turn-level and provider-level events stay
+main-turn-only. The scoped surface is also not offered to
 script mods. Denying a builtin by name is not this list's job (see
 above).
 
@@ -498,7 +500,7 @@ arm's approval-gate-plus-run. Never awaiting `next` vetoes. The DSH
 | `ProjectTrust` | `HostServices::build_turn_dispatcher` (`crates/cli/src/core/engine/runtime_traits.rs`; + `spawn_subagent`) after `build_tool_context_for` (per-turn `Trusted`/`Untrusted`); `FirstLoad` currently has no emit site — the onboarding trust-prompt emit went with the TUI in 0.9.0 | emit | per-turn `Trusted`/`Untrusted` from `session.trust_mode`; `FirstLoad` is defined for onboarding trust acceptance (`TrustReason::FirstLoad`) but has no live emit site — the runtime `trust_mode` toggle (`/trust on`), YOLO entry, and persisted-trust startup surface per-turn as `Trusted`/`Untrusted`, not `FirstLoad` |
 | `ToolsChange { added, removed }` | `HostServices::build_turn_dispatcher` after every selection source is applied | emit | diff of the final model-visible catalog vs the previous main-turn baseline; the first build establishes the baseline silently; sub-agent toolsets never reach this seam |
 | `—` (dylib LOAD, not an event) | `populate_extension_runtime` (`crates/cli/src/core/engine.rs`) after `discover_static` | n/a (load phase) | `discover_dylib(&global_roots, &project_roots)` → `apply_trust_gate(discovered, !is_workspace_trusted(workspace))` drops project-local (`global == false`) → `state.is_enabled` reconcile → `ExtensionRunner::load_dylib` on the OS-thread load runtime; reload picks up via `reload_extension_runtime`→`populate`. `ExtensionRunner.libraries` holds `Library` handles; on a runtime reload they `drain_libraries_to_pending` to `pending_drop` (alongside the clears) + the engine op-loop `drop_pending`s them at the next turn boundary. Lockstep `*mut dyn Extension` via `codesmith_register_extension`. |
-| `SessionBeforeFork` | spawn-family tools (`agent_open` / `agent_spawn` / `agent_run` / `delegate_to_agent`, every depth — the runner rides `SubAgentRuntime`, so grandchildren forks are vetoable too) + `HostServices::spawn_subagent` (`crates/cli/src/tools/subagent/mod.rs`, `core/engine/runtime_traits.rs`) | **Cancel** | emitted before a child forks session state; `Cancel` aborts the spawn with a model-visible error |
+| `SessionBeforeFork` | spawn-family tools (`agent_open` / `agent_spawn` / `agent_run` / `delegate_to_agent`, every depth — the runner rides `SubAgentRuntime`, so grandchildren forks are vetoable too) + `HostServices::spawn_subagent` (`crates/cli/src/tools/subagent/mod.rs`, `core/engine/runtime_traits.rs`) | **Cancel** | emitted before a child forks session state; `Cancel` aborts the spawn with a model-visible error. From a depth ≥ 1 context the veto dispatches at the child's agent-type scope, so dylib-origin handlers are skipped there (§F5d — a detached child can outlive a reload's `Library` drop); at depth 0 and on the engine-internal path it stays the Global emit (the main executor holds the `Library` alive through the turn). Global script/compiled-in handlers receive the veto at every depth |
 | `ToolExecutionUpdate` | `exec_shell` (foreground) / `exec_shell_wait` poll loops → `ToolContext::progress` → `callback_bridge::RunnerProgressSink` | emit | throttled checkpoints while a command runs (≥1s apart, new output only): `id` = shell task id, `message` = output since the previous checkpoint (tail-capped at 4 KiB); the same checkpoint rides the UI as `Event::ToolCallProgress`; dispatched under the AssistantStream budget/breaker; main turns only; sandboxed-backend and interactive runs report none |
 
 > The `Transform` payload's actionable field is applied at the seam AFTER

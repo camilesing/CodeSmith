@@ -2485,9 +2485,12 @@ impl ToolSpec for AgentSpawnTool {
         // proceeds. The runner rides the sub-agent runtime, so this fires
         // at every generation — grandchildren forks are vetoable too.
         if let Some(runner) = &self.extension_runner {
-            let out = runner
-                .emit(codesmith_agent::extension::ExtensionEvent::SessionBeforeFork)
-                .await;
+            let out = emit_fork_veto(
+                runner,
+                self.runtime.spawn_depth,
+                spawn_request.agent_type.as_str(),
+            )
+            .await;
             if matches!(
                 out.outcome,
                 codesmith_agent::extension::HandlerOutcome::Cancel { .. }
@@ -3208,6 +3211,36 @@ fn parse_run_request(input: &Value) -> Result<AgentRunRequest, ToolError> {
     parse_run_request_with_workspace(input, Path::new("."))
 }
 
+/// Dispatch the `SessionBeforeFork` veto (serial seam). Depth 0 (the main
+/// turn) uses the Global emit: the main executor keeps every dylib
+/// `Library` alive through the turn (`drop_pending` fires only at the
+/// op-loop top), so dylib fork vetoes keep working there. Depth ≥ 1
+/// executes inside a child that may be a detached background session
+/// outliving a reload's two-phase `Library` drop — dispatch at the
+/// child's agent-type scope instead, whose origin filter skips dylib
+/// handlers (§F5d; same rule as the child loop's `tool-call` /
+/// `tool-result` dispatch). Global script/compiled-in handlers receive
+/// the scoped dispatch either way, so mod fork vetoes hold at every
+/// depth.
+async fn emit_fork_veto(
+    runner: &codesmith_extensions::ExtensionRunner,
+    spawn_depth: u32,
+    child_agent_type: &str,
+) -> codesmith_extensions::EmitOutcome {
+    if spawn_depth == 0 {
+        runner
+            .emit(codesmith_agent::extension::ExtensionEvent::SessionBeforeFork)
+            .await
+    } else {
+        runner
+            .emit_scoped(
+                codesmith_agent::extension::Scope::AgentType(child_agent_type.to_string()),
+                codesmith_agent::extension::ExtensionEvent::SessionBeforeFork,
+            )
+            .await
+    }
+}
+
 /// Run a sub-agent synchronously (foreground) or asynchronously (background).
 ///
 /// Sync mode: the parent turn blocks until the child finishes and returns
@@ -3575,9 +3608,12 @@ impl ToolSpec for SubagentRunTool {
         // proceeds. The runner rides the sub-agent runtime, so this fires
         // at every generation — grandchildren forks are vetoable too.
         if let Some(runner) = &self.extension_runner {
-            let out = runner
-                .emit(codesmith_agent::extension::ExtensionEvent::SessionBeforeFork)
-                .await;
+            let out = emit_fork_veto(
+                runner,
+                self.runtime.spawn_depth,
+                request.agent_type.as_str(),
+            )
+            .await;
             if matches!(
                 out.outcome,
                 codesmith_agent::extension::HandlerOutcome::Cancel { .. }

@@ -3463,6 +3463,82 @@ async fn session_before_fork_cancel_vetoes_grandchild_spawn() {
     );
 }
 
+/// A dylib-origin fork veto keeps its main-turn effect (depth 0: Global
+/// emit — the main executor holds the `Library` alive through the turn)
+/// but is skipped from a child context (depth ≥ 1), where a detached
+/// background session can outlive a reload's two-phase `Library` drop:
+/// the grandchild seam dispatches at the child's agent-type scope, whose
+/// origin filter excludes dylib handlers (§F5d).
+#[tokio::test]
+async fn session_before_fork_dylib_handler_skipped_in_child_context() {
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let runner = std::sync::Arc::new(codesmith_extensions::ExtensionRunner::new());
+    let ext = ForkExt {
+        handler: std::sync::Arc::new(ForkHandler {
+            seen: seen.clone(),
+            cancel_fork: true,
+        }),
+    };
+    runner
+        .load_as(&ext, codesmith_extensions::RegistrationOrigin::Dylib)
+        .await
+        .expect("configure ForkExt as dylib-origin");
+    runner.bind_core(std::sync::Arc::new(ForkCtx));
+    let tmp = tempdir().expect("tempdir");
+
+    // Depth 0 — the main-turn contract holds: the dylib veto fires.
+    let mut runtime = stub_runtime();
+    runtime.context = ToolContext::new(tmp.path().to_path_buf());
+    let manager = Arc::new(tokio::sync::RwLock::new(SubAgentManager::new(
+        tmp.path().to_path_buf(),
+        4,
+    )));
+    let tool = AgentSpawnTool::new(manager, runtime).with_extension_runner(runner.clone());
+    let err = tool
+        .execute(
+            serde_json::json!({"prompt": "map the repo"}),
+            &ToolContext::new(tmp.path().to_path_buf()),
+        )
+        .await
+        .expect_err("depth-0 dylib veto must fire");
+    assert!(err.to_string().contains("vetoed"), "{err}");
+
+    // Depth 1 — the same handler from a child context: not consulted.
+    seen.lock().unwrap().clear();
+    let mut parent = stub_runtime().with_extension_runner(Some(runner));
+    parent.context = ToolContext::new(tmp.path().to_path_buf());
+    parent.context.auto_approve = true;
+    let child = parent.child_runtime();
+    assert_eq!(child.spawn_depth, 1);
+    let registry = SubAgentToolRegistry::new(
+        child,
+        SubAgentType::General,
+        None,
+        Arc::new(Mutex::new(TodoList::new())),
+        Arc::new(Mutex::new(PlanState::default())),
+    );
+    let outcome = registry
+        .execute(
+            "agent-child",
+            "agent_spawn",
+            serde_json::json!({"prompt": "fork a grandchild"}),
+        )
+        .await;
+    assert!(
+        !matches!(&outcome, Err(e) if e.to_string().contains("vetoed")),
+        "dylib handler must not run from a child context: {outcome:?}"
+    );
+    assert!(
+        !seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|k| k.contains("SessionBeforeFork")),
+        "dylib handler must not even observe the child-context seam: {:?}",
+        seen.lock().unwrap()
+    );
+}
+
 // === External sub-agent provider (seam consumer) ===
 
 /// Mock provider: records every request, optionally blocks on a gate (so a
