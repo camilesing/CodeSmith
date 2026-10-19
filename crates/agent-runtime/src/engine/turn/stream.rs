@@ -2118,7 +2118,7 @@ mod tests {
     use codesmith_agent::extension::{
         Extension as RetryPlanExtTrait, ExtensionApi, ExtensionContext, ExtensionError,
         ExtensionEvent as RetryPlanEvent, ExtensionMetadata, Handler, HandlerOutcome,
-        ProviderRequestErrorEvent, RetryPlan,
+        ProviderRequestErrorEvent, RetryPlan, TurnEndReason,
     };
     use codesmith_extensions::{ExtensionRunner, HostExtensionContext};
 
@@ -2322,6 +2322,200 @@ mod tests {
             mock.call_counts().len(),
             10,
             "1 initial + 3 default retries + 6 forced overrides"
+        );
+    }
+
+    // === Turn-stopping serial steer (DSH turn-stopping seam) ================
+    //
+    // The question sits INSIDE the no-tool-calls ending branch: an
+    // abstaining (or absent) handler must leave the default terminal
+    // behavior byte-identical, a `Cancel` steers (the note appended as a
+    // user-role message, the turn resumes on a fresh step), and steers
+    // are capped by the loop guard so an always-steer handler cannot
+    // spin the turn.
+
+    /// A `TurnStopping` handler that records whether each ask carried
+    /// `reason = NoToolCalls` and steers with `notes[i]` on the i-th ask,
+    /// abstaining once the notes run out.
+    struct TurnSteerHandler {
+        asked: std::sync::Arc<std::sync::Mutex<Vec<bool>>>,
+        notes: Vec<String>,
+    }
+
+    #[async_trait::async_trait]
+    impl Handler for TurnSteerHandler {
+        async fn handle(
+            &self,
+            event: &RetryPlanEvent,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<HandlerOutcome, ExtensionError> {
+            if let RetryPlanEvent::TurnStopping(e) = event {
+                let idx = {
+                    let mut asked = self.asked.lock().unwrap();
+                    asked.push(e.reason == TurnEndReason::NoToolCalls);
+                    asked.len() - 1
+                };
+                if let Some(note) = self.notes.get(idx) {
+                    Ok(HandlerOutcome::Cancel {
+                        reason: note.clone(),
+                    })
+                } else {
+                    Ok(HandlerOutcome::Continue)
+                }
+            } else {
+                Ok(HandlerOutcome::Continue)
+            }
+        }
+    }
+
+    /// Count user-role messages whose text starts with `steer-note` — the
+    /// steer notes the host appended into the transcript.
+    fn steer_note_count(sess: &Session) -> usize {
+        sess.messages
+            .iter()
+            .filter(|m| m.role == "user")
+            .filter(|m| {
+                m.content.iter().any(|b| {
+                    matches!(b,
+                        codesmith_agent::models::ContentBlock::Text { text, .. }
+                            if text.starts_with("steer-note"))
+                })
+            })
+            .count()
+    }
+
+    /// Parity: a bound runner whose handler abstains (`Continue`) keeps
+    /// the default termination — one round, `NoToolCalls`, no extra user
+    /// message — while the handler observes the ask with the correct
+    /// payload (`reason` = no-tool-calls).
+    #[tokio::test]
+    async fn turn_stopping_abstaining_handler_keeps_default_termination() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let mock = std::sync::Arc::new(RetryMockLlm::new(vec![MockRound::Events(usage_round(
+            10, 5,
+        ))]));
+        let asked: std::sync::Arc<std::sync::Mutex<Vec<bool>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let handler: std::sync::Arc<dyn Handler> = std::sync::Arc::new(TurnSteerHandler {
+            asked: asked.clone(),
+            notes: vec![],
+        });
+        let runner = retry_plan_runner(handler).await;
+        let executor = retry_plan_executor(&mock, runner).await;
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("abstaining handler must leave the default terminal path");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(mock.call_counts(), vec![1], "one round, no resume");
+        assert_eq!(
+            *asked.lock().unwrap(),
+            vec![true],
+            "asked once, reason = no-tool-calls"
+        );
+        assert_eq!(steer_note_count(&sess), 0, "no steer note appended");
+    }
+
+    /// `Cancel` steers: the note lands in the transcript verbatim as a
+    /// user-role message, the follow-up request carries it (request grew
+    /// by the surfaced turn + the note), and the turn ends on the second
+    /// ask where the now-abstaining handler lets it stop.
+    #[tokio::test]
+    async fn turn_stopping_cancel_appends_note_and_resumes_turn() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let mock = std::sync::Arc::new(RetryMockLlm::new(vec![
+            MockRound::Events(usage_round(10, 5)),
+            MockRound::Events(usage_round(20, 5)),
+        ]));
+        let asked: std::sync::Arc<std::sync::Mutex<Vec<bool>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let handler: std::sync::Arc<dyn Handler> = std::sync::Arc::new(TurnSteerHandler {
+            asked: asked.clone(),
+            notes: vec!["steer-note: keep going".to_string()],
+        });
+        let runner = retry_plan_runner(handler).await;
+        let executor = retry_plan_executor(&mock, runner).await;
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("steered turn must still complete cleanly");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(
+            mock.call_counts(),
+            vec![1, 3],
+            "round 2's request = go + answer + the steer note"
+        );
+        assert_eq!(
+            *asked.lock().unwrap(),
+            vec![true, true],
+            "asked at each would-be end"
+        );
+        assert_eq!(steer_note_count(&sess), 1, "exactly one steer note");
+        let note = sess
+            .messages
+            .iter()
+            .filter(|m| m.role == "user")
+            .find_map(|m| {
+                m.content.iter().find_map(|b| match b {
+                    codesmith_agent::models::ContentBlock::Text { text, .. }
+                        if text.starts_with("steer-note") =>
+                    {
+                        Some(text.clone())
+                    }
+                    _ => None,
+                })
+            })
+            .expect("the steer note is a user-role text message");
+        assert_eq!(note, "steer-note: keep going", "appended verbatim");
+    }
+
+    /// An always-steer handler is capped: exactly `MAX_TURN_STEERS`
+    /// resumes, then the steer is dropped (no note, no request) and the
+    /// turn ends on the default path — the spare scripted round is never
+    /// requested.
+    #[tokio::test]
+    async fn turn_stopping_steer_is_capped_by_loop_guard() {
+        use crate::engine::loop_guard::MAX_TURN_STEERS;
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let mock = std::sync::Arc::new(RetryMockLlm::new(
+            (0..5)
+                .map(|_| MockRound::Events(usage_round(10, 5)))
+                .collect(),
+        ));
+        let asked: std::sync::Arc<std::sync::Mutex<Vec<bool>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let handler: std::sync::Arc<dyn Handler> = std::sync::Arc::new(TurnSteerHandler {
+            asked: asked.clone(),
+            notes: (0..5).map(|i| format!("steer-note: again {i}")).collect(),
+        });
+        let runner = retry_plan_runner(handler).await;
+        let executor = retry_plan_executor(&mock, runner).await;
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("a capped steer must end the turn, not fail it");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(
+            mock.call_counts(),
+            vec![1, 3, 5, 7],
+            "1 initial + {MAX_TURN_STEERS} steered rounds; the 5th round is never requested"
+        );
+        assert_eq!(
+            asked.lock().unwrap().len(),
+            4,
+            "asked once per would-be end, including the capped one"
+        );
+        assert_eq!(
+            steer_note_count(&sess),
+            MAX_TURN_STEERS as usize,
+            "capped steers leave no note"
         );
     }
 

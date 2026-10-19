@@ -3728,6 +3728,55 @@ impl HostAgentExecutor {
                         continue;
                     }
                 }
+                // TurnStopping (DSH serial turn-steer): the turn is about to
+                // end on `NoToolCalls` — ask the extensions first. The
+                // question sits INSIDE the ending branch (same shape as the
+                // iteration-2 retry guard): no handler bound, all-abstain,
+                // or an out-of-place outcome degrades to exactly the
+                // default terminal path below. Naming inversion: `Continue`
+                // abstains (the turn stops), `Cancel { reason }` cancels the
+                // STOP — a steer. The first `Cancel` short-circuits the
+                // Serial chain, so the first non-abstaining handler decides;
+                // its `reason` is appended verbatim as a `user`-role message
+                // (plain push, like `BeforeAgentStart::inject_message` — NOT
+                // `push_steer_message`, which would observe it into the
+                // working set as user input) and the turn resumes on a fresh
+                // step. Steers are capped by the loop guard; a capped steer
+                // is dropped (logged) so an always-steer handler cannot spin
+                // the turn.
+                if let Some(runner) = &extension {
+                    let out = runner
+                        .emit(codesmith_agent::extension::ExtensionEvent::TurnStopping(
+                            codesmith_agent::extension::TurnStoppingEvent {
+                                reason: codesmith_agent::extension::TurnEndReason::NoToolCalls,
+                            },
+                        ))
+                        .await;
+                    if let codesmith_agent::extension::HandlerOutcome::Cancel { reason } =
+                        out.outcome
+                    {
+                        if loop_guard.record_turn_steer() {
+                            let status =
+                                format!("Extension steer: {}", summarize_text(&reason, 120));
+                            history.push(Message {
+                                role: "user".to_string(),
+                                content: vec![ContentBlock::Text {
+                                    text: reason,
+                                    cache_control: None,
+                                }],
+                            });
+                            self.emit_status(status).await;
+                            step += 1;
+                            continue 'step;
+                        }
+                        tracing::warn!(
+                            target: "codesmith_agent_runtime::engine",
+                            "extension turn steer dropped: per-turn cap of {} reached; \
+                             the turn ends",
+                            super::loop_guard::MAX_TURN_STEERS
+                        );
+                    }
+                }
                 // Thinking-only tail (issue #1727, slice 39 §E): the stream
                 // produced only a `Thinking` block (no sendable content), the
                 // steer flush / sub-agent drain resume branches did not fire,

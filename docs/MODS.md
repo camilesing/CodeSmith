@@ -123,7 +123,7 @@ You've now touched all four registration surfaces: event hooks, tools, commands,
 
 ### Event hooks
 
-`on("<event>", |e, ctx| { ... })` — `e` is the event payload map (every payload carries `kind`), `ctx` is `#{cwd, mode, idle, generation}` (`mode` is `"tui"` for the interactive terminal REPL — the retired frontend's name, kept for compatibility — or `"rpc"` / `"json"` / `"print"`); **ctx is optional** (`|e|` works). Event names are the kebab-case spelling of all 25 `ExtensionEventKind` variants:
+`on("<event>", |e, ctx| { ... })` — `e` is the event payload map (every payload carries `kind`), `ctx` is `#{cwd, mode, idle, generation}` (`mode` is `"tui"` for the interactive terminal REPL — the retired frontend's name, kept for compatibility — or `"rpc"` / `"json"` / `"print"`); **ctx is optional** (`|e|` works). Event names are the kebab-case spelling of all 26 `ExtensionEventKind` variants:
 
 | Event | Payload fields |
 |---|---|
@@ -136,6 +136,7 @@ You've now touched all four registration surfaces: event hooks, tools, commands,
 | `tool-call` | `id`, `name`, `input` (JSON value) |
 | `tool-result` | `id`, `name`, `content`, `success`, `is_error`, `canonical` (JSON value, `()` when the tool produced none) |
 | `turn-start` / `turn-end` | `turn_id`; `turn-end` also `reason` |
+| `turn-stopping` | `reason` (why the turn would end — `no-tool-calls` at the only emit site); fires just before the turn ends on no tool calls; `cancel("note")` steers — the note is appended as a user message and the turn resumes (capped at 3 steers per turn) |
 | `assistant-stream` | `text` (one incremental chunk; fires per text delta, emit-only) |
 | `tool-execution-update` | `id`, `name`, `message` |
 | `tools-change` | `added`, `removed` (tool-name arrays) |
@@ -167,7 +168,7 @@ model: **waterfall**, **serial**, **emit**:
 
 - **waterfall**: `input`, `before-agent-start`, `before-provider-request`, `tool-result` — each transform folds in, the next handler sees it, the final field applies
 - **waterfall + deny**: `tool-call` — rewrite the call's `input` (the rewritten input is what approval gates and what runs, and it is the recorded input) or `block(reason)` to deny (monotonic — no later handler can flip it); `provider-request-error` — rewrite the retry `plan` or `block(reason)` to give up
-- **serial**: `session-before-switch`, `session-before-fork`, `session-before-compact`
+- **serial**: `session-before-switch`, `session-before-fork`, `session-before-compact`, `turn-stopping` (inverted: `cancel(reason)` continues the turn — the note steers it)
 - **emit** (outcomes advisory): everything else, including `assistant-stream` (fires per text delta — keep handlers cheap) and `tools-change` (catalog diff at the turn-dispatch chokepoint)
 
 ### Hook return value → HandlerOutcome
@@ -176,7 +177,7 @@ model: **waterfall**, **serial**, **emit**:
 |---|---|---|
 | `proceed()` or `()` | `Continue` | all |
 | `block(reason)` | `Block` (ignored at non-block seams) | `tool-call`, `provider-request-error` |
-| `cancel(reason)` | `Cancel` (ignored at non-cancel seams) | `session-before-*` |
+| `cancel(reason)` | `Cancel` (ignored at non-cancel seams) | `session-before-*`, `turn-stopping` (steers the turn onward) |
 | `transform(#{...})` | `Transform` (merges mutable fields, chain continues) | see below |
 
 Transform mutable fields (one handler's rewrite is immediately visible to the next):

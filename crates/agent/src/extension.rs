@@ -323,6 +323,29 @@ pub struct ProviderRequestErrorEvent {
     pub plan: RetryPlan,
 }
 
+/// Payload for [`ExtensionEvent::TurnStopping`] — the DSH turn-stopping
+/// serial steer, asked when the turn is about to end on `NoToolCalls`
+/// (after the steer flush and sub-agent drain resume branches, before the
+/// terminal path). `reason` is why the turn would end (`NoToolCalls` at
+/// the only emit site).
+///
+/// Naming inversion at this seam: the pending host operation is
+/// *stopping the turn*, so a handler's `Continue` abstains (the turn
+/// stops — the default) and [`HandlerOutcome::Cancel { reason }`]
+/// cancels the stop — a steer. The first non-abstaining handler decides
+/// (Serial short-circuit), and its `reason` becomes the steer note: the
+/// host appends it verbatim as a `user`-role message (model-visible ⇒
+/// session-recorded; append-only, the prefix cache is untouched) and
+/// resumes the turn on a fresh step. Steers are capped per turn by the
+/// engine's loop guard — a capped steer is dropped (logged) and the turn
+/// ends on the default path. Known limitation: only the `NoToolCalls`
+/// termination asks — `MaxSteps` / `Interrupted` / `Error` terminal
+/// paths do not consult extensions.
+#[derive(Debug, Clone)]
+pub struct TurnStoppingEvent {
+    pub reason: TurnEndReason,
+}
+
 /// Payload for [`ExtensionEvent::AssistantStream`] (streaming
 /// observation, route B): one incremental assistant **text** chunk as the
 /// wire stream yields it. Emit-only; handlers must be cheap. The host
@@ -345,16 +368,18 @@ pub struct ToolExecutionUpdateEvent {
 }
 
 /// Lifecycle events. §F1 minimal set (spec §10.1) + §F2a full set (spec
-/// §10.2 + §4): 25 variants total (23 §F2a + `AssistantStream` +
+/// §10.2 + §4): 26 variants total (23 §F2a + `AssistantStream` +
 /// `ToolsChange`, minus the removed `ResourcesDiscover`, plus the
-/// DSH-alignment `ProviderRequestError`), `#[non_exhaustive]` so future
+/// DSH-alignment `ProviderRequestError` + `TurnStopping`),
+/// `#[non_exhaustive]` so future
 /// slices can add variants without breaking downstream match arms. Handler dispatch is
 /// open (any `Handler` may subscribe to any variant via `on` /
 /// `on_variant`). Variant-specific outcome semantics are part of the
 /// contract and live with the kinds:
 /// [`ExtensionEventKind::dispatch_mode`](ExtensionEventKind::dispatch_mode)
 /// (discipline 3 — the `SessionBefore*` seams are `Serial` (cancel
-/// veto); `ToolCall` is a denying `Waterfall` — input rewrite or
+/// veto) and so is `TurnStopping` (serial steer: `Cancel` continues the
+/// turn); `ToolCall` is a denying `Waterfall` — input rewrite or
 /// monotonic deny; `Input` / `BeforeAgentStart` / `BeforeProviderRequest`
 /// / `ToolResult` are non-denying `Waterfall`s; the rest `Emit`).
 #[non_exhaustive]
@@ -388,6 +413,10 @@ pub enum ExtensionEvent {
     /// transparent-retry guard before each retry decision (a denying
     /// `Waterfall` — see [`ProviderRequestErrorEvent`]).
     ProviderRequestError(ProviderRequestErrorEvent),
+    /// The DSH turn-stopping serial steer: asked when the turn is about
+    /// to end on `NoToolCalls`; `Cancel { reason }` steers the turn
+    /// onward (see [`TurnStoppingEvent`]).
+    TurnStopping(TurnStoppingEvent),
     ToolExecutionStart,
     AssistantStream(AssistantStreamEvent),
     ToolExecutionUpdate(ToolExecutionUpdateEvent),
@@ -425,6 +454,7 @@ pub enum ExtensionEventKind {
     BeforeProviderRequest,
     AfterProviderResponse,
     ProviderRequestError,
+    TurnStopping,
     ToolExecutionStart,
     AssistantStream,
     ToolCall,
@@ -459,6 +489,7 @@ impl ExtensionEvent {
             ExtensionEvent::BeforeProviderRequest(_) => ExtensionEventKind::BeforeProviderRequest,
             ExtensionEvent::AfterProviderResponse(_) => ExtensionEventKind::AfterProviderResponse,
             ExtensionEvent::ProviderRequestError(_) => ExtensionEventKind::ProviderRequestError,
+            ExtensionEvent::TurnStopping(_) => ExtensionEventKind::TurnStopping,
             ExtensionEvent::ToolExecutionStart => ExtensionEventKind::ToolExecutionStart,
             ExtensionEvent::AssistantStream(_) => ExtensionEventKind::AssistantStream,
             ExtensionEvent::ToolCall(_) => ExtensionEventKind::ToolCall,
@@ -498,7 +529,9 @@ pub enum DispatchMode {
     /// DSH **serial** — ordered listeners with veto: handlers run in
     /// subscription order; a handler's `Cancel` aborts the pending host
     /// operation and short-circuits the chain (the `SessionBefore*`
-    /// seams).
+    /// seams). [`ExtensionEventKind::TurnStopping`] is serial with an
+    /// inverted reading: the pending operation there IS the stop, so
+    /// `Cancel { reason }` continues the turn — the steer.
     Serial,
     /// DSH **waterfall** — transform fold: each handler's `Transform`
     /// folds into the running event (immediately visible to the next
@@ -533,7 +566,8 @@ impl ExtensionEventKind {
             }
             ExtensionEventKind::SessionBeforeSwitch
             | ExtensionEventKind::SessionBeforeFork
-            | ExtensionEventKind::SessionBeforeCompact => DispatchMode::Serial,
+            | ExtensionEventKind::SessionBeforeCompact
+            | ExtensionEventKind::TurnStopping => DispatchMode::Serial,
             ExtensionEventKind::ProjectTrust
             | ExtensionEventKind::SessionStart
             | ExtensionEventKind::AgentStart
@@ -686,7 +720,12 @@ pub trait CommandDefinition: Send + Sync {
 /// - `Cancel { reason }` — abort the surrounding operation. Honored only
 ///   at `Serial` seams (the `SessionBefore*` variants, spec §4); ignored
 ///   (treated as `Continue`) elsewhere so a stray `Cancel` cannot break
-///   unrelated flows.
+///   unrelated flows. [`ExtensionEvent::TurnStopping`] is also `Serial`
+///   with an inverted reading — the "surrounding operation" is stopping
+///   the turn, so `Cancel { reason }` continues the turn (a steer) and
+///   `Continue` abstains (the turn stops); the `reason` doubles as the
+///   steer note the host appends as a `user`-role message (see
+///   [`TurnStoppingEvent`]).
 /// - `Block { reason }` — prevent the operation. Honored only at a
 ///   denying `Waterfall` seam (`ToolCall`); ignored elsewhere.
 /// - `Transform(event)` — replace the running event with `event` for
@@ -1391,9 +1430,10 @@ mod tests {
     /// declared mode; the exhaustive `dispatch_mode` match makes a new
     /// variant a compile error without an arm, and this table makes
     /// CHANGING an existing kind's mode a test failure — the contract
-    /// cannot drift silently. 25 rows = the full §F2a set +
+    /// cannot drift silently. 26 rows = the full §F2a set +
     /// assistant-stream + tools-change (minus the removed
-    /// `ResourcesDiscover`) + provider-request-error (DSH alignment).
+    /// `ResourcesDiscover`) + provider-request-error + turn-stopping
+    /// (DSH alignment).
     #[test]
     fn event_dispatch_contract_table() {
         use DispatchMode as M;
@@ -1411,6 +1451,7 @@ mod tests {
             (K::SessionBeforeSwitch, M::Serial),
             (K::SessionBeforeFork, M::Serial),
             (K::SessionBeforeCompact, M::Serial),
+            (K::TurnStopping, M::Serial),
             // Emit (broadcast; outcomes advisory).
             (K::AssistantStream, M::Emit),
             (K::ProjectTrust, M::Emit),
@@ -1431,8 +1472,9 @@ mod tests {
         ];
         assert_eq!(
             contract.len(),
-            25,
-            "the full §F2a set + assistant-stream + tools-change + provider-request-error"
+            26,
+            "the full §F2a set + assistant-stream + tools-change + provider-request-error \
+             + turn-stopping"
         );
         for (kind, mode) in contract {
             assert_eq!(&kind.dispatch_mode(), mode, "contract drift at {kind:?}");
@@ -1677,8 +1719,11 @@ mod tests {
             attempt: 2,
             plan: RetryPlan::GiveUp,
         };
+        let stop = TurnStoppingEvent {
+            reason: TurnEndReason::NoToolCalls,
+        };
         // Debug renders without panic for every new type.
-        let _ = format!("{start:?} {req:?} {resp:?} {upd:?} {hdrs:?} {pre:?}");
+        let _ = format!("{start:?} {req:?} {resp:?} {upd:?} {hdrs:?} {pre:?} {stop:?}");
     }
 
     #[test]
@@ -1774,6 +1819,12 @@ mod tests {
                 }),
                 K::ProviderRequestError,
             ),
+            (
+                ExtensionEvent::TurnStopping(TurnStoppingEvent {
+                    reason: TurnEndReason::NoToolCalls,
+                }),
+                K::TurnStopping,
+            ),
             (ExtensionEvent::ToolExecutionStart, K::ToolExecutionStart),
             (
                 ExtensionEvent::ToolCall(ToolCallEvent {
@@ -1829,7 +1880,7 @@ mod tests {
                 K::ToolsChange,
             ),
         ];
-        assert_eq!(cases.len(), 25, "all variants covered");
+        assert_eq!(cases.len(), 26, "all variants covered");
         for (ev, kind) in cases {
             assert_eq!(ev.kind(), kind, "kind mismatch for {ev:?}");
         }

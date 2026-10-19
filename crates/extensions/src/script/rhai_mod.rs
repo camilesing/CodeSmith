@@ -130,7 +130,7 @@ pub enum ScriptRegistration {
 
 type RegistrationCell = Arc<Mutex<Vec<ScriptRegistration>>>;
 
-// === Event-name mapping (25 kinds, kebab-case) =============================
+// === Event-name mapping (26 kinds, kebab-case) =============================
 
 /// Parse a script-side event name (kebab-case) into its
 /// [`ExtensionEventKind`]. `None` for unknown names (surfaced as a script
@@ -147,6 +147,7 @@ pub(crate) fn event_kind_from_name(name: &str) -> Option<ExtensionEventKind> {
         "before-provider-request" => ExtensionEventKind::BeforeProviderRequest,
         "after-provider-response" => ExtensionEventKind::AfterProviderResponse,
         "provider-request-error" => ExtensionEventKind::ProviderRequestError,
+        "turn-stopping" => ExtensionEventKind::TurnStopping,
         "tool-execution-start" => ExtensionEventKind::ToolExecutionStart,
         "assistant-stream" => ExtensionEventKind::AssistantStream,
         "tool-call" => ExtensionEventKind::ToolCall,
@@ -181,6 +182,7 @@ pub(crate) fn event_name_from_kind(kind: ExtensionEventKind) -> &'static str {
         ExtensionEventKind::BeforeProviderRequest => "before-provider-request",
         ExtensionEventKind::AfterProviderResponse => "after-provider-response",
         ExtensionEventKind::ProviderRequestError => "provider-request-error",
+        ExtensionEventKind::TurnStopping => "turn-stopping",
         ExtensionEventKind::ToolExecutionStart => "tool-execution-start",
         ExtensionEventKind::ToolCall => "tool-call",
         ExtensionEventKind::ToolExecutionUpdate => "tool-execution-update",
@@ -196,7 +198,7 @@ pub(crate) fn event_name_from_kind(kind: ExtensionEventKind) -> &'static str {
         ExtensionEventKind::SessionCompact => "session-compact",
         ExtensionEventKind::ToolsChange => "tools-change",
         // `ExtensionEventKind` is `#[non_exhaustive]`; the wildcard is
-        // unreachable while this crate tracks every variant (the 25-entry
+        // unreachable while this crate tracks every variant (the 26-entry
         // round-trip test guards that).
         _ => "unknown-event",
     }
@@ -342,6 +344,9 @@ pub(crate) fn event_to_dynamic(event: &ExtensionEvent) -> Dynamic {
                 },
             ),
         ],
+        ExtensionEvent::TurnStopping(e) => {
+            vec![("reason", Dynamic::from(turn_end_reason(e.reason)))]
+        }
         ExtensionEvent::ToolExecutionStart => vec![],
         ExtensionEvent::ToolCall(e) => vec![
             ("id", Dynamic::from(e.id.clone())),
@@ -699,7 +704,7 @@ fn register_natives(
                     Ok(())
                 }
                 None => Err(script_error(format!(
-                    "on(): unknown event name '{event}' (see docs/MODS.md for the 25 event names)"
+                    "on(): unknown event name '{event}' (see docs/MODS.md for the 26 event names)"
                 ))),
             }
         },
@@ -2074,8 +2079,9 @@ mod tests {
             ExtensionEventKind::SessionCompact,
             ExtensionEventKind::ToolsChange,
             ExtensionEventKind::ProviderRequestError,
+            ExtensionEventKind::TurnStopping,
         ];
-        assert_eq!(kinds.len(), 25);
+        assert_eq!(kinds.len(), 26);
         for kind in kinds {
             let name = event_name_from_kind(kind);
             assert_eq!(event_kind_from_name(name), Some(kind), "round-trip {name}");
