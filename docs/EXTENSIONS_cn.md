@@ -421,7 +421,7 @@ UI 决策通道；不存在 `ask()` 控制值，脚本永远产生不了 `Ask` �
 | `AgentSettled` | `engine/mod.rs` 运行后排空（容量应用之后） | emit | — |
 | `SessionBeforeCompact` | `host_executor::run_compaction` 在 `should_compact` 门控之后 | **Cancel** | 跳过压缩（`return`） |
 | `SessionCompact` | `host_executor::run_compaction` 在摘要应用之后 | emit | — |
-| `SessionBeforeSwitch` | —（无 emit 位点） | **Cancel** | 能力保留但当前从不发出：进程内工作区切换随 TUI 在 0.9.0 移除（`/workspace` 改为提示重启） |
+| `SessionBeforeSwitch` | `/cd` REPL 命令（`crates/cli/src/interactive/commands/dir_cmds.rs`）——其唯一触发点，`cd_allowed` 信任检查之后、工作区赋值 + `Op::SyncSession` 重根之前 | **Cancel** | mod 否决则会话留在原目录（原因回显用户、归因到 mod）；`Continue`（或无 handler）放行切换 |
 | `ProjectTrust` | `HostServices::build_turn_dispatcher`（`crates/cli/src/core/engine/runtime_traits.rs`；+ `spawn_subagent`）在 `build_tool_context_for` 之后（每轮 `Trusted`/`Untrusted`）；`FirstLoad` 当前无 emit 位点 —— onboarding 信任提示的发出随 TUI 在 0.9.0 移除 | emit | 来自 `session.trust_mode` 的每轮 `Trusted`/`Untrusted`；`FirstLoad` 为 onboarding 信任接受（`TrustReason::FirstLoad`）而定义，但已无活跃 emit 位点 —— 运行时 `trust_mode` 开关（`/trust on`）、YOLO 进入和持久化信任启动在每轮表现为 `Trusted`/`Untrusted`，而不是 `FirstLoad` |
 | `ToolsChange { added, removed }` | `HostServices::build_turn_dispatcher` 在所有选择源应用之后 | emit | 最终模型可见目录与上一主回合基线的差量；首次构建静默建立基线；子代理工具集不经过此接缝 |
 | `—`（dylib LOAD，不是事件） | `populate_extension_runtime`（`crates/cli/src/core/engine.rs`）在 `discover_static` 之后 | n/a（加载阶段） | `discover_dylib(&global_roots, &project_roots)` → `apply_trust_gate(discovered, !is_workspace_trusted(workspace))` 丢弃项目本地（`global == false`）→ `state.is_enabled` 对账 → 在 OS 线程加载运行时上执行 `ExtensionRunner::load_dylib`；重载经 `reload_extension_runtime`→`populate` 拾取。`ExtensionRunner.libraries` 持有 `Library` 句柄；运行时重载时它们 `drain_libraries_to_pending` 到 `pending_drop`（与各 clear 一并执行）+ 引擎 op-loop 在下一个轮边界对它们执行 `drop_pending`。经 `codesmith_register_extension` 实现 lockstep `*mut dyn Extension`。 |
@@ -473,7 +473,6 @@ agent 类型的视图，它会过滤掉 **dylib 来源**工具——detached 后
 
 - `ExtensionContext::abort() / shutdown() / compact() /
   get_context_usage()` 返回 `ExtensionError::Unimplemented`。
-- `SessionBeforeSwitch` 在契约中有定义，但没有宿主 emit 位点（理由见上文接缝表）。
 - `TurnStopping` 的 steer 每轮上限 3 次（loop guard）；只有 `NoToolCalls`
   终止会询问 —— `MaxSteps` / `Interrupted` / `Error` 终态路径不咨询扩展，
   且到顶被丢弃的 steer 提示不追加进会话。
