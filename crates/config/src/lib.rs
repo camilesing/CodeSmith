@@ -2612,7 +2612,11 @@ fn serialize_http_headers(headers: &BTreeMap<String, String>) -> Option<String> 
     )
 }
 
-fn redact_secret(secret: &str) -> String {
+/// Mask a secret for display: values up to 16 chars become `********`;
+/// longer ones keep a 4-char prefix + suffix. Shared by config display
+/// (`get_display_value`) and the extension `BeforeProviderHeaders` payload
+/// masking (`codesmith-agent`).
+pub fn redact_secret(secret: &str) -> String {
     let chars: Vec<char> = secret.chars().collect();
     if chars.len() <= 16 {
         return "********".to_string();

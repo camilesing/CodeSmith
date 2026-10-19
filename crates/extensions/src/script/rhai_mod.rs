@@ -28,8 +28,8 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use codesmith_agent::extension::{
     AgentStartEvent, Extension, ExtensionApi, ExtensionContext, ExtensionError, ExtensionEvent,
-    ExtensionEventKind, ExtensionMetadata, ExtensionMode, InputEvent, ToolCallEvent,
-    ToolResultEvent,
+    ExtensionEventKind, ExtensionMetadata, ExtensionMode, InputEvent, ProviderFailure,
+    ProviderRequestErrorEvent, RetryPlan, ToolCallEvent, ToolResultEvent,
 };
 use codesmith_agent::provider::ProviderId;
 use codesmith_tools::{ToolError, ToolResult};
@@ -146,6 +146,7 @@ pub(crate) fn event_kind_from_name(name: &str) -> Option<ExtensionEventKind> {
         "before-provider-headers" => ExtensionEventKind::BeforeProviderHeaders,
         "before-provider-request" => ExtensionEventKind::BeforeProviderRequest,
         "after-provider-response" => ExtensionEventKind::AfterProviderResponse,
+        "provider-request-error" => ExtensionEventKind::ProviderRequestError,
         "tool-execution-start" => ExtensionEventKind::ToolExecutionStart,
         "assistant-stream" => ExtensionEventKind::AssistantStream,
         "tool-call" => ExtensionEventKind::ToolCall,
@@ -179,6 +180,7 @@ pub(crate) fn event_name_from_kind(kind: ExtensionEventKind) -> &'static str {
         ExtensionEventKind::BeforeProviderHeaders => "before-provider-headers",
         ExtensionEventKind::BeforeProviderRequest => "before-provider-request",
         ExtensionEventKind::AfterProviderResponse => "after-provider-response",
+        ExtensionEventKind::ProviderRequestError => "provider-request-error",
         ExtensionEventKind::ToolExecutionStart => "tool-execution-start",
         ExtensionEventKind::ToolCall => "tool-call",
         ExtensionEventKind::ToolExecutionUpdate => "tool-execution-update",
@@ -194,7 +196,7 @@ pub(crate) fn event_name_from_kind(kind: ExtensionEventKind) -> &'static str {
         ExtensionEventKind::SessionCompact => "session-compact",
         ExtensionEventKind::ToolsChange => "tools-change",
         // `ExtensionEventKind` is `#[non_exhaustive]`; the wildcard is
-        // unreachable while this crate tracks every variant (the 24-entry
+        // unreachable while this crate tracks every variant (the 25-entry
         // round-trip test guards that).
         _ => "unknown-event",
     }
@@ -308,13 +310,38 @@ pub(crate) fn event_to_dynamic(event: &ExtensionEvent) -> Dynamic {
         ExtensionEvent::TurnStart { turn_id } => {
             vec![("turn_id", Dynamic::from(turn_id.clone()))]
         }
-        ExtensionEvent::BeforeProviderHeaders => vec![],
+        ExtensionEvent::BeforeProviderHeaders(e) => {
+            vec![("headers", json_to_dynamic(&e.headers))]
+        }
         ExtensionEvent::BeforeProviderRequest(e) => {
             vec![("messages", json_to_dynamic(&e.messages))]
         }
         ExtensionEvent::AfterProviderResponse(e) => {
             vec![("response", json_to_dynamic(&e.response))]
         }
+        ExtensionEvent::ProviderRequestError(e) => vec![
+            (
+                "failure",
+                dynamic_map(vec![
+                    ("category", Dynamic::from(e.failure.category.clone())),
+                    ("message", Dynamic::from(e.failure.message.clone())),
+                ]),
+            ),
+            ("attempt", Dynamic::from(i64::from(e.attempt))),
+            (
+                "plan",
+                match &e.plan {
+                    RetryPlan::Retry { delay_ms } => dynamic_map(vec![
+                        ("action", Dynamic::from("retry")),
+                        (
+                            "delay_ms",
+                            Dynamic::from(i64::try_from(*delay_ms).unwrap_or(i64::MAX)),
+                        ),
+                    ]),
+                    RetryPlan::GiveUp => dynamic_map(vec![("action", Dynamic::from("give-up"))]),
+                },
+            ),
+        ],
         ExtensionEvent::ToolExecutionStart => vec![],
         ExtensionEvent::ToolCall(e) => vec![
             ("id", Dynamic::from(e.id.clone())),
@@ -588,6 +615,43 @@ pub(crate) fn merge_transform(
                 HandlerOutcome::Continue
             }
         }
+        ExtensionEvent::ProviderRequestError(cur) => {
+            // `transform(#{ retry: false })` gives up;
+            // `transform(#{ retry: true, delay_ms: 5000 })` rewrites the
+            // backoff or forces a retry past the default budget (the
+            // engine caps forced retries). A missing `retry` field is a mod
+            // bug — warn and keep the default plan.
+            let Some(retry) = map_field_bool(&map, "retry") else {
+                tracing::warn!(
+                    target: "codesmith_mods",
+                    "provider-request-error transform requires a boolean `retry` field"
+                );
+                return HandlerOutcome::Continue;
+            };
+            let plan = if retry {
+                let delay_ms = map
+                    .get("delay_ms")
+                    .and_then(|d| d.clone().try_cast::<i64>())
+                    .map(|ms| ms.max(0) as u64)
+                    .unwrap_or(match cur.plan {
+                        RetryPlan::Retry { delay_ms } => delay_ms,
+                        RetryPlan::GiveUp => 0,
+                    });
+                RetryPlan::Retry { delay_ms }
+            } else {
+                RetryPlan::GiveUp
+            };
+            HandlerOutcome::Transform(ExtensionEvent::ProviderRequestError(
+                ProviderRequestErrorEvent {
+                    failure: ProviderFailure {
+                        category: cur.failure.category.clone(),
+                        message: cur.failure.message.clone(),
+                    },
+                    attempt: cur.attempt,
+                    plan,
+                },
+            ))
+        }
         // Emit/Serial seams are non-transformable: ignore the transform.
         _ => HandlerOutcome::Continue,
     }
@@ -635,7 +699,7 @@ fn register_natives(
                     Ok(())
                 }
                 None => Err(script_error(format!(
-                    "on(): unknown event name '{event}' (see docs/MODS.md for the 24 event names)"
+                    "on(): unknown event name '{event}' (see docs/MODS.md for the 25 event names)"
                 ))),
             }
         },
@@ -2009,8 +2073,9 @@ mod tests {
             ExtensionEventKind::SessionBeforeCompact,
             ExtensionEventKind::SessionCompact,
             ExtensionEventKind::ToolsChange,
+            ExtensionEventKind::ProviderRequestError,
         ];
-        assert_eq!(kinds.len(), 24);
+        assert_eq!(kinds.len(), 25);
         for kind in kinds {
             let name = event_name_from_kind(kind);
             assert_eq!(event_kind_from_name(name), Some(kind), "round-trip {name}");

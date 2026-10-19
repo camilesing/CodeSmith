@@ -328,8 +328,8 @@ thinking-only / capacity / early-tool-start / subagent）请直接查看模块�
 `SessionBefore*` 处遵守 `Cancel`（跳过压缩/切换）；在
 `Input`/`BeforeAgentStart`/`BeforeProviderRequest`/`ToolResult` 处遵守
 `Transform`（改写可操作字段；`ToolResult` 把 emit→`on_tool_end`→传播到
-`outcomes[idx]` 的顺序重新安排）；错位的结果映射为 `Continue`。24 种事件
-中 23 种从生产接缝发射（`ToolExecutionUpdate` 由 shell 工具的轮询循环经
+`outcomes[idx]` 的顺序重新安排）；错位的结果映射为 `Continue`。25 种事件
+中 24 种从生产接缝发射（`ToolExecutionUpdate` 由 shell 工具的轮询循环经
 `ToolContext::progress` 发出，`SessionBeforeFork` 由每条 spawn 路径发出，
 `ProjectTrust` 每回合与每次子代理 spawn 发出）；唯一未发射的是
 `SessionBeforeSwitch`（无运行时发射点——见 `EXTENSIONS.md` 接缝表）。

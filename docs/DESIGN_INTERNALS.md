@@ -352,7 +352,7 @@ At the host seams, `EmitOutcome` is `#[must_use]` (forcing seam inspection):
 `SessionBefore*` skips compaction/switch, and `Transform` at
 `Input`/`BeforeAgentStart`/`BeforeProviderRequest`/`ToolResult` rewrites the
 actionable field (`ToolResult` reorders emit→`on_tool_end`→propagate to
-`outcomes[idx]`); out-of-place outcomes map to `Continue`. 23 of the 24
+`outcomes[idx]`); out-of-place outcomes map to `Continue`. 24 of the 25
 event kinds are emitted from production seams (`ToolExecutionUpdate` from
 the shell tools' poll loops through `ToolContext::progress`,
 `SessionBeforeFork` from every spawn path, `ProjectTrust` per turn and per

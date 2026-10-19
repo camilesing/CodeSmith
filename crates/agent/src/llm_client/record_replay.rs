@@ -143,6 +143,10 @@ impl LlmClient for RecordingClient {
         self.inner.model()
     }
 
+    fn request_headers(&self) -> Vec<(String, String)> {
+        self.inner.request_headers()
+    }
+
     fn create_message(
         &self,
         request: MessageRequest,

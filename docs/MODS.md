@@ -123,14 +123,16 @@ You've now touched all four registration surfaces: event hooks, tools, commands,
 
 ### Event hooks
 
-`on("<event>", |e, ctx| { ... })` — `e` is the event payload map (every payload carries `kind`), `ctx` is `#{cwd, mode, idle, generation}` (`mode` is `"tui"` for the interactive terminal REPL — the retired frontend's name, kept for compatibility — or `"rpc"` / `"json"` / `"print"`); **ctx is optional** (`|e|` works). Event names are the kebab-case spelling of all 24 `ExtensionEventKind` variants:
+`on("<event>", |e, ctx| { ... })` — `e` is the event payload map (every payload carries `kind`), `ctx` is `#{cwd, mode, idle, generation}` (`mode` is `"tui"` for the interactive terminal REPL — the retired frontend's name, kept for compatibility — or `"rpc"` / `"json"` / `"print"`); **ctx is optional** (`|e|` works). Event names are the kebab-case spelling of all 25 `ExtensionEventKind` variants:
 
 | Event | Payload fields |
 |---|---|
 | `input` | `text` |
 | `before-agent-start` | `system_prompt`, `inject_message` (`()` = unset) |
 | `before-provider-request` | `messages` (JSON value) |
-| `after-provider-response` | `response` (JSON value) |
+| `after-provider-response` | `response` (JSON value — the assembled `MessageResponse`; `id` is empty on the streaming path) |
+| `before-provider-headers` | `headers` (JSON object; credential-bearing values masked) |
+| `provider-request-error` | `failure` (`#{category, message}`), `attempt`, `plan` (`#{action: "retry" \| "give-up", delay_ms}`) |
 | `tool-call` | `id`, `name`, `input` (JSON value) |
 | `tool-result` | `id`, `name`, `content`, `success`, `is_error`, `canonical` (JSON value, `()` when the tool produced none) |
 | `turn-start` / `turn-end` | `turn_id`; `turn-end` also `reason` |
@@ -138,7 +140,7 @@ You've now touched all four registration surfaces: event hooks, tools, commands,
 | `tool-execution-update` | `id`, `name`, `message` |
 | `tools-change` | `added`, `removed` (tool-name arrays) |
 | `project-trust` / `session-start` | `reason` |
-| `agent-start` / `before-provider-headers` / `tool-execution-start` / `tool-execution-end` / `agent-end` / `agent-settled` / `session-before-switch` / `session-before-fork` / `session-shutdown` / `session-before-compact` / `session-compact` | (`kind` only) |
+| `agent-start` / `tool-execution-start` / `tool-execution-end` / `agent-end` / `agent-settled` / `session-before-switch` / `session-before-fork` / `session-shutdown` / `session-before-compact` / `session-compact` | (`kind` only) |
 
 `tool-execution-update` fires from the shell tools' own poll loops while a command keeps
 running (`exec_shell` foreground and `exec_shell_wait`): at most once per second and only
@@ -164,7 +166,7 @@ checked by a contract test) — three states named after the DSH (deepseek-harne
 model: **waterfall**, **serial**, **emit**:
 
 - **waterfall**: `input`, `before-agent-start`, `before-provider-request`, `tool-result` — each transform folds in, the next handler sees it, the final field applies
-- **waterfall + deny**: `tool-call` — rewrite the call's `input` (the rewritten input is what approval gates and what runs, and it is the recorded input) or `block(reason)` to deny (monotonic — no later handler can flip it)
+- **waterfall + deny**: `tool-call` — rewrite the call's `input` (the rewritten input is what approval gates and what runs, and it is the recorded input) or `block(reason)` to deny (monotonic — no later handler can flip it); `provider-request-error` — rewrite the retry `plan` or `block(reason)` to give up
 - **serial**: `session-before-switch`, `session-before-fork`, `session-before-compact`
 - **emit** (outcomes advisory): everything else, including `assistant-stream` (fires per text delta — keep handlers cheap) and `tools-change` (catalog diff at the turn-dispatch chokepoint)
 
@@ -173,7 +175,7 @@ model: **waterfall**, **serial**, **emit**:
 | Script returns | HandlerOutcome | Effective seams |
 |---|---|---|
 | `proceed()` or `()` | `Continue` | all |
-| `block(reason)` | `Block` (ignored at non-block seams) | `tool-call` |
+| `block(reason)` | `Block` (ignored at non-block seams) | `tool-call`, `provider-request-error` |
 | `cancel(reason)` | `Cancel` (ignored at non-cancel seams) | `session-before-*` |
 | `transform(#{...})` | `Transform` (merges mutable fields, chain continues) | see below |
 
@@ -184,6 +186,7 @@ Transform mutable fields (one handler's rewrite is immediately visible to the ne
 - `before-agent-start`: `system_prompt`, `inject_message` (string = set, `()` = clear, absent = keep)
 - `before-provider-request`: `messages`
 - `tool-result`: `content`, `success`, `is_error`, `canonical` (JSON value — the machine-readable result; rewriting `content` alone leaves it untouched, and it can be replaced explicitly)
+- `provider-request-error`: `retry` (bool — `false` gives up), `delay_ms` (int; kept from the current plan when absent; forced retries are capped engine-side)
 
 ### Capability functions
 

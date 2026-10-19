@@ -219,7 +219,7 @@ inventory::submit! {
 - **`ExtensionCommandContext: ExtensionContext`** —— 交给命令处理器
   的严格子 trait；它不携带任何会话变更方法（这一拆分是为了类型
   安全）。
-- **`ExtensionEvent`** —— `#[non_exhaustive]`，24 个变体（`resources-discover` 已于 0.11.0 移除）：
+- **`ExtensionEvent`** —— `#[non_exhaustive]`，25 个变体（`resources-discover` 已于 0.11.0 移除；`provider-request-error` 随 DSH 重试瀑布加入）：
   `SessionStart` / `TurnStart` / `ToolCall` / `ToolResult` / `TurnEnd` /
   `SessionShutdown` / `ProjectTrust` / `Input` /
   `BeforeAgentStart` / `AgentStart` / `BeforeProviderHeaders` /
@@ -302,7 +302,7 @@ async fn configure(api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
 | `Emit` | emit | 广播：handler 按订阅顺序运行，结果仅具参考性（`Transform`/`Cancel`/`Block` 被忽略） |
 | `Serial` | serial | 带否决的有序监听：`Cancel` 中止待定的宿主操作并短路链（`SessionBefore*` 接缝） |
 | `Waterfall { can_deny: false }` | waterfall | transform 折叠：每个 handler 的 `Transform` 折入运行中的事件（对下一个 handler 可见）；终值作用于接缝（`Input`、`BeforeAgentStart`、`BeforeProviderRequest`、`ToolResult`） |
-| `Waterfall { can_deny: true }` | waterfall + deny | 折叠外加 `Block`：handler 可改写调用 `input` —— 改写后的输入才是审批、执行与入档的输入 —— 或直接拒绝；拒绝是单调的（`ToolCall`） |
+| `Waterfall { can_deny: true }` | waterfall + deny | 折叠外加 `Block`：handler 可改写事件的可操作字段（`ToolCall`：调用 `input` —— 改写后的输入才是审批、执行与入档的输入；`ProviderRequestError`：重试 `plan`），或直接拒绝操作；拒绝是单调的（`ToolCall`、`ProviderRequestError`） |
 
 该匹配与 `kind()` 同为穷尽匹配，并由 `event_dispatch_contract_table`
 测试锁定，声明的契约不会无声漂移。CodeSmith **不**采纳 DSH 的
@@ -328,9 +328,10 @@ async fn configure(api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
 | `Input(InputEvent)` | `host_executor::run_inner`（用户轮种子） | **Transform** | 重写已提交的 `text` |
 | `BeforeAgentStart(AgentStartEvent)` | `host_executor::run_inner` 顶部 | **Transform** | 注入 `inject_message`（history push）+ 若设置了 `system_prompt` 则覆盖 |
 | `AgentStart` | `host_executor::run_inner`（emit） | emit | — |
-| `BeforeProviderHeaders` | `host_executor` 在构建 `request` 之前 | emit | — |
+| `BeforeProviderHeaders(BeforeProviderHeadersEvent)` | `host_executor` 在构建 `request` 之前 | emit | payload = provider 客户端的额外 HTTP 头（JSON 对象，含凭据性质的值已掩码）；传输层由 api key 生成的认证头不列出 —— 它们从不离开客户端 |
 | `BeforeProviderRequest(BeforeProviderRequestEvent)` | `host_executor` 在 `request` 构建后、流式开始前 | **Transform** | 重写 `request.messages` |
-| `AfterProviderResponse(AfterProviderResponseEvent)` | `host_executor` `Content` 分支在 `accumulate_usage` 之后 | emit | — |
+| `AfterProviderResponse(AfterProviderResponseEvent)` | `host_executor` `Content` 分支在 `accumulate_usage` 之后 | emit | payload = 组装后的 `MessageResponse` 序列化（流式合成：`id` 为空 —— 归约器拿不到 wire 响应对象；`content`/`stop_reason`/`usage` 来自流归约） |
+| `ProviderRequestError(ProviderRequestErrorEvent)` | `stream_with_transparent_retry` `Empty` 分支，每次重试决策前 | **Transform + Block** | DSH request-error 瀑布，在透明重试守卫内部问询：`Continue` 保持默认策略（有界重试；限流退避）；`Transform` 改写 `plan` —— `Retry { delay_ms }` 改写退避（钳制 5 分钟）或在默认预算耗尽后强制重试（强制重试上限 6 次）；`Block` 放弃并让失败上浮。`failure` 携带分类类别（snake_case）+ 原始消息；`attempt` 是 1 起始的失败尝试序号。重试不进模型上下文 —— 扩展决策由 `tracing` 记录 |
 | `AssistantStream(AssistantStreamEvent)` | 回调桥流式增量路径（`agent-runtime/src/callback_bridge.rs`） | emit | 每个线上增量一个 assistant **文本**块；分发在离线程执行，受每增量 250 ms + 每轮累计 1 s 预算约束 —— 超预算的处理器被脱离（运行至完成、结果被丢弃、从不在执行中途被取消），该轮后续增量跳过分发；无订阅者时完全不分发；thinking 增量保持仅 UI |
 | `ToolCall(ToolCallEvent)` | `host_executor` 并行 + 串行工具分发 | **Transform + Block** | handler 可改写调用 `input` 或拒绝它。`Block` 跳过审批 + `tool.run` → `Err(ToolError::permission_denied(reason))`，`blocked = true`。在并行批中，改写后的输入必须重新分类为自动批准，否则调用在该处被阻断 —— 改写无法把未批准的输入偷运过免审批批；模型可重新发起调用以走串行审批门。`on_tool_start` 与审计记录看到的是改写后的输入 |
 | `ToolResult(ToolResultEvent)` | `host_executor` 并行 + 串行，emit 重排到 `on_tool_end` 之前 | **Transform** | 替换结果；`on_tool_end` + 下游 `outcomes[idx].result` 看到的是变换后的结果。`ToolResult` 携带 canonical/rendered 分离：`content` 是模型可见渲染，`canonical` 是结构化机器值（仅存活于当前进程，不随转录持久化）—— 改写 `content` 不得改写 `canonical` |

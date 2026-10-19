@@ -14,7 +14,9 @@ use codesmith_agent::llm_client::LlmClientHandle;
 use codesmith_agent::provider::{ProviderConfig, ProviderFactory, ProviderId};
 use rig_core::providers::openai;
 
-use crate::rig_adapter::{GenericShaper, H2FallbackClient, RigLlmClient, build_header_map};
+use crate::rig_adapter::{
+    GenericShaper, H2FallbackClient, RigLlmClient, build_header_map, header_pairs,
+};
 
 /// Factory for the official OpenAI provider (Chat Completions API). Carries
 /// the manifest-sourced `base_url` / `model` defaults it falls back to when the
@@ -76,6 +78,6 @@ impl ProviderFactory for OpenAiFactory {
             None,
             None,
         );
-        Ok(Arc::new(adapter) as LlmClientHandle)
+        Ok(Arc::new(adapter.with_headers(header_pairs(&cfg.http_headers))) as LlmClientHandle)
     }
 }

@@ -119,14 +119,16 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 
 ### 事件钩子
 
-`on("<event>", |e, ctx| { ... })`——`e` 是事件 payload map（都带 `kind` 字段），`ctx` 是 `#{cwd, mode, idle, generation}`（`mode` 在交互终端 REPL 下为 `"tui"`——沿用已移除前端的名字以保兼容——其余为 `"rpc"` / `"json"` / `"print"`），**ctx 可省略**（写 `|e|` 即可）。事件名是 `ExtensionEventKind` 的 kebab-case 全量 24 种：
+`on("<event>", |e, ctx| { ... })`——`e` 是事件 payload map（都带 `kind` 字段），`ctx` 是 `#{cwd, mode, idle, generation}`（`mode` 在交互终端 REPL 下为 `"tui"`——沿用已移除前端的名字以保兼容——其余为 `"rpc"` / `"json"` / `"print"`），**ctx 可省略**（写 `|e|` 即可）。事件名是 `ExtensionEventKind` 的 kebab-case 全量 25 种：
 
 | 事件 | payload 字段 |
 |---|---|
 | `input` | `text` |
 | `before-agent-start` | `system_prompt`、`inject_message`（`()` 表示未设置） |
 | `before-provider-request` | `messages`（JSON 值） |
-| `after-provider-response` | `response`（JSON 值） |
+| `after-provider-response` | `response`（JSON 值——组装后的 `MessageResponse`；流式路径下 `id` 为空） |
+| `before-provider-headers` | `headers`（JSON 对象；含凭据性质的值已掩码） |
+| `provider-request-error` | `failure`（`#{category, message}`）、`attempt`、`plan`（`#{action: "retry" \| "give-up", delay_ms}`） |
 | `tool-call` | `id`、`name`、`input`（JSON 值） |
 | `tool-result` | `id`、`name`、`content`、`success`、`is_error`、`canonical`（JSON 值，工具未产出时为 `()`） |
 | `turn-start` / `turn-end` | `turn_id`；`turn-end` 另有 `reason` |
@@ -134,7 +136,7 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 | `tool-execution-update` | `id`、`name`、`message` |
 | `tools-change` | `added`、`removed`（工具名数组） |
 | `project-trust` / `session-start` | `reason` |
-| `agent-start` / `before-provider-headers` / `tool-execution-start` / `tool-execution-end` / `agent-end` / `agent-settled` / `session-before-switch` / `session-before-fork` / `session-shutdown` / `session-before-compact` / `session-compact` | （仅 `kind`） |
+| `agent-start` / `tool-execution-start` / `tool-execution-end` / `agent-end` / `agent-settled` / `session-before-switch` / `session-before-fork` / `session-shutdown` / `session-before-compact` / `session-compact` | （仅 `kind`） |
 
 `tool-execution-update` 由 shell 工具自己的轮询循环在命令持续运行时发射（`exec_shell`
 前台与 `exec_shell_wait`）：至多每秒一次、且仅当有新输出。`id` 是 shell 任务 id（工具
@@ -155,7 +157,7 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 —— 三态命名对齐 DSH（deepseek-harness）模型：**waterfall**、**serial**、**emit**：
 
 - **waterfall**：`input`、`before-agent-start`、`before-provider-request`、`tool-result` —— transform 逐个折叠、后续 handler 可见、终值作用于宿主操作
-- **waterfall + deny**：`tool-call` —— 改写调用 `input`（改写后的输入才是审批与实际执行的输入，也是入档输入），或 `block(reason)` 拒绝（单调——后续 handler 不可翻转）
+- **waterfall + deny**：`tool-call` —— 改写调用 `input`（改写后的输入才是审批与实际执行的输入，也是入档输入），或 `block(reason)` 拒绝（单调——后续 handler 不可翻转）；`provider-request-error` —— 改写重试 `plan`，或 `block(reason)` 放弃
 - **serial**：`session-before-switch`、`session-before-fork`、`session-before-compact`
 - **emit**（outcomes 仅供参考）：其余全部，含 `assistant-stream`（随文本 delta 逐次触发——handler 须轻量）与 `tools-change`（回合分发收口的目录差量）
 
@@ -164,7 +166,7 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 | 脚本返回 | HandlerOutcome | 生效 seam |
 |---|---|---|
 | `proceed()` 或 `()` | `Continue` | 全部 |
-| `block(reason)` | `Block`（越权 seam 忽略） | `tool-call` |
+| `block(reason)` | `Block`（越权 seam 忽略） | `tool-call`、`provider-request-error` |
 | `cancel(reason)` | `Cancel`（越权 seam 忽略） | `session-before-*` |
 | `transform(#{...})` | `Transform`（合并可变字段后继续链） | 见下 |
 
@@ -174,6 +176,7 @@ Transform 可变字段（一个 handler 的改写对后续 handler 立即可见�
 - `before-agent-start`：`system_prompt`、`inject_message`（字符串=设置，`()`=清除，缺省=保持）
 - `before-provider-request`：`messages`
 - `tool-result`：`content`、`success`、`is_error`、`canonical`（JSON 值——结果的机器可读值；仅改写 `content` 不动它，可显式替换）
+- `provider-request-error`：`retry`（布尔——`false` 放弃）、`delay_ms`（整数；缺省时保持当前 plan 的值；强制重试在引擎侧有上限）
 
 ### 能力面函数
 

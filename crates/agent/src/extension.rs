@@ -230,6 +230,50 @@ pub struct AgentStartEvent {
     pub inject_message: Option<String>,
 }
 
+/// Payload for [`ExtensionEvent::BeforeProviderHeaders`]. Emit-only.
+/// `headers` is a JSON object (name → value) of the extra HTTP headers the
+/// provider client rides on every request, with credential-bearing values
+/// masked via [`mask_sensitive_header`]. Known limitation: the transport's
+/// auth headers (built from the api key inside the client) are not listed —
+/// they never leave the client, and would render fully masked anyway.
+#[derive(Debug, Clone)]
+pub struct BeforeProviderHeadersEvent {
+    pub headers: Value,
+}
+
+/// Whether a header NAME marks its value as credential-bearing (masked in
+/// the [`ExtensionEvent::BeforeProviderHeaders`] payload). Substring match
+/// on the lowercased name — the same deny-list shape config's
+/// `is_sensitive_config_key` applies to config keys, here for HTTP header
+/// names.
+#[must_use]
+pub fn is_sensitive_header_name(name: &str) -> bool {
+    const NEEDLES: [&str; 8] = [
+        "authorization",
+        "api-key",
+        "apikey",
+        "token",
+        "secret",
+        "cookie",
+        "session",
+        "password",
+    ];
+    let lower = name.to_ascii_lowercase();
+    NEEDLES.iter().any(|needle| lower.contains(needle))
+}
+
+/// One header rendered for the [`ExtensionEvent::BeforeProviderHeaders`]
+/// payload: the value masked (config's `redact_secret` shape) when the
+/// name is credential-bearing, verbatim otherwise.
+#[must_use]
+pub fn mask_sensitive_header(name: &str, value: &str) -> String {
+    if is_sensitive_header_name(name) {
+        codesmith_config::redact_secret(value)
+    } else {
+        value.to_string()
+    }
+}
+
 /// Payload for [`ExtensionEvent::BeforeProviderRequest`]. `messages` is the
 /// actionable field (the provider request body); a handler may transform it.
 #[derive(Debug, Clone)]
@@ -241,6 +285,42 @@ pub struct BeforeProviderRequestEvent {
 #[derive(Debug, Clone)]
 pub struct AfterProviderResponseEvent {
     pub response: Value,
+}
+
+/// What failed on a provider request, as the host classified it.
+/// `category` is the engine's error taxonomy rendered snake_case
+/// (`rate_limit`, `network`, `state`, …); `message` is the raw error text.
+#[derive(Debug, Clone)]
+pub struct ProviderFailure {
+    pub category: String,
+    pub message: String,
+}
+
+/// The retry plan for [`ExtensionEvent::ProviderRequestError`] — the
+/// event's actionable field.
+#[derive(Debug, Clone)]
+pub enum RetryPlan {
+    /// Retry after `delay_ms` milliseconds (0 = immediately). A `Transform`
+    /// may set this to force a retry even when the host's default budget is
+    /// exhausted — the engine bounds such overrides so a handler that
+    /// always rewrites to `Retry` cannot spin the round forever.
+    Retry { delay_ms: u64 },
+    /// Stop retrying and surface the failure.
+    GiveUp,
+}
+
+/// Payload for [`ExtensionEvent::ProviderRequestError`] — the DSH
+/// request-error waterfall, asked inside the engine's transparent-retry
+/// guard before each retry decision. `plan` arrives pre-filled with the
+/// host's default policy: `Continue` keeps it, a `Transform` rewrites it
+/// (`Retry` rewrites the backoff or forces past the default budget;
+/// `GiveUp` stops), and `Block` is equivalent to `GiveUp`.
+#[derive(Debug, Clone)]
+pub struct ProviderRequestErrorEvent {
+    pub failure: ProviderFailure,
+    /// 1-based number of the attempt that just failed (retries included).
+    pub attempt: u32,
+    pub plan: RetryPlan,
 }
 
 /// Payload for [`ExtensionEvent::AssistantStream`] (streaming
@@ -265,10 +345,10 @@ pub struct ToolExecutionUpdateEvent {
 }
 
 /// Lifecycle events. §F1 minimal set (spec §10.1) + §F2a full set (spec
-/// §10.2 + §4): 24 variants total (23 §F2a + `AssistantStream` +
-/// `ToolsChange`, minus the removed `ResourcesDiscover`),
-/// `#[non_exhaustive]` so future slices can
-/// add variants without breaking downstream match arms. Handler dispatch is
+/// §10.2 + §4): 25 variants total (23 §F2a + `AssistantStream` +
+/// `ToolsChange`, minus the removed `ResourcesDiscover`, plus the
+/// DSH-alignment `ProviderRequestError`), `#[non_exhaustive]` so future
+/// slices can add variants without breaking downstream match arms. Handler dispatch is
 /// open (any `Handler` may subscribe to any variant via `on` /
 /// `on_variant`). Variant-specific outcome semantics are part of the
 /// contract and live with the kinds:
@@ -301,9 +381,13 @@ pub enum ExtensionEvent {
     Input(InputEvent),
     BeforeAgentStart(AgentStartEvent),
     AgentStart,
-    BeforeProviderHeaders,
+    BeforeProviderHeaders(BeforeProviderHeadersEvent),
     BeforeProviderRequest(BeforeProviderRequestEvent),
     AfterProviderResponse(AfterProviderResponseEvent),
+    /// The DSH request-error waterfall: asked inside the engine's
+    /// transparent-retry guard before each retry decision (a denying
+    /// `Waterfall` — see [`ProviderRequestErrorEvent`]).
+    ProviderRequestError(ProviderRequestErrorEvent),
     ToolExecutionStart,
     AssistantStream(AssistantStreamEvent),
     ToolExecutionUpdate(ToolExecutionUpdateEvent),
@@ -340,6 +424,7 @@ pub enum ExtensionEventKind {
     BeforeProviderHeaders,
     BeforeProviderRequest,
     AfterProviderResponse,
+    ProviderRequestError,
     ToolExecutionStart,
     AssistantStream,
     ToolCall,
@@ -370,9 +455,10 @@ impl ExtensionEvent {
             ExtensionEvent::BeforeAgentStart(_) => ExtensionEventKind::BeforeAgentStart,
             ExtensionEvent::AgentStart => ExtensionEventKind::AgentStart,
             ExtensionEvent::TurnStart { .. } => ExtensionEventKind::TurnStart,
-            ExtensionEvent::BeforeProviderHeaders => ExtensionEventKind::BeforeProviderHeaders,
+            ExtensionEvent::BeforeProviderHeaders(_) => ExtensionEventKind::BeforeProviderHeaders,
             ExtensionEvent::BeforeProviderRequest(_) => ExtensionEventKind::BeforeProviderRequest,
             ExtensionEvent::AfterProviderResponse(_) => ExtensionEventKind::AfterProviderResponse,
+            ExtensionEvent::ProviderRequestError(_) => ExtensionEventKind::ProviderRequestError,
             ExtensionEvent::ToolExecutionStart => ExtensionEventKind::ToolExecutionStart,
             ExtensionEvent::AssistantStream(_) => ExtensionEventKind::AssistantStream,
             ExtensionEvent::ToolCall(_) => ExtensionEventKind::ToolCall,
@@ -442,7 +528,9 @@ impl ExtensionEventKind {
             | ExtensionEventKind::BeforeAgentStart
             | ExtensionEventKind::BeforeProviderRequest
             | ExtensionEventKind::ToolResult => DispatchMode::Waterfall { can_deny: false },
-            ExtensionEventKind::ToolCall => DispatchMode::Waterfall { can_deny: true },
+            ExtensionEventKind::ToolCall | ExtensionEventKind::ProviderRequestError => {
+                DispatchMode::Waterfall { can_deny: true }
+            }
             ExtensionEventKind::SessionBeforeSwitch
             | ExtensionEventKind::SessionBeforeFork
             | ExtensionEventKind::SessionBeforeCompact => DispatchMode::Serial,
@@ -1303,9 +1391,9 @@ mod tests {
     /// declared mode; the exhaustive `dispatch_mode` match makes a new
     /// variant a compile error without an arm, and this table makes
     /// CHANGING an existing kind's mode a test failure — the contract
-    /// cannot drift silently. 24 rows = the full §F2a set +
+    /// cannot drift silently. 25 rows = the full §F2a set +
     /// assistant-stream + tools-change (minus the removed
-    /// `ResourcesDiscover`).
+    /// `ResourcesDiscover`) + provider-request-error (DSH alignment).
     #[test]
     fn event_dispatch_contract_table() {
         use DispatchMode as M;
@@ -1318,6 +1406,7 @@ mod tests {
             (K::ToolResult, M::Waterfall { can_deny: false }),
             // Denying waterfall (fold + monotonic deny).
             (K::ToolCall, M::Waterfall { can_deny: true }),
+            (K::ProviderRequestError, M::Waterfall { can_deny: true }),
             // Serial (ordered listeners; veto short-circuits).
             (K::SessionBeforeSwitch, M::Serial),
             (K::SessionBeforeFork, M::Serial),
@@ -1342,8 +1431,8 @@ mod tests {
         ];
         assert_eq!(
             contract.len(),
-            24,
-            "the full §F2a set + assistant-stream + tools-change"
+            25,
+            "the full §F2a set + assistant-stream + tools-change + provider-request-error"
         );
         for (kind, mode) in contract {
             assert_eq!(&kind.dispatch_mode(), mode, "contract drift at {kind:?}");
@@ -1577,8 +1666,49 @@ mod tests {
             name: "echo".into(),
             message: "ok".into(),
         };
+        let hdrs = BeforeProviderHeadersEvent {
+            headers: json!({"x-custom": "v"}),
+        };
+        let pre = ProviderRequestErrorEvent {
+            failure: ProviderFailure {
+                category: "state".into(),
+                message: "503".into(),
+            },
+            attempt: 2,
+            plan: RetryPlan::GiveUp,
+        };
         // Debug renders without panic for every new type.
-        let _ = format!("{start:?} {req:?} {resp:?} {upd:?}");
+        let _ = format!("{start:?} {req:?} {resp:?} {upd:?} {hdrs:?} {pre:?}");
+    }
+
+    #[test]
+    fn header_masking_hides_credential_bearing_values() {
+        // Benign names pass through verbatim.
+        assert_eq!(mask_sensitive_header("x-custom", "abc"), "abc");
+        assert_eq!(
+            mask_sensitive_header("accept", "text/event-stream"),
+            "text/event-stream"
+        );
+        // Credential-bearing names (case-insensitive, substring) are
+        // redacted — the masked form never contains the raw value.
+        for name in [
+            "Authorization",
+            "x-api-key",
+            "X-Api-Key",
+            "x-goog-api-key",
+            "cookie",
+            "x-session-token",
+        ] {
+            let masked = mask_sensitive_header(name, "sk-secret-value-123456");
+            assert_ne!(masked, "sk-secret-value-123456", "{name} must be masked");
+            assert!(
+                !masked.contains("secret-value"),
+                "{name} mask leaked content"
+            );
+        }
+        // The deny-list matches by substring, so a benign name carrying a
+        // needle is masked too (fail-closed direction).
+        assert_ne!(mask_sensitive_header("my-token-header", "v"), "v");
     }
 
     #[test]
@@ -1616,7 +1746,9 @@ mod tests {
                 K::TurnStart,
             ),
             (
-                ExtensionEvent::BeforeProviderHeaders,
+                ExtensionEvent::BeforeProviderHeaders(BeforeProviderHeadersEvent {
+                    headers: json!({}),
+                }),
                 K::BeforeProviderHeaders,
             ),
             (
@@ -1630,6 +1762,17 @@ mod tests {
                     response: json!({}),
                 }),
                 K::AfterProviderResponse,
+            ),
+            (
+                ExtensionEvent::ProviderRequestError(ProviderRequestErrorEvent {
+                    failure: ProviderFailure {
+                        category: "rate_limit".into(),
+                        message: "429".into(),
+                    },
+                    attempt: 1,
+                    plan: RetryPlan::Retry { delay_ms: 0 },
+                }),
+                K::ProviderRequestError,
             ),
             (ExtensionEvent::ToolExecutionStart, K::ToolExecutionStart),
             (
@@ -1686,7 +1829,7 @@ mod tests {
                 K::ToolsChange,
             ),
         ];
-        assert_eq!(cases.len(), 24, "all variants covered");
+        assert_eq!(cases.len(), 25, "all variants covered");
         for (ev, kind) in cases {
             assert_eq!(ev.kind(), kind, "kind mismatch for {ev:?}");
         }

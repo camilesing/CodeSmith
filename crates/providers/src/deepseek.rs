@@ -22,7 +22,9 @@ use codesmith_agent::llm_client::LlmClientHandle;
 use codesmith_agent::provider::{ProviderConfig, ProviderFactory, ProviderId};
 use rig_core::providers::deepseek;
 
-use crate::rig_adapter::{GenericShaper, H2FallbackClient, RigLlmClient, build_header_map};
+use crate::rig_adapter::{
+    GenericShaper, H2FallbackClient, RigLlmClient, build_header_map, header_pairs,
+};
 
 /// Factory for the DeepSeek provider. Carries the manifest-sourced `base_url`
 /// / `model` defaults it falls back to when the host passes an empty
@@ -91,6 +93,6 @@ impl ProviderFactory for DeepSeekFactory {
             Some(cfg.api_key.clone()),
             Some(http),
         );
-        Ok(Arc::new(adapter) as LlmClientHandle)
+        Ok(Arc::new(adapter.with_headers(header_pairs(&cfg.http_headers))) as LlmClientHandle)
     }
 }
