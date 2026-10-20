@@ -358,9 +358,12 @@ no. Only the four keys (`y`/`n`/`a`/`e`) answer the question itself.
 
 `[a]` remembers one **grouping key**, and the prompt spells out what that key
 covers: `this command family` for shell commands (`git status` covers
-`git status -s`, not `git push`), `patches to the same paths` for a patch,
-`requests to the same host` for a fetch, and `every <tool> call` for a tool with
-no such family — one `write_file` answer covers its later calls, and one
+`git status -s`, not `git push`), `each of these command families` for a chain
+(`cargo build && cargo clippy` — a later call is covered only when *every* one of
+its families was approved), `this exact call` for a command the safety analyzer
+calls dangerous (`… | sh`, a multi-line script), `patches to the same paths` for a
+patch, `requests to the same host` for a fetch, and `every <tool> call` for a tool
+with no such family — one `write_file` answer covers its later calls, and one
 `agent_open` answer covers every spawn for the rest of the run. So `[a]` on one
 tool never silences a different tool's prompt; answer it once per tool you are
 happy to stop being asked about. `[e]` is always the exact call: that one

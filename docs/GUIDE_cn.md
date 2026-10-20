@@ -270,7 +270,7 @@ directories or global config.
 
 当命令需要网络、写入工作区之外或执行有风险的 shell 操作时，除非你配置了更宽松的行为，否则应预期出现审批提示。每条审批提示都支持"带理由拒绝"：输入 `[r] <反馈>`——或者直接把你那句话打进去——它拒掉这一个调用，并把文字送到正在运行的回合，让模型知道该改什么，而不是猜你为什么说"不"。只有那四个键（`y`/`n`/`a`/`e`）才算回答问题本身。
 
-`[a]` 记住的是一个**分组键**，而这个键覆盖什么，提示语本身就写明了：shell 命令是 `this command family`（`git status` 覆盖 `git status -s`，但不覆盖 `git push`）、补丁是 `patches to the same paths`、抓取是 `requests to the same host`，而没有这类族的工具是 `every <tool> call`——答一次 `write_file` 就覆盖它之后的调用，答一次 `agent_open` 就覆盖本次运行里之后的每次 spawn。所以对某个工具按 `[a]` 不会静音另一个工具的提示：每个你不想再被问到的工具都要各答一次。`[e]` 始终是精确的那一次调用：只拒掉这一个调用，别的都不受影响。`[a]` 和 `[e]` 都只活到进程退出；会写进 `~/.codesmith/approvals.toml`、重启后仍然有效的是 `/permissions allow <命令前缀>`。
+`[a]` 记住的是一个**分组键**，而这个键覆盖什么，提示语本身就写明了：shell 命令是 `this command family`（`git status` 覆盖 `git status -s`，但不覆盖 `git push`）、链式命令是 `each of these command families`（`cargo build && cargo clippy`——之后某条命令的**每条**子命令族都被批准过才算覆盖）、被安全分析判定为危险的命令（`… | sh`、多行脚本）是 `this exact call`、补丁是 `patches to the same paths`、抓取是 `requests to the same host`，而没有这类族的工具是 `every <tool> call`——答一次 `write_file` 就覆盖它之后的调用，答一次 `agent_open` 就覆盖本次运行里之后的每次 spawn。所以对某个工具按 `[a]` 不会静音另一个工具的提示：每个你不想再被问到的工具都要各答一次。`[e]` 始终是精确的那一次调用：只拒掉这一个调用，别的都不受影响。`[a]` 和 `[e]` 都只活到进程退出；会写进 `~/.codesmith/approvals.toml`、重启后仍然有效的是 `/permissions allow <命令前缀>`。
 
 好的工具指令是具体的：
 
