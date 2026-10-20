@@ -39,6 +39,7 @@ pub(crate) fn policy_test_lock() -> std::sync::MutexGuard<'static, ()> {
 
 pub mod agent_memory;
 pub mod artifacts;
+pub mod attachments;
 pub mod auto_reasoning;
 pub mod background_task;
 pub mod bash_ast;

@@ -60,13 +60,27 @@ pub struct RecentReadFile {
     pub output_preview: String,
 }
 
+/// Most recent image attachments re-sent after compaction (TODO-50). Bounded
+/// by [`RECENT_MEDIA_LIMIT`]: every re-sent image costs roughly
+/// `IMAGE_BLOCK_ESTIMATED_TOKENS`, so the window stays small.
+pub const RECENT_MEDIA_LIMIT: usize = 4;
+
+/// One image attachment the user sent this session, kept outside the
+/// transcript so compaction can re-send it (TODO-50). `path` is the
+/// content-addressed store path the transcript's `ImageSource::File` carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecentMediaAttachment {
+    pub path: PathBuf,
+}
+
 /// Session state for the engine.
 ///
 /// # Clone semantics
 ///
 /// The derived `Clone` deep-copies the value fields (transcript, usage,
 /// cycle state, …) but deliberately SHARES the `Arc`-guarded projections
-/// (`working_set`, `fact_ledger`, `recent_read_files`, `prefix_stability`)
+/// (`working_set`, `fact_ledger`, `recent_read_files`, `recent_media`,
+/// `prefix_stability`)
 /// with the original — a clone mutates its own transcript while those
 /// probes keep observing the original's data, and vice versa. This exists
 /// so framework-core probes held across an `executor.run` borrow stay
@@ -117,6 +131,12 @@ pub struct Session {
     /// `executor.run` (while `&mut self.session` is borrowed by
     /// `SessionChatHistory`), mirroring the `working_set` precedent (slice 22).
     pub recent_read_files: Arc<StdMutex<VecDeque<RecentReadFile>>>,
+
+    /// Recent image attachments (TODO-50), retained outside the transcript so
+    /// compaction can re-send them through the attachment re-inject hook.
+    /// Same `Arc<std::sync::Mutex<…>>` shape as `recent_read_files`, for the
+    /// same mid-`run` probe access.
+    pub recent_media: Arc<StdMutex<VecDeque<RecentMediaAttachment>>>,
 
     /// Rule-extracted must-not-lose facts (task constraints, key paths,
     /// failure causes) that survive every compaction and cycle reset. Fed
@@ -274,6 +294,7 @@ impl Session {
             compaction_summary_prompt: None,
             messages: AppendLog::new(),
             recent_read_files: Arc::new(StdMutex::new(VecDeque::new())),
+            recent_media: Arc::new(StdMutex::new(VecDeque::new())),
             fact_ledger: Arc::new(StdMutex::new(FactLedger::default())),
             total_usage: SessionUsage::default(),
             allow_shell,
@@ -337,6 +358,34 @@ impl Session {
     /// turn-loop observe site.
     pub fn record_read_file_result(&mut self, input: &Value, output_for_context: &str) {
         record_read_file_result_into(&self.recent_read_files, input, output_for_context);
+    }
+
+    /// Remember this turn's image attachments for post-compaction re-send
+    /// (TODO-50). Dedup by path, newest last, trimmed to
+    /// [`RECENT_MEDIA_LIMIT`].
+    pub fn record_media_attachments(&self, paths: &[PathBuf]) {
+        record_media_attachments_into(&self.recent_media, paths);
+    }
+}
+
+/// Shared implementation of [`Session::record_media_attachments`]: dedup by
+/// path, push newest last, trim to [`RECENT_MEDIA_LIMIT`].
+pub(crate) fn record_media_attachments_into(
+    media: &Arc<StdMutex<VecDeque<RecentMediaAttachment>>>,
+    paths: &[PathBuf],
+) {
+    if paths.is_empty() {
+        return;
+    }
+    let mut media = media.lock().unwrap_or_else(|e| e.into_inner());
+    for path in paths {
+        if let Some(existing) = media.iter().position(|entry| &entry.path == path) {
+            media.remove(existing);
+        }
+        media.push_back(RecentMediaAttachment { path: path.clone() });
+    }
+    while media.len() > RECENT_MEDIA_LIMIT {
+        media.pop_front();
     }
 }
 

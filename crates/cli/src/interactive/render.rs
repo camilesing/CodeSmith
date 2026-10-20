@@ -1376,6 +1376,9 @@ fn saved_session_from_state(state: &ReplState) -> Option<crate::session_manager:
     // Same contract for the approval record: it is the only place the
     // session can say what the user actually agreed to, asked or not.
     session.approvals = state.approvals.clone();
+    // TODO-50 — the media attachment record: which images reached the model
+    // (store path + hash) and which were refused, per message.
+    session.context_references = state.context_references.clone();
     Some(session)
 }
 
@@ -2184,6 +2187,59 @@ mod tests {
         assert_eq!(
             session.approvals[0].workspace,
             state.workspace.display().to_string()
+        );
+    }
+
+    /// TODO-50 — the media attachment record rides the session record the same
+    /// way: an admitted image (store path + hash) and a refused one (reason)
+    /// are both recoverable from the file. This channel existed in the format
+    /// but no producer filled it before.
+    #[test]
+    fn saved_session_from_state_carries_media_attachment_references() {
+        use codesmith_agent_runtime::session_store::{
+            ContextReference, ContextReferenceKind, ContextReferenceSource, SessionContextReference,
+        };
+        let _lock = crate::test_support::lock_test_env();
+        let mut state = test_repl_state();
+        state.api_messages = vec![crate::models::Message {
+            role: "user".to_string(),
+            content: vec![crate::models::ContentBlock::Text {
+                text: "look".to_string(),
+                cache_control: None,
+            }],
+        }];
+        state.context_references.push(SessionContextReference {
+            message_index: 0,
+            reference: ContextReference {
+                kind: ContextReferenceKind::MediaAttachment,
+                source: ContextReferenceSource::Attachment,
+                badge: "image".to_string(),
+                label: "shot.png".to_string(),
+                target: "/home/u/.codesmith/attachments/abc.png".to_string(),
+                included: true,
+                expanded: false,
+                detail: Some("sha256:abc 9 bytes image/png".to_string()),
+            },
+        });
+        state
+            .context_references
+            .push(crate::media::rejected_reference(
+                std::path::Path::new("/tmp/huge.png"),
+                ContextReferenceSource::AtMention,
+                0,
+                "too many attachments for one message (9); the limit is 8",
+            ));
+        let session = saved_session_from_state(&state).expect("session builds");
+        assert_eq!(session.context_references, state.context_references);
+        assert!(session.context_references[0].reference.included);
+        assert!(!session.context_references[1].reference.included);
+        assert!(
+            session.context_references[1]
+                .reference
+                .detail
+                .as_deref()
+                .unwrap()
+                .starts_with("rejected:")
         );
     }
 

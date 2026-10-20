@@ -425,14 +425,25 @@ pub async fn run_repl(
             continue;
         }
 
-        let (content, mut image_paths) = extract_attachments(trimmed, &state.workspace);
-        image_paths.extend(
+        let (content, at_images) = extract_attachments(trimmed, &state.workspace);
+        let mut images: Vec<crate::media::PendingImage> = at_images
+            .into_iter()
+            .map(|path| crate::media::PendingImage {
+                path: PathBuf::from(path),
+                source: codesmith_agent_runtime::session_store::ContextReferenceSource::AtMention,
+            })
+            .collect();
+        images.extend(
             state
                 .pending_attachments
                 .drain(..)
-                .map(|path| path.display().to_string()),
+                .map(|path| crate::media::PendingImage {
+                    path,
+                    source:
+                        codesmith_agent_runtime::session_store::ContextReferenceSource::Attachment,
+                }),
         );
-        if let Err(err) = submit_with_images(&mut state, content, image_paths).await {
+        if let Err(err) = submit_with_images(&mut state, content, images).await {
             println!("{} {err}", "✗".red());
             break;
         }
@@ -1267,7 +1278,7 @@ pub(crate) async fn submit(state: &mut ReplState, content: String) -> Result<()>
 async fn submit_with_images(
     state: &mut ReplState,
     mut content: String,
-    image_paths: Vec<String>,
+    images: Vec<crate::media::PendingImage>,
 ) -> Result<()> {
     // message_submit hooks transform or block the submitted text before it
     // reaches routing, session history, or the model — the transformed text
@@ -1305,6 +1316,17 @@ async fn submit_with_images(
 
     let engine = state.engine()?.clone();
 
+    // TODO-50: admit this message's images into the content-addressed store
+    // (after the hook gate, so a blocked submission records nothing). The
+    // engine receives store paths; the session record gets one reference per
+    // image, admitted or refused, under the index this message will take.
+    let intake = crate::media::ingest_for_message(images, state.api_messages.len()).await;
+    for line in &intake.rejections {
+        println!("{} {line}", "✗".red());
+    }
+    state.context_references.extend(intake.references);
+    let image_paths = intake.accepted;
+
     // Auto-model routing per request (mirror of the retired dispatch path
     // / `resolve_cli_auto_route` in exec).
     let (effective_model, effective_reasoning_effort) = if state.auto_model {
@@ -1336,7 +1358,7 @@ async fn submit_with_images(
     engine
         .send(Op::SendMessage {
             content,
-            image_paths: image_paths.into_iter().map(PathBuf::from).collect(),
+            image_paths,
             mode: state.mode,
             model: effective_model,
             goal_objective: state.hunt.quarry.clone(),

@@ -1174,6 +1174,10 @@ impl Engine {
             reasoning_effort_auto,
         );
         append_image_blocks(&mut user_msg, &image_paths);
+        // TODO-50: remember the attachments outside the transcript so the
+        // post-compaction re-inject hook can re-send them once compaction
+        // has summarized the message that carried them.
+        self.session.record_media_attachments(&image_paths);
         // P3-8: remember where this turn's transcript slice starts (the
         // user message below is its first entry) so the post-turn result
         // claim verifier can scan exactly this turn's assistant/tool traffic.
@@ -1351,6 +1355,7 @@ impl Engine {
             Arc::clone(&self.config.plan_state),
             Arc::clone(&self.config.todos),
             Arc::clone(&self.session.recent_read_files),
+            Arc::clone(&self.session.recent_media),
             self.session.model.clone(),
             self.api_provider,
         );
@@ -3116,6 +3121,22 @@ impl Engine {
                 &recent_read_files,
             )
         {
+            candidates.push(message);
+        }
+        // TODO-50: re-send image attachments whose carrying message was
+        // compacted away (skipped while the originals are still live).
+        let recent_media = self
+            .session
+            .recent_media
+            .lock()
+            .expect("recent_media poisoned")
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Some(message) = crate::compaction::attachment_reinject::reinject_media_attachments(
+            &recent_media,
+            &self.session.messages,
+        ) {
             candidates.push(message);
         }
 

@@ -121,6 +121,13 @@ pub struct ReplState {
     /// request, and carrying no authority (the grants themselves live in
     /// `approval_session_approved` / `approval_grants`).
     pub approvals: Vec<codesmith_agent_runtime::session_store::ApprovalRecord>,
+    /// Media attachment record (TODO-50): one entry per image the user
+    /// attached, admitted into the content-addressed store (`included: true`,
+    /// hash/size/type in `detail`) or refused (`included: false`, reason in
+    /// `detail`). Persisted onto `SavedSession::context_references` at the
+    /// turn boundary and re-adopted on resume/`/load`. Log-only — the
+    /// transcript's image blocks are what the model sees; this says why.
+    pub context_references: Vec<codesmith_agent_runtime::session_store::SessionContextReference>,
     pub api_provider: ApiProvider,
     pub model_ids_passthrough: bool,
     pub reasoning_effort: ReasoningEffort,
@@ -359,6 +366,7 @@ impl ReplState {
             reported_model: None,
             failed_attempts: Vec::new(),
             approvals: Vec::new(),
+            context_references: Vec::new(),
             api_provider: provider,
             model_ids_passthrough,
             reasoning_effort,
@@ -871,6 +879,8 @@ pub async fn resume_session(
     // record of what was agreed to must not evaporate on the first save after
     // a resume.
     state.approvals = saved.approvals.clone();
+    // TODO-50 — the media attachment record survives resume the same way.
+    state.context_references = saved.context_references.clone();
     restore_engine_backed_session_state(state, &saved).await;
     // Round-7 TODO-48 — undelivered queued input rides the resume: the
     // journal was written the moment each message was queued and survives
