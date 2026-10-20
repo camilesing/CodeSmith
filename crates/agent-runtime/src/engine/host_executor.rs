@@ -1108,6 +1108,18 @@ pub struct HostAgentExecutor {
     /// [`should_stop_after_plan_tool`]: crate::engine::dispatch::should_stop_after_plan_tool
     pub(crate) turn_mode: AppMode,
 
+    /// The shared plan-session state (`EngineConfig::plan_mode_state`), when the
+    /// host wired one in.
+    ///
+    /// Read live by [`plan_mode_refusal`] — the execution gate for the plan
+    /// session a *model* opens with `enter_plan_mode` (the `AppMode::Plan` axis
+    /// is already narrowed by the host's per-turn registry). `None`
+    /// (embeds/tests) ⇒ that gate is a no-op, which is the truthful value for a
+    /// host that never gave the executor a plan state.
+    ///
+    /// [`plan_mode_refusal`]: crate::engine::turn::approval::HostAgentExecutor::plan_mode_refusal
+    pub(crate) plan_mode_state: Option<crate::tool_state::plan_mode::SharedPlanModeState>,
+
     /// Deliverables watchdog (W2 P1-1). `None` (default; embeds/tests) ⇒ no
     /// periodic disk checks. When `Some`, [`run_inner`]'s pre-request seam
     /// checks the deliverable paths every
@@ -1508,6 +1520,7 @@ impl HostAgentExecutor {
             tool_durations: None,
             session_id: None,
             turn_mode: AppMode::Agent,
+            plan_mode_state: None,
             deliverables: None,
         }
     }
@@ -1705,6 +1718,20 @@ impl HostAgentExecutor {
     #[must_use]
     pub fn with_turn_mode(mut self, mode: AppMode) -> Self {
         self.turn_mode = mode;
+        self
+    }
+
+    /// Attach the shared plan-session state, so the execution gate can refuse a
+    /// call that a model-initiated plan session does not allow
+    /// ([`Self::plan_mode_refusal`]). The production wire-in passes the same
+    /// handle the plan-mode tools use; embeds/tests skip it (no gate).
+    /// Consumes and returns `self` (builder).
+    #[must_use]
+    pub fn with_plan_mode_state(
+        mut self,
+        state: Option<crate::tool_state::plan_mode::SharedPlanModeState>,
+    ) -> Self {
+        self.plan_mode_state = state;
         self
     }
 
@@ -5379,6 +5406,112 @@ mod tests {
                 .iter()
                 .any(|block| matches!(block, ContentBlock::Text { text, .. } if text == "implementing"))),
             "the Agent turn continues to the next model step"
+        );
+    }
+
+    /// Plan mode's execution gate, for the axis the registry cannot cover: a
+    /// plan session a *model* opens by itself. While it is active a
+    /// workspace-writing tool is refused **without running**, and the refusal
+    /// names the rule; clearing the flag (which `exit_plan_mode` does) makes the
+    /// same call run again — the per-call read that lets an approved plan keep
+    /// using the turn it was approved in.
+    #[tokio::test]
+    async fn plan_session_refuses_writes_without_running_them() {
+        fn rounds() -> Vec<Vec<StreamEvent>> {
+            let call = || {
+                let mut call = text_block(0, "writing");
+                call.extend(tool_use_block(1, "t1", "write_file", r#"{"path":"a.txt"}"#));
+                call.extend(finish("tool_use"));
+                let mut next = text_block(0, "done");
+                next.extend(finish("end_turn"));
+                vec![call, next]
+            };
+            // Three turns: one outside plan mode, one inside it, one after it
+            // was cleared.
+            [call(), call(), call()].concat()
+        }
+
+        let tmp = tempdir().expect("tempdir");
+        let count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(CountingWriteSpec {
+            count: count.clone(),
+        }));
+        let tools = Arc::new(registry.to_framework_tool_set());
+        let plan_state = crate::tool_state::plan_mode::new_shared_plan_mode_state();
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(rounds())),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_plan_mode_state(Some(plan_state.clone()));
+        let runs = |count: &Arc<std::sync::atomic::AtomicU32>| {
+            count.load(std::sync::atomic::Ordering::SeqCst)
+        };
+
+        // No plan session: the write runs — the control that the gate is not
+        // simply refusing every call.
+        assert!(!plan_state.lock().await.active);
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(runs(&count), 1, "the write must run outside plan mode");
+
+        // A plan session is open: the same call is refused and the tool never
+        // sees it.
+        plan_state.lock().await.active = true;
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(runs(&count), 1, "a refused write must not reach the tool");
+        let refusal = sess
+            .messages
+            .to_vec()
+            .iter()
+            .find_map(|message| {
+                message.content.iter().find_map(|block| match block {
+                    ContentBlock::ToolResult {
+                        content, is_error, ..
+                    } => Some((content.clone(), *is_error)),
+                    _ => None,
+                })
+            })
+            .expect("the refusal is fed back to the model");
+        assert_eq!(refusal.1, Some(true), "the model must see a failed call");
+        assert!(refusal.0.contains("Plan mode is active"), "{}", refusal.0);
+
+        // Cleared (as `exit_plan_mode` does): the write runs again, in the same
+        // executor — the gate is read per call, not per turn.
+        plan_state.lock().await.active = false;
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let _ = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(
+            runs(&count),
+            2,
+            "an exited plan session restores the tool inside the same turn loop"
         );
     }
 

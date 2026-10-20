@@ -400,7 +400,15 @@ impl HostServices for super::EngineHost {
                         // register them, with every child narrowed to the
                         // read-only tools of its own surface so it can neither
                         // write nor shell out.
-                        if children_are_read_only_in(mode) {
+                        //
+                        // The flag is OR-ed with the *live* plan session a model
+                        // opens by itself: that axis is enforced per call in the
+                        // turn loop (`plan_mode_refusal`), and a child built
+                        // here would otherwise be the way around it — it has its
+                        // own loop and its own registry, so the parent's gate
+                        // never sees its calls.
+                        let plan_session_open = config.plan_mode_state.lock().await.active;
+                        if children_are_read_only_in(mode) || plan_session_open {
                             rt = rt.with_children_read_only(true);
                         }
                         Some(rt)

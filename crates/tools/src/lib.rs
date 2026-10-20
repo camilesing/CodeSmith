@@ -31,6 +31,21 @@ pub enum ToolCapability {
     Sandboxable,
     /// Tool requires user approval before execution.
     RequiresApproval,
+    /// Plan mode's execution gate lets this tool run even though it is not
+    /// `ReadOnly`.
+    ///
+    /// For the tools that *are* the plan session — the plan file, the checklist,
+    /// the goal and mode tools — plus the ones plan mode deliberately keeps
+    /// (read-only sub-agent sessions, web lookups). A tool that writes anything
+    /// else (a workspace file, a shell command) must **not** carry this: plan
+    /// mode promises that its turn cannot change the world, and the turn loop
+    /// reads this flag to enforce that per call — live, so `exit_plan_mode`
+    /// unblocks the same turn it was approved in.
+    ///
+    /// A session-scoped tool that misses the mark is refused loudly in a plan
+    /// session (`Plan mode is active: … is not a read-only tool`), never
+    /// silently allowed.
+    AllowedInPlanMode,
 }
 
 /// Approval requirement for a tool.

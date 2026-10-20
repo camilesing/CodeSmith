@@ -1419,6 +1419,10 @@ impl Engine {
         // can end a Plan turn once its plan is approved (a Plan registry has
         // no write tools to continue with).
         .with_turn_mode(mode)
+        // The other plan axis: the session a *model* opens with
+        // `enter_plan_mode`. The gate reads this live, so an approved exit
+        // unblocks writes in the same turn.
+        .with_plan_mode_state(Some(self.config.plan_mode_state.clone()))
         .with_tool_dispatcher(plan.tool_registry().cloned())
         .with_turn_meta(Some(turn_meta_probe))
         .with_reinject(Some(reinject_probe))
