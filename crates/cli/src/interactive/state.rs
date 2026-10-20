@@ -114,6 +114,13 @@ pub struct ReplState {
     /// boundary and re-adopted on resume/`/load`. Log-only — never part of
     /// `api_messages` or any model request.
     pub failed_attempts: Vec<codesmith_agent_runtime::session_store::AttemptRecord>,
+    /// Approval decisions this session's gate reached, one per gated tool call —
+    /// including the ones answered without asking. Persisted onto
+    /// `SavedSession::approvals` at the turn boundary and re-adopted on
+    /// resume/`/load`. Log-only — never part of `api_messages` or any model
+    /// request, and carrying no authority (the grants themselves live in
+    /// `approval_session_approved` / `approval_grants`).
+    pub approvals: Vec<codesmith_agent_runtime::session_store::ApprovalRecord>,
     pub api_provider: ApiProvider,
     pub model_ids_passthrough: bool,
     pub reasoning_effort: ReasoningEffort,
@@ -351,6 +358,7 @@ impl ReplState {
             last_effective_model: None,
             reported_model: None,
             failed_attempts: Vec::new(),
+            approvals: Vec::new(),
             api_provider: provider,
             model_ids_passthrough,
             reasoning_effort,
@@ -859,6 +867,10 @@ pub async fn resume_session(
     // the persisted records so the next turn-boundary save keeps them
     // (otherwise every resume+save cycle silently dropped the history).
     state.failed_attempts = saved.failed_attempts.clone();
+    // Round-4 — approval decisions survive resume for the same reason: the
+    // record of what was agreed to must not evaporate on the first save after
+    // a resume.
+    state.approvals = saved.approvals.clone();
     restore_engine_backed_session_state(state, &saved).await;
     // Round-7 TODO-48 — undelivered queued input rides the resume: the
     // journal was written the moment each message was queued and survives
@@ -1112,6 +1124,7 @@ mod restore_tests {
             context_references: Vec::new(),
             artifacts: Vec::new(),
             failed_attempts: Vec::new(),
+            approvals: Vec::new(),
         };
         restore_engine_backed_session_state(&mut state, &saved).await;
 

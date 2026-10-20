@@ -1373,6 +1373,9 @@ fn saved_session_from_state(state: &ReplState) -> Option<crate::session_manager:
     // Round-3 TODO-42 — failed-attempt bookkeeping rides the session record
     // (log-only; the constructor starts it empty, state owns the accumulate).
     session.failed_attempts = state.failed_attempts.clone();
+    // Same contract for the approval record: it is the only place the
+    // session can say what the user actually agreed to, asked or not.
+    session.approvals = state.approvals.clone();
     Some(session)
 }
 
@@ -1555,11 +1558,34 @@ async fn handle_approval(
     view.clear_live();
     let workspace_key = state.workspace.to_string_lossy().into_owned();
 
+    // Every path through this gate leaves a record — the asked and the
+    // unasked alike. A session file that cannot say whether a patch was
+    // hand-approved or covered by an earlier `[a]` is not a record of what the
+    // user agreed to; see `SavedSession::approvals` for what the record does
+    // and does not cover.
     if state.approval_mode == ApprovalMode::Auto {
+        log_approval(
+            state,
+            &id,
+            &tool_name,
+            &approval_key,
+            &approval_grouping_key,
+            "auto-mode",
+            None,
+        );
         let _ = engine.approve_tool_call(id).await;
         return;
     }
     if state.approval_session_denied.contains(&approval_key) {
+        log_approval(
+            state,
+            &id,
+            &tool_name,
+            &approval_key,
+            &approval_grouping_key,
+            "session-deny",
+            None,
+        );
         let _ = engine.deny_tool_call(id).await;
         return;
     }
@@ -1569,6 +1595,27 @@ async fn handle_approval(
         &workspace_key,
         &approval_grouping_key,
     ) {
+        // Which of the two answered it matters to the reader: a session `[a]`
+        // dies with the process, a workspace grant survives a restart.
+        let decision = if approval_always_granted(
+            &state.approval_session_approved,
+            &crate::approval_grants::ApprovalGrants::default(),
+            &workspace_key,
+            &approval_grouping_key,
+        ) {
+            "session-grant"
+        } else {
+            "workspace-grant"
+        };
+        log_approval(
+            state,
+            &id,
+            &tool_name,
+            &approval_key,
+            &approval_grouping_key,
+            decision,
+            None,
+        );
         let _ = engine.approve_tool_call(id).await;
         return;
     }
@@ -1610,17 +1657,53 @@ async fn handle_approval(
     state.awaiting_approval = false;
     match answer {
         ApprovalAnswer::RunOnce => {
+            log_approval(
+                state,
+                &id,
+                &tool_name,
+                &approval_key,
+                &approval_grouping_key,
+                "run-once",
+                None,
+            );
             let _ = engine.approve_tool_call(id).await;
         }
         ApprovalAnswer::AlwaysSession => {
             record_always_approved(&mut state.approval_session_approved, &approval_grouping_key);
+            log_approval(
+                state,
+                &id,
+                &tool_name,
+                &approval_key,
+                &approval_grouping_key,
+                "always-session",
+                None,
+            );
             let _ = engine.approve_tool_call(id).await;
         }
         ApprovalAnswer::NeverThis => {
+            log_approval(
+                state,
+                &id,
+                &tool_name,
+                &approval_key,
+                &approval_grouping_key,
+                "never-this",
+                None,
+            );
             state.approval_session_denied.insert(approval_key);
             let _ = engine.deny_tool_call(id).await;
         }
         ApprovalAnswer::Revise(feedback) => {
+            log_approval(
+                state,
+                &id,
+                &tool_name,
+                &approval_key,
+                &approval_grouping_key,
+                "feedback",
+                Some(&feedback),
+            );
             // Deny first: the turn is parked on this gate, so the refusal
             // reaches the model as this call's tool error, and the feedback is
             // drained at the next step boundary as a user message — both
@@ -1643,9 +1726,48 @@ async fn handle_approval(
         // Unreachable — the prompt loop above consumes it — and refusing is
         // the safe reading if it ever isn't.
         ApprovalAnswer::NeedFeedback | ApprovalAnswer::Skip => {
+            log_approval(
+                state,
+                &id,
+                &tool_name,
+                &approval_key,
+                &approval_grouping_key,
+                "skip",
+                None,
+            );
             let _ = engine.deny_tool_call(id).await;
         }
     }
+}
+
+/// Append one approval decision to the session's record.
+///
+/// The `decision` vocabulary is the one documented on
+/// [`ApprovalRecord`](codesmith_agent_runtime::session_store::ApprovalRecord):
+/// the four prompt answers, `feedback`, and the four paths that never prompted.
+#[allow(clippy::too_many_arguments)]
+fn log_approval(
+    state: &mut ReplState,
+    tool_call_id: &str,
+    tool_name: &str,
+    approval_key: &str,
+    grouping_key: &str,
+    decision: &str,
+    feedback: Option<&str>,
+) {
+    let workspace = state.workspace.to_string_lossy().into_owned();
+    state
+        .approvals
+        .push(codesmith_agent_runtime::session_store::ApprovalRecord {
+            tool_call_id: tool_call_id.to_string(),
+            tool_name: tool_name.to_string(),
+            approval_key: approval_key.to_string(),
+            grouping_key: grouping_key.to_string(),
+            decision: decision.to_string(),
+            feedback: feedback.map(str::to_string),
+            workspace,
+            at: chrono::Utc::now(),
+        });
 }
 
 /// What a path-access answer does. Split from the prompt because mapping a
@@ -2027,6 +2149,62 @@ mod tests {
         let session = saved_session_from_state(&state).expect("session builds");
         assert_eq!(session.failed_attempts, state.failed_attempts);
         assert_eq!(session.messages.len(), 1);
+    }
+
+    /// Round-4 — an approval decision rides the session record, like the
+    /// failed-attempt summary beside it: the prompt and its answer must be
+    /// recoverable from the file, not only from scrollback.
+    #[test]
+    fn saved_session_from_state_carries_approval_decisions() {
+        let _lock = crate::test_support::lock_test_env();
+        let mut state = test_repl_state();
+        state.api_messages = vec![crate::models::Message {
+            role: "user".to_string(),
+            content: vec![crate::models::ContentBlock::Text {
+                text: "hello".to_string(),
+                cache_control: None,
+            }],
+        }];
+        log_approval(
+            &mut state,
+            "call-1",
+            "exec_shell",
+            "shell:exec_shell:abc",
+            "shell:cargo build + cargo clippy",
+            "always-session",
+            None,
+        );
+        let session = saved_session_from_state(&state).expect("session builds");
+        assert_eq!(session.approvals, state.approvals);
+        assert_eq!(session.approvals[0].decision, "always-session");
+        assert_eq!(
+            session.approvals[0].grouping_key,
+            "shell:cargo build + cargo clippy"
+        );
+        assert_eq!(
+            session.approvals[0].workspace,
+            state.workspace.display().to_string()
+        );
+    }
+
+    /// The record keeps the refusal text when the user refused with one, since
+    /// that sentence is what the model was steered with.
+    #[test]
+    fn approval_record_keeps_feedback_text() {
+        let _lock = crate::test_support::lock_test_env();
+        let mut state = test_repl_state();
+        log_approval(
+            &mut state,
+            "call-2",
+            "write_file",
+            "file:write_file:abc",
+            "tool:write_file",
+            "feedback",
+            Some("先改 cn 文档"),
+        );
+        assert_eq!(state.approvals.len(), 1);
+        assert_eq!(state.approvals[0].feedback.as_deref(), Some("先改 cn 文档"));
+        assert!(state.approvals[0].tool_call_id == "call-2");
     }
 
     #[test]

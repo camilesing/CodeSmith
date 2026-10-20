@@ -13,6 +13,19 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
 
 ### Added
 
+- **Approval decisions are in the session record** — every gated tool call now
+  writes an `approvals` entry to the session file: the tool-call id, the tool,
+  the exact-call and grouping keys, the decision, the refusal text when the user
+  typed one, the workspace and the time. That includes the calls answered
+  *without* asking — `session-grant` for one an earlier `[a]` covered,
+  `workspace-grant` for a persisted grant, `session-deny` for `[e]`, `auto-mode`
+  when the approval mode suppresses prompts — which is exactly where a session
+  file used to be silent: it could not tell a hand-approved patch from one an
+  earlier "always" covered. Log only: never sent to a model, and carrying no
+  authority (the grants themselves are unchanged). Path-access and
+  sandbox-elevation questions are separate gates and are not recorded yet. See
+  `SavedSession::approvals` and `docs/GUIDE.md` ("Working with Tools").
+
 - **An approval prompt takes `[r] <feedback>`** — refuse that one call and hand
   your sentence to the running turn through the engine's steer path, so the
   model hears what to change instead of guessing why you said no. Any line that
