@@ -13,14 +13,20 @@
 //!
 //! Known limitations, by design:
 //!
-//! - **Exiting does not change the session mode.** Nothing a tool returns can
-//!   change `AppMode` — the user owns it (`/mode`, `Shift+Tab`) — so
-//!   `exit_plan_mode` reports the handoff and leaves the mode alone.
-//! - **A model-initiated `enter_plan_mode` does not narrow the turn's
-//!   toolset.** The registry and mode prompt are fixed at turn start from
-//!   `AppMode`, so an entry of that kind is instructions plus a plan-file side
-//!   channel, not an enforced read-only turn; `prompts/modes/agent.md` claims
-//!   otherwise. The read-only guarantee holds on the `AppMode::Plan` axis.
+//! - **Exiting does not change the session mode by itself.** A tool cannot move
+//!   `AppMode` — the user owns it (`/mode`, `Shift+Tab`) — so `exit_plan_mode`
+//!   reports the handoff. The *host* may restore it when it approves the call:
+//!   the REPL returns the session to the mode it came from and the engine ends
+//!   that turn (`should_stop_after_plan_tool`), so the next message is
+//!   dispatched with the write tools. A host that does neither (headless, the
+//!   thread runtime) leaves the turn read-only and relies on the user's switch.
+//! - **A model-initiated `enter_plan_mode` does not narrow the turn it runs
+//!   in.** The registry and mode prompt are fixed at turn start from
+//!   `AppMode`, so the entry takes effect from the *next* turn — the host
+//!   follows it into Plan mode when it observes the result. `prompts/modes/
+//!   agent.md` claims a same-turn guarantee it does not have.
+//! - **`write_plan_file` serves both axes** (the turn's `AppMode::Plan`, or an
+//!   active model-initiated session), minting the slug on the first write.
 
 use async_trait::async_trait;
 use serde_json::json;
@@ -33,11 +39,16 @@ use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
 
-/// Appended to every `exit_plan_mode` result: exiting hands the plan to the
-/// user, it does not move the session out of plan mode.
-const MODE_UNCHANGED: &str = "The session mode is unchanged — exiting plan \
-mode does not make this turn writable, so ask the user to switch \
-(`/mode agent`, or Shift+Tab) before editing.";
+/// Appended to every `exit_plan_mode` result: the plan is the user's to act on,
+/// and implementation is the next turn's business.
+///
+/// A host that restores the session mode when it approves this call (the REPL
+/// does, and ends the turn right there) makes the next message writable; a host
+/// that does not leaves the read-only set in place, which is why the fallback
+/// names the switch. The tool itself never touches the mode.
+const PLAN_HANDOFF: &str = "The plan is with the user — do not start implementing in this \
+turn. The writable toolset arrives with their next message; if it does not, ask them to \
+switch (`/mode agent`, or Shift+Tab) before editing.";
 
 /// 5-phase workflow instructions injected on EnterPlanMode.
 const PLAN_MODE_INSTRUCTIONS: &str = "\
@@ -250,7 +261,7 @@ impl ToolSpec for ExitPlanModeTool {
         let Some(slug) = state.current_slug.clone() else {
             state.active = false;
             return Ok(ToolResult::success(format!(
-                "Exited plan mode (no plan file was written). {MODE_UNCHANGED}"
+                "Exited plan mode (no plan file was written). {PLAN_HANDOFF}"
             )));
         };
 
@@ -267,11 +278,11 @@ impl ToolSpec for ExitPlanModeTool {
 
         if plan_content.trim().is_empty() {
             Ok(ToolResult::success(format!(
-                "Exited plan mode (no plan content written). {MODE_UNCHANGED}"
+                "Exited plan mode (no plan content written). {PLAN_HANDOFF}"
             )))
         } else {
             let mut result = ToolResult::success(format!(
-                "Exited plan mode. {MODE_UNCHANGED}\n\nPlan content:\n{plan_content}"
+                "Exited plan mode. {PLAN_HANDOFF}\n\nPlan content:\n{plan_content}"
             ));
             result.metadata = Some(json!({
                 "plan_content": plan_content,

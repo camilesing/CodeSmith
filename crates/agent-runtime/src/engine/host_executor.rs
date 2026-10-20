@@ -599,6 +599,7 @@ use crate::error_taxonomy::ErrorEnvelope;
 use crate::events::Event;
 use crate::host_services::LspManagerApi;
 use crate::lsp_diagnostics::DiagnosticBlock;
+use crate::mode::AppMode;
 use crate::subagent::SubAgentCompletion;
 use crate::tool_dispatch::ToolDispatcher;
 use crate::working_set::WorkingSet;
@@ -1094,6 +1095,19 @@ pub struct HostAgentExecutor {
     /// artifact and the model sees an `[artifact: …]` reference block.
     pub(crate) session_id: Option<String>,
 
+    /// The mode this turn was dispatched in (`TurnDispatchRequest::mode`, the
+    /// same value the host built the registry from).
+    ///
+    /// Read by [`should_stop_after_plan_tool`] at the post-batch seam: a Plan
+    /// turn carries no write tools, so approving its plan ends the turn rather
+    /// than asking the model for a step it cannot take. Defaults to
+    /// [`AppMode::Agent`] (embeds/tests skip the builder) — the truthful value
+    /// for an executor whose host never said otherwise, and the conservative
+    /// one for this decision (no stop).
+    ///
+    /// [`should_stop_after_plan_tool`]: crate::engine::dispatch::should_stop_after_plan_tool
+    pub(crate) turn_mode: AppMode,
+
     /// Deliverables watchdog (W2 P1-1). `None` (default; embeds/tests) ⇒ no
     /// periodic disk checks. When `Some`, [`run_inner`]'s pre-request seam
     /// checks the deliverable paths every
@@ -1493,6 +1507,7 @@ impl HostAgentExecutor {
             result_verifications: None,
             tool_durations: None,
             session_id: None,
+            turn_mode: AppMode::Agent,
             deliverables: None,
         }
     }
@@ -1679,6 +1694,17 @@ impl HostAgentExecutor {
     #[must_use]
     pub fn with_session_id(mut self, session_id: Option<String>) -> Self {
         self.session_id = session_id;
+        self
+    }
+
+    /// Tell the executor which mode this turn runs in. The production wire-in
+    /// passes the same `mode` it built the tool registry with, so the
+    /// post-batch seam can end a Plan turn once its plan is approved
+    /// ([`Self::turn_mode`]). Embeds/tests skip it — the default is Agent.
+    /// Consumes and returns `self` (builder).
+    #[must_use]
+    pub fn with_turn_mode(mut self, mode: AppMode) -> Self {
+        self.turn_mode = mode;
         self
     }
 
@@ -3824,7 +3850,7 @@ impl HostAgentExecutor {
             // Planning + batch dispatch + the post-batch pass now live in
             // `turn::batches::execute_tool_batches` (codebase-health §1 split);
             // the parameters are exactly this step's locals.
-            let loop_guard_halt = self
+            let batch = self
                 .execute_tool_batches(
                     history,
                     tool_uses,
@@ -3839,6 +3865,8 @@ impl HostAgentExecutor {
                     &mut step_error_envelopes,
                 )
                 .await;
+            let plan_approved = batch.plan_approved;
+            let loop_guard_halt = batch.loop_guard_halt;
 
             // Mid-stream steer flush (mirrors the retired turn handler): push
             // any steers that arrived during streaming into the transcript
@@ -3961,6 +3989,30 @@ impl HostAgentExecutor {
                     .on_complete(&StopReason::Error(message.clone()))
                     .await;
                 return Ok(StopReason::Error(message));
+            }
+            // The user approved the plan (see `should_stop_after_plan_tool`):
+            // this is a Plan turn, so its registry has no write tools and the
+            // only thing left in it is more read-only work on a plan the user
+            // already answered. Return the handoff instead — the next turn is
+            // dispatched with the restored toolset and the model implements
+            // there. Skipped while children are still running: their completion
+            // sentinels belong to a live turn (the hold path above owns that
+            // tail), and ending here would strand them.
+            if plan_approved {
+                let running = match &self.subagent_api {
+                    Some(api) => api.running_count().await,
+                    None => 0,
+                };
+                if running == 0 {
+                    self.emit_status(
+                        "Plan approved — the turn ends here; the next one runs with the \
+                         restored toolset"
+                            .to_string(),
+                    )
+                    .await;
+                    callback.on_complete(&StopReason::PlanApproved).await;
+                    return Ok(StopReason::PlanApproved);
+                }
             }
 
             // Opt-in CapacityController (Gate A) — error-escalation checkpoint
@@ -5216,6 +5268,118 @@ mod tests {
             }
             other => panic!("expected ToolResult, got {other:?}"),
         }
+    }
+
+    // === plan approval ends a Plan turn ====================================
+
+    /// Stand-in for `exit_plan_mode`: the real tool lives in
+    /// `codesmith-tool-impls`, which this crate cannot reach (it depends on the
+    /// reverse direction). The stop decision reads only the call's name and its
+    /// result, so a success-returning spec of the same name exercises the
+    /// wiring exactly.
+    struct PlanExitSpec;
+
+    #[async_trait::async_trait]
+    impl ToolSpec for PlanExitSpec {
+        fn name(&self) -> &str {
+            "exit_plan_mode"
+        }
+        fn description(&self) -> &str {
+            "Stand-in for the plan-mode exit tool."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            })
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success("Exited plan mode."))
+        }
+    }
+
+    /// An approved plan ends a Plan turn — the harness returns
+    /// `PlanApproved` instead of asking the model for another step, whose
+    /// registry (Plan) has no write tools to take it with. The Agent turn is
+    /// the control: the same call there keeps its step, because that turn's
+    /// toolset already has the write tools a plan approval is asking for.
+    #[tokio::test]
+    async fn approved_plan_stops_a_plan_turn() {
+        /// One scripted round that calls the tool, then a second that must
+        /// only run when the turn did not stop.
+        fn rounds() -> Vec<Vec<StreamEvent>> {
+            let mut call = text_block(0, "plan ready");
+            call.extend(tool_use_block(1, "t1", "exit_plan_mode", r#"{}"#));
+            call.extend(finish("tool_use"));
+            let mut next = text_block(0, "implementing");
+            next.extend(finish("end_turn"));
+            vec![call, next]
+        }
+
+        async fn run_turn(mode: AppMode) -> (StopReason, Vec<Message>) {
+            let tmp = tempdir().expect("tempdir");
+            let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+            registry.register(Arc::new(PlanExitSpec));
+            let tools = Arc::new(registry.to_framework_tool_set());
+            let mut sess = fresh_session();
+            let mut history = SessionChatHistory::new(&mut sess);
+            let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+            let executor = HostAgentExecutor::new(
+                Arc::new(MockLlm::new(rounds())),
+                tools,
+                callback,
+                AgentExecutorConfig::default(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .with_turn_mode(mode);
+            let reason = executor
+                .run(&mut history, "go".to_string())
+                .await
+                .expect("run");
+            drop(history);
+            (reason, sess.messages.to_vec())
+        }
+
+        let (plan_reason, plan_messages) = run_turn(AppMode::Plan).await;
+        assert_eq!(plan_reason, StopReason::PlanApproved);
+        assert!(
+            !plan_messages.iter().any(|message| message
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::Text { text, .. } if text == "implementing"))),
+            "the second model step must not run: {:?}",
+            plan_messages
+        );
+
+        let (agent_reason, agent_messages) = run_turn(AppMode::Agent).await;
+        assert_eq!(
+            agent_reason,
+            StopReason::NoToolCalls,
+            "an Agent turn keeps its step — it already has the write tools"
+        );
+        assert!(
+            agent_messages.iter().any(|message| message
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::Text { text, .. } if text == "implementing"))),
+            "the Agent turn continues to the next model step"
+        );
     }
 
     // === P0-2: tool calls truncated by the output limit ====================

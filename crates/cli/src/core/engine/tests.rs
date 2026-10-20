@@ -758,26 +758,30 @@ fn tool_execution_batches_use_serial_barriers() {
 }
 
 #[test]
-fn successful_update_plan_ends_plan_mode_turn_immediately() {
+fn approved_plan_ends_a_plan_turn() {
     assert!(should_stop_after_plan_tool(
         AppMode::Plan,
-        "update_plan",
-        &Ok(ToolResult::success("planned"))
+        "exit_plan_mode",
+        &Ok(ToolResult::success("Exited plan mode"))
     ));
+    // Only a Plan turn stops: an Agent turn that ran a model-initiated plan
+    // session already has the write tools, so it keeps its step.
     assert!(!should_stop_after_plan_tool(
         AppMode::Agent,
-        "update_plan",
-        &Ok(ToolResult::success("planned"))
+        "exit_plan_mode",
+        &Ok(ToolResult::success("Exited plan mode"))
     ));
     assert!(!should_stop_after_plan_tool(
         AppMode::Plan,
-        "request_user_input",
-        &Ok(ToolResult::success("input"))
+        "write_plan_file",
+        &Ok(ToolResult::success("written"))
     ));
+    // A refusal (`[r] <feedback>`, or a plain skip) is an `Err`: the revise
+    // loop keeps the turn, with plan mode still active.
     assert!(!should_stop_after_plan_tool(
         AppMode::Plan,
-        "update_plan",
-        &Err(ToolError::execution_failed("failed".to_string()))
+        "exit_plan_mode",
+        &Err(ToolError::execution_failed("denied by user".to_string()))
     ));
 }
 

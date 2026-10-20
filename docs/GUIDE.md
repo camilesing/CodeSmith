@@ -252,8 +252,15 @@ else you type is feedback: it refuses the plan *and hands your sentence to the
 running turn*, so the model revises the plan file and asks again — `[r] <feedback>`
 is the same thing spelled out, and a bare `[r]` asks you for the words on the next
 line. A refusal leaves plan mode active and the plan file in place, so revising
-never means starting over. `[a]` is the one to avoid here: the call takes no
-arguments, so "always" covers every later plan approval in the session.
+never means starting over. `[a]` is the one to avoid here: the plan tool has no
+arguments to scope by, so "always" covers every later plan approval in the
+session.
+
+Approving the plan ends that turn. A Plan-mode turn's toolset registers no write
+tools at all (`apply_patch`, `write_file`, and shell are absent), so the turn has
+nothing left it can do — and the session is returned to the mode you came from,
+which means your next message starts the implementation with those tools in
+hand.
 
 Agent mode is the default for most contribution work. It lets CodeSmith read,
 run checks, and edit files while keeping risky actions behind approval gates.
@@ -348,6 +355,18 @@ behavior. Every approval prompt refuses with a reason: type `[r] <feedback>` —
 just type your sentence — and it refuses that one call and sends your text to the
 running turn, so the model hears what to change instead of guessing why you said
 no. Only the four keys (`y`/`n`/`a`/`e`) answer the question itself.
+
+`[a]` remembers one **grouping key**, and the prompt spells out what that key
+covers: `this command family` for shell commands (`git status` covers
+`git status -s`, not `git push`), `patches to the same paths` for a patch,
+`requests to the same host` for a fetch, and `every <tool> call` for a tool with
+no such family — one `write_file` answer covers its later calls, and one
+`agent_open` answer covers every spawn for the rest of the run. So `[a]` on one
+tool never silences a different tool's prompt; answer it once per tool you are
+happy to stop being asked about. `[e]` is always the exact call: that one
+invocation is denied and nothing else. `[a]` and `[e]` last until the process
+exits; `/permissions allow <command prefix>` is the form written to
+`~/.codesmith/approvals.toml` that survives a restart.
 
 Good tool instructions are concrete:
 

@@ -22,6 +22,38 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
   intact, the model rewrites it and asks again. `[y]`/`[n]`/`[a]`/`[e]` keep
   their keys and meanings.
 
+### Changed
+
+- **Approving a plan hands the turn back instead of stalling in it** — an
+  approved `exit_plan_mode` now ends the turn it was approved in (a new
+  `StopReason::PlanApproved`, reported as a completed turn), and the REPL
+  returns the session to the mode it came from. Before this the session stayed
+  in Plan — whose registry registers no `apply_patch`, `write_file`, or shell at
+  all — while the tool result told the model "Restoring Agent mode", so a model
+  just told to start implementing announced it and had no write tool to do it
+  with. A model-driven `enter_plan_mode` is followed the same way (the session
+  enters Plan for the next turn, so plan mode's read-only contract applies),
+  a refused plan still leaves plan mode active for the `[r]` revise loop, and
+  the stop is skipped while sub-agents are still running so their completions
+  land in a live turn. Hosts that never restored the mode are unchanged: the
+  tool result now names the switch for the user instead of claiming otherwise.
+  See `docs/GUIDE.md` ("Modes").
+- **`[a]` now covers the tool, not a byte-identical replay** — for tools with no
+  command, patch-path, or host family to group by (`write_file`, `agent_open`,
+  `agent_close`, MCP tools, …) the "always allow" answer hashed the full
+  arguments, so it covered exactly what `[e]` denies and any *different* call to
+  the same tool asked again. Three prompts in a row
+  (`exit_plan_mode` → `agent_open` → `agent_close`) therefore read as `[a]` being
+  ignored. Those tools now group by `tool:<name>`, the prompt legend names what
+  it covers (`[a] always allow every agent_open call for this session` — one
+  `write_file` answer covers its later calls to any path), and only the deny side
+  stays exact-call scoped. `[a]` is still session-only; `/permissions allow`
+  remains the form that persists. See `docs/GUIDE.md` ("Working with Tools").
+- **The base prompt refuses placeholder sub-agents** — `agent_open` called with
+  a self-test prompt (`noop`) is explicitly out of bounds beside the existing
+  "use sub-agents liberally": a child's prompt must be self-contained and name
+  its deliverable, and a one-file change is the parent's own work.
+
 ## [0.10.0] - 2026-10-15
 
 ### Added
@@ -179,8 +211,9 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
   into a directory trusted with `/trust add <path>`, which is what makes
   "one explorer per repository" work — the child's workspace root becomes that
   directory. Untrusted paths are refused with the exact `/trust add` line to
-  run. `agent_open` remains approval-gated: two spawns in one message prompt
-  once (`[a]` covers the same call shape) and then run concurrently, each
+  run. `agent_open` remains approval-gated: two spawns in one message prompted
+  separately — `[a]` hashed the full arguments, so only a byte-identical replay
+  was covered, corrected in [Unreleased] — and then ran concurrently, each
   returning immediately. See `docs/SUBAGENTS.md` ("Read-only roles and Plan
   mode", "Working across repositories").
 

@@ -430,12 +430,32 @@ pub fn plan_tool_execution_batches(plans: Vec<ToolExecutionPlan>) -> Vec<ToolExe
     batches
 }
 
+/// Whether an approved plan should end the turn.
+///
+/// A `Plan` turn's registry carries no write tools, so once the user approves
+/// the plan the turn has nothing left it can do — and the toolset the restored
+/// mode brings is built at the *next* turn's start
+/// (`handle_send_message` → `build_turn_dispatcher`). Stopping here is the
+/// handoff `prompts/modes/plan.md` promises. A refused call is an `Err`, so the
+/// `[r] <feedback>` revise loop keeps the turn alive with plan mode intact, and
+/// a model-initiated exit inside an Agent turn does not stop anything: that
+/// turn already has its write tools.
+///
+/// Known gaps, beside the behaviour it owns:
+///
+/// - `update_plan` also claims a handback in `plan.md`, and this predicate does
+///   not cover it — the tool is used mid-investigation too (base.md's
+///   composition pattern), so stopping on every successful `update_plan` in
+///   Plan mode would cut the turn short.
+/// - A capacity-controller intervention (`VerifyAndReplan`) in the same step
+///   replaces the batch outcome and drops the flag for that step, so the turn
+///   continues — the pre-existing behaviour, narrowed to that rare pairing.
 pub fn should_stop_after_plan_tool(
     mode: AppMode,
     tool_name: &str,
     result: &Result<ToolResult, ToolError>,
 ) -> bool {
-    mode == AppMode::Plan && tool_name == "update_plan" && result.is_ok()
+    mode == AppMode::Plan && tool_name == "exit_plan_mode" && result.is_ok()
 }
 
 pub fn should_force_update_plan_first(mode: AppMode, content: &str) -> bool {
