@@ -1444,13 +1444,22 @@ fn deferred_tool_preflight_skips_already_active_tools() {
 fn turn_tool_registry_builder_keeps_plan_mode_read_only_for_files() {
     let _env = HermeticEnv::new();
     let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+    let context = engine.build_tool_context(AppMode::Plan, false);
+    // The plan-file tools gate on this field: a context that did not carry
+    // the turn's mode would leave write_plan_file refusing in plan mode,
+    // where the plan file is the one write the mode permits.
+    assert_eq!(
+        context.mode,
+        AppMode::Plan,
+        "the per-turn context must carry the mode the turn runs in"
+    );
     let registry = engine
         .build_turn_tool_registry_builder(
             AppMode::Plan,
             engine.config.todos.clone(),
             engine.config.plan_state.clone(),
         )
-        .build(engine.build_tool_context(AppMode::Plan, false));
+        .build(context);
 
     assert!(registry.contains("read_file"));
     assert!(registry.contains("list_dir"));

@@ -20,9 +20,11 @@ present it again. That holds for a refused `exit_plan_mode` too — the refused 
 you are still in plan mode: rewrite the plan file and call `exit_plan_mode` again, rather than
 starting work or asking a question the feedback already answered.
 
-### Plan Mode V2 — Model-Initiated Workflow
+### Plan Mode V2 — Plan File Workflow
 
-If you entered plan mode via `enter_plan_mode` (model-initiated), the workflow is:
+In plan mode the workflow is the same however you got here, including when the
+user switched the mode themselves — you do not need to call `enter_plan_mode`
+first, and it will refuse if you do:
 
 **Phase 1: Initial Understanding**
 Read relevant files, search the codebase, understand the existing architecture.
