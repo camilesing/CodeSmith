@@ -16,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 use crate::features::Features;
 use crate::host_services::ShellManagerApi;
 use crate::host_services::{AutomationManagerHost, LspManagerApi, TaskManagerHost};
+use crate::mode::AppMode;
 use crate::network_policy::NetworkPolicyDecider;
 use crate::rlm::session::SessionObjectSnapshot;
 use crate::rlm::session::{SharedRlmSessionStore, new_shared_rlm_session_store};
@@ -206,6 +207,17 @@ pub struct ToolContext {
     /// Optional user-facing hint for shell commands that fail because the
     /// active sandbox policy intentionally denies outbound network access.
     pub shell_network_denied_hint: Option<String>,
+    /// The mode this turn runs in.
+    ///
+    /// The neighbouring mode-derived fields (`elevated_sandbox_policy`,
+    /// `shell_network_denied_hint`, `auto_approve`) are consequences of this
+    /// one; a tool that must know the mode itself reads this instead of
+    /// inferring it from them. Defaults to [`AppMode::Agent`] for embeds and
+    /// tests, which is also the truthful value for a host that runs no turns
+    /// (the MCP server context). A host that runs turns sets it from the same
+    /// value it hands the tool registry, so a context left at the default
+    /// cannot claim to be in Plan mode.
+    pub mode: AppMode,
     /// Whether tools should auto-approve without safety checks (YOLO mode).
     /// When true, command safety analysis is skipped for shell execution.
     pub auto_approve: bool,
@@ -339,6 +351,7 @@ impl ToolContext {
             mcp_config_path,
             elevated_sandbox_policy: None,
             shell_network_denied_hint: None,
+            mode: AppMode::Agent,
             auto_approve: false,
             features: Features::with_defaults(),
             parse_gate: true,
@@ -397,6 +410,13 @@ impl ToolContext {
         let mut ctx = Self::with_options(workspace, trust_mode, notes_path, mcp_config_path);
         ctx.auto_approve = auto_approve;
         ctx
+    }
+
+    /// Set the mode the turn this context belongs to runs in.
+    #[must_use]
+    pub fn with_mode(mut self, mode: AppMode) -> Self {
+        self.mode = mode;
+        self
     }
 
     /// Attach a per-domain network policy to this context (#135).

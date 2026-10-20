@@ -57,6 +57,7 @@ pub(super) fn build_tool_context_for(
         session.mcp_config_path.clone(),
         mode == AppMode::Yolo || mode == AppMode::Coordinator || auto_approve,
     )
+    .with_mode(mode)
     .with_state_namespace(session.id.clone())
     .with_features(config.features.clone())
     .with_parse_gate(config.parse_gate)

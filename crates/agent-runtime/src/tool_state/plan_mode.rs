@@ -5,19 +5,28 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 /// Session-level plan mode state, stored in Engine.
+///
+/// Holds only what the turn's `AppMode` cannot express: whether the *model*
+/// opened a plan session of its own accord, and which plan file that session
+/// writes to.
+///
+/// User-initiated plan mode is `AppMode::Plan` on the turn itself. That axis
+/// belongs to whoever submits the turn (Shift+Tab, `/mode plan`, a preset, a
+/// headless run) and is deliberately not mirrored here — a copy would be a
+/// second source of truth that only stays right while every writer remembers
+/// to update it. Tools serving both axes read `ToolContext::mode` and OR it
+/// with this state.
 #[derive(Debug, Clone, Default)]
 pub struct PlanModeState {
-    /// Whether plan mode is currently active (model-initiated).
+    /// Whether a model-initiated plan session is open.
+    ///
+    /// Set by `enter_plan_mode` and cleared by `exit_plan_mode`, and neither
+    /// happens while the turn is already in `AppMode::Plan`, where plan mode
+    /// is the session's own state and needs no separate flag. No user mode
+    /// switch writes it.
     pub active: bool,
-    /// The AppMode variant name that was active before entering plan mode.
-    /// Saved as a string so the state is Clone-friendly without requiring
-    /// AppMode to be Clone (it may carry non-Clone fields in the future).
-    pub pre_plan_mode: Option<String>,
     /// Slug for the current plan file (e.g. "plan_a3f2b1c4").
     pub current_slug: Option<String>,
-    /// Whether this plan mode entry was model-initiated (tool call)
-    /// vs user-initiated (/mode plan UI switch).
-    pub model_initiated: bool,
 }
 
 /// Shared reference to plan mode state.

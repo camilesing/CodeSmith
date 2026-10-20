@@ -1,19 +1,43 @@
 //! Plan mode tools — EnterPlanMode, ExitPlanMode, WritePlanFile.
 //!
-//! These tools enable model-initiated plan mode transitions, mirroring
-//! Claude Code's EnterPlanMode/ExitPlanMode pattern. In plan mode, only
-//! read-only tools and `write_plan_file` are available; all other
-//! state-mutating tools are blocked at the dispatch layer.
+//! Two independent axes decide whether these tools work:
+//!
+//! - **`AppMode::Plan` on the turn** — the user's choice (`Shift+Tab`,
+//!   `/mode plan`, a preset, a headless run). The plan file is the one write
+//!   plan mode permits, so the three tools serve this axis directly; the slug
+//!   is minted on the first write, leaving a plan-mode turn that only
+//!   investigates with no file behind.
+//! - **`PlanModeState::active`** — a plan session the *model* opened with
+//!   `enter_plan_mode` while the turn was not already in `AppMode::Plan`,
+//!   mirroring Claude Code's EnterPlanMode/ExitPlanMode pattern.
+//!
+//! Known limitations, by design:
+//!
+//! - **Exiting does not change the session mode.** Nothing a tool returns can
+//!   change `AppMode` — the user owns it (`/mode`, `Shift+Tab`) — so
+//!   `exit_plan_mode` reports the handoff and leaves the mode alone.
+//! - **A model-initiated `enter_plan_mode` does not narrow the turn's
+//!   toolset.** The registry and mode prompt are fixed at turn start from
+//!   `AppMode`, so an entry of that kind is instructions plus a plan-file side
+//!   channel, not an enforced read-only turn; `prompts/modes/agent.md` claims
+//!   otherwise. The read-only guarantee holds on the `AppMode::Plan` axis.
 
 use async_trait::async_trait;
 use serde_json::json;
 
 use crate::tools::plan::SharedPlanState;
 use crate::tools::plan_file;
+use codesmith_agent_runtime::mode::AppMode;
 pub use codesmith_agent_runtime::tool_state::plan_mode::*;
 use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
+
+/// Appended to every `exit_plan_mode` result: exiting hands the plan to the
+/// user, it does not move the session out of plan mode.
+const MODE_UNCHANGED: &str = "The session mode is unchanged — exiting plan \
+mode does not make this turn writable, so ask the user to switch \
+(`/mode agent`, or Shift+Tab) before editing.";
 
 /// 5-phase workflow instructions injected on EnterPlanMode.
 const PLAN_MODE_INSTRUCTIONS: &str = "\
@@ -112,13 +136,18 @@ impl ToolSpec for EnterPlanModeTool {
     async fn execute(
         &self,
         _input: serde_json::Value,
-        _context: &ToolContext,
+        context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
         let mut state = self.plan_mode_state.lock().await;
 
-        if state.active {
+        // Already in plan mode is one refusal whichever axis put us there:
+        // entering again would mint a second slug and orphan the plan file
+        // already written under the first.
+        if state.active || context.mode == AppMode::Plan {
             return Err(ToolError::ExecutionFailed {
-                message: "Already in plan mode. Call exit_plan_mode to leave.".to_string(),
+                message: "Already in plan mode. Write the plan with write_plan_file, then \
+                          call exit_plan_mode to present it."
+                    .to_string(),
             });
         }
 
@@ -142,15 +171,8 @@ impl ToolSpec for EnterPlanModeTool {
                 message: format!("Failed to resolve plan file path: {e}"),
             })?;
 
-        // Save the current mode and activate plan mode
-        // The caller (the turn loop, in host_executor) should set pre_plan_mode to the current AppMode name
-        // before calling this tool, or we capture it here as "Agent" (default).
-        if state.pre_plan_mode.is_none() {
-            state.pre_plan_mode = Some("Agent".to_string());
-        }
         state.active = true;
         state.current_slug = Some(slug);
-        state.model_initiated = true;
 
         let message = format!(
             "Entered plan mode. Plan file: {}\n\n{}",
@@ -214,27 +236,23 @@ impl ToolSpec for ExitPlanModeTool {
     async fn execute(
         &self,
         _input: serde_json::Value,
-        _context: &ToolContext,
+        context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
         let mut state = self.plan_mode_state.lock().await;
 
-        if !state.active {
+        if !state.active && context.mode != AppMode::Plan {
             return Err(ToolError::ExecutionFailed {
                 message: "Not in plan mode. Call enter_plan_mode first.".to_string(),
             });
         }
 
-        let slug = state
-            .current_slug
-            .clone()
-            .ok_or_else(|| ToolError::ExecutionFailed {
-                message: "plan mode is active but no plan file slug is set; state is inconsistent"
-                    .to_string(),
-            })?;
-        let pre_mode = state
-            .pre_plan_mode
-            .clone()
-            .unwrap_or_else(|| "Agent".to_string());
+        // A plan-mode turn that never wrote a plan has nothing to report.
+        let Some(slug) = state.current_slug.clone() else {
+            state.active = false;
+            return Ok(ToolResult::success(format!(
+                "Exited plan mode (no plan file was written). {MODE_UNCHANGED}"
+            )));
+        };
 
         // Read the plan file content
         let plan_content = plan_file::read_plan_file(&slug)
@@ -244,24 +262,20 @@ impl ToolSpec for ExitPlanModeTool {
             })?
             .unwrap_or_default();
 
-        // Clear plan mode state
         state.active = false;
-        state.pre_plan_mode = None;
         state.current_slug = None;
-        state.model_initiated = false;
 
         if plan_content.trim().is_empty() {
             Ok(ToolResult::success(format!(
-                "Exited plan mode (no plan content written). Restoring {pre_mode} mode."
+                "Exited plan mode (no plan content written). {MODE_UNCHANGED}"
             )))
         } else {
             let mut result = ToolResult::success(format!(
-                "Exited plan mode. Restoring {pre_mode} mode.\n\nPlan content:\n{plan_content}"
+                "Exited plan mode. {MODE_UNCHANGED}\n\nPlan content:\n{plan_content}"
             ));
             result.metadata = Some(json!({
                 "plan_content": plan_content,
                 "plan_slug": slug,
-                "restored_mode": pre_mode,
             }));
             Ok(result)
         }
@@ -326,28 +340,37 @@ impl ToolSpec for WritePlanFileTool {
     async fn execute(
         &self,
         input: serde_json::Value,
-        _context: &ToolContext,
+        context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
         // Hold the guard across the disk write: a concurrent exit/enter
         // used to interleave between the snapshot and the write, writing
         // the plan file after plan mode ended (or under a stale slug).
         // The plan_state lock is only taken after, so no deadlock.
-        let state = self.plan_mode_state.lock().await;
+        let mut state = self.plan_mode_state.lock().await;
 
-        if !state.active {
+        // Allowed in a plan-mode turn — the plan file is the one write plan
+        // mode permits — or in a model-initiated plan session.
+        if !state.active && context.mode != AppMode::Plan {
             return Err(ToolError::PermissionDenied {
                 message:
                     "write_plan_file is only available in plan mode. Call enter_plan_mode first."
                         .to_string(),
             });
         }
-        let slug = state
-            .current_slug
-            .clone()
-            .ok_or_else(|| ToolError::ExecutionFailed {
-                message: "plan mode is active but no plan file slug is set; state is inconsistent"
-                    .to_string(),
-            })?;
+        // Mint the slug on the first write: a plan-mode turn that only
+        // investigates leaves no plan file behind, and the file that does
+        // appear is the one the user will be asked to approve.
+        let slug = match state.current_slug.clone() {
+            Some(slug) => slug,
+            None => {
+                let slug =
+                    plan_file::generate_plan_slug().map_err(|e| ToolError::ExecutionFailed {
+                        message: format!("Failed to generate plan slug: {e}"),
+                    })?;
+                state.current_slug = Some(slug.clone());
+                slug
+            }
+        };
 
         let content = input
             .get("content")
@@ -413,5 +436,154 @@ impl ToolSpec for WritePlanFileTool {
             "Plan written to {}",
             path.display()
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::plan::new_shared_plan_state;
+    use codesmith_agent_runtime::test_support::{ScopedCodeSmithHome, lock_test_env};
+
+    fn context_in(mode: AppMode) -> ToolContext {
+        ToolContext::new(std::env::temp_dir()).with_mode(mode)
+    }
+
+    // lock_test_env serializes the whole async test (env mutation): the
+    // guard intentionally outlives every await in the body.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn write_plan_file_works_in_plan_mode_without_entering() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        let mode_state = new_shared_plan_mode_state();
+
+        WritePlanFileTool::new(mode_state.clone(), new_shared_plan_state())
+            .execute(
+                json!({"content": "# Plan\n\n## Context\n\nwhy"}),
+                &context_in(AppMode::Plan),
+            )
+            .await
+            .expect("plan mode's one permitted write must not require enter_plan_mode first");
+
+        let slug = mode_state
+            .lock()
+            .await
+            .current_slug
+            .clone()
+            .expect("the first write mints the slug");
+        assert_eq!(
+            plan_file::read_plan_file(&slug).await.expect("read"),
+            Some("# Plan\n\n## Context\n\nwhy".to_string()),
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn plan_file_tools_stay_refused_outside_plan_mode() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        let mode_state = new_shared_plan_mode_state();
+        let agent_turn = context_in(AppMode::Agent);
+
+        let error = WritePlanFileTool::new(mode_state.clone(), new_shared_plan_state())
+            .execute(json!({"content": "# Plan"}), &agent_turn)
+            .await
+            .expect_err("an Agent-mode turn must not write the plan file");
+        assert!(
+            matches!(error, ToolError::PermissionDenied { .. }),
+            "the mode gate, not an execution failure: {error:?}"
+        );
+
+        assert!(
+            ExitPlanModeTool::new(mode_state.clone(), new_shared_plan_state())
+                .execute(json!({}), &agent_turn)
+                .await
+                .is_err(),
+            "leaving a plan session this turn is not in must fail loud"
+        );
+        assert!(mode_state.lock().await.current_slug.is_none());
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn exit_plan_mode_hands_over_the_plan_in_plan_mode() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        let mode_state = new_shared_plan_mode_state();
+        let plan_state = new_shared_plan_state();
+        let plan_turn = context_in(AppMode::Plan);
+
+        WritePlanFileTool::new(mode_state.clone(), plan_state.clone())
+            .execute(
+                json!({"content": "# Plan\n\n## Context\n\nwhy"}),
+                &plan_turn,
+            )
+            .await
+            .expect("write");
+
+        let result = ExitPlanModeTool::new(mode_state.clone(), plan_state)
+            .execute(json!({}), &plan_turn)
+            .await
+            .expect("a plan-mode turn must be able to present its plan");
+        assert!(
+            result.content.contains("## Context"),
+            "the plan body is what the user is asked to approve: {}",
+            result.content
+        );
+
+        let state = mode_state.lock().await;
+        assert!(!state.active);
+        assert!(state.current_slug.is_none(), "the session is handed over");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn enter_plan_mode_refuses_when_the_turn_is_already_in_plan_mode() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        let mode_state = new_shared_plan_mode_state();
+
+        assert!(
+            EnterPlanModeTool::new(mode_state.clone(), new_shared_plan_state())
+                .execute(json!({}), &context_in(AppMode::Plan))
+                .await
+                .is_err(),
+            "a second entry would mint a second slug and orphan the first plan file"
+        );
+        assert!(mode_state.lock().await.current_slug.is_none());
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn model_initiated_entry_still_serves_an_agent_turn() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        let mode_state = new_shared_plan_mode_state();
+        let plan_state = new_shared_plan_state();
+        let agent_turn = context_in(AppMode::Agent);
+
+        EnterPlanModeTool::new(mode_state.clone(), plan_state.clone())
+            .execute(json!({}), &agent_turn)
+            .await
+            .expect("entering plan mode from an Agent turn");
+        assert!(mode_state.lock().await.active);
+
+        WritePlanFileTool::new(mode_state.clone(), plan_state.clone())
+            .execute(
+                json!({"content": "# Plan\n\n## Context\n\nwhy"}),
+                &agent_turn,
+            )
+            .await
+            .expect("the model-initiated session writes its own plan file");
+
+        ExitPlanModeTool::new(mode_state.clone(), plan_state)
+            .execute(json!({}), &agent_turn)
+            .await
+            .expect("exiting the model-initiated session");
+
+        let state = mode_state.lock().await;
+        assert!(!state.active);
+        assert!(state.current_slug.is_none());
     }
 }
