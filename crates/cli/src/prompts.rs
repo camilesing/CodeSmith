@@ -338,8 +338,12 @@ mod tests {
             "Plan mode must tell the model to finish plans through update_plan"
         );
         assert!(
-            PLAN_MODE.contains("accept / revise / exit prompt"),
-            "Plan mode must explain why update_plan is the UI handoff signal"
+            PLAN_MODE.contains("the plan is rendered for review"),
+            "Plan mode must explain that update_plan hands the turn back for review"
+        );
+        assert!(
+            PLAN_MODE.contains("If an approval is refused"),
+            "Plan mode must say what a refused plan approval means: revise, do not implement"
         );
     }
 

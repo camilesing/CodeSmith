@@ -246,6 +246,14 @@ parallel; each child is bounded to read-only tools, and a directory outside the
 workspace has to be trusted with `/trust add <path>` first (`docs/SUBAGENTS.md`,
 "Working across repositories").
 
+Plan mode ends at an approval prompt of its own: `exit_plan_mode` prints the plan
+body and asks. `[y]` approves it once, `[n]` (or an empty line) skips, and
+`[r] <feedback>` refuses the plan *and hands your sentence to the running turn* —
+the model revises the plan file and asks again. A refusal leaves plan mode active
+and the plan file in place, so revising never means starting over. `[a]` is the
+one to avoid here: the call takes no arguments, so "always" covers every later
+plan approval in the session.
+
 Agent mode is the default for most contribution work. It lets CodeSmith read,
 run checks, and edit files while keeping risky actions behind approval gates.
 
@@ -335,7 +343,9 @@ directories or global config.
 
 When a command needs network, writes outside the workspace, or a risky shell
 operation, expect an approval prompt unless you have configured more permissive
-behavior.
+behavior. Every approval prompt also takes `[r] <feedback>`: it refuses that one
+call and sends your text to the running turn, so the model hears what to change
+instead of guessing why you said no.
 
 Good tool instructions are concrete:
 
