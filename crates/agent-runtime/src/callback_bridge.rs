@@ -369,8 +369,8 @@ impl CallbackBridge {
     }
 }
 
-/// The mode transition a mode-gated tool call was aiming at, when the call
-/// is refused. `None` for every tool the current mode does not gate.
+/// The mode transition a refused mode-gated tool call was aiming at. `None`
+/// for every tool the current mode does not gate.
 ///
 /// A refusal from one of these is not an approval decision — it is the model
 /// reaching for a mode it is not in, and the tool error alone renders as
@@ -378,10 +378,27 @@ impl CallbackBridge {
 /// and leaves no trace of the intent. `codesmith_tool_impls::tools::plan_mode`
 /// is the only mode-gated family in the tree today; a tool that grows a gate
 /// of its own belongs here so its refusals stay greppable.
-fn mode_gated_intent(tool_name: &str) -> Option<&'static str> {
-    match tool_name {
-        "enter_plan_mode" | "write_plan_file" => Some("enter plan mode"),
-        "exit_plan_mode" => Some("leave plan mode"),
+///
+/// The name is not the whole answer: these tools also fail *without* reaching
+/// a gate. A stream severed mid-argument leaves `write_plan_file` with no
+/// parseable input, so it fails validation ("Failed to validate input: missing
+/// required field 'content'"), and `exit_plan_mode` is approval-gated, so the
+/// user's "no" fails it too. Reporting either as "the call was refused by the
+/// tool's mode gate" sends the reader hunting a mode bug that is not there.
+/// The gate's own refusal is the one `PermissionDenied` that names plan mode
+/// (the remedy the model needs is in that same text).
+fn mode_gate_refusal(tool_name: &str, err: &ToolError) -> Option<&'static str> {
+    let intent = match tool_name {
+        "enter_plan_mode" | "write_plan_file" => "enter plan mode",
+        "exit_plan_mode" => "leave plan mode",
+        _ => return None,
+    };
+    match err {
+        ToolError::PermissionDenied { message }
+            if message.to_ascii_lowercase().contains("plan mode") =>
+        {
+            Some(intent)
+        }
         _ => None,
     }
 }
@@ -493,7 +510,7 @@ impl Callback for CallbackBridge {
             // visible in the transcript and in the persisted `Status` turn
             // item instead of only as an authorization-shaped error.
             if let Err(err) = result
-                && let Some(intent) = mode_gated_intent(name)
+                && let Some(intent) = mode_gate_refusal(name, err)
             {
                 tracing::warn!(
                     target: "codesmith_runtime::callback_bridge",
@@ -1014,6 +1031,58 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, Event::Status { .. })),
             "an approval denial must not be logged as a mode switch attempt"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_validation_on_a_gated_tool_is_not_a_mode_switch_attempt() {
+        let (tx, mut rx) = mpsc::channel(256);
+        let bridge = CallbackBridge::new(Some(tx), None, test_template());
+
+        // A stream severed mid-argument leaves the call with no parseable
+        // input, so it fails validation without ever reaching the mode gate.
+        // Reporting the gate here sends a reader hunting a mode bug that is
+        // not there — the transcript's own failing line already said what
+        // went wrong.
+        bridge
+            .on_tool_start("wire-1", "write_plan_file", &serde_json::json!({}))
+            .await;
+        bridge
+            .on_tool_end("write_plan_file", &Err(ToolError::missing_field("content")))
+            .await;
+
+        assert!(
+            !drain(&mut rx)
+                .iter()
+                .any(|event| matches!(event, Event::Status { .. })),
+            "a validation failure must not be logged as the gate's refusal"
+        );
+    }
+
+    #[tokio::test]
+    async fn user_denial_of_a_gated_tool_is_not_a_mode_switch_attempt() {
+        let (tx, mut rx) = mpsc::channel(256);
+        let bridge = CallbackBridge::new(Some(tx), None, test_template());
+
+        // `exit_plan_mode` is approval-gated, so the user saying no fails the
+        // call — with the user's refusal, not the gate's.
+        bridge
+            .on_tool_start("wire-1", "exit_plan_mode", &serde_json::json!({}))
+            .await;
+        bridge
+            .on_tool_end(
+                "exit_plan_mode",
+                &Err(ToolError::execution_failed(
+                    "Tool 'exit_plan_mode' denied by user".to_string(),
+                )),
+            )
+            .await;
+
+        assert!(
+            !drain(&mut rx)
+                .iter()
+                .any(|event| matches!(event, Event::Status { .. })),
+            "a user denial must not be logged as the gate's refusal"
         );
     }
 

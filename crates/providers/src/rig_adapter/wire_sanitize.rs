@@ -40,6 +40,14 @@
 //!    OpenAI serializer drops text from a user message that also carries
 //!    tool results, so only a tool-result-free user message produces a
 //!    `role:"user"` message on the wire.)
+//! 8. a tool call's arguments travel as a JSON object. A stream severed
+//!    mid-argument leaves the transcript holding the reducer's
+//!    non-executable marker (`null`) for that call, and rig stringifies the
+//!    value into the wire field — the provider receives
+//!    `"arguments": "null"`, which no tool-calling API accepts (Claude's
+//!    `tool_use.input` is an object by definition); the gateway that
+//!    reported this answered 500 to every later request of the session.
+//!    Enforced by [`normalize_tool_call_inputs`].
 //!
 //! Reasoning items are never touched here: the provider shaper owns the
 //! strip/inject decision (#1542 / #1739), and DeepSeek thinking-mode requires
@@ -68,6 +76,7 @@ pub(crate) fn sanitize_wire_messages(messages: &mut Vec<RigMessage>) {
     for _ in 0..FIXPOINT_PASSES {
         let mut changed = repair_tool_pairs(messages);
         changed |= normalize_empty_content(messages);
+        changed |= normalize_tool_call_inputs(messages);
         changed |= merge_adjacent_same_role(messages);
         changed_any |= changed;
         if !changed {
@@ -338,6 +347,53 @@ fn normalize_empty_content(messages: &mut [RigMessage]) -> bool {
     changed
 }
 
+/// Enforce invariant 8: a tool call's arguments travel as a JSON object.
+///
+/// The one shape this exists for is a stream severed mid-argument: the
+/// reducer can't parse the half-written buffer, so it keeps the call with
+/// `Null` arguments (P0-2 — truncated arguments must not be salvaged into an
+/// executable call) and the pair travels on every later request. Rig
+/// stringifies the value, so the wire carries `"arguments": "null"`, and a
+/// provider that translates to Claude's object-typed `tool_use.input` fails
+/// the whole request — this session's gateway answered 500 to each retry and
+/// the turn died. A string holding a JSON object is the same defect one
+/// encode deeper (stringify would double-encode it), so it is unwrapped;
+/// every other non-object becomes `{}`.
+///
+/// Idempotent by construction — the replacement is always an object, so a
+/// second pass is a no-op — and independent of the pairing passes.
+fn normalize_tool_call_inputs(messages: &mut [RigMessage]) -> bool {
+    let mut changed = false;
+    for msg in messages.iter_mut() {
+        let RigMessage::Assistant { content, .. } = msg else {
+            continue;
+        };
+        for item in content.iter_mut() {
+            let AssistantContent::ToolCall(call) = item else {
+                continue;
+            };
+            if call.function.arguments.is_object() {
+                continue;
+            }
+            call.function.arguments = object_or_empty(&call.function.arguments);
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// The object [`normalize_tool_call_inputs`] puts in place of a non-object:
+/// the string's own JSON object when it is one, `{}` otherwise.
+fn object_or_empty(value: &serde_json::Value) -> serde_json::Value {
+    if let serde_json::Value::String(inner) = value
+        && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(inner)
+        && parsed.is_object()
+    {
+        return parsed;
+    }
+    serde_json::Value::Object(serde_json::Map::new())
+}
+
 /// Enforce invariant 4: merge adjacent same-role messages.
 fn merge_adjacent_same_role(messages: &mut Vec<RigMessage>) -> bool {
     let mut changed = false;
@@ -475,6 +531,16 @@ mod tests {
         }
     }
 
+    fn assistant_call_with_input(id: &str, input: serde_json::Value) -> RigMessage {
+        RigMessage::Assistant {
+            id: None,
+            content: OneOrMany::one(AssistantContent::ToolCall(RigToolCall::new(
+                id.to_string(),
+                ToolFunction::new("tool".to_string(), input),
+            ))),
+        }
+    }
+
     fn assistant_reasoning(text: &str) -> RigMessage {
         RigMessage::Assistant {
             id: None,
@@ -500,6 +566,16 @@ mod tests {
 
     fn call_ids(msg: &RigMessage) -> Vec<String> {
         call_ids_of(msg)
+    }
+
+    fn call_arguments(msg: &RigMessage) -> Option<serde_json::Value> {
+        match msg {
+            RigMessage::Assistant { content, .. } => content.iter().find_map(|item| match item {
+                AssistantContent::ToolCall(call) => Some(call.function.arguments.clone()),
+                _ => None,
+            }),
+            _ => None,
+        }
     }
 
     fn result_ids(msg: &RigMessage) -> Vec<String> {
@@ -650,6 +726,45 @@ mod tests {
     }
 
     #[test]
+    fn non_object_tool_arguments_travel_as_an_object() {
+        // A stream severed mid-argument leaves `Null` arguments in the
+        // transcript — the reducer's non-executable marker (P0-2). Rig
+        // stringifies the value into the wire field, so the verbatim replay
+        // carried `"arguments": "null"`: no tool API accepts that shape
+        // (Claude's `tool_use.input` is object-typed by definition), and the
+        // gateway that reported it answered 500 to every later request of
+        // that session. A string holding an object is the same defect one
+        // encode deeper — stringify would double-encode it.
+        let mut messages = vec![
+            user_text("go"),
+            assistant_call_with_input("call_1", serde_json::Value::Null),
+            user_result("call_1", "Failed to validate input"),
+            assistant_call_with_input("call_2", serde_json::json!("{\"path\":\"a\"}")),
+            user_result("call_2", "ok"),
+            assistant_call_with_input("call_3", serde_json::json!({"path": "b"})),
+            user_result("call_3", "ok"),
+        ];
+        sanitize_wire_messages(&mut messages);
+        assert_eq!(call_arguments(&messages[1]), Some(serde_json::json!({})));
+        assert_eq!(
+            call_arguments(&messages[3]),
+            Some(serde_json::json!({"path": "a"}))
+        );
+        assert_eq!(
+            call_arguments(&messages[5]),
+            Some(serde_json::json!({"path": "b"})),
+            "an object already on the wire is passed through untouched"
+        );
+        // Normalizing the input must not disturb the pair it belongs to: the
+        // truncated call keeps its id and its result.
+        assert_eq!(call_ids(&messages[1]), vec!["call_1".to_string()]);
+        assert_eq!(
+            result_content(&messages[2], "call_1").as_deref(),
+            Some("Failed to validate input")
+        );
+    }
+
+    #[test]
     fn empty_assistant_text_gets_placeholder() {
         let mut messages = vec![assistant_text(""), user_text("hello")];
         sanitize_wire_messages(&mut messages);
@@ -744,6 +859,8 @@ mod tests {
             assistant_text(""),
             assistant_call("call_3"),
             user_text("after"),
+            assistant_call_with_input("call_4", serde_json::Value::Null),
+            user_result("call_4", "truncated arguments"),
         ];
         sanitize_wire_messages(&mut messages);
         let once = messages.clone();

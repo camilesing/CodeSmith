@@ -69,6 +69,28 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
 
 ### Fixed
 
+- **A truncated tool call no longer bricks the session it landed in** — a stream
+  severed mid-argument (this one: a plan-file write large enough that the SSE
+  frame came through cut at 22 KB) leaves the call in the transcript carrying
+  `null` arguments, the reducer's marker for "never parsed, do not execute"
+  (P0-2). Rig stringifies that value into the wire field, so the next request
+  shipped `"arguments": "null"` — a shape no tool-calling API accepts, since
+  Claude's `tool_use.input` is object-typed by definition. The gateway answered
+  500, the bound retries replayed the same poisoned history and got the same
+  500, and the turn died — the work in progress was lost, and every resume of
+  that session carried the same call. The outbound sweep now normalizes a
+  tool call's arguments to a JSON object, unwrapping a stringified object
+  instead of double-encoding it; valid calls are untouched. The sanitizer's
+  invariants are listed in `crates/providers/src/rig_adapter/wire_sanitize.rs`.
+- **A failed plan-file call no longer claims the mode gate refused it** — the
+  "mode switch attempt" status line keyed on the tool name alone, so any failure
+  of `enter_plan_mode` / `write_plan_file` / `exit_plan_mode` was reported as the
+  gate's refusal. A truncated call failing validation ("Failed to validate
+  input: missing required field 'content'") and a user's `[n]` on
+  `exit_plan_mode` both printed it while the line above said otherwise, pointing
+  a reader at a mode bug that was not there. Only a `PermissionDenied` that
+  names plan mode — the gate's own refusal, whose text carries the remedy — is
+  reported now.
 - **A plan session the model opens about itself is now enforced** — the
   `PlanModeState::active` axis (what a model-initiated `enter_plan_mode` sets)
   had no enforcement at all: the turn's tool registry is built before the call
