@@ -131,6 +131,55 @@ pub(crate) fn input_requires_approval(
 /// 20 §E cutover; the `turn_loop::` original was deleted in slice 49.)
 const APPROVAL_INTENT_SUMMARY_MAX_CHARS: usize = 2_000;
 
+impl HostAgentExecutor {
+    /// Plan mode's execution gate: `Some(refusal)` when a plan session is open
+    /// and this call is not allowed in it.
+    ///
+    /// The rule is the capability declaration, read the way the rest of the
+    /// engine reads it: a tool that declares `WritesFiles` or `ExecutesCode` is
+    /// refused, unless it is marked [`ToolCapability::AllowedInPlanMode`]
+    /// because it *is* part of the plan session (the plan file, the checklist,
+    /// `update_plan`, the sub-agent family, whose own registry is narrowed).
+    /// Read-only tools, network lookups, and the session-scoped tools that
+    /// declare no file or shell effect pass through, so the gate cannot
+    /// regress a tool whose only effect is session state. Known limitation, by
+    /// design: a workspace-writing tool that declares no capability slips
+    /// through here — the same trust the registry places in the declaration.
+    ///
+    /// The flag is read **live, per call**: `enter_plan_mode` and
+    /// `exit_plan_mode` take effect on the next tool call of the *same* turn,
+    /// which is why an approved plan no longer has to end the turn for the
+    /// model to be able to write again. A `Plan` *turn* still narrows its
+    /// registry as before — this gate is the second axis, the plan session a
+    /// model opens by itself (`PlanModeState::active`), which the registry
+    /// cannot see because it is built before the tool call that opens it.
+    ///
+    /// Known limitation, by design: the sub-agent registry is narrowed at
+    /// construction (`children_read_only`), not per call, so a child opened
+    /// during a plan session is only as read-only as the mode it was spawned
+    /// under.
+    pub(crate) async fn plan_mode_refusal(
+        &self,
+        name: &str,
+        caps: &[ToolCapability],
+    ) -> Option<codesmith_tools::ToolResult> {
+        let state = self.plan_mode_state.as_ref()?;
+        let mutates = caps.contains(&ToolCapability::WritesFiles)
+            || caps.contains(&ToolCapability::ExecutesCode);
+        if !mutates || caps.contains(&ToolCapability::AllowedInPlanMode) {
+            return None;
+        }
+        if !state.lock().await.active {
+            return None;
+        }
+        Some(codesmith_tools::ToolResult::error(format!(
+            "Plan mode is active: '{name}' is not a read-only tool and was not run. \
+             Keep investigating and put the plan in the plan file; `exit_plan_mode` \
+             hands it to the user, and writing resumes once it is approved."
+        )))
+    }
+}
+
 /// Extract the model's preceding text this step as an approval "intent summary"
 /// — the *why* shown in the approval view before the *what*. Joins the step's
 /// `Text` blocks and caps the length. (Relocated from the retired

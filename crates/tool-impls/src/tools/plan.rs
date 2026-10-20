@@ -69,7 +69,10 @@ impl ToolSpec for UpdatePlanTool {
     }
 
     fn capabilities(&self) -> Vec<ToolCapability> {
-        vec![ToolCapability::WritesFiles]
+        vec![
+            ToolCapability::WritesFiles,
+            ToolCapability::AllowedInPlanMode,
+        ]
     }
 
     fn approval_requirement(&self) -> ApprovalRequirement {

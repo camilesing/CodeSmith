@@ -2160,6 +2160,9 @@ impl ToolSpec for AgentOpenTool {
         vec![
             ToolCapability::ExecutesCode,
             ToolCapability::RequiresApproval,
+            // Session management, not a workspace write: the child's own
+            // registry is what plan mode narrows.
+            ToolCapability::AllowedInPlanMode,
         ]
     }
 
@@ -2286,6 +2289,9 @@ impl ToolSpec for ToolAgentTool {
         vec![
             ToolCapability::ExecutesCode,
             ToolCapability::RequiresApproval,
+            // Session management, not a workspace write: the child's own
+            // registry is what plan mode narrows.
+            ToolCapability::AllowedInPlanMode,
         ]
     }
 
@@ -2458,6 +2464,9 @@ impl ToolSpec for AgentSpawnTool {
         vec![
             ToolCapability::ExecutesCode,
             ToolCapability::RequiresApproval,
+            // Session management, not a workspace write: the child's own
+            // registry is what plan mode narrows.
+            ToolCapability::AllowedInPlanMode,
         ]
     }
 
@@ -3580,6 +3589,9 @@ impl ToolSpec for SubagentRunTool {
         vec![
             ToolCapability::ExecutesCode,
             ToolCapability::RequiresApproval,
+            // Session management, not a workspace write: the child's own
+            // registry is what plan mode narrows.
+            ToolCapability::AllowedInPlanMode,
         ]
     }
 
@@ -3918,6 +3930,9 @@ impl ToolSpec for AgentCancelTool {
         vec![
             ToolCapability::ExecutesCode,
             ToolCapability::RequiresApproval,
+            // Session management, not a workspace write: the child's own
+            // registry is what plan mode narrows.
+            ToolCapability::AllowedInPlanMode,
         ]
     }
 
@@ -3989,6 +4004,9 @@ impl ToolSpec for AgentCloseTool {
         vec![
             ToolCapability::ExecutesCode,
             ToolCapability::RequiresApproval,
+            // Session management, not a workspace write: the child's own
+            // registry is what plan mode narrows.
+            ToolCapability::AllowedInPlanMode,
         ]
     }
 
@@ -4064,6 +4082,9 @@ impl ToolSpec for AgentResumeTool {
         vec![
             ToolCapability::ExecutesCode,
             ToolCapability::RequiresApproval,
+            // Session management, not a workspace write: the child's own
+            // registry is what plan mode narrows.
+            ToolCapability::AllowedInPlanMode,
         ]
     }
 
@@ -4582,6 +4603,9 @@ impl ToolSpec for DelegateToAgentTool {
         vec![
             ToolCapability::ExecutesCode,
             ToolCapability::RequiresApproval,
+            // Session management, not a workspace write: the child's own
+            // registry is what plan mode narrows.
+            ToolCapability::AllowedInPlanMode,
         ]
     }
 

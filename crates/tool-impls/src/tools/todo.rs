@@ -90,7 +90,10 @@ impl ToolSpec for TodoAddTool {
     }
 
     fn capabilities(&self) -> Vec<ToolCapability> {
-        vec![ToolCapability::WritesFiles]
+        vec![
+            ToolCapability::WritesFiles,
+            ToolCapability::AllowedInPlanMode,
+        ]
     }
 
     fn approval_requirement(&self) -> ApprovalRequirement {
@@ -183,7 +186,10 @@ impl ToolSpec for TodoUpdateTool {
     }
 
     fn capabilities(&self) -> Vec<ToolCapability> {
-        vec![ToolCapability::WritesFiles]
+        vec![
+            ToolCapability::WritesFiles,
+            ToolCapability::AllowedInPlanMode,
+        ]
     }
 
     fn approval_requirement(&self) -> ApprovalRequirement {
@@ -338,7 +344,10 @@ impl ToolSpec for TodoWriteTool {
     }
 
     fn capabilities(&self) -> Vec<ToolCapability> {
-        vec![ToolCapability::WritesFiles]
+        vec![
+            ToolCapability::WritesFiles,
+            ToolCapability::AllowedInPlanMode,
+        ]
     }
 
     fn approval_requirement(&self) -> ApprovalRequirement {

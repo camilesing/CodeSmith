@@ -224,6 +224,15 @@ impl HostAgentExecutor {
             // input; `Auto` or `None` falls back to the static capability gate.
             let approval_required =
                 input_requires_approval(self.tool_dispatcher.as_ref(), &name, &input, &caps);
+            // Plan mode's execution gate (see `plan_mode_refusal`): computed
+            // beside the other refusal gates and fed through the same seam, so
+            // a call an open plan session does not allow never reaches dispatch
+            // *or* the approval prompt. Read live per call — which is how
+            // `exit_plan_mode` restores the write tools inside the same turn.
+            let guard_result = match guard_result {
+                Some(refusal) => Some(refusal),
+                None => self.plan_mode_refusal(&name, &caps).await,
+            };
             plans.push(ToolExecutionPlan {
                 index: i,
                 id: id.clone(),

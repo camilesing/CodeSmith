@@ -20,11 +20,12 @@
 //!   that turn (`should_stop_after_plan_tool`), so the next message is
 //!   dispatched with the write tools. A host that does neither (headless, the
 //!   thread runtime) leaves the turn read-only and relies on the user's switch.
-//! - **A model-initiated `enter_plan_mode` does not narrow the turn it runs
-//!   in.** The registry and mode prompt are fixed at turn start from
-//!   `AppMode`, so the entry takes effect from the *next* turn — the host
-//!   follows it into Plan mode when it observes the result. `prompts/modes/
-//!   agent.md` claims a same-turn guarantee it does not have.
+//! - **A model-initiated `enter_plan_mode` is enforced per call, not by the
+//!   registry.** The registry and mode prompt are fixed at turn start from
+//!   `AppMode`, so the entry narrows the turn through the engine's execution
+//!   gate instead (`plan_mode_refusal`, reading `active` live): from the next
+//!   tool call of the *same* turn, a `WritesFiles`/`ExecutesCode` tool is
+//!   refused. Its children are narrowed at spawn for the same reason.
 //! - **`write_plan_file` serves both axes** (the turn's `AppMode::Plan`, or an
 //!   active model-initiated session), minting the slug on the first write.
 
@@ -137,7 +138,10 @@ impl ToolSpec for EnterPlanModeTool {
     }
 
     fn capabilities(&self) -> Vec<ToolCapability> {
-        vec![ToolCapability::WritesFiles]
+        vec![
+            ToolCapability::WritesFiles,
+            ToolCapability::AllowedInPlanMode,
+        ]
     }
 
     fn approval_requirement(&self) -> ApprovalRequirement {
@@ -237,7 +241,10 @@ impl ToolSpec for ExitPlanModeTool {
     }
 
     fn capabilities(&self) -> Vec<ToolCapability> {
-        vec![ToolCapability::RequiresApproval]
+        vec![
+            ToolCapability::RequiresApproval,
+            ToolCapability::AllowedInPlanMode,
+        ]
     }
 
     fn approval_requirement(&self) -> ApprovalRequirement {
@@ -341,7 +348,10 @@ impl ToolSpec for WritePlanFileTool {
     }
 
     fn capabilities(&self) -> Vec<ToolCapability> {
-        vec![ToolCapability::WritesFiles]
+        vec![
+            ToolCapability::WritesFiles,
+            ToolCapability::AllowedInPlanMode,
+        ]
     }
 
     fn approval_requirement(&self) -> ApprovalRequirement {

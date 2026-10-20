@@ -262,6 +262,13 @@ nothing left it can do — and the session is returned to the mode you came from
 which means your next message starts the implementation with those tools in
 hand.
 
+A model can also open a plan session *itself*, mid-task, with `enter_plan_mode`
+(ask it to plan something out and it may do exactly that). That form needs no
+switch from you: while it is open, writes and shell are refused call by call
+(the plan file, the checklist, and read-only sub-agent sessions still work), and
+`exit_plan_mode` — which you approve like any plan — lifts the refusal
+immediately, so the same turn goes on to implement.
+
 Agent mode is the default for most contribution work. It lets CodeSmith read,
 run checks, and edit files while keeping risky actions behind approval gates.
 
