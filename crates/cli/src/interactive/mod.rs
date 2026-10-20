@@ -27,6 +27,7 @@ pub mod completion;
 pub mod inbox_journal;
 pub mod keys;
 pub mod path_index;
+pub mod plan_view;
 pub mod render;
 pub mod shell_mode;
 pub mod state;

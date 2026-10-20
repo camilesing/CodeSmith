@@ -25,6 +25,7 @@ use crate::models::{Message, SystemPrompt};
 use crate::session_manager::SessionManager;
 use crate::settings::Settings;
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
+use crate::tools::plan_mode::SharedPlanModeState;
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager, wrap_shell_manager};
 use crate::tools::spec::RuntimeToolServices;
 use crate::tools::subagent::SubAgentResult;
@@ -177,6 +178,10 @@ pub struct ReplState {
     pub index_service: Option<Arc<dyn codesmith_index::IndexServiceApi>>,
     pub todos: SharedTodoList,
     pub plan_state: SharedPlanState,
+    /// Shared with the engine (same handle it drives plan mode with), so the
+    /// REPL can name the current plan file — the `exit_plan_mode` approval
+    /// renders its body from this slug.
+    pub plan_mode_state: SharedPlanModeState,
     pub telemetry_sink: Option<TelemetrySink>,
     pub current_session_id: Option<String>,
     pub approval_grants: ApprovalGrants,
@@ -306,6 +311,7 @@ impl ReplState {
         let shell_manager = new_shared_shell_manager(workspace.clone());
         let hooks = HookExecutor::new(config.hooks_config(), workspace.clone());
         let plan_state = new_shared_plan_state();
+        let plan_mode_state = crate::tools::plan_mode::new_shared_plan_mode_state();
         let skills_dir = resolve_skills_dir(&workspace, &global_skills_dir, config);
         let approval_mode = if matches!(initial_mode, AppMode::Yolo) {
             ApprovalMode::Auto
@@ -381,6 +387,7 @@ impl ReplState {
             index_service: None,
             todos: new_shared_todo_list(),
             plan_state,
+            plan_mode_state,
             telemetry_sink: None,
             current_session_id: None,
             approval_grants: approvals_toml_path()
@@ -721,7 +728,7 @@ pub fn build_engine_config(state: &ReplState, config: &Config) -> anyhow::Result
         capacity: crate::core::capacity::capacity_controller_config_from_app(config),
         todos: state.todos.clone(),
         plan_state: state.plan_state.clone(),
-        plan_mode_state: crate::tools::plan_mode::new_shared_plan_mode_state(),
+        plan_mode_state: state.plan_mode_state.clone(),
         task_v2_manager: None,
         goal_state: crate::tools::goal::new_shared_goal_state_from_host(
             state.hunt.quarry.clone(),

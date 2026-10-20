@@ -18,11 +18,14 @@
 //!
 //! Known limitations (recorded beside the behaviour it owns): assistant text
 //! is printed verbatim as the model streams it — there is no markdown
-//! rendering and no width-aware reflow, so `**`/backticks and any line breaks
-//! the model wrote reach the terminal as-is, and the terminal owns wrapping
-//! (and therefore where a CJK paragraph breaks). Tool lines are single lines
-//! assembled from column-capped parts (`tool_summary`), but their total width
-//! is not clamped to the terminal, so a narrow terminal still wraps them.
+//! rendering and no width-aware reflow there, so `**`/backticks and any line
+//! breaks the model wrote reach the terminal as-is, and the terminal owns
+//! wrapping (and therefore where a CJK paragraph breaks). The one rendered
+//! surface is the plan body at the `exit_plan_mode` approval: a completed
+//! block goes through [`super::plan_view`], which wraps to the terminal width
+//! before styling. Tool lines are single lines assembled from column-capped
+//! parts (`tool_summary`), but their total width is not clamped to the
+//! terminal, so a narrow terminal still wraps them.
 
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
@@ -335,6 +338,44 @@ fn approval_frame(
         scope = approval_always_scope(tool_name)
     ));
     frame
+}
+
+/// Columns the plan block indents by. Rendering runs at the full terminal
+/// width first; this prefix is a visual marker applied after the reflow.
+const PLAN_BLOCK_INDENT: usize = 4;
+
+/// The plan body printed before the `exit_plan_mode` approval question.
+///
+/// Rendered with [`super::plan_view`]'s width-aware reflow, indented like the
+/// REPL's detail blocks. A missing or empty plan is a loud notice (the model
+/// skipped `write_plan_file`), never a silent empty block: the approval still
+/// proceeds, but the user can see what is being approved is nothing.
+async fn plan_approval_block(state: &ReplState) -> String {
+    let slug = state.plan_mode_state.lock().await.current_slug.clone();
+    let (body, path) = match slug.as_deref() {
+        Some(slug) => {
+            let read = codesmith_tool_impls::tools::plan_file::read_plan_file(slug).await;
+            (read.ok().flatten(), slug.to_string())
+        }
+        None => (None, "(unset)".to_string()),
+    };
+    match body.as_deref().map(str::trim) {
+        Some(plan) if !plan.is_empty() => {
+            let rendered = super::plan_view::render_plan(plan);
+            let mut block = String::from("\n  已定稿的计划（plan mode）:\n\n");
+            for line in rendered {
+                block.push_str(" ".repeat(PLAN_BLOCK_INDENT).as_str());
+                block.push_str(&line);
+                block.push('\n');
+            }
+            block.push('\n');
+            block
+        }
+        _ => format!(
+            "{} plan file {path} has no content — approving approves nothing\n",
+            "⚠".yellow()
+        ),
+    }
 }
 
 /// Pump engine events until the current turn finishes.
@@ -1308,6 +1349,12 @@ async fn handle_approval(
     state.awaiting_approval = true;
     // The prompt reads stdin line-by-line; the key tap must let go first.
     keys.suspend();
+    // Plan approval is the one place a plan body reaches the user: render the
+    // full markdown before the question, so the answer is informed (the
+    // plan-mode prompt points the model at the file, not at `update_plan`).
+    if tool_name == "exit_plan_mode" {
+        print!("{}", plan_approval_block(state).await);
+    }
     print!(
         "{}",
         approval_frame(
@@ -1951,5 +1998,133 @@ mod tests {
                 "{refuse:?} must not allow"
             );
         }
+    }
+
+    /// The plan-body approval block: the plan file's *content* is printed
+    /// before the approval question, so the answer is informed (the defect
+    /// this renders for: the file existed but the user only ever saw the
+    /// `update_plan` step list).
+    #[tokio::test]
+    async fn plan_approval_block_renders_the_plan_body_before_the_question() {
+        let _lock = crate::test_support::lock_test_env();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        let slug = "plan_testbody";
+        let plan = "# 合并「开发中 / 已上线」\n\n\
+                    - 状态筛选替换单选组，删除 el-radio-group 的 v-if 守卫\n\
+                    - i18n 各加两键\n";
+        let block = with_home_async(&home, async {
+            codesmith_tool_impls::tools::plan_file::write_plan_file(slug, plan)
+                .await
+                .expect("write plan file");
+
+            let mut state = test_repl_state();
+            *state.plan_mode_state.lock().await =
+                codesmith_agent_runtime::tool_state::plan_mode::PlanModeState {
+                    active: true,
+                    current_slug: Some(slug.to_string()),
+                    ..Default::default()
+                };
+            plan_approval_block(&state).await
+        })
+        .await;
+
+        let plain = strip_ansi_for_test(&block);
+        assert!(plain.contains("已定稿的计划"), "{plain}");
+        assert!(plain.contains("合并「开发中 / 已上线」"), "{plain}");
+        assert!(plain.contains("状态筛选替换单选组"), "{plain}");
+        assert!(
+            !plain.contains('#') && plain.contains("el-radio-group 的"),
+            "markdown markers are consumed: {plain}"
+        );
+        assert!(plain.contains('▸') && plain.contains('•'), "{plain}");
+        // Every plan line inside the block stays within the width budget.
+        // The render runs at the full terminal width and the block indent is
+        // added afterwards, so the printed row budget is width + indent.
+        let budget = super::super::plan_view::columns() + PLAN_BLOCK_INDENT;
+        for line in plain.lines().filter(|line| {
+            line.contains("合并")
+                || line.contains("状态筛选")
+                || line.contains("i18n")
+                || line.contains("开发中")
+        }) {
+            assert!(
+                line.width() <= budget,
+                "plan line over budget ({budget}): {line:?}"
+            );
+        }
+    }
+
+    /// A plan slug whose file was never written must fail loud, not print an
+    /// empty block that reads as an approved-but-empty plan.
+    #[tokio::test]
+    async fn plan_approval_block_warns_when_the_plan_file_is_missing() {
+        let _lock = crate::test_support::lock_test_env();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        let block = with_home_async(&home, async {
+            let mut state = test_repl_state();
+            *state.plan_mode_state.lock().await =
+                codesmith_agent_runtime::tool_state::plan_mode::PlanModeState {
+                    active: true,
+                    current_slug: Some("plan_never_written".to_string()),
+                    ..Default::default()
+                };
+            plan_approval_block(&state).await
+        })
+        .await;
+
+        let plain = strip_ansi_for_test(&block);
+        assert!(plain.contains("⚠"), "{plain}");
+        assert!(plain.contains("plan_never_written"), "{plain}");
+    }
+
+    /// [`with_home`] for async tests: the redirect has to be in place across
+    /// the await, and `tokio::runtime::Handle::block_on` inside a tokio test
+    /// would panic.
+    async fn with_home_async<T>(
+        home: &std::path::Path,
+        future: impl std::future::Future<Output = T>,
+    ) -> T {
+        let prev_home = std::env::var_os("HOME");
+        let prev_userprofile = std::env::var_os("USERPROFILE");
+        unsafe {
+            std::env::set_var("HOME", home);
+            std::env::set_var("USERPROFILE", home);
+        }
+        let result = future.await;
+        unsafe {
+            match prev_home {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+            match prev_userprofile {
+                Some(value) => std::env::set_var("USERPROFILE", value),
+                None => std::env::remove_var("USERPROFILE"),
+            }
+        }
+        result
+    }
+
+    /// ANSI-stripping for assertions on rendered blocks.
+    fn strip_ansi_for_test(text: &str) -> String {
+        let mut out = String::new();
+        let mut chars = text.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\u{1b}' {
+                for next in chars.by_ref() {
+                    if next.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+                continue;
+            }
+            out.push(c);
+        }
+        out
     }
 }
