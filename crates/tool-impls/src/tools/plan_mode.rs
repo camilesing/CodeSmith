@@ -49,7 +49,13 @@ to execute effectively.
 
 ### Phase 5: Exit Plan Mode
 Goal: Present your plan for user approval. Call `exit_plan_mode` when your \
-plan is finalized. The user must approve before implementation begins.";
+plan is finalized. The user must approve before implementation begins.
+
+If the approval is refused, the refusal arrives with the user's feedback as a \
+message. Revise the plan file accordingly and call `exit_plan_mode` again — \
+plan mode stays active until a plan is approved, so never start implementing a \
+refused plan, and never answer a refusal with a question the feedback already \
+answers.";
 
 // === PlanModeState ===
 

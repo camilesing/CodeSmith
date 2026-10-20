@@ -26,6 +26,12 @@
 //! before styling. Tool lines are single lines assembled from column-capped
 //! parts (`tool_summary`), but their total width is not clamped to the
 //! terminal, so a narrow terminal still wraps them.
+//!
+//! The approval prompt's `[r] <feedback>` answer denies the call and hands the
+//! text to the running turn through the engine's steer path — the same
+//! mid-turn input the composer's queue uses — so the refusal and the reason
+//! are both recorded. Only the tool gate offers it; the path-access and
+//! sandbox-elevation questions keep their own smaller answer sets.
 
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
@@ -334,10 +340,76 @@ fn approval_frame(
     }
     frame.push_str(&format!(
         "allow? [y] run it once · [n] skip · [a] always allow {scope} for this session \
-         · [e] never this exact call: ",
+         · [e] never this exact call · [r] <feedback> deny and tell the model why: ",
         scope = approval_always_scope(tool_name)
     ));
     frame
+}
+
+/// The re-ask after a bare `[r]`: the key carries feedback, so it needs the
+/// feedback on the same line. Repeating the whole question would bury that one
+/// instruction; this is the shortest line that says what to type next. Ends at
+/// the unterminated prompt, like [`approval_frame`].
+fn feedback_needed_frame() -> String {
+    "[r] needs the feedback on the same line — type it after r, or n to skip: ".to_string()
+}
+
+/// What an approval answer does. Split from the prompt for the same reason as
+/// [`parse_path_access_answer`]: mapping a typed line to (allow, deny, refuse
+/// with feedback) is the security-relevant half, and this way it is testable
+/// without stdin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ApprovalAnswer {
+    /// `[y]` — approve this one call.
+    RunOnce,
+    /// `[a]` — approve, and remember the grouping key for this session.
+    AlwaysSession,
+    /// `[e]` — deny, and remember this exact call for this session.
+    NeverThis,
+    /// `[r] <feedback>` — deny, and hand the feedback to the running turn as a
+    /// user message (the engine's steer path) so the model can revise.
+    Revise(String),
+    /// `[r]` on its own: the key needs its feedback on the same line.
+    NeedFeedback,
+    /// `[n]`, an empty line, EOF, or anything unrecognized — the fail-closed
+    /// default, which refuses the call.
+    Skip,
+}
+
+/// The four approve/deny keys match the whole line, exactly as the inline
+/// match they replace did: `y please` is not a yes.
+fn parse_approval_answer(raw: &str) -> ApprovalAnswer {
+    let trimmed = raw.trim();
+    match trimmed.to_ascii_lowercase().as_str() {
+        "y" | "yes" => ApprovalAnswer::RunOnce,
+        "a" | "always" => ApprovalAnswer::AlwaysSession,
+        "e" | "never" => ApprovalAnswer::NeverThis,
+        _ => parse_feedback_answer(trimmed),
+    }
+}
+
+/// The lines that are not one of the whole-line keys: `[r] <feedback>`, a bare
+/// `[r]` asking for the text, or the fail-closed skip.
+///
+/// The key is matched case-insensitively but the feedback keeps the case the
+/// user typed — lowercasing the line (what the inline match did) turned
+/// `r Fix PlanView` into `fix planview`. A word that merely starts with `r`,
+/// like `run it later`, is not the key.
+fn parse_feedback_answer(line: &str) -> ApprovalAnswer {
+    let (key, rest) = match line.split_once(char::is_whitespace) {
+        Some((key, rest)) => (key, rest),
+        None => (line, ""),
+    };
+    let key = key.trim_end_matches(':');
+    if !key.eq_ignore_ascii_case("r") && !key.eq_ignore_ascii_case("revise") {
+        return ApprovalAnswer::Skip;
+    }
+    let feedback = rest.trim_start_matches(':').trim();
+    if feedback.is_empty() {
+        ApprovalAnswer::NeedFeedback
+    } else {
+        ApprovalAnswer::Revise(feedback.to_string())
+    }
 }
 
 /// Columns the plan block indents by. Rendering runs at the full terminal
@@ -1309,6 +1381,21 @@ fn apply_turn_accounting(
     }
 }
 
+/// The tool-approval gate: ask, map the answer, answer the engine.
+///
+/// `[r] <feedback>` denies the call and steers the feedback into the running
+/// turn as a user message, so the model can revise and ask again. For
+/// `exit_plan_mode` that is the re-plan path: the refused call never ran, so
+/// plan mode stays active and the plan file is still there to rewrite.
+///
+/// Known limitation, beside the behaviour it owns: `exit_plan_mode` takes no
+/// arguments, so its "always" key is the same input hash on every call — `[a]`
+/// at that gate covers every later `exit_plan_mode` in this session, and a
+/// revised plan is then approved without a question. A steer is drained at the
+/// turn's next step boundary; if the turn ends before one arrives, the host's
+/// stale-drain discards it — the same edge the composer's queued messages
+/// carry, and the reason the confirmation line says the turn was told, not
+/// that the model acted on it.
 #[allow(clippy::too_many_arguments)]
 async fn handle_approval(
     state: &mut ReplState,
@@ -1365,25 +1452,57 @@ async fn handle_approval(
         )
     );
     let _ = std::io::stdout().flush();
-    let answer = read_stdin_line("").await;
+    // A bare `[r]` re-asks on a fresh line rather than refusing the keypress
+    // the user meant as the start of their feedback. EOF reads as an empty
+    // line and skips, exactly as it did before the key existed.
+    let answer = loop {
+        match parse_approval_answer(&read_stdin_line("").await) {
+            ApprovalAnswer::NeedFeedback => {
+                print!("{}", feedback_needed_frame());
+                let _ = std::io::stdout().flush();
+            }
+            answer => break answer,
+        }
+    };
     keys.resume();
     state.awaiting_approval = false;
-    let answer = answer.to_ascii_lowercase();
-    match answer.as_str() {
-        "y" | "yes" => {
+    match answer {
+        ApprovalAnswer::RunOnce => {
             let _ = engine.approve_tool_call(id).await;
         }
-        "a" | "always" => {
+        ApprovalAnswer::AlwaysSession => {
             state
                 .approval_session_approved
                 .insert(approval_grouping_key);
             let _ = engine.approve_tool_call(id).await;
         }
-        "e" | "never" => {
+        ApprovalAnswer::NeverThis => {
             state.approval_session_denied.insert(approval_key);
             let _ = engine.deny_tool_call(id).await;
         }
-        _ => {
+        ApprovalAnswer::Revise(feedback) => {
+            // Deny first: the turn is parked on this gate, so the refusal
+            // reaches the model as this call's tool error, and the feedback is
+            // drained at the next step boundary as a user message — both
+            // recorded, in that order.
+            let _ = engine.deny_tool_call(id).await;
+            match engine.steer(feedback.clone()).await {
+                Ok(()) => println!("{}", "→ feedback sent to the running turn".dimmed()),
+                Err(err) => {
+                    // Nothing is lost: the text goes back on the queue the
+                    // REPL drains into the turn, and the failure is not
+                    // dressed up as a delivery.
+                    println!(
+                        "{}",
+                        format!("✗ could not deliver the feedback: {err}").red()
+                    );
+                    state.queued_messages.push(feedback);
+                }
+            }
+        }
+        // Unreachable — the prompt loop above consumes it — and refusing is
+        // the safe reading if it ever isn't.
+        ApprovalAnswer::NeedFeedback | ApprovalAnswer::Skip => {
             let _ = engine.deny_tool_call(id).await;
         }
     }
@@ -1900,9 +2019,90 @@ mod tests {
             "[n] skip",
             "[a] always allow this command family for this session",
             "[e] never this exact call",
+            "[r] <feedback> deny and tell the model why",
         ] {
             assert!(frame.contains(scoped), "missing {scoped:?} in {frame:?}");
         }
+    }
+
+    /// The re-ask after a bare `[r]` is a question too: it must leave the
+    /// answer on its own row and end at the unterminated prompt.
+    #[test]
+    fn feedback_needed_frame_is_a_prompt_row() {
+        let frame = feedback_needed_frame();
+        assert!(!frame.ends_with('\n'), "{frame}");
+        assert!(frame.ends_with(": "), "{frame}");
+        assert!(frame.contains("same line"), "{frame}");
+    }
+
+    /// The answer mapping, split from stdin: the four keys match the whole
+    /// line (so `y please` is not a yes), `[r]` carries a payload, and
+    /// everything else refuses. Fail-closed survives the rewrite.
+    #[test]
+    fn approval_answers_map_every_key_and_fail_closed() {
+        assert_eq!(parse_approval_answer("y"), ApprovalAnswer::RunOnce);
+        assert_eq!(parse_approval_answer(" YES "), ApprovalAnswer::RunOnce);
+        assert_eq!(parse_approval_answer("a"), ApprovalAnswer::AlwaysSession);
+        assert_eq!(
+            parse_approval_answer("Always"),
+            ApprovalAnswer::AlwaysSession
+        );
+        assert_eq!(parse_approval_answer("e"), ApprovalAnswer::NeverThis);
+        assert_eq!(parse_approval_answer("never"), ApprovalAnswer::NeverThis);
+        for skip in [
+            "n",
+            "no",
+            "",
+            "  ",
+            "nope",
+            "1",
+            "yolo",
+            "why?",
+            // A whole-line key with trailing text stays a key-only match:
+            // `y please` must not approve.
+            "y please",
+            // A word that merely starts with `r` is not the feedback key.
+            "run it later",
+        ] {
+            assert_eq!(
+                parse_approval_answer(skip),
+                ApprovalAnswer::Skip,
+                "{skip:?} must not approve"
+            );
+        }
+    }
+
+    /// `[r] <feedback>` is the one answer that carries text, and the text keeps
+    /// the case the user typed — the inline match it replaced lowercased the
+    /// whole line, which would have turned `R Fix PlanView` into
+    /// `fix planview`.
+    #[test]
+    fn revise_answer_carries_feedback_with_its_case() {
+        assert_eq!(
+            parse_approval_answer("r 把列宽也改"),
+            ApprovalAnswer::Revise("把列宽也改".to_string())
+        );
+        assert_eq!(
+            parse_approval_answer("r: 把列宽也改"),
+            ApprovalAnswer::Revise("把列宽也改".to_string())
+        );
+        assert_eq!(
+            parse_approval_answer("R  Fix PlanView casing"),
+            ApprovalAnswer::Revise("Fix PlanView casing".to_string())
+        );
+        assert_eq!(
+            parse_approval_answer("r"),
+            ApprovalAnswer::NeedFeedback,
+            "a bare key asks for the text instead of refusing"
+        );
+        assert_eq!(
+            parse_approval_answer("revise:"),
+            ApprovalAnswer::NeedFeedback
+        );
+        assert_eq!(
+            parse_approval_answer("revise also cover the cn docs"),
+            ApprovalAnswer::Revise("also cover the cn docs".to_string())
+        );
     }
 
     #[test]
