@@ -369,6 +369,23 @@ impl CallbackBridge {
     }
 }
 
+/// The mode transition a mode-gated tool call was aiming at, when the call
+/// is refused. `None` for every tool the current mode does not gate.
+///
+/// A refusal from one of these is not an approval decision — it is the model
+/// reaching for a mode it is not in, and the tool error alone renders as
+/// "Failed to authorize tool execution", which reads as a permission problem
+/// and leaves no trace of the intent. `codesmith_tool_impls::tools::plan_mode`
+/// is the only mode-gated family in the tree today; a tool that grows a gate
+/// of its own belongs here so its refusals stay greppable.
+fn mode_gated_intent(tool_name: &str) -> Option<&'static str> {
+    match tool_name {
+        "enter_plan_mode" | "write_plan_file" => Some("enter plan mode"),
+        "exit_plan_mode" => Some("leave plan mode"),
+        _ => None,
+    }
+}
+
 impl Callback for CallbackBridge {
     fn on_tool_start<'a>(
         &'a self,
@@ -469,6 +486,32 @@ impl Callback for CallbackBridge {
                         result: result.clone(),
                     })
                     .await;
+            }
+
+            // A refused mode-gated call is the model asking for another mode;
+            // say so once, after the failing tool line, so the attempt is
+            // visible in the transcript and in the persisted `Status` turn
+            // item instead of only as an authorization-shaped error.
+            if let Err(err) = result
+                && let Some(intent) = mode_gated_intent(name)
+            {
+                tracing::warn!(
+                    target: "codesmith_runtime::callback_bridge",
+                    tool = name,
+                    intent,
+                    error = %err,
+                    "mode switch attempt: refused mode-gated tool call",
+                );
+                if let Some(tx) = tx.as_ref() {
+                    let _ = tx
+                        .send(Event::Status {
+                            message: format!(
+                                "mode switch attempt: model called '{name}' to {intent} — \
+                                 the call was refused by the tool's mode gate"
+                            ),
+                        })
+                        .await;
+                }
             }
 
             if let Some(hooks) = hooks.as_ref()
@@ -909,6 +952,69 @@ mod tests {
         );
         assert_eq!(after_ctx.tool_result.as_deref(), Some("echo:world"));
         assert_eq!(after_ctx.tool_success, Some(true));
+    }
+
+    #[tokio::test]
+    async fn refused_mode_gated_tool_logs_a_mode_switch_attempt() {
+        let (tx, mut rx) = mpsc::channel(256);
+        let bridge = CallbackBridge::new(Some(tx), None, test_template());
+
+        let input = serde_json::json!({"content":"# plan"});
+        bridge
+            .on_tool_start("wire-1", "write_plan_file", &input)
+            .await;
+        bridge
+            .on_tool_end(
+                "write_plan_file",
+                &Err(ToolError::PermissionDenied {
+                    message: "write_plan_file is only available in plan mode. \
+                              Call enter_plan_mode first."
+                        .to_string(),
+                }),
+            )
+            .await;
+
+        let events = drain(&mut rx);
+        let status = events
+            .iter()
+            .find_map(|event| match event {
+                Event::Status { message } => Some(message.clone()),
+                _ => None,
+            })
+            .expect("refused mode-gated call must leave a status line");
+        assert!(
+            status.starts_with("mode switch attempt:"),
+            "greppable prefix: {status}"
+        );
+        assert!(status.contains("write_plan_file"), "{status}");
+        assert!(status.contains("enter plan mode"), "{status}");
+    }
+
+    #[tokio::test]
+    async fn refused_ungated_tool_logs_no_mode_switch_attempt() {
+        let (tx, mut rx) = mpsc::channel(256);
+        let bridge = CallbackBridge::new(Some(tx), None, test_template());
+
+        // Approval-shaped refusal from an ordinary tool: the mode-switch line
+        // is about a mode gate, not about denied approvals.
+        bridge
+            .on_tool_start("wire-1", "exec_shell", &serde_json::json!({}))
+            .await;
+        bridge
+            .on_tool_end(
+                "exec_shell",
+                &Err(ToolError::PermissionDenied {
+                    message: "user denied the command".to_string(),
+                }),
+            )
+            .await;
+
+        assert!(
+            !drain(&mut rx)
+                .iter()
+                .any(|event| matches!(event, Event::Status { .. })),
+            "an approval denial must not be logged as a mode switch attempt"
+        );
     }
 
     #[tokio::test]
