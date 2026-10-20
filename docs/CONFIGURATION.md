@@ -1364,6 +1364,14 @@ parseable results. Bing remains selectable for users who explicitly want it,
 and Tavily, Bocha, Metaso, or Baidu can be selected when an API-backed provider
 is preferred.
 
+The `[search]` table selects the provider for the unified web service that
+backs every web tool: `web_search` and `web.run`'s text search both follow it
+(switching backends is config-only — `web.run` no longer has a hardwired
+engine), while `fetch_url` rides the same service's anonymous HTTP fetch.
+Requests share one timeout/cancellation/error-classification path and the
+per-domain network policy (`[network]`) applies per host, including each
+redirect hop.
+
 **Metaso** ([metaso.cn](https://metaso.cn)) has a 100 searches/day free quota;
 set `METASO_API_KEY` or `[search] api_key` for a higher quota.
 

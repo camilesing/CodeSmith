@@ -1224,6 +1224,12 @@ exec_policy = true
 明确想要它的用户选择，并且在偏好基于 API 的 provider 时，可以选择
 Tavily、Bocha、Metaso 或 Baidu。
 
+`[search]` 表为统一 Web 服务选择 provider，该服务支撑所有 web 工具：
+`web_search` 与 `web.run` 的文本搜索都遵循它（切换后端只改配置——
+`web.run` 不再固定引擎），而 `fetch_url` 走同一服务的匿名 HTTP 抓取。
+请求共享同一条超时/取消/错误分类路径；按域网络策略（`[network]`）
+按主机生效，重定向的每一跳都会重新检查。
+
 **Metaso**（[metaso.cn](https://metaso.cn)）每天有 100 次免费搜索
 额度；设置 `METASO_API_KEY` 或 `[search] api_key` 可获得更高额度。
 

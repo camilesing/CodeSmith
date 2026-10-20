@@ -29,3 +29,4 @@
 #![deny(unsafe_code)]
 
 pub mod tools;
+pub mod web_service;

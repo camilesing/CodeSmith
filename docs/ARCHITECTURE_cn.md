@@ -17,7 +17,11 @@
   `IndexServiceApi` 及其值类型定义于 `codesmith-tools::index_api`，由
   `codesmith-index` 实现并原路径 re-export，内核工具上下文
   （`agent-runtime/src/tools/spec.rs`）消费 —— 与 `LlmClient`（定义于
-  `codesmith-agent`、实现于 `codesmith-providers`）同构。
+  `codesmith-agent`、实现于 `codesmith-providers`）以及统一 Web 服务
+  （`WebService` 定义于 `agent-runtime/src/web_service.rs`、
+  `HttpWebService` 实现于 `codesmith-tool-impls::web_service`，
+  由 `web_search` / `fetch_url` / `web.run` 工具经 `ToolContext` 消费）
+  同构。
   生成式能力图谱（`docs/CAPABILITY_GRAPH.md`，由
   `scripts/capability-graph.py` 生成、CI 校验新鲜度）列出每个接缝的
   三件套——新能力须在同一变更中落齐三个角色；每个

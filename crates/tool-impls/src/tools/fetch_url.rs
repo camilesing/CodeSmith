@@ -2,6 +2,11 @@
 //! already knows the URL — a known repo, a blog post, a spec page — and
 //! search is overkill or actively unhelpful.
 //!
+//! Transport (anonymous HTTP GET with SSRF validation, DNS pinning, policy
+//! rechecks per redirect hop, timeout and cancellation) lives in the unified
+//! web service (`crates/tool-impls/src/web_service.rs`, TODO-49); this tool
+//! owns input parsing and result post-processing only.
+//!
 //! Returns a structured `{url, status, content_type, content, truncated}`
 //! payload. HTML responses are stripped to readable text by default
 //! (`format = "markdown"`); pass `format = "raw"` to keep the bytes intact
@@ -9,11 +14,12 @@
 
 use super::handle::query_jsonpath;
 use async_trait::async_trait;
-use codesmith_agent_runtime::network_policy::{Decision, NetworkPolicyDecider};
+use codesmith_agent_runtime::network_policy::host_from_url;
 use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_u64,
 };
 use codesmith_agent_runtime::tools::tool_catalog::FETCH_URL_NAME;
+use codesmith_agent_runtime::web_service::FetchRequest;
 use regex::Regex;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -26,15 +32,6 @@ const HARD_MAX_BYTES: u64 = 10 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS: u64 = 15_000;
 const HARD_MAX_TIMEOUT_MS: u64 = 60_000;
 const MAX_REDIRECTS: usize = 5;
-fn user_agent() -> &'static str {
-    static USER_AGENT: OnceLock<String> = OnceLock::new();
-    USER_AGENT.get_or_init(|| {
-        format!(
-            "Mozilla/5.0 (compatible; codesmith/0.5; +https://github.com/{})",
-            codesmith_agent_runtime::utils::GITHUB_REPO
-        )
-    })
-}
 
 static SCRIPT_RE: OnceLock<Regex> = OnceLock::new();
 static STYLE_RE: OnceLock<Regex> = OnceLock::new();
@@ -145,7 +142,7 @@ impl ToolSpec for FetchUrlTool {
     /// P1-5: gate the *host* of this specific fetch. A `Prompt` policy
     /// decision raises the standard inline approval prompt (approve-for-
     /// session dedup applies); `Allow` / `Deny` / no decider stay `Auto` —
-    /// `Deny` hard-fails at execute time inside the tool, so asking the
+    /// `Deny` hard-fails at execute time inside the service, so asking the
     /// user to approve it would be absurd.
     fn approval_requirement_for_input(
         &self,
@@ -156,7 +153,7 @@ impl ToolSpec for FetchUrlTool {
             // Missing/invalid url fails at execute-time validation.
             return ApprovalRequirement::Auto;
         };
-        let Some(host) = codesmith_agent_runtime::network_policy::host_from_url(url) else {
+        let Some(host) = host_from_url(url) else {
             return ApprovalRequirement::Auto;
         };
         codesmith_agent_runtime::network_policy::network_approval_requirement(
@@ -189,82 +186,32 @@ impl ToolSpec for FetchUrlTool {
         let timeout_ms =
             optional_u64(&input, "timeout_ms", DEFAULT_TIMEOUT_MS).min(HARD_MAX_TIMEOUT_MS);
         let requested_fields = parse_fields(&input)?;
-        let mut current_url = reqwest::Url::parse(&url)
-            .map_err(|e| ToolError::invalid_input(format!("invalid URL: {e}")))?;
-        let mut redirects_followed = 0usize;
 
-        let resp = loop {
-            let dns_pinning = validate_fetch_target(&current_url, context).await?;
-            let mut client_builder = reqwest::Client::builder()
-                .timeout(Duration::from_millis(timeout_ms))
-                .user_agent(user_agent())
-                .redirect(reqwest::redirect::Policy::none());
+        let service = context.web_service.as_ref().ok_or_else(|| {
+            ToolError::not_available(
+                "fetch_url: no web service attached to this context; web tools are unavailable",
+            )
+        })?;
 
-            // Pin validated IP to prevent DNS rebinding (TOCTOU) — reqwest will
-            // connect to the validated IP directly instead of re-resolving.
-            if let Some((hostname, validated_ip)) = dns_pinning {
-                client_builder =
-                    client_builder.resolve(&hostname, std::net::SocketAddr::new(validated_ip, 0));
-            }
-
-            let client = client_builder.build().map_err(|e| {
-                ToolError::execution_failed(format!("failed to build HTTP client: {e}"))
-            })?;
-
-            let resp = client
-                .get(current_url.clone())
-                .header("Accept", "text/html,text/plain,application/json,*/*;q=0.5")
-                .header("Accept-Language", "en-US,en;q=0.5")
-                .send()
-                .await
-                .map_err(|e| ToolError::execution_failed(format!("request failed: {e}")))?;
-
-            if !resp.status().is_redirection() || redirects_followed >= MAX_REDIRECTS {
-                break resp;
-            }
-
-            let Some(location) = resp
-                .headers()
-                .get(reqwest::header::LOCATION)
-                .and_then(|value| value.to_str().ok())
-            else {
-                break resp;
-            };
-
-            current_url = resp.url().join(location).map_err(|e| {
-                ToolError::execution_failed(format!("invalid redirect location: {e}"))
-            })?;
-            redirects_followed += 1;
-        };
-
-        let final_url = resp.url().to_string();
-        let status = resp.status();
-        let content_type = resp
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("application/octet-stream")
-            .to_string();
-        let headers = response_headers(resp.headers());
-
-        let bytes = resp
-            .bytes()
+        let outcome = service
+            .fetch(
+                FetchRequest::new(url)
+                    .with_timeout(Duration::from_millis(timeout_ms))
+                    .with_max_bytes(max_bytes)
+                    .with_max_redirects(MAX_REDIRECTS)
+                    .with_policy(context.network_policy.clone())
+                    .with_cancel(context.cancel_token.clone())
+                    .for_tool(FETCH_URL_NAME),
+            )
             .await
-            .map_err(|e| ToolError::execution_failed(format!("failed to read body: {e}")))?;
-        let total_bytes = bytes.len() as u64;
-        let truncated = total_bytes > max_bytes;
-        let usable = if truncated {
-            &bytes[..max_bytes as usize]
-        } else {
-            &bytes[..]
-        };
+            .map_err(ToolError::from)?;
 
-        let body_text = String::from_utf8_lossy(usable).to_string();
-        let fields = project_json_fields(&body_text, &content_type, &requested_fields)?;
+        let body_text = String::from_utf8_lossy(&outcome.body).to_string();
+        let fields = project_json_fields(&body_text, &outcome.content_type, &requested_fields)?;
         let processed = match format {
             Format::Raw => body_text,
             Format::Text | Format::Markdown => {
-                if content_type.contains("text/html") || body_text.contains("<html") {
+                if outcome.content_type.contains("text/html") || body_text.contains("<html") {
                     html_to_text(&body_text)
                 } else {
                     body_text
@@ -273,16 +220,16 @@ impl ToolSpec for FetchUrlTool {
         };
 
         let response = FetchResponse {
-            url: final_url,
-            status: status.as_u16(),
-            headers,
-            content_type,
+            url: outcome.url,
+            status: outcome.status,
+            headers: outcome.headers,
+            content_type: outcome.content_type,
             content: processed,
-            truncated,
+            truncated: outcome.truncated,
             fields,
         };
 
-        if !status.is_success() {
+        if !(200..300).contains(&response.status) {
             // Don't `Err` on 4xx/5xx — the caller often wants to see the body
             // (e.g. a JSON error envelope). Mark the result as a failure so the
             // engine renders it as such. Built via `ToolResult::json` (then
@@ -298,147 +245,6 @@ impl ToolSpec for FetchUrlTool {
         ToolResult::json(&response)
             .map_err(|e| ToolError::execution_failed(format!("failed to serialize response: {e}")))
     }
-}
-
-/// Check if an IP address is loopback, private, link-local, cloud-metadata,
-/// multicast, or reserved — all addresses that should not be reachable via
-/// an LLM-initiated fetch_url request (SSRF prevention).
-fn is_restricted_ip(ip: &std::net::IpAddr) -> bool {
-    match ip {
-        std::net::IpAddr::V4(v4) => {
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_multicast()
-                || v4.is_broadcast()
-                || v4.is_unspecified()
-                // 100.64.0.0/10 — Carrier-grade NAT (CGNAT / shared address space)
-                || matches!(v4.octets(), [100, 64..=127, ..])
-                // 169.254.169.254 — cloud metadata (AWS/GCP/Azure)
-                || *ip == std::net::IpAddr::V4(std::net::Ipv4Addr::new(169, 254, 169, 254))
-                // 198.18.0.0/15 — IETF benchmark testing
-                || matches!(v4.octets(), [198, 18..=19, ..])
-                // 240.0.0.0/4 — reserved (former Class E)
-                || v4.octets()[0] >= 240
-        }
-        std::net::IpAddr::V6(v6) => {
-            // IPv4-mapped IPv6 addresses (::ffff:a.b.c.d) — unwrap and check as IPv4
-            // to prevent bypass via ::ffff:127.0.0.1 etc.
-            if v6.is_unspecified()
-                || matches!(v6.octets(), [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, ..])
-            {
-                return true;
-            }
-            if let Some(v4) = v6.to_ipv4_mapped() {
-                return is_restricted_ip(&std::net::IpAddr::V4(v4));
-            }
-            v6.is_loopback()
-                || v6.is_multicast()
-                || matches!(v6.segments(), [0xfc00..=0xfdff, ..]) // ULA fc00::/7
-                || matches!(v6.segments(), [0xfe80..=0xfebf, ..]) // Link-local fe80::/10
-        }
-    }
-}
-
-async fn validate_fetch_target(
-    url: &reqwest::Url,
-    context: &ToolContext,
-) -> Result<Option<(String, std::net::IpAddr)>, ToolError> {
-    if url.scheme() != "http" && url.scheme() != "https" {
-        return Err(ToolError::invalid_input(
-            "only http:// and https:// URLs are supported",
-        ));
-    }
-
-    let host = url
-        .host_str()
-        .map(str::to_ascii_lowercase)
-        .ok_or_else(|| ToolError::invalid_input("URL must include a host"))?;
-
-    validate_network_policy(&host, context)?;
-
-    // SSRF protection: resolve hostname and reject private/link-local/loopback IPs.
-    // Prevents LLM-prompted requests to cloud metadata (169.254.169.254),
-    // localhost services, and internal networks.
-    if host == "localhost" || host == "localhost.localdomain" {
-        return Err(ToolError::permission_denied(
-            "requests to localhost are not allowed",
-        ));
-    }
-    // Normalize bracketed IPv6 literals before the literal-IP check so they
-    // route through the same restricted-IP policy as unbracketed forms
-    // (GHSA-88gh-2526-gfrr).
-    let ip_candidate = host
-        .strip_prefix('[')
-        .and_then(|s| s.strip_suffix(']'))
-        .unwrap_or(host.as_str());
-    if let Ok(ip) = ip_candidate.parse::<std::net::IpAddr>() {
-        if is_restricted_ip(&ip) {
-            return Err(ToolError::permission_denied(format!(
-                "IP {ip} is a restricted address (private/loopback/link-local)"
-            )));
-        }
-        return Ok(None);
-    }
-
-    let mut first_valid: Option<std::net::IpAddr> = None;
-    if let Ok(addrs) = tokio::net::lookup_host((host.as_str(), 0u16)).await {
-        for addr in addrs {
-            validate_dns_resolved_ip(&host, &addr.ip(), context.network_policy.as_ref())?;
-            if first_valid.is_none() {
-                first_valid = Some(addr.ip());
-            }
-        }
-    }
-
-    // If DNS resolution fails, let the HTTP request proceed and fail naturally.
-    Ok(first_valid.map(|validated_ip| (host, validated_ip)))
-}
-
-fn validate_network_policy(host: &str, context: &ToolContext) -> Result<(), ToolError> {
-    let Some(decider) = context.network_policy.as_ref() else {
-        return Ok(());
-    };
-
-    match decider.evaluate(host, "fetch_url") {
-        Decision::Allow => Ok(()),
-        Decision::Deny => Err(ToolError::permission_denied(format!(
-            "network call to '{host}' blocked by network policy"
-        ))),
-        // P1-5: Prompt no longer errors here. The inline approval gate at
-        // dispatch time (`approval_requirement_for_input` → Required) owns
-        // the ask; by the time execute runs, either the user approved this
-        // call or no approval channel exists (embeds) — erroring now would
-        // dead-end both paths.
-        Decision::Prompt => Ok(()),
-    }
-}
-
-fn validate_dns_resolved_ip(
-    host: &str,
-    ip: &std::net::IpAddr,
-    decider: Option<&NetworkPolicyDecider>,
-) -> Result<(), ToolError> {
-    if !is_restricted_ip(ip) {
-        return Ok(());
-    }
-
-    // Allow the resolved IP past the restricted-IP block if either:
-    //   * it falls inside a configured fake-IP placeholder range (a TUN /
-    //     transparent-proxy setup in `fake-ip` mode resolves every host into a
-    //     reserved range such as `198.18.0.0/15`), or
-    //   * the host is on the explicitly-trusted proxy list.
-    // Real private/loopback/link-local/metadata IPs match neither and stay blocked.
-    if let Some(decider) = decider
-        && (decider.is_trusted_fakeip_addr(ip) || decider.trusts_proxy_fakeip_host(host))
-    {
-        decider.record_trusted_proxy_fakeip_allow(host, "fetch_url");
-        return Ok(());
-    }
-
-    Err(ToolError::permission_denied(format!(
-        "resolved IP {ip} is a restricted address (private/loopback/link-local)"
-    )))
 }
 
 fn parse_fields(input: &Value) -> Result<Vec<String>, ToolError> {
@@ -461,18 +267,6 @@ fn parse_fields(input: &Value) -> Result<Vec<String>, ToolError> {
         }
     }
     Ok(fields)
-}
-
-fn response_headers(headers: &reqwest::header::HeaderMap) -> BTreeMap<String, String> {
-    headers
-        .iter()
-        .filter_map(|(name, value)| {
-            value
-                .to_str()
-                .ok()
-                .map(|value| (name.as_str().to_ascii_lowercase(), value.to_string()))
-        })
-        .collect()
 }
 
 fn project_json_fields(
@@ -530,11 +324,31 @@ fn decode_entities(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codesmith_agent_runtime::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
     use codesmith_agent_runtime::tools::spec::ToolContext;
+    use codesmith_agent_runtime::web_service::mock::MockWebService;
+    use codesmith_agent_runtime::web_service::{FetchOutcome, WebError, WebErrorKind};
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     fn ctx() -> ToolContext {
         ToolContext::new(PathBuf::from("."))
+    }
+
+    fn service_ctx(service: MockWebService) -> ToolContext {
+        ctx().with_web_service(Arc::new(service))
+    }
+
+    fn page(status: u16, content_type: &str, body: &str) -> FetchOutcome {
+        FetchOutcome {
+            url: "https://example.com/final".to_string(),
+            status,
+            headers: BTreeMap::from([("content-type".to_string(), content_type.to_string())]),
+            content_type: content_type.to_string(),
+            body: body.as_bytes().to_vec(),
+            truncated: false,
+        }
     }
 
     #[test]
@@ -617,76 +431,79 @@ mod tests {
         assert!(res.is_err());
     }
 
-    #[test]
-    fn rejects_private_localhost_literal() {
-        assert!(is_restricted_ip(&"127.0.0.1".parse().unwrap()));
-        assert!(is_restricted_ip(&"::1".parse().unwrap()));
-    }
-
-    #[test]
-    fn rejects_private_rfc1918() {
-        assert!(is_restricted_ip(&"10.0.0.1".parse().unwrap()));
-        assert!(is_restricted_ip(&"172.16.0.1".parse().unwrap()));
-        assert!(is_restricted_ip(&"192.168.1.1".parse().unwrap()));
-    }
-
-    #[test]
-    fn rejects_cloud_metadata() {
-        assert!(is_restricted_ip(&"169.254.169.254".parse().unwrap()));
-    }
-
-    #[test]
-    fn rejects_link_local() {
-        assert!(is_restricted_ip(&"169.254.1.1".parse().unwrap()));
-    }
-
-    #[test]
-    fn rejects_cgnat() {
-        assert!(is_restricted_ip(&"100.64.0.1".parse().unwrap()));
-        assert!(!is_restricted_ip(&"100.63.0.1".parse().unwrap()));
-        assert!(!is_restricted_ip(&"100.128.0.1".parse().unwrap()));
-    }
-
-    #[test]
-    fn rejects_ipv6_ula() {
-        assert!(is_restricted_ip(&"fc00::1".parse().unwrap()));
-        assert!(is_restricted_ip(&"fd12:3456::1".parse().unwrap()));
-    }
-
-    #[test]
-    fn rejects_ipv4_mapped_ipv6() {
-        // ::ffff:127.0.0.1 — IPv4-mapped IPv6 loopback bypass
-        assert!(is_restricted_ip(&"::ffff:127.0.0.1".parse().unwrap()));
-        assert!(is_restricted_ip(&"::ffff:10.0.0.1".parse().unwrap()));
-        assert!(is_restricted_ip(&"::ffff:169.254.169.254".parse().unwrap()));
-        assert!(is_restricted_ip(&"::ffff:192.168.1.1".parse().unwrap()));
-        // :: (unspecified)
-        assert!(is_restricted_ip(&"::".parse().unwrap()));
-    }
-
-    #[test]
-    fn allows_public_ips() {
-        assert!(!is_restricted_ip(&"8.8.8.8".parse().unwrap()));
-        assert!(!is_restricted_ip(&"1.1.1.1".parse().unwrap()));
-        assert!(!is_restricted_ip(&"93.184.216.34".parse().unwrap()));
-        assert!(!is_restricted_ip(&"2606:4700::1".parse().unwrap()));
-    }
-
     #[tokio::test]
-    async fn rejects_localhost_hostname() {
+    async fn missing_service_fails_loud_not_silently() {
         let tool = FetchUrlTool;
-        let res = tool
-            .execute(json!({"url": "http://localhost:8080/admin"}), &ctx())
-            .await;
-        let err = res.unwrap_err();
-        assert!(format!("{err}").contains("localhost"));
+        let err = tool
+            .execute(json!({"url": "https://example.com/doc.md"}), &ctx())
+            .await
+            .expect_err("no service attached must fail");
+        assert!(format!("{err}").contains("no web service attached"));
     }
 
     #[tokio::test]
-    async fn network_policy_denies_blocked_host() {
-        use codesmith_agent_runtime::network_policy::{
-            Decision, NetworkPolicy, NetworkPolicyDecider,
-        };
+    async fn fetch_formats_service_outcome_into_response() {
+        // Tool-through-service path: a canned mock outcome (final URL after
+        // redirects, HTML body) is formatted with markdown stripping and the
+        // final URL is what the response reports.
+        let service = MockWebService::ok().with_fetch(Ok(page(
+            200,
+            "text/html",
+            "<html><body><p>hello <b>world</b></p></body></html>",
+        )));
+        let result = FetchUrlTool
+            .execute(
+                json!({"url": "https://example.com/start"}),
+                &service_ctx(service),
+            )
+            .await
+            .expect("fetch through service");
+        assert!(result.success);
+        let parsed: serde_json::Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(parsed["url"], "https://example.com/final");
+        assert_eq!(parsed["status"], 200);
+        assert!(parsed["content"].as_str().unwrap().contains("hello world"));
+        assert!(!parsed["content"].as_str().unwrap().contains("<b>"));
+    }
+
+    #[tokio::test]
+    async fn non_success_status_marks_result_failed_but_keeps_body() {
+        let service = MockWebService::ok().with_fetch(Ok(page(
+            404,
+            "application/json",
+            r#"{"error":"gone"}"#,
+        )));
+        let result = FetchUrlTool
+            .execute(
+                json!({"url": "https://example.com/missing"}),
+                &service_ctx(service),
+            )
+            .await
+            .expect("4xx still returns a result");
+        assert!(!result.success);
+        let parsed: serde_json::Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(parsed["status"], 404);
+        assert!(parsed["content"].as_str().unwrap().contains("gone"));
+    }
+
+    #[tokio::test]
+    async fn service_error_maps_to_tool_error() {
+        let service = MockWebService::ok().with_fetch(Err(WebError::new(
+            WebErrorKind::PolicyDenied,
+            "network call to 'evil.example' blocked by network policy",
+        )));
+        let err = FetchUrlTool
+            .execute(
+                json!({"url": "https://evil.example/x"}),
+                &service_ctx(service),
+            )
+            .await
+            .expect_err("policy deny must surface");
+        assert!(format!("{err}").contains("blocked by network policy"));
+    }
+
+    #[tokio::test]
+    async fn network_policy_denies_blocked_host_through_real_service() {
         let policy = NetworkPolicy {
             default: Decision::Deny.into(),
             allow: vec!["api.deepseek.com".to_string()],
@@ -695,7 +512,11 @@ mod tests {
             audit: false,
         };
         let decider = NetworkPolicyDecider::new(policy, None);
-        let ctx = ToolContext::new(PathBuf::from(".")).with_network_policy(decider);
+        // The real (non-mock) service: the policy check under test lives in
+        // HttpWebService, so the mock must not be attached here.
+        let ctx = ctx()
+            .with_web_service(Arc::new(crate::web_service::HttpWebService::default()))
+            .with_network_policy(decider);
         let tool = FetchUrlTool;
         let res = tool
             .execute(json!({"url": "https://example.com/foo"}), &ctx)
@@ -704,191 +525,7 @@ mod tests {
         assert!(format!("{err}").contains("blocked"));
     }
 
-    #[tokio::test]
-    async fn redirected_localhost_hostname_is_rejected() {
-        let url = reqwest::Url::parse("http://localhost:8080/admin").unwrap();
-        let err = validate_fetch_target(&url, &ctx()).await.unwrap_err();
-        assert!(format!("{err}").contains("localhost"));
-    }
-
-    #[tokio::test]
-    async fn redirected_private_ip_literal_is_rejected() {
-        let url = reqwest::Url::parse("http://169.254.169.254/latest/meta-data").unwrap();
-        let err = validate_fetch_target(&url, &ctx()).await.unwrap_err();
-        assert!(format!("{err}").contains("restricted address"));
-    }
-
-    // GHSA-88gh-2526-gfrr — regression coverage for bracketed IPv6 literals.
-    #[tokio::test]
-    async fn rejects_ipv6_literal_loopback() {
-        let url = reqwest::Url::parse("http://[::1]/").unwrap();
-        let err = validate_fetch_target(&url, &ctx())
-            .await
-            .expect_err("[::1] must be rejected as restricted");
-        assert!(format!("{err}").contains("restricted"));
-    }
-
-    #[tokio::test]
-    async fn rejects_ipv6_literal_ula() {
-        let url = reqwest::Url::parse("http://[fc00::1]/").unwrap();
-        let err = validate_fetch_target(&url, &ctx())
-            .await
-            .expect_err("[fc00::1] must be rejected as restricted");
-        assert!(format!("{err}").contains("restricted"));
-    }
-
-    #[tokio::test]
-    async fn rejects_ipv6_literal_link_local() {
-        let url = reqwest::Url::parse("http://[fe80::1]/").unwrap();
-        let err = validate_fetch_target(&url, &ctx())
-            .await
-            .expect_err("[fe80::1] must be rejected as restricted");
-        assert!(format!("{err}").contains("restricted"));
-    }
-
-    #[tokio::test]
-    async fn rejects_ipv6_literal_ipv4_mapped_loopback() {
-        let url = reqwest::Url::parse("http://[::ffff:127.0.0.1]/").unwrap();
-        let err = validate_fetch_target(&url, &ctx())
-            .await
-            .expect_err("[::ffff:127.0.0.1] must be rejected as restricted");
-        assert!(format!("{err}").contains("restricted"));
-    }
-
-    #[tokio::test]
-    async fn rejects_ipv6_literal_unspecified() {
-        let url = reqwest::Url::parse("http://[::]/").unwrap();
-        let err = validate_fetch_target(&url, &ctx())
-            .await
-            .expect_err("[::] must be rejected as restricted");
-        assert!(format!("{err}").contains("restricted"));
-    }
-
-    #[tokio::test]
-    async fn redirected_host_respects_network_policy() {
-        use codesmith_agent_runtime::network_policy::{
-            Decision, NetworkPolicy, NetworkPolicyDecider,
-        };
-        let policy = NetworkPolicy {
-            default: Decision::Deny.into(),
-            allow: vec!["api.deepseek.com".to_string()],
-            deny: vec![],
-            proxy: Vec::new(),
-            audit: false,
-        };
-        let decider = NetworkPolicyDecider::new(policy, None);
-        let ctx = ToolContext::new(PathBuf::from(".")).with_network_policy(decider);
-        let url = reqwest::Url::parse("https://example.com/redirect-target").unwrap();
-        let err = validate_fetch_target(&url, &ctx).await.unwrap_err();
-        assert!(format!("{err}").contains("blocked"));
-    }
-
-    #[test]
-    fn restricted_dns_result_is_denied_without_proxy_opt_in() {
-        let ip = "198.18.0.1".parse().unwrap();
-
-        let err = validate_dns_resolved_ip("github.com", &ip, None)
-            .expect_err("fake-IP DNS result must be denied by default");
-
-        assert!(format!("{err}").contains("resolved IP 198.18.0.1 is a restricted address"));
-    }
-
-    #[test]
-    fn proxy_opt_in_allows_restricted_dns_for_matching_host() {
-        use codesmith_agent_runtime::network_policy::{
-            Decision, NetworkPolicy, NetworkPolicyDecider,
-        };
-
-        let policy = NetworkPolicy {
-            default: Decision::Allow.into(),
-            allow: Vec::new(),
-            deny: Vec::new(),
-            proxy: vec!["github.com".to_string()],
-            audit: false,
-        };
-        let decider = NetworkPolicyDecider::new(policy, None);
-        let ip = "198.18.0.1".parse().unwrap();
-
-        validate_dns_resolved_ip("github.com", &ip, Some(&decider))
-            .expect("proxy opt-in should allow fake-IP DNS for matching host");
-    }
-
-    #[test]
-    fn proxy_opt_in_does_not_allow_unlisted_host() {
-        use codesmith_agent_runtime::network_policy::{
-            Decision, NetworkPolicy, NetworkPolicyDecider,
-        };
-
-        let policy = NetworkPolicy {
-            default: Decision::Allow.into(),
-            allow: Vec::new(),
-            deny: Vec::new(),
-            proxy: vec!["github.com".to_string()],
-            audit: false,
-        };
-        let decider = NetworkPolicyDecider::new(policy, None);
-        let ip = "198.18.0.1".parse().unwrap();
-
-        let err = validate_dns_resolved_ip("example.com", &ip, Some(&decider))
-            .expect_err("proxy opt-in must be scoped to configured hosts");
-
-        assert!(format!("{err}").contains("resolved IP 198.18.0.1 is a restricted address"));
-    }
-
-    #[tokio::test]
-    async fn proxy_opt_in_does_not_allow_restricted_ip_literal() {
-        use codesmith_agent_runtime::network_policy::{
-            Decision, NetworkPolicy, NetworkPolicyDecider,
-        };
-
-        let policy = NetworkPolicy {
-            default: Decision::Allow.into(),
-            allow: Vec::new(),
-            deny: Vec::new(),
-            proxy: vec!["198.18.0.1".to_string()],
-            audit: false,
-        };
-        let decider = NetworkPolicyDecider::new(policy, None);
-        let ctx = ToolContext::new(PathBuf::from(".")).with_network_policy(decider);
-        let tool = FetchUrlTool;
-
-        let err = tool
-            .execute(json!({"url": "http://198.18.0.1/status"}), &ctx)
-            .await
-            .expect_err("literal restricted IP URLs must stay blocked");
-
-        assert!(format!("{err}").contains("IP 198.18.0.1 is a restricted address"));
-    }
-
-    #[test]
-    fn proxy_dns_allow_is_audited() {
-        use codesmith_agent_runtime::network_policy::{
-            Decision, NetworkAuditor, NetworkPolicy, NetworkPolicyDecider,
-        };
-        use tempfile::tempdir;
-
-        let dir = tempdir().expect("tempdir");
-        let auditor = NetworkAuditor::new(dir.path().join("audit.log"), true);
-        let policy = NetworkPolicy {
-            default: Decision::Allow.into(),
-            allow: Vec::new(),
-            deny: Vec::new(),
-            proxy: vec!["github.com".to_string()],
-            audit: true,
-        };
-        let decider = NetworkPolicyDecider::new(policy, Some(auditor));
-        let ip = "198.18.0.1".parse().unwrap();
-
-        validate_dns_resolved_ip("github.com", &ip, Some(&decider)).expect("proxy DNS allow");
-
-        let body = std::fs::read_to_string(dir.path().join("audit.log")).expect("audit log");
-        assert!(body.contains("github.com"));
-        assert!(body.contains("TrustedProxyFakeIp-Allow"));
-    }
-
     // === P1-5: per-input approval gate ===================================
-
-    use codesmith_agent_runtime::network_policy::NetworkPolicy;
 
     fn prompt_decider(allow: &[&str], deny: &[&str]) -> NetworkPolicyDecider {
         NetworkPolicyDecider::new(
@@ -926,7 +563,7 @@ mod tests {
     #[test]
     fn approval_for_input_denied_host_is_auto_not_prompted() {
         // Deny must not raise the gate — the execute-time check inside the
-        // tool hard-fails; approving a forbidden call would be absurd.
+        // service hard-fails; approving a forbidden call would be absurd.
         let context = ctx().with_network_policy(prompt_decider(&[], &["evil.example.com"]));
         let req = FetchUrlTool.approval_requirement_for_input(
             &json!({"url": "https://evil.example.com/payload"}),
@@ -940,17 +577,5 @@ mod tests {
         let req = FetchUrlTool
             .approval_requirement_for_input(&json!({"url": "https://any.example.com/"}), &ctx());
         assert_eq!(req, ApprovalRequirement::Auto);
-    }
-
-    #[test]
-    fn validate_policy_prompt_passes_after_gate_semantics() {
-        // P1-5: the tool-internal Prompt branch no longer errors — the
-        // inline approval gate owns the ask before execute ever runs.
-        let context = ctx().with_network_policy(prompt_decider(&[], &[]));
-        validate_network_policy("unlisted.example.com", &context)
-            .expect("Prompt must not fail at execute time");
-        // Deny still hard-fails inside the tool.
-        let denied = ctx().with_network_policy(prompt_decider(&[], &["evil.example.com"]));
-        assert!(validate_network_policy("evil.example.com", &denied).is_err());
     }
 }

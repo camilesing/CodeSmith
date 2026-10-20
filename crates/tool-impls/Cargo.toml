@@ -43,6 +43,9 @@ tokio-util = { workspace = true, features = ["io"] }
 pretty_assertions = "1.4"
 tempfile.workspace = true
 wiremock = "0.6"
+# Enables agent-runtime's test-support mock module for this crate's unit
+# tests (MockWebService at the WebService trait boundary).
+codesmith-agent-runtime = { workspace = true, features = ["test-support"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.3"
