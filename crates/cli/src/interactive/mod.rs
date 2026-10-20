@@ -559,6 +559,29 @@ pub(crate) fn debug_command(state: &ReplState, arg: &str) {
     );
 }
 
+/// The assistant replies that carry text, oldest first, each with its index
+/// in `messages`. `/copy N` and `/feedback N` both count from the end of this
+/// list: 1 is the most recent reply.
+pub(crate) fn assistant_replies(messages: &[crate::models::Message]) -> Vec<(usize, String)> {
+    messages
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| message.role == "assistant")
+        .filter_map(|(index, message)| {
+            let text: String = message
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    crate::models::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            (!text.trim().is_empty()).then_some((index, text))
+        })
+        .collect()
+}
+
 /// `/copy [N]` — put the Nth-from-last assistant reply on the clipboard.
 ///
 /// Claude Code shows a block picker when the reply has code blocks; the
@@ -576,24 +599,8 @@ pub(crate) fn copy_command(state: &ReplState, arg: &str) {
             }
         },
     };
-    let replies: Vec<String> = state
-        .api_messages
-        .iter()
-        .filter(|message| message.role == "assistant")
-        .filter_map(|message| {
-            let text: String = message
-                .content
-                .iter()
-                .filter_map(|block| match block {
-                    crate::models::ContentBlock::Text { text, .. } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            (!text.trim().is_empty()).then_some(text)
-        })
-        .collect();
-    let Some(text) = replies.iter().rev().nth(index - 1) else {
+    let replies = assistant_replies(&state.api_messages);
+    let Some((_, text)) = replies.iter().rev().nth(index - 1) else {
         println!(
             "{} no reply #{index} in this session ({} assistant repl(ies) so far)",
             "✗".red(),

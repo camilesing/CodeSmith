@@ -111,6 +111,10 @@ mod 侧也可在运行期用 `disable_command(name)` 达到同样效果——两
   `/loop run|pause|resume|stop <id>` 管理单个循环；不带提示的 `/loop <interval>`
   使用工作区的 `loop.md` 或内置维护提示。下限是一小时（调度器的 RRULE 只有
   小时/周粒度），因此 `/loop 5m` 会被点名拒绝，而不是四舍五入。
+- **`/feedback up|down [N] [评语]`** 给本会话的某条回复打分 —— 默认最近一条，或按
+  `/copy N` 的数法取倒数第 N 条 —— 并把评分、评语、会话 id、消息索引、模型与时间戳
+  作为一行 JSON 追加到 `~/.codesmith/feedback/feedback.jsonl`。评分只属于你：
+  永不加进对话、永不发给模型，也不会上传。单独的 `/feedback` 打印用法与提 bug 的入口。
 - **`/effort`、`/autocompact`、`/usage`、`/tasks`、`/plugins`、`/reload-skills`、
   `/reload-plugins`、`/theme`、`/color`、`/statusline`、`/copy`、`/doctor`、
   `/debug`、`/release-notes`、`/terminal-setup`、`/keybindings`** 覆盖模型档位、

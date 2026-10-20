@@ -729,20 +729,6 @@ checks it (see [verification] result_claims in config.example.toml)."
     )
 }
 
-/// `/feedback [bug|feature|security|…]` — prints the issue URLs.
-pub fn feedback(arg: Option<&str>) {
-    let raw = arg.map(str::trim).unwrap_or("");
-    println!(
-        "feedback:\n  bug:      https://github.com/camilesing/CodeSmith/issues/new?template=bug_report.md\n  feature:  https://github.com/camilesing/CodeSmith/issues/new?template=feature_request.md\n  security: see SECURITY.md before reporting vulnerabilities"
-    );
-    if !raw.is_empty() && raw != "help" {
-        println!(
-            "{}",
-            format!("(category '{raw}' noted; open the matching URL above)").dimmed()
-        );
-    }
-}
-
 /// `/share` — upload conversation to a paste service.
 pub async fn share(state: &mut ReplState) {
     let history_json = serde_json::to_string(&state.api_messages).unwrap_or_default();
