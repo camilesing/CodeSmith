@@ -139,6 +139,13 @@ this fork's users asked for. The ones worth knowing:
   no prompt uses `loop.md` from the workspace or the built-in maintenance
   prompt. The floor is one hour (the scheduler's RRULEs are hourly/weekly), so
   `/loop 5m` is refused by name rather than rounded up.
+- **`/feedback up|down [N] [comment]`** rates one of this session's replies —
+  the most recent by default, or the Nth-from-last the way `/copy N` counts —
+  and appends the rating, your comment, the session id, the message index, the
+  model, and a timestamp as one JSON line to
+  `~/.codesmith/feedback/feedback.jsonl`. The rating is for you: it is never
+  added to the conversation or sent to the model, and nothing uploads it.
+  `/feedback` alone prints the usage and where to file a bug report.
 - **`/effort`, `/autocompact`, `/usage`, `/tasks`, `/plugins`,
   `/reload-skills`, `/reload-plugins`, `/theme`, `/color`, `/statusline`,
   `/copy`, `/doctor`, `/debug`, `/release-notes`, `/terminal-setup`,

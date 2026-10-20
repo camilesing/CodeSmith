@@ -1089,11 +1089,11 @@ impl Command {
         CommandInfo {
             command: Command::Feedback,
             name: "feedback",
-            usage: "[category]",
-            args: &[],
+            usage: "up|down [N] [comment]",
+            args: &["up", "down"],
             aliases: &[],
             group: Group::Share,
-            help: "print the GitHub issue template URLs",
+            help: "rate the Nth-from-last reply; recorded locally, never shown to the model",
         },
         CommandInfo {
             command: Command::Share,

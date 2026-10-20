@@ -11,6 +11,7 @@ pub mod config_cmds;
 pub mod debug_cmds;
 pub mod dir_cmds;
 pub mod extension_cmds;
+pub mod feedback_cmds;
 pub mod fewer_prompts_cmds;
 pub mod import_cmds;
 pub mod insights_cmds;
@@ -682,11 +683,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             false
         }
         Command::Feedback => {
-            misc_cmds::feedback(if arg_str.is_empty() {
-                None
-            } else {
-                Some(&arg_str)
-            });
+            feedback_cmds::feedback(state, &arg_str);
             false
         }
         Command::Share => {
