@@ -651,14 +651,18 @@ pub fn note(state: &ReplState, content: Option<&str>) {
 
 /// `/attach <image path>` — queue an image for the next message.
 ///
-/// Only the wire-representable image types (`WIRE_IMAGE_EXTENSIONS`) are
-/// accepted: the request builder drops anything else without a trace, so
-/// rejecting here is the loud-failure point. Video containers have no wire
-/// representation on the OpenAI-compatible `image_url` form. A
-/// content-addressed attachment store (dsh `attachment` shape) is
-/// deliberately not built — no second consuming surface exists; the
-/// File-path `ImageSource` form is the primary shape.
+/// Admission is the metadata-level [`AttachmentStore::precheck`] (TODO-50):
+/// wire-representable type (`WIRE_IMAGE_EXTENSIONS` — the request builder
+/// drops anything else without a trace, so refusing here is the loud-failure
+/// point; video has no wire form), per-file byte cap, and the per-message
+/// count cap against what is already queued. A refusal is printed and
+/// recorded on the session as an excluded context reference. The hash + copy
+/// into the content-addressed store happens at send time
+/// (`crate::media::ingest_for_message`), off the runtime thread.
 pub fn attach(state: &mut ReplState, arg: Option<&str>) {
+    use codesmith_agent_runtime::attachments::{AttachmentStore, MAX_ATTACHMENTS_PER_MESSAGE};
+    use codesmith_agent_runtime::session_store::ContextReferenceSource;
+
     let Some(raw_path) = arg.map(str::trim).filter(|value| !value.is_empty()) else {
         println!("{} usage: /attach <image-path>", "✗".red());
         return;
@@ -673,25 +677,30 @@ pub fn attach(state: &mut ReplState, arg: Option<&str>) {
         println!("{} attachment not found: {}", "✗".red(), path.display());
         return;
     };
-    if !path.is_file() {
-        println!("{} attachment is not a file: {}", "✗".red(), path.display());
-        return;
-    }
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase())
-        .unwrap_or_default();
-    if !codesmith_agent::models::WIRE_IMAGE_EXTENSIONS.contains(&ext.as_str()) {
-        println!(
-            "{} unsupported attachment type .{ext} — providers can only carry {} on the wire (video has no wire representation; text files go in the message as @path)",
-            "✗".red(),
-            codesmith_agent::models::WIRE_IMAGE_EXTENSIONS.join("/")
-        );
-        return;
-    }
+    let next_message = state.api_messages.len();
+    let admitted = AttachmentStore::check_message_count(state.pending_attachments.len() + 1)
+        .and_then(|()| AttachmentStore::precheck(&path));
+    let (_, bytes) = match admitted {
+        Ok(ok) => ok,
+        Err(err) => {
+            println!("{} attachment refused: {err}", "✗".red());
+            state
+                .context_references
+                .push(crate::media::rejected_reference(
+                    &path,
+                    ContextReferenceSource::Attachment,
+                    next_message,
+                    &err.to_string(),
+                ));
+            return;
+        }
+    };
     state.pending_attachments.push(path.clone());
-    println!("attached: {} (sent with your next message)", path.display());
+    println!(
+        "attached: {} ({bytes} bytes; {}/{MAX_ATTACHMENTS_PER_MESSAGE} queued — stored content-addressed when the message is sent)",
+        path.display(),
+        state.pending_attachments.len()
+    );
 }
 
 /// Claim-check stats (moved from the retired `commands/verify.rs`).

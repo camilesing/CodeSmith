@@ -1414,6 +1414,20 @@ is not supported, attachments degrade to the text-reference mode: the
 model at the `image_analyze` tool (when `[vision_model]` is configured) or
 `read_file`'s OCR extraction.
 
+Every image that reaches a message is first copied into the content-addressed
+store `~/.codesmith/attachments/<sha256>.<ext>` (identical content is stored
+once), and the transcript references the store path rather than your original
+file — so a resumed session still carries its images and can re-send them even
+if the original was moved or deleted. Intake limits are fixed: at most
+10 MiB per image and 8 images per message, images only (`png`, `jpg`/`jpeg`,
+`gif`, `webp`). An attachment over a limit is refused out loud — at `/attach`
+time for type, size and count, and again at send time for `@path` images — and
+the refusal is written into the session file alongside the admitted ones
+(`context_references`, with the reason), never dropped silently. After a
+context compaction summarizes the message that carried an image, the most
+recent images (up to four) are re-sent to the model as native blocks through the
+same post-compaction re-inject hook that restores plans and todos.
+
 Attachment rows appear above the composer before submit; move to the start of
 the composer, press `↑` to select an attachment row, then press `Backspace` or
 `Delete` to remove it without editing the placeholder text by hand.

@@ -5,8 +5,8 @@
 //! This module re-injects those states as user messages with
 //! system-reminder blocks so the model can continue working.
 
-use crate::models::{ContentBlock, Message};
-use crate::session::RecentReadFile;
+use crate::models::{ContentBlock, ImageSource, Message};
+use crate::session::{RecentMediaAttachment, RecentReadFile};
 use crate::subagent::SubAgentResult;
 use crate::tool_state::plan::PlanSnapshot;
 use crate::tool_state::todo::TodoListSnapshot;
@@ -22,6 +22,8 @@ pub enum AttachmentType {
     SubAgents { agent_summaries: Vec<AgentSummary> },
     /// Recent file reads.
     ReadFiles { paths: Vec<String> },
+    /// Recent image attachments re-sent as native image blocks (TODO-50).
+    Media { paths: Vec<String> },
 }
 
 /// Summary of a running subagent.
@@ -207,15 +209,73 @@ pub fn reinject_read_file_attachments(read_files: &[RecentReadFile]) -> Option<M
     Some(compaction_reinject_message(content.trim_end().to_string()))
 }
 
+/// Re-send recent image attachments after compaction (TODO-50).
+///
+/// Compaction flattens an image block in a removed message to one
+/// `[image at …]` text line, so the model loses sight of it. This re-inserts
+/// the images that are *no longer* in `transcript` as native image blocks,
+/// behind a `<system-reminder>` naming them. Attachments whose store path
+/// still appears in a live message are skipped (nothing to restore), so the
+/// candidate is empty — `None` — right after a turn and only fills once
+/// compaction has dropped the originals. Bounded upstream by
+/// `RECENT_MEDIA_LIMIT`.
+pub fn reinject_media_attachments(
+    recent: &[RecentMediaAttachment],
+    transcript: &[Message],
+) -> Option<Message> {
+    let missing: Vec<&RecentMediaAttachment> = recent
+        .iter()
+        .filter(|entry| !transcript_has_image(transcript, &entry.path))
+        .collect();
+    if missing.is_empty() {
+        return None;
+    }
+    let listing = missing
+        .iter()
+        .map(|entry| format!("- {}", entry.path.display()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut message = compaction_reinject_message(format!(
+        "Image attachments re-sent after context compaction ({} image(s); the originals were \
+         in messages that have been summarized):\n{listing}",
+        missing.len()
+    ));
+    message
+        .content
+        .extend(missing.iter().map(|entry| ContentBlock::Image {
+            source: ImageSource::File {
+                path: entry.path.clone(),
+                media_type: None,
+            },
+        }));
+    Some(message)
+}
+
+fn transcript_has_image(transcript: &[Message], path: &std::path::Path) -> bool {
+    transcript.iter().any(|message| {
+        message.content.iter().any(|block| {
+            matches!(
+                block,
+                ContentBlock::Image {
+                    source: ImageSource::File { path: existing, .. }
+                } if existing == path
+            )
+        })
+    })
+}
+
 /// Re-inject all available attachments after compaction.
 ///
-/// Checks session state for active plans, skills, and subagents,
-/// and re-injects their current state as user messages.
+/// Checks session state for active plans, skills, subagents, recent file
+/// reads, and recent image attachments, and re-injects their current state
+/// as user messages.
 pub fn reinject_all_attachments(
     plan_summary: Option<&str>,
     skill_definitions: &[String],
     agent_summaries: &[AgentSummary],
     read_files: &[RecentReadFile],
+    media: &[RecentMediaAttachment],
+    transcript: &[Message],
 ) -> AttachmentReinjectResult {
     let mut injected_messages = Vec::new();
     let mut types_reinjected = Vec::new();
@@ -247,6 +307,16 @@ pub fn reinject_all_attachments(
         injected_messages.push(msg);
         types_reinjected.push(AttachmentType::ReadFiles {
             paths: read_files.iter().map(|entry| entry.path.clone()).collect(),
+        });
+    }
+
+    if let Some(msg) = reinject_media_attachments(media, transcript) {
+        injected_messages.push(msg);
+        types_reinjected.push(AttachmentType::Media {
+            paths: media
+                .iter()
+                .map(|entry| entry.path.display().to_string())
+                .collect(),
         });
     }
 
@@ -357,15 +427,86 @@ mod tests {
                 input: serde_json::json!({"path": "src/lib.rs"}),
                 output_preview: "contents".to_string(),
             }],
+            &[RecentMediaAttachment {
+                path: std::path::PathBuf::from("/store/abc.png"),
+            }],
+            &[],
         );
-        assert_eq!(result.injected_messages.len(), 4);
-        assert_eq!(result.types_reinjected.len(), 4);
+        assert_eq!(result.injected_messages.len(), 5);
+        assert_eq!(result.types_reinjected.len(), 5);
     }
 
     #[test]
     fn reinject_all_with_nothing_returns_empty() {
-        let result = reinject_all_attachments(None, &[], &[], &[]);
+        let result = reinject_all_attachments(None, &[], &[], &[], &[], &[]);
         assert!(result.injected_messages.is_empty());
         assert!(result.types_reinjected.is_empty());
+    }
+
+    // === TODO-50: media re-send ===========================================
+
+    fn image_message(path: &str) -> Message {
+        Message {
+            role: "user".to_string(),
+            content: vec![
+                ContentBlock::Text {
+                    text: "look at this".to_string(),
+                    cache_control: None,
+                },
+                ContentBlock::Image {
+                    source: ImageSource::File {
+                        path: std::path::PathBuf::from(path),
+                        media_type: None,
+                    },
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn reinject_media_resends_only_images_missing_from_the_transcript() {
+        let recent = vec![
+            RecentMediaAttachment {
+                path: std::path::PathBuf::from("/store/aaa.png"),
+            },
+            RecentMediaAttachment {
+                path: std::path::PathBuf::from("/store/bbb.png"),
+            },
+        ];
+        // bbb is still live in the transcript; only aaa was compacted out.
+        let transcript = vec![image_message("/store/bbb.png")];
+
+        let msg = reinject_media_attachments(&recent, &transcript).expect("aaa needs re-send");
+
+        let images: Vec<&std::path::Path> = msg
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Image {
+                    source: ImageSource::File { path, .. },
+                } => Some(path.as_path()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(images, vec![std::path::Path::new("/store/aaa.png")]);
+        match &msg.content[0] {
+            ContentBlock::Text { text, .. } => {
+                assert!(text.contains("<system-reminder>"));
+                assert!(text.contains("re-sent after context compaction"));
+                assert!(text.contains("/store/aaa.png"));
+                assert!(!text.contains("/store/bbb.png"));
+            }
+            other => panic!("first block must be the reminder text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reinject_media_is_none_while_every_image_is_still_live() {
+        let recent = vec![RecentMediaAttachment {
+            path: std::path::PathBuf::from("/store/aaa.png"),
+        }];
+        let transcript = vec![image_message("/store/aaa.png")];
+        assert!(reinject_media_attachments(&recent, &transcript).is_none());
+        assert!(reinject_media_attachments(&[], &[]).is_none());
     }
 }

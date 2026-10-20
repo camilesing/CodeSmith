@@ -728,6 +728,8 @@ impl CompactionProbe {
 /// - `todos` — `SharedTodoList = Arc<tokio::sync::Mutex<TodoList>>`, same.
 /// - `recent_read_files` — `Arc<std::sync::Mutex<VecDeque<RecentReadFile>>>`,
 ///   Arc-ified on `Session` in slice 25b (mirroring `working_set` / slice 22).
+/// - `recent_media` — `Arc<std::sync::Mutex<VecDeque<RecentMediaAttachment>>>`
+///   (TODO-50), the same shape, feeding the post-compaction image re-send.
 ///
 /// Sub-agent state needs **no probe** — the executor already holds a
 /// `subagent_api: Option<Arc<dyn SubAgentApi>>` with `live_running_snapshots`.
@@ -741,6 +743,8 @@ pub struct ReinjectProbe {
     todos: crate::tool_state::todo::SharedTodoList,
     recent_read_files:
         Arc<std::sync::Mutex<std::collections::VecDeque<crate::session::RecentReadFile>>>,
+    recent_media:
+        Arc<std::sync::Mutex<std::collections::VecDeque<crate::session::RecentMediaAttachment>>>,
     /// Model id used by [`compact_tool_result_for_context`] (model-dependent
     /// context limits) when observing a `read_file` result into
     /// `recent_read_files`. Mirrors the retired the retired turn handler's call
@@ -771,6 +775,9 @@ impl ReinjectProbe {
         recent_read_files: Arc<
             std::sync::Mutex<std::collections::VecDeque<crate::session::RecentReadFile>>,
         >,
+        recent_media: Arc<
+            std::sync::Mutex<std::collections::VecDeque<crate::session::RecentMediaAttachment>>,
+        >,
         model: String,
         api_provider: ApiProvider,
     ) -> Self {
@@ -778,6 +785,7 @@ impl ReinjectProbe {
             plan_state,
             todos,
             recent_read_files,
+            recent_media,
             model,
             api_provider,
         }
@@ -2205,6 +2213,21 @@ impl HostAgentExecutor {
         if let Some(message) =
             crate::compaction::attachment_reinject::reinject_read_file_attachments(&read_files)
         {
+            candidates.push(message);
+        }
+        // Media (TODO-50): re-send image attachments whose carrying message
+        // was compacted away; skipped while the originals are still live.
+        let recent_media = probe
+            .recent_media
+            .lock()
+            .expect("recent_media poisoned")
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Some(message) = crate::compaction::attachment_reinject::reinject_media_attachments(
+            &recent_media,
+            &history.messages(),
+        ) {
             candidates.push(message);
         }
         // Enrich: prepend the `<turn_meta>` block (slice 24 shape) — built
@@ -10042,6 +10065,7 @@ mod tests {
             Arc::clone(&plan_state),
             Arc::clone(&todos),
             Arc::clone(&sess.recent_read_files),
+            Arc::clone(&sess.recent_media),
             sess.model.clone(),
             api_provider,
         );
@@ -10319,6 +10343,7 @@ mod tests {
             new_shared_plan_state(),
             new_shared_todo_list(),
             Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+            Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             "llama2".to_string(),
             ApiProvider::Ollama,
         );
@@ -10338,6 +10363,7 @@ mod tests {
         let probe = ReinjectProbe::new(
             new_shared_plan_state(),
             new_shared_todo_list(),
+            Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             model.clone(),
             provider,
@@ -10433,6 +10459,7 @@ mod tests {
             new_shared_plan_state(),
             new_shared_todo_list(),
             Arc::clone(&sess.recent_read_files),
+            Arc::clone(&sess.recent_media),
             sess.model.clone(),
             api_provider,
         )
