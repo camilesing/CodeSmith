@@ -27,10 +27,11 @@
 //! parts (`tool_summary`), but their total width is not clamped to the
 //! terminal, so a narrow terminal still wraps them.
 //!
-//! The approval prompt's `[r] <feedback>` answer denies the call and hands the
-//! text to the running turn through the engine's steer path — the same
-//! mid-turn input the composer's queue uses — so the refusal and the reason
-//! are both recorded. Only the tool gate offers it; the path-access and
+//! The approval prompt refuses with a reason: `[r] <feedback>` — or any line
+//! that is not one of the four keys — denies the call and hands the text to
+//! the running turn through the engine's steer path (the same mid-turn input
+//! the composer's queue uses), so the refusal and the reason are both
+//! recorded. Only the tool gate offers it; the path-access and
 //! sandbox-elevation questions keep their own smaller answer sets.
 
 use std::collections::HashMap;
@@ -346,12 +347,13 @@ fn approval_frame(
     frame
 }
 
-/// The re-ask after a bare `[r]`: the key carries feedback, so it needs the
-/// feedback on the same line. Repeating the whole question would bury that one
-/// instruction; this is the shortest line that says what to type next. Ends at
-/// the unterminated prompt, like [`approval_frame`].
+/// The re-ask after a bare `[r]`: the introducer said "I want to refuse with a
+/// reason", so the next line is read for the reason. Repeating the whole
+/// question would bury that one instruction; this is the shortest line that
+/// says what to type next. Ends at the unterminated prompt, like
+/// [`approval_frame`].
 fn feedback_needed_frame() -> String {
-    "[r] needs the feedback on the same line — type it after r, or n to skip: ".to_string()
+    "feedback? type what should change (y/n/a/e still answer the question above): ".to_string()
 }
 
 /// What an approval answer does. Split from the prompt for the same reason as
@@ -366,43 +368,53 @@ enum ApprovalAnswer {
     AlwaysSession,
     /// `[e]` — deny, and remember this exact call for this session.
     NeverThis,
-    /// `[r] <feedback>` — deny, and hand the feedback to the running turn as a
-    /// user message (the engine's steer path) so the model can revise.
+    /// Any other line — `[r] <feedback>` or the feedback on its own — denies
+    /// the call and hands the text to the running turn as a user message (the
+    /// engine's steer path) so the model can revise.
     Revise(String),
-    /// `[r]` on its own: the key needs its feedback on the same line.
+    /// `[r]` on its own: the introducer asks for the text on the next line
+    /// instead of sending an empty reason.
     NeedFeedback,
-    /// `[n]`, an empty line, EOF, or anything unrecognized — the fail-closed
-    /// default, which refuses the call.
+    /// `[n]`, `no`, an empty line, or EOF — the fail-closed default, which
+    /// refuses the call without telling the model anything.
     Skip,
 }
 
-/// The four approve/deny keys match the whole line, exactly as the inline
-/// match they replace did: `y please` is not a yes.
+/// The four approve/deny keys and the skip keys match the whole line, exactly
+/// as the inline match they replace did: `y please` is not a yes, and it is
+/// not `n` either — it is feedback, which denies the call just the same.
 fn parse_approval_answer(raw: &str) -> ApprovalAnswer {
     let trimmed = raw.trim();
     match trimmed.to_ascii_lowercase().as_str() {
         "y" | "yes" => ApprovalAnswer::RunOnce,
         "a" | "always" => ApprovalAnswer::AlwaysSession,
         "e" | "never" => ApprovalAnswer::NeverThis,
+        "n" | "no" | "" => ApprovalAnswer::Skip,
         _ => parse_feedback_answer(trimmed),
     }
 }
 
-/// The lines that are not one of the whole-line keys: `[r] <feedback>`, a bare
-/// `[r]` asking for the text, or the fail-closed skip.
+/// Everything that is not one of the whole-line keys is the feedback the user
+/// wants the model to hear.
 ///
-/// The key is matched case-insensitively but the feedback keeps the case the
-/// user typed — lowercasing the line (what the inline match did) turned
-/// `r Fix PlanView` into `fix planview`. A word that merely starts with `r`,
-/// like `run it later`, is not the key.
+/// The `r`/`revise` introducer is optional: requiring it dropped the reason of
+/// every user who typed their sentence straight at the prompt — the line was
+/// read as "unrecognized" and refused silently, so the model was told nothing
+/// while the terminal looked like something had been said. `r`, `r:`, and
+/// `revise` with no text after them ask for it on the next line.
+///
+/// The introducer is matched case-insensitively; the feedback keeps the case
+/// the user typed, because lowercasing the line (what the inline match did)
+/// turned `r Fix PlanView` into `fix planview`.
 fn parse_feedback_answer(line: &str) -> ApprovalAnswer {
     let (key, rest) = match line.split_once(char::is_whitespace) {
         Some((key, rest)) => (key, rest),
         None => (line, ""),
     };
-    let key = key.trim_end_matches(':');
-    if !key.eq_ignore_ascii_case("r") && !key.eq_ignore_ascii_case("revise") {
-        return ApprovalAnswer::Skip;
+    let bare_key = key.trim_end_matches(':');
+    let introduces = bare_key.eq_ignore_ascii_case("r") || bare_key.eq_ignore_ascii_case("revise");
+    if !introduces {
+        return ApprovalAnswer::Revise(line.to_string());
     }
     let feedback = rest.trim_start_matches(':').trim();
     if feedback.is_empty() {
@@ -1383,10 +1395,11 @@ fn apply_turn_accounting(
 
 /// The tool-approval gate: ask, map the answer, answer the engine.
 ///
-/// `[r] <feedback>` denies the call and steers the feedback into the running
-/// turn as a user message, so the model can revise and ask again. For
-/// `exit_plan_mode` that is the re-plan path: the refused call never ran, so
-/// plan mode stays active and the plan file is still there to rewrite.
+/// `[r] <feedback>` — or any line that is not one of the four keys — denies
+/// the call and steers the feedback into the running turn as a user message,
+/// so the model can revise and ask again. For `exit_plan_mode` that is the
+/// re-plan path: the refused call never ran, so plan mode stays active and the
+/// plan file is still there to rewrite.
 ///
 /// Known limitation, beside the behaviour it owns: `exit_plan_mode` takes no
 /// arguments, so its "always" key is the same input hash on every call — `[a]`
@@ -2026,20 +2039,22 @@ mod tests {
     }
 
     /// The re-ask after a bare `[r]` is a question too: it must leave the
-    /// answer on its own row and end at the unterminated prompt.
+    /// answer on its own row, end at the unterminated prompt, and say what the
+    /// line it is about to read is for.
     #[test]
     fn feedback_needed_frame_is_a_prompt_row() {
         let frame = feedback_needed_frame();
         assert!(!frame.ends_with('\n'), "{frame}");
         assert!(frame.ends_with(": "), "{frame}");
-        assert!(frame.contains("same line"), "{frame}");
+        assert!(frame.contains("what should change"), "{frame}");
     }
 
-    /// The answer mapping, split from stdin: the four keys match the whole
-    /// line (so `y please` is not a yes), `[r]` carries a payload, and
-    /// everything else refuses. Fail-closed survives the rewrite.
+    /// The answer mapping, split from stdin: the keys match the whole line (so
+    /// `y please` is not a yes), `[n]`/empty skip silently, and every other
+    /// line is feedback the model gets to hear. Only an explicit key approves
+    /// — the fail-closed half survives the rewrite.
     #[test]
-    fn approval_answers_map_every_key_and_fail_closed() {
+    fn approval_answers_map_every_key_and_send_the_rest_as_feedback() {
         assert_eq!(parse_approval_answer("y"), ApprovalAnswer::RunOnce);
         assert_eq!(parse_approval_answer(" YES "), ApprovalAnswer::RunOnce);
         assert_eq!(parse_approval_answer("a"), ApprovalAnswer::AlwaysSession);
@@ -2049,60 +2064,73 @@ mod tests {
         );
         assert_eq!(parse_approval_answer("e"), ApprovalAnswer::NeverThis);
         assert_eq!(parse_approval_answer("never"), ApprovalAnswer::NeverThis);
-        for skip in [
-            "n",
-            "no",
-            "",
-            "  ",
+        for skip in ["n", "no", "", "  "] {
+            assert_eq!(
+                parse_approval_answer(skip),
+                ApprovalAnswer::Skip,
+                "{skip:?} skips the call and says nothing"
+            );
+        }
+        for feedback in [
+            // A near-miss on a key, a stray line, and a word that merely
+            // starts with `r`: all of them refuse *and* reach the model, which
+            // is what a user typing an answer expects.
             "nope",
             "1",
             "yolo",
             "why?",
-            // A whole-line key with trailing text stays a key-only match:
-            // `y please` must not approve.
             "y please",
-            // A word that merely starts with `r` is not the feedback key.
             "run it later",
+            // The reported defect: a sentence typed straight at the prompt was
+            // read as "unrecognized" and dropped, so the model was told the
+            // refusal came with no feedback.
+            "快速上线的逻辑改一下。先发版，再默认选最新版本上线",
         ] {
-            assert_eq!(
-                parse_approval_answer(skip),
-                ApprovalAnswer::Skip,
-                "{skip:?} must not approve"
+            assert!(
+                matches!(parse_approval_answer(feedback), ApprovalAnswer::Revise(_)),
+                "{feedback:?} must reach the model as feedback"
+            );
+            assert!(
+                !matches!(
+                    parse_approval_answer(feedback),
+                    ApprovalAnswer::RunOnce
+                        | ApprovalAnswer::AlwaysSession
+                        | ApprovalAnswer::NeverThis
+                ),
+                "{feedback:?} must not answer with a key"
             );
         }
     }
 
-    /// `[r] <feedback>` is the one answer that carries text, and the text keeps
-    /// the case the user typed — the inline match it replaced lowercased the
-    /// whole line, which would have turned `R Fix PlanView` into
-    /// `fix planview`.
+    /// The feedback is carried verbatim, and the case the user typed survives —
+    /// the inline match this replaced lowercased the whole line, which would
+    /// have turned `R Fix PlanView` into `fix planview`.
     #[test]
     fn revise_answer_carries_feedback_with_its_case() {
-        assert_eq!(
-            parse_approval_answer("r 把列宽也改"),
-            ApprovalAnswer::Revise("把列宽也改".to_string())
-        );
-        assert_eq!(
-            parse_approval_answer("r: 把列宽也改"),
-            ApprovalAnswer::Revise("把列宽也改".to_string())
-        );
-        assert_eq!(
-            parse_approval_answer("R  Fix PlanView casing"),
-            ApprovalAnswer::Revise("Fix PlanView casing".to_string())
-        );
-        assert_eq!(
-            parse_approval_answer("r"),
-            ApprovalAnswer::NeedFeedback,
-            "a bare key asks for the text instead of refusing"
-        );
-        assert_eq!(
-            parse_approval_answer("revise:"),
-            ApprovalAnswer::NeedFeedback
-        );
-        assert_eq!(
-            parse_approval_answer("revise also cover the cn docs"),
-            ApprovalAnswer::Revise("also cover the cn docs".to_string())
-        );
+        for (line, expected) in [
+            // The `r`/`revise` introducer is optional.
+            ("r 把列宽也改", "把列宽也改"),
+            ("r: 把列宽也改", "把列宽也改"),
+            ("R  Fix PlanView casing", "Fix PlanView casing"),
+            ("revise also cover the cn docs", "also cover the cn docs"),
+            ("把列宽也改", "把列宽也改"),
+            ("Fix PlanView casing", "Fix PlanView casing"),
+        ] {
+            assert_eq!(
+                parse_approval_answer(line),
+                ApprovalAnswer::Revise(expected.to_string()),
+                "{line:?}"
+            );
+        }
+        // A bare introducer asks for the text on the next line rather than
+        // sending an empty reason.
+        for bare in ["r", "r:", "revise", "revise:"] {
+            assert_eq!(
+                parse_approval_answer(bare),
+                ApprovalAnswer::NeedFeedback,
+                "{bare:?}"
+            );
+        }
     }
 
     #[test]

@@ -15,11 +15,12 @@ See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
 
 - **An approval prompt takes `[r] <feedback>`** — refuse that one call and hand
   your sentence to the running turn through the engine's steer path, so the
-  model hears what to change instead of guessing why you said no. For plan
-  approval this is the revise loop: the refusal leaves plan mode active and the
-  plan file intact, the model rewrites it and asks again. A bare `[r]` re-asks
-  for the text on the same line rather than refusing. `[y]`/`[n]`/`[a]`/`[e]`
-  keep their keys and meanings.
+  model hears what to change instead of guessing why you said no. Any line that
+  is not one of the four keys is that feedback (`[r]` is the same thing spelled
+  out, and a bare `[r]` asks for the words on the next line). For plan approval
+  this is the revise loop: the refusal leaves plan mode active and the plan file
+  intact, the model rewrites it and asks again. `[y]`/`[n]`/`[a]`/`[e]` keep
+  their keys and meanings.
 
 ## [0.10.0] - 2026-10-15
 
