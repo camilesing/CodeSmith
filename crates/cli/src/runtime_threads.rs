@@ -2135,11 +2135,15 @@ impl RuntimeThreadManager {
                 .tag()
                 .to_string(),
             workshop: self.config.workshop.clone(),
-            search_provider: self.config.search_provider(),
+            web_service: Some(std::sync::Arc::new(
+                codesmith_tool_impls::web_service::HttpWebService::new(
+                    self.config.search_provider(),
+                    self.config.search.as_ref().and_then(|s| s.api_key.clone()),
+                ),
+            )),
             // Background threads run without the code index in v1; the
             // service attaches to the main session's ToolContext only.
             index_enabled: false,
-            search_api_key: self.config.search.as_ref().and_then(|s| s.api_key.clone()),
             tools_always_load: self.config.tools_always_load(),
             disabled_tools: crate::capabilities::effective_disabled(self.config.tools.as_ref())
                 .map_err(anyhow::Error::msg)?,

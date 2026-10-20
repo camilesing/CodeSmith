@@ -21,7 +21,11 @@ Current boundary note (v0.9.0):
   are defined in `codesmith-tools::index_api`, implemented and re-exported
   by `codesmith-index`, consumed by the kernel's tool context
   (`agent-runtime/src/tools/spec.rs`) — the same shape as `LlmClient`
-  (defined in `codesmith-agent`, implemented in `codesmith-providers`).
+  (defined in `codesmith-agent`, implemented in `codesmith-providers`)
+  and as the unified web service (`WebService` defined in
+  `agent-runtime/src/web_service.rs`, `HttpWebService` implemented in
+  `codesmith-tool-impls::web_service`, consumed by the `web_search` /
+  `fetch_url` / `web.run` tools through `ToolContext`).
   The generated capability graph (`docs/CAPABILITY_GRAPH.md`, from
 `scripts/capability-graph.py`, CI-checked for freshness) lists every
 seam's triple — a new capability lands all three roles in the same

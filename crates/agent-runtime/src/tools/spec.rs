@@ -304,13 +304,12 @@ pub struct ToolContext {
     /// preview.
     pub utility_llm: Option<crate::tools::large_output_router::UtilityLlm>,
 
-    /// Which search backend `web_search` should use. Default: DuckDuckGo. Set via
-    /// `[search] provider` in config.toml.
-    pub search_provider: crate::config_types::SearchProvider,
-    /// API key for Tavily, Bocha, Metaso, or Baidu. `None` for Bing or DuckDuckGo.
-    /// Metaso also falls back to `METASO_API_KEY` env var, then a built-in key.
-    /// Baidu also falls back to `BAIDU_SEARCH_API_KEY`.
-    pub search_api_key: Option<String>,
+    /// Unified web retrieval service (TODO-49): `search`/`fetch` behind one
+    /// seam, provider-selected from `[search]` config by the host. `None`
+    /// (embeds, tests that use no web tools) makes the web-facing tools fail
+    /// closed with a "no web service attached" error — never a silent
+    /// fallback transport.
+    pub web_service: Option<Arc<dyn crate::web_service::WebService>>,
 
     /// Per-session workshop variable store (#548). Holds the raw content of
     /// the most recent large-tool routing event so the parent can call
@@ -360,8 +359,7 @@ impl ToolContext {
             lsp_manager: None,
             large_output_router: None,
             utility_llm: None,
-            search_provider: crate::config_types::SearchProvider::default(),
-            search_api_key: None,
+            web_service: None,
             workshop_vars: None,
             registered_skills: Vec::new(),
             skills_dir: None,
@@ -405,6 +403,14 @@ impl ToolContext {
     #[must_use]
     pub fn with_network_policy(mut self, policy: NetworkPolicyDecider) -> Self {
         self.network_policy = Some(policy);
+        self
+    }
+
+    /// Attach the unified web retrieval service (TODO-49). Without it the
+    /// web-facing tools fail closed.
+    #[must_use]
+    pub fn with_web_service(mut self, service: Arc<dyn crate::web_service::WebService>) -> Self {
+        self.web_service = Some(service);
         self
     }
 

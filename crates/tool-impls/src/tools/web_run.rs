@@ -2,14 +2,21 @@
 //!
 //! This mirrors the Codex harness `web.run` interface so models can use a single
 //! tool call to perform multiple web actions and cite sources with ref_ids.
+//!
+//! Transport is a consumer of the unified web service (TODO-49,
+//! `crates/tool-impls/src/web_service.rs`): text search follows the
+//! configured `[search]` provider and page fetching runs the service's SSRF
+//! validation and per-hop policy checks (this tool's private fetch loop had
+//! neither before the seam). Known limitation: `image_query` stays on its own
+//! DuckDuckGo-images scrape — it is not part of the `WebService` contract.
 
 use async_trait::async_trait;
-use base64::{Engine as _, engine::general_purpose};
 use codesmith_agent_runtime::network_policy::{Decision, host_from_url};
 use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_u64, required_str,
 };
+use codesmith_agent_runtime::web_service::{FetchRequest, SearchHit, SearchRequest};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -22,8 +29,8 @@ const MAX_RESULTS: usize = 10;
 const DEFAULT_TIMEOUT_MS: u64 = 15_000;
 const DEFAULT_OPEN_TIMEOUT_MS: u64 = 20_000;
 
-/// Redirect hops [`fetch_page`] will follow at most (mirrors reqwest's own
-/// default bound); every hop is re-checked against the network policy.
+/// Redirect hops the service fetch will follow for page opens; every hop is
+/// re-checked against the network policy inside the service.
 const MAX_REDIRECT_HOPS: usize = 10;
 const MAX_WEB_RUN_SESSIONS: usize = 64;
 const MAX_PAGES_PER_SESSION: usize = 256;
@@ -238,19 +245,12 @@ impl ResponseLength {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct SearchEntry {
-    title: String,
-    url: String,
-    snippet: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
 struct SearchResult {
     ref_id: String,
     query: String,
     source: String,
     count: usize,
-    results: Vec<SearchEntry>,
+    results: Vec<SearchHit>,
     #[serde(skip_serializing_if = "Option::is_none")]
     warning: Option<String>,
 }
@@ -469,14 +469,22 @@ impl ToolSpec for WebRunTool {
                 }
             }
         }
-        // Searches contact fixed endpoints; gate them the same way.
+        // Searches contact the configured provider's endpoints; gate them
+        // the same way. Without a service attached the execute path fails
+        // closed anyway, so the default scrape pair is a safe stand-in.
         if input
             .get("search_query")
             .and_then(|v| v.as_array())
             .is_some_and(|a| !a.is_empty())
         {
-            hosts.push("html.duckduckgo.com".to_string());
-            hosts.push("www.bing.com".to_string());
+            let search_hosts = match context.web_service.as_ref() {
+                Some(service) => service.search_hosts(),
+                None => vec![
+                    "html.duckduckgo.com".to_string(),
+                    "www.bing.com".to_string(),
+                ],
+            };
+            hosts.extend(search_hosts);
         }
         if input
             .get("image_query")
@@ -758,7 +766,6 @@ async fn resolve_or_fetch_page(
         return Ok(page);
     }
     if looks_like_url(ref_id) {
-        check_network_policy(ref_id, context)?;
         return fetch_page(ref_id, timeout_ms, context).await;
     }
     Err(ToolError::invalid_input(format!(
@@ -770,83 +777,35 @@ fn looks_like_url(value: &str) -> bool {
     value.starts_with("http://") || value.starts_with("https://")
 }
 
+/// Text search through the unified web service. The domain filter is a
+/// web_run-specific post-processing step on top of the service outcome.
 async fn run_search(
     query: &str,
     max_results: usize,
     timeout_ms: u64,
     domains: &[String],
     context: &ToolContext,
-) -> Result<(Vec<SearchEntry>, String, Option<String>), ToolError> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_millis(timeout_ms))
-        .user_agent(USER_AGENT)
-        .build()
-        .map_err(|e| ToolError::execution_failed(format!("Failed to build HTTP client: {e}")))?;
-
-    let encoded = url_encode(query);
-    let url = format!("https://html.duckduckgo.com/html/?q={encoded}");
-    check_network_policy(&url, context)?;
-    let resp = client
-        .get(&url)
-        .header(
-            "Accept",
-            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+) -> Result<(Vec<SearchHit>, String, Option<String>), ToolError> {
+    let service = context.web_service.as_ref().ok_or_else(|| {
+        ToolError::not_available(
+            "web.run: no web service attached to this context; web tools are unavailable",
         )
-        .header("Accept-Language", "en-US,en;q=0.5")
-        .send()
+    })?;
+
+    let outcome = service
+        .search(
+            SearchRequest::new(query)
+                .with_max_results(max_results)
+                .with_timeout(Duration::from_millis(timeout_ms))
+                .with_policy(context.network_policy.clone())
+                .with_cancel(context.cancel_token.clone())
+                .for_tool("web_run"),
+        )
         .await
-        .map_err(|e| ToolError::execution_failed(format!("Web search request failed: {e}")))?;
+        .map_err(ToolError::from)?;
 
-    let status = resp.status();
-    let body = resp
-        .text()
-        .await
-        .map_err(|e| ToolError::execution_failed(format!("Failed to read response: {e}")))?;
-
-    if !status.is_success() {
-        return Err(ToolError::execution_failed(format!(
-            "Web search failed: HTTP {}",
-            status.as_u16()
-        )));
-    }
-
-    let mut results = parse_duckduckgo_results(&body, max_results);
-    let mut source = "duckduckgo".to_string();
-    let mut warnings = Vec::new();
-
-    if results.is_empty() {
-        let duckduckgo_blocked = is_duckduckgo_challenge(&body);
-        // The Bing fallback contacts a second host; honour the policy for it
-        // too, degrading to a warning instead of an error so a Bing-denied
-        // policy still returns the (empty) DuckDuckGo results.
-        match check_network_policy("https://www.bing.com/", context) {
-            Err(policy_err) => {
-                warnings.push(format!("Bing fallback skipped: {policy_err}"));
-            }
-            Ok(()) => match run_bing_search(&client, query, max_results).await {
-                Ok(fallback_results) if !fallback_results.is_empty() => {
-                    results = fallback_results;
-                    source = "bing".to_string();
-                    warnings.push(if duckduckgo_blocked {
-                        "DuckDuckGo returned a bot challenge; used Bing fallback".to_string()
-                    } else {
-                        "DuckDuckGo returned no parseable results; used Bing fallback".to_string()
-                    });
-                }
-                Ok(_) if duckduckgo_blocked => {
-                    return Err(ToolError::execution_failed(
-                        "DuckDuckGo returned a bot challenge and Bing fallback returned no results",
-                    ));
-                }
-                Err(err) if duckduckgo_blocked => {
-                    return Err(ToolError::execution_failed(format!(
-                        "DuckDuckGo returned a bot challenge and Bing fallback failed: {err}"
-                    )));
-                }
-                Ok(_) | Err(_) => {}
-            },
-        }
-    }
+    let mut results = outcome.results;
+    let mut warnings = outcome.warnings;
 
     if !domains.is_empty() {
         let before = results.len();
@@ -858,46 +817,13 @@ async fn run_search(
 
     Ok((
         results,
-        source,
+        outcome.source,
         if warnings.is_empty() {
             None
         } else {
             Some(warnings.join("; "))
         },
     ))
-}
-
-async fn run_bing_search(
-    client: &reqwest::Client,
-    query: &str,
-    max_results: usize,
-) -> Result<Vec<SearchEntry>, ToolError> {
-    let encoded = url_encode(query);
-    let url = format!("https://www.bing.com/search?q={encoded}");
-    let resp = client
-        .get(&url)
-        .header(
-            "Accept",
-            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        )
-        .header("Accept-Language", "en-US,en;q=0.9")
-        .send()
-        .await
-        .map_err(|e| ToolError::execution_failed(format!("Bing fallback request failed: {e}")))?;
-
-    let status = resp.status();
-    let body = resp.text().await.map_err(|e| {
-        ToolError::execution_failed(format!("Failed to read Bing fallback response: {e}"))
-    })?;
-
-    if !status.is_success() {
-        return Err(ToolError::execution_failed(format!(
-            "Bing fallback failed: HTTP {}",
-            status.as_u16()
-        )));
-    }
-
-    Ok(parse_bing_results(&body, max_results))
 }
 
 fn domain_matches(url: &str, domains: &[String]) -> bool {
@@ -1085,7 +1011,7 @@ async fn run_image_search(
     Ok((results, warning))
 }
 
-fn page_from_search(query: &str, results: &[SearchEntry]) -> WebPage {
+fn page_from_search(query: &str, results: &[SearchHit]) -> WebPage {
     let mut lines = Vec::new();
     let mut links = Vec::new();
 
@@ -1136,100 +1062,57 @@ fn check_network_policy(url: &str, context: &ToolContext) -> Result<(), ToolErro
     }
 }
 
+/// Fetch one page through the unified web service: policy per redirect hop
+/// and SSRF validation live in the service; this side owns the page parsing
+/// (HTML to lines/links, PDF extraction).
 async fn fetch_page(
     url: &str,
     timeout_ms: u64,
     context: &ToolContext,
 ) -> Result<WebPage, ToolError> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_millis(timeout_ms))
-        .user_agent(USER_AGENT)
-        // Redirects are followed manually below so every hop re-runs the
-        // network policy check; a denied host must not be reachable by
-        // redirect from an allowed one.
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| ToolError::execution_failed(format!("Failed to build HTTP client: {e}")))?;
+    let service = context.web_service.as_ref().ok_or_else(|| {
+        ToolError::not_available(
+            "web.run: no web service attached to this context; web tools are unavailable",
+        )
+    })?;
 
-    let mut current = url.to_string();
-    for _ in 0..=MAX_REDIRECT_HOPS {
-        check_network_policy(&current, context)?;
-        let resp = client
-            .get(&current)
-            .header(
-                "Accept",
-                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            )
-            .header("Accept-Language", "en-US,en;q=0.5")
-            .send()
-            .await
-            .map_err(|e| ToolError::execution_failed(format!("Web request failed: {e}")))?;
+    let outcome = service
+        .fetch(
+            FetchRequest::new(url)
+                .with_timeout(Duration::from_millis(timeout_ms))
+                .with_max_redirects(MAX_REDIRECT_HOPS)
+                .with_policy(context.network_policy.clone())
+                .with_cancel(context.cancel_token.clone())
+                .for_tool("web_run"),
+        )
+        .await
+        .map_err(ToolError::from)?;
 
-        let status = resp.status();
-        if status.is_redirection() {
-            let Some(location) = resp
-                .headers()
-                .get(reqwest::header::LOCATION)
-                .and_then(|v| v.to_str().ok())
-            else {
-                return Err(ToolError::execution_failed(format!(
-                    "Web request failed: HTTP {} without a redirect location",
-                    status.as_u16()
-                )));
-            };
-            current = resolve_redirect_url(&current, location)?;
-            continue;
-        }
+    let current = outcome.url;
+    let content_type = Some(outcome.content_type);
 
-        let content_type = resp
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| ToolError::execution_failed(format!("Failed to read response: {e}")))?;
-
-        if !status.is_success() {
-            return Err(ToolError::execution_failed(format!(
-                "Web request failed: HTTP {}",
-                status.as_u16()
-            )));
-        }
-
-        if is_pdf(&content_type, &current) {
-            return parse_pdf_page(&current, content_type, &bytes);
-        }
-
-        let body = String::from_utf8_lossy(&bytes).to_string();
-        let (lines, links, title) = parse_html(&body, &current);
-
-        return Ok(WebPage {
-            url: current,
-            title,
-            content_type,
-            lines,
-            links,
-            pdf_pages: None,
-        });
+    if !(200..300).contains(&outcome.status) {
+        return Err(ToolError::execution_failed(format!(
+            "Web request failed: HTTP {}",
+            outcome.status
+        )));
     }
 
-    Err(ToolError::execution_failed(format!(
-        "Web request failed: more than {MAX_REDIRECT_HOPS} redirects"
-    )))
-}
+    if is_pdf(&content_type, &current) {
+        return parse_pdf_page(&current, content_type, &outcome.body);
+    }
 
-/// Resolve a redirect `Location` (possibly relative) against the URL that
-/// produced it.
-fn resolve_redirect_url(base: &str, location: &str) -> Result<String, ToolError> {
-    let base_url = reqwest::Url::parse(base).map_err(|e| {
-        ToolError::execution_failed(format!("Invalid redirect base URL '{base}': {e}"))
-    })?;
-    let next = base_url.join(location).map_err(|e| {
-        ToolError::execution_failed(format!("Invalid redirect location '{location}': {e}"))
-    })?;
-    Ok(next.to_string())
+    let body = String::from_utf8_lossy(&outcome.body).to_string();
+    let (lines, links, title) = parse_html(&body, &current);
+
+    Ok(WebPage {
+        url: current,
+        title,
+        content_type,
+        lines,
+        links,
+        pdf_pages: None,
+    })
 }
 
 fn is_pdf(content_type: &Option<String>, url: &str) -> bool {
@@ -1397,11 +1280,6 @@ static BLOCK_RE: OnceLock<Regex> = OnceLock::new();
 static SCRIPT_RE: OnceLock<Regex> = OnceLock::new();
 static STYLE_RE: OnceLock<Regex> = OnceLock::new();
 static TITLE_RE: OnceLock<Regex> = OnceLock::new();
-static SNIPPET_RE: OnceLock<Regex> = OnceLock::new();
-static SEARCH_TITLE_RE: OnceLock<Regex> = OnceLock::new();
-static BING_RESULT_RE: OnceLock<Regex> = OnceLock::new();
-static BING_TITLE_RE: OnceLock<Regex> = OnceLock::new();
-static BING_SNIPPET_RE: OnceLock<Regex> = OnceLock::new();
 
 fn get_anchor_re() -> &'static Regex {
     ANCHOR_RE.get_or_init(|| {
@@ -1431,43 +1309,6 @@ fn get_style_re() -> &'static Regex {
 
 fn get_title_re() -> &'static Regex {
     TITLE_RE.get_or_init(|| Regex::new(r"(?is)<title[^>]*>(.*?)</title>").unwrap())
-}
-
-fn get_search_title_re() -> &'static Regex {
-    SEARCH_TITLE_RE.get_or_init(|| {
-        Regex::new(r#"<a[^>]*class=\"result__a\"[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>"#)
-            .expect("title regex pattern is valid")
-    })
-}
-
-fn get_search_snippet_re() -> &'static Regex {
-    SNIPPET_RE.get_or_init(|| {
-        Regex::new(
-            r#"<a[^>]*class=\"result__snippet\"[^>]*>(.*?)</a>|<div[^>]*class=\"result__snippet\"[^>]*>(.*?)</div>"#,
-        )
-        .expect("snippet regex pattern is valid")
-    })
-}
-
-fn get_bing_result_re() -> &'static Regex {
-    BING_RESULT_RE.get_or_init(|| {
-        Regex::new(r#"(?is)<li[^>]*class=\"[^\"]*\bb_algo\b[^\"]*\"[^>]*>(.*?)</li>"#)
-            .expect("bing result regex pattern is valid")
-    })
-}
-
-fn get_bing_title_re() -> &'static Regex {
-    BING_TITLE_RE.get_or_init(|| {
-        Regex::new(r#"(?is)<h2[^>]*>.*?<a[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>"#)
-            .expect("bing title regex pattern is valid")
-    })
-}
-
-fn get_bing_snippet_re() -> &'static Regex {
-    BING_SNIPPET_RE.get_or_init(|| {
-        Regex::new(r#"(?is)<div[^>]*class=\"[^\"]*\bb_caption\b[^\"]*\"[^>]*>.*?<p[^>]*>(.*?)</p>"#)
-            .expect("bing snippet regex pattern is valid")
-    })
 }
 
 fn parse_html(html: &str, base_url: &str) -> (Vec<String>, Vec<WebLink>, Option<String>) {
@@ -1596,152 +1437,6 @@ fn decode_html_entities(text: &str) -> String {
         .replace("&nbsp;", " ")
 }
 
-fn parse_duckduckgo_results(html: &str, max_results: usize) -> Vec<SearchEntry> {
-    let title_re = get_search_title_re();
-    let snippet_re = get_search_snippet_re();
-    let snippets: Vec<String> = snippet_re
-        .captures_iter(html)
-        .filter_map(|cap| cap.get(1).or_else(|| cap.get(2)))
-        .map(|m| normalize_whitespace(&decode_html_entities(&strip_tags(m.as_str()))))
-        .collect();
-
-    let mut results = Vec::new();
-    for (idx, cap) in title_re.captures_iter(html).enumerate() {
-        if results.len() >= max_results {
-            break;
-        }
-        let href = cap.get(1).map(|m| m.as_str()).unwrap_or("");
-        let title_raw = cap.get(2).map(|m| m.as_str()).unwrap_or("");
-        let title = normalize_whitespace(&decode_html_entities(&strip_tags(title_raw)));
-        if title.is_empty() {
-            continue;
-        }
-        let url = normalize_search_url(href);
-        let snippet = snippets
-            .get(idx)
-            .map(|s| s.to_string())
-            .filter(|s| !s.is_empty());
-
-        results.push(SearchEntry {
-            title,
-            url,
-            snippet,
-        });
-    }
-
-    results
-}
-
-fn is_duckduckgo_challenge(html: &str) -> bool {
-    html.contains("anomaly-modal") || html.contains("Unfortunately, bots use DuckDuckGo too")
-}
-
-fn parse_bing_results(html: &str, max_results: usize) -> Vec<SearchEntry> {
-    let mut results = Vec::new();
-    for cap in get_bing_result_re().captures_iter(html) {
-        if results.len() >= max_results {
-            break;
-        }
-        let Some(block) = cap.get(1).map(|m| m.as_str()) else {
-            continue;
-        };
-        let Some(title_cap) = get_bing_title_re().captures(block) else {
-            continue;
-        };
-        let href = title_cap.get(1).map(|m| m.as_str()).unwrap_or("");
-        let title_raw = title_cap.get(2).map(|m| m.as_str()).unwrap_or("");
-        let title = normalize_whitespace(&decode_html_entities(&strip_tags(title_raw)));
-        if title.is_empty() {
-            continue;
-        }
-        let snippet = get_bing_snippet_re()
-            .captures(block)
-            .and_then(|snippet_cap| snippet_cap.get(1))
-            .map(|m| normalize_whitespace(&decode_html_entities(&strip_tags(m.as_str()))))
-            .filter(|s| !s.is_empty());
-
-        results.push(SearchEntry {
-            title,
-            url: normalize_bing_url(href),
-            snippet,
-        });
-    }
-
-    results
-}
-
-fn normalize_search_url(href: &str) -> String {
-    if let Some(uddg) = extract_query_param(href, "uddg") {
-        let decoded = percent_decode(&uddg);
-        if !decoded.is_empty() {
-            return decoded;
-        }
-    }
-    if href.starts_with("//") {
-        return format!("https:{href}");
-    }
-    if href.starts_with('/') {
-        return format!("https://duckduckgo.com{href}");
-    }
-    href.to_string()
-}
-
-fn normalize_bing_url(href: &str) -> String {
-    if let Some(encoded) = extract_query_param(href, "u") {
-        let decoded = percent_decode(&encoded);
-        let token = decoded.strip_prefix("a1").unwrap_or(&decoded);
-        let mut padded = token.replace('-', "+").replace('_', "/");
-        while !padded.len().is_multiple_of(4) {
-            padded.push('=');
-        }
-        if let Ok(bytes) = general_purpose::STANDARD.decode(padded)
-            && let Ok(url) = String::from_utf8(bytes)
-            && looks_like_url(&url)
-        {
-            return url;
-        }
-    }
-    if href.starts_with("//") {
-        return format!("https:{href}");
-    }
-    if href.starts_with('/') {
-        return format!("https://www.bing.com{href}");
-    }
-    href.to_string()
-}
-
-fn extract_query_param(url: &str, key: &str) -> Option<String> {
-    let query_start = url.find('?')?;
-    let query = &url[query_start + 1..];
-    for part in query.split('&') {
-        let (k, v) = part.split_once('=')?;
-        if k == key {
-            return Some(v.to_string());
-        }
-    }
-    None
-}
-
-fn percent_decode(input: &str) -> String {
-    let mut out = Vec::with_capacity(input.len());
-    let bytes = input.as_bytes();
-    let mut idx = 0;
-    while idx < bytes.len() {
-        if bytes[idx] == b'%'
-            && idx + 2 < bytes.len()
-            && let Ok(hex) = std::str::from_utf8(&bytes[idx + 1..idx + 3])
-            && let Ok(val) = u8::from_str_radix(hex, 16)
-        {
-            out.push(val);
-            idx += 3;
-            continue;
-        }
-        out.push(bytes[idx]);
-        idx += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
 fn url_encode(input: &str) -> String {
     codesmith_agent_runtime::utils::url_encode(input)
 }
@@ -1750,6 +1445,11 @@ fn url_encode(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    // The test mutex serializes process-global WebRunState resets across the
+    // module's tests, including the async ones below: holding the guard
+    // across an await is safe here because no other holder blocks — every
+    // other acquisition is a brief synchronous with_state call.
+    #![allow(clippy::await_holding_lock)]
     use super::*;
     use std::path::PathBuf;
     use std::sync::Mutex;
@@ -1819,41 +1519,6 @@ mod tests {
             extract_duckduckgo_vqd(html_plain),
             Some("3-xyz_123".to_string())
         );
-    }
-
-    #[test]
-    fn parses_bing_results_and_decodes_redirect_url() {
-        let html = r#"
-            <ol>
-              <li class="b_algo">
-                <h2><a href="https://www.bing.com/ck/a?u=a1aHR0cHM6Ly9leGFtcGxlLmNvbS9wYXRoP3E9MQ">Example &amp; Result</a></h2>
-                <div class="b_caption"><p>A <strong>useful</strong> snippet.</p></div>
-              </li>
-            </ol>
-        "#;
-
-        let results = parse_bing_results(html, 5);
-
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].title, "Example & Result");
-        assert_eq!(results[0].url, "https://example.com/path?q=1");
-        assert_eq!(results[0].snippet.as_deref(), Some("A useful snippet."));
-    }
-
-    #[test]
-    fn percent_decode_handles_utf8_multibyte_sequences() {
-        // Percent-encoded CJK: %E4%B8%AA%E4%BA%BA = 个人 (each glyph is 3 UTF-8 bytes).
-        assert_eq!(percent_decode("Hello %E4%B8%AA%E4%BA%BA"), "Hello 个人");
-        assert_eq!(percent_decode("%E7%B4%A0%E6%9D%90"), "素材");
-        // Percent-encoded UTF-8 inside a URL path (DuckDuckGo `uddg=` redirect shape).
-        assert_eq!(
-            percent_decode("https://example.com/%E9%A1%B5%E9%9D%A2"),
-            "https://example.com/页面"
-        );
-        // Raw UTF-8 in the input passes through unchanged.
-        assert_eq!(percent_decode("查询 keyword"), "查询 keyword");
-        // ASCII-only inputs preserve existing behavior; `+` stays literal.
-        assert_eq!(percent_decode("foo+bar%20baz"), "foo+bar baz");
     }
 
     #[test]
@@ -1960,62 +1625,164 @@ mod tests {
         assert!(format!("{err}").contains("blocked by network policy"));
     }
 
-    #[test]
-    fn redirect_location_resolves_relative_and_absolute() {
+    // === unified web service paths (TODO-49) ==============================
+
+    use codesmith_agent_runtime::web_service::mock::MockWebService;
+    use codesmith_agent_runtime::web_service::{
+        FetchOutcome, SearchOutcome, WebError, WebErrorKind,
+    };
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    fn service_ctx(service: MockWebService) -> ToolContext {
+        ToolContext::new(PathBuf::from("."))
+            .with_state_namespace("web-run-tests".to_string())
+            .with_web_service(Arc::new(service))
+    }
+
+    #[tokio::test]
+    async fn search_query_runs_through_the_service_and_stores_a_ref() {
+        let _lock = lock_web_run_tests();
+        reset_web_run_state();
+        let service = MockWebService::ok().with_search(Ok(SearchOutcome {
+            results: vec![SearchHit {
+                title: "Rust docs".to_string(),
+                url: "https://doc.rust-lang.org/".to_string(),
+                snippet: Some("the book".to_string()),
+            }],
+            source: "mock".to_string(),
+            warnings: vec!["fallback note".to_string()],
+        }));
+        let result = WebRunTool
+            .execute(
+                json!({"search_query": [{"q": "rust book"}]}),
+                &service_ctx(service),
+            )
+            .await
+            .expect("search through service");
+        let parsed: serde_json::Value = serde_json::from_str(&result.content).unwrap();
+        let searches = parsed["search_query"].as_array().unwrap();
+        assert_eq!(searches.len(), 1);
+        assert_eq!(searches[0]["source"], "mock");
+        assert_eq!(searches[0]["count"], 1);
         assert_eq!(
-            resolve_redirect_url("https://a.example/x/y", "/z").unwrap(),
-            "https://a.example/z"
+            searches[0]["results"][0]["url"],
+            "https://doc.rust-lang.org/"
         );
-        assert_eq!(
-            resolve_redirect_url("https://a.example/x/y", "../w").unwrap(),
-            "https://a.example/w"
+        assert!(
+            searches[0]["warning"]
+                .as_str()
+                .unwrap()
+                .contains("fallback note")
         );
-        assert_eq!(
-            resolve_redirect_url("https://a.example/x/y", "https://b.example/c").unwrap(),
-            "https://b.example/c"
+        // The ref_id the model cites resolves back to a stored page.
+        let ref_id = searches[0]["ref_id"].as_str().unwrap().to_string();
+        let page = get_page(&ref_id).expect("search results are stored under ref_id");
+        assert!(
+            page.links
+                .iter()
+                .any(|l| l.url == "https://doc.rust-lang.org/")
         );
     }
 
     #[tokio::test]
-    async fn fetch_page_rechecks_network_policy_on_redirect() {
-        use codesmith_agent_runtime::network_policy::{
-            Decision, NetworkPolicy, NetworkPolicyDecider,
-        };
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-        // Minimal server: any request answers with a redirect to a denied host.
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+    async fn search_query_domain_filter_applies_on_top_of_the_service() {
+        let _lock = lock_web_run_tests();
+        reset_web_run_state();
+        let service = MockWebService::ok().with_search(Ok(SearchOutcome {
+            results: vec![
+                SearchHit {
+                    title: "inside".to_string(),
+                    url: "https://rust-lang.org/inside".to_string(),
+                    snippet: None,
+                },
+                SearchHit {
+                    title: "outside".to_string(),
+                    url: "https://example.com/outside".to_string(),
+                    snippet: None,
+                },
+            ],
+            source: "mock".to_string(),
+            warnings: Vec::new(),
+        }));
+        let result = WebRunTool
+            .execute(
+                json!({"search_query": [{"q": "rust", "domains": ["rust-lang.org"]}]}),
+                &service_ctx(service),
+            )
             .await
-            .expect("bind test listener");
-        let addr = listener.local_addr().expect("local addr");
-        let server = tokio::spawn(async move {
-            let (mut sock, _) = listener.accept().await.expect("accept");
-            let mut buf = [0u8; 2048];
-            let _ = sock.read(&mut buf).await;
-            let resp = "HTTP/1.1 302 Found\r\n\
-                        Location: https://denied.example/landing\r\n\
-                        Content-Length: 0\r\n\
-                        Connection: close\r\n\r\n";
-            let _ = sock.write_all(resp.as_bytes()).await;
-        });
-
-        let policy = NetworkPolicy {
-            default: Decision::Allow.into(),
-            allow: vec![],
-            deny: vec!["denied.example".to_string()],
-            proxy: Vec::new(),
-            audit: false,
-        };
-        let decider = NetworkPolicyDecider::new(policy, None);
-        let ctx = ToolContext::new(PathBuf::from(".")).with_network_policy(decider);
-
-        let err = fetch_page(&format!("http://{addr}/hop"), 5_000, &ctx)
-            .await
-            .expect_err("redirect to a denied host must be blocked");
-        assert!(
-            format!("{err}").contains("denied.example"),
-            "error should name the denied host: {err}"
+            .expect("filtered search");
+        let parsed: serde_json::Value = serde_json::from_str(&result.content).unwrap();
+        let searches = parsed["search_query"].as_array().unwrap();
+        assert_eq!(searches[0]["count"], 1);
+        assert_eq!(
+            searches[0]["results"][0]["url"],
+            "https://rust-lang.org/inside"
         );
-        server.await.expect("server task");
+        assert!(
+            searches[0]["warning"]
+                .as_str()
+                .unwrap()
+                .contains("Filtered")
+        );
+    }
+
+    #[tokio::test]
+    async fn open_url_fetches_through_the_service_and_renders_lines() {
+        let _lock = lock_web_run_tests();
+        reset_web_run_state();
+        let service = MockWebService::ok().with_fetch(Ok(FetchOutcome {
+            url: "https://example.com/article".to_string(),
+            status: 200,
+            headers: BTreeMap::new(),
+            content_type: "text/html".to_string(),
+            body: b"<html><head><title>Article</title></head><body><p>hello web</p></body></html>"
+                .to_vec(),
+            truncated: false,
+        }));
+        let result = WebRunTool
+            .execute(
+                json!({"open": [{"ref_id": "https://example.com/article"}]}),
+                &service_ctx(service),
+            )
+            .await
+            .expect("open through service");
+        let parsed: serde_json::Value = serde_json::from_str(&result.content).unwrap();
+        let opens = parsed["open"].as_array().unwrap();
+        assert_eq!(opens[0]["url"], "https://example.com/article");
+        assert_eq!(opens[0]["title"], "Article");
+        assert!(opens[0]["content"].as_str().unwrap().contains("hello web"));
+    }
+
+    #[tokio::test]
+    async fn open_service_error_surfaces_as_tool_error() {
+        let _lock = lock_web_run_tests();
+        reset_web_run_state();
+        let service = MockWebService::ok().with_fetch(Err(WebError::new(
+            WebErrorKind::PolicyDenied,
+            "network call to 'evil.example' blocked by network policy",
+        )));
+        let err = WebRunTool
+            .execute(
+                json!({"open": [{"ref_id": "https://evil.example/x"}]}),
+                &service_ctx(service),
+            )
+            .await
+            .expect_err("policy deny must surface");
+        assert!(format!("{err}").contains("blocked by network policy"));
+    }
+
+    #[tokio::test]
+    async fn missing_service_fails_loud_not_silently() {
+        let _lock = lock_web_run_tests();
+        reset_web_run_state();
+        let err = WebRunTool
+            .execute(
+                json!({"search_query": [{"q": "rust"}]}),
+                &ToolContext::new(PathBuf::from(".")),
+            )
+            .await
+            .expect_err("no service attached must fail");
+        assert!(format!("{err}").contains("no web service attached"));
     }
 }

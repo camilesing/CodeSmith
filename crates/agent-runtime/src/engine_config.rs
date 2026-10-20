@@ -16,9 +16,10 @@ use std::time::Duration;
 use crate::capacity::CapacityControllerConfig;
 use crate::compaction::{CompactionConfig, DEFAULT_TEXT_MODEL};
 use crate::config_types::{
-    AutoRouteContext, DEFAULT_MAX_SUBAGENTS, DEFAULT_SUBAGENT_API_TIMEOUT_SECS, SearchProvider,
-    ToolsConfig, VisionModelConfig, WorkshopConfig,
+    AutoRouteContext, DEFAULT_MAX_SUBAGENTS, DEFAULT_SUBAGENT_API_TIMEOUT_SECS, ToolsConfig,
+    VisionModelConfig, WorkshopConfig,
 };
+use crate::web_service::WebService;
 
 /// Default step budget for the engine's tool loop, consumed by the headless
 /// entry points (`run_exec_agent`, `run_team_teammate`) and by embedders
@@ -220,12 +221,14 @@ pub struct EngineConfig {
     pub strict_tool_mode: bool,
     /// Workshop / large-tool-output routing (#548). `None` disables routing.
     pub workshop: Option<WorkshopConfig>,
-    /// Which search backend `web_search` should use. Default: DuckDuckGo.
-    pub search_provider: SearchProvider,
-    /// API key for Tavily, Bocha, Metaso, or Baidu. `None` for Bing or DuckDuckGo.
-    /// Metaso also falls back to `METASO_API_KEY` env var, then a built-in key.
-    /// Baidu also falls back to `BAIDU_SEARCH_API_KEY`.
-    pub search_api_key: Option<String>,
+    /// Unified web retrieval service (TODO-49): `search`/`fetch` for the
+    /// web-facing tools, provider-selected from `[search]` config by the
+    /// host at engine construction (switching the search provider is
+    /// config-only). Held as the seam's trait object so the kernel only
+    /// sees the definition (`crate::web_service::WebService`); the
+    /// reqwest-backed provider lives in `codesmith-tool-impls`. `None`
+    /// (embeds, tests) makes the web tools fail closed.
+    pub web_service: Option<Arc<dyn WebService>>,
     /// Whether the session registered the code-index navigation tools
     /// (`symbol_search`, `find_references`). Session-constant by design:
     /// the tool catalog must stay stable across turns for the KV prefix
@@ -315,19 +318,15 @@ pub struct EngineConfig {
     // — see `host.runtime_services` and `host.hooks` in the engine.
 }
 
-/// Manual `Debug`: `search_api_key` is redacted (a derived impl would print
-/// the plaintext key into logs), and the remaining fields are summarized via
-/// `finish_non_exhaustive` so a future field can never leak through Debug
-/// by accident.
+/// Manual `Debug`: no search credential can leak — the API key (if any)
+/// lives inside the `web_service` trait object, which is not `Debug` — and
+/// the remaining fields are summarized via `finish_non_exhaustive` so a
+/// future field can never leak through Debug by accident.
 impl std::fmt::Debug for EngineConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EngineConfig")
             .field("model", &self.model)
             .field("workspace", &self.workspace)
-            .field(
-                "search_api_key",
-                &self.search_api_key.as_ref().map(|_| "<redacted>"),
-            )
             .finish_non_exhaustive()
     }
 }
@@ -387,8 +386,7 @@ impl Default for EngineConfig {
             disabled_tools: HashSet::new(),
             locale_tag: "en".to_string(),
             workshop: None,
-            search_provider: SearchProvider::default(),
-            search_api_key: None,
+            web_service: None,
             index_enabled: true,
             subagent_api_timeout: Duration::from_secs(DEFAULT_SUBAGENT_API_TIMEOUT_SECS),
             stream_idle_timeout: Duration::from_secs(DEFAULT_STREAM_IDLE_TIMEOUT_SECS),

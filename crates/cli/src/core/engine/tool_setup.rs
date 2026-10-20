@@ -161,9 +161,12 @@ pub(super) fn build_tool_context_for(
         ctx = ctx.with_sandbox_backend(std::sync::Arc::clone(backend));
     }
 
-    // Wire search provider config.
-    ctx.search_provider = config.search_provider;
-    ctx.search_api_key = config.search_api_key.clone();
+    // Wire the unified web service (TODO-49): provider-selected search +
+    // anonymous-HTTP fetch behind one WebService seam, built once per engine
+    // from `[search]` config by the host. Web tools fail closed without it.
+    if let Some(web) = config.web_service.clone() {
+        ctx = ctx.with_web_service(web);
+    }
 
     let policy = sandbox_policy_for_mode(mode, &session.workspace);
     let mut ctx = ctx

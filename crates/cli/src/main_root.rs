@@ -6020,9 +6020,13 @@ pub(crate) async fn run_exec_agent(
             .tag()
             .to_string(),
         workshop: config.workshop.clone(),
-        search_provider: config.search_provider(),
+        web_service: Some(std::sync::Arc::new(
+            codesmith_tool_impls::web_service::HttpWebService::new(
+                config.search_provider(),
+                config.search.as_ref().and_then(|s| s.api_key.clone()),
+            ),
+        )),
         index_enabled: config.index_tools_enabled(),
-        search_api_key: config.search.as_ref().and_then(|s| s.api_key.clone()),
         tools_always_load: config.tools_always_load(),
         disabled_tools: crate::capabilities::effective_disabled(config.tools.as_ref())
             .map_err(anyhow::Error::msg)?,
@@ -6629,9 +6633,13 @@ pub(crate) async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -
             .tag()
             .to_string(),
         workshop: config.workshop.clone(),
-        search_provider: config.search_provider(),
+        web_service: Some(std::sync::Arc::new(
+            codesmith_tool_impls::web_service::HttpWebService::new(
+                config.search_provider(),
+                config.search.as_ref().and_then(|s| s.api_key.clone()),
+            ),
+        )),
         index_enabled: config.index_tools_enabled(),
-        search_api_key: config.search.as_ref().and_then(|s| s.api_key.clone()),
         tools_always_load: config.tools_always_load(),
         disabled_tools: crate::capabilities::effective_disabled(config.tools.as_ref())
             .map_err(anyhow::Error::msg)?,
