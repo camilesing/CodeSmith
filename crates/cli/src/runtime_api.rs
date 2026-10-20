@@ -2321,6 +2321,7 @@ mod tests {
             context_references: Vec::new(),
             artifacts: Vec::new(),
             failed_attempts: Vec::new(),
+            approvals: Vec::new(),
         }
     }
 

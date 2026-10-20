@@ -371,6 +371,14 @@ invocation is denied and nothing else. `[a]` and `[e]` last until the process
 exits; `/permissions allow <command prefix>` is the form written to
 `~/.codesmith/approvals.toml` that survives a restart.
 
+Every approval decision lands in the session file's `approvals` list — the tool,
+both keys, the answer, the reason you typed, the workspace, and the time —
+including the calls that were answered without asking you (`session-grant`,
+`workspace-grant`, `session-deny`, `auto-mode`). It is the record of what you
+actually agreed to, so a resumed session can still say whether a patch was
+hand-approved or covered by an earlier "always". Log only: it never reaches the
+model and grants nothing by itself.
+
 Good tool instructions are concrete:
 
 ```text

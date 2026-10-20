@@ -366,6 +366,50 @@ pub struct AttemptRecord {
     pub duration_ms: u64,
 }
 
+/// One tool-approval decision, as the host reached it.
+///
+/// The REPL's approval gate used to leave no trace at all: the prompt and the
+/// answer scrolled off the terminal, and a session file could not tell a
+/// hand-approved `apply_patch` from one covered by an earlier "always". This
+/// record is written for **every** gated call — including the ones the host
+/// answers without asking, which is where the ambiguity lived.
+///
+/// Log-only: never part of the transcript, never sent to a model, and carrying
+/// no authority (the grants themselves live in the host's session set and
+/// `approvals.toml`). Read it as the record of what the user actually agreed to.
+///
+/// Known limitations, by design: the path-access and sandbox-elevation
+/// questions are separate gates and are not recorded here yet; approvals a
+/// sub-agent surfaces through the parent's prompt are recorded as the parent's
+/// (that prompt is where the answer came from); the one-shot `exec` path never
+/// prompts, so it writes none.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ApprovalRecord {
+    /// The engine's tool-call id (`Event::ApprovalRequired.id`).
+    pub tool_call_id: String,
+    /// Tool the call was made against.
+    pub tool_name: String,
+    /// The exact-call key — what `[e]` denies.
+    pub approval_key: String,
+    /// The grouping key — one part per family for a chained shell command, and
+    /// `exact:<hash>` for a call with no family. `[a]` records these parts.
+    pub grouping_key: String,
+    /// How the decision was reached: one of the four answers
+    /// (`run-once`, `always-session`, `never-this`, `skip`), `feedback` for a
+    /// refusal carrying text for the model, or a path that never asked
+    /// (`auto-mode` for an approval mode that suppresses prompts,
+    /// `session-grant` / `workspace-grant` for a call covered by an earlier
+    /// `[a]` or a persisted grant, `session-deny` for one covered by `[e]`).
+    pub decision: String,
+    /// The text handed to the running turn, for `feedback`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feedback: Option<String>,
+    /// Workspace the call was authorized in.
+    pub workspace: String,
+    /// When the answer was recorded.
+    pub at: DateTime<Utc>,
+}
+
 /// A saved session containing full conversation history
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedSession {
@@ -405,6 +449,12 @@ pub struct SavedSession {
     /// field existed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failed_attempts: Vec<AttemptRecord>,
+    /// Approval decisions the host's gate reached (round-4): one record per
+    /// gated tool call, whether the user answered the prompt or an earlier
+    /// grant answered it. Log-only — never part of the transcript or any model
+    /// request. Empty on sessions saved before the field existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approvals: Vec<ApprovalRecord>,
 }
 
 /// File-backed [`SessionStore`] provider: one pretty-JSON
@@ -1075,6 +1125,7 @@ pub fn create_saved_session_with_id_and_mode(
         context_references: Vec::new(),
         artifacts: Vec::new(),
         failed_attempts: Vec::new(),
+        approvals: Vec::new(),
     }
 }
 
@@ -1405,6 +1456,44 @@ mod tests {
         );
     }
 
+    #[test]
+    fn approvals_round_trip_and_empty_omission() {
+        let record = ApprovalRecord {
+            tool_call_id: "call-1".to_string(),
+            tool_name: "exec_shell".to_string(),
+            approval_key: "shell:exec_shell:abc".to_string(),
+            grouping_key: "shell:cargo build + cargo clippy".to_string(),
+            decision: "always-session".to_string(),
+            feedback: None,
+            workspace: "/tmp".to_string(),
+            at: DateTime::from_timestamp(1_700_000_000, 0).expect("timestamp"),
+        };
+        let mut session = create_saved_session(
+            &[make_test_message("user", "hello")],
+            "m",
+            std::path::Path::new("/tmp"),
+            0,
+            None,
+        );
+        session.approvals.push(record.clone());
+        let json = serde_json::to_value(&session).expect("serialize");
+        assert_eq!(
+            json.get("approvals")
+                .and_then(|v| v.as_array())
+                .map(Vec::len),
+            Some(1)
+        );
+        let back: SavedSession = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back.approvals, vec![record]);
+
+        session.approvals.clear();
+        let empty_json = serde_json::to_value(&session).expect("serialize");
+        assert!(
+            empty_json.get("approvals").is_none(),
+            "empty records must be omitted, keeping the legacy JSON shape"
+        );
+    }
+
     fn make_test_message(role: &str, text: &str) -> Message {
         Message {
             role: role.to_string(),
@@ -1447,6 +1536,7 @@ mod tests {
             context_references: Vec::new(),
             artifacts: Vec::new(),
             failed_attempts: Vec::new(),
+            approvals: Vec::new(),
         };
         manager.save_session(&session).expect("save");
     }
@@ -1483,6 +1573,7 @@ mod tests {
             context_references: Vec::new(),
             artifacts: Vec::new(),
             failed_attempts: Vec::new(),
+            approvals: Vec::new(),
         };
         manager.save_session(&session).expect("save empty");
     }
