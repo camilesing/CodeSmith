@@ -72,8 +72,10 @@ agent_open {name: "repo-b", cwd: "/abs/other-repo", agent_type: "Explore", promp
 
 A cwd outside the workspace that was never trusted is refused with the exact
 `/trust add <path>` line to run, so a mistyped path cannot become a silent read
-of an unrelated tree. The two spawns are approval-gated one at a time; each
-returns immediately, so both children then run concurrently.
+of an unrelated tree. The two spawns are approval-gated one at a time; answer
+the first with `[a]` and it covers every later `agent_open` in the run, so the
+second asks nothing. Each returns immediately, so both children then run
+concurrently.
 
 A child's own file tools are scoped the same way, and a path it cannot reach
 becomes a question rather than a dead end: the child emits the path-access

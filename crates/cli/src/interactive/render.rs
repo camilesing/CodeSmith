@@ -43,11 +43,13 @@ use unicode_width::UnicodeWidthStr;
 
 use super::keys::TurnKey;
 use super::state::ReplState;
+use crate::app_state::AppMode;
 use crate::core::events::{Event, TurnOutcomeStatus};
 use crate::core::ops::Op;
 use crate::hooks::HookEvent;
 use codesmith_agent_runtime::error_taxonomy::ErrorEnvelope;
 use codesmith_agent_runtime::mode::ApprovalMode;
+use codesmith_tools::{ToolError, ToolResult};
 
 /// Interval between live-line refreshes (spinner/elapsed/ctx).
 const LIVE_REFRESH: Duration = Duration::from_millis(250);
@@ -308,16 +310,15 @@ const APPROVAL_LABEL_MAX: usize = 100;
 ///
 /// The scope is decided engine-side by `build_approval_grouping_key`; its
 /// `grouping_key_kind` classifier is the shared source of truth for which shape
-/// a tool produces, so the prompt can say what "always" will cover instead of
-/// implying a per-tool grant. For most tools the grouping key is the *input
-/// hash* — "always" then covers this exact call, no more than `[e]` denies.
-fn approval_always_scope(tool_name: &str) -> &'static str {
+/// a tool produces, so the prompt can say what "always" will cover. Only the
+/// deny key is exact-call scoped — the legend's `[e]` says so itself.
+fn approval_always_scope(tool_name: &str) -> String {
     use codesmith_agent_runtime::tools::approval_cache::{GroupingKeyKind, grouping_key_kind};
     match grouping_key_kind(tool_name) {
-        GroupingKeyKind::ShellPrefix => "this command family",
-        GroupingKeyKind::PatchPaths => "patches to the same paths",
-        GroupingKeyKind::NetHost => "requests to the same host",
-        GroupingKeyKind::InputHash => "this exact call",
+        GroupingKeyKind::ShellPrefix => "this command family".to_string(),
+        GroupingKeyKind::PatchPaths => "patches to the same paths".to_string(),
+        GroupingKeyKind::NetHost => "requests to the same host".to_string(),
+        GroupingKeyKind::ToolName => format!("every {tool_name} call"),
     }
 }
 
@@ -462,6 +463,77 @@ async fn plan_approval_block(state: &ReplState) -> String {
     }
 }
 
+/// What a plan-mode tool result means for this session's mode — the pure half;
+/// [`apply_plan_mode_sync`] performs the switch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlanModeSync {
+    /// `enter_plan_mode` succeeded: follow the model into Plan.
+    Enter,
+    /// `exit_plan_mode` succeeded: return to the mode the session came from.
+    Exit(AppMode),
+}
+
+/// Map a finished plan tool to the mode change it implies, if any.
+///
+/// The plan tools read `PlanModeState`, which says only whether the *model*
+/// opened a plan session; the session's own mode — the status line and each
+/// turn's tool registry — is the REPL's to own, and nothing else bridges the
+/// two. The gap was user-visible in both directions: an approved
+/// `exit_plan_mode` left the session in Plan, whose registry carries no
+/// `apply_patch`/`write_file`/shell, so the model that had just been told the
+/// plan was approved had nothing to implement it with; and a model-initiated
+/// `enter_plan_mode` left the write tools registered, so plan mode's read-only
+/// contract never applied.
+///
+/// A refused plan tool is a no-op here: `[r] <feedback>` — or a plain skip —
+/// leaves plan mode active and the plan file intact, which is the revise loop.
+fn plan_mode_sync_after_tool(
+    name: &str,
+    result: &Result<ToolResult, ToolError>,
+    restore_fallback: Option<AppMode>,
+) -> Option<PlanModeSync> {
+    // Only a call that ran and succeeded moves the mode — a dispatch error, and
+    // a `success: false` result ("Not in plan mode", a slug inconsistency), both
+    // leave the session where it is.
+    let result = result.as_ref().ok()?;
+    if !result.success {
+        return None;
+    }
+    match name {
+        "enter_plan_mode" => Some(PlanModeSync::Enter),
+        "exit_plan_mode" => Some(PlanModeSync::Exit(
+            restore_fallback.unwrap_or(AppMode::Agent),
+        )),
+        _ => None,
+    }
+}
+
+/// Apply [`plan_mode_sync_after_tool`].
+///
+/// Known limitation, beside the behaviour it owns: a turn's tool registry is
+/// built once at turn start, so a mode switched here reaches the *next* turn.
+/// The plan approval is the one place that matters, and the engine closes it
+/// there: `should_stop_after_plan_tool` ends a Plan turn on the approved
+/// `exit_plan_mode`, so the next message is dispatched with the restored
+/// toolset instead of the model working a plan it cannot implement in the turn
+/// it is in.
+async fn apply_plan_mode_sync(state: &mut ReplState, sync: PlanModeSync) {
+    match sync {
+        PlanModeSync::Enter => {
+            if state.mode != AppMode::Plan {
+                state.set_mode(AppMode::Plan);
+            }
+        }
+        PlanModeSync::Exit(restored) => {
+            state.set_mode(restored);
+            println!(
+                "{}",
+                format!("◇ plan approved · {} mode restored", restored.as_setting()).dimmed()
+            );
+        }
+    }
+}
+
 /// Pump engine events until the current turn finishes.
 pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
     let mut view = TurnView::new();
@@ -575,6 +647,9 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                     .as_ref()
                     .map(|summary| format!("({summary})"))
                     .unwrap_or_default();
+                // Read the result before the match consumes it: the plan tools
+                // are the pair whose outcome moves this session's mode.
+                let plan_sync = plan_mode_sync_after_tool(&name, &result, state.plan_restore_mode);
                 match result {
                     Ok(output) => {
                         let summary = crate::tool_summary::summarize_tool_output(&output.content);
@@ -619,6 +694,9 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                     }
                 }
                 view.after_tool_line = true;
+                if let Some(sync) = plan_sync {
+                    apply_plan_mode_sync(state, sync).await;
+                }
                 // A queued message goes to the model as soon as the tool
                 // calls it waited on finish — Claude Code's rule — rather
                 // than waiting for the turn to end.
@@ -1401,8 +1479,8 @@ fn apply_turn_accounting(
 /// re-plan path: the refused call never ran, so plan mode stays active and the
 /// plan file is still there to rewrite.
 ///
-/// Known limitation, beside the behaviour it owns: `exit_plan_mode` takes no
-/// arguments, so its "always" key is the same input hash on every call — `[a]`
+/// Known limitation, beside the behaviour it owns: `exit_plan_mode` has no
+/// arguments to discriminate on, so its grouping key is the bare tool name — `[a]`
 /// at that gate covers every later `exit_plan_mode` in this session, and a
 /// revised plan is then approved without a question. A steer is drained at the
 /// turn's next step boundary; if the turn ends before one arrives, the host's
@@ -2135,17 +2213,72 @@ mod tests {
 
     #[test]
     fn approval_frame_always_scope_follows_the_grouping_key() {
-        // Most tools group by input hash: "always" covers this exact call and
-        // nothing else, and the legend must not promise more than that.
+        // Tools with no command/path/host family group by tool name: "always"
+        // covers every later call of that tool in the session, and the legend
+        // names the tool so the scope is not an abstraction.
         let frame = approval_frame("write_file", "Write a file.", Some("path: a.txt"), None);
         assert!(
-            frame.contains("[a] always allow this exact call for this session"),
+            frame.contains("[a] always allow every write_file call for this session"),
             "{frame}"
+        );
+        let spawn = approval_frame("agent_open", "Open a sub-agent.", Some("name: noop"), None);
+        assert!(
+            spawn.contains("[a] always allow every agent_open call for this session"),
+            "{spawn}"
         );
         let fetch = approval_frame("fetch_url", "Fetch a URL.", Some("url: https://x/y"), None);
         assert!(
             fetch.contains("[a] always allow requests to the same host for this session"),
             "{fetch}"
+        );
+        // The deny side stays exact-call scoped, and only its label says so.
+        assert!(frame.contains("[e] never this exact call"), "{frame}");
+    }
+
+    /// The two plan tools are the only results that move this session's mode, and
+    /// only when the call actually ran: a refusal is the revise loop, which leaves
+    /// plan mode active on purpose.
+    #[test]
+    fn plan_tool_results_map_to_the_session_mode_change() {
+        let exited = Ok(ToolResult::success("Exited plan mode"));
+        assert_eq!(
+            plan_mode_sync_after_tool("enter_plan_mode", &exited, None),
+            Some(PlanModeSync::Enter)
+        );
+        assert_eq!(
+            plan_mode_sync_after_tool("exit_plan_mode", &exited, Some(AppMode::Yolo)),
+            Some(PlanModeSync::Exit(AppMode::Yolo)),
+            "the restore target is the mode this session came from"
+        );
+        assert_eq!(
+            plan_mode_sync_after_tool("exit_plan_mode", &exited, None),
+            Some(PlanModeSync::Exit(AppMode::Agent)),
+            "an origin the session never recorded falls back to Agent"
+        );
+        assert_eq!(
+            plan_mode_sync_after_tool(
+                "exit_plan_mode",
+                &Err(ToolError::execution_failed("denied by user".to_string())),
+                Some(AppMode::Agent)
+            ),
+            None,
+            "a refused plan leaves plan mode active — the revise loop"
+        );
+        assert_eq!(
+            plan_mode_sync_after_tool(
+                "exit_plan_mode",
+                &Ok(ToolResult::error(
+                    "Not in plan mode. Call enter_plan_mode first."
+                )),
+                Some(AppMode::Yolo)
+            ),
+            None,
+            "a failed result must not move the mode either"
+        );
+        assert_eq!(
+            plan_mode_sync_after_tool("write_plan_file", &exited, None),
+            None,
+            "only the mode-transition tools are read here"
         );
     }
 

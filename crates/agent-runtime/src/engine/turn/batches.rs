@@ -30,7 +30,9 @@ use codesmith_agent::tools::{Tool, ToolCapability, ToolError, ToolResult, ToolSe
 use super::approval::input_requires_approval;
 use super::stream::{EarlyToolTask, early_start_safe};
 use super::truncation::stop_reason_indicates_output_truncation;
-use crate::engine::dispatch::{ToolExecutionBatch, ToolExecutionPlan, plan_tool_execution_batches};
+use crate::engine::dispatch::{
+    ToolExecutionBatch, ToolExecutionPlan, plan_tool_execution_batches, should_stop_after_plan_tool,
+};
 use crate::engine::host_executor::HostAgentExecutor;
 use crate::engine::loop_guard::{AttemptDecision, LoopGuard, OutcomeDecision};
 use crate::error_taxonomy::ErrorEnvelope;
@@ -88,6 +90,18 @@ struct DispatchedTool {
     blocked: bool,
 }
 
+/// What a drained tool batch hands back to the step loop.
+pub(crate) struct ToolBatchOutcome {
+    /// The loop-guard failure halt message, when this batch tripped it.
+    pub(crate) loop_guard_halt: Option<String>,
+    /// Whether this batch ran the call that ends the turn — an approved
+    /// `exit_plan_mode` in a Plan turn (see
+    /// [`should_stop_after_plan_tool`](crate::engine::dispatch::should_stop_after_plan_tool)).
+    /// Read at the (4) seam, which is where the loop can still return a stop
+    /// reason instead of asking the model for another step.
+    pub(crate) plan_approved: bool,
+}
+
 impl HostAgentExecutor {
     /// Execute the parsed tool calls and feed each result back as a
     /// `role:"user"` `ToolResult` block (Anthropic/OpenAI-compat shape).
@@ -135,8 +149,9 @@ impl HostAgentExecutor {
         intent_summary: &Option<String>,
         step_error_count: &mut usize,
         step_error_envelopes: &mut Vec<ErrorEnvelope>,
-    ) -> Option<String> {
+    ) -> ToolBatchOutcome {
         let mut loop_guard_halt: Option<String> = None;
+        let mut plan_approved = false;
         let n = tool_uses.len();
         // DSH around-dispatch (tools/execute): the generation's around
         // handlers wrap the dispatch terminal in BOTH arms below. An empty
@@ -874,6 +889,17 @@ impl HostAgentExecutor {
                     if r.success {
                         self.collect_lsp_diagnostics(&o.name, &o.input).await;
                         self.record_read_file_result(&o.name, &o.input, r);
+                        // The approved plan ends a Plan turn. Decided here —
+                        // the one place a finished result is in hand — and
+                        // consumed at the (4) seam, where the loop can return
+                        // `StopReason::PlanApproved` instead of asking the
+                        // model for a step in a toolset that has no write
+                        // tools. `blocked` calls never reach this (a guard
+                        // intervention is not an approval), and a refusal is
+                        // an `Err` (the `[r]` revise loop).
+                        if should_stop_after_plan_tool(self.turn_mode, &o.name, &o.result) {
+                            plan_approved = true;
+                        }
                     }
                 } else if let Err(e) = &o.result {
                     // Error-escalation tracking (slice 34 §E): categorize a
@@ -974,6 +1000,9 @@ impl HostAgentExecutor {
         // is consumed or aborted within the loop, so this is defensive.
         early_tasks.clear();
 
-        loop_guard_halt
+        ToolBatchOutcome {
+            loop_guard_halt,
+            plan_approved,
+        }
     }
 }

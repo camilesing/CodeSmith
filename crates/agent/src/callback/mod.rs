@@ -36,6 +36,14 @@ pub enum StopReason {
     /// [`StopReason::Error`] so the host can surface "cancelled" rather than
     /// "error" — mirrors production's `TurnOutcomeStatus::Interrupted`.
     Interrupted,
+    /// The user approved a plan and the harness ended the turn there.
+    ///
+    /// Neither an error nor the model's decision: a Plan-mode turn's tool
+    /// registry carries no write tools, so once `exit_plan_mode` is approved
+    /// the turn has nothing left it can do, and the toolset a restored mode
+    /// brings is built at the *next* turn's start. Hosts should surface it as
+    /// a completed turn that hands back to the user, not as a failure.
+    PlanApproved,
 }
 
 /// A UI-relevant streaming event, emitted by the inline stream reducer in real

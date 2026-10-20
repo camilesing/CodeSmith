@@ -30,7 +30,13 @@
 //!   | `apply_patch`  | `patch:<hash of file paths>`             |
 //!   | shell tools    | `shell:<command prefix>`                 |
 //!   | `fetch_url`    | `net:<hostname>`                         |
-//!   | everything else| `tool:<tool_name>:<hash of input>`       |
+//!   | everything else| `tool:<tool_name>`                       |
+//!
+//!   The last row is the widest scope the prompt can offer: for a tool with
+//!   no command, path, or host family to group by, `[a]` grants the whole
+//!   tool for the session. It is deliberately not an input digest — a
+//!   grouping key that only re-matched a byte-identical replay made the
+//!   "always allow" answer indistinguishable from its "never" counterpart.
 //!
 //! The cache is **session‑keyed**: entries carry an
 //! `ApprovedForSession` flag. When true, the approval is reused for the
@@ -162,12 +168,10 @@ pub fn build_approval_key(tool_name: &str, input: &serde_json::Value) -> Approva
 
 /// What shape of grouping key `tool_name` produces.
 ///
-/// `ShellPrefix`, `NetHost` and `PatchPaths` keys are *stable* across
-/// calls (they depend only on the command prefix / URL host / touched
-/// path set), so a persisted grant recorded against one can re-match a
-/// later, different invocation. `InputHash` keys digest the full input
-/// (`tool:<name>:<sha256>`), so they can only ever re-match a
-/// byte-identical replay — a persisted grant against one is a dead entry.
+/// Every variant is *stable* across calls, so a grant recorded against one
+/// (in the session set, or persisted) re-matches later, different
+/// invocations. Only the deny side ([`build_approval_key`]) digests the
+/// full input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GroupingKeyKind {
     /// `shell:<classified command prefix>`
@@ -176,12 +180,13 @@ pub enum GroupingKeyKind {
     NetHost,
     /// `patch:<hash of touched paths>`
     PatchPaths,
-    /// `tool:<name>:<sha256 of the full input>` — never stable.
-    InputHash,
+    /// `tool:<name>` — the whole tool for the session.
+    ToolName,
 }
 
 /// Classify which grouping-key shape `tool_name` produces. Single source
-/// of truth shared with [`build_approval_grouping_key`].
+/// of truth shared with [`build_approval_grouping_key`], and the source the
+/// host's prompt legend reads to say what `[a]` will cover.
 #[must_use]
 pub fn grouping_key_kind(tool_name: &str) -> GroupingKeyKind {
     match tool_name {
@@ -193,7 +198,11 @@ pub fn grouping_key_kind(tool_name: &str) -> GroupingKeyKind {
         | "exec_wait"
         | "exec_interact" => GroupingKeyKind::ShellPrefix,
         "fetch_url" | "web.fetch" | "web_fetch" => GroupingKeyKind::NetHost,
-        _ => GroupingKeyKind::InputHash,
+        // Known limitation, at the place it matters: this arm has no
+        // argument structure to narrow by, so `[a]` on e.g. `write_file`
+        // covers writes to *any* path for the rest of the process. The
+        // tools that need a narrower scope must classify themselves above.
+        _ => GroupingKeyKind::ToolName,
     }
 }
 
@@ -218,9 +227,7 @@ pub fn build_approval_grouping_key(tool_name: &str, input: &serde_json::Value) -
             let host = parse_host(input);
             format!("net:{host}")
         }
-        GroupingKeyKind::InputHash => {
-            format!("tool:{tool_name}:{}", hash_json_value(input))
-        }
+        GroupingKeyKind::ToolName => format!("tool:{tool_name}"),
     };
     ApprovalKey(fingerprint)
 }
@@ -419,13 +426,48 @@ mod tests {
         assert_eq!(grouping_key_kind("fetch_url"), NetHost);
         assert_eq!(grouping_key_kind("web.fetch"), NetHost);
         assert_eq!(grouping_key_kind("apply_patch"), PatchPaths);
-        // Everything else digests the full input and can never re-match a
-        // persisted grant.
-        assert_eq!(grouping_key_kind("write_file"), InputHash);
-        assert_eq!(grouping_key_kind("edit_file"), InputHash);
-        assert_eq!(grouping_key_kind("web_search"), InputHash);
-        assert_eq!(grouping_key_kind("mcp_github"), InputHash);
-        assert_eq!(grouping_key_kind("read_file"), InputHash);
+        // Everything else groups by tool name — stable, so `[a]` covers the
+        // rest of the session.
+        assert_eq!(grouping_key_kind("write_file"), ToolName);
+        assert_eq!(grouping_key_kind("edit_file"), ToolName);
+        assert_eq!(grouping_key_kind("agent_open"), ToolName);
+        assert_eq!(grouping_key_kind("web_search"), ToolName);
+        assert_eq!(grouping_key_kind("mcp_github"), ToolName);
+        assert_eq!(grouping_key_kind("read_file"), ToolName);
+    }
+
+    #[test]
+    fn tool_name_grouping_key_covers_different_arguments_of_the_same_tool() {
+        // The `[a]` answer must mean "stop asking about agent_open", not
+        // "approve this byte-identical replay" — consecutive spawns differ
+        // in name and prompt by construction (#1617's deny side keeps the
+        // exact key, below).
+        let key_a = build_approval_grouping_key(
+            "agent_open",
+            &json!({"name": "repo-a", "prompt": "sweep src/"}),
+        );
+        let key_b = build_approval_grouping_key(
+            "agent_open",
+            &json!({"name": "repo-b", "prompt": "sweep tests/"}),
+        );
+        assert_eq!(key_a, key_b);
+        assert_eq!(key_a.0, "tool:agent_open");
+
+        assert_ne!(
+            build_approval_grouping_key("agent_close", &json!({"id": "agent_1"})),
+            build_approval_grouping_key("agent_open", &json!({"name": "x", "prompt": "y"})),
+            "a grant for one tool must not cover another"
+        );
+    }
+
+    #[test]
+    fn denial_key_stays_exact_for_tool_name_grouped_tools() {
+        let exact_a = build_approval_key("write_file", &json!({"path": "a.txt", "content": "x"}));
+        let exact_b = build_approval_key("write_file", &json!({"path": "b.txt", "content": "x"}));
+        assert_ne!(
+            exact_a, exact_b,
+            "denials stay exact-call scoped even when the grouping key is per tool"
+        );
     }
 
     #[test]

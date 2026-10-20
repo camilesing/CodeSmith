@@ -160,6 +160,7 @@ For any task estimated to take 5+ concrete steps:
 
 Use sub-agents liberally for parallel work — they run concurrently in one turn and return findings you synthesize.
 
+- **A child needs a real task**: never open a sub-agent with a placeholder or self-test prompt (`noop`, `test`, `ping`), and never just to check that the tool works. Its prompt must be self-contained and name the deliverable — the child starts without this conversation. A one-file or single-step change is your own work; fanning it out costs more than it saves.
 - **Parallel investigation**: 3+ independent files or modules → one read-only sub-agent session per target.
 - **Parallel implementation**: after a plan is laid out, one sub-agent session per independent leaf task.
 - **Solo tasks**: a single read, search, or focused question — do it yourself; opening a sub-agent has overhead.

@@ -182,13 +182,24 @@ pub struct ReplState {
     /// REPL can name the current plan file — the `exit_plan_mode` approval
     /// renders its body from this slug.
     pub plan_mode_state: SharedPlanModeState,
+    /// Where a plan session returns to — this session's own record, written
+    /// when it enters Plan mode (Shift+Tab, `/mode`, or following the model's
+    /// `enter_plan_mode`) and read when an approved `exit_plan_mode` restores
+    /// the mode. Deliberately not mirrored into `PlanModeState`: that flag
+    /// means a *model-initiated* session, and a second copy of the mode would
+    /// only stay right while every writer remembered to update it.
+    pub plan_restore_mode: Option<AppMode>,
     pub telemetry_sink: Option<TelemetrySink>,
     pub current_session_id: Option<String>,
     pub approval_grants: ApprovalGrants,
-    /// Tool names (or fingerprints) approved for this session.
+    /// **Grouping** keys approved for this session (`shell:<prefix>`,
+    /// `patch:<hash>`, `net:<host>`, `tool:<name>`), inserted by `[a]` — so
+    /// "always allow" covers what the prompt's legend says it covers, and a
+    /// later call with different arguments can match without re-prompting.
     pub approval_session_approved: HashSet<String>,
-    /// Tool names (or fingerprints) denied this session; re-requests
-    /// auto-deny without re-prompting.
+    /// **Exact** call keys denied this session, inserted by `[e]`; a retry of
+    /// that same call auto-denies without re-prompting, while a different call
+    /// to the same tool still asks.
     pub approval_session_denied: HashSet<String>,
     pub cycle: CycleConfig,
     pub engine: Option<EngineHandle>,
@@ -388,6 +399,7 @@ impl ReplState {
             todos: new_shared_todo_list(),
             plan_state,
             plan_mode_state,
+            plan_restore_mode: None,
             telemetry_sink: None,
             current_session_id: None,
             approval_grants: approvals_toml_path()
@@ -444,6 +456,16 @@ impl ReplState {
             mode == AppMode::Coordinator && self.mode != AppMode::Coordinator;
         let leaving_coordinator = self.mode == AppMode::Coordinator && mode != AppMode::Coordinator;
         self.mode = mode;
+
+        // A plan session returns to the mode it came from. Both entry routes
+        // funnel through here — the user's switch, and the REPL following the
+        // model's `enter_plan_mode` result — so the stash and the mode cannot
+        // disagree.
+        if mode == AppMode::Plan && previous_mode != AppMode::Plan {
+            self.plan_restore_mode = Some(previous_mode);
+        } else if mode != AppMode::Plan {
+            self.plan_restore_mode = None;
+        }
 
         if entering_coordinator {
             // Coordinator mode requires auto-approve so workers can execute

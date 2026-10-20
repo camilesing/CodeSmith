@@ -1415,6 +1415,10 @@ impl Engine {
             self.config.capacity.profile_window,
             self.turn_counter,
         )))
+        // The mode the registry above was built from, so the post-batch seam
+        // can end a Plan turn once its plan is approved (a Plan registry has
+        // no write tools to continue with).
+        .with_turn_mode(mode)
         .with_tool_dispatcher(plan.tool_registry().cloned())
         .with_turn_meta(Some(turn_meta_probe))
         .with_reinject(Some(reinject_probe))
@@ -1626,9 +1630,12 @@ impl Engine {
                 .await;
         }
         let (status, error) = match stop_reason {
-            Ok(StopReason::NoToolCalls) | Ok(StopReason::MaxSteps) => {
-                (TurnOutcomeStatus::Completed, None)
-            }
+            // `PlanApproved` is a completed turn: the harness stopped it at a
+            // point the model cannot act on, and the user's next message
+            // starts the implementation with the restored toolset.
+            Ok(StopReason::NoToolCalls)
+            | Ok(StopReason::MaxSteps)
+            | Ok(StopReason::PlanApproved) => (TurnOutcomeStatus::Completed, None),
             Ok(StopReason::Interrupted) => (TurnOutcomeStatus::Interrupted, None),
             Ok(StopReason::Error(msg)) => (TurnOutcomeStatus::Failed, Some(msg)),
             Err(e) => (TurnOutcomeStatus::Failed, Some(e.to_string())),
