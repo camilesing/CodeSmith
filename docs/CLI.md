@@ -296,6 +296,15 @@ Inside the REPL, `/undo` drops the last exchange from the transcript and
 separate workspace rollback tool: it restores files
 from side-git snapshots but does not rewrite conversation history.
 
+`codesmith serve --acp` sessions are the same records: the ACP adapter saves
+each completed editor turn to `~/.codesmith/sessions/` under a plain UUID,
+`session/list` enumerates the store (scoped to the editor's project when it
+passes a `cwd`), and `session/resume` — also answering to the protocol's
+`session/load` — reloads one and replays its turns, so a conversation moves
+between the editor and `/resume` freely. `session/close` forgets the live
+session; the record stays. ACP prompts run without tools, so there is no
+permission prompting on that surface yet.
+
 More detail: [PRESETS.md — Branching and Rollback](PRESETS.md#branching-and-rollback).
 
 ## Docker
