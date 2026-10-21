@@ -207,6 +207,7 @@ impl Engine {
                     ToolError::Timeout { .. } => "timeout",
                     ToolError::NotAvailable { .. } => "not_available",
                     ToolError::PermissionDenied { .. } => "permission_denied",
+                    ToolError::Rejected { .. } => "rejected",
                 };
                 tracing::warn!(
                     target: "engine.tool_execution",

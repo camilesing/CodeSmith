@@ -387,7 +387,7 @@ impl ToolSpec for FreshnessWrappedTool {
                         path = %path.display(),
                         "file freshness validation rejected the edit"
                     );
-                    return Err(ToolError::execution_failed(message));
+                    return Err(ToolError::rejected(message));
                 }
             }
         }

@@ -89,6 +89,13 @@ pub enum ToolError {
     NotAvailable { message: String },
     #[error("Failed to authorize tool execution: {message}")]
     PermissionDenied { message: String },
+    /// A guard refused the call before anything ran (e.g. the file-freshness
+    /// gate rejecting an edit to a file never read this session). The
+    /// message carries the remedy and the model is expected to retry with
+    /// corrected input; presentation layers render it as a warning rather
+    /// than a failure.
+    #[error("Tool call rejected: {message}")]
+    Rejected { message: String },
 }
 
 impl ToolError {
@@ -116,6 +123,13 @@ impl ToolError {
     #[must_use]
     pub fn path_escape(path: impl Into<PathBuf>) -> Self {
         Self::PathEscape { path: path.into() }
+    }
+
+    #[must_use]
+    pub fn rejected(msg: impl Into<String>) -> Self {
+        Self::Rejected {
+            message: msg.into(),
+        }
     }
 
     #[must_use]

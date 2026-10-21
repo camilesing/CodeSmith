@@ -150,6 +150,10 @@ pub fn format_tool_error(err: &ToolError, tool_name: &str) -> String {
         ToolError::PermissionDenied { message } => format!(
             "Tool '{tool_name}' was denied: {message}. Adjust approval mode or request permission."
         ),
+        // Same rule as `PathEscape`: the rejection's message is the one place
+        // carrying the remedy (read the file, then retry), so every channel
+        // prints the same Display instead of restating it.
+        ToolError::Rejected { .. } => err.to_string(),
     }
 }
 

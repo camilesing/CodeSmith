@@ -474,6 +474,13 @@ impl From<ToolError> for ErrorEnvelope {
                 "tool_permission_denied",
                 message,
             ),
+            ToolError::Rejected { message } => Self::new(
+                ErrorCategory::InvalidInput,
+                ErrorSeverity::Warning,
+                true,
+                "tool_rejected",
+                message,
+            ),
         }
     }
 }
