@@ -358,4 +358,30 @@ async fn acp_external_provider_round_trips_with_real_acp_server_child() {
          bodies:\n{}",
         bodies.join("\n---\n")
     );
+
+    // Round-8 TODO-51: an ACP session is a saved session. The child's turn
+    // must be on disk in the scratch home under mode "acp", prompt and
+    // reply included — the record `session/list` and `session/resume` read.
+    let sessions_dir = e2e.home.path().join("sessions");
+    let acp_sessions: Vec<serde_json::Value> = std::fs::read_dir(&sessions_dir)
+        .expect("the --acp child opened the session store")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .filter_map(|path| {
+            serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(path).ok()?).ok()
+        })
+        .filter(|session| session["metadata"]["mode"] == "acp")
+        .collect();
+    assert_eq!(
+        acp_sessions.len(),
+        1,
+        "exactly one ACP child session saved under {}",
+        sessions_dir.display()
+    );
+    let saved_messages = acp_sessions[0]["messages"].to_string();
+    assert!(
+        saved_messages.contains("E2E-CHILD-OBJECTIVE") && saved_messages.contains("acp child done"),
+        "the saved ACP session carries the child's prompt and reply:\n{saved_messages}"
+    );
 }

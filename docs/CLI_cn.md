@@ -240,6 +240,13 @@ tool_call/tool_result 配对要求。由更新版本 CodeSmith 写入的未知�
 重发同一条用户消息。`revert_turn` 是独立的
 工作区回滚工具：它从 side-git 快照恢复文件，但不改写对话历史。
 
+`codesmith serve --acp` 的会话就是同一份记录：ACP 适配器把编辑器里每个完成的
+回合以普通 UUID id 保存到 `~/.codesmith/sessions/`；`session/list` 枚举存储
+（编辑器传 `cwd` 时按项目过滤）；`session/resume`（同时响应协议名
+`session/load`）加载一个会话并回放其回合，因此对话可以在编辑器与终端的
+`/resume` 之间自由流转。`session/close` 丢弃内存中的会话；记录保留。
+ACP 提示词不带工具运行，因此该表面暂无权限提示。
+
 更多细节见 [PRESETS.md — Branching and Rollback](PRESETS.md#branching-and-rollback)。
 
 ## Docker
