@@ -53,7 +53,7 @@ typing.
 | `Ctrl+X Ctrl+K` | Stops all background work (press twice within 3 seconds) |
 | `Alt+P` (`⌥P`) | Toggles between the session model and the configured default model — `/model <id>` picks any |
 | `Alt+T` (`⌥T`) | Toggles extended thinking (off ↔ high) |
-| `Shift+Tab` | Cycles the run mode: `agent → plan → yolo` (plus `coordinator` when its feature is enabled) |
+| `Shift+Tab` | Cycles the run mode: `agent → plan → yolo` (plus `coordinator` when its feature is enabled). Nothing is printed — the `🚥` segment of the status row flips in place, and the draft keeps its text and cursor |
 | `Esc` | In vi insert mode: leaves insert mode |
 | `Esc`, `Esc` | With text: clears the draft and keeps it for `Up`. On an empty prompt: no-op (rewind's menu is not built; files are `/rewind`, the exchange is `/undo`) |
 | `?` | On an empty prompt: prints the shortcut panel |

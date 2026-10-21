@@ -237,7 +237,9 @@ value; a bare `/mode` prints the current mode.) `Shift+Tab` at the prompt
 cycles the same modes without typing a command — `agent → plan → yolo`, with
 `coordinator` as a fourth stop while the experimental `coordinator_mode`
 feature is enabled. The switch applies to the next message you send, and the
-`🚥` segment of the status line above the prompt shows where you landed.
+`🚥` segment of the status line above the prompt shows where you landed — it
+is updated in place: the key prints nothing, and the draft you are typing
+keeps its text and cursor.
 
 Plan mode is the safest place to start in an unfamiliar repository. It is for
 inspection and decision-making, not file edits. It can open read-only

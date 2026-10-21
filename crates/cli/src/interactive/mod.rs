@@ -16,10 +16,13 @@
 //! typing. Known limitations of that arrangement, recorded beside the
 //! behaviour it owns: each action key re-renders the prompt (the transcript
 //! cannot be rewritten), and the restored cursor sits at the end of the
-//! draft rather than where it was. Terminals that encode `Shift+Tab` as
-//! `CSI 1;2Z` (the kitty keyboard protocol and friends) are not decoded by
-//! rustyline 14, so that binding never fires there — Terminal.app, iTerm2,
-//! and tmux defaults send `ESC [ Z`.
+//! draft rather than where it was. The prompt is composed as the status row
+//! followed by `❯ `, which is how `Shift+Tab` escapes that limitation — the
+//! status row is rustyline's to redraw, so the mode it moves to lands in
+//! place instead of costing a line and a re-prompt (`bindings`). Terminals
+//! that encode `Shift+Tab` as `CSI 1;2Z` (the kitty keyboard protocol and
+//! friends) are not decoded by rustyline 14, so that binding never fires
+//! there — Terminal.app, iTerm2, and tmux defaults send `ESC [ Z`.
 
 pub mod bindings;
 pub mod commands;
@@ -35,7 +38,6 @@ pub mod status;
 pub mod statusline;
 pub mod theme;
 
-use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
@@ -309,8 +311,19 @@ pub async fn run_repl(
                 ),
             }
         }
-        println!("{}", status::status_line(&state));
-        let _ = std::io::stdout().flush();
+        // The status row is the prompt's first row, not a printed line: a
+        // printed line can never be rewritten, and handing the row to
+        // rustyline is what lets `Shift+Tab` relabel it in place (rustyline
+        // redraws its prompt on every key). It is padded to the widest label
+        // the ring can show, so the relabel keeps the row count — and the
+        // layout — rustyline computed from this string.
+        let status_row = status::status_line(&state);
+        let ring = state.coordinator_in_ring();
+        let prompt_row = {
+            let mut cell = Bindings::lock(&bindings);
+            cell.set_prompt_row(&status_row, state.mode, ring);
+            cell.padded_prompt_row()
+        };
         // The hint reports these without holding `ReplState`.
         Bindings::lock(&bindings).set_display(
             state.tool_detail,
@@ -326,11 +339,17 @@ pub async fn run_repl(
         if let Some(prepared) = state.next_input.take() {
             prefill = Some(prepared);
         }
-        let prompt = prompt_str(&state);
+        let prompt = format!("{prompt_row}\n{}", prompt_str(&state));
         let read = match prefill.take() {
             Some(text) => editor.readline_with_initial(&prompt, ("", text.as_str())),
             None => editor.readline(&prompt),
         };
+        // A `Shift+Tab` at the prompt only advanced the shared cell's mirror
+        // (a key handler cannot reach `ReplState`); the mode lands here. Still
+        // before the message below is sent — that is the turn it has to cover.
+        if let Some(mode) = Bindings::lock(&bindings).take_prompt_mode() {
+            state.set_mode(mode);
+        }
         // Drained before `read` is matched, so a Ctrl+C or Ctrl+D cannot
         // strand a key the user already pressed.
         let actions = Bindings::lock(&bindings).drain();
@@ -855,13 +874,6 @@ fn prompt_str(state: &ReplState) -> String {
 /// here: printing, engine traffic, and the settings a switch persists.
 async fn apply_action(state: &mut ReplState, action: Action) -> Result<()> {
     match action {
-        Action::CycleMode => {
-            state.cycle_mode();
-            println!(
-                "{}",
-                format!("switched to {} mode (Shift+Tab cycles)", state.mode.label()).dimmed()
-            );
-        }
         Action::ToggleDetail => {
             state.tool_detail = !state.tool_detail;
             if state.tool_detail {
