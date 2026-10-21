@@ -1691,6 +1691,162 @@ pub fn spawn_engine(config: EngineConfig, api_config: &Config, host: EngineHost)
     handle
 }
 
+/// What one headless engine run varies from another — `codesmith exec`, a
+/// team teammate, an ACP session. Everything else about the engine comes
+/// from `Config` and `Settings` the same way, so all three build through
+/// [`headless_engine_config`] rather than each carrying its own copy of the
+/// eighty-field literal (the two copies this replaced had already drifted
+/// into a "mirrors `run_exec_agent`" comment). The REPL builds from
+/// `ReplState` in `interactive::state::build_engine_config`; its inputs are
+/// interactive state, not these.
+pub(crate) struct HeadlessEngineOptions {
+    /// The routed model: `resolve_cli_auto_route` already applied.
+    pub model: String,
+    pub workspace: PathBuf,
+    /// A headless run that auto-approves also gets the shell.
+    pub auto_approve: bool,
+    pub trust_mode: bool,
+    pub max_subagents: usize,
+    pub override_system_prompt: Option<String>,
+    pub append_system_prompts: Vec<crate::prompts::PromptAppendSource>,
+    pub cache_breaker: Option<String>,
+    pub allowed_tools: Option<Vec<String>>,
+    pub team_context: Option<codesmith_agent_runtime::tool_state::team::SharedTeamContext>,
+}
+
+/// The engine configuration of a headless run. Compaction is on by default
+/// so smaller-context providers compact before a hard context-limit
+/// rejection; the REPL path lets settings disable it.
+pub(crate) fn headless_engine_config(
+    config: &Config,
+    settings: &crate::settings::Settings,
+    options: HeadlessEngineOptions,
+) -> anyhow::Result<EngineConfig> {
+    use crate::compaction::CompactionConfig;
+    use crate::tools::plan::new_shared_plan_state;
+    use crate::tools::todo::new_shared_todo_list;
+
+    let HeadlessEngineOptions {
+        model,
+        workspace,
+        auto_approve,
+        trust_mode,
+        max_subagents,
+        override_system_prompt,
+        append_system_prompts,
+        cache_breaker,
+        allowed_tools,
+        team_context,
+    } = options;
+
+    let compaction = CompactionConfig {
+        enabled: true,
+        model: model.clone(),
+        token_threshold: config.compaction_threshold(&model),
+        ..Default::default()
+    };
+    let network_policy = Some(config.network_policy_decider());
+    let lsp_config = config
+        .lsp
+        .clone()
+        .map(crate::config::LspConfigToml::into_runtime);
+
+    Ok(EngineConfig {
+        model,
+        workspace,
+        allow_shell: auto_approve || config.allow_shell(),
+        trust_mode,
+        notes_path: config.notes_path(),
+        mcp_config_path: config.mcp_config_path(),
+        skills_dir: config.skills_dir(),
+        instructions: config
+            .instructions_paths()
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+        override_system_prompt,
+        custom_system_prompt: None,
+        coordinator_system_prompt: None,
+        agent_system_prompt: None,
+        append_system_prompts,
+        cache_breaker,
+        project_context_pack_enabled: config.project_context_pack_enabled(),
+        translation_enabled: false,
+        show_thinking: settings.show_thinking,
+        is_simple: settings.is_simple,
+        personality: config.personality(),
+        // Headless runs take the full engine budget (1024) by design, not
+        // drift — unlike the tighter automation-thread budget
+        // (AUTOMATION_DEFAULT_MAX_STEPS); see DEFAULT_ENGINE_MAX_STEPS.
+        max_steps: codesmith_agent_runtime::engine_config::DEFAULT_ENGINE_MAX_STEPS,
+        max_subagents,
+        features: config.features(),
+        parse_gate: config.edit_config().parse_gate_enabled(),
+        compaction,
+        cycle: crate::cycle_manager::CycleConfig::default(),
+        capacity: crate::core::capacity::capacity_controller_config_from_app(config),
+        todos: new_shared_todo_list(),
+        plan_state: new_shared_plan_state(),
+        plan_mode_state: crate::tools::plan_mode::new_shared_plan_mode_state(),
+        task_v2_manager: None,
+        goal_state: crate::tools::goal::new_shared_goal_state(),
+        worktree_state: crate::tools::worktree::new_shared_worktree_session_state(),
+        // A headless child inherits its parent's remaining spawn budget via
+        // the environment (see `tools::subagent::headless`); a top-level run
+        // gets the configured `[runtime] max_spawn_depth` default.
+        max_spawn_depth: crate::tools::subagent::headless::inherited_spawn_budget()?
+            .unwrap_or(config.max_spawn_depth()),
+        network_policy,
+        snapshots_enabled: config.snapshots_config().is_enabled(),
+        snapshots_max_workspace_bytes: config
+            .snapshots_config()
+            .max_workspace_gb
+            .saturating_mul(1024 * 1024 * 1024),
+        lsp_config,
+        subagent_model_overrides: config.subagent_model_overrides(),
+        auto_route: config.auto_route_context(),
+        subagent_api_timeout: std::time::Duration::from_secs(config.subagent_api_timeout_secs()),
+        stream_idle_timeout: std::time::Duration::from_secs(config.stream_idle_timeout_secs()),
+        stream_idle_retry_increment: std::time::Duration::from_secs(
+            config.stream_idle_retry_increment_secs(),
+        ),
+        result_claim_verifier: config.result_claim_verifier(),
+        subagent_inherit_full_registry: config.subagent_inherit_full_registry(),
+        subagent_external_provider: crate::tools::subagent::headless::provider_from_config(config)?,
+        prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
+        sandbox_runtime: config.sandbox_runtime_config(),
+        memory_enabled: config.memory_enabled(),
+        memory_path: config.memory_path(),
+        kod_enabled: config.kod_enabled(),
+        memory_dir: config.memory_dir(),
+        memory_excludes: config.memory_excludes(),
+        vision_config: config.vision_model_config(),
+        strict_tool_mode: config.strict_tool_mode.unwrap_or(false),
+        goal_objective: None,
+        allowed_tools,
+        blocked_tools: Vec::new(),
+        locale_tag: crate::localization::resolve_locale(&settings.locale)
+            .tag()
+            .to_string(),
+        workshop: config.workshop.clone(),
+        web_service: Some(std::sync::Arc::new(
+            codesmith_tool_impls::web_service::HttpWebService::new(
+                config.search_provider(),
+                config.search.as_ref().and_then(|s| s.api_key.clone()),
+            ),
+        )),
+        index_enabled: config.index_tools_enabled(),
+        tools_always_load: config.tools_always_load(),
+        disabled_tools: crate::capabilities::effective_disabled(config.tools.as_ref())
+            .map_err(anyhow::Error::msg)?,
+        tools: config.tools.clone(),
+        team_context,
+        file_freshness_tracker:
+            codesmith_agent_runtime::tools::freshness::FileFreshnessTracker::new(),
+        telemetry_sink: None,
+    })
+}
+
 // === Test helpers ===
 
 #[cfg(test)]
