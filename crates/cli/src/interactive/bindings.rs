@@ -24,6 +24,11 @@
 //!   rather than replacing the one being edited. With text in the line, the
 //!   text comes back with the cursor at its end (rustyline's
 //!   `readline_with_initial`), not at its previous offset.
+//! - `Shift+Tab` is the exception, because nothing has to be printed: it
+//!   stays inside `readline` and asks for a repaint, and the status row (the
+//!   prompt's first row) shows the mode it moved to in place — see
+//!   [`Bindings::repainted_prompt`]. The mode itself is applied to the REPL
+//!   when `readline` returns, which is still before the next message is sent.
 //! - `jj` → Escape (Claude Code's `vimInsertModeRemaps`) is not implemented:
 //!   rustyline 14 exposes no `Cmd` that switches vi input mode, so a handler
 //!   cannot synthesize the Escape. Press Escape.
@@ -43,6 +48,9 @@ use rustyline::EventContext;
 use rustyline::InputMode;
 use rustyline::Movement;
 
+use super::status;
+use crate::app_state::AppMode;
+
 /// Esc Esc window (Claude Code's double press).
 pub const ESC_WINDOW: Duration = Duration::from_millis(1500);
 /// Ctrl+D's exit confirmation window.
@@ -60,8 +68,6 @@ pub type Shared = Arc<Mutex<Bindings>>;
 /// only place with a terminal to print to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
-    /// Walk the run-mode ring (`Shift+Tab`).
-    CycleMode,
     /// Toggle collapsed/expanded tool-call detail (`Ctrl+O`).
     ToggleDetail,
     /// Toggle the task checklist (`Ctrl+T`).
@@ -109,6 +115,10 @@ pub enum Edit {
     Newline,
     /// End the `readline` call so the loop can act on the drained actions.
     LeaveReadline,
+    /// Redraw the prompt in place, keeping the line and the cursor where
+    /// they are. The status row carries the state the key just changed
+    /// (`Shift+Tab`'s run mode).
+    Repaint,
     /// End the session.
     Exit,
 }
@@ -183,6 +193,16 @@ pub struct Bindings {
     /// back), mirrored for the same reason.
     pub queue_pending: usize,
     pub tool_detail: bool,
+    /// The status row rustyline is showing as the prompt's first row, the
+    /// mode it was rendered for, and whether `coordinator` is in the ring.
+    /// `Shift+Tab` advances `prompt_mode`; [`Self::repainted_prompt`]
+    /// rebuilds the row from these three, so a relabel needs no terminal.
+    prompt_row: String,
+    prompt_mode: Option<AppMode>,
+    /// The mode the REPL last applied — what the composed row still shows.
+    applied_mode: Option<AppMode>,
+    /// Whether `coordinator` is one of the ring's stops this session.
+    coordinator_in_ring: bool,
 }
 
 impl Bindings {
@@ -252,6 +272,85 @@ impl Bindings {
         self.tool_detail = tool_detail;
         self.tasks_shown = tasks_shown;
         self.queue_pending = queue_pending;
+    }
+
+    /// Record the prompt's status row and the mode it was composed for. The
+    /// REPL calls this before every `readline`; `Shift+Tab` then advances
+    /// the mode here and asks for a repaint.
+    ///
+    /// The row is stored *unpadded*: [`Self::padded_prompt_row`] and
+    /// [`Self::repainted_prompt`] both pad it to the widest label the ring
+    /// can show, which is what keeps a relabelled row the same width as the
+    /// one the layout was computed from.
+    pub fn set_prompt_row(&mut self, row: &str, mode: AppMode, coordinator_in_ring: bool) {
+        self.prompt_row.clear();
+        self.prompt_row.push_str(row);
+        self.prompt_mode = Some(mode);
+        self.applied_mode = Some(mode);
+        self.coordinator_in_ring = coordinator_in_ring;
+    }
+
+    /// The status row as the prompt carries it: padded to the widest label
+    /// the ring can show, so every mode a `Shift+Tab` reaches occupies the
+    /// same width — and the same number of rows where the row wraps.
+    #[must_use]
+    pub fn padded_prompt_row(&self) -> String {
+        let Some(mode) = self.prompt_mode else {
+            return self.prompt_row.clone();
+        };
+        format!("{}{}", self.prompt_row, " ".repeat(self.pad_for(mode)))
+    }
+
+    /// Columns this cell pads a row rendered for `mode` with.
+    fn pad_for(&self, mode: AppMode) -> usize {
+        status::widest_mode_label_columns(self.coordinator_in_ring)
+            .saturating_sub(status::mode_label_columns(mode))
+    }
+
+    /// `Shift+Tab`: move the mode the prompt shows to the ring's next stop.
+    /// The handler cannot reach [`ReplState`](super::state::ReplState), so
+    /// the loop applies it when `readline` returns — before the next message
+    /// is sent, which is what the mode has to cover.
+    fn cycle_prompt_mode(&mut self) {
+        if let Some(mode) = self.prompt_mode {
+            self.prompt_mode = Some(mode.cycle_next(self.coordinator_in_ring));
+        }
+    }
+
+    /// The mode the user cycled to, if it is not the one already applied.
+    /// Taken by the loop when `readline` returns; what was taken counts as
+    /// applied, so the same mode is never handed out twice.
+    pub fn take_prompt_mode(&mut self) -> Option<AppMode> {
+        let pending = self
+            .prompt_mode
+            .filter(|mode| Some(*mode) != self.applied_mode);
+        self.applied_mode = self.prompt_mode;
+        pending
+    }
+
+    /// The prompt as rustyline should draw it right now, or `None` when
+    /// nothing changed or the prompt is not the one this cell recorded.
+    ///
+    /// The relabelled row is padded back to the width of the widest label
+    /// the ring can show, so every variant of the prompt has the same row
+    /// count — the layout rustyline computed from the composed prompt (and
+    /// the cursor it tracks) stays valid through the relabel.
+    #[must_use]
+    pub fn repainted_prompt(&self, prompt: &str) -> Option<String> {
+        let mode = self.prompt_mode?;
+        let applied = self.applied_mode?;
+        if mode == applied || self.prompt_row.is_empty() || !prompt.starts_with(&self.prompt_row) {
+            return None;
+        }
+        // Not our prompt (rustyline's reverse-search prompt is one row and
+        // says something else).
+        let (_, rest) = prompt.split_once('\n')?;
+        let row = self.prompt_row.replacen(
+            &status::mode_segment(applied),
+            &status::mode_segment(mode),
+            1,
+        );
+        Some(format!("{row}{}\n{rest}", " ".repeat(self.pad_for(mode))))
     }
 
     /// The live status hint: what the prompt can do right now that has no
@@ -333,7 +432,12 @@ fn act(action: Action, bindings: &mut Bindings) -> Edit {
 /// so every rule below is unit-tested without a terminal.
 fn decide(bind: Bind, state: EditState<'_>, bindings: &mut Bindings, now: Instant) -> Edit {
     match bind {
-        Bind::ShiftTab => act(Action::CycleMode, bindings),
+        // The mode ring is the one action that changes nothing but what the
+        // status row already shows: no panel, no re-prompt, no lost draft.
+        Bind::ShiftTab => {
+            bindings.cycle_prompt_mode();
+            Edit::Repaint
+        }
         Bind::Esc => {
             if state.vi_insert {
                 return Edit::FallThrough;
@@ -436,6 +540,7 @@ fn to_cmd(edit: Edit) -> Option<Cmd> {
         // handles; it checks the drained actions first, so an action never
         // reads as Ctrl+C.
         Edit::LeaveReadline => Some(Cmd::Interrupt),
+        Edit::Repaint => Some(Cmd::Repaint),
         Edit::Exit => Some(Cmd::EndOfFile),
     }
 }
@@ -641,6 +746,152 @@ mod tests {
             );
             assert_eq!(b.drain(), vec![action.clone()], "{bind:?}");
         }
+    }
+
+    /// A real status row (ANSI and all), as the REPL composes it for the prompt.
+    fn status_row(mode: AppMode) -> String {
+        status::render_status_line(
+            status::RunState::Idle,
+            Some("middle"),
+            None,
+            mode,
+            0,
+            "GLM5.3",
+            crate::app_state::ReasoningEffort::Auto,
+            "0.10.0",
+        )
+    }
+
+    /// Visible columns of a row: CSI sequences are skipped, everything else
+    /// counts its terminal width.
+    fn visible_columns(text: &str) -> usize {
+        use unicode_width::UnicodeWidthChar;
+
+        let mut width = 0;
+        let mut chars = text.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                for next in chars.by_ref() {
+                    if next.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+                continue;
+            }
+            width += c.width().unwrap_or(0);
+        }
+        width
+    }
+
+    #[test]
+    fn shift_tab_repaints_the_status_row_without_leaving_readline() {
+        let mut b = Bindings::default();
+        b.set_prompt_row(&status_row(AppMode::Agent), AppMode::Agent, false);
+        assert_eq!(
+            b.take_prompt_mode(),
+            None,
+            "a fresh prompt has nothing to apply"
+        );
+        assert_eq!(
+            decide(
+                Bind::ShiftTab,
+                state("half a thought"),
+                &mut b,
+                Instant::now()
+            ),
+            Edit::Repaint,
+            "the draft stays in the line: no interrupt, no re-prompt"
+        );
+        assert!(b.drain().is_empty(), "nothing for the loop to print");
+        assert_eq!(b.take_prompt_mode(), Some(AppMode::Plan));
+        assert_eq!(b.take_prompt_mode(), None, "the ring is applied once");
+    }
+
+    #[test]
+    fn shift_tab_walks_the_ring_and_skips_coordinator_unless_enabled() {
+        let mut b = Bindings::default();
+        b.set_prompt_row(&status_row(AppMode::Agent), AppMode::Agent, false);
+        for expected in [AppMode::Plan, AppMode::Yolo, AppMode::Agent] {
+            assert_eq!(
+                decide(Bind::ShiftTab, state(""), &mut b, Instant::now()),
+                Edit::Repaint
+            );
+            assert_eq!(b.take_prompt_mode(), Some(expected));
+        }
+        let mut b = Bindings::default();
+        b.set_prompt_row(&status_row(AppMode::Yolo), AppMode::Yolo, true);
+        assert_eq!(
+            decide(Bind::ShiftTab, state(""), &mut b, Instant::now()),
+            Edit::Repaint
+        );
+        assert_eq!(b.take_prompt_mode(), Some(AppMode::Coordinator));
+    }
+
+    #[test]
+    fn repainting_the_status_row_keeps_the_prompt_width() {
+        // The layout and the cursor rustyline tracks come from the composed
+        // prompt string: a relabel that changed the row's width (or its row
+        // count on a wrapping terminal) would move the cursor off the input.
+        for coordinator_in_ring in [false, true] {
+            for from in [AppMode::Agent, AppMode::Plan, AppMode::Yolo] {
+                let mut b = Bindings::default();
+                b.set_prompt_row(&status_row(from), from, coordinator_in_ring);
+                // What the REPL hands rustyline, padding included.
+                let prompt = format!("{}\n❯ typed", b.padded_prompt_row());
+                let composed_row = prompt.split_once('\n').unwrap().0.to_string();
+                let composed = visible_columns(&composed_row);
+                let mut mode = from;
+                for step in 0..4 {
+                    mode = mode.cycle_next(coordinator_in_ring);
+                    assert_eq!(
+                        decide(Bind::ShiftTab, state("typed"), &mut b, Instant::now()),
+                        Edit::Repaint
+                    );
+                    match b.repainted_prompt(&prompt) {
+                        Some(repainted) => {
+                            let head = repainted.split_once('\n').unwrap().0;
+                            assert_eq!(
+                                visible_columns(head),
+                                composed,
+                                "{from:?} → {mode:?} changed the prompt row's width\n\
+                                 composed:  {}\n\
+                                 repainted: {}",
+                                composed_row.replace(' ', "·"),
+                                head.replace(' ', "·")
+                            );
+                            assert!(
+                                head.contains(&status::mode_segment(mode)),
+                                "{from:?} → {mode:?}: the row still says {head:?}"
+                            );
+                            assert!(repainted.ends_with("\n❯ typed"), "the line is untouched");
+                        }
+                        // Cycling back to the mode the prompt was composed
+                        // for needs no repaint: the prompt already says it.
+                        None => assert_eq!(
+                            mode, from,
+                            "{from:?} step {step} skipped a repaint it needed"
+                        ),
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_prompt_this_cell_does_not_own_is_left_alone() {
+        let mut b = Bindings::default();
+        b.set_prompt_row(&status_row(AppMode::Agent), AppMode::Agent, false);
+        decide(Bind::ShiftTab, state(""), &mut b, Instant::now());
+        // rustyline's own reverse-search prompt: one row, not ours.
+        assert_eq!(b.repainted_prompt("(reverse-i-search)`foo': "), None);
+        let ours = format!("{}\n❯ x", b.padded_prompt_row());
+        assert!(
+            b.repainted_prompt(&ours).is_some(),
+            "our prompt still repaints"
+        );
+        // Nothing recorded yet (the editor exists before the first prompt).
+        let fresh = Bindings::default();
+        assert_eq!(fresh.repainted_prompt("❯ "), None);
     }
 
     #[test]

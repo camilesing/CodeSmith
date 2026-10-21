@@ -29,6 +29,7 @@
 //!   matches on a plain name prefix, so a path like `/tmp/notes.md` offers
 //!   nothing and keeps no list open.
 
+use std::borrow::Cow;
 use std::sync::Mutex;
 
 use rustyline::Context;
@@ -313,7 +314,23 @@ impl Validator for ReplHelper {
 
 // The helper exists for completion, the hint, and multiline validation; the
 // line is not re-highlighted.
-impl Highlighter for ReplHelper {}
+impl Highlighter for ReplHelper {
+    /// The status row is the prompt's first row, so a mode switch redraws it
+    /// in place: this is the only hook that sees the prompt string on every
+    /// repaint, and the shared cell holds the row plus the mode `Shift+Tab`
+    /// has cycled to. A changed prompt comes back owned; everything else,
+    /// including rustyline's own one-row reverse-search prompt, is lent.
+    fn highlight_prompt<'b, 's: 'b, 'p: 'b>(
+        &'s self,
+        prompt: &'p str,
+        _default: bool,
+    ) -> Cow<'b, str> {
+        match Bindings::lock(&self.bindings).repainted_prompt(prompt) {
+            Some(repainted) => Cow::Owned(repainted),
+            None => Cow::Borrowed(prompt),
+        }
+    }
+}
 // rustyline 14 has no blanket impl, so the alias trait is spelled out.
 impl Helper for ReplHelper {}
 

@@ -456,15 +456,19 @@ impl ReplState {
             .ok_or_else(|| anyhow::anyhow!("engine not running"))
     }
 
+    /// Whether `coordinator` joins the Shift+Tab ring for this session.
+    /// `/mode coordinator` is the ungated door.
+    pub fn coordinator_in_ring(&self) -> bool {
+        self.config
+            .features()
+            .enabled(crate::features::Feature::CoordinatorMode)
+    }
+
     /// Advance the Shift+Tab ring by one mode ([`AppMode::cycle_next`]).
     /// Coordinator joins the ring only while its experimental feature is
     /// enabled — the same gate the startup path above applies.
     pub fn cycle_mode(&mut self) {
-        let include_coordinator = self
-            .config
-            .features()
-            .enabled(crate::features::Feature::CoordinatorMode);
-        let next = self.mode.cycle_next(include_coordinator);
+        let next = self.mode.cycle_next(self.coordinator_in_ring());
         self.set_mode(next);
     }
 

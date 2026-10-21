@@ -1,8 +1,12 @@
 //! Status line for the REPL.
 //!
-//! Printed above the input prompt (and refreshed as a transient line
-//! during turns). One line, seven data items plus a leading running-state
-//! indicator:
+//! The prompt's first row — drawn above the input line, and refreshed as a
+//! transient line during turns. Being part of the prompt is what lets the
+//! mode switch land in place: rustyline redraws its prompt on every key, so
+//! `Shift+Tab` relabels the `🚥` segment instead of printing a line and
+//! re-prompting (see
+//! [`Bindings::repainted_prompt`](super::bindings::Bindings::repainted_prompt)).
+//! One line, seven data items plus a leading running-state indicator:
 //!
 //! ```text
 //! ● working │ Full │ 🧭 42% (72k/171k) │ 🚥agent │ 🤖2 │ deepseek-chat │ 🧠max │ v0.9.0 (f83c330)
@@ -164,8 +168,33 @@ fn ctx_segment(used: i64, max: u32, percent: f64) -> String {
 }
 
 /// The mode segment, shared by the idle status line and the live line.
-fn mode_segment(mode: AppMode) -> String {
+pub fn mode_segment(mode: AppMode) -> String {
     format!("🚥{}", mode.label().to_lowercase())
+}
+
+/// The mode label's width, in terminal columns.
+///
+/// The `🚥` badge is the same in every mode, so a relabel moves the row by
+/// the difference between two of these — the glyph cancels out. The labels
+/// are ASCII, so their byte length is their width.
+pub fn mode_label_columns(mode: AppMode) -> usize {
+    mode.label().len()
+}
+
+/// The widest mode label the `Shift+Tab` ring can show.
+///
+/// The prompt's status row is padded to this width before rustyline sees it:
+/// every label the ring can produce then occupies the same number of rows,
+/// so the layout rustyline computed from the composed prompt stays valid
+/// when the row is relabelled in place. Without the pad, a wider label on a
+/// terminal where the row wraps would shift the cursor by a row.
+pub fn widest_mode_label_columns(include_coordinator: bool) -> usize {
+    let widest = if include_coordinator {
+        AppMode::Coordinator
+    } else {
+        AppMode::Agent
+    };
+    mode_label_columns(widest)
 }
 
 /// The sub-agent count segment (dimmed at zero, cyan when running), shared
@@ -388,6 +417,37 @@ mod tests {
         assert_eq!(strip_ansi(&mode_segment(AppMode::Agent)), "🚥agent");
         assert_eq!(strip_ansi(&agents_segment(0)), "🤖0");
         assert_eq!(strip_ansi(&ctx_percent_segment(42.0)), "🧭 42%");
+    }
+
+    #[test]
+    fn every_ring_label_fits_the_widest_one() {
+        assert_eq!(mode_label_columns(AppMode::Agent), 5);
+        assert_eq!(mode_label_columns(AppMode::Plan), 4);
+        assert_eq!(mode_label_columns(AppMode::Yolo), 4);
+        assert_eq!(mode_label_columns(AppMode::Coordinator), 11);
+        assert_eq!(
+            widest_mode_label_columns(false),
+            5,
+            "without the feature the ring stops at agent"
+        );
+        assert_eq!(widest_mode_label_columns(true), 11);
+        for include_coordinator in [false, true] {
+            let widest = widest_mode_label_columns(include_coordinator);
+            for mode in [
+                AppMode::Agent,
+                AppMode::Plan,
+                AppMode::Yolo,
+                AppMode::Coordinator,
+            ] {
+                if !include_coordinator && mode == AppMode::Coordinator {
+                    continue;
+                }
+                assert!(
+                    mode_label_columns(mode) <= widest,
+                    "{mode:?} is wider than the pad the prompt reserves"
+                );
+            }
+        }
     }
 
     fn strip_ansi(text: &str) -> String {

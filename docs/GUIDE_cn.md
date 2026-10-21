@@ -195,7 +195,7 @@ CodeSmith 有三个可见模式：
 /mode yolo
 ```
 
-（`/plan`、`/agent`、`/yolo` 分别是对应 `/mode` 取值的快捷方式；不带参数的 `/mode` 打印当前模式。）在提示符下按 `Shift+Tab` 不必输入命令即可循环同样的模式——依次经过 `agent → plan → yolo`，实验性 `coordinator_mode` 功能开启时 `coordinator` 是第四站。切换对下一条发送的消息生效，提示符上方状态行的 `🚥` 段显示当前所在模式。
+（`/plan`、`/agent`、`/yolo` 分别是对应 `/mode` 取值的快捷方式；不带参数的 `/mode` 打印当前模式。）在提示符下按 `Shift+Tab` 不必输入命令即可循环同样的模式——依次经过 `agent → plan → yolo`，实验性 `coordinator_mode` 功能开启时 `coordinator` 是第四站。切换对下一条发送的消息生效，提示符上方状态行的 `🚥` 段显示当前所在模式——这一段是原地更新的：按键不打印任何东西，正在输入的草稿文字与光标都留在原处。
 
 在不熟悉的仓库中，Plan 模式是最安全的起点。它用于检查和决策，而不是文件编辑。它可以派发只读子代理并行调查多个区域——或多个仓库；每个子代理都被限制在只读工具内，工作区之外的目录需要先用 `/trust add <path>` 授权（见 `docs/SUBAGENTS.md` 的 "Working across repositories"）。
 

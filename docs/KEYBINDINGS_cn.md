@@ -51,7 +51,7 @@ REPL 在提示符处与回合运行中绑定的全部按键。`/help` 列出命�
 | `Ctrl+X Ctrl+K` | 停掉全部后台工作（3 秒内按两次） |
 | `Alt+P`（`⌥P`） | 在本会话模型与配置的默认模型之间切换 —— `/model <id>` 可选任意模型 |
 | `Alt+T`（`⌥T`） | 切换 extended thinking（off ↔ high） |
-| `Shift+Tab` | 循环运行模式：`agent → plan → yolo`（启用对应 feature 时还有 `coordinator`） |
+| `Shift+Tab` | 循环运行模式：`agent → plan → yolo`（启用对应 feature 时还有 `coordinator`）。不打印任何东西 —— 状态行的 `🚥` 段原地翻转，草稿的文字与光标保持原样 |
 | `Esc` | vi 插入模式下：退出插入模式 |
 | `Esc`, `Esc` | 行内有文本：清空草稿并保留给 `Up`。空提示符：无操作（rewind 菜单未实现；文件用 `/rewind`，对话用 `/undo`） |
 | `?` | 空提示符下：打印快捷键面板 |
