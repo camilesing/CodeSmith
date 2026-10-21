@@ -301,6 +301,24 @@ live there).
 9. **Diagnostics flush** (v0.8.6): before the next API request, `flush_pending_lsp_diagnostics()` injects any collected errors as a synthetic user message
 10. Result returned to agent loop
 
+The steps above are per call, and one assistant message may carry several. The
+engine groups them into **batches** (`engine::dispatch::plan_tool_execution_batches`):
+a batch runs concurrently inside itself and every batch finishes before the
+next starts, so the grouping is the ordering guarantee and declaration order
+survives whatever the split does. A call joins a concurrent batch when it is
+read-only, or declares `supports_parallel` (the sub-agent spawn family), or
+writes files whose named target paths do not collide with the batch's. It gets
+its own sequential batch when it is interactive or destructive, or when it
+writes without naming a target (`exec_shell` — it can write anywhere). Two
+calls naming one file never share a batch, and neither does an unnamed reader
+with a writer: `grep_files` over a tree can be looking at the file a write is
+rewriting. A batch holds at most `MAX_PARALLEL_BATCH` (10) calls.
+**Approval does not force a call out of a concurrent batch**: every member that
+needs approval is asked about in a sequential pre-dispatch pass, in declaration
+order, before any future spawns — one denial stops that call and leaves its
+siblings running. Known gap: an approved sandbox *escalation* cannot thread
+into a concurrent batch, so such a call logs and runs with its fixed context.
+
 ### Background Tasks
 
 1. Client enqueues task (`/task add ...` or `POST /v1/tasks`)

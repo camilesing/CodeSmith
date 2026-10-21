@@ -201,12 +201,19 @@ Use `edit_file` for one clear replacement in one file. Do not use it for multi-b
 ### `exec_shell`
 Use `exec_shell` for shell-native diagnostics, pipelines, and bounded commands. Use structured tools for structured operations when they map directly (`grep_files`, `git_diff`, `read_file`). For long commands, servers, full test suites, or release computations, start background work with `task_shell_start` or `exec_shell` using `background: true`, then poll with `task_shell_wait` or `exec_shell_wait`. If foreground `exec_shell` times out, the process was killed.
 
-### `agent_open` / `agent_eval` / `agent_close` / `tool_agent`
+### `agent_open` / `agent_run` / `agent_eval` / `agent_close` / `tool_agent`
 Use `agent_open` for independent investigations or implementation slices that can run while you continue coordinating. Fresh sessions are the default and are best when the child only needs the assignment you pass. Use `fork_context: true` when multiple perspectives should share the same parent context: the runtime preserves the parent prefill/prompt prefix byte-identically where available so DeepSeek prefix-cache reuse stays high, then appends the child instructions and task at the tail.
+
+Use `agent_run` when you need the child's answer in this turn: foreground mode blocks until it finishes and returns the result inline. Several foreground calls in one message run concurrently, so three independent lookups cost about one lookup's wall-clock.
+
+Spawn calls issued together in one assistant message open concurrently (up to the sub-agent cap); issuing them one per turn serializes the whole fan-out. Neither `agent_open` nor `agent_run` prompts for approval — a child inherits the parent's posture and its own writes are gated there.
 
 Use `tool_agent` for the experimental Fin fast lane: simple OCR, search, fetch, or command-probe tasks where Flash V4 with thinking off executes tools while the parent keeps planning context clean. Not for nuanced implementation, architecture, or release decisions.
 
 Use `agent_eval` to send follow-up input, block for completion, or retrieve the current session projection. Use `agent_close` to cancel or release a session that is no longer useful. Keep tiny single-read/search tasks local so the transcript stays compact.
+
+### Editing several files at once
+Writes run in parallel when the batch names disjoint paths: two `edit_file` or `apply_patch` calls on different files overlap, and each still asks for its own approval. Two calls that name the *same* file are serialized in declaration order, so write them in the order they must land. A writer that names no path (`exec_shell`) never shares a batch with anything else.
 
 ### `rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close`
 Use persistent RLM sessions for long-context semantic work, bulk classification/extraction, and decomposition where a Python REPL plus child LLM helpers is useful. Use deterministic Python inside RLM for exact counts and structured aggregation; use `grep_files` or `exec_shell` directly when that is the clearest deterministic check. Batch RLM child calls only after asserting independence with `dependency_mode="independent"`; use `sub_query_sequence` for dependent chains. Close sessions when their context is no longer needed.

@@ -685,6 +685,25 @@ impl ToolDispatcher for ToolRegistry {
             .is_some_and(|spec| spec.is_interactive(input))
     }
 
+    fn touched_paths(&self, name: &str, input: &Value) -> Vec<PathBuf> {
+        let Some(spec) = self.get(name) else {
+            return Vec::new();
+        };
+        // The same extractor the read-before-edit gate uses, so the
+        // classifier's idea of "this call touches a.rs" and the freshness
+        // tracker's cannot drift apart. `resolve_path` is the tools' own
+        // resolution: it canonicalizes when the file exists and normalizes
+        // lexically when it does not, so `a.rs`, `./a.rs`, and an absolute
+        // path land on one key. A path outside the workspace (or one the
+        // resolver refuses) drops out of the set, which keeps a writer
+        // carrying it serial rather than racing — the call needs an approval
+        // for that path anyway.
+        super::freshness::target_paths(spec.name(), input)
+            .into_iter()
+            .filter_map(|raw| self.context.resolve_path(&raw).ok())
+            .collect()
+    }
+
     fn approval_requirement_for(&self, name: &str, input: &Value) -> Option<ApprovalRequirement> {
         let spec = self.get(name)?;
         // An out-of-workspace path is an approval requirement by
@@ -1092,5 +1111,70 @@ mod tests {
 
         assert_eq!(result.content, "danger-full-access");
         assert!(result.success);
+    }
+
+    /// The batch classifier's conflict key, which is what decides that two
+    /// `apply_patch` calls on one file must not share a concurrent batch.
+    /// Two spellings of one file have to agree, an `apply_patch` diff has to
+    /// contribute every header, and a path the resolver refuses has to
+    /// contribute *nothing* — an unknown writer stays serial rather than
+    /// racing, which is the fail-closed half of the same rule.
+    #[test]
+    fn touched_paths_are_resolved_conflict_keys() {
+        use crate::tool_dispatch::ToolDispatcher as _;
+
+        struct PathProbe;
+        #[async_trait::async_trait]
+        impl ToolSpec for PathProbe {
+            fn name(&self) -> &str {
+                "apply_patch"
+            }
+            fn description(&self) -> &str {
+                "path-key probe"
+            }
+            fn input_schema(&self) -> Value {
+                serde_json::json!({"type": "object"})
+            }
+            fn capabilities(&self) -> Vec<ToolCapability> {
+                vec![ToolCapability::WritesFiles]
+            }
+            async fn execute(
+                &self,
+                _input: Value,
+                _context: &ToolContext,
+            ) -> Result<ToolResult, crate::tools::spec::ToolError> {
+                unreachable!("the path-key probe is never executed")
+            }
+        }
+
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(workspace.path().to_path_buf()));
+        registry.register(Arc::new(PathProbe));
+
+        let diff = |path: &str| {
+            serde_json::json!({
+                "patch": format!("--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n+new\n")
+            })
+        };
+
+        let plain = registry.touched_paths("apply_patch", &diff("src/one.rs"));
+        assert_eq!(plain.len(), 1, "one header, one path: {plain:?}");
+        assert!(plain[0].is_absolute(), "keys are resolved: {plain:?}");
+        assert!(
+            plain[0].ends_with("src/one.rs"),
+            "the header resolves under the workspace: {plain:?}"
+        );
+
+        let dotted = registry.touched_paths("apply_patch", &diff("./src/one.rs"));
+        assert_eq!(
+            dotted, plain,
+            "`./src/one.rs` is the same file as `src/one.rs`"
+        );
+
+        let escaped = registry.touched_paths("apply_patch", &diff("../../elsewhere.rs"));
+        assert!(
+            escaped.is_empty(),
+            "a refused path yields no key, so the writer stays serial: {escaped:?}"
+        );
     }
 }
