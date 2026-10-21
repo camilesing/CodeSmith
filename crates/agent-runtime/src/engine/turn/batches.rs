@@ -4,14 +4,34 @@
 //! Split out of `engine/host_executor.rs` (codebase-health §1, step 1),
 //! together with `stream.rs`. [`HostAgentExecutor::execute_tool_batches`] runs
 //! the four phases that used to live inline in `run_inner`: planning
-//! (loop-guard `record_attempt`, speculative early-task pops, per-input
-//! approval gating), batch classification via `plan_tool_execution_batches`
-//! (the production classifier in `engine::dispatch`), per-batch dispatch
-//! (`Parallel` batches concurrently via `FuturesUnordered`, `Serial` batches
-//! one-by-one with approval gating), and the sequential post-batch pass
-//! (loop-guard outcomes, LSP collect, read-file observe, error taxonomy,
-//! `ToolResult` transcript push). The method was extracted verbatim — the
-//! parameters are exactly the step-loop locals this phase reads or mutates.
+//! (loop-guard `record_attempt`, speculative early-task pops, the scheduling
+//! metadata the classifier reads), batch classification via
+//! `plan_tool_execution_batches` (the production classifier in
+//! `engine::dispatch`), per-batch dispatch (`Parallel` batches concurrently
+//! via `FuturesUnordered`, `Serial` batches one-by-one), and the sequential
+//! post-batch pass (loop-guard outcomes, LSP collect, read-file observe,
+//! error taxonomy, `ToolResult` transcript push). The method was extracted
+//! verbatim — the parameters are exactly the step-loop locals this phase reads
+//! or mutates.
+//!
+//! What a batch may run concurrently, and why — the classification lives in
+//! `engine::dispatch`; this module owns the approval side of it:
+//!
+//! - A `Parallel` batch is **not** approval-free by construction. Every member
+//!   that needs approval is asked about in the sequential pre-dispatch pass
+//!   before any future spawns, in declaration order, so a fan-out asks its
+//!   questions up front and then runs concurrently instead of serializing
+//!   behind one prompt per call. A denial stops that one call and leaves its
+//!   siblings running.
+//! - **Known limitation**: an approved sandbox **escalation** cannot thread
+//!   into a concurrent batch (the `RetryWithPolicy` re-dispatch needs a
+//!   sequential dispatch). Such a call logs and runs with the fixed context —
+//!   the same fallback an extension `Ask` on a parallel call has always had.
+//! - **Known limitation**: where a write and a read of one file land in one
+//!   batch, the classifier only keeps them apart when *both* name their
+//!   targets. A reader with no path information (`grep_files` over a tree) and
+//!   a writer never share a batch, so the guarantee holds by refusing to
+//!   guess rather than by resolving paths at dispatch time.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -111,9 +131,13 @@ impl HostAgentExecutor {
     /// during streaming if the args still match; otherwise abort + run
     /// fresh); ✅ LSP post-edit collect; ✅ parallel dispatch (slice 40 §E).
     /// `plan_tool_execution_batches` groups consecutive parallel-safe
-    /// (read-only, no-approval) tool_uses into a single `Parallel` batch
-    /// run concurrently via `FuturesUnordered`; each unsafe tool becomes
-    /// its own `Serial` batch (approval / write / blocked). Outcomes are
+    /// tool_uses into a single `Parallel` batch run concurrently via
+    /// `FuturesUnordered` — safe means read-only, an explicit
+    /// `supports_parallel` opt-in, or a file writer with disjoint target
+    /// paths; interactive and destructive calls, and a writer that names no
+    /// target, become their own `Serial` batch. Approval does not force a
+    /// call out of a parallel batch any more: it is asked in the
+    /// pre-dispatch pass (see the module doc). Outcomes are
     /// index-preserving (a pre-allocated array written by `plan.index`),
     /// and `record_outcome` / LSP / read-file / error-escalation / push
     /// `ToolResult` are deferred to a sequential post-batch pass.
@@ -218,6 +242,33 @@ impl HostAgentExecutor {
             let caps: Vec<ToolCapability> =
                 tool.as_ref().map(|t| t.capabilities()).unwrap_or_default();
             let read_only = caps.contains(&ToolCapability::ReadOnly);
+            let writes_files = caps.contains(&ToolCapability::WritesFiles);
+            // Scheduling metadata is a per-tool-and-input answer that only the
+            // host dispatcher carries (`ToolMetadata::supports_parallel`,
+            // `is_interactive`, `is_destructive`, `touched_paths`) — the
+            // framework `Tool` trait exposes capability flags alone. Without a
+            // dispatcher (embeds, framework tests) the classifier falls back to
+            // those flags, which is what it used unconditionally before; with
+            // one, every arm fails closed: an unregistered tool, or one whose
+            // metadata cannot be resolved, is never concurrent.
+            let supports_parallel = tool.is_some()
+                && self
+                    .tool_dispatcher
+                    .as_ref()
+                    .is_none_or(|d| d.metadata(&name).is_some_and(|m| m.supports_parallel));
+            let interactive = self
+                .tool_dispatcher
+                .as_ref()
+                .is_some_and(|d| d.is_interactive(&name, &input));
+            let destructive = self
+                .tool_dispatcher
+                .as_ref()
+                .is_some_and(|d| d.is_destructive(&name, &input));
+            let touched_paths = self
+                .tool_dispatcher
+                .as_ref()
+                .map(|d| d.touched_paths(&name, &input))
+                .unwrap_or_default();
             // Per-input approval override (mirrors `request_approval`'s
             // own logic in `turn::approval`): a host dispatcher's
             // `Required` / `Suggest` downgrades/upgrades the gate per
@@ -239,15 +290,14 @@ impl HostAgentExecutor {
                 name: name.clone(),
                 input: input.clone(),
                 caller: None,
-                interactive: false,
+                interactive,
                 approval_required,
                 approval_description: String::new(),
-                // Framework `Tool` doesn't expose `supports_parallel` /
-                // `interactive` directly; assume `true` / `false` so the
-                // classifier's predicate reduces to `read_only &&
-                // !approval_required` — the same gate as `early_start_safe`.
-                supports_parallel: true,
+                supports_parallel,
                 read_only,
+                writes_files,
+                destructive,
+                touched_paths,
                 stream_early_start_safe: early_start_safe(&caps),
                 blocked_error: None,
                 guard_result: guard_result.clone(),
@@ -263,7 +313,7 @@ impl HostAgentExecutor {
         // concurrently via `FuturesUnordered` (each future is `'static` — it
         // owns an `Arc<dyn Tool>` clone, matching the early-start spawn
         // site's `async move { tool.run(input).await }` pattern); a `Serial`
-        // batch runs one tool with approval gating (borrows `&self`).
+        // batch runs one tool with its approval gate inline (borrows `&self`).
         let mut outcomes: Vec<Option<DispatchedTool>> = (0..n).map(|_| None).collect();
         for batch in batches {
             match batch {
@@ -281,6 +331,16 @@ impl HostAgentExecutor {
                     // actually runs.
                     let mut ext_blocks: HashMap<usize, String> = HashMap::new();
                     let mut ext_rewrites: HashMap<usize, serde_json::Value> = HashMap::new();
+                    // Approval answers for a parallel batch. A batch is no
+                    // longer approval-free by classification: a call that
+                    // needs approval is asked about HERE, in this sequential
+                    // pre-dispatch pass — the same shape an extension `Ask`
+                    // has always used — and only then do the futures spawn.
+                    // What the gate asks about is the input that will
+                    // actually run (post-rewrite). A denial is one call's
+                    // problem: it records a `permission_denied` outcome at
+                    // that index, and its siblings still run concurrently.
+                    let mut approval_denials: HashMap<usize, String> = HashMap::new();
                     for plan in &batch_plans {
                         // Resolve the extension transform FIRST so
                         // `on_tool_start` reports the input that will
@@ -288,6 +348,14 @@ impl HostAgentExecutor {
                         // agree with the executed call, not the pre-rewrite
                         // plan input.
                         let mut effective_input = plan.input.clone();
+                        // Whether this call's approval requirement was already
+                        // answered by an extension `Ask` above — the user is
+                        // asked once per call, whichever seam raised it.
+                        let mut asked = false;
+                        // The capability gate says yes for the batch's own
+                        // classification; an extension rewrite can add a
+                        // requirement the original input did not carry.
+                        let mut needs_approval = plan.approval_required;
                         if let Some(runner) = &extension {
                             let out = runner
                                 .emit(codesmith_agent::extension::ExtensionEvent::ToolCall(
@@ -359,6 +427,7 @@ impl HostAgentExecutor {
                                                  running with the fixed context"
                                             );
                                         }
+                                        asked = true;
                                     }
                                     Err(denial) => {
                                         ext_blocks.insert(plan.index, denial);
@@ -375,12 +444,14 @@ impl HostAgentExecutor {
                                     plan.id
                                 );
                                 // The parallel batch was classified on the
-                                // ORIGINAL input; the rewritten input must
-                                // re-classify as auto-approved or the call is
-                                // blocked here — a rewrite cannot smuggle a
-                                // non-approved input through the approval-free
-                                // batch. The model can re-issue the call to
-                                // route it through the serial approval gate.
+                                // ORIGINAL input: the rewritten input has to
+                                // re-classify, and a rewrite that newly needs
+                                // approval is no longer a dead end — the
+                                // pre-dispatch approval pass below owns the
+                                // whole batch's gating, so the rewritten input
+                                // is simply what the user is asked about. The
+                                // rewrite always lands in `ext_rewrites`, so
+                                // the executed input and the recorded one agree.
                                 let caps = tool_for_plan[plan.index]
                                     .as_ref()
                                     .map(|t| t.capabilities())
@@ -391,15 +462,51 @@ impl HostAgentExecutor {
                                     &e.input,
                                     &caps,
                                 ) {
-                                    ext_blocks.insert(
-                                        plan.index,
-                                        "extension-rewritten input requires approval; the \
-                                         call was blocked from the parallel batch — re-issue it"
-                                            .to_string(),
-                                    );
-                                } else {
-                                    effective_input = e.input.clone();
-                                    ext_rewrites.insert(plan.index, e.input);
+                                    needs_approval = true;
+                                }
+                                effective_input = e.input.clone();
+                                ext_rewrites.insert(plan.index, e.input);
+                            }
+                        }
+                        // Approval for a gated call: answered NOW, before the
+                        // futures spawn, in index order. Session grants and the
+                        // auto posture answer without a prompt. Known
+                        // limitation, same as the `Ask` seam above: an approved
+                        // sandbox escalation cannot thread into a concurrent
+                        // batch — it logs and the call runs with the fixed
+                        // context.
+                        if !ext_blocks.contains_key(&plan.index)
+                            && needs_approval
+                            && !asked
+                            // A call the gates already refused never runs, so
+                            // there is nothing to approve: the same order the
+                            // serial arm uses (loop-guard first, then the
+                            // question).
+                            && plan.guard_result.is_none()
+                            && let Some(tool) = tool_for_plan[plan.index].clone()
+                        {
+                            match self
+                                .request_approval(
+                                    &plan.id,
+                                    &plan.name,
+                                    &effective_input,
+                                    &tool,
+                                    intent_summary,
+                                )
+                                .await
+                            {
+                                Ok(elevation) => {
+                                    if elevation.is_some() {
+                                        tracing::warn!(
+                                            target: "codesmith_agent_runtime::engine",
+                                            "approval escalation on a parallel-batch call cannot \
+                                             thread into the concurrent batch; running with the \
+                                             fixed context"
+                                        );
+                                    }
+                                }
+                                Err(denial) => {
+                                    approval_denials.insert(plan.index, denial);
                                 }
                             }
                         }
@@ -420,6 +527,9 @@ impl HostAgentExecutor {
                         // (if a handler blocked this `ToolCall`), cloned
                         // into the `'static` future.
                         let ext_block_reason = ext_blocks.get(&plan.index).cloned();
+                        // The user's answer for this call, if they were asked
+                        // (a denial is the only answer that stops it).
+                        let approval_denial = approval_denials.get(&plan.index).cloned();
                         // §F2b T3 — capture the runner into the `'static`
                         // future so ToolExecutionStart/End can bracket the
                         // tool run from inside `async move`.
@@ -443,6 +553,14 @@ impl HostAgentExecutor {
                                 // the tool (the speculative task was already
                                 // aborted in planning).
                                 Ok(g)
+                            } else if let Some(denial) = approval_denial {
+                                // Approval denied in the pre-dispatch pass.
+                                // Mirroring the serial arm: the answer feeds
+                                // back as a permission error so the model can
+                                // react, and the turn continues. Not a block —
+                                // it counts toward error escalation exactly as
+                                // a denied serial call does.
+                                Err(ToolError::permission_denied(denial))
                             } else if let Some(reason) = ext_block_reason {
                                 // §F2b T1 — an extension blocked this
                                 // `ToolCall`; skip dispatch and feed back a

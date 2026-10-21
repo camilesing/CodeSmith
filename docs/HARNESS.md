@@ -150,6 +150,13 @@ concurrent task queue:
 - **Background execution.** Sub-agents execute concurrently (default cap:
   10, configurable to 20). The engine manages the pool — no polling loop
   needed.
+- **One turn, one fan-out.** Several spawn calls in a single assistant
+  message start their children together: the dispatch batch is what makes
+  the cap meaningful, so issuing them one per turn serializes the fan-out no
+  matter what the cap says. Spawning asks for no approval (`agent_run`'s
+  foreground form included) — a child inherits the parent's posture, and a
+  non-auto parent's child runs `permission_mode: "ask"` for its own reads and
+  writes.
 - **Completion notification.** When a sub-agent finishes, the runtime
   injects a `<codesmith:subagent.done>` sentinel into the parent's
   transcript. The human-readable summary — including the child's findings,

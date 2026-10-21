@@ -583,6 +583,50 @@ fn make_plan_at(
     interactive: bool,
 ) -> ToolExecutionPlan {
     ToolExecutionPlan {
+        // Anything that is not read-only is modelled as an *unnamed* writer:
+        // it declares no target paths, which is the shape the classifier
+        // refuses to make concurrent. `make_writer_at` is the named-path
+        // shape, and `make_spawner_at` the declared-but-not-a-writer one.
+        writes_files: !read_only,
+        touched_paths: Vec::new(),
+        ..plan_base(
+            index,
+            read_only,
+            supports_parallel,
+            approval_required,
+            interactive,
+        )
+    }
+}
+
+/// A file writer that names its targets — the shape that can fan out when the
+/// paths do not collide.
+fn make_writer_at(index: usize, paths: &[&str]) -> ToolExecutionPlan {
+    ToolExecutionPlan {
+        writes_files: true,
+        touched_paths: paths.iter().map(PathBuf::from).collect(),
+        ..plan_base(index, false, false, true, false)
+    }
+}
+
+/// A tool that declares concurrency without being read-only — the sub-agent
+/// spawn family, which names no workspace path.
+fn make_spawner_at(index: usize) -> ToolExecutionPlan {
+    ToolExecutionPlan {
+        writes_files: false,
+        touched_paths: Vec::new(),
+        ..plan_base(index, false, true, false, false)
+    }
+}
+
+fn plan_base(
+    index: usize,
+    read_only: bool,
+    supports_parallel: bool,
+    approval_required: bool,
+    interactive: bool,
+) -> ToolExecutionPlan {
+    ToolExecutionPlan {
         index,
         id: format!("tool-{index}"),
         name: "grep_files".to_string(),
@@ -593,6 +637,9 @@ fn make_plan_at(
         approval_description: "desc".to_string(),
         supports_parallel,
         read_only,
+        writes_files: false,
+        destructive: false,
+        touched_paths: Vec::new(),
         stream_early_start_safe: false,
         blocked_error: None,
         guard_result: None,
@@ -693,17 +740,163 @@ fn parallel_batch_requires_read_only_parallel_tools() {
     ];
     assert!(should_parallelize_tool_batch(&plans));
 
+    // Not read-only, no declaration, no named targets: the `exec_shell` shape
+    // — it could write anywhere, so it never shares a batch.
     let plans = vec![make_plan(false, true, false, false)];
     assert!(!should_parallelize_tool_batch(&plans));
 
+    // Read-only is the default posture now, so a read tool converges whether
+    // or not it declares `supports_parallel` (most read tools do not).
     let plans = vec![make_plan(true, false, false, false)];
-    assert!(!should_parallelize_tool_batch(&plans));
+    assert!(should_parallelize_tool_batch(&plans));
 
+    // Approval no longer disqualifies: a gated call is asked in the
+    // pre-dispatch pass and then runs with its siblings.
     let plans = vec![make_plan(true, true, true, false)];
-    assert!(!should_parallelize_tool_batch(&plans));
+    assert!(should_parallelize_tool_batch(&plans));
 
     let plans = vec![make_plan(true, true, false, true)];
     assert!(!should_parallelize_tool_batch(&plans));
+
+    // The sub-agent spawn family: not read-only, but declares concurrency and
+    // names no target.
+    let plans = vec![make_spawner_at(0), make_spawner_at(1)];
+    assert!(should_parallelize_tool_batch(&plans));
+
+    // Two writers on one file: eligible, but not with each other.
+    let plans = vec![
+        make_writer_at(0, &["src/a.rs"]),
+        make_writer_at(1, &["src/a.rs"]),
+    ];
+    assert!(!should_parallelize_tool_batch(&plans));
+}
+
+#[test]
+fn disjoint_write_targets_share_one_batch() {
+    let batches = plan_tool_execution_batches(vec![
+        make_writer_at(0, &["src/a.rs"]),
+        make_writer_at(1, &["src/b.rs"]),
+    ]);
+    assert_eq!(batches.len(), 1);
+    match &batches[0] {
+        ToolExecutionBatch::Parallel(plans) => {
+            assert_eq!(
+                plans.iter().map(|plan| plan.index).collect::<Vec<_>>(),
+                vec![0, 1]
+            );
+        }
+        ToolExecutionBatch::Serial(_) => panic!("disjoint writers should share a batch"),
+    }
+}
+
+#[test]
+fn same_path_writes_split_into_ordered_batches() {
+    // Declaration order survives the split: batch 0 drains before batch 1
+    // starts, so the second write to a.rs sees the first one's result. The
+    // grouping is greedy over consecutive plans — it never reorders to pack a
+    // batch, which is why the third call joins the *second* group rather than
+    // pairing with the first.
+    let batches = plan_tool_execution_batches(vec![
+        make_writer_at(0, &["src/a.rs"]),
+        make_writer_at(1, &["src/a.rs"]),
+        make_writer_at(2, &["src/b.rs"]),
+    ]);
+    assert_eq!(batches.len(), 2);
+    match &batches[0] {
+        ToolExecutionBatch::Parallel(plans) => {
+            assert_eq!(
+                plans.iter().map(|plan| plan.index).collect::<Vec<_>>(),
+                vec![0]
+            );
+        }
+        ToolExecutionBatch::Serial(_) => panic!("first batch should be parallel"),
+    }
+    match &batches[1] {
+        ToolExecutionBatch::Parallel(plans) => {
+            assert_eq!(
+                plans.iter().map(|plan| plan.index).collect::<Vec<_>>(),
+                vec![1, 2]
+            );
+        }
+        ToolExecutionBatch::Serial(_) => panic!("second batch should be parallel"),
+    }
+}
+
+#[test]
+fn a_writer_never_shares_a_batch_with_an_unbounded_reader() {
+    // `grep_files` names no path: it can be looking at the file the writer is
+    // rewriting, and a half-written file reads as an empty one. Neither order
+    // is allowed to share a batch.
+    let batches = plan_tool_execution_batches(vec![
+        make_plan_at(0, true, true, false, false),
+        make_writer_at(1, &["src/a.rs"]),
+    ]);
+    assert_eq!(batches.len(), 2);
+    match &batches[0] {
+        ToolExecutionBatch::Parallel(plans) => assert_eq!(plans.len(), 1),
+        ToolExecutionBatch::Serial(_) => panic!("first batch should be parallel"),
+    }
+    match &batches[1] {
+        ToolExecutionBatch::Parallel(plans) => {
+            assert_eq!(plans[0].index, 1);
+        }
+        ToolExecutionBatch::Serial(_) => panic!("writer should still run, just alone"),
+    }
+
+    let batches = plan_tool_execution_batches(vec![
+        make_writer_at(0, &["src/a.rs"]),
+        make_plan_at(1, true, true, false, false),
+    ]);
+    assert_eq!(batches.len(), 2);
+}
+
+#[test]
+fn interactive_read_only_tool_is_never_concurrent() {
+    // `request_user_input` is `ReadOnly` and interactive: it blocks on the
+    // user, so it must not sit inside a batch of futures.
+    let batches = plan_tool_execution_batches(vec![
+        make_plan_at(0, true, true, false, false),
+        make_plan_at(1, true, true, false, true),
+    ]);
+    assert_eq!(batches.len(), 2);
+    match &batches[1] {
+        ToolExecutionBatch::Serial(plan) => assert_eq!(plan.index, 1),
+        ToolExecutionBatch::Parallel(_) => panic!("interactive tool should be serial"),
+    }
+}
+
+#[test]
+fn destructive_call_is_never_concurrent() {
+    let mut destructive = make_writer_at(1, &["src/b.rs"]);
+    destructive.destructive = true;
+    let batches = plan_tool_execution_batches(vec![make_writer_at(0, &["src/a.rs"]), destructive]);
+    assert_eq!(batches.len(), 2);
+    match &batches[1] {
+        ToolExecutionBatch::Serial(plan) => assert_eq!(plan.index, 1),
+        ToolExecutionBatch::Parallel(_) => panic!("destructive tool should be serial"),
+    }
+}
+
+#[test]
+fn parallel_batch_is_capped_and_keeps_order() {
+    let plans: Vec<ToolExecutionPlan> = (0..MAX_PARALLEL_BATCH + 2)
+        .map(|i| make_spawner_at(i))
+        .collect();
+    let batches = plan_tool_execution_batches(plans);
+    assert_eq!(batches.len(), 2);
+    match &batches[0] {
+        ToolExecutionBatch::Parallel(plans) => assert_eq!(plans.len(), MAX_PARALLEL_BATCH),
+        ToolExecutionBatch::Serial(_) => panic!("first batch should be parallel"),
+    }
+    match &batches[1] {
+        ToolExecutionBatch::Parallel(plans) => {
+            assert_eq!(
+                plans.iter().map(|plan| plan.index).collect::<Vec<_>>(),
+                vec![MAX_PARALLEL_BATCH, MAX_PARALLEL_BATCH + 1]
+            );
+        }
+        ToolExecutionBatch::Serial(_) => panic!("tail should be parallel"),
+    }
 }
 
 #[test]
@@ -713,7 +906,9 @@ fn tool_execution_batches_use_serial_barriers() {
         make_plan_at(1, true, true, false, false),
         make_plan_at(2, false, false, true, false),
         make_plan_at(3, true, true, false, false),
-        make_plan_at(4, true, false, false, false),
+        // Interactive: the barrier that is still a `Serial` batch now that
+        // read-only alone no longer makes a call serial.
+        make_plan_at(4, true, false, false, true),
         make_plan_at(5, true, true, false, false),
         make_plan_at(6, true, true, false, false),
     ]);
@@ -1084,6 +1279,68 @@ fn tools_always_load_overrides_default_native_deferral() {
         AppMode::Agent,
         &always_load
     ));
+}
+
+/// The declarations fan-out rests on, read back through the registry the
+/// engine actually consults. Without them the classifier gives every spawn its
+/// own `Serial` batch, so "N sub-agents in one turn" means N children one at a
+/// time, each behind its own prompt.
+///
+/// Opening a child is not an approval-gated act: a child inherits the parent's
+/// approval posture (`SubAgentRuntime` copies `auto_approve` into the child's
+/// context, and a non-auto parent's child runs `permission_mode: "ask"`), so
+/// the gate a write would need is still the child's own.
+#[test]
+fn subagent_spawn_family_declares_parallel_without_approval() {
+    use codesmith_agent_runtime::tool_dispatch::ToolDispatcher as _;
+
+    let tmp = tempdir().expect("tempdir");
+    let context = crate::tools::ToolContext::new(tmp.path().to_path_buf());
+    let client = super::resolve_llm_client(&Config {
+        api_key: Some("test-key".to_string()),
+        ..Config::default()
+    })
+    .expect("stub client");
+    let client: crate::llm_client::LlmClientHandle = client;
+    let manager = crate::tools::subagent::new_shared_subagent_manager(tmp.path().to_path_buf(), 8);
+    let runtime = crate::tools::subagent::SubAgentRuntime::new(
+        client,
+        DEFAULT_TEXT_MODEL.to_string(),
+        context.clone(),
+        true,
+        None,
+        manager.clone(),
+    );
+    let registry = crate::tools::ToolRegistryBuilder::new()
+        .with_subagent_tools(manager, runtime, None)
+        .build(context);
+
+    for name in [
+        "agent_open",
+        "agent_run",
+        "agent_spawn",
+        "agent_close",
+        "tool_agent",
+    ] {
+        let metadata = registry
+            .metadata(name)
+            .unwrap_or_else(|| panic!("{name} is registered"));
+        assert!(
+            metadata.supports_parallel,
+            "{name} must declare concurrency, or one turn can only open one child"
+        );
+        assert_eq!(
+            metadata.approval_requirement,
+            crate::tools::spec::ApprovalRequirement::Auto,
+            "{name} no longer asks for its own approval"
+        );
+        assert!(
+            !metadata
+                .capabilities
+                .contains(&ToolCapability::RequiresApproval),
+            "{name} must not carry RequiresApproval while its requirement is Auto"
+        );
+    }
 }
 
 #[test]

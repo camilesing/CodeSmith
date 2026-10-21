@@ -216,6 +216,13 @@ v0.8.33 开始将大型工具输出迁移到符号句柄：工具返回小型 `v
 | `agent_run` | 内联运行一个子代理并等待结果（前台），或在后台派生——前台形式适用于需要立即得到答案的紧凑反馈回路。 |
 | `agent_memory_read` / `agent_memory_write` / `agent_memory_edit` | 在子代理的作用域代理记忆目录内读取、创建/覆写和搜索替换文件（通过 `agent_open` 的 `memory` 参数可选启用）。仅对启用了记忆作用域的子代理生效。 |
 
+派生家族（`agent_open`、`agent_run`、`agent_spawn`、`tool_agent`、
+`agent_close`）声明自身并发安全，且不再带有自己的审批要求——因此一条助手消息里
+的多次派生会同时开启各自的子级，而不是一个子级排在一个弹窗之后。这不是把闸门撤掉：
+子级继承父级的审批姿态，非 auto 父级的子级运行在 `permission_mode: "ask"` 下，
+所以子级做的任何事都逃不出父级本就要面对的闸门。其他什么能共享同一个并发 batch，
+见 [ARCHITECTURE.md](ARCHITECTURE.md)（"工具执行"）里的 batch 规则。
+
 委派协议见 `agent.txt`，角色分类（`general` / `explore` / `plan` /
 `review` / `implementer` / `verifier` / `tool_agent` / `team` /
 `coordinator_worker` / `custom`）见

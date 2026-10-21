@@ -305,7 +305,15 @@ fn apply_patch_target_paths(input: &Value) -> Vec<String> {
     paths
 }
 
-fn target_paths(tool_name: &str, input: &Value) -> Vec<String> {
+/// Workspace paths named by `tool_name`'s input, as written by the model.
+///
+/// Shared with the batch classifier (`tools::registry`'s
+/// `ToolDispatcher::touched_paths` implementation), which asks the same
+/// question for a different reason: whether two calls in one turn may run
+/// concurrently. Both callers want the *declared* targets, not the ones
+/// execution resolves, so this stays string-level and never touches the
+/// filesystem.
+pub(crate) fn target_paths(tool_name: &str, input: &Value) -> Vec<String> {
     if tool_name == "apply_patch" {
         apply_patch_target_paths(input)
     } else {

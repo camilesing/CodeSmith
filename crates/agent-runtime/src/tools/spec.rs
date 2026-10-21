@@ -1027,7 +1027,17 @@ pub trait ToolSpec: Send + Sync {
         None
     }
 
-    /// Returns whether this tool can be executed in parallel with others.
+    /// Whether this tool may run concurrently with other calls in one turn.
+    ///
+    /// Read-only tools do not need to declare it — the classifier treats
+    /// `ReadOnly` as the default concurrency posture, which is why most read
+    /// tools leave this at `false` and still fan out. The declaration is what
+    /// a tool that is **not** read-only needs to be considered at all (the
+    /// sub-agent spawn family), and a `WritesFiles` tool additionally has to
+    /// name its target paths: two calls naming one file, or a writer naming
+    /// none, are serialized. See `engine::dispatch::tool_plan_is_parallel_safe`
+    /// for the full rule and `docs/ARCHITECTURE.md` ("Tool Execution") for the
+    /// batch semantics.
     fn supports_parallel(&self) -> bool {
         false
     }

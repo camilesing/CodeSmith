@@ -52,6 +52,8 @@ pub use codesmith_agent_runtime::engine::{
     COMPACTION_SUMMARY_MARKER,
     // streaming
     FAKE_WRAPPER_NOTICE,
+    // The concurrent-batch width the classifier enforces.
+    MAX_PARALLEL_BATCH,
     MAX_STREAM_ERRORS_BEFORE_FAIL,
     MAX_TRANSPARENT_STREAM_RETRIES,
     TOOL_CALL_START_MARKERS,

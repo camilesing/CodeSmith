@@ -21,6 +21,8 @@
 //! `EngineHandle`, `spawn_engine`) stays in `core/engine.rs`.
 
 use serde_json::json;
+use std::collections::HashSet;
+use std::path::PathBuf;
 
 use crate::mode::AppMode;
 use crate::models::{Tool, ToolCaller};
@@ -60,8 +62,23 @@ pub struct ToolExecutionPlan {
     pub interactive: bool,
     pub approval_required: bool,
     pub approval_description: String,
+    /// Whether the call may run concurrently at all (see
+    /// [`tool_plan_is_parallel_safe`]).
     pub supports_parallel: bool,
     pub read_only: bool,
+    /// `WritesFiles`: the call can mutate the workspace. Writers are the one
+    /// class whose concurrency depends on *which* files they name, so the
+    /// classifier needs the bit that separates them from a read.
+    pub writes_files: bool,
+    /// Whether the tool+input can destroy data. A destructive call is never
+    /// concurrent, whatever its paths say.
+    pub destructive: bool,
+    /// Resolved paths the call declares — the files it reads or writes.
+    /// Empty means no path information, which the classifier reads as a
+    /// refusal to guess (see [`ToolDispatcher::touched_paths`]).
+    ///
+    /// [`ToolDispatcher::touched_paths`]: crate::tool_dispatch::ToolDispatcher::touched_paths
+    pub touched_paths: Vec<PathBuf>,
     pub stream_early_start_safe: bool,
     pub blocked_error: Option<ToolError>,
     pub guard_result: Option<ToolResult>,
@@ -401,34 +418,136 @@ pub fn parse_parallel_tool_calls(
 
 // === Dispatch policy ==================================================
 
-pub fn should_parallelize_tool_batch(plans: &[ToolExecutionPlan]) -> bool {
-    !plans.is_empty() && plans.iter().all(tool_plan_is_parallel_safe)
-}
+/// How many calls may share one concurrent batch.
+///
+/// The same order of magnitude as the sub-agent cap (`[subagents].
+/// max_concurrent`, default 10): a model that emits forty `grep_files` calls
+/// in one turn gets four groups of ten rather than forty concurrent
+/// processes. The cap only delays the tail — groups stay in declaration order
+/// — and it is deliberately not a config knob: fan-out width is a resource
+/// question the runtime can answer, and `[subagents].max_concurrent` is
+/// already the dial that matters for the expensive case.
+pub const MAX_PARALLEL_BATCH: usize = 10;
 
+/// Whether `plan` could run concurrently *at all*, before looking at what else
+/// is in the batch. Group-level conflicts (two calls naming one file) are
+/// [`plan_tool_execution_batches`]'s decision, not this one.
+///
+/// Read-only is the default posture — every read tool fans out, whether or not
+/// it declares `supports_parallel`; the declaration is what a tool that is
+/// **not** read-only needs in order to be considered at all (the sub-agent
+/// spawn family, which names no workspace path). A file writer is eligible
+/// with known target paths on top of that.
 pub fn tool_plan_is_parallel_safe(plan: &ToolExecutionPlan) -> bool {
-    plan.read_only && plan.supports_parallel && !plan.approval_required && !plan.interactive
+    if plan.interactive || plan.destructive {
+        return false;
+    }
+    // A writer that does not name its targets is never eligible: `exec_shell`
+    // can write anywhere, and an `apply_patch` whose diff failed to parse
+    // resolves no path. Both stay serial rather than race.
+    if plan.writes_files && plan.touched_paths.is_empty() {
+        return false;
+    }
+    plan.read_only || plan.writes_files || plan.supports_parallel
 }
 
-pub fn plan_tool_execution_batches(plans: Vec<ToolExecutionPlan>) -> Vec<ToolExecutionBatch> {
-    let mut batches = Vec::new();
-    let mut parallel_chunk = Vec::new();
+pub fn should_parallelize_tool_batch(plans: &[ToolExecutionPlan]) -> bool {
+    if plans.is_empty() || !plans.iter().all(tool_plan_is_parallel_safe) {
+        return false;
+    }
+    // Same conflict rule the grouping applies: one file, one writer per batch.
+    let mut claimed: HashSet<&PathBuf> = HashSet::new();
+    plans
+        .iter()
+        .flat_map(|plan| plan.touched_paths.iter())
+        .all(|path| claimed.insert(path))
+}
 
-    for plan in plans {
-        if tool_plan_is_parallel_safe(&plan) {
-            parallel_chunk.push(plan);
-            continue;
-        }
+/// A concurrent batch being assembled, plus the facts the next call's join has
+/// to be checked against.
+#[derive(Default)]
+struct ParallelGroup {
+    plans: Vec<ToolExecutionPlan>,
+    /// Every path the members name.
+    paths: HashSet<PathBuf>,
+    /// A member with no path information — `grep_files` over a tree, a
+    /// sub-agent spawn. Its reach is unbounded, so no writer may follow it.
+    unbounded_reader: bool,
+    /// A member that writes the workspace. An unbounded reader may not follow
+    /// one, for the same reason.
+    writer: bool,
+}
 
-        if !parallel_chunk.is_empty() {
-            batches.push(ToolExecutionBatch::Parallel(std::mem::take(
-                &mut parallel_chunk,
-            )));
+impl ParallelGroup {
+    fn accepts(&self, plan: &ToolExecutionPlan) -> bool {
+        if !tool_plan_is_parallel_safe(plan) || self.plans.len() >= MAX_PARALLEL_BATCH {
+            return false;
         }
-        batches.push(ToolExecutionBatch::Serial(Box::new(plan)));
+        // Never pair a writer with a reader whose reach we cannot bound, in
+        // either order: that reader may be looking at the very file the writer
+        // is rewriting, and a half-written file reads as an empty one.
+        if plan.writes_files && self.unbounded_reader {
+            return false;
+        }
+        if plan.touched_paths.is_empty() && self.writer {
+            return false;
+        }
+        // Two calls naming one file run in declaration order or not at all.
+        !plan
+            .touched_paths
+            .iter()
+            .any(|path| self.paths.contains(path))
     }
 
-    if !parallel_chunk.is_empty() {
-        batches.push(ToolExecutionBatch::Parallel(parallel_chunk));
+    fn push(&mut self, plan: ToolExecutionPlan) {
+        self.unbounded_reader |= plan.touched_paths.is_empty();
+        self.writer |= plan.writes_files;
+        self.paths.extend(plan.touched_paths.iter().cloned());
+        self.plans.push(plan);
+    }
+
+    fn take(&mut self) -> Vec<ToolExecutionPlan> {
+        self.paths.clear();
+        self.unbounded_reader = false;
+        self.writer = false;
+        std::mem::take(&mut self.plans)
+    }
+}
+
+/// Group the turn's calls into batches that already encode their ordering.
+///
+/// A batch runs concurrently inside itself, and every batch finishes before
+/// the next starts — so the grouping *is* the ordering guarantee, and
+/// declaration order survives whatever the group split does. A call that is
+/// parallel-eligible but conflicts with the group it would join starts a
+/// fresh group instead of degrading to a barrier, which is what keeps two
+/// `apply_patch` calls on one file in declaration order while two calls on
+/// different files still overlap. Grouping is greedy over consecutive plans
+/// and never reorders to pack a batch, so a conflict costs parallelism, never
+/// ordering. Calls that are not eligible at all (interactive, destructive, an
+/// unnamed writer) become one-call `Serial` batches: a barrier, exactly as
+/// before.
+pub fn plan_tool_execution_batches(plans: Vec<ToolExecutionPlan>) -> Vec<ToolExecutionBatch> {
+    let mut batches = Vec::new();
+    let mut group = ParallelGroup::default();
+
+    for plan in plans {
+        if group.accepts(&plan) {
+            group.push(plan);
+            continue;
+        }
+        if !group.plans.is_empty() {
+            batches.push(ToolExecutionBatch::Parallel(group.take()));
+        }
+        if tool_plan_is_parallel_safe(&plan) {
+            group.push(plan);
+        } else {
+            batches.push(ToolExecutionBatch::Serial(Box::new(plan)));
+        }
+    }
+
+    if !group.plans.is_empty() {
+        batches.push(ToolExecutionBatch::Parallel(group.take()));
     }
 
     batches

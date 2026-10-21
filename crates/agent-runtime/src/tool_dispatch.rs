@@ -89,6 +89,20 @@ pub trait ToolDispatcher: Send + Sync {
     /// Whether the tool+input requires user interaction while executing.
     fn is_interactive(&self, name: &str, input: &Value) -> bool;
 
+    /// Workspace paths this input declares as its own — the files a call
+    /// reads or writes, resolved. The batch classifier uses them for one
+    /// question: whether two calls of one turn touch the same file, in which
+    /// case they must not run concurrently.
+    ///
+    /// An empty result means "no path information", and that is the
+    /// fail-closed answer at every classification site: a caller that writes
+    /// files without naming them (`exec_shell`) never joins a concurrent
+    /// batch, and a writer whose target does not resolve stays serial rather
+    /// than racing.
+    fn touched_paths(&self, _name: &str, _input: &Value) -> Vec<std::path::PathBuf> {
+        Vec::new()
+    }
+
     /// Per-input approval requirement. Returns `None` if the tool isn't
     /// registered.
     fn approval_requirement_for(&self, name: &str, input: &Value) -> Option<ApprovalRequirement>;

@@ -14145,6 +14145,54 @@ mod tests {
         }
     }
 
+    /// A read-only tool that needs approval and records the highest number of
+    /// copies of itself inside `execute` at the same time. Overlap is
+    /// *measured* rather than inferred, which matters for a regression test:
+    /// under serial dispatch the peak is 1 and the assertion fails, where a
+    /// `Barrier` would deadlock instead — and a hang is a worse CI outcome
+    /// than a failed assertion.
+    struct OverlapSpec {
+        tool_name: &'static str,
+        live: Arc<std::sync::atomic::AtomicU32>,
+        peak: Arc<std::sync::atomic::AtomicU32>,
+        hold_ms: u64,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolSpec for OverlapSpec {
+        fn name(&self) -> &str {
+            self.tool_name
+        }
+        fn description(&self) -> &str {
+            "Approval-gated read-only tool that measures its own overlap."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object" })
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly, ToolCapability::RequiresApproval]
+        }
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            use std::sync::atomic::Ordering;
+            let now = self.live.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(now, Ordering::SeqCst);
+            // Long enough that a concurrent sibling is certain to be inside
+            // its own `execute` while this one waits (which yields the task).
+            tokio::time::sleep(std::time::Duration::from_millis(self.hold_ms)).await;
+            self.live.fetch_sub(1, Ordering::SeqCst);
+            Ok(ToolResult {
+                canonical: None,
+                content: format!("{}-done", self.tool_name),
+                success: true,
+                metadata: None,
+            })
+        }
+    }
+
     /// A read-only `ToolSpec` that counts `execute` calls via a shared
     /// [`AtomicU32`], parameterised by name — used to prove early-tool-start
     /// reuse in a multi-tool `Parallel` batch (each tool runs once in the
@@ -14191,21 +14239,57 @@ mod tests {
         callback: Arc<dyn Callback>,
         calls: Vec<Vec<StreamEvent>>,
     ) -> HostAgentExecutor {
+        build_gated_test_executor(tools, callback, calls, None, None)
+    }
+
+    /// `build_test_executor` plus the two channels a gated turn talks through:
+    /// the approval decision router (position 8 of `HostAgentExecutor::new`)
+    /// and the event stream the executor reports `ApprovalRequired` on.
+    fn build_gated_test_executor(
+        tools: Arc<ToolSet>,
+        callback: Arc<dyn Callback>,
+        calls: Vec<Vec<StreamEvent>>,
+        approval: Option<Arc<crate::engine::approval::ApprovalRouter>>,
+        events: Option<mpsc::Sender<crate::events::Event>>,
+    ) -> HostAgentExecutor {
         HostAgentExecutor::new(
             Arc::new(MockLlm::new(calls)),
             tools,
             callback,
             AgentExecutorConfig::default(),
+            events,
             None,
             None,
-            None,
-            None,
+            approval,
             None,
             None,
             None,
             None,
             None,
         )
+    }
+
+    /// `(tool_use_id, content, is_error)` for every tool result in the
+    /// transcript, in transcript order — the batch driver pushes them in
+    /// index order, so the vector reads as the call order the model wrote.
+    fn tool_result_blocks(sess: &crate::session::Session) -> Vec<(String, String, bool)> {
+        sess.messages
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .filter_map(|block| match block {
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                    ..
+                } => Some((
+                    tool_use_id.clone(),
+                    content.clone(),
+                    is_error.unwrap_or(false),
+                )),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Two read-only tools run concurrently: both must reach a shared
@@ -14251,6 +14335,230 @@ mod tests {
 
         let reason = handle.await.expect("executor task panicked").expect("run");
         assert_eq!(reason, StopReason::NoToolCalls);
+    }
+
+    /// The fan-out that could not happen before: two calls that each need
+    /// approval *and* are otherwise concurrency-safe run in ONE batch once both
+    /// answers are in. Without the change these are two `Serial` batches, both
+    /// calls still succeed, and only the measured peak of 2 tells them apart.
+    #[tokio::test]
+    async fn approval_gated_tools_fan_out_concurrently() {
+        let tmp = tempdir().expect("tempdir");
+        let live = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let peak = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        for tool_name in ["gated_a", "gated_b"] {
+            registry.register(Arc::new(OverlapSpec {
+                tool_name,
+                live: live.clone(),
+                peak: peak.clone(),
+                hold_ms: 50,
+            }));
+        }
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let (tx_approval, rx_approval) = approval_channel();
+        // Both answers are waiting before the turn starts; the router routes a
+        // decision by tool-call id, in whatever order the executor asks.
+        for id in ["t1", "t2"] {
+            tx_approval
+                .send(ApprovalDecision::Approved { id: id.to_string() })
+                .await
+                .expect("pre-approve");
+        }
+
+        let mut call1 = text_block(0, "running both");
+        call1.extend(tool_use_block(1, "t1", "gated_a", r#"{}"#));
+        call1.extend(tool_use_block(2, "t2", "gated_b", r#"{}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+
+        let executor =
+            build_gated_test_executor(tools, callback, vec![call1, call2], Some(rx_approval), None);
+
+        let mut history = SessionChatHistory::new(&mut sess);
+        let reason = executor
+            .run(&mut history, "run both".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        let results = tool_result_blocks(&sess);
+        assert_eq!(results.len(), 2, "both calls reported: {results:?}");
+        assert_eq!(results[0].1, "gated_a-done");
+        assert_eq!(results[1].1, "gated_b-done");
+        assert_eq!(
+            peak.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "both approval-gated calls should have been inside execute at once"
+        );
+    }
+
+    /// One denial is one call's problem: the answered calls still share a
+    /// batch and still overlap, and the denied one reports a permission error
+    /// at its own index. The approved pair is what the peak measures — the
+    /// denial sits between them, so a batch split by the denial would show a
+    /// peak of 1 while every other assertion here still passed.
+    #[tokio::test]
+    async fn a_denied_call_does_not_stop_its_parallel_siblings() {
+        let tmp = tempdir().expect("tempdir");
+        let live = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let peak = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        for tool_name in ["gated_a", "denied_b", "gated_c"] {
+            registry.register(Arc::new(OverlapSpec {
+                tool_name,
+                live: live.clone(),
+                peak: peak.clone(),
+                hold_ms: 50,
+            }));
+        }
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let (tx_approval, rx_approval) = approval_channel();
+        tx_approval
+            .send(ApprovalDecision::Approved {
+                id: "t1".to_string(),
+            })
+            .await
+            .expect("pre-approve t1");
+        tx_approval
+            .send(ApprovalDecision::Denied {
+                id: "t2".to_string(),
+            })
+            .await
+            .expect("pre-deny t2");
+        tx_approval
+            .send(ApprovalDecision::Approved {
+                id: "t3".to_string(),
+            })
+            .await
+            .expect("pre-approve t3");
+
+        let mut call1 = text_block(0, "running three");
+        call1.extend(tool_use_block(1, "t1", "gated_a", r#"{}"#));
+        call1.extend(tool_use_block(2, "t2", "denied_b", r#"{}"#));
+        call1.extend(tool_use_block(3, "t3", "gated_c", r#"{}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+
+        let executor =
+            build_gated_test_executor(tools, callback, vec![call1, call2], Some(rx_approval), None);
+
+        let mut history = SessionChatHistory::new(&mut sess);
+        let reason = executor
+            .run(&mut history, "run three".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        let results = tool_result_blocks(&sess);
+        assert_eq!(results.len(), 3, "every call reported: {results:?}");
+        assert_eq!(results[0].1, "gated_a-done");
+        assert!(!results[0].2, "t1 ran: {:?}", results[0]);
+        // The denial lands at the denied call's own index — declaration order
+        // in the transcript, whatever order the answers arrived in.
+        assert_eq!(results[1].0, "t2");
+        assert!(
+            results[1].2,
+            "denied call is an error result: {:?}",
+            results[1]
+        );
+        assert!(
+            results[1].1.contains("denied"),
+            "denial reaches the model verbatim: {}",
+            results[1].1
+        );
+        assert_eq!(results[2].1, "gated_c-done");
+        assert!(!results[2].2, "t3 ran: {:?}", results[2]);
+        assert_eq!(
+            peak.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "the two approved siblings should still have overlapped"
+        );
+    }
+
+    /// A call the loop guard already blocked is not worth a question. The
+    /// serial arm asks only after its gates pass (loop-guard first, then the
+    /// prompt); the pre-dispatch pass has to keep that order, or it prompts
+    /// the user about a call that never runs. Here the third of three
+    /// identical calls is the one the guard refuses, so two questions are
+    /// owed — and its answer is pre-pushed, so an unasked call cannot leave
+    /// the turn waiting on a prompt that will never arrive.
+    #[tokio::test]
+    async fn a_guard_blocked_call_is_not_asked_about() {
+        let tmp = tempdir().expect("tempdir");
+        let live = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let peak = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(OverlapSpec {
+            tool_name: "gated_a",
+            live: live.clone(),
+            peak: peak.clone(),
+            hold_ms: 1,
+        }));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let (tx_approval, rx_approval) = approval_channel();
+        for id in ["t1", "t2", "t3"] {
+            tx_approval
+                .send(ApprovalDecision::Approved { id: id.to_string() })
+                .await
+                .expect("pre-approve");
+        }
+        let (tx_events, mut rx_events) = mpsc::channel::<crate::events::Event>(64);
+
+        let mut call1 = text_block(0, "three identical calls");
+        call1.extend(tool_use_block(1, "t1", "gated_a", r#"{}"#));
+        call1.extend(tool_use_block(2, "t2", "gated_a", r#"{}"#));
+        call1.extend(tool_use_block(3, "t3", "gated_a", r#"{}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+
+        let executor = build_gated_test_executor(
+            tools,
+            callback,
+            vec![call1, call2],
+            Some(rx_approval),
+            Some(tx_events),
+        );
+
+        let mut history = SessionChatHistory::new(&mut sess);
+        let reason = executor
+            .run(&mut history, "run three".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        let mut asked = 0;
+        while let Ok(event) = rx_events.try_recv() {
+            if matches!(event, crate::events::Event::ApprovalRequired { .. }) {
+                asked += 1;
+            }
+        }
+        assert_eq!(
+            asked, 2,
+            "the guard-blocked third call must not be asked about"
+        );
+
+        let results = tool_result_blocks(&sess);
+        assert_eq!(results.len(), 3, "every call still reports: {results:?}");
+        assert_eq!(results[0].1, "gated_a-done");
+        assert_eq!(results[1].1, "gated_a-done");
+        assert_ne!(
+            results[2].1, "gated_a-done",
+            "the third call was blocked, not run: {:?}",
+            results[2]
+        );
     }
 
     /// Index-preserving outcomes: the slow tool (80 ms, index 1) is listed

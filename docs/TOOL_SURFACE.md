@@ -226,6 +226,16 @@ The active model-facing sub-agent surface is persistent:
 | `agent_run` | Run a sub-agent inline and wait for the result (foreground), or spawn it in the background — the foreground form is for tight feedback loops where you need the answer now. |
 | `agent_memory_read` / `agent_memory_write` / `agent_memory_edit` | Read, create/overwrite, and search-replace files inside a sub-agent's scoped Agent Memory directory (opt-in via `agent_open`'s `memory` parameter). Functional only for memory-scoped children. |
 
+The spawn family (`agent_open`, `agent_run`, `agent_spawn`, `tool_agent`,
+`agent_close`) declares itself concurrency-safe and carries no approval
+requirement of its own, so several spawn calls in one assistant message open
+their children at once instead of queueing behind one prompt per child. That is
+not a gate being lifted: a child inherits the parent's approval posture, and a
+non-auto parent's child runs `permission_mode: "ask"`, so nothing a child does
+escapes the gate the parent would have faced. See the batch rules in
+[ARCHITECTURE.md](ARCHITECTURE.md) ("Tool Execution") for what else may share a
+concurrent batch.
+
 See `agent.txt` for the delegation protocol and
 [`SUBAGENTS.md`](SUBAGENTS.md) for the role taxonomy
 (`general` / `explore` / `plan` / `review` / `implementer` /

@@ -2058,6 +2058,7 @@ impl ToolSpec for AgentOpenTool {
     fn description(&self) -> &'static str {
         concat!(
             "Open a named child sub-agent session for focused background work. Returns the session name, status, agent_id, context_mode, prefix_cache metadata, and a handle_read-compatible transcript_handle. ",
+            "Children are independent, so several agent_open calls issued in ONE message open concurrently (up to the sub-agent cap) — that is the fast path for parallel investigation: one child per target, all at once, rather than one per turn. ",
             "Use agent_eval to fetch or wait on the session, and agent_close to cancel/close it.\n\n",
             "Context control is explicit: omit fork_context or set it false for a fresh child with an independent prefill; set fork_context=true for perspective fanout over the current parent context. ",
             "Forked children preserve the parent system prompt and leading message prefix byte-identically where the runtime has that prefix, so DeepSeek can reuse its prefix cache before the child-specific task is appended.\n\n",
@@ -2156,10 +2157,20 @@ impl ToolSpec for AgentOpenTool {
         })
     }
 
+    /// Fan-out is the point of this family: several spawn calls in one
+    /// assistant message run at once instead of queueing behind one another.
+    /// A child is independent by construction — its own session, its own tool
+    /// context — so it needs no target paths; and it inherits the parent's
+    /// approval posture, so a non-auto parent's child still runs
+    /// `permission_mode: "ask"` for its own reads and writes. Opening or
+    /// closing a child is session management, not a workspace write.
+    fn supports_parallel(&self) -> bool {
+        true
+    }
+
     fn capabilities(&self) -> Vec<ToolCapability> {
         vec![
             ToolCapability::ExecutesCode,
-            ToolCapability::RequiresApproval,
             // Session management, not a workspace write: the child's own
             // registry is what plan mode narrows.
             ToolCapability::AllowedInPlanMode,
@@ -2167,7 +2178,7 @@ impl ToolSpec for AgentOpenTool {
     }
 
     fn approval_requirement(&self) -> ApprovalRequirement {
-        ApprovalRequirement::Required
+        ApprovalRequirement::Auto
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
@@ -2285,10 +2296,20 @@ impl ToolSpec for ToolAgentTool {
         })
     }
 
+    /// Fan-out is the point of this family: several spawn calls in one
+    /// assistant message run at once instead of queueing behind one another.
+    /// A child is independent by construction — its own session, its own tool
+    /// context — so it needs no target paths; and it inherits the parent's
+    /// approval posture, so a non-auto parent's child still runs
+    /// `permission_mode: "ask"` for its own reads and writes. Opening or
+    /// closing a child is session management, not a workspace write.
+    fn supports_parallel(&self) -> bool {
+        true
+    }
+
     fn capabilities(&self) -> Vec<ToolCapability> {
         vec![
             ToolCapability::ExecutesCode,
-            ToolCapability::RequiresApproval,
             // Session management, not a workspace write: the child's own
             // registry is what plan mode narrows.
             ToolCapability::AllowedInPlanMode,
@@ -2296,7 +2317,7 @@ impl ToolSpec for ToolAgentTool {
     }
 
     fn approval_requirement(&self) -> ApprovalRequirement {
-        ApprovalRequirement::Required
+        ApprovalRequirement::Auto
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
@@ -2460,10 +2481,20 @@ impl ToolSpec for AgentSpawnTool {
         })
     }
 
+    /// Fan-out is the point of this family: several spawn calls in one
+    /// assistant message run at once instead of queueing behind one another.
+    /// A child is independent by construction — its own session, its own tool
+    /// context — so it needs no target paths; and it inherits the parent's
+    /// approval posture, so a non-auto parent's child still runs
+    /// `permission_mode: "ask"` for its own reads and writes. Opening or
+    /// closing a child is session management, not a workspace write.
+    fn supports_parallel(&self) -> bool {
+        true
+    }
+
     fn capabilities(&self) -> Vec<ToolCapability> {
         vec![
             ToolCapability::ExecutesCode,
-            ToolCapability::RequiresApproval,
             // Session management, not a workspace write: the child's own
             // registry is what plan mode narrows.
             ToolCapability::AllowedInPlanMode,
@@ -2471,7 +2502,7 @@ impl ToolSpec for AgentSpawnTool {
     }
 
     fn approval_requirement(&self) -> ApprovalRequirement {
-        ApprovalRequirement::Required
+        ApprovalRequirement::Auto
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
@@ -3488,7 +3519,8 @@ impl ToolSpec for SubagentRunTool {
         concat!(
             "Run a sub-agent and wait for its result inline (foreground), or spawn it in the background. ",
             "Foreground mode (run_in_background=false, default): the parent turn blocks until the child finishes, and the final result is returned directly in the tool output. ",
-            "Use this for tight feedback loops — simple exploration, verification, quick lookups, or focused one-shot tasks where you need the answer now.\n\n",
+            "Use this for tight feedback loops — simple exploration, verification, quick lookups, or focused one-shot tasks where you need the answer now. ",
+            "Foreground calls issued in ONE message run concurrently, so three independent lookups in one turn cost about one lookup's wall-clock — batch them instead of asking one per turn.\n\n",
             "Background mode (run_in_background=true): equivalent to agent_spawn — returns an agent_id immediately; follow up with agent_eval to retrieve results later.\n\n",
             "Context control: fork_context=false (default) gives the child an independent fresh context; ",
             "fork_context=true inherits the parent's system prompt and conversation prefix for DeepSeek prefix-cache reuse. ",
@@ -3585,10 +3617,20 @@ impl ToolSpec for SubagentRunTool {
         })
     }
 
+    /// Fan-out is the point of this family: several spawn calls in one
+    /// assistant message run at once instead of queueing behind one another.
+    /// A child is independent by construction — its own session, its own tool
+    /// context — so it needs no target paths; and it inherits the parent's
+    /// approval posture, so a non-auto parent's child still runs
+    /// `permission_mode: "ask"` for its own reads and writes. Opening or
+    /// closing a child is session management, not a workspace write.
+    fn supports_parallel(&self) -> bool {
+        true
+    }
+
     fn capabilities(&self) -> Vec<ToolCapability> {
         vec![
             ToolCapability::ExecutesCode,
-            ToolCapability::RequiresApproval,
             // Session management, not a workspace write: the child's own
             // registry is what plan mode narrows.
             ToolCapability::AllowedInPlanMode,
@@ -3596,11 +3638,7 @@ impl ToolSpec for SubagentRunTool {
     }
 
     fn approval_requirement(&self) -> ApprovalRequirement {
-        ApprovalRequirement::Required
-    }
-
-    fn supports_parallel(&self) -> bool {
-        false
+        ApprovalRequirement::Auto
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
@@ -4000,10 +4038,20 @@ impl ToolSpec for AgentCloseTool {
         })
     }
 
+    /// Fan-out is the point of this family: several spawn calls in one
+    /// assistant message run at once instead of queueing behind one another.
+    /// A child is independent by construction — its own session, its own tool
+    /// context — so it needs no target paths; and it inherits the parent's
+    /// approval posture, so a non-auto parent's child still runs
+    /// `permission_mode: "ask"` for its own reads and writes. Opening or
+    /// closing a child is session management, not a workspace write.
+    fn supports_parallel(&self) -> bool {
+        true
+    }
+
     fn capabilities(&self) -> Vec<ToolCapability> {
         vec![
             ToolCapability::ExecutesCode,
-            ToolCapability::RequiresApproval,
             // Session management, not a workspace write: the child's own
             // registry is what plan mode narrows.
             ToolCapability::AllowedInPlanMode,
@@ -4011,7 +4059,7 @@ impl ToolSpec for AgentCloseTool {
     }
 
     fn approval_requirement(&self) -> ApprovalRequirement {
-        ApprovalRequirement::Required
+        ApprovalRequirement::Auto
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
