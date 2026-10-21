@@ -764,16 +764,22 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                     }
                     Err(err) => {
                         let message = err.to_string();
+                        // A guard rejection carries its own remedy and the
+                        // model retries without the user — warn in yellow,
+                        // keep genuine failures red.
+                        let (glyph, tail) = if matches!(err, ToolError::Rejected { .. }) {
+                            ("⎿".yellow(), message.yellow())
+                        } else {
+                            ("⎿".red(), format!("failed: {message}").red())
+                        };
                         if state.tool_detail {
-                            println!("  {} {}", "⎿".red(), format!("failed: {message}").red());
+                            println!("  {glyph} {tail}");
                         } else {
                             println!(
-                                "{} {}{} {} {}",
+                                "{} {}{} {glyph} {tail}",
                                 "⏺".cyan(),
                                 name.cyan(),
-                                args.dimmed(),
-                                "⎿".red(),
-                                format!("failed: {message}").red()
+                                args.dimmed()
                             );
                         }
                         push_tool_record(state, &name, args_summary, None, Some(message));
