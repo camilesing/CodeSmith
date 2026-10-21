@@ -25,6 +25,10 @@
 //! - No model negotiation: `request.model` is not forwarded (the child
 //!   uses its own default); `steps_taken` is unobservable and reported
 //!   as 0.
+//! - `session/request_permission` is auto-answered from the parent's
+//!   posture: `request.auto_approve` (the ceiling the headless provider's
+//!   `--auto` rule set) selects an allow option, anything else selects a
+//!   reject one. There is no human on this side to ask.
 //!
 //! # Cancellation
 //!
@@ -213,6 +217,14 @@ impl ExternalSubagentProvider for AcpSubagentProvider {
                 if is_response_for(&value, 3) {
                     break value;
                 }
+                // The child asks permission for gated tool calls; answer
+                // from the parent's posture (see the module note). Left
+                // unanswered, the child would wait out its permission
+                // timeout and refuse the call.
+                if let Some(answer) = permission_answer(&value, request.auto_approve) {
+                    write_line(&mut stdin, answer).await?;
+                    continue;
+                }
                 if let Some(chunk) = agent_message_chunk(&value, &session_id) {
                     output.push_str(&chunk);
                 }
@@ -302,6 +314,66 @@ where
         .await
         .map_err(|e| anyhow!("ACP write {method} newline: {e}"))?;
     stdin.flush().await.map_err(|e| anyhow!("ACP flush: {e}"))
+}
+
+/// Write one raw JSON-RPC line (a response to a child-initiated request).
+async fn write_line<W>(stdin: &mut W, line: Value) -> Result<()>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    stdin
+        .write_all(line.to_string().as_bytes())
+        .await
+        .map_err(|e| anyhow!("ACP write response: {e}"))?;
+    stdin
+        .write_all(b"\n")
+        .await
+        .map_err(|e| anyhow!("ACP write response newline: {e}"))?;
+    stdin.flush().await.map_err(|e| anyhow!("ACP flush: {e}"))
+}
+
+/// The auto-answer to a child's `session/request_permission`, if `value` is
+/// one. Picks the first option whose kind matches the parent's posture —
+/// `request.auto_approve` is the ceiling the headless provider's `--auto`
+/// rule set — and answers "selected"; there is no human on this side.
+fn permission_answer(value: &Value, auto_approve: bool) -> Option<Value> {
+    if value.get("method").and_then(Value::as_str) != Some("session/request_permission") {
+        return None;
+    }
+    let id = value.get("id")?.clone();
+    let options = value.pointer("/params/options")?.as_array()?;
+    let wanted_kind = if auto_approve { "allow" } else { "reject" };
+    let chosen = options
+        .iter()
+        .find(|option| {
+            option
+                .get("kind")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind.starts_with(wanted_kind))
+        })
+        .or_else(|| {
+            // Lenient servers that send no kinds: match by optionId.
+            options.iter().find(|option| {
+                option.get("optionId").and_then(Value::as_str)
+                    == Some(wanted_kind_prefix_fallback(auto_approve))
+            })
+        });
+    let option_id = chosen
+        .and_then(|option| option.get("optionId").cloned())
+        .unwrap_or_else(|| json!(wanted_kind_prefix_fallback(auto_approve)));
+    Some(json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": { "outcome": { "outcome": "selected", "optionId": option_id } }
+    }))
+}
+
+fn wanted_kind_prefix_fallback(auto_approve: bool) -> &'static str {
+    if auto_approve {
+        "allow_once"
+    } else {
+        "reject_once"
+    }
 }
 
 /// Read lines until the response for `id` arrives; notifications in
@@ -526,5 +598,49 @@ mod tests {
             }
         });
         assert_eq!(agent_message_chunk(&tool_update, "s1"), None);
+    }
+
+    /// The auto-answer follows the parent's posture: an auto parent selects
+    /// an allow option, a non-auto parent selects a reject one, and the
+    /// child's request id is echoed back.
+    #[test]
+    fn permission_auto_answer_follows_the_parent_posture() {
+        let ask = json!({
+            "jsonrpc": "2.0",
+            "id": 41,
+            "method": "session/request_permission",
+            "params": {
+                "sessionId": "s1",
+                "toolCall": {"toolCallId": "c1", "title": "write_file", "kind": "edit"},
+                "options": [
+                    {"optionId": "allow_once", "name": "Allow", "kind": "allow_once"},
+                    {"optionId": "allow_always", "name": "Always", "kind": "allow_always"},
+                    {"optionId": "reject_once", "name": "Deny", "kind": "reject_once"}
+                ]
+            }
+        });
+
+        let allow = permission_answer(&ask, true).expect("auto parent answers");
+        assert_eq!(allow["id"], 41);
+        assert_eq!(
+            allow
+                .pointer("/result/outcome/optionId")
+                .and_then(Value::as_str),
+            Some("allow_once")
+        );
+
+        let reject = permission_answer(&ask, false).expect("ask parent answers too");
+        assert_eq!(
+            reject
+                .pointer("/result/outcome/optionId")
+                .and_then(Value::as_str),
+            Some("reject_once")
+        );
+
+        // A non-permission message is not ours to answer.
+        assert_eq!(
+            permission_answer(&json!({"jsonrpc": "2.0", "id": 3, "result": {}}), true),
+            None
+        );
     }
 }

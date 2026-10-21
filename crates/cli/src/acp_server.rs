@@ -23,11 +23,14 @@
 //! never in flight on one session: the second is refused with
 //! `invalid_params` (ACP clients await one response before the next).
 //!
-//! **Approvals fail closed.** The engine's approval, path-access and
-//! elevation gates are answered with a denial and `request_user_input` is
-//! cancelled — exactly what `codesmith exec` does without `--auto`. The
-//! model reads freely and is refused on edits and commands; asking the
-//! client through `session/request_permission` is the next slice.
+//! **Approvals ask the client.** When the engine gates a tool call, the pump
+//! sends `session/request_permission` (allow once / allow for this session /
+//! deny) and waits up to [`PERMISSION_TIMEOUT`] for the client's response,
+//! which the read loop routes back by JSON-RPC id. Anything but an explicit
+//! allow — a denial, an error, a cancellation, no answer — refuses the
+//! call: the surface fails closed, as `codesmith exec` does without
+//! `--auto`. "Allow for this session" remembers the approval grouping key
+//! for the live session, like the REPL's session grants.
 //!
 //! Persistence follows "model-visible means logged": a completed turn is
 //! written before `session/prompt` answers, from the engine's
@@ -41,15 +44,19 @@
 //!
 //! Known limitations (recorded beside the behaviour they bound):
 //!
-//! - No `session/request_permission` yet: approvals are denied, not asked
-//!   (see above).
+//! - Only approval gates are asked over the protocol. Path access outside
+//!   the workspace, sandbox elevation, and `request_user_input` are refused
+//!   outright — they have no `session/request_permission` shape of their own
+//!   yet.
+//! - Session "always" grants live in memory with the live session; they are
+//!   not persisted and do not reach the REPL's grant store.
 //! - Replay carries text blocks only: tool calls and results in a REPL
 //!   session are skipped in the update stream while staying in the history
 //!   the engine syncs in.
 //! - `session/list` has no paging; the store's own retention cap bounds it.
 //! - One engine per live session; `MAX_ACP_SESSIONS` bounds the count.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -137,6 +144,12 @@ pub async fn run_acp_server(config: Config, model: String) -> Result<()> {
         let method = match message.get("method").and_then(Value::as_str) {
             Some(method) => method,
             None => {
+                // A response to one of OUR requests carries an id, no
+                // method, and expects no reply: it answers a pending
+                // `session/request_permission`.
+                if route_client_response(&server.shared, &message) {
+                    continue;
+                }
                 if let Some(id) = id.clone() {
                     let mut writer = writer.lock().await;
                     write_jsonrpc_error(&mut *writer, Some(id), -32600, "missing method").await?;
@@ -191,7 +204,7 @@ struct AcpServer {
     model: String,
     store: FileSessionStore,
     settings: Settings,
-    sessions: Arc<Mutex<HashMap<String, AcpSession>>>,
+    shared: AcpShared,
 }
 
 struct AcpSession {
@@ -213,6 +226,8 @@ struct AcpSession {
     pump_task: Option<tokio::task::AbortHandle>,
     /// The in-flight prompt's completion slot, if any.
     pending_prompt: Option<oneshot::Sender<PromptOutcome>>,
+    /// Approval grouping keys the client allowed "for this session".
+    approved_keys: HashSet<String>,
 }
 
 /// Lock the session map, tolerating a poisoned lock: the map is only ever
@@ -224,6 +239,145 @@ fn lock_sessions(
     sessions
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Same poisoned-lock recovery for the permission-waiter map.
+fn lock_waiters(
+    waiters: &Mutex<HashMap<String, oneshot::Sender<Value>>>,
+) -> std::sync::MutexGuard<'_, HashMap<String, oneshot::Sender<Value>>> {
+    waiters
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// State shared by the read loop, the per-session pumps, and prompt tasks.
+#[derive(Clone, Default)]
+struct AcpShared {
+    sessions: Arc<Mutex<HashMap<String, AcpSession>>>,
+    /// Server-initiated requests (`session/request_permission`) awaiting the
+    /// client's response, keyed by the JSON-RPC id the client echoes.
+    permission_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>,
+}
+
+/// How long the client has to answer `session/request_permission` before
+/// the call is refused — the runtime-thread API's approval timeout.
+const PERMISSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// The client's answer to one permission request.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum Permission {
+    Allow,
+    /// Allow now and remember the approval's grouping key for the session.
+    AllowAlways,
+    Deny,
+}
+
+/// Deliver a client RESPONSE (an id, no method) to its waiter, if any.
+/// Returns whether the message was one of ours.
+fn route_client_response(shared: &AcpShared, message: &Value) -> bool {
+    let Some(id) = message.get("id") else {
+        return false;
+    };
+    let key = match id {
+        Value::String(key) => key.clone(),
+        other => other.to_string(),
+    };
+    let waiter = lock_waiters(&shared.permission_waiters).remove(&key);
+    match waiter {
+        Some(waiter) => waiter.send(message.clone()).is_ok(),
+        None => false,
+    }
+}
+
+/// The options a `session/request_permission` offers, in order.
+fn permission_options() -> Value {
+    json!([
+        { "optionId": "allow_once", "name": "Allow", "kind": "allow_once" },
+        { "optionId": "allow_always", "name": "Allow for this session", "kind": "allow_always" },
+        { "optionId": "reject_once", "name": "Deny", "kind": "reject_once" },
+    ])
+}
+
+/// Map the client's response to a decision. Fail closed: anything but an
+/// explicit allow is a denial (an error object, a cancellation, a timeout,
+/// or an unknown optionId).
+fn permission_from_response(response: &Value) -> Permission {
+    if response.get("error").is_some() {
+        return Permission::Deny;
+    }
+    let outcome = response.pointer("/result/outcome");
+    let selected = outcome
+        .and_then(|o| o.get("outcome"))
+        .and_then(Value::as_str)
+        == Some("selected");
+    if !selected {
+        return Permission::Deny;
+    }
+    match outcome
+        .and_then(|o| o.get("optionId"))
+        .and_then(Value::as_str)
+    {
+        Some("allow_always") => Permission::AllowAlways,
+        Some("allow_once") | Some("allow") => Permission::Allow,
+        _ => Permission::Deny,
+    }
+}
+
+/// Ask the client, with a caller-chosen deadline (the production timeout is
+/// [`PERMISSION_TIMEOUT`]; tests shrink it).
+async fn ask_permission_within<W>(
+    shared: &AcpShared,
+    writer: &SharedWriter<W>,
+    session_id: &str,
+    tool_call: Value,
+    timeout: std::time::Duration,
+) -> Permission
+where
+    W: AsyncWrite + Unpin,
+{
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let (tx, rx) = oneshot::channel();
+    lock_waiters(&shared.permission_waiters).insert(request_id.clone(), tx);
+    let sent = {
+        let mut writer = writer.lock().await;
+        write_json_line(
+            &mut *writer,
+            json!({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "session/request_permission",
+                "params": {
+                    "sessionId": session_id,
+                    "toolCall": tool_call,
+                    "options": permission_options(),
+                }
+            }),
+        )
+        .await
+    };
+    if sent.is_err() {
+        lock_waiters(&shared.permission_waiters).remove(&request_id);
+        return Permission::Deny;
+    }
+    let answer = tokio::time::timeout(timeout, rx).await;
+    lock_waiters(&shared.permission_waiters).remove(&request_id);
+    match answer {
+        Ok(Ok(response)) => permission_from_response(&response),
+        // A dropped waiter or the deadline: refused, never waved through.
+        _ => Permission::Deny,
+    }
+}
+
+async fn ask_permission<W>(
+    shared: &AcpShared,
+    writer: &SharedWriter<W>,
+    session_id: &str,
+    tool_call: Value,
+) -> Permission
+where
+    W: AsyncWrite + Unpin,
+{
+    ask_permission_within(shared, writer, session_id, tool_call, PERMISSION_TIMEOUT).await
 }
 
 #[derive(Debug)]
@@ -247,7 +401,7 @@ impl AcpServer {
             model,
             store,
             settings,
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            shared: AcpShared::default(),
         }
     }
 
@@ -304,7 +458,7 @@ impl AcpServer {
         // REPL's 8-char prefix display must not read "codesmit" for every
         // ACP session.
         let session_id = uuid::Uuid::new_v4().to_string();
-        let mut sessions = lock_sessions(&self.sessions);
+        let mut sessions = lock_sessions(&self.shared.sessions);
         evict_oldest_if_full(&mut sessions);
         sessions.insert(
             session_id.clone(),
@@ -316,6 +470,7 @@ impl AcpServer {
                 engine: None,
                 pump_task: None,
                 pending_prompt: None,
+                approved_keys: HashSet::new(),
             },
         );
         Ok(json!({ "sessionId": session_id }))
@@ -385,7 +540,7 @@ impl AcpServer {
             }
         }
         self.close_session(&session_id);
-        let mut sessions = lock_sessions(&self.sessions);
+        let mut sessions = lock_sessions(&self.shared.sessions);
         evict_oldest_if_full(&mut sessions);
         sessions.insert(
             session_id,
@@ -397,6 +552,7 @@ impl AcpServer {
                 engine: None,
                 pump_task: None,
                 pending_prompt: None,
+                approved_keys: HashSet::new(),
             },
         );
         Ok(())
@@ -421,7 +577,7 @@ impl AcpServer {
             .ok_or_else(|| AcpError::invalid_params("prompt must include text content"))?;
         let (completion_tx, completion_rx) = oneshot::channel::<PromptOutcome>();
         {
-            let mut sessions = lock_sessions(&self.sessions);
+            let mut sessions = lock_sessions(&self.shared.sessions);
             let Some(session) = sessions.get_mut(&session_id) else {
                 return Err(AcpError::invalid_params("unknown sessionId"));
             };
@@ -441,9 +597,9 @@ impl AcpServer {
             session_id,
             prompt,
         };
-        let sessions = Arc::clone(&self.sessions);
+        let shared = self.shared.clone();
         tokio::spawn(async move {
-            let outcome = run_turn(request, completion_rx, &sessions, writer.clone()).await;
+            let outcome = run_turn(request, completion_rx, &shared, writer.clone()).await;
             let mut writer = writer.lock().await;
             let _ = match outcome {
                 Ok(outcome) => answer_completed_prompt(&mut *writer, id, &outcome).await,
@@ -457,7 +613,7 @@ impl AcpServer {
     /// the pump resolves the pending prompt as interrupted, and the
     /// cancelled prompt's own task answers its request with `cancelled`.
     fn cancel_session(&mut self, session_id: &str) {
-        let sessions = lock_sessions(&self.sessions);
+        let sessions = lock_sessions(&self.shared.sessions);
         if let Some(session) = sessions.get(session_id)
             && let Some(engine) = session.engine.as_ref()
         {
@@ -470,7 +626,7 @@ impl AcpServer {
     /// its completion slot drops. The saved record stays: close is not
     /// delete.
     fn close_session(&mut self, session_id: &str) {
-        let mut sessions = lock_sessions(&self.sessions);
+        let mut sessions = lock_sessions(&self.shared.sessions);
         if let Some(session) = sessions.remove(session_id) {
             release(session);
         }
@@ -493,7 +649,7 @@ struct TurnRequest {
 async fn run_turn<W>(
     request: TurnRequest,
     completion: oneshot::Receiver<PromptOutcome>,
-    sessions: &Arc<Mutex<HashMap<String, AcpSession>>>,
+    shared: &AcpShared,
     writer: SharedWriter<W>,
 ) -> anyhow::Result<PromptOutcome>
 where
@@ -513,7 +669,7 @@ where
         .map(|effort| effort.as_setting().to_string());
 
     let engine = ensure_engine(
-        sessions,
+        shared,
         &config,
         &settings,
         &session_id,
@@ -564,7 +720,7 @@ where
     // Persist the engine's transcript before answering; on failure the
     // caller reports it instead of answering success.
     let (history, system_prompt, workspace) = {
-        let sessions = lock_sessions(sessions);
+        let sessions = lock_sessions(&shared.sessions);
         match sessions.get(session_id.as_str()) {
             Some(session) => (
                 session.history.clone(),
@@ -606,7 +762,7 @@ where
 /// Create the session's engine and pump at its first prompt, or return the
 /// existing one. A resumed session's saved transcript is synced in.
 async fn ensure_engine<W>(
-    sessions: &Arc<Mutex<HashMap<String, AcpSession>>>,
+    shared: &AcpShared,
     config: &Config,
     settings: &Settings,
     session_id: &str,
@@ -617,7 +773,7 @@ where
     W: AsyncWrite + Unpin + Send + 'static,
 {
     let (existing, workspace, history, system_prompt) = {
-        let sessions = lock_sessions(sessions);
+        let sessions = lock_sessions(&shared.sessions);
         let Some(session) = sessions.get(session_id) else {
             anyhow::bail!("unknown sessionId {session_id:?}");
         };
@@ -663,11 +819,11 @@ where
     }
     let pump = tokio::spawn(pump_events(
         engine.clone(),
-        Arc::clone(sessions),
+        shared.clone(),
         session_id.to_string(),
         writer,
     ));
-    let mut sessions = lock_sessions(sessions);
+    let mut sessions = lock_sessions(&shared.sessions);
     if let Some(session) = sessions.get_mut(session_id) {
         session.engine = Some(engine.clone());
         session.pump_task = Some(pump.abort_handle());
@@ -686,7 +842,7 @@ where
 /// confused with its successor.
 async fn pump_events<W>(
     engine: EngineHandle,
-    sessions: Arc<Mutex<HashMap<String, AcpSession>>>,
+    shared: AcpShared,
     session_id: String,
     writer: SharedWriter<W>,
 ) where
@@ -763,9 +919,65 @@ async fn pump_events<W>(
                 )
                 .await;
             }
-            // Fail closed, exactly as `codesmith exec` does without `--auto`:
-            // nobody here can yet ask the client, so the call is refused.
-            Event::ApprovalRequired { id, .. } | Event::PathAccessRequired { id, .. } => {
+            // The permission channel: a session "always" grant answers
+            // directly; otherwise the client is asked over
+            // `session/request_permission`, and no answer is a refusal.
+            Event::ApprovalRequired {
+                id,
+                tool_name,
+                input,
+                approval_grouping_key,
+                intent_summary,
+                ..
+            } => {
+                let granted = {
+                    let sessions = lock_sessions(&shared.sessions);
+                    sessions.get(&session_id).is_some_and(|session| {
+                        session.approved_keys.contains(&approval_grouping_key)
+                    })
+                };
+                let decision = if granted {
+                    Permission::Allow
+                } else {
+                    let title = intent_summary
+                        .filter(|intent| !intent.trim().is_empty())
+                        .map(|intent| format!("{tool_name}: {intent}"))
+                        .unwrap_or_else(|| tool_title(&tool_name, &input));
+                    ask_permission(
+                        &shared,
+                        &writer,
+                        &session_id,
+                        json!({
+                            "toolCallId": id.clone(),
+                            "title": title,
+                            "kind": tool_kind(&tool_name),
+                            "status": "pending",
+                            "rawInput": input,
+                        }),
+                    )
+                    .await
+                };
+                match decision {
+                    Permission::AllowAlways => {
+                        {
+                            let mut sessions = lock_sessions(&shared.sessions);
+                            if let Some(session) = sessions.get_mut(&session_id) {
+                                session.approved_keys.insert(approval_grouping_key);
+                            }
+                        }
+                        let _ = engine.approve_tool_call(id).await;
+                    }
+                    Permission::Allow => {
+                        let _ = engine.approve_tool_call(id).await;
+                    }
+                    Permission::Deny => {
+                        let _ = engine.deny_tool_call(id).await;
+                    }
+                }
+            }
+            // Path access, sandbox elevation, and ask-user have no protocol
+            // channel of their own yet: refused, never waved through.
+            Event::PathAccessRequired { id, .. } => {
                 let _ = engine.deny_tool_call(id).await;
             }
             Event::ElevationRequired { tool_id, .. } => {
@@ -779,7 +991,7 @@ async fn pump_events<W>(
                 system_prompt,
                 ..
             } => {
-                let mut sessions = lock_sessions(&sessions);
+                let mut sessions = lock_sessions(&shared.sessions);
                 if let Some(session) = sessions.get_mut(&session_id) {
                     session.history = messages;
                     session.system_prompt = system_prompt;
@@ -796,7 +1008,7 @@ async fn pump_events<W>(
                     error,
                     tokens: u64::from(usage.input_tokens) + u64::from(usage.output_tokens),
                 };
-                let mut sessions = lock_sessions(&sessions);
+                let mut sessions = lock_sessions(&shared.sessions);
                 if let Some(session) = sessions.get_mut(&session_id)
                     && let Some(pending) = session.pending_prompt.take()
                 {
@@ -1256,7 +1468,7 @@ mod tests {
     /// Open a live session directly, the way `session/new` does, without
     /// going through the dispatcher.
     fn open_session(server: &mut AcpServer, id: &str, workspace: &Path) {
-        lock_sessions(&server.sessions).insert(
+        lock_sessions(&server.shared.sessions).insert(
             id.to_string(),
             AcpSession {
                 created_at: Instant::now(),
@@ -1266,6 +1478,7 @@ mod tests {
                 engine: None,
                 pump_task: None,
                 pending_prompt: None,
+                approved_keys: HashSet::new(),
             },
         );
     }
@@ -1353,7 +1566,7 @@ mod tests {
             "a plain UUID, like a REPL session: {id}"
         );
         {
-            let sessions = lock_sessions(&server.sessions);
+            let sessions = lock_sessions(&server.shared.sessions);
             assert_eq!(sessions[&id].workspace, cwd);
             assert!(sessions[&id].engine.is_none(), "engines are lazy");
         }
@@ -1530,7 +1743,7 @@ mod tests {
         );
 
         {
-            let sessions = lock_sessions(&server.sessions);
+            let sessions = lock_sessions(&server.shared.sessions);
             let session = &sessions["sess-replay"];
             assert_eq!(
                 session.history.len(),
@@ -1586,7 +1799,7 @@ mod tests {
         // Reserve the prompt slot directly, as spawn_prompt does; no engine
         // is needed to test the one-prompt-per-session rule.
         let (tx, _rx) = oneshot::channel();
-        lock_sessions(&server.sessions)
+        lock_sessions(&server.shared.sessions)
             .get_mut("acp-busy")
             .expect("session opened")
             .pending_prompt = Some(tx);
@@ -1644,7 +1857,7 @@ mod tests {
                 .await,
         );
         assert_eq!(closed, json!(null));
-        assert!(lock_sessions(&server.sessions).is_empty());
+        assert!(lock_sessions(&server.shared.sessions).is_empty());
         assert_eq!(
             store.list_sessions().unwrap().len(),
             1,
@@ -1702,5 +1915,123 @@ mod tests {
         let value: Value = serde_json::from_str(line.trim()).expect("json");
         assert_eq!(value["id"], Value::Null);
         assert_eq!(value["error"]["code"], -32700);
+    }
+
+    /// Drain what the sink writer has collected so far.
+    async fn take_lines(writer: &SharedWriter<Vec<u8>>) -> Vec<Value> {
+        let mut bytes = writer.lock().await;
+        let text = String::from_utf8(std::mem::take(&mut *bytes)).expect("utf8");
+        text.lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line).expect("each line is json"))
+            .collect()
+    }
+
+    #[test]
+    fn permission_responses_map_fail_closed() {
+        let allow =
+            json!({"result": {"outcome": {"outcome": "selected", "optionId": "allow_once"}}});
+        assert_eq!(permission_from_response(&allow), Permission::Allow);
+        let always =
+            json!({"result": {"outcome": {"outcome": "selected", "optionId": "allow_always"}}});
+        assert_eq!(permission_from_response(&always), Permission::AllowAlways);
+        for refused in [
+            json!({"result": {"outcome": {"outcome": "cancelled"}}}),
+            json!({"result": {"outcome": {"outcome": "selected", "optionId": "mystery"}}}),
+            json!({"error": {"code": -1, "message": "user dismissed"}}),
+            json!({"result": {}}),
+        ] {
+            assert_eq!(
+                permission_from_response(&refused),
+                Permission::Deny,
+                "{refused}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_client_response_reaches_its_waiter() {
+        let shared = AcpShared::default();
+        let (tx, mut rx) = oneshot::channel();
+        lock_waiters(&shared.permission_waiters).insert("perm-7".to_string(), tx);
+
+        let response = json!({"jsonrpc": "2.0", "id": "perm-7", "result": {"outcome": {}}});
+        assert!(route_client_response(&shared, &response));
+        assert_eq!(
+            rx.try_recv().expect("the response was delivered"),
+            response,
+            "the waiter sees the whole response object"
+        );
+        assert!(
+            !route_client_response(&shared, &response),
+            "the waiter is gone once answered"
+        );
+        assert!(
+            !route_client_response(&shared, &json!({"result": {}})),
+            "no id"
+        );
+    }
+
+    /// The permission round-trip without an engine: the request goes out on
+    /// the wire, the client's response comes back through the read loop's
+    /// router, and a client that never answers is refused at the deadline.
+    #[tokio::test]
+    async fn ask_permission_round_trips_and_times_out() {
+        let shared = AcpShared::default();
+        let writer = sink();
+        let tool_call = json!({"toolCallId": "call-1", "title": "write_file", "kind": "edit"});
+
+        let ask = tokio::spawn({
+            let shared = shared.clone();
+            let writer = writer.clone();
+            let tool_call = tool_call.clone();
+            async move {
+                ask_permission_within(
+                    &shared,
+                    &writer,
+                    "sess-1",
+                    tool_call,
+                    std::time::Duration::from_secs(5),
+                )
+                .await
+            }
+        });
+
+        // Read the request the server wrote, answer it as the client would.
+        let request = loop {
+            let lines = take_lines(&writer).await;
+            if let Some(line) = lines.into_iter().find(|line| {
+                line.get("method").and_then(Value::as_str) == Some("session/request_permission")
+            }) {
+                break line;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        };
+        assert_eq!(request["params"]["sessionId"], "sess-1");
+        assert_eq!(request["params"]["toolCall"], tool_call);
+        assert!(
+            !request["params"]["options"]
+                .as_array()
+                .expect("options offered")
+                .is_empty()
+        );
+        let answer = json!({
+            "jsonrpc": "2.0",
+            "id": request["id"],
+            "result": {"outcome": {"outcome": "selected", "optionId": "allow_once"}}
+        });
+        assert!(route_client_response(&shared, &answer));
+        assert_eq!(ask.await.expect("task"), Permission::Allow);
+
+        // No answer inside the deadline: refused.
+        let denied = ask_permission_within(
+            &shared,
+            &sink(),
+            "sess-1",
+            tool_call,
+            std::time::Duration::from_millis(10),
+        )
+        .await;
+        assert_eq!(denied, Permission::Deny);
     }
 }

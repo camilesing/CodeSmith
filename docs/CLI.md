@@ -304,8 +304,10 @@ passes a `cwd`), and `session/resume` — also answering to the protocol's
 between the editor and `/resume` freely. `session/close` forgets the live
 session; the record stays. ACP prompts run through the engine with the full
 tool catalog — the model reads the project freely, and the editor sees each
-call as a `tool_call` update — while approval-gated calls (edits, commands)
-are refused until the permission channel lands.
+call as a `tool_call` update. Approval-gated calls (edits, commands) are
+asked of the editor over `session/request_permission` (allow once / allow
+for this session / deny); anything but an explicit allow — a denial, an
+error, no answer within the timeout — refuses the call.
 
 More detail: [PRESETS.md — Branching and Rollback](PRESETS.md#branching-and-rollback).
 

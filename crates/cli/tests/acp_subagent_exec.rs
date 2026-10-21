@@ -366,3 +366,104 @@ async fn acp_external_provider_round_trips_with_real_acp_server_child() {
         "the saved ACP session carries the child's prompt and reply:\n{saved_messages}"
     );
 }
+
+/// Round-8 TODO-51 permission channel, end to end: the `--acp` child runs
+/// engine turns with tools, a gated `write_file` makes it send
+/// `session/request_permission`, and this repo's own ACP provider client
+/// auto-answers allow under the parent's `--auto` posture. The proof is the
+/// file actually landing in the scratch workspace — under the earlier
+/// fail-closed behaviour (approvals denied outright) no file appeared.
+#[tokio::test]
+async fn acp_child_tool_permission_round_trips_through_the_provider() {
+    assert!(
+        !BIN.contains('\''),
+        "TOML literal string cannot carry the binary path {BIN:?}"
+    );
+    let config_toml = format!(
+        "[subagents]\nexternal_provider = \"acp\"\n\n[subagents.acp]\ncommand = '{BIN}'\nargs = \
+         [\"--model\", \"e2e-test-model\", \"serve\", \"--acp\"]\ntimeout_secs = 30\n"
+    );
+    let e2e = AcpE2E::new(&config_toml).await;
+
+    // Child turn 1: request the gated write.
+    Mock::given(method("POST"))
+        .and(path(CHAT_COMPLETIONS_PATH))
+        .and(body_string_contains("assignment-instructions"))
+        .respond_with(tool_call_answer(
+            "call_child_write",
+            "write_file",
+            r#"{"path": "acp-permission-proof.txt", "content": "allowed by the editor"}"#,
+        ))
+        .up_to_n_times(1)
+        .mount(&e2e.server)
+        .await;
+    // Child turn 2 (after the allowed write): final answer.
+    Mock::given(method("POST"))
+        .and(path(CHAT_COMPLETIONS_PATH))
+        .and(body_string_contains("assignment-instructions"))
+        .respond_with(text_answer("acp child wrote it"))
+        .up_to_n_times(1)
+        .mount(&e2e.server)
+        .await;
+    // Outer turn 1: delegate to a named session.
+    Mock::given(method("POST"))
+        .and(path(CHAT_COMPLETIONS_PATH))
+        .and(body_string_contains("E2E-OUTER-OBJECTIVE"))
+        .respond_with(tool_call_answer(
+            "call_e2e_acp_open",
+            "agent_open",
+            r#"{"name": "e2e-acp-scribe", "objective": "E2E-CHILD-OBJECTIVE: write the proof file via acp", "type": "explore"}"#,
+        ))
+        .up_to_n_times(1)
+        .mount(&e2e.server)
+        .await;
+    // Outer turn 2: wait for the named session's terminal result.
+    Mock::given(method("POST"))
+        .and(path(CHAT_COMPLETIONS_PATH))
+        .and(body_string_contains("e2e-acp-scribe"))
+        .respond_with(tool_call_answer(
+            "call_e2e_acp_eval",
+            "agent_eval",
+            r#"{"name": "e2e-acp-scribe"}"#,
+        ))
+        .up_to_n_times(1)
+        .mount(&e2e.server)
+        .await;
+    // Everything else (outer turn 3): final plain answer.
+    Mock::given(method("POST"))
+        .and(path(CHAT_COMPLETIONS_PATH))
+        .respond_with(text_answer("outer done"))
+        .mount(&e2e.server)
+        .await;
+
+    let mut cmd = e2e.command();
+    cmd.arg("exec")
+        .arg("--json")
+        .arg("--auto")
+        .arg("--model")
+        .arg("e2e-test-model")
+        .arg("E2E-OUTER-OBJECTIVE: delegate one gated write over acp");
+    let (status, stdout, stderr) = run_with_timeout(cmd, Duration::from_secs(180));
+
+    assert_eq!(status.code(), Some(0), "stderr:\n{stderr}");
+    let summary = parse_summary(&stdout);
+    assert_eq!(summary["status"], "completed", "summary:\n{summary}");
+
+    let proof = e2e.workspace.path().join("acp-permission-proof.txt");
+    let content = std::fs::read_to_string(&proof).unwrap_or_else(|_| {
+        panic!(
+            "the gated write only lands if session/request_permission round-tripped and was \
+             allowed; workspace:\n{}",
+            std::fs::read_dir(e2e.workspace.path())
+                .map(|entries| {
+                    entries
+                        .filter_map(Result::ok)
+                        .map(|e| e.path().display().to_string())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default()
+        )
+    });
+    assert_eq!(content, "allowed by the editor");
+}

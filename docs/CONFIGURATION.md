@@ -959,7 +959,11 @@ and the capacity controller remains disabled unless configured.
   the assignment's workspace; the role instruction is folded into the
   prompt (ACP baseline has no system-prompt field), mid-run progress does
   not stream back, and the child's own model/step count are unobservable
-  (reported as the parent's model / 0 steps).
+  (reported as the parent's model / 0 steps). When the child asks
+  permission for a gated tool call (`session/request_permission`), this
+  provider auto-answers from the parent's posture: `--auto` selects an
+  allow option, everything else selects a reject one — there is no human
+  on this side to ask.
   `[subagents.models]` accepts lower-case role or type keys such as `worker`,
   `explorer`, `general`, `explore`, `plan`, and `review`. Values must normalize
   to a supported DeepSeek model id before an agent is spawned.
