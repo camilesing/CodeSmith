@@ -364,7 +364,7 @@ operation, expect an approval prompt unless you have configured more permissive
 behavior. Every approval prompt refuses with a reason: type `[r] <feedback>` — or
 just type your sentence — and it refuses that one call and sends your text to the
 running turn, so the model hears what to change instead of guessing why you said
-no. Only the four keys (`y`/`n`/`a`/`e`) answer the question itself.
+no. Only the five keys (`y`/`n`/`a`/`o`/`e`) answer the question itself.
 
 `[a]` remembers one **grouping key**, and the prompt spells out what that key
 covers: `this command family` for shell commands (`git status` covers
@@ -380,6 +380,14 @@ happy to stop being asked about. `[e]` is always the exact call: that one
 invocation is denied and nothing else. `[a]` and `[e]` last until the process
 exits; `/permissions allow <command prefix>` is the form written to
 `~/.codesmith/approvals.toml` that survives a restart.
+
+`[o] yolo` answers this one call *and* switches the session into the YOLO
+posture — the same `/yolo`: shell, trust, and auto-approve on, so no later gate
+in this session asks. The switch is recorded as a `yolo` decision and
+everything after it as `auto-mode`; it lasts until the process exits and writes
+nothing to `approvals.toml`. `/mode agent` (or any other mode) turns the
+questions back on. Catastrophic commands (`rm -rf /` and the like) are still
+refused even in this posture.
 
 Every approval decision lands in the session file's `approvals` list — the tool,
 both keys, the answer, the reason you typed, the workspace, and the time —

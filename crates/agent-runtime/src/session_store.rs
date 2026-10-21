@@ -395,7 +395,8 @@ pub struct ApprovalRecord {
     /// `exact:<hash>` for a call with no family. `[a]` records these parts.
     pub grouping_key: String,
     /// How the decision was reached: one of the four answers
-    /// (`run-once`, `always-session`, `never-this`, `skip`), `feedback` for a
+    /// (`run-once`, `always-session`, `never-this`, `skip`), `yolo` for the
+    /// answer that switched the session into auto-approve, `feedback` for a
     /// refusal carrying text for the model, or a path that never asked
     /// (`auto-mode` for an approval mode that suppresses prompts,
     /// `session-grant` / `workspace-grant` for a call covered by an earlier

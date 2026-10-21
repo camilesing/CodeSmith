@@ -394,6 +394,7 @@ fn approval_frame(
     }
     frame.push_str(&format!(
         "allow? [y] run it once · [n] skip · [a] always allow {always_scope} for this session \
+         · [o] yolo — shell + trust + auto-approve for the rest of this session \
          · [e] never this exact call · [r] <feedback> deny and tell the model why: "
     ));
     frame
@@ -405,7 +406,7 @@ fn approval_frame(
 /// says what to type next. Ends at the unterminated prompt, like
 /// [`approval_frame`].
 fn feedback_needed_frame() -> String {
-    "feedback? type what should change (y/n/a/e still answer the question above): ".to_string()
+    "feedback? type what should change (y/n/a/o/e still answer the question above): ".to_string()
 }
 
 /// What an approval answer does. Split from the prompt for the same reason as
@@ -418,6 +419,10 @@ enum ApprovalAnswer {
     RunOnce,
     /// `[a]` — approve, and remember the grouping key for this session.
     AlwaysSession,
+    /// `[o]` — approve, and switch the session into the YOLO posture
+    /// (`/yolo`: shell + trust + auto-approve) so no later gate asks. Session
+    /// only: nothing is persisted, and `/mode <mode>` switches back.
+    Yolo,
     /// `[e]` — deny, and remember this exact call for this session.
     NeverThis,
     /// Any other line — `[r] <feedback>` or the feedback on its own — denies
@@ -432,7 +437,7 @@ enum ApprovalAnswer {
     Skip,
 }
 
-/// The four approve/deny keys and the skip keys match the whole line, exactly
+/// The five approve/deny keys and the skip keys match the whole line, exactly
 /// as the inline match they replace did: `y please` is not a yes, and it is
 /// not `n` either — it is feedback, which denies the call just the same.
 fn parse_approval_answer(raw: &str) -> ApprovalAnswer {
@@ -440,6 +445,7 @@ fn parse_approval_answer(raw: &str) -> ApprovalAnswer {
     match trimmed.to_ascii_lowercase().as_str() {
         "y" | "yes" => ApprovalAnswer::RunOnce,
         "a" | "always" => ApprovalAnswer::AlwaysSession,
+        "o" | "yolo" => ApprovalAnswer::Yolo,
         "e" | "never" => ApprovalAnswer::NeverThis,
         "n" | "no" | "" => ApprovalAnswer::Skip,
         _ => parse_feedback_answer(trimmed),
@@ -477,14 +483,15 @@ fn parse_feedback_answer(line: &str) -> ApprovalAnswer {
 }
 
 /// The plan gate's answer mapping — [`parse_approval_answer`] without the two
-/// remember-keys. `a`/`always` and `e`/`never` still answer in the direction
-/// they point (approve / reject, remembered for nothing): a key pressed from
-/// the generic gate's muscle memory must not fall through to `Revise` and
-/// steer a bare letter at the model.
+/// remember-keys. `a`/`always`, `e`/`never`, and `o`/`yolo` still answer in the
+/// direction they point (approve / reject, remembered for nothing): a key
+/// pressed from the generic gate's muscle memory must not fall through to
+/// `Revise` and steer a bare letter at the model. The posture switch itself is
+/// not offered here, for the same reason as the remember-keys below.
 fn parse_plan_approval_answer(raw: &str) -> ApprovalAnswer {
     let trimmed = raw.trim();
     match trimmed.to_ascii_lowercase().as_str() {
-        "y" | "yes" | "a" | "always" => ApprovalAnswer::RunOnce,
+        "y" | "yes" | "a" | "always" | "o" | "yolo" => ApprovalAnswer::RunOnce,
         "n" | "no" | "e" | "never" | "" => ApprovalAnswer::Skip,
         _ => parse_feedback_answer(trimmed),
     }
@@ -1739,6 +1746,32 @@ async fn handle_approval(
             );
             let _ = engine.approve_tool_call(id).await;
         }
+        ApprovalAnswer::Yolo => {
+            // `/yolo` spelled from the gate: the mode switch turns on shell +
+            // trust + auto-approve, and every later gate this session is then
+            // answered by the `ApprovalMode::Auto` checks above. The mode
+            // field is set directly too because `set_mode` no-ops when the
+            // mode is already Yolo — `/config approval_mode suggest` can
+            // re-arm prompts inside it.
+            state.set_mode(crate::app_state::AppMode::Yolo);
+            state.approval_mode = ApprovalMode::Auto;
+            log_approval(
+                state,
+                &id,
+                &tool_name,
+                &approval_key,
+                &approval_grouping_key,
+                "yolo",
+                None,
+            );
+            println!(
+                "{}",
+                "→ yolo — shell, trust, and auto-approve on for the rest of this session \
+                 (/mode agent to leave)"
+                    .dimmed()
+            );
+            let _ = engine.approve_tool_call(id).await;
+        }
         ApprovalAnswer::NeverThis => {
             log_approval(
                 state,
@@ -2474,6 +2507,7 @@ mod tests {
             "[y] run it once",
             "[n] skip",
             "[a] always allow this command family for this session",
+            "[o] yolo — shell + trust + auto-approve for the rest of this session",
             "[e] never this exact call",
             "[r] <feedback> deny and tell the model why",
         ] {
@@ -2494,7 +2528,7 @@ mod tests {
 
     #[test]
     fn plan_gate_maps_answers_without_remember_keys() {
-        for raw in ["y", "yes", "a", "always"] {
+        for raw in ["y", "yes", "a", "always", "o", "yolo"] {
             assert_eq!(
                 parse_plan_approval_answer(raw),
                 ApprovalAnswer::RunOnce,
@@ -2549,6 +2583,8 @@ mod tests {
             parse_approval_answer("Always"),
             ApprovalAnswer::AlwaysSession
         );
+        assert_eq!(parse_approval_answer("o"), ApprovalAnswer::Yolo);
+        assert_eq!(parse_approval_answer("YOLO"), ApprovalAnswer::Yolo);
         assert_eq!(parse_approval_answer("e"), ApprovalAnswer::NeverThis);
         assert_eq!(parse_approval_answer("never"), ApprovalAnswer::NeverThis);
         for skip in ["n", "no", "", "  "] {
@@ -2564,7 +2600,6 @@ mod tests {
             // is what a user typing an answer expects.
             "nope",
             "1",
-            "yolo",
             "why?",
             "y please",
             "run it later",
@@ -2582,6 +2617,7 @@ mod tests {
                     parse_approval_answer(feedback),
                     ApprovalAnswer::RunOnce
                         | ApprovalAnswer::AlwaysSession
+                        | ApprovalAnswer::Yolo
                         | ApprovalAnswer::NeverThis
                 ),
                 "{feedback:?} must not answer with a key"
