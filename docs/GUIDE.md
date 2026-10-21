@@ -247,20 +247,23 @@ workspace has to be trusted with `/trust add <path>` first (`docs/SUBAGENTS.md`,
 "Working across repositories").
 
 Plan mode ends at an approval prompt of its own: `exit_plan_mode` prints the plan
-body and asks. `[y]` approves it once and `[n]` (or an empty line) skips. Anything
+body and asks a three-way question. `[y]` approves the plan and implementation
+begins immediately (next paragraph); `[n]` (or an empty line) rejects it — the
+model is told the plan was refused, stays in plan mode, and revises. Anything
 else you type is feedback: it refuses the plan *and hands your sentence to the
 running turn*, so the model revises the plan file and asks again — `[r] <feedback>`
 is the same thing spelled out, and a bare `[r]` asks you for the words on the next
 line. A refusal leaves plan mode active and the plan file in place, so revising
-never means starting over. `[a]` is the one to avoid here: the plan tool has no
-arguments to scope by, so "always" covers every later plan approval in the
-session.
+never means starting over. There is deliberately no `[a]`/`[e]` at this gate: the
+plan tool has no arguments to scope by, so an approval that outlives the plan it
+answered would silence the review of every revised plan after it.
 
-Approving the plan ends that turn. A Plan-mode turn's toolset registers no write
-tools at all (`apply_patch`, `write_file`, and shell are absent), so the turn has
-nothing left it can do — and the session is returned to the mode you came from,
-which means your next message starts the implementation with those tools in
-hand.
+Approving the plan ends that turn — and CodeSmith continues on its own: the
+session is returned to the mode you came from and the implementation kickoff is
+submitted for you, so the next turn starts the work with the write tools in
+hand; no second message is needed. (A Plan-mode turn's toolset registers no
+write tools at all — `apply_patch`, `write_file`, and shell are absent — which
+is why the handoff goes through a fresh turn instead of continuing this one.)
 
 A model can also open a plan session *itself*, mid-task, with `enter_plan_mode`
 (ask it to plan something out and it may do exactly that). That form needs no

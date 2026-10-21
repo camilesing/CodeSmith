@@ -242,6 +242,30 @@ pub async fn run_repl(
             }
         }
 
+        // An approved plan continues straight into implementation: the
+        // approved `exit_plan_mode` ended its turn with the session back in a
+        // writable mode, and this kickoff is the message that handoff used to
+        // wait for the user to type.
+        if state.plan_implementation_pending {
+            state.plan_implementation_pending = false;
+            println!(
+                "{}",
+                "▶ plan approved — continuing into implementation".dimmed()
+            );
+            if let Err(err) = submit(&mut state, PLAN_IMPLEMENTATION_KICKOFF.to_string()).await {
+                println!("{} {err}", "✗".red());
+                break;
+            }
+            match render::pump_turn(&mut state).await {
+                Ok(render::PumpExit::UserQuit | render::PumpExit::EngineGone) => break,
+                Ok(render::PumpExit::TurnDone) => continue,
+                Err(err) => {
+                    println!("{} {err}", "✗".red());
+                    break;
+                }
+            }
+        }
+
         // A message queued mid-turn that the turn never picked up goes out
         // now, in the order it was typed (the pump steers what it can into
         // the running turn; these are the leftovers).
@@ -1276,6 +1300,12 @@ async fn append_memory_entry(state: &ReplState, entry: &str) {
         Err(err) => println!("{} memory worker failed: {err}", "✗".red()),
     }
 }
+
+/// The message the REPL submits itself when an approved plan hands off into
+/// implementation — through the normal `submit` path, so it lands in the
+/// session record like any typed line (model-visible means logged) and the
+/// new turn is dispatched with the restored, writable toolset.
+const PLAN_IMPLEMENTATION_KICKOFF: &str = "Plan approved by the user — implement it now.";
 
 /// Submit a plain user message (auto-model routing resolved per request).
 pub(crate) async fn submit(state: &mut ReplState, content: String) -> Result<()> {

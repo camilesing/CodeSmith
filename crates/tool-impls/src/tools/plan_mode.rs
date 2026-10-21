@@ -17,9 +17,10 @@
 //!   `AppMode` — the user owns it (`/mode`, `Shift+Tab`) — so `exit_plan_mode`
 //!   reports the handoff. The *host* may restore it when it approves the call:
 //!   the REPL returns the session to the mode it came from and the engine ends
-//!   that turn (`should_stop_after_plan_tool`), so the next message is
-//!   dispatched with the write tools. A host that does neither (headless, the
-//!   thread runtime) leaves the turn read-only and relies on the user's switch.
+//!   that turn (`should_stop_after_plan_tool`); the REPL then submits the
+//!   implementation kickoff itself, so approval continues straight into a turn
+//!   with the write tools. A host that does neither (headless, the thread
+//!   runtime) leaves the turn read-only and relies on the user's switch.
 //! - **A model-initiated `enter_plan_mode` is enforced per call, not by the
 //!   registry.** The registry and mode prompt are fixed at turn start from
 //!   `AppMode`, so the entry narrows the turn through the engine's execution
@@ -44,12 +45,14 @@ use codesmith_agent_runtime::tools::spec::{
 /// and implementation is the next turn's business.
 ///
 /// A host that restores the session mode when it approves this call (the REPL
-/// does, and ends the turn right there) makes the next message writable; a host
-/// that does not leaves the read-only set in place, which is why the fallback
-/// names the switch. The tool itself never touches the mode.
+/// does, and submits the implementation kickoff itself once the turn ends)
+/// continues straight into a writable turn; a host that does not leaves the
+/// read-only set in place, which is why the fallback names the switch. The tool
+/// itself never touches the mode.
 const PLAN_HANDOFF: &str = "The plan is with the user — do not start implementing in this \
-turn. The writable toolset arrives with their next message; if it does not, ask them to \
-switch (`/mode agent`, or Shift+Tab) before editing.";
+turn. An approving host continues on its own (the REPL submits the implementation kickoff \
+itself); otherwise the writable toolset arrives with the user's next message — if it does \
+not, ask them to switch (`/mode agent`, or Shift+Tab) before editing.";
 
 /// 5-phase workflow instructions injected on EnterPlanMode.
 const PLAN_MODE_INSTRUCTIONS: &str = "\
@@ -85,7 +88,9 @@ to execute effectively.
 
 ### Phase 5: Exit Plan Mode
 Goal: Present your plan for user approval. Call `exit_plan_mode` when your \
-plan is finalized. The user must approve before implementation begins.
+plan is finalized. The user must approve before implementation begins. On \
+approval the host continues on its own (the REPL submits the implementation \
+kickoff).
 
 If the approval is refused, the refusal arrives with the user's feedback as a \
 message. Revise the plan file accordingly and call `exit_plan_mode` again — \

@@ -1640,8 +1640,9 @@ impl Engine {
         }
         let (status, error) = match stop_reason {
             // `PlanApproved` is a completed turn: the harness stopped it at a
-            // point the model cannot act on, and the user's next message
-            // starts the implementation with the restored toolset.
+            // point the model cannot act on, and the next dispatch starts the
+            // implementation with the restored toolset (the REPL submits that
+            // kickoff itself when it approves).
             Ok(StopReason::NoToolCalls)
             | Ok(StopReason::MaxSteps)
             | Ok(StopReason::PlanApproved) => (TurnOutcomeStatus::Completed, None),
