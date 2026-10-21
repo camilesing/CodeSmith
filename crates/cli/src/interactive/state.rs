@@ -28,7 +28,7 @@ use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
 use crate::tools::plan_mode::SharedPlanModeState;
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager, wrap_shell_manager};
 use crate::tools::spec::RuntimeToolServices;
-use crate::tools::subagent::SubAgentResult;
+use crate::tools::subagent::{SubAgentResult, SubAgentStatus};
 use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
 use codesmith_agent_runtime::mode::ApprovalMode;
 use codesmith_config::presets::PresetCatalog;
@@ -152,7 +152,11 @@ pub struct ReplState {
     pub approval_mode: ApprovalMode,
     pub auto_compact: bool,
     pub compact_threshold: usize,
-    /// Live sub-agent tracking: agent id → latest status text.
+    /// Each running child's latest status line (text only): agent id → what it
+    /// is doing. Decoration for `/agents`, **not** the running count — a
+    /// cancelled child never fires its completion, so how many entries this
+    /// map holds is not the number of live children. Use
+    /// [`ReplState::running_agent_count`] for that.
     pub agent_progress: HashMap<String, String>,
     /// Collapsed one-line tool-call rendering (default) vs the expanded
     /// two-line form; toggled in-turn with Ctrl+O.
@@ -654,8 +658,25 @@ impl ReplState {
         }
     }
 
+    /// The sub-agent sessions the engine still reports as running.
+    ///
+    /// Reads the engine's own list (`Event::AgentList`, refreshed by
+    /// `Op::ListSubAgents`), not a locally accumulated map. A map fed by
+    /// spawn/complete events can only ever be *approximately* right: the
+    /// completion epilogue is skipped for an agent that is cancelled or
+    /// aborted, so a closed child would keep counting as running, and a
+    /// dropped event drifts the other way. The list is the record, and the
+    /// record is right.
+    pub fn running_agents(&self) -> impl Iterator<Item = &SubAgentResult> {
+        self.subagent_cache
+            .iter()
+            .filter(|agent| agent.status == SubAgentStatus::Running)
+    }
+
+    /// Running sub-agent count — the 🤖 segment's input, in the idle status
+    /// line and the live line alike.
     pub fn running_agent_count(&self) -> usize {
-        self.agent_progress.len()
+        self.running_agents().count()
     }
 
     /// Apply a preset tier's live dials (mode, tool allow/deny lists) —
@@ -1161,6 +1182,118 @@ mod restore_tests {
             plan.steps().len(),
             2,
             "resume must rebuild the plan state from the transcript"
+        );
+    }
+}
+
+#[cfg(test)]
+mod agent_count_tests {
+    use super::*;
+
+    fn options() -> crate::app_state::InteractiveOptions {
+        crate::app_state::InteractiveOptions {
+            model: "test-model".to_string(),
+            workspace: std::env::temp_dir(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            max_subagents: 2,
+            skills_dir: std::env::temp_dir(),
+            memory_path: std::env::temp_dir().join("memory.md"),
+            mcp_config_path: std::env::temp_dir().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+        }
+    }
+
+    /// A manager-shaped snapshot — the shape `Event::AgentList` carries.
+    fn snapshot(id: &str, status: SubAgentStatus) -> SubAgentResult {
+        SubAgentResult {
+            name: id.to_string(),
+            agent_id: id.to_string(),
+            context_mode: "fresh".to_string(),
+            fork_context: false,
+            agent_type: crate::tools::subagent::SubAgentType::General,
+            assignment: crate::tools::subagent::SubAgentAssignment::new(
+                "prompt".to_string(),
+                Some("worker".to_string()),
+            ),
+            model: "test-model".to_string(),
+            nickname: None,
+            status,
+            agent_memory: None,
+            result: None,
+            steps_taken: 0,
+            duration_ms: 0,
+            from_prior_session: false,
+        }
+    }
+
+    /// The 🤖 segment shows how many sub-agents are *running*, which is what
+    /// the engine's list says — not how many entries a locally accumulated
+    /// map happens to hold.
+    ///
+    /// Both directions of that difference are pinned here, because both were
+    /// reachable: a cancelled or aborted child never fires its completion
+    /// (the task epilogue is skipped on abort), so a map that only learns
+    /// from events keeps counting it as running forever; and a child that is
+    /// running but has not sent a progress event yet was invisible.
+    #[test]
+    fn running_agent_count_reads_the_engine_list_not_the_event_map() {
+        let _lock = crate::test_support::lock_test_env();
+        let config = crate::config::Config::default();
+        let mut state = ReplState::new(options(), &config);
+
+        state.subagent_cache = vec![
+            snapshot("child-a", SubAgentStatus::Running),
+            snapshot("child-b", SubAgentStatus::Completed),
+            snapshot("child-c", SubAgentStatus::Cancelled),
+            snapshot("child-d", SubAgentStatus::Failed("boom".to_string())),
+            snapshot(
+                "child-e",
+                SubAgentStatus::Interrupted("restart".to_string()),
+            ),
+        ];
+
+        // One running child, and the event map has heard nothing about it.
+        assert_eq!(
+            state.running_agent_count(),
+            1,
+            "the list says child-a is running"
+        );
+        assert_eq!(
+            state
+                .running_agents()
+                .map(|agent| agent.agent_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["child-a"],
+            "only the running session is listed"
+        );
+
+        // Three terminal children still sitting in the event map (the shape a
+        // cancelled child leaves behind) must not inflate the count.
+        for stale in ["child-b", "child-c", "child-d"] {
+            state
+                .agent_progress
+                .insert(stale.to_string(), "running".to_string());
+        }
+        assert_eq!(
+            state.running_agent_count(),
+            1,
+            "stale status text cannot inflate the count"
+        );
+
+        // And a second running child counts even before its first progress.
+        state
+            .subagent_cache
+            .push(snapshot("child-f", SubAgentStatus::Running));
+        assert_eq!(
+            state.running_agent_count(),
+            2,
+            "a running child counts without a progress event"
         );
     }
 }
