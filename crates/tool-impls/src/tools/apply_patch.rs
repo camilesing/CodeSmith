@@ -213,7 +213,7 @@ impl ToolSpec for ApplyPatchTool {
                 },
                 "fuzz": {
                     "type": "integer",
-                    "description": "Maximum fuzz factor for fuzzy matching (default: 3)"
+                    "description": "Maximum fuzz factor for fuzzy matching (default: 50)"
                 },
                 "create_if_missing": {
                     "type": "boolean",
@@ -1166,12 +1166,30 @@ fn apply_hunk(
 
         for pos in search_range {
             if matches_at_position(lines, &old_lines, pos) {
-                // Apply the hunk
+                // Apply the hunk. Context lines are re-emitted from the file
+                // verbatim, not from the patch: with whitespace-loose matching
+                // the model's remembered indentation must not rewrite lines
+                // the patch does not change — only `+` lines carry the
+                // patch's own bytes.
+                let mut replaced: Vec<String> = Vec::with_capacity(hunk.lines.len());
+                let mut file_idx = pos;
+                for line in &hunk.lines {
+                    match line {
+                        HunkLine::Context(_) => {
+                            replaced.push(lines[file_idx].clone());
+                            file_idx += 1;
+                        }
+                        HunkLine::Remove(_) => {
+                            file_idx += 1;
+                        }
+                        HunkLine::Add(text) => replaced.push(text.clone()),
+                    }
+                }
                 let end_pos = pos + old_lines.len();
-                lines.splice(pos..end_pos, new_lines.clone());
+                let delta = replaced.len() as isize - old_lines.len() as isize;
+                lines.splice(pos..end_pos, replaced);
 
                 // Update cumulative offset: new lines added minus old lines removed
-                let delta = new_lines.len() as isize - old_lines.len() as isize;
                 *cumulative_offset += delta;
 
                 return Ok(fuzz);
@@ -1201,9 +1219,14 @@ fn matches_at_position(lines: &[String], old_lines: &[&str], pos: usize) -> bool
     }
 
     for (i, old_line) in old_lines.iter().enumerate() {
-        // Normalize whitespace for comparison
-        let file_line = lines[pos + i].trim_end();
-        let expected = old_line.trim_end();
+        // Whitespace-loose on both ends: models routinely drift the leading
+        // indentation of remembered context while the content is current,
+        // and fuzz only widens the position search — it cannot rescue a
+        // content comparison. Known trade-off: leading whitespace that is
+        // semantically load-bearing (Makefile recipes) can cross-match; the
+        // line anchor and multi-line context keep that window tiny.
+        let file_line = lines[pos + i].trim();
+        let expected = old_line.trim();
         if file_line != expected {
             return false;
         }
@@ -1397,6 +1420,48 @@ diff --git a/same.txt b/same.txt
         let fuzz = apply_hunk(&mut lines, &hunk, 3, &mut offset).unwrap();
         assert!(fuzz > 0);
         assert_eq!(lines, vec!["line0", "modified", "line2", "line3"]);
+    }
+
+    #[test]
+    fn test_apply_hunk_tolerates_leading_whitespace_drift() {
+        // Model-remembered context drifted one indent level shallower than
+        // the file while the content is current. Exact-byte matching rejects
+        // this at any fuzz (fuzz only moves the search position, not the
+        // content comparison), so the hunk must match whitespace-loosely,
+        // keep the file's context bytes verbatim, and insert the `+` line
+        // with the patch's own bytes.
+        let mut lines = vec![
+            "    fn main() {".to_string(),
+            "        run();".to_string(),
+            "    }".to_string(),
+        ];
+
+        let hunk = Hunk {
+            old_start: 1,
+            old_count: 3,
+            new_start: 1,
+            new_count: 4,
+            lines: vec![
+                HunkLine::Context("  fn main() {".to_string()),
+                HunkLine::Add("      setup();".to_string()),
+                HunkLine::Context("      run();".to_string()),
+                HunkLine::Context("  }".to_string()),
+            ],
+        };
+
+        let mut offset: isize = 0;
+        let fuzz = apply_hunk(&mut lines, &hunk, 0, &mut offset).expect("loose match applies");
+        assert_eq!(fuzz, 0);
+        assert_eq!(offset, 1);
+        assert_eq!(
+            lines,
+            vec![
+                "    fn main() {",
+                "      setup();",
+                "        run();",
+                "    }",
+            ]
+        );
     }
 
     #[test]
