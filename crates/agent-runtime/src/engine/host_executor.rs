@@ -4044,8 +4044,9 @@ impl HostAgentExecutor {
             // this is a Plan turn, so its registry has no write tools and the
             // only thing left in it is more read-only work on a plan the user
             // already answered. Return the handoff instead — the next turn is
-            // dispatched with the restored toolset and the model implements
-            // there. Skipped while children are still running: their completion
+            // dispatched with the restored toolset (the REPL submits that
+            // kickoff itself when it approves) and the model implements there.
+            // Skipped while children are still running: their completion
             // sentinels belong to a live turn (the hold path above owns that
             // tail), and ending here would strand them.
             if plan_approved {
@@ -4055,8 +4056,8 @@ impl HostAgentExecutor {
                 };
                 if running == 0 {
                     self.emit_status(
-                        "Plan approved — the turn ends here; the next one runs with the \
-                         restored toolset"
+                        "Plan approved — the turn ends here; implementation continues in \
+                         the next turn with the restored toolset"
                             .to_string(),
                     )
                     .await;

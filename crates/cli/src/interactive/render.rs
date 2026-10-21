@@ -476,6 +476,38 @@ fn parse_feedback_answer(line: &str) -> ApprovalAnswer {
     }
 }
 
+/// The plan gate's answer mapping — [`parse_approval_answer`] without the two
+/// remember-keys. `a`/`always` and `e`/`never` still answer in the direction
+/// they point (approve / reject, remembered for nothing): a key pressed from
+/// the generic gate's muscle memory must not fall through to `Revise` and
+/// steer a bare letter at the model.
+fn parse_plan_approval_answer(raw: &str) -> ApprovalAnswer {
+    let trimmed = raw.trim();
+    match trimmed.to_ascii_lowercase().as_str() {
+        "y" | "yes" | "a" | "always" => ApprovalAnswer::RunOnce,
+        "n" | "no" | "e" | "never" | "" => ApprovalAnswer::Skip,
+        _ => parse_feedback_answer(trimmed),
+    }
+}
+
+/// The plan-approval question — [`approval_frame`]'s shape for the one gate
+/// that decides about a plan, not a tool call. Three choices, no remember-keys:
+/// an approval that outlives the plan it answered would silence the review of
+/// every revised plan after it. Ends at the unterminated prompt, like
+/// [`approval_frame`].
+fn plan_approval_frame() -> String {
+    "approve this plan? [y] approve and implement · [n] reject (plan mode stays) · \
+     [r] <feedback> revise: "
+        .to_string()
+}
+
+/// Steered into the running turn when the plan gate rejects: a bare
+/// permission error does not say *what* was refused, so the model is told the
+/// plan was rejected and where to go next.
+const PLAN_REJECTED_NOTE: &str = "The user rejected this plan without feedback. Stay in plan \
+                                  mode: revise the plan file and present it again with \
+                                  exit_plan_mode.";
+
 /// Columns the plan block indents by. Rendering runs at the full terminal
 /// width first; this prefix is a visual marker applied after the reflow.
 const PLAN_BLOCK_INDENT: usize = 4;
@@ -567,7 +599,9 @@ fn plan_mode_sync_after_tool(
 /// there: `should_stop_after_plan_tool` ends a Plan turn on the approved
 /// `exit_plan_mode`, so the next message is dispatched with the restored
 /// toolset instead of the model working a plan it cannot implement in the turn
-/// it is in.
+/// it is in. The REPL then submits that message itself
+/// (`plan_implementation_pending`), so approval continues straight into the
+/// implementation instead of waiting for the user to type.
 async fn apply_plan_mode_sync(state: &mut ReplState, sync: PlanModeSync) {
     match sync {
         PlanModeSync::Enter => {
@@ -577,6 +611,7 @@ async fn apply_plan_mode_sync(state: &mut ReplState, sync: PlanModeSync) {
         }
         PlanModeSync::Exit(restored) => {
             state.set_mode(restored);
+            state.plan_implementation_pending = true;
             println!(
                 "{}",
                 format!("◇ plan approved · {} mode restored", restored.as_setting()).dimmed()
@@ -948,6 +983,10 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                     reported_model,
                 );
                 if status != TurnOutcomeStatus::Completed {
+                    // The plan handoff dies with a turn that did not finish:
+                    // firing the implementation kickoff after a cancel or a
+                    // failure would act on an approval the session abandoned.
+                    state.plan_implementation_pending = false;
                     let _ = engine.send(Op::ListSubAgents).await;
                 }
                 state.is_loading = false;
@@ -1629,26 +1668,36 @@ async fn handle_approval(
     keys.suspend();
     // Plan approval is the one place a plan body reaches the user: render the
     // full markdown before the question, so the answer is informed (the
-    // plan-mode prompt points the model at the file, not at `update_plan`).
-    if tool_name == "exit_plan_mode" {
+    // plan-mode prompt points the model at the file, not at `update_plan`),
+    // and ask the plan gate's own three-way question — the decision is about
+    // the plan, not this tool call.
+    let plan_gate = tool_name == "exit_plan_mode";
+    if plan_gate {
         print!("{}", plan_approval_block(state).await);
+        print!("{}", plan_approval_frame());
+    } else {
+        print!(
+            "{}",
+            approval_frame(
+                &tool_name,
+                &description,
+                args_summary.as_deref(),
+                intent_summary.as_deref(),
+                &approval_always_scope(&tool_name, &approval_grouping_key),
+            )
+        );
     }
-    print!(
-        "{}",
-        approval_frame(
-            &tool_name,
-            &description,
-            args_summary.as_deref(),
-            intent_summary.as_deref(),
-            &approval_always_scope(&tool_name, &approval_grouping_key),
-        )
-    );
     let _ = std::io::stdout().flush();
     // A bare `[r]` re-asks on a fresh line rather than refusing the keypress
     // the user meant as the start of their feedback. EOF reads as an empty
     // line and skips, exactly as it did before the key existed.
+    let parse = if plan_gate {
+        parse_plan_approval_answer
+    } else {
+        parse_approval_answer
+    };
     let answer = loop {
-        match parse_approval_answer(&read_stdin_line("").await) {
+        match parse(&read_stdin_line("").await) {
             ApprovalAnswer::NeedFeedback => {
                 print!("{}", feedback_needed_frame());
                 let _ = std::io::stdout().flush();
@@ -1739,6 +1788,20 @@ async fn handle_approval(
                 None,
             );
             let _ = engine.deny_tool_call(id).await;
+            // The plan gate's reject is not a silent skip: the turn is told
+            // the plan was refused and where to go next, so it revises
+            // instead of reading a bare permission error.
+            if plan_gate {
+                match engine.steer(PLAN_REJECTED_NOTE.to_string()).await {
+                    Ok(()) => println!("{}", "→ plan rejected — the turn was told".dimmed()),
+                    Err(err) => {
+                        println!(
+                            "{}",
+                            format!("✗ could not deliver the rejection: {err}").red()
+                        );
+                    }
+                }
+            }
         }
     }
 }
@@ -2421,6 +2484,50 @@ mod tests {
         assert!(!frame.ends_with('\n'), "{frame}");
         assert!(frame.ends_with(": "), "{frame}");
         assert!(frame.contains("what should change"), "{frame}");
+    }
+
+    #[test]
+    fn plan_gate_maps_answers_without_remember_keys() {
+        for raw in ["y", "yes", "a", "always"] {
+            assert_eq!(
+                parse_plan_approval_answer(raw),
+                ApprovalAnswer::RunOnce,
+                "{raw:?} approves this plan (remembered for nothing)"
+            );
+        }
+        for raw in ["n", "no", "e", "never", ""] {
+            assert_eq!(
+                parse_plan_approval_answer(raw),
+                ApprovalAnswer::Skip,
+                "{raw:?} rejects this plan (remembered for nothing)"
+            );
+        }
+        assert_eq!(
+            parse_plan_approval_answer("r"),
+            ApprovalAnswer::NeedFeedback
+        );
+        assert_eq!(
+            parse_plan_approval_answer("make it shorter"),
+            ApprovalAnswer::Revise("make it shorter".to_string())
+        );
+    }
+
+    #[test]
+    fn plan_gate_frame_offers_three_choices_and_no_remember_keys() {
+        let frame = plan_approval_frame();
+        assert!(!frame.ends_with('\n'), "{frame}");
+        assert!(frame.ends_with(": "), "{frame}");
+        for scoped in ["approve and implement", "reject", "<feedback> revise"] {
+            assert!(frame.contains(scoped), "missing {scoped:?} in {frame:?}");
+        }
+        assert!(
+            !frame.contains("[a]"),
+            "an approval that outlives the plan it answered must not be offered: {frame}"
+        );
+        assert!(
+            !frame.contains("[e]"),
+            "a denial that outlives the plan it answered must not be offered: {frame}"
+        );
     }
 
     /// The answer mapping, split from stdin: the keys match the whole line (so

@@ -203,6 +203,12 @@ pub struct ReplState {
     /// means a *model-initiated* session, and a second copy of the mode would
     /// only stay right while every writer remembered to update it.
     pub plan_restore_mode: Option<AppMode>,
+    /// Set when an approved `exit_plan_mode` restored the mode: the REPL
+    /// submits the implementation kickoff itself once the plan turn finishes
+    /// (the loop-top consumer in `interactive::mod`), so approval continues
+    /// straight into a writable turn instead of waiting for the user's next
+    /// message. Cleared when the turn ends any other way.
+    pub plan_implementation_pending: bool,
     pub telemetry_sink: Option<TelemetrySink>,
     pub current_session_id: Option<String>,
     pub approval_grants: ApprovalGrants,
@@ -416,6 +422,7 @@ impl ReplState {
             plan_state,
             plan_mode_state,
             plan_restore_mode: None,
+            plan_implementation_pending: false,
             telemetry_sink: None,
             current_session_id: None,
             approval_grants: approvals_toml_path()

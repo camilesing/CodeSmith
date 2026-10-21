@@ -47,6 +47,8 @@ Ensure the plan is concise but detailed enough to execute effectively.
 **Phase 5: Exit Plan Mode**
 Call `exit_plan_mode` when your plan is finalized. The user must approve before
 implementation begins. The plan file content carries forward into the next turn.
+On approval the host continues on its own — the REPL submits the implementation
+kickoff — so implementation begins without another user message.
 
 ### Task V2 Tools
 
