@@ -245,7 +245,8 @@ tool_call/tool_result 配对要求。由更新版本 CodeSmith 写入的未知�
 （编辑器传 `cwd` 时按项目过滤）；`session/resume`（同时响应协议名
 `session/load`）加载一个会话并回放其回合，因此对话可以在编辑器与终端的
 `/resume` 之间自由流转。`session/close` 丢弃内存中的会话；记录保留。
-ACP 提示词不带工具运行，因此该表面暂无权限提示。
+ACP 提示词经引擎带完整工具目录运行——模型可自由读取项目，每次工具调用以
+`tool_call` 更新呈现给编辑器——需审批的调用（编辑、命令）在权限通道落地前一律拒绝。
 
 更多细节见 [PRESETS.md — Branching and Rollback](PRESETS.md#branching-and-rollback)。
 

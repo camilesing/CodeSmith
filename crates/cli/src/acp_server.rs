@@ -1,37 +1,53 @@
 //! Agent Client Protocol stdio adapter.
 //!
 //! Baseline: `initialize`, `session/new`, `session/prompt`,
-//! `session/cancel`, `shutdown`. Round-8 TODO-51 adds the session surface,
-//! and the decision behind it is that **an ACP session is a saved session**:
-//! the same `~/.codesmith/sessions/<id>.json` record the REPL writes, with a
-//! plain UUID id. `session/list` enumerates the store (scoped to a `cwd`'s
+//! `session/cancel`, `shutdown`. Round-8 TODO-51 adds the session surface
+//! and puts prompts through the engine.
+//!
+//! **An ACP session is a saved session**: the same
+//! `~/.codesmith/sessions/<id>.json` record the REPL writes, with a plain
+//! UUID id. `session/list` enumerates the store (scoped to a `cwd`'s
 //! checkout when given), `session/resume` — and `session/load`, the ACP v1
 //! name — reloads one and replays its turns as `session/update` chunks, and
 //! `session/close` releases the live one. A conversation started in the
 //! editor continues with `/resume` in the terminal, and the other way round.
 //!
-//! Stdout stays protocol-clean for editor clients; prompts go through the
-//! same configured client as one-shot CLI mode, without tools.
+//! **A prompt is an engine turn.** Each live session owns one engine —
+//! [`headless_engine_config`], the same configuration `codesmith exec` runs
+//! with — created lazily at its first prompt, plus one pump task that is the
+//! engine's only event reader: text deltas relay as `agent_message_chunk`,
+//! reasoning as `agent_thinking_chunk`, tool calls as `tool_call` /
+//! `tool_call_update`. A prompt completes through a per-session oneshot the
+//! pump resolves on `TurnComplete`; because the pump is the single reader, a
+//! cancelled turn cannot be confused with its successor. Two prompts are
+//! never in flight on one session: the second is refused with
+//! `invalid_params` (ACP clients await one response before the next).
+//!
+//! **Approvals fail closed.** The engine's approval, path-access and
+//! elevation gates are answered with a denial and `request_user_input` is
+//! cancelled — exactly what `codesmith exec` does without `--auto`. The
+//! model reads freely and is refused on edits and commands; asking the
+//! client through `session/request_permission` is the next slice.
 //!
 //! Persistence follows "model-visible means logged": a completed turn is
-//! written before `session/prompt` answers. When the write fails, the reply
-//! chunk is still delivered and the prompt is answered with a JSON-RPC error
-//! naming the cause — the editor keeps the text, and a missing record is
-//! reported rather than silent. The store is opened when the server starts;
-//! an unusable sessions directory fails the start.
+//! written before `session/prompt` answers, from the engine's
+//! `SessionUpdated` transcript. When the write fails, the reply is still
+//! delivered and the prompt is answered with a JSON-RPC error naming the
+//! cause — the editor keeps the text, and a missing record is reported
+//! rather than silent. The store is opened when the server starts; an
+//! unusable sessions directory fails the start.
+//!
+//! Stdout stays protocol-clean for editor clients.
 //!
 //! Known limitations (recorded beside the behaviour they bound):
 //!
-//! - No tools, so no `session/request_permission`. The permission channel
-//!   (`ApprovalRouter`) is the next TODO-51 slice and needs prompts to run
-//!   through the engine first.
+//! - No `session/request_permission` yet: approvals are denied, not asked
+//!   (see above).
 //! - Replay carries text blocks only: tool calls and results in a REPL
 //!   session are skipped in the update stream while staying in the history
-//!   the next prompt sends.
-//! - The ACP system prompt is recorded only for sessions created here. A
-//!   resumed REPL session keeps its own prompt on disk; ACP requests on it
-//!   still use the ACP prompt.
+//!   the engine syncs in.
 //! - `session/list` has no paging; the store's own retention cap bounds it.
+//! - One engine per live session; `MAX_ACP_SESSIONS` bounds the count.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -39,39 +55,51 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{Context as _, Result};
+use codesmith_agent_runtime::mode::ApprovalMode;
 use codesmith_agent_runtime::session_store::{
     FileSessionStore, SessionMetadata, create_saved_session_with_id_and_mode, update_session,
     workspace_scope_matches,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::sync::oneshot;
 
+use crate::app_state::AppMode;
 use crate::config::Config;
-use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
+use crate::core::engine::{
+    EngineHandle, EngineHost, HeadlessEngineOptions, headless_engine_config, spawn_engine,
+};
+use crate::core::events::{Event, TurnOutcomeStatus};
+use crate::core::ops::Op;
+use crate::models::{ContentBlock, Message, SystemPrompt};
+use crate::prompts::PromptAppendSource;
+use crate::settings::Settings;
 
 const ACP_PROTOCOL_VERSION: u64 = 1;
 
 /// Upper bound on tracked sessions; the oldest is evicted beyond it.
 const MAX_ACP_SESSIONS: usize = 128;
 
-/// System prompt every ACP prompt runs with; recorded on sessions created
-/// here (see the module note on resumed sessions).
-const ACP_SYSTEM_PROMPT: &str = "You are a coding assistant inside an ACP-compatible editor. Give concise, actionable responses.";
+/// Appended to the engine's base prompt for every ACP session, so the
+/// request stays recognizable as an ACP turn (and the model knows its
+/// audience).
+const ACP_EDITOR_NOTE: &str = "You are answering inside an ACP-compatible \
+editor client. Give concise, actionable responses.";
 
-/// Stdout is shared between the read loop and spawned prompt tasks, which
-/// write `session/update` notifications and their JSON-RPC response as the
-/// prompt completes.
+/// Stdout is shared between the read loop, per-session pumps, and prompt
+/// tasks, which write `session/update` notifications and JSON-RPC responses.
 type SharedWriter<W> = Arc<tokio::sync::Mutex<W>>;
 
 pub async fn run_acp_server(config: Config, model: String) -> Result<()> {
     let store = FileSessionStore::default_location()
         .context("ACP sessions are saved sessions; the sessions directory must be usable")?;
+    let settings = Settings::load().unwrap_or_default();
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
     let mut reader = BufReader::new(stdin).lines();
     let writer: SharedWriter<tokio::io::BufWriter<tokio::io::Stdout>> =
         Arc::new(tokio::sync::Mutex::new(tokio::io::BufWriter::new(stdout)));
-    let mut server = AcpServer::new(config, model, store);
+    let mut server = AcpServer::new(config, model, store, settings);
 
     while let Some(line) = reader.next_line().await? {
         if line.trim().is_empty() {
@@ -150,10 +178,19 @@ pub async fn run_acp_server(config: Config, model: String) -> Result<()> {
     Ok(())
 }
 
+/// What `session/prompt` is answered with once the turn completes.
+struct PromptOutcome {
+    status: TurnOutcomeStatus,
+    error: Option<String>,
+    /// Input + output tokens of the completed turn.
+    tokens: u64,
+}
+
 struct AcpServer {
     config: Config,
     model: String,
     store: FileSessionStore,
+    settings: Settings,
     sessions: Arc<Mutex<HashMap<String, AcpSession>>>,
 }
 
@@ -161,21 +198,26 @@ struct AcpSession {
     /// Creation stamp; the oldest session is evicted once the map grows
     /// past `MAX_ACP_SESSIONS`.
     created_at: Instant,
-    /// In-flight prompt task for this session, if any.
-    prompt_task: Option<tokio::task::AbortHandle>,
-    /// Completed turns (user prompt + assistant reply). Replayed as the
-    /// `messages` vector on the next `session/prompt` — the protocol's
-    /// stateful `sessionId` implies the editor conversation keeps its
-    /// context instead of restarting from zero each turn.
-    history: Vec<Message>,
     /// The editor's `cwd` from `session/new`, or the saved session's
     /// workspace on resume — what the record's `workspace` field says.
     workspace: PathBuf,
+    /// The transcript as the engine last reported it (`SessionUpdated`), or
+    /// the saved messages on resume until the engine takes over. What the
+    /// next save writes.
+    history: Vec<Message>,
+    /// Same provenance as [`AcpSession::history`].
+    system_prompt: Option<SystemPrompt>,
+    /// Created at the session's first prompt; one engine per session.
+    engine: Option<EngineHandle>,
+    /// The engine's only event reader.
+    pump_task: Option<tokio::task::AbortHandle>,
+    /// The in-flight prompt's completion slot, if any.
+    pending_prompt: Option<oneshot::Sender<PromptOutcome>>,
 }
 
 /// Lock the session map, tolerating a poisoned lock: the map is only ever
-/// held for brief clone/insert critical sections, so a panic elsewhere
-/// must not take prompt history down with it.
+/// held for brief critical sections, so a panic elsewhere must not take
+/// every session down with it.
 fn lock_sessions(
     sessions: &Mutex<HashMap<String, AcpSession>>,
 ) -> std::sync::MutexGuard<'_, HashMap<String, AcpSession>> {
@@ -199,11 +241,12 @@ struct AcpError {
 }
 
 impl AcpServer {
-    fn new(config: Config, model: String, store: FileSessionStore) -> Self {
+    fn new(config: Config, model: String, store: FileSessionStore, settings: Settings) -> Self {
         Self {
             config,
             model,
             store,
+            settings,
             sessions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -267,9 +310,12 @@ impl AcpServer {
             session_id.clone(),
             AcpSession {
                 created_at: Instant::now(),
-                prompt_task: None,
-                history: Vec::new(),
                 workspace,
+                history: Vec::new(),
+                system_prompt: None,
+                engine: None,
+                pump_task: None,
+                pending_prompt: None,
             },
         );
         Ok(json!({ "sessionId": session_id }))
@@ -295,7 +341,8 @@ impl AcpServer {
 
     /// `session/resume` / `session/load` — reload a saved session, replay
     /// its text turns as update chunks, and make it the live session under
-    /// its own id (replacing one already open here).
+    /// its own id (replacing one already open here). The engine is created
+    /// lazily at the next prompt, with this history synced in.
     async fn resume_session<W>(
         &mut self,
         params: Value,
@@ -332,7 +379,7 @@ impl AcpServer {
                 if text.trim().is_empty() {
                     continue;
                 }
-                write_session_update(&mut *writer, &session_id, kind, text)
+                write_session_update(&mut *writer, &session_id, chunk_update(kind, text))
                     .await
                     .map_err(AcpError::internal)?;
             }
@@ -344,18 +391,21 @@ impl AcpServer {
             session_id,
             AcpSession {
                 created_at: Instant::now(),
-                prompt_task: None,
-                history: saved.messages,
                 workspace: saved.metadata.workspace,
+                history: saved.messages,
+                system_prompt: saved.system_prompt.map(SystemPrompt::Text),
+                engine: None,
+                pump_task: None,
+                pending_prompt: None,
             },
         );
         Ok(())
     }
 
-    /// Validate the prompt request, then run the LLM call on its own task so
-    /// the read loop stays free to accept `session/cancel` (and other
-    /// requests) while the prompt is in flight. The task owns the response
-    /// for `id`.
+    /// Validate the prompt request and reserve the session's one prompt
+    /// slot, then run the turn on its own task so the read loop stays free
+    /// to accept `session/cancel` (and other requests) while it runs. The
+    /// task owns the response for `id`.
     fn spawn_prompt<W>(
         &mut self,
         id: Option<Value>,
@@ -366,148 +416,458 @@ impl AcpServer {
         W: AsyncWrite + Unpin + Send + 'static,
     {
         let session_id = required_session_id(&params)?.to_string();
-        // Snapshot the conversation so far under the lock; the prompt task
-        // appends its completed turn back into the map when the reply lands.
-        let (history, workspace) = {
-            let sessions = lock_sessions(&self.sessions);
-            match sessions.get(&session_id) {
-                Some(session) => (session.history.clone(), session.workspace.clone()),
-                None => return Err(AcpError::invalid_params("unknown sessionId")),
-            }
-        };
         let prompt = extract_prompt_text(params.get("prompt"))
             .filter(|text| !text.trim().is_empty())
             .ok_or_else(|| AcpError::invalid_params("prompt must include text content"))?;
-
-        let config = self.config.clone();
-        let model = self.model.clone();
-        let store = self.store.clone();
-        let task_session_id = session_id.clone();
-        let sessions = Arc::clone(&self.sessions);
-        // One in-flight prompt per session: a new prompt supersedes (aborts)
-        // any stale one still running.
-        let task = tokio::spawn(async move {
-            let mut messages = history;
-            messages.push(Message {
-                role: "user".to_string(),
-                content: vec![ContentBlock::Text {
-                    text: prompt.clone(),
-                    cache_control: None,
-                }],
-            });
-            let (output, turn_tokens) = match run_prompt(&config, &model, &prompt, messages.clone())
-                .await
-            {
-                Ok(result) => result,
-                Err(err) => {
-                    let mut writer = writer.lock().await;
-                    let _ = write_jsonrpc_error(&mut *writer, id, -32603, err.to_string()).await;
-                    return;
-                }
-            };
-            // Persist the completed turn so the next `session/prompt` on
-            // this session replays the conversation. A turn without a
-            // reply (aborted, empty) is left out entirely.
-            if output.is_empty() {
-                let mut writer = writer.lock().await;
-                if let Some(id) = id {
-                    let _ =
-                        write_jsonrpc_result(&mut *writer, id, json!({ "stopReason": "end_turn" }))
-                            .await;
-                }
-                return;
-            }
-            messages.push(Message {
-                role: "assistant".to_string(),
-                content: vec![ContentBlock::Text {
-                    text: output.clone(),
-                    cache_control: None,
-                }],
-            });
-            {
-                let mut sessions = lock_sessions(&sessions);
-                if let Some(session) = sessions.get_mut(&task_session_id) {
-                    session.history = messages.clone();
-                }
-            }
-            // The record is written before the prompt is answered. The
-            // reply chunk goes out either way, so a failed record is a
-            // reported error, not a silently missing one.
-            let record = {
-                let session_id = task_session_id.clone();
-                with_store(&store, move |store| {
-                    persist_turn(
-                        store,
-                        &session_id,
-                        &workspace,
-                        &model,
-                        &messages,
-                        turn_tokens,
-                    )
-                })
-                .await
-            };
-            let mut writer = writer.lock().await;
-            let _ = write_session_update(
-                &mut *writer,
-                &task_session_id,
-                "agent_message_chunk",
-                output,
-            )
-            .await;
-            if let Some(id) = id {
-                let _ = match record {
-                    Ok(()) => {
-                        write_jsonrpc_result(&mut *writer, id, json!({ "stopReason": "end_turn" }))
-                            .await
-                    }
-                    Err(err) => {
-                        write_jsonrpc_error(
-                            &mut *writer,
-                            Some(id),
-                            -32603,
-                            format!("reply delivered but the session was not saved: {err}"),
-                        )
-                        .await
-                    }
-                };
-            }
-        });
-        let mut sessions = lock_sessions(&self.sessions);
-        if let Some(session) = sessions.get_mut(&session_id)
-            && let Some(previous) = session.prompt_task.replace(task.abort_handle())
+        let (completion_tx, completion_rx) = oneshot::channel::<PromptOutcome>();
         {
-            previous.abort();
+            let mut sessions = lock_sessions(&self.sessions);
+            let Some(session) = sessions.get_mut(&session_id) else {
+                return Err(AcpError::invalid_params("unknown sessionId"));
+            };
+            if session.pending_prompt.is_some() {
+                return Err(AcpError::invalid_params(
+                    "a prompt is already in flight for this session — session/cancel it first",
+                ));
+            }
+            session.pending_prompt = Some(completion_tx);
         }
+
+        let request = TurnRequest {
+            config: self.config.clone(),
+            settings: self.settings.clone(),
+            model: self.model.clone(),
+            store: self.store.clone(),
+            session_id,
+            prompt,
+        };
+        let sessions = Arc::clone(&self.sessions);
+        tokio::spawn(async move {
+            let outcome = run_turn(request, completion_rx, &sessions, writer.clone()).await;
+            let mut writer = writer.lock().await;
+            let _ = match outcome {
+                Ok(outcome) => answer_completed_prompt(&mut *writer, id, &outcome).await,
+                Err(err) => write_jsonrpc_error(&mut *writer, id, -32603, err.to_string()).await,
+            };
+        });
         Ok(())
     }
 
-    /// Abort the in-flight prompt task for `session_id`, if any. Dropping
-    /// the task's future cancels the awaited LLM call.
+    /// End the in-flight turn of `session_id`, if any: the engine cancels,
+    /// the pump resolves the pending prompt as interrupted, and the
+    /// cancelled prompt's own task answers its request with `cancelled`.
     fn cancel_session(&mut self, session_id: &str) {
-        let mut sessions = lock_sessions(&self.sessions);
-        if let Some(session) = sessions.get_mut(session_id)
-            && let Some(task) = session.prompt_task.take()
+        let sessions = lock_sessions(&self.sessions);
+        if let Some(session) = sessions.get(session_id)
+            && let Some(engine) = session.engine.as_ref()
         {
-            task.abort();
+            engine.cancel();
         }
     }
 
-    /// Drop the session from memory, aborting its in-flight prompt. The
-    /// saved record stays — close is not delete.
+    /// Drop the session from memory — engine shut down, pump aborted,
+    /// in-flight prompt (if any) answered `cancelled` by its own task when
+    /// its completion slot drops. The saved record stays: close is not
+    /// delete.
     fn close_session(&mut self, session_id: &str) {
         let mut sessions = lock_sessions(&self.sessions);
-        if let Some(session) = sessions.remove(session_id)
-            && let Some(task) = session.prompt_task
-        {
-            task.abort();
+        if let Some(session) = sessions.remove(session_id) {
+            release(session);
         }
     }
 }
 
+/// What one prompt carries into its turn.
+struct TurnRequest {
+    config: Config,
+    settings: Settings,
+    model: String,
+    store: FileSessionStore,
+    session_id: String,
+    prompt: String,
+}
+
+/// Run one prompt: resolve the route, ensure the session's engine exists,
+/// send the message, and wait for the pump to report the turn's outcome.
+/// Persistence happens here, before the prompt is answered.
+async fn run_turn<W>(
+    request: TurnRequest,
+    completion: oneshot::Receiver<PromptOutcome>,
+    sessions: &Arc<Mutex<HashMap<String, AcpSession>>>,
+    writer: SharedWriter<W>,
+) -> anyhow::Result<PromptOutcome>
+where
+    W: AsyncWrite + Unpin + Send + 'static,
+{
+    let TurnRequest {
+        config,
+        settings,
+        model,
+        store,
+        session_id,
+        prompt,
+    } = request;
+    let route = crate::main_root::resolve_cli_auto_route(&config, &model, &prompt).await;
+    let reasoning_effort = route
+        .reasoning_effort
+        .map(|effort| effort.as_setting().to_string());
+
+    let engine = ensure_engine(
+        sessions,
+        &config,
+        &settings,
+        &session_id,
+        &route.model,
+        writer,
+    )
+    .await?;
+    engine
+        .send(Op::SendMessage {
+            content: prompt,
+            image_paths: Vec::new(),
+            mode: AppMode::Agent,
+            model: route.model.clone(),
+            goal_objective: None,
+            allowed_tools: None,
+            blocked_tools: Vec::new(),
+            reasoning_effort,
+            reasoning_effort_auto: route.auto_model,
+            auto_model: route.auto_model,
+            allow_shell: config.allow_shell(),
+            trust_mode: false,
+            auto_approve: false,
+            translation_enabled: false,
+            show_thinking: settings.show_thinking,
+            is_simple: settings.is_simple,
+            approval_mode: config
+                .approval_policy
+                .as_deref()
+                .and_then(ApprovalMode::from_config_value)
+                .unwrap_or_default(),
+        })
+        .await
+        .context("send prompt to the engine")?;
+
+    let outcome = match completion.await {
+        Ok(outcome) => outcome,
+        // The session closed (or its pump died); the turn is over either way.
+        Err(_) => {
+            engine.cancel();
+            return Ok(PromptOutcome {
+                status: TurnOutcomeStatus::Interrupted,
+                error: None,
+                tokens: 0,
+            });
+        }
+    };
+
+    // Persist the engine's transcript before answering; on failure the
+    // caller reports it instead of answering success.
+    let (history, system_prompt, workspace) = {
+        let sessions = lock_sessions(sessions);
+        match sessions.get(session_id.as_str()) {
+            Some(session) => (
+                session.history.clone(),
+                session.system_prompt.clone(),
+                session.workspace.clone(),
+            ),
+            None => (
+                Vec::new(),
+                None,
+                std::env::current_dir().unwrap_or_default(),
+            ),
+        }
+    };
+    let persist = if history.is_empty() {
+        Ok(())
+    } else {
+        let store_model = model;
+        with_store(&store, move |store| {
+            persist_turn(
+                store,
+                &session_id,
+                &workspace,
+                &store_model,
+                &history,
+                outcome.tokens,
+                system_prompt.as_ref(),
+            )
+        })
+        .await
+    };
+    match persist {
+        Ok(()) => Ok(outcome),
+        Err(err) => Err(anyhow::anyhow!(
+            "reply delivered but the session was not saved: {err}"
+        )),
+    }
+}
+
+/// Create the session's engine and pump at its first prompt, or return the
+/// existing one. A resumed session's saved transcript is synced in.
+async fn ensure_engine<W>(
+    sessions: &Arc<Mutex<HashMap<String, AcpSession>>>,
+    config: &Config,
+    settings: &Settings,
+    session_id: &str,
+    model: &str,
+    writer: SharedWriter<W>,
+) -> anyhow::Result<EngineHandle>
+where
+    W: AsyncWrite + Unpin + Send + 'static,
+{
+    let (existing, workspace, history, system_prompt) = {
+        let sessions = lock_sessions(sessions);
+        let Some(session) = sessions.get(session_id) else {
+            anyhow::bail!("unknown sessionId {session_id:?}");
+        };
+        (
+            session.engine.clone(),
+            session.workspace.clone(),
+            session.history.clone(),
+            session.system_prompt.clone(),
+        )
+    };
+    if let Some(engine) = existing {
+        return Ok(engine);
+    }
+    let engine_config = headless_engine_config(
+        config,
+        settings,
+        HeadlessEngineOptions {
+            model: model.to_string(),
+            workspace: workspace.clone(),
+            auto_approve: false,
+            trust_mode: false,
+            max_subagents: config.max_subagents(),
+            override_system_prompt: None,
+            append_system_prompts: vec![PromptAppendSource::inline("acp-editor", ACP_EDITOR_NOTE)],
+            cache_breaker: None,
+            allowed_tools: None,
+            team_context: None,
+        },
+    )?;
+    let engine = spawn_engine(engine_config, config, EngineHost::default());
+    if !history.is_empty() {
+        engine
+            .send(Op::SyncSession {
+                session_id: Some(session_id.to_string()),
+                messages: history,
+                system_prompt,
+                system_prompt_override: false,
+                model: model.to_string(),
+                workspace,
+            })
+            .await
+            .context("sync the resumed session into the engine")?;
+    }
+    let pump = tokio::spawn(pump_events(
+        engine.clone(),
+        Arc::clone(sessions),
+        session_id.to_string(),
+        writer,
+    ));
+    let mut sessions = lock_sessions(sessions);
+    if let Some(session) = sessions.get_mut(session_id) {
+        session.engine = Some(engine.clone());
+        session.pump_task = Some(pump.abort_handle());
+    } else {
+        // Closed while the engine was being built.
+        pump.abort();
+        release_engine(engine);
+        anyhow::bail!("unknown sessionId {session_id:?}");
+    }
+    Ok(engine)
+}
+
+/// Relay one session's engine events to the client until the session goes.
+/// The single-reader discipline is the point: every event of this session's
+/// engine flows through this task alone, so a cancelled turn cannot be
+/// confused with its successor.
+async fn pump_events<W>(
+    engine: EngineHandle,
+    sessions: Arc<Mutex<HashMap<String, AcpSession>>>,
+    session_id: String,
+    writer: SharedWriter<W>,
+) where
+    W: AsyncWrite + Unpin + Send + 'static,
+{
+    loop {
+        let event = {
+            let mut rx = engine.rx_event.write().await;
+            rx.recv().await
+        };
+        let Some(event) = event else {
+            return;
+        };
+        match event {
+            Event::MessageDelta { content, .. } => {
+                let mut writer = writer.lock().await;
+                let _ = write_session_update(
+                    &mut *writer,
+                    &session_id,
+                    chunk_update("agent_message_chunk", content),
+                )
+                .await;
+            }
+            Event::ThinkingDelta { content, .. } => {
+                let mut writer = writer.lock().await;
+                let _ = write_session_update(
+                    &mut *writer,
+                    &session_id,
+                    chunk_update("agent_thinking_chunk", content),
+                )
+                .await;
+            }
+            Event::ToolCallStarted { id, name, input } => {
+                let mut writer = writer.lock().await;
+                let _ = write_session_update(
+                    &mut *writer,
+                    &session_id,
+                    json!({
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": id,
+                        "title": tool_title(&name, &input),
+                        "kind": tool_kind(&name),
+                        "status": "in_progress",
+                    }),
+                )
+                .await;
+            }
+            Event::ToolCallProgress { id, output } => {
+                let mut writer = writer.lock().await;
+                let _ = write_session_update(
+                    &mut *writer,
+                    &session_id,
+                    tool_call_update(&id, "in_progress", &output),
+                )
+                .await;
+            }
+            Event::ToolCallComplete { id, result, .. } => {
+                let (status, text) = match result {
+                    Ok(output) => (
+                        if output.success {
+                            "completed"
+                        } else {
+                            "failed"
+                        },
+                        output.content,
+                    ),
+                    Err(err) => ("failed", err.to_string()),
+                };
+                let mut writer = writer.lock().await;
+                let _ = write_session_update(
+                    &mut *writer,
+                    &session_id,
+                    tool_call_update(&id, status, &text),
+                )
+                .await;
+            }
+            // Fail closed, exactly as `codesmith exec` does without `--auto`:
+            // nobody here can yet ask the client, so the call is refused.
+            Event::ApprovalRequired { id, .. } | Event::PathAccessRequired { id, .. } => {
+                let _ = engine.deny_tool_call(id).await;
+            }
+            Event::ElevationRequired { tool_id, .. } => {
+                let _ = engine.deny_tool_call(tool_id).await;
+            }
+            Event::UserInputRequired { id, .. } => {
+                let _ = engine.cancel_user_input(id).await;
+            }
+            Event::SessionUpdated {
+                messages,
+                system_prompt,
+                ..
+            } => {
+                let mut sessions = lock_sessions(&sessions);
+                if let Some(session) = sessions.get_mut(&session_id) {
+                    session.history = messages;
+                    session.system_prompt = system_prompt;
+                }
+            }
+            Event::TurnComplete {
+                status,
+                error,
+                usage,
+                ..
+            } => {
+                let outcome = PromptOutcome {
+                    status,
+                    error,
+                    tokens: u64::from(usage.input_tokens) + u64::from(usage.output_tokens),
+                };
+                let mut sessions = lock_sessions(&sessions);
+                if let Some(session) = sessions.get_mut(&session_id)
+                    && let Some(pending) = session.pending_prompt.take()
+                {
+                    let _ = pending.send(outcome);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Answer one completed prompt: the record is already written, so a failure
+/// here is the turn's own.
+async fn answer_completed_prompt<W>(
+    writer: &mut W,
+    id: Option<Value>,
+    outcome: &PromptOutcome,
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    let Some(id) = id else {
+        return Ok(());
+    };
+    match &outcome.status {
+        TurnOutcomeStatus::Failed => {
+            write_jsonrpc_error(
+                writer,
+                Some(id),
+                -32603,
+                outcome
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "turn failed".to_string()),
+            )
+            .await
+        }
+        status => {
+            write_jsonrpc_result(writer, id, json!({ "stopReason": stop_reason(status) })).await
+        }
+    }
+}
+
+fn stop_reason(status: &TurnOutcomeStatus) -> &'static str {
+    match status {
+        TurnOutcomeStatus::Completed => "end_turn",
+        TurnOutcomeStatus::Interrupted => "cancelled",
+        // Failed turns are answered as errors before reaching here; this is
+        // the unreachable mapping.
+        TurnOutcomeStatus::Failed => "end_turn",
+    }
+}
+
+/// Abort the pump and shut the engine down.
+fn release(session: AcpSession) {
+    if let Some(pump) = session.pump_task {
+        pump.abort();
+    }
+    if let Some(engine) = session.engine {
+        release_engine(engine);
+    }
+}
+
+fn release_engine(engine: EngineHandle) {
+    tokio::spawn(async move {
+        let _ = engine.send(Op::Shutdown).await;
+    });
+}
+
 /// Bound the tracked-session count: evict the oldest beyond
-/// `MAX_ACP_SESSIONS`, aborting its in-flight prompt (if any) so it cannot
-/// write into a session that no longer exists.
+/// `MAX_ACP_SESSIONS` (aborting its pump and shutting its engine down).
 fn evict_oldest_if_full(sessions: &mut HashMap<String, AcpSession>) {
     if sessions.len() >= MAX_ACP_SESSIONS
         && let Some(oldest) = sessions
@@ -515,9 +875,8 @@ fn evict_oldest_if_full(sessions: &mut HashMap<String, AcpSession>) {
             .min_by_key(|(_, session)| session.created_at)
             .map(|(id, _)| id.clone())
         && let Some(session) = sessions.remove(&oldest)
-        && let Some(task) = session.prompt_task
     {
-        task.abort();
+        release(session);
     }
 }
 
@@ -543,7 +902,8 @@ async fn with_store<T: Send + 'static>(
 /// record — an earlier ACP turn, or a REPL session resumed here — is
 /// reloaded and updated, so metadata the REPL changed meanwhile (a
 /// `/rename`) survives and a resumed session keeps its own system prompt
-/// and mode; otherwise the record is created with the ACP prompt and mode.
+/// and mode; otherwise the record is created with the engine's prompt and
+/// the `acp` mode.
 fn persist_turn(
     store: &FileSessionStore,
     session_id: &str,
@@ -551,6 +911,7 @@ fn persist_turn(
     model: &str,
     messages: &[Message],
     turn_tokens: u64,
+    system_prompt: Option<&SystemPrompt>,
 ) -> std::io::Result<()> {
     let saved = match store.load_session(session_id) {
         Ok(existing) => {
@@ -564,7 +925,7 @@ fn persist_turn(
                 model,
                 workspace,
                 turn_tokens,
-                Some(&SystemPrompt::Text(ACP_SYSTEM_PROMPT.to_string())),
+                system_prompt,
                 Some("acp"),
             )
         }
@@ -599,49 +960,51 @@ fn message_text(message: &Message) -> String {
         .join("\n")
 }
 
-async fn run_prompt(
-    config: &Config,
-    model: &str,
-    prompt: &str,
-    messages: Vec<Message>,
-) -> Result<(String, u64)> {
-    // No ScopedCurrentDir: the guard mutated the PROCESS-wide cwd and
-    // held that change across the awaited LLM calls, so any concurrent
-    // runtime work resolving a relative path observed the wrong session
-    // directory. `resolve_cli_auto_route` takes no cwd (heuristic /
-    // router-model only) and the request below is fully explicit, so
-    // the chdir served nothing.
-    let client = crate::core::engine::resolve_llm_client(config)?;
-    let route = crate::main_root::resolve_cli_auto_route(config, model, prompt).await;
-    let reasoning_effort = route
-        .reasoning_effort
-        .map(|effort| effort.as_setting().to_string());
+/// A `sessionUpdate` carrying one text chunk.
+fn chunk_update(kind: &str, text: String) -> Value {
+    json!({
+        "sessionUpdate": kind,
+        "content": { "type": "text", "text": text }
+    })
+}
 
-    let request = MessageRequest {
-        model: route.model,
-        messages,
-        max_tokens: 4096,
-        system: Some(SystemPrompt::Text(ACP_SYSTEM_PROMPT.to_string())),
-        tools: None,
-        tool_choice: None,
-        metadata: None,
-        thinking: None,
-        reasoning_effort,
-        stream: Some(false),
-        temperature: Some(0.2),
-        top_p: Some(0.9),
-    };
+/// A `tool_call_update` with one text content block.
+fn tool_call_update(tool_call_id: &str, status: &str, text: &str) -> Value {
+    json!({
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": tool_call_id,
+        "status": status,
+        "content": [ { "type": "content", "content": { "type": "text", "text": text } } ]
+    })
+}
 
-    let response = client.create_message(request).await?;
-    let mut output = String::new();
-    for block in response.content {
-        if let ContentBlock::Text { text, .. } = block {
-            output.push_str(&text);
-        }
+/// The ACP activity kind for a CodeSmith tool name.
+fn tool_kind(name: &str) -> &'static str {
+    let name = name.to_ascii_lowercase();
+    let has = |needles: &[&str]| needles.iter().any(|n| name.contains(n));
+    if has(&["edit", "write", "patch", "create", "delete", "remove"]) {
+        "edit"
+    } else if has(&["shell", "exec", "command", "run_"]) {
+        "execute"
+    } else if has(&["fetch", "web", "http"]) {
+        // Before the read list: `web_search` is a fetch, not a read.
+        "fetch"
+    } else if has(&["read", "grep", "glob", "search", "list", "find", "tree"]) {
+        "read"
+    } else {
+        "other"
     }
-    let turn_tokens =
-        u64::from(response.usage.input_tokens) + u64::from(response.usage.output_tokens);
-    Ok((output, turn_tokens))
+}
+
+/// A one-line title for a `tool_call`: the tool name plus a capped argument
+/// summary.
+fn tool_title(name: &str, input: &Value) -> String {
+    let args = input.to_string();
+    if args.is_empty() || args == "{}" {
+        return name.to_string();
+    }
+    let capped: String = args.chars().take(120).collect();
+    format!("{name} {capped}")
 }
 
 impl AcpError {
@@ -740,12 +1103,7 @@ fn resource_link_text(block: &Value) -> Option<String> {
     Some(format!("@{uri}"))
 }
 
-async fn write_session_update<W>(
-    writer: &mut W,
-    session_id: &str,
-    kind: &str,
-    text: String,
-) -> Result<()>
+async fn write_session_update<W>(writer: &mut W, session_id: &str, update: Value) -> Result<()>
 where
     W: AsyncWrite + Unpin,
 {
@@ -754,13 +1112,7 @@ where
         "method": "session/update",
         "params": {
             "sessionId": session_id,
-            "update": {
-                "sessionUpdate": kind,
-                "content": {
-                    "type": "text",
-                    "text": text
-                }
-            }
+            "update": update
         }
     });
     write_json_line(writer, notification).await
@@ -872,7 +1224,12 @@ mod tests {
     }
 
     fn server_over(store: FileSessionStore) -> AcpServer {
-        AcpServer::new(Config::default(), "test-model".to_string(), store)
+        AcpServer::new(
+            Config::default(),
+            "test-model".to_string(),
+            store,
+            Settings::default(),
+        )
     }
 
     fn sink() -> SharedWriter<Vec<u8>> {
@@ -903,9 +1260,12 @@ mod tests {
             id.to_string(),
             AcpSession {
                 created_at: Instant::now(),
-                prompt_task: None,
-                history: Vec::new(),
                 workspace: workspace.to_path_buf(),
+                history: Vec::new(),
+                system_prompt: None,
+                engine: None,
+                pump_task: None,
+                pending_prompt: None,
             },
         );
     }
@@ -954,6 +1314,22 @@ mod tests {
         assert!(text.contains("@file:///tmp/lib.rs"));
     }
 
+    #[test]
+    fn tool_calls_map_to_acp_kinds() {
+        assert_eq!(tool_kind("edit_file"), "edit");
+        assert_eq!(tool_kind("write_file"), "edit");
+        assert_eq!(tool_kind("exec_shell"), "execute");
+        assert_eq!(tool_kind("read_file"), "read");
+        assert_eq!(tool_kind("grep"), "read");
+        assert_eq!(tool_kind("web_search"), "fetch");
+        assert_eq!(tool_kind("agent_open"), "other");
+
+        let title = tool_title("read_file", &serde_json::json!({"path": "src/lib.rs"}));
+        assert!(title.starts_with("read_file "));
+        assert!(title.contains("src/lib.rs"));
+        assert_eq!(tool_title("plan", &serde_json::json!({})), "plan");
+    }
+
     #[tokio::test]
     async fn session_new_keeps_the_editor_cwd_and_saves_nothing_yet() {
         let (tmp, store) = temp_store();
@@ -976,7 +1352,11 @@ mod tests {
             uuid::Uuid::parse_str(&id).is_ok(),
             "a plain UUID, like a REPL session: {id}"
         );
-        assert_eq!(lock_sessions(&server.sessions)[&id].workspace, cwd);
+        {
+            let sessions = lock_sessions(&server.sessions);
+            assert_eq!(sessions[&id].workspace, cwd);
+            assert!(sessions[&id].engine.is_none(), "engines are lazy");
+        }
 
         let listed = response(
             server
@@ -1000,7 +1380,16 @@ mod tests {
         open_session(&mut server, "acp-1", &cwd);
 
         let first_turn = [text("user", "hello there"), text("assistant", "hi")];
-        persist_turn(&store, "acp-1", &cwd, "test-model", &first_turn, 42).unwrap();
+        persist_turn(
+            &store,
+            "acp-1",
+            &cwd,
+            "test-model",
+            &first_turn,
+            42,
+            Some(&SystemPrompt::Text("acp prompt".to_string())),
+        )
+        .unwrap();
 
         let listed = response(
             server
@@ -1045,12 +1434,12 @@ mod tests {
             text("user", "again"),
             text("assistant", "yo"),
         ];
-        persist_turn(&store, "acp-1", &cwd, "test-model", &second_turn, 8).unwrap();
+        persist_turn(&store, "acp-1", &cwd, "test-model", &second_turn, 8, None).unwrap();
         let saved = store.load_session("acp-1").unwrap();
         assert_eq!(saved.metadata.total_tokens, 50);
         assert_eq!(saved.metadata.message_count, 4);
         assert_eq!(saved.metadata.mode.as_deref(), Some("acp"));
-        assert_eq!(saved.system_prompt.as_deref(), Some(ACP_SYSTEM_PROMPT));
+        assert_eq!(saved.system_prompt.as_deref(), Some("acp prompt"));
     }
 
     #[test]
@@ -1074,7 +1463,7 @@ mod tests {
             text("user", "from acp"),
             text("assistant", "ok"),
         ];
-        persist_turn(&store, "repl-1", &cwd, "test-model", &next_turn, 5).unwrap();
+        persist_turn(&store, "repl-1", &cwd, "test-model", &next_turn, 5, None).unwrap();
 
         let after = store.load_session("repl-1").unwrap();
         assert_eq!(after.system_prompt.as_deref(), Some("repl prompt"));
@@ -1146,9 +1535,13 @@ mod tests {
             assert_eq!(
                 session.history.len(),
                 5,
-                "tool call and result stay in the history the next prompt sends"
+                "tool turns stay in the history the engine syncs in"
             );
             assert_eq!(session.workspace, cwd);
+            assert!(
+                session.engine.is_none(),
+                "the engine is created at the next prompt"
+            );
         }
 
         // The protocol's v1 name answers the same way.
@@ -1184,6 +1577,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_second_prompt_while_one_is_in_flight_is_refused() {
+        let (tmp, store) = temp_store();
+        let mut server = server_over(store);
+        let cwd = tmp.path().join("proj");
+        open_session(&mut server, "acp-busy", &cwd);
+
+        // Reserve the prompt slot directly, as spawn_prompt does; no engine
+        // is needed to test the one-prompt-per-session rule.
+        let (tx, _rx) = oneshot::channel();
+        lock_sessions(&server.sessions)
+            .get_mut("acp-busy")
+            .expect("session opened")
+            .pending_prompt = Some(tx);
+
+        let err = server
+            .handle_request(
+                "session/prompt",
+                json!({ "sessionId": "acp-busy", "prompt": "again" }),
+                Some(json!(1)),
+                sink(),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("in flight"), "{}", err.message);
+    }
+
+    #[tokio::test]
     async fn close_forgets_the_live_session_and_keeps_the_record() {
         let (tmp, store) = temp_store();
         let mut server = server_over(store.clone());
@@ -1207,6 +1629,7 @@ mod tests {
             "test-model",
             &[text("user", "hi"), text("assistant", "yo")],
             3,
+            None,
         )
         .unwrap();
 
@@ -1236,8 +1659,7 @@ mod tests {
         write_session_update(
             &mut out,
             "sess_1",
-            "agent_message_chunk",
-            "hello\nworld".to_string(),
+            chunk_update("agent_message_chunk", "hello\nworld".to_string()),
         )
         .await
         .expect("write update");

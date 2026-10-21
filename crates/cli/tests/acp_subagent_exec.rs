@@ -13,10 +13,9 @@
 //! Fake model, same posture as `headless_exec.rs` (fixtures are
 //! per-file by local idiom): wiremock stands up a loopback
 //! OpenAI-compatible endpoint and both processes are pointed at it
-//! through explicit env opt-in. One shape difference: the ACP server
-//! issues its LLM call with `stream: false`, so the child's mock
-//! answers a plain `chat.completion` JSON body while the outer engine's
-//! turns keep the SSE streaming fixtures.
+//! through explicit env opt-in. Both the outer engine and the `--acp`
+//! child run real engine turns (the child's session is a per-session
+//! engine since TODO-51), so both sides consume the SSE fixtures.
 
 use std::io::Read;
 use std::process::{Command, Stdio};
@@ -99,24 +98,6 @@ fn tool_call_answer(call_id: &str, name: &str, arguments: &str) -> ResponseTempl
         chunk(serde_json::json!({}), Some("tool_calls")),
         usage_frame(),
     ])
-}
-
-/// One NON-streaming Chat Completions body — the shape the `--acp`
-/// server requests (`stream: false` in `run_prompt`) and parses; an SSE
-/// body here would fail the child's reply extraction and fail the run.
-fn json_answer(text: &str) -> ResponseTemplate {
-    ResponseTemplate::new(200).set_body_json(serde_json::json!({
-        "id": "chatcmpl-acp-e2e",
-        "object": "chat.completion",
-        "created": 1_700_000_000,
-        "model": "e2e-test-model",
-        "choices": [{
-            "index": 0,
-            "message": {"role": "assistant", "content": text},
-            "finish_reason": "stop"
-        }],
-        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
-    }))
 }
 
 // ────────────────────────────── process plumbing ──────────────────────────────
@@ -279,11 +260,11 @@ async fn acp_external_provider_round_trips_with_real_acp_server_child() {
         .up_to_n_times(1)
         .mount(&e2e.server)
         .await;
-    // ACP child: non-streaming JSON (the --acp server asks stream:false).
+    // ACP child: a real engine turn (streaming), answered with plain text.
     Mock::given(method("POST"))
         .and(path(CHAT_COMPLETIONS_PATH))
         .and(body_string_contains("assignment-instructions"))
-        .respond_with(json_answer("acp child done"))
+        .respond_with(text_answer("acp child done"))
         .up_to_n_times(1)
         .mount(&e2e.server)
         .await;

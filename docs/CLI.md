@@ -302,8 +302,10 @@ each completed editor turn to `~/.codesmith/sessions/` under a plain UUID,
 passes a `cwd`), and `session/resume` — also answering to the protocol's
 `session/load` — reloads one and replays its turns, so a conversation moves
 between the editor and `/resume` freely. `session/close` forgets the live
-session; the record stays. ACP prompts run without tools, so there is no
-permission prompting on that surface yet.
+session; the record stays. ACP prompts run through the engine with the full
+tool catalog — the model reads the project freely, and the editor sees each
+call as a `tool_call` update — while approval-gated calls (edits, commands)
+are refused until the permission channel lands.
 
 More detail: [PRESETS.md — Branching and Rollback](PRESETS.md#branching-and-rollback).
 

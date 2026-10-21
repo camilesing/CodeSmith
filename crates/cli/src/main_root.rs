@@ -5910,12 +5910,9 @@ pub(crate) async fn run_exec_agent(
     prompt_cache_breaker: Option<String>,
 ) -> Result<()> {
     use crate::app_state::AppMode;
-    use crate::compaction::CompactionConfig;
-    use crate::core::engine::{EngineConfig, spawn_engine};
+    use crate::core::engine::{HeadlessEngineOptions, headless_engine_config, spawn_engine};
     use crate::core::events::Event;
     use crate::core::ops::Op;
-    use crate::tools::plan::new_shared_plan_state;
-    use crate::tools::todo::new_shared_todo_list;
 
     let route = resolve_cli_auto_route(config, model, prompt).await;
     let auto_model = route.auto_model;
@@ -5924,118 +5921,24 @@ pub(crate) async fn run_exec_agent(
         .reasoning_effort
         .map(|effort| effort.as_setting().to_string());
 
-    // Provider-neutral automatic compaction is enabled by default so smaller
-    // context providers compact before hard context-limit rejection. Users can
-    // still disable it through settings in the REPL path.
-    let compaction = CompactionConfig {
-        enabled: true,
-        model: effective_model.clone(),
-        token_threshold: config.compaction_threshold(&effective_model),
-        ..Default::default()
-    };
-
-    let network_policy = Some(config.network_policy_decider());
-
-    let lsp_config = config
-        .lsp
-        .clone()
-        .map(crate::config::LspConfigToml::into_runtime);
     let settings = crate::settings::Settings::load().unwrap_or_default();
 
-    let engine_config = EngineConfig {
-        model: effective_model.clone(),
-        workspace: workspace.clone(),
-        allow_shell: auto_approve || config.allow_shell(),
-        trust_mode,
-        notes_path: config.notes_path(),
-        mcp_config_path: config.mcp_config_path(),
-        skills_dir: config.skills_dir(),
-        instructions: config
-            .instructions_paths()
-            .into_iter()
-            .map(Into::into)
-            .collect(),
-        override_system_prompt: system_prompt_override,
-        custom_system_prompt: None,
-        coordinator_system_prompt: None,
-        agent_system_prompt: None,
-        append_system_prompts,
-        cache_breaker: prompt_cache_breaker,
-        project_context_pack_enabled: config.project_context_pack_enabled(),
-        translation_enabled: false,
-        show_thinking: settings.show_thinking,
-        is_simple: settings.is_simple,
-        personality: config.personality(),
-        // Headless exec takes the full engine budget (1024) by design, not
-        // drift — unlike the tighter automation-thread budget
-        // (AUTOMATION_DEFAULT_MAX_STEPS); see DEFAULT_ENGINE_MAX_STEPS.
-        max_steps: codesmith_agent_runtime::engine_config::DEFAULT_ENGINE_MAX_STEPS,
-        max_subagents,
-        features: config.features(),
-        parse_gate: config.edit_config().parse_gate_enabled(),
-        compaction,
-        cycle: crate::cycle_manager::CycleConfig::default(),
-        capacity: crate::core::capacity::capacity_controller_config_from_app(config),
-        todos: new_shared_todo_list(),
-        plan_state: new_shared_plan_state(),
-        plan_mode_state: crate::tools::plan_mode::new_shared_plan_mode_state(),
-        task_v2_manager: None,
-        goal_state: crate::tools::goal::new_shared_goal_state(),
-        worktree_state: crate::tools::worktree::new_shared_worktree_session_state(),
-        // A headless child inherits its parent's remaining spawn budget via
-        // the environment (see `tools::subagent::headless`); a top-level run
-        // gets the configured `[runtime] max_spawn_depth` default.
-        max_spawn_depth: crate::tools::subagent::headless::inherited_spawn_budget()?
-            .unwrap_or(config.max_spawn_depth()),
-        network_policy,
-        snapshots_enabled: config.snapshots_config().is_enabled(),
-        snapshots_max_workspace_bytes: config
-            .snapshots_config()
-            .max_workspace_gb
-            .saturating_mul(1024 * 1024 * 1024),
-        lsp_config,
-        subagent_model_overrides: config.subagent_model_overrides(),
-        auto_route: config.auto_route_context(),
-        subagent_api_timeout: std::time::Duration::from_secs(config.subagent_api_timeout_secs()),
-        stream_idle_timeout: std::time::Duration::from_secs(config.stream_idle_timeout_secs()),
-        stream_idle_retry_increment: std::time::Duration::from_secs(
-            config.stream_idle_retry_increment_secs(),
-        ),
-        result_claim_verifier: config.result_claim_verifier(),
-        subagent_inherit_full_registry: config.subagent_inherit_full_registry(),
-        subagent_external_provider: crate::tools::subagent::headless::provider_from_config(config)?,
-        prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
-        sandbox_runtime: config.sandbox_runtime_config(),
-        memory_enabled: config.memory_enabled(),
-        memory_path: config.memory_path(),
-        kod_enabled: config.kod_enabled(),
-        memory_dir: config.memory_dir(),
-        memory_excludes: config.memory_excludes(),
-        vision_config: config.vision_model_config(),
-        strict_tool_mode: config.strict_tool_mode.unwrap_or(false),
-        goal_objective: None,
-        allowed_tools: None,
-        blocked_tools: Vec::new(),
-        locale_tag: crate::localization::resolve_locale(&settings.locale)
-            .tag()
-            .to_string(),
-        workshop: config.workshop.clone(),
-        web_service: Some(std::sync::Arc::new(
-            codesmith_tool_impls::web_service::HttpWebService::new(
-                config.search_provider(),
-                config.search.as_ref().and_then(|s| s.api_key.clone()),
-            ),
-        )),
-        index_enabled: config.index_tools_enabled(),
-        tools_always_load: config.tools_always_load(),
-        disabled_tools: crate::capabilities::effective_disabled(config.tools.as_ref())
-            .map_err(anyhow::Error::msg)?,
-        tools: config.tools.clone(),
-        team_context: None,
-        file_freshness_tracker:
-            codesmith_agent_runtime::tools::freshness::FileFreshnessTracker::new(),
-        telemetry_sink: None,
-    };
+    let engine_config = headless_engine_config(
+        config,
+        &settings,
+        HeadlessEngineOptions {
+            model: effective_model.clone(),
+            workspace: workspace.clone(),
+            auto_approve,
+            trust_mode,
+            max_subagents,
+            override_system_prompt: system_prompt_override,
+            append_system_prompts,
+            cache_breaker: prompt_cache_breaker,
+            allowed_tools: None,
+            team_context: None,
+        },
+    )?;
 
     let engine_handle = spawn_engine(
         engine_config,
@@ -6442,18 +6345,15 @@ pub(crate) async fn run_exec_agent(
 /// Phase 6's execution-core extraction.
 pub(crate) async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()> {
     use crate::app_state::AppMode;
-    use crate::compaction::CompactionConfig;
-    use crate::core::engine::{EngineConfig, spawn_engine};
+    use crate::core::engine::{HeadlessEngineOptions, headless_engine_config, spawn_engine};
     use crate::core::events::Event;
     use crate::core::ops::Op;
-    use crate::tools::plan::new_shared_plan_state;
     use crate::tools::task_v2::new_shared_task_v2_manager;
     use crate::tools::team::{
         TeamContext, TeammateMessage, find_member_by_name, new_shared_team_context,
         read_team_config, set_member_inactive, team_config_path, team_lead_name, write_team_config,
         write_to_mailbox,
     };
-    use crate::tools::todo::new_shared_todo_list;
 
     // 1. Load team + member registration from disk.
     let team_file = read_team_config(&args.team)
@@ -6530,125 +6430,38 @@ pub(crate) async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -
         });
     }
 
-    // 5. Build the headless engine config (mirrors `run_exec_agent`, with the
-    //    team context + sender wired so this process participates as the
-    //    teammate rather than as an anonymous exec caller).
+    // 5. Build the headless engine config (shared with `run_exec_agent` via
+    //    `headless_engine_config`; the team context + sender wired here so
+    //    this process participates as the teammate rather than as an
+    //    anonymous exec caller).
     let route = resolve_cli_auto_route(config, &model, &prompt).await;
     let effective_model = route.model;
     let effective_reasoning_effort = route
         .reasoning_effort
         .map(|effort| effort.as_setting().to_string());
 
-    let compaction = CompactionConfig {
-        enabled: true,
-        model: effective_model.clone(),
-        token_threshold: config.compaction_threshold(&effective_model),
-        ..Default::default()
-    };
-    let network_policy = Some(config.network_policy_decider());
-    let lsp_config = config
-        .lsp
-        .clone()
-        .map(crate::config::LspConfigToml::into_runtime);
     let settings = crate::settings::Settings::load().unwrap_or_default();
 
     let mut runtime_services = crate::tools::spec::RuntimeToolServices::default();
     runtime_services.team_sender = Some(args.name.clone());
     runtime_services.task_v2_manager = Some(task_v2_manager);
 
-    let engine_config = EngineConfig {
-        model: effective_model.clone(),
-        workspace: cwd.clone(),
-        allow_shell: auto_approve || config.allow_shell(),
-        trust_mode: auto_approve,
-        notes_path: config.notes_path(),
-        mcp_config_path: config.mcp_config_path(),
-        skills_dir: config.skills_dir(),
-        instructions: config
-            .instructions_paths()
-            .into_iter()
-            .map(Into::into)
-            .collect(),
-        override_system_prompt: None,
-        custom_system_prompt: None,
-        coordinator_system_prompt: None,
-        agent_system_prompt: None,
-        append_system_prompts: vec![],
-        cache_breaker: None,
-        project_context_pack_enabled: config.project_context_pack_enabled(),
-        translation_enabled: false,
-        show_thinking: settings.show_thinking,
-        is_simple: settings.is_simple,
-        personality: config.personality(),
-        // Headless team-teammate runs take the full engine budget (1024)
-        // by design, not drift — see DEFAULT_ENGINE_MAX_STEPS.
-        max_steps: codesmith_agent_runtime::engine_config::DEFAULT_ENGINE_MAX_STEPS,
-        max_subagents: config.max_subagents(),
-        features: config.features(),
-        parse_gate: config.edit_config().parse_gate_enabled(),
-        compaction,
-        cycle: crate::cycle_manager::CycleConfig::default(),
-        capacity: crate::core::capacity::capacity_controller_config_from_app(config),
-        todos: new_shared_todo_list(),
-        plan_state: new_shared_plan_state(),
-        plan_mode_state: crate::tools::plan_mode::new_shared_plan_mode_state(),
-        task_v2_manager: None,
-        goal_state: crate::tools::goal::new_shared_goal_state(),
-        worktree_state: crate::tools::worktree::new_shared_worktree_session_state(),
-        // A headless child inherits its parent's remaining spawn budget via
-        // the environment (see `tools::subagent::headless`); a top-level run
-        // gets the configured `[runtime] max_spawn_depth` default.
-        max_spawn_depth: crate::tools::subagent::headless::inherited_spawn_budget()?
-            .unwrap_or(config.max_spawn_depth()),
-        network_policy,
-        snapshots_enabled: config.snapshots_config().is_enabled(),
-        snapshots_max_workspace_bytes: config
-            .snapshots_config()
-            .max_workspace_gb
-            .saturating_mul(1024 * 1024 * 1024),
-        lsp_config,
-        subagent_model_overrides: config.subagent_model_overrides(),
-        auto_route: config.auto_route_context(),
-        subagent_api_timeout: std::time::Duration::from_secs(config.subagent_api_timeout_secs()),
-        stream_idle_timeout: std::time::Duration::from_secs(config.stream_idle_timeout_secs()),
-        stream_idle_retry_increment: std::time::Duration::from_secs(
-            config.stream_idle_retry_increment_secs(),
-        ),
-        result_claim_verifier: config.result_claim_verifier(),
-        subagent_inherit_full_registry: config.subagent_inherit_full_registry(),
-        subagent_external_provider: crate::tools::subagent::headless::provider_from_config(config)?,
-        prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
-        sandbox_runtime: config.sandbox_runtime_config(),
-        memory_enabled: config.memory_enabled(),
-        memory_path: config.memory_path(),
-        kod_enabled: config.kod_enabled(),
-        memory_dir: config.memory_dir(),
-        memory_excludes: config.memory_excludes(),
-        vision_config: config.vision_model_config(),
-        strict_tool_mode: config.strict_tool_mode.unwrap_or(false),
-        goal_objective: None,
-        allowed_tools: allowed_tools.clone(),
-        blocked_tools: Vec::new(),
-        locale_tag: crate::localization::resolve_locale(&settings.locale)
-            .tag()
-            .to_string(),
-        workshop: config.workshop.clone(),
-        web_service: Some(std::sync::Arc::new(
-            codesmith_tool_impls::web_service::HttpWebService::new(
-                config.search_provider(),
-                config.search.as_ref().and_then(|s| s.api_key.clone()),
-            ),
-        )),
-        index_enabled: config.index_tools_enabled(),
-        tools_always_load: config.tools_always_load(),
-        disabled_tools: crate::capabilities::effective_disabled(config.tools.as_ref())
-            .map_err(anyhow::Error::msg)?,
-        tools: config.tools.clone(),
-        file_freshness_tracker:
-            codesmith_agent_runtime::tools::freshness::FileFreshnessTracker::new(),
-        team_context: Some(team_context),
-        telemetry_sink: None,
-    };
+    let engine_config = headless_engine_config(
+        config,
+        &settings,
+        HeadlessEngineOptions {
+            model: effective_model.clone(),
+            workspace: cwd.clone(),
+            auto_approve,
+            trust_mode: auto_approve,
+            max_subagents: config.max_subagents(),
+            override_system_prompt: None,
+            append_system_prompts: vec![],
+            cache_breaker: None,
+            allowed_tools: allowed_tools.clone(),
+            team_context: Some(team_context),
+        },
+    )?;
 
     let engine_host = crate::core::engine::EngineHost {
         runtime_services,
