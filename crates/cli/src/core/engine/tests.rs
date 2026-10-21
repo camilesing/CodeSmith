@@ -879,9 +879,7 @@ fn destructive_call_is_never_concurrent() {
 
 #[test]
 fn parallel_batch_is_capped_and_keeps_order() {
-    let plans: Vec<ToolExecutionPlan> = (0..MAX_PARALLEL_BATCH + 2)
-        .map(|i| make_spawner_at(i))
-        .collect();
+    let plans: Vec<ToolExecutionPlan> = (0..MAX_PARALLEL_BATCH + 2).map(make_spawner_at).collect();
     let batches = plan_tool_execution_batches(plans);
     assert_eq!(batches.len(), 2);
     match &batches[0] {

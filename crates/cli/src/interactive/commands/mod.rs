@@ -1353,12 +1353,20 @@ fn cmd_provider(state: &mut ReplState, arg: &str) {
 /// configured is the model each role uses and where its memory lives —
 /// Claude Code's `/agents` covers definitions the model writes at spawn time.
 fn cmd_agents(state: &ReplState) {
-    if state.agent_progress.is_empty() {
+    // The engine's list is the source for *which* agents are running (the
+    // same source the 🤖 segment counts); `agent_progress` only decorates
+    // them with the child's latest status line, so a child whose completion
+    // event never arrived still cannot show up here as running.
+    let running: Vec<&crate::tools::subagent::SubAgentResult> = state.running_agents().collect();
+    if running.is_empty() {
         println!("no sub-agents running");
     } else {
         println!("{}", "running sub-agents:".bold());
-        for (id, status) in &state.agent_progress {
-            println!("  {id}: {status}");
+        for agent in running {
+            match state.agent_progress.get(&agent.agent_id) {
+                Some(progress) => println!("  {}: {progress}", agent.name),
+                None => println!("  {}: {:?}", agent.name, agent.status),
+            }
         }
     }
     let overrides = state.config.subagent_model_overrides();

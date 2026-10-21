@@ -820,6 +820,11 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                 state
                     .agent_progress
                     .insert(id.clone(), "running".to_string());
+                // The 🤖 count comes from the engine's list, so re-read it as
+                // soon as a child exists: a foreground `agent_run` runs its
+                // child *inside* the tool call, and waiting for that call to
+                // return would leave the count at 0 for the whole child.
+                let _ = engine.send(Op::ListSubAgents).await;
                 view.clear_live();
                 println!(
                     "{} spawned {id}: {}",
@@ -833,6 +838,11 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
             }
             Event::AgentComplete { id, result } => {
                 state.agent_progress.remove(&id);
+                // A child that finishes on its own has no tool call to hang a
+                // refresh on, so the 🤖 count would keep it until the next
+                // spawn. Re-read the engine's list here: the number comes from
+                // the record, and this is the event that says the record moved.
+                let _ = engine.send(Op::ListSubAgents).await;
                 view.clear_live();
                 println!(
                     "{} agent {id} done: {}",
