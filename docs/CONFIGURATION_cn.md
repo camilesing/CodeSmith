@@ -868,7 +868,9 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   变量，`timeout_secs`（整数，可选，默认 1800）是单次运行的超时。
   子代理在任务工作区内运行；角色指令被折叠进 prompt（ACP 基线没有
   system-prompt 字段），运行中进度不会回流，子代理自身的模型与步数
-  不可观测（按父代理模型 / 0 步上报）。`[subagents.models]` 接受小写的角色或类型键，如 `worker`、
+  不可观测（按父代理模型 / 0 步上报）。当子代理为被门控的工具调用请求
+  许可（`session/request_permission`）时，本 provider 按父进程姿态自动
+  作答：`--auto` 选择允许类选项，其余选择拒绝——这一侧没有可问的人。`[subagents.models]` 接受小写的角色或类型键，如 `worker`、
   `explorer`、`general`、`explore`、`plan` 和 `review`。值必须归一化
   为受支持的 DeepSeek 模型 id，代理才能被生成。
 - `runtime.*`（可选）：引擎递归限制。`runtime.max_spawn_depth`（整数，
