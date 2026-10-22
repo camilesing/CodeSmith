@@ -17,10 +17,9 @@ use crate::tools::spec::{ToolError, ToolResult, optional_u64, required_str};
 
 use crate::dependencies::ExternalTool;
 
-// The default active native tool set now lives in
-// `codesmith_agent_runtime::tools::tool_catalog` so the prompt builder
-// (in agent-runtime) can reference it without a circular dependency.
-use crate::tools::tool_catalog::DEFAULT_ACTIVE_NATIVE_TOOLS;
+// The default active native tool set lives in
+// `crate::tools::tool_catalog` (same crate, sibling module) — it now feeds the
+// prompt's core-tool taxonomy only; deferral is declared per tool.
 
 pub const MULTI_TOOL_PARALLEL_NAME: &str = "multi_tool_use.parallel";
 pub const REQUEST_USER_INPUT_NAME: &str = "request_user_input";
@@ -34,56 +33,48 @@ const TOOL_SEARCH_BM25_TYPE: &str = "tool_search_tool_bm25_20251119";
 const TOOL_SEARCH_DEFAULT_MAX_RESULTS: usize = 20;
 const TOOL_SEARCH_MAX_RESULTS_LIMIT: usize = 100;
 
+/// Canonical name of the client-side tool-search control tool.
+pub const TOOL_SEARCH_NAME: &str = "tool_search";
+
 pub fn is_tool_search_tool(name: &str) -> bool {
-    matches!(name, TOOL_SEARCH_REGEX_NAME | TOOL_SEARCH_BM25_NAME)
-}
-
-// `DEFAULT_ACTIVE_NATIVE_TOOLS` relocated to
-// `codesmith_agent_runtime::tools::tool_catalog` (re-exported above).
-
-pub fn should_default_defer_tool(
-    name: &str,
-    _mode: AppMode,
-    always_load: &HashSet<String>,
-) -> bool {
-    if always_load.contains(name) {
-        return false;
-    }
-
-    if is_tool_search_tool(name) {
-        return false;
-    }
-
-    !DEFAULT_ACTIVE_NATIVE_TOOLS
-        .iter()
-        .any(|core_tool| core_tool == &name)
-}
-
-pub fn apply_native_tool_deferral(
-    catalog: &mut [Tool],
-    mode: AppMode,
-    always_load: &HashSet<String>,
-) {
-    for tool in catalog {
-        tool.defer_loading = Some(should_default_defer_tool(&tool.name, mode, always_load));
-    }
-}
-
-fn should_keep_mcp_tool_loaded(name: &str) -> bool {
     matches!(
         name,
-        "list_mcp_resources"
-            | "list_mcp_resource_templates"
-            | "mcp_read_resource"
-            | "read_mcp_resource"
-            | "mcp_get_prompt"
+        TOOL_SEARCH_NAME | TOOL_SEARCH_REGEX_NAME | TOOL_SEARCH_BM25_NAME
     )
 }
 
-pub fn apply_mcp_tool_deferral(catalog: &mut [Tool], mode: AppMode) {
+// `DEFAULT_ACTIVE_NATIVE_TOOLS` relocated to
+// `codesmith_agent_runtime::tools::tool_catalog` (re-exported above) — it now
+// feeds the prompt's core-tool taxonomy only; deferral is declared per tool.
+
+/// Apply the overrides that sit *above* a tool's own deferral declaration.
+///
+/// The policy is the declaration (`ToolSpec::defer_loading`, propagated into
+/// the catalog by the registry): a tool is withheld from the request only
+/// because its own definition says so — never because it is missing from a
+/// central list. The direction matters: an undeclared tool is resident, so a
+/// new tool is visible by default and a stale list cannot silently hide it.
+/// This function applies only `[tools] always_load`, which wins over a
+/// declaration.
+pub fn apply_native_deferral_overrides(catalog: &mut [Tool], always_load: &HashSet<String>) {
     for tool in catalog {
-        tool.defer_loading =
-            Some(mode != AppMode::Yolo && !should_keep_mcp_tool_loaded(&tool.name));
+        if always_load.contains(&tool.name) {
+            tool.defer_loading = Some(false);
+        }
+    }
+}
+
+/// YOLO turns send the whole MCP surface resident: the mode exists to remove
+/// friction, and an on-demand search step is friction. Outside YOLO the MCP
+/// adapter's own declaration stands — its discovery helpers stay resident, the
+/// rest of a server's tools are discoverable on demand (the adapter in
+/// `crates/cli` owns that list, beside the tools it describes).
+pub fn apply_mcp_tool_deferral(catalog: &mut [Tool], mode: AppMode) {
+    if mode != AppMode::Yolo {
+        return;
+    }
+    for tool in catalog {
+        tool.defer_loading = Some(false);
     }
 }
 
@@ -93,7 +84,7 @@ pub fn build_model_tool_catalog(
     mode: AppMode,
     always_load: &HashSet<String>,
 ) -> Vec<Tool> {
-    apply_native_tool_deferral(&mut native_tools, mode, always_load);
+    apply_native_deferral_overrides(&mut native_tools, always_load);
     apply_mcp_tool_deferral(&mut mcp_tools, mode);
     // Sort each partition by name for prefix-cache stability (#263). The
     // upstream `to_api_tools()` already sorts the registry's HashMap output;
@@ -155,7 +146,7 @@ pub fn apply_tool_selection(
 pub fn ensure_advanced_tooling(
     catalog: &mut Vec<Tool>,
     mode: AppMode,
-    always_load: &HashSet<String>,
+    _always_load: &HashSet<String>,
 ) {
     // code_execution depends on a locally-installed Python interpreter
     // (python3 / python / py -3). Before v0.8.31, the tool was always
@@ -182,11 +173,9 @@ pub fn ensure_advanced_tooling(
             }),
             output_schema: None,
             allowed_callers: Some(vec!["direct".to_string()]),
-            defer_loading: Some(should_default_defer_tool(
-                CODE_EXECUTION_TOOL_NAME,
-                mode,
-                always_load,
-            )),
+            // Synthetic catalog entry (no `ToolSpec` to declare deferral):
+            // resident, like every undeclared tool.
+            defer_loading: None,
             input_examples: None,
             strict: None,
             cache_control: None,
@@ -204,7 +193,8 @@ pub fn ensure_advanced_tooling(
         && crate::dependencies::resolve_node().is_some()
     {
         let mut tool = crate::tools::js_execution::js_execution_tool_definition();
-        tool.defer_loading = Some(should_default_defer_tool(&tool.name, mode, always_load));
+        // Synthetic definition (no `ToolSpec` to declare deferral): resident.
+        tool.defer_loading = None;
         catalog.push(tool);
     }
 

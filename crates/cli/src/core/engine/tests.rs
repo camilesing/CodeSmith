@@ -661,6 +661,15 @@ fn api_tool(name: &str) -> Tool {
     }
 }
 
+/// The mark a registry produces for a spec: `Some(spec.defer_loading())` —
+/// `Some(false)` for an undeclared tool, never `None`.
+fn api_tool_declared(name: &str, deferred: bool) -> Tool {
+    Tool {
+        defer_loading: Some(deferred),
+        ..api_tool(name)
+    }
+}
+
 #[test]
 fn engine_handle_cancel_tracks_latest_turn_token() {
     let _env = HermeticEnv::new();
@@ -1066,129 +1075,177 @@ fn tool_exec_outcome_tracks_duration() {
     assert!(outcome.started_at.elapsed().as_nanos() > 0);
 }
 
+/// Deferral is declared per tool (`ToolSpec::defer_loading`), with exactly two
+/// overrides above the declaration: `[tools] always_load` (wins) and the YOLO
+/// MCP rule (that mode sends a server's whole surface resident).
 #[test]
-fn core_native_tools_stay_loaded_in_yolo_mode() {
-    let always_load = HashSet::new();
-    assert!(!should_default_defer_tool(
-        "exec_shell",
-        AppMode::Yolo,
-        &always_load
-    ));
-    assert!(should_default_defer_tool(
-        "git_show",
-        AppMode::Yolo,
-        &always_load
-    ));
-}
-
-#[test]
-fn non_yolo_mode_retains_default_defer_policy() {
-    let always_load = HashSet::new();
-    assert!(!should_default_defer_tool(
-        "exec_shell",
-        AppMode::Agent,
-        &always_load
-    ));
-    assert!(!should_default_defer_tool(
-        "edit_file",
-        AppMode::Agent,
-        &always_load
-    ));
-    assert!(!should_default_defer_tool(
-        "apply_patch",
-        AppMode::Agent,
-        &always_load
-    ));
-    assert!(!should_default_defer_tool(
-        "fetch_url",
-        AppMode::Agent,
-        &always_load
-    ));
-    assert!(!should_default_defer_tool(
-        "git_diff",
-        AppMode::Agent,
-        &always_load
-    ));
-    assert!(!should_default_defer_tool(
-        "git_status",
-        AppMode::Agent,
-        &always_load
-    ));
-    assert!(!should_default_defer_tool(
-        "run_tests",
-        AppMode::Agent,
-        &always_load
-    ));
-    assert!(!should_default_defer_tool(
-        "agent_open",
-        AppMode::Agent,
-        &always_load
-    ));
-    assert!(!should_default_defer_tool(
-        "read_file",
-        AppMode::Agent,
-        &always_load
-    ));
-    assert!(!should_default_defer_tool(
-        "web_search",
-        AppMode::Agent,
-        &always_load
-    ));
-    assert!(!should_default_defer_tool(
-        "write_file",
-        AppMode::Agent,
-        &always_load
-    ));
-    assert!(!should_default_defer_tool(
-        "task_shell_start",
-        AppMode::Agent,
-        &always_load
-    ));
-    assert!(!should_default_defer_tool(
-        "task_shell_wait",
-        AppMode::Agent,
-        &always_load
-    ));
-    assert!(should_default_defer_tool(
-        "git_show",
-        AppMode::Agent,
-        &always_load
-    ));
-}
-
-#[test]
-fn model_tool_catalog_applies_native_and_mcp_deferral() {
-    let always_load = HashSet::new();
+fn deferral_is_declared_per_tool_with_two_overrides() {
     let catalog = build_model_tool_catalog(
         vec![
-            api_tool("read_file"),
-            api_tool("write_file"),
-            api_tool("exec_shell"),
-            api_tool("edit_file"),
-            api_tool("project_map"),
+            api_tool_declared("niche_tool", true),
+            api_tool_declared("other_niche_tool", true),
+            api_tool_declared("read_file", false),
         ],
-        vec![
-            api_tool("list_mcp_resources"),
-            api_tool("mcp__server__write"),
-        ],
+        vec![api_tool_declared("mcp__server__act", true)],
         AppMode::Agent,
-        &always_load,
+        &HashSet::from(["niche_tool".to_string()]),
     );
-
-    let defer_loading = |name: &str| {
+    let defer = |name: &str| {
         catalog
             .iter()
             .find(|tool| tool.name == name)
             .and_then(|tool| tool.defer_loading)
     };
+    assert_eq!(
+        defer("niche_tool"),
+        Some(false),
+        "always_load wins over a declaration"
+    );
+    assert_eq!(
+        defer("other_niche_tool"),
+        Some(true),
+        "the declaration stands"
+    );
+    assert_eq!(
+        defer("read_file"),
+        Some(false),
+        "an undeclared tool is resident"
+    );
+    assert_eq!(
+        defer("mcp__server__act"),
+        Some(true),
+        "MCP tail keeps its mark"
+    );
 
-    assert_eq!(defer_loading("read_file"), Some(false));
-    assert_eq!(defer_loading("write_file"), Some(false));
-    assert_eq!(defer_loading("exec_shell"), Some(false));
-    assert_eq!(defer_loading("edit_file"), Some(false));
-    assert_eq!(defer_loading("project_map"), Some(true));
-    assert_eq!(defer_loading("list_mcp_resources"), Some(false));
-    assert_eq!(defer_loading("mcp__server__write"), Some(true));
+    let yolo = build_model_tool_catalog(
+        vec![],
+        vec![api_tool_declared("mcp__server__act", true)],
+        AppMode::Yolo,
+        &HashSet::new(),
+    );
+    assert_eq!(
+        yolo[0].defer_loading,
+        Some(false),
+        "YOLO sends the MCP surface resident"
+    );
+}
+
+/// The review artifact for *which* tools opt into deferral: exact equality
+/// against the catalog the engine itself assembled for a real turn (the
+/// `TurnComplete` payload, marks intact). Anything a contributor declares shows
+/// up here, so the deferred set is a reviewed decision and never an accident of
+/// a list going stale — and nothing outside it can be withheld.
+#[tokio::test]
+async fn deferred_tools_are_exactly_the_reviewed_niche_set() {
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    let mock = MockLlmClient::new(vec![canned::simple_text_turn("ok")]);
+    let (handle, _mock) = spawn_engine_with_mock(test_engine_config(tmp.path()), mock);
+    handle.send(make_send_op("hello")).await.expect("send op");
+    let events = collect_until_turn_complete(&handle).await;
+    let catalog = events
+        .iter()
+        .find_map(|event| match event {
+            Event::TurnComplete {
+                tool_catalog: Some(catalog),
+                ..
+            } => Some(catalog.clone()),
+            _ => None,
+        })
+        .expect("TurnComplete carries the turn's tool catalog");
+
+    let mut deferred: Vec<String> = catalog
+        .iter()
+        .filter(|tool| tool.defer_loading == Some(true))
+        .map(|tool| tool.name.clone())
+        .collect();
+    deferred.sort();
+    let mut expected: Vec<String> = [
+        // Automation surface: configured rarely, per session.
+        "automation_create",
+        "automation_delete",
+        "automation_list",
+        "automation_pause",
+        "automation_read",
+        "automation_resume",
+        "automation_run",
+        "automation_update",
+        // GitHub bespoke shortcuts.
+        "github_close_issue",
+        "github_close_pr",
+        "github_comment",
+        "github_issue_context",
+        "github_pr_context",
+        // Slop-ledger bookkeeping.
+        "slop_ledger_append",
+        "slop_ledger_export",
+        "slop_ledger_query",
+        "slop_ledger_update",
+        // PR-attempt bookkeeping.
+        "pr_attempt_list",
+        "pr_attempt_preflight",
+        "pr_attempt_read",
+        "pr_attempt_record",
+        // Worktrees: opt-in isolation per task.
+        "enter_worktree",
+        "exit_worktree",
+        // One-off helpers.
+        "finance",
+        "fim_edit",
+        "image_ocr",
+        "revert_turn",
+        "validate_data",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    expected.sort();
+    assert_eq!(
+        deferred, expected,
+        "the deferred set is a reviewed list: update it here when a tool opts in or out"
+    );
+
+    // Resident guards — the surfaces a stale eager list would have hidden under
+    // the old inverse policy, plus the ones a prompt names by hand: plan mode's
+    // end-turn contract and the sub-agent session chain. (Shell tools are absent
+    // here because this config gates shell off; deferral is what is under test.)
+    for name in [
+        "read_file",
+        "grep_files",
+        "write_file",
+        "edit_file",
+        "apply_patch",
+        "note",
+        "recall_archive",
+        "handle_read",
+        "search_sessions",
+        "project_map",
+        "lsp_navigate",
+        "review",
+        "diagnostics",
+        "task_create",
+        "task_list",
+        "task_read",
+        "todo_write",
+        "checklist_write",
+        "enter_plan_mode",
+        "exit_plan_mode",
+        "write_plan_file",
+        "request_user_input",
+        "agent_open",
+        "agent_eval",
+        "agent_close",
+    ] {
+        let tool = catalog
+            .iter()
+            .find(|tool| tool.name == name)
+            .unwrap_or_else(|| panic!("{name} should be in an Agent turn's catalog"));
+        assert_ne!(
+            tool.defer_loading,
+            Some(true),
+            "{name} must stay resident — it is daily surface or a prompt names it"
+        );
+    }
 }
 
 #[test]
@@ -1267,16 +1324,6 @@ fn agent_catalog_keeps_edit_file_loaded_when_fuzz_is_omitted() {
         "loaded edit_file calls without fuzz should execute instead of hydrating the schema"
     );
     assert!(hydrated_this_batch.is_empty());
-}
-
-#[test]
-fn tools_always_load_overrides_default_native_deferral() {
-    let always_load = HashSet::from(["git_show".to_string()]);
-    assert!(!should_default_defer_tool(
-        "git_show",
-        AppMode::Agent,
-        &always_load
-    ));
 }
 
 /// The declarations fan-out rests on, read back through the registry the
@@ -1481,14 +1528,19 @@ fn deferred_edit_file_first_use_hydrates_schema_without_execution() {
     );
 }
 
+/// YOLO clears MCP deferral (that mode is about removing friction) and leaves
+/// native declarations alone — under the declaration policy there is no
+/// "non-core" inverse list to defer anything else.
 #[test]
-fn model_tool_catalog_defers_non_core_native_tools_in_yolo_mode() {
-    let always_load = HashSet::new();
+fn yolo_sends_the_mcp_surface_resident_and_leaves_declarations_alone() {
     let catalog = build_model_tool_catalog(
-        vec![api_tool("read_file"), api_tool("project_map")],
-        vec![api_tool("mcp__server__write")],
+        vec![
+            api_tool_declared("niche_tool", true),
+            api_tool_declared("read_file", false),
+        ],
+        vec![api_tool_declared("mcp__server__write", true)],
         AppMode::Yolo,
-        &always_load,
+        &HashSet::new(),
     );
 
     let defer_loading = |name: &str| {
@@ -1498,9 +1550,17 @@ fn model_tool_catalog_defers_non_core_native_tools_in_yolo_mode() {
             .and_then(|tool| tool.defer_loading)
     };
 
+    assert_eq!(
+        defer_loading("niche_tool"),
+        Some(true),
+        "declaration stands"
+    );
     assert_eq!(defer_loading("read_file"), Some(false));
-    assert_eq!(defer_loading("project_map"), Some(true));
-    assert_eq!(defer_loading("mcp__server__write"), Some(false));
+    assert_eq!(
+        defer_loading("mcp__server__write"),
+        Some(false),
+        "YOLO sends a server's tools resident"
+    );
 }
 
 #[test]
@@ -1648,12 +1708,19 @@ fn deferred_tool_preflight_guides_checklist_update_list_replacement() {
         )
         .build(engine.build_tool_context(AppMode::Agent, false));
     let always_load = HashSet::new();
-    let catalog = build_model_tool_catalog(
+    let mut catalog = build_model_tool_catalog(
         registry.to_api_tools_with_cache(true),
         vec![],
         AppMode::Agent,
         &always_load,
     );
+    // The policy ships `checklist_update` resident (it declares nothing); this
+    // test pins the schema-hydration guidance path, so withhold it explicitly.
+    for tool in &mut catalog {
+        if tool.name == "checklist_update" {
+            tool.defer_loading = Some(true);
+        }
+    }
     let mut active = initial_active_tools(&catalog);
     assert!(!active.contains("checklist_update"));
 

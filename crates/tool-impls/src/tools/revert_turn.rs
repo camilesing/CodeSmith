@@ -64,6 +64,10 @@ impl ToolSpec for RevertTurnTool {
         ApprovalRequirement::Required
     }
 
+    fn defer_loading(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let offset = optional_u64(&input, "turn_offset", DEFAULT_OFFSET);
         if offset == 0 || offset > MAX_OFFSET {

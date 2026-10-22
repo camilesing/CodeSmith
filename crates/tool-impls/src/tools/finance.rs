@@ -246,6 +246,10 @@ impl ToolSpec for FinanceTool {
         true
     }
 
+    fn defer_loading(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
         let raw_ticker = optional_str(&input, "ticker")
             .or_else(|| optional_str(&input, "symbol"))

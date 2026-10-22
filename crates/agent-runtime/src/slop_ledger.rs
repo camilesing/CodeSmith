@@ -633,6 +633,10 @@ impl ToolSpec for SlopLedgerAppendTool {
         ApprovalRequirement::Auto
     }
 
+    fn defer_loading(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let entries_val = input
             .get("entries")
@@ -766,6 +770,10 @@ impl ToolSpec for SlopLedgerQueryTool {
         ApprovalRequirement::Auto
     }
 
+    fn defer_loading(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
         let filter = SlopLedgerFilter {
             bucket: parse_enum_filter(&input, "bucket", SlopBucket::from_str)?,
@@ -874,6 +882,10 @@ impl ToolSpec for SlopLedgerUpdateTool {
         ApprovalRequirement::Auto
     }
 
+    fn defer_loading(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
         let id = required_str(&input, "id")?.to_string();
         let status =
@@ -963,6 +975,10 @@ impl ToolSpec for SlopLedgerExportTool {
 
     fn approval_requirement(&self) -> ApprovalRequirement {
         ApprovalRequirement::Auto
+    }
+
+    fn defer_loading(&self) -> bool {
+        true
     }
 
     async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {

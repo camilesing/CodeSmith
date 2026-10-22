@@ -55,6 +55,10 @@ impl ToolSpec for GithubIssueContextTool {
         ApprovalRequirement::Auto
     }
 
+    fn defer_loading(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         ensure_github_repo(context)?;
         let number = required_u64(&input, "number")?;
@@ -108,6 +112,10 @@ impl ToolSpec for GithubPrContextTool {
 
     fn approval_requirement(&self) -> ApprovalRequirement {
         ApprovalRequirement::Auto
+    }
+
+    fn defer_loading(&self) -> bool {
+        true
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
@@ -184,6 +192,10 @@ impl ToolSpec for GithubCommentTool {
         ApprovalRequirement::Required
     }
 
+    fn defer_loading(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         validate_evidence(&input, false)?;
         let target = required_str(&input, "target")?;
@@ -235,6 +247,10 @@ impl ToolSpec for GithubCloseIssueTool {
         ApprovalRequirement::Required
     }
 
+    fn defer_loading(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         close_github_thread(input, context, GithubCloseTarget::Issue).await
     }
@@ -260,6 +276,10 @@ impl ToolSpec for GithubClosePrTool {
 
     fn approval_requirement(&self) -> ApprovalRequirement {
         ApprovalRequirement::Required
+    }
+
+    fn defer_loading(&self) -> bool {
+        true
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {

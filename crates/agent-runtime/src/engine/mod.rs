@@ -3431,10 +3431,11 @@ pub use self::streaming::{
     should_transparently_retry_stream,
 };
 pub use self::tool_catalog::{
-    CODE_EXECUTION_TOOL_NAME, TOOL_SEARCH_BM25_NAME, TOOL_SEARCH_REGEX_NAME, active_tools_for_step,
+    CODE_EXECUTION_TOOL_NAME, TOOL_SEARCH_BM25_NAME, TOOL_SEARCH_NAME, TOOL_SEARCH_REGEX_NAME,
+    active_tools_for_step, apply_mcp_tool_deferral, apply_native_deferral_overrides,
     apply_tool_selection, build_model_tool_catalog, ensure_advanced_tooling,
-    execute_code_execution_tool, execute_tool_search, initial_active_tools,
+    execute_code_execution_tool, execute_tool_search, initial_active_tools, is_tool_search_tool,
     maybe_activate_requested_deferred_tool, maybe_hydrate_requested_deferred_tool,
-    missing_tool_error_message, preflight_requested_deferred_tool, should_default_defer_tool,
+    missing_tool_error_message, preflight_requested_deferred_tool,
 };
 use self::tool_catalog::{MULTI_TOOL_PARALLEL_NAME, REQUEST_USER_INPUT_NAME};

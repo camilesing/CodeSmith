@@ -61,6 +61,10 @@ impl ToolSpec for ImageOcrTool {
         true
     }
 
+    fn defer_loading(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let path_str = required_str(&input, "path")?;
         let image_path = context.resolve_path(path_str)?;

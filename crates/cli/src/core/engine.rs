@@ -88,7 +88,6 @@ pub use codesmith_agent_runtime::engine::{
     missing_tool_error_message,
     plan_tool_execution_batches,
     preflight_requested_deferred_tool,
-    should_default_defer_tool,
     should_force_update_plan_first,
     should_parallelize_tool_batch,
     should_stop_after_plan_tool,

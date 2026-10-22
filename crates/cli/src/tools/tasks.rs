@@ -843,6 +843,10 @@ impl ToolSpec for PrAttemptRecordTool {
         ApprovalRequirement::Required
     }
 
+    fn defer_loading(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let task_id = task_id_from_input_or_context(&input, context)?;
         // Four sequential git subprocesses — keep them off the async
@@ -943,6 +947,10 @@ impl ToolSpec for PrAttemptListTool {
         vec![ToolCapability::ReadOnly]
     }
 
+    fn defer_loading(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let task = read_task_for_input(&input, context).await?;
         ToolResult::json(&json!({ "task_id": task.id, "attempts": task.attempts }))
@@ -974,6 +982,10 @@ impl ToolSpec for PrAttemptReadTool {
 
     fn capabilities(&self) -> Vec<ToolCapability> {
         vec![ToolCapability::ReadOnly]
+    }
+
+    fn defer_loading(&self) -> bool {
+        true
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
@@ -1012,6 +1024,10 @@ impl ToolSpec for PrAttemptPreflightTool {
 
     fn capabilities(&self) -> Vec<ToolCapability> {
         vec![ToolCapability::ReadOnly]
+    }
+
+    fn defer_loading(&self) -> bool {
+        true
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {

@@ -109,6 +109,10 @@ impl ToolSpec for FimEditTool {
         ApprovalRequirement::Suggest
     }
 
+    fn defer_loading(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let path = required_str(&input, "path")?;
         let prefix_anchor = required_str(&input, "prefix_anchor")?;

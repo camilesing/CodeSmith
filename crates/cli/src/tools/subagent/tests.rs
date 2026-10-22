@@ -248,7 +248,14 @@ fn new_session_tools_use_open_eval_close_names() {
         ToolAgentTool::new(manager.clone(), stub_runtime()).name(),
         "tool_agent"
     );
-    assert_eq!(AgentCloseTool::new(manager).name(), "agent_close");
+    assert_eq!(AgentCloseTool::new(manager.clone()).name(), "agent_close");
+
+    // Deferral would contradict the prompts that name this chain for parallel
+    // fan-out: a withheld schema cannot be called without a discovery round
+    // trip, and the plan-mode reminder names the trio by hand.
+    assert!(!AgentOpenTool::new(manager.clone(), stub_runtime()).defer_loading());
+    assert!(!AgentEvalTool::new(manager.clone()).defer_loading());
+    assert!(!AgentCloseTool::new(manager).defer_loading());
 }
 
 #[test]

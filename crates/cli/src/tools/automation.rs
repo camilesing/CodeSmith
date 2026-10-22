@@ -58,6 +58,10 @@ impl ToolSpec for AutomationCreateTool {
         ApprovalRequirement::Required
     }
 
+    fn defer_loading(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let manager = context
             .runtime
@@ -116,6 +120,10 @@ impl ToolSpec for AutomationListTool {
         vec![ToolCapability::ReadOnly]
     }
 
+    fn defer_loading(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let manager = context
             .runtime
@@ -151,6 +159,10 @@ impl ToolSpec for AutomationReadTool {
 
     fn approval_requirement(&self) -> ApprovalRequirement {
         ApprovalRequirement::Auto
+    }
+
+    fn defer_loading(&self) -> bool {
+        true
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
@@ -207,6 +219,10 @@ impl ToolSpec for AutomationUpdateTool {
         ApprovalRequirement::Required
     }
 
+    fn defer_loading(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let manager = context
             .runtime
@@ -260,6 +276,10 @@ macro_rules! write_automation_tool {
             fn approval_requirement(&self) -> ApprovalRequirement {
                 ApprovalRequirement::Required
             }
+            fn defer_loading(&self) -> bool {
+                true
+            }
+
             async fn execute(
                 &self,
                 input: Value,
@@ -319,6 +339,10 @@ impl ToolSpec for AutomationRunTool {
 
     fn approval_requirement(&self) -> ApprovalRequirement {
         ApprovalRequirement::Required
+    }
+
+    fn defer_loading(&self) -> bool {
+        true
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {

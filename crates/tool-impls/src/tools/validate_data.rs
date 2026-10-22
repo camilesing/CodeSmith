@@ -87,6 +87,10 @@ impl ToolSpec for ValidateDataTool {
         true
     }
 
+    fn defer_loading(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let path = optional_str(&input, "path");
         let content = optional_str(&input, "content");

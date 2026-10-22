@@ -66,25 +66,19 @@ pub const WEB_SEARCH_NAME: &str = "web_search";
 /// Canonical name of the file write tool (`WriteFileTool`).
 pub const WRITE_FILE_NAME: &str = "write_file";
 
-/// Native tools enabled by default. Tools listed here are marked
-/// non-deferred by `crate::engine::tool_catalog::should_default_defer_tool`,
-/// so they are eager-loaded *whenever they are registered at all*. Note
-/// that registration itself can be config-gated (e.g. `symbol_search` /
-/// `find_references` need an enabled code index; shell and task-shell
-/// tools need `allow_shell`), in which case the entry here is inert. The
-/// prompt builder renders its core-tool taxonomy block from this list —
-/// keep it in sync with the enforcing function.
+/// The native tools the prompt builder advertises as the core surface (its
+/// core-tool taxonomy block is rendered from this list).
 ///
-/// Built from the `*_NAME` constants above so the catalog and the tool
-/// construction/`name()` sites share one spelling — a bare literal that
-/// drifts from the catalog would silently flip the tool into
-/// tool-search deferral.
+/// Deferral is **not** derived from this list — it is declared per tool
+/// ([`crate::tools::spec::ToolSpec::defer_loading`], propagated into the
+/// catalog by the registry): a tool is withheld from the request only because
+/// its own definition says so, so an undeclared tool is resident and this list
+/// going stale cannot silently hide anything. `[tools] always_load` overrides a
+/// declaration; the YOLO mode override is MCP-only.
 ///
-/// The whole sub-agent session chain (`agent_open` → `agent_eval` →
-/// `agent_close`) is eager: the prompts name all three for parallel fan-out,
-/// and a deferred tool's *first* call is refused with a schema-hydration
-/// result rather than executed, so leaving part of the chain behind
-/// tool-search would cost a wasted round trip on every prompted call.
+/// Built from the `*_NAME` constants above so the list and the tool
+/// construction/`name()` sites share one spelling — a bare literal that drifts
+/// would advertise a tool the model does not have, or miss one it does.
 pub const DEFAULT_ACTIVE_NATIVE_TOOLS: &[&str] = &[
     AGENT_CLOSE_NAME,
     AGENT_EVAL_NAME,
@@ -137,26 +131,59 @@ mod tests {
         );
     }
 
-    /// The spawn → harvest → release chain the prompts name must stay
-    /// callable without a tool search. A deferred tool's first call is not
-    /// executed — it returns "was deferred and has now been loaded … not
-    /// executed" — so a prompt that tells the model to fan out and then
-    /// `agent_eval` the children would burn a round trip per call if any leg
-    /// of the chain were deferred. Asserted through the enforcing function,
-    /// so this covers both the list and the rule that reads it.
+    /// The deferral rule's shape, at the level this crate can see it.
+    ///
+    /// The declarations themselves are pinned over the real registry in
+    /// `codesmith-cli` (`deferred_tools_are_exactly_the_reviewed_niche_set`) —
+    /// that test is the review artifact for *which* tools opt in. Here: the two
+    /// overrides above a declaration, and the control tool's infrastructure
+    /// status.
     #[test]
-    fn the_subagent_session_chain_stays_eager() {
-        for name in [AGENT_CLOSE_NAME, AGENT_EVAL_NAME, AGENT_OPEN_NAME] {
-            for mode in [crate::mode::AppMode::Agent, crate::mode::AppMode::Plan] {
-                assert!(
-                    !crate::engine::should_default_defer_tool(
-                        name,
-                        mode,
-                        &std::collections::HashSet::new(),
-                    ),
-                    "{name} must stay eager — the prompts name it for parallel fan-out"
-                );
-            }
-        }
+    fn deferral_overrides_and_control_tool_status() {
+        use std::collections::HashSet;
+
+        let tool = |name: &str, deferred: Option<bool>| crate::models::Tool {
+            tool_type: Some("custom".to_string()),
+            name: name.to_string(),
+            description: String::new(),
+            input_schema: serde_json::json!({}),
+            output_schema: None,
+            allowed_callers: None,
+            defer_loading: deferred,
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        };
+
+        // `[tools] always_load` beats a declaration; others keep theirs.
+        let mut catalog = vec![
+            tool("niche_tool", Some(true)),
+            tool("other_niche_tool", Some(true)),
+            tool("read_file", None),
+        ];
+        let always_load = HashSet::from(["niche_tool".to_string()]);
+        crate::engine::apply_native_deferral_overrides(&mut catalog, &always_load);
+        assert_eq!(catalog[0].defer_loading, Some(false), "always_load wins");
+        assert_eq!(catalog[1].defer_loading, Some(true), "declaration stands");
+        assert_eq!(catalog[2].defer_loading, None, "undeclared stays resident");
+
+        // YOLO sends the MCP surface resident; every other mode keeps the
+        // adapter's declaration.
+        let mut mcp = vec![tool("mcp__srv__act", Some(true))];
+        crate::engine::apply_mcp_tool_deferral(&mut mcp, crate::mode::AppMode::Yolo);
+        assert_eq!(
+            mcp[0].defer_loading,
+            Some(false),
+            "YOLO clears MCP deferral"
+        );
+        let mut mcp = vec![tool("mcp__srv__act", Some(true))];
+        crate::engine::apply_mcp_tool_deferral(&mut mcp, crate::mode::AppMode::Agent);
+        assert_eq!(mcp[0].defer_loading, Some(true), "Agent keeps it");
+
+        // The search control tool is dispatch infrastructure: tool selection
+        // never filters it and the active-set seeding always keeps it.
+        assert!(crate::engine::is_tool_search_tool(
+            crate::engine::TOOL_SEARCH_NAME
+        ));
     }
 }
