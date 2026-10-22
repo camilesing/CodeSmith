@@ -11,7 +11,6 @@ use crate::background_task::{BackgroundTaskNotification, BackgroundTaskType};
 use crate::coherence::CoherenceState;
 use crate::error_taxonomy::ErrorEnvelope;
 use crate::models::{Message, SystemPrompt, Tool, Usage};
-use crate::subagent::SubAgentResult;
 use crate::telemetry::{RedactedAnalyticsMetadata, VerifiedAnalyticsMetadata};
 use crate::user_input::UserInputRequest;
 use codesmith_tools::{ToolError, ToolResult};
@@ -337,9 +336,6 @@ pub enum Event {
 
     /// Sub-agent completed
     AgentComplete { id: String, result: String },
-
-    /// Sub-agent listing
-    AgentList { agents: Vec<SubAgentResult> },
 
     /// Structured sub-agent mailbox envelope (issue #128). Carries the
     /// monotonic seq + the typed `MailboxMessage` so the UI can route each

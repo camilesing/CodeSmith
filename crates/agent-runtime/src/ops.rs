@@ -78,9 +78,6 @@ pub enum Op {
     #[allow(dead_code)]
     SpawnSubAgent { prompt: String },
 
-    /// List current sub-agents and their status
-    ListSubAgents,
-
     /// Change the operating mode
     #[allow(dead_code)]
     ChangeMode { mode: AppMode },

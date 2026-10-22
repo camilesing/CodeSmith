@@ -189,6 +189,9 @@ pub struct ReplState {
     /// Turn index, bumped on each `TurnStarted` so `/expand` can address
     /// "the last turn" of the log.
     pub tool_log_turn: usize,
+    /// Live sub-agent record, re-read from `EngineHandle::subagent_api` by
+    /// the turn pump (see [`Self::running_agents`] for why the manager's
+    /// record and not an event-fed map).
     pub subagent_cache: Vec<SubAgentResult>,
     pub hooks: HookExecutor,
     pub shell_manager: SharedShellManager,
@@ -660,13 +663,13 @@ impl ReplState {
 
     /// The sub-agent sessions the engine still reports as running.
     ///
-    /// Reads the engine's own list (`Event::AgentList`, refreshed by
-    /// `Op::ListSubAgents`), not a locally accumulated map. A map fed by
-    /// spawn/complete events can only ever be *approximately* right: the
-    /// completion epilogue is skipped for an agent that is cancelled or
-    /// aborted, so a closed child would keep counting as running, and a
-    /// dropped event drifts the other way. The list is the record, and the
-    /// record is right.
+    /// Reads the manager's own list (surfaced on `EngineHandle::subagent_api`
+    /// and re-read by `render::pump_turn` at every point the record moves),
+    /// not a locally accumulated map. A map fed by spawn/complete events can
+    /// only ever be *approximately* right: the completion epilogue is skipped
+    /// for an agent that is cancelled or aborted, so a closed child would
+    /// keep counting as running, and a dropped event drifts the other way.
+    /// The list is the record, and the record is right.
     pub fn running_agents(&self) -> impl Iterator<Item = &SubAgentResult> {
         self.subagent_cache
             .iter()
@@ -1209,7 +1212,7 @@ mod agent_count_tests {
         }
     }
 
-    /// A manager-shaped snapshot — the shape `Event::AgentList` carries.
+    /// A manager-shaped snapshot — the shape `SubAgentApi::list` returns.
     fn snapshot(id: &str, status: SubAgentStatus) -> SubAgentResult {
         SubAgentResult {
             name: id.to_string(),

@@ -11,7 +11,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use anyhow::Result;
 use futures_util::StreamExt;
@@ -677,12 +677,6 @@ impl Engine {
                                 .await;
                         }
                     }
-                }
-                Op::ListSubAgents => {
-                    let subagents = self.host.subagents();
-                    subagents.cleanup(Duration::from_secs(60 * 60)).await;
-                    let agents = subagents.list().await;
-                    let _ = self.tx_event.send(Event::AgentList { agents }).await;
                 }
                 Op::ChangeMode { mode } => {
                     let _ = self

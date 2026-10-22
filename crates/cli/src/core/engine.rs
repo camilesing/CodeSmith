@@ -181,6 +181,12 @@ pub struct EngineHandle {
     /// `EngineHost` at build time so the REPL reads it without an engine
     /// round-trip.
     pub tool_catalog: crate::core::tool_catalog::SharedToolCatalog,
+    /// Live sub-agent record — the same manager the engine host and the
+    /// spawn tools share, surfaced so the REPL re-reads the 🤖 count without
+    /// an engine round-trip. The engine drains its op channel only *between*
+    /// turns, so an op sent mid-turn is answered after the child it was
+    /// meant to reveal has already finished.
+    pub subagent_api: Arc<dyn SubAgentApi>,
 }
 
 // `impl EngineHandle { ... }` lives in `engine/handle.rs`.
@@ -1556,6 +1562,7 @@ pub fn build_engine(
         mods_pending: mods_report.pending_mods,
         mods_audit: mods_report.audit,
         tool_catalog: host_concrete.tool_catalog.clone(),
+        subagent_api: Arc::clone(&host_concrete.subagent_api),
     };
 
     (engine, handle)
@@ -1912,6 +1919,11 @@ pub(crate) fn mock_engine_handle() -> MockEngineHandle {
         fact_ledger: Arc::new(StdMutex::new(Default::default())),
         recent_read_files: Arc::new(StdMutex::new(Default::default())),
         tool_catalog: Default::default(),
+        // Empty throwaway record, mirroring `EngineHost::default()`. Tests
+        // that need children replace it with a seeded `SubAgentApi` double.
+        subagent_api: Arc::new(runtime_traits::SubAgentManagerHost(
+            new_shared_subagent_manager(std::path::PathBuf::new(), crate::config::MAX_SUBAGENTS),
+        )),
     };
 
     MockEngineHandle {

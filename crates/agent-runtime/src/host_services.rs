@@ -203,7 +203,9 @@ pub trait SeamManagerApi: Send + Sync {
 pub trait SubAgentApi: Send + Sync {
     /// Number of sub-agents currently running in this process.
     async fn running_count(&self) -> usize;
-    /// Snapshot of every tracked sub-agent (for `AgentList`).
+    /// Snapshot of every tracked sub-agent — the 🤖 count's source, read
+    /// directly by the UI that renders it (the engine's op channel is only
+    /// drained between turns).
     async fn list(&self) -> Vec<SubAgentResult>;
     /// Evict completed agents older than `max_age`.
     async fn cleanup(&self, max_age: Duration);

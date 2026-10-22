@@ -825,7 +825,9 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                 // than waiting for the turn to end.
                 flush_queue_into_turn(state, &mut view, &engine).await;
                 // Keep the sub-agent cache fresh after agent-lifecycle
-                // tools (mirrors the retired loop's ListSubAgents nudge).
+                // tools: several of them move the record without a
+                // spawn/complete event of their own (`agent_cancel` marks
+                // the child cancelled and fires nothing).
                 if matches!(
                     name.as_str(),
                     "agent_open"
@@ -837,18 +839,18 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                         | "agent_status"
                         | "agent_spawn"
                 ) {
-                    let _ = engine.send(Op::ListSubAgents).await;
+                    refresh_subagent_cache(state, &engine).await;
                 }
             }
             Event::AgentSpawned { id, prompt } => {
                 state
                     .agent_progress
                     .insert(id.clone(), "running".to_string());
-                // The 🤖 count comes from the engine's list, so re-read it as
-                // soon as a child exists: a foreground `agent_run` runs its
-                // child *inside* the tool call, and waiting for that call to
-                // return would leave the count at 0 for the whole child.
-                let _ = engine.send(Op::ListSubAgents).await;
+                // The 🤖 count comes from the record, so re-read it as soon
+                // as a child exists: a foreground `agent_run` runs its child
+                // *inside* the tool call, and waiting for that call to return
+                // would leave the count at 0 for the whole child.
+                refresh_subagent_cache(state, &engine).await;
                 view.clear_live();
                 println!(
                     "{} spawned {id}: {}",
@@ -864,9 +866,9 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                 state.agent_progress.remove(&id);
                 // A child that finishes on its own has no tool call to hang a
                 // refresh on, so the 🤖 count would keep it until the next
-                // spawn. Re-read the engine's list here: the number comes from
-                // the record, and this is the event that says the record moved.
-                let _ = engine.send(Op::ListSubAgents).await;
+                // spawn. Re-read the record here: the number comes from it,
+                // and this is the event that says it moved.
+                refresh_subagent_cache(state, &engine).await;
                 view.clear_live();
                 println!(
                     "{} agent {id} done: {}",
@@ -874,9 +876,6 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                     crate::tool_summary::summarize_tool_output(&result).dimmed()
                 );
                 view.after_tool_line = true;
-            }
-            Event::AgentList { agents } => {
-                state.subagent_cache = agents;
             }
             Event::SubAgentMailbox { .. } => {}
             Event::ApprovalRequired {
@@ -1029,12 +1028,16 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                     base_url,
                     reported_model,
                 );
+                // The turn boundary is the catch-up read for the 🤖 count: a
+                // child cancelled or aborted with the turn never fires its
+                // completion event, so the record would otherwise keep
+                // reading as running.
+                refresh_subagent_cache(state, &engine).await;
                 if status != TurnOutcomeStatus::Completed {
                     // The plan handoff dies with a turn that did not finish:
                     // firing the implementation kickoff after a cancel or a
                     // failure would act on an approval the session abandoned.
                     state.plan_implementation_pending = false;
-                    let _ = engine.send(Op::ListSubAgents).await;
                 }
                 state.is_loading = false;
                 state.turn_started_at = None;
@@ -1264,6 +1267,19 @@ async fn handle_turn_key(
 /// running in the background, and a sub-agent has its own task.
 fn is_backgroundable_tool(name: &str) -> bool {
     name.starts_with("exec_shell") || name.starts_with("agent_")
+}
+
+/// Re-read the live sub-agent record into `state.subagent_cache` — the input
+/// of the 🤖 segment and `/agents`.
+///
+/// A direct read of the manager the engine host shares with the spawn tools,
+/// not a list request through the engine: the engine drains its op channel
+/// only *between* turns, so a request sent from here would be answered after
+/// the child it was meant to reveal had already finished, and the count sat
+/// at `🤖0` the whole time a child was running. The record stays the source
+/// — only the request path changed.
+async fn refresh_subagent_cache(state: &mut ReplState, engine: &crate::core::engine::EngineHandle) {
+    state.subagent_cache = engine.subagent_api.list().await;
 }
 
 /// Redraw the live region after a composer edit, using the status line the
@@ -3118,5 +3134,115 @@ mod tests {
             out.push(c);
         }
         out
+    }
+
+    /// A seeded stand-in for the shared sub-agent manager: `list()` returns
+    /// exactly what the test put in the record.
+    struct SeededSubAgents(Vec<crate::tools::subagent::SubAgentResult>);
+
+    #[async_trait::async_trait]
+    impl codesmith_agent_runtime::host_services::SubAgentApi for SeededSubAgents {
+        async fn running_count(&self) -> usize {
+            self.0
+                .iter()
+                .filter(|agent| agent.status == crate::tools::subagent::SubAgentStatus::Running)
+                .count()
+        }
+
+        async fn list(&self) -> Vec<crate::tools::subagent::SubAgentResult> {
+            self.0.clone()
+        }
+
+        async fn cleanup(&self, _max_age: Duration) {}
+
+        async fn live_running_snapshots(&self) -> Vec<crate::tools::subagent::SubAgentResult> {
+            self.0
+                .iter()
+                .filter(|agent| agent.status == crate::tools::subagent::SubAgentStatus::Running)
+                .cloned()
+                .collect()
+        }
+    }
+
+    fn running_snapshot(id: &str) -> crate::tools::subagent::SubAgentResult {
+        crate::tools::subagent::SubAgentResult {
+            name: id.to_string(),
+            agent_id: id.to_string(),
+            context_mode: "fresh".to_string(),
+            fork_context: false,
+            agent_type: crate::tools::subagent::SubAgentType::General,
+            assignment: crate::tools::subagent::SubAgentAssignment::new(
+                "probe the tree".to_string(),
+                Some("explorer".to_string()),
+            ),
+            model: "test-model".to_string(),
+            nickname: None,
+            status: crate::tools::subagent::SubAgentStatus::Running,
+            agent_memory: None,
+            result: None,
+            steps_taken: 0,
+            duration_ms: 0,
+            from_prior_session: false,
+        }
+    }
+
+    /// The 🤖 count has to move while the engine is *mid-turn*.
+    ///
+    /// The engine drains its op channel only between turns (it runs the whole
+    /// turn inside `Op::SendMessage`), so a spawn that refreshed the count
+    /// through an op left the segment at `🤖0` for the whole time the child
+    /// ran. This pumps a real `AgentSpawned` through `pump_turn` with nobody
+    /// reading the op channel — the production mid-turn condition.
+    #[tokio::test]
+    // The env lock serializes env mutation across the test binary; every
+    // other holder acquires it only briefly (no blocking), so holding the
+    // guard across this await cannot deadlock.
+    #[allow(clippy::await_holding_lock)]
+    async fn agent_spawn_counts_a_running_child_with_the_engine_mid_turn() {
+        let _lock = crate::test_support::lock_test_env();
+        let mut mock = crate::core::engine::mock_engine_handle();
+        mock.handle.subagent_api =
+            std::sync::Arc::new(SeededSubAgents(vec![running_snapshot("child-a")]));
+
+        let mut state = test_repl_state();
+        state.engine = Some(mock.handle.clone());
+
+        mock.tx_event
+            .send(Event::TurnStarted {
+                turn_id: "turn-1".to_string(),
+            })
+            .await
+            .expect("event channel");
+        mock.tx_event
+            .send(Event::AgentSpawned {
+                id: "child-a".to_string(),
+                prompt: "probe the tree".to_string(),
+            })
+            .await
+            .expect("event channel");
+        mock.tx_event
+            .send(Event::TurnComplete {
+                usage: Default::default(),
+                status: TurnOutcomeStatus::Completed,
+                error: None,
+                tool_catalog: None,
+                base_url: None,
+                reported_model: None,
+                failed_attempts: Vec::new(),
+            })
+            .await
+            .expect("event channel");
+
+        let exit = pump_turn(&mut state).await.expect("pump");
+        assert_eq!(exit, PumpExit::TurnDone);
+        assert_eq!(
+            state.running_agent_count(),
+            1,
+            "the child is running — the 🤖 segment must say so"
+        );
+        assert!(
+            mock.rx_op.try_recv().is_err(),
+            "the refresh must not ride the engine's op channel"
+        );
     }
 }
