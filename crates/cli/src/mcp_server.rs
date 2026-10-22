@@ -48,7 +48,10 @@ impl McpServerSettings {
                 .server
                 .expose_tools
                 .unwrap_or_else(default_expose_tools);
-            let require_approval = config.server.require_approval.unwrap_or(false);
+            // Fail-closed: the default exposure set includes shell /
+            // apply_patch / file_write, so approval is required unless the
+            // operator explicitly opts out.
+            let require_approval = config.server.require_approval.unwrap_or(true);
             Ok(Self {
                 expose_tools,
                 require_approval,
@@ -56,7 +59,7 @@ impl McpServerSettings {
         } else {
             Ok(Self {
                 expose_tools: default_expose_tools(),
-                require_approval: false,
+                require_approval: true,
             })
         }
     }
