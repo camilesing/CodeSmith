@@ -10,6 +10,10 @@ publish-crates), see [`RELEASE_RUNBOOK.md`](RELEASE_RUNBOOK.md).
 ## 1. CHANGELOG entry exists for the version
 
 - [ ] `CHANGELOG.md` has a `## [X.Y.Z] - YYYY-MM-DD` heading at the top
+- [ ] The entry runs 400–1200 characters of prose (headings and markup
+      excluded): it names the change and the contributor/`#NNNN` references it
+      owes, and leaves the receipts — test results, file lists, review threads
+      — to the PR body.
 - [ ] The entry credits every external contributor, harvested PR author,
       linked issue reporter, reproduction/log provider, reviewer, and
       verification helper whose work materially shaped this version. Get the

