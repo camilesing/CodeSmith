@@ -101,6 +101,18 @@ pub fn apply_to_config(config: &mut Config, definition: &PresetDefinitionToml) -
         }
     }
 
+    // Tool catalog baseline. Same materialize-only-when-defined rule as the
+    // sections below: `[tools]` also carries plugin/override keys the preset
+    // layer does not own.
+    if definition.tools_progressive_disclosure.is_some() {
+        let tools = config.tools.get_or_insert_with(Default::default);
+        fill_bool(
+            &mut tools.progressive_disclosure,
+            definition.tools_progressive_disclosure,
+            &mut deviated,
+        );
+    }
+
     // Only materialize a config section when the preset actually defines
     // one of its keys: `get_or_insert_with(Default::default)` on an unset
     // section would turn `None` into `Some(empty)`, leaking empty tables
@@ -412,6 +424,36 @@ mod tests {
         assert!(config.capacity.is_none());
         assert!(config.auto.is_none());
         assert!(config.network.is_none());
+        assert!(config.tools.is_none());
+    }
+
+    #[test]
+    fn preset_baselines_progressive_disclosure_but_explicit_config_wins() {
+        let mut definition = PresetDefinitionToml {
+            tools_progressive_disclosure: Some(true),
+            ..PresetDefinitionToml::default()
+        };
+
+        // User left the key unset: the tier's baseline applies.
+        let mut config = Config::default();
+        assert!(!apply_to_config(&mut config, &definition));
+        assert!(config.tools_progressive_disclosure());
+
+        // An explicit value wins — and flags the deviation that reports the
+        // effective preset as `diy`.
+        let mut config = Config::default();
+        config.tools = Some(crate::config::ToolsConfig {
+            progressive_disclosure: Some(false),
+            ..Default::default()
+        });
+        assert!(apply_to_config(&mut config, &definition));
+        assert!(!config.tools_progressive_disclosure());
+
+        // A tier with no opinion leaves the key alone entirely.
+        definition.tools_progressive_disclosure = None;
+        let mut config = Config::default();
+        assert!(!apply_to_config(&mut config, &definition));
+        assert!(config.tools.is_none());
     }
 
     #[test]

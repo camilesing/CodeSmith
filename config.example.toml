@@ -166,13 +166,15 @@ memory_path = "~/.codesmith/memory.md"
 # Parsed but currently unused (reserved for future versions):
 # tools_file = "./tools.json"
 
-# Native tool catalog controls (#2076). By default the request carries the whole
-# registered surface (minus include/exclude): a tool is withheld only when its
-# own definition declares deferral. Turn `progressive_disclosure` on to withhold
-# those declared-deferred tools and offer them through `tool_search` on demand.
-# `always_load` wins over both, so a name here is resident either way.
+# Native tool catalog controls (#2076). The request carries the registered
+# surface minus a preset's `tools.include`/`exclude` mask; a tool is withheld
+# only when its own definition declares deferral. Progressive disclosure —
+# withholding that declared-deferred tail and offering it through `tool_search`
+# — is a preset dial: the factory tiers set it on for middle/all/experiment/plan
+# and off for simple. Uncomment to override the tier. `always_load` wins over
+# both, so a name here is resident either way.
 # [tools]
-# progressive_disclosure = false
+# progressive_disclosure = true
 # always_load = ["git_show", "notify"]
 
 # ─────────────────────────────────────────────────────────────────────────────────

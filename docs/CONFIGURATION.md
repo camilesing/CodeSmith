@@ -1265,17 +1265,21 @@ These keys are accepted by the config loader but not currently used by the inter
 
 ## Tool Catalog
 
-By default the model receives the whole registered tool surface (minus whatever
-`[tools] include`/`exclude` select). A tool is withheld only when its own
-definition declares deferral, and **progressive disclosure is off by default**:
-turn it on to hide those declared-deferred tools and offer them on demand
-through the `tool_search` control tool — a search (or a direct first call)
-returns the schema, and the tool is callable from the next step on. Set
-`[tools].always_load` to keep specific native tools resident regardless:
+The model receives the whole registered tool surface, minus whatever a preset's
+`tools.include`/`exclude` masks out. A tool is withheld only when its own
+definition declares deferral, and whether those declared-deferred tools are
+withheld is a preset dial: every factory tier except `simple` ships
+**progressive disclosure on**, so their request carries the resident core and
+offers the declared-deferred long tail on demand through the `tool_search`
+control tool — a search (or a direct first call) returns the schema, and the
+tool is callable from the next step on. Set `[tools].progressive_disclosure`
+explicitly to override the tier (an explicit value that differs from the tier
+also reports the effective preset as `diy`), and `[tools].always_load` to keep
+specific native tools resident regardless:
 
 ```toml
 [tools]
-progressive_disclosure = false          # true: withhold declared-deferred tools
+progressive_disclosure = false          # explicit override; unset inherits the tier
 always_load = ["git_show", "notify"]    # wins over both policies
 # plugin_dir = "~/.codesmith/tools"   # default; scripts carrying a
 #                                     # `# name:` / `# description:` /

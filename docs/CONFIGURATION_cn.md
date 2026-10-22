@@ -1134,16 +1134,19 @@ Ghostty OSC 777 或 BEL）。没有任何需要配置的内容；如果你的终
 
 ## 工具目录
 
-默认情况下，模型会收到**整个已注册工具面**（减去 `[tools] include`/`exclude`
-选中的部分）。只有工具自己的定义声明了延迟，它才会被隐藏；而且
-**默认关闭逐步披露（progressive disclosure）**：打开后，这些声明延迟的工具
-会从请求中移除，改由 `tool_search` 控制工具按需提供——一次搜索（或直接首调）
-返回其 schema，该工具从下一步起即可调用。要让特定原生工具无论策略如何都
-保持常驻，将其加入 `[tools].always_load`：
+模型会收到**整个已注册工具面**，减去 preset 的 `tools.include`/`exclude`
+遮罩掉的部分。只有工具自己的定义声明了延迟，它才会被隐藏；而"是否隐藏这些
+声明延迟的工具"是 preset 的一个拨盘：除 `simple` 外，所有出厂档位都默认
+打开**逐步披露（progressive disclosure）**——常驻核心之外，声明延迟的长尾
+从请求中移除，改由 `tool_search` 控制工具按需提供：一次搜索（或直接首调）
+返回其 schema，该工具从下一步起即可调用。要覆盖档位的决定，显式写
+`[tools].progressive_disclosure`（显式值与档位不同还会把有效 preset 标记为
+`diy`）；要让特定原生工具无论策略如何都保持常驻，将其加入
+`[tools].always_load`：
 
 ```toml
 [tools]
-progressive_disclosure = false          # true：隐藏声明延迟的工具
+progressive_disclosure = false          # 显式覆盖；不写则继承所选档位
 always_load = ["git_show", "notify"]    # 优先于两种策略
 # plugin_dir = "~/.codesmith/tools"   # 默认；携带 `# name:` /
 #                                     # `# description:` / `# schema:`

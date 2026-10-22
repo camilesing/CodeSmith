@@ -19,6 +19,7 @@ capacity_enabled = false
 auto_cost_saving = false
 network_audit = true
 strict_tool_mode = false
+tools_progressive_disclosure = true
 
 [features]
 shell_tool = true

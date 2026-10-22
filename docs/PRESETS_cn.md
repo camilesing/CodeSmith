@@ -32,16 +32,17 @@ codesmith preset show         # 档位矩阵 + 你的生效预设
 
 | 档位 | 思考 | 工具 | 记忆 | 子代理 | 资源开关 |
 |---|---|---|---|---|---|
-| `simple` | medium | 仅核心文件 + shell（`tools.include`） | goldfish（无） | 关闭 | 索引/LSP/快照/记忆/审计全关 |
-| `middle`（默认） | 继承 | 继承 | 继承 | 10 | 高价值低消耗组合开启（索引、LSP、快照、记忆、强脑自动路由）；实验性机制关闭 |
-| `all` | 继承 | 全量 | notebook（记忆开、KOD 关） | 20 | middle + LSP 警告；预览旗标仍关闭 |
-| `experiment` | 继承 | 全量 | elephant + Knowledge On Demand | 20 | 全部开启（视觉、agent teams、coordinator、上下文管理器、容量控制器、strict tool mode） |
-| `plan` | 继承 | 只读 + 计划工具 | notebook（仅显式保存） | 继承 | 继承 |
+| `simple` | medium | 仅核心文件 + shell（`tools.include`），全部常驻 | goldfish（无） | 关闭 | 索引/LSP/快照/记忆/审计全关 |
+| `middle`（默认） | 继承 | 继承；声明延迟的长尾靠 `tool_search` | 继承 | 10 | 高价值低消耗组合开启（索引、LSP、快照、记忆、强脑自动路由）；实验性机制关闭 |
+| `all` | 继承 | 全量 − 声明延迟长尾（`tool_search`） | notebook（记忆开、KOD 关） | 20 | middle + LSP 警告；预览旗标仍关闭 |
+| `experiment` | 继承 | 全量 − 声明延迟长尾（`tool_search`） | elephant + Knowledge On Demand | 20 | 全部开启（视觉、agent teams、coordinator、上下文管理器、容量控制器、strict tool mode） |
+| `plan` | 继承 | 只读 + 计划工具；声明延迟的长尾靠 `tool_search` | notebook（仅显式保存） | 继承 | 继承 |
 
 治理开关矩阵（`codesmith preset show` 会打印带生效值的版本）：
 
 | 键 | simple | middle | all | experiment |
 |---|---|---|---|---|
+| `[tools].progressive_disclosure` | 关 | 开 | 开 | 开 |
 | `[index].enabled` | 关 | 开 | 开 | 开 |
 | `[lsp].enabled` | 关 | 开 | 开 | 开 |
 | `[lsp].include_warnings` | 关 | 关 | 开 | 开 |
@@ -82,6 +83,7 @@ model = "deepseek-v4-pro"
 provider = "deepseek"           # 仅启动时生效；切换需重启
 
 # 资源开关基线（填充式，与 config.toml 同名词表）
+tools_progressive_disclosure = false  # 隐藏声明延迟的工具（经 tool_search 取回）
 index_enabled = false
 lsp_enabled = false
 lsp_include_warnings = false
@@ -110,7 +112,8 @@ web_search = false
 衰减的 Knowledge On Demand。
 
 **热切换 vs 需重启。** 应用模式、思考、审批、工具白/黑名单、子代理上限和模型
-下一轮即生效。资源开关（索引、LSP、快照、context/capacity 接缝）、Provider、
+下一轮即生效。资源开关（索引、LSP、快照、context/capacity 接缝）、工具目录
+拨盘（`tools_progressive_disclosure`）、Provider、
 feature 开关和记忆注入在引擎启动时读取——切换到包含这些字段的预设时，会明确
 提示哪些将在重启后生效。
 

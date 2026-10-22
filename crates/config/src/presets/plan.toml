@@ -1,6 +1,9 @@
 # Plan — design before implementing. Read-only exploration + plan tooling,
-# writing tools gated behind approval.
+# writing tools gated behind approval. The tool catalog follows the same
+# posture as the heavier tiers: resident core in the request, declared-deferred
+# long tail discoverable through `tool_search`.
 name = "plan"
 description = "Design first: read-only exploration, plan tooling, writes gated behind approval."
 app_mode = "plan"
 memory_level = "notebook"
+tools_progressive_disclosure = true

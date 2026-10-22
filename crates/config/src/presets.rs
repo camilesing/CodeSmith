@@ -201,6 +201,11 @@ pub struct PresetDefinitionToml {
     /// Tool surface dials.
     #[serde(default)]
     pub tools: Option<PresetToolsToml>,
+    /// `[tools].progressive_disclosure` — withhold the tools whose own
+    /// definition declares deferral, offering them on demand through
+    /// `tool_search`.
+    #[serde(default)]
+    pub tools_progressive_disclosure: Option<bool>,
     /// Feature-flag baselines keyed like `[features]` in config.toml
     /// (e.g. `subagents = false`).
     #[serde(default)]
@@ -253,6 +258,10 @@ impl PresetDefinitionToml {
     #[must_use]
     pub fn bool_dials(&self) -> Vec<(&'static str, Option<bool>)> {
         vec![
+            (
+                "[tools].progressive_disclosure",
+                self.tools_progressive_disclosure,
+            ),
             ("[index].enabled", self.index_enabled),
             ("[lsp].enabled", self.lsp_enabled),
             ("[lsp].include_warnings", self.lsp_include_warnings),
@@ -658,11 +667,14 @@ mod tests {
         assert_eq!(simple.max_subagents, Some(0));
         assert!(simple.tools.as_ref().unwrap().include.is_some());
         assert_eq!(simple.index_enabled, Some(false));
+        // The minimal tier keeps its 9-tool surface fully resident.
+        assert_eq!(simple.tools_progressive_disclosure, Some(false));
 
         let middle = &catalog.get("middle").unwrap().definition;
         assert_eq!(middle.app_mode, None);
         assert_eq!(middle.tools, None);
         assert_eq!(middle.index_enabled, Some(true));
+        assert_eq!(middle.tools_progressive_disclosure, Some(true));
         // Quality-first default: the strong brain classifies; cost_saving is
         // the opt-in cheap router.
         assert_eq!(middle.auto_cost_saving, Some(false));
@@ -696,8 +708,22 @@ mod tests {
             Some(&true)
         );
 
+        // Every tier but `simple` ships the on-demand tool catalog.
+        for id in ["all", "experiment"] {
+            assert_eq!(
+                catalog
+                    .get(id)
+                    .unwrap()
+                    .definition
+                    .tools_progressive_disclosure,
+                Some(true),
+                "preset {id} must ship progressive disclosure on"
+            );
+        }
+
         let plan = &catalog.get("plan").unwrap().definition;
         assert_eq!(plan.app_mode.as_deref(), Some("plan"));
+        assert_eq!(plan.tools_progressive_disclosure, Some(true));
     }
 
     #[test]

@@ -37,17 +37,18 @@ Built-in tiers, progressive from lightest to heaviest:
 
 | Tier | Thinking | Tools | Memory | Sub-agents | Resource switches |
 |---|---|---|---|---|---|
-| `simple` | medium | core file + shell only (`tools.include`) | goldfish (none) | off | index/LSP/snapshots/memory/audit off |
-| `middle` *(default)* | inherits | inherits | inherits | 10 | high-value low-cost set on (index, LSP, snapshots, memory, strong-brain auto router); experimental seams off |
-| `all` | inherits | full surface | notebook (memory on, KOD off) | 20 | middle + LSP warnings; preview flags still off |
-| `experiment` | inherits | full surface | elephant + Knowledge On Demand | 20 | everything on (vision, agent teams, coordinator, context manager, capacity controller, strict tool mode) |
-| `plan` | inherits | read-only + plan tooling | notebook (explicit only) | inherits | inherits |
+| `simple` | medium | core file + shell only (`tools.include`), all resident | goldfish (none) | off | index/LSP/snapshots/memory/audit off |
+| `middle` *(default)* | inherits | inherits; declared-deferred tail via `tool_search` | inherits | 10 | high-value low-cost set on (index, LSP, snapshots, memory, strong-brain auto router); experimental seams off |
+| `all` | inherits | full surface − declared-deferred tail (`tool_search`) | notebook (memory on, KOD off) | 20 | middle + LSP warnings; preview flags still off |
+| `experiment` | inherits | full surface − declared-deferred tail (`tool_search`) | elephant + Knowledge On Demand | 20 | everything on (vision, agent teams, coordinator, context manager, capacity controller, strict tool mode) |
+| `plan` | inherits | read-only + plan tooling; declared-deferred tail via `tool_search` | notebook (explicit only) | inherits | inherits |
 
 Governed switch matrix (`codesmith preset show` prints this with your
 effective values):
 
 | key | simple | middle | all | experiment |
 |---|---|---|---|---|
+| `[tools].progressive_disclosure` | off | on | on | on |
 | `[index].enabled` | off | on | on | on |
 | `[lsp].enabled` | off | on | on | on |
 | `[lsp].include_warnings` | off | off | on | on |
@@ -90,6 +91,7 @@ model = "deepseek-v4-pro"
 provider = "deepseek"           # startup-only; needs a restart to change
 
 # Resource switch baselines (fill-if-unset, same vocabulary as config.toml)
+tools_progressive_disclosure = false  # withhold declared-deferred tools (tool_search)
 index_enabled = false
 lsp_enabled = false
 lsp_include_warnings = false
@@ -119,7 +121,8 @@ memory, `notebook` keeps only what you explicitly save (`# note`,
 
 **Hot vs. restart.** App mode, thinking, approvals, tool allow/denylists,
 sub-agent cap, and model switch on the next turn. The resource switches
-(index, LSP, snapshots, context/capacity seams), provider, feature flags,
+(index, LSP, snapshots, context/capacity seams), the tool catalog dial
+(`tools_progressive_disclosure`), provider, feature flags,
 and memory injection are read at engine startup — switching to a preset
 that sets them prints what will apply after restart.
 

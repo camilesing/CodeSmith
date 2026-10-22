@@ -616,12 +616,12 @@ pub struct ToolsToml {
     #[serde(default)]
     pub always_load: Vec<String>,
 
-    /// Progressive disclosure: withhold the tools that declare
-    /// `should_defer` from the request and offer them on demand through
-    /// `tool_search`. Off by default — the request carries the whole
-    /// registered surface (minus `[tools] include`/`exclude`).
+    /// Progressive disclosure: withhold the tools that declare deferral from
+    /// the request and offer them on demand through `tool_search`. Schema
+    /// parity with the CLI's `ToolsConfig`, which is the authority; `None`
+    /// (key absent) lets the active preset baseline decide.
     #[serde(default)]
-    pub progressive_disclosure: bool,
+    pub progressive_disclosure: Option<bool>,
 }
 
 /// On-disk schema for the `[snapshots]` table (#137). See

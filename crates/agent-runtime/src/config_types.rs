@@ -194,10 +194,11 @@ pub struct ToolsConfig {
     pub always_load: Vec<String>,
 
     /// Progressive disclosure: withhold the tools that declare `should_defer`
-    /// from the request and offer them on demand through `tool_search`. Off by
-    /// default.
+    /// from the request and offer them on demand through `tool_search`. `None`
+    /// (key absent) leaves the decision to the active preset's baseline, which
+    /// the factory tiers set on for every tier except `simple`.
     #[serde(default)]
-    pub progressive_disclosure: bool,
+    pub progressive_disclosure: Option<bool>,
 
     /// Optional directory to scan for plugin tool scripts. Scripts with a
     /// frontmatter header (`# name:`, `# description:`, `# schema:`) are

@@ -19,6 +19,9 @@ capacity_enabled = false
 auto_cost_saving = false
 network_audit = false
 strict_tool_mode = false
+# The allowlist below is the whole surface, so it stays fully resident — the
+# on-demand `tool_search` path belongs to the tiers that carry the long tail.
+tools_progressive_disclosure = false
 
 [tools]
 include = [

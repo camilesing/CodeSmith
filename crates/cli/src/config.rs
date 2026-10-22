@@ -1419,11 +1419,14 @@ impl Config {
 
     /// Whether declared-deferred tools are withheld from the request and
     /// discoverable through `tool_search` (`[tools].progressive_disclosure`).
+    /// The key is preset-governed, so an unset value reads as off here only
+    /// after the preset layer had its chance to baseline it.
     #[must_use]
     pub fn tools_progressive_disclosure(&self) -> bool {
         self.tools
             .as_ref()
-            .is_some_and(|tools| tools.progressive_disclosure)
+            .and_then(|tools| tools.progressive_disclosure)
+            .unwrap_or(false)
     }
 
     #[must_use]
@@ -4855,8 +4858,26 @@ mod tests {
         assert!(parsed.base.tools_progressive_disclosure());
         assert!(
             !ConfigFile::default().base.tools_progressive_disclosure(),
-            "an absent setting means off"
+            "an absent setting means off at the config layer"
         );
+        // Absent and explicit `false` must stay distinguishable: the preset
+        // baseline only fills the former, so a user who wrote `false` while
+        // the tier ships `true` keeps their value (and reports `diy`).
+        let off: ConfigFile = toml::from_str(
+            r#"
+            [tools]
+            progressive_disclosure = false
+            "#,
+        )
+        .expect("tools config");
+        assert_eq!(
+            off.base
+                .tools
+                .as_ref()
+                .and_then(|tools| tools.progressive_disclosure),
+            Some(false)
+        );
+        assert!(!off.base.tools_progressive_disclosure());
     }
 
     #[test]

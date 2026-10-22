@@ -1,6 +1,8 @@
 # Middle — the factory default. Simple plus the high-value, low-cost
 # features: cross-session memory, lazy code index, LSP diagnostics,
-# workspace snapshots, sub-agents, web search, MCP, and the strong-brain
+# workspace snapshots, sub-agents, web search, MCP, tool search on demand
+# (the request carries the resident core; the declared-deferred long tail
+# is discoverable through `tool_search`), and the strong-brain
 # auto router (heavy tier classifies, quality-first). Experimental
 # seams (context manager, capacity, KOD, vision, agent teams,
 # coordinator) stay off. Set [auto] cost_saving = true in your config.toml
@@ -22,6 +24,7 @@ capacity_enabled = false
 auto_cost_saving = false
 network_audit = true
 strict_tool_mode = false
+tools_progressive_disclosure = true
 
 [features]
 shell_tool = true
