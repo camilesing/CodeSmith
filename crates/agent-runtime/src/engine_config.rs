@@ -336,7 +336,11 @@ impl Default for EngineConfig {
         Self {
             model: DEFAULT_TEXT_MODEL.to_string(),
             workspace: PathBuf::from("."),
-            allow_shell: true,
+            // Fail-closed library default: shell access must be opted into.
+            // Every CLI entry point already sets this explicitly from
+            // `Config::allow_shell()` (itself defaulting to false);
+            // embedders get the same posture instead of silent shell.
+            allow_shell: false,
             trust_mode: false,
             notes_path: PathBuf::from("notes.txt"),
             mcp_config_path: PathBuf::from("mcp.json"),

@@ -18,7 +18,6 @@
 #![deny(clippy::print_stderr)]
 
 pub mod capacity;
-pub mod capacity_memory;
 pub mod coherence;
 pub mod engine;
 pub mod events;

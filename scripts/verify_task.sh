@@ -13,7 +13,12 @@ TASKS_DIR="${TASKS_DIR:-$HOME/deep-swe/tasks}"
 WORK_DIR="/tmp/deep-swe-verify/$TASK_ID"
 
 mkdir -p "$WORK_DIR"
-RESULT_FILE="$WORK_DIR/result.txt"
+# Per-run result file: concurrent invocations of the same task must not read
+# (and exit on) each other's output. result.txt stays as a last-writer-wins
+# copy for anything that expects it.
+RESULT_FILE="$(mktemp "$WORK_DIR/result.XXXXXX")"
+CONTAINER="dswe-verify-${TASK_ID}-$$"
+trap 'docker kill "$CONTAINER" >/dev/null 2>&1 || true' EXIT
 
 echo "[$TASK_ID] Pulling image..."
 if ! docker pull "$IMAGE" 2>&1 | tail -1; then
@@ -25,7 +30,11 @@ echo "[$TASK_ID] Running verifier..."
 # The verifier's own exit status is captured in EC inside the container (no
 # `set -e` around it) so the REWARD block always runs and failing runs still
 # produce a parseable result file.
-docker run --rm \
+# Bounded: a hung verifier cannot park this script (or the container) forever —
+# timeout kills the client, the EXIT trap kills the container.
+timeout 900 docker run --rm \
+  --name "$CONTAINER" \
+  --memory 8g --cpus 4 \
   --platform linux/amd64 \
   -v "$WORK_DIR/model.patch:/model.patch:ro" \
   -v "$TASKS_DIR/$TASK_ID/tests/test.patch:/tests/test.patch:ro" \
@@ -62,15 +71,18 @@ RUN_STATUS=$?
 
 echo "[$TASK_ID] Done. Result:"
 grep -E 'REWARD|FAILED|PATCH_FAILED|passed' "$RESULT_FILE" || true
+cp "$RESULT_FILE" "$WORK_DIR/result.txt"
 
 if [ "$RUN_STATUS" -ne 0 ]; then
   echo "[$TASK_ID] docker run exited with status $RUN_STATUS" >&2
   exit 3
 fi
-if grep -q "PATCH_FAILED" "$RESULT_FILE"; then
+# Line-anchored: the verifier's own output tail is in the same file, and a
+# stray "REWARD=1" substring inside it must not grade the task as solved.
+if grep -qE '^PATCH_FAILED\r?$' "$RESULT_FILE"; then
   exit 2
 fi
-if grep -q "REWARD=1" "$RESULT_FILE"; then
+if grep -qE '^REWARD=1\r?$' "$RESULT_FILE"; then
   exit 0
 fi
 exit 1

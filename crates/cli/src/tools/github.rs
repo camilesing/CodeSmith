@@ -16,13 +16,6 @@ use crate::tools::spec::{
     optional_bool, optional_str, required_str, required_u64,
 };
 
-const DEFAULT_GH: &str = "/opt/homebrew/bin/gh";
-const FALLBACK_GH_PATHS: &[&str] = &[
-    "/usr/bin/gh",                       // Linux system package manager
-    "/usr/local/bin/gh",                 // macOS Intel Homebrew / manual install
-    "/home/linuxbrew/.linuxbrew/bin/gh", // Linux Homebrew (official prefix)
-    "/opt/homebrew/bin/gh",              // macOS Apple Silicon Homebrew
-];
 const BODY_ARTIFACT_THRESHOLD: usize = 4_000;
 const DIFF_ARTIFACT_THRESHOLD: usize = 8_000;
 
@@ -397,31 +390,44 @@ async fn close_github_thread(
     )
 }
 
+/// gh calls are bounded: a hung gh (credential prompt, network stall) must
+/// not park the tool — and its caller's turn — forever.
+const GH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 fn gh_bin() -> String {
+    // The env override is a user contract; everything else resolves from
+    // PATH through the shared dependency helper instead of a hardcoded
+    // per-platform path list.
     if let Some(bin) = codesmith_config::codesmith_env("GH_BIN") {
         return bin;
     }
-    for path in FALLBACK_GH_PATHS {
-        if std::path::Path::new(path).is_file() {
-            return path.to_string();
-        }
-    }
-    DEFAULT_GH.to_string()
+    crate::dependencies::Gh::resolve().unwrap_or_else(|| "gh".to_string())
 }
 
 async fn run_gh_text(context: &ToolContext, args: &[&str]) -> Result<String, ToolError> {
-    let out = Command::new(gh_bin())
-        .args(args)
-        .current_dir(&context.workspace)
-        .output()
-        .await
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                ToolError::not_available("gh CLI not found; install it or set CODESMITH_GH_BIN")
-            } else {
-                ToolError::execution_failed(format!("failed to run gh: {e}"))
-            }
-        })?;
+    let out = tokio::time::timeout(
+        GH_TIMEOUT,
+        Command::new(gh_bin())
+            .args(args)
+            .current_dir(&context.workspace)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .map_err(|_| {
+        ToolError::execution_failed(format!(
+            "gh {} timed out after {}s",
+            args.join(" "),
+            GH_TIMEOUT.as_secs()
+        ))
+    })?
+    .map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            ToolError::not_available("gh CLI not found; install it or set CODESMITH_GH_BIN")
+        } else {
+            ToolError::execution_failed(format!("failed to run gh: {e}"))
+        }
+    })?;
     if !out.status.success() {
         return Err(ToolError::execution_failed(format!(
             "gh {} failed: {}",

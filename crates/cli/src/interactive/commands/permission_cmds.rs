@@ -209,8 +209,11 @@ pub fn remove(state: &mut ReplState, command: &str) {
 /// `/permissions deny <command>` — refuse it for the rest of the session.
 ///
 /// Session-scoped by design: a persisted deny would need a store, and none
-/// exists (see the module note). The denial is keyed exactly like the
-/// approval prompt's `[e]`, so the two are the same rule.
+/// exists (see the module note). The denial is keyed like `/permissions
+/// allow` — the engine's grouping key (`shell:<family>`), so `deny git
+/// status` refuses that family wherever it appears in a later command. The
+/// approval gate also honors the exact per-call keys the prompt's `[e]`
+/// records; the two shapes meet in `approval_session_denied`.
 pub fn deny(state: &mut ReplState, command: &str) {
     let rule = normalize_rule(command);
     if rule.is_empty() {

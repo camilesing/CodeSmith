@@ -1232,8 +1232,9 @@ Tavily、Bocha、Metaso 或 Baidu。
 请求共享同一条超时/取消/错误分类路径；按域网络策略（`[network]`）
 按主机生效，重定向的每一跳都会重新检查。
 
-**Metaso**（[metaso.cn](https://metaso.cn)）每天有 100 次免费搜索
-额度；设置 `METASO_API_KEY` 或 `[search] api_key` 可获得更高额度。
+**Metaso**（[metaso.cn](https://metaso.cn)）为自有 key 提供每天 100 次
+免费搜索额度；设置 `METASO_API_KEY` 或 `[search] api_key`。旧版本内置的
+社区共享 key 已移除——所有安装共用一把 key 会把额度一起耗尽。
 
 **Baidu** 使用位于
 `https://qianfan.baidubce.com/v2/ai_search/web_search` 的百度 AI 搜索。
@@ -1247,7 +1248,7 @@ Tavily、Bocha、Metaso 或 Baidu。
 ```toml
 [search]
 provider = "baidu" # duckduckgo | bing | tavily | bocha | metaso | baidu | volcengine
-# api_key = "YOUR_KEY" # required for tavily, bocha, and baidu; optional for metaso
+# api_key = "YOUR_KEY" # required for tavily, bocha, metaso, and baidu
 ```
 
 ## 本地媒体附件

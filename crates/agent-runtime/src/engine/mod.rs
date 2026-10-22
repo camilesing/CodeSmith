@@ -1012,7 +1012,7 @@ impl Engine {
             .session
             .working_set
             .lock()
-            .expect("working_set poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         turn_meta::turn_metadata_block(
             &working_set,
             &self.config.workspace,
@@ -1078,7 +1078,7 @@ impl Engine {
         self.turn_counter = self.turn_counter.saturating_add(1);
         self.capacity_controller
             .lock()
-            .expect("capacity_controller poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .mark_turn_start(self.turn_counter);
 
         // Emit turn started event IMMEDIATELY so the UI knows the turn is
@@ -1149,7 +1149,7 @@ impl Engine {
         self.session
             .working_set
             .lock()
-            .expect("working_set poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .observe_user_message(&content, &self.session.workspace);
         let _force_update_plan_first = should_force_update_plan_first(mode, &content);
 
@@ -1164,7 +1164,7 @@ impl Engine {
             .session
             .working_set
             .lock()
-            .expect("working_set poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .prompt_paths();
         let mut user_msg = self.user_text_message_with_turn_metadata_for_route(
             content,
@@ -1546,7 +1546,7 @@ impl Engine {
             let snapshot = self
                 .capacity_controller
                 .lock()
-                .expect("capacity_controller poisoned")
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .last_snapshot()
                 .cloned();
             // Clone the client Arc before the `&mut self` borrow in the
@@ -1756,7 +1756,7 @@ impl Engine {
                             command.source_duration_ms = self
                                 .tool_durations
                                 .lock()
-                                .expect("tool_durations poisoned")
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
                                 .get(&command.tool_use_id)
                                 .copied();
                             command
@@ -1798,7 +1798,7 @@ impl Engine {
                         .await;
                         pending
                             .lock()
-                            .expect("pending_result_verifications poisoned")
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push(block.clone());
                         // P3-9 step 1: every verdict is appended to the
                         // local evolution log (best-effort — see
@@ -1870,13 +1870,13 @@ impl Engine {
             .session
             .working_set
             .lock()
-            .expect("working_set poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .pinned_message_indices(&self.session.messages, &self.session.workspace);
         let compaction_paths = self
             .session
             .working_set
             .lock()
-            .expect("working_set poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .top_paths(24);
         let messages_before = self.session.messages.len();
         let mut turn_status = TurnOutcomeStatus::Completed;
@@ -2596,7 +2596,7 @@ impl Engine {
             .session
             .working_set
             .lock()
-            .expect("working_set poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .pinned_message_indices(&self.session.messages, &self.session.workspace);
 
         let _ = self
@@ -2781,7 +2781,7 @@ impl Engine {
             .session
             .working_set
             .lock()
-            .expect("working_set poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         let state_block = self
             .host
@@ -2808,7 +2808,7 @@ impl Engine {
                 .session
                 .fact_ledger
                 .lock()
-                .expect("fact ledger poisoned");
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if ledger.is_empty() {
                 None
             } else {
@@ -2881,7 +2881,7 @@ impl Engine {
                     .session
                     .working_set
                     .lock()
-                    .expect("working_set poisoned")
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .clone();
                 self.host
                     .capture_structured_state(StructuredStateRequest {
@@ -3113,7 +3113,7 @@ impl Engine {
             .session
             .recent_read_files
             .lock()
-            .expect("recent_read_files poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .cloned()
             .collect::<Vec<_>>();
@@ -3130,7 +3130,7 @@ impl Engine {
             .session
             .recent_media
             .lock()
-            .expect("recent_media poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .cloned()
             .collect::<Vec<_>>();
@@ -3405,11 +3405,9 @@ pub fn default_active_native_tool_names() -> &'static [&'static str] {
 pub use self::approval::{ApprovalDecision, ApprovalRouter, ApprovalWaitError, UserInputDecision};
 pub use self::dispatch::should_parallelize_tool_batch;
 pub use self::dispatch::{
-    ArgSalvagePolicy, MAX_PARALLEL_BATCH, ToolExecOutcome, ToolExecutionBatch, ToolExecutionPlan,
-    caller_allowed_for_tool, final_tool_input, final_tool_input_for_turn,
-    final_tool_input_with_policy, format_tool_error, parse_tool_input,
-    parse_tool_input_with_policy, plan_tool_execution_batches, should_force_update_plan_first,
-    should_stop_after_plan_tool,
+    MAX_PARALLEL_BATCH, ToolExecOutcome, ToolExecutionBatch, ToolExecutionPlan,
+    caller_allowed_for_tool, format_tool_error, plan_tool_execution_batches,
+    should_force_update_plan_first, should_stop_after_plan_tool,
 };
 use self::dispatch::{
     ParallelToolResult, ParallelToolResultEntry, ToolExecGuard, mcp_tool_is_parallel_safe,
