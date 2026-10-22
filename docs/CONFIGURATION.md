@@ -1376,8 +1376,10 @@ Requests share one timeout/cancellation/error-classification path and the
 per-domain network policy (`[network]`) applies per host, including each
 redirect hop.
 
-**Metaso** ([metaso.cn](https://metaso.cn)) has a 100 searches/day free quota;
-set `METASO_API_KEY` or `[search] api_key` for a higher quota.
+**Metaso** ([metaso.cn](https://metaso.cn)) offers a 100 searches/day free
+quota with your own key; set `METASO_API_KEY` or `[search] api_key`. The
+built-in community key that earlier versions fell back to was removed — one
+shared key across every install exhausted its quota collectively.
 
 **Baidu** uses Baidu AI Search at
 `https://qianfan.baidubce.com/v2/ai_search/web_search`. Set
@@ -1391,7 +1393,7 @@ environment variables.
 ```toml
 [search]
 provider = "baidu" # duckduckgo | bing | tavily | bocha | metaso | baidu | volcengine
-# api_key = "YOUR_KEY" # required for tavily, bocha, and baidu; optional for metaso
+# api_key = "YOUR_KEY" # required for tavily, bocha, metaso, and baidu
 ```
 
 ## Local Media Attachments

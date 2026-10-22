@@ -64,7 +64,11 @@ impl ToolSpec for GitStatusTool {
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let git_ctx = resolve_git_context(context, optional_str(&input, "path"))?;
 
+        // `--no-optional-locks`: a read-only status must not opportunistically
+        // refresh and write `.git/index` (and so never contend the index lock
+        // with a concurrent real git invocation).
         let mut args = vec![
+            "--no-optional-locks".to_string(),
             "-c".to_string(),
             "core.quotepath=false".to_string(),
             "status".to_string(),
