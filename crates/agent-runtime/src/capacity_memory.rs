@@ -72,7 +72,7 @@ fn capacity_memory_dirs() -> Vec<PathBuf> {
 }
 
 pub fn append_capacity_record(session_id: &str, record: &CapacityMemoryRecord) -> Result<PathBuf> {
-    let candidates = candidate_session_memory_paths(session_id);
+    let candidates = candidate_session_memory_paths(session_id)?;
     append_capacity_record_to_candidates(&candidates, record)
 }
 
@@ -97,7 +97,7 @@ pub fn load_last_k_capacity_records(
     session_id: &str,
     k: usize,
 ) -> Result<Vec<CapacityMemoryRecord>> {
-    let candidates = candidate_session_memory_paths(session_id);
+    let candidates = candidate_session_memory_paths(session_id)?;
     load_last_k_capacity_records_from_candidates(&candidates, k)
 }
 
@@ -133,11 +133,14 @@ pub fn load_last_k_capacity_records_from_path(
     }
 }
 
-fn candidate_session_memory_paths(session_id: &str) -> Vec<PathBuf> {
-    capacity_memory_dirs()
+fn candidate_session_memory_paths(session_id: &str) -> Result<Vec<PathBuf>> {
+    // The id is joined into a path; reject traversal-shaped ids here, at the
+    // join, instead of trusting every caller to have validated upstream.
+    crate::utils::require_safe_path_component(session_id)?;
+    Ok(capacity_memory_dirs()
         .into_iter()
         .map(|dir| dir.join(format!("{session_id}.jsonl")))
-        .collect()
+        .collect())
 }
 
 fn append_capacity_record_to_candidates(

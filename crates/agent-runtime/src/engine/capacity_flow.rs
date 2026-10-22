@@ -695,7 +695,10 @@ impl CapacityGateProbe {
             .saturating_add(tool_call_ids.len())
             .saturating_add(1);
         let tool_calls_recent_window = recent_tool_call_count(messages, message_window);
-        let working_set = self.working_set.lock().expect("working_set poisoned");
+        let working_set = self
+            .working_set
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let unique_reference_ids_recent_window =
             recent_unique_reference_count(messages, message_window, tool_call_ids, &working_set);
         let context_window = usize::try_from(
@@ -728,7 +731,7 @@ impl CapacityGateProbe {
         let input = self.build_observation(messages, step, tool_call_ids, system);
         self.controller
             .lock()
-            .expect("capacity_controller poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .observe_pre_turn(input)
     }
 
@@ -743,7 +746,7 @@ impl CapacityGateProbe {
         let input = self.build_observation(messages, step, tool_call_ids, system);
         self.controller
             .lock()
-            .expect("capacity_controller poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .observe_post_tool(input)
     }
 
@@ -751,7 +754,7 @@ impl CapacityGateProbe {
     pub fn decide(&self, snapshot: Option<&CapacitySnapshot>) -> CapacityDecision {
         self.controller
             .lock()
-            .expect("capacity_controller poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .decide(self.turn_index, snapshot)
     }
 
@@ -760,7 +763,7 @@ impl CapacityGateProbe {
     pub fn mark_intervention_applied(&self, action: GuardrailAction) {
         self.controller
             .lock()
-            .expect("capacity_controller poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .mark_intervention_applied(self.turn_index, action);
     }
 
@@ -768,7 +771,7 @@ impl CapacityGateProbe {
     pub fn last_snapshot(&self) -> Option<CapacitySnapshot> {
         self.controller
             .lock()
-            .expect("capacity_controller poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .last_snapshot()
             .cloned()
     }
@@ -875,12 +878,12 @@ impl Engine {
         let snapshot = self
             .capacity_controller
             .lock()
-            .expect("capacity_controller poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .observe_pre_turn(input);
         let decision = self
             .capacity_controller
             .lock()
-            .expect("capacity_controller poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .decide(self.turn_counter, snapshot.as_ref());
         self.emit_capacity_decision(turn, snapshot.as_ref(), &decision)
             .await;
@@ -910,12 +913,12 @@ impl Engine {
         let snapshot = self
             .capacity_controller
             .lock()
-            .expect("capacity_controller poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .observe_post_tool(input);
         let decision = self
             .capacity_controller
             .lock()
-            .expect("capacity_controller poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .decide(self.turn_counter, snapshot.as_ref());
         self.emit_capacity_decision(turn, snapshot.as_ref(), &decision)
             .await;
@@ -973,7 +976,7 @@ impl Engine {
         let last = self
             .capacity_controller
             .lock()
-            .expect("capacity_controller poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .last_snapshot()
             .cloned();
         // Lock-ordering: the fallback observation is built before the
@@ -985,7 +988,7 @@ impl Engine {
                 let input = self.capacity_observation(turn);
                 self.capacity_controller
                     .lock()
-                    .expect("capacity_controller poisoned")
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .observe_pre_turn(input)
             }
         };
@@ -998,7 +1001,7 @@ impl Engine {
         let decision = self
             .capacity_controller
             .lock()
-            .expect("capacity_controller poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .decide(self.turn_counter, Some(&forced));
         self.emit_capacity_decision(turn, Some(&forced), &decision)
             .await;
@@ -1066,7 +1069,7 @@ impl Engine {
             .session
             .working_set
             .lock()
-            .expect("working_set poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let ids: Vec<String> = turn.tool_calls.iter().map(|t| t.id.clone()).collect();
         recent_unique_reference_count(&self.session.messages, message_window, &ids, &working_set)
     }
@@ -1322,13 +1325,13 @@ impl Engine {
                 .session
                 .working_set
                 .lock()
-                .expect("working_set poisoned")
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .pinned_message_indices(&self.session.messages, &self.session.workspace);
             let compaction_paths = self
                 .session
                 .working_set
                 .lock()
-                .expect("working_set poisoned")
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .top_paths(24);
 
             let mut refreshed = false;
@@ -1435,7 +1438,7 @@ impl Engine {
         .await;
         self.capacity_controller
             .lock()
-            .expect("capacity_controller poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .mark_intervention_applied(self.turn_counter, GuardrailAction::TargetedContextRefresh);
         true
     }
@@ -1543,7 +1546,7 @@ impl Engine {
                     Err(err) => {
                         self.capacity_controller
                             .lock()
-                            .expect("capacity_controller poisoned")
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .mark_replay_failed(self.turn_counter);
                         (
                             false,
@@ -1586,7 +1589,7 @@ impl Engine {
         if !pass {
             self.capacity_controller
                 .lock()
-                .expect("capacity_controller poisoned")
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .mark_replay_failed(self.turn_counter);
         }
 
@@ -1637,7 +1640,7 @@ impl Engine {
         .await;
         self.capacity_controller
             .lock()
-            .expect("capacity_controller poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .mark_intervention_applied(self.turn_counter, GuardrailAction::VerifyWithToolReplay);
         true
     }
@@ -1710,7 +1713,7 @@ impl Engine {
         .await;
         self.capacity_controller
             .lock()
-            .expect("capacity_controller poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .mark_intervention_applied(self.turn_counter, GuardrailAction::VerifyAndReplan);
         true
     }
@@ -1823,7 +1826,7 @@ impl Engine {
             .session
             .working_set
             .lock()
-            .expect("working_set poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .top_paths(8);
         for tool_call in turn.tool_calls.iter().rev().take(4) {
             critical_refs.push(format!("tool:{}", tool_call.id));
