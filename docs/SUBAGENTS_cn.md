@@ -11,6 +11,12 @@
 注册了 `tool_agent` 和 `agent_run`。参见 `prompts/base.md`
 的"Sub-Agent Strategy"以及内联的工具描述。
 
+这三个会话工具是常驻（eager）加载的：只要子代理家族被注册（`subagents`
+特性开启），`agent_open` → `agent_eval` → `agent_close` 从第一轮起就
+随请求的工具清单一并下发，照提示词行事的模型无需再花一次 ToolSearch
+发现往返。`agent_run`、`agent_spawn` 和 `tool_agent` 仍留在 ToolSearch
+之后——提示词里的并行调查路径用的是这个会话三件套。
+
 ## 角色分类体系
 
 `agent_open` 的 `type` 字段为子代理选择一种系统提示词姿态

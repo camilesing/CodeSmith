@@ -7,6 +7,10 @@
 //! list) can live in `codesmith-agent-runtime` without a circular
 //! dependency back into the TUI engine body.
 
+/// Canonical name of the sub-agent release tool (`AgentCloseTool`).
+pub const AGENT_CLOSE_NAME: &str = "agent_close";
+/// Canonical name of the sub-agent follow-up/harvest tool (`AgentEvalTool`).
+pub const AGENT_EVAL_NAME: &str = "agent_eval";
 /// Canonical name of the sub-agent opener tool (`AgentOpenTool`).
 pub const AGENT_OPEN_NAME: &str = "agent_open";
 /// Canonical name of the patch-application tool (`ApplyPatchTool`).
@@ -75,7 +79,15 @@ pub const WRITE_FILE_NAME: &str = "write_file";
 /// construction/`name()` sites share one spelling — a bare literal that
 /// drifts from the catalog would silently flip the tool into
 /// tool-search deferral.
+///
+/// The whole sub-agent session chain (`agent_open` → `agent_eval` →
+/// `agent_close`) is eager: the prompts name all three for parallel fan-out,
+/// and a deferred tool's *first* call is refused with a schema-hydration
+/// result rather than executed, so leaving part of the chain behind
+/// tool-search would cost a wasted round trip on every prompted call.
 pub const DEFAULT_ACTIVE_NATIVE_TOOLS: &[&str] = &[
+    AGENT_CLOSE_NAME,
+    AGENT_EVAL_NAME,
     AGENT_OPEN_NAME,
     APPLY_PATCH_NAME,
     CHECKLIST_WRITE_NAME,
@@ -123,5 +135,28 @@ mod tests {
             DEFAULT_ACTIVE_NATIVE_TOOLS.windows(2).all(|w| w[0] < w[1]),
             "catalog must stay sorted (prefix-cache stability) and duplicate-free"
         );
+    }
+
+    /// The spawn → harvest → release chain the prompts name must stay
+    /// callable without a tool search. A deferred tool's first call is not
+    /// executed — it returns "was deferred and has now been loaded … not
+    /// executed" — so a prompt that tells the model to fan out and then
+    /// `agent_eval` the children would burn a round trip per call if any leg
+    /// of the chain were deferred. Asserted through the enforcing function,
+    /// so this covers both the list and the rule that reads it.
+    #[test]
+    fn the_subagent_session_chain_stays_eager() {
+        for name in [AGENT_CLOSE_NAME, AGENT_EVAL_NAME, AGENT_OPEN_NAME] {
+            for mode in [crate::mode::AppMode::Agent, crate::mode::AppMode::Plan] {
+                assert!(
+                    !crate::engine::should_default_defer_tool(
+                        name,
+                        mode,
+                        &std::collections::HashSet::new(),
+                    ),
+                    "{name} must stay eager — the prompts name it for parallel fan-out"
+                );
+            }
+        }
     }
 }

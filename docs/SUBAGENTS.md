@@ -14,6 +14,13 @@ registers `tool_agent` and `agent_run` alongside them. See
 `prompts/base.md` "Sub-Agent Strategy" and the in-line tool
 descriptions.
 
+The three session tools are eager-loaded: whenever the family is registered
+(the `subagents` feature), all of `agent_open` → `agent_eval` →
+`agent_close` ride the request's tool list from the first turn, so a model
+following the prompt never pays a ToolSearch discovery round trip for them.
+`agent_run`, `agent_spawn`, and `tool_agent` stay behind ToolSearch — the
+prompt's parallel-investigation path uses the session trio.
+
 ## Role taxonomy
 
 The `type` field on `agent_open` selects a system-prompt posture for the child

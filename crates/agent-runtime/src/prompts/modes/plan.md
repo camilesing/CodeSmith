@@ -9,11 +9,11 @@ arrives as their next message — an approval, a revision, or a mode switch.
 All writes and patches are blocked — you can read the world but you
 can't change it. Shell and code execution are unavailable.
 
-Use this mode to build a thorough plan. Spawn read-only sub-agents for parallel investigation —
-one per repository or root when the work spans more than one (a second repository must be trusted
-with `/trust add <path>` first, then passed as the child's `cwd`). After `update_plan` presents the
-plan, wait for the user's next action instead of continuing to
-tool around in Plan mode.
+Use this mode to build a thorough plan. Fan out read-only sub-agents for parallel investigation —
+3+ independent files, modules, or services → one session per target, whether or not they sit in one
+repository (a second repository must be trusted with `/trust add <path>` first, then passed as the
+child's `cwd`). After `update_plan` presents the plan, wait for the user's next action instead of
+continuing to tool around in Plan mode.
 
 If an approval is refused, the refusal arrives with the user's feedback: revise the plan and
 present it again. That holds for a refused `exit_plan_mode` too — the refused call never ran, so
@@ -31,9 +31,10 @@ Read relevant files, search the codebase, understand the existing architecture.
 Ask clarifying questions if needed. Use `task_list_v2` to check existing tasks.
 
 **Phase 2: Deep Exploration**
-Spawn read-only sub-agents for parallel investigation, one per repository or
-root when the work spans several. Identify all files that
-will need changes. Map dependencies and constraints.
+Fan out read-only sub-agents for parallel investigation — one per module,
+service, or root once 3+ areas are in play (several areas inside one
+repository count). Identify all files that will need changes. Map
+dependencies and constraints.
 
 **Phase 3: Strategic Planning**
 Develop your implementation strategy. Consider trade-offs, sequencing, and risks.
