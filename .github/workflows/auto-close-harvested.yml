@@ -79,13 +79,17 @@ jobs:
           declare -A processed_prs=()
 
           for sha in "${commits[@]}"; do
-            body="$(git log -1 --format=%B "${sha}")"
-            # Two patterns, both case-insensitive on the keyword:
+            # %b is the body only (no subject line), matching the header
+            # comment's contract; the line anchor keeps quoted/revert text
+            # that merely mentions a harvest from closing that PR.
+            body="$(git log -1 --format=%b "${sha}")"
+            # Two patterns, both case-insensitive on the keyword, each at
+            # the start of its own line:
             #   "Harvested from PR #1234 by @username"  (preferred form)
             #   "harvested from #1234"                  (short form)
             mapfile -t pr_numbers < <(
               printf '%s\n' "${body}" \
-                | grep -oiE 'harvested from (pr )?#[0-9]+' \
+                | grep -oiE '^harvested from (pr )?#[0-9]+' \
                 | grep -oE '#[0-9]+' \
                 | tr -d '#' \
                 | sort -u || true

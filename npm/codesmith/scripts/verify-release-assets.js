@@ -85,16 +85,6 @@ function requestStatus(url, method = "HEAD", redirects = 0) {
   });
 }
 
-async function verifyAsset(url, label) {
-  let status = await requestStatus(url, "HEAD");
-  if (status === 403 || status === 405) {
-    status = await requestStatus(url, "GET");
-  }
-  if (status < 200 || status >= 400) {
-    throw new Error(`${label} returned HTTP ${status} (${url})`);
-  }
-}
-
 async function downloadText(url, redirects = 0) {
   const client = clientFor(url);
   return new Promise((resolve, reject) => {

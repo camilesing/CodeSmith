@@ -9,9 +9,20 @@ on:
         description: 'Package/release version to publish to npm, without the leading v'
         required: true
         type: string
+      push_latest:
+        description: 'Also move the `latest` docker tag to this version (set false when re-dispatching an older release)'
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: read
+
+# One release pipeline at a time; a queued run must not be cancelled
+# mid-publish, so cancel-in-progress stays off.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -100,7 +111,7 @@ jobs:
     # or was skipped — but never when it actually failed or the run was
     # cancelled. Operators using dispatch are expected to have already run
     # the same gates locally / via ci.yml on `main`.
-    if: ${{ !cancelled() && (needs.parity.result == 'success' || needs.parity.result == 'skipped') }}
+    if: ${{ !cancelled() && (needs.parity.result == 'success' || needs.parity.result == 'skipped') && needs.resolve.result == 'success' }}
     strategy:
       matrix:
         include:
@@ -227,9 +238,9 @@ jobs:
           bundle() {
             local platform="$1"   # linux-x64, linux-arm64, macos-x64, macos-arm64, windows-x64
             local cli_src="$2"    # artifact name for codesmith binary
-            local ext="$4"        # tar.gz or zip
-            local variant="$5"    # '' (standard) or 'portable' (Windows only, no install script)
-            shift 5
+            local ext="$3"        # tar.gz or zip
+            local variant="$4"    # '' (standard) or 'portable' (Windows only, no install script)
+            shift 4
 
             local dir="bundles/codesmith-${platform}${variant:+-}${variant}"
             mkdir -p "$dir"
@@ -352,7 +363,10 @@ jobs:
             type=semver,pattern=v{{major}},value=${{ needs.resolve.outputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
             type=raw,value=${{ inputs.version }},enable=${{ github.event_name == 'workflow_dispatch' }}
             type=raw,value=v${{ inputs.version }},enable=${{ github.event_name == 'workflow_dispatch' }}
-            type=raw,value=latest
+            # Tag pushes always move `latest`; a dispatch only does when the
+            # operator confirms it, so re-dispatching an old version cannot
+            # silently regress the tag.
+            type=raw,value=latest,enable=${{ github.event_name != 'workflow_dispatch' || inputs.push_latest != false }}
       - name: Build and push
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.18.0
         env:
