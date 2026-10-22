@@ -3379,6 +3379,7 @@ mod deliverables;
 mod dispatch;
 mod loop_guard;
 mod lsp_hooks;
+mod plan_reminder;
 mod result_verifier;
 mod streaming;
 mod team_inbox;

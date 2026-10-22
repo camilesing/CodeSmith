@@ -3328,6 +3328,16 @@ impl HostAgentExecutor {
             if let Some(probe) = &self.deliverables {
                 probe.check_and_note(history, step).await;
             }
+            // Plan-mode contract restatement: the mode prompt is pinned far
+            // back in the prefix, so its binding rules (read-only, the
+            // fan-out rule, turn discipline) ride a runtime note at this
+            // same pre-request seam. Stateless — the transcript is the
+            // schedule (see `plan_reminder`'s module doc).
+            let plan_active = match &self.plan_mode_state {
+                Some(state) => state.lock().await.active,
+                None => false,
+            };
+            crate::engine::plan_reminder::note_plan_reminder(history, self.turn_mode, plan_active);
 
             let api_tools = tools.to_api_tools();
             // Three-zone assembly (#2264 Phase 2): freeze the step's prefix
@@ -5536,6 +5546,206 @@ mod tests {
             runs(&count),
             2,
             "an exited plan session restores the tool inside the same turn loop"
+        );
+    }
+
+    // === Plan-mode runtime reminder (seam 1) ===============================
+
+    /// Helper: does any transcript message carry `kind="<kind>"`?
+    fn has_runtime_note(sess: &Session, kind: &str) -> bool {
+        let needle = format!("kind=\"{kind}\"");
+        sess.messages.iter().any(|message| {
+            message.content.iter().any(
+                |block| matches!(block, ContentBlock::Text { text, .. } if text.contains(&needle)),
+            )
+        })
+    }
+
+    fn count_runtime_notes(sess: &Session, kind: &str) -> usize {
+        let needle = format!("kind=\"{kind}\"");
+        sess.messages
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .filter(
+                |block| matches!(block, ContentBlock::Text { text, .. } if text.contains(&needle)),
+            )
+            .count()
+    }
+
+    /// The plan contract has to be in recent context, not only in the pinned
+    /// mode prompt: a Plan turn carries the full reminder as a runtime note
+    /// before its first request, and the model actually sees it there.
+    #[tokio::test]
+    async fn plan_turn_injects_the_reminder_before_its_first_request() {
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mut call = text_block(0, "mapping the repo");
+        call.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_turn_mode(AppMode::Plan);
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let reason = executor
+            .run(&mut history, "investigate three modules".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // [user prompt, plan reminder, assistant]
+        assert_eq!(history.len(), 3);
+        assert_eq!(sess.messages[1].role.as_str(), "user");
+        let ContentBlock::Text { text, .. } = &sess.messages[1].content[0] else {
+            panic!("expected a text block, got {:?}", sess.messages[1]);
+        };
+        assert!(text.contains("kind=\"plan_mode\""), "{text}");
+        assert!(text.contains("**Fan-out rule.**"), "{text}");
+
+        // The first request carried it — the note is not merely in the store.
+        let requests = mock.requests();
+        assert_eq!(requests.len(), 1);
+        let seen = requests[0].iter().any(|message| {
+            message
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::Text { text, .. } if text.contains("kind=\"plan_mode\"")))
+        });
+        assert!(seen, "request 1 must carry the reminder: {requests:?}");
+    }
+
+    /// The reminder is plan-scoped: an Agent turn owes nothing, and a live
+    /// model-opened plan session (`enter_plan_mode`) is enough to bind it
+    /// even while the mode is still Agent.
+    #[tokio::test]
+    async fn agent_turn_carries_no_plan_reminder_and_a_live_session_does() {
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let rounds = || {
+            let mut call = text_block(0, "ok");
+            call.extend(finish("end_turn"));
+            call
+        };
+        let mock = Arc::new(MockLlm::new(vec![rounds(), rounds()]));
+        let plan_state = crate::tool_state::plan_mode::new_shared_plan_mode_state();
+        let executor = HostAgentExecutor::new(
+            mock,
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_turn_mode(AppMode::Agent)
+        .with_plan_mode_state(Some(plan_state.clone()));
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        executor
+            .run(&mut history, "ordinary work".to_string())
+            .await
+            .expect("run");
+        assert!(
+            !has_runtime_note(&sess, "plan_mode"),
+            "an Agent turn must not carry the plan reminder"
+        );
+
+        plan_state.lock().await.active = true;
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        executor
+            .run(&mut history, "opened a plan session".to_string())
+            .await
+            .expect("run");
+        assert!(
+            has_runtime_note(&sess, "plan_mode"),
+            "a live plan session binds the reminder inside an Agent-mode turn"
+        );
+    }
+
+    /// Leaving plan mode gets one exit note — the user-switch route has no
+    /// other signal — and never a second.
+    #[tokio::test]
+    async fn leaving_plan_mode_notes_the_exit_once() {
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let rounds = || {
+            let mut call = text_block(0, "ok");
+            call.extend(finish("end_turn"));
+            call
+        };
+        let mock = Arc::new(MockLlm::new(vec![rounds(), rounds()]));
+        let executor = HostAgentExecutor::new(
+            mock,
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_turn_mode(AppMode::Agent);
+
+        // A transcript that ran under plan mode: user turn + the reminder.
+        let mut sess = fresh_session();
+        sess.add_message(Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "plan the migration".to_string(),
+                cache_control: None,
+            }],
+        });
+        sess.add_message(crate::engine::plan_reminder::plan_reminder_runtime_message(
+            crate::engine::plan_reminder::PlanReminder::Full,
+        ));
+        {
+            let mut history = SessionChatHistory::new(&mut sess);
+            executor
+                .run(&mut history, "now implement it".to_string())
+                .await
+                .expect("run");
+        }
+        assert_eq!(
+            count_runtime_notes(&sess, "plan_mode_exit"),
+            1,
+            "leaving plan mode owes exactly one exit note"
+        );
+
+        {
+            let mut history = SessionChatHistory::new(&mut sess);
+            executor
+                .run(&mut history, "continue".to_string())
+                .await
+                .expect("run");
+        }
+        assert_eq!(
+            count_runtime_notes(&sess, "plan_mode_exit"),
+            1,
+            "the exit note is one-shot"
         );
     }
 
