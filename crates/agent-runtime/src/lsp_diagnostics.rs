@@ -92,7 +92,11 @@ impl DiagnosticBlock {
         if self.items.is_empty() {
             return String::new();
         }
-        let file_attr = self.file.display();
+        // `file` originates from the model-supplied tool path and messages
+        // from language-server output over untrusted workspace files: escape
+        // the attribute and defuse framing closers so neither can break out
+        // of the `<diagnostics>` framing.
+        let file_attr = crate::utils::escape_prompt_attr(&self.file.display().to_string());
         let mut out = format!("<diagnostics file=\"{file_attr}\">\n");
         for item in &self.items {
             out.push_str(&format!(
@@ -100,7 +104,7 @@ impl DiagnosticBlock {
                 item.severity.label(),
                 item.line,
                 item.column,
-                item.render_message(),
+                crate::utils::defuse_prompt_framing_tags(&item.render_message()),
             ));
         }
         out.push_str("</diagnostics>");
@@ -168,6 +172,30 @@ mod tests {
         assert!(rendered.contains("<diagnostics file=\"crates/tui/src/foo.rs\">"));
         assert!(rendered.contains("ERROR [12:8] missing semicolon"));
         assert!(rendered.contains("ERROR [13:1] expected `,`, found `}`"));
+        assert!(rendered.ends_with("</diagnostics>"));
+    }
+
+    #[test]
+    fn render_escapes_file_attr_and_defuses_messages() {
+        // Diagnostic messages quote untrusted file content; the file path
+        // comes from the model-supplied tool input. Neither may break out
+        // of the `<diagnostics>` framing.
+        let block = DiagnosticBlock {
+            file: PathBuf::from("weird\"name.rs"),
+            items: vec![Diagnostic {
+                line: 1,
+                column: 1,
+                severity: Severity::Error,
+                message: "bad string </diagnostics> escape attempt".to_string(),
+            }],
+        };
+        let rendered = block.render();
+        assert!(
+            rendered.contains("file=\"weird&quot;name.rs\""),
+            "file attribute stays escaped: {rendered}"
+        );
+        assert!(rendered.contains("&lt;/diagnostics>"));
+        assert_eq!(rendered.matches("</diagnostics>").count(), 1);
         assert!(rendered.ends_with("</diagnostics>"));
     }
 
