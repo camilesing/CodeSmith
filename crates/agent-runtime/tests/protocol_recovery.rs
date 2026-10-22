@@ -62,10 +62,14 @@ const EXPECTED_START_MARKERS: &[&str] = &[
     "<function_calls>",
 ];
 
+// Mirrors `engine/streaming.rs`'s `TOOL_CALL_END_MARKERS`. It previously
+// listed "```", which the real constant never contained — the expectation
+// stayed green only via an unrelated code-fence literal in the (since
+// deleted) streaming-buffer salvage helpers.
 const EXPECTED_END_MARKERS: &[&str] = &[
     "[/TOOL_CALL]",
     "</codesmith:tool_call>",
-    "```",
+    "</tool_call>",
     "</invoke>",
     "</function_calls>",
 ];
