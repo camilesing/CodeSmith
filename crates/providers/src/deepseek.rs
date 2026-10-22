@@ -74,8 +74,11 @@ impl ProviderFactory for DeepSeekFactory {
 
         // Separate reqwest client for the FIM/translate shim. Honours the same
         // extra headers as the chat client; the shim adds bearer auth + JSON
-        // body per call.
+        // body per call. Bounded: these are LLM round-trips, so the total
+        // window is generous while a connect stall still fails fast.
         let http = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(120))
             .default_headers(build_header_map(&cfg.http_headers))
             .build()
             .context("failed to build deepseek FIM/translate http client")?;

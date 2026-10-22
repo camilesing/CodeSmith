@@ -57,9 +57,6 @@ const BOCHA_ENDPOINT: &str = "https://api.bochaai.com/v1/ai/search";
 const METASO_ENDPOINT: &str = "https://metaso.cn/api/v1";
 const BAIDU_ENDPOINT: &str = "https://qianfan.baidubce.com/v2/ai_search/web_search";
 const VOLCENGINE_RESPONSES_ENDPOINT: &str = "https://ark.cn-beijing.volces.com/api/v3/responses";
-/// Intentionally public default key provided by Metaso for open-source/community use.
-/// Last-resort fallback after config and env var. Rate-limited to ~100 searches/day.
-const METASO_DEFAULT_API_KEY: &str = "mk-E384C1DD5E8501BB7EFE27C949AFDE5B";
 const ERROR_BODY_PREVIEW_BYTES: usize = 512;
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15";
 
@@ -305,9 +302,11 @@ impl HttpWebService {
         })
     }
 
-    /// Search via Metaso AI Search API (<https://metaso.cn>). Falls back to
-    /// `METASO_API_KEY` env var then a built-in default key if no config key
-    /// is set.
+    /// Search via Metaso AI Search API (<https://metaso.cn>). Requires
+    /// `[search] api_key` or `METASO_API_KEY` — the community default key
+    /// that used to be compiled in as a last resort was removed: one shared
+    /// key across every install exhausted its quota collectively and shipped
+    /// an implicit credential in the binary.
     async fn run_metaso_search(&self, req: &SearchRequest) -> Result<SearchOutcome, WebError> {
         check_policy(req.policy.as_ref(), "metaso.cn", req.tool)?;
         let env_key = std::env::var("METASO_API_KEY").ok();
@@ -315,7 +314,12 @@ impl HttpWebService {
             .api_key
             .as_deref()
             .or(env_key.as_deref())
-            .unwrap_or(METASO_DEFAULT_API_KEY);
+            .ok_or_else(|| {
+                WebError::new(
+                    WebErrorKind::Config,
+                    "Metaso search requires an API key. Set METASO_API_KEY or `[search] api_key = \"…\"` in config.toml, or get one at https://metaso.cn/search-api/playground",
+                )
+            })?;
 
         let client = search_client(req.timeout, None, None)?;
         let size = req.max_results.clamp(1, 100);
@@ -923,14 +927,27 @@ fn validate_dns_resolved_ip(
     ))
 }
 
+/// Response-header names that never reach the model-visible transcript:
+/// session and auth material a fetched server put on the connection has no
+/// diagnostic value and would leak credentials into session logs.
+const REDACTED_RESPONSE_HEADERS: &[&str] = &[
+    "set-cookie",
+    "set-cookie2",
+    "cookie",
+    "authorization",
+    "proxy-authorization",
+    "www-authenticate",
+];
+
 fn response_headers(headers: &reqwest::header::HeaderMap) -> BTreeMap<String, String> {
     headers
         .iter()
         .filter_map(|(name, value)| {
-            value
-                .to_str()
-                .ok()
-                .map(|value| (name.as_str().to_ascii_lowercase(), value.to_string()))
+            let name = name.as_str().to_ascii_lowercase();
+            if REDACTED_RESPONSE_HEADERS.contains(&name.as_str()) {
+                return None;
+            }
+            value.to_str().ok().map(|value| (name, value.to_string()))
         })
         .collect()
 }
@@ -1627,21 +1644,26 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "performs real network I/O against metaso.cn; run explicitly when needed"]
-    async fn metaso_provider_uses_built_in_key_when_no_config_key_set() {
-        // Unlike Tavily/Bocha, Metaso falls back to a built-in default, so
-        // the call should NOT return an API-key-related error — it should
-        // either succeed or fail with a network-level error, but never a
-        // missing-key error.
+    // The env mutex serializes env mutation across the test binary; every
+    // other holder acquires it only briefly (no blocking), so holding the
+    // guard across this await cannot deadlock.
+    #[allow(clippy::await_holding_lock)]
+    async fn metaso_provider_requires_a_configured_key() {
+        // The built-in community default key was removed: with neither a
+        // config key nor the env var set, the request must fail loud before
+        // any network I/O. (Guard the env so a developer machine exporting
+        // METASO_API_KEY cannot flip the result.)
+        let _guard = codesmith_agent_runtime::test_support::lock_test_env();
+        let _metaso = codesmith_agent_runtime::test_support::EnvVarGuard::remove("METASO_API_KEY");
         let svc = HttpWebService::new(SearchProvider::Metaso, None);
-        let result = svc.search(SearchRequest::new("anything")).await;
-        let msg = match &result {
-            Ok(res) => format!("{res:?}"),
-            Err(e) => e.to_string(),
-        };
+        let err = svc
+            .search(SearchRequest::new("anything"))
+            .await
+            .expect_err("no key configured must fail, not hit the network");
+        assert_eq!(err.kind(), WebErrorKind::Config);
         assert!(
-            !msg.contains("API key"),
-            "should not complain about missing API key (built-in default); got `{msg}`"
+            err.to_string().contains("requires an API key"),
+            "got `{err}`"
         );
     }
 

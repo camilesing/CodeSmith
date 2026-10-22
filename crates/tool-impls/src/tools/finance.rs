@@ -154,6 +154,7 @@ fn shared_client() -> Result<Client, ToolError> {
         .get_or_init(|| {
             Client::builder()
                 .user_agent(USER_AGENT)
+                .timeout(Duration::from_secs(30))
                 .build()
                 .map_err(|e| e.to_string())
         })

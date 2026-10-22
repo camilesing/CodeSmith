@@ -313,7 +313,12 @@ pub(crate) fn validate_and_build_proxy(proxy_str: &str) -> Result<Proxy> {
 }
 
 fn update_http_client(proxy: Option<&Proxy>) -> Result<reqwest::blocking::Client> {
-    let mut builder = reqwest::blocking::Client::builder();
+    // No default timeout existed: one stalled metadata probe or download
+    // blocked `codesmith update` indefinitely. 300s comfortably covers the
+    // largest platform archive on a slow link while metadata stays fast.
+    let mut builder = reqwest::blocking::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(300));
     if let Some(proxy) = proxy {
         builder = builder.proxy(proxy.clone());
     }
