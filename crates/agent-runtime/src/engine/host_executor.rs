@@ -1128,6 +1128,19 @@ pub struct HostAgentExecutor {
     /// [`plan_mode_refusal`]: crate::engine::turn::approval::HostAgentExecutor::plan_mode_refusal
     pub(crate) plan_mode_state: Option<crate::tool_state::plan_mode::SharedPlanModeState>,
 
+    /// The host-built request catalog (`TurnDispatchPlan::tools`), when the
+    /// host wired one in: the tool definitions the model receives for this
+    /// turn, with the user/preset selection (`apply_tool_selection`) already
+    /// applied. `None` (embeds/tests, and hosts that never built a catalog)
+    /// ⇒ [`Self::run_inner`] falls back to the dispatch ToolSet's own
+    /// definitions.
+    ///
+    /// The dispatch surface and the request surface are deliberately two
+    /// things: a tool the allowlist removed must not be *sent*, while the
+    /// registry still knows how to run it (that keeps in-flight calls and
+    /// the `/tools` readout coherent).
+    pub(crate) request_catalog: Option<Arc<Vec<crate::models::Tool>>>,
+
     /// Deliverables watchdog (W2 P1-1). `None` (default; embeds/tests) ⇒ no
     /// periodic disk checks. When `Some`, [`run_inner`]'s pre-request seam
     /// checks the deliverable paths every
@@ -1529,6 +1542,7 @@ impl HostAgentExecutor {
             session_id: None,
             turn_mode: AppMode::Agent,
             plan_mode_state: None,
+            request_catalog: None,
             deliverables: None,
         }
     }
@@ -1740,6 +1754,19 @@ impl HostAgentExecutor {
         state: Option<crate::tool_state::plan_mode::SharedPlanModeState>,
     ) -> Self {
         self.plan_mode_state = state;
+        self
+    }
+
+    /// Attach the host-built request catalog ([`Self::request_catalog`]): the
+    /// per-turn `TurnDispatchPlan::tools` with selection applied and the
+    /// deferral marks stripped. Progressive disclosure (tool search) is not
+    /// wired to the request path, and an unknown `defer_loading` field on the
+    /// wire is a provider risk for no gain — so the host clears it before
+    /// handing the catalog over.
+    /// Consumes and returns `self` (builder).
+    #[must_use]
+    pub fn with_request_catalog(mut self, catalog: Option<Arc<Vec<crate::models::Tool>>>) -> Self {
+        self.request_catalog = catalog;
         self
     }
 
@@ -3339,7 +3366,17 @@ impl HostAgentExecutor {
             };
             crate::engine::plan_reminder::note_plan_reminder(history, self.turn_mode, plan_active);
 
-            let api_tools = tools.to_api_tools();
+            // The host's catalog is the request's tool surface when it wired one
+            // in (user/preset selection already applied); the dispatch
+            // ToolSet's own definitions are the embed/test fallback. The
+            // catalog also carries name-sorted order (MCP after built-ins),
+            // replacing the ToolSet's HashMap-order output — the same tool
+            // array across process launches, which is what the prefix cache
+            // needs.
+            let api_tools = match &self.request_catalog {
+                Some(catalog) => catalog.as_ref().clone(),
+                None => tools.to_api_tools(),
+            };
             // Three-zone assembly (#2264 Phase 2): freeze the step's prefix
             // identity once — the same frozen prefix feeds the stability
             // observer below AND the request, so what `/cache zones`

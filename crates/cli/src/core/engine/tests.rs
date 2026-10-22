@@ -4406,6 +4406,49 @@ async fn model_tool_catalog_includes_session_search() {
     );
 }
 
+/// `[tools] include` (what the preset tiers set) must narrow the *request*
+/// the model receives, not only the catalog reported on `TurnComplete`. A
+/// turn whose allowlist is `["read_file"]` sends `read_file` plus the
+/// infrastructure entries `apply_tool_selection` always keeps — and nothing
+/// else.
+#[tokio::test]
+async fn allowed_tool_list_narrows_the_model_request() {
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    let mock = MockLlmClient::new(vec![canned::simple_text_turn("ok")]);
+    let (handle, mock) = spawn_engine_with_mock(test_engine_config(tmp.path()), mock);
+
+    let mut op = make_send_op("inspect one file");
+    match &mut op {
+        Op::SendMessage { allowed_tools, .. } => {
+            *allowed_tools = Some(vec!["read_file".to_string()]);
+        }
+        other => panic!("expected a SendMessage op, got {other:?}"),
+    }
+    handle.send(op).await.expect("send op");
+    let _ = collect_until_turn_complete(&handle).await;
+
+    let requests = mock.captured_requests();
+    assert_eq!(requests.len(), 1, "one model round for a text-only turn");
+    let mut names: Vec<String> = requests[0]
+        .tools
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect();
+    names.sort();
+    // `multi_tool_use.parallel` would survive the allowlist by design
+    // (`apply_tool_selection` never filters dispatch infrastructure) but is
+    // not registered as a tool in this build, so the request is exactly the
+    // one allowed name.
+    assert_eq!(
+        names,
+        vec!["read_file".to_string()],
+        "the allowlist must narrow the request the model receives"
+    );
+}
+
 /// Round-4 TODO-45 — the model-visible tool catalog includes the type-aware
 /// LSP navigation tool (`lsp_navigate`), registered for every mode by the
 /// per-turn tool setup (fails closed at runtime when LSP is disabled — the

@@ -1264,6 +1264,17 @@ impl Engine {
             TurnDispatchPlan::NoTools => None,
             TurnDispatchPlan::Tools { tools, .. } => Some(tools.clone()),
         };
+        // The same catalog is the request's tool surface — host-built, so
+        // `apply_tool_selection` (`[tools] include`/`exclude`, the preset
+        // tiers) has already run on it. Deferral marks are cleared on the way
+        // in: progressive disclosure is not wired to the request path, and a
+        // provider must not meet an unknown `defer_loading` field for no gain.
+        let request_catalog = tool_catalog_for_event.clone().map(|mut catalog| {
+            for tool in &mut catalog {
+                tool.defer_loading = None;
+            }
+            Arc::new(catalog)
+        });
         let base_url_for_event = self
             .llm_client
             .as_ref()
@@ -1422,6 +1433,10 @@ impl Engine {
         // `enter_plan_mode`. The gate reads this live, so an approved exit
         // unblocks writes in the same turn.
         .with_plan_mode_state(Some(self.config.plan_mode_state.clone()))
+        // The catalog the model receives: the host's per-turn catalog with
+        // selection applied, so an allowlist actually narrows the request
+        // (the dispatch ToolSet keeps the full registry).
+        .with_request_catalog(request_catalog)
         .with_tool_dispatcher(plan.tool_registry().cloned())
         .with_turn_meta(Some(turn_meta_probe))
         .with_reinject(Some(reinject_probe))
