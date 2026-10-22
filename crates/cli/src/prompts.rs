@@ -347,35 +347,29 @@ mod tests {
         );
     }
 
-    /// The fan-out rule is what makes plan mode actually use the sub-agent
-    /// surface it registers: a model asked only to infer it from a
-    /// descriptive sentence tends to sweep the areas serially instead
-    /// (observed with GLM-5.3 on a three-module investigation). The pinned
-    /// substrings are the rule's binding half — the trigger, the named
-    /// session tools, and the solo-work exemption that keeps it from firing
-    /// on one-file questions.
+    /// The plan rule sheet has exactly one copy now — `plan_reminder`'s full
+    /// text in `codesmith-agent-runtime`, where its own test pins the binding
+    /// half (the fan-out trigger, the named session tools, the solo-work
+    /// exemption) and the executor test proves it reaches the first request of
+    /// a Plan turn. The mode prompt points at it instead of repeating it, and
+    /// this test is the convergence guard: the pointer must exist, and a second
+    /// copy here must not.
     #[test]
-    fn plan_mode_prompt_binds_the_fan_out_rule() {
+    fn plan_mode_prompt_points_at_the_rule_sheet_instead_of_repeating_it() {
         assert!(
-            PLAN_MODE.contains("**Fan-out rule.**"),
-            "the rule must be labelled so it reads as a rule, not advice"
+            PLAN_MODE.contains("restated as a runtime reminder")
+                && PLAN_MODE.contains("exactly one copy to keep true"),
+            "the mode prompt must say where the binding rules come from"
         );
         assert!(
-            PLAN_MODE.contains("3+ modules, services, or")
-                && PLAN_MODE.contains("one read-only sub-agent session per area"),
-            "the rule must name its trigger in modules, not repositories"
-        );
-        assert!(
-            PLAN_MODE.contains("`agent_open`") && PLAN_MODE.contains("`agent_eval`"),
-            "the rule must name the session tools the model is bound to use"
-        );
-        assert!(
-            PLAN_MODE.contains("do not fan it out"),
-            "the rule must keep the solo-work exemption, or every one-file question fans out"
+            !PLAN_MODE.contains("**Fan-out rule.**")
+                && !PLAN_MODE.contains("Phase 1: Initial Understanding"),
+            "the rule sheet and the phase list live in the runtime reminder; a \
+             second copy here drifts out of sync"
         );
 
-        // And it must ride the composed plan prompt the model actually gets,
-        // not just the mode fragment.
+        // And the pointer rides the composed plan prompt the model gets, not
+        // just the mode fragment.
         let composed = compose_prompt_with_approval_and_model(
             AppMode::Plan,
             Personality::Calm,
@@ -383,8 +377,8 @@ mod tests {
             "deepseek-v4-pro",
         );
         assert!(
-            composed.contains("**Fan-out rule.**") && composed.contains("`agent_open`"),
-            "the fan-out rule and its tools must survive into the composed plan prompt"
+            composed.contains("restated as a runtime reminder"),
+            "the composed plan prompt must carry the pointer"
         );
     }
 

@@ -54,7 +54,14 @@ turn. An approving host continues on its own (the REPL submits the implementatio
 itself); otherwise the writable toolset arrives with the user's next message — if it does \
 not, ask them to switch (`/mode agent`, or Shift+Tab) before editing.";
 
-/// 5-phase workflow instructions injected on EnterPlanMode.
+/// Pointers injected on EnterPlanMode: the plan-file carve-out, and where the
+/// binding rules live.
+///
+/// The rule sheet itself is `plan_reminder`'s `PLAN_REMINDER_FULL` in
+/// `codesmith-agent-runtime`, delivered as a per-request runtime reminder. The
+/// entry turn gets it on its next step (the reminder is injected at the
+/// pre-request seam and reads the live plan flag), so this text no longer
+/// repeats the workflow — one copy, kept true in one place.
 const PLAN_MODE_INSTRUCTIONS: &str = "\
 Plan mode is active. The user indicated that they do not want you to execute yet — \
 you MUST NOT make any edits (with the exception of the plan file mentioned below), \
@@ -65,32 +72,10 @@ Your plan file is at the path shown in the tool result. This is the ONLY file \
 you may write in plan mode. All other file writes, shell commands, and code \
 execution are blocked.
 
-## Plan Workflow
-
-### Phase 1: Initial Understanding
-Goal: Gain a comprehensive understanding of the user's request by reading \
-through code and asking them questions. Only use read-only tools and \
-search agents in this phase.
-
-### Phase 2: Deep Exploration
-Goal: Explore the codebase in parallel. Identify all files that will need \
-changes. Map dependencies and constraints.
-
-### Phase 3: Strategic Planning
-Goal: Design an implementation approach. Consider trade-offs, sequencing, \
-and risks. Use `write_plan_file` to persist your evolving plan to disk.
-
-### Phase 4: Final Plan
-Goal: Write your finalized plan using `write_plan_file`. Begin with a \
-**Context** section explaining why this change is being made. Include only \
-your recommended approach. Ensure the plan is concise but detailed enough \
-to execute effectively.
-
-### Phase 5: Exit Plan Mode
-Goal: Present your plan for user approval. Call `exit_plan_mode` when your \
-plan is finalized. The user must approve before implementation begins. On \
-approval the host continues on its own (the REPL submits the implementation \
-kickoff).
+## Where the rules are
+The plan-mode rules — the fan-out rule for multi-area investigation, the \
+workflow phases, and how a turn must end — arrive as a runtime reminder before \
+each request; the next one follows this call. Follow the most recent reminder.
 
 If the approval is refused, the refusal arrives with the user's feedback as a \
 message. Revise the plan file accordingly and call `exit_plan_mode` again — \
@@ -104,8 +89,9 @@ answers.";
 
 /// Tool for entering plan mode.
 ///
-/// Sets `PlanModeState.active = true`, generates a plan slug, and
-/// returns 5-phase workflow instructions for the model to follow.
+/// Sets `PlanModeState.active = true`, generates a plan slug, and returns the
+/// plan-file pointers ([`PLAN_MODE_INSTRUCTIONS`]) — the binding rules follow
+/// as a runtime reminder on the next step.
 pub struct EnterPlanModeTool {
     plan_mode_state: SharedPlanModeState,
     #[allow(dead_code)]

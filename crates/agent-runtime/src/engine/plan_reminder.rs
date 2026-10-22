@@ -41,6 +41,11 @@
 //!   transcript does not carry: a user message that itself begins with an
 //!   XML block (`<…>`) is read as an engine note and not counted. The test
 //!   module pins every shape this rule recognizes.
+//! * This module is the rule sheet's one copy: `prompts/modes/plan.md` and
+//!   `enter_plan_mode`'s result text point here. A host that runs a turn
+//!   loop without [`note_plan_reminder`] therefore leaves plan mode with
+//!   the pointer and no rules — production wires it in
+//!   `HostAgentExecutor`'s pre-request seam.
 
 use codesmith_agent::memory::ChatHistory;
 use codesmith_agent::models::{ContentBlock, Message};
