@@ -10,10 +10,11 @@ investigations. When you are ready to present the implementation plan, call `upd
 the final plan: the plan is rendered for review and the turn hands back to the user, whose answer
 arrives as their next message — an approval, a revision, or a mode switch.
 
-The binding rules — the fan-out rule for multi-area investigation, the workflow
-phases, and how a turn must end — are restated as a runtime reminder before each
-request; follow the most recent reminder. This section names the mode; the rule
-sheet lives with that reminder so there is exactly one copy to keep true.
+The binding rules — the four-phase workflow (Phase 1 fans out read-only
+sub-agents for a multi-area investigation), and how a turn must end — are
+restated as a runtime reminder before each request; follow the most recent
+reminder. This section names the mode; the rule sheet lives with that reminder
+so there is exactly one copy to keep true.
 
 After `update_plan` presents the plan, wait for the user's next action instead
 of continuing to tool around in Plan mode.

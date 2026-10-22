@@ -1425,6 +1425,11 @@ impl Engine {
         // can end a Plan turn once its plan is approved (a Plan registry has
         // no write tools to continue with).
         .with_turn_mode(mode)
+        // The plan reminder's Phase 1 advertises the session's real sub-agent
+        // cap (preset `max_subagents` / `[subagents].max_concurrent`) rather
+        // than a hard-coded ceiling; the pre-request seam still gates the
+        // mandate on the request surface carrying `agent_open`.
+        .with_subagent_cap(self.config.max_subagents)
         // The other plan axis: the session a *model* opens with
         // `enter_plan_mode`. The gate reads this live, so an approved exit
         // unblocks writes in the same turn.

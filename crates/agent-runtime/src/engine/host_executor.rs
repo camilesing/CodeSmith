@@ -1128,6 +1128,14 @@ pub struct HostAgentExecutor {
     /// [`plan_mode_refusal`]: crate::engine::turn::approval::HostAgentExecutor::plan_mode_refusal
     pub(crate) plan_mode_state: Option<crate::tool_state::plan_mode::SharedPlanModeState>,
 
+    /// The session's configured sub-agent cap (`[subagents].max_concurrent`,
+    /// preset `max_subagents`) — the same number `SubAgentManager` enforces,
+    /// passed in by the host so the plan reminder's Phase 1 advertises the
+    /// real ceiling. `None` (default; embeds/tests that skip the builder, and
+    /// hosts whose turn carries no `agent_open` in its request surface) ⇒ the
+    /// reminder renders Phase 1 without the fan-out mandate.
+    pub(crate) subagent_cap: Option<usize>,
+
     /// The host-built request catalog (`TurnDispatchPlan::tools`), when the
     /// host wired one in: the tool definitions the model receives for this
     /// turn, with the user/preset selection (`apply_tool_selection`) already
@@ -1550,6 +1558,7 @@ impl HostAgentExecutor {
             session_id: None,
             turn_mode: AppMode::Agent,
             plan_mode_state: None,
+            subagent_cap: None,
             request_catalog: None,
             progressive_disclosure: false,
             deliverables: None,
@@ -1763,6 +1772,20 @@ impl HostAgentExecutor {
         state: Option<crate::tool_state::plan_mode::SharedPlanModeState>,
     ) -> Self {
         self.plan_mode_state = state;
+        self
+    }
+
+    /// Tell the executor the session's configured sub-agent cap
+    /// (`[subagents].max_concurrent`, preset `max_subagents`), so the plan
+    /// reminder's Phase 1 renders the real ceiling instead of a hard-coded
+    /// one. The production wire-in passes `EngineConfig::max_subagents`; the
+    /// pre-request seam still gates on the request surface carrying
+    /// `agent_open`, so a host without the tool never gets the mandate.
+    /// Embeds/tests skip it — the default is `None`. Consumes and returns
+    /// `self` (builder).
+    #[must_use]
+    pub fn with_subagent_cap(mut self, cap: usize) -> Self {
+        self.subagent_cap = Some(cap);
         self
     }
 
@@ -3424,7 +3447,23 @@ impl HostAgentExecutor {
                 Some(state) => state.lock().await.active,
                 None => false,
             };
-            crate::engine::plan_reminder::note_plan_reminder(history, self.turn_mode, plan_active);
+            // The fan-out mandate needs the tool, not just the setting: a tier
+            // without sub-agents, or an allowlist that removed `agent_open`,
+            // leaves the model unable to comply — so the cap reaches the note
+            // only when the request surface actually carries the tool.
+            let plan_subagent_cap = self.subagent_cap.filter(|_| {
+                self.request_catalog.as_ref().is_some_and(|catalog| {
+                    catalog
+                        .iter()
+                        .any(|tool| tool.name == crate::engine::plan_reminder::AGENT_OPEN_TOOL_NAME)
+                })
+            });
+            crate::engine::plan_reminder::note_plan_reminder(
+                history,
+                self.turn_mode,
+                plan_active,
+                plan_subagent_cap,
+            );
 
             // The host's catalog is the request's tool surface when it wired one
             // in (user/preset selection already applied); the dispatch
@@ -5744,7 +5783,14 @@ mod tests {
             panic!("expected a text block, got {:?}", sess.messages[1]);
         };
         assert!(text.contains("kind=\"plan_mode\""), "{text}");
-        assert!(text.contains("**Fan-out rule.**"), "{text}");
+        assert!(
+            text.contains("### Phase 1: Initial Understanding"),
+            "{text}"
+        );
+        // No request catalog is wired in this harness, so the surface cannot
+        // carry `agent_open` — the note must not mandate a call the model
+        // cannot make.
+        assert!(!text.contains("agent_open"), "{text}");
 
         // The first request carried it — the note is not merely in the store.
         let requests = mock.requests();
@@ -5756,6 +5802,68 @@ mod tests {
                 .any(|block| matches!(block, ContentBlock::Text { text, .. } if text.contains("kind=\"plan_mode\"")))
         });
         assert!(seen, "request 1 must carry the reminder: {requests:?}");
+    }
+
+    /// The fan-out mandate renders the configured cap, and only when the
+    /// request surface carries `agent_open` — the setting alone must not
+    /// promise children the model cannot open.
+    #[tokio::test]
+    async fn plan_reminder_renders_the_configured_cap_when_the_surface_carries_agent_open() {
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mut call = text_block(0, "mapping the repo");
+        call.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_turn_mode(AppMode::Plan)
+        .with_subagent_cap(10)
+        .with_request_catalog(Some(Arc::new(vec![crate::models::Tool {
+            tool_type: Some("custom".to_string()),
+            name: crate::engine::plan_reminder::AGENT_OPEN_TOOL_NAME.to_string(),
+            description: String::new(),
+            input_schema: serde_json::json!({"type": "object"}),
+            output_schema: None,
+            allowed_callers: None,
+            defer_loading: None,
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        }])));
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let reason = executor
+            .run(&mut history, "investigate three modules".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        let ContentBlock::Text { text, .. } = &sess.messages[1].content[0] else {
+            panic!("expected a text block, got {:?}", sess.messages[1]);
+        };
+        assert!(text.contains("kind=\"plan_mode\""), "{text}");
+        assert!(
+            text.contains("up to 10 `explore` agents IN PARALLEL"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Critical: in this phase you should only use the `explore`"),
+            "{text}"
+        );
+        assert!(text.contains("do not fan it out"), "{text}");
     }
 
     /// The reminder is plan-scoped: an Agent turn owes nothing, and a live
@@ -5852,6 +5960,7 @@ mod tests {
         });
         sess.add_message(crate::engine::plan_reminder::plan_reminder_runtime_message(
             crate::engine::plan_reminder::PlanReminder::Full,
+            None,
         ));
         {
             let mut history = SessionChatHistory::new(&mut sess);

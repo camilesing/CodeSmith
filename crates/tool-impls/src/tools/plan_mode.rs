@@ -57,7 +57,7 @@ not, ask them to switch (`/mode agent`, or Shift+Tab) before editing.";
 /// Pointers injected on EnterPlanMode: the plan-file carve-out, and where the
 /// binding rules live.
 ///
-/// The rule sheet itself is `plan_reminder`'s `PLAN_REMINDER_FULL` in
+/// The rule sheet itself is `plan_reminder`'s `plan_reminder_full` in
 /// `codesmith-agent-runtime`, delivered as a per-request runtime reminder. The
 /// entry turn gets it on its next step (the reminder is injected at the
 /// pre-request seam and reads the live plan flag), so this text no longer
@@ -73,9 +73,10 @@ you may write in plan mode. All other file writes, shell commands, and code \
 execution are blocked.
 
 ## Where the rules are
-The plan-mode rules — the fan-out rule for multi-area investigation, the \
-workflow phases, and how a turn must end — arrive as a runtime reminder before \
-each request; the next one follows this call. Follow the most recent reminder.
+The plan-mode rules — the four-phase workflow (Phase 1 fans out read-only \
+`explore` sub-agents for a multi-area investigation), and how a turn must end \
+— arrive as a runtime reminder before each request; the next one follows this \
+call. Follow the most recent reminder.
 
 If the approval is refused, the refusal arrives with the user's feedback as a \
 message. Revise the plan file accordingly and call `exit_plan_mode` again — \

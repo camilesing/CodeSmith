@@ -349,7 +349,7 @@ mod tests {
 
     /// The plan rule sheet has exactly one copy now — `plan_reminder`'s full
     /// text in `codesmith-agent-runtime`, where its own test pins the binding
-    /// half (the fan-out trigger, the named session tools, the solo-work
+    /// half (the Phase 1 fan-out mandate, the named session tools, the solo-work
     /// exemption) and the executor test proves it reaches the first request of
     /// a Plan turn. The mode prompt points at it instead of repeating it, and
     /// this test is the convergence guard: the pointer must exist, and a second
