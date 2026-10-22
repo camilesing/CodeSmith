@@ -646,10 +646,10 @@ pub fn defuse_closing_tag(text: &str, tag: &str) -> String {
     out
 }
 
-/// Every framing tag the system prompt wraps around untrusted bodies.
-/// A body injected inside one framing element must not be able to
-/// prematurely close a *different* element rendered later in the prompt,
-/// so all of these are defused together — see
+/// Every framing tag the system prompt or conversation tail wraps around
+/// untrusted bodies. A body injected inside one framing element must not be
+/// able to prematurely close a *different* element rendered later in the
+/// prompt, so all of these are defused together — see
 /// [`defuse_prompt_framing_tags`].
 pub const PROMPT_FRAMING_TAGS: &[&str] = &[
     "instructions",
@@ -658,6 +658,16 @@ pub const PROMPT_FRAMING_TAGS: &[&str] = &[
     "session_goal",
     "knowledge_memory",
     "external_content",
+    // Conversation-tail wrappers: `<system-reminder>` carries compaction
+    // re-injected file previews and skill bodies; `<user_memory>` /
+    // `<agent_memory>` carry files the model itself can write via
+    // `remember` / `agent_memory_write` (a planted closer would survive
+    // across sessions); `<diagnostics>` carries language-server output over
+    // untrusted workspace files.
+    "system-reminder",
+    "user_memory",
+    "agent_memory",
+    "diagnostics",
 ];
 
 /// Neutralize closing-tag sequences of **every** known prompt framing tag
