@@ -1,21 +1,17 @@
 //! Tool dispatch — plan/execute helpers for the per-turn tool batch.
 //!
 //! Extracted from `core/engine.rs` (P1.3). The high-level ordering now
-//! lives in `HostAgentExecutor` (the legacy engine turn loop
-//! was retired/deleted); this module owns:
+//! lives in `HostAgentExecutor` — the legacy engine turn loop, along with
+//! the streaming-buffer salvage ladder this module used to own, was
+//! retired (stream decoding lives in `turn/stream.rs`); this module owns:
 //!
-//! * Streaming-buffer parsing into a finalized `serde_json::Value` tool input
-//!   (`final_tool_input`, `parse_tool_input`, fenced/JSON segment helpers) —
-//!   with the P0-2 salvage policy: on an output-limit-truncated turn the
-//!   ladder must not run (pass [`ArgSalvagePolicy::StrictOnly`]; a fragment
-//!   the model was cut off writing is feedback material, never something to
-//!   repair into executable arguments).
 //! * The `multi_tool_use.parallel` payload parser.
 //! * Policy predicates the turn loop consults — when a batch can run in
 //!   parallel, when an `update_plan` step should stop the turn, when a Plan
 //!   prompt should force a plan-first hop, and the small set of read-only
 //!   MCP tools that are safe to run in parallel.
-//! * The tool execution plan/outcome types the batch driver passes around.
+//! * The tool execution plan/outcome types the batch driver passes around,
+//!   and `format_tool_error`, the error renderer shared by every channel.
 //!
 //! All items are `pub`-only: the public engine surface (Op/Event,
 //! `EngineHandle`, `spawn_engine`) stays in `core/engine.rs`.
@@ -27,8 +23,6 @@ use std::path::PathBuf;
 use crate::mode::AppMode;
 use crate::models::{Tool, ToolCaller};
 use crate::tools::spec::{ToolError, ToolResult};
-
-use super::ToolUseState;
 
 // === Types ============================================================
 
@@ -172,186 +166,6 @@ pub fn format_tool_error(err: &ToolError, tool_name: &str) -> String {
         // prints the same Display instead of restating it.
         ToolError::Rejected { .. } => err.to_string(),
     }
-}
-
-// === Streaming-buffer parsing =========================================
-
-/// Salvage policy for a streamed tool-argument buffer (P0-2).
-///
-/// [`ArgSalvagePolicy::RepairAllowed`] runs the full ladder — the
-/// deterministic arg-repair pass plus the code-fence / double-encoded /
-/// balanced-segment fallbacks — and is right for a turn the model finished
-/// writing, where "almost-JSON" is a formatting slip worth fixing.
-///
-/// [`ArgSalvagePolicy::StrictOnly`] parses strictly and returns `None` on
-/// failure. It is mandatory on a turn whose stop reason says the provider
-/// output limit was hit: an unparseable buffer there is a call the model
-/// was cut off mid-argument, and salvaging it (closing its braces,
-/// stripping its trailing commas) would fabricate executable arguments the
-/// model never wrote. Such calls are routed to feedback asking for a
-/// re-send instead — never repaired into execution (upstream v0.9.13
-/// #5986).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ArgSalvagePolicy {
-    RepairAllowed,
-    StrictOnly,
-}
-
-/// Promote a streaming `ToolUseState` to a finalized JSON input.
-///
-/// Order of preference:
-///
-///   1. `input_buffer` (the raw streamed delta concatenation) — parsed as
-///      JSON. This is the most authoritative because it's what the model
-///      actually emitted.
-///   2. `input` (the per-delta best-effort parse mirror) — used when the
-///      buffer is empty (pre-streaming tool calls take this path).
-///   3. `input_buffer` non-empty but unparseable → under
-///      [`ArgSalvagePolicy::RepairAllowed`] fall back to `input` (the
-///      per-delta parser has already mirrored the most recent valid
-///      partial parse). Under [`ArgSalvagePolicy::StrictOnly`] return
-///      `Value::Null` instead: a non-empty unparseable buffer means the
-///      model was cut off mid-argument (P0-2), and the partial-parse
-///      mirror may hold fabricated arguments that must not execute.
-pub fn final_tool_input(state: &ToolUseState) -> serde_json::Value {
-    final_tool_input_for_turn(state, false)
-}
-
-/// Select the salvage policy from the turn outcome so an output-limit-
-/// truncated turn structurally cannot run the repair ladder (P0-2): the
-/// caller passes whether the turn's stop reason said the provider output
-/// limit was hit, and this boundary picks [`ArgSalvagePolicy::StrictOnly`]
-/// accordingly — relying on every caller to remember the convention is
-/// exactly the gap P0-2 closed.
-pub fn final_tool_input_for_turn(
-    state: &ToolUseState,
-    output_limit_truncated: bool,
-) -> serde_json::Value {
-    let policy = if output_limit_truncated {
-        ArgSalvagePolicy::StrictOnly
-    } else {
-        ArgSalvagePolicy::RepairAllowed
-    };
-    final_tool_input_with_policy(state, policy)
-}
-
-/// [`final_tool_input`] with an explicit salvage [`ArgSalvagePolicy`] —
-/// pass [`ArgSalvagePolicy::StrictOnly`] for output-limit-truncated turns
-/// (P0-2).
-pub fn final_tool_input_with_policy(
-    state: &ToolUseState,
-    policy: ArgSalvagePolicy,
-) -> serde_json::Value {
-    let buffer_empty = state.input_buffer.trim().is_empty();
-    if !buffer_empty && let Some(parsed) = parse_tool_input_with_policy(&state.input_buffer, policy)
-    {
-        return parsed;
-    }
-    if buffer_empty || policy == ArgSalvagePolicy::RepairAllowed {
-        return state.input.clone();
-    }
-    // StrictOnly + non-empty unparseable buffer: non-executable (P0-2) —
-    // the turn loop routes Null input to feedback.
-    serde_json::Value::Null
-}
-
-pub fn parse_tool_input(buffer: &str) -> Option<serde_json::Value> {
-    parse_tool_input_with_policy(buffer, ArgSalvagePolicy::RepairAllowed)
-}
-
-/// [`parse_tool_input`] with an explicit salvage [`ArgSalvagePolicy`] —
-/// [`ArgSalvagePolicy::StrictOnly`] runs a strict parse only, so a
-/// truncated buffer surfaces as `None` instead of being repaired into
-/// executable arguments (P0-2).
-pub fn parse_tool_input_with_policy(
-    buffer: &str,
-    policy: ArgSalvagePolicy,
-) -> Option<serde_json::Value> {
-    let trimmed = buffer.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if policy == ArgSalvagePolicy::StrictOnly {
-        return serde_json::from_str::<serde_json::Value>(trimmed).ok();
-    }
-    // Try the deterministic arg-repair ladder first (handles trailing commas,
-    // unclosed braces, embedded control chars, etc.)
-    if let Ok(value) = crate::tools::arg_repair::repair(trimmed) {
-        return Some(value);
-    }
-    // Fall back to existing strategies for code-fenced, double-encoded, and
-    // segment-extraction patterns that the repair ladder doesn't cover.
-    if let Some(stripped) = strip_code_fences(trimmed)
-        && let Ok(value) = serde_json::from_str::<serde_json::Value>(&stripped)
-    {
-        return Some(value);
-    }
-    if let Ok(serde_json::Value::String(inner)) = serde_json::from_str::<serde_json::Value>(trimmed)
-        && let Ok(value) = serde_json::from_str::<serde_json::Value>(&inner)
-    {
-        return Some(value);
-    }
-    extract_json_segment(trimmed)
-        .and_then(|segment| serde_json::from_str::<serde_json::Value>(&segment).ok())
-}
-
-fn strip_code_fences(text: &str) -> Option<String> {
-    if !text.contains("```") {
-        return None;
-    }
-    let mut lines = Vec::new();
-    for line in text.lines() {
-        if line.trim_start().starts_with("```") {
-            continue;
-        }
-        lines.push(line);
-    }
-    let stripped = lines.join("\n");
-    let stripped = stripped.trim();
-    if stripped.is_empty() {
-        None
-    } else {
-        Some(stripped.to_string())
-    }
-}
-
-fn extract_json_segment(text: &str) -> Option<String> {
-    extract_balanced_segment(text, '{', '}').or_else(|| extract_balanced_segment(text, '[', ']'))
-}
-
-fn extract_balanced_segment(text: &str, open: char, close: char) -> Option<String> {
-    let start = text.find(open)?;
-    let mut depth = 0i32;
-    let mut end = None;
-    // Track JSON string state while counting: a `}` inside a string value
-    // (`note {"a": "y}"} tail`) must not close the object — the extracted
-    // segment used to be the truncated `{"a": "y"}`, which parses
-    // successfully but has silently rewritten the argument value
-    // ("y}" → "y"), turning malformed model output into wrong-but-
-    // executable tool arguments via the fallback ladder.
-    let mut in_string = false;
-    let mut escaped = false;
-    for (offset, ch) in text[start..].char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match ch {
-            '\\' if in_string => escaped = true,
-            '"' => in_string = !in_string,
-            _ if in_string => {}
-            _ if ch == open => depth += 1,
-            _ if ch == close => {
-                depth -= 1;
-                if depth == 0 {
-                    end = Some(start + offset + ch.len_utf8());
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-    end.map(|end_idx| text[start..end_idx].to_string())
 }
 
 fn normalize_parallel_tool_name(raw: &str) -> String {
@@ -649,50 +463,4 @@ pub fn mcp_tool_is_parallel_safe(name: &str) -> bool {
 
 pub fn mcp_tool_is_read_only(name: &str) -> bool {
     MCP_PARALLEL_SAFE_TOOLS.contains(&name)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn extract_json_segment_ignores_braces_inside_strings() {
-        // The `}` inside the string value must not close the object — the
-        // truncated segment `{"a": "y"}` parses fine but has silently
-        // rewritten the argument value from `y}` to `y`.
-        let text = r#"note {"a": "y}"} tail"#;
-        assert_eq!(
-            extract_json_segment(text).as_deref(),
-            Some(r#"{"a": "y}"}"#)
-        );
-    }
-
-    #[test]
-    fn strict_policy_refuses_truncated_buffer_instead_of_repairing() {
-        // A call cut off mid-argument by the output limit: unterminated
-        // string, no closing brace. RepairAllowed would close the braces
-        // and fabricate `{"command": "rm -rf /tmp/legacy"}`-shaped
-        // executable args the model never finished writing; StrictOnly
-        // must surface it as unparseable (P0-2).
-        let truncated = r#"{"command": "rm -rf /tmp/leg"#;
-        assert!(parse_tool_input_with_policy(truncated, ArgSalvagePolicy::StrictOnly).is_none());
-        assert!(parse_tool_input_with_policy(truncated, ArgSalvagePolicy::RepairAllowed).is_some());
-    }
-
-    #[test]
-    fn strict_policy_still_parses_complete_buffers() {
-        let complete = r#"{"command": "ls -la"}"#;
-        assert_eq!(
-            parse_tool_input_with_policy(complete, ArgSalvagePolicy::StrictOnly),
-            Some(json!({"command": "ls -la"}))
-        );
-    }
-
-    #[test]
-    fn default_parse_tool_input_keeps_repair_ladder() {
-        // The default wrapper must stay behavior-compatible with the
-        // pre-P0-2 ladder (CLI engine tests pin this too).
-        assert!(parse_tool_input(r#"{"a": 1,}"#).is_some());
-        assert!(parse_tool_input(r#"{"a": 1"#).is_some());
-    }
 }
