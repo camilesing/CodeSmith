@@ -347,6 +347,27 @@ fn approval_always_granted(
         .all(|part| approved.contains(part) || grants.is_granted(workspace_key, part))
 }
 
+/// Whether a call is blocked by the session's denials: the exact key (what
+/// the prompt's `[e]` records), the whole grouping key, or **any** of the
+/// call's shell families (what `/permissions deny <command>` records — the
+/// same `shell:<family>` keys `/permissions allow` writes).
+///
+/// The inverse of [`approval_always_granted`]: a grant needs every part
+/// approved, a denial vetoes when any family is denied — so `deny git status`
+/// also refuses a later `git status && cargo build`. A compound key joins
+/// bare family names (`shell:cargo build + git status` — only the first
+/// carries the prefix), so each family is re-prefixed before the lookup.
+fn approval_session_denied(denied: &HashSet<String>, exact_key: &str, grouping_key: &str) -> bool {
+    if denied.contains(exact_key) || denied.contains(grouping_key) {
+        return true;
+    }
+    grouping_key.strip_prefix("shell:").is_some_and(|families| {
+        families
+            .split(GROUPING_PART_SEPARATOR)
+            .any(|family| denied.contains(&format!("shell:{family}")))
+    })
+}
+
 /// What `[a]` actually covers for this tool, in the user's words.
 ///
 /// The scope is decided engine-side by `build_approval_grouping_key`, and the
@@ -1641,7 +1662,11 @@ async fn handle_approval(
         let _ = engine.approve_tool_call(id).await;
         return;
     }
-    if state.approval_session_denied.contains(&approval_key) {
+    if approval_session_denied(
+        &state.approval_session_denied,
+        &approval_key,
+        &approval_grouping_key,
+    ) {
         log_approval(
             state,
             &id,
@@ -2776,9 +2801,59 @@ mod tests {
             &key_of("cargo build && git push origin main")
         ));
 
-        // The deny side stays exact, so a `[e]` on the bare command does not
-        // follow the chain.
+        // The deny side stays exact for `[e]` (an exact key never follows the
+        // chain), while `/permissions deny` writes the grouping key — matched
+        // per part by `approval_session_denied`.
         assert_ne!(key_of("cargo build"), chain);
+    }
+
+    /// `[e]` and `/permissions deny` fill the same denial set through two key
+    /// shapes: the exact call key and the grouping key. The gate honors both,
+    /// and a grouping-key denial vetoes any call whose parts include it.
+    #[test]
+    fn session_denials_match_exact_and_grouping_key_shapes() {
+        use codesmith_agent_runtime::tools::approval_cache::{
+            build_approval_grouping_key, build_approval_key,
+        };
+        use serde_json::json;
+
+        let grouping_of = |command: &str| {
+            build_approval_grouping_key("exec_shell", &json!({ "command": command })).0
+        };
+        let input = json!({ "command": "git status" });
+        let exact = build_approval_key("exec_shell", &input).0;
+
+        // `[e]` records the exact key; the gate must still honor it.
+        let mut denied = HashSet::new();
+        denied.insert(exact.clone());
+        assert!(approval_session_denied(
+            &denied,
+            &exact,
+            &grouping_of("git status")
+        ));
+
+        // `/permissions deny git status` records `shell:git status` (the same
+        // grouping key `/permissions allow` writes) — that key never equals
+        // the exact key, and the gate must still refuse the call, including
+        // as one part of a compound command.
+        let mut denied = HashSet::new();
+        denied.insert(grouping_of("git status"));
+        assert_ne!(
+            denied.iter().next().unwrap().as_str(),
+            exact.as_str(),
+            "the grouping key the command writes is a different shape than the exact key"
+        );
+        assert!(approval_session_denied(
+            &denied,
+            "shell:exec_shell:deadbeef",
+            &grouping_of("git status && cargo build")
+        ));
+        // A family that is not denied does not veto.
+        assert!(!approval_session_denied(
+            &denied,
+            "shell:exec_shell:deadbeef",
+            &grouping_of("cargo build")
+        ));
     }
 
     /// The two plan tools are the only results that move this session's mode, and
@@ -2912,6 +2987,10 @@ mod tests {
     /// this renders for: the file existed but the user only ever saw the
     /// `update_plan` step list).
     #[tokio::test]
+    // The env lock serializes env mutation across the test binary; every
+    // other holder acquires it only briefly (no blocking), so holding the
+    // guard across this await cannot deadlock.
+    #[allow(clippy::await_holding_lock)]
     async fn plan_approval_block_renders_the_plan_body_before_the_question() {
         let _lock = crate::test_support::lock_test_env();
         let tmp = tempfile::TempDir::new().unwrap();
@@ -2927,12 +3006,11 @@ mod tests {
                 .await
                 .expect("write plan file");
 
-            let mut state = test_repl_state();
+            let state = test_repl_state();
             *state.plan_mode_state.lock().await =
                 codesmith_agent_runtime::tool_state::plan_mode::PlanModeState {
                     active: true,
                     current_slug: Some(slug.to_string()),
-                    ..Default::default()
                 };
             plan_approval_block(&state).await
         })
@@ -2967,6 +3045,8 @@ mod tests {
     /// A plan slug whose file was never written must fail loud, not print an
     /// empty block that reads as an approved-but-empty plan.
     #[tokio::test]
+    // Same env-lock justification as the plan-body test above.
+    #[allow(clippy::await_holding_lock)]
     async fn plan_approval_block_warns_when_the_plan_file_is_missing() {
         let _lock = crate::test_support::lock_test_env();
         let tmp = tempfile::TempDir::new().unwrap();
@@ -2974,12 +3054,11 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
 
         let block = with_home_async(&home, async {
-            let mut state = test_repl_state();
+            let state = test_repl_state();
             *state.plan_mode_state.lock().await =
                 codesmith_agent_runtime::tool_state::plan_mode::PlanModeState {
                     active: true,
                     current_slug: Some("plan_never_written".to_string()),
-                    ..Default::default()
                 };
             plan_approval_block(&state).await
         })
