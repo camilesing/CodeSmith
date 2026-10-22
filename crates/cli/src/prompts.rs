@@ -347,6 +347,47 @@ mod tests {
         );
     }
 
+    /// The fan-out rule is what makes plan mode actually use the sub-agent
+    /// surface it registers: a model asked only to infer it from a
+    /// descriptive sentence tends to sweep the areas serially instead
+    /// (observed with GLM-5.3 on a three-module investigation). The pinned
+    /// substrings are the rule's binding half — the trigger, the named
+    /// session tools, and the solo-work exemption that keeps it from firing
+    /// on one-file questions.
+    #[test]
+    fn plan_mode_prompt_binds_the_fan_out_rule() {
+        assert!(
+            PLAN_MODE.contains("**Fan-out rule.**"),
+            "the rule must be labelled so it reads as a rule, not advice"
+        );
+        assert!(
+            PLAN_MODE.contains("3+ modules, services, or")
+                && PLAN_MODE.contains("one read-only sub-agent session per area"),
+            "the rule must name its trigger in modules, not repositories"
+        );
+        assert!(
+            PLAN_MODE.contains("`agent_open`") && PLAN_MODE.contains("`agent_eval`"),
+            "the rule must name the session tools the model is bound to use"
+        );
+        assert!(
+            PLAN_MODE.contains("do not fan it out"),
+            "the rule must keep the solo-work exemption, or every one-file question fans out"
+        );
+
+        // And it must ride the composed plan prompt the model actually gets,
+        // not just the mode fragment.
+        let composed = compose_prompt_with_approval_and_model(
+            AppMode::Plan,
+            Personality::Calm,
+            ApprovalMode::Never,
+            "deepseek-v4-pro",
+        );
+        assert!(
+            composed.contains("**Fan-out rule.**") && composed.contains("`agent_open`"),
+            "the fan-out rule and its tools must survive into the composed plan prompt"
+        );
+    }
+
     #[test]
     fn render_environment_block_lists_supplied_locale_and_workspace() {
         let tmp = tempdir().expect("tempdir");

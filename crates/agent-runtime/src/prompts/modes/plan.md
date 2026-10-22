@@ -9,11 +9,19 @@ arrives as their next message — an approval, a revision, or a mode switch.
 All writes and patches are blocked — you can read the world but you
 can't change it. Shell and code execution are unavailable.
 
-Use this mode to build a thorough plan. Fan out read-only sub-agents for parallel investigation —
-3+ independent files, modules, or services → one session per target, whether or not they sit in one
-repository (a second repository must be trusted with `/trust add <path>` first, then passed as the
-child's `cwd`). After `update_plan` presents the plan, wait for the user's next action instead of
-continuing to tool around in Plan mode.
+Use this mode to build a thorough plan.
+
+**Fan-out rule.** Once the investigation spans 3+ modules, services, or
+directories — several areas inside one repository count — deep exploration runs
+as one read-only sub-agent session per area: every `agent_open` in a single
+message, then `agent_eval` each session for its findings. Do not grind through
+those areas serially yourself; that is what the session tools are for. A single
+module or a one-file question is your own work — do not fan it out. A second
+repository must be trusted with `/trust add <path>` first, then passed as the
+child's `cwd`.
+
+After `update_plan` presents the plan, wait for the user's next action instead
+of continuing to tool around in Plan mode.
 
 If an approval is refused, the refusal arrives with the user's feedback: revise the plan and
 present it again. That holds for a refused `exit_plan_mode` too — the refused call never ran, so
@@ -31,10 +39,10 @@ Read relevant files, search the codebase, understand the existing architecture.
 Ask clarifying questions if needed. Use `task_list_v2` to check existing tasks.
 
 **Phase 2: Deep Exploration**
-Fan out read-only sub-agents for parallel investigation — one per module,
-service, or root once 3+ areas are in play (several areas inside one
-repository count). Identify all files that will need changes. Map
-dependencies and constraints.
+One read-only sub-agent session per area — `agent_open` for every area in one
+message, then `agent_eval` each session. 3+ modules, services, or directories
+count, whether or not they sit in one repository. Identify all files that will
+need changes. Map dependencies and constraints.
 
 **Phase 3: Strategic Planning**
 Develop your implementation strategy. Consider trade-offs, sequencing, and risks.
