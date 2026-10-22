@@ -196,7 +196,7 @@ impl DeliverablesProbe {
         let mut progress = self
             .progress
             .lock()
-            .expect("deliverables progress poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if missing.is_empty() {
             progress.last_noted_missing.clear();
             return;

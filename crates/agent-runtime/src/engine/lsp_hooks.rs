@@ -61,6 +61,16 @@ impl Engine {
         }
         let paths = edited_paths_for_tool(tool_name, tool_input, self.host.as_ref());
         for path in paths {
+            // Defense in depth: the path came from the (already approved)
+            // tool input, but this hook must not become a read primitive of
+            // its own — skip traversal-shaped paths rather than diagnosing
+            // outside the workspace.
+            if path
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                continue;
+            }
             let absolute = if path.is_absolute() {
                 path.clone()
             } else {

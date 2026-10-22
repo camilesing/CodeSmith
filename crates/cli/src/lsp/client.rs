@@ -464,7 +464,7 @@ impl DiagnosticsCache {
     fn version_of(&self, path: &Path) -> Option<(u64, Option<i64>)> {
         self.inner
             .read()
-            .expect("lsp diagnostics cache lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(path)
             .map(|(_, version, doc_version)| (*version, *doc_version))
     }
@@ -472,7 +472,7 @@ impl DiagnosticsCache {
     fn get(&self, path: &Path) -> Option<CachedDiagnostics> {
         self.inner
             .read()
-            .expect("lsp diagnostics cache lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(path)
             .cloned()
     }
@@ -480,7 +480,7 @@ impl DiagnosticsCache {
     fn store(&self, path: PathBuf, items: Vec<Diagnostic>, version: u64, doc_version: Option<i64>) {
         self.inner
             .write()
-            .expect("lsp diagnostics cache lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(path, (items, version, doc_version));
     }
 }
