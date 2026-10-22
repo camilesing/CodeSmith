@@ -37,8 +37,9 @@ use codesmith_agent_runtime::host_services::{HostServices, SubAgentApi};
 // `runtime_traits`, `ui`, …). These items MUST stay `pub` in AR's engine
 // module (see C7-2).
 pub use codesmith_agent_runtime::engine::{
-    ApprovalDecision, ApprovalRouter, CancelReason, Engine, EngineConfig, UserInputDecision,
-    apply_tool_selection, build_model_tool_catalog, goal_objective_for_prompt, system_prompt_hash,
+    ApprovalDecision, ApprovalRouter, CancelReason, Engine, EngineConfig, TOOL_SEARCH_NAME,
+    UserInputDecision, apply_tool_selection, build_model_tool_catalog, goal_objective_for_prompt,
+    progressive_disclosure_active, system_prompt_hash, tool_search_control_tool,
 };
 
 // Test-only surface — referenced exclusively from `#[cfg(test)]` modules
@@ -1843,6 +1844,7 @@ pub(crate) fn headless_engine_config(
         )),
         index_enabled: config.index_tools_enabled(),
         tools_always_load: config.tools_always_load(),
+        progressive_disclosure: config.tools_progressive_disclosure(),
         disabled_tools: crate::capabilities::effective_disabled(config.tools.as_ref())
             .map_err(anyhow::Error::msg)?,
         tools: config.tools.clone(),

@@ -31,7 +31,10 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::tool_setup::{build_tool_context_for, build_turn_tool_registry_builder_for};
-use super::{Event, Op, apply_tool_selection, build_model_tool_catalog, configure_plugin_tools};
+use super::{
+    Event, Op, TOOL_SEARCH_NAME, apply_tool_selection, build_model_tool_catalog,
+    configure_plugin_tools, progressive_disclosure_active, tool_search_control_tool,
+};
 use crate::app_state::AppMode;
 use crate::background_task::SharedBackgroundTaskRegistry;
 use crate::cycle_manager::StructuredState;
@@ -588,6 +591,16 @@ impl HostServices for super::EngineHost {
                 config.allowed_tools.as_deref(),
                 &config.blocked_tools,
             );
+            // Progressive disclosure: the `tool_search` control tool exists
+            // only while the mode can bite (a withheld tool is registered), and
+            // it is inserted in sorted position so the catalog's byte order —
+            // and with it the request prefix — stays stable across turns.
+            if progressive_disclosure_active(&catalog, config.progressive_disclosure)
+                && !catalog.iter().any(|tool| tool.name == TOOL_SEARCH_NAME)
+            {
+                catalog.push(tool_search_control_tool());
+                catalog.sort_by(|a, b| a.name.cmp(&b.name));
+            }
             catalog
         });
 

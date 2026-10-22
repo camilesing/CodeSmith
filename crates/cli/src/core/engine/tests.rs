@@ -4516,6 +4516,80 @@ async fn allowed_tool_list_narrows_the_model_request() {
     );
 }
 
+/// Progressive disclosure is off by default: the request carries the declared
+/// deferred tools and no discovery control tool.
+#[tokio::test]
+async fn progressive_disclosure_default_off_sends_the_declared_deferred_tools() {
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    let mock = MockLlmClient::new(vec![canned::simple_text_turn("ok")]);
+    let (handle, mock) = spawn_engine_with_mock(test_engine_config(tmp.path()), mock);
+    handle.send(make_send_op("hello")).await.expect("send op");
+    let _ = collect_until_turn_complete(&handle).await;
+
+    let names: Vec<String> = mock.captured_requests()[0]
+        .tools
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect();
+    assert!(
+        names.iter().any(|name| name == "automation_list"),
+        "off means resident, even for a declared-deferred tool"
+    );
+    assert!(
+        !names.iter().any(|name| name == "tool_search"),
+        "the control tool must not appear while nothing is withheld"
+    );
+}
+
+/// With the setting on: declared-deferred tools are withheld, `tool_search` is
+/// offered, and a successful search makes the named tool callable from the next
+/// step on — the loaded-sentinel in the transcript is what promotes it.
+#[tokio::test]
+async fn progressive_disclosure_withholds_then_promotes_on_search() {
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    let mut config = test_engine_config(tmp.path());
+    config.progressive_disclosure = true;
+    let mock = MockLlmClient::new(vec![
+        canned::tool_call_turn("t1", "tool_search", r#"{"query":"select:automation_list"}"#),
+        canned::simple_text_turn("ok"),
+    ]);
+    let (handle, mock) = spawn_engine_with_mock(config, mock);
+    handle.send(make_send_op("hello")).await.expect("send op");
+    let _ = collect_until_turn_complete(&handle).await;
+
+    let requests = mock.captured_requests();
+    assert_eq!(requests.len(), 2, "one search step, then a text step");
+    let names = |index: usize| -> Vec<String> {
+        requests[index]
+            .tools
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect()
+    };
+
+    let first = names(0);
+    assert!(
+        !first.iter().any(|name| name == "automation_list"),
+        "a declared-deferred tool is withheld: {first:?}"
+    );
+    assert!(
+        first.iter().any(|name| name == "tool_search"),
+        "the control tool must be offered while something is withheld: {first:?}"
+    );
+
+    let second = names(1);
+    assert!(
+        second.iter().any(|name| name == "automation_list"),
+        "the search result's sentinel must promote the tool for the next step: \n{second:?}"
+    );
+}
+
 /// Round-4 TODO-45 — the model-visible tool catalog includes the type-aware
 /// LSP navigation tool (`lsp_navigate`), registered for every mode by the
 /// per-turn tool setup (fails closed at runtime when LSP is disabled — the

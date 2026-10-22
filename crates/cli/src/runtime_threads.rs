@@ -2144,6 +2144,7 @@ impl RuntimeThreadManager {
             // service attaches to the main session's ToolContext only.
             index_enabled: false,
             tools_always_load: self.config.tools_always_load(),
+            progressive_disclosure: self.config.tools_progressive_disclosure(),
             disabled_tools: crate::capabilities::effective_disabled(self.config.tools.as_ref())
                 .map_err(anyhow::Error::msg)?,
             tools: self.config.tools.clone(),

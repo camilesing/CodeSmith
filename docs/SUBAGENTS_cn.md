@@ -11,11 +11,11 @@
 注册了 `tool_agent` 和 `agent_run`。参见 `prompts/base.md`
 的"Sub-Agent Strategy"以及内联的工具描述。
 
-这三个会话工具是常驻（eager）加载的：只要子代理家族被注册（`subagents`
-特性开启），`agent_open` → `agent_eval` → `agent_close` 从第一轮起就
-随请求的工具清单一并下发，照提示词行事的模型无需再花一次 ToolSearch
-发现往返。`agent_run`、`agent_spawn` 和 `tool_agent` 仍留在 ToolSearch
-之后——提示词里的并行调查路径用的是这个会话三件套。
+这三个会话工具保持常驻：它们没有声明延迟，所以 `agent_open` → `agent_eval`
+→ `agent_close` 始终随请求的工具清单下发——即使 `[tools].progressive_disclosure`
+把声明延迟的长尾收起，照提示词行事的模型也不会为它们多花一次发现往返。
+延迟是**逐工具**决定的（`ToolSpec::defer_loading`，声明在工具自己的定义旁边），
+不再由某份中心常驻清单反推。
 
 ## 角色分类体系
 

@@ -1417,6 +1417,15 @@ impl Config {
         }
     }
 
+    /// Whether declared-deferred tools are withheld from the request and
+    /// discoverable through `tool_search` (`[tools].progressive_disclosure`).
+    #[must_use]
+    pub fn tools_progressive_disclosure(&self) -> bool {
+        self.tools
+            .as_ref()
+            .is_some_and(|tools| tools.progressive_disclosure)
+    }
+
     #[must_use]
     pub fn tools_always_load(&self) -> std::collections::HashSet<String> {
         self.tools
@@ -4832,6 +4841,22 @@ mod tests {
     #[test]
     fn search_provider_defaults_to_duckduckgo() {
         assert_eq!(SearchProvider::default(), SearchProvider::DuckDuckGo);
+    }
+
+    #[test]
+    fn progressive_disclosure_parses_and_defaults_off() {
+        let parsed: ConfigFile = toml::from_str(
+            r#"
+            [tools]
+            progressive_disclosure = true
+            "#,
+        )
+        .expect("tools config");
+        assert!(parsed.base.tools_progressive_disclosure());
+        assert!(
+            !ConfigFile::default().base.tools_progressive_disclosure(),
+            "an absent setting means off"
+        );
     }
 
     #[test]

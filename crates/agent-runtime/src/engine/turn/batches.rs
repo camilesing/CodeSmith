@@ -284,6 +284,15 @@ impl HostAgentExecutor {
                 Some(refusal) => Some(refusal),
                 None => self.plan_mode_refusal(&name, &caps).await,
             };
+            // Progressive disclosure (see `deferred_tool_guard`): the discovery
+            // control tool runs here, and a withheld tool's call is answered
+            // with the schema-hydration guidance instead of dispatched. Both
+            // append the loaded-sentinel that activates the tool for the next
+            // request.
+            let guard_result = match guard_result {
+                Some(refusal) => Some(refusal),
+                None => self.deferred_tool_guard(&name, &input, history),
+            };
             plans.push(ToolExecutionPlan {
                 index: i,
                 id: id.clone(),

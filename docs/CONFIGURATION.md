@@ -1265,13 +1265,18 @@ These keys are accepted by the config loader but not currently used by the inter
 
 ## Tool Catalog
 
-CodeSmith loads a small core native tool catalog by default and leaves less
-common native tools discoverable through ToolSearch. To keep specific native
-tools loaded on every request, add them to `[tools].always_load`:
+By default the model receives the whole registered tool surface (minus whatever
+`[tools] include`/`exclude` select). A tool is withheld only when its own
+definition declares deferral, and **progressive disclosure is off by default**:
+turn it on to hide those declared-deferred tools and offer them on demand
+through the `tool_search` control tool — a search (or a direct first call)
+returns the schema, and the tool is callable from the next step on. Set
+`[tools].always_load` to keep specific native tools resident regardless:
 
 ```toml
 [tools]
-always_load = ["git_show", "notify"]
+progressive_disclosure = false          # true: withhold declared-deferred tools
+always_load = ["git_show", "notify"]    # wins over both policies
 # plugin_dir = "~/.codesmith/tools"   # default; scripts carrying a
 #                                     # `# name:` / `# description:` /
 #                                     # `# schema:` frontmatter header are

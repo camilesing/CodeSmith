@@ -14,12 +14,12 @@ registers `tool_agent` and `agent_run` alongside them. See
 `prompts/base.md` "Sub-Agent Strategy" and the in-line tool
 descriptions.
 
-The three session tools are eager-loaded: whenever the family is registered
-(the `subagents` feature), all of `agent_open` → `agent_eval` →
-`agent_close` ride the request's tool list from the first turn, so a model
-following the prompt never pays a ToolSearch discovery round trip for them.
-`agent_run`, `agent_spawn`, and `tool_agent` stay behind ToolSearch — the
-prompt's parallel-investigation path uses the session trio.
+The three session tools stay resident: they declare no deferral, so
+`agent_open` → `agent_eval` → `agent_close` ride the request's tool list — even
+when `[tools].progressive_disclosure` withholds the declared-deferred tail, a
+model following the prompt never pays a discovery round trip for them. Deferral
+is decided per tool (`ToolSpec::defer_loading`, declared beside the tool's own
+definition), never inferred from a central eager list.
 
 ## Role taxonomy
 

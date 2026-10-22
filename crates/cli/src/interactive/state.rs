@@ -852,6 +852,7 @@ pub fn build_engine_config(state: &ReplState, config: &Config) -> anyhow::Result
         )),
         index_enabled: config.index_tools_enabled(),
         tools_always_load: config.tools_always_load(),
+        progressive_disclosure: config.tools_progressive_disclosure(),
         disabled_tools: crate::capabilities::effective_disabled(config.tools.as_ref())
             .map_err(anyhow::Error::msg)?,
         tools: config.tools.clone(),

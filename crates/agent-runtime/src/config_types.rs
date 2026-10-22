@@ -193,6 +193,12 @@ pub struct ToolsConfig {
     #[serde(default)]
     pub always_load: Vec<String>,
 
+    /// Progressive disclosure: withhold the tools that declare `should_defer`
+    /// from the request and offer them on demand through `tool_search`. Off by
+    /// default.
+    #[serde(default)]
+    pub progressive_disclosure: bool,
+
     /// Optional directory to scan for plugin tool scripts. Scripts with a
     /// frontmatter header (`# name:`, `# description:`, `# schema:`) are
     /// auto-discovered and registered as tools.

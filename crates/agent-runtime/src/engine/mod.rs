@@ -1266,15 +1266,11 @@ impl Engine {
         };
         // The same catalog is the request's tool surface — host-built, so
         // `apply_tool_selection` (`[tools] include`/`exclude`, the preset
-        // tiers) has already run on it. Deferral marks are cleared on the way
-        // in: progressive disclosure is not wired to the request path, and a
-        // provider must not meet an unknown `defer_loading` field for no gain.
-        let request_catalog = tool_catalog_for_event.clone().map(|mut catalog| {
-            for tool in &mut catalog {
-                tool.defer_loading = None;
-            }
-            Arc::new(catalog)
-        });
+        // tiers) has already run on it, and the deferral marks stay on: the
+        // executor needs them to withhold declared-deferred tools (progressive
+        // disclosure) and strips them itself when it emits the request, so no
+        // provider ever meets the field.
+        let request_catalog = tool_catalog_for_event.clone().map(Arc::new);
         let base_url_for_event = self
             .llm_client
             .as_ref()
@@ -1437,6 +1433,11 @@ impl Engine {
         // selection applied, so an allowlist actually narrows the request
         // (the dispatch ToolSet keeps the full registry).
         .with_request_catalog(request_catalog)
+        // Withholding takes effect only when a withheld tool exists (the host's
+        // catalog says so) — the setting alone must not pay for a search step.
+        .with_progressive_disclosure(tool_catalog_for_event.as_deref().is_some_and(|catalog| {
+            progressive_disclosure_active(catalog, self.config.progressive_disclosure)
+        }))
         .with_tool_dispatcher(plan.tool_registry().cloned())
         .with_turn_meta(Some(turn_meta_probe))
         .with_reinject(Some(reinject_probe))
@@ -3432,10 +3433,12 @@ pub use self::streaming::{
 };
 pub use self::tool_catalog::{
     CODE_EXECUTION_TOOL_NAME, TOOL_SEARCH_BM25_NAME, TOOL_SEARCH_NAME, TOOL_SEARCH_REGEX_NAME,
-    active_tools_for_step, apply_mcp_tool_deferral, apply_native_deferral_overrides,
-    apply_tool_selection, build_model_tool_catalog, ensure_advanced_tooling,
-    execute_code_execution_tool, execute_tool_search, initial_active_tools, is_tool_search_tool,
+    activated_by_transcript, active_tool_list_from_catalog, active_tools_for_step,
+    apply_mcp_tool_deferral, apply_native_deferral_overrides, apply_tool_selection,
+    build_model_tool_catalog, ensure_advanced_tooling, execute_code_execution_tool,
+    execute_tool_search, initial_active_tools, is_tool_search_tool,
     maybe_activate_requested_deferred_tool, maybe_hydrate_requested_deferred_tool,
-    missing_tool_error_message, preflight_requested_deferred_tool,
+    missing_tool_error_message, preflight_requested_deferred_tool, progressive_disclosure_active,
+    tool_search_control_tool, tool_search_loaded_sentinel,
 };
 use self::tool_catalog::{MULTI_TOOL_PARALLEL_NAME, REQUEST_USER_INPUT_NAME};

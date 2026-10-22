@@ -615,6 +615,13 @@ pub struct ToolsToml {
     /// Native tool names to keep loaded outside the default core catalog.
     #[serde(default)]
     pub always_load: Vec<String>,
+
+    /// Progressive disclosure: withhold the tools that declare
+    /// `should_defer` from the request and offer them on demand through
+    /// `tool_search`. Off by default — the request carries the whole
+    /// registered surface (minus `[tools] include`/`exclude`).
+    #[serde(default)]
+    pub progressive_disclosure: bool,
 }
 
 /// On-disk schema for the `[snapshots]` table (#137). See

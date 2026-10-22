@@ -12,7 +12,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::mode::AppMode;
-use crate::models::Tool;
+use crate::models::{ContentBlock, Message, Tool};
 use crate::tools::spec::{ToolError, ToolResult, optional_u64, required_str};
 
 use crate::dependencies::ExternalTool;
@@ -46,6 +46,114 @@ pub fn is_tool_search_tool(name: &str) -> bool {
 // `DEFAULT_ACTIVE_NATIVE_TOOLS` relocated to
 // `codesmith_agent_runtime::tools::tool_catalog` (re-exported above) — it now
 // feeds the prompt's core-tool taxonomy only; deferral is declared per tool.
+
+/// Model-facing description of the `tool_search` control tool.
+pub const TOOL_SEARCH_DESCRIPTION: &str = "\
+Load the schemas of tools that are not in this request's tool list. Pass \
+`query` with keywords (optionally `+term` to require a term), or \
+`select:name1,name2` for exact names. Matching tools' schemas are returned and \
+those tools become callable from your next step on. Tools already listed in \
+this request are resident — call them directly.";
+
+/// The synthetic `tool_search` control tool definition.
+///
+/// Like `code_execution`, this entry is not a `ToolSpec`: the executor answers
+/// it inline (`execute_tool_search`), because only the executor holds the
+/// withheld catalog and the active set. It exists in the catalog only while
+/// progressive disclosure is on.
+#[must_use]
+pub fn tool_search_control_tool() -> Tool {
+    Tool {
+        tool_type: Some("custom".to_string()),
+        name: TOOL_SEARCH_NAME.to_string(),
+        description: TOOL_SEARCH_DESCRIPTION.to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Keywords (`+term` to require), or `select:name1,name2` for exact names."
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum matches to return (default 20)."
+                }
+            },
+            "required": ["query"]
+        }),
+        output_schema: None,
+        allowed_callers: Some(vec!["direct".to_string()]),
+        defer_loading: Some(false),
+        input_examples: None,
+        strict: None,
+        cache_control: None,
+    }
+}
+
+/// The activation marker a search or hydration result carries, naming the tools
+/// now callable.
+///
+/// The **transcript is the activation record** — the log of which tools this
+/// session has loaded — so the active set is derived
+/// ([`activated_by_transcript`]) instead of held in executor state: it survives
+/// a resume for free, and the replay shows exactly why a tool was visible.
+#[must_use]
+pub fn tool_search_loaded_sentinel(names: &[String]) -> String {
+    format!("<codesmith:tool_search loaded=\"{}\" />", names.join(","))
+}
+
+/// Tools the transcript says have been loaded (see
+/// [`tool_search_loaded_sentinel`]).
+#[must_use]
+pub fn activated_by_transcript(messages: &[Message]) -> HashSet<String> {
+    const PREFIX: &str = "<codesmith:tool_search loaded=\"";
+    let mut names = HashSet::new();
+    for message in messages {
+        for block in &message.content {
+            // The sentinel rides a *tool result's* content — that is where a
+            // discovery answer lands — and a text block for engine notes; both
+            // are read.
+            let text = match block {
+                ContentBlock::Text { text, .. } => text.as_str(),
+                ContentBlock::ToolResult { content, .. } => content.as_str(),
+                _ => continue,
+            };
+            for (index, _) in text.match_indices(PREFIX) {
+                let rest = &text[index + PREFIX.len()..];
+                let Some(end) = rest.find('"') else {
+                    continue;
+                };
+                for name in rest[..end].split(',') {
+                    let name = name.trim();
+                    if !name.is_empty() {
+                        names.insert(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    names
+}
+
+/// Whether to withhold declared-deferred tools for this turn.
+///
+/// Off unless the user asked for disclosure **and** something is declarable: no
+/// withheld tool means no search step to pay for, and the degraded case is
+/// logged so a config that cannot take effect says why.
+#[must_use]
+pub fn progressive_disclosure_active(catalog: &[Tool], requested: bool) -> bool {
+    if !requested {
+        return false;
+    }
+    if catalog.iter().any(|tool| tool.defer_loading == Some(true)) {
+        return true;
+    }
+    tracing::info!(
+        "progressive_disclosure is on but no registered tool declares deferral \
+         — sending the full catalog"
+    );
+    false
+}
 
 /// Apply the overrides that sit *above* a tool's own deferral declaration.
 ///
@@ -112,6 +220,70 @@ pub fn build_model_tool_catalog(
 /// infrastructure tools (`multi_tool_use.parallel`, tool-search) are never
 /// filtered: they are dispatch machinery the model needs to drive whatever
 /// surface remains, not capabilities of their own.
+#[cfg(test)]
+mod progressive_disclosure_tests {
+    use super::*;
+
+    fn tool(name: &str, deferred: Option<bool>) -> Tool {
+        Tool {
+            tool_type: Some("custom".to_string()),
+            name: name.to_string(),
+            description: String::new(),
+            input_schema: json!({}),
+            output_schema: None,
+            allowed_callers: None,
+            defer_loading: deferred,
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        }
+    }
+
+    /// The valve: the setting alone must not pay for a search step, and the
+    /// transcript is the activation record.
+    #[test]
+    fn disclosure_requires_something_to_withhold() {
+        let resident_only = vec![tool("read_file", Some(false))];
+        assert!(!progressive_disclosure_active(&resident_only, false));
+        assert!(
+            !progressive_disclosure_active(&resident_only, true),
+            "nothing to withhold ⇒ off"
+        );
+        let with_deferred = vec![tool("read_file", Some(false)), tool("niche", Some(true))];
+        assert!(progressive_disclosure_active(&with_deferred, true));
+    }
+
+    #[test]
+    fn loaded_sentinels_round_trip_through_the_transcript() {
+        let sentinel = tool_search_loaded_sentinel(&["niche".to_string(), "other".to_string()]);
+        // The real shape: a discovery answer is a tool *result*, so the
+        // sentinel sits in `ContentBlock::ToolResult::content`.
+        let result_message = Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "t1".to_string(),
+                content: format!("found them\n\n{sentinel}"),
+                is_error: None,
+                content_blocks: None,
+            }],
+        };
+        let text_message = Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: format!("note\n\n{sentinel}"),
+                cache_control: None,
+            }],
+        };
+        let activated = activated_by_transcript(&[result_message, text_message]);
+        assert!(activated.contains("niche"));
+        assert!(activated.contains("other"));
+        assert!(
+            activated_by_transcript(&[]).is_empty(),
+            "an empty transcript activates nothing"
+        );
+    }
+}
+
 pub fn apply_tool_selection(
     catalog: &mut Vec<Tool>,
     allowed: Option<&[String]>,
@@ -271,7 +443,7 @@ pub fn initial_active_tools(catalog: &[Tool]) -> HashSet<String> {
     active
 }
 
-fn active_tool_list_from_catalog(catalog: &[Tool], active: &HashSet<String>) -> Vec<Tool> {
+pub fn active_tool_list_from_catalog(catalog: &[Tool], active: &HashSet<String>) -> Vec<Tool> {
     // Two-pass for prefix-cache stability (#263). Always-loaded tools come
     // first in their stable catalog order; tools that started life deferred
     // and were activated mid-conversation by ToolSearch get appended at the
@@ -737,7 +909,24 @@ pub fn execute_tool_search(
     ))
     .unwrap_or(TOOL_SEARCH_DEFAULT_MAX_RESULTS)
     .clamp(1, TOOL_SEARCH_MAX_RESULTS_LIMIT);
-    let discovered = if tool_name == TOOL_SEARCH_REGEX_NAME {
+    let discovered = if let Some(select) = query.strip_prefix("select:") {
+        // Exact names, order-preserving and never truncated: a model that knows
+        // the tool name should not depend on the keyword ranker, which is the
+        // whole point of naming it. Case-insensitive; unknown names drop out.
+        let mut seen = HashSet::new();
+        select
+            .split(',')
+            .map(str::trim)
+            .filter(|wanted| !wanted.is_empty())
+            .filter_map(|wanted| {
+                catalog
+                    .iter()
+                    .find(|tool| tool.name.eq_ignore_ascii_case(wanted))
+                    .map(|tool| tool.name.clone())
+            })
+            .filter(|name| seen.insert(name.clone()))
+            .collect::<Vec<_>>()
+    } else if tool_name == TOOL_SEARCH_REGEX_NAME {
         discover_tools_with_regex(catalog, query, max_results)?
     } else {
         discover_tools_with_bm25_like(catalog, query, max_results)

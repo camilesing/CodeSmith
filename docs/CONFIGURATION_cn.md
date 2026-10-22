@@ -1134,13 +1134,17 @@ Ghostty OSC 777 或 BEL）。没有任何需要配置的内容；如果你的终
 
 ## 工具目录
 
-CodeSmith 默认加载一个精简的核心原生工具目录，并让不太常用的原生
-工具可通过 ToolSearch 发现。要让特定原生工具在每次请求中都保持
-加载，可将它们加入 `[tools].always_load`：
+默认情况下，模型会收到**整个已注册工具面**（减去 `[tools] include`/`exclude`
+选中的部分）。只有工具自己的定义声明了延迟，它才会被隐藏；而且
+**默认关闭逐步披露（progressive disclosure）**：打开后，这些声明延迟的工具
+会从请求中移除，改由 `tool_search` 控制工具按需提供——一次搜索（或直接首调）
+返回其 schema，该工具从下一步起即可调用。要让特定原生工具无论策略如何都
+保持常驻，将其加入 `[tools].always_load`：
 
 ```toml
 [tools]
-always_load = ["git_show", "notify"]
+progressive_disclosure = false          # true：隐藏声明延迟的工具
+always_load = ["git_show", "notify"]    # 优先于两种策略
 # plugin_dir = "~/.codesmith/tools"   # 默认；携带 `# name:` /
 #                                     # `# description:` / `# schema:`
 #                                     # frontmatter 头的脚本会被自动发现

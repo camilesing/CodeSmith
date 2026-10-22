@@ -284,6 +284,10 @@ pub struct EngineConfig {
     /// Native tools that should stay in the model-visible catalog even when
     /// they are outside the small default core surface (#2076).
     pub tools_always_load: HashSet<String>,
+    /// Withhold declared-deferred tools from the request and offer them through
+    /// `tool_search` instead. Off by default (`[tools].progressive_disclosure`):
+    /// an undeclared tool is resident, so the off state is the safe one.
+    pub progressive_disclosure: bool,
     /// When true and `/usr/bin/bwrap` is present on Linux, route exec_shell
     /// through bubblewrap instead of relying solely on Landlock (#2184).
     #[allow(dead_code)] // Wired through ShellManager in follow-up PR
@@ -401,6 +405,7 @@ impl Default for EngineConfig {
             subagent_inherit_full_registry: false,
             subagent_external_provider: None,
             tools_always_load: HashSet::new(),
+            progressive_disclosure: false,
             prefer_bwrap: false,
             sandbox_runtime: SandboxRuntimeConfig::default(),
             tools: None,

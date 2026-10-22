@@ -1141,6 +1141,14 @@ pub struct HostAgentExecutor {
     /// the `/tools` readout coherent).
     pub(crate) request_catalog: Option<Arc<Vec<crate::models::Tool>>>,
 
+    /// Progressive disclosure is on for this turn: declared-deferred tools stay
+    /// out of the request, `tool_search` answers discovery inline, and a
+    /// withheld tool's *first* call gets the schema-hydration guidance. The
+    /// production wire-in ORs `[tools].progressive_disclosure` with "the host's
+    /// catalog actually withholds something", so a session with nothing to
+    /// disclose pays nothing.
+    pub(crate) progressive_disclosure: bool,
+
     /// Deliverables watchdog (W2 P1-1). `None` (default; embeds/tests) ⇒ no
     /// periodic disk checks. When `Some`, [`run_inner`]'s pre-request seam
     /// checks the deliverable paths every
@@ -1543,6 +1551,7 @@ impl HostAgentExecutor {
             turn_mode: AppMode::Agent,
             plan_mode_state: None,
             request_catalog: None,
+            progressive_disclosure: false,
             deliverables: None,
         }
     }
@@ -1768,6 +1777,57 @@ impl HostAgentExecutor {
     pub fn with_request_catalog(mut self, catalog: Option<Arc<Vec<crate::models::Tool>>>) -> Self {
         self.request_catalog = catalog;
         self
+    }
+
+    /// Turn progressive disclosure on for this turn
+    /// ([`Self::progressive_disclosure`]). Consumes and returns `self`.
+    #[must_use]
+    pub fn with_progressive_disclosure(mut self, on: bool) -> Self {
+        self.progressive_disclosure = on;
+        self
+    }
+
+    /// Progressive disclosure's execution gate (called from `turn::batches`,
+    /// beside the plan-mode refusal): answer the discovery control tool inline,
+    /// and answer a call to a *withheld* tool with the schema-hydration
+    /// guidance instead of dispatching it.
+    ///
+    /// Both answers append a loaded-sentinel, and the sentinel is the whole
+    /// activation record: the next request derives the active set from the
+    /// transcript ([`crate::engine::activated_by_transcript`]), so nothing is
+    /// mutated here and a resume replays the same visibility.
+    pub(crate) fn deferred_tool_guard(
+        &self,
+        name: &str,
+        input: &serde_json::Value,
+        history: &dyn ChatHistory,
+    ) -> Option<ToolResult> {
+        if !self.progressive_disclosure {
+            return None;
+        }
+        let catalog = self.request_catalog.as_ref()?;
+        let mut active = crate::engine::initial_active_tools(catalog);
+        active.extend(crate::engine::activated_by_transcript(&history.messages()));
+
+        if crate::engine::is_tool_search_tool(name) {
+            let before = active.clone();
+            let mut result =
+                crate::engine::execute_tool_search(name, input, catalog, &mut active).ok()?;
+            append_loaded_sentinel(&mut result, &before, &active);
+            return Some(result);
+        }
+
+        let withheld = catalog
+            .iter()
+            .any(|tool| tool.name == name && tool.defer_loading == Some(true));
+        if !withheld || active.contains(name) {
+            return None;
+        }
+        let before = active.clone();
+        let mut result =
+            crate::engine::preflight_requested_deferred_tool(name, input, catalog, &mut active)?;
+        append_loaded_sentinel(&mut result, &before, &active);
+        Some(result)
     }
 
     /// Read back the per-turn token usage accumulated by the inline stream
@@ -3374,7 +3434,23 @@ impl HostAgentExecutor {
             // array across process launches, which is what the prefix cache
             // needs.
             let api_tools = match &self.request_catalog {
-                Some(catalog) => catalog.as_ref().clone(),
+                Some(catalog) => {
+                    let mut catalog = catalog.as_ref().clone();
+                    if self.progressive_disclosure {
+                        // Resident ∪ loaded-from-the-transcript: what the model
+                        // may call right now.
+                        let mut active = crate::engine::initial_active_tools(&catalog);
+                        active.extend(crate::engine::activated_by_transcript(&history.messages()));
+                        catalog = crate::engine::active_tool_list_from_catalog(&catalog, &active);
+                    }
+                    // The mark is the host's bookkeeping, never the provider's
+                    // business: an unknown field on the wire is a risk for no
+                    // gain.
+                    for tool in &mut catalog {
+                        tool.defer_loading = None;
+                    }
+                    catalog
+                }
                 None => tools.to_api_tools(),
             };
             // Three-zone assembly (#2264 Phase 2): freeze the step's prefix
@@ -4168,6 +4244,24 @@ impl HostAgentExecutor {
             step += 1;
         }
     }
+}
+
+/// Record the names a discovery answer turned from withheld to callable, for
+/// [`crate::engine::activated_by_transcript`] to pick up.
+fn append_loaded_sentinel(
+    result: &mut ToolResult,
+    before: &std::collections::HashSet<String>,
+    after: &std::collections::HashSet<String>,
+) {
+    let mut loaded: Vec<String> = after.difference(before).cloned().collect();
+    if loaded.is_empty() {
+        return;
+    }
+    loaded.sort();
+    result.content.push_str("\n\n");
+    result
+        .content
+        .push_str(&crate::engine::tool_search_loaded_sentinel(&loaded));
 }
 
 #[cfg(test)]

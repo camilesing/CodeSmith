@@ -166,10 +166,13 @@ memory_path = "~/.codesmith/memory.md"
 # Parsed but currently unused (reserved for future versions):
 # tools_file = "./tools.json"
 
-# Native tool catalog controls (#2076). By default only the core tool surface
-# is loaded into the model context; less common native tools are discoverable
-# through ToolSearch and loaded on first use.
+# Native tool catalog controls (#2076). By default the request carries the whole
+# registered surface (minus include/exclude): a tool is withheld only when its
+# own definition declares deferral. Turn `progressive_disclosure` on to withhold
+# those declared-deferred tools and offer them through `tool_search` on demand.
+# `always_load` wins over both, so a name here is resident either way.
 # [tools]
+# progressive_disclosure = false
 # always_load = ["git_show", "notify"]
 
 # ─────────────────────────────────────────────────────────────────────────────────
