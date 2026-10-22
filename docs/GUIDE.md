@@ -366,7 +366,8 @@ operation, expect an approval prompt unless you have configured more permissive
 behavior. Every approval prompt refuses with a reason: type `[r] <feedback>` — or
 just type your sentence — and it refuses that one call and sends your text to the
 running turn, so the model hears what to change instead of guessing why you said
-no. Only the five keys (`y`/`n`/`a`/`o`/`e`) answer the question itself.
+no. Only the four keys (`y`/`a`/`o`/`e`) answer the question itself. An empty
+line — or a bare `n` — skips the call silently, telling the model nothing.
 
 `[a]` remembers one **grouping key**, and the prompt spells out what that key
 covers: `this command family` for shell commands (`git status` covers

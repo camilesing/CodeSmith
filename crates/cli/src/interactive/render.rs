@@ -393,7 +393,7 @@ fn approval_frame(
         frame.push_str(&format!("{}\n", format!("  intent: {intent}").dimmed()));
     }
     frame.push_str(&format!(
-        "allow? [y] run it once · [n] skip · [a] always allow {always_scope} for this session \
+        "allow? [y] run it once · [a] always allow {always_scope} for this session \
          · [o] yolo — shell + trust + auto-approve for the rest of this session \
          · [e] never this exact call · [r] <feedback> deny and tell the model why: "
     ));
@@ -406,7 +406,7 @@ fn approval_frame(
 /// says what to type next. Ends at the unterminated prompt, like
 /// [`approval_frame`].
 fn feedback_needed_frame() -> String {
-    "feedback? type what should change (y/n/a/o/e still answer the question above): ".to_string()
+    "feedback? type what should change (y/a/o/e still answer the question above): ".to_string()
 }
 
 /// What an approval answer does. Split from the prompt for the same reason as
@@ -432,14 +432,17 @@ enum ApprovalAnswer {
     /// `[r]` on its own: the introducer asks for the text on the next line
     /// instead of sending an empty reason.
     NeedFeedback,
-    /// `[n]`, `no`, an empty line, or EOF — the fail-closed default, which
-    /// refuses the call without telling the model anything.
+    /// An empty line, EOF, or the `n`/`no` keys (off the legend; they still
+    /// match) — the fail-closed default, which refuses the call without
+    /// telling the model anything.
     Skip,
 }
 
-/// The five approve/deny keys and the skip keys match the whole line, exactly
-/// as the inline match they replace did: `y please` is not a yes, and it is
-/// not `n` either — it is feedback, which denies the call just the same.
+/// The legend's keys match the whole line, exactly as the inline match they
+/// replace did: `y please` is not a yes, and it is not `n` either — it is
+/// feedback, which denies the call just the same. The `n`/`no` skip keys are
+/// off the legend but still match, so muscle memory lands on the fail-closed
+/// skip instead of steering a bare letter at the model.
 fn parse_approval_answer(raw: &str) -> ApprovalAnswer {
     let trimmed = raw.trim();
     match trimmed.to_ascii_lowercase().as_str() {
@@ -2515,7 +2518,6 @@ mod tests {
         assert!(frame.ends_with(": "), "{frame}");
         for scoped in [
             "[y] run it once",
-            "[n] skip",
             "[a] always allow this command family for this session",
             "[o] yolo — shell + trust + auto-approve for the rest of this session",
             "[e] never this exact call",
@@ -2523,6 +2525,10 @@ mod tests {
         ] {
             assert!(frame.contains(scoped), "missing {scoped:?} in {frame:?}");
         }
+        assert!(
+            !frame.contains("[n]"),
+            "skip is the empty line, not a legend key: {frame}"
+        );
     }
 
     /// The re-ask after a bare `[r]` is a question too: it must leave the
