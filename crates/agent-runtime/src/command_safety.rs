@@ -1058,7 +1058,10 @@ fn analyze_destructive_patterns_legacy(command: &str) -> Option<SafetyAnalysis> 
     None
 }
 
-fn split_command_segments(command: &str) -> Vec<String> {
+/// Split a command line into its top-level segments on `&&`, `||`, `;`, and
+/// newlines. Shared by the safety analyzer and the sandbox exclusion check
+/// (which must unsandbox a chained line only when every segment qualifies).
+pub fn split_command_segments(command: &str) -> Vec<String> {
     command
         .replace("&&", "\n")
         .replace("||", "\n")
