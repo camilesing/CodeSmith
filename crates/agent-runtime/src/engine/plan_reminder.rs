@@ -203,7 +203,7 @@ pub fn plan_reminder_due(
         return None;
     }
     let next = family.plan_count + 1;
-    Some(if (next - 1) % FULL_EVERY_N_PLAN_REMINDERS == 0 {
+    Some(if (next - 1).is_multiple_of(FULL_EVERY_N_PLAN_REMINDERS) {
         PlanReminder::Full
     } else {
         PlanReminder::Sparse
