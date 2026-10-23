@@ -180,7 +180,10 @@ memory_path = "~/.codesmith/memory.md"
 # ─────────────────────────────────────────────────────────────────────────────────
 # Security
 # ─────────────────────────────────────────────────────────────────────────────────
-allow_shell = true
+# Shell access is opt-in (GHSA-72w5-pf8h-xfp4 regression default): when unset
+# the shell tool stays gated behind approval. Uncomment only for trusted,
+# local workflows where the shell gate is genuinely in the way.
+# allow_shell = true
 approval_policy = "on-request" # on-request | untrusted | never
 sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-access | external-sandbox
 
@@ -655,8 +658,7 @@ exec_policy = true
 # per-request model override); a different `provider` builds a dedicated second
 # client (e.g. main = anthropic, utility = deepseek) and then needs its own
 # api_key — one vendor's key is never sent to another.
-# The model id can also be set via CODESMITH_UTILITY_MODEL (legacy alias:
-# CODESMITH_UTILITY_MODEL).
+# The model id can also be set via CODESMITH_UTILITY_MODEL.
 #
 # [utility_model]
 # model = "deepseek-v4-flash"        # Required: enables the utility model
@@ -682,17 +684,7 @@ exec_policy = true
 # router_model = "override the classifier brain itself"  # optional
 
 # ─────────────────────────────────────────────────────────────────────────────────
-# Retry Configuration
-# ─────────────────────────────────────────────────────────────────────────────────
-[retry]
-enabled = true
-max_retries = 3
-initial_delay = 1.0
-max_delay = 60.0
-exponential_base = 2.0
-
-# ─────────────────────────────────────────────────────────────────────────────────
-# Stream Idle Watchdog
+# Stream Idle Watchdog (top-level keys — keep them out of any [table])
 # ─────────────────────────────────────────────────────────────────────────────────
 # Maximum silence between two consecutive stream events before the stream is
 # declared silently stalled (connection open, data flow stopped) and aborted
@@ -707,6 +699,16 @@ exponential_base = 2.0
 # in the same silent stretch. Default: 30. Set 0 to keep the window fixed.
 # Clamped to 0..=600 otherwise.
 # stream_idle_retry_increment_secs = 30
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Retry Configuration
+# ─────────────────────────────────────────────────────────────────────────────────
+[retry]
+enabled = true
+max_retries = 3
+initial_delay = 1.0
+max_delay = 60.0
+exponential_base = 2.0
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Result Claim Verifier (P3-8)
@@ -852,7 +854,8 @@ base_url = "https://api.deepseek.com/beta"
 
 [profiles.dev]
 api_key = "DEV_DEEPSEEK_API_KEY"
-allow_shell = true
+# Same GHSA opt-in rule as the top-level key — shown commented on purpose.
+# allow_shell = true
 
 [profiles.nvidia-nim]
 provider = "nvidia-nim"
