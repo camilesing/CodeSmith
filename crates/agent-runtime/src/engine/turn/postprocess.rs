@@ -152,7 +152,11 @@ impl HostAgentExecutor {
             // `edit_seq` is log-correlation only (production uses `turn_counter`);
             // this executor doesn't track a turn counter, so 0 suffices.
             if let Some(block) = probe.manager.diagnostics_for(&absolute, 0).await {
-                probe.pending.lock().expect("poisoned").push(block);
+                probe
+                    .pending
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(block);
             }
         }
     }
@@ -167,7 +171,12 @@ impl HostAgentExecutor {
         let Some(probe) = &self.lsp else {
             return;
         };
-        let blocks = std::mem::take(&mut *probe.pending.lock().expect("poisoned"));
+        let blocks = std::mem::take(
+            &mut *probe
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
         if blocks.is_empty() {
             return;
         }
@@ -211,7 +220,11 @@ impl HostAgentExecutor {
         let Some(pending) = &self.result_verifications else {
             return;
         };
-        let blocks = std::mem::take(&mut *pending.lock().expect("poisoned"));
+        let blocks = std::mem::take(
+            &mut *pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
         let Some(rendered) = crate::engine::result_verifier::render_verdicts(&blocks) else {
             return;
         };

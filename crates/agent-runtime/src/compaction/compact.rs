@@ -1035,7 +1035,9 @@ pub async fn compact_messages_safe(
             external_working_set_paths,
         );
         let dropped = plan.summarize_indices.iter().map(|&idx| &messages[idx]);
-        let mut guard = ledger.lock().expect("fact ledger poisoned");
+        let mut guard = ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let added = guard.accumulate(dropped, workspace);
         if added > 0 {
             tracing::info!(
@@ -1124,7 +1126,9 @@ pub async fn compact_messages_safe(
             .summarize_indices
             .iter()
             .map(|&idx| &messages[idx]);
-        let mut guard = ledger.lock().expect("fact ledger poisoned");
+        let mut guard = ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let added = guard.accumulate(dropped, workspace);
         if added > 0 {
             tracing::info!(
@@ -1217,7 +1221,9 @@ pub async fn compact_messages_safe(
                     let lessons = super::fact_ledger::extract_refuted_assumptions(&summary_text);
                     let file_map = super::fact_ledger::extract_file_map(&summary_text);
                     if !lessons.is_empty() || !file_map.is_empty() {
-                        let mut guard = ledger.lock().expect("fact ledger poisoned");
+                        let mut guard = ledger
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         let lessons_added = guard.record_refuted_assumptions(lessons);
                         let map_added = guard.record_file_map(file_map);
                         if lessons_added > 0 || map_added > 0 {

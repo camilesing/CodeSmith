@@ -151,7 +151,10 @@ impl ToolCatalogState {
     /// `#[must_use]` (matching `current`).
     #[must_use]
     pub fn update(&self, snapshot: ToolCatalogSnapshot) -> Option<(Vec<String>, Vec<String>)> {
-        let mut guard = self.inner.lock().expect("tool catalog baseline poisoned");
+        let mut guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let diff = guard.as_ref().and_then(|prev| diff_names(prev, &snapshot));
         *guard = Some(snapshot);
         diff
@@ -162,7 +165,7 @@ impl ToolCatalogState {
     pub fn current(&self) -> Option<ToolCatalogSnapshot> {
         self.inner
             .lock()
-            .expect("tool catalog baseline poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 }
