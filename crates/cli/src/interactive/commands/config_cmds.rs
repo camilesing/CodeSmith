@@ -42,18 +42,21 @@ pub fn config_command(state: &mut ReplState, arg: &str) {
         show_single_setting(state, parts[0]);
         return;
     }
-    let raw_value = parts[1];
-    let persist = raw_value.ends_with(" --save") || raw_value.ends_with(" -s");
-    let value = if persist {
-        raw_value
-            .strip_suffix(" --save")
-            .or_else(|| raw_value.strip_suffix(" -s"))
-            .unwrap_or(raw_value)
-            .trim()
-    } else {
-        raw_value.trim()
-    };
-    set_config_value(state, parts[0], value, persist);
+    // The persist flag is a whitespace-delimited word, not a string suffix:
+    // suffix matching corrupted values that legitimately ended in " -s" and
+    // mis-parsed `/config key --save` (the flag itself became the value).
+    let mut words: Vec<&str> = parts[1].split_whitespace().collect();
+    let persist = matches!(words.last(), Some(&"--save") | Some(&"-s"));
+    if persist {
+        words.pop();
+    }
+    let value = words.join(" ");
+    if value.is_empty() {
+        // `/config key --save` with no value is a read, not a set.
+        show_single_setting(state, parts[0]);
+        return;
+    }
+    set_config_value(state, parts[0], &value, persist);
 }
 
 fn show_single_setting(state: &ReplState, key: &str) {
@@ -130,17 +133,21 @@ pub fn set_config_value(state: &mut ReplState, key: &str, value: &str, persist: 
         },
         "locale" | "language" => {
             let tag = value.trim();
-            let resolved = crate::localization::resolve_locale(tag);
-            if resolved.tag() != "en" || tag.eq_ignore_ascii_case("en") {
-                if persist {
-                    persist_setting_string("locale", tag);
+            // `normalize_configured_locale` is the parser the startup path
+            // trusts (it accepts `auto`/`system` and known tags, rejects the
+            // rest); reverse-engineering validity from the resolved locale
+            // rejected valid settings on English machines.
+            match crate::localization::normalize_configured_locale(tag) {
+                Some(normalized) => {
+                    if persist {
+                        persist_setting_string("locale", normalized);
+                    }
+                    println!("locale = {normalized} (applies fully on restart)");
                 }
-                println!("locale = {tag} (applies fully on restart)");
-            } else {
-                println!(
-                    "{} unknown locale {tag:?} — try en, zh-Hans, zh-Hant, hi, es-419",
+                None => println!(
+                    "{} unknown locale {tag:?} — try auto, en, zh-Hans, zh-Hant, hi, es-419",
                     "✗".red()
-                );
+                ),
             }
         }
         "mcp_config_path" | "mcp" => {
@@ -229,12 +236,39 @@ pub fn set_config_value(state: &mut ReplState, key: &str, value: &str, persist: 
             state.reasoning_effort = effort;
             state.update_model_compaction_budget();
             if persist {
-                persist_setting_string("reasoning_effort", value);
+                // Canonical form, matching `/effort`: the raw input may spell
+                // the tier in any case, and settings.toml holds one spelling.
+                persist_setting_string("reasoning_effort", effort.as_setting());
             }
             println!("reasoning_effort = {}", effort.short_label());
         }
         _ => {
-            // Appearance and unknown keys: persist verbatim when asked.
+            // A closed list of root keys `/config` may persist verbatim:
+            // it keeps typos out of config.toml and stops an unknown key
+            // (e.g. `models`, `network`) from replacing a table section
+            // with a plain string on the next save.
+            const PERSISTABLE_ROOT_KEYS: &[&str] = &[
+                "api_key",
+                "base_url",
+                "default_text_model",
+                "custom_provider",
+                "model",
+                "auth_mode",
+                "output_mode",
+                "log_level",
+                "preset",
+                "approval_policy",
+                "sandbox_mode",
+                "mode",
+            ];
+            if !PERSISTABLE_ROOT_KEYS.contains(&key.as_str()) {
+                println!(
+                    "{} unknown key {key:?} — /settings lists everything; edit config.toml for the rest",
+                    "✗".red()
+                );
+                return;
+            }
+            // Known-but-not-live keys: persist verbatim when asked.
             if persist {
                 match crate::interactive::commands::auto_route::persist_root_string_key(
                     state.config_path.as_deref(),
@@ -523,10 +557,29 @@ pub async fn autocompact(state: &mut ReplState, arg: Option<&str>) {
 }
 
 /// Push the current compaction settings into the running engine.
+///
+/// Both failure modes are surfaced: a dropped `SetCompaction` or a missing
+/// engine would otherwise leave the running engine on the old window while
+/// the caller prints success.
 async fn apply_compaction(state: &ReplState) {
     let config = state.compaction_config();
-    if let Ok(engine) = state.engine() {
-        let _ = engine.send(Op::SetCompaction { config }).await;
+    match state.engine() {
+        Ok(engine) => {
+            if let Err(err) = engine.send(Op::SetCompaction { config }).await {
+                println!(
+                    "{}",
+                    format!(
+                        "warning: could not push the new compaction window to the engine: {err}"
+                    )
+                    .yellow()
+                );
+            }
+        }
+        Err(err) => println!(
+            "{}",
+            format!("warning: engine unavailable — the window applies to the next session: {err}")
+                .yellow()
+        ),
     }
 }
 
@@ -540,10 +593,17 @@ fn parse_token_size(value: &str) -> Option<usize> {
             None => (lowered.as_str(), 1),
         },
     };
-    digits.trim().parse::<usize>().ok()?.checked_mul(scale)
+    digits
+        .trim()
+        .parse::<usize>()
+        .ok()?
+        .checked_mul(scale)
+        // A zero window pins every turn over-budget while `auto_compact` is
+        // forced on — a degenerate value, not a small one.
+        .filter(|tokens| *tokens > 0)
 }
 
-/// `/sandbox [on|off|status|read-only|workspace-write|danger-full-access]`.
+/// `/sandbox [on|off|status|read-only|workspace-write|danger-full-access|external-sandbox]`.
 ///
 /// The sandbox policy is chosen when the engine is built, so a change here
 /// is stored (and persisted with `--save`) and takes effect for the next
@@ -573,7 +633,7 @@ pub fn sandbox(state: &mut ReplState, arg: Option<&str>, persist: bool) {
         "read-only" | "workspace-write" | "danger-full-access" | "external-sandbox"
     ) {
         println!(
-            "{} unknown sandbox mode {value:?} — on|off|read-only|workspace-write|danger-full-access",
+            "{} unknown sandbox mode {value:?} — on|off|read-only|workspace-write|danger-full-access|external-sandbox",
             "✗".red()
         );
         return;
@@ -590,15 +650,17 @@ pub fn sandbox(state: &mut ReplState, arg: Option<&str>, persist: bool) {
             Err(err) => println!("{} could not save sandbox_mode: {err}", "✗".red()),
         }
     }
-    if changed {
+    // The unconfined notice is unconditional: `off` maps to fully unconfined
+    // execution, and warning only when the stored value changed stayed silent
+    // for a persisted mode and for `/sandbox status`.
+    if mode == "danger-full-access" {
         println!(
-            "sandbox = {mode} (applies from the next engine; add --save to keep it){}",
-            if mode == "danger-full-access" {
-                " — commands run unconfined"
-            } else {
-                ""
-            }
+            "{}",
+            "warning: commands will run unconfined outside the sandbox".yellow()
         );
+    }
+    if changed {
+        println!("sandbox = {mode} (applies from the next engine; add --save to keep it)");
     } else {
         println!("sandbox = {mode} (unchanged)");
     }
@@ -723,5 +785,8 @@ mod tests {
         assert_eq!(parse_token_size("lots"), None);
         // Overflow is a refusal, not a silent wrap.
         assert_eq!(parse_token_size("99999999999999m"), None);
+        // A zero window would pin every turn over-budget.
+        assert_eq!(parse_token_size("0"), None);
+        assert_eq!(parse_token_size("0k"), None);
     }
 }

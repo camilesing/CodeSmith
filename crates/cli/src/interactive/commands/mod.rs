@@ -48,7 +48,10 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
         return false;
     };
     let command = raw.trim_start_matches('/');
-    let arg_str = line[raw.len()..].trim().to_string();
+    // Args come from the same iterator that found the command word: slicing
+    // `line[raw.len()..]` assumed the command word starts at byte 0 and could
+    // land mid-character on an untrimmed line.
+    let arg_str = parts.collect::<Vec<_>>().join(" ");
 
     // User-defined commands override built-ins (mirrors the TUI's layer
     // order: user > extension > mods > static table).
@@ -73,7 +76,10 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
                 return false;
             }
             Some(CommandOutput::SendMessage(text)) => {
-                let _ = super::submit(state, text).await;
+                // A failed turn submission is a real failure, not silence.
+                if let Err(err) = super::submit(state, text).await {
+                    println!("{} sending the command's message failed: {err}", "✗".red());
+                }
                 return false;
             }
             None => {
@@ -113,6 +119,10 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
         Command::Exit => true,
         Command::Clear => {
             print!("\x1b[2J\x1b[H");
+            // Line-buffered stdout would otherwise hold the escape sequence
+            // until some later println! flushes it.
+            use std::io::Write as _;
+            let _ = std::io::stdout().flush();
             // The screen transcript is gone; so is its replay source.
             state.tool_log.clear();
             false
@@ -505,7 +515,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
         }
         Command::Sandbox => {
             let (arg, persist) = split_save_flag(&arg_str);
-            config_cmds::sandbox(state, arg, persist);
+            config_cmds::sandbox(state, arg.as_deref(), persist);
             false
         }
         Command::ReleaseNotes => {
@@ -616,7 +626,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             false
         }
         Command::Links => {
-            misc_cmds::links();
+            misc_cmds::links(state);
             false
         }
         Command::Home => {
@@ -687,7 +697,15 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             false
         }
         Command::Share => {
-            misc_cmds::share(state).await;
+            misc_cmds::share(
+                state,
+                if arg_str.is_empty() {
+                    None
+                } else {
+                    Some(&arg_str)
+                },
+            )
+            .await;
             false
         }
         Command::Skills => {
@@ -845,18 +863,25 @@ fn has_save_flag(arg: &str) -> bool {
         .any(|part| part == "--save" || part == "-s")
 }
 
-/// Split a trailing `--save` / `-s` off an argument string.
-fn split_save_flag(arg: &str) -> (Option<&str>, bool) {
-    let trimmed = arg.trim();
-    for flag in ["--save", "-s"] {
-        if let Some(rest) = trimmed.strip_suffix(flag) {
-            return (
-                Some(rest.trim_end()).filter(|value| !value.is_empty()),
-                true,
-            );
-        }
-    }
-    (Some(trimmed).filter(|value| !value.is_empty()), false)
+/// Split `--save` / `-s` words out of an argument string.
+///
+/// Flags are matched as whitespace-delimited words anywhere in the string —
+/// the same rule [`has_save_flag`] applies — so a flag-first invocation is
+/// recognized and an argument that merely ends in `-s` is not truncated.
+fn split_save_flag(arg: &str) -> (Option<String>, bool) {
+    let mut persist = false;
+    let words: Vec<&str> = arg
+        .split_whitespace()
+        .filter(|part| match *part {
+            "--save" | "-s" => {
+                persist = true;
+                false
+            }
+            _ => true,
+        })
+        .collect();
+    let value = words.join(" ");
+    (Some(value).filter(|value| !value.is_empty()), persist)
 }
 
 /// `/rewind [n|list]` — list or restore this session's file snapshots.
@@ -1133,8 +1158,22 @@ async fn cmd_model(state: &mut ReplState, arg: &str) {
         );
     }
     state.set_model_selection(selection.clone());
-    if let Ok(engine) = state.engine() {
-        let _ = engine.send(Op::SetModel { model: selection }).await;
+    // Both failure modes surface as warnings: a dropped op or a missing
+    // engine would otherwise leave the engine serving the previous model
+    // while the command printed success.
+    match state.engine() {
+        Ok(engine) => {
+            if let Err(err) = engine.send(Op::SetModel { model: selection }).await {
+                println!(
+                    "{}",
+                    format!("warning: engine did not accept the model change: {err}").yellow()
+                );
+            }
+        }
+        Err(err) => println!(
+            "{}",
+            format!("warning: model applied locally only; engine unavailable: {err}").yellow()
+        ),
     }
     // Persist the selection (mirrors the retired /model command): pinned
     // per provider in settings.toml so restarts keep it.
@@ -1334,11 +1373,32 @@ fn cmd_provider(state: &mut ReplState, arg: &str) {
     }
     match crate::config::ApiProvider::parse(arg.trim()) {
         Some(provider) => {
-            state.api_provider = provider;
-            println!("provider set to {}", state.api_provider.as_str());
+            // The live client keeps serving the old provider until restart,
+            // so `state.api_provider` stays on the provider actually serving
+            // the session (keeping /status and /model's per-provider
+            // persistence truthful); the choice is persisted for the next
+            // start instead of mutating the live field.
+            match crate::settings::Settings::load() {
+                Ok(mut settings) => {
+                    settings.default_provider = Some(provider.as_str().to_string());
+                    if let Err(err) = settings.save() {
+                        println!("{} could not persist the provider choice: {err}", "✗".red());
+                        return;
+                    }
+                }
+                Err(err) => {
+                    println!("{} could not persist the provider choice: {err}", "✗".red());
+                    return;
+                }
+            }
             println!(
                 "{}",
-                "restart codesmith (or run the onboarding again) to rebuild the client for the new provider".dimmed()
+                format!(
+                    "provider {} saved — restart codesmith to switch the live client (this session still runs on {})",
+                    provider.as_str(),
+                    state.api_provider.as_str()
+                )
+                .dimmed()
             );
         }
         None => println!("{} unknown provider {arg:?}", "✗".red()),
