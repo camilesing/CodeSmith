@@ -3,7 +3,7 @@
 # coordinator mode, the layered-context manager, the capacity controller,
 # and DeepSeek beta strict tool mode. Expect rough edges.
 name = "experiment"
-description = "Everything on: preview flags, context/capacity seams, strict tool mode."
+description = "Everything on except auto cost-saving: preview flags, context/capacity seams, strict tool mode, tool-search-on-demand."
 memory_level = "elephant"
 max_subagents = 20
 index_enabled = true

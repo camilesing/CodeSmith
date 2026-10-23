@@ -7,6 +7,7 @@
 //! `{"stdout": "...", "stderr": "...", "exit_code": 0}`.
 
 use std::time::Duration;
+use futures_util::StreamExt;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -148,17 +149,23 @@ impl SandboxBackend for OpenSandboxBackend {
         // The endpoint is trusted to run commands, not to be well-behaved
         // about response size: bound the accepted body so a misbehaving or
         // hostile endpoint cannot force unbounded memory use in the caller.
-        const MAX_RESPONSE_BYTES: u64 = 32 * 1024 * 1024;
-        if let Some(len) = response.content_length() {
+        // Enforced while streaming the DECODED body: `content_length()` is
+        // absent for chunked responses and describes the (possibly
+        // gzip-compressed) wire bytes, so a header check let both chunked
+        // bodies and decompression bombs through unbounded.
+        const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+        let mut body: Vec<u8> = Vec::new();
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.context("failed to read OpenSandbox response body")?;
             anyhow::ensure!(
-                len <= MAX_RESPONSE_BYTES,
-                "OpenSandbox response too large: {len} bytes (limit {MAX_RESPONSE_BYTES})"
+                body.len() + chunk.len() <= MAX_RESPONSE_BYTES,
+                "OpenSandbox response too large (limit {MAX_RESPONSE_BYTES} bytes)"
             );
+            body.extend_from_slice(&chunk);
         }
 
-        let parsed: SandboxRunResponse = response
-            .json()
-            .await
+        let parsed: SandboxRunResponse = serde_json::from_slice(&body)
             .context("Failed to parse OpenSandbox response")?;
 
         Ok(SandboxOutput {

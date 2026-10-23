@@ -4,7 +4,7 @@
 # level). The four preview feature flags (vision, knowledge-on-demand,
 # agent teams, coordinator) and the invasive context/capacity seams stay off.
 name = "all"
-description = "Everything stable on: 20 sub-agents, LSP warnings; preview flags off."
+description = "Everything stable on: 20 sub-agents, LSP warnings, tool-search-on-demand; auto cost-saving, strict tool mode, and preview flags off."
 memory_level = "notebook"
 max_subagents = 20
 index_enabled = true

@@ -4,12 +4,14 @@
 //! and resource-switch baselines. This module owns the *application* of a
 //! preset:
 //!
-//! - **startup** ([`apply_config_preset`] + [`apply_at_startup`]): preset
+//! - **startup** ([`apply_config_preset`] + [`ReplState::apply_preset_at_startup`]):
+//!   preset
 //!   values are folded into the loaded [`Config`] with fill-if-unset
 //!   semantics — explicit user configuration (file, profile, project
 //!   overlay, env, CLI) always wins. Any explicit value that differs from
 //!   the selected tier marks the effective preset as `diy`.
-//! - **hot switch** ([`apply`], `/preset <name>`): the user's real-time
+//! - **hot switch** (`/preset <name>`, handled in the interactive command
+//!   layer): the user's real-time
 //!   command overrides the live session immediately; config-bound dials
 //!   (index, LSP, snapshots, …) are flagged as restart-required.
 //!
