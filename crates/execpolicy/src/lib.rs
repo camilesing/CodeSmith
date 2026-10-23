@@ -311,7 +311,7 @@ impl ExecPolicyEngine {
         let (trusted, denied) = self.resolve_prefixes();
         let denied_normalized = denied
             .iter()
-            .map(|rule| normalize_command(rule))
+            .map(|rule| dequote_for_deny(&normalize_command(rule)))
             .collect::<Vec<_>>();
         self.merged_trusted = trusted;
         self.merged_denied = denied;
@@ -398,7 +398,7 @@ impl ExecPolicyEngine {
         } else {
             segments
                 .iter()
-                .map(|segment| normalize_command(segment))
+                .map(|segment| dequote_for_deny(&normalize_command(segment)))
                 .collect()
         };
         // Deny rules match ANY segment of a (possibly compound) command on a
@@ -533,6 +533,16 @@ fn normalize_command(value: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .to_ascii_lowercase()
+}
+
+/// Strip the shell quoting characters (`"`, `'`, `\`) a word can carry, so
+/// `r"m" -rf /` and `r\m` normalize to the command they actually run. Used
+/// ONLY on the deny side — over-matching is the documented safe direction
+/// for deny ("deny stays maximally strict"), while an allow match must keep
+/// seeing the raw tokens. A real shell tokenizer remains the long-term fix;
+/// this closes the quote/backslash bypass class on raw text.
+fn dequote_for_deny(value: &str) -> String {
+    value.chars().filter(|c| !matches!(c, '"' | '\'' | '\\')).collect()
 }
 
 /// Splits a raw shell command on the operators that chain further commands
@@ -932,6 +942,21 @@ mod tests {
             .check(ctx("echo $(rm -rf /)", AskForApproval::Never))
             .unwrap();
         assert!(!substituted.allow);
+    }
+
+    #[test]
+    fn denied_prefix_cannot_be_evaded_by_shell_quoting() {
+        // Quote/backslash spellings of a denied command must still deny:
+        // raw-text prefix matching without dequote let `r"m" -rf /` and
+        // `r\\m -rf /` run a denied `rm`.
+        let engine = ExecPolicyEngine::new(vec![], vec!["rm".to_string()]);
+        for evasive in ["r\"m\" -rf /", "r\\m -rf /", "\"rm\" -rf /", "'rm' -rf /"] {
+            let decision = engine.check(ctx(evasive, AskForApproval::Never)).unwrap();
+            assert!(
+                !decision.allow,
+                "deny rule evaded by {evasive:?}: {decision:?}"
+            );
+        }
     }
 
     #[test]

@@ -5644,6 +5644,15 @@ mod tests {
         let tools = Arc::new(registry.to_framework_tool_set());
         let plan_state = crate::tool_state::plan_mode::new_shared_plan_mode_state();
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let (tx_approval, rx_approval) = approval_channel();
+        // Turn 1 and turn 3 run the write (turn 2 is refused by the plan
+        // gate before approval); one pre-sent approval per execution.
+        for _ in 0..2 {
+            tx_approval
+                .send(ApprovalDecision::Approved { id: "t1".to_string() })
+                .await
+                .unwrap();
+        }
         let executor = HostAgentExecutor::new(
             Arc::new(MockLlm::new(rounds())),
             tools,
@@ -5652,7 +5661,7 @@ mod tests {
             None,
             None,
             None,
-            None,
+            Some(rx_approval),
             None,
             None,
             None,
@@ -8095,8 +8104,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn approval_none_skips_gating() {
-        // No approval channel ⇒ WriteSpec runs ungated (no event, no blocking).
+    async fn approval_none_denies_gated_tool() {
+        // No approval channel + a gated tool ⇒ fail-closed: the call is
+        // denied, never silently run unapproved (the old Ok(None) path).
         let mut sess = fresh_session();
         let mut history = SessionChatHistory::new(&mut sess);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
@@ -8128,8 +8138,11 @@ mod tests {
             ContentBlock::ToolResult {
                 content, is_error, ..
             } => {
-                assert_eq!(content, "wrote:/tmp/x", "ungated tool must run");
-                assert_eq!(*is_error, Some(false));
+                assert!(
+                    content.contains("requires approval but no approval channel"),
+                    "expected fail-closed denial, got: {content}"
+                );
+                assert_eq!(*is_error, Some(true));
             }
             other => panic!("expected ToolResult, got {other:?}"),
         }
@@ -14397,6 +14410,11 @@ mod tests {
         let mut call2 = text_block(0, "done");
         call2.extend(finish("end_turn"));
 
+        let (tx_approval, rx_approval) = approval_channel();
+        tx_approval
+            .send(ApprovalDecision::Approved { id: "w1".to_string() })
+            .await
+            .unwrap();
         let executor = HostAgentExecutor::new(
             Arc::new(MockLlm::new(vec![call1, call2])),
             tools,
@@ -14405,7 +14423,7 @@ mod tests {
             None,
             None,
             None,
-            None,
+            Some(rx_approval),
             None,
             None,
             None,
@@ -15156,7 +15174,20 @@ mod tests {
         let mut call2 = text_block(0, "done");
         call2.extend(finish("end_turn"));
 
-        let executor = build_test_executor(tools, callback, vec![call1, call2]);
+        let (tx_approval, rx_approval) = approval_channel();
+        for id in ["t1", "t2", "t3", "t4"] {
+            tx_approval
+                .send(ApprovalDecision::Approved { id: id.to_string() })
+                .await
+                .unwrap();
+        }
+        let executor = build_gated_test_executor(
+            tools,
+            callback,
+            vec![call1, call2],
+            Some(rx_approval),
+            None,
+        );
         let reason = executor
             .run(&mut history, "mixed".to_string())
             .await
@@ -15332,7 +15363,20 @@ mod tests {
         let mut call2 = text_block(0, "done");
         call2.extend(finish("end_turn"));
 
-        let executor = build_test_executor(tools, callback, vec![call1, call2]);
+        let (tx_approval, rx_approval) = approval_channel();
+        for id in ["w1", "w2", "w3"] {
+            tx_approval
+                .send(ApprovalDecision::Approved { id: id.to_string() })
+                .await
+                .unwrap();
+        }
+        let executor = build_gated_test_executor(
+            tools,
+            callback,
+            vec![call1, call2],
+            Some(rx_approval),
+            None,
+        );
         let reason = executor
             .run(&mut history, "write three".to_string())
             .await

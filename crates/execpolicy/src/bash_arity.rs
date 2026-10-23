@@ -372,7 +372,7 @@ impl BashArityDict {
         let pattern_lower = pattern.trim().to_ascii_lowercase();
         let command_tokens: Vec<&str> = command.split_whitespace().collect();
 
-        if contains_exec_capable_flag(&command_tokens) {
+        if contains_exec_capable_flag(&command_tokens) || is_exec_by_positioning(&command_tokens) {
             return false;
         }
 
@@ -468,6 +468,25 @@ fn contains_exec_capable_flag(tokens: &[&str]) -> bool {
             || lower.contains("core.editor=")
             || lower.contains("core.pager=")
     })
+}
+
+/// Commands whose *positional* tail (often after a `--` separator) executes
+/// an arbitrary payload: `kubectl exec pod -- sh -c …`, `docker exec …`,
+/// `ssh host cmd`, `xargs cmd`, `sudo cmd`. An allow rule never covers
+/// them whatever the arity table says — the same contract as
+/// [`contains_exec_capable_flag`].
+fn is_exec_by_positioning(tokens: &[&str]) -> bool {
+    const CONTAINER_CARRIERS: &[&str] = &["kubectl", "docker", "podman", "nerdctl"];
+    if tokens.len() >= 2
+        && CONTAINER_CARRIERS.contains(&tokens[0].to_ascii_lowercase().as_str())
+        && tokens[1].eq_ignore_ascii_case("exec")
+    {
+        return true;
+    }
+    matches!(
+        tokens.first().copied(),
+        Some("ssh") | Some("xargs") | Some("sudo")
+    )
 }
 
 #[cfg(test)]
@@ -656,6 +675,21 @@ mod tests {
         ));
         assert!(!dict().allow_rule_matches("git push", "git push --receive-pack /bin/sh origin"));
         assert!(!dict().allow_rule_matches("git fetch", "git fetch --upload-pack=/bin/sh origin"));
+    #[test]
+    fn exec_by_positioning_is_never_allow_matched() {
+        // `kubectl exec pod -- <payload>` executes the payload; an arity
+        // allow rule must never cover it (same for docker exec / ssh /
+        // xargs / sudo positional tails).
+        assert!(!dict().allow_rule_matches("kubectl exec", "kubectl exec mypod -- sh -c id"));
+        assert!(!dict().allow_rule_matches("docker exec", "docker exec ctr whoami"));
+        assert!(!dict().allow_rule_matches("ssh", "ssh host uptime"));
+        assert!(!dict().allow_rule_matches("xargs", "xargs rm"));
+        assert!(!dict().allow_rule_matches("sudo", "sudo systemctl status nginx"));
+        // Benign same-shape commands keep matching.
+        assert!(dict().allow_rule_matches("git status", "git status --porcelain"));
+        assert!(dict().allow_rule_matches("kubectl get", "kubectl get pods"));
+    }
+
         assert!(!dict().allow_rule_matches("ssh", "ssh -oProxyCommand=touch$IFS/tmp/pwned host"));
         assert!(!dict().allow_rule_matches("ssh", "ssh -o ProxyCommand=cmd host"));
         assert!(!dict().allow_rule_matches("git push", "git -c core.sshCommand=/bin/sh push"));

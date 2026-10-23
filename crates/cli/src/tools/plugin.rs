@@ -99,7 +99,12 @@ impl ToolSpec for ScriptPluginTool {
     }
 
     fn approval_requirement(&self) -> ApprovalRequirement {
-        self.metadata.approval
+        // A plugin script's frontmatter is author-controlled and must never
+        // downgrade its own gate: plugins always run behind approval. The
+        // `approval:` frontmatter key is metadata only. (Config-authored
+        // command overrides are the user's own trust decision and keep
+        // their configured level.)
+        ApprovalRequirement::Required
     }
 
     async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {

@@ -277,20 +277,6 @@ impl HostAgentExecutor {
         intent_summary: &Option<String>,
         force_ask: Option<&str>,
     ) -> Result<Option<crate::sandbox::SandboxPolicy>, String> {
-        let Some(router) = &self.approval else {
-            if let Some(reason) = force_ask {
-                tracing::warn!(
-                    target: "codesmith_agent_runtime::engine",
-                    "extension Ask for '{name}' denied fail-closed (no approval channel): \
-                     {reason}"
-                );
-                return Err(format!(
-                    "An extension requested user approval for tool '{name}' but no approval \
-                     channel is attached — the call was denied (fail-closed)."
-                ));
-            }
-            return Ok(None); // no approval channel ⇒ gating disabled
-        };
         // Path-access question (the user trusts, or refuses, an
         // out-of-workspace directory) instead of a bare refusal. The registry
         // merges this into `Required`; asking is kept unconditional here so a
@@ -310,9 +296,37 @@ impl HostAgentExecutor {
             input,
             &tool.capabilities(),
         );
+        // Classify BEFORE consulting the channel: an approval-free call never
+        // needs one.
         if !approval_required && force_ask.is_none() {
             return Ok(None); // dispatcher said Auto, or static gate says no
         }
+        let Some(router) = &self.approval else {
+            if let Some(reason) = force_ask {
+                tracing::warn!(
+                    target: "codesmith_agent_runtime::engine",
+                    "extension Ask for '{name}' denied fail-closed (no approval channel): \
+                     {reason}"
+                );
+                return Err(format!(
+                    "An extension requested user approval for tool '{name}' but no approval \
+                     channel is attached — the call was denied (fail-closed)."
+                ));
+            }
+            // Fail closed: a gated tool with no approval channel must not
+            // silently run unapproved. Hosts that want approval-free
+            // execution classify the tool Auto (the predicate above) or
+            // attach a channel.
+            tracing::warn!(
+                target: "codesmith_agent_runtime::engine",
+                "tool '{name}' requires approval but no approval channel is attached; \
+                 denied fail-closed"
+            );
+            return Err(format!(
+                "Tool '{name}' requires approval but no approval channel is attached — \
+                 the call was denied (fail-closed)."
+            ));
+        };
         let is_read_only = tool.capabilities().contains(&ToolCapability::ReadOnly);
         // Emit the request so a host UI can prompt and resolve. The
         // fingerprints are built here (not inside the await) and carried on the

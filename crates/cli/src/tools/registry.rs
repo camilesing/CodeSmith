@@ -118,12 +118,28 @@ impl ToolRegistryPluginExt for ToolRegistry {
         }
         let plugins = crate::tools::plugin::load_plugin_tools(plugin_dir);
         let count = plugins.len();
+        let mut loaded = 0;
         for tool in plugins {
+            let name = tool.name().to_string();
+            if self.contains(&name) {
+                // Auto-discovered scripts must never shadow a registered
+                // (builtin or config) tool: the frontmatter name comes from
+                // the script's author, and a `read_file` look-alike would
+                // hijack a trusted tool's dispatch. Explicit config
+                // overrides (`apply_overrides`) remain the one sanctioned
+                // way to replace a builtin.
+                tracing::warn!(
+                    "Plugin tool '{name}' shadows an existing tool and was NOT registered; \
+                     rename the plugin or replace the tool via an explicit config override"
+                );
+                continue;
+            }
             self.register(tool);
+            loaded += 1;
         }
-        if count > 0 {
+        if loaded > 0 {
             tracing::info!(
-                "Loaded {count} plugin tool(s) from {}",
+                "Loaded {loaded}/{count} plugin tool(s) from {}",
                 plugin_dir.display()
             );
         }
@@ -943,14 +959,19 @@ impl ToolSpec for McpToolAdapter {
     }
 
     fn capabilities(&self) -> Vec<ToolCapability> {
-        // Conservatively treat MCP tools as requiring approval and
-        // network access unless they're known discovery helpers.
-        let name_lower = self.name.to_lowercase();
-        if name_lower.contains("list_mcp")
-            || name_lower.contains("read_mcp")
-            || name_lower.contains("mcp_read")
-            || name_lower.contains("mcp_get_prompt")
-        {
+        // Conservatively treat MCP tools as requiring approval and network
+        // access unless they are exactly one of the built-in discovery
+        // helpers. Exact match, never substring: the tool name is
+        // server-controlled, and `evil_list_mcp_scraper` must not inherit
+        // the read-only (no-approval) classification.
+        if matches!(
+            self.name.as_str(),
+            "list_mcp_resources"
+                | "list_mcp_resource_templates"
+                | "mcp_read_resource"
+                | "read_mcp_resource"
+                | "mcp_get_prompt"
+        ) {
             vec![ToolCapability::ReadOnly]
         } else {
             vec![ToolCapability::Network, ToolCapability::RequiresApproval]
