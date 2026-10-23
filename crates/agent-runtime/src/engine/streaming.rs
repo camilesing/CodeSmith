@@ -196,12 +196,15 @@ impl ToolCallDeltaFilter {
 
 /// Longest suffix of `text` (shorter than `text`) that is a proper prefix
 /// of any marker — the bytes that must carry to the next chunk because
-/// they might complete a marker.
+/// they might complete a marker. Candidate keeps are byte lengths, so any
+/// that would split a multi-byte character at `text.len() - keep` is
+/// skipped: markers are ASCII, and slicing mid-codepoint would panic.
 fn marker_prefix_suffix_len(text: &str, markers: &[&str]) -> usize {
     let max_marker = markers.iter().map(|m| m.len()).max().unwrap_or(0);
     let max_keep = max_marker.saturating_sub(1).min(text.len());
     (1..=max_keep)
         .rev()
+        .filter(|keep| text.is_char_boundary(text.len() - keep))
         .find(|keep| {
             let suffix = &text[text.len() - keep..];
             markers
@@ -241,6 +244,18 @@ mod split_marker_tests {
         let visible = filter.push("_CALL] after");
         assert!(!visible.contains("hidden"));
         assert!(visible.contains("after"), "{visible:?}");
+    }
+
+    /// Multi-byte text must never panic the carry computation: candidate
+    /// keeps are byte offsets, and one of them (2) lands inside `所`.
+    /// Found by the engine result-verifier tests streaming CJK text after
+    /// the live wiring.
+    #[test]
+    fn multibyte_tail_does_not_panic_the_carry_computation() {
+        let mut filter = ToolCallDeltaFilter::new();
+        let out = filter.push("所有测试通过。[");
+        let all = format!("{out}{}", filter.flush());
+        assert_eq!(all, "所有测试通过。[", "text must survive intact: {all:?}");
     }
 
     #[test]
