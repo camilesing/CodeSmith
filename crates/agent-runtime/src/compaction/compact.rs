@@ -1267,7 +1267,7 @@ pub fn read_workspace_anchors(workspace: Option<&Path>) -> Vec<String> {
     let anchors_path = if primary.exists() {
         primary
     } else {
-        ws.join(".codesmith").join("anchors.md")
+        ws.join(".deepseek").join("anchors.md")
     };
     let Ok(content) = std::fs::read_to_string(anchors_path) else {
         return Vec::new();
@@ -2017,6 +2017,40 @@ pub fn merge_system_prompts(
             });
             Some(SystemPrompt::Blocks(blocks))
         }
+    }
+}
+
+#[cfg(test)]
+mod workspace_anchor_tests {
+    use super::read_workspace_anchors;
+
+    #[test]
+    fn legacy_deepseek_anchor_file_is_the_fallback() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ws = tmp.path();
+        std::fs::create_dir_all(ws.join(".deepseek")).expect("legacy dir");
+        std::fs::write(ws.join(".deepseek").join("anchors.md"), "anchor one\n---\nanchor two")
+            .expect("write anchors");
+        let anchors = read_workspace_anchors(Some(ws));
+        assert_eq!(
+            anchors,
+            vec!["anchor one".to_string(), "anchor two".to_string()],
+            "users with only a legacy .deepseek/anchors.md keep their pinned facts"
+        );
+    }
+
+    #[test]
+    fn codesmith_anchor_file_wins_when_present() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ws = tmp.path();
+        std::fs::create_dir_all(ws.join(".codesmith")).expect("primary dir");
+        std::fs::write(ws.join(".codesmith").join("anchors.md"), "primary").expect("write");
+        std::fs::create_dir_all(ws.join(".deepseek")).expect("legacy dir");
+        std::fs::write(ws.join(".deepseek").join("anchors.md"), "legacy").expect("write");
+        assert_eq!(
+            read_workspace_anchors(Some(ws)),
+            vec!["primary".to_string()]
+        );
     }
 }
 

@@ -90,10 +90,15 @@ pub struct RecordLine {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum RecordOutcome {
-    /// A streaming call: the events exactly as the stream yielded them
-    /// (a run that died mid-stream is recorded partial — replay
-    /// reproduces the disconnect).
-    Stream { response_events: Vec<StreamEvent> },
+    /// A streaming call: the events exactly as the stream yielded them.
+    /// A run that died mid-stream carries the terminal error in
+    /// `stream_error` — replay reproduces the disconnect by ending the
+    /// stream with that `Err` instead of a clean `None`.
+    Stream {
+        response_events: Vec<StreamEvent>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stream_error: Option<String>,
+    },
     /// A non-streaming call. Boxed: `MessageResponse` is much larger
     /// than the `Stream` variant (serde-transparent either way).
     Message {
@@ -246,6 +251,7 @@ impl LlmClient for RecordingClient {
                 TeeState {
                     stream,
                     events: Vec::new(),
+                    error: None,
                     written: false,
                     envelope: RecordEnvelope {
                         request,
@@ -272,7 +278,10 @@ impl LlmClient for RecordingClient {
                             // write here, a disconnect is never recorded at
                             // all, desyncing strict-FIFO replay. The
                             // `written` flag keeps a later drain from
-                            // double-writing.
+                            // double-writing. The error text rides the line
+                            // so replay re-dies the same way instead of
+                            // ending cleanly.
+                            state.error = Some(e.to_string());
                             state.write_line();
                             Some((Err(e), state))
                         }
@@ -425,6 +434,10 @@ impl Drop for CancelledCallLine {
 struct TeeState {
     stream: StreamEventBox,
     events: Vec<StreamEvent>,
+    /// Terminal stream error, set in the `Some(Err(e))` arm before the
+    /// one-shot line write so the recording distinguishes "ended cleanly
+    /// without MessageStop" from "errored mid-flight".
+    error: Option<String>,
     /// Set once the line is written (MessageStop seen, or stream ended);
     /// guards against a double write when a stopped stream is also drained.
     written: bool,
@@ -456,6 +469,7 @@ impl TeeState {
             outcome: RecordOutcome::Stream {
                 // `events` is never read after this one-shot write.
                 response_events: std::mem::take(&mut self.events),
+                stream_error: self.error.clone(),
             },
         };
         write_line_shared(&self.writer, &self.path, &line);
@@ -605,9 +619,15 @@ impl LlmClient for ReplayClient {
             let line = self.pop_line_for("create_message", Some(&request.model))?;
             match line.outcome {
                 RecordOutcome::Message { response_message } => Ok(*response_message),
-                RecordOutcome::Stream { response_events } => {
-                    Ok(synthesize_message_response(&response_events, &line.model))
-                }
+                RecordOutcome::Stream {
+                    response_events,
+                    stream_error,
+                } => match stream_error {
+                    Some(message) => {
+                        Err(anyhow!("ReplayClient: recorded stream failed: {message}"))
+                    }
+                    None => Ok(synthesize_message_response(&response_events, &line.model)),
+                },
                 RecordOutcome::Error { message } => {
                     Err(anyhow!("ReplayClient: recorded call failed: {message}"))
                 }
@@ -623,8 +643,19 @@ impl LlmClient for ReplayClient {
             // Lazy for the same reason as `create_message`.
             let line = self.pop_line_for("create_message_stream", Some(&request.model))?;
             match line.outcome {
-                RecordOutcome::Stream { response_events } => {
-                    let s = futures_util::stream::iter(response_events.into_iter().map(Ok));
+                RecordOutcome::Stream {
+                    response_events,
+                    stream_error,
+                } => {
+                    let events = futures_util::stream::iter(response_events.into_iter().map(Ok));
+                    let s = match stream_error {
+                        Some(message) => futures_util::future::Either::Left(
+                            events.chain(futures_util::stream::once(async move {
+                                Err(anyhow!("ReplayClient: recorded stream failed: {message}"))
+                            })),
+                        ),
+                        None => futures_util::future::Either::Right(events),
+                    };
                     Ok(Box::pin(s) as StreamEventBox)
                 }
                 RecordOutcome::Message { .. } => Err(anyhow!(
@@ -820,6 +851,7 @@ mod tests {
             request,
             outcome: RecordOutcome::Stream {
                 response_events: sample_turn(),
+                stream_error: None,
             },
         };
         let json = serde_json::to_string(&line).expect("serialize line");
@@ -829,7 +861,7 @@ mod tests {
         assert_eq!(tools[0].name, "read_file");
         assert_eq!(back.request.temperature, Some(0.7));
         match back.outcome {
-            RecordOutcome::Stream { response_events } => {
+            RecordOutcome::Stream { response_events, .. } => {
                 assert_eq!(response_events.len(), sample_turn().len());
             }
             other => panic!("expected stream outcome, got {other:?}"),
@@ -942,13 +974,43 @@ mod tests {
         let line: RecordLine =
             serde_json::from_str(text.lines().next().expect("one line")).expect("valid JSONL");
         match line.outcome {
-            RecordOutcome::Stream { response_events } => assert_eq!(
-                response_events.len(),
-                2,
-                "the events seen before the error are recorded partial"
-            ),
+            RecordOutcome::Stream {
+                response_events,
+                stream_error,
+            } => {
+                assert_eq!(
+                    response_events.len(),
+                    2,
+                    "the events seen before the error are recorded partial"
+                );
+                assert_eq!(
+                    stream_error.as_deref(),
+                    Some("connection reset"),
+                    "the terminal error rides the line, not just the partial events"
+                );
+            }
             other => panic!("expected stream outcome, got {other:?}"),
         }
+
+        // Replay must reproduce the disconnect: the same partial events,
+        // then the recorded `Err` — never a clean end.
+        let replayer = ReplayClient::load(&path).expect("open recording");
+        let handle: LlmClientHandle = Arc::new(replayer);
+        let mut replay = handle
+            .create_message_stream(minimal_request())
+            .await
+            .expect("replayed stream starts");
+        let mut events = Vec::new();
+        while let Some(event) = futures_util::StreamExt::next(&mut replay).await {
+            events.push(event);
+        }
+        assert_eq!(events.len(), 3, "two events then the terminal error");
+        assert!(events[0].is_ok() && events[1].is_ok());
+        let tail = events[2].as_ref().expect_err("replay re-dies, not ends cleanly");
+        assert!(
+            tail.to_string().contains("recorded stream failed"),
+            "terminal error names the recorded failure: {tail}"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1070,7 +1132,7 @@ mod tests {
         let line: RecordLine =
             serde_json::from_str(text.lines().next().expect("one line")).expect("valid JSONL");
         match line.outcome {
-            RecordOutcome::Stream { response_events } => assert_eq!(
+            RecordOutcome::Stream { response_events, .. } => assert_eq!(
                 response_events.len(),
                 1,
                 "the event seen before cancellation is recorded partial"
