@@ -216,8 +216,9 @@ stdin 不会触发询问（此时已有凭据的启动会静默写入标记）�
 `codesmith login` 可不经引导流程配置密钥。首启之后，信任只决定是否加载
 项目级 config 和 `.env` 文件，由 `/trust` 管理。
 
-在 REPL 内，裸 `/provider` 打印当前 provider，`/provider <id>` 切换
-（仅当前会话生效；会打印重启提示，因为完整重配置需要新会话）。裸
+在 REPL 内，裸 `/provider` 打印当前 provider，`/provider <id>` 把选择保存为
+下次启动的默认 provider（在重启前，在线客户端仍由当前 provider 服务，
+因此 `/status` 报告的始终是真正在应答的 provider）。裸
 `/model` 打印当前模型，`/model <id>` 切换并持久化。`/models` 从活动
 端点拉取并列出实时模型（`--json` 输出 pretty JSON；不支持 `/models`
 目录的 provider 会报告空列表）——与 `codesmith models` 子命令同一

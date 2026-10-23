@@ -269,8 +269,9 @@ project-level config and `.env` files are loaded, and `/trust` manages
 it.
 
 Inside the REPL, a bare `/provider` prints the current provider and
-`/provider <id>` switches (session-scoped; a restart hint is printed, since a
-full re-config needs a new session). A bare `/model` prints the current model
+`/provider <id>` saves the choice as the default for the next start (the live
+client keeps serving the current provider until you restart, so `/status`
+stays truthful about which provider is answering). A bare `/model` prints the current model
 and `/model <id>` switches and persists it. `/models` fetches and lists the
 live models from the active endpoint (`--json` for pretty JSON; providers
 without a `/models` catalog report an empty list) — the same listing as the
