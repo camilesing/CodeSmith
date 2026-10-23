@@ -372,12 +372,16 @@ fn compact_content_block(block: &ContentBlock) -> Value {
             "type": "text",
             "text": text,
         }),
+        // `redacted: true` promises the chain-of-thought is withheld —
+        // size/identity metadata is kept, but no preview text: these cards
+        // surface to callers and model-visible session objects, and a
+        // 240-char preview leaked the CoT while the JSON claimed it was
+        // redacted.
         ContentBlock::Thinking { thinking } => json!({
             "type": "thinking",
             "redacted": true,
             "chars": thinking.chars().count(),
             "sha256": sha256_hex(thinking.as_bytes()),
-            "preview_240": truncate_chars(thinking, 240),
         }),
         ContentBlock::Image { source } => json!({
             "type": "image",

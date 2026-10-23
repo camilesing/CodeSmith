@@ -298,8 +298,20 @@ pub fn render_environment_block(workspace: &Path, locale_tag: &str) -> String {
 /// doesn't fail the launch. Empty input (or all sources missing/empty)
 /// returns `None` so callers append nothing.
 pub fn render_instructions_block(sources: &[InstructionSource]) -> Option<String> {
+    // Aggregate budget: the per-source cap alone let N inline/file entries
+    // inject N × 100KB into the system prompt. Stop consuming sources once
+    // the running total is exhausted.
+    const INSTRUCTIONS_TOTAL_MAX_BYTES: usize = 4 * INSTRUCTIONS_FILE_MAX_BYTES;
+    let mut remaining = INSTRUCTIONS_TOTAL_MAX_BYTES;
     let mut sections: Vec<String> = Vec::new();
     for source in sources {
+        if remaining == 0 {
+            tracing::warn!(
+                target: "instructions",
+                "aggregate instructions budget ({INSTRUCTIONS_TOTAL_MAX_BYTES} bytes) exhausted;                  skipping remaining sources"
+            );
+            break;
+        }
         let (raw_source_name, raw_content): (String, String) = match source {
             InstructionSource::File(path) => match std::fs::read_to_string(path) {
                 Ok(raw) => (path.display().to_string(), raw),
@@ -319,7 +331,9 @@ pub fn render_instructions_block(sources: &[InstructionSource]) -> Option<String
         if trimmed.is_empty() {
             continue;
         }
-        let body = cap_untrusted_block(trimmed, INSTRUCTIONS_FILE_MAX_BYTES);
+        let per_source_cap = INSTRUCTIONS_FILE_MAX_BYTES.min(remaining);
+        let body = cap_untrusted_block(trimmed, per_source_cap);
+        remaining = remaining.saturating_sub(body.len());
         // Source name lands in a double-quoted attribute, body inside the
         // element — both are config/workspace-supplied, so escape the
         // attribute and defuse every prompt framing closer (not just
@@ -1213,11 +1227,18 @@ pub fn default_prompt_bundle_for_mode_with_context_skills_session_and_approval(
     // skills-discovery dependencies and portable across crates.
     let skills_block = session_context.skills_block;
     if let Some(block) = skills_block {
+        // Workspace-supplied SKILL.md text: same defuse + cap hardening as
+        // every other untrusted block — a planted `</session_goal>` in a
+        // skill file otherwise forges later sections' framing, and an
+        // oversized skills directory blows the prompt budget.
         append_section(
             &mut bundle,
             "skills",
             "Skills",
-            block,
+            defuse_prompt_framing_tags(&cap_untrusted_block(
+                block.trim(),
+                INSTRUCTIONS_FILE_MAX_BYTES,
+            )),
             PromptSectionStability::Workspace,
             PromptSectionSource::Skills,
         );
@@ -1268,22 +1289,38 @@ pub fn default_prompt_bundle_for_mode_with_context_skills_session_and_approval(
     if let Some(knowledge_block) = session_context.knowledge_prompt_block
         && !knowledge_block.trim().is_empty()
     {
+        // Rendered from workspace knowledge files (untrusted): defuse the
+        // framing tags and cap the size like every other workspace block —
+        // a planted `</session_goal>` here forges later sections' framing.
         append_section(
             &mut bundle,
             "memory_or_knowledge",
             "Knowledge memory",
-            format!("{knowledge_block}\n\n{KNOWLEDGE_GUIDANCE}"),
+            format!(
+                "{}\n\n{KNOWLEDGE_GUIDANCE}",
+                defuse_prompt_framing_tags(&cap_untrusted_block(
+                    knowledge_block.trim(),
+                    INSTRUCTIONS_FILE_MAX_BYTES
+                ))
+            ),
             PromptSectionStability::Session,
             PromptSectionSource::Memory,
         );
     } else if let Some(memory_block) = session_context.user_memory_block
         && !memory_block.trim().is_empty()
     {
+        // Same hardening: MEMORY.md is workspace-supplied.
         append_section(
             &mut bundle,
             "memory_or_knowledge",
             "User memory",
-            format!("{memory_block}\n\n{MEMORY_GUIDANCE}"),
+            format!(
+                "{}\n\n{MEMORY_GUIDANCE}",
+                defuse_prompt_framing_tags(&cap_untrusted_block(
+                    memory_block.trim(),
+                    INSTRUCTIONS_FILE_MAX_BYTES
+                ))
+            ),
             PromptSectionStability::Session,
             PromptSectionSource::Memory,
         );

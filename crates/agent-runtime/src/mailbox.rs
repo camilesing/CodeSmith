@@ -180,6 +180,11 @@ struct MailboxInner {
     tx: mpsc::UnboundedSender<MailboxEnvelope>,
     next_seq: AtomicU64,
     seq_tx: watch::Sender<u64>,
+    /// Serializes seq allocation + enqueue + watch bump: `fetch_add` alone
+    /// let thread B allocate a later seq and enqueue before thread A, so
+    /// the receiver drained out of order and `send_replace` regressed the
+    /// watch watermark (the module promises monotonic ordering).
+    publish: std::sync::Mutex<()>,
     closed: AtomicBool,
     cancel_token: CancellationToken,
 }
@@ -205,6 +210,7 @@ impl Mailbox {
             tx,
             next_seq: AtomicU64::new(0),
             seq_tx,
+            publish: std::sync::Mutex::new(()),
             closed: AtomicBool::new(false),
             cancel_token,
         };
@@ -235,6 +241,13 @@ impl Mailbox {
         if self.inner.closed.load(Ordering::Acquire) {
             return None;
         }
+        // Hold the publish lock across alloc + enqueue + watch bump so seq
+        // order == enqueue order == watch watermark order.
+        let _publish = self
+            .inner
+            .publish
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let seq = self.inner.next_seq.fetch_add(1, Ordering::Relaxed) + 1;
         let envelope = MailboxEnvelope { seq, message };
         if self.inner.tx.send(envelope).is_err() {

@@ -1421,9 +1421,20 @@ pub fn build_engine(
         .shell_manager
         .clone()
         .unwrap_or_else(|| new_shared_shell_manager(config.workspace.clone()));
-    if let Ok(mut manager) = shell_manager.lock() {
-        manager.set_prefer_bwrap(config.sandbox_runtime.prefer_bwrap || config.prefer_bwrap);
-        manager.set_sandbox_runtime(config.sandbox_runtime.clone());
+    match shell_manager.lock() {
+        Ok(mut manager) => {
+            manager.set_prefer_bwrap(config.sandbox_runtime.prefer_bwrap || config.prefer_bwrap);
+            manager.set_sandbox_runtime(config.sandbox_runtime.clone());
+        }
+        Err(poisoned) => {
+            // A poisoned lock must not silently drop the sandbox
+            // configuration — the engine would start with the manager's
+            // default (unsandboxed) runtime. Recover the guard and apply it.
+            tracing::error!("shell manager lock poisoned; applying sandbox config anyway");
+            let mut manager = poisoned.into_inner();
+            manager.set_prefer_bwrap(config.sandbox_runtime.prefer_bwrap || config.prefer_bwrap);
+            manager.set_sandbox_runtime(config.sandbox_runtime.clone());
+        }
     }
     if host.runtime_services.shell_manager.is_none() {
         host.runtime_services.shell_manager = Some(wrap_shell_manager(shell_manager.clone()));
@@ -1501,18 +1512,18 @@ pub fn build_engine(
 
     // External sandbox backend (#516). Config::validate() rejects a
     // misconfigured backend at load, so an error here means the config was
-    // never validated (tests, dynamic re-config): fail loud rather than
-    // degrade silently to unconfined local execution.
+    // never validated (tests, dynamic re-config). Fail construction loudly:
+    // `.ok()` degraded a configured-but-broken backend to `None`, which is
+    // indistinguishable from "unconfigured" downstream — tool gating cannot
+    // fail closed on a state it cannot see.
     let sandbox_backend = crate::sandbox::backend::create_backend(api_config)
-        .inspect_err(|e| {
-            tracing::error!(
-                "sandbox backend from config is invalid: {e}; commands will run LOCALLY \
-                 UNCONFINED — fix sandbox_backend/sandbox_url or set \
-                 sandbox_backend = \"none\" (Config::validate rejects this at load)"
+        .unwrap_or_else(|e| {
+            panic!(
+                "sandbox backend from config is invalid: {e}; refusing to build the engine \
+                 with an unconfigured-looking backend — fix sandbox_backend/sandbox_url or \
+                 set sandbox_backend = \"none\" (Config::validate rejects this at load)"
             );
         })
-        .ok()
-        .flatten()
         .map(std::sync::Arc::from);
 
     let bg_registry = std::sync::Arc::new(tokio::sync::Mutex::new(

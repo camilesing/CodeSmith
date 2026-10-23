@@ -31,6 +31,11 @@ use anyhow::Result;
 /// default. Overridden per RLM context via `rlm_configure`'s
 /// `sub_query_timeout_secs` (clamped 1..=600 at the tool).
 const CHILD_TIMEOUT_SECS: u64 = 120;
+/// Wall-clock bound for a nested RLM turn as a multiple of the child
+/// call timeout: the nested turn runs several child calls (Python REPL
+/// rounds + LLM steps), so it gets proportionally more — but never
+/// unbounded.
+const NESTED_TURN_TIMEOUT_CHILD_MULTIPLE: u32 = 4;
 /// Default `max_tokens` for one-shot child completions.
 const DEFAULT_CHILD_MAX_TOKENS: u32 = 4096;
 /// Hard cap on prompts per batch RPC.
@@ -191,8 +196,12 @@ impl RlmBridge {
         let child_model = self.child_model.clone();
 
         // Recursive call. The dyn-erasure on `run_rlm_turn_inner` breaks
-        // the `bridge → turn → bridge` opaque-future cycle.
-        let result = super::turn::run_rlm_turn_inner(
+        // the `bridge → turn → bridge` opaque-future cycle. Bounded by a
+        // wall clock: `turn_timeout()` returns `None`, so a hung nested
+        // turn (model-generated Python in an infinite loop, a stuck REPL
+        // read) would otherwise block this `rlm_query` RPC — and the whole
+        // parent turn — indefinitely.
+        let turn_fut = super::turn::run_rlm_turn_inner(
             Arc::clone(&self.client),
             child_model.clone(),
             prompt,
@@ -200,8 +209,23 @@ impl RlmBridge {
             child_model,
             tx,
             self.depth_remaining.saturating_sub(1),
-        )
-        .await;
+        );
+        let nested_budget = self
+            .child_timeout
+            .saturating_mul(NESTED_TURN_TIMEOUT_CHILD_MULTIPLE);
+        let result = match tokio::time::timeout(nested_budget, turn_fut).await {
+            Ok(result) => result,
+            Err(_elapsed) => {
+                drain.abort();
+                return SingleResp {
+                    text: String::new(),
+                    error: Some(format!(
+                        "rlm_query: nested turn timed out after {}s",
+                        nested_budget.as_secs()
+                    )),
+                };
+            }
+        };
 
         drain.abort();
 

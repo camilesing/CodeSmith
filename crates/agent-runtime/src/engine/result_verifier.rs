@@ -636,17 +636,20 @@ fn verdict_from_tool_result(
 
     let kind = if sandbox_denied {
         ResultVerdict::VerifyError
+    } else if status == "timedout" || status == "killed" {
+        // `{:?}` of `ShellStatus`, lowercased: "timedout" does not contain
+        // "timeout" — an exact match. Checked BEFORE the exit-code arms:
+        // killed/timed-out re-runs often still carry an exit code (SIGKILL
+        // → 137, SIGTERM → 143, GNU timeout → 124), which would otherwise
+        // masquerade as `VerifiedFail` ("claim mismatch") instead of
+        // `VerifyError`.
+        ResultVerdict::VerifyError
     } else if exit_code == Some(0) {
         ResultVerdict::VerifiedPass
     } else if exit_code.is_some() {
         ResultVerdict::VerifiedFail
     } else if result.success {
         ResultVerdict::VerifiedPass
-    } else if status == "timedout" || status == "killed" {
-        // `{:?}` of `ShellStatus`, lowercased: "timedout" does not contain
-        // "timeout" — an exact match, or a killed/timed-out re-run falls to
-        // the fail arm below and is misreported as a claim mismatch.
-        ResultVerdict::VerifyError
     } else {
         // No exit code and no success flag: treat as a failed run rather
         // than pass — the checker fails closed like every other validator.
@@ -1106,6 +1109,38 @@ mod tests {
                     content: String::new(),
                     success: false,
                     metadata: Some(json!({"status": status, "exit_code": null})),
+                },
+            );
+            assert_eq!(block.kind, ResultVerdict::VerifyError, "status {status}");
+            assert!(block.error_reason.is_some(), "status {status}");
+        }
+    }
+
+    #[test]
+    fn killed_replay_with_nonzero_exit_code_is_still_an_error() {
+        // SIGKILL → 137, SIGTERM → 143, GNU timeout → 124: the status must
+        // classify these as VerifyError even though a non-null exit code is
+        // present — the old arm order read them as claim-mismatch fails.
+        for (status, code) in [("Killed", 137), ("TimedOut", 124)] {
+            let claim = DetectedClaim {
+                kind: ClaimKind::Test,
+                phrase: "tests pass".to_string(),
+            };
+            let command = VerificationCommand {
+                replay_input: json!({"command": "cargo test"}),
+                display_command: "cargo test".to_string(),
+                tool_name: "exec_shell".to_string(),
+                tool_use_id: "t-code".to_string(),
+                source_duration_ms: None,
+            };
+            let block = verdict_from_tool_result(
+                claim,
+                &command,
+                ToolResult {
+                    canonical: None,
+                    content: String::new(),
+                    success: false,
+                    metadata: Some(json!({"status": status, "exit_code": code})),
                 },
             );
             assert_eq!(block.kind, ResultVerdict::VerifyError, "status {status}");
