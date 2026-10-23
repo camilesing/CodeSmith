@@ -2045,7 +2045,7 @@ async fn session_update_preserves_reasoning_tool_only_turn() {
         panic!("expected session update event");
     };
 
-    assert_eq!(messages, vec![assistant]);
+    assert_eq!(*messages, vec![assistant]);
 }
 
 #[tokio::test]

@@ -4,6 +4,7 @@
 //! enabling non-blocking, real-time updates.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde_json::Value;
 
@@ -402,9 +403,13 @@ pub enum Event {
     /// reasoning directly followed by tool calls without a visible assistant
     /// text block, and that assistant message still has to be persisted for
     /// later `reasoning_content` replay.
+    ///
+    /// `messages` is an Arc-shared snapshot from the session's `AppendLog`:
+    /// the engine emits this after every appended message, so an owned
+    /// `Vec` deep-copied the whole transcript each time.
     SessionUpdated {
         session_id: String,
-        messages: Vec<Message>,
+        messages: Arc<Vec<Message>>,
         system_prompt: Option<SystemPrompt>,
         model: String,
         workspace: PathBuf,

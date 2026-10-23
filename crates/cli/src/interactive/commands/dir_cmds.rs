@@ -139,7 +139,7 @@ pub async fn cd(state: &mut ReplState, argument: &str) -> anyhow::Result<()> {
     // `api_messages` that a cancelled future never restores loses the whole
     // conversation. "No engine attached" is not a sync failure — the move
     // proceeds (see the `cd_is_vetoable_by_a_mod` control case).
-    let messages = state.api_messages.clone();
+    let messages = (*state.api_messages).clone();
     let synced = match state.engine() {
         Ok(engine) => engine
             .send(codesmith_agent_runtime::ops::Op::SyncSession {

@@ -673,7 +673,7 @@ mod tests {
             "deepseek-v4-pro".to_string(),
             PathBuf::from("."),
             Some(SystemPrompt::Text("You are CodeSmith.".to_string())),
-            vec![
+            std::sync::Arc::new(vec![
                 Message {
                     role: "user".to_string(),
                     content: vec![ContentBlock::Text {
@@ -688,7 +688,7 @@ mod tests {
                         cache_control: None,
                     }],
                 },
-            ],
+            ]),
         ))
     }
 

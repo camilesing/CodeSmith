@@ -105,6 +105,10 @@ pub const MINIMUM_AUTO_COMPACTION_TOKENS: usize = 0;
 
 pub fn estimate_tokens_for_message(message: &Message, include_thinking: bool) -> usize {
     let counter = crate::tokenizer::default_counter();
+    // Reused serialization buffer: the budget check walks the full history
+    // on every pass, and a fresh `to_string` per block churned one String
+    // allocation per ToolUse/result block on every estimate.
+    let mut buf = String::new();
     message
         .content
         .iter()
@@ -114,9 +118,7 @@ pub fn estimate_tokens_for_message(message: &Message, include_thinking: bool) ->
             // Only current-turn tool-call reasoning is sent back to the API.
             ContentBlock::Thinking { thinking } if include_thinking => counter.count_text(thinking),
             ContentBlock::Thinking { .. } => 0,
-            ContentBlock::ToolUse { input, .. } => serde_json::to_string(input)
-                .map(|s| counter.count_text(&s))
-                .unwrap_or(100),
+            ContentBlock::ToolUse { input, .. } => count_json_tokens(&counter, input, &mut buf),
             ContentBlock::ToolResult {
                 content,
                 content_blocks,
@@ -136,9 +138,7 @@ pub fn estimate_tokens_for_message(message: &Message, include_thinking: bool) ->
                         {
                             crate::models::IMAGE_BLOCK_ESTIMATED_TOKENS
                         } else {
-                            serde_json::to_string(block)
-                                .map(|s| counter.count_text(&s))
-                                .unwrap_or(100)
+                            count_json_tokens(&counter, block, &mut buf)
                         };
                     }
                 }
@@ -148,11 +148,34 @@ pub fn estimate_tokens_for_message(message: &Message, include_thinking: bool) ->
             // token cost is roughly size-independent (see
             // `IMAGE_BLOCK_ESTIMATED_TOKENS`).
             ContentBlock::Image { .. } => crate::models::IMAGE_BLOCK_ESTIMATED_TOKENS,
-            ContentBlock::ServerToolUse { .. }
-            | ContentBlock::ToolSearchToolResult { .. }
-            | ContentBlock::CodeExecutionToolResult { .. } => 0,
+            // Provider-side tool use/results consume real context window
+            // (the rig adapter restores these blocks for providers that
+            // support them) — count their payloads instead of 0.
+            ContentBlock::ServerToolUse { input, .. } => {
+                count_json_tokens(&counter, input, &mut buf)
+            }
+            ContentBlock::ToolSearchToolResult { content, .. }
+            | ContentBlock::CodeExecutionToolResult { content, .. } => {
+                count_json_tokens(&counter, content, &mut buf)
+            }
         })
         .sum::<usize>()
+}
+
+/// Count a JSON block's serialized size through a reused buffer.
+/// `serde_json::Value`'s `Display` emits the same compact JSON as
+/// `to_string` and writing into a `String` cannot fail, so there is no
+/// fallback branch — the retired `unwrap_or(100)` silently miscounted
+/// exactly the payloads that failed to serialize.
+fn count_json_tokens(
+    counter: &crate::tokenizer::TokenCounter,
+    value: &serde_json::Value,
+    buf: &mut String,
+) -> usize {
+    use std::fmt::Write as _;
+    buf.clear();
+    let _ = write!(buf, "{value}");
+    counter.count_text(buf)
 }
 
 pub fn estimate_tokens(messages: &[Message]) -> usize {

@@ -45,6 +45,7 @@
 //! system's job is to make that impossible to do by accident.
 
 use std::fmt;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use crate::models::{Message, MessageRequest, SystemPrompt, Tool};
 use crate::utils::sha256_hex;
@@ -294,10 +295,30 @@ pub struct RebuildRecord {
 /// `sort`), so `&log`, `log.len()`, `log.iter()`, `log[i]`, and
 /// `log.to_vec()` all keep working while every mutating method of `Vec`
 /// fails to compile.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct AppendLog {
     messages: Vec<Message>,
     last_rebuild: Option<RebuildRecord>,
+    /// Shared snapshot handed to `Event::SessionUpdated` and the per-turn
+    /// tool-context build. Interior-mutable so `snapshot(&self)` works from
+    /// shared-ref call sites: `push` extends it in place while unsold
+    /// (`Arc::strong_count == 1`), so per-message emission is amortized
+    /// O(1); once a consumer still holds the previous snapshot the cache is
+    /// dropped and the next [`snapshot`](Self::snapshot) rebuilds once —
+    /// never more than the pre-snapshot `to_vec()` per emission.
+    snapshot: StdMutex<Option<Arc<Vec<Message>>>>,
+}
+
+/// Manual clone: the snapshot cache is dropped — a cloned log starts
+/// uncached (the cache is a sharing optimization, not state).
+impl Clone for AppendLog {
+    fn clone(&self) -> Self {
+        Self {
+            messages: self.messages.clone(),
+            last_rebuild: self.last_rebuild,
+            snapshot: StdMutex::new(None),
+        }
+    }
 }
 
 impl AppendLog {
@@ -305,6 +326,7 @@ impl AppendLog {
         Self {
             messages: Vec::new(),
             last_rebuild: None,
+            snapshot: StdMutex::new(None),
         }
     }
 
@@ -314,6 +336,7 @@ impl AppendLog {
         Self {
             messages,
             last_rebuild: None,
+            snapshot: StdMutex::new(None),
         }
     }
 
@@ -321,6 +344,18 @@ impl AppendLog {
     /// production growth path (user turns, assistant turns, tool results,
     /// steers, seams, re-injections) funnels through here.
     pub fn push(&mut self, message: Message) {
+        {
+            let mut guard = self
+                .snapshot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match guard.as_mut() {
+                Some(snap) if Arc::strong_count(snap) == 1 => {
+                    Arc::make_mut(snap).push(message.clone());
+                }
+                _ => *guard = None,
+            }
+        }
         self.messages.push(message);
     }
 
@@ -335,6 +370,31 @@ impl AppendLog {
             before,
             after: self.messages.len(),
         });
+        *self
+            .snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+
+    /// Shared copy-on-write view of the whole log, for full-transcript
+    /// event emission and per-turn context builds. Cheaper than `to_vec()`
+    /// when the previous snapshot has been released (cached and extended in
+    /// place by `push`); costs one `to_vec()`-equivalent rebuild otherwise.
+    /// Known limitation: while a consumer holds an earlier snapshot, every
+    /// emission pays that one full rebuild — removing it entirely would
+    /// take a delta event or a persistent structure, both larger contract
+    /// changes.
+    pub fn snapshot(&self) -> Arc<Vec<Message>> {
+        let mut guard = self
+            .snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(snap) = guard.as_ref() {
+            return Arc::clone(snap);
+        }
+        let snap = Arc::new(self.messages.clone());
+        *guard = Some(Arc::clone(&snap));
+        snap
     }
 
     /// The most recent rebuild's audit entry, if the log was ever rebuilt.
@@ -482,6 +542,65 @@ impl<'a> ThreeZoneRequest<'a> {
 mod tests {
     use super::*;
     use crate::models::ContentBlock;
+
+    fn text_message(role: &str, text: &str) -> Message {
+        Message {
+            role: role.to_string(),
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+                cache_control: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn snapshot_tracks_pushes_while_unsold() {
+        let mut log = AppendLog::new();
+        log.push(text_message("user", "one"));
+        let a = log.snapshot();
+        let a2 = log.snapshot();
+        assert!(Arc::ptr_eq(&a, &a2), "consecutive reads share the cache");
+        drop(a);
+        drop(a2);
+
+        // Cache is the sole holder again: push extends in place and the
+        // next snapshot observes the appended message.
+        log.push(text_message("assistant", "two"));
+        let b = log.snapshot();
+        assert_eq!(b.len(), 2);
+        assert_eq!(b[1].role, "assistant");
+        drop(b);
+        log.push(text_message("user", "three"));
+        assert_eq!(log.snapshot().len(), 3);
+    }
+
+    #[test]
+    fn snapshot_sold_copy_is_frozen_and_cache_rebuilds() {
+        let mut log = AppendLog::from_messages(vec![text_message("user", "one")]);
+        let sold = log.snapshot();
+
+        log.push(text_message("assistant", "two"));
+        // The sold snapshot must not observe the new message.
+        assert_eq!(sold.len(), 1);
+        let fresh = log.snapshot();
+        assert_eq!(fresh.len(), 2);
+        assert!(!Arc::ptr_eq(&sold, &fresh));
+    }
+
+    #[test]
+    fn rebuild_invalidates_the_snapshot() {
+        let mut log = AppendLog::new();
+        log.push(text_message("user", "one"));
+        let stale = log.snapshot();
+        log.rebuild(
+            RebuildReason::FrontTrim,
+            vec![text_message("assistant", "kept")],
+        );
+        assert_eq!(stale.len(), 1);
+        let fresh = log.snapshot();
+        assert_eq!(fresh.len(), 1);
+        assert_eq!(fresh[0].role, "assistant");
+    }
 
     fn make_tool(name: &str) -> Tool {
         Tool {

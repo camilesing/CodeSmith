@@ -73,7 +73,7 @@ pub(super) fn build_tool_context_for(
         session.model.clone(),
         session.workspace.clone(),
         session.system_prompt.clone(),
-        session.messages.to_vec(),
+        session.messages.snapshot(),
     ))
     .with_cancel_token(cancel_token.clone())
     .with_trusted_external_paths(trusted_external_paths);

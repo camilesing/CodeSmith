@@ -4,6 +4,7 @@
 //! op directly.
 
 use colored::Colorize;
+use std::sync::Arc;
 
 use super::ReplState;
 use crate::models::{Message, SystemPrompt};
@@ -215,7 +216,7 @@ pub async fn branch(state: &mut ReplState, name: Option<&str>) {
         state,
         Op::SyncSession {
             session_id: Some(fork_id),
-            messages: state.api_messages.clone(),
+            messages: (*state.api_messages).clone(),
             system_prompt: state.system_prompt.clone(),
             system_prompt_override: super::system_prompt_override_active(state),
             model: state.model.clone(),
@@ -252,7 +253,7 @@ pub async fn new_session(state: &mut ReplState, arg: Option<&str>) {
     }
 
     let new_id = uuid::Uuid::new_v4().to_string();
-    state.api_messages.clear();
+    state.api_messages = Arc::new(Vec::new());
     state.system_prompt = None;
     state.session = Default::default();
     state.agent_progress.clear();
@@ -388,7 +389,7 @@ async fn adopt_loaded_session(
     state: &mut ReplState,
     session: crate::session_manager::SavedSession,
 ) {
-    state.api_messages = session.messages.clone();
+    state.api_messages = Arc::new(session.messages.clone());
     state.set_model_selection(session.metadata.model.clone());
     // A tampered or hand-edited session file must not silently redirect all
     // relative-path resolution to an arbitrary directory: adopt the stored
@@ -538,7 +539,7 @@ pub fn export(state: &ReplState, path: Option<&str>) {
         state.workspace.display(),
         chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
     );
-    for message in &state.api_messages {
+    for message in state.api_messages.iter() {
         let role = match message.role.as_str() {
             "user" => "**You:**",
             "assistant" => "**Assistant:**",

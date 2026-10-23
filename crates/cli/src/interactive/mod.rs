@@ -642,7 +642,7 @@ pub(crate) fn copy_command(state: &ReplState, arg: &str) {
             }
         },
     };
-    let replies = assistant_replies(&state.api_messages);
+    let replies = assistant_replies(state.api_messages.as_slice());
     let Some((_, text)) = replies.iter().rev().nth(index - 1) else {
         println!(
             "{} no reply #{index} in this session ({} assistant repl(ies) so far)",
@@ -799,7 +799,7 @@ pub(crate) fn btw_request_messages(
     state: &ReplState,
     question: &str,
 ) -> Vec<crate::models::Message> {
-    let mut messages = state.api_messages.clone();
+    let mut messages = (*state.api_messages).clone();
     messages.push(crate::models::Message {
         role: "user".to_string(),
         content: vec![crate::models::ContentBlock::Text {

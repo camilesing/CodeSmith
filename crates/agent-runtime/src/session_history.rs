@@ -147,7 +147,7 @@ impl<'a> ChatHistory for SessionChatHistory<'a> {
         if let Some(tx) = &self.event_tx {
             let _ = tx.try_send(Event::SessionUpdated {
                 session_id: self.session.id.clone(),
-                messages: self.session.messages.to_vec(),
+                messages: self.session.messages.snapshot(),
                 system_prompt: self.session.system_prompt.clone(),
                 model: self.session.model.clone(),
                 workspace: self.session.workspace.clone(),
@@ -180,7 +180,7 @@ impl<'a> ChatHistory for SessionChatHistory<'a> {
         if let Some(tx) = &self.event_tx {
             let _ = tx.try_send(Event::SessionUpdated {
                 session_id: self.session.id.clone(),
-                messages: self.session.messages.to_vec(),
+                messages: self.session.messages.snapshot(),
                 system_prompt: self.session.system_prompt.clone(),
                 model: self.session.model.clone(),
                 workspace: self.session.workspace.clone(),

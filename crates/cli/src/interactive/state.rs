@@ -85,7 +85,7 @@ pub struct ReplState {
     /// Name of the active preset tier (simple | middle | all | ... | diy).
     pub active_preset: Option<String>,
     /// Authoritative API conversation (mirrors engine `SessionUpdated`).
-    pub api_messages: Vec<Message>,
+    pub api_messages: Arc<Vec<Message>>,
     pub system_prompt: Option<SystemPrompt>,
     pub is_loading: bool,
     pub is_compacting: bool,
@@ -381,7 +381,7 @@ impl ReplState {
             active_allowed_tools: None,
             active_blocked_tools: None,
             active_preset: None,
-            api_messages: Vec::new(),
+            api_messages: Arc::new(Vec::new()),
             system_prompt: None,
             is_loading: false,
             is_compacting: false,
@@ -746,7 +746,7 @@ impl ReplState {
         system_prompt: Option<String>,
         model: String,
     ) {
-        self.api_messages = messages;
+        self.api_messages = Arc::new(messages);
         self.system_prompt = system_prompt.map(SystemPrompt::Text);
         self.set_model_selection(model);
         self.current_session_id = Some(session_id.to_string());
@@ -990,11 +990,11 @@ async fn restore_engine_backed_session_state(
     // engine — the shared Arcs outlive any single engine instance.
     *state.todos.lock().await =
         codesmith_agent_runtime::tool_state::todo::TodoList::rebuild_from_messages(
-            &state.api_messages,
+            state.api_messages.as_slice(),
         );
     *state.plan_state.lock().await =
         codesmith_agent_runtime::tool_state::plan::PlanState::rebuild_from_messages(
-            &state.api_messages,
+            state.api_messages.as_slice(),
         );
     if let Some(files) = state
         .engine
@@ -1002,7 +1002,7 @@ async fn restore_engine_backed_session_state(
         .map(|engine| engine.recent_read_files.clone())
     {
         let rebuilt = codesmith_agent_runtime::session::rebuild_recent_read_files_from_messages(
-            &state.api_messages,
+            state.api_messages.as_slice(),
         );
         let mut guard = files.lock().unwrap_or_else(|e| e.into_inner());
         *guard = rebuilt.lock().unwrap_or_else(|e| e.into_inner()).clone();

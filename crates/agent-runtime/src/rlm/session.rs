@@ -150,7 +150,9 @@ pub struct SessionObjectSnapshot {
     pub model: String,
     pub workspace: PathBuf,
     pub system_prompt: Option<SystemPrompt>,
-    pub messages: Vec<Message>,
+    /// Arc-shared from the session's `AppendLog` snapshot: the per-turn
+    /// tool-context build used to deep-clone the whole history here.
+    pub messages: Arc<Vec<Message>>,
 }
 
 impl SessionObjectSnapshot {
@@ -160,7 +162,7 @@ impl SessionObjectSnapshot {
         model: String,
         workspace: PathBuf,
         system_prompt: Option<SystemPrompt>,
-        messages: Vec<Message>,
+        messages: Arc<Vec<Message>>,
     ) -> Self {
         Self {
             session_id,
@@ -510,13 +512,13 @@ mod tests {
             "deepseek-v4-pro".to_string(),
             PathBuf::from("/tmp/work"),
             Some(SystemPrompt::Text("system body".to_string())),
-            vec![Message {
+            std::sync::Arc::new(vec![Message {
                 role: "user".to_string(),
                 content: vec![ContentBlock::Text {
                     text: "hello RLM".to_string(),
                     cache_control: None,
                 }],
-            }],
+            }]),
         );
 
         let cards = snapshot.object_cards();
@@ -545,7 +547,7 @@ mod tests {
             "deepseek-v4-pro".to_string(),
             PathBuf::from("/tmp/work"),
             None,
-            vec![Message {
+            std::sync::Arc::new(vec![Message {
                 role: "user".to_string(),
                 content: vec![ContentBlock::ToolResult {
                     tool_use_id: "call_1".to_string(),
@@ -553,7 +555,7 @@ mod tests {
                     is_error: None,
                     content_blocks: None,
                 }],
-            }],
+            }]),
         );
 
         let object = snapshot

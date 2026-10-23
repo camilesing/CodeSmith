@@ -3,6 +3,7 @@
 #![allow(clippy::too_many_arguments)]
 
 use std::io::{self, IsTerminal, Read, Write};
+use std::sync::Arc;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -6059,7 +6060,7 @@ pub(crate) async fn run_exec_agent(
     let should_persist_session =
         resume_session_id.is_some() || output_format == ExecOutputFormat::StreamJson;
     let mut latest_session_id = loaded_session_id;
-    let mut latest_messages: Vec<Message> = Vec::new();
+    let mut latest_messages: Arc<Vec<Message>> = Arc::new(Vec::new());
     let mut latest_system_prompt: Option<SystemPrompt> = None;
     let mut latest_model = effective_model;
     let mut latest_workspace = workspace.clone();
@@ -6268,7 +6269,7 @@ pub(crate) async fn run_exec_agent(
                 summary.error = error;
                 let saved_session_id = if should_persist_session && !latest_messages.is_empty() {
                     match persist_exec_session(
-                        &latest_messages,
+                        &latest_messages[..],
                         &latest_model,
                         &latest_workspace,
                         &latest_system_prompt,

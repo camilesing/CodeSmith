@@ -1457,7 +1457,7 @@ fn saved_session_from_state(state: &ReplState) -> Option<crate::session_manager:
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let mut session = create_saved_session_with_id_and_mode(
         session_id,
-        &state.api_messages,
+        state.api_messages.as_slice(),
         &state.model,
         &state.workspace,
         u64::from(state.session.total_tokens),
@@ -2136,6 +2136,7 @@ async fn handle_elevation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     fn test_repl_state() -> ReplState {
         let options = crate::app_state::InteractiveOptions {
@@ -2196,13 +2197,13 @@ mod tests {
             let sessions_dir = manager.sessions_dir().to_path_buf();
 
             let mut state = test_repl_state();
-            state.api_messages = vec![crate::models::Message {
+            state.api_messages = Arc::new(vec![crate::models::Message {
                 role: "user".to_string(),
                 content: vec![crate::models::ContentBlock::Text {
                     text: "hello".to_string(),
                     cache_control: None,
                 }],
-            }];
+            }]);
             state.current_session_id = Some("sess-mirror".to_string());
             let journal = crate::interactive::inbox_journal::InboxJournal::for_session(
                 &sessions_dir,
@@ -2290,13 +2291,13 @@ mod tests {
     fn saved_session_from_state_carries_failed_attempts() {
         let _lock = codesmith_agent_runtime::test_support::lock_test_env();
         let mut state = test_repl_state();
-        state.api_messages = vec![crate::models::Message {
+        state.api_messages = Arc::new(vec![crate::models::Message {
             role: "user".to_string(),
             content: vec![crate::models::ContentBlock::Text {
                 text: "hello".to_string(),
                 cache_control: None,
             }],
-        }];
+        }]);
         state.failed_attempts = vec![codesmith_agent_runtime::session_store::AttemptRecord {
             turn_id: "t-1".to_string(),
             step: 1,
@@ -2318,13 +2319,13 @@ mod tests {
     fn saved_session_from_state_carries_approval_decisions() {
         let _lock = codesmith_agent_runtime::test_support::lock_test_env();
         let mut state = test_repl_state();
-        state.api_messages = vec![crate::models::Message {
+        state.api_messages = Arc::new(vec![crate::models::Message {
             role: "user".to_string(),
             content: vec![crate::models::ContentBlock::Text {
                 text: "hello".to_string(),
                 cache_control: None,
             }],
-        }];
+        }]);
         log_approval(
             &mut state,
             "call-1",
@@ -2358,13 +2359,13 @@ mod tests {
         };
         let _lock = codesmith_agent_runtime::test_support::lock_test_env();
         let mut state = test_repl_state();
-        state.api_messages = vec![crate::models::Message {
+        state.api_messages = Arc::new(vec![crate::models::Message {
             role: "user".to_string(),
             content: vec![crate::models::ContentBlock::Text {
                 text: "look".to_string(),
                 cache_control: None,
             }],
-        }];
+        }]);
         state.context_references.push(SessionContextReference {
             message_index: 0,
             reference: ContextReference {

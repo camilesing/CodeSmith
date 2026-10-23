@@ -3,6 +3,7 @@
 //! views (`/context` inspector, `/cache inspect`) degrade to line output.
 
 use colored::Colorize;
+use std::sync::Arc;
 
 use super::ReplState;
 use crate::models::SystemPrompt;
@@ -369,14 +370,16 @@ async fn truncate_to_before_last_user(
     let Some(last_user_idx) = state.api_messages.iter().rposition(|m| m.role == "user") else {
         return Some(Vec::new());
     };
-    let removed = state.api_messages.split_off(last_user_idx);
+    let mut owned = (*state.api_messages).clone();
+    let removed = owned.split_off(last_user_idx);
+    state.api_messages = Arc::new(owned);
     if !removed.is_empty() {
         match state.engine() {
             Ok(engine) => {
                 if let Err(err) = engine
                     .send(Op::SyncSession {
                         session_id: state.current_session_id.clone(),
-                        messages: state.api_messages.clone(),
+                        messages: (*state.api_messages).clone(),
                         system_prompt: state.system_prompt.clone(),
                         system_prompt_override: super::system_prompt_override_active(state),
                         model: state.model.clone(),
@@ -407,12 +410,14 @@ async fn truncate_to_before_last_user(
 /// Put a drained tail back into local history and re-sync the engine with
 /// it, so a failed follow-up (`/retry`'s resubmission) costs nothing.
 async fn restore_exchange(state: &mut ReplState, tail: Vec<crate::models::Message>) {
-    state.api_messages.extend(tail);
+    let mut merged = (*state.api_messages).clone();
+    merged.extend(tail);
+    state.api_messages = Arc::new(merged);
     if let Ok(engine) = state.engine() {
         let _ = engine
             .send(Op::SyncSession {
                 session_id: state.current_session_id.clone(),
-                messages: state.api_messages.clone(),
+                messages: (*state.api_messages).clone(),
                 system_prompt: state.system_prompt.clone(),
                 system_prompt_override: super::system_prompt_override_active(state),
                 model: state.model.clone(),

@@ -259,7 +259,7 @@ pub fn status_line(state: &ReplState) -> String {
         RunState::Idle
     };
     let ctx = context_usage(
-        &state.api_messages,
+        state.api_messages.as_slice(),
         state.system_prompt.as_ref(),
         state.session.last_prompt_tokens,
         state.context_window(),
@@ -291,7 +291,7 @@ pub fn live_line(state: &ReplState, current_tool: Option<&str>) -> String {
         .map(|started| started.elapsed().as_secs())
         .unwrap_or(0);
     let ctx = context_usage(
-        &state.api_messages,
+        state.api_messages.as_slice(),
         state.system_prompt.as_ref(),
         state.session.last_prompt_tokens,
         state.context_window(),

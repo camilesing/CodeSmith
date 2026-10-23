@@ -217,7 +217,7 @@ struct AcpSession {
     /// The transcript as the engine last reported it (`SessionUpdated`), or
     /// the saved messages on resume until the engine takes over. What the
     /// next save writes.
-    history: Vec<Message>,
+    history: Arc<Vec<Message>>,
     /// Same provenance as [`AcpSession::history`].
     system_prompt: Option<SystemPrompt>,
     /// Created at the session's first prompt; one engine per session.
@@ -465,7 +465,7 @@ impl AcpServer {
             AcpSession {
                 created_at: Instant::now(),
                 workspace,
-                history: Vec::new(),
+                history: Arc::new(Vec::new()),
                 system_prompt: None,
                 engine: None,
                 pump_task: None,
@@ -547,7 +547,7 @@ impl AcpServer {
             AcpSession {
                 created_at: Instant::now(),
                 workspace: saved.metadata.workspace,
-                history: saved.messages,
+                history: Arc::new(saved.messages),
                 system_prompt: saved.system_prompt.map(SystemPrompt::Text),
                 engine: None,
                 pump_task: None,
@@ -728,7 +728,7 @@ where
                 session.workspace.clone(),
             ),
             None => (
-                Vec::new(),
+                Arc::new(Vec::new()),
                 None,
                 std::env::current_dir().unwrap_or_default(),
             ),
@@ -744,7 +744,7 @@ where
                 &session_id,
                 &workspace,
                 &store_model,
-                &history,
+                &history[..],
                 outcome.tokens,
                 system_prompt.as_ref(),
             )
@@ -808,7 +808,7 @@ where
         engine
             .send(Op::SyncSession {
                 session_id: Some(session_id.to_string()),
-                messages: history,
+                messages: (*history).clone(),
                 system_prompt,
                 system_prompt_override: false,
                 model: model.to_string(),
@@ -1473,7 +1473,7 @@ mod tests {
             AcpSession {
                 created_at: Instant::now(),
                 workspace: workspace.to_path_buf(),
-                history: Vec::new(),
+                history: Arc::new(Vec::new()),
                 system_prompt: None,
                 engine: None,
                 pump_task: None,

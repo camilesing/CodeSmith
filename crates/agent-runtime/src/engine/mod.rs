@@ -887,12 +887,12 @@ impl Engine {
         }
     }
 
-    async fn emit_session_updated(&self) {
+    async fn emit_session_updated(&mut self) {
         let _ = self
             .tx_event
             .send(Event::SessionUpdated {
                 session_id: self.session.id.clone(),
-                messages: self.session.messages.to_vec(),
+                messages: self.session.messages.snapshot(),
                 system_prompt: self.session.system_prompt.clone(),
                 model: self.session.model.clone(),
                 workspace: self.session.workspace.clone(),

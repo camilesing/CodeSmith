@@ -387,12 +387,12 @@ mod tests {
             initial_input: None,
         };
         let mut state = ReplState::new(options, &crate::config::Config::default());
-        state.api_messages = vec![
+        state.api_messages = std::sync::Arc::new(vec![
             text("user", "q1"),
             text("assistant", "first answer"),
             text("user", "q2"),
             text("assistant", "second answer"),
-        ];
+        ]);
         let before = state.api_messages.clone();
 
         feedback(&state, "down 2 wrong file");
