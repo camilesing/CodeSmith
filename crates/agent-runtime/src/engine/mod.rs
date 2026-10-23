@@ -178,6 +178,11 @@ pub struct Engine {
     pub capacity_controller: Arc<StdMutex<CapacityController>>,
     pub(crate) coherence_state: CoherenceState,
     pub turn_counter: u64,
+    /// The mode the most recent `SendMessage` dispatched under, so
+    /// `Op::EditLastTurn` re-sends with the same tool surface and system
+    /// prompt. A hardcoded `AppMode::Agent` there let `/edit` in Plan mode
+    /// silently re-dispatch with the full Agent surface.
+    pub(crate) last_dispatched_mode: Option<AppMode>,
     /// Diagnostics collected during the current step's tool calls. Drained
     /// and forwarded as a synthetic user message before the next API call.
     pub pending_lsp_blocks: Vec<crate::lsp_diagnostics::DiagnosticBlock>,
@@ -789,9 +794,10 @@ impl Engine {
                         // still refold.
                         self.refold_message_projections();
                     }
-                    // Now dispatch the new message as a normal send,
-                    // reusing the engine's stored mode/model config.
-                    let mode = AppMode::Agent; // default fallback
+                    // Now dispatch the new message as a normal send under
+                    // the mode the edited turn ran in. `Agent` is only the
+                    // fallback for a session that never dispatched a turn.
+                    let mode = self.last_dispatched_mode.unwrap_or(AppMode::Agent);
                     self.handle_send_message(
                         new_message,
                         Vec::new(),
@@ -1061,6 +1067,7 @@ impl Engine {
     ) {
         // Reset cancel token for fresh turn (in case previous was cancelled)
         self.reset_cancel_token();
+        self.last_dispatched_mode = Some(mode);
 
         // Stale-steer drain now happens inside the executor (slice 20 §E),
         // just before `executor.run` — see the wire-in below.
@@ -2321,8 +2328,10 @@ impl Engine {
             // every-tool_use-has-a-tool_result contract (see
             // `enforce_tool_pairs_after_front_trim`).
             removed += capacity_flow::enforce_tool_pairs_after_front_trim(&mut messages);
-            self.session
-                .rebuild_transcript(RebuildReason::FrontTrim, messages);
+            // The audited wrapper: it refolds extension message projections
+            // and emits `TranscriptRebuilt` — the direct session call skipped
+            // both on a live capacity-cascade path.
+            self.rebuild_transcript(RebuildReason::FrontTrim, messages);
         }
         removed
     }
@@ -3174,6 +3183,15 @@ impl Engine {
         }
 
         let mut injected = 0usize;
+        // The transcript's cost is estimated once and advanced per accepted
+        // candidate: cloning the whole (largest-ever, mid-compaction)
+        // transcript and re-estimating it for every candidate was pure churn.
+        let mut current_estimate = target_input_budget.map(|_| {
+            estimate_input_tokens_conservative(
+                &self.session.messages,
+                self.session.system_prompt.as_ref(),
+            )
+        });
         for candidate in candidates {
             // Slice 24 §E: prepend a `<turn_meta>` block to each re-inject
             // candidate so the model gets current state (date / model route /
@@ -3182,22 +3200,25 @@ impl Engine {
             // precedent (slice 22). Done here so the dedup check, budget trial,
             // and push all see the enriched candidate.
             let candidate = self.enrich_reinject_message(candidate);
-            if self
-                .session
-                .messages
-                .iter()
-                .any(|message| message == &candidate)
-            {
+            // Dedup on the payload (everything after the `<turn_meta>` block
+            // at index 0): the block embeds cwd / working-set state and is
+            // not byte-stable across compactions, so whole-message equality
+            // re-injected the same reminder on every compaction.
+            let payload = &candidate.content[1..];
+            if self.session.messages.iter().any(|message| {
+                message.role == candidate.role
+                    && message.content.len() == candidate.content.len()
+                    && &message.content[1..] == payload
+            }) {
                 continue;
             }
-            if let Some(target_budget) = target_input_budget {
-                let mut trial = self.session.messages.to_vec();
-                trial.push(candidate.clone());
-                if estimate_input_tokens_conservative(&trial, self.session.system_prompt.as_ref())
-                    > target_budget
-                {
+            if let (Some(target_budget), Some(current)) = (target_input_budget, current_estimate) {
+                let candidate_cost =
+                    estimate_input_tokens_conservative(std::slice::from_ref(&candidate), None);
+                if current.saturating_add(candidate_cost) > target_budget {
                     continue;
                 }
+                current_estimate = Some(current.saturating_add(candidate_cost));
             }
             self.session.messages.push(candidate);
             injected = injected.saturating_add(1);
@@ -3286,6 +3307,7 @@ impl Engine {
             capacity_controller,
             coherence_state: CoherenceState::default(),
             turn_counter: 0,
+            last_dispatched_mode: None,
             turn_scratch: crate::prompt_zones::TurnScratch::new(),
             pending_lsp_blocks: Vec::new(),
             pending_result_verifications: Arc::new(StdMutex::new(Vec::new())),

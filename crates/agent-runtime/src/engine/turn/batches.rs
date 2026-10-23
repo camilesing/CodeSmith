@@ -51,7 +51,8 @@ use super::approval::input_requires_approval;
 use super::stream::{EarlyToolTask, early_start_safe};
 use super::truncation::stop_reason_indicates_output_truncation;
 use crate::engine::dispatch::{
-    ToolExecutionBatch, ToolExecutionPlan, plan_tool_execution_batches, should_stop_after_plan_tool,
+    ToolExecutionBatch, ToolExecutionPlan, batch_stays_parallel_safe_with,
+    plan_tool_execution_batches, should_stop_after_plan_tool,
 };
 use crate::engine::host_executor::HostAgentExecutor;
 use crate::engine::loop_guard::{AttemptDecision, LoopGuard, OutcomeDecision};
@@ -350,6 +351,12 @@ impl HostAgentExecutor {
                     // problem: it records a `permission_denied` outcome at
                     // that index, and its siblings still run concurrently.
                     let mut approval_denials: HashMap<usize, String> = HashMap::new();
+                    // Calls whose approval was asked about in this pass. The
+                    // speculative early-start result for such a call was
+                    // produced before the user's answer, so reusing it would
+                    // consume a pre-grant result — the serial arm gates reuse
+                    // on `!approval_required` for the same reason.
+                    let mut approval_gated: HashMap<usize, ()> = HashMap::new();
                     for plan in &batch_plans {
                         // Resolve the extension transform FIRST so
                         // `on_tool_start` reports the input that will
@@ -382,15 +389,22 @@ impl HostAgentExecutor {
                             } else if let codesmith_agent::extension::HandlerOutcome::Ask {
                                 reason,
                             } = out.outcome
+                                // A call the gates already refused never runs,
+                                // so there is nothing to approve — the same
+                                // precedence the standard gate below and the
+                                // serial arm apply.
+                                && plan.guard_result.is_none()
                             {
                                 // Iteration 4 — an asked call leaves the
                                 // approval-free batch semantics: the user is
                                 // asked NOW (this pre-dispatch loop is
                                 // sequential; the futures spawn after). A
-                                // denial records like a block — an
-                                // intervention (the tool never runs, no
-                                // failure-escalation count). The ask targets
-                                // the folded terminal input (a pre-Ask
+                                // denial is the user's answer and records as a
+                                // `permission_denied` error, exactly as a
+                                // denial at the standard gate or in the serial
+                                // arm does — its semantics do not depend on
+                                // which seam raised the question. The ask
+                                // targets the folded terminal input (a pre-Ask
                                 // transform rides along as the rewrite).
                                 let ask_input = match &out.event {
                                     codesmith_agent::extension::ExtensionEvent::ToolCall(e)
@@ -408,9 +422,16 @@ impl HostAgentExecutor {
                                     }
                                     _ => plan.input.clone(),
                                 };
-                                let tool = tool_for_plan[plan.index]
-                                    .clone()
-                                    .expect("parallel-safe plan has a registered read-only tool");
+                                // `on_tool_start` and the audit record must
+                                // see the input that actually runs.
+                                effective_input = ask_input.clone();
+                                // A classifier/registry divergence (a plan
+                                // whose tool vanished) degrades to a typed
+                                // per-call result below instead of aborting
+                                // the turn loop here.
+                                let Some(tool) = tool_for_plan[plan.index].clone() else {
+                                    continue;
+                                };
                                 match self
                                     .request_approval_forced(
                                         &plan.id,
@@ -439,7 +460,7 @@ impl HostAgentExecutor {
                                         asked = true;
                                     }
                                     Err(denial) => {
-                                        ext_blocks.insert(plan.index, denial);
+                                        approval_denials.insert(plan.index, denial);
                                     }
                                 }
                             } else if let codesmith_agent::extension::ExtensionEvent::ToolCall(e) =
@@ -472,6 +493,38 @@ impl HostAgentExecutor {
                                     &caps,
                                 ) {
                                     needs_approval = true;
+                                }
+                                // The batch's disjointness guarantee was
+                                // computed on the ORIGINAL inputs: two writers
+                                // whose rewritten inputs now name the same
+                                // file would run concurrently and lose
+                                // updates. Re-run the batch classifier with
+                                // this plan's paths recomputed for the
+                                // rewritten input; a rewrite that voids the
+                                // guarantee is blocked (an extension-caused
+                                // intervention, reported as such) rather than
+                                // raced.
+                                if plan.writes_files {
+                                    let rewritten_paths = self
+                                        .tool_dispatcher
+                                        .as_ref()
+                                        .map(|d| d.touched_paths(&plan.name, &e.input))
+                                        .unwrap_or_default();
+                                    if !batch_stays_parallel_safe_with(
+                                        &batch_plans,
+                                        plan.index,
+                                        &rewritten_paths,
+                                    ) {
+                                        ext_blocks.insert(
+                                            plan.index,
+                                            format!(
+                                                "extension rewrote the input of `{}` so it no \
+                                                 longer runs safely alongside this batch's other \
+                                                 calls; not executed — re-issue it on its own",
+                                                plan.name
+                                            ),
+                                        );
+                                    }
                                 }
                                 effective_input = e.input.clone();
                                 ext_rewrites.insert(plan.index, e.input);
@@ -519,6 +572,9 @@ impl HostAgentExecutor {
                                 }
                             }
                         }
+                        if needs_approval || asked {
+                            approval_gated.insert(plan.index, ());
+                        }
                         callback
                             .on_tool_start(&plan.id, &plan.name, &effective_input)
                             .await;
@@ -527,10 +583,31 @@ impl HostAgentExecutor {
                         Pin<Box<dyn Future<Output = DispatchedTool> + Send>>,
                     > = FuturesUnordered::new();
                     for plan in &batch_plans {
-                        let tool = tool_for_plan[plan.index]
-                            .clone()
-                            .expect("parallel-safe plan has a registered read-only tool");
+                        let Some(tool) = tool_for_plan[plan.index].clone() else {
+                            // Classifier/registry divergence: the plan has no
+                            // registered tool. Degrade to the typed result the
+                            // serial arm uses for unregistered tools instead of
+                            // aborting the whole turn loop on a cross-module
+                            // invariant this file cannot enforce.
+                            let index = plan.index;
+                            let (id, name, input) =
+                                (plan.id.clone(), plan.name.clone(), plan.input.clone());
+                            futs.push(Box::pin(async move {
+                                DispatchedTool {
+                                    index,
+                                    id,
+                                    name: name.clone(),
+                                    input,
+                                    result: Err(ToolError::not_available(format!(
+                                        "tool `{name}` is not registered"
+                                    ))),
+                                    blocked: false,
+                                }
+                            }));
+                            continue;
+                        };
                         let early = early_for_plan[plan.index].take();
+                        let gated = approval_gated.contains_key(&plan.index);
                         let guard = plan.guard_result.clone();
                         // §F2b T1 — the per-plan extension Block reason
                         // (if a handler blocked this `ToolCall`), cloned
@@ -605,8 +682,14 @@ impl HostAgentExecutor {
                                 let terminal_input = input.clone();
                                 let terminal: ToolCallNext = Box::pin(async move {
                                     match early {
+                                        // Reuse only when the call was never
+                                        // approval-gated: a speculative result
+                                        // computed before the user's answer
+                                        // must not stand in for the approved
+                                        // run (mirrors the serial arm).
                                         Some(mut early)
-                                            if early.name == terminal_name
+                                            if !gated
+                                                && early.name == terminal_name
                                                 && early.input == terminal_input =>
                                         {
                                             let handle = early
@@ -1063,9 +1146,11 @@ impl HostAgentExecutor {
                     .and_then(|m| m.get("duration_ms"))
                     .and_then(serde_json::Value::as_u64)
             {
+                // Advisory replay metadata: a poisoned lock must not take
+                // every later tool result down with the original panic.
                 durations
                     .lock()
-                    .expect("tool_durations poisoned")
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .insert(o.id.clone(), ms);
             }
             // Round-4 TODO-44: spill an oversized successful result before it

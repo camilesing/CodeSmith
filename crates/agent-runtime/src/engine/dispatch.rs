@@ -277,6 +277,37 @@ pub fn should_parallelize_tool_batch(plans: &[ToolExecutionPlan]) -> bool {
         .all(|path| claimed.insert(path))
 }
 
+/// Whether a batch stays parallel-safe after one member's declared paths are
+/// recomputed — an extension rewrote that call's input after
+/// [`plan_tool_execution_batches`] classified the batch on the original.
+///
+/// Same two rules as [`should_parallelize_tool_batch`], applied with the
+/// member's paths substituted: a writer that no longer names its targets is
+/// never eligible, and one file gets one claim per batch.
+pub fn batch_stays_parallel_safe_with(
+    plans: &[ToolExecutionPlan],
+    index: usize,
+    rewritten_paths: &[PathBuf],
+) -> bool {
+    let Some(target) = plans.iter().find(|plan| plan.index == index) else {
+        return false;
+    };
+    if target.writes_files && rewritten_paths.is_empty() {
+        return false;
+    }
+    let mut claimed: HashSet<&PathBuf> = HashSet::new();
+    plans
+        .iter()
+        .flat_map(|plan| {
+            if plan.index == index {
+                rewritten_paths.iter()
+            } else {
+                plan.touched_paths.iter()
+            }
+        })
+        .all(|path| claimed.insert(path))
+}
+
 /// A concurrent batch being assembled, plus the facts the next call's join has
 /// to be checked against.
 #[derive(Default)]
