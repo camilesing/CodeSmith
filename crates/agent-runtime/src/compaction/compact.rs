@@ -2052,6 +2052,7 @@ mod anchored_estimate_tests {
         let anchor = TokenUsageAnchor {
             messages_len: 2,
             input_tokens: 10_000,
+            boundary_digest: TokenUsageAnchor::digest_boundary(&messages[..2]),
         };
         let expected_increment = estimate_tokens(&messages[2..])
             .saturating_mul(CONSERVATIVE_ESTIMATE_NUMERATOR)
@@ -2071,6 +2072,7 @@ mod anchored_estimate_tests {
         let anchor = TokenUsageAnchor {
             messages_len: messages.len(),
             input_tokens: 5_000,
+            boundary_digest: TokenUsageAnchor::digest_boundary(&messages),
         };
         // messages_len == len is the "anchor is at the tail" case: the
         // anchor's own request covered exactly these messages, so the
@@ -2083,6 +2085,38 @@ mod anchored_estimate_tests {
         );
     }
 
+
+    #[test]
+    fn same_length_rewrite_falls_back_to_the_pure_estimate() {
+        // Rewind-and-regrow / splice can rewrite history at the SAME length
+        // the anchor recorded; the length guard alone is blind to it, so
+        // the boundary digest must catch the rewrite.
+        let messages: Vec<Message> = (0..4)
+            .map(|i| text_message(&format!("message {i}")))
+            .collect();
+        let mut rewritten = messages.clone();
+        rewritten[1] = text_message("rewritten by a splice");
+        let anchor = TokenUsageAnchor {
+            messages_len: 2,
+            input_tokens: 10_000,
+            boundary_digest: TokenUsageAnchor::digest_boundary(&messages[..2]),
+        };
+        assert_eq!(
+            estimate_input_tokens_anchored(&rewritten, None, Some(&anchor)),
+            estimate_input_tokens_conservative(&rewritten, None),
+            "rewritten-at-same-length history must not trust the stale anchor"
+        );
+        // The untouched history still anchors.
+        let expected_increment = estimate_tokens(&messages[2..])
+            .saturating_mul(CONSERVATIVE_ESTIMATE_NUMERATOR)
+            .div_ceil(CONSERVATIVE_ESTIMATE_DENOMINATOR)
+            .saturating_add(2 * 12);
+        assert_eq!(
+            estimate_input_tokens_anchored(&messages, None, Some(&anchor)),
+            10_000 + expected_increment
+        );
+    }
+
     #[test]
     fn shrunk_history_falls_back_to_the_pure_estimate() {
         // Compaction rewrote history past the anchor — the reading no
@@ -2091,6 +2125,7 @@ mod anchored_estimate_tests {
         let anchor = TokenUsageAnchor {
             messages_len: 9,
             input_tokens: 10_000,
+            boundary_digest: 0,
         };
         assert_eq!(
             estimate_input_tokens_anchored(&messages, None, Some(&anchor)),

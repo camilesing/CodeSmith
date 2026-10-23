@@ -213,8 +213,16 @@ fn calculate_retain_start_index(
         }
     }
 
+    // A boundary of `messages.len()` means the tail message ALONE exceeds
+    // the budget: clamp to keep that one message. Dropping it (the old
+    // behavior) emptied the entire conversation exactly when it was most
+    // over budget — one over-budget tail message beats an empty transcript.
+    let boundary = candidate_idx
+        .unwrap_or(0)
+        .min(messages.len().saturating_sub(1));
+
     // Adjust to preserve tool_use/tool_result pairs.
-    adjust_index_for_tool_pairs(messages, candidate_idx.unwrap_or(0))
+    adjust_index_for_tool_pairs(messages, boundary)
 }
 
 /// Adjust a start index to ensure we don't split tool_use/tool_result pairs.
@@ -347,6 +355,29 @@ mod tests {
                 content_blocks: None,
             }],
         }
+    }
+
+
+    #[test]
+    fn tail_message_alone_over_budget_still_retains_the_tail() {
+        // The old boundary walk returned `messages.len()` when the tail
+        // message alone exceeded the budget, dropping the ENTIRE
+        // conversation. The clamp must keep at least the last message.
+        let messages = vec![
+            msg("user", "early"),
+            msg("assistant", &"x".repeat(200_000)),
+        ];
+        let config = SessionMemoryCompactConfig {
+            enabled: true,
+            min_retain_tokens: 10,
+            max_retain_tokens: 1_000,
+        };
+        let result = session_memory_compact(&messages, "memory", &config);
+        assert!(
+            !result.messages.is_empty(),
+            "entire conversation dropped; must retain the tail message"
+        );
+        assert!(result.messages.last().is_some_and(|m| m.role == "assistant"));
     }
 
     #[test]

@@ -79,10 +79,19 @@ pub struct MicroCompactState {
     /// Timestamp of the last assistant message in the session.
     /// Used for time-based trigger (>=60 min gap).
     pub last_assistant_message_at: Option<Instant>,
-    /// Bytes cleared by micro-compaction since last reset.
+    /// Bytes cleared by the most recent micro-compaction pass. Reset at the
+    /// end of every pass — the old never-reset accumulator crossed the
+    /// trigger threshold once and latched it for the session's lifetime,
+    /// re-triggering compaction on every turn with nothing left to clear.
     pub bytes_cleared: usize,
     /// Byte threshold for cache-trigger micro-compaction.
     pub cache_trigger_threshold: usize,
+    /// tool_use_ids already cleared by a previous pass. Cleared-ness is
+    /// tracked by identity, not by comparing against the current
+    /// placeholder text: the placeholder is policy-controlled and can
+    /// change between passes, and string comparison under placeholder
+    /// drift re-cleared (and double-counted) already-cleared results.
+    pub cleared_tool_ids: std::collections::HashSet<String>,
 }
 
 impl Default for MicroCompactState {
@@ -93,6 +102,7 @@ impl Default for MicroCompactState {
             // Policy-seeded default (builtin compact-policy mod; the
             // compiled fallback matches — see policy_read).
             cache_trigger_threshold: policy_read().cache_trigger_threshold,
+            cleared_tool_ids: std::collections::HashSet::new(),
         }
     }
 }
@@ -204,11 +214,10 @@ fn collect_tool_use_names(messages: &[Message]) -> std::collections::HashMap<Str
 /// Scans for tool results from compactable tools and replaces their content
 /// with a placeholder, preserving message structure and tool_use/tool_result pairs.
 ///
-/// Returns the number of bytes cleared.
+/// Returns the number of bytes cleared by this pass.
 pub fn micro_compact_messages(messages: &mut [Message], state: &mut MicroCompactState) -> usize {
     let tool_use_names = collect_tool_use_names(messages);
     let knobs = policy_read();
-    let _total_bytes_cleared: usize = 0;
     let mut bytes_cleared = 0usize;
 
     for msg in messages.iter_mut() {
@@ -226,8 +235,12 @@ pub fn micro_compact_messages(messages: &mut [Message], state: &mut MicroCompact
                 if !is_micro_compactable_tool(tool_name) {
                     continue;
                 }
-                // Don't clear already-cleared results
-                if *content == knobs.cleared_placeholder {
+                // Identity check (not placeholder-text equality): the
+                // placeholder is policy-controlled; drift between passes
+                // used to make string comparison re-clear and double-count
+                // already-cleared results.
+                if state.cleared_tool_ids.contains(tool_use_id) || *content == knobs.cleared_placeholder
+                {
                     continue;
                 }
 
@@ -237,13 +250,14 @@ pub fn micro_compact_messages(messages: &mut [Message], state: &mut MicroCompact
                 }
 
                 bytes_cleared += original_len.saturating_sub(knobs.cleared_placeholder.len());
+                state.cleared_tool_ids.insert(tool_use_id.clone());
                 *content = knobs.cleared_placeholder.clone();
                 *content_blocks = None;
             }
         }
     }
 
-    state.bytes_cleared += bytes_cleared;
+    state.bytes_cleared = bytes_cleared;
     bytes_cleared
 }
 
@@ -290,6 +304,36 @@ mod tests {
                 content_blocks: None,
             }],
         }
+    }
+
+
+    #[test]
+    fn trigger_does_not_latch_after_a_pass_and_drift_does_not_reclear() {
+        let _guard = policy_test_lock();
+        // One pass clears a big result; the counter reflects only that
+        // pass (not a lifetime accumulator), and a placeholder change
+        // between passes must not re-clear the already-cleared result.
+        let mut messages = vec![
+            tool_use_msg("c1", "file_read", json!({"path": "a"})),
+            tool_result_msg("c1", &"x".repeat(64 * 1024)),
+        ];
+        let mut state = MicroCompactState::default();
+        state.cache_trigger_threshold = 1024;
+        let first = micro_compact_messages(&mut messages, &mut state);
+        assert!(first > 0);
+        assert_eq!(state.bytes_cleared, first);
+
+        // Simulate placeholder drift: rewrite the cleared content to an
+        // old-style placeholder text that no longer equals the current one.
+        if let ContentBlock::ToolResult { content, .. } = &mut messages[1].content[0] {
+            *content = "[cleared]".to_string();
+        }
+        let second = micro_compact_messages(&mut messages, &mut state);
+        assert_eq!(second, 0, "already-cleared id must not re-clear on drift");
+        // bytes_cleared reflects the (empty) latest pass — the trigger
+        // re-arms instead of latching.
+        assert_eq!(state.bytes_cleared, 0);
+        assert!(state.bytes_cleared < state.cache_trigger_threshold);
     }
 
     #[test]

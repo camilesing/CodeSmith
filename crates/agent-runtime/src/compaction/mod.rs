@@ -221,6 +221,40 @@ pub struct TokenUsageAnchor {
     /// tools, history), so the anchor implicitly absorbs every constant
     /// the message-only estimator never sees.
     pub input_tokens: u64,
+    /// Digest of the LAST message of the anchored prefix (0 when the
+    /// prefix is empty). The rewrite guard below compares it against the
+    /// current message at the same index — a history rewritten past the
+    /// anchor WITHOUT shrinking (rewind-and-regrow, splices) keeps the
+    /// length check blind, and the anchor would pin its absolute level to
+    /// messages that no longer exist.
+    pub boundary_digest: u64,
+}
+
+impl TokenUsageAnchor {
+    /// Digest of `anchored_prefix`'s last message (0 for an empty prefix).
+    /// Construction helper: build the anchor with
+    /// `boundary_digest: TokenUsageAnchor::digest_boundary(&messages[..len])`.
+    #[must_use]
+    pub fn digest_boundary(anchored_prefix: &[Message]) -> u64 {
+        let Some(boundary) = anchored_prefix.last() else {
+            return 0;
+        };
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        boundary.role.hash(&mut hasher);
+        // The block-level JSON carries the content; fall back to a length
+        // mix when a block fails to serialize (never in practice — the
+        // wire types are all serializable).
+        for block in &boundary.content {
+            match serde_json::to_string(block) {
+                Ok(json) => json.hash(&mut hasher),
+                // Never in practice (the wire types are serializable); hash
+                // a stable discriminant instead of failing to hash at all.
+                Err(_) => std::mem::discriminant(block).hash(&mut hasher),
+            }
+        }
+        hasher.finish()
+    }
 }
 
 /// [`estimate_input_tokens_conservative`], anchored to a real usage reading
@@ -238,6 +272,16 @@ pub fn estimate_input_tokens_anchored(
         return estimate_input_tokens_conservative(messages, system);
     };
     if anchor.messages_len >= messages.len() {
+        return estimate_input_tokens_conservative(messages, system);
+    }
+    // Rewrite guard: the length check above only sees shrinkage. Compare
+    // the anchor's boundary digest against the message now sitting at the
+    // same index — a same-length-or-longer history whose boundary differs
+    // was rewritten past the anchor (rewind-and-regrow, splice), and the
+    // anchor's absolute level describes messages that no longer exist.
+    if anchor.messages_len > 0
+        && TokenUsageAnchor::digest_boundary(&messages[..anchor.messages_len]) != anchor.boundary_digest
+    {
         return estimate_input_tokens_conservative(messages, system);
     }
     let new_messages = messages.len() - anchor.messages_len;

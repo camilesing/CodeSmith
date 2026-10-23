@@ -3747,6 +3747,10 @@ impl HostAgentExecutor {
                         Some(crate::compaction::TokenUsageAnchor {
                             messages_len: anchored_len,
                             input_tokens: u64::from(usage.input_tokens),
+                            boundary_digest:
+                                crate::compaction::TokenUsageAnchor::digest_boundary(
+                                    &history.messages()[..anchored_len],
+                                ),
                         });
                 }
             }
@@ -9046,6 +9050,12 @@ mod tests {
         *executor.usage_anchor.lock().unwrap() = Some(crate::compaction::TokenUsageAnchor {
             messages_len: 3,
             input_tokens: 50_000,
+            // Digest of the pre-run boundary; micro-compaction rewrites it,
+            // which (with the rewrite guard) invalidates the anchor even at
+            // unchanged length.
+            boundary_digest: crate::compaction::TokenUsageAnchor::digest_boundary(
+                &history.messages()[..3],
+            ),
         });
         let reason = executor
             .run(&mut history, "what did the file say".to_string())
@@ -9112,6 +9122,7 @@ mod tests {
         *executor.usage_anchor.lock().unwrap() = Some(crate::compaction::TokenUsageAnchor {
             messages_len: 13,
             input_tokens: 90_000,
+            boundary_digest: 1, // stale on purpose: full-compact rewrites history
         });
         let reason = executor
             .run(&mut history, "continue".to_string())

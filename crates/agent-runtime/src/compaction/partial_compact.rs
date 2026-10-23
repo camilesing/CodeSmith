@@ -47,18 +47,31 @@ pub struct PartialCompactResult {
 /// Adjust a pivot index to align with tool_use/tool_result pair boundaries.
 ///
 /// Ensures we don't split a tool_use + tool_result pair at the boundary.
-pub fn adjust_pivot_for_tool_pairs(messages: &[Message], pivot: usize) -> usize {
+/// Direction-aware pivot adjustment. The sweep must move the pivot in the
+/// direction that keeps the RETAINED side within the budget the walk just
+/// computed:
+///
+/// - **UpTo** (retain the tail): forward past the pair's latest side — the
+///   retained tail only shrinks.
+/// - **From** (retain the head): BACKWARD to the pair's earliest side —
+///   the kept prefix only shrinks. The old forward-only sweep grew the
+///   kept prefix past the budget and, when a pair straddled the tail,
+///   cascaded to `messages.len()`, degenerating From into a silent no-op
+///   exactly on the overflow it existed to recover.
+pub fn adjust_pivot_for_tool_pairs(
+    messages: &[Message],
+    pivot: usize,
+    direction: PartialCompactDirection,
+) -> usize {
     if pivot == 0 || pivot >= messages.len() {
         return pivot;
     }
 
     // Build tool_use_id → (earliest side, latest side). A pair spans the
     // compaction boundary whenever its two sides land on opposite sides of
-    // `pivot`; the pivot then moves forward past the pair so both sides stay
-    // together (in the summarized prefix for UpTo, in the kept prefix for
-    // From). Scanning every pair is required: inspecting only the message at
-    // `pivot` misses a call/result straddling it from pivot-1 / pivot+1, and
-    // one side would then be summarized away from the other.
+    // `pivot`. Scanning every pair is required: inspecting only the message
+    // at `pivot` misses a call/result straddling it from pivot-1 /
+    // pivot+1, and one side would then be summarized away from the other.
     let mut pair_bounds: std::collections::HashMap<String, (usize, usize)> =
         std::collections::HashMap::new();
     for (idx, msg) in messages.iter().enumerate() {
@@ -75,18 +88,39 @@ pub fn adjust_pivot_for_tool_pairs(messages: &[Message], pivot: usize) -> usize 
     }
 
     let mut adjusted = pivot;
-    loop {
-        let Some((_, (_, latest))) = pair_bounds
-            .iter()
-            .find(|(_, (earliest, latest))| *earliest < adjusted && *latest >= adjusted)
-        else {
-            break;
-        };
-        adjusted = latest.saturating_add(1);
-        if adjusted >= messages.len() {
-            // Clamp to a sliceable bound (`perform_partial_compact` slices
-            // `messages[pivot..]`).
-            return messages.len();
+    match direction {
+        PartialCompactDirection::UpTo => {
+            loop {
+                let Some((_, (_, latest))) = pair_bounds
+                    .iter()
+                    .find(|(_, (earliest, latest))| *earliest < adjusted && *latest >= adjusted)
+                else {
+                    break;
+                };
+                adjusted = latest.saturating_add(1);
+                if adjusted >= messages.len() {
+                    // Clamp to a sliceable bound (`perform_partial_compact`
+                    // slices `messages[pivot..]`).
+                    return messages.len();
+                }
+            }
+        }
+        PartialCompactDirection::From => {
+            loop {
+                let Some((_, (earliest, _))) = pair_bounds
+                    .iter()
+                    .find(|(_, (earliest, latest))| *earliest < adjusted && *latest >= adjusted)
+                else {
+                    break;
+                };
+                // Move BACK to include the pair's earliest side in the
+                // summarized suffix; never below the direction's floor of
+                // keeping the walk-computed head intact minus the cascade.
+                adjusted = *earliest;
+                if adjusted == 0 {
+                    return 0;
+                }
+            }
         }
     }
 
@@ -122,7 +156,7 @@ pub fn find_pivot_for_budget(
             for (idx, msg) in messages.iter().enumerate() {
                 accumulated += estimate_tokens_for_message(msg);
                 if accumulated > target_tokens {
-                    return adjust_pivot_for_tool_pairs(messages, idx);
+                    return adjust_pivot_for_tool_pairs(messages, idx, PartialCompactDirection::From);
                 }
             }
             // Entire conversation fits in budget — no compaction needed. For
@@ -143,7 +177,7 @@ pub fn find_pivot_for_budget(
                     break;
                 }
             }
-            adjust_pivot_for_tool_pairs(messages, pivot.min(messages.len()))
+            adjust_pivot_for_tool_pairs(messages, pivot.min(messages.len()), PartialCompactDirection::UpTo)
         }
     }
 }
@@ -179,7 +213,7 @@ pub async fn partial_compact(
         });
     }
 
-    let pivot = adjust_pivot_for_tool_pairs(messages, request.pivot_index);
+    let pivot = adjust_pivot_for_tool_pairs(messages, request.pivot_index, request.direction);
 
     let (to_summarize, to_retain, removed_indices): (Vec<Message>, Vec<Message>, Vec<usize>) =
         match request.direction {
@@ -392,6 +426,28 @@ mod tests {
         }
     }
 
+
+    #[test]
+    fn from_direction_pair_sweep_moves_backward_not_to_noop() {
+        // A pair straddling the pivot under `From` must move the pivot
+        // BACKWARD (kept prefix only shrinks). The old forward-only sweep
+        // grew the kept prefix past the budget and cascaded to
+        // `messages.len()`, degenerating From into a silent no-op.
+        let messages = vec![
+            msg("user", "head"),
+            tool_use_msg("c1", "write_file"),
+            tool_result_msg("c1", &"r".repeat(50)),
+            msg("assistant", "tail answer"),
+        ];
+        // Pivot at 2 splits the c1 pair (use at 1, result at 2).
+        let adjusted =
+            adjust_pivot_for_tool_pairs(&messages, 2, PartialCompactDirection::From);
+        assert_eq!(adjusted, 1, "pivot must move back to the pair's use side");
+        // And the kept prefix is smaller than the requested pivot — the
+        // budget bound survives the sweep.
+        assert!(adjusted < 2);
+    }
+
     #[test]
     fn adjust_pivot_preserves_tool_pairs() {
         let messages = vec![
@@ -403,7 +459,8 @@ mod tests {
         ];
 
         // Pivot at 2 (tool_result) — its call at 1 would be split.
-        let adjusted = adjust_pivot_for_tool_pairs(&messages, 2);
+        let adjusted =
+            adjust_pivot_for_tool_pairs(&messages, 2, PartialCompactDirection::UpTo);
         // Should move past the result to 3.
         assert!(adjusted >= 3, "adjusted pivot should not split tool pairs");
     }
@@ -485,7 +542,7 @@ mod tests {
     #[test]
     fn empty_messages_return_empty_result() {
         let messages: Vec<Message> = vec![];
-        let pivot = adjust_pivot_for_tool_pairs(&messages, 0);
+        let pivot = adjust_pivot_for_tool_pairs(&messages, 0, PartialCompactDirection::UpTo);
         assert_eq!(pivot, 0);
     }
 
@@ -498,7 +555,7 @@ mod tests {
             msg("assistant", "d"),
         ];
 
-        let pivot = adjust_pivot_for_tool_pairs(&messages, 2);
+        let pivot = adjust_pivot_for_tool_pairs(&messages, 2, PartialCompactDirection::UpTo);
         assert_eq!(pivot, 2); // No tool pairs, pivot stays at 2
     }
 
@@ -514,7 +571,8 @@ mod tests {
             tool_result_msg("t1", "ok"), // 3
             msg("user", "more"),         // 4
         ];
-        let adjusted = adjust_pivot_for_tool_pairs(&messages, 2);
+        let adjusted =
+            adjust_pivot_for_tool_pairs(&messages, 2, PartialCompactDirection::UpTo);
         assert_eq!(adjusted, 4, "pivot must move past the whole pair");
     }
 
@@ -529,7 +587,8 @@ mod tests {
             tool_result_msg("t2", "ok"), // 3
             msg("user", "more"),         // 4
         ];
-        let adjusted = adjust_pivot_for_tool_pairs(&messages, 2);
+        let adjusted =
+            adjust_pivot_for_tool_pairs(&messages, 2, PartialCompactDirection::UpTo);
         assert_eq!(adjusted, 4, "cascade must clear every straddling pair");
     }
 }
