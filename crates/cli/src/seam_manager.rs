@@ -348,7 +348,7 @@ impl SeamManager {
         // Seam recompaction calls are billed; route through the
         // side-channel (#526) so the footer total matches the
         // DeepSeek website.
-        crate::cost_status::report(&response.model, &response.usage);
+        codesmith_agent_runtime::cost_status::report(&response.model, &response.usage);
         let summary = response
             .content
             .iter()
@@ -447,7 +447,7 @@ impl SeamManager {
         // Seam recompaction calls are billed; route through the
         // side-channel (#526) so the footer total matches the
         // DeepSeek website.
-        crate::cost_status::report(&response.model, &response.usage);
+        codesmith_agent_runtime::cost_status::report(&response.model, &response.usage);
         let raw = response
             .content
             .iter()
@@ -547,7 +547,7 @@ impl SeamManager {
         // Seam recompaction calls are billed; route through the
         // side-channel (#526) so the footer total matches the
         // DeepSeek website.
-        crate::cost_status::report(&response.model, &response.usage);
+        codesmith_agent_runtime::cost_status::report(&response.model, &response.usage);
         let summary = response
             .content
             .iter()

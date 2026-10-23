@@ -21,7 +21,6 @@ mod command_safety;
 mod compaction;
 mod config;
 mod core;
-mod cost_status;
 mod cycle_manager;
 mod dependencies;
 mod doctor_llm;

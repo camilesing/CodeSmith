@@ -1618,7 +1618,7 @@ fn apply_turn_accounting(
     // seam recompaction, cycle briefings — #526). The REPL is the pool's one
     // draining consumer; the background bucket keeps it distinguishable from
     // per-turn accrual in the saved session's cost snapshot.
-    let background = crate::cost_status::drain();
+    let background = codesmith_agent_runtime::cost_status::drain();
     if background.is_positive() {
         state.session.subagent_cost += background.usd;
         state.session.subagent_cost_cny += background.cny;
