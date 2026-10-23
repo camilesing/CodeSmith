@@ -649,11 +649,11 @@ impl LlmClient for ReplayClient {
                 } => {
                     let events = futures_util::stream::iter(response_events.into_iter().map(Ok));
                     let s = match stream_error {
-                        Some(message) => futures_util::future::Either::Left(
-                            events.chain(futures_util::stream::once(async move {
+                        Some(message) => futures_util::future::Either::Left(events.chain(
+                            futures_util::stream::once(async move {
                                 Err(anyhow!("ReplayClient: recorded stream failed: {message}"))
-                            })),
-                        ),
+                            }),
+                        )),
                         None => futures_util::future::Either::Right(events),
                     };
                     Ok(Box::pin(s) as StreamEventBox)
@@ -861,7 +861,9 @@ mod tests {
         assert_eq!(tools[0].name, "read_file");
         assert_eq!(back.request.temperature, Some(0.7));
         match back.outcome {
-            RecordOutcome::Stream { response_events, .. } => {
+            RecordOutcome::Stream {
+                response_events, ..
+            } => {
                 assert_eq!(response_events.len(), sample_turn().len());
             }
             other => panic!("expected stream outcome, got {other:?}"),
@@ -1006,7 +1008,9 @@ mod tests {
         }
         assert_eq!(events.len(), 3, "two events then the terminal error");
         assert!(events[0].is_ok() && events[1].is_ok());
-        let tail = events[2].as_ref().expect_err("replay re-dies, not ends cleanly");
+        let tail = events[2]
+            .as_ref()
+            .expect_err("replay re-dies, not ends cleanly");
         assert!(
             tail.to_string().contains("recorded stream failed"),
             "terminal error names the recorded failure: {tail}"
@@ -1132,7 +1136,9 @@ mod tests {
         let line: RecordLine =
             serde_json::from_str(text.lines().next().expect("one line")).expect("valid JSONL");
         match line.outcome {
-            RecordOutcome::Stream { response_events, .. } => assert_eq!(
+            RecordOutcome::Stream {
+                response_events, ..
+            } => assert_eq!(
                 response_events.len(),
                 1,
                 "the event seen before cancellation is recorded partial"

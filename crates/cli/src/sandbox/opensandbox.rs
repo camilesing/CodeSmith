@@ -6,8 +6,8 @@
 //! `stdin`, and `policy`, and expects a JSON response
 //! `{"stdout": "...", "stderr": "...", "exit_code": 0}`.
 
-use std::time::Duration;
 use futures_util::StreamExt;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -165,8 +165,8 @@ impl SandboxBackend for OpenSandboxBackend {
             body.extend_from_slice(&chunk);
         }
 
-        let parsed: SandboxRunResponse = serde_json::from_slice(&body)
-            .context("Failed to parse OpenSandbox response")?;
+        let parsed: SandboxRunResponse =
+            serde_json::from_slice(&body).context("Failed to parse OpenSandbox response")?;
 
         Ok(SandboxOutput {
             stdout: parsed.stdout,

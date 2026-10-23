@@ -162,7 +162,10 @@ fn tool_result_metadata_summary(metadata: Option<&serde_json::Value>) -> Option<
             // characters, not zero-width/format characters.
             let sanitized = crate::sanitization::partially_sanitize_unicode(text.trim());
             if !sanitized.is_empty() {
-                return Some(summarize_text(&sanitized, TOOL_RESULT_METADATA_SUMMARY_CHARS));
+                return Some(summarize_text(
+                    &sanitized,
+                    TOOL_RESULT_METADATA_SUMMARY_CHARS,
+                ));
             }
         }
     }

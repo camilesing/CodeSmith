@@ -327,7 +327,10 @@ fn reconstruct_run_tests_command(input: &serde_json::Value) -> Option<String> {
             if args.is_empty() {
                 // fall through: no args to append
             } else if args.chars().any(|c| {
-                matches!(c, ';' | '&' | '|' | '<' | '>' | '`' | '$' | '\\' | '\'' | '"' | '\n')
+                matches!(
+                    c,
+                    ';' | '&' | '|' | '<' | '>' | '`' | '$' | '\\' | '\'' | '"' | '\n'
+                )
             }) {
                 // The original `run_tests` shlex-parses args without a
                 // shell; this replay goes through one (exec_shell). Shell
@@ -347,7 +350,10 @@ fn reconstruct_run_tests_command(input: &serde_json::Value) -> Option<String> {
                 // Same metacharacter guard as the string form: array
                 // elements are appended verbatim into the shell replay.
                 if arg.chars().any(|c| {
-                    matches!(c, ';' | '&' | '|' | '<' | '>' | '`' | '$' | '\\' | '\'' | '"' | '\n')
+                    matches!(
+                        c,
+                        ';' | '&' | '|' | '<' | '>' | '`' | '$' | '\\' | '\'' | '"' | '\n'
+                    )
                 }) {
                     return None;
                 }

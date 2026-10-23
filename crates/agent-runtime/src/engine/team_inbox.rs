@@ -60,10 +60,8 @@ impl Engine {
                 if let Some(shared_tc) = self.config.team_context.as_ref() {
                     let team_ctx = shared_tc.lock().await;
                     if let Some(ctx) = team_ctx.as_ref() {
-                        hook_snapshot = Some((
-                            ctx.team_name.clone(),
-                            ctx.teammate_cancel_tokens.clone(),
-                        ));
+                        hook_snapshot =
+                            Some((ctx.team_name.clone(), ctx.teammate_cancel_tokens.clone()));
                     }
                 }
                 if let Some((team_name, cancel_tokens)) = hook_snapshot {

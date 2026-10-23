@@ -426,7 +426,13 @@ impl McpServer {
             .get("model")
             .and_then(Value::as_str)
             .map(str::to_string)
-            .unwrap_or_else(|| self.llm.as_ref().expect("just resolved").default_model.clone());
+            .unwrap_or_else(|| {
+                self.llm
+                    .as_ref()
+                    .expect("just resolved")
+                    .default_model
+                    .clone()
+            });
 
         // Resolve thread_id
         let thread_id = if internal_name == "codesmith" {

@@ -3057,7 +3057,10 @@ impl Engine {
             match kod_block {
                 Some(block) => (None, Some(block)),
                 None => (
-                    crate::memory::compose_block(self.config.memory_enabled, &self.config.memory_path),
+                    crate::memory::compose_block(
+                        self.config.memory_enabled,
+                        &self.config.memory_path,
+                    ),
                     None,
                 ),
             }

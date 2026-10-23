@@ -226,8 +226,7 @@ mod tests {
             let kv = ModKvStore::new(path.clone());
             kv.set("new", json!(2));
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-            let on_disk =
-                std::fs::read_to_string(&path).expect("original file still present");
+            let on_disk = std::fs::read_to_string(&path).expect("original file still present");
             assert_eq!(on_disk, r#"{"keep":1}"#);
         }
     }

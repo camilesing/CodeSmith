@@ -477,7 +477,8 @@ fn contains_exec_capable_flag(tokens: &[&str]) -> bool {
         // git `-c core.sshCommand=<cmd>` and friends execute their value
         // (`credential.helper=!<cmd>`, `diff.external=<cmd>` included).
         is_exec_capable_git_key(&lower)
-    }) || git_config_carries_exec_key(tokens) || has_executing_transport(tokens)
+    }) || git_config_carries_exec_key(tokens)
+        || has_executing_transport(tokens)
 }
 
 /// git configuration keys whose persisted value is executed by a later git
@@ -540,15 +541,18 @@ fn has_executing_transport(tokens: &[&str]) -> bool {
 /// naming the prefix authorize the payload itself.
 fn is_exec_by_positioning(tokens: &[&str]) -> bool {
     const CONTAINER_CARRIERS: &[&str] = &["kubectl", "docker", "podman", "nerdctl"];
-    let base = tokens.first().copied().unwrap_or_default().to_ascii_lowercase();
+    let base = tokens
+        .first()
+        .copied()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     if tokens.len() >= 2
         && CONTAINER_CARRIERS.contains(&base.as_str())
         && (tokens[1].eq_ignore_ascii_case("exec") || tokens[1].eq_ignore_ascii_case("run"))
     {
         return true;
     }
-    if tokens.len() >= 2 && matches!(base.as_str(), "go" | "cargo" | "bun" | "python" | "python3")
-    {
+    if tokens.len() >= 2 && matches!(base.as_str(), "go" | "cargo" | "bun" | "python" | "python3") {
         let sub = tokens[1].to_ascii_lowercase();
         let base_execs = match base.as_str() {
             "python" | "python3" => sub == "-m",
@@ -835,9 +839,6 @@ mod tests {
 
     #[test]
     fn ordinary_git_config_still_matches() {
-        assert!(dict().allow_rule_matches(
-            "git config",
-            "git config --global user.name Someone"
-        ));
+        assert!(dict().allow_rule_matches("git config", "git config --global user.name Someone"));
     }
 }

@@ -2029,8 +2029,11 @@ mod workspace_anchor_tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let ws = tmp.path();
         std::fs::create_dir_all(ws.join(".deepseek")).expect("legacy dir");
-        std::fs::write(ws.join(".deepseek").join("anchors.md"), "anchor one\n---\nanchor two")
-            .expect("write anchors");
+        std::fs::write(
+            ws.join(".deepseek").join("anchors.md"),
+            "anchor one\n---\nanchor two",
+        )
+        .expect("write anchors");
         let anchors = read_workspace_anchors(Some(ws));
         assert_eq!(
             anchors,

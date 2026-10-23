@@ -3,9 +3,9 @@
 #![allow(clippy::too_many_arguments)]
 
 use std::io::{self, IsTerminal, Read, Write};
-use std::sync::Arc;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
