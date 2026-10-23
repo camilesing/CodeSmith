@@ -2277,7 +2277,7 @@ fn child_cancellation_cascades_from_parent() {
 
 #[test]
 fn mailbox_propagates_through_child_runtime_chain() {
-    use crate::tools::subagent::mailbox::Mailbox;
+    use codesmith_agent_runtime::mailbox::Mailbox;
     let parent_token = CancellationToken::new();
     let (mailbox, _rx) = Mailbox::new(parent_token.clone());
 
@@ -2330,7 +2330,7 @@ fn subagent_rejects_interactive_shell_terminal_takeover() {
 
 #[tokio::test]
 async fn mailbox_close_as_cancel_propagates_to_grandchild_runtime() {
-    use crate::tools::subagent::mailbox::Mailbox;
+    use codesmith_agent_runtime::mailbox::Mailbox;
     let parent_token = CancellationToken::new();
     let (mailbox, _rx) = Mailbox::new(parent_token.clone());
 
@@ -2355,7 +2355,7 @@ async fn mailbox_close_as_cancel_propagates_to_grandchild_runtime() {
 
 #[tokio::test]
 async fn mailbox_orders_messages_from_parent_and_child_runtimes() {
-    use crate::tools::subagent::mailbox::{Mailbox, MailboxMessage};
+    use codesmith_agent_runtime::mailbox::{Mailbox, MailboxMessage};
     let parent_token = CancellationToken::new();
     let (mailbox, mut rx) = Mailbox::new(parent_token.clone());
 

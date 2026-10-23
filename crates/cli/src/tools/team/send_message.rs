@@ -607,12 +607,12 @@ mod tests {
     #![allow(clippy::await_holding_lock)]
 
     use super::*;
-    use crate::test_support::{ScopedCodeSmithHome, lock_test_env};
     use crate::tools::spec::RuntimeToolServices;
     use crate::tools::team::team_file::{
         TeamFile, TeamMember, create_team_file, format_lead_agent_id,
     };
     use crate::tools::team::teammate_mailbox::read_mailbox;
+    use codesmith_agent_runtime::test_support::{ScopedCodeSmithHome, lock_test_env};
 
     fn make_team(name: &str) -> TeamFile {
         TeamFile {

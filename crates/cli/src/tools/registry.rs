@@ -628,13 +628,16 @@ impl ToolRegistryBuilder {
     /// MCP tools are marked `defer_loading` by default (except discovery
     /// helpers) to keep the model-visible catalog compact.
     #[must_use]
-    pub fn with_mcp_tools(mut self, mcp_pool: std::sync::Arc<crate::mcp::McpPool>) -> Self {
+    pub fn with_mcp_tools(
+        mut self,
+        mcp_pool: std::sync::Arc<codesmith_agent_runtime::mcp::McpPool>,
+    ) -> Self {
         // Snapshot the current tool list from the pool (lock-free catalog
         // read). The adapter lazily resolves at execution time via the pool.
         for (name, tool) in mcp_pool.all_tools() {
             let adapter = Arc::new(McpToolAdapter {
                 name: name.clone(),
-                description: crate::mcp::truncate_mcp_description(
+                description: codesmith_agent_runtime::mcp::truncate_mcp_description(
                     tool.description.as_deref().unwrap_or(&name),
                 ),
                 tool,
@@ -938,8 +941,8 @@ impl Default for ToolRegistryBuilder {
 struct McpToolAdapter {
     name: String,
     description: String,
-    tool: crate::mcp::McpTool,
-    pool: std::sync::Arc<crate::mcp::McpPool>,
+    tool: codesmith_agent_runtime::mcp::McpTool,
+    pool: std::sync::Arc<codesmith_agent_runtime::mcp::McpPool>,
 }
 
 #[async_trait::async_trait]

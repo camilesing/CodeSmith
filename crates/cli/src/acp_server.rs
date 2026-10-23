@@ -77,10 +77,10 @@ use crate::core::engine::{
     EngineHandle, EngineHost, HeadlessEngineOptions, headless_engine_config, spawn_engine,
 };
 use crate::core::events::{Event, TurnOutcomeStatus};
-use crate::core::ops::Op;
 use crate::models::{ContentBlock, Message, SystemPrompt};
 use crate::prompts::PromptAppendSource;
 use crate::settings::Settings;
+use codesmith_agent_runtime::ops::Op;
 
 const ACP_PROTOCOL_VERSION: u64 = 1;
 

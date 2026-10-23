@@ -408,8 +408,8 @@ fn write_inbox_atomic(path: &Path, json: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{ScopedCodeSmithHome, lock_test_env};
     use crate::tools::team::team_file::{TeamFile, create_team_file, format_lead_agent_id};
+    use codesmith_agent_runtime::test_support::{ScopedCodeSmithHome, lock_test_env};
 
     #[test]
     fn envelope_parse_rejects_forged_sender() {

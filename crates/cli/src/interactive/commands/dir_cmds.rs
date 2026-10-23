@@ -129,7 +129,7 @@ pub async fn cd(state: &mut ReplState, argument: &str) -> anyhow::Result<()> {
     let messages = std::mem::take(&mut state.api_messages);
     let synced = match state.engine() {
         Ok(engine) => engine
-            .send(crate::core::ops::Op::SyncSession {
+            .send(codesmith_agent_runtime::ops::Op::SyncSession {
                 session_id: state.current_session_id.clone(),
                 messages: messages.clone(),
                 system_prompt: state.system_prompt.clone(),
@@ -247,7 +247,7 @@ mod tests {
         use codesmith_extensions::{ExtensionRunner, HostExtensionContext, ModKvStore, RhaiMod};
         use tokio_util::sync::CancellationToken;
 
-        let _lock = crate::test_support::lock_test_env();
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
         let dir = tempfile::tempdir().expect("tempdir");
         let child = dir.path().join("child");
         std::fs::create_dir(&child).expect("mkdir");

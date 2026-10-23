@@ -6,11 +6,11 @@
 use colored::Colorize;
 
 use super::ReplState;
-use crate::network_policy::{DecisionToml, NetworkPolicy};
 use crate::skills::install::{
     self, InstallOutcome, RegistryFetchResult, SkillSyncOutcome, SyncResult, UpdateResult,
 };
 use crate::skills::{Skill, SkillRegistry};
+use codesmith_agent_runtime::network_policy::{DecisionToml, NetworkPolicy};
 
 /// Resolved `[skills]` knobs (defaults when the table is absent).
 fn skills_config(config: &crate::config::Config) -> crate::config::SkillsConfig {

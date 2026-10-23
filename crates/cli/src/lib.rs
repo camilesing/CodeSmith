@@ -6,7 +6,6 @@ pub(crate) use codesmith_agent_runtime::auto_reasoning;
 use main_root::Cli;
 
 mod acp_server;
-mod agent_memory;
 mod app_state;
 mod approval_grants;
 mod audit;
@@ -35,20 +34,15 @@ mod localization;
 mod logging;
 mod lsp;
 mod main_root;
-mod mcp;
 mod mcp_server;
 mod media;
-mod memory;
 mod memory_consolidate;
 mod mod_ops;
 mod mod_state;
 mod models;
-mod network_policy;
 mod notifications;
 mod onboarding;
-mod prefix_cache;
 mod presets;
-mod project_context;
 mod prompts;
 mod purge;
 pub mod repl;
@@ -66,12 +60,9 @@ mod skill_state;
 mod skills;
 mod slop_ledger;
 mod task_manager;
-#[cfg(test)]
-mod test_support;
 mod tool_summary;
 mod tools;
 mod vision;
-mod working_set;
 mod workspace_trust;
 
 use std::io::{self, Read};
@@ -1882,7 +1873,7 @@ mod tests {
     fn custom_provider_flag_reaches_config_and_fails_loud_on_unknown_id() {
         // Before the fold in `load_config_from_cli_with_exec_model` the flag
         // parsed and was dropped, so an unknown id loaded a config silently.
-        let _guard = crate::test_support::lock_test_env();
+        let _guard = codesmith_agent_runtime::test_support::lock_test_env();
         let dir = tempfile::tempdir().expect("tempdir");
         let config_path = dir.path().join("config.toml");
         std::fs::write(

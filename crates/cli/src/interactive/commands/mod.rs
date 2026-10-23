@@ -37,8 +37,8 @@ use colored::Colorize;
 use self::registry::Command;
 use super::state::ReplState;
 use crate::app_state::AppMode;
-use crate::core::ops::Op;
 use crate::presets;
+use codesmith_agent_runtime::ops::Op;
 
 /// Dispatch one `/command args…` line. Returns `true` when the REPL
 /// should exit.

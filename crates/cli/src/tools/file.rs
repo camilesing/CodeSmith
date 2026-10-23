@@ -3,12 +3,12 @@
 //! These tools provide safe file system operations within the workspace,
 //! with path validation to prevent escaping the workspace boundary.
 
-use super::diff_format::make_unified_diff;
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     lsp_diagnostics_for_paths, optional_bool, optional_str, required_str,
 };
 use async_trait::async_trait;
+use codesmith_agent_runtime::tools::diff_format::make_unified_diff;
 use codesmith_agent_runtime::tools::parse_gate;
 use codesmith_agent_runtime::tools::tool_catalog::{
     EDIT_FILE_NAME, LIST_DIR_NAME, READ_FILE_NAME, WRITE_FILE_NAME,

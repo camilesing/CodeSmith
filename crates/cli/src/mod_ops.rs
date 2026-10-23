@@ -992,7 +992,7 @@ trust_level = "trusted"
 
     #[test]
     fn mod_paths_global_root_follows_codesmith_home() {
-        let _env = crate::test_support::lock_test_env();
+        let _env = codesmith_agent_runtime::test_support::lock_test_env();
         let dir = TempDir::new().unwrap();
         let _guard = codesmith_agent_runtime::test_support::EnvVarGuard::set(
             "CODESMITH_HOME",
@@ -1019,7 +1019,7 @@ trust_level = "trusted"
 
     #[test]
     fn write_mod_creates_files_and_requires_manifest() {
-        let _env = crate::test_support::lock_test_env();
+        let _env = codesmith_agent_runtime::test_support::lock_test_env();
         let dir = TempDir::new().unwrap();
         let _home = ScopedHome::set_trusted(&dir, &dir.path().join("ws"));
         let ws = workspace_in(&dir);
@@ -1051,7 +1051,7 @@ trust_level = "trusted"
         // approved write outside the root — `create_dir_all` succeeds on
         // the symlinked dir and every per-file check anchored at the
         // symlink target passed. The anchor must be the mods root.
-        let _env = crate::test_support::lock_test_env();
+        let _env = codesmith_agent_runtime::test_support::lock_test_env();
         let dir = TempDir::new().unwrap();
         let _home = ScopedHome::set_trusted(&dir, &dir.path().join("ws"));
         let ws = workspace_in(&dir);
@@ -1077,7 +1077,7 @@ trust_level = "trusted"
     fn write_mod_refuses_final_component_symlink() {
         // A symlinked FILE inside an honest mod dir: `fs::write` follows
         // it, and the parent-containment check cannot see it.
-        let _env = crate::test_support::lock_test_env();
+        let _env = codesmith_agent_runtime::test_support::lock_test_env();
         let dir = TempDir::new().unwrap();
         let _home = ScopedHome::set_trusted(&dir, &dir.path().join("ws"));
         let ws = workspace_in(&dir);
@@ -1106,7 +1106,7 @@ trust_level = "trusted"
         // `global=true` write persisted executable mod code into
         // ~/.codesmith/mods, which every workspace (including other
         // untrusted ones) discovers and loads once activated.
-        let _env = crate::test_support::lock_test_env();
+        let _env = codesmith_agent_runtime::test_support::lock_test_env();
         let dir = TempDir::new().unwrap();
         // No trust config written → the workspace is untrusted.
         let _home = ScopedHome::set(&dir);
@@ -1123,7 +1123,7 @@ trust_level = "trusted"
 
     #[test]
     fn activate_persists_and_reports() {
-        let _env = crate::test_support::lock_test_env();
+        let _env = codesmith_agent_runtime::test_support::lock_test_env();
         let dir = TempDir::new().unwrap();
         let _home = ScopedHome::set_trusted(&dir, &dir.path().join("ws"));
         let ws = workspace_in(&dir);
@@ -1156,7 +1156,7 @@ trust_level = "trusted"
 
     #[test]
     fn remove_deletes_dir_state_and_kv() {
-        let _env = crate::test_support::lock_test_env();
+        let _env = codesmith_agent_runtime::test_support::lock_test_env();
         let dir = TempDir::new().unwrap();
         let _home = ScopedHome::set_trusted(&dir, &dir.path().join("ws"));
         let ws = workspace_in(&dir);
@@ -1181,7 +1181,7 @@ trust_level = "trusted"
 
     #[test]
     fn load_rhai_mod_builds_mod_from_discovery() {
-        let _env = crate::test_support::lock_test_env();
+        let _env = codesmith_agent_runtime::test_support::lock_test_env();
         let dir = TempDir::new().unwrap();
         let _home = ScopedHome::set_trusted(&dir, &dir.path().join("ws"));
         let ws = workspace_in(&dir);
@@ -1253,7 +1253,7 @@ trust_level = "trusted"
 
     #[test]
     fn load_and_unload_single_mod_keep_survivors() {
-        let _env = crate::test_support::lock_test_env();
+        let _env = codesmith_agent_runtime::test_support::lock_test_env();
         let dir = TempDir::new().unwrap();
         let _home = ScopedHome::set_trusted(&dir, &dir.path().join("ws"));
         let ws = workspace_in(&dir);
@@ -1304,7 +1304,7 @@ trust_level = "trusted"
     /// builtin default after the overriding mod unloads.
     #[test]
     fn list_mods_shows_resolved_policies_and_falls_back_on_unload() {
-        let _env = crate::test_support::lock_test_env();
+        let _env = codesmith_agent_runtime::test_support::lock_test_env();
         let dir = TempDir::new().unwrap();
         let _home = ScopedHome::set_trusted(&dir, &dir.path().join("ws"));
         let ws = workspace_in(&dir);
@@ -1367,7 +1367,7 @@ trust_level = "trusted"
 
     #[test]
     fn session_mod_lifecycle_and_policy_source() {
-        let _env = crate::test_support::lock_test_env();
+        let _env = codesmith_agent_runtime::test_support::lock_test_env();
         let dir = TempDir::new().unwrap();
         let _home = ScopedHome::set_trusted(&dir, &dir.path().join("ws"));
         let ws = workspace_in(&dir);
@@ -1443,7 +1443,7 @@ trust_level = "trusted"
 
     #[test]
     fn reload_replays_session_mods() {
-        let _env = crate::test_support::lock_test_env();
+        let _env = codesmith_agent_runtime::test_support::lock_test_env();
         let dir = TempDir::new().unwrap();
         let _home = ScopedHome::set_trusted(&dir, &dir.path().join("ws"));
         let ws = workspace_in(&dir);
@@ -1502,7 +1502,7 @@ trust_level = "trusted"
 
     #[test]
     fn session_write_rejects_bad_ids_collisions_and_disabled_layer() {
-        let _env = crate::test_support::lock_test_env();
+        let _env = codesmith_agent_runtime::test_support::lock_test_env();
         let dir = TempDir::new().unwrap();
         let _home = ScopedHome::set_trusted(&dir, &dir.path().join("ws"));
         let ws = workspace_in(&dir);
@@ -1537,7 +1537,7 @@ trust_level = "trusted"
     #[test]
     fn session_write_approval_memoizes_identical_content() {
         use codesmith_agent_runtime::tools::spec::ToolSpec as _;
-        let _env = crate::test_support::lock_test_env();
+        let _env = codesmith_agent_runtime::test_support::lock_test_env();
         let dir = TempDir::new().unwrap();
         let _home = ScopedHome::set_trusted(&dir, &dir.path().join("ws"));
         let ws = workspace_in(&dir);
@@ -1583,7 +1583,7 @@ trust_level = "trusted"
 
     #[test]
     fn load_mod_refuses_hash_drift_and_unloaded_ids() {
-        let _env = crate::test_support::lock_test_env();
+        let _env = codesmith_agent_runtime::test_support::lock_test_env();
         let dir = TempDir::new().unwrap();
         let _home = ScopedHome::set_trusted(&dir, &dir.path().join("ws"));
         let ws = workspace_in(&dir);

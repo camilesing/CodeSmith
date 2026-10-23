@@ -7,7 +7,7 @@ use std::path::Path;
 use anyhow::{Context, bail};
 use toml::Value;
 
-use crate::network_policy::host_from_url;
+use codesmith_agent_runtime::network_policy::host_from_url;
 
 pub(crate) fn network_inner(arg: Option<&str>) -> anyhow::Result<String> {
     let raw = arg.map(str::trim).unwrap_or("");

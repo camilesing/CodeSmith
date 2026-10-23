@@ -21,7 +21,6 @@ pub mod capacity;
 pub mod coherence;
 pub mod engine;
 pub mod events;
-pub mod ops;
 pub mod session;
 pub mod tool_catalog;
 pub mod turn;

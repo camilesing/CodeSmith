@@ -723,7 +723,7 @@ struct RpcError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{EnvVarGuard, lock_test_env};
+    use codesmith_agent_runtime::test_support::{EnvVarGuard, lock_test_env};
     use std::collections::HashMap;
 
     fn approval_server(require: bool) -> (McpServer, Runtime, tempfile::TempDir) {

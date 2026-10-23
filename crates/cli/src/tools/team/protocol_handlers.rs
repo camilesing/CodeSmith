@@ -218,9 +218,9 @@ pub fn handle_permission_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{ScopedCodeSmithHome, lock_test_env};
     use crate::tools::team::team_file::{TeamFile, create_team_file, format_lead_agent_id};
     use crate::tools::team::teammate_mailbox::{parse_structured_protocol, read_mailbox};
+    use codesmith_agent_runtime::test_support::{ScopedCodeSmithHome, lock_test_env};
 
     fn make_team_file(name: &str) -> TeamFile {
         TeamFile {

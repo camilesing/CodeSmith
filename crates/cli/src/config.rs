@@ -904,7 +904,7 @@ pub struct Config {
     /// Workshop / large-tool-output routing (#548). When absent, the global
     /// default threshold of 4 096 tokens applies and routing is active.
     #[serde(default)]
-    pub workshop: Option<crate::tools::large_output_router::WorkshopConfig>,
+    pub workshop: Option<codesmith_agent_runtime::tools::large_output_router::WorkshopConfig>,
 
     /// Vision model configuration for the `image_analyze` tool.
     #[serde(default)]
@@ -986,7 +986,7 @@ pub struct DoctorToml {
 }
 
 /// `[network]` table — mirrors `codesmith_config::NetworkPolicyToml` so the live
-/// CLI runtime can construct a [`crate::network_policy::NetworkPolicy`]
+/// CLI runtime can construct a [`codesmith_agent_runtime::network_policy::NetworkPolicy`]
 /// without reaching into the workspace config crate. See `config.example.toml`
 /// for documentation.
 #[derive(Debug, Clone, Deserialize)]
@@ -1035,13 +1035,13 @@ impl NetworkPolicyToml {
         self.audit.unwrap_or(true)
     }
 
-    /// Build a runtime [`crate::network_policy::NetworkPolicy`] from the
+    /// Build a runtime [`codesmith_agent_runtime::network_policy::NetworkPolicy`] from the
     /// on-disk schema.
     #[must_use]
-    pub fn into_runtime(self) -> crate::network_policy::NetworkPolicy {
+    pub fn into_runtime(self) -> codesmith_agent_runtime::network_policy::NetworkPolicy {
         let audit = self.audit_enabled();
-        crate::network_policy::NetworkPolicy {
-            default: crate::network_policy::Decision::parse(&self.default).into(),
+        codesmith_agent_runtime::network_policy::NetworkPolicy {
+            default: codesmith_agent_runtime::network_policy::Decision::parse(&self.default).into(),
             allow: self.allow,
             deny: self.deny,
             proxy: self.proxy,
@@ -1063,9 +1063,13 @@ impl Config {
     /// approval gate auto-approves under `ApprovalMode::Auto` — so the
     /// out-of-box flow there is unchanged.
     #[must_use]
-    pub fn network_policy_decider(&self) -> crate::network_policy::NetworkPolicyDecider {
+    pub fn network_policy_decider(
+        &self,
+    ) -> codesmith_agent_runtime::network_policy::NetworkPolicyDecider {
         let toml_cfg = self.network.clone().unwrap_or_default();
-        crate::network_policy::NetworkPolicyDecider::with_default_audit(toml_cfg.into_runtime())
+        codesmith_agent_runtime::network_policy::NetworkPolicyDecider::with_default_audit(
+            toml_cfg.into_runtime(),
+        )
     }
 
     /// Script-mod layer enabled? (default `true`).
@@ -4757,7 +4761,7 @@ pub fn clear_api_key() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{EnvVarGuard, lock_test_env};
+    use codesmith_agent_runtime::test_support::{EnvVarGuard, lock_test_env};
     use std::collections::HashMap;
     use std::env;
     use std::ffi::OsString;
@@ -5796,7 +5800,7 @@ mod tests {
         let policy = decider.policy();
         assert_eq!(
             policy.decide("unlisted.example.com"),
-            crate::network_policy::Decision::Prompt
+            codesmith_agent_runtime::network_policy::Decision::Prompt
         );
 
         // Explicit table is honored: default allow for everyone except deny.
@@ -5814,11 +5818,11 @@ mod tests {
         let policy = decider.policy();
         assert_eq!(
             policy.decide("anything.example.com"),
-            crate::network_policy::Decision::Allow
+            codesmith_agent_runtime::network_policy::Decision::Allow
         );
         assert_eq!(
             policy.decide("evil.example.com"),
-            crate::network_policy::Decision::Deny
+            codesmith_agent_runtime::network_policy::Decision::Deny
         );
     }
 

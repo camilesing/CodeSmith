@@ -46,9 +46,9 @@ use colored::Colorize;
 use crate::app_state::{InitialInput, InteractiveOptions, ReasoningEffort};
 use crate::config::Config;
 use crate::core::engine::{EngineHost, spawn_engine};
-use crate::core::ops::Op;
 use crate::hooks::{HookEvent, MessageSubmitOutcome};
 use bindings::{Action, Bind, Bindings, KeyHandler, Shared as SharedBindings};
+use codesmith_agent_runtime::ops::Op;
 use completion::ReplHelper;
 use state::ReplState;
 

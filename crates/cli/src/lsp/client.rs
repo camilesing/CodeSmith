@@ -40,7 +40,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::timeout;
 
 use super::diagnostics::{Diagnostic, Severity};
-use super::registry::Language;
+use codesmith_agent_runtime::lsp_registry::Language;
 use codesmith_agent_runtime::utils::spawn_supervised;
 
 /// How long [`StdioLspTransport::spawn`] waits for the server's `initialize`

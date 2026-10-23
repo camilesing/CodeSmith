@@ -34,7 +34,6 @@ use crate::automation_manager::{
     CreateAutomationRequest, SharedAutomationManager, UpdateAutomationRequest, spawn_scheduler,
 };
 use crate::config::{Config, DEFAULT_TEXT_MODEL};
-use crate::mcp::{McpConfig, McpPool};
 use crate::runtime_threads::{
     CompactThreadRequest, CreateThreadRequest, ExternalApprovalDecision, RuntimeThreadManager,
     RuntimeThreadManagerConfig, SharedRuntimeThreadManager, StartTurnRequest, SteerTurnRequest,
@@ -47,6 +46,7 @@ use crate::task_manager::{
     NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig, TaskRecord, TaskSummary,
     wrap_task_manager,
 };
+use codesmith_agent_runtime::mcp::{McpConfig, McpPool};
 
 #[derive(Clone)]
 pub struct RuntimeApiState {
@@ -1332,7 +1332,7 @@ async fn list_mcp_servers(
             required: server_cfg.required,
             command: server_cfg.command.clone(),
             url: server_cfg.url.clone(),
-            transport: crate::mcp::mcp_transport_label(
+            transport: codesmith_agent_runtime::mcp::mcp_transport_label(
                 server_cfg.transport.as_deref(),
                 server_cfg.url.is_some(),
             )
@@ -1358,7 +1358,9 @@ async fn list_mcp_tools(
 
     let mut tools = Vec::new();
     for (prefixed_name, tool) in pool.all_tools() {
-        let Ok((server, name)) = crate::mcp::parse_mcp_tool_model_name(&prefixed_name) else {
+        let Ok((server, name)) =
+            codesmith_agent_runtime::mcp::parse_mcp_tool_model_name(&prefixed_name)
+        else {
             continue;
         };
 
@@ -2102,7 +2104,7 @@ fn format_skill_search_paths(directories: &[PathBuf]) -> String {
 }
 
 fn load_mcp_config_or_default(path: &std::path::Path) -> Result<McpConfig, ApiError> {
-    crate::mcp::load_config(path)
+    codesmith_agent_runtime::mcp::load_config(path)
         .map_err(|e| ApiError::internal(format!("Failed to load MCP config: {e:#}")))
 }
 
@@ -2285,10 +2287,10 @@ impl IntoResponse for ApiError {
 mod tests {
     use super::*;
     use crate::core::events::{Event as EngineEvent, TurnOutcomeStatus};
-    use crate::core::ops::Op;
     use crate::models::Usage;
     use crate::runtime_threads::RuntimeEventRecord;
     use anyhow::{Context, bail};
+    use codesmith_agent_runtime::ops::Op;
     use futures_util::StreamExt;
     use std::fs;
     use std::sync::Arc;

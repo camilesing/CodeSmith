@@ -490,7 +490,7 @@ pub fn run(state: &ReplState, arg: &str, yes: bool) {
     // arm means an existing mcp.json that is unreadable/unparseable. With
     // `--yes` the later save would then overwrite it with only the
     // imported servers — silently destroying the user's existing config.
-    let mut config = match crate::mcp::load_config(&config_path) {
+    let mut config = match codesmith_agent_runtime::mcp::load_config(&config_path) {
         Ok(config) => config,
         Err(err) => {
             println!(
@@ -530,7 +530,9 @@ pub fn run(state: &ReplState, arg: &str, yes: bool) {
         if !yes {
             continue;
         }
-        match serde_json::from_value::<crate::mcp::McpServerConfig>(server.to_config_value()) {
+        match serde_json::from_value::<codesmith_agent_runtime::mcp::McpServerConfig>(
+            server.to_config_value(),
+        ) {
             Ok(entry) => {
                 config.servers.insert(server.name.clone(), entry);
                 added.push(server.name);
@@ -559,7 +561,7 @@ pub fn run(state: &ReplState, arg: &str, yes: bool) {
         println!("{}", "nothing new to add".dimmed());
         return;
     }
-    match crate::mcp::save_config(&config_path, &config) {
+    match codesmith_agent_runtime::mcp::save_config(&config_path, &config) {
         Ok(()) => println!(
             "{}",
             format!(
@@ -618,7 +620,7 @@ mod tests {
             transport: Some("sse".to_string()),
             headers: Vec::new(),
         };
-        let entry: crate::mcp::McpServerConfig =
+        let entry: codesmith_agent_runtime::mcp::McpServerConfig =
             serde_json::from_value(server.to_config_value()).expect("config entry");
         assert_eq!(entry.url.as_deref(), Some("https://example.test/mcp"));
         assert_eq!(entry.transport.as_deref(), Some("sse"));

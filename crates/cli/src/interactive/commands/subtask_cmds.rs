@@ -28,7 +28,7 @@
 use colored::Colorize;
 
 use super::ReplState;
-use crate::core::ops::Op;
+use codesmith_agent_runtime::ops::Op;
 
 /// `/subtask <task>`.
 pub async fn run(state: &mut ReplState, arg: &str) {

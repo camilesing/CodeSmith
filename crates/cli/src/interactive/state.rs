@@ -20,7 +20,6 @@ use crate::core::engine::{EngineConfig, EngineHandle};
 use crate::cycle_manager::CycleConfig;
 use crate::hooks::{HookContext, HookEvent, HookExecutor};
 use crate::localization::{Locale, resolve_locale};
-use crate::mcp;
 use crate::models::{Message, SystemPrompt};
 use crate::session_manager::SessionManager;
 use crate::settings::Settings;
@@ -30,6 +29,7 @@ use crate::tools::shell::{SharedShellManager, new_shared_shell_manager, wrap_she
 use crate::tools::spec::RuntimeToolServices;
 use crate::tools::subagent::{SubAgentResult, SubAgentStatus};
 use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
+use codesmith_agent_runtime::mcp;
 use codesmith_agent_runtime::mode::ApprovalMode;
 use codesmith_config::presets::PresetCatalog;
 
@@ -887,7 +887,7 @@ pub async fn resume_session(
     state: &mut ReplState,
     resume_session_id: &str,
 ) -> anyhow::Result<bool> {
-    use crate::core::ops::Op;
+    use codesmith_agent_runtime::ops::Op;
 
     let manager = match SessionManager::default_location() {
         Ok(manager) => manager,
@@ -1040,7 +1040,7 @@ mod restore_tests {
     /// resumed empty.
     #[test]
     fn adopt_for_resume_seeds_the_queue_from_the_journal() {
-        let _lock = crate::test_support::lock_test_env();
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
         let tmp = tempfile::TempDir::new().unwrap();
         let journal =
             crate::interactive::inbox_journal::InboxJournal::for_session(tmp.path(), "sess-inbox")
@@ -1083,7 +1083,7 @@ mod restore_tests {
 
     #[tokio::test]
     async fn resume_restore_rebuilds_todo_and_plan_projections() {
-        let _lock = crate::test_support::lock_test_env();
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
         fn options() -> crate::app_state::InteractiveOptions {
             crate::app_state::InteractiveOptions {
                 model: "test-model".to_string(),
@@ -1265,7 +1265,7 @@ mod agent_count_tests {
     /// running but has not sent a progress event yet was invisible.
     #[test]
     fn running_agent_count_reads_the_engine_list_not_the_event_map() {
-        let _lock = crate::test_support::lock_test_env();
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
         let config = crate::config::Config::default();
         let mut state = ReplState::new(options(), &config);
 

@@ -45,10 +45,10 @@ use super::keys::TurnKey;
 use super::state::ReplState;
 use crate::app_state::AppMode;
 use crate::core::events::{Event, TurnOutcomeStatus};
-use crate::core::ops::Op;
 use crate::hooks::HookEvent;
 use codesmith_agent_runtime::error_taxonomy::ErrorEnvelope;
 use codesmith_agent_runtime::mode::ApprovalMode;
+use codesmith_agent_runtime::ops::Op;
 use codesmith_tools::{ToolError, ToolResult};
 
 /// Interval between live-line refreshes (spinner/elapsed/ctx).
@@ -2186,7 +2186,7 @@ mod tests {
     /// crash.
     #[test]
     fn turn_boundary_persist_mirrors_inbox_journal() {
-        let _lock = crate::test_support::lock_test_env();
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
         std::fs::create_dir_all(&home).unwrap();
@@ -2230,7 +2230,7 @@ mod tests {
     /// deleted.
     #[test]
     fn harvest_orphans_seeds_queue_and_rejournals() {
-        let _lock = crate::test_support::lock_test_env();
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
         std::fs::create_dir_all(&home).unwrap();
@@ -2288,7 +2288,7 @@ mod tests {
     /// (log-only; never part of `api_messages`).
     #[test]
     fn saved_session_from_state_carries_failed_attempts() {
-        let _lock = crate::test_support::lock_test_env();
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
         let mut state = test_repl_state();
         state.api_messages = vec![crate::models::Message {
             role: "user".to_string(),
@@ -2316,7 +2316,7 @@ mod tests {
     /// recoverable from the file, not only from scrollback.
     #[test]
     fn saved_session_from_state_carries_approval_decisions() {
-        let _lock = crate::test_support::lock_test_env();
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
         let mut state = test_repl_state();
         state.api_messages = vec![crate::models::Message {
             role: "user".to_string(),
@@ -2356,7 +2356,7 @@ mod tests {
         use codesmith_agent_runtime::session_store::{
             ContextReference, ContextReferenceKind, ContextReferenceSource, SessionContextReference,
         };
-        let _lock = crate::test_support::lock_test_env();
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
         let mut state = test_repl_state();
         state.api_messages = vec![crate::models::Message {
             role: "user".to_string(),
@@ -2404,7 +2404,7 @@ mod tests {
     /// that sentence is what the model was steered with.
     #[test]
     fn approval_record_keeps_feedback_text() {
-        let _lock = crate::test_support::lock_test_env();
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
         let mut state = test_repl_state();
         log_approval(
             &mut state,
@@ -3015,7 +3015,7 @@ mod tests {
     // guard across this await cannot deadlock.
     #[allow(clippy::await_holding_lock)]
     async fn plan_approval_block_renders_the_plan_body_before_the_question() {
-        let _lock = crate::test_support::lock_test_env();
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
         std::fs::create_dir_all(&home).unwrap();
@@ -3071,7 +3071,7 @@ mod tests {
     // Same env-lock justification as the plan-body test above.
     #[allow(clippy::await_holding_lock)]
     async fn plan_approval_block_warns_when_the_plan_file_is_missing() {
-        let _lock = crate::test_support::lock_test_env();
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
         std::fs::create_dir_all(&home).unwrap();
@@ -3200,7 +3200,7 @@ mod tests {
     // guard across this await cannot deadlock.
     #[allow(clippy::await_holding_lock)]
     async fn agent_spawn_counts_a_running_child_with_the_engine_mid_turn() {
-        let _lock = crate::test_support::lock_test_env();
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
         let mut mock = crate::core::engine::mock_engine_handle();
         mock.handle.subagent_api =
             std::sync::Arc::new(SeededSubAgents(vec![running_snapshot("child-a")]));

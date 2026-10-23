@@ -12,7 +12,7 @@ pub use codesmith_agent_runtime::team::team_file::*;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{ScopedCodeSmithHome, lock_test_env};
+    use codesmith_agent_runtime::test_support::{ScopedCodeSmithHome, lock_test_env};
 
     fn make_team_file(name: &str) -> TeamFile {
         TeamFile {

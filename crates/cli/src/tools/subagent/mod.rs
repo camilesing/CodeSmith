@@ -48,10 +48,6 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::agent_memory::{
-    AgentMemoryMetadata, AgentMemoryRequest, AgentMemoryScope, AgentMemorySnapshotMode,
-    ResolvedAgentMemory,
-};
 use crate::config::MAX_SUBAGENTS;
 use crate::core::engine::ApprovalDecision;
 use crate::core::events::Event;
@@ -70,13 +66,15 @@ use crate::tools::team::{
     run_teammate_loop, write_team_config,
 };
 use crate::tools::todo::{SharedTodoList, TodoList};
+use codesmith_agent_runtime::agent_memory::{
+    AgentMemoryMetadata, AgentMemoryRequest, AgentMemoryScope, AgentMemorySnapshotMode,
+    ResolvedAgentMemory,
+};
 use codesmith_agent_runtime::utils::spawn_supervised;
 
 pub mod acp;
 pub mod headless;
-pub mod mailbox;
-#[allow(unused_imports)]
-pub use mailbox::{Mailbox, MailboxEnvelope, MailboxMessage, MailboxReceiver};
+pub use codesmith_agent_runtime::mailbox::{Mailbox, MailboxMessage};
 
 // === Constants ===
 
@@ -623,7 +621,7 @@ pub struct SubAgentRuntime {
     /// Snapshot of the request prefix visible to an opt-in forked child.
     pub fork_context: Option<SubAgentForkContext>,
     /// The parent's MCP pool if available.
-    pub mcp_pool: Option<std::sync::Arc<crate::mcp::McpPool>>,
+    pub mcp_pool: Option<std::sync::Arc<codesmith_agent_runtime::mcp::McpPool>>,
     /// Per-step DeepSeek API timeout for the child's `create_message` call.
     /// Resolved from `[subagents] api_timeout_secs` (clamped to 1..=1800) at
     /// engine construction so a slow but legitimate model turn does not
@@ -727,7 +725,10 @@ impl SubAgentRuntime {
 
     /// Attach an MCP pool so the subagent can execute MCP tools.
     #[must_use]
-    pub fn with_mcp_pool(mut self, pool: Option<std::sync::Arc<crate::mcp::McpPool>>) -> Self {
+    pub fn with_mcp_pool(
+        mut self,
+        pool: Option<std::sync::Arc<codesmith_agent_runtime::mcp::McpPool>>,
+    ) -> Self {
         self.mcp_pool = pool;
         self
     }
@@ -1586,7 +1587,7 @@ impl SubAgentManager {
             let restarted_at = Instant::now();
             let mut restart_runtime = runtime.clone();
             let agent_memory = agent.agent_memory.clone().map(|metadata| {
-                let prompt = crate::agent_memory::compose_agent_memory_prompt(
+                let prompt = codesmith_agent_runtime::agent_memory::compose_agent_memory_prompt(
                     &metadata.agent_type,
                     metadata.scope,
                     &metadata.dir,
@@ -6015,7 +6016,7 @@ fn agent_definition_candidates(workspace: &Path, name: &str) -> Vec<PathBuf> {
         roots.push(home_dir.join(".claude").join("agents"));
     }
 
-    let safe_name = crate::agent_memory::paths::sanitize_agent_type_segment(name)
+    let safe_name = codesmith_agent_runtime::agent_memory::paths::sanitize_agent_type_segment(name)
         .unwrap_or_else(|_| name.trim().to_string());
     let mut candidates = Vec::new();
     for root in roots {
@@ -6296,19 +6297,27 @@ fn resolve_agent_memory_for_spawn(
     agent_type: &str,
     request: AgentMemoryRequest,
 ) -> Result<ResolvedAgentMemory, ToolError> {
-    let dir = crate::agent_memory::resolve_agent_memory_dir(workspace, agent_type, request.scope)
-        .map_err(ToolError::invalid_input)?;
-    crate::agent_memory::ensure_agent_memory_dir(&dir).map_err(|err| {
+    let dir = codesmith_agent_runtime::agent_memory::resolve_agent_memory_dir(
+        workspace,
+        agent_type,
+        request.scope,
+    )
+    .map_err(ToolError::invalid_input)?;
+    codesmith_agent_runtime::agent_memory::ensure_agent_memory_dir(&dir).map_err(|err| {
         ToolError::execution_failed(format!(
             "failed to initialize agent memory dir {}: {err}",
             dir.display()
         ))
     })?;
-    let prompt = crate::agent_memory::compose_agent_memory_prompt(agent_type, request.scope, &dir);
+    let prompt = codesmith_agent_runtime::agent_memory::compose_agent_memory_prompt(
+        agent_type,
+        request.scope,
+        &dir,
+    );
     match request.snapshot {
         AgentMemorySnapshotMode::None => {}
         AgentMemorySnapshotMode::Initialize => {
-            crate::agent_memory::initialize_or_update_snapshot(
+            codesmith_agent_runtime::agent_memory::initialize_or_update_snapshot(
                 workspace,
                 agent_type,
                 request.scope,
@@ -6322,7 +6331,7 @@ fn resolve_agent_memory_for_spawn(
             })?;
         }
         AgentMemorySnapshotMode::PromptUpdate => {
-            let status = crate::agent_memory::load_snapshot_status(
+            let status = codesmith_agent_runtime::agent_memory::load_snapshot_status(
                 workspace,
                 agent_type,
                 request.scope,
@@ -6335,7 +6344,7 @@ fn resolve_agent_memory_for_spawn(
                 ))
             })?;
             if status.snapshot.is_none() || status.prompt_changed {
-                crate::agent_memory::initialize_or_update_snapshot(
+                codesmith_agent_runtime::agent_memory::initialize_or_update_snapshot(
                     workspace,
                     agent_type,
                     request.scope,

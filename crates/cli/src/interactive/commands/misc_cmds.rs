@@ -172,7 +172,7 @@ pub async fn mcp(state: &mut ReplState, args: &str) {
     if let Err(err) = crate::main_root::run_mcp_command(&state.config.clone(), command).await {
         println!("{} {err}", "✗".red());
     }
-    state.mcp_configured_count = crate::mcp::load_config(&state.mcp_config_path)
+    state.mcp_configured_count = codesmith_agent_runtime::mcp::load_config(&state.mcp_config_path)
         .map(|cfg| cfg.servers.len())
         .unwrap_or(0);
 }
@@ -1074,7 +1074,7 @@ pub async fn stop(state: &mut ReplState) {
         }
     };
     match engine
-        .send(crate::core::ops::Op::CancelAllBackgroundTasks)
+        .send(codesmith_agent_runtime::ops::Op::CancelAllBackgroundTasks)
         .await
     {
         Ok(()) => {
@@ -1306,7 +1306,7 @@ mod tests {
     /// the model saw something it never did. Baseline: an .mp4 was queued.
     #[test]
     fn attach_rejects_wire_unrepresentable_media() {
-        let _lock = crate::test_support::lock_test_env();
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
         let dir = tempfile::tempdir().expect("tempdir");
         let mp4 = dir.path().join("clip.mp4");
         std::fs::write(&mp4, b"x").expect("write");

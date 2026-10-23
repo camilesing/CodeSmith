@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent_memory::{
+use codesmith_agent_runtime::agent_memory::{
     AgentMemoryScope, resolve_agent_memory_dir, resolve_agent_memory_entrypoint,
 };
 
@@ -118,8 +118,8 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{ScopedCodeSmithHome, lock_test_env};
     use crate::tools::team::{TeamMember, create_team_file, format_lead_agent_id};
+    use codesmith_agent_runtime::test_support::{ScopedCodeSmithHome, lock_test_env};
     use tempfile::tempdir;
 
     fn member(name: &str, agent_type: &str) -> TeamMember {

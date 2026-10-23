@@ -150,8 +150,9 @@ pub(super) fn build_tool_context_for(
     if let Some(workshop_cfg) = config.workshop.as_ref()
         && let Some(vars_arc) = host.workshop_vars.as_ref()
     {
-        let router =
-            crate::tools::large_output_router::LargeOutputRouter::new(workshop_cfg.clone());
+        let router = codesmith_agent_runtime::tools::large_output_router::LargeOutputRouter::new(
+            workshop_cfg.clone(),
+        );
         ctx = ctx.with_large_output_router(router, vars_arc.clone());
     }
 

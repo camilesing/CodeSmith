@@ -40,11 +40,11 @@ use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS};
 use crate::core::coherence::CoherenceState;
 use crate::core::engine::{EngineConfig, EngineHandle, spawn_engine};
 use crate::core::events::{Event as EngineEvent, TurnOutcomeStatus};
-use crate::core::ops::Op;
 use crate::models::{ContentBlock, Message, SystemPrompt, Usage};
 use crate::task_manager::wrap_task_manager;
 use crate::tools::plan::new_shared_plan_state;
 use crate::tools::todo::new_shared_todo_list;
+use codesmith_agent_runtime::ops::Op;
 
 const EVENT_CHANNEL_CAPACITY: usize = 1024;
 const MAX_ACTIVE_THREADS_DEFAULT: usize = 8;

@@ -35,15 +35,15 @@ const CODESMITH_BLUE_RGB: (u8, u8, u8) = (47, 134, 255);
 
 use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS, effective_home_dir};
 use crate::eval::{EvalHarness, EvalHarnessConfig, ScenarioStepKind};
-use crate::mcp::{McpConfig, McpPool, McpServerConfig};
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
 use crate::session_manager::{SessionManager, create_saved_session, truncate_id};
 use crate::tool_summary::{summarize_tool_args, summarize_tool_output};
 use crate::{
     acp_server, child_env, doctor_llm, execpolicy, logging, mcp_server, memory_consolidate,
-    project_context, runtime_api, session_manager,
+    runtime_api, session_manager,
 };
 use codesmith_agent_runtime::features::{Feature, render_feature_table};
+use codesmith_agent_runtime::mcp::{McpConfig, McpPool, McpServerConfig};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -3966,8 +3966,8 @@ pub(crate) fn list_sessions(limit: usize, search: Option<String>) -> Result<()> 
 
 /// Initialize a new project with AGENTS.md
 pub(crate) fn init_project() -> Result<()> {
+    use codesmith_agent_runtime::project_context::create_default_agents_md;
     use colored::Colorize;
-    use project_context::create_default_agents_md;
 
     let (sky_r, sky_g, sky_b) = CODESMITH_SKY_RGB;
     let (aqua_r, aqua_g, aqua_b) = CODESMITH_SKY_RGB;
@@ -4744,7 +4744,7 @@ pub(crate) async fn run_mcp_command(config: &Config, command: McpCommand) -> Res
                 bail!("Provide either --command or --url for `mcp add`.");
             }
             if let Some(transport) = transport.as_deref() {
-                crate::mcp::validate_mcp_transport_option(Some(transport))?;
+                codesmith_agent_runtime::mcp::validate_mcp_transport_option(Some(transport))?;
             }
             let mut cfg = load_mcp_config(&config_path)?;
             cfg.servers.insert(
@@ -4902,7 +4902,8 @@ pub(crate) fn doctor_check_mcp_server(server: &McpServerConfig) -> McpServerDoct
     // URL-based server — report the configured transport and URL.
     if let Some(ref url) = server.url {
         let label =
-            crate::mcp::mcp_transport_label(server.transport.as_deref(), true).unwrap_or("invalid");
+            codesmith_agent_runtime::mcp::mcp_transport_label(server.transport.as_deref(), true)
+                .unwrap_or("invalid");
         return McpServerDoctorStatus::Ok(format!("{label} server at {url}"));
     }
 
@@ -5929,7 +5930,7 @@ pub(crate) async fn run_exec_agent(
     use crate::app_state::AppMode;
     use crate::core::engine::{HeadlessEngineOptions, headless_engine_config, spawn_engine};
     use crate::core::events::Event;
-    use crate::core::ops::Op;
+    use codesmith_agent_runtime::ops::Op;
 
     let route = resolve_cli_auto_route(config, model, prompt).await;
     let auto_model = route.auto_model;
@@ -6364,13 +6365,13 @@ pub(crate) async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -
     use crate::app_state::AppMode;
     use crate::core::engine::{HeadlessEngineOptions, headless_engine_config, spawn_engine};
     use crate::core::events::Event;
-    use crate::core::ops::Op;
     use crate::tools::task_v2::new_shared_task_v2_manager;
     use crate::tools::team::{
         TeamContext, TeammateMessage, find_member_by_name, new_shared_team_context,
         read_team_config, set_member_inactive, team_config_path, team_lead_name, write_team_config,
         write_to_mailbox,
     };
+    use codesmith_agent_runtime::ops::Op;
 
     // 1. Load team + member registration from disk.
     let team_file = read_team_config(&args.team)
@@ -6839,7 +6840,7 @@ mod doctor_endpoint_tests {
 
     #[test]
     fn doctor_search_provider_line_includes_duckduckgo_default_source_and_switch_hint() {
-        let _guard = crate::test_support::lock_test_env();
+        let _guard = codesmith_agent_runtime::test_support::lock_test_env();
         let prev = std::env::var_os("CODESMITH_SEARCH_PROVIDER");
         unsafe { std::env::remove_var("CODESMITH_SEARCH_PROVIDER") };
 
@@ -6857,7 +6858,7 @@ mod doctor_endpoint_tests {
 
     #[test]
     fn doctor_search_provider_json_reports_config_source() {
-        let _guard = crate::test_support::lock_test_env();
+        let _guard = codesmith_agent_runtime::test_support::lock_test_env();
         let prev = std::env::var_os("CODESMITH_SEARCH_PROVIDER");
         unsafe { std::env::remove_var("CODESMITH_SEARCH_PROVIDER") };
         let config = Config {
@@ -6880,7 +6881,7 @@ mod doctor_endpoint_tests {
 
     #[test]
     fn doctor_search_provider_json_reports_env_override_source() {
-        let _guard = crate::test_support::lock_test_env();
+        let _guard = codesmith_agent_runtime::test_support::lock_test_env();
         let prev = std::env::var_os("CODESMITH_SEARCH_PROVIDER");
         unsafe { std::env::set_var("CODESMITH_SEARCH_PROVIDER", "tavily") };
 
@@ -6896,7 +6897,7 @@ mod doctor_endpoint_tests {
 
     #[test]
     fn doctor_search_provider_line_omits_switch_hint_when_bing_is_configured() {
-        let _guard = crate::test_support::lock_test_env();
+        let _guard = codesmith_agent_runtime::test_support::lock_test_env();
         let prev = std::env::var_os("CODESMITH_SEARCH_PROVIDER");
         unsafe { std::env::remove_var("CODESMITH_SEARCH_PROVIDER") };
         let config = Config {
@@ -7307,8 +7308,9 @@ mod project_config_tests {
 
     #[test]
     fn startup_boundary_allows_workspace_initialization_for_trusted_workspace() {
-        let _guard = crate::test_support::lock_test_env();
-        let _cfg_path = crate::test_support::EnvVarGuard::remove("CODESMITH_CONFIG_PATH");
+        let _guard = codesmith_agent_runtime::test_support::lock_test_env();
+        let _cfg_path =
+            codesmith_agent_runtime::test_support::EnvVarGuard::remove("CODESMITH_CONFIG_PATH");
         let tmp = tempdir().expect("tempdir");
         // Trust lives in the USER config only — an in-repo marker must never
         // grant trust (a cloned hostile workspace could otherwise initialize
@@ -7351,7 +7353,7 @@ mod project_config_tests {
 
     #[test]
     fn workspace_dotenv_load_is_gated_by_startup_boundary() {
-        let _guard = crate::test_support::lock_test_env();
+        let _guard = codesmith_agent_runtime::test_support::lock_test_env();
         let tmp = tempdir().expect("tempdir");
         let key = "CODESMITH_TEST_STARTUP_DOTENV_GATE";
         unsafe { std::env::remove_var(key) };
@@ -7377,7 +7379,7 @@ mod project_config_tests {
 
     #[test]
     fn project_overlay_skips_when_workspace_is_home_directory() {
-        let _guard = crate::test_support::lock_test_env();
+        let _guard = codesmith_agent_runtime::test_support::lock_test_env();
         let tmp = tempdir().expect("tempdir");
         let project_dir = tmp.path().join(codesmith_config::CODESMITH_APP_DIR);
         fs::create_dir_all(&project_dir).expect("mkdir .codesmith");
@@ -7856,7 +7858,7 @@ mod doctor_mcp_tests {
 mod setup_helper_tests {
     #[test]
     fn plain_launch_preserves_checkpoint_but_starts_fresh() {
-        let _guard = crate::test_support::lock_test_env();
+        let _guard = codesmith_agent_runtime::test_support::lock_test_env();
         let tmp = TempDir::new().unwrap();
         let workspace = tmp.path().join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
@@ -7891,7 +7893,7 @@ mod setup_helper_tests {
     }
     #[test]
     fn continue_recovers_same_workspace_checkpoint() {
-        let _guard = crate::test_support::lock_test_env();
+        let _guard = codesmith_agent_runtime::test_support::lock_test_env();
         let tmp = TempDir::new().unwrap();
         let workspace = tmp.path().join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
@@ -8164,7 +8166,7 @@ mod setup_helper_tests {
 
     #[test]
     fn resolve_api_key_source_reports_env_when_set() {
-        let _guard = crate::test_support::lock_test_env();
+        let _guard = codesmith_agent_runtime::test_support::lock_test_env();
         let prev = std::env::var("DEEPSEEK_API_KEY").ok();
         let prev_source = std::env::var("CODESMITH_API_KEY_SOURCE").ok();
         unsafe {
@@ -8186,7 +8188,7 @@ mod setup_helper_tests {
 
     #[test]
     fn resolve_api_key_source_reports_dispatcher_keyring() {
-        let _guard = crate::test_support::lock_test_env();
+        let _guard = codesmith_agent_runtime::test_support::lock_test_env();
         let prev = std::env::var("DEEPSEEK_API_KEY").ok();
         let prev_source = std::env::var("CODESMITH_API_KEY_SOURCE").ok();
         unsafe {
@@ -8208,7 +8210,7 @@ mod setup_helper_tests {
 
     #[test]
     fn resolve_api_key_source_prefers_config_over_env() {
-        let _guard = crate::test_support::lock_test_env();
+        let _guard = codesmith_agent_runtime::test_support::lock_test_env();
         let prev = std::env::var("DEEPSEEK_API_KEY").ok();
         let prev_source = std::env::var("CODESMITH_API_KEY_SOURCE").ok();
         unsafe {

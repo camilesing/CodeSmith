@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use crate::tools::plan::{PlanSnapshot, SharedPlanState};
 use crate::tools::subagent::{SharedSubAgentManager, SubAgentResult, SubAgentStatus};
 use crate::tools::todo::{SharedTodoList, TodoListSnapshot};
-use crate::working_set::WorkingSet;
+use codesmith_agent_runtime::working_set::WorkingSet;
 
 pub use codesmith_agent_runtime::cycle_manager::*;
 

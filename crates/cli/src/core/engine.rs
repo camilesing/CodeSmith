@@ -100,7 +100,6 @@ use crate::config::{ApiProvider, Config};
 use crate::llm_client::LlmClientHandle;
 use crate::prompts;
 use crate::seam_manager::{SeamConfig, SeamManager};
-use crate::tools::large_output_router::UtilityLlm;
 use crate::tools::plan::SharedPlanState;
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager, wrap_shell_manager};
 use crate::tools::spec::RuntimeToolServices;
@@ -109,6 +108,7 @@ use crate::tools::todo::SharedTodoList;
 use crate::tools::{ToolContext, ToolRegistryBuilder, ToolRegistryPluginExt};
 use codesmith_agent::provider::{ProviderConfig, ProviderId, SharedProviderRegistry};
 use codesmith_agent_runtime::features::Feature;
+use codesmith_agent_runtime::tools::large_output_router::UtilityLlm;
 use codesmith_agent_runtime::utils::spawn_supervised;
 
 use super::capacity::CapacityController;
@@ -116,8 +116,8 @@ use super::events::Event;
 // Re-imported for the test module below, which picks it up via `use super::*`.
 #[cfg(test)]
 use super::events::TurnOutcomeStatus;
-use super::ops::Op;
 use super::session::Session;
+use codesmith_agent_runtime::ops::Op;
 
 // === EngineHandle ===
 
@@ -231,13 +231,17 @@ pub struct EngineHost {
     /// Session-scoped workshop variable store (#548). `None` when no
     /// `[workshop]` config is present.
     pub workshop_vars: Option<
-        std::sync::Arc<tokio::sync::Mutex<crate::tools::large_output_router::WorkshopVariables>>,
+        std::sync::Arc<
+            tokio::sync::Mutex<
+                codesmith_agent_runtime::tools::large_output_router::WorkshopVariables,
+            >,
+        >,
     >,
     /// Resolved `[utility_model]` handle for background assists (workshop
     /// synthesis, auto-route classification, seams). `None` when unconfigured
     /// or when a dedicated client could not be built — assists then use the
     /// main model.
-    pub utility_llm: Option<crate::tools::large_output_router::UtilityLlm>,
+    pub utility_llm: Option<codesmith_agent_runtime::tools::large_output_router::UtilityLlm>,
     /// External sandbox backend (#516). `None` when no backend is configured.
     pub sandbox_backend: Option<std::sync::Arc<dyn crate::sandbox::backend::SandboxBackend>>,
     /// §F2c — bound extension runner, set by `build_engine` (alongside the
@@ -1338,17 +1342,23 @@ pub fn build_engine(
     session.policies = policy_store;
     // Set up stable system prompt with project context (default to agent mode).
     let (user_memory_block, knowledge_prompt_block) = if config.kod_enabled {
-        let kod_block = crate::memory::compose_kod_block(&config.memory_dir);
+        let kod_block = codesmith_agent_runtime::memory::compose_kod_block(&config.memory_dir);
         match kod_block {
             Some(block) => (None, Some(block)),
             None => (
-                crate::memory::compose_block(config.memory_enabled, &config.memory_path),
+                codesmith_agent_runtime::memory::compose_block(
+                    config.memory_enabled,
+                    &config.memory_path,
+                ),
                 None,
             ),
         }
     } else {
         (
-            crate::memory::compose_block(config.memory_enabled, &config.memory_path),
+            codesmith_agent_runtime::memory::compose_block(
+                config.memory_enabled,
+                &config.memory_path,
+            ),
             None,
         )
     };
@@ -1400,7 +1410,7 @@ pub fn build_engine(
     // re-pins persist across turns.
     let _ = session.prefix_stability.get_or_insert_with(|| {
         std::sync::Arc::new(std::sync::Mutex::new(
-            crate::prefix_cache::PrefixStabilityManager::new_unpinned(),
+            codesmith_agent_runtime::prefix_cache::PrefixStabilityManager::new_unpinned(),
         ))
     });
 
@@ -1475,10 +1485,14 @@ pub fn build_engine(
 
     // Workshop variable store (#548).
     let workshop_vars: Option<
-        std::sync::Arc<tokio::sync::Mutex<crate::tools::large_output_router::WorkshopVariables>>,
+        std::sync::Arc<
+            tokio::sync::Mutex<
+                codesmith_agent_runtime::tools::large_output_router::WorkshopVariables,
+            >,
+        >,
     > = if config.workshop.is_some() {
         Some(std::sync::Arc::new(tokio::sync::Mutex::new(
-            crate::tools::large_output_router::WorkshopVariables::default(),
+            codesmith_agent_runtime::tools::large_output_router::WorkshopVariables::default(),
         )))
     } else {
         None

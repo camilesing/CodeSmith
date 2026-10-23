@@ -325,7 +325,7 @@ pub(crate) fn resolve_analysis_target(
     // ("no provider factory registered for 'x'"), not just that it is.
     let main_err = main_result.as_ref().err().map(ToString::to_string);
     let main = main_result.ok();
-    if let Some(crate::tools::large_output_router::UtilityLlm { client, model }) =
+    if let Some(codesmith_agent_runtime::tools::large_output_router::UtilityLlm { client, model }) =
         crate::core::engine::resolve_utility_llm(config, main.as_ref())
     {
         return Ok((client, model));

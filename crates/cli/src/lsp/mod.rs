@@ -42,15 +42,13 @@ use tokio::time::timeout;
 
 pub mod client;
 pub mod diagnostics;
-pub mod registry;
-
 pub use client::{LspTransport, StdioLspTransport};
 pub use diagnostics::{Diagnostic, DiagnosticBlock, Severity};
 // Only the test module below consumes this re-export today; the cfg gate
 // keeps the non-test bin pass from flagging it as an unused import.
+pub use codesmith_agent_runtime::lsp_registry::Language;
 #[cfg(test)]
 pub use diagnostics::render_blocks;
-pub use registry::Language;
 
 /// `[lsp]` config schema. Re-exported from
 /// `codesmith_agent_runtime::lsp_config` so `EngineConfig` and the LSP
@@ -128,7 +126,7 @@ impl LspManager {
         if !self.config.enabled {
             return None;
         }
-        let lang = registry::detect_language(file);
+        let lang = codesmith_agent_runtime::lsp_registry::detect_language(file);
         if lang == Language::Other {
             return None;
         }
@@ -209,7 +207,7 @@ impl LspManager {
         if !self.config.enabled {
             return None;
         }
-        let lang = registry::detect_language(file);
+        let lang = codesmith_agent_runtime::lsp_registry::detect_language(file);
         if lang == Language::Other {
             return None;
         }

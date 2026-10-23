@@ -117,7 +117,7 @@ impl ToolSpec for WebSearchTool {
             None => vec![DEFAULT_SEARCH_HOST.to_string()],
         };
         for host in &hosts {
-            if crate::network_policy::network_approval_requirement(
+            if codesmith_agent_runtime::network_policy::network_approval_requirement(
                 context.network_policy.as_ref(),
                 host,
                 "web_search",
@@ -479,8 +479,8 @@ mod tests {
 
     // === P1-5: per-input approval gate ===================================
 
-    use crate::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
     use crate::tools::spec::{ApprovalRequirement, ToolSpec};
+    use codesmith_agent_runtime::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
 
     fn prompt_decider(allow: &[&str]) -> NetworkPolicyDecider {
         NetworkPolicyDecider::new(

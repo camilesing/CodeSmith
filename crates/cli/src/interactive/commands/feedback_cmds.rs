@@ -368,8 +368,8 @@ mod tests {
     /// the model will see, and the record lands under the feedback dir.
     #[test]
     fn a_rating_never_reaches_the_model_context() {
-        let _lock = crate::test_support::lock_test_env();
-        let home = crate::test_support::ScopedCodeSmithHome::new();
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
+        let home = codesmith_agent_runtime::test_support::ScopedCodeSmithHome::new();
         let options = crate::app_state::InteractiveOptions {
             model: "test-model".to_string(),
             workspace: std::env::temp_dir(),

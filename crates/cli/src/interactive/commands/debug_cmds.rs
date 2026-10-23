@@ -5,9 +5,9 @@
 use colored::Colorize;
 
 use super::ReplState;
-use crate::core::ops::Op;
 use crate::models::SystemPrompt;
 use codesmith_agent_runtime::dependencies::{ExternalTool, Git};
+use codesmith_agent_runtime::ops::Op;
 
 /// `/tokens` — last-turn + session token report.
 pub fn tokens(state: &ReplState) {

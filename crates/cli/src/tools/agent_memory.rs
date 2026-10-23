@@ -8,13 +8,15 @@
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use crate::agent_memory::paths::{ensure_agent_memory_dir, scoped_path_within_memory};
+use codesmith_agent_runtime::agent_memory::paths::{
+    ensure_agent_memory_dir, scoped_path_within_memory,
+};
 
-use super::diff_format::make_unified_diff;
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_u64, required_str,
 };
+use codesmith_agent_runtime::tools::diff_format::make_unified_diff;
 
 pub struct AgentMemoryReadTool;
 pub struct AgentMemoryWriteTool;

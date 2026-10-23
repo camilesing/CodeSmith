@@ -394,7 +394,7 @@ impl ToolSpec for TaskV2UpdateTool {
             let owner_input = input.get("owner").and_then(|v| v.as_str());
             if owner_input.is_some() {
                 mailbox.send(
-                    crate::tools::subagent::mailbox::MailboxMessage::TaskAssigned {
+                    codesmith_agent_runtime::mailbox::MailboxMessage::TaskAssigned {
                         agent_id: updated.owner.clone().unwrap_or_default(),
                         task_id: updated.id.clone(),
                         task_subject: updated.subject.clone(),

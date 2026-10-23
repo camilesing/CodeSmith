@@ -6,12 +6,12 @@
 use colored::Colorize;
 
 use super::ReplState;
-use crate::core::ops::Op;
 use crate::models::{Message, SystemPrompt};
 use crate::session_manager::{
     SessionManager, create_saved_session_with_id_and_mode, create_saved_session_with_mode,
     truncate_id, update_session,
 };
+use codesmith_agent_runtime::ops::Op;
 
 const MAX_TITLE_LEN: usize = 100;
 
@@ -402,7 +402,7 @@ async fn adopt_loaded_session(
 
 /// `/compact [memory|from=N|up_to=N]`
 pub async fn compact(state: &mut ReplState, arg: Option<&str>) {
-    use crate::core::ops::CompactMode;
+    use codesmith_agent_runtime::ops::CompactMode;
 
     let mode = match arg.map(str::trim) {
         None => CompactMode::Full,
@@ -723,7 +723,7 @@ mod tests {
     /// adoption `resume_session` performs at startup).
     #[tokio::test]
     async fn load_adopts_failed_attempt_records() {
-        let _lock = crate::test_support::lock_test_env();
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
         let mut state = test_repl_state();
         adopt_loaded_session(&mut state, saved_with_failed_attempt()).await;
         assert_eq!(
