@@ -372,8 +372,7 @@ pub async fn accumulate_stream(
                                 error = %err,
                                 "tool arguments did not parse as JSON; refusing null substitution"
                             );
-                            let raw_head: String =
-                                input_buf.chars().take(512).collect();
+                            let raw_head: String = input_buf.chars().take(512).collect();
                             serde_json::json!({
                                 "__malformed_arguments__": raw_head,
                                 "__parse_error__": err.to_string(),

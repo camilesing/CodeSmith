@@ -542,7 +542,10 @@ fn normalize_command(value: &str) -> String {
 /// seeing the raw tokens. A real shell tokenizer remains the long-term fix;
 /// this closes the quote/backslash bypass class on raw text.
 fn dequote_for_deny(value: &str) -> String {
-    value.chars().filter(|c| !matches!(c, '"' | '\'' | '\\')).collect()
+    value
+        .chars()
+        .filter(|c| !matches!(c, '"' | '\'' | '\\'))
+        .collect()
 }
 
 /// Splits a raw shell command on the operators that chain further commands

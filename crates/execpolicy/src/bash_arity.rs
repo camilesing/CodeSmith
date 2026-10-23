@@ -675,6 +675,12 @@ mod tests {
         ));
         assert!(!dict().allow_rule_matches("git push", "git push --receive-pack /bin/sh origin"));
         assert!(!dict().allow_rule_matches("git fetch", "git fetch --upload-pack=/bin/sh origin"));
+        assert!(!dict().allow_rule_matches("ssh", "ssh -oProxyCommand=touch$IFS/tmp/pwned host"));
+        assert!(!dict().allow_rule_matches("ssh", "ssh -o ProxyCommand=cmd host"));
+        assert!(!dict().allow_rule_matches("git push", "git -c core.sshCommand=/bin/sh push"));
+        assert!(!dict().allow_rule_matches("find", "find . -exec rm {} ;"));
+    }
+
     #[test]
     fn exec_by_positioning_is_never_allow_matched() {
         // `kubectl exec pod -- <payload>` executes the payload; an arity
@@ -688,12 +694,6 @@ mod tests {
         // Benign same-shape commands keep matching.
         assert!(dict().allow_rule_matches("git status", "git status --porcelain"));
         assert!(dict().allow_rule_matches("kubectl get", "kubectl get pods"));
-    }
-
-        assert!(!dict().allow_rule_matches("ssh", "ssh -oProxyCommand=touch$IFS/tmp/pwned host"));
-        assert!(!dict().allow_rule_matches("ssh", "ssh -o ProxyCommand=cmd host"));
-        assert!(!dict().allow_rule_matches("git push", "git -c core.sshCommand=/bin/sh push"));
-        assert!(!dict().allow_rule_matches("find", "find . -exec rm {} ;"));
     }
 
     // ── coverage count ────────────────────────────────────────────────────────

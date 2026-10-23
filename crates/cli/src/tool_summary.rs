@@ -25,7 +25,9 @@ const SENSITIVE_ARG_KEYS: &[&str] = &[
 
 fn is_sensitive_arg_key(key: &str) -> bool {
     let lower = key.to_ascii_lowercase();
-    SENSITIVE_ARG_KEYS.iter().any(|marker| lower.contains(marker))
+    SENSITIVE_ARG_KEYS
+        .iter()
+        .any(|marker| lower.contains(marker))
 }
 
 /// Summarize tool-call arguments as `key: value` pairs for one line.
@@ -225,6 +227,9 @@ mod tests {
         let fallback = serde_json::json!({ "token": "sk-live-abc", "label": "upload" });
         let summary = summarize_tool_args(&fallback).unwrap();
         assert!(!summary.contains("sk-live-abc"), "token leaked: {summary}");
-        assert!(summary.contains("label"), "non-sensitive fallback lost: {summary}");
+        assert!(
+            summary.contains("label"),
+            "non-sensitive fallback lost: {summary}"
+        );
     }
 }

@@ -3433,7 +3433,7 @@ pub use self::lsp_hooks::edited_paths_for_tool;
 pub use self::streaming::TOOL_CALL_START_MARKERS;
 pub use self::streaming::{
     FAKE_WRAPPER_NOTICE, MAX_STREAM_ERRORS_BEFORE_FAIL, MAX_TRANSPARENT_STREAM_RETRIES,
-    ToolUseState, contains_fake_tool_wrapper, filter_tool_call_delta,
+    ToolCallDeltaFilter, ToolUseState, contains_fake_tool_wrapper, filter_tool_call_delta,
     should_transparently_retry_stream,
 };
 pub use self::tool_catalog::{

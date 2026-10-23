@@ -741,9 +741,16 @@ mod tests {
             "[::1]:8080",
             "127.0.0.1",
         ] {
-            assert!(authority_is_loopback(authority), "{authority:?} should be loopback");
+            assert!(
+                authority_is_loopback(authority),
+                "{authority:?} should be loopback"
+            );
         }
-        for authority in ["127.evil.com:8080", "user@127.evil.com", "localhost.evil.com:80"] {
+        for authority in [
+            "127.evil.com:8080",
+            "user@127.evil.com",
+            "localhost.evil.com:80",
+        ] {
             assert!(
                 !authority_is_loopback(authority),
                 "{authority:?} must not be loopback"

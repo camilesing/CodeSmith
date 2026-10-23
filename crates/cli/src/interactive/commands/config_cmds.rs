@@ -463,8 +463,8 @@ pub fn effort(state: &mut ReplState, arg: Option<&str>) {
         );
         return;
     }
-    let effort = ReasoningEffort::from_setting(&value)
-        .expect("value validated against `accepted` above");
+    let effort =
+        ReasoningEffort::from_setting(&value).expect("value validated against `accepted` above");
     state.reasoning_effort = effort;
     state.update_model_compaction_budget();
     if effort == ReasoningEffort::Max {

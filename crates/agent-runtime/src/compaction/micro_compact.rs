@@ -239,7 +239,8 @@ pub fn micro_compact_messages(messages: &mut [Message], state: &mut MicroCompact
                 // placeholder is policy-controlled; drift between passes
                 // used to make string comparison re-clear and double-count
                 // already-cleared results.
-                if state.cleared_tool_ids.contains(tool_use_id) || *content == knobs.cleared_placeholder
+                if state.cleared_tool_ids.contains(tool_use_id)
+                    || *content == knobs.cleared_placeholder
                 {
                     continue;
                 }
@@ -306,7 +307,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn trigger_does_not_latch_after_a_pass_and_drift_does_not_reclear() {
         let _guard = policy_test_lock();
@@ -317,8 +317,10 @@ mod tests {
             tool_use_msg("c1", "file_read", json!({"path": "a"})),
             tool_result_msg("c1", &"x".repeat(64 * 1024)),
         ];
-        let mut state = MicroCompactState::default();
-        state.cache_trigger_threshold = 1024;
+        let mut state = MicroCompactState {
+            cache_trigger_threshold: 1024,
+            ..MicroCompactState::default()
+        };
         let first = micro_compact_messages(&mut messages, &mut state);
         assert!(first > 0);
         assert_eq!(state.bytes_cleared, first);

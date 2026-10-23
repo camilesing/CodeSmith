@@ -357,16 +357,12 @@ mod tests {
         }
     }
 
-
     #[test]
     fn tail_message_alone_over_budget_still_retains_the_tail() {
         // The old boundary walk returned `messages.len()` when the tail
         // message alone exceeded the budget, dropping the ENTIRE
         // conversation. The clamp must keep at least the last message.
-        let messages = vec![
-            msg("user", "early"),
-            msg("assistant", &"x".repeat(200_000)),
-        ];
+        let messages = vec![msg("user", "early"), msg("assistant", &"x".repeat(200_000))];
         let config = SessionMemoryCompactConfig {
             enabled: true,
             min_retain_tokens: 10,
@@ -377,7 +373,12 @@ mod tests {
             !result.messages.is_empty(),
             "entire conversation dropped; must retain the tail message"
         );
-        assert!(result.messages.last().is_some_and(|m| m.role == "assistant"));
+        assert!(
+            result
+                .messages
+                .last()
+                .is_some_and(|m| m.role == "assistant")
+        );
     }
 
     #[test]

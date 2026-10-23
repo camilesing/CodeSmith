@@ -449,9 +449,11 @@ pub(crate) fn write_env_file(
             backend,
             message: format!("failed to create env file for {agent_id}: {e}"),
         })?;
-    std::io::Write::write_all(&mut file, body.as_bytes()).map_err(|e| BackendError::SpawnFailed {
-        backend,
-        message: format!("failed to write env file for {agent_id}: {e}"),
+    std::io::Write::write_all(&mut file, body.as_bytes()).map_err(|e| {
+        BackendError::SpawnFailed {
+            backend,
+            message: format!("failed to write env file for {agent_id}: {e}"),
+        }
     })?;
     let (_, path) = file.keep().map_err(|e| BackendError::SpawnFailed {
         backend,
@@ -466,9 +468,7 @@ pub(crate) fn write_env_file(
 pub(crate) fn is_shell_identifier(ident: &str) -> bool {
     !ident.is_empty()
         && !ident.starts_with(|c: char| c.is_ascii_digit())
-        && ident
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && ident.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 #[cfg(test)]

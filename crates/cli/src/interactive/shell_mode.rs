@@ -98,7 +98,9 @@ pub async fn run(command: &str, cwd: &std::path::Path) -> Result<(String, String
     }
     let dropped = stdout_dropped + stderr_dropped;
     if dropped > 0 {
-        combined.push_str(&format!("\n… [{dropped} more bytes of output not captured]\n"));
+        combined.push_str(&format!(
+            "\n… [{dropped} more bytes of output not captured]\n"
+        ));
     }
     let status = match status.code() {
         Some(0) => "exit 0".to_string(),
@@ -112,7 +114,6 @@ pub async fn run(command: &str, cwd: &std::path::Path) -> Result<(String, String
 /// worst-case UTF-8 expansion, so the later char-level cap is never
 /// loosened by the byte cap.
 const MAX_OUTPUT_BYTES: usize = MAX_OUTPUT_CHARS * 4;
-
 
 /// Truncate to `max` chars, saying how much was dropped.
 #[must_use]

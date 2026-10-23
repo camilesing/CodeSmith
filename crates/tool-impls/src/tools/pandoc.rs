@@ -198,9 +198,8 @@ impl ToolSpec for PandocConvertTool {
                 .await
         });
         let status = match tokio::time::timeout(PANDOC_TIMEOUT, child.wait()).await {
-            Ok(result) => result.map_err(|e| {
-                ToolError::execution_failed(format!("pandoc wait failed: {e}"))
-            })?,
+            Ok(result) => result
+                .map_err(|e| ToolError::execution_failed(format!("pandoc wait failed: {e}")))?,
             Err(_) => {
                 codesmith_agent_runtime::shell_manager::kill_process_group_of_opt(child.id());
                 let _ = child.start_kill();

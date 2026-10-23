@@ -48,17 +48,16 @@ impl TeammateBackend for ITermBackend {
         let agent_id = spec.agent_id.clone();
         let prompt = spec.prompt.clone();
         let agent_env = spec.env.clone();
-        let (prompt_file, env_file) =
-            tokio::task::spawn_blocking(move || {
-                let prompt_file = write_prompt_file("iterm", &agent_id, &prompt)?;
-                let env_file = write_env_file("iterm", &agent_id, &agent_env)?;
-                Ok::<_, BackendError>((prompt_file, env_file))
-            })
-            .await
-            .map_err(|e| BackendError::SpawnFailed {
-                backend: "iterm",
-                message: format!("prompt-file task failed: {e}"),
-            })??;
+        let (prompt_file, env_file) = tokio::task::spawn_blocking(move || {
+            let prompt_file = write_prompt_file("iterm", &agent_id, &prompt)?;
+            let env_file = write_env_file("iterm", &agent_id, &agent_env)?;
+            Ok::<_, BackendError>((prompt_file, env_file))
+        })
+        .await
+        .map_err(|e| BackendError::SpawnFailed {
+            backend: "iterm",
+            message: format!("prompt-file task failed: {e}"),
+        })??;
         let script = build_applescript(spec, &prompt_file, env_file.as_deref());
 
         // Bound the osascript call: a first-run Automation-permission dialog
@@ -259,7 +258,11 @@ mod tests {
     #[test]
     fn script_sources_env_file_when_provided() {
         let spec = sample_spec();
-        let script = build_applescript(&spec, Path::new("/tmp/p.txt"), Some(Path::new("/tmp/t.env")));
+        let script = build_applescript(
+            &spec,
+            Path::new("/tmp/p.txt"),
+            Some(Path::new("/tmp/t.env")),
+        );
         assert!(
             script.contains("set -a; . '/tmp/t.env'; set +a; rm -f '/tmp/t.env'"),
             "env wrapper missing: {script}"

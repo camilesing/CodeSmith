@@ -312,9 +312,9 @@ async fn run_plugin_child_raw(
     });
 
     let status = match tokio::time::timeout(PLUGIN_EXECUTION_TIMEOUT, child.wait()).await {
-        Ok(result) => result.map_err(|e| ToolError::execution_failed(format!(
-            "process error: {e}"
-        )))?,
+        Ok(result) => {
+            result.map_err(|e| ToolError::execution_failed(format!("process error: {e}")))?
+        }
         Err(_) => {
             codesmith_agent_runtime::shell_manager::kill_process_group_of_opt(child.id());
             let _ = child.start_kill();
@@ -334,7 +334,9 @@ async fn run_plugin_child_raw(
     if status.success() {
         let mut stdout = String::from_utf8_lossy(&stdout_kept).to_string();
         if dropped > 0 {
-            stdout.push_str(&format!("\n… [{dropped} more bytes of output not captured]"));
+            stdout.push_str(&format!(
+                "\n… [{dropped} more bytes of output not captured]"
+            ));
         }
         if let Ok(parsed) = serde_json::from_str::<ToolResult>(&stdout) {
             Ok(parsed)
@@ -352,7 +354,9 @@ async fn run_plugin_child_raw(
             format!("{stdout}\n{stderr}")
         };
         if dropped > 0 {
-            combined.push_str(&format!("\n… [{dropped} more bytes of output not captured]"));
+            combined.push_str(&format!(
+                "\n… [{dropped} more bytes of output not captured]"
+            ));
         }
         Err(ToolError::execution_failed(combined))
     }

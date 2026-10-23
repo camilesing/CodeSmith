@@ -280,7 +280,8 @@ pub fn estimate_input_tokens_anchored(
     // was rewritten past the anchor (rewind-and-regrow, splice), and the
     // anchor's absolute level describes messages that no longer exist.
     if anchor.messages_len > 0
-        && TokenUsageAnchor::digest_boundary(&messages[..anchor.messages_len]) != anchor.boundary_digest
+        && TokenUsageAnchor::digest_boundary(&messages[..anchor.messages_len])
+            != anchor.boundary_digest
     {
         return estimate_input_tokens_conservative(messages, system);
     }

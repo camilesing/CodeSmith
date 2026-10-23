@@ -404,9 +404,15 @@ mod tests {
         assert!(!line.contains("sk-live-abc"), "bearer token leaked: {line}");
         assert!(!line.contains("sekrit"), "api_key leaked: {line}");
         assert!(!line.contains("hunter2"), "password leaked: {line}");
-        assert!(line.contains("curl"), "non-credential parts must survive: {line}");
+        assert!(
+            line.contains("curl"),
+            "non-credential parts must survive: {line}"
+        );
         // Plain commands pass through untouched.
-        assert_eq!(redact_command_credentials("cargo build --release"), "cargo build --release");
+        assert_eq!(
+            redact_command_credentials("cargo build --release"),
+            "cargo build --release"
+        );
     }
 
     #[test]

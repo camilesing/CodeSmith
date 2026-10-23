@@ -1141,7 +1141,9 @@ fn load_mcp_server_definitions(store: &ConfigStore) -> Vec<McpServerDefinition> 
             let _ = std::fs::write(
                 codesmith_config::codesmith_home()
                     .map(|home| home.join("mcp-server-definitions.corrupt.txt"))
-                    .unwrap_or_else(|_| std::path::PathBuf::from("mcp-server-definitions.corrupt.txt")),
+                    .unwrap_or_else(|_| {
+                        std::path::PathBuf::from("mcp-server-definitions.corrupt.txt")
+                    }),
                 &raw,
             );
             Vec::new()

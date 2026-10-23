@@ -271,7 +271,10 @@ fn pathspec_from(working_dir: &Path, resolved: &Path) -> PathBuf {
 /// runs. Bounds memory; the head of the stream is what display keeps.
 const GIT_OUTPUT_CAP_BYTES: usize = 32 * 1024 * 1024;
 
-async fn run_git_command(working_dir: &Path, args: &[String]) -> Result<std::process::Output, ToolError> {
+async fn run_git_command(
+    working_dir: &Path,
+    args: &[String],
+) -> Result<std::process::Output, ToolError> {
     let Some(mut cmd) = codesmith_agent_runtime::dependencies::Git::tokio_command() else {
         return Err(ToolError::not_available(
             "git is not installed or not in PATH",
@@ -303,7 +306,11 @@ async fn run_git_command(working_dir: &Path, args: &[String]) -> Result<std::pro
         .map_err(|e| ToolError::execution_failed(format!("Failed to run git: {e}")))?;
     let (stdout, _dropped_out) = stdout_task.await.unwrap_or_default();
     let (stderr, _dropped_err) = stderr_task.await.unwrap_or_default();
-    Ok(std::process::Output { status, stdout, stderr })
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 fn format_command(working_dir: &Path, args: &[String]) -> String {

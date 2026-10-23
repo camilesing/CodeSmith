@@ -147,9 +147,15 @@ mod tests {
         });
         let out = redact_sensitive_keys(input);
         let url = out["url"].as_str().unwrap();
-        assert!(!url.contains("sk-live-xyz"), "query credential leaked: {url}");
+        assert!(
+            !url.contains("sk-live-xyz"),
+            "query credential leaked: {url}"
+        );
         let header = out["header_line"].as_str().unwrap();
-        assert!(!header.contains("abc.def.ghi"), "bearer token leaked: {header}");
+        assert!(
+            !header.contains("abc.def.ghi"),
+            "bearer token leaked: {header}"
+        );
         assert_eq!(out["plain"], "nothing to mask");
     }
 }

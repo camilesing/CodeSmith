@@ -223,6 +223,9 @@ mod tests {
         assert_eq!(AppMode::from_setting("yoloo"), None);
         assert_eq!(AppMode::from_setting("agentic"), None);
         assert_eq!(ReasoningEffort::from_setting("hgh"), None);
-        assert_eq!(ReasoningEffort::from_setting("max "), Some(ReasoningEffort::Max));
+        assert_eq!(
+            ReasoningEffort::from_setting("max "),
+            Some(ReasoningEffort::Max)
+        );
     }
 }

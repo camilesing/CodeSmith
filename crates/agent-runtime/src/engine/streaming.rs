@@ -204,7 +204,9 @@ fn marker_prefix_suffix_len(text: &str, markers: &[&str]) -> usize {
         .rev()
         .find(|keep| {
             let suffix = &text[text.len() - keep..];
-            markers.iter().any(|m| m.len() > *keep && m.starts_with(suffix))
+            markers
+                .iter()
+                .any(|m| m.len() > *keep && m.starts_with(suffix))
         })
         .unwrap_or(0)
 }
@@ -226,7 +228,10 @@ mod split_marker_tests {
             !visible.contains("pwned"),
             "split-marker wrapper leaked: {visible:?}"
         );
-        assert!(visible.contains("tail"), "post-marker text lost: {visible:?}");
+        assert!(
+            visible.contains("tail"),
+            "post-marker text lost: {visible:?}"
+        );
     }
 
     #[test]

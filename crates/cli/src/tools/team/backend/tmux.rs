@@ -52,17 +52,16 @@ impl TeammateBackend for TmuxBackend {
         let agent_id = spec.agent_id.clone();
         let prompt = spec.prompt.clone();
         let agent_env = spec.env.clone();
-        let (prompt_file, env_file) =
-            tokio::task::spawn_blocking(move || {
-                let prompt_file = write_prompt_file("tmux", &agent_id, &prompt)?;
-                let env_file = write_env_file("tmux", &agent_id, &agent_env)?;
-                Ok::<_, BackendError>((prompt_file, env_file))
-            })
-            .await
-            .map_err(|e| BackendError::SpawnFailed {
-                backend: "tmux",
-                message: format!("prompt-file task failed: {e}"),
-            })??;
+        let (prompt_file, env_file) = tokio::task::spawn_blocking(move || {
+            let prompt_file = write_prompt_file("tmux", &agent_id, &prompt)?;
+            let env_file = write_env_file("tmux", &agent_id, &agent_env)?;
+            Ok::<_, BackendError>((prompt_file, env_file))
+        })
+        .await
+        .map_err(|e| BackendError::SpawnFailed {
+            backend: "tmux",
+            message: format!("prompt-file task failed: {e}"),
+        })??;
 
         let argv = build_tmux_argv(spec, &prompt_file, env_file.as_deref());
         // argv[0] == "tmux".
@@ -260,12 +259,19 @@ mod tests {
             ("BAD=KEY".to_string(), "x".to_string()),
             ("MULTI".to_string(), "a\nb".to_string()),
         ]);
-        let path = write_env_file("tmux", "agent_x", &env).expect("write ok").expect("Some");
+        let path = write_env_file("tmux", "agent_x", &env)
+            .expect("write ok")
+            .expect("Some");
         let body = std::fs::read_to_string(&path).unwrap_or_default();
         let _ = std::fs::remove_file(&path);
-        assert!(body.contains("GOOD_KEY='ok'"), "valid entry missing: {body}");
-        assert!(!body.contains("1BAD") && !body.contains("BAD=KEY") && !body.contains("MULTI"),
-            "invalid entries written: {body}");
+        assert!(
+            body.contains("GOOD_KEY='ok'"),
+            "valid entry missing: {body}"
+        );
+        assert!(
+            !body.contains("1BAD") && !body.contains("BAD=KEY") && !body.contains("MULTI"),
+            "invalid entries written: {body}"
+        );
     }
 
     #[test]

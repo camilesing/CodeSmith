@@ -410,7 +410,13 @@ fn redact_uri_for_diagnostics(uri: &str) -> String {
             let key = pair.split('=').next().unwrap_or("");
             !matches!(
                 key.to_ascii_lowercase().as_str(),
-                "key" | "api_key" | "apikey" | "token" | "access_token" | "signature" | "sig"
+                "key"
+                    | "api_key"
+                    | "apikey"
+                    | "token"
+                    | "access_token"
+                    | "signature"
+                    | "sig"
                     | "secret"
             )
         })

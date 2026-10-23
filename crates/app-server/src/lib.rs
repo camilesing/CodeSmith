@@ -385,7 +385,10 @@ fn resolve_auth_token(options: &AppServerOptions) -> Result<Option<String>> {
         // — pass --auth-token or CODESMITH_APP_SERVER_TOKEN to choose one).
         let token_path = write_generated_token_file(&token)?;
         eprintln!("app-server auth: generated bearer token for this process.");
-        eprintln!("  Token written to {} (mode 0600); use it as `Authorization: Bearer <token>`.", token_path.display());
+        eprintln!(
+            "  Token written to {} (mode 0600); use it as `Authorization: Bearer <token>`.",
+            token_path.display()
+        );
         eprintln!("  Pass --auth-token or set CODESMITH_APP_SERVER_TOKEN for a stable token.");
     }
     Ok(Some(token))

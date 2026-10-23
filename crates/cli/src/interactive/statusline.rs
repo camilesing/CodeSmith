@@ -101,9 +101,7 @@ pub fn run(command: &str, timeout: Duration) -> Result<String, String> {
             }
         }
     }
-    let stdout = stdout_reader
-        .join()
-        .unwrap_or_default();
+    let stdout = stdout_reader.join().unwrap_or_default();
     let stderr = stderr_reader.join().unwrap_or_default();
     let status = child
         .wait()

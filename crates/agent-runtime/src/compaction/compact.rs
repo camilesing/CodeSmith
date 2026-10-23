@@ -2085,7 +2085,6 @@ mod anchored_estimate_tests {
         );
     }
 
-
     #[test]
     fn same_length_rewrite_falls_back_to_the_pure_estimate() {
         // Rewind-and-regrow / splice can rewrite history at the SAME length

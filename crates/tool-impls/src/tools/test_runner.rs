@@ -186,9 +186,9 @@ async fn run_cargo(workspace: &Path, args: &[String]) -> Result<std::process::Ou
         codesmith_agent_runtime::utils::read_capped_tail(&mut stderr, CARGO_OUTPUT_CAP_BYTES).await
     });
     let status = match tokio::time::timeout(CARGO_TEST_TIMEOUT, child.wait()).await {
-        Ok(result) => result.map_err(|e| ToolError::execution_failed(format!(
-            "Failed to run cargo: {e}"
-        )))?,
+        Ok(result) => {
+            result.map_err(|e| ToolError::execution_failed(format!("Failed to run cargo: {e}")))?
+        }
         Err(_) => {
             codesmith_agent_runtime::shell_manager::kill_process_group_of_opt(child.id());
             let _ = child.start_kill();
@@ -209,7 +209,11 @@ async fn run_cargo(workspace: &Path, args: &[String]) -> Result<std::process::Ou
         let note = format!("[… {stderr_dropped} earlier bytes of output not captured]\n");
         stderr.splice(..0, note.into_bytes());
     }
-    Ok(std::process::Output { status, stdout, stderr })
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 fn format_command(workspace: &Path, args: &[String]) -> String {

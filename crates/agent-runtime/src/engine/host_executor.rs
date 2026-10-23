@@ -3747,10 +3747,9 @@ impl HostAgentExecutor {
                         Some(crate::compaction::TokenUsageAnchor {
                             messages_len: anchored_len,
                             input_tokens: u64::from(usage.input_tokens),
-                            boundary_digest:
-                                crate::compaction::TokenUsageAnchor::digest_boundary(
-                                    &history.messages()[..anchored_len],
-                                ),
+                            boundary_digest: crate::compaction::TokenUsageAnchor::digest_boundary(
+                                &history.messages()[..anchored_len],
+                            ),
                         });
                 }
             }
@@ -5653,7 +5652,9 @@ mod tests {
         // gate before approval); one pre-sent approval per execution.
         for _ in 0..2 {
             tx_approval
-                .send(ApprovalDecision::Approved { id: "t1".to_string() })
+                .send(ApprovalDecision::Approved {
+                    id: "t1".to_string(),
+                })
                 .await
                 .unwrap();
         }
@@ -14423,7 +14424,9 @@ mod tests {
 
         let (tx_approval, rx_approval) = approval_channel();
         tx_approval
-            .send(ApprovalDecision::Approved { id: "w1".to_string() })
+            .send(ApprovalDecision::Approved {
+                id: "w1".to_string(),
+            })
             .await
             .unwrap();
         let executor = HostAgentExecutor::new(
@@ -15192,13 +15195,8 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let executor = build_gated_test_executor(
-            tools,
-            callback,
-            vec![call1, call2],
-            Some(rx_approval),
-            None,
-        );
+        let executor =
+            build_gated_test_executor(tools, callback, vec![call1, call2], Some(rx_approval), None);
         let reason = executor
             .run(&mut history, "mixed".to_string())
             .await
@@ -15381,13 +15379,8 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let executor = build_gated_test_executor(
-            tools,
-            callback,
-            vec![call1, call2],
-            Some(rx_approval),
-            None,
-        );
+        let executor =
+            build_gated_test_executor(tools, callback, vec![call1, call2], Some(rx_approval), None);
         let reason = executor
             .run(&mut history, "write three".to_string())
             .await
