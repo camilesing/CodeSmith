@@ -9,7 +9,6 @@ mod acp_server;
 mod agent_memory;
 mod app_state;
 mod approval_grants;
-mod artifacts;
 mod audit;
 mod auto_mode;
 mod automation_manager;

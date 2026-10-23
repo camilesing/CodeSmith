@@ -32,7 +32,6 @@ pub mod github;
 pub mod goal;
 pub use codesmith_tool_impls::tools::handle;
 pub use codesmith_tool_impls::tools::image_ocr;
-pub mod js_execution;
 pub use codesmith_tool_impls::tools::knowledge_recall;
 pub mod large_output_router;
 pub use codesmith_tool_impls::tools::notify;
