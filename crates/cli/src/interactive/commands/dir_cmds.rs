@@ -146,7 +146,7 @@ pub async fn cd(state: &mut ReplState, argument: &str) -> anyhow::Result<()> {
                 session_id: state.current_session_id.clone(),
                 messages,
                 system_prompt: state.system_prompt.clone(),
-                system_prompt_override: false,
+                system_prompt_override: super::system_prompt_override_active(state),
                 model: state.model.clone(),
                 workspace: target.clone(),
             })

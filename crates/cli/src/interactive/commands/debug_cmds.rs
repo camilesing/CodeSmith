@@ -352,17 +352,25 @@ pub fn edit(state: &ReplState) {
 }
 
 /// Remove the last exchange (assistant tail + the triggering user message)
-/// from the engine session and local state. Port of `undo_conversation`.
-async fn truncate_to_before_last_user(state: &mut ReplState) -> usize {
+/// from the engine session and local state, returning the drained messages
+/// for a caller that may need to restore them (`/retry`). Port of
+/// `undo_conversation`.
+///
+/// `None` means the operation failed and was rolled back (local history
+/// restored, engine re-synced) — the caller must not report success. A
+/// missing engine is not a failure: an engine-less REPL has no session to
+/// diverge from, so the local truncation stands with a warning.
+async fn truncate_to_before_last_user(
+    state: &mut ReplState,
+) -> Option<Vec<crate::models::Message>> {
     // Locate the last user message first: a history with no user turn at
     // all (resumed/imported/seeded sessions) must not be drained wholesale
     // and reported as a successful undo.
     let Some(last_user_idx) = state.api_messages.iter().rposition(|m| m.role == "user") else {
-        return 0;
+        return Some(Vec::new());
     };
-    let removed = state.api_messages.len() - last_user_idx;
-    state.api_messages.truncate(last_user_idx);
-    if removed > 0 {
+    let removed = state.api_messages.split_off(last_user_idx);
+    if !removed.is_empty() {
         match state.engine() {
             Ok(engine) => {
                 if let Err(err) = engine
@@ -370,18 +378,21 @@ async fn truncate_to_before_last_user(state: &mut ReplState) -> usize {
                         session_id: state.current_session_id.clone(),
                         messages: state.api_messages.clone(),
                         system_prompt: state.system_prompt.clone(),
-                        system_prompt_override: false,
+                        system_prompt_override: super::system_prompt_override_active(state),
                         model: state.model.clone(),
                         workspace: state.workspace.clone(),
                     })
                     .await
                 {
-                    // Local history was truncated — the engine session is
-                    // now stale. Surfacing it beats silently diverging.
+                    // A failed sync would leave the engine serving the old
+                    // (longer) history while local state is short — restore
+                    // both rather than half-commit the truncation.
+                    restore_exchange(state, removed).await;
                     println!(
-                        "{} local history truncated, but engine sync failed: {err}",
+                        "{} could not sync the engine — nothing was removed: {err}",
                         "✗".red()
                     );
+                    return None;
                 }
             }
             Err(err) => println!(
@@ -390,16 +401,35 @@ async fn truncate_to_before_last_user(state: &mut ReplState) -> usize {
             ),
         }
     }
-    removed
+    Some(removed)
+}
+
+/// Put a drained tail back into local history and re-sync the engine with
+/// it, so a failed follow-up (`/retry`'s resubmission) costs nothing.
+async fn restore_exchange(state: &mut ReplState, tail: Vec<crate::models::Message>) {
+    state.api_messages.extend(tail);
+    if let Ok(engine) = state.engine() {
+        let _ = engine
+            .send(Op::SyncSession {
+                session_id: state.current_session_id.clone(),
+                messages: state.api_messages.clone(),
+                system_prompt: state.system_prompt.clone(),
+                system_prompt_override: super::system_prompt_override_active(state),
+                model: state.model.clone(),
+                workspace: state.workspace.clone(),
+            })
+            .await;
+    }
 }
 
 /// `/undo` — drop the last exchange.
 pub async fn undo(state: &mut ReplState) {
-    let removed = truncate_to_before_last_user(state).await;
-    if removed > 0 {
-        println!("removed {removed} message(s)");
-    } else {
-        println!("nothing to undo");
+    match truncate_to_before_last_user(state).await {
+        Some(removed) if !removed.is_empty() => {
+            println!("removed {} message(s)", removed.len());
+        }
+        Some(_) => println!("nothing to undo"),
+        None => {}
     }
 }
 
@@ -440,12 +470,20 @@ pub async fn retry(state: &mut ReplState) {
             );
         }
     }
-    truncate_to_before_last_user(state).await;
+    let Some(removed) = truncate_to_before_last_user(state).await else {
+        // The truncation itself failed and was rolled back.
+        return;
+    };
+    if removed.is_empty() {
+        println!("{} no previous request to retry", "✗".red());
+        return;
+    }
     println!("retrying: {}", truncate_for_display(&input, 50));
-    // The previous exchange is already truncated — a failed resubmission
-    // must not pass silently.
+    // The previous exchange is drained — a failed resubmission restores it
+    // (locally and in the engine) instead of losing it permanently.
     if let Err(err) = super::super::submit(state, input).await {
         println!("{} retry failed: {err}", "✗".red());
+        restore_exchange(state, removed).await;
     }
 }
 

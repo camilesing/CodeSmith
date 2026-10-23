@@ -3,11 +3,10 @@
 //!
 //! The engine snapshots the workspace around every file-mutating turn (the
 //! side-git repo in `~/.codesmith/snapshots/<project>`), so the history is
-//! already recorded; this command lists it and checks one back out. The
-//! listing path is read-only in intent but not in effect: on a workspace
-//! with no snapshots yet, `SnapshotRepo::open_or_init` initializes the
-//! side repo (directories, `git init`, config, excludes file) as a side
-//! effect of the first `/rewind list`.
+//! already recorded; this command lists it and checks one back out. Both
+//! paths open the side repo with `SnapshotRepo::try_open`: reading never
+//! initializes anything, and a workspace with no repo yet is simply
+//! "nothing to rewind to".
 //!
 //! Known limitations (recorded beside the behaviour it owns):
 //!
@@ -26,6 +25,7 @@
 //! - The list is capped at [`LIST_LIMIT`] entries.
 
 use codesmith_agent_runtime::snapshot::repo::{SnapshotId, SnapshotRepo};
+use colored::Colorize;
 
 /// How many snapshots `/rewind` lists.
 pub const LIST_LIMIT: usize = 25;
@@ -36,12 +36,12 @@ pub const LIST_LIMIT: usize = 25;
 pub async fn list(workspace: &std::path::Path) -> Result<Vec<SnapshotRow>, String> {
     let workspace = workspace.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let repo = SnapshotRepo::open_or_init(&workspace).map_err(describe_open_error)?;
+        let repo = SnapshotRepo::try_open(&workspace).map_err(describe_open_error)?;
         let snapshots = repo.list(LIST_LIMIT).map_err(|err| err.to_string())?;
         Ok(snapshots
             .into_iter()
             .map(|snapshot| SnapshotRow {
-                id: snapshot.id.0,
+                id: snapshot.id.as_str().to_string(),
                 label: snapshot.label,
                 timestamp: snapshot.timestamp,
             })
@@ -54,17 +54,27 @@ pub async fn list(workspace: &std::path::Path) -> Result<Vec<SnapshotRow>, Strin
 /// Restore the workspace to one snapshot.
 pub async fn restore(workspace: &std::path::Path, id: String) -> Result<(), String> {
     // `restore` feeds the id into `git checkout <id> -- :/` and deletes
-    // working-tree paths — a destructive whole-tree operation. The id must
-    // be a hex object name: anything else (including a leading `-`, which
-    // git parses as an option) is rejected at this boundary, before the
-    // repo is even opened.
-    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(format!("not a snapshot id: {id}"));
-    }
+    // working-tree paths — a destructive whole-tree operation.
+    // `SnapshotId::from_hex` is the type's validating constructor: anything
+    // that is not a hex object name (including a leading `-`, which git
+    // parses as an option) is rejected before the repo is even opened.
+    let id = SnapshotId::from_hex(id).map_err(|err| err.to_string())?;
     let workspace = workspace.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let repo = SnapshotRepo::open_or_init(&workspace).map_err(describe_open_error)?;
-        repo.restore(&SnapshotId(id)).map_err(|err| err.to_string())
+        let repo = SnapshotRepo::try_open(&workspace).map_err(describe_open_error)?;
+        // Safety net: the checkout deletes working-tree files the target
+        // snapshot does not contain, so manual edits made outside an engine
+        // turn exist in no snapshot — capture the pre-restore state so
+        // `/rewind` is itself rewindable. A failed safety-net snapshot is a
+        // warning, not a blocker (the restore is the user's explicit ask).
+        if let Err(err) = repo.snapshot("before /rewind") {
+            println!(
+                "{}",
+                format!("warning: could not snapshot the current state before restoring: {err}")
+                    .yellow()
+            );
+        }
+        repo.restore(&id).map_err(|err| err.to_string())
     })
     .await
     .map_err(|err| format!("restore failed: {err}"))?
@@ -146,5 +156,18 @@ mod tests {
             timestamp: i64::MAX,
         };
         assert_eq!(row.when(), i64::MAX.to_string());
+    }
+
+    /// The boundary walk exists so a multi-byte character spanning byte 8
+    /// cannot panic the slice; a regression to `&self.id[..8]` would pass
+    /// every clean-ascii test and only blow up here.
+    #[test]
+    fn short_id_stops_at_a_char_boundary() {
+        let row = SnapshotRow {
+            id: "0123456\u{e9}abcdef".to_string(),
+            label: "turn 1".to_string(),
+            timestamp: 0,
+        };
+        assert_eq!(row.short_id(), "0123456");
     }
 }

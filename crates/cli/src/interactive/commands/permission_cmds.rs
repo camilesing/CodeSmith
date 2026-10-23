@@ -182,6 +182,56 @@ pub fn allow(state: &mut ReplState, command: &str) {
     }
 }
 
+/// Grant many prefixes with one persisted save.
+///
+/// `/fewer-permission-prompts --yes` proposes up to a dozen rules; calling
+/// [`allow`] per rule would rewrite approvals.toml once per rule on the
+/// runtime thread. Grants in memory first, then a single save.
+pub fn allow_many(state: &mut ReplState, prefixes: &[&str]) {
+    let key = workspace_key(state);
+    let mut granted_keys = Vec::new();
+    for prefix in prefixes {
+        let rule = normalize_rule(prefix);
+        if rule.is_empty() {
+            continue;
+        }
+        let grant = shell_grant_key(&rule);
+        state.approval_grants.grant(&key, &grant);
+        state.approval_session_denied.remove(&grant);
+        granted_keys.push(grant);
+    }
+    match approvals_toml_path() {
+        Some(path) => match state.approval_grants.save(&path) {
+            Ok(()) => println!(
+                "{}",
+                format!(
+                    "allowed {} rule(s) — saved to {}",
+                    granted_keys.len(),
+                    path.display()
+                )
+                .green()
+            ),
+            Err(err) => println!(
+                "{}",
+                format!(
+                    "allowed {} rule(s) for this session, but saving failed: {err} \
+                     (the grants are in memory only)",
+                    granted_keys.len()
+                )
+                .yellow()
+            ),
+        },
+        None => println!(
+            "{}",
+            format!(
+                "allowed {} rule(s) for this session — no home directory to persist them in",
+                granted_keys.len()
+            )
+            .yellow()
+        ),
+    }
+}
+
 /// `/permissions remove <command prefix>` — forget a persisted grant.
 pub fn remove(state: &mut ReplState, command: &str) {
     let rule = normalize_rule(command);

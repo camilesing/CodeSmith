@@ -217,7 +217,7 @@ fn snapshot_with_label(workspace: &Path, label: &str, cap_bytes: u64) -> Option<
     match SnapshotRepo::open_or_init_with_cap(workspace, cap_bytes) {
         Ok(repo) => {
             let id = match repo.snapshot(label) {
-                Ok(id) => Some(id.0),
+                Ok(id) => Some(id.as_str().to_string()),
                 Err(e) => {
                     tracing::warn!(target: "snapshot", "snapshot '{label}' failed: {e}");
                     return None;

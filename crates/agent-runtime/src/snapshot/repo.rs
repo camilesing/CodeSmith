@@ -23,10 +23,29 @@ use crate::dependencies::ExternalTool;
 use super::paths::{ensure_snapshot_dir, snapshot_git_dir};
 
 /// Identifier for a snapshot — currently the underlying git commit SHA.
+///
+/// The field is private and [`SnapshotId::from_hex`] is the only public
+/// constructor, so the invariant "a `SnapshotId` is always a hex object
+/// name" holds for every caller: the id reaches `git checkout <id> -- :/`
+/// as git's first argument, and anything else (a leading `-` in
+/// particular) would be git option injection into a destructive whole-tree
+/// checkout.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SnapshotId(pub String);
+pub struct SnapshotId(String);
 
 impl SnapshotId {
+    /// Construct from a hex object name, rejecting anything else.
+    pub fn from_hex(id: impl Into<String>) -> io::Result<Self> {
+        let id = id.into();
+        if id.is_empty() || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("not a snapshot id: {id}"),
+            ));
+        }
+        Ok(Self(id))
+    }
+
     /// Borrow the SHA as a string slice.
     pub fn as_str(&self) -> &str {
         &self.0
@@ -207,6 +226,40 @@ impl SnapshotRepo {
     ///    look like they came from the user).
     pub fn open_or_init(workspace: &Path) -> io::Result<Self> {
         Self::open_or_init_with_cap(workspace, DEFAULT_MAX_WORKSPACE_BYTES_FOR_SNAPSHOT)
+    }
+
+    /// Open the snapshot repo without initializing anything.
+    ///
+    /// Read-side entry (`/rewind list`, `/rewind restore` preflight): a
+    /// first read must not create directories or run `git init`, two
+    /// concurrent first reads cannot race the check-then-act init, and a
+    /// workspace whose repo does not exist (snapshots disabled, oversized,
+    /// simply never snapshotted) reports "no snapshots" instead of leaving
+    /// a half-built side repo behind. Returns `Err(InvalidInput)` when the
+    /// side repo is not there.
+    pub fn try_open(workspace: &Path) -> io::Result<Self> {
+        let work_tree = workspace
+            .canonicalize()
+            .unwrap_or_else(|_| workspace.to_path_buf());
+        if let Some(reason) =
+            unsafe_workspace_snapshot_reason(&work_tree, dirs::home_dir().as_deref())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "workspace snapshots are disabled for {reason}: {}",
+                    work_tree.display()
+                ),
+            ));
+        }
+        let git_dir = snapshot_git_dir(&work_tree);
+        if !git_dir.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "no snapshot repository for this workspace yet",
+            ));
+        }
+        Ok(Self { git_dir, work_tree })
     }
 
     /// Variant of [`Self::open_or_init`] that accepts an explicit

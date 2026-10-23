@@ -857,6 +857,13 @@ fn builtin_disabled(state: &ReplState, info: &registry::CommandInfo) -> bool {
             .is_some_and(|runner| runner.is_builtin_command_disabled(info.name))
 }
 
+/// Whether the session's prompt is protected by the user's configured
+/// override — the flag `Op::SyncSession` needs so a later prompt refresh
+/// cannot silently swap an explicit override for a default one.
+pub(super) fn system_prompt_override_active(state: &ReplState) -> bool {
+    state.config.system_prompt_override_text().is_some()
+}
+
 /// Whether an argument string asks to persist (`--save` / `-s`).
 fn has_save_flag(arg: &str) -> bool {
     arg.split_whitespace()

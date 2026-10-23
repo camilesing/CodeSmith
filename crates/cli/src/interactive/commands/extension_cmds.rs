@@ -30,7 +30,7 @@ pub async fn extension_command(state: &ReplState, arg: &str) {
             None => println!("{} usage: /extension info <id>", "✗".red()),
         },
         "enable" | "disable" => match rest.first() {
-            Some(id) => set_enabled(id, sub == "enable"),
+            Some(id) => set_enabled(id, sub == "enable").await,
             None => println!("{} usage: /extension {sub} <id>", "✗".red()),
         },
         "reload" => match super::mods_cmds::reload_note(state).await {
@@ -188,9 +188,21 @@ fn status(state: &ReplState) {
     }
 }
 
-fn set_enabled(id: &str, enabled: bool) {
-    let result = crate::extension_state::ExtensionStateStore::load_default()
-        .and_then(|mut store| store.set_enabled(id, enabled));
+async fn set_enabled(id: &str, enabled: bool) {
+    let id = id.to_string();
+    let worker_id = id.clone();
+    let result = match tokio::task::spawn_blocking(move || {
+        crate::extension_state::ExtensionStateStore::load_default()
+            .and_then(|mut store| store.set_enabled(&worker_id, enabled))
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(err) => {
+            println!("{} state worker failed: {err}", "✗".red());
+            return;
+        }
+    };
     match result {
         Ok(()) => println!(
             "{id} {} — /extension reload applies it",
@@ -231,6 +243,22 @@ async fn install(state: &ReplState, arg: &str) {
         codesmith_extensions::InstallScope::Project => project_root,
     };
     let untrusted_project = !global_scope && !crate::config::is_workspace_trusted(&state.workspace);
+    // Both warnings precede the install: the fetch/build already executes
+    // arbitrary code (git clone, cargo build.rs, or a prebuilt dylib), so a
+    // notice printed afterwards cannot be declined.
+    if matches!(spec.kind, codesmith_extensions::SourceKind::Prebuilt) && spec.checksum.is_none() {
+        println!(
+            "{}",
+            "warning: prebuilt install without --checksum — the dylib is fetched over HTTPS              and loaded with no integrity pin; the host's trust is all that protects you"
+                .yellow()
+        );
+    }
+    if untrusted_project {
+        println!(
+            "{}",
+            "warning: this workspace is not trusted — the install source runs arbitrary code              (git clone / cargo build); project-scope extensions are gated at load; /trust add              marks the workspace trusted".yellow()
+        );
+    }
     let result = tokio::task::spawn_blocking(move || run_install(spec, root)).await;
     match result {
         Ok(Ok(report)) => {
@@ -249,12 +277,6 @@ async fn install(state: &ReplState, arg: &str) {
                     format!("warning: could not record install provenance: {err}").yellow()
                 );
             }
-            if untrusted_project {
-                println!(
-                    "{}",
-                    "warning: this workspace is not trusted — project-scope extensions are gated at load; add the path with /trust add to trust it".yellow()
-                );
-            }
             println!("{}", "run /extension reload to load it".dimmed());
         }
         Ok(Err(err)) => println!("{} install failed: {err}", "✗".red()),
@@ -263,8 +285,15 @@ async fn install(state: &ReplState, arg: &str) {
 }
 
 /// Cargo target dir for source-building installs (git/path/crate).
+///
+/// Per-user under the codesmith home rather than a fixed name in the
+/// sticky, world-shared `/tmp`: a pre-created or symlinked directory there
+/// is a classic tampering target, and the built dylib is loaded as native
+/// code after `/extension reload`.
 fn build_dir() -> PathBuf {
-    std::env::temp_dir().join("codesmith-extension-builds")
+    codesmith_config::codesmith_home()
+        .map(|home| home.join("extension-builds"))
+        .unwrap_or_else(|_| std::env::temp_dir())
 }
 
 fn run_install(
@@ -308,8 +337,14 @@ async fn uninstall(state: &ReplState, id: &str) {
     match result {
         Ok(Ok(report)) => {
             if report.removed {
-                let _ = crate::extension_state::ExtensionStateStore::load_default()
-                    .and_then(|mut store| store.remove_installed(&report.id));
+                if let Err(err) = crate::extension_state::ExtensionStateStore::load_default()
+                    .and_then(|mut store| store.remove_installed(&report.id))
+                {
+                    println!(
+                        "{}",
+                        format!("warning: could not clear install provenance: {err}").yellow()
+                    );
+                }
                 println!(
                     "uninstalled {} — bindings clear on the next /extension reload",
                     report.id

@@ -179,7 +179,8 @@ pub struct CommandInfo {
 }
 
 impl Command {
-    /// Every dispatchable command, in `/help` order.
+    /// Every dispatchable command. `/help` regroups these rows through
+    /// [`Group::ALL`], so order here is completion-candidate order only.
     pub const ALL: &'static [CommandInfo] = &[
         CommandInfo {
             command: Command::Help,
@@ -346,8 +347,8 @@ impl Command {
         CommandInfo {
             command: Command::Compact,
             name: "compact",
-            usage: "[memory|from|up_to]",
-            args: &["memory"],
+            usage: "[memory|from=N|up_to=N]",
+            args: &["memory", "from=", "up_to="],
             aliases: &["yasuo"],
             group: Group::Context,
             help: "compact the context now",
@@ -1008,11 +1009,11 @@ impl Command {
         CommandInfo {
             command: Command::Verify,
             name: "verify",
-            usage: "[stats]",
+            usage: "[target]",
             args: &[],
             aliases: &[],
             group: Group::Diagnostics,
-            help: "verification ledger stats",
+            help: "activate the verify-app skill (ledger stats moved to /claim-check)",
         },
         CommandInfo {
             command: Command::Links,
@@ -1055,6 +1056,7 @@ impl Command {
             name: "translate",
             usage: "",
             args: &[],
+            // "transale" is kept as a common misspelling of "translate".
             aliases: &["translation", "transale"],
             group: Group::Model,
             help: "toggle response-locale translation",
@@ -1116,7 +1118,7 @@ impl Command {
         CommandInfo {
             command: Command::Skill,
             name: "skill",
-            usage: "<name>|install|update|uninstall",
+            usage: "<name>|install|update|uninstall|trust",
             args: &["install", "update", "uninstall", "trust"],
             aliases: &["jineng"],
             group: Group::Extensions,
@@ -1300,6 +1302,19 @@ mod tests {
             Command::all_variants().len(),
             "Command::ALL has rows the enum does not have variants for"
         );
+    }
+
+    /// Tripwire: `/help` prints sections by iterating [`Group::ALL`], so a
+    /// row whose group is not listed there vanishes from the help output.
+    #[test]
+    fn every_row_group_is_listed() {
+        for info in Command::ALL {
+            assert!(
+                Group::ALL.contains(&info.group),
+                "/{} uses a group missing from Group::ALL and would not appear in /help",
+                info.name
+            );
+        }
     }
 
     #[test]

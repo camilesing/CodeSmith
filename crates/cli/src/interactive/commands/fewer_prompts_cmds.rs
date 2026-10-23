@@ -50,8 +50,8 @@ pub struct Suggestion {
     /// The command prefix `/permissions allow` takes (`git status`).
     pub prefix: String,
     /// The grant key the approval path matches and the store holds
-    /// (`shell:git`), which is what the report prints and what an existing
-    /// grant is compared against.
+    /// (`shell:git status`), which is what the report prints and what an
+    /// existing grant is compared against.
     pub key: String,
     /// A full command line that produced this key, for the report.
     pub example: String,
@@ -62,8 +62,8 @@ pub struct Suggestion {
 ///
 /// Separated from the printing so the counting can be tested without a REPL
 /// or a home directory.
-pub fn tally(commands: &[String]) -> HashMap<String, (String, u32)> {
-    let mut counts: HashMap<String, (String, u32)> = HashMap::new();
+pub fn tally(commands: &[String]) -> HashMap<String, (Vec<String>, u32)> {
+    let mut counts: HashMap<String, (Vec<String>, u32)> = HashMap::new();
     for command in commands {
         let key = permission_cmds::shell_grant_key(command);
         // `shell:<empty>` is what an all-whitespace command keys to; it
@@ -71,7 +71,11 @@ pub fn tally(commands: &[String]) -> HashMap<String, (String, u32)> {
         if key.is_empty() || key == "shell:<empty>" {
             continue;
         }
-        let entry = counts.entry(key).or_insert_with(|| (command.clone(), 0));
+        // Every observed variant of the family is kept: the rule written
+        // with `--yes` covers the whole family, so safety must hold for all
+        // of them, not for whichever example happened to come first.
+        let entry = counts.entry(key).or_insert_with(|| (Vec::new(), 0));
+        entry.0.push(command.clone());
         entry.1 += 1;
     }
     counts
@@ -81,16 +85,26 @@ pub fn tally(commands: &[String]) -> HashMap<String, (String, u32)> {
 ///
 /// `granted` is the set of rules already in force, which are dropped — the
 /// command exists to remove friction that is still there.
-pub fn suggestions(counts: HashMap<String, (String, u32)>, granted: &[String]) -> Vec<Suggestion> {
+pub fn suggestions(
+    counts: HashMap<String, (Vec<String>, u32)>,
+    granted: &[String],
+) -> Vec<Suggestion> {
     let mut out: Vec<Suggestion> = counts
         .into_iter()
         .filter(|(_, (_, runs))| *runs >= MIN_RUNS)
         .filter(|(key, _)| !granted.iter().any(|existing| existing == key))
-        .filter(|(_, (example, _))| analyze_command(example).level == SafetyLevel::Safe)
-        .map(|(key, (example, runs))| Suggestion {
+        // The grant covers every variant that keys here, so every observed
+        // variant must be read-only — one Safe example must not vouch for a
+        // family that also contains an unsafe spelling.
+        .filter(|(_, (examples, _))| {
+            examples
+                .iter()
+                .all(|example| analyze_command(example).level == SafetyLevel::Safe)
+        })
+        .map(|(key, (examples, runs))| Suggestion {
             prefix: key.strip_prefix("shell:").unwrap_or(&key).to_string(),
             key,
-            example,
+            example: examples.first().cloned().unwrap_or_default(),
             runs,
         })
         .collect();
@@ -103,7 +117,7 @@ pub fn suggestions(counts: HashMap<String, (String, u32)>, granted: &[String]) -
 pub async fn run(state: &mut ReplState, arg: &str) {
     let apply = arg
         .split_whitespace()
-        .any(|word| word == "--yes" || word == "-y");
+        .any(|word| matches!(word, "--yes" | "-y" | "--all"));
 
     // Reading the session files is blocking file IO and it is the whole cost
     // of the command.
@@ -119,7 +133,15 @@ pub async fn run(state: &mut ReplState, arg: &str) {
     {
         Ok(counts) => counts,
         Err(err) => {
-            println!("{} could not read the saved sessions: {err}", "✗".red());
+            // A JoinError is a panic or cancellation in the worker, not an
+            // IO failure — do not blame a file read that never failed.
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+            println!(
+                "{} reading the saved sessions was cancelled: {err}",
+                "✗".red()
+            );
             return;
         }
     };
@@ -144,8 +166,8 @@ pub async fn run(state: &mut ReplState, arg: &str) {
         println!(
             "{}",
             format!(
-                "nothing to propose — read {files_read} session(s) and every read-only command runs \
-                 {MIN_RUNS} times or more is already allowed (or has been run fewer than {MIN_RUNS} times)"
+                "nothing to propose — read {files_read} session(s): every read-only command run \
+                 {MIN_RUNS}+ times is already allowed, and nothing else reached {MIN_RUNS} runs"
             )
             .dimmed()
         );
@@ -188,15 +210,14 @@ pub async fn run(state: &mut ReplState, arg: &str) {
         return;
     }
 
-    for suggestion in &rules {
-        permission_cmds::allow(state, &suggestion.prefix);
-    }
+    let prefixes: Vec<&str> = rules.iter().map(|rule| rule.prefix.as_str()).collect();
+    permission_cmds::allow_many(state, &prefixes);
 }
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn runs(commands: &[&str]) -> HashMap<String, (String, u32)> {
+    fn runs(commands: &[&str]) -> HashMap<String, (Vec<String>, u32)> {
         tally(
             &commands
                 .iter()
@@ -234,12 +255,15 @@ mod tests {
             "a command seen once is not friction worth a rule: {keys:?}"
         );
 
-        for (key, (example, runs)) in &counts {
-            let expected = *runs >= MIN_RUNS && analyze_command(example).level == SafetyLevel::Safe;
+        for (key, (examples, runs)) in &counts {
+            let expected = *runs >= MIN_RUNS
+                && examples
+                    .iter()
+                    .all(|example| analyze_command(example).level == SafetyLevel::Safe);
             assert_eq!(
                 keys.contains(&key.as_str()),
                 expected,
-                "{key} (ran {runs}x, example {example:?})"
+                "{key} (ran {runs}x, examples {examples:?})"
             );
         }
 
@@ -259,6 +283,28 @@ mod tests {
         assert!(
             suggestions(counts, &["shell:git status".to_string()]).is_empty(),
             "an existing grant is why there is no prompt left to remove"
+        );
+    }
+
+    /// A family whose first-seen example is read-only but that also
+    /// contains a non-Safe spelling must not be proposed: the `--yes` rule
+    /// covers every variant, so the first example must not vouch for the
+    /// rest. This is the shape the old single-example tally got wrong.
+    #[test]
+    fn one_unsafe_variant_disqualifies_the_family() {
+        let mut counts: HashMap<String, (Vec<String>, u32)> = HashMap::new();
+        counts.insert(
+            "shell:read-only family".to_string(),
+            (vec!["ls".to_string(), "rm -rf build".to_string()], 5),
+        );
+        // Expectation derives from the same authority the filter uses.
+        let all_safe = ["ls", "rm -rf build"]
+            .iter()
+            .all(|example| analyze_command(example).level == SafetyLevel::Safe);
+        assert_eq!(
+            suggestions(counts, &[]).is_empty(),
+            !all_safe,
+            "a family with one non-Safe variant must not be proposed"
         );
     }
 
