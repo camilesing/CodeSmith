@@ -511,10 +511,8 @@ fn validate_endpoint_url_for_onboarding(url: &str) -> InputValidation {
     if rest.is_empty() || rest.starts_with('/') {
         return InputValidation::Reject("Endpoint URL is missing a host.".to_string());
     }
-    let authority = rest.split('/').next().unwrap_or_default();
-    let is_local = authority.starts_with("localhost")
-        || authority.starts_with("127.")
-        || authority.starts_with("[::1]")
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let is_local = codesmith_agent_runtime::network_policy::authority_is_loopback(authority)
         || authority.ends_with(".local");
     if trimmed.starts_with("http://") && !is_local {
         return InputValidation::Accept {

@@ -56,7 +56,7 @@ pub struct McpOAuthConfig {
 /// Reject user-configured OAuth endpoints that do not use `https://`: a
 /// cleartext `http://` hop would send the refresh token and receive access
 /// tokens in the clear. Plain `http://` stays allowed for loopback hosts
-/// (`localhost` / `127.x` / `[::1]`) for local testing.
+/// (`localhost`, `127.0.0.0/8`, `::1`) for local testing.
 fn ensure_secure_endpoint(url: &str) -> Result<()> {
     let Some((scheme, rest)) = url.split_once("://") else {
         bail!("oauth endpoint `{url}` must be an https:// URL");
@@ -66,15 +66,7 @@ fn ensure_secure_endpoint(url: &str) -> Result<()> {
     }
     if scheme.eq_ignore_ascii_case("http") {
         let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-        let host_port = authority
-            .rsplit_once('@')
-            .map_or(authority, |(_, host)| host);
-        let host = if let Some(bracketed) = host_port.strip_prefix('[') {
-            bracketed.split(']').next().unwrap_or_default()
-        } else {
-            host_port.split(':').next().unwrap_or_default()
-        };
-        if matches!(host, "localhost" | "::1" | "[::1]") || host.starts_with("127.") {
+        if crate::network_policy::authority_is_loopback(authority) {
             return Ok(());
         }
     }

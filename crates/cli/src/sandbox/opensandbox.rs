@@ -72,9 +72,9 @@ impl OpenSandboxBackend {
         if api_key.is_some() && base.scheme() != "https" {
             // Plaintext HTTP would expose the bearer token on the wire;
             // loopback is the one reasonable local-dev exception.
-            if base.host_str() != Some("localhost")
-                && !base.host_str().is_some_and(|h| h.starts_with("127."))
-            {
+            if !codesmith_agent_runtime::network_policy::is_loopback_host(
+                base.host_str().unwrap_or_default(),
+            ) {
                 anyhow::bail!(
                     "refusing to send the OpenSandbox API key over plaintext HTTP to {base_url:?}; \
                      use https or a loopback host"

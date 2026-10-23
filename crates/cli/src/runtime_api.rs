@@ -474,8 +474,7 @@ pub async fn run_http_server(
     };
     let app = build_router(state);
 
-    let addr: SocketAddr = format!("{}:{}", options.host, options.port)
-        .parse()
+    let addr: SocketAddr = parse_bind_addr(&options.host, options.port)
         .with_context(|| format!("Invalid bind address '{}:{}'", options.host, options.port))?;
     let listener = TcpListener::bind(addr)
         .await
@@ -501,7 +500,7 @@ pub async fn run_http_server(
             options.show_qr,
         );
     }
-    let is_loopback = options.host == "127.0.0.1" || options.host == "::1";
+    let is_loopback = codesmith_agent_runtime::network_policy::is_loopback_host(&options.host);
     if is_loopback {
         println!("Security: this server is local-first. Do not expose it to untrusted networks.");
     } else {
@@ -527,6 +526,16 @@ pub async fn run_http_server(
     scheduler_cancel.cancel();
     scheduler_handle.abort();
     serve_result
+}
+
+/// `host:port` concatenation cannot express a bare IPv6 literal (`::1:8787`
+/// is ambiguous), so parse the host as an IP first; both `::1` and the
+/// bracketed `[::1]` spelling then bind correctly.
+fn parse_bind_addr(host: &str, port: u16) -> Option<SocketAddr> {
+    if let Ok(ip) = host.trim().parse::<std::net::IpAddr>() {
+        return Some(SocketAddr::new(ip, port));
+    }
+    format!("{host}:{port}").parse().ok()
 }
 
 pub fn build_router(state: RuntimeApiState) -> Router {
@@ -582,6 +591,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/automations/{id}/resume", post(resume_automation))
         .route("/v1/automations/{id}/runs", get(list_automation_runs))
         .route("/v1/usage", get(get_usage))
+        // Authenticated like the rest of /v1/*: it echoes the bind host,
+        // port, and auth mode, which is exactly the recon an unauthenticated
+        // caller must not get for free.
+        .route("/v1/runtime/info", get(runtime_info))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_runtime_token,
@@ -591,7 +604,6 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/health", get(health))
         .route("/mobile", get(mobile_page))
         .route("/mobile/", get(mobile_page))
-        .route("/v1/runtime/info", get(runtime_info))
         .merge(api_routes)
         .layer(cors_layer(&state.cors_origins))
         .with_state(state)
@@ -713,6 +725,16 @@ async fn mobile_page(State(state): State<RuntimeApiState>, req: Request) -> Resp
     Html(MOBILE_HTML).into_response()
 }
 
+/// A bare IPv6 host (`::1`) is not a valid URL authority — bracket it for
+/// URL construction; IPv4 and already-bracketed hosts pass through.
+fn bracketed_host_port(host: &str, port: u16) -> String {
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
 fn print_mobile_urls(addr: SocketAddr, token: Option<&str>, auth_enabled: bool, show_qr: bool) {
     println!("Mobile control page enabled.");
     // URLs are printed without the token embedded: terminal scrollback and
@@ -724,7 +746,7 @@ fn print_mobile_urls(addr: SocketAddr, token: Option<&str>, auth_enabled: bool, 
     let qr_url = if addr.ip().is_unspecified() {
         println!("  Local: http://127.0.0.1:{port}/mobile");
         if let Some(ip) = detect_lan_ip() {
-            let lan_url = format!("http://{ip}:{port}/mobile");
+            let lan_url = format!("http://{}/mobile", bracketed_host_port(&ip, port));
             println!("  LAN:   {lan_url}");
             lan_url
         } else {

@@ -65,6 +65,42 @@ pub enum Decision {
     Prompt,
 }
 
+/// True when `host` is a loopback endpoint: `localhost` (case-insensitive,
+/// optional trailing dot), any IPv4 address in `127.0.0.0/8`, `::1`, or an
+/// IPv4-mapped loopback. Parsing-based, so look-alike names such as
+/// `127.evil.com` or `localhost.evil.com` are **not** loopback — a
+/// prefix/substring match here is the classic bypass.
+#[must_use]
+pub fn is_loopback_host(host: &str) -> bool {
+    let trimmed = host.trim().trim_end_matches('.');
+    let unbracketed = trimmed.strip_prefix('[').and_then(|h| h.strip_suffix(']'));
+    let normalized = (unbracketed.unwrap_or(trimmed)).to_ascii_lowercase();
+    if normalized == "localhost" {
+        return true;
+    }
+    match normalized.parse::<IpAddr>() {
+        Ok(IpAddr::V4(v4)) => v4.is_loopback(),
+        Ok(IpAddr::V6(v6)) => {
+            v6.is_loopback() || matches!(v6.to_ipv4_mapped(), Some(v4) if v4.is_loopback())
+        }
+        Err(_) => false,
+    }
+}
+
+/// True when a URL authority (`host`, `host:port`, `[v6]:port`,
+/// `user@host:port`) names a loopback host. Bracketed IPv6 literals are
+/// accepted with or without the brackets.
+#[must_use]
+pub fn authority_is_loopback(authority: &str) -> bool {
+    let host_part = authority.rsplit('@').next().unwrap_or_default();
+    let host = if let Some(rest) = host_part.strip_prefix('[') {
+        rest.split(']').next().unwrap_or_default()
+    } else {
+        host_part.split(':').next().unwrap_or_default()
+    };
+    is_loopback_host(host)
+}
+
 impl Decision {
     /// String form used in audit-log lines.
     #[must_use]
@@ -666,6 +702,53 @@ mod tests {
         // Deny-wins applies even when the deny is a wildcard and the allow is exact.
         let p = mk(Decision::Allow, &["api.example.com"], &[".example.com"]);
         assert_eq!(p.decide("api.example.com"), Decision::Deny);
+    }
+
+    #[test]
+    fn loopback_host_accepts_only_real_loopback() {
+        for host in [
+            "localhost",
+            "LOCALHOST",
+            "localhost.",
+            "127.0.0.1",
+            "127.1.2.3",
+            "::1",
+            "[::1]",
+            "::ffff:127.0.0.1",
+        ] {
+            assert!(is_loopback_host(host), "{host:?} should be loopback");
+        }
+        // Prefix/substring look-alikes are the classic bypass.
+        for host in [
+            "127.evil.com",
+            "localhost.evil.com",
+            "127.0.0.1.evil.com",
+            "localhostss",
+            "::1.evil.com",
+            "evil.com",
+            "",
+        ] {
+            assert!(!is_loopback_host(host), "{host:?} must not be loopback");
+        }
+    }
+
+    #[test]
+    fn loopback_authority_handles_ports_userinfo_and_brackets() {
+        for authority in [
+            "localhost:8080",
+            "127.0.0.1:8080",
+            "user@127.0.0.1:8080",
+            "[::1]:8080",
+            "127.0.0.1",
+        ] {
+            assert!(authority_is_loopback(authority), "{authority:?} should be loopback");
+        }
+        for authority in ["127.evil.com:8080", "user@127.evil.com", "localhost.evil.com:80"] {
+            assert!(
+                !authority_is_loopback(authority),
+                "{authority:?} must not be loopback"
+            );
+        }
     }
 
     #[test]

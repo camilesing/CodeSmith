@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -30,8 +30,7 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let listen: SocketAddr = format!("{}:{}", cli.host, cli.port)
-        .parse()
+    let listen: SocketAddr = parse_listen_addr(&cli.host, cli.port)
         .with_context(|| format!("invalid listen address {}:{}", cli.host, cli.port))?;
     // Env wins over the flag: the flag value is visible in `ps` output, so a
     // caller that set both almost certainly wants the env token used.
@@ -58,4 +57,14 @@ fn app_server_token_from_env() -> Option<String> {
     std::env::var("CODESMITH_APP_SERVER_TOKEN")
         .ok()
         .or_else(|| std::env::var("DEEPSEEK_APP_SERVER_TOKEN").ok())
+}
+
+/// `host:port` string concatenation cannot express a bare IPv6 literal
+/// (`::1:8787` is ambiguous), so parse the host as an IP first and accept
+/// both `--host ::1` and the bracketed `--host [::1]` spelling.
+fn parse_listen_addr(host: &str, port: u16) -> Option<SocketAddr> {
+    if let Ok(ip) = host.trim().parse::<IpAddr>() {
+        return Some(SocketAddr::new(ip, port));
+    }
+    format!("{host}:{port}").parse().ok()
 }
