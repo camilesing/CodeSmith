@@ -14,11 +14,11 @@
 //! ```text
 //! bwrap \
 //!   --ro-bind / / \
+//!   --bind <cwd> <cwd> \
 //!   --dev /dev \
 //!   --proc /proc \
 //!   --dir /sys \
 //!   --die-with-parent \
-//!   --bind <cwd> <cwd> \
 //!   --chdir <cwd> \
 //!   --unshare-all \
 //!   [--share-net] \
@@ -26,15 +26,15 @@
 //! ```
 //!
 //! This creates a read-only view of the entire filesystem with write access
-//! limited to the working directory. The `--dev`/`--proc`/`--dir /sys`
-//! overrides are stacked after the root ro-bind (bwrap applies mounts in
-//! argument order) so the sandbox gets a fresh minimal `/dev` tmpfs, a
-//! `/proc` bound to the new PID namespace rather than the host's, and an
-//! empty `/sys` — the host device tree and host PID/environ view stay
-//! hidden. `--unshare-all` implies `--unshare-net`, so `--share-net` is
-//! appended explicitly when the policy grants network access (Agent mode
-//! grants it by default; without this flag bwrap would silently cut the
-//! network the policy promised).
+//! limited to the working directory. Writable binds are emitted BEFORE the
+//! `--dev`/`--proc`/`--dir /sys` hardening mounts (bwrap applies mounts in
+//! argument order, later wins), so a covering writable root cannot
+//! re-expose the host device tree; the sandbox always gets a fresh minimal
+//! `/dev` tmpfs, a `/proc` bound to the new PID namespace rather than the
+//! host's, and an empty `/sys`. `--unshare-all` implies `--unshare-net`, so
+//! `--share-net` is appended explicitly when the policy grants network
+//! access (Agent mode grants it by default; without this flag bwrap would
+//! silently cut the network the policy promised).
 //!
 //! # Important
 //!
@@ -98,19 +98,11 @@ pub fn build_bwrap_command(
     cmd.push("/".to_string());
     cmd.push("/".to_string());
 
-    // Override the host's /dev, /proc and /sys that the root ro-bind just
-    // pulled in. bwrap applies mounts in argument order, so these later
-    // mounts win: /dev becomes a minimal tmpfs, /proc is a fresh instance
-    // tied to the new PID namespace (no host process/environ view), and /sys
-    // is an empty directory.
-    cmd.push("--dev".to_string());
-    cmd.push("/dev".to_string());
-    cmd.push("--proc".to_string());
-    cmd.push("/proc".to_string());
-    cmd.push("--dir".to_string());
-    cmd.push("/sys".to_string());
-
-    // Re-bind only policy writable roots as read-write.
+    // Re-bind only policy writable roots as read-write. These MUST come
+    // before the /dev//proc//sys hardening mounts below: bwrap applies
+    // mounts in argument order and later mounts win, so a writable root
+    // that covers them (a covering root, or literally `/`) would otherwise
+    // re-expose the host device tree and host PID view read-write.
     for writable_root in writable_roots {
         let root = writable_root.root.to_string_lossy().to_string();
         cmd.push("--bind".to_string());
@@ -126,6 +118,18 @@ pub fn build_bwrap_command(
             cmd.push(path);
         }
     }
+
+    // Override the host's /dev, /proc and /sys that the root ro-bind (or a
+    // covering writable bind above) just pulled in. Emitted LAST so the
+    // hardening always wins: /dev becomes a minimal tmpfs, /proc is a fresh
+    // instance tied to the new PID namespace (no host process/environ
+    // view), and /sys is an empty directory.
+    cmd.push("--dev".to_string());
+    cmd.push("/dev".to_string());
+    cmd.push("--proc".to_string());
+    cmd.push("/proc".to_string());
+    cmd.push("--dir".to_string());
+    cmd.push("/sys".to_string());
 
     // Change to the working directory inside the container.
     let cwd_str = cwd.to_string_lossy().to_string();
@@ -203,6 +207,14 @@ mod tests {
         assert!(dev_at > ro_bind_root);
         assert!(proc_at > ro_bind_root);
         assert!(sys_at > ro_bind_root);
+        // Hardening must come after ANY writable bind (exact `--bind`
+        // flag; `--ro-bind` never matches): a covering root must not
+        // re-expose the host device tree.
+        if let Some(bind_at) = cmd.iter().position(|a| a == "--bind") {
+            assert!(dev_at > bind_at, "hardening must win over writable binds");
+            assert!(proc_at > bind_at);
+            assert!(sys_at > bind_at);
+        }
 
         // Die with the parent so sandboxed children cannot outlive us.
         assert!(cmd.contains(&"--die-with-parent".to_string()));

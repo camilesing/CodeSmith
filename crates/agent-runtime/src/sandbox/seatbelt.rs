@@ -105,23 +105,39 @@ const SEATBELT_NETWORK_POLICY: &str = r"
 ";
 
 /// Check if sandbox-exec is available and permitted on this system.
+///
+/// Only definitive answers latch into the process-lifetime cache: a missing
+/// binary or a completed probe (success or clean failure) is definitive; a
+/// transient spawn error (fork/exec hiccup, resource pressure) returns
+/// `false` for THIS call without latching, so a later call retries instead
+/// of the whole process permanently downgrading to "no sandbox".
 pub fn is_available() -> bool {
     static SEATBELT_AVAILABLE: OnceLock<bool> = OnceLock::new();
 
-    *SEATBELT_AVAILABLE.get_or_init(|| {
-        if !Path::new(SANDBOX_EXEC_PATH).exists() {
-            return false;
-        }
+    if let Some(cached) = SEATBELT_AVAILABLE.get() {
+        return *cached;
+    }
 
-        let output = Command::new(SANDBOX_EXEC_PATH)
-            .args(["-p", "(version 1)(allow default)", "--", "/usr/bin/true"])
-            .output();
+    if !Path::new(SANDBOX_EXEC_PATH).exists() {
+        // Definitive: nothing to retry.
+        let _ = SEATBELT_AVAILABLE.set(false);
+        return false;
+    }
 
-        match output {
-            Ok(result) => result.status.success(),
-            Err(_) => false,
+    let probed = Command::new(SANDBOX_EXEC_PATH)
+        .args(["-p", "(version 1)(allow default)", "--", "/usr/bin/true"])
+        .output();
+
+    match probed {
+        Ok(result) => {
+            let available = result.status.success();
+            let _ = SEATBELT_AVAILABLE.set(available);
+            available
         }
-    })
+        // Transient spawn failure: do NOT latch — report unavailable for
+        // this call and let the next call retry.
+        Err(_) => false,
+    }
 }
 
 /// Env- and filesystem-derived inputs shared by [`generate_policy`] and
@@ -369,9 +385,24 @@ fn generate_params(ctx: &ProfileContext) -> Vec<(String, PathBuf)> {
             // (deleted/racy path, `..`, unresolved symlink) silently stops
             // matching and writes into the "read-only" area stay allowed.
             // Derive the exception from the canonicalized root instead.
+            // `PathBuf::join` with an ABSOLUTE path replaces the base
+            // entirely, so an absolute subpath that failed to canonicalize
+            // would point the exception at an arbitrary path (fail-open);
+            // when the derivation cannot be proven to sit under the root,
+            // pin the exception to the root itself — the whole root becomes
+            // read-only rather than the protected area losing protection.
             let canonical_subpath = match subpath.canonicalize() {
-                Ok(p) => p,
-                Err(_) => canonical.join(subpath.strip_prefix(&root.root).unwrap_or(subpath)),
+                Ok(p) if p.starts_with(&canonical) => p,
+                Ok(_) => canonical.clone(),
+                Err(_) => {
+                    let derived =
+                        canonical.join(subpath.strip_prefix(&root.root).unwrap_or(subpath));
+                    if derived.starts_with(&canonical) {
+                        derived
+                    } else {
+                        canonical.clone()
+                    }
+                }
             };
             params.push((
                 format!("WRITABLE_ROOT_{index}_RO_{subpath_index}"),

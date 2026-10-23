@@ -1092,7 +1092,20 @@ pub fn get_platform_sandbox() -> Option<SandboxType> {
 }
 
 /// Check if sandboxing is available on this platform.
+///
+/// Must agree with [`SandboxManager::select_sandbox`]'s backend choice: on
+/// Linux, bwrap is selected whenever installed (Landlock is only the
+/// fallback), so availability detection counts bwrap too — otherwise a
+/// bwrap-only host reports "no sandbox" here while selection happily
+/// enforces through bwrap, and callers gating on this probe refuse
+/// confinement that exists.
 pub fn is_sandbox_available() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        if bwrap::is_available() {
+            return true;
+        }
+    }
     get_platform_sandbox().is_some()
 }
 

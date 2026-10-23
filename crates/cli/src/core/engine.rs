@@ -1484,12 +1484,20 @@ pub fn build_engine(
         None
     };
 
-    // External sandbox backend (#516).
+    // External sandbox backend (#516). Config::validate() rejects a
+    // misconfigured backend at load, so an error here means the config was
+    // never validated (tests, dynamic re-config): fail loud rather than
+    // degrade silently to unconfined local execution.
     let sandbox_backend = crate::sandbox::backend::create_backend(api_config)
-        .unwrap_or_else(|e| {
-            tracing::warn!("Failed to create sandbox backend: {e}");
-            None
+        .inspect_err(|e| {
+            tracing::error!(
+                "sandbox backend from config is invalid: {e}; commands will run LOCALLY \
+                 UNCONFINED — fix sandbox_backend/sandbox_url or set \
+                 sandbox_backend = \"none\" (Config::validate rejects this at load)"
+            );
         })
+        .ok()
+        .flatten()
         .map(std::sync::Arc::from);
 
     let bg_registry = std::sync::Arc::new(tokio::sync::Mutex::new(

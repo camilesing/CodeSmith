@@ -1599,6 +1599,10 @@ impl Config {
                 }
             }
         }
+        // Sandbox backend: validated at load, not degraded at engine build —
+        // a misconfigured external backend must fail startup, never quietly
+        // fall back to local (unconfined) execution.
+        crate::sandbox::backend::create_backend(self)?;
         for (key, value) in [("preset", &self.preset), ("mode", &self.mode)] {
             if let Some(value) = value.as_deref()
                 && value.trim().eq_ignore_ascii_case("diy")

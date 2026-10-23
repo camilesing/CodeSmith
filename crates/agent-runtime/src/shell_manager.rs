@@ -773,9 +773,9 @@ fn sandbox_unavailable_reason(prefer_bwrap: bool) -> String {
     }
     #[cfg(target_os = "linux")]
     {
-        if prefer_bwrap && !crate::sandbox::bwrap::is_available() {
-            return "bubblewrap was requested but /usr/bin/bwrap is unavailable".to_string();
-        }
+        // Backend selection prefers bwrap automatically; a missing bwrap
+        // with Landlock present is NOT unavailability.
+        let _ = prefer_bwrap;
         if !crate::sandbox::landlock::is_available() && !crate::sandbox::bwrap::is_available() {
             return "no Linux sandbox backend is available (install bubblewrap, e.g. \
                     'apt install bubblewrap', or run a Landlock-capable kernel, 5.13+)"
