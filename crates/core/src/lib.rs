@@ -737,7 +737,15 @@ pub struct Runtime {
     /// Registry of available model providers.
     pub model_registry: ModelRegistry,
     /// Manages conversation thread lifecycle.
-    pub thread_manager: ThreadManager,
+    ///
+    /// Interior-mutability seam: every `Runtime` method is `&self`, so the
+    /// app-server shares one `Arc<Runtime>` across handlers without a
+    /// process-global lock. The mutex guards the running-thread table and
+    /// its state store (all synchronous operations — a guard is never held
+    /// across an `.await`), which serializes thread mutations against each
+    /// other while everything else (hook emission, tool dispatch, MCP
+    /// startup, job reads) runs concurrently.
+    pub thread_manager: std::sync::Mutex<ThreadManager>,
     /// Registry of callable tools.
     pub tool_registry: Arc<ToolRegistry>,
     /// Manager for MCP server connections.
@@ -780,7 +788,7 @@ impl Runtime {
         Self {
             config,
             model_registry,
-            thread_manager: ThreadManager::new(state),
+            thread_manager: std::sync::Mutex::new(ThreadManager::new(state)),
             tool_registry,
             mcp_manager,
             exec_policy,
@@ -793,6 +801,8 @@ impl Runtime {
         const HISTORY_LIMIT: usize = 500;
         let mut records = self
             .thread_manager
+            .lock()
+            .unwrap()
             .state_store()
             .list_messages(thread_id, Some(HISTORY_LIMIT + 1))?;
         // `list_messages` walks back from the leaf, so the cap keeps the
@@ -817,6 +827,8 @@ impl Runtime {
 
         let checkpoint = self
             .thread_manager
+            .lock()
+            .unwrap()
             .state_store()
             .load_checkpoint(thread_id, None)?
             .map(|record| {
@@ -835,28 +847,36 @@ impl Runtime {
     }
 
     fn persist_latest_checkpoint(&self, thread_id: &str, reason: &str, state: Value) -> Result<()> {
-        self.thread_manager.state_store().save_checkpoint(
-            thread_id,
-            "latest",
-            &json!({
-                "reason": reason,
-                "saved_at": chrono::Utc::now().timestamp(),
-                "state": state
-            }),
-        )
+        self.thread_manager
+            .lock()
+            .unwrap()
+            .state_store()
+            .save_checkpoint(
+                thread_id,
+                "latest",
+                &json!({
+                    "reason": reason,
+                    "saved_at": chrono::Utc::now().timestamp(),
+                    "state": state
+                }),
+            )
     }
 
     /// Dispatches a thread request (create, start, resume, fork, list, read, etc.).
-    pub async fn handle_thread(&mut self, req: ThreadRequest) -> Result<ThreadResponse> {
+    pub async fn handle_thread(&self, req: ThreadRequest) -> Result<ThreadResponse> {
         match req {
             ThreadRequest::Create { .. } => {
                 let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-                let new = self.thread_manager.spawn_thread_with_history(
-                    self.config.provider.as_str().to_string(),
-                    cwd,
-                    InitialHistory::New,
-                    false,
-                )?;
+                let new = self
+                    .thread_manager
+                    .lock()
+                    .unwrap()
+                    .spawn_thread_with_history(
+                        self.config.provider.as_str().to_string(),
+                        cwd,
+                        InitialHistory::New,
+                        false,
+                    )?;
                 let mut response = thread_response_from_new("created", new);
                 response.data = self.persisted_thread_data(&response.thread_id)?;
                 Ok(response)
@@ -865,26 +885,35 @@ impl Runtime {
                 let cwd = params.cwd.clone().unwrap_or_else(|| {
                     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
                 });
-                let new = self.thread_manager.spawn_thread_with_history(
-                    params
-                        .model_provider
-                        .clone()
-                        .unwrap_or_else(|| self.config.provider.as_str().to_string()),
-                    cwd,
-                    InitialHistory::New,
-                    params.persist_extended_history,
-                )?;
+                let new = self
+                    .thread_manager
+                    .lock()
+                    .unwrap()
+                    .spawn_thread_with_history(
+                        params
+                            .model_provider
+                            .clone()
+                            .unwrap_or_else(|| self.config.provider.as_str().to_string()),
+                        cwd,
+                        InitialHistory::New,
+                        params.persist_extended_history,
+                    )?;
                 let mut response = thread_response_from_new("started", new);
                 response.data = self.persisted_thread_data(&response.thread_id)?;
                 Ok(response)
             }
             ThreadRequest::Resume(params) => {
                 let fallback_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-                if let Some(new) = self.thread_manager.resume_thread_with_history(
-                    &params,
-                    &fallback_cwd,
-                    self.config.provider.as_str().to_string(),
-                )? {
+                if let Some(new) = self
+                    .thread_manager
+                    .lock()
+                    .unwrap()
+                    .resume_thread_with_history(
+                        &params,
+                        &fallback_cwd,
+                        self.config.provider.as_str().to_string(),
+                    )?
+                {
                     let mut response = thread_response_from_new("resumed", new);
                     response.data = self.persisted_thread_data(&response.thread_id)?;
                     Ok(response)
@@ -906,7 +935,12 @@ impl Runtime {
             }
             ThreadRequest::Fork(params) => {
                 let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-                if let Some(new) = self.thread_manager.fork_thread(&params, &cwd)? {
+                if let Some(new) = self
+                    .thread_manager
+                    .lock()
+                    .unwrap()
+                    .fork_thread(&params, &cwd)?
+                {
                     let mut response = thread_response_from_new("forked", new);
                     response.data = self.persisted_thread_data(&response.thread_id)?;
                     Ok(response)
@@ -930,7 +964,7 @@ impl Runtime {
                 thread_id: "list".to_string(),
                 status: "ok".to_string(),
                 thread: None,
-                threads: self.thread_manager.list_threads(&params)?,
+                threads: self.thread_manager.lock().unwrap().list_threads(&params)?,
                 model: None,
                 model_provider: None,
                 cwd: None,
@@ -945,7 +979,7 @@ impl Runtime {
                 Ok(ThreadResponse {
                     thread_id: id,
                     status: "ok".to_string(),
-                    thread: self.thread_manager.read_thread(&params)?,
+                    thread: self.thread_manager.lock().unwrap().read_thread(&params)?,
                     threads: Vec::new(),
                     model: None,
                     model_provider: None,
@@ -959,7 +993,11 @@ impl Runtime {
             ThreadRequest::SetName(params) => Ok(ThreadResponse {
                 thread_id: params.thread_id.clone(),
                 status: "ok".to_string(),
-                thread: self.thread_manager.set_thread_name(&params)?,
+                thread: self
+                    .thread_manager
+                    .lock()
+                    .unwrap()
+                    .set_thread_name(&params)?,
                 threads: Vec::new(),
                 model: None,
                 model_provider: None,
@@ -970,7 +1008,10 @@ impl Runtime {
                 data: json!({}),
             }),
             ThreadRequest::Archive { thread_id } => {
-                self.thread_manager.archive_thread(&thread_id)?;
+                self.thread_manager
+                    .lock()
+                    .unwrap()
+                    .archive_thread(&thread_id)?;
                 Ok(ThreadResponse {
                     thread_id,
                     status: "archived".to_string(),
@@ -986,7 +1027,10 @@ impl Runtime {
                 })
             }
             ThreadRequest::Unarchive { thread_id } => {
-                self.thread_manager.unarchive_thread(&thread_id)?;
+                self.thread_manager
+                    .lock()
+                    .unwrap()
+                    .unarchive_thread(&thread_id)?;
                 Ok(ThreadResponse {
                     thread_id,
                     status: "unarchived".to_string(),
@@ -1002,7 +1046,10 @@ impl Runtime {
                 })
             }
             ThreadRequest::Message { thread_id, input } => {
-                self.thread_manager.touch_message(&thread_id, &input)?;
+                self.thread_manager
+                    .lock()
+                    .unwrap()
+                    .touch_message(&thread_id, &input)?;
                 // UUID-based like `handle_prompt`: `{thread_id}:{len}` collides
                 // for same-length inputs, conflating distinct turns in any
                 // response_id-keyed consumer.
@@ -1047,7 +1094,7 @@ impl Runtime {
 
     /// Resolves the model for a prompt, records the message, and returns the response.
     pub async fn handle_prompt(
-        &mut self,
+        &self,
         req: PromptRequest,
         cli_overrides: &CliRuntimeOverrides,
     ) -> Result<PromptResponse> {
@@ -1087,17 +1134,19 @@ impl Runtime {
             "sandbox_mode": resolved.sandbox_mode
         });
         if let Some(thread_id) = req.thread_id.as_ref() {
-            self.thread_manager.touch_message(thread_id, &req.prompt)?;
+            let mut thread_manager = self.thread_manager.lock().unwrap();
+            thread_manager.touch_message(thread_id, &req.prompt)?;
             // Runtime metadata, not assistant output — a "assistant" role
             // would be replayed as conversation history by Read/Resume data,
             // forks, and any list_messages consumer, polluting model context
             // with config echoes.
-            let assistant_message_id = self.thread_manager.store.append_message(
+            let assistant_message_id = thread_manager.store.append_message(
                 thread_id,
                 "metadata",
                 &payload.to_string(),
                 Some(payload.clone()),
             )?;
+            drop(thread_manager);
             self.persist_latest_checkpoint(
                 thread_id,
                 "prompt_response",
@@ -1440,6 +1489,8 @@ impl Runtime {
         state: &Value,
     ) -> Result<()> {
         self.thread_manager
+            .lock()
+            .unwrap()
             .state_store()
             .save_checkpoint(thread_id, checkpoint_id, state)
     }
@@ -1452,6 +1503,8 @@ impl Runtime {
     ) -> Result<Option<Value>> {
         Ok(self
             .thread_manager
+            .lock()
+            .unwrap()
             .state_store()
             .load_checkpoint(thread_id, checkpoint_id)?
             .map(|checkpoint| checkpoint.state))
@@ -1461,7 +1514,7 @@ impl Runtime {
     pub fn enqueue_job(&mut self, name: impl Into<String>) -> Result<JobRecord> {
         let job = self.jobs.enqueue(name);
         self.jobs
-            .persist_job(self.thread_manager.state_store(), &job.id)?;
+            .persist_job(self.thread_manager.lock().unwrap().state_store(), &job.id)?;
         Ok(job)
     }
 
@@ -1469,7 +1522,7 @@ impl Runtime {
     pub fn set_job_running(&mut self, job_id: &str) -> Result<()> {
         self.jobs.set_running(job_id);
         self.jobs
-            .persist_job(self.thread_manager.state_store(), job_id)
+            .persist_job(self.thread_manager.lock().unwrap().state_store(), job_id)
     }
 
     /// Updates a job's progress and persists the change.
@@ -1481,42 +1534,42 @@ impl Runtime {
     ) -> Result<()> {
         self.jobs.update_progress(job_id, progress, detail);
         self.jobs
-            .persist_job(self.thread_manager.state_store(), job_id)
+            .persist_job(self.thread_manager.lock().unwrap().state_store(), job_id)
     }
 
     /// Marks a job as completed and persists the change.
     pub fn complete_job(&mut self, job_id: &str) -> Result<()> {
         self.jobs.complete(job_id);
         self.jobs
-            .persist_job(self.thread_manager.state_store(), job_id)
+            .persist_job(self.thread_manager.lock().unwrap().state_store(), job_id)
     }
 
     /// Marks a job as failed and persists the change.
     pub fn fail_job(&mut self, job_id: &str, detail: impl Into<String>) -> Result<()> {
         self.jobs.fail(job_id, detail);
         self.jobs
-            .persist_job(self.thread_manager.state_store(), job_id)
+            .persist_job(self.thread_manager.lock().unwrap().state_store(), job_id)
     }
 
     /// Cancels a job and persists the change.
     pub fn cancel_job(&mut self, job_id: &str) -> Result<()> {
         self.jobs.cancel(job_id);
         self.jobs
-            .persist_job(self.thread_manager.state_store(), job_id)
+            .persist_job(self.thread_manager.lock().unwrap().state_store(), job_id)
     }
 
     /// Pauses a job and persists the change.
     pub fn pause_job(&mut self, job_id: &str, detail: Option<String>) -> Result<()> {
         self.jobs.pause(job_id, detail);
         self.jobs
-            .persist_job(self.thread_manager.state_store(), job_id)
+            .persist_job(self.thread_manager.lock().unwrap().state_store(), job_id)
     }
 
     /// Resumes a paused job and persists the change.
     pub fn resume_job(&mut self, job_id: &str, detail: Option<String>) -> Result<()> {
         self.jobs.resume(job_id, detail);
         self.jobs
-            .persist_job(self.thread_manager.state_store(), job_id)
+            .persist_job(self.thread_manager.lock().unwrap().state_store(), job_id)
     }
 
     /// Returns the state-transition history for a job.

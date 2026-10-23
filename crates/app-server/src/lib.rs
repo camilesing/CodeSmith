@@ -24,7 +24,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 
@@ -66,7 +66,12 @@ impl std::fmt::Debug for AppServerOptions {
 struct AppState {
     config_path: Option<PathBuf>,
     config: Arc<RwLock<codesmith_config::ConfigToml>>,
-    runtime: Arc<Mutex<Runtime>>,
+    /// Shared runtime. Every `Runtime` method takes `&self` (the
+    /// running-thread table and its state store are behind an internal
+    /// mutex), so handlers run concurrently with no process-global lock:
+    /// hook emission, tool dispatch, MCP startup, and job reads overlap,
+    /// and only thread-table mutations serialize against each other.
+    runtime: Arc<Runtime>,
     registry: ModelRegistry,
     auth_token: Option<String>,
 }
@@ -234,8 +239,7 @@ async fn thread_handler(
     State(state): State<AppState>,
     Json(req): Json<ThreadRequest>,
 ) -> axum::response::Response {
-    let mut runtime = state.runtime.lock().await;
-    match runtime.handle_thread(req).await {
+    match state.runtime.handle_thread(req).await {
         Ok(res) => Json(res).into_response(),
         Err(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -249,9 +253,8 @@ async fn prompt_handler(
     State(state): State<AppState>,
     Json(req): Json<PromptRequest>,
 ) -> axum::response::Response {
-    let mut runtime = state.runtime.lock().await;
     let overrides = CliRuntimeOverrides::default();
-    match runtime.handle_prompt(req, &overrides).await {
+    match state.runtime.handle_prompt(req, &overrides).await {
         Ok(res) => Json(res).into_response(),
         Err(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -265,11 +268,13 @@ async fn tool_handler(
     State(state): State<AppState>,
     Json(req): Json<ToolCallRequest>,
 ) -> axum::response::Response {
-    let runtime = state.runtime.lock().await;
+    // No global lock: tool execution can run for minutes and must not
+    // block (or be blocked by) any other handler.
     let cwd = req
         .cwd
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    match runtime
+    match state
+        .runtime
         .invoke_tool(
             req.call,
             codesmith_execpolicy::AskForApproval::OnRequest,
@@ -290,13 +295,11 @@ async fn tool_handler(
 }
 
 async fn jobs_handler(State(state): State<AppState>) -> Json<AppResponse> {
-    let runtime = state.runtime.lock().await;
-    Json(runtime.app_status())
+    Json(state.runtime.app_status())
 }
 
 async fn mcp_startup_handler(State(state): State<AppState>) -> Json<Value> {
-    let runtime = state.runtime.lock().await;
-    let summary = runtime.mcp_startup().await;
+    let summary = state.runtime.mcp_startup().await;
     Json(json!({
         "ok": true,
         "summary": summary
@@ -350,7 +353,7 @@ fn build_state(config_path: Option<PathBuf>, auth_token: Option<String>) -> Resu
     Ok(AppState {
         config_path,
         config: Arc::new(RwLock::new(config)),
-        runtime: Arc::new(Mutex::new(runtime)),
+        runtime: Arc::new(runtime),
         registry,
         auth_token,
     })
@@ -571,8 +574,8 @@ async fn handle_thread_request(
     state: &AppState,
     req: ThreadRequest,
 ) -> std::result::Result<ThreadResponse, JsonRpcError> {
-    let mut runtime = state.runtime.lock().await;
-    runtime
+    state
+        .runtime
         .handle_thread(req)
         .await
         .map_err(|err| JsonRpcError::internal(err.to_string()))
@@ -582,8 +585,8 @@ async fn handle_prompt_request(
     state: &AppState,
     req: PromptRequest,
 ) -> std::result::Result<PromptResponse, JsonRpcError> {
-    let mut runtime = state.runtime.lock().await;
-    runtime
+    state
+        .runtime
         .handle_prompt(req, &CliRuntimeOverrides::default())
         .await
         .map_err(|err| JsonRpcError::internal(err.to_string()))
@@ -996,8 +999,8 @@ async fn process_app_request(
             events: Vec::new(),
         },
         AppRequest::ThreadLoadedList => {
-            let mut runtime = state.runtime.lock().await;
-            let response = runtime
+            let response = state
+                .runtime
                 .handle_thread(codesmith_protocol::ThreadRequest::List(
                     codesmith_protocol::ThreadListParams {
                         include_archived: false,
@@ -1362,6 +1365,65 @@ mod tests {
         assert!(!constant_time_eq(b"cwapp abc", b"cwapp ab"));
         assert!(!constant_time_eq(b"", b"x"));
         assert!(constant_time_eq(b"", b""));
+    }
+
+    /// Hook sink that stalls every emit, used to hold a handler open long
+    /// enough to observe lock contention (or its absence).
+    struct StallingSink(std::time::Duration);
+
+    #[async_trait::async_trait]
+    impl codesmith_hooks::HookSink for StallingSink {
+        async fn emit(&self, _event: &codesmith_hooks::HookEvent) -> Result<()> {
+            tokio::time::sleep(self.0).await;
+            Ok(())
+        }
+    }
+
+    /// Locking regression: a slow mutating handler (`handle_prompt`, write
+    /// lock held through its hook emits) must not block the read-lock
+    /// handlers (`/jobs`). Before the `Mutex` → `RwLock` split, every
+    /// handler serialized behind the single global runtime mutex.
+    #[tokio::test]
+    async fn read_handlers_are_not_blocked_by_a_slow_write_handler() {
+        let mut state = build_state(None, None).expect("state");
+        {
+            let mut hooks = codesmith_hooks::HookDispatcher::default();
+            hooks.add_sink(Arc::new(StallingSink(std::time::Duration::from_millis(
+                200,
+            ))));
+            let runtime = Arc::get_mut(&mut state.runtime)
+                .expect("test state must hold the only runtime Arc");
+            runtime.hooks = hooks;
+        }
+
+        let prompt_state = state.clone();
+        let prompt = tokio::spawn(async move {
+            prompt_state
+                .runtime
+                .handle_prompt(
+                    codesmith_protocol::PromptRequest {
+                        prompt: "slow".to_string(),
+                        model: None,
+                        thread_id: None,
+                    },
+                    &CliRuntimeOverrides::default(),
+                )
+                .await
+                .expect("prompt")
+        });
+
+        // Give the prompt handler time to grab the write lock first; then a
+        // read handler must still complete immediately.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let started = std::time::Instant::now();
+        let _ = jobs_handler(State(state)).await;
+        let jobs_elapsed = started.elapsed();
+
+        prompt.await.expect("prompt task");
+        assert!(
+            jobs_elapsed < std::time::Duration::from_millis(200),
+            "/jobs blocked behind a slow write handler: {jobs_elapsed:?}"
+        );
     }
 
     #[tokio::test]

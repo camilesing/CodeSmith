@@ -836,6 +836,7 @@ name = "codesmith-app-server"
 version = "0.10.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "clap",
  "codesmith-agent",
