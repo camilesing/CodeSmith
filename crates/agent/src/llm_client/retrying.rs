@@ -15,10 +15,13 @@
 //! By the time an adapter failure reaches the trait boundary it is an
 //! `anyhow::Error` whose HTTP cause is type-erased (rig boxes the underlying
 //! `reqwest::Error`), so retryability is recovered from the rendered chain
-//! text — the same posture as the engine's stream-retry classifier. Known
-//! limitation: a provider whose error text names no status code, timeout, or
-//! connection shape classifies as non-retryable `Other` and fails after one
-//! attempt.
+//! text — matching the transient shapes reqwest/hyper/rig actually emit
+//! (`timed out`, `error sending request`, `connection refused/closed/reset`,
+//! `failed to connect`), never the bare words "timeout"/"connection":
+//! permanent prose that merely names one (a 400 whose body says "'timeout'
+//! must be between 1 and 120") must not burn retries. Known limitation: a
+//! provider whose transient error text uses none of these shapes classifies
+//! as non-retryable `Other` and fails after one attempt.
 //!
 //! # Recording order
 //!
@@ -49,12 +52,23 @@ fn classify(err: &anyhow::Error) -> LlmError {
     if let Some(status) = find_status_code(&lower) {
         return LlmError::from_http_response(status, &text);
     }
-    if lower.contains("timed out") || lower.contains("timeout") {
+    // Transient shapes reqwest/hyper/rig actually emit. Bare
+    // "timeout"/"connection"/"connect " matched permanent prose too (a 400
+    // whose body says "'timeout' must be between 1 and 120", "invalid
+    // connection string", a model named "connection-pro") and retried it.
+    if lower.contains("timed out") || lower.contains("request timeout") {
         return LlmError::Timeout(Duration::ZERO);
     }
     if lower.contains("error sending request")
-        || lower.contains("connection")
-        || lower.contains("connect ")
+        || lower.contains("connection refused")
+        || lower.contains("connection closed")
+        || lower.contains("connection reset")
+        || lower.contains("connection aborted")
+        || lower.contains("connection error")
+        || lower.contains("failed to connect")
+        || lower.contains("unable to connect")
+        || lower.contains("could not connect")
+        || lower.contains("timed out connecting")
     {
         return LlmError::NetworkError(text);
     }
@@ -335,6 +349,25 @@ mod tests {
                 .await
                 .expect("transient shape recovers on retry");
             assert_eq!(inner.calls.load(Ordering::SeqCst), 2, "{message}");
+        }
+    }
+
+    #[tokio::test]
+    async fn permanent_prose_naming_transient_words_is_not_retried() {
+        // A permanent failure whose body merely mentions "timeout"/
+        // "connection" must not inherit transient retry semantics.
+        for message in [
+            "'timeout' must be between 1 and 120",
+            "invalid connection string for provider",
+        ] {
+            let inner = Arc::new(FlakyClient {
+                fail_count: 5,
+                fail_message: message,
+                calls: AtomicU32::new(0),
+            });
+            let client = RetryingClient::new(inner.clone(), quick_retry());
+            let _ = client.create_message(request()).await;
+            assert_eq!(inner.calls.load(Ordering::SeqCst), 1, "{message}");
         }
     }
 

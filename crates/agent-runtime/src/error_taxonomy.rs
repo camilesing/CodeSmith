@@ -323,8 +323,9 @@ fn contains_status_code(lower: &str, code: &str) -> bool {
 }
 
 /// Token-level authentication keywords. Substring `contains("auth")`
-/// matched "author"/"authoring"; plain "authorization" stays on the
-/// Authorization branch below.
+/// matched "author"/"authoring"; plain "authorization" and bare "authorized"
+/// stay on the Authorization branch below (401 identity failures keep the
+/// "unauthorized"/"unauthenticated" spellings).
 fn contains_auth_keyword(lower: &str) -> bool {
     if lower.contains("api key") || lower.contains("api-key") || lower.contains("api_key") {
         return true;
@@ -342,12 +343,58 @@ fn contains_auth_keyword(lower: &str) -> bool {
                     | "apikey"
                     | "authenticate"
                     | "authentication"
-                    | "authorized"
                     | "unauthorized"
                     | "unauthenticated"
             )
         })
 }
+
+/// Whole-token match sharing `contains_status_code`'s split, so
+/// "not authorized to perform" matches "authorized" while "unauthorized"
+/// (a different token) and "preauthorized" do not.
+fn contains_whole_token(lower: &str, token: &str) -> bool {
+    lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|part| part == token)
+}
+
+/// Disk/storage quota failures are deterministic — the same request hits
+/// the same wall on retry — so they must not inherit RateLimit's
+/// auto-retry semantics (turn/stream.rs retries anything RateLimit).
+fn disk_quota_context(lower: &str) -> bool {
+    lower.contains("disk")
+        || lower.contains("storage")
+        || lower.contains("filesystem")
+        || lower.contains("inode")
+}
+
+/// Transport-failure phrases reqwest/hyper/rig actually emit. Bare
+/// `contains("connection")` also matched deterministic prose ("invalid
+/// connection string", "connection pool exhausted", "missing connection
+/// header") and granted it transport-retry semantics it does not deserve.
+const TRANSPORT_FAILURE_PHRASES: &[&str] = &[
+    "connection refused",
+    "connection reset",
+    "connection closed",
+    "connection aborted",
+    "connection denied",
+    "connection error",
+    "connection failed",
+    "connection failure",
+    "connection lost",
+    "connection dropped",
+    // The engine's own termination-proof wording ("treating as interrupted
+    // connection") must stay retryable-Network.
+    "interrupted connection",
+    "failed to connect",
+    "unable to connect",
+    "couldn't connect",
+    "could not connect",
+    "cannot connect",
+    "can't connect",
+    "error sending request",
+    "error trying to connect",
+];
 
 /// Classify an error message string into an ErrorCategory.
 ///
@@ -369,7 +416,10 @@ pub fn classify_error_message(message: &str) -> ErrorCategory {
     if lower.contains("rate limit")
         || lower.contains("too many requests")
         || contains_status_code(&lower, "429")
-        || lower.contains("quota")
+        // "quota" alone also fires on disk/storage quota errors
+        // ("disk quota exceeded"), which would auto-retry a deterministic
+        // failure — exclude the disk-context spellings.
+        || (lower.contains("quota") && !disk_quota_context(&lower))
     {
         return ErrorCategory::RateLimit;
     }
@@ -385,9 +435,11 @@ pub fn classify_error_message(message: &str) -> ErrorCategory {
     // need. Pure permission rejections ("Tool 'edit_file' denied by user")
     // carry no network keywords, so they still land in Authorization.
     if lower.contains("network")
-        || lower.contains("connection")
         || lower.contains("dns")
         || lower.contains("temporarily unavailable")
+        || TRANSPORT_FAILURE_PHRASES
+            .iter()
+            .any(|phrase| lower.contains(phrase))
         // Word-boundary matching (like the 429 check above): the padded
         // starts_with/ends_with/equality forms missed punctuation-adjacent
         // occurrences such as "HTTP 502:", "status=502", "(502)", or
@@ -403,6 +455,12 @@ pub fn classify_error_message(message: &str) -> ErrorCategory {
         || lower.contains("forbidden")
         || lower.contains("denied")
         || lower.contains("authorization")
+        // Bare "authorized" as a whole token: IAM-style "user is not
+        // authorized to perform" is a 403-class permission failure —
+        // routing it to Authentication paired it with Critical +
+        // fatal_auth and an API-key recovery hint for a permissions
+        // problem.
+        || contains_whole_token(&lower, "authorized")
     {
         return ErrorCategory::Authorization;
     }
@@ -601,6 +659,23 @@ mod tests {
     }
 
     #[test]
+    fn disk_quota_phrasings_are_not_rate_limited() {
+        // Deterministic disk/storage quota failures must not get
+        // RateLimit's auto-retry in the stream loop.
+        for msg in [
+            "disk quota exceeded",
+            "quota limit reached on workspace storage",
+            "write failed: filesystem quota exceeded",
+        ] {
+            assert_eq!(
+                classify(msg),
+                ErrorCategory::Internal,
+                "expected Internal (not RateLimit) for `{msg}`",
+            );
+        }
+    }
+
+    #[test]
     fn timeout_catches_both_spellings() {
         assert_eq!(classify("connection timeout"), ErrorCategory::Timeout);
         assert_eq!(
@@ -642,19 +717,48 @@ mod tests {
     }
 
     #[test]
-    fn not_authorized_phrasing_classifies_as_authentication() {
+    fn not_authorized_phrasing_classifies_as_authorization() {
         // "authorized" as a whole token: gateway/IAM-style "user is not
-        // authorized to perform: …" must land on an auth category (both
-        // hard-fail in the stream loop) — falling through to `Internal`
-        // would transparently retry a credential error to exhaustion.
+        // authorized to perform: …" is a 403-class permission failure and
+        // lands on Authorization (Error severity, no API-key hint) — not
+        // Authentication, whose Critical + fatal_auth pairing would block
+        // the session over a permissions problem.
         for msg in [
             "user is not authorized to perform: dynamodb:GetItem",
             "caller is not authorized to execute this operation",
         ] {
             assert_eq!(
                 classify(msg),
-                ErrorCategory::Authentication,
-                "expected Authentication for `{msg}`",
+                ErrorCategory::Authorization,
+                "expected Authorization for `{msg}`",
+            );
+        }
+    }
+
+    #[test]
+    fn connection_phrasing_requires_transport_failure_shape() {
+        // Deterministic misconfigurations must not get Network's retry
+        // semantics just because they contain "connection".
+        for msg in [
+            "invalid connection string",
+            "connection pool exhausted",
+            "missing connection header",
+        ] {
+            assert_ne!(
+                classify(msg),
+                ErrorCategory::Network,
+                "expected non-Network for `{msg}`",
+            );
+        }
+        for msg in [
+            "connection refused",
+            "connection reset by peer",
+            "failed to connect to upstream",
+        ] {
+            assert_eq!(
+                classify(msg),
+                ErrorCategory::Network,
+                "expected Network for `{msg}`",
             );
         }
     }
